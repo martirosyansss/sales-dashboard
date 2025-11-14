@@ -1,85 +1,157 @@
-# Sales Management System
+# Sales Dashboard v2.0
 
-A comprehensive sales management application built with Python and SQL Server.
+🚀 **Система аналитики продаж** с поддержкой фильтрации по менеджерам, группам и территориям.
 
-## Features
+## 📋 Возможности
 
-- **Customer Management**: Add, update, delete, and view customers
-- **Product Management**: Manage product inventory with pricing and stock tracking
-- **Sales Processing**: Create sales transactions with automatic stock updates
-- **Reports**: View sales summaries and statistics
+- **Dashboard** - общая статистика продаж, топ менеджеров, графики
+- **Менеджеры** - детальная аналитика по каждому менеджеру
+- **Группы** - анализ продаж по группам клиентов
+- **Территории** - географическое распределение продаж
+- **Настройки** - управление связями и исключениями
 
-## Prerequisites
+### 🔥 Ключевые особенности:
 
-1. **SQL Server**: Make sure SQL Server is installed and running
-2. **ODBC Driver**: Install ODBC Driver 17 for SQL Server
-   - Download from: https://docs.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server
+- ✅ **Назначение ответственных групп менеджерам** - фильтрация статистики только по назначенным группам
+- ✅ **Массовое редактирование** - назначение групп нескольким менеджерам одновременно
+- ✅ **Исключение клиентов** - убрать из статистики отдельных клиентов или целые группы
+- ✅ **Оптимизированная производительность** - загрузка страницы < 3 секунд
+- ✅ **Toast-уведомления** - визуальное подтверждение всех операций
 
-## Database Configuration
+## 🛠 Технологии
 
-The application connects to SQL Server with the following default settings:
-- Server: `localhost`
-- Database: `SalesManagement` (created automatically)
-- Username: `sa`
-- Password: `Aa123456`
+- **Backend**: Python 3.12, Flask 3.0
+- **Database**: Microsoft SQL Server (pyodbc)
+- **Frontend**: Bootstrap 5.3, Chart.js 4.4, Alpine.js 3.x
+- **Storage**: JSON файлы для конфигурации
 
-## Installation
+## 📦 Установка
 
-1. Install Python dependencies:
-```powershell
+1. **Клонировать репозиторий:**
+```bash
+git clone https://github.com/YOUR_USERNAME/sales-dashboard.git
+cd sales-dashboard
+```
+
+2. **Установить зависимости:**
+```bash
 pip install -r requirements.txt
 ```
 
-2. Run the application:
-```powershell
-python sales_management.py
+3. **Настроить подключение к БД:**
+
+Создать файл `.env` или установить переменную окружения:
+```bash
+set SALES_DB=SalesManagement
 ```
 
-## Usage
+4. **Запустить приложение:**
+```bash
+python app_v2.py
+```
 
-### Customers Tab
-- Add new customers with contact information
-- Edit existing customer details
-- Delete customers
-- View all customers in a searchable list
+5. **Открыть в браузере:**
+```
+http://localhost:5000
+```
 
-### Products Tab
-- Add products with pricing and stock levels
-- Update product information
-- Delete products
-- Monitor inventory
+## 🗄️ Структура БД
 
-### Sales Tab
-- Create new sales by selecting customer and product
-- Specify quantity
-- Automatic stock deduction
-- View sales history
+Приложение работает с базой данных SQL Server со следующими таблицами:
 
-### Reports Tab
-- Total sales revenue
-- Customer count
-- Product count
+- `SALESAGENTS` - менеджеры
+- `CUSTOMERS` - клиенты (поле `fGROUP` для группировки)
+- `SALES` - продажи
+- `HICUSTOMERSDEBT` - задолженности клиентов
+- `DOCUMENTS` - документы (для расчета долгов)
 
-## Database Structure
+## ⚙️ Конфигурация
 
-The application automatically creates the following tables:
+Система использует JSON файлы для хранения настроек:
 
-- **Customers**: Customer information
-- **Products**: Product catalog with inventory
-- **Sales**: Sales transactions
-- **SaleDetails**: Line items for each sale
+- `group_manager_assignments.json` - назначения групп менеджерам
+- `excluded_customers.json` - исключенные клиенты
+- `excluded_groups.json` - исключенные группы
 
-## Troubleshooting
+**Формат `group_manager_assignments.json`:**
+```json
+{
+  "036": 3136,
+  "002": 3136
+}
+```
+Где ключ - код группы, значение - ID менеджера.
 
-### Connection Issues
-- Verify SQL Server is running
-- Check if sa account is enabled
-- Ensure TCP/IP is enabled in SQL Server Configuration Manager
-- Verify firewall settings allow SQL Server connections
+## 📊 Логика фильтрации
 
-### ODBC Driver Not Found
-Install ODBC Driver 17 for SQL Server from Microsoft's website.
+### Ответственные группы:
 
-## License
+1. Назначаете группу менеджеру в настройках
+2. В статистике менеджера показываются **ТОЛЬКО** клиенты из назначенных групп
+3. Если группы не назначены - показываются все продажи (обратная совместимость)
 
-This project is provided as-is for educational and commercial use.
+**Пример:**
+- Менеджер ID 3136 ответственен за группы 002 и 036
+- Группа 002 содержит 1776 клиентов
+- Группа 036 содержит 6500 клиентов
+- Статистика менеджера покажет только продажи этим 8276 клиентам
+
+## 🚀 API Endpoints
+
+### Dashboard
+- `GET /api/dashboard` - общая статистика
+- `GET /api/top-managers` - топ менеджеров
+
+### Менеджеры
+- `GET /api/managers` - список менеджеров со статистикой
+- `GET /api/managers/<id>` - детальная информация по менеджеру
+
+### Настройки
+- `GET /api/settings/managers` - список менеджеров
+- `GET /api/settings/groups-with-stats` - группы с количеством клиентов
+- `POST /api/settings/group-manager-assignments/set` - назначить группу менеджеру
+- `POST /api/settings/group-manager-assignments/remove` - удалить назначение
+- `GET /api/settings/group-manager-assignments` - получить все назначения
+
+## 🎨 Интерфейс
+
+### Страница настроек - Группы:
+
+**Режим "Один менеджер":**
+1. Выбираете менеджера из списка
+2. Отмечаете группы, за которые он отвечает
+3. Автосохранение при каждом изменении
+
+**Режим "Массовое изменение":**
+1. Выбираете несколько менеджеров
+2. Выбираете несколько групп
+3. Три операции:
+   - **Добавить** - добавить группы к существующим
+   - **Заменить** - удалить старые, назначить новые
+   - **Очистить** - снять все группы с выбранных менеджеров
+
+## 🔧 Производительность
+
+### Оптимизации:
+
+- ✅ SQL запросы: N*2 → 1 запрос для загрузки всех менеджеров
+- ✅ Параллельная загрузка данных (Promise.all)
+- ✅ Убраны медленные SELECT DISTINCT запросы
+- ✅ Исправлены проблемы с реактивностью Alpine.js
+
+**Результат:** загрузка страницы < 3 секунд (было 30+ секунд)
+
+## 📝 Лицензия
+
+MIT License
+
+## 🐛 Известные проблемы
+
+Нет известных критичных проблем.
+
+## 🔜 Планы развития
+
+- [ ] Добавить экспорт в Excel
+- [ ] Графики по территориям
+- [ ] История изменений назначений
+- [ ] Уведомления по email
