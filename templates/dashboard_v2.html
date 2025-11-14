@@ -1,0 +1,999 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Dashboard - Sales Dashboard v2.0{% endblock %}
+
+{% block content %}
+<div class="container-fluid" x-data="dashboardData()">
+    <!-- Заголовок и фильтры -->
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <h1 class="display-4">
+                <i class="fas fa-chart-line text-primary"></i>
+                Панель управления продажами
+            </h1>
+            <p class="lead text-muted">
+                <i class="fas fa-calendar-alt"></i> 
+                <span x-text="selectedPeriodText"></span> | 
+                <i class="fas fa-clock"></i> Обновлено: <span x-text="currentTime"></span>
+            </p>
+        </div>
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-body">
+                    <h6 class="mb-3">
+                        <i class="fas fa-filter"></i> Фильтры по дате
+                    </h6>
+                    <div class="row">
+                        <div class="col-md-5">
+                            <label class="form-label small">От:</label>
+                            <input type="date" 
+                                   class="form-control form-control-sm" 
+                                   x-model="dateFrom"
+                                   @change="loadStats()">
+                        </div>
+                        <div class="col-md-5">
+                            <label class="form-label small">До:</label>
+                            <input type="date" 
+                                   class="form-control form-control-sm" 
+                                   x-model="dateTo"
+                                   @change="loadStats()">
+                        </div>
+                        <div class="col-md-2 d-flex align-items-end">
+                            <button class="btn btn-sm btn-outline-secondary w-100" 
+                                    @click="resetDates()"
+                                    title="Сбросить на текущий месяц">
+                                <i class="fas fa-undo"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <small class="text-muted">
+                            <i class="fas fa-info-circle"></i>
+                            Быстрый выбор:
+                        </small>
+                        <div class="btn-group btn-group-sm mt-1" role="group">
+                            <button type="button" class="btn btn-outline-primary" @click="setThisMonth()">
+                                Этот месяц
+                            </button>
+                            <button type="button" class="btn btn-outline-primary" @click="setLastMonth()">
+                                Прошлый месяц
+                            </button>
+                            <button type="button" class="btn btn-outline-primary" @click="setThisYear()">
+                                Этот год
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Сравнение с предыдущими периодами -->
+    <div class="row mb-4" x-show="!loading && stats.total_revenue.value > 0">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h6 class="mb-0">
+                        <i class="fas fa-chart-bar"></i>
+                        Сравнение с предыдущими периодами
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <h6 class="text-muted">К прошлому месяцу:</h6>
+                            <div class="d-flex justify-content-between mb-2">
+                                <span>Выручка:</span>
+                                <strong>
+                                    <span :class="stats.total_revenue.growth >= 0 ? 'text-success' : 'text-danger'"
+                                          x-text="formatPercent(stats.total_revenue.growth)"></span>
+                                    <small class="text-muted" x-text="`(${formatCurrency(stats.total_revenue.prev_month)})`"></small>
+                                </strong>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <span>Продажи:</span>
+                                <strong>
+                                    <span :class="stats.sales_count.growth >= 0 ? 'text-success' : 'text-danger'"
+                                          x-text="formatPercent(stats.sales_count.growth)"></span>
+                                    <small class="text-muted" x-text="`(${formatNumber(stats.sales_count.prev_month)})`"></small>
+                                </strong>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <h6 class="text-muted">К прошлому году (этот же месяц):</h6>
+                            <div class="d-flex justify-content-between mb-2">
+                                <span>Выручка:</span>
+                                <strong>
+                                    <span :class="stats.total_revenue.growth_yoy >= 0 ? 'text-success' : 'text-danger'"
+                                          x-text="formatPercent(stats.total_revenue.growth_yoy)"></span>
+                                    <small class="text-muted" x-text="`(${formatCurrency(stats.total_revenue.last_year)})`"></small>
+                                </strong>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <span>Продажи:</span>
+                                <strong>
+                                    <span :class="stats.sales_count.growth_yoy >= 0 ? 'text-success' : 'text-danger'"
+                                          x-text="formatPercent(stats.sales_count.growth_yoy)"></span>
+                                    <small class="text-muted" x-text="`(${formatNumber(stats.sales_count.last_year)})`"></small>
+                                </strong>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <h6 class="text-muted">К 10 лет назад (этот же месяц):</h6>
+                            <div class="d-flex justify-content-between mb-2">
+                                <span>Выручка:</span>
+                                <strong>
+                                    <span :class="stats.total_revenue.growth_10y >= 0 ? 'text-success' : 'text-danger'"
+                                          x-text="formatPercent(stats.total_revenue.growth_10y)"></span>
+                                    <small class="text-muted" x-text="`(${formatCurrency(stats.total_revenue.ten_years_ago)})`"></small>
+                                </strong>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <span>Продажи:</span>
+                                <strong>
+                                    <span :class="stats.sales_count.growth_10y >= 0 ? 'text-success' : 'text-danger'"
+                                          x-text="formatPercent(stats.sales_count.growth_10y)"></span>
+                                    <small class="text-muted" x-text="`(${formatNumber(stats.sales_count.ten_years_ago)})`"></small>
+                                </strong>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Статистические карточки -->
+    <div class="row mb-4" id="stats-container">
+        <!-- Общая выручка -->
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card stat-card" style="border-left-color: #0d6efd;">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <p class="stat-label mb-1">Общая выручка</p>
+                        <h2 class="stat-value mb-0" x-text="formatCurrency(stats.total_revenue.value)">
+                            Загрузка...
+                        </h2>
+                        <span class="growth-badge" 
+                              :class="stats.total_revenue.growth >= 0 ? 'growth-positive' : 'growth-negative'"
+                              x-show="stats.total_revenue.growth !== undefined">
+                            <i :class="stats.total_revenue.growth >= 0 ? 'fas fa-arrow-up' : 'fas fa-arrow-down'"></i>
+                            <span x-text="formatPercent(stats.total_revenue.growth)"></span>
+                        </span>
+                    </div>
+                    <div class="stat-icon">
+                        <i class="fas fa-dollar-sign text-primary"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Количество продаж -->
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card stat-card" style="border-left-color: #198754;">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <p class="stat-label mb-1">Количество продаж</p>
+                        <h2 class="stat-value mb-0" x-text="formatNumber(stats.sales_count.value)">
+                            Загрузка...
+                        </h2>
+                        <span class="growth-badge" 
+                              :class="stats.sales_count.growth >= 0 ? 'growth-positive' : 'growth-negative'"
+                              x-show="stats.sales_count.growth !== undefined">
+                            <i :class="stats.sales_count.growth >= 0 ? 'fas fa-arrow-up' : 'fas fa-arrow-down'"></i>
+                            <span x-text="formatPercent(stats.sales_count.growth)"></span>
+                        </span>
+                    </div>
+                    <div class="stat-icon">
+                        <i class="fas fa-shopping-cart text-success"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Средний чек -->
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card stat-card" style="border-left-color: #0dcaf0;">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <p class="stat-label mb-1">Средний чек</p>
+                        <h2 class="stat-value mb-0" x-text="formatCurrency(stats.avg_check.value)">
+                            Загрузка...
+                        </h2>
+                        <small class="text-muted">за текущий месяц</small>
+                    </div>
+                    <div class="stat-icon">
+                        <i class="fas fa-receipt text-info"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Активные клиенты -->
+        <div class="col-xl-3 col-md-6 mb-4">
+            <div class="card stat-card" style="border-left-color: #ffc107;">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <p class="stat-label mb-1">Активные клиенты</p>
+                        <h2 class="stat-value mb-0" x-text="formatNumber(stats.active_customers.value)">
+                            Загрузка...
+                        </h2>
+                        <small class="text-muted">покупали в этом месяце</small>
+                    </div>
+                    <div class="stat-icon">
+                        <i class="fas fa-users text-warning"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Блок с долгами клиентов -->
+    <div class="row mb-4" x-show="!loadingDebts">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header bg-danger text-white">
+                    <h5 class="mb-0">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        Долги клиентов
+                    </h5>
+                    <small>Формула: Конечный долг = debtFromDocuments - |type01| - |type02|</small>
+                </div>
+                <div class="card-body">
+                    <div class="row mb-3">
+                        <div class="col-md-3">
+                            <div class="text-center p-3 bg-light rounded">
+                                <small class="text-muted d-block mb-1">Долг из документов</small>
+                                <h4 class="mb-0 text-primary" x-text="formatCurrency(debts.debt_from_documents)">0</h4>
+                                <small class="text-muted">D - C</small>
+                            </div>
+                        </div>
+                        <div class="col-md-2">
+                            <div class="text-center p-3 bg-light rounded">
+                                <small class="text-muted d-block mb-1">Type 01</small>
+                                <h4 class="mb-0 text-info" x-text="formatCurrency(Math.abs(debts.type01))">0</h4>
+                                <small class="text-muted">|type01|</small>
+                            </div>
+                        </div>
+                        <div class="col-md-2">
+                            <div class="text-center p-3 bg-light rounded">
+                                <small class="text-muted d-block mb-1">Type 02</small>
+                                <h4 class="mb-0 text-info" x-text="formatCurrency(Math.abs(debts.type02))">0</h4>
+                                <small class="text-muted">|type02|</small>
+                            </div>
+                        </div>
+                        <div class="col-md-1 d-flex align-items-center justify-content-center">
+                            <h3 class="mb-0">=</h3>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="text-center p-3 bg-warning rounded">
+                                <small class="text-dark d-block mb-1"><strong>Конечный долг</strong></small>
+                                <h3 class="mb-0 text-dark" x-text="formatCurrency(debts.final_debt)">0</h3>
+                                <small class="text-dark" x-text="`${debts.debt_customers_count} клиентов с долгами`"></small>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <template x-if="debts.top_debtors && debts.top_debtors.length > 0">
+                        <div>
+                            <h6 class="mb-3">
+                                <i class="fas fa-list-ol"></i> ТОП-10 должников
+                            </h6>
+                            <div class="table-responsive">
+                                <table class="table table-sm table-hover">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th width="50">#</th>
+                                            <th width="100">Код</th>
+                                            <th>Клиент</th>
+                                            <th width="150" class="text-end">Долг</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <template x-for="(debtor, index) in debts.top_debtors" :key="index">
+                                            <tr>
+                                                <td x-text="index + 1"></td>
+                                                <td x-text="debtor.customer_code"></td>
+                                                <td x-text="debtor.customer_name"></td>
+                                                <td class="text-end">
+                                                    <strong class="text-danger" x-text="formatCurrency(debtor.debt_amount)"></strong>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Топ менеджер месяца -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-trophy text-warning me-2"></i>
+                        Лучший менеджер месяца
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="flex-grow-1">
+                            <h4 class="mb-1" x-text="stats.top_manager.name">Загрузка...</h4>
+                            <p class="text-muted mb-0">
+                                Общие продажи: <strong x-text="formatCurrency(stats.top_manager.sales)"></strong>
+                            </p>
+                        </div>
+                        <div class="text-end">
+                            <i class="fas fa-medal fa-3x text-warning"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Графики -->
+    <div class="row mb-4">
+        <!-- График долгов (композиция) -->
+        <div class="col-xl-4 mb-4">
+            <div class="card">
+                <div class="card-header bg-danger text-white">
+                    <h5 class="mb-0">
+                        <i class="fas fa-chart-pie me-2"></i>
+                        Структура долгов
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="debtsChart" height="200"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- График продаж по месяцам -->
+        <div class="col-xl-8 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-chart-area text-primary me-2"></i>
+                        Динамика продаж за последние 12 месяцев
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="salesChart" height="80"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mb-4">
+        <!-- Топ 10 менеджеров -->
+        <div class="col-xl-6 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-chart-bar text-success me-2"></i>
+                        Топ 10 менеджеров
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="managersChart" height="200"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- График долгов по клиентам (ТОП-10) -->
+        <div class="col-xl-6 mb-4">
+            <div class="card">
+                <div class="card-header bg-warning">
+                    <h5 class="mb-0 text-dark">
+                        <i class="fas fa-chart-bar me-2"></i>
+                        ТОП-10 должников
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="topDebtorsChart" height="200"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    </div>
+
+    <!-- График динамики за последние 10 лет -->
+    <div class="row mb-4" x-show="!loading">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-history text-warning me-2"></i>
+                        Динамика продаж за последние 10 лет (текущий месяц)
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="tenYearsChart" height="60"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Индикатор загрузки -->
+    <div x-show="loading" class="text-center py-5">
+        <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;">
+            <span class="visually-hidden">Загрузка...</span>
+        </div>
+        <p class="mt-3 text-muted">Загрузка данных из базы...</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function dashboardData() {
+        return {
+            loading: true,
+            loadingDebts: true,
+            currentTime: new Date().toLocaleString('ru-RU'),
+            dateFrom: '',
+            dateTo: '',
+            selectedPeriodText: 'Текущий месяц',
+            stats: {
+                total_revenue: { value: 0, growth: 0, growth_yoy: 0, growth_10y: 0, prev_month: 0, last_year: 0, ten_years_ago: 0 },
+                sales_count: { value: 0, growth: 0, growth_yoy: 0, growth_10y: 0, prev_month: 0, last_year: 0, ten_years_ago: 0 },
+                avg_check: { value: 0 },
+                active_customers: { value: 0 },
+                top_manager: { name: 'Загрузка...', sales: 0 }
+            },
+            debts: {
+                debt_from_documents: 0,
+                type01: 0,
+                type02: 0,
+                final_debt: 0,
+                debt_customers_count: 0,
+                top_debtors: []
+            },
+            salesChart: null,
+            managersChart: null,
+            tenYearsChart: null,
+            debtsChart: null,
+            topDebtorsChart: null,
+
+            init() {
+                // Установить текущий месяц по умолчанию
+                this.setThisMonth();
+                this.loadCharts();
+                this.loadDebts();
+                
+                // Обновление времени каждую секунду
+                setInterval(() => {
+                    this.currentTime = new Date().toLocaleString('ru-RU');
+                }, 1000);
+
+                // Автообновление данных каждые 5 минут
+                setInterval(() => {
+                    this.loadStats();
+                    this.loadCharts();
+                    this.loadDebts();
+                }, 300000);
+            },
+
+            setThisMonth() {
+                const today = new Date();
+                const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+                const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+                
+                this.dateFrom = this.formatDate(firstDay);
+                this.dateTo = this.formatDate(lastDay);
+                this.selectedPeriodText = 'Текущий месяц';
+                this.loadStats();
+                this.loadDebts();
+            },
+
+            setLastMonth() {
+                const today = new Date();
+                const firstDay = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+                const lastDay = new Date(today.getFullYear(), today.getMonth(), 0);
+                
+                this.dateFrom = this.formatDate(firstDay);
+                this.dateTo = this.formatDate(lastDay);
+                this.selectedPeriodText = 'Прошлый месяц';
+                this.loadStats();
+                this.loadDebts();
+            },
+
+            setThisYear() {
+                const today = new Date();
+                const firstDay = new Date(today.getFullYear(), 0, 1);
+                const lastDay = new Date(today.getFullYear(), 11, 31);
+                
+                this.dateFrom = this.formatDate(firstDay);
+                this.dateTo = this.formatDate(lastDay);
+                this.selectedPeriodText = 'Текущий год';
+                this.loadStats();
+                this.loadDebts();
+            },
+
+            resetDates() {
+                this.setThisMonth();
+            },
+
+            formatDate(date) {
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                return `${year}-${month}-${day}`;
+            },
+
+            async loadStats() {
+                try {
+                    let url = '/api/dashboard/stats';
+                    if (this.dateFrom && this.dateTo) {
+                        url += `?date_from=${this.dateFrom}&date_to=${this.dateTo}`;
+                        this.selectedPeriodText = `${this.dateFrom} — ${this.dateTo}`;
+                    }
+                    
+                    const response = await fetch(url);
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        this.stats = result.data;
+                        this.loading = false;
+                    }
+                    
+                    // Обновить долги при изменении даты через input
+                    this.loadDebts();
+                } catch (error) {
+                    console.error('Ошибка загрузки статистики:', error);
+                    this.loading = false;
+                }
+            },
+
+            async loadDebts() {
+                try {
+                    let url = '/api/dashboard/debts';
+                    
+                    const response = await fetch(url);
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        this.debts = {
+                            debt_from_documents: result.debt_from_documents,
+                            type01: result.type01,
+                            type02: result.type02,
+                            final_debt: result.final_debt,
+                            debt_customers_count: result.debt_customers_count,
+                            top_debtors: result.top_debtors
+                        };
+                        this.loadingDebts = false;
+                        
+                        // Отрисовать графики долгов
+                        this.renderDebtsChart();
+                        this.renderTopDebtorsChart();
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки долгов:', error);
+                    this.loadingDebts = false;
+                }
+            },
+
+            async loadCharts() {
+                try {
+                    // График продаж
+                    const salesResponse = await fetch('/api/dashboard/sales-chart');
+                    const salesResult = await salesResponse.json();
+                    
+                    if (salesResult.success) {
+                        this.renderSalesChart(salesResult.data);
+                    }
+
+                    // График менеджеров
+                    const managersResponse = await fetch('/api/dashboard/top-managers');
+                    const managersResult = await managersResponse.json();
+                    
+                    if (managersResult.success) {
+                        this.renderManagersChart(managersResult.data);
+                    }
+
+                    // График за последние 10 лет
+                    await this.load10YearsChart();
+                } catch (error) {
+                    console.error('Ошибка загрузки графиков:', error);
+                }
+            },
+
+            async load10YearsChart() {
+                try {
+                    const response = await fetch(`/api/dashboard/10years-chart?date_from=${this.dateFrom}`);
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        this.render10YearsChart(result.data, result.current_month);
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки графика за 10 лет:', error);
+                }
+            },
+
+            render10YearsChart(data, monthName) {
+                const ctx = document.getElementById('tenYearsChart');
+                
+                if (this.tenYearsChart) {
+                    this.tenYearsChart.destroy();
+                }
+
+                const labels = data.map(item => item.Year);
+                const salesValues = data.map(item => item.SalesCount);
+                const revenueValues = data.map(item => item.TotalSum);
+
+                this.tenYearsChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: 'Выручка (AMD)',
+                                data: revenueValues,
+                                borderColor: 'rgb(13, 202, 240)',
+                                backgroundColor: 'rgba(13, 202, 240, 0.1)',
+                                tension: 0.4,
+                                fill: true,
+                                yAxisID: 'y'
+                            },
+                            {
+                                label: 'Количество продаж',
+                                data: salesValues,
+                                borderColor: 'rgb(255, 193, 7)',
+                                backgroundColor: 'rgba(255, 193, 7, 0.1)',
+                                tension: 0.4,
+                                fill: true,
+                                yAxisID: 'y1'
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        interaction: {
+                            mode: 'index',
+                            intersect: false
+                        },
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: `Динамика за ${monthName} (последние 10 лет)`,
+                                color: '#fff'
+                            },
+                            legend: {
+                                display: true,
+                                position: 'top',
+                                labels: {
+                                    color: '#fff'
+                                }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        let label = context.dataset.label || '';
+                                        if (label) {
+                                            label += ': ';
+                                        }
+                                        if (context.dataset.yAxisID === 'y') {
+                                            label += formatCurrency(context.parsed.y);
+                                        } else {
+                                            label += formatNumber(context.parsed.y);
+                                        }
+                                        return label;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                ticks: { color: '#adb5bd' },
+                                grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                            },
+                            y: {
+                                type: 'linear',
+                                display: true,
+                                position: 'left',
+                                ticks: {
+                                    color: '#adb5bd',
+                                    callback: function(value) {
+                                        return formatNumber(value);
+                                    }
+                                },
+                                grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                                title: {
+                                    display: true,
+                                    text: 'Выручка (AMD)',
+                                    color: '#adb5bd'
+                                }
+                            },
+                            y1: {
+                                type: 'linear',
+                                display: true,
+                                position: 'right',
+                                ticks: {
+                                    color: '#adb5bd',
+                                    callback: function(value) {
+                                        return formatNumber(value);
+                                    }
+                                },
+                                grid: {
+                                    drawOnChartArea: false
+                                },
+                                title: {
+                                    display: true,
+                                    text: 'Количество продаж',
+                                    color: '#adb5bd'
+                                }
+                            }
+                        }
+                    }
+                });
+            },
+
+            renderSalesChart(data) {
+                const ctx = document.getElementById('salesChart');
+                
+                if (this.salesChart) {
+                    this.salesChart.destroy();
+                }
+
+                const labels = data.map(item => item.Month);
+                const values = data.map(item => item.TotalSum);
+
+                this.salesChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Выручка (AMD)',
+                            data: values,
+                            borderColor: 'rgb(13, 110, 253)',
+                            backgroundColor: 'rgba(13, 110, 253, 0.1)',
+                            tension: 0.4,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top'
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return 'Выручка: ' + formatCurrency(context.parsed.y);
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: function(value) {
+                                        return formatNumber(value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            },
+
+            renderManagersChart(data) {
+                const ctx = document.getElementById('managersChart');
+                
+                if (this.managersChart) {
+                    this.managersChart.destroy();
+                }
+
+                const labels = data.map(item => item.ManagerName);
+                const values = data.map(item => item.TotalSales);
+
+                this.managersChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Продажи (AMD)',
+                            data: values,
+                            backgroundColor: [
+                                'rgba(13, 110, 253, 0.8)',
+                                'rgba(25, 135, 84, 0.8)',
+                                'rgba(255, 193, 7, 0.8)',
+                                'rgba(13, 202, 240, 0.8)',
+                                'rgba(220, 53, 69, 0.8)',
+                                'rgba(111, 66, 193, 0.8)',
+                                'rgba(255, 87, 34, 0.8)',
+                                'rgba(76, 175, 80, 0.8)',
+                                'rgba(156, 39, 176, 0.8)',
+                                'rgba(255, 152, 0, 0.8)'
+                            ],
+                            borderColor: 'rgba(255, 255, 255, 0.1)',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                display: false
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return formatCurrency(context.parsed.x);
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: function(value) {
+                                        return formatNumber(value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            },
+
+            renderDebtsChart() {
+                const ctx = document.getElementById('debtsChart');
+                
+                if (this.debtsChart) {
+                    this.debtsChart.destroy();
+                }
+
+                const debtFromDocs = Math.abs(this.debts.debt_from_documents);
+                const type01Abs = Math.abs(this.debts.type01);
+                const type02Abs = Math.abs(this.debts.type02);
+                const finalDebt = Math.abs(this.debts.final_debt);
+
+                this.debtsChart = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Долг из документов', 'Type 01', 'Type 02', 'Конечный долг'],
+                        datasets: [{
+                            data: [debtFromDocs, type01Abs, type02Abs, finalDebt],
+                            backgroundColor: [
+                                'rgba(13, 110, 253, 0.8)',
+                                'rgba(13, 202, 240, 0.8)',
+                                'rgba(111, 66, 193, 0.8)',
+                                'rgba(255, 193, 7, 0.8)'
+                            ],
+                            borderColor: [
+                                'rgb(13, 110, 253)',
+                                'rgb(13, 202, 240)',
+                                'rgb(111, 66, 193)',
+                                'rgb(255, 193, 7)'
+                            ],
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                position: 'bottom'
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: (context) => {
+                                        return context.label + ': ' + this.formatCurrency(context.parsed);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            },
+
+            renderTopDebtorsChart() {
+                const ctx = document.getElementById('topDebtorsChart');
+                
+                if (this.topDebtorsChart) {
+                    this.topDebtorsChart.destroy();
+                }
+
+                if (!this.debts.top_debtors || this.debts.top_debtors.length === 0) {
+                    return;
+                }
+
+                const labels = this.debts.top_debtors.map(d => d.customer_name.substring(0, 20));
+                const data = this.debts.top_debtors.map(d => d.debt_amount);
+
+                this.topDebtorsChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Долг',
+                            data: data,
+                            backgroundColor: 'rgba(220, 53, 69, 0.8)',
+                            borderColor: 'rgb(220, 53, 69)',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                display: false
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: (context) => {
+                                        return this.formatCurrency(context.parsed.x);
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: (value) => {
+                                        return this.formatNumber(value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            },
+
+            formatNumber(num) {
+                return new Intl.NumberFormat('ru-RU').format(num);
+            },
+
+            formatCurrency(num) {
+                return new Intl.NumberFormat('ru-RU', {
+                    style: 'currency',
+                    currency: 'AMD',
+                    minimumFractionDigits: 0
+                }).format(num);
+            },
+
+            formatPercent(num) {
+                return (num >= 0 ? '+' : '') + num.toFixed(1) + '%';
+            }
+        }
+    }
+
+    // Инициализация drag & drop для карточек
+    document.addEventListener('DOMContentLoaded', () => {
+        const statsContainer = document.getElementById('stats-container');
+        if (statsContainer) {
+            new Sortable(statsContainer, {
+                animation: 150,
+                ghostClass: 'sortable-ghost',
+                chosenClass: 'sortable-chosen',
+                dragClass: 'sortable-drag',
+                onEnd: function() {
+                    // Сохранить порядок в localStorage
+                    const order = Array.from(statsContainer.children).map((card, index) => index);
+                    localStorage.setItem('stats-order', JSON.stringify(order));
+                }
+            });
+        }
+    });
+</script>
+{% endblock %}

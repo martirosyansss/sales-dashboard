@@ -1,0 +1,376 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Территории - Sales Dashboard v2.0{% endblock %}
+
+{% block content %}
+<div class="container-fluid" x-data="areasData()">
+    <div class="row mb-4">
+        <div class="col-12">
+            <h1 class="display-4">
+                <i class="fas fa-map-marked-alt text-primary"></i>
+                Территории продаж
+            </h1>
+            <p class="lead text-muted">
+                <i class="fas fa-info-circle"></i> 
+                Всего территорий: <span x-text="areas.length" class="badge bg-primary">0</span>
+            </p>
+        </div>
+    </div>
+
+    <!-- Карточки территорий -->
+    <div class="row mb-4" id="areas-container">
+        <template x-for="(area, index) in areas" :key="index">
+            <div class="col-xl-3 col-lg-4 col-md-6 mb-4">
+                <div class="card h-100">
+                    <div class="card-header text-center" 
+                         :style="`background: linear-gradient(135deg, rgba(13, 110, 253, 0.2), rgba(13, 202, 240, 0.2))`">
+                        <h2 class="mb-0" x-text="area.AreaCode || 'N/A'"></h2>
+                        <small class="text-muted">Территория</small>
+                    </div>
+                    <div class="card-body">
+                        <!-- Статистика -->
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">
+                                    <i class="fas fa-shopping-cart"></i> Продаж:
+                                </span>
+                                <strong x-text="formatNumber(area.SalesCount)"></strong>
+                            </div>
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">
+                                    <i class="fas fa-users"></i> Клиентов:
+                                </span>
+                                <strong x-text="formatNumber(area.CustomerCount)"></strong>
+                            </div>
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">
+                                    <i class="fas fa-dollar-sign"></i> Сумма:
+                                </span>
+                                <strong x-text="formatCurrency(area.TotalSales)" class="text-success"></strong>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <span class="text-muted">
+                                    <i class="fas fa-receipt"></i> Средний чек:
+                                </span>
+                                <strong x-text="formatCurrency(area.TotalSales / area.SalesCount)"></strong>
+                            </div>
+                        </div>
+
+                        <!-- Прогресс бар -->
+                        <div class="mb-3">
+                            <small class="text-muted">Доля от общих продаж</small>
+                            <div class="progress" style="height: 8px;">
+                                <div class="progress-bar" 
+                                     :class="`bg-${getColorByRank(index)}`"
+                                     role="progressbar" 
+                                     :style="`width: ${calculateShare(area.TotalSales)}%`">
+                                </div>
+                            </div>
+                            <small x-text="`${calculateShare(area.TotalSales).toFixed(1)}%`" class="text-muted"></small>
+                        </div>
+
+                        <!-- Рейтинг -->
+                        <div class="text-center">
+                            <template x-if="index === 0">
+                                <span class="badge bg-warning">
+                                    <i class="fas fa-trophy"></i> #1 Лучшая территория
+                                </span>
+                            </template>
+                            <template x-if="index === 1">
+                                <span class="badge bg-info">
+                                    <i class="fas fa-medal"></i> #2 Место
+                                </span>
+                            </template>
+                            <template x-if="index === 2">
+                                <span class="badge bg-success">
+                                    <i class="fas fa-award"></i> #3 Место
+                                </span>
+                            </template>
+                            <template x-if="index > 2">
+                                <span class="badge bg-secondary" x-text="`#${index + 1} место`"></span>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </template>
+
+        <!-- Индикатор загрузки -->
+        <div x-show="loading" class="col-12 text-center py-5">
+            <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;">
+                <span class="visually-hidden">Загрузка...</span>
+            </div>
+            <p class="mt-3 text-muted">Загрузка территорий...</p>
+        </div>
+    </div>
+
+    <!-- График сравнения территорий -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-chart-bar"></i>
+                        Сравнение продаж по территориям
+                    </h5>
+                    <button class="btn btn-outline-primary btn-sm" @click="loadAreas()">
+                        <i class="fas fa-sync-alt"></i> Обновить
+                    </button>
+                </div>
+                <div class="card-body">
+                    <canvas id="areasChart" height="80"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Таблица детальной статистики -->
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-table"></i>
+                        Детальная статистика
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Рейтинг</th>
+                                    <th>Территория</th>
+                                    <th>Продаж</th>
+                                    <th>Клиентов</th>
+                                    <th>Общая сумма</th>
+                                    <th>Средний чек</th>
+                                    <th>Доля</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="(area, index) in areas" :key="index">
+                                    <tr>
+                                        <td>
+                                            <template x-if="index < 3">
+                                                <i class="fas fa-medal" :class="`text-${getColorByRank(index)}`"></i>
+                                            </template>
+                                            <span x-text="`#${index + 1}`"></span>
+                                        </td>
+                                        <td>
+                                            <strong x-text="area.AreaCode || 'N/A'"></strong>
+                                        </td>
+                                        <td x-text="formatNumber(area.SalesCount)"></td>
+                                        <td x-text="formatNumber(area.CustomerCount)"></td>
+                                        <td>
+                                            <strong x-text="formatCurrency(area.TotalSales)" class="text-success"></strong>
+                                        </td>
+                                        <td x-text="formatCurrency(area.TotalSales / area.SalesCount)"></td>
+                                        <td>
+                                            <span x-text="`${calculateShare(area.TotalSales).toFixed(1)}%`"></span>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                            <tfoot>
+                                <tr class="table-secondary">
+                                    <td colspan="2"><strong>ИТОГО:</strong></td>
+                                    <td><strong x-text="formatNumber(totalSalesCount)"></strong></td>
+                                    <td><strong x-text="formatNumber(totalCustomers)"></strong></td>
+                                    <td><strong x-text="formatCurrency(totalSales)" class="text-success"></strong></td>
+                                    <td><strong x-text="formatCurrency(totalSales / totalSalesCount)"></strong></td>
+                                    <td>100%</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function areasData() {
+        return {
+            areas: [],
+            loading: true,
+            totalSales: 0,
+            totalSalesCount: 0,
+            totalCustomers: 0,
+            chart: null,
+
+            init() {
+                this.loadAreas();
+            },
+
+            async loadAreas() {
+                this.loading = true;
+                try {
+                    const response = await fetch('/api/areas');
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        this.areas = result.data;
+                        
+                        // Подсчитать итоги
+                        this.totalSales = this.areas.reduce((sum, a) => sum + a.TotalSales, 0);
+                        this.totalSalesCount = this.areas.reduce((sum, a) => sum + a.SalesCount, 0);
+                        this.totalCustomers = this.areas.reduce((sum, a) => sum + a.CustomerCount, 0);
+                        
+                        // Отрисовать график
+                        this.$nextTick(() => {
+                            this.renderChart();
+                        });
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки территорий:', error);
+                } finally {
+                    this.loading = false;
+                }
+            },
+
+            calculateShare(sales) {
+                return this.totalSales > 0 ? (sales / this.totalSales * 100) : 0;
+            },
+
+            getColorByRank(index) {
+                const colors = ['warning', 'info', 'success', 'primary', 'secondary'];
+                return colors[Math.min(index, colors.length - 1)];
+            },
+
+            renderChart() {
+                const ctx = document.getElementById('areasChart');
+                if (!ctx) return;
+
+                if (this.chart) {
+                    this.chart.destroy();
+                }
+
+                const labels = this.areas.map(a => a.AreaCode || 'N/A');
+                const salesData = this.areas.map(a => a.SalesCount);
+                const revenueData = this.areas.map(a => a.TotalSales);
+
+                this.chart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: 'Количество продаж',
+                                data: salesData,
+                                backgroundColor: 'rgba(13, 110, 253, 0.6)',
+                                borderColor: 'rgba(13, 110, 253, 1)',
+                                borderWidth: 1,
+                                yAxisID: 'y'
+                            },
+                            {
+                                label: 'Выручка (AMD)',
+                                data: revenueData,
+                                type: 'line',
+                                borderColor: 'rgba(25, 135, 84, 1)',
+                                backgroundColor: 'rgba(25, 135, 84, 0.1)',
+                                borderWidth: 2,
+                                yAxisID: 'y1',
+                                tension: 0.4
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        interaction: {
+                            mode: 'index',
+                            intersect: false
+                        },
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top'
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        let label = context.dataset.label || '';
+                                        if (label) {
+                                            label += ': ';
+                                        }
+                                        if (context.dataset.yAxisID === 'y1') {
+                                            label += formatCurrency(context.parsed.y);
+                                        } else {
+                                            label += formatNumber(context.parsed.y);
+                                        }
+                                        return label;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                type: 'linear',
+                                display: true,
+                                position: 'left',
+                                title: {
+                                    display: true,
+                                    text: 'Количество продаж'
+                                },
+                                ticks: {
+                                    callback: function(value) {
+                                        return formatNumber(value);
+                                    }
+                                }
+                            },
+                            y1: {
+                                type: 'linear',
+                                display: true,
+                                position: 'right',
+                                title: {
+                                    display: true,
+                                    text: 'Выручка (AMD)'
+                                },
+                                grid: {
+                                    drawOnChartArea: false
+                                },
+                                ticks: {
+                                    callback: function(value) {
+                                        return formatNumber(value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            },
+
+            formatNumber(num) {
+                return new Intl.NumberFormat('ru-RU').format(num);
+            },
+
+            formatCurrency(num) {
+                return new Intl.NumberFormat('ru-RU', {
+                    style: 'currency',
+                    currency: 'AMD',
+                    minimumFractionDigits: 0
+                }).format(num);
+            }
+        }
+    }
+
+    // Инициализация drag & drop для карточек территорий
+    document.addEventListener('DOMContentLoaded', () => {
+        const container = document.getElementById('areas-container');
+        if (container) {
+            new Sortable(container, {
+                animation: 150,
+                ghostClass: 'sortable-ghost',
+                handle: '.card-header',
+                onEnd: function() {
+                    console.log('Порядок территорий изменён');
+                }
+            });
+        }
+    });
+</script>
+{% endblock %}

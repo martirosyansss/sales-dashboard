@@ -1,0 +1,332 @@
+{% extends "base.html" %}
+
+{% block title %}Аналитика - Sales Management{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">
+            <i class="fas fa-chart-bar text-primary"></i> Аналитика и рекомендации
+        </h1>
+    </div>
+</div>
+
+<!-- Recommendations -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">
+                    <i class="fas fa-lightbulb"></i> Рекомендации для бизнеса
+                </h5>
+            </div>
+            <div class="card-body" id="recommendations-container">
+                <div class="text-center">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Загрузка...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Customer Problems Tabs -->
+<div class="row">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-exclamation-triangle text-warning"></i> Проблемы с клиентами
+                </h5>
+            </div>
+            <div class="card-body">
+                <ul class="nav nav-tabs mb-3" id="problemTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="no-purchases-tab" data-bs-toggle="tab" 
+                                data-bs-target="#no-purchases" type="button">
+                            <i class="fas fa-user-times"></i> Без покупок <span class="badge bg-danger" id="no-purchases-count">0</span>
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="inactive-tab" data-bs-toggle="tab" 
+                                data-bs-target="#inactive" type="button">
+                            <i class="fas fa-user-clock"></i> Неактивные <span class="badge bg-warning" id="inactive-count">0</span>
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="cancelled-tab" data-bs-toggle="tab" 
+                                data-bs-target="#cancelled" type="button">
+                            <i class="fas fa-ban"></i> С отменами <span class="badge bg-info" id="cancelled-count">0</span>
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content" id="problemTabsContent">
+                    <!-- No Purchases Tab -->
+                    <div class="tab-pane fade show active" id="no-purchases" role="tabpanel">
+                        <div class="alert alert-info">
+                            <i class="fas fa-info-circle"></i> Клиенты, которые зарегистрировались, но еще не совершили покупку
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="noPurchasesTable">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Имя</th>
+                                        <th>Email</th>
+                                        <th>Телефон</th>
+                                        <th>Город</th>
+                                        <th>Дней с регистрации</th>
+                                        <th>Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="no-purchases-body">
+                                    <tr>
+                                        <td colspan="7" class="text-center">Загрузка...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Inactive Customers Tab -->
+                    <div class="tab-pane fade" id="inactive" role="tabpanel">
+                        <div class="alert alert-warning">
+                            <i class="fas fa-exclamation-triangle"></i> Клиенты, которые не совершали покупки более 90 дней
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="inactiveTable">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Имя</th>
+                                        <th>Email</th>
+                                        <th>Последняя покупка</th>
+                                        <th>Дней неактивности</th>
+                                        <th>Всего заказов</th>
+                                        <th>Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="inactive-body">
+                                    <tr>
+                                        <td colspan="7" class="text-center">Загрузка...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Cancelled Orders Tab -->
+                    <div class="tab-pane fade" id="cancelled" role="tabpanel">
+                        <div class="alert alert-danger">
+                            <i class="fas fa-ban"></i> Клиенты с отмененными заказами
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="cancelledTable">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Имя</th>
+                                        <th>Email</th>
+                                        <th>Отменено заказов</th>
+                                        <th>Всего заказов</th>
+                                        <th>% отмен</th>
+                                        <th>Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="cancelled-body">
+                                    <tr>
+                                        <td colspan="7" class="text-center">Загрузка...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+$(document).ready(function() {
+    loadRecommendations();
+    loadCustomerProblems();
+});
+
+function loadRecommendations() {
+    $.get('/api/analytics/recommendations', function(data) {
+        if (data.length === 0) {
+            $('#recommendations-container').html(
+                '<div class="alert alert-success mb-0">' +
+                '<i class="fas fa-check-circle"></i> Отлично! Нет критических проблем.' +
+                '</div>'
+            );
+            return;
+        }
+
+        let html = '';
+        data.forEach(rec => {
+            let alertClass = 'alert-info';
+            let icon = 'fa-info-circle';
+            
+            if (rec.type === 'warning') {
+                alertClass = 'alert-warning';
+                icon = 'fa-exclamation-triangle';
+            } else if (rec.type === 'danger') {
+                alertClass = 'alert-danger';
+                icon = 'fa-exclamation-circle';
+            } else if (rec.type === 'success') {
+                alertClass = 'alert-success';
+                icon = 'fa-check-circle';
+            }
+
+            html += `
+                <div class="alert ${alertClass} mb-3">
+                    <h6 class="alert-heading">
+                        <i class="fas ${icon}"></i> ${rec.title}
+                    </h6>
+                    <p class="mb-1">${rec.message}</p>
+                    <hr>
+                    <p class="mb-0"><strong>Рекомендация:</strong> ${rec.action}</p>
+                </div>
+            `;
+        });
+
+        $('#recommendations-container').html(html);
+    });
+}
+
+function loadCustomerProblems() {
+    $.get('/api/analytics/customer-problems', function(data) {
+        // No purchases
+        $('#no-purchases-count').text(data.no_purchases.length);
+        let html = '';
+        if (data.no_purchases.length === 0) {
+            html = '<tr><td colspan="7" class="text-center text-muted">Нет данных</td></tr>';
+        } else {
+            data.no_purchases.forEach(customer => {
+                html += `
+                    <tr>
+                        <td>${customer.id}</td>
+                        <td><strong>${customer.name}</strong></td>
+                        <td>${customer.email}</td>
+                        <td>${customer.phone}</td>
+                        <td>${customer.city}</td>
+                        <td>
+                            <span class="badge ${customer.days_since_registration > 30 ? 'bg-danger' : 'bg-warning'}">
+                                ${customer.days_since_registration} дней
+                            </span>
+                        </td>
+                        <td>
+                            <button class="btn btn-sm btn-primary" onclick="sendPromo(${customer.id})">
+                                <i class="fas fa-envelope"></i> Отправить промо
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+        $('#no-purchases-body').html(html);
+
+        // Inactive customers
+        $('#inactive-count').text(data.inactive_customers.length);
+        html = '';
+        if (data.inactive_customers.length === 0) {
+            html = '<tr><td colspan="7" class="text-center text-muted">Нет данных</td></tr>';
+        } else {
+            data.inactive_customers.forEach(customer => {
+                html += `
+                    <tr>
+                        <td>${customer.id}</td>
+                        <td><strong>${customer.name}</strong></td>
+                        <td>${customer.email}</td>
+                        <td>${customer.last_purchase}</td>
+                        <td>
+                            <span class="badge ${customer.days_inactive > 180 ? 'bg-danger' : 'bg-warning'}">
+                                ${customer.days_inactive} дней
+                            </span>
+                        </td>
+                        <td>${customer.total_orders}</td>
+                        <td>
+                            <button class="btn btn-sm btn-success" onclick="sendWinbackEmail(${customer.id})">
+                                <i class="fas fa-undo"></i> Вернуть клиента
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+        $('#inactive-body').html(html);
+
+        // Cancelled orders
+        $('#cancelled-count').text(data.cancelled_orders.length);
+        html = '';
+        if (data.cancelled_orders.length === 0) {
+            html = '<tr><td colspan="7" class="text-center text-muted">Нет данных</td></tr>';
+        } else {
+            data.cancelled_orders.forEach(customer => {
+                html += `
+                    <tr>
+                        <td>${customer.id}</td>
+                        <td><strong>${customer.name}</strong></td>
+                        <td>${customer.email}</td>
+                        <td>${customer.cancelled_orders}</td>
+                        <td>${customer.total_orders}</td>
+                        <td>
+                            <span class="badge ${customer.cancellation_rate > 50 ? 'bg-danger' : 'bg-warning'}">
+                                ${customer.cancellation_rate}%
+                            </span>
+                        </td>
+                        <td>
+                            <button class="btn btn-sm btn-info" onclick="contactCustomer(${customer.id})">
+                                <i class="fas fa-phone"></i> Связаться
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+        $('#cancelled-body').html(html);
+
+        // Initialize DataTables
+        $('#noPurchasesTable').DataTable({
+            language: {
+                url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/ru.json'
+            },
+            pageLength: 10
+        });
+
+        $('#inactiveTable').DataTable({
+            language: {
+                url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/ru.json'
+            },
+            pageLength: 10
+        });
+
+        $('#cancelledTable').DataTable({
+            language: {
+                url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/ru.json'
+            },
+            pageLength: 10
+        });
+    });
+}
+
+function sendPromo(customerId) {
+    alert('Отправка промо-предложения клиенту #' + customerId + '\n\nЭта функция будет реализована для отправки email.');
+}
+
+function sendWinbackEmail(customerId) {
+    alert('Отправка письма для возврата клиента #' + customerId + '\n\nЭта функция будет реализована для отправки email.');
+}
+
+function contactCustomer(customerId) {
+    alert('Связаться с клиентом #' + customerId + '\n\nЭта функция откроет форму для звонка или email.');
+}
+</script>
+{% endblock %}

@@ -1,0 +1,235 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Дистрибьюторы - Sales Dashboard v2.0{% endblock %}
+
+{% block content %}
+<div class="container-fluid" x-data="groupsData()">
+    <div class="row mb-4">
+        <div class="col-12">
+            <h1 class="display-4">
+                <i class="fas fa-layer-group text-primary"></i>
+                Дистрибьюторы (Группы клиентов)
+            </h1>
+            <p class="lead text-muted">
+                <i class="fas fa-info-circle"></i> 
+                Всего групп: <span x-text="groups.length" class="badge bg-primary">0</span>
+            </p>
+        </div>
+    </div>
+
+    <!-- Таблица групп -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-table"></i>
+                        Статистика по группам
+                    </h5>
+                    <button class="btn btn-outline-primary btn-sm" @click="loadGroups()">
+                        <i class="fas fa-sync-alt"></i> Обновить
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div x-show="loading" class="text-center py-5">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Загрузка...</span>
+                        </div>
+                    </div>
+
+                    <div x-show="!loading" class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Код группы</th>
+                                    <th>Количество клиентов</th>
+                                    <th>Количество продаж</th>
+                                    <th>Общая сумма</th>
+                                    <th>Доля</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="(group, index) in groups" :key="index">
+                                    <tr>
+                                        <td x-text="index + 1"></td>
+                                        <td>
+                                            <span class="badge bg-info" x-text="group.GroupCode"></span>
+                                        </td>
+                                        <td>
+                                            <i class="fas fa-users text-muted me-2"></i>
+                                            <span x-text="formatNumber(group.CustomerCount)"></span>
+                                        </td>
+                                        <td>
+                                            <i class="fas fa-shopping-cart text-muted me-2"></i>
+                                            <span x-text="formatNumber(group.SalesCount)"></span>
+                                        </td>
+                                        <td>
+                                            <strong x-text="formatCurrency(group.TotalSales)" class="text-success"></strong>
+                                        </td>
+                                        <td>
+                                            <div class="progress" style="height: 20px; min-width: 100px;">
+                                                <div class="progress-bar bg-primary" 
+                                                     role="progressbar" 
+                                                     :style="`width: ${calculateShare(group.TotalSales)}%`"
+                                                     :aria-valuenow="calculateShare(group.TotalSales)">
+                                                    <span x-text="`${calculateShare(group.TotalSales).toFixed(1)}%`"></span>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                            <tfoot>
+                                <tr class="table-secondary">
+                                    <td colspan="2"><strong>ИТОГО:</strong></td>
+                                    <td><strong x-text="formatNumber(totalCustomers)"></strong></td>
+                                    <td><strong x-text="formatNumber(totalSalesCount)"></strong></td>
+                                    <td><strong x-text="formatCurrency(totalSales)" class="text-success"></strong></td>
+                                    <td>100%</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- График распределения -->
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-chart-pie"></i>
+                        Распределение продаж по группам
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="groupsChart" height="80"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function groupsData() {
+        return {
+            groups: [],
+            loading: true,
+            totalSales: 0,
+            totalCustomers: 0,
+            totalSalesCount: 0,
+            chart: null,
+
+            init() {
+                this.loadGroups();
+            },
+
+            async loadGroups() {
+                this.loading = true;
+                try {
+                    const response = await fetch('/api/groups');
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        this.groups = result.data;
+                        
+                        // Подсчитать итоги
+                        this.totalSales = this.groups.reduce((sum, g) => sum + g.TotalSales, 0);
+                        this.totalCustomers = this.groups.reduce((sum, g) => sum + g.CustomerCount, 0);
+                        this.totalSalesCount = this.groups.reduce((sum, g) => sum + g.SalesCount, 0);
+                        
+                        // Отрисовать график
+                        this.$nextTick(() => {
+                            this.renderChart();
+                        });
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки групп:', error);
+                } finally {
+                    this.loading = false;
+                }
+            },
+
+            calculateShare(sales) {
+                return this.totalSales > 0 ? (sales / this.totalSales * 100) : 0;
+            },
+
+            renderChart() {
+                const ctx = document.getElementById('groupsChart');
+                if (!ctx) return;
+
+                if (this.chart) {
+                    this.chart.destroy();
+                }
+
+                const labels = this.groups.map(g => 'Группа ' + g.GroupCode);
+                const values = this.groups.map(g => g.TotalSales);
+
+                this.chart = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            data: values,
+                            backgroundColor: [
+                                'rgba(13, 110, 253, 0.8)',
+                                'rgba(25, 135, 84, 0.8)',
+                                'rgba(255, 193, 7, 0.8)',
+                                'rgba(13, 202, 240, 0.8)',
+                                'rgba(220, 53, 69, 0.8)',
+                                'rgba(111, 66, 193, 0.8)',
+                                'rgba(255, 87, 34, 0.8)',
+                                'rgba(76, 175, 80, 0.8)',
+                                'rgba(156, 39, 176, 0.8)',
+                                'rgba(255, 152, 0, 0.8)',
+                                'rgba(3, 169, 244, 0.8)',
+                                'rgba(233, 30, 99, 0.8)',
+                                'rgba(139, 195, 74, 0.8)',
+                                'rgba(255, 235, 59, 0.8)',
+                                'rgba(121, 85, 72, 0.8)',
+                                'rgba(158, 158, 158, 0.8)'
+                            ]
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                position: 'right'
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        const value = formatCurrency(context.parsed);
+                                        const percentage = ((context.parsed / values.reduce((a, b) => a + b, 0)) * 100).toFixed(1);
+                                        return `${context.label}: ${value} (${percentage}%)`;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            },
+
+            formatNumber(num) {
+                return new Intl.NumberFormat('ru-RU').format(num);
+            },
+
+            formatCurrency(num) {
+                return new Intl.NumberFormat('ru-RU', {
+                    style: 'currency',
+                    currency: 'AMD',
+                    minimumFractionDigits: 0
+                }).format(num);
+            }
+        }
+    }
+</script>
+{% endblock %}

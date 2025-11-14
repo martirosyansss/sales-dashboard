@@ -1,0 +1,442 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Отчет по менеджерам - Sales Dashboard{% endblock %}
+
+{% block content %}
+<div class="container-fluid" x-data="reportsData()">
+    <!-- Заголовок с датой -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <h2 class="mb-0">
+                        <i class="fas fa-file-alt text-primary me-2"></i>
+                        Детальный отчет по менеджерам
+                    </h2>
+                    <p class="text-muted mb-0" x-text="currentDate"></p>
+                </div>
+                <div>
+                    <button class="btn btn-success" onclick="alert('Экспорт в Excel скоро будет доступен')">
+                        <i class="fas fa-file-excel me-2"></i>Экспорт в Excel
+                    </button>
+                    <button class="btn btn-danger ms-2" onclick="alert('Экспорт в PDF скоро будет доступен')">
+                        <i class="fas fa-file-pdf me-2"></i>Экспорт в PDF
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Фильтры -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body">
+                    <div class="row align-items-end">
+                        <div class="col-md-3">
+                            <label class="form-label">Дата начала</label>
+                            <input type="date" class="form-control" x-model="dateFrom" @change="loadData()">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Дата окончания</label>
+                            <input type="date" class="form-control" x-model="dateTo" @change="loadData()">
+                        </div>
+                        <div class="col-md-6">
+                            <button class="btn btn-primary me-2" @click="setThisMonth()">Этот месяц</button>
+                            <button class="btn btn-outline-primary me-2" @click="setLastMonth()">Прошлый месяц</button>
+                            <button class="btn btn-outline-primary" @click="setThisYear()">Этот год</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Итоговая карточка -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card bg-gradient" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                <div class="card-body text-white">
+                    <div class="row text-center">
+                        <div class="col-md-3">
+                            <h6 class="opacity-75">План</h6>
+                            <h3 class="mb-0" x-text="formatCurrency(totals.plan)"></h3>
+                        </div>
+                        <div class="col-md-3">
+                            <h6 class="opacity-75">Факт</h6>
+                            <h3 class="mb-0" x-text="formatCurrency(totals.fact)"></h3>
+                        </div>
+                        <div class="col-md-3">
+                            <h6 class="opacity-75">Выполнение</h6>
+                            <h3 class="mb-0" x-text="totals.percent + '%'"></h3>
+                        </div>
+                        <div class="col-md-3">
+                            <h6 class="opacity-75">Прогноз</h6>
+                            <h3 class="mb-0" x-text="formatCurrency(totals.forecast)"></h3>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Таблица менеджеров -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <i class="fas fa-table text-info me-2"></i>
+                    Детальная таблица по менеджерам
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-dark table-hover table-striped mb-0">
+                            <thead class="table-primary">
+                                <tr>
+                                    <th class="text-center">Код</th>
+                                    <th>Территория</th>
+                                    <th class="text-end">План продаж</th>
+                                    <th class="text-end">Дневной план</th>
+                                    <th class="text-end">Факт продаж</th>
+                                    <th class="text-center">%</th>
+                                    <th class="text-end">Сегодня</th>
+                                    <th class="text-end">Средний день</th>
+                                    <th class="text-end">Прогноз</th>
+                                    <th class="text-center">Прогноз %</th>
+                                    <th class="text-end">План кредитов</th>
+                                    <th class="text-end">Факт кредитов</th>
+                                    <th class="text-center">Кредиты %</th>
+                                    <th class="text-end">Собрано</th>
+                                    <th class="text-end">Зарплата</th>
+                                    <th class="text-end">Бонус</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="manager in managers" :key="manager.code">
+                                    <tr>
+                                        <td class="text-center fw-bold" x-text="manager.code"></td>
+                                        <td x-text="manager.name"></td>
+                                        <td class="text-end" x-text="formatCurrency(manager.sales_plan)"></td>
+                                        <td class="text-end" x-text="formatCurrency(manager.daily_plan)"></td>
+                                        <td class="text-end" x-text="formatCurrency(manager.sales_fact)"></td>
+                                        <td class="text-center">
+                                            <span class="badge" :class="{
+                                                'bg-success': manager.sales_percent >= 100,
+                                                'bg-info': manager.sales_percent >= 90,
+                                                'bg-warning': manager.sales_percent >= 80,
+                                                'bg-danger': manager.sales_percent < 80
+                                            }" x-text="manager.sales_percent + '%'"></span>
+                                        </td>
+                                        <td class="text-end" x-text="formatCurrency(manager.today_sales)"></td>
+                                        <td class="text-end" x-text="formatCurrency(manager.avg_daily)"></td>
+                                        <td class="text-end" x-text="formatCurrency(manager.forecast)"></td>
+                                        <td class="text-center">
+                                            <span class="badge" :class="{
+                                                'bg-success': manager.forecast_percent >= 100,
+                                                'bg-info': manager.forecast_percent >= 90,
+                                                'bg-warning': manager.forecast_percent >= 80,
+                                                'bg-danger': manager.forecast_percent < 80
+                                            }" x-text="manager.forecast_percent + '%'"></span>
+                                        </td>
+                                        <td class="text-end" x-text="formatCurrency(manager.credit_plan)"></td>
+                                        <td class="text-end" x-text="formatCurrency(manager.credit_fact)"></td>
+                                        <td class="text-center">
+                                            <span class="badge" :class="{
+                                                'bg-danger': manager.credit_percent >= 150,
+                                                'bg-warning': manager.credit_percent >= 130,
+                                                'bg-success': manager.credit_percent < 130
+                                            }" x-text="manager.credit_percent + '%'"></span>
+                                        </td>
+                                        <td class="text-end" x-text="formatCurrency(manager.collected)"></td>
+                                        <td class="text-end" x-text="formatCurrency(manager.salary)"></td>
+                                        <td class="text-end text-success fw-bold" x-text="formatCurrency(manager.bonus)"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                            <tfoot class="table-warning">
+                                <tr class="fw-bold">
+                                    <td colspan="2" class="text-center">ИТОГО</td>
+                                    <td class="text-end" x-text="formatCurrency(totals.plan)"></td>
+                                    <td class="text-end" x-text="formatCurrency(totals.daily_plan)"></td>
+                                    <td class="text-end" x-text="formatCurrency(totals.fact)"></td>
+                                    <td class="text-center">
+                                        <span class="badge bg-primary" x-text="totals.percent + '%'"></span>
+                                    </td>
+                                    <td class="text-end" x-text="formatCurrency(totals.today)"></td>
+                                    <td class="text-end" x-text="formatCurrency(totals.avg_daily)"></td>
+                                    <td class="text-end" x-text="formatCurrency(totals.forecast)"></td>
+                                    <td class="text-center">
+                                        <span class="badge bg-primary" x-text="totals.forecast_percent + '%'"></span>
+                                    </td>
+                                    <td class="text-end" x-text="formatCurrency(totals.credit_plan)"></td>
+                                    <td class="text-end" x-text="formatCurrency(totals.credit_fact)"></td>
+                                    <td class="text-center">
+                                        <span class="badge bg-primary" x-text="totals.credit_percent + '%'"></span>
+                                    </td>
+                                    <td class="text-end" x-text="formatCurrency(totals.collected)"></td>
+                                    <td class="text-end" x-text="formatCurrency(totals.salary)"></td>
+                                    <td class="text-end text-success" x-text="formatCurrency(totals.bonus)"></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- График дневных продаж -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <i class="fas fa-chart-line text-success me-2"></i>
+                    Дневные продажи
+                </div>
+                <div class="card-body">
+                    <div class="row mb-3">
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <small class="text-muted">Всего за период</small>
+                                <h4 class="mb-0 text-primary" x-text="formatCurrency(dailyStats.total)"></h4>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <small class="text-muted">Среднее в день</small>
+                                <h4 class="mb-0 text-info" x-text="formatCurrency(dailyStats.average)"></h4>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <small class="text-muted">Максимум</small>
+                                <h4 class="mb-0 text-success" x-text="formatCurrency(dailyStats.max)"></h4>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <small class="text-muted">Минимум</small>
+                                <h4 class="mb-0 text-warning" x-text="formatCurrency(dailyStats.min)"></h4>
+                            </div>
+                        </div>
+                    </div>
+                    <canvas id="dailySalesChart" height="80"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Индикатор загрузки -->
+    <div x-show="loading" class="text-center py-5">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Загрузка...</span>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function reportsData() {
+        return {
+            loading: true,
+            currentDate: new Date().toLocaleDateString('ru-RU', { 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            }),
+            dateFrom: '',
+            dateTo: '',
+            managers: [],
+            dailyData: [],
+            dailyStats: {
+                total: 0,
+                average: 0,
+                max: 0,
+                min: 0
+            },
+            dailyChart: null,
+            totals: {
+                plan: 0,
+                daily_plan: 0,
+                fact: 0,
+                percent: 0,
+                today: 0,
+                avg_daily: 0,
+                forecast: 0,
+                forecast_percent: 0,
+                credit_plan: 0,
+                credit_fact: 0,
+                credit_percent: 0,
+                collected: 0,
+                salary: 0,
+                bonus: 0
+            },
+
+            init() {
+                this.setThisMonth();
+            },
+
+            setThisMonth() {
+                const today = new Date();
+                const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+                const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+                
+                this.dateFrom = this.formatDate(firstDay);
+                this.dateTo = this.formatDate(lastDay);
+                this.loadData();
+            },
+
+            setLastMonth() {
+                const today = new Date();
+                const firstDay = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+                const lastDay = new Date(today.getFullYear(), today.getMonth(), 0);
+                
+                this.dateFrom = this.formatDate(firstDay);
+                this.dateTo = this.formatDate(lastDay);
+                this.loadData();
+            },
+
+            setThisYear() {
+                const today = new Date();
+                const firstDay = new Date(today.getFullYear(), 0, 1);
+                
+                this.dateFrom = this.formatDate(firstDay);
+                this.dateTo = this.formatDate(today);
+                this.loadData();
+            },
+
+            formatDate(date) {
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                return `${year}-${month}-${day}`;
+            },
+
+            async loadData() {
+                this.loading = true;
+                console.log('Loading data from:', this.dateFrom, 'to:', this.dateTo);
+                try {
+                    // Загрузка данных менеджеров
+                    const response = await fetch(`/api/reports/managers?date_from=${this.dateFrom}&date_to=${this.dateTo}`);
+                    const result = await response.json();
+                    console.log('Managers data:', result);
+                    
+                    if (result.success) {
+                        this.managers = result.data;
+                        this.totals = result.totals;
+                    } else {
+                        console.error('Failed to load managers:', result.error);
+                    }
+
+                    // Загрузка дневных продаж
+                    const dailyResponse = await fetch(`/api/reports/daily-sales?date_from=${this.dateFrom}&date_to=${this.dateTo}`);
+                    const dailyResult = await dailyResponse.json();
+                    console.log('Daily sales data:', dailyResult);
+                    
+                    if (dailyResult.success) {
+                        this.dailyData = dailyResult.data;
+                        this.dailyStats = dailyResult.stats;
+                        this.renderDailyChart();
+                    } else {
+                        console.error('Failed to load daily sales:', dailyResult.error);
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки данных:', error);
+                } finally {
+                    this.loading = false;
+                }
+            },
+
+            renderDailyChart() {
+                const ctx = document.getElementById('dailySalesChart');
+                
+                if (this.dailyChart) {
+                    this.dailyChart.destroy();
+                }
+
+                const labels = this.dailyData.map(d => d.date_short);
+                const values = this.dailyData.map(d => d.total_sales);
+
+                this.dailyChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Продажи',
+                            data: values,
+                            backgroundColor: values.map(v => {
+                                if (v === this.dailyStats.max) return 'rgba(25, 135, 84, 0.8)';
+                                if (v === this.dailyStats.min) return 'rgba(255, 193, 7, 0.8)';
+                                return 'rgba(13, 110, 253, 0.6)';
+                            }),
+                            borderColor: values.map(v => {
+                                if (v === this.dailyStats.max) return 'rgb(25, 135, 84)';
+                                if (v === this.dailyStats.min) return 'rgb(255, 193, 7)';
+                                return 'rgb(13, 110, 253)';
+                            }),
+                            borderWidth: 2
+                        },
+                        {
+                            label: 'Среднее',
+                            data: Array(labels.length).fill(this.dailyStats.average),
+                            type: 'line',
+                            borderColor: 'rgb(13, 202, 240)',
+                            borderWidth: 2,
+                            borderDash: [5, 5],
+                            pointRadius: 0,
+                            fill: false
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top',
+                                labels: {
+                                    color: '#fff'
+                                }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: (context) => {
+                                        if (context.dataset.label === 'Среднее') {
+                                            return 'Среднее: ' + this.formatCurrency(context.parsed.y);
+                                        }
+                                        return 'Продажи: ' + this.formatCurrency(context.parsed.y);
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                ticks: { color: '#adb5bd' },
+                                grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    color: '#adb5bd',
+                                    callback: (value) => {
+                                        return new Intl.NumberFormat('hy-AM').format(value);
+                                    }
+                                },
+                                grid: { color: 'rgba(255, 255, 255, 0.1)' }
+                            }
+                        }
+                    }
+                });
+            },
+
+            formatCurrency(value) {
+                if (!value) return '0 ֏';
+                return new Intl.NumberFormat('hy-AM').format(Math.round(value)) + ' ֏';
+            }
+        }
+    }
+</script>
+{% endblock %}

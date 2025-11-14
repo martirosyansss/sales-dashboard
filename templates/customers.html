@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+
+{% block title %}Клиенты - Sales Management{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">
+            <i class="fas fa-users text-primary"></i> Управление клиентами
+        </h1>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card shadow">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-list"></i> Список клиентов
+                </h5>
+                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#customerModal" onclick="openAddModal()">
+                    <i class="fas fa-plus"></i> Добавить клиента
+                </button>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover" id="customersTable">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Имя</th>
+                                <th>Email</th>
+                                <th>Телефон</th>
+                                <th>Город</th>
+                                <th>Страна</th>
+                                <th>Заказов</th>
+                                <th>Потрачено</th>
+                                <th>Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Customer Modal -->
+<div class="modal fade" id="customerModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="modalTitle">Добавить клиента</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="customerForm">
+                    <input type="hidden" id="customerId">
+                    <div class="mb-3">
+                        <label for="customerName" class="form-label">Имя *</label>
+                        <input type="text" class="form-control" id="customerName" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="customerEmail" class="form-label">Email</label>
+                        <input type="email" class="form-control" id="customerEmail">
+                    </div>
+                    <div class="mb-3">
+                        <label for="customerPhone" class="form-label">Телефон</label>
+                        <input type="text" class="form-control" id="customerPhone">
+                    </div>
+                    <div class="mb-3">
+                        <label for="customerAddress" class="form-label">Адрес</label>
+                        <input type="text" class="form-control" id="customerAddress">
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="customerCity" class="form-label">Город</label>
+                            <input type="text" class="form-control" id="customerCity">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="customerCountry" class="form-label">Страна</label>
+                            <input type="text" class="form-control" id="customerCountry">
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                <button type="button" class="btn btn-primary" onclick="saveCustomer()">Сохранить</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let customersTable;
+
+$(document).ready(function() {
+    loadCustomers();
+});
+
+function loadCustomers() {
+    $.get('/api/customers', function(data) {
+        customersTable = $('#customersTable').DataTable({
+            data: data,
+            columns: [
+                { data: 'id' },
+                { data: 'name' },
+                { data: 'email' },
+                { data: 'phone' },
+                { data: 'city' },
+                { data: 'country' },
+                { data: 'orders' },
+                { 
+                    data: 'spent',
+                    render: function(data) {
+                        return formatCurrency(data);
+                    }
+                },
+                {
+                    data: null,
+                    render: function(data) {
+                        return `
+                            <button class="btn btn-sm btn-info" onclick="editCustomer(${data.id})">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteCustomer(${data.id})">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        `;
+                    }
+                }
+            ],
+            language: {
+                url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/ru.json'
+            },
+            pageLength: 25,
+            order: [[7, 'desc']]
+        });
+    });
+}
+
+function openAddModal() {
+    $('#modalTitle').text('Добавить клиента');
+    $('#customerForm')[0].reset();
+    $('#customerId').val('');
+}
+
+function editCustomer(id) {
+    $.get(`/api/customers/${id}`, function(data) {
+        $('#modalTitle').text('Редактировать клиента');
+        $('#customerId').val(data.id);
+        $('#customerName').val(data.name);
+        $('#customerEmail').val(data.email);
+        $('#customerPhone').val(data.phone);
+        $('#customerAddress').val(data.address);
+        $('#customerCity').val(data.city);
+        $('#customerCountry').val(data.country);
+        $('#customerModal').modal('show');
+    });
+}
+
+function saveCustomer() {
+    const id = $('#customerId').val();
+    const data = {
+        name: $('#customerName').val(),
+        email: $('#customerEmail').val(),
+        phone: $('#customerPhone').val(),
+        address: $('#customerAddress').val(),
+        city: $('#customerCity').val(),
+        country: $('#customerCountry').val()
+    };
+
+    if (!data.name) {
+        alert('Введите имя клиента!');
+        return;
+    }
+
+    const method = id ? 'PUT' : 'POST';
+    const url = id ? `/api/customers/${id}` : '/api/customers';
+
+    $.ajax({
+        url: url,
+        method: method,
+        contentType: 'application/json',
+        data: JSON.stringify(data),
+        success: function() {
+            $('#customerModal').modal('hide');
+            customersTable.destroy();
+            loadCustomers();
+            showNotification('Успех', 'Клиент сохранен!', 'success');
+        },
+        error: function() {
+            showNotification('Ошибка', 'Не удалось сохранить клиента', 'danger');
+        }
+    });
+}
+
+function deleteCustomer(id) {
+    if (!confirm('Вы уверены, что хотите удалить этого клиента?')) {
+        return;
+    }
+
+    $.ajax({
+        url: `/api/customers/${id}`,
+        method: 'DELETE',
+        success: function() {
+            customersTable.destroy();
+            loadCustomers();
+            showNotification('Успех', 'Клиент удален!', 'success');
+        },
+        error: function() {
+            showNotification('Ошибка', 'Не удалось удалить клиента. Возможно, у него есть продажи.', 'danger');
+        }
+    });
+}
+
+function formatCurrency(amount) {
+    return new Intl.NumberFormat('ru-RU', {
+        style: 'currency',
+        currency: 'RUB',
+        minimumFractionDigits: 0
+    }).format(amount);
+}
+
+function showNotification(title, message, type) {
+    const alertHtml = `
+        <div class="alert alert-${type} alert-dismissible fade show position-fixed top-0 end-0 m-3" role="alert" style="z-index: 9999;">
+            <strong>${title}:</strong> ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+    `;
+    $('body').append(alertHtml);
+    setTimeout(() => $('.alert').alert('close'), 3000);
+}
+</script>
+{% endblock %}

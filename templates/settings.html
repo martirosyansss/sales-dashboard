@@ -1,0 +1,1396 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Настройки - Sales Dashboard v2.0{% endblock %}
+
+{% block content %}
+<div class="container-fluid" x-data="settingsData()">
+    <!-- Toast-уведомления -->
+    <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 9999;">
+        <div id="successToast" class="toast align-items-center text-white bg-success border-0" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="d-flex">
+                <div class="toast-body">
+                    <i class="fas fa-check-circle me-2"></i>
+                    <span id="successToastMessage">Сохранено успешно!</span>
+                </div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Заголовок -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <h1 class="display-4">
+                <i class="fas fa-cog text-primary"></i>
+                Настройки системы
+            </h1>
+            <p class="lead text-muted">
+                Управление связями: Менеджеры → Магазины → Группы → Дистрибьюторы
+            </p>
+        </div>
+    </div>
+
+    <!-- Tabs -->
+    <ul class="nav nav-tabs mb-4" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="managers-tab" data-bs-toggle="tab" 
+                    data-bs-target="#managers-pane" type="button" role="tab">
+                <i class="fas fa-user-tie"></i> Менеджеры
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="stores-tab" data-bs-toggle="tab" 
+                    data-bs-target="#stores-pane" type="button" role="tab">
+                <i class="fas fa-store"></i> Магазины
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="groups-tab" data-bs-toggle="tab" 
+                    data-bs-target="#groups-pane" type="button" role="tab">
+                <i class="fas fa-layer-group"></i> Группы
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="distributors-tab" data-bs-toggle="tab" 
+                    data-bs-target="#distributors-pane" type="button" role="tab">
+                <i class="fas fa-truck"></i> Дистрибьюторы
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="excluded-tab" data-bs-toggle="tab" 
+                    data-bs-target="#excluded-pane" type="button" role="tab">
+                <i class="fas fa-user-slash text-danger"></i> Исключенные клиенты
+            </button>
+        </li>
+    </ul>
+
+    <!-- Tab Content -->
+    <div class="tab-content">
+        <!-- Менеджеры -->
+        <div class="tab-pane fade show active" id="managers-pane" role="tabpanel">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-user-tie"></i> Менеджеры и их магазины
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <!-- Список менеджеров -->
+                        <div class="col-md-4">
+                            <h6 class="mb-3">Выберите менеджера:</h6>
+                            <div class="list-group" style="max-height: 600px; overflow-y: auto;">
+                                <template x-for="manager in managers" :key="manager.fID">
+                                    <button type="button" 
+                                            class="list-group-item list-group-item-action"
+                                            :class="selectedManager && selectedManager.fID === manager.fID ? 'active' : ''"
+                                            @click="selectManager(manager)">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <div>
+                                                <strong x-text="manager.fNAME"></strong>
+                                                <br>
+                                                <small x-text="`Код: ${manager.fCODE}`"></small>
+                                            </div>
+                                            <span class="badge bg-primary" x-text="manager.storesCount || 0"></span>
+                                        </div>
+                                    </button>
+                                </template>
+                            </div>
+                        </div>
+
+                        <!-- Магазины менеджера -->
+                        <div class="col-md-8">
+                            <div x-show="selectedManager">
+                                <h6 class="mb-3">
+                                    Магазины для: <strong x-text="selectedManager ? selectedManager.fNAME : ''"></strong>
+                                </h6>
+                                
+                                <div class="mb-3">
+                                    <button class="btn btn-success btn-sm" @click="showAddStoreModal()">
+                                        <i class="fas fa-plus"></i> Добавить магазин
+                                    </button>
+                                </div>
+
+                                <div class="table-responsive">
+                                    <table class="table table-hover">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th>Код</th>
+                                                <th>Название магазина</th>
+                                                <th>Группа</th>
+                                                <th>Действия</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <template x-for="store in managerStores" :key="store.fID">
+                                                <tr>
+                                                    <td x-text="store.fCODE"></td>
+                                                    <td x-text="store.fNAME"></td>
+                                                    <td x-text="store.fGROUP || 'Не указана'"></td>
+                                                    <td>
+                                                        <button class="btn btn-sm btn-danger" 
+                                                                @click="removeStoreFromManager(store.fID)">
+                                                            <i class="fas fa-trash"></i>
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                            <tr x-show="managerStores.length === 0">
+                                                <td colspan="4" class="text-center text-muted">
+                                                    Нет назначенных магазинов
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <div x-show="!selectedManager" class="text-center text-muted py-5">
+                                <i class="fas fa-hand-pointer fa-3x mb-3"></i>
+                                <p>Выберите менеджера из списка слева</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Магазины -->
+        <div class="tab-pane fade" id="stores-pane" role="tabpanel">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-store"></i> Магазины и их группы
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <input type="text" class="form-control" placeholder="Поиск магазина..." 
+                               x-model="storeSearch" @input="filterStores()">
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Код</th>
+                                    <th>Название</th>
+                                    <th>Группа</th>
+                                    <th>Менеджер</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="store in filteredStores" :key="store.fID">
+                                    <tr>
+                                        <td x-text="store.fCODE"></td>
+                                        <td x-text="store.fNAME"></td>
+                                        <td>
+                                            <select class="form-select form-select-sm" 
+                                                    :value="store.fGROUP"
+                                                    @change="updateStoreGroup(store.fID, $event.target.value)">
+                                                <option value="">Не указана</option>
+                                                <template x-for="group in groups" :key="group">
+                                                    <option :value="group" x-text="group"></option>
+                                                </template>
+                                            </select>
+                                        </td>
+                                        <td x-text="store.managerName || 'Не назначен'"></td>
+                                        <td>
+                                            <button class="btn btn-sm btn-primary" 
+                                                    @click="editStore(store)">
+                                                <i class="fas fa-edit"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Группы -->
+        <div class="tab-pane fade" id="groups-pane" role="tabpanel">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-users-cog"></i> Назначение групп менеджерам
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle"></i> 
+                        <strong>Важно:</strong> Выберите менеджера и назначьте ему группы, за которые он отвечает.<br>
+                        📊 В статистике менеджера будут показаны <strong>ТОЛЬКО клиенты из назначенных ему групп</strong>.<br>
+                        ⚠️ Если менеджеру не назначено ни одной группы - показываются все его продажи.
+                    </div>
+                    
+                    <!-- Кнопки режима работы -->
+                    <div class="btn-group mb-3" role="group">
+                        <button type="button" 
+                                class="btn"
+                                :class="!bulkEditMode ? 'btn-primary' : 'btn-outline-primary'"
+                                @click="bulkEditMode = false; selectedManagersForBulk = []">
+                            <i class="fas fa-user"></i> Один менеджер
+                        </button>
+                        <button type="button" 
+                                class="btn"
+                                :class="bulkEditMode ? 'btn-primary' : 'btn-outline-primary'"
+                                @click="bulkEditMode = true; selectedManagerForGroups = null">
+                            <i class="fas fa-users"></i> Массовое изменение
+                        </button>
+                    </div>
+                    
+                    <!-- Режим: Один менеджер -->
+                    <div x-show="!bulkEditMode">
+                        <!-- Список менеджеров -->
+                        <div class="row mb-4">
+                            <div class="col-12">
+                                <h6 class="mb-3"><i class="fas fa-user-tie"></i> Выберите менеджера:</h6>
+                                <div class="list-group" style="max-height: 300px; overflow-y: auto;">
+                                    <template x-for="manager in managers" :key="manager.fID">
+                                        <button type="button" 
+                                                class="list-group-item list-group-item-action d-flex justify-content-between align-items-center"
+                                                :class="selectedManagerForGroups?.fID === manager.fID ? 'active' : ''"
+                                                @click="selectManagerForGroups(manager)">
+                                            <span>
+                                                <i class="fas fa-user"></i> 
+                                                <strong x-text="manager.fNAME"></strong>
+                                                <small class="text-muted" x-text="`(${manager.fCODE})`"></small>
+                                            </span>
+                                            <span class="badge bg-primary rounded-pill" 
+                                                  x-text="getManagerGroupsCount(manager.fID)"></span>
+                                        </button>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Назначение групп выбранному менеджеру -->
+                        <div x-show="selectedManagerForGroups" class="border-top pt-4">
+                            <h6 class="mb-3">
+                                <i class="fas fa-layer-group"></i> 
+                                Группы для менеджера: <strong x-text="selectedManagerForGroups?.fNAME"></strong>
+                            </h6>
+                            
+                            <div class="alert alert-warning">
+                                <i class="fas fa-check-square"></i> 
+                                Отметьте группы, за которые отвечает этот менеджер:
+                            </div>
+                            
+                            <div class="mb-3">
+                                <button class="btn btn-sm btn-primary" @click="selectAllGroups">
+                                    <i class="fas fa-check-double"></i> Выбрать все
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary ms-2" @click="clearManagerGroups">
+                                    <i class="fas fa-times"></i> Снять все
+                                </button>
+                            </div>
+                            
+                            <div class="row">
+                                <template x-for="group in groupsWithStats" :key="group.fGROUP">
+                                    <div class="col-md-3 col-sm-4 col-6 mb-2">
+                                        <div class="form-check">
+                                            <input class="form-check-input" 
+                                                   type="checkbox" 
+                                                   :id="`group-${group.fGROUP}`"
+                                                   :checked="isGroupAssignedToSelectedManager(group.fGROUP)"
+                                                   :disabled="group.isExcluded"
+                                                   @change="toggleGroupForManager(group.fGROUP, $event.target.checked)">
+                                            <label class="form-check-label" 
+                                                   :for="`group-${group.fGROUP}`"
+                                                   :class="group.isExcluded ? 'text-danger text-decoration-line-through' : ''">
+                                                <strong x-text="group.fGROUP"></strong>
+                                                <span class="badge bg-secondary ms-1" x-text="group.customerCount"></span>
+                                                <span x-show="group.isExcluded" class="badge bg-danger ms-1">Исключена</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                            
+                            <div class="mt-3">
+                                <button class="btn btn-success" @click="saveManagerGroups">
+                                    <i class="fas fa-save"></i> Сохранить назначения
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Режим: Массовое изменение -->
+                    <div x-show="bulkEditMode">
+                        <div class="row">
+                            <!-- Выбор менеджеров -->
+                            <div class="col-md-6">
+                                <h6 class="mb-3">
+                                    <i class="fas fa-users"></i> 
+                                    Выберите менеджеров (<span x-text="selectedManagersForBulk.length"></span>):
+                                </h6>
+                                <div class="mb-2">
+                                    <button class="btn btn-sm btn-outline-primary" @click="selectAllManagers">
+                                        <i class="fas fa-check-double"></i> Выбрать всех
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-secondary ms-2" @click="selectedManagersForBulk = []">
+                                        <i class="fas fa-times"></i> Снять всех
+                                    </button>
+                                </div>
+                                <div class="border rounded p-2" style="max-height: 400px; overflow-y: auto;">
+                                    <template x-for="manager in managers" :key="manager.fID">
+                                        <div class="form-check">
+                                            <input class="form-check-input" 
+                                                   type="checkbox" 
+                                                   :id="`bulk-mgr-${manager.fID}`"
+                                                   :value="manager.fID"
+                                                   x-model="selectedManagersForBulk">
+                                            <label class="form-check-label" :for="`bulk-mgr-${manager.fID}`">
+                                                <strong x-text="manager.fNAME"></strong>
+                                                <small class="text-muted" x-text="`(${manager.fCODE})`"></small>
+                                                <span class="badge bg-info ms-1" x-text="getManagerGroupsCount(manager.fID)"></span>
+                                            </label>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                            
+                            <!-- Выбор групп -->
+                            <div class="col-md-6">
+                                <h6 class="mb-3">
+                                    <i class="fas fa-layer-group"></i> 
+                                    Выберите группы для назначения (<span x-text="selectedGroupsForBulk.length"></span>):
+                                </h6>
+                                <div class="mb-2">
+                                    <button class="btn btn-sm btn-outline-primary" @click="selectAllGroupsForBulk">
+                                        <i class="fas fa-check-double"></i> Выбрать все
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-secondary ms-2" @click="selectedGroupsForBulk = []">
+                                        <i class="fas fa-times"></i> Снять все
+                                    </button>
+                                </div>
+                                <div class="border rounded p-2" style="max-height: 400px; overflow-y: auto;">
+                                    <template x-for="group in groupsWithStats" :key="group.fGROUP">
+                                        <div class="form-check">
+                                            <input class="form-check-input" 
+                                                   type="checkbox" 
+                                                   :id="`bulk-grp-${group.fGROUP}`"
+                                                   :value="group.fGROUP"
+                                                   :disabled="group.isExcluded"
+                                                   x-model="selectedGroupsForBulk">
+                                            <label class="form-check-label" 
+                                                   :for="`bulk-grp-${group.fGROUP}`"
+                                                   :class="group.isExcluded ? 'text-danger text-decoration-line-through' : ''">
+                                                <strong x-text="group.fGROUP"></strong>
+                                                <span class="badge bg-secondary ms-1" x-text="group.customerCount"></span>
+                                                <span x-show="group.isExcluded" class="badge bg-danger ms-1">Исключена</span>
+                                            </label>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Кнопки действий -->
+                        <div class="mt-4 border-top pt-3">
+                            <div class="alert alert-warning">
+                                <i class="fas fa-exclamation-triangle"></i>
+                                <strong>Выберите действие:</strong>
+                            </div>
+                            <button class="btn btn-success" 
+                                    @click="bulkAssignGroups"
+                                    :disabled="selectedManagersForBulk.length === 0 || selectedGroupsForBulk.length === 0">
+                                <i class="fas fa-plus-circle"></i> 
+                                Добавить группы к менеджерам (<span x-text="selectedManagersForBulk.length"></span> менеджеров, <span x-text="selectedGroupsForBulk.length"></span> групп)
+                            </button>
+                            <button class="btn btn-danger ms-2" 
+                                    @click="bulkReplaceGroups"
+                                    :disabled="selectedManagersForBulk.length === 0 || selectedGroupsForBulk.length === 0">
+                                <i class="fas fa-sync"></i> 
+                                Заменить все группы менеджеров
+                            </button>
+                            <button class="btn btn-warning ms-2" 
+                                    @click="bulkClearGroups"
+                                    :disabled="selectedManagersForBulk.length === 0">
+                                <i class="fas fa-eraser"></i> 
+                                Очистить все группы у выбранных менеджеров
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="alert alert-secondary mt-4">
+                        <i class="fas fa-lightbulb"></i> 
+                        <strong>Как работает:</strong><br>
+                        <strong>Режим "Один менеджер":</strong><br>
+                        1️⃣ Выберите менеджера из списка<br>
+                        2️⃣ Отметьте галочками группы, за которые он отвечает<br>
+                        3️⃣ Изменения сохраняются автоматически<br><br>
+                        <strong>Режим "Массовое изменение":</strong><br>
+                        1️⃣ Выберите нескольких менеджеров<br>
+                        2️⃣ Выберите группы<br>
+                        3️⃣ Нажмите "Добавить" (добавит к существующим) или "Заменить" (заменит все группы)
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Дистрибьюторы -->
+        <div class="tab-pane fade" id="distributors-pane" role="tabpanel">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-truck"></i> Дистрибьюторы
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Группа (fGROUP)</th>
+                                    <th>Количество клиентов</th>
+                                    <th>Менеджер</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="dist in distributors" :key="dist.fGROUP">
+                                    <tr>
+                                        <td><strong x-text="dist.fGROUP"></strong></td>
+                                        <td x-text="dist.customerCount"></td>
+                                        <td>
+                                            <select class="form-select form-select-sm"
+                                                    :value="dist.assignedManager"
+                                                    @change="assignDistributorToManager(dist.fGROUP, $event.target.value)">
+                                                <option value="">Не назначен</option>
+                                                <template x-for="manager in managers" :key="manager.fID">
+                                                    <option :value="manager.fID" x-text="manager.fNAME"></option>
+                                                </template>
+                                            </select>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Исключенные клиенты -->
+        <div class="tab-pane fade" id="excluded-pane" role="tabpanel">
+            <div class="card">
+                <div class="card-header bg-danger bg-opacity-10 border-danger">
+                    <h5 class="mb-0">
+                        <i class="fas fa-user-slash text-danger"></i> Исключенные клиенты
+                    </h5>
+                    <p class="text-muted small mb-0 mt-2">
+                        <i class="fas fa-info-circle"></i> Неблагонадежные покупатели с долгами (անհուսալի գնորդներ) - 
+                        не учитываются в статистике, графиках и расчетах
+                    </p>
+                </div>
+                <div class="card-body">
+                    <div class="row mb-4">
+                        <div class="col-md-4">
+                            <div class="card bg-danger bg-opacity-10 border-danger">
+                                <div class="card-body text-center">
+                                    <i class="fas fa-user-times fa-3x text-danger mb-3"></i>
+                                    <h3 class="text-danger" x-text="excludedCustomers.length"></h3>
+                                    <p class="text-muted mb-0">Исключенных клиентов</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card bg-warning bg-opacity-10 border-warning">
+                                <div class="card-body text-center">
+                                    <i class="fas fa-exclamation-triangle fa-3x text-warning mb-3"></i>
+                                    <h3 class="text-warning" x-text="formatCurrency(getTotalExcludedDebt())"></h3>
+                                    <p class="text-muted mb-0">Общий долг исключенных</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card bg-info bg-opacity-10 border-info">
+                                <div class="card-body text-center">
+                                    <i class="fas fa-ban fa-3x text-info mb-3"></i>
+                                    <h3 class="text-info" x-text="formatCurrency(getTotalExcludedSales())"></h3>
+                                    <p class="text-muted mb-0">Продажи исключенных</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-3 d-flex justify-content-between align-items-center">
+                        <div>
+                            <input type="text" class="form-control" placeholder="Поиск клиента..." 
+                                   x-model="excludedSearch" @input="filterExcludedCustomers()" style="width: 300px;">
+                        </div>
+                        <button class="btn btn-danger" @click="showAddExcludedModal()">
+                            <i class="fas fa-user-slash"></i> Добавить исключенного
+                        </button>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Код</th>
+                                    <th>Название</th>
+                                    <th>Группа</th>
+                                    <th>Долг</th>
+                                    <th>Продажи (2025)</th>
+                                    <th>Причина исключения</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="customer in filteredExcludedCustomers" :key="customer.fID">
+                                    <tr>
+                                        <td x-text="customer.fCODE"></td>
+                                        <td x-text="customer.fNAME"></td>
+                                        <td><span class="badge bg-secondary" x-text="customer.fGROUP || 'Нет'"></span></td>
+                                        <td class="text-danger fw-bold" x-text="formatCurrency(customer.debt || 0)"></td>
+                                        <td x-text="formatCurrency(customer.sales || 0)"></td>
+                                        <td>
+                                            <span class="badge bg-danger">
+                                                <i class="fas fa-exclamation-triangle"></i> 
+                                                <span x-text="customer.excludeReason || 'Неблагонадежный'"></span>
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <button class="btn btn-sm btn-success" 
+                                                    @click="removeFromExcluded(customer.fID)"
+                                                    title="Восстановить клиента">
+                                                <i class="fas fa-undo"></i> Восстановить
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </template>
+                                <tr x-show="filteredExcludedCustomers.length === 0">
+                                    <td colspan="7" class="text-center text-muted py-5">
+                                        <i class="fas fa-check-circle fa-3x mb-3 text-success"></i>
+                                        <p>Нет исключенных клиентов</p>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно добавления магазина -->
+    <div class="modal fade" id="addStoreModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Добавить магазин</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Выберите магазин:</label>
+                        <select class="form-select" x-model="newStoreId">
+                            <option value="">-- Выберите --</option>
+                            <template x-for="store in availableStores" :key="store.fID">
+                                <option :value="store.fID" x-text="`${store.fCODE} - ${store.fNAME}`"></option>
+                            </template>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                    <button type="button" class="btn btn-primary" @click="addStoreToManager()">Добавить</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно добавления группы -->
+    <div class="modal fade" id="addGroupModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Добавить группу</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Название группы:</label>
+                        <input type="text" class="form-control" x-model="newGroupName" 
+                               placeholder="Например: Сеть А">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                    <button type="button" class="btn btn-primary" @click="addGroup()">Создать</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно добавления исключенного клиента -->
+    <div class="modal fade" id="addExcludedModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header bg-danger bg-opacity-10">
+                    <h5 class="modal-title">
+                        <i class="fas fa-user-slash text-danger"></i> Добавить исключенного клиента
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Поиск клиента:</label>
+                        <input type="text" class="form-control" x-model="excludeCustomerSearch" 
+                               @input="searchCustomersToExclude()"
+                               placeholder="Введите код или название клиента">
+                    </div>
+                    <div class="mb-3" x-show="customersToExclude.length > 0">
+                        <label class="form-label">Выберите клиента:</label>
+                        <select class="form-select" x-model="selectedCustomerToExclude" size="8">
+                            <template x-for="customer in customersToExclude" :key="customer.fID">
+                                <option :value="customer.fID" 
+                                        x-text="`${customer.fCODE} - ${customer.fNAME} (Долг: ${formatCurrency(customer.debt || 0)})`">
+                                </option>
+                            </template>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Причина исключения:</label>
+                        <select class="form-select" x-model="excludeReason">
+                            <option value="Неблагонадежный">Неблагонадежный клиент</option>
+                            <option value="Большой долг">Большой долг</option>
+                            <option value="Не платит">Не платит</option>
+                            <option value="Банкротство">Банкротство</option>
+                            <option value="Закрыт">Закрыт</option>
+                            <option value="Другое">Другое</option>
+                        </select>
+                    </div>
+                    <div class="alert alert-warning">
+                        <i class="fas fa-info-circle"></i> 
+                        <strong>Внимание:</strong> Исключенные клиенты не будут учитываться в статистике, 
+                        графиках, отчетах и расчетах долгов на всех страницах системы.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                    <button type="button" class="btn btn-danger" @click="addToExcluded()">
+                        <i class="fas fa-user-slash"></i> Исключить клиента
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function settingsData() {
+        return {
+            managers: [],
+            stores: [],
+            filteredStores: [],
+            groups: [],
+            groupsWithStats: [],
+            distributors: [],
+            selectedManager: null,
+            managerStores: [],
+            availableStores: [],
+            storeSearch: '',
+            newStoreId: '',
+            newGroupName: '',
+            excludedCustomers: [],
+            filteredExcludedCustomers: [],
+            excludedSearch: '',
+            excludeCustomerSearch: '',
+            customersToExclude: [],
+            selectedCustomerToExclude: '',
+            excludeReason: 'Неблагонадежный',
+            excludedGroups: [],
+            groupManagerAssignments: {},
+            selectedManagerForGroups: null,  // Новое: выбранный менеджер для назначения групп
+            bulkEditMode: false,  // Режим массового изменения
+            selectedManagersForBulk: [],  // Выбранные менеджеры для массового изменения
+            selectedGroupsForBulk: [],  // Выбранные группы для массового изменения
+
+            async init() {
+                // Загружаем только критически важные данные параллельно
+                await Promise.all([
+                    this.loadManagers(),
+                    this.loadStores(),
+                    this.loadDistributors(),
+                    this.loadExcludedCustomers(),
+                    this.loadGroupsWithStats()
+                ]);
+                // loadGroups() убран - он нужен только если есть dropdown для групп
+            },
+
+            // Показать toast-уведомление
+            showSuccess(message) {
+                const toastEl = document.getElementById('successToast');
+                const messageEl = document.getElementById('successToastMessage');
+                messageEl.textContent = message;
+                const toast = new bootstrap.Toast(toastEl, { delay: 3000 });
+                toast.show();
+            },
+
+            async loadManagers() {
+                try {
+                    const response = await fetch('/api/settings/managers');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.managers = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки менеджеров:', error);
+                }
+            },
+
+            async loadStores() {
+                try {
+                    const response = await fetch('/api/settings/stores');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.stores = result.data;
+                        this.filteredStores = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки магазинов:', error);
+                }
+            },
+
+            async loadGroups() {
+                try {
+                    const response = await fetch('/api/settings/groups');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.groups = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки групп:', error);
+                }
+            },
+
+            async loadGroupsWithStats() {
+                try {
+                    console.log('🔄 Загрузка групп со статистикой...');
+                    
+                    // Загрузить все данные параллельно
+                    const [groupsResp, excludedResp, assignmentsResp] = await Promise.all([
+                        fetch('/api/settings/groups-with-stats'),
+                        fetch('/api/settings/excluded-groups'),
+                        fetch('/api/settings/group-manager-assignments')
+                    ]);
+                    
+                    const groupsResult = await groupsResp.json();
+                    const excludedResult = await excludedResp.json();
+                    const assignmentsResult = await assignmentsResp.json();
+                    
+                    console.log('📦 Получены данные:', {
+                        groups: groupsResult.data?.length,
+                        excluded: excludedResult.data?.length,
+                        assignments: Object.keys(assignmentsResult.data || {}).length
+                    });
+                    
+                    if (groupsResult.success) {
+                        // Сохранить справочные данные
+                        this.excludedGroups = excludedResult.success ? excludedResult.data : [];
+                        this.groupManagerAssignments = assignmentsResult.success ? assignmentsResult.data : {};
+                        
+                        // Обновить группы с учетом исключений и назначений ЗА ОДИН РАЗ
+                        const excludedSet = new Set(this.excludedGroups);
+                        this.groupsWithStats = groupsResult.data.map(g => ({
+                            ...g,
+                            isExcluded: excludedSet.has(g.fGROUP),
+                            assignedManager: this.groupManagerAssignments[g.fGROUP] || ''
+                        }));
+                        
+                        console.log('✅ Загружено групп:', this.groupsWithStats.length);
+                    } else {
+                        console.error('❌ Ошибка от сервера:', groupsResult.error);
+                    }
+                } catch (error) {
+                    console.error('❌ Ошибка загрузки групп со статистикой:', error);
+                }
+            },
+
+            async loadExcludedGroups() {
+                try {
+                    const response = await fetch('/api/settings/excluded-groups');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.excludedGroups = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки исключенных групп:', error);
+                }
+            },
+
+            async loadGroupManagerAssignments() {
+                try {
+                    const response = await fetch('/api/settings/group-manager-assignments');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.groupManagerAssignments = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки назначений менеджеров:', error);
+                }
+            },
+
+            async loadDistributors() {
+                try {
+                    const response = await fetch('/api/settings/distributors');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.distributors = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки дистрибьюторов:', error);
+                }
+            },
+
+            async selectManager(manager) {
+                this.selectedManager = manager;
+                await this.loadManagerStores(manager.fID);
+            },
+
+            async loadManagerStores(managerId) {
+                try {
+                    const response = await fetch(`/api/settings/managers/${managerId}/stores`);
+                    const result = await response.json();
+                    if (result.success) {
+                        this.managerStores = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки магазинов менеджера:', error);
+                }
+            },
+
+            showAddStoreModal() {
+                this.availableStores = this.stores.filter(s => 
+                    !this.managerStores.find(ms => ms.fID === s.fID)
+                );
+                const modal = new bootstrap.Modal(document.getElementById('addStoreModal'));
+                modal.show();
+            },
+
+            async addStoreToManager() {
+                if (!this.newStoreId || !this.selectedManager) return;
+
+                try {
+                    const response = await fetch('/api/settings/managers/assign-store', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            managerId: this.selectedManager.fID,
+                            storeId: this.newStoreId
+                        })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadManagerStores(this.selectedManager.fID);
+                        bootstrap.Modal.getInstance(document.getElementById('addStoreModal')).hide();
+                        this.newStoreId = '';
+                    }
+                } catch (error) {
+                    console.error('Ошибка добавления магазина:', error);
+                }
+            },
+
+            async removeStoreFromManager(storeId) {
+                if (!confirm('Удалить связь с этим магазином?')) return;
+
+                try {
+                    const response = await fetch('/api/settings/managers/unassign-store', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            managerId: this.selectedManager.fID,
+                            storeId: storeId
+                        })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadManagerStores(this.selectedManager.fID);
+                    }
+                } catch (error) {
+                    console.error('Ошибка удаления магазина:', error);
+                }
+            },
+
+            filterStores() {
+                const query = this.storeSearch.toLowerCase();
+                this.filteredStores = this.stores.filter(s => 
+                    s.fNAME.toLowerCase().includes(query) || 
+                    s.fCODE.toLowerCase().includes(query)
+                );
+            },
+
+            async updateStoreGroup(storeId, group) {
+                try {
+                    const response = await fetch('/api/settings/stores/update-group', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ storeId, group })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadStores();
+                    }
+                } catch (error) {
+                    console.error('Ошибка обновления группы:', error);
+                }
+            },
+
+            showAddGroupModal() {
+                const modal = new bootstrap.Modal(document.getElementById('addGroupModal'));
+                modal.show();
+            },
+
+            async addGroup() {
+                if (!this.newGroupName.trim()) return;
+
+                try {
+                    const response = await fetch('/api/settings/groups/add', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: this.newGroupName })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadGroups();
+                        bootstrap.Modal.getInstance(document.getElementById('addGroupModal')).hide();
+                        this.newGroupName = '';
+                    }
+                } catch (error) {
+                    console.error('Ошибка добавления группы:', error);
+                }
+            },
+
+            async deleteGroup(group) {
+                if (!confirm(`Удалить группу "${group}"?`)) return;
+
+                try {
+                    const response = await fetch('/api/settings/groups/delete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: group })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadGroups();
+                        await this.loadStores();
+                    }
+                } catch (error) {
+                    console.error('Ошибка удаления группы:', error);
+                }
+            },
+
+            getStoresInGroup(group) {
+                return this.stores.filter(s => s.fGROUP === group).length;
+            },
+
+            async assignDistributorToManager(distributorGroup, managerId) {
+                try {
+                    const response = await fetch('/api/settings/distributors/assign', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ distributorGroup, managerId })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadDistributors();
+                    }
+                } catch (error) {
+                    console.error('Ошибка назначения дистрибьютора:', error);
+                }
+            },
+
+            editStore(store) {
+                alert('Функция редактирования будет добавлена позже');
+            },
+
+            // ===== Исключенные клиенты =====
+            async loadExcludedCustomers() {
+                try {
+                    const response = await fetch('/api/settings/excluded-customers');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.excludedCustomers = result.data;
+                        this.filteredExcludedCustomers = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки исключенных клиентов:', error);
+                }
+            },
+
+            filterExcludedCustomers() {
+                const query = this.excludedSearch.toLowerCase();
+                this.filteredExcludedCustomers = this.excludedCustomers.filter(c => 
+                    c.fNAME.toLowerCase().includes(query) || 
+                    c.fCODE.toLowerCase().includes(query)
+                );
+            },
+
+            showAddExcludedModal() {
+                this.excludeCustomerSearch = '';
+                this.customersToExclude = [];
+                this.selectedCustomerToExclude = '';
+                this.excludeReason = 'Неблагонадежный';
+                const modal = new bootstrap.Modal(document.getElementById('addExcludedModal'));
+                modal.show();
+            },
+
+            async searchCustomersToExclude() {
+                if (this.excludeCustomerSearch.length < 2) {
+                    this.customersToExclude = [];
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`/api/settings/search-customers?query=${encodeURIComponent(this.excludeCustomerSearch)}`);
+                    const result = await response.json();
+                    if (result.success) {
+                        // Фильтруем уже исключенных
+                        this.customersToExclude = result.data.filter(c => 
+                            !this.excludedCustomers.find(exc => exc.fID === c.fID)
+                        );
+                    }
+                } catch (error) {
+                    console.error('Ошибка поиска клиентов:', error);
+                }
+            },
+
+            async addToExcluded() {
+                if (!this.selectedCustomerToExclude) {
+                    alert('Выберите клиента из списка');
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/settings/excluded-customers/add', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            customerId: this.selectedCustomerToExclude,
+                            reason: this.excludeReason
+                        })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadExcludedCustomers();
+                        bootstrap.Modal.getInstance(document.getElementById('addExcludedModal')).hide();
+                        alert('Клиент добавлен в список исключенных');
+                    }
+                } catch (error) {
+                    console.error('Ошибка добавления исключенного:', error);
+                }
+            },
+
+            async removeFromExcluded(customerId) {
+                if (!confirm('Восстановить этого клиента? Он снова будет учитываться в статистике.')) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/settings/excluded-customers/remove', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ customerId })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadExcludedCustomers();
+                        alert('Клиент восстановлен');
+                    }
+                } catch (error) {
+                    console.error('Ошибка восстановления клиента:', error);
+                }
+            },
+
+            getTotalExcludedDebt() {
+                return this.excludedCustomers.reduce((sum, c) => sum + (c.debt || 0), 0);
+            },
+
+            getTotalExcludedSales() {
+                return this.excludedCustomers.reduce((sum, c) => sum + (c.sales || 0), 0);
+            },
+
+            // ===== Исключение и восстановление групп =====
+            async excludeGroup(groupCode) {
+                const group = this.groupsWithStats.find(g => g.fGROUP === groupCode);
+                if (!group) return;
+
+                if (!confirm(`ИСКЛЮЧИТЬ группу "${groupCode}"?\n\nВсе ${group.customerCount} клиентов из этой группы будут исключены из расчетов!`)) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/settings/excluded-groups/add', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ groupCode })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadExcludedGroups();
+                        await this.loadGroupsWithStats();
+                        alert(`Группа "${groupCode}" исключена. ${group.customerCount} клиентов не будут учитываться в статистике.`);
+                    }
+                } catch (error) {
+                    console.error('Ошибка исключения группы:', error);
+                }
+            },
+
+            async restoreGroup(groupCode) {
+                if (!confirm(`Восстановить группу "${groupCode}"?`)) return;
+
+                try {
+                    const response = await fetch('/api/settings/excluded-groups/remove', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ groupCode })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadExcludedGroups();
+                        await this.loadGroupsWithStats();
+                        alert(`Группа "${groupCode}" восстановлена`);
+                    }
+                } catch (error) {
+                    console.error('Ошибка восстановления группы:', error);
+                }
+            },
+
+            async assignManagerToGroup(groupCode, managerId) {
+                try {
+                    const response = await fetch('/api/settings/group-manager-assignments/set', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ groupCode, managerId })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        await this.loadGroupManagerAssignments();
+                        await this.loadGroupsWithStats();
+                    }
+                } catch (error) {
+                    console.error('Ошибка назначения менеджера группе:', error);
+                }
+            },
+
+            // Новые методы для работы с назначением групп менеджеру
+            selectManagerForGroups(manager) {
+                this.selectedManagerForGroups = manager;
+            },
+
+            getManagerGroupsCount(managerId) {
+                return Object.entries(this.groupManagerAssignments)
+                    .filter(([group, mgr]) => mgr === managerId)
+                    .length;
+            },
+
+            isGroupAssignedToSelectedManager(groupCode) {
+                if (!this.selectedManagerForGroups) return false;
+                return this.groupManagerAssignments[groupCode] === this.selectedManagerForGroups.fID;
+            },
+
+            async toggleGroupForManager(groupCode, isChecked, showToast = true) {
+                if (!this.selectedManagerForGroups) return;
+                
+                const managerId = isChecked ? this.selectedManagerForGroups.fID : '';
+                
+                try {
+                    const response = await fetch('/api/settings/group-manager-assignments/set', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ groupCode, managerId })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        // Обновить локальные данные
+                        if (isChecked) {
+                            this.groupManagerAssignments[groupCode] = managerId;
+                            if (showToast) {
+                                this.showSuccess(`✅ Группа ${groupCode} назначена менеджеру ${this.selectedManagerForGroups.fNAME}`);
+                            }
+                        } else {
+                            delete this.groupManagerAssignments[groupCode];
+                            if (showToast) {
+                                this.showSuccess(`🗑️ Группа ${groupCode} снята с менеджера ${this.selectedManagerForGroups.fNAME}`);
+                            }
+                        }
+                        return true;
+                    }
+                    return false;
+                } catch (error) {
+                    console.error('Ошибка переключения группы:', error);
+                    return false;
+                }
+            },
+
+            async saveManagerGroups() {
+                alert('Назначения сохранены автоматически');
+            },
+
+            async selectAllGroups() {
+                if (!this.selectedManagerForGroups) return;
+                if (!confirm(`Назначить ВСЕ группы менеджеру "${this.selectedManagerForGroups.fNAME}"?`)) return;
+
+                let assigned = 0;
+                for (const group of this.groupsWithStats) {
+                    if (!group.isExcluded && !this.isGroupAssignedToSelectedManager(group.fGROUP)) {
+                        const success = await this.toggleGroupForManager(group.fGROUP, true, false);
+                        if (success) assigned++;
+                    }
+                }
+
+                if (assigned > 0) {
+                    this.showSuccess(`✅ Назначено ${assigned} групп менеджеру ${this.selectedManagerForGroups.fNAME}`);
+                }
+            },
+
+            async clearManagerGroups() {
+                if (!this.selectedManagerForGroups) return;
+                if (!confirm(`Снять все группы с менеджера "${this.selectedManagerForGroups.fNAME}"?`)) return;
+
+                const managerGroups = Object.entries(this.groupManagerAssignments)
+                    .filter(([group, mgr]) => mgr === this.selectedManagerForGroups.fID)
+                    .map(([group]) => group);
+
+                let cleared = 0;
+                for (const groupCode of managerGroups) {
+                    const success = await this.toggleGroupForManager(groupCode, false, false);
+                    if (success) cleared++;
+                }
+
+                if (cleared > 0) {
+                    this.showSuccess(`🗑️ Снято ${cleared} групп с менеджера ${this.selectedManagerForGroups.fNAME}`);
+                }
+            },
+
+            // ===== Массовое изменение =====
+            selectAllManagers() {
+                this.selectedManagersForBulk = this.managers.map(m => m.fID);
+            },
+
+            selectAllGroupsForBulk() {
+                this.selectedGroupsForBulk = this.groupsWithStats
+                    .filter(g => !g.isExcluded)
+                    .map(g => g.fGROUP);
+            },
+
+            async bulkAssignGroups() {
+                if (!confirm(`ДОБАВИТЬ выбранные ${this.selectedGroupsForBulk.length} групп к ${this.selectedManagersForBulk.length} менеджерам?\n\nСуществующие назначения сохранятся.`)) {
+                    return;
+                }
+
+                let updated = 0;
+                for (const managerId of this.selectedManagersForBulk) {
+                    for (const groupCode of this.selectedGroupsForBulk) {
+                        // Проверить, не назначена ли уже эта группа
+                        if (this.groupManagerAssignments[groupCode] !== managerId) {
+                            await this.assignGroupToManager(groupCode, managerId);
+                            updated++;
+                        }
+                    }
+                }
+
+                await this.loadGroupsWithStats();
+                this.showSuccess(`✅ Выполнено ${updated} назначений (${this.selectedManagersForBulk.length} менеджеров × ${this.selectedGroupsForBulk.length} групп)`);
+            },
+
+            async bulkReplaceGroups() {
+                if (!confirm(`ЗАМЕНИТЬ все группы у ${this.selectedManagersForBulk.length} менеджеров на выбранные ${this.selectedGroupsForBulk.length} групп?\n\nСтарые назначения будут удалены!`)) {
+                    return;
+                }
+
+                let cleared = 0;
+                let assigned = 0;
+
+                // Сначала очистить все группы у выбранных менеджеров
+                for (const managerId of this.selectedManagersForBulk) {
+                    const managerGroups = Object.entries(this.groupManagerAssignments)
+                        .filter(([group, mgr]) => mgr === managerId)
+                        .map(([group]) => group);
+                    
+                    for (const groupCode of managerGroups) {
+                        await this.assignGroupToManager(groupCode, '');
+                        cleared++;
+                    }
+                }
+
+                // Затем назначить новые группы
+                for (const managerId of this.selectedManagersForBulk) {
+                    for (const groupCode of this.selectedGroupsForBulk) {
+                        await this.assignGroupToManager(groupCode, managerId);
+                        assigned++;
+                    }
+                }
+
+                await this.loadGroupsWithStats();
+                this.showSuccess(`🔄 Замена завершена: удалено ${cleared}, назначено ${assigned} групп`);
+            },
+
+            async bulkClearGroups() {
+                if (!confirm(`ОЧИСТИТЬ все группы у ${this.selectedManagersForBulk.length} менеджеров?`)) {
+                    return;
+                }
+
+                let cleared = 0;
+                for (const managerId of this.selectedManagersForBulk) {
+                    const managerGroups = Object.entries(this.groupManagerAssignments)
+                        .filter(([group, mgr]) => mgr === managerId)
+                        .map(([group]) => group);
+                    
+                    for (const groupCode of managerGroups) {
+                        await this.assignGroupToManager(groupCode, '');
+                        cleared++;
+                    }
+                }
+
+                await this.loadGroupsWithStats();
+                this.showSuccess(`🗑️ Удалено ${cleared} назначений у ${this.selectedManagersForBulk.length} менеджеров`);
+            },
+
+            async assignGroupToManager(groupCode, managerId) {
+                const response = await fetch('/api/settings/group-manager-assignments/set', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ groupCode, managerId })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    if (managerId) {
+                        this.groupManagerAssignments[groupCode] = managerId;
+                    } else {
+                        delete this.groupManagerAssignments[groupCode];
+                    }
+                }
+            },
+
+            formatCurrency(num) {
+                return new Intl.NumberFormat('ru-RU', {
+                    style: 'currency',
+                    currency: 'AMD',
+                    minimumFractionDigits: 0
+                }).format(num);
+            }
+        }
+    }
+</script>
+{% endblock %}
