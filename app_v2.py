@@ -853,37 +853,15 @@ def customers_api():
 
         # Если нужно включить клиентов с 0 продаж, используем другой запрос
         if include_zero_sales:
-            # Загружаем назначения групп к Sales Areas
-            area_assignments = load_sales_area_group_assignments()
-            assigned_groups_for_area = area_assignments.get(sales_area, [])
-            
-            # Запрос со всеми клиентами (включая 0 продаж)
+            # Запрос со всеми клиентами, назначенными на Sales Area через таблицу CUSTOMERSALESAREAS
             base_customer_clause = ""
             customer_params_base = []
             
-            # Определяем финальный список групп для фильтрации
-            final_groups = []
+            # Дополнительная фильтрация по выбранным группам
             if selected_groups:
-                # Если пользователь выбрал группы, берем пересечение с группами Sales Area
-                if assigned_groups_for_area:
-                    final_groups = [g for g in selected_groups if g in assigned_groups_for_area]
-                    if not final_groups:
-                        # Если пересечения нет, берем все выбранные группы
-                        final_groups = selected_groups
-                else:
-                    # Если для Sales Area нет назначенных групп, берем выбранные пользователем
-                    final_groups = selected_groups
-            elif assigned_groups_for_area:
-                # Если пользователь не выбрал группы, берем все группы Sales Area
-                final_groups = assigned_groups_for_area
-            
-            app.logger.info(f"[include_zero_sales] selected_groups={selected_groups}, assigned_groups_for_area={assigned_groups_for_area}, final_groups={final_groups}")
-            
-            # Фильтруем клиентов по финальному списку групп
-            if final_groups:
-                placeholders = ','.join('?' * len(final_groups))
+                placeholders = ','.join('?' * len(selected_groups))
                 base_customer_clause += f" AND c.fGROUP IN ({placeholders})"
-                customer_params_base.extend(final_groups)
+                customer_params_base.extend(selected_groups)
             
             # Дополнительная фильтрация по выбранным дивизионам
             if selected_divisions:
@@ -891,6 +869,8 @@ def customers_api():
                 base_customer_clause += f" AND c.fDIVISION IN ({placeholders})"
                 customer_params_base.extend(selected_divisions)
             
+            app.logger.info(f"[include_zero_sales] Using CUSTOMERSALESAREAS for sales_area={sales_area}")
+            app.logger.info(f"[include_zero_sales] selected_groups={selected_groups}, selected_divisions={selected_divisions}")
             app.logger.info(f"[include_zero_sales] base_customer_clause={base_customer_clause}")
             app.logger.info(f"[include_zero_sales] customer_params_base={customer_params_base}")
             
@@ -902,48 +882,9 @@ def customers_api():
                         c.fNAME AS CustomerName,
                         c.fGROUP AS GroupCode
                     FROM CUSTOMERS c
-                    WHERE 1=1
+                    INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+                    WHERE csa.fSALESAREA = ?
                         {base_customer_clause}
-                        AND (
-                            -- Либо клиент имеет продажи в нужном Sales Area
-                            EXISTS (
-                                SELECT 1 FROM SALES s 
-                                WHERE s.fCUSTOMERID = c.fID 
-                                AND s.fSTATE = 2 
-                                AND s.fSALESAREA = ?
-                            )
-                            OR
-                            -- Либо клиент вообще не имеет продаж
-                            NOT EXISTS (
-                                SELECT 1 FROM SALES s 
-                                WHERE s.fCUSTOMERID = c.fID 
-                                AND s.fSTATE = 2
-                            )
-                        )
-                        -- Обязательно проверить что у клиента есть положительный долг (та же формула что и в основном запросе)
-                        AND EXISTS (
-                            SELECT 1 
-                            FROM (
-                                SELECT 
-                                    ISNULL(
-                                        (SELECT SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END)
-                                         FROM HICUSTOMERSDEBT d
-                                         INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-                                         WHERE doc.fCUSTOMERID = c.fID), 0
-                                    ) - 
-                                    ABS(ISNULL(
-                                        (SELECT SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END)
-                                         FROM HIRESTCUSTOMERSSUM r
-                                         WHERE r.fCUSTOMERID = c.fID), 0
-                                    )) -
-                                    ABS(ISNULL(
-                                        (SELECT SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END)
-                                         FROM HIRESTCUSTOMERSSUM r
-                                         WHERE r.fCUSTOMERID = c.fID), 0
-                                    )) AS FinalDebt
-                            ) debt_check
-                            WHERE debt_check.FinalDebt > 0
-                        )
                 ),
                 FilteredSales AS (
                     SELECT 
@@ -1053,9 +994,11 @@ def customers_api():
                 LEFT JOIN PaymentData pd ON t.CustomerId = pd.CustomerId
                 LEFT JOIN LastPaymentData lpd ON t.CustomerId = lpd.CustomerId
                 LEFT JOIN LastSaleData lsd ON t.CustomerId = lsd.CustomerId
+                WHERE (ISNULL(dd.DebtFromDocs, 0) - ABS(ISNULL(rd.Type01, 0)) - ABS(ISNULL(rd.Type02, 0))) > 0
                 ORDER BY t.TotalSales DESC
             """
-            params = tuple(customer_params_base) + (sales_area,) + (date_from, date_to, sales_area) + excluded_params + product_groups_params + (date_from, date_to)
+            # Parameters: sales_area (for CUSTOMERSALESAREAS), customer_params_base (groups/divisions), dates, sales_area (for FilteredSales), excluded, product_groups, dates (for PaymentData)
+            params = (sales_area,) + tuple(customer_params_base) + (date_from, date_to, sales_area) + excluded_params + product_groups_params + (date_from, date_to)
         else:
             # Стандартный запрос только с клиентами, у которых есть продажи
             query = f"""
@@ -2395,21 +2338,27 @@ def assign_distributor():
 # ===== Sales Areas → Groups =====
 @app.route('/api/settings/sales-areas/list')
 def get_settings_sales_areas_list():
-    """Получить список Sales Areas из TREES"""
+    """Получить список Sales Areas из TREES с количеством назначенных клиентов из CUSTOMERSALESAREAS"""
     try:
         conn = db.get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT fCODE, fCAPTION
-            FROM TREES
-            WHERE fTREEID = 'SArea'
-            ORDER BY fCODE
+            SELECT 
+                t.fCODE, 
+                t.fCAPTION,
+                COUNT(DISTINCT csa.fCUSTOMERID) AS CustomerCount
+            FROM TREES t
+            LEFT JOIN CUSTOMERSALESAREAS csa ON t.fCODE = csa.fSALESAREA
+            WHERE t.fTREEID = 'SArea'
+            GROUP BY t.fCODE, t.fCAPTION
+            ORDER BY t.fCODE
         """)
         areas = []
         for row in cursor.fetchall():
             areas.append({
                 'code': row.fCODE,
-                'name': row.fCAPTION
+                'name': row.fCAPTION,
+                'customerCount': row.CustomerCount if row.CustomerCount else 0
             })
         conn.close()
         return jsonify({'success': True, 'data': areas})
