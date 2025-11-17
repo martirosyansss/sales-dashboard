@@ -19,6 +19,11 @@
         --ag-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     }
     
+    /* Rotation utility */
+    .rotate-90 {
+        transform: rotate(90deg);
+    }
+    
     .customer-detail-overlay {
         position: fixed;
         inset: 0;
@@ -728,9 +733,6 @@
                 </div>
                 <div class="stat-value" x-text="summary.count"></div>
                 <small class="text-muted d-block" x-text="includeZeroSales ? 'включая клиентов с 0 продаж' : 'с продажами в выбранный период'"></small>
-                <small class="badge bg-info mt-1" x-show="viewMode === 'table'" x-transition>
-                    <i class="fas fa-filter"></i> при фильтре в гриде
-                </small>
             </div>
         </div>
         <div class="col-lg-3 col-md-6 col-6">
@@ -742,9 +744,6 @@
                 </div>
                 <div class="stat-value"><span x-text="formatCurrency(summary.total_sales)"></span> ֏</div>
                 <small class="text-muted d-block">за выбранный период</small>
-                <small class="badge bg-info mt-1" x-show="viewMode === 'table'" x-transition>
-                    <i class="fas fa-filter"></i> при фильтре в гриде
-                </small>
             </div>
         </div>
         <div class="col-lg-3 col-md-6 col-6">
@@ -756,9 +755,6 @@
                 </div>
                 <div class="stat-value"><span x-text="formatCurrency(summary.total_payments || 0)"></span> ֏</div>
                 <small class="text-muted d-block">за выбранный период</small>
-                <small class="badge bg-info mt-1" x-show="viewMode === 'table'" x-transition>
-                    <i class="fas fa-filter"></i> при фильтре в гриде
-                </small>
             </div>
         </div>
         <div class="col-lg-3 col-md-6 col-6">
@@ -770,9 +766,6 @@
                 </div>
                 <div class="stat-value"><span x-text="formatCurrency(summary.total_debt)"></span> ֏</div>
                 <small class="text-muted d-block">на текущую дату</small>
-                <small class="badge bg-info mt-1" x-show="viewMode === 'table'" x-transition>
-                    <i class="fas fa-filter"></i> при фильтре в гриде
-                </small>
             </div>
         </div>
     </div>
@@ -787,11 +780,11 @@
                     </small>
                 </div>
                 <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-primary" @click="exportToExcel()">
-                        <i class="fas fa-file-excel"></i> Excel
+                    <button class="btn btn-outline-primary" @click="exportToExcel()" title="Экспорт отфильтрованных данных в Excel">
+                        <i class="fas fa-file-excel"></i> Экспорт в Excel
                     </button>
-                    <button class="btn btn-outline-secondary" @click="exportToCsv()">
-                        <i class="fas fa-file-csv"></i> CSV
+                    <button class="btn btn-outline-secondary" @click="exportToCsv()" title="Экспорт отфильтрованных данных в CSV">
+                        <i class="fas fa-file-csv"></i> Экспорт в CSV
                     </button>
                 </div>
             </div>
@@ -905,29 +898,6 @@
             <div x-show="loading" class="text-center text-muted py-4">
                 <div class="spinner-border text-primary" role="status"></div>
                 <p class="mt-2 mb-0">Загрузка данных...</p>
-            </div>
-            
-            <!-- No Data Message -->
-            <div x-show="!loading && customers.length === 0" class="text-center py-5">
-                <div class="mb-3">
-                    <i class="fas fa-inbox fa-3x text-muted"></i>
-                </div>
-                <h5 class="text-muted mb-3">Данные не найдены</h5>
-                <template x-if="selectedGroups.length > 0">
-                    <div class="alert alert-info d-inline-block">
-                        <i class="fas fa-info-circle me-2"></i>
-                        <strong>Подсказка:</strong> Для Sales Area <span x-text="selectedArea"></span> нет данных с выбранными группами (<span x-text="selectedGroups.join(', ')"></span>).
-                        <br>
-                        <button class="btn btn-sm btn-primary mt-2" @click="selectedGroups = []; saveGroupsToStorage(); loadCustomers()">
-                            <i class="fas fa-times-circle"></i> Очистить фильтр групп
-                        </button>
-                    </div>
-                </template>
-                <template x-if="selectedGroups.length === 0">
-                    <p class="text-muted">
-                        Попробуйте изменить параметры фильтра или выбрать другой период
-                    </p>
-                </template>
             </div>
         </div>
     </div>
@@ -1091,7 +1061,7 @@
                                         <table class="table table-dark table-sm">
                                             <thead class="sticky-top bg-dark">
                                                 <tr>
-                                                    <th style="width: 30px;"></th>
+                                                    <th width="30"></th>
                                                     <th>Дата</th>
                                                     <th>Тип оплаты</th>
                                                     <th>Менеджер</th>
@@ -1099,20 +1069,69 @@
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                <template x-for="purchase in detailPanel.purchases" :key="purchase.SaleId">
-                                                    <tr style="cursor: pointer;" 
-                                                        @click="detailPanel.selectedPurchase = purchase"
-                                                        :class="{'table-active': detailPanel.selectedPurchase?.SaleId === purchase.SaleId}">
-                                                        <td>
-                                                            <i class="fas" 
-                                                               :class="detailPanel.selectedPurchase?.SaleId === purchase.SaleId ? 'fa-chevron-down text-primary' : 'fa-chevron-right'"
-                                                               style="font-size: 0.75rem;"></i>
-                                                        </td>
-                                                        <td><small x-text="purchase.SaleDate"></small></td>
-                                                        <td><span class="badge bg-info" x-text="purchase.PaymentType"></span></td>
-                                                        <td><small x-text="purchase.ManagerName || 'N/A'"></small></td>
-                                                        <td class="text-end text-primary fw-bold">
-                                                            <small x-text="formatCurrency(purchase.TotalSum) + ' ֏'"></small>
+                                                <template x-for="(purchase, idx) in detailPanel.purchases" :key="purchase.SaleId">
+                                                    <tr>
+                                                        <td colspan="5" class="p-0">
+                                                            <table class="table table-dark table-sm mb-0">
+                                                                <tbody>
+                                                                    <tr style="cursor: pointer;" 
+                                                                        @click="purchase._expanded = !purchase._expanded"
+                                                                        :class="purchase._expanded ? 'table-active' : 'table-hover'">
+                                                                        <td width="30">
+                                                                            <i class="fas fa-chevron-right transition-transform" 
+                                                                               :class="purchase._expanded ? 'rotate-90' : ''"
+                                                                               style="transition: transform 0.2s;"></i>
+                                                                        </td>
+                                                                        <td><small x-text="purchase.SaleDate"></small></td>
+                                                                        <td><span class="badge bg-info" x-text="purchase.PaymentType"></span></td>
+                                                                        <td><small x-text="purchase.ManagerName || 'N/A'"></small></td>
+                                                                        <td class="text-end text-primary">
+                                                                            <small x-text="formatCurrency(purchase.TotalSum) + ' ֏'"></small>
+                                                                        </td>
+                                                                    </tr>
+                                                                    <tr x-show="purchase._expanded" 
+                                                                        x-transition
+                                                                        style="background-color: rgba(13, 110, 253, 0.05);">
+                                                                        <td colspan="5" class="p-3">
+                                                                            <div x-show="purchase.Products && purchase.Products.length > 0">
+                                                                                <div class="table-responsive">
+                                                                                    <table class="table table-sm table-bordered mb-0" style="background-color: rgba(0,0,0,0.2);">
+                                                                                        <thead>
+                                                                                            <tr class="text-muted" style="font-size: 0.75rem;">
+                                                                                                <th width="80">Код</th>
+                                                                                                <th>Товар</th>
+                                                                                                <th width="80" class="text-end">Кол-во</th>
+                                                                                                <th width="100" class="text-end">Цена</th>
+                                                                                                <th width="90" class="text-end">Скидка</th>
+                                                                                                <th width="110" class="text-end">Итого</th>
+                                                                                            </tr>
+                                                                                        </thead>
+                                                                                        <tbody>
+                                                                                            <template x-for="product in purchase.Products" :key="product.LineNo">
+                                                                                                <tr style="font-size: 0.8rem;">
+                                                                                                    <td><code class="text-info" x-text="product.ProductCode"></code></td>
+                                                                                                    <td x-text="product.ProductName"></td>
+                                                                                                    <td class="text-end" x-text="product.Quantity.toFixed(2)"></td>
+                                                                                                    <td class="text-end">
+                                                                                                        <span x-text="formatCurrency(product.Price) + ' ֏'"></span>
+                                                                                                        <span x-show="product.DiscountPercent > 0"><br><small class="text-muted" style="text-decoration: line-through;" x-text="formatCurrency(product.OriginalPrice) + ' ֏'"></small></span>
+                                                                                                    </td>
+                                                                                                    <td class="text-end">
+                                                                                                        <span x-show="product.DiscountPercent > 0" class="badge bg-success" x-text="product.DiscountPercent.toFixed(1) + '%'"></span>
+                                                                                                        <span x-show="product.DiscountPercent === 0" class="text-muted">—</span>
+                                                                                                    </td>
+                                                                                                    <td class="text-end fw-bold text-primary" x-text="formatCurrency(product.LineTotal) + ' ֏'"></td>
+                                                                                                </tr>
+                                                                                            </template>
+                                                                                        </tbody>
+                                                                                    </table>
+                                                                                </div>
+                                                                            </div>
+                                                                            <p x-show="!purchase.Products || purchase.Products.length === 0" class="text-muted small mb-0 text-center">Нет данных о товарах</p>
+                                                                        </td>
+                                                                    </tr>
+                                                                </tbody>
+                                                            </table>
                                                         </td>
                                                     </tr>
                                                 </template>
@@ -1125,67 +1144,6 @@
                                             </tfoot>
                                         </table>
                                     </div>
-                                </template>
-                            </div>
-                        </div>
-
-                        <!-- Детали выбранной продажи -->
-                        <div x-show="detailPanel.selectedPurchase" class="card bg-dark border-secondary mb-3">
-                            <div class="card-header d-flex justify-content-between align-items-center">
-                                <h6 class="mb-0">
-                                    <i class="fas fa-box-open text-info me-2"></i>
-                                    Товары в продаже
-                                </h6>
-                                <button type="button" class="btn btn-sm btn-outline-secondary" @click="detailPanel.selectedPurchase = null">
-                                    <i class="fas fa-times"></i>
-                                </button>
-                            </div>
-                            <div class="card-body">
-                                <div class="mb-2">
-                                    <small class="text-muted">Дата:</small>
-                                    <strong x-text="detailPanel.selectedPurchase?.SaleDate"></strong>
-                                    <span class="ms-3">
-                                        <small class="text-muted">Тип оплаты:</small>
-                                        <span class="badge bg-info" x-text="detailPanel.selectedPurchase?.PaymentType"></span>
-                                    </span>
-                                </div>
-                                <template x-if="detailPanel.selectedPurchase?.Products && detailPanel.selectedPurchase.Products.length > 0">
-                                    <div class="table-responsive">
-                                        <table class="table table-dark table-sm mb-0" style="font-size: 0.85rem;">
-                                            <thead style="background-color: #1a1d20;">
-                                                <tr>
-                                                    <th style="width: 60px;">Код</th>
-                                                    <th>Товар</th>
-                                                    <th class="text-end" style="width: 80px;">Кол-во</th>
-                                                    <th class="text-end" style="width: 100px;">Цена</th>
-                                                    <th class="text-end" style="width: 100px;">Сумма</th>
-                                                    <th class="text-end" style="width: 80px;">% скидки</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                <template x-for="product in detailPanel.selectedPurchase.Products" :key="product.LineNo">
-                                                    <tr>
-                                                        <td><span class="badge bg-secondary" x-text="product.ProductCode"></span></td>
-                                                        <td><small x-text="product.ProductName"></small></td>
-                                                        <td class="text-end"><small x-text="product.Quantity"></small></td>
-                                                        <td class="text-end"><small x-text="formatCurrency(product.Price) + ' ֏'"></small></td>
-                                                        <td class="text-end text-primary"><small x-text="formatCurrency(product.LineTotal) + ' ֏'"></small></td>
-                                                        <td class="text-end">
-                                                            <span class="badge" 
-                                                                  :class="product.DiscountPercent > 0 ? 'bg-warning' : 'bg-secondary'"
-                                                                  x-text="(product.DiscountPercent || 0).toFixed(1) + '%'"></span>
-                                                        </td>
-                                                    </tr>
-                                                </template>
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </template>
-                                <template x-if="!detailPanel.selectedPurchase?.Products || detailPanel.selectedPurchase.Products.length === 0">
-                                    <p class="text-muted small mb-0">
-                                        <i class="fas fa-info-circle me-1"></i>
-                                        Нет данных о товарах
-                                    </p>
                                 </template>
                             </div>
                         </div>
@@ -1299,7 +1257,6 @@ function customersData() {
             customer: null,
             purchases: [],
             payments: [],
-            selectedPurchase: null,
             loadingPurchases: false,
             loadingPayments: false
         },
@@ -1359,11 +1316,7 @@ function customersData() {
                         headerName: 'Код',
                         field: 'CustomerCode',
                         width: 120,
-                        filter: 'agSetColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true
-                        },
+                        filter: 'agTextColumnFilter',
                         cellRenderer: params => {
                             const isProblematic = params.data.IsProblematic;
                             const badgeClass = isProblematic ? 'bg-danger' : 'bg-secondary';
@@ -1374,32 +1327,20 @@ function customersData() {
                         headerName: 'Название',
                         field: 'CustomerName',
                         width: 250,
-                        filter: 'agSetColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true
-                        },
+                        filter: 'agTextColumnFilter',
                         cellRenderer: params => `<strong>${params.value}</strong>`
                     },
                     {
                         headerName: 'Группа',
                         field: 'GroupCode',
                         width: 120,
-                        filter: 'agSetColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true
-                        }
+                        filter: 'agSetColumnFilter'
                     },
                     {
                         headerName: 'Менеджер',
                         field: 'ManagerName',
                         width: 180,
                         filter: 'agSetColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true
-                        },
                         cellRenderer: params => {
                             if (params.value) {
                                 return `<span class="badge bg-primary">${params.data.ManagerCode}</span> ${params.value}`;
@@ -1413,14 +1354,6 @@ function customersData() {
                         width: 100,
                         type: 'numericColumn',
                         filter: 'agNumberColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true,
-                            allowedCharPattern: '\\d\\-\\,',
-                            numberParser: text => {
-                                return text == null ? null : parseFloat(text.replace(/,/g, ''));
-                            }
-                        },
                         valueFormatter: params => params.value ? params.value.toLocaleString('ru-RU') : '0'
                     },
                     {
@@ -1429,14 +1362,6 @@ function customersData() {
                         width: 150,
                         type: 'numericColumn',
                         filter: 'agNumberColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true,
-                            allowedCharPattern: '\\d\\-\\,',
-                            numberParser: text => {
-                                return text == null ? null : parseFloat(text.replace(/,/g, ''));
-                            }
-                        },
                         cellClass: 'text-primary fw-bold',
                         valueFormatter: params => params.value ? params.value.toLocaleString('ru-RU', {minimumFractionDigits: 0, maximumFractionDigits: 0}) + ' AMD' : '0 AMD'
                     },
@@ -1446,14 +1371,6 @@ function customersData() {
                         width: 150,
                         type: 'numericColumn',
                         filter: 'agNumberColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true,
-                            allowedCharPattern: '\\d\\-\\,',
-                            numberParser: text => {
-                                return text == null ? null : parseFloat(text.replace(/,/g, ''));
-                            }
-                        },
                         cellClass: 'text-success',
                         valueFormatter: params => params.value ? params.value.toLocaleString('ru-RU', {minimumFractionDigits: 0, maximumFractionDigits: 0}) + ' AMD' : '0 AMD'
                     },
@@ -1463,14 +1380,6 @@ function customersData() {
                         width: 150,
                         type: 'numericColumn',
                         filter: 'agNumberColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true,
-                            allowedCharPattern: '\\d\\-\\,',
-                            numberParser: text => {
-                                return text == null ? null : parseFloat(text.replace(/,/g, ''));
-                            }
-                        },
                         cellClass: params => params.value > 0 ? 'text-danger fw-bold' : 'text-success',
                         valueFormatter: params => params.value ? params.value.toLocaleString('ru-RU', {minimumFractionDigits: 0, maximumFractionDigits: 0}) + ' AMD' : '0 AMD'
                     },
@@ -1480,10 +1389,6 @@ function customersData() {
                         width: 120,
                         type: 'numericColumn',
                         filter: 'agNumberColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true
-                        },
                         cellRenderer: params => {
                             const value = params.value || 0;
                             let badgeClass = 'bg-secondary';
@@ -1497,24 +1402,6 @@ function customersData() {
                         field: 'LastPaymentDate',
                         width: 130,
                         filter: 'agDateColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true,
-                            comparator: (filterLocalDateAtMidnight, cellValue) => {
-                                if (cellValue == null) return -1;
-                                const dateParts = cellValue.split('-');
-                                const cellDate = new Date(parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]));
-                                if (filterLocalDateAtMidnight.getTime() === cellDate.getTime()) {
-                                    return 0;
-                                }
-                                if (cellDate < filterLocalDateAtMidnight) {
-                                    return -1;
-                                }
-                                if (cellDate > filterLocalDateAtMidnight) {
-                                    return 1;
-                                }
-                            }
-                        },
                         cellRenderer: params => {
                             if (!params.value) return '<small class="text-muted">—</small>';
                             return `<span style="color: #adb5bd;">${params.value}</span>`;
@@ -1526,10 +1413,6 @@ function customersData() {
                         width: 130,
                         type: 'numericColumn',
                         filter: 'agNumberColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true
-                        },
                         cellRenderer: params => {
                             if (!params.value) return '<small class="text-muted">—</small>';
                             let badgeClass = 'text-muted';
@@ -1543,24 +1426,6 @@ function customersData() {
                         field: 'LastSaleDate',
                         width: 130,
                         filter: 'agDateColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true,
-                            comparator: (filterLocalDateAtMidnight, cellValue) => {
-                                if (cellValue == null) return -1;
-                                const dateParts = cellValue.split('-');
-                                const cellDate = new Date(parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]));
-                                if (filterLocalDateAtMidnight.getTime() === cellDate.getTime()) {
-                                    return 0;
-                                }
-                                if (cellDate < filterLocalDateAtMidnight) {
-                                    return -1;
-                                }
-                                if (cellDate > filterLocalDateAtMidnight) {
-                                    return 1;
-                                }
-                            }
-                        },
                         cellRenderer: params => {
                             if (!params.value) return '<small class="text-muted">—</small>';
                             return `<span style="color: #adb5bd;">${params.value}</span>`;
@@ -1571,11 +1436,6 @@ function customersData() {
                         field: 'DaysSinceLastSale',
                         width: 130,
                         type: 'numericColumn',
-                        filter: 'agNumberColumnFilter',
-                        filterParams: {
-                            buttons: ['reset', 'apply'],
-                            closeOnApply: true
-                        },
                         filter: 'agNumberColumnFilter',
                         cellRenderer: params => {
                             if (!params.value) return '<small class="text-muted">—</small>';
@@ -1604,10 +1464,6 @@ function customersData() {
                             alpineComponent.openCustomerPurchases(event.data);
                         }
                     }
-                },
-                onFilterChanged: (params) => {
-                    // Обновляем итоги при изменении фильтров
-                    this.updateFilteredSummary();
                 },
                 localeText: {
                     page: 'Страница',
@@ -1642,31 +1498,6 @@ function customersData() {
             if (this.customers.length > 0) {
                 this.gridApi.setGridOption('rowData', this.customers);
             }
-        },
-        
-        updateFilteredSummary() {
-            if (!this.gridApi) return;
-            
-            let count = 0;
-            let totalSales = 0;
-            let totalPayments = 0;
-            let totalDebt = 0;
-            
-            // Проходим по всем отфильтрованным строкам
-            this.gridApi.forEachNodeAfterFilter((node) => {
-                if (node.data) {
-                    count++;
-                    totalSales += node.data.TotalSales || 0;
-                    totalPayments += node.data.TotalPayments || 0;
-                    totalDebt += node.data.Debt || 0;
-                }
-            });
-            
-            // Обновляем summary
-            this.summary.count = count;
-            this.summary.total_sales = totalSales;
-            this.summary.total_payments = totalPayments;
-            this.summary.total_debt = totalDebt;
         },
         
         setCurrentMonth() {
@@ -1834,11 +1665,6 @@ function customersData() {
         },
         
         onAreaChange() {
-            // Проверяем совместимость выбранных групп с новой Sales Area
-            if (this.selectedGroups.length > 0) {
-                // Показываем предупреждение, если могут быть проблемы
-                console.log(`Changed Sales Area to ${this.selectedArea} with groups ${this.selectedGroups.join(',')}`);
-            }
             this.loadCustomers();
         },
         
@@ -1870,12 +1696,6 @@ function customersData() {
                         IsProblematic: this.checkIsProblematic(customer)
                     }));
                     this.summary = result.summary;
-                    
-                    // Показываем предупреждение если данных нет при активных фильтрах групп
-                    if (this.customers.length === 0 && this.selectedGroups.length > 0) {
-                        console.warn(`No data found for Sales Area ${this.selectedArea} with groups ${this.selectedGroups.join(',')}. Try clearing group filters.`);
-                        // Можно добавить toast уведомление
-                    }
                     
                     // Update AG Grid only if in table mode and grid is initialized
                     if (this.viewMode === 'table' && this.gridApi) {
@@ -1951,17 +1771,58 @@ function customersData() {
         
         exportToExcel() {
             if (this.gridApi) {
+                const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+                const areaName = this.salesAreas.find(a => a.code === this.selectedArea)?.name || this.selectedArea;
+                
                 this.gridApi.exportDataAsExcel({
-                    fileName: `customers_${this.selectedArea}_${this.dateFrom}_${this.dateTo}.xlsx`,
-                    sheetName: 'Клиенты'
+                    fileName: `customers_${areaName}_${timestamp}.xlsx`,
+                    sheetName: 'Клиенты',
+                    // Export only filtered data (default behavior)
+                    onlySelected: false,
+                    onlySelectedAllPages: false,
+                    // Column customization for Excel
+                    columnKeys: ['CustomerCode', 'CustomerName', 'GroupCode', 'ManagerCode', 'ManagerName', 
+                                 'SalesCount', 'TotalSales', 'TotalPayments', 'Debt', 'DebtPercent',
+                                 'LastPaymentDate', 'DaysSinceLastPayment', 'LastSaleDate', 'DaysSinceLastSale'],
+                    processCellCallback: (params) => {
+                        // Format numeric values for Excel
+                        if (['TotalSales', 'TotalPayments', 'Debt'].includes(params.column.getColId())) {
+                            return params.value || 0;
+                        }
+                        if (params.column.getColId() === 'DebtPercent') {
+                            return params.value ? params.value / 100 : 0; // Export as decimal for Excel percentage format
+                        }
+                        return params.value;
+                    }
+                });
+                
+                // Show notification
+                this.$dispatch('show-toast', {
+                    message: 'Экспорт в Excel завершен (только отфильтрованные данные)',
+                    type: 'success'
                 });
             }
         },
         
         exportToCsv() {
             if (this.gridApi) {
+                const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+                const areaName = this.salesAreas.find(a => a.code === this.selectedArea)?.name || this.selectedArea;
+                
                 this.gridApi.exportDataAsCsv({
-                    fileName: `customers_${this.selectedArea}_${this.dateFrom}_${this.dateTo}.csv`
+                    fileName: `customers_${areaName}_${timestamp}.csv`,
+                    // Export only filtered data (default behavior)
+                    onlySelected: false,
+                    onlySelectedAllPages: false,
+                    columnKeys: ['CustomerCode', 'CustomerName', 'GroupCode', 'ManagerCode', 'ManagerName', 
+                                 'SalesCount', 'TotalSales', 'TotalPayments', 'Debt', 'DebtPercent',
+                                 'LastPaymentDate', 'DaysSinceLastPayment', 'LastSaleDate', 'DaysSinceLastSale']
+                });
+                
+                // Show notification
+                this.$dispatch('show-toast', {
+                    message: 'Экспорт в CSV завершен (только отфильтрованные данные)',
+                    type: 'success'
                 });
             }
         },
@@ -1992,15 +1853,10 @@ function customersData() {
                 const result = await response.json();
                 
                 if (result.success) {
-                    // Инициализируем expanded=false для каждой покупки
-                    this.detailPanel.purchases = (result.data || []).map(purchase => ({
-                        ...purchase,
-                        expanded: false
-                    }));
+                    this.detailPanel.purchases = result.data || [];
                     this.detailPanel.payments = result.payments || [];
                     console.log('Loaded purchases:', this.detailPanel.purchases.length);
                     console.log('Loaded payments:', this.detailPanel.payments.length);
-                    console.log('First purchase:', this.detailPanel.purchases[0]);
                 } else {
                     console.error('API returned error:', result);
                 }
@@ -2017,7 +1873,6 @@ function customersData() {
             this.detailPanel.customer = null;
             this.detailPanel.purchases = [];
             this.detailPanel.payments = [];
-            this.detailPanel.selectedPurchase = null;
         },
         
         formatCurrency(value) {

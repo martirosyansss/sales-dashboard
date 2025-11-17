@@ -1685,11 +1685,6 @@ def areas_page():
     """Страница с территориями"""
     return render_template('areas.html')
 
-@app.route('/customers')
-def customers_page():
-    """Страница клиентов с долгами"""
-    return render_template('customers.html')
-
 @app.route('/customers-grid')
 def customers_grid_page():
     """Страница клиентов с AG Grid (DevExpress-style)"""
