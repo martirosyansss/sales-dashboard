@@ -18,14 +18,39 @@
     </div>
 
     <!-- Карточки территорий -->
+    <div class="row mb-4">
+        <!-- Фильтры даты -->
+        <div class="col-12 mb-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="row align-items-end">
+                        <div class="col-md-4">
+                            <label class="form-label">Дата от</label>
+                            <input type="date" class="form-control" x-model="dateFrom" @change="loadAreas()">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Дата до</label>
+                            <input type="date" class="form-control" x-model="dateTo" @change="loadAreas()">
+                        </div>
+                        <div class="col-md-4">
+                            <button class="btn btn-primary" @click="loadAreas()">
+                                <i class="fas fa-sync-alt"></i> Обновить
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="row mb-4" id="areas-container">
         <template x-for="(area, index) in areas" :key="index">
             <div class="col-xl-3 col-lg-4 col-md-6 mb-4">
                 <div class="card h-100">
                     <div class="card-header text-center" 
                          :style="`background: linear-gradient(135deg, rgba(13, 110, 253, 0.2), rgba(13, 202, 240, 0.2))`">
-                        <h2 class="mb-0" x-text="area.AreaCode || 'N/A'"></h2>
-                        <small class="text-muted">Территория</small>
+                        <h2 class="mb-0" x-text="area.code || 'N/A'"></h2>
+                        <small class="text-muted" x-text="area.name"></small>
                     </div>
                     <div class="card-body">
                         <!-- Статистика -->
@@ -48,11 +73,34 @@
                                 </span>
                                 <strong x-text="formatCurrency(area.TotalSales)" class="text-success"></strong>
                             </div>
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">
+                                    <i class="fas fa-exclamation-triangle"></i> Долг:
+                                </span>
+                                <strong x-text="formatCurrency(area.Debt)" class="text-danger"></strong>
+                            </div>
                             <div class="d-flex justify-content-between">
                                 <span class="text-muted">
                                     <i class="fas fa-receipt"></i> Средний чек:
                                 </span>
-                                <strong x-text="formatCurrency(area.TotalSales / area.SalesCount)"></strong>
+                                <strong x-text="formatCurrency(area.AvgSale)"></strong>
+                            </div>
+                        </div>
+
+                        <!-- Менеджеры -->
+                        <div class="mb-3" x-show="area.Managers && area.Managers.length > 0">
+                            <small class="text-muted">Менеджеры:</small>
+                            <div class="mt-1">
+                                <template x-for="manager in area.Managers.slice(0, 3)" :key="manager.id">
+                                    <span class="badge me-1 mb-1" 
+                                          :class="manager.is_default ? 'bg-primary' : 'bg-secondary'"
+                                          :title="manager.name"
+                                          x-text="manager.code">
+                                    </span>
+                                </template>
+                                <template x-if="area.Managers.length > 3">
+                                    <span class="badge bg-secondary" x-text="`+${area.Managers.length - 3}`"></span>
+                                </template>
                             </div>
                         </div>
 
@@ -141,9 +189,11 @@
                                 <tr>
                                     <th>Рейтинг</th>
                                     <th>Территория</th>
+                                    <th>Менеджеров</th>
                                     <th>Продаж</th>
                                     <th>Клиентов</th>
                                     <th>Общая сумма</th>
+                                    <th>Долг</th>
                                     <th>Средний чек</th>
                                     <th>Доля</th>
                                 </tr>
@@ -158,14 +208,20 @@
                                             <span x-text="`#${index + 1}`"></span>
                                         </td>
                                         <td>
-                                            <strong x-text="area.AreaCode || 'N/A'"></strong>
+                                            <strong x-text="area.code || 'N/A'"></strong>
+                                            <br>
+                                            <small class="text-muted" x-text="area.name"></small>
                                         </td>
+                                        <td x-text="area.Managers ? area.Managers.length : 0"></td>
                                         <td x-text="formatNumber(area.SalesCount)"></td>
                                         <td x-text="formatNumber(area.CustomerCount)"></td>
                                         <td>
                                             <strong x-text="formatCurrency(area.TotalSales)" class="text-success"></strong>
                                         </td>
-                                        <td x-text="formatCurrency(area.TotalSales / area.SalesCount)"></td>
+                                        <td>
+                                            <strong x-text="formatCurrency(area.Debt)" class="text-danger"></strong>
+                                        </td>
+                                        <td x-text="formatCurrency(area.AvgSale)"></td>
                                         <td>
                                             <span x-text="`${calculateShare(area.TotalSales).toFixed(1)}%`"></span>
                                         </td>
@@ -174,10 +230,11 @@
                             </tbody>
                             <tfoot>
                                 <tr class="table-secondary">
-                                    <td colspan="2"><strong>ИТОГО:</strong></td>
+                                    <td colspan="3"><strong>ИТОГО:</strong></td>
                                     <td><strong x-text="formatNumber(totalSalesCount)"></strong></td>
                                     <td><strong x-text="formatNumber(totalCustomers)"></strong></td>
                                     <td><strong x-text="formatCurrency(totalSales)" class="text-success"></strong></td>
+                                    <td><strong x-text="formatCurrency(totalDebt)" class="text-danger"></strong></td>
                                     <td><strong x-text="formatCurrency(totalSales / totalSalesCount)"></strong></td>
                                     <td>100%</td>
                                 </tr>
@@ -198,9 +255,12 @@
             areas: [],
             loading: true,
             totalSales: 0,
+            totalDebt: 0,
             totalSalesCount: 0,
             totalCustomers: 0,
             chart: null,
+            dateFrom: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
+            dateTo: new Date().toISOString().split('T')[0],
 
             init() {
                 this.loadAreas();
@@ -209,7 +269,12 @@
             async loadAreas() {
                 this.loading = true;
                 try {
-                    const response = await fetch('/api/areas');
+                    const params = new URLSearchParams({
+                        date_from: this.dateFrom,
+                        date_to: this.dateTo
+                    });
+                    
+                    const response = await fetch(`/api/sales-areas?${params}`);
                     const result = await response.json();
                     
                     if (result.success) {
@@ -217,6 +282,7 @@
                         
                         // Подсчитать итоги
                         this.totalSales = this.areas.reduce((sum, a) => sum + a.TotalSales, 0);
+                        this.totalDebt = this.areas.reduce((sum, a) => sum + a.Debt, 0);
                         this.totalSalesCount = this.areas.reduce((sum, a) => sum + a.SalesCount, 0);
                         this.totalCustomers = this.areas.reduce((sum, a) => sum + a.CustomerCount, 0);
                         
@@ -249,7 +315,7 @@
                     this.chart.destroy();
                 }
 
-                const labels = this.areas.map(a => a.AreaCode || 'N/A');
+                const labels = this.areas.map(a => a.name || a.code || 'N/A');
                 const salesData = this.areas.map(a => a.SalesCount);
                 const revenueData = this.areas.map(a => a.TotalSales);
 

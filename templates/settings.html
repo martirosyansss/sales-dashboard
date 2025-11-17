@@ -62,6 +62,12 @@
                 <i class="fas fa-user-slash text-danger"></i> Исключенные клиенты
             </button>
         </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="product-groups-tab" data-bs-toggle="tab" 
+                    data-bs-target="#product-groups-pane" type="button" role="tab">
+                <i class="fas fa-boxes text-primary"></i> Дивизионы
+            </button>
+        </li>
     </ul>
 
     <!-- Tab Content -->
@@ -428,6 +434,76 @@
                         2️⃣ Выберите группы<br>
                         3️⃣ Нажмите "Добавить" (добавит к существующим) или "Заменить" (заменит все группы)
                     </div>
+
+                    <div class="card mt-4">
+                        <div class="card-header bg-primary bg-opacity-10 border-primary">
+                            <h5 class="mb-0">
+                                <i class="fas fa-map-marked-alt text-primary"></i> Группы по территориям (Sales Areas)
+                            </h5>
+                            <p class="text-muted small mb-0 mt-2">
+                                Ограничивает показываемые данные на вкладке «Территории». Если для territory выбраны группы,
+                                будут учитываться только эти группы независимо от назначений менеджеров.
+                            </p>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-4 mb-3">
+                                    <h6 class="mb-3"><i class="fas fa-map"></i> Территории</h6>
+                                    <div class="list-group" style="max-height: 400px; overflow-y: auto;">
+                                        <template x-for="area in salesAreas" :key="area.code">
+                                            <button type="button" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center"
+                                                    :class="selectedSalesArea?.code === area.code ? 'active' : ''"
+                                                    @click="selectSalesArea(area)">
+                                                <span>
+                                                    <strong x-text="area.name || 'Без названия'"></strong>
+                                                    <small class="d-block text-muted" x-text="area.code"></small>
+                                                </span>
+                                                <span class="badge bg-primary" x-text="getSalesAreaGroupCount(area.code)"></span>
+                                            </button>
+                                        </template>
+                                    </div>
+                                </div>
+                                <div class="col-md-8">
+                                    <div x-show="selectedSalesArea">
+                                        <div class="d-flex justify-content-between align-items-center mb-3">
+                                            <h6 class="mb-0">
+                                                <i class="fas fa-layer-group"></i>
+                                                Группы для: <strong x-text="selectedSalesArea?.name || selectedSalesArea?.code"></strong>
+                                            </h6>
+                                            <div>
+                                                <button class="btn btn-sm btn-outline-primary" @click="selectAllGroupsForSalesArea()">
+                                                    <i class="fas fa-check-double"></i> Все группы
+                                                </button>
+                                                <button class="btn btn-sm btn-outline-secondary ms-2" @click="clearSalesAreaGroups()">
+                                                    <i class="fas fa-times"></i> Очистить
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="row">
+                                            <template x-for="group in groupsWithStats" :key="`sa-${group.fGROUP}`">
+                                                <div class="col-md-4 col-sm-6 col-12 mb-2">
+                                                    <div class="form-check">
+                                                        <input class="form-check-input" type="checkbox"
+                                                               :id="`sa-group-${group.fGROUP}`"
+                                                               :checked="isGroupAssignedToSelectedSalesArea(group.fGROUP)"
+                                                               @change="toggleGroupForSalesArea(group.fGROUP, $event.target.checked)">
+                                                        <label class="form-check-label" :for="`sa-group-${group.fGROUP}`">
+                                                            <strong x-text="group.fGROUP"></strong>
+                                                            <span class="badge bg-secondary ms-1" x-text="group.customerCount"></span>
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                    <div x-show="!selectedSalesArea" class="text-muted text-center py-5">
+                                        <i class="fas fa-hand-pointer fa-2x mb-3"></i>
+                                        <p>Выберите территорию слева, чтобы назначить ей группы</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -575,6 +651,107 @@
                 </div>
             </div>
         </div>
+
+        <!-- Группы товаров -->
+        <div class="tab-pane fade" id="product-groups-pane" role="tabpanel">
+            <div class="card">
+                <div class="card-header bg-primary bg-opacity-10 border-primary">
+                    <h5 class="mb-0">
+                        <i class="fas fa-boxes text-primary"></i> Фильтр по дивизионам
+                    </h5>
+                    <p class="text-muted small mb-0 mt-2">
+                        <i class="fas fa-info-circle"></i> Выберите дивизионы для отображения в статистике. 
+                        Если ничего не выбрано, показываются все дивизионы.
+                    </p>
+                </div>
+                <div class="card-body">
+                    <div class="row mb-4">
+                        <div class="col-md-4">
+                            <div class="card bg-primary bg-opacity-10 border-primary">
+                                <div class="card-body text-center">
+                                    <i class="fas fa-boxes fa-3x text-primary mb-3"></i>
+                                    <h3 class="text-primary" x-text="productGroups.length"></h3>
+                                    <p class="text-muted mb-0">Всего дивизионов</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card bg-success bg-opacity-10 border-success">
+                                <div class="card-body text-center">
+                                    <i class="fas fa-check-circle fa-3x text-success mb-3"></i>
+                                    <h3 class="text-success" x-text="selectedProductGroups.length"></h3>
+                                    <p class="text-muted mb-0">Выбрано дивизионов</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card bg-info bg-opacity-10 border-info">
+                                <div class="card-body text-center">
+                                    <i class="fas fa-cube fa-3x text-info mb-3"></i>
+                                    <h3 class="text-info" x-text="getTotalSelectedProducts()"></h3>
+                                    <p class="text-muted mb-0">Товаров в выбранных дивизионах</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-3 d-flex justify-content-between align-items-center">
+                        <div class="btn-group" role="group">
+                            <button class="btn btn-outline-primary" @click="selectAllProductGroups()">
+                                <i class="fas fa-check-double"></i> Выбрать все
+                            </button>
+                            <button class="btn btn-outline-secondary" @click="clearAllProductGroups()">
+                                <i class="fas fa-times"></i> Очистить выбор
+                            </button>
+                        </div>
+                        <button class="btn btn-success" @click="saveProductGroups()">
+                            <i class="fas fa-save"></i> Сохранить выбор
+                        </button>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead class="table-light">
+                                <tr>
+                                    <th style="width: 60px;">
+                                        <input type="checkbox" class="form-check-input" 
+                                               @change="toggleAllProductGroups($event)"
+                                               :checked="selectedProductGroups.length === productGroups.length && productGroups.length > 0">
+                                    </th>
+                                    <th>Код дивизиона</th>
+                                    <th>Название</th>
+                                    <th>Количество товаров</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="group in productGroups" :key="group.fGROUP">
+                                    <tr :class="selectedProductGroups.includes(group.fGROUP) ? 'table-primary' : ''">
+                                        <td>
+                                            <input type="checkbox" class="form-check-input" 
+                                                   :checked="selectedProductGroups.includes(group.fGROUP)"
+                                                   @change="toggleProductGroup(group.fGROUP)">
+                                        </td>
+                                        <td>
+                                            <span class="badge bg-primary" x-text="group.fGROUP || '(пусто)'"></span>
+                                        </td>
+                                        <td x-text="group.name || 'Без названия'"></td>
+                                        <td>
+                                            <span class="badge bg-info" x-text="group.product_count"></span>
+                                        </td>
+                                    </tr>
+                                </template>
+                                <tr x-show="productGroups.length === 0">
+                                    <td colspan="4" class="text-center text-muted py-5">
+                                        <i class="fas fa-spinner fa-spin fa-3x mb-3"></i>
+                                        <p>Загрузка дивизионов...</p>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Модальное окно добавления магазина -->
@@ -712,6 +889,12 @@
             bulkEditMode: false,  // Режим массового изменения
             selectedManagersForBulk: [],  // Выбранные менеджеры для массового изменения
             selectedGroupsForBulk: [],  // Выбранные группы для массового изменения
+            productGroups: [],  // Список всех групп товаров
+            selectedProductGroups: [],  // Выбранные группы товаров для фильтрации
+            salesAreas: [],  // Территории продаж
+            salesAreaGroupAssignments: {},  // Назначения групп для Sales Areas
+            selectedSalesArea: null,
+            selectedSalesAreaGroups: [],
 
             async init() {
                 // Загружаем только критически важные данные параллельно
@@ -720,7 +903,11 @@
                     this.loadStores(),
                     this.loadDistributors(),
                     this.loadExcludedCustomers(),
-                    this.loadGroupsWithStats()
+                    this.loadGroupsWithStats(),
+                    this.loadProductGroups(),
+                    this.loadSelectedProductGroups(),
+                    this.loadSalesAreas(),
+                    this.loadSalesAreaGroupAssignments()
                 ]);
                 // loadGroups() убран - он нужен только если есть dropdown для групп
             },
@@ -847,6 +1034,96 @@
                     }
                 } catch (error) {
                     console.error('Ошибка загрузки дистрибьюторов:', error);
+                }
+            },
+
+            async loadSalesAreas() {
+                try {
+                    const response = await fetch('/api/settings/sales-areas/list');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.salesAreas = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки Sales Areas:', error);
+                }
+            },
+
+            async loadSalesAreaGroupAssignments() {
+                try {
+                    const response = await fetch('/api/settings/sales-areas/groups');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.salesAreaGroupAssignments = result.data || {};
+                        if (this.selectedSalesArea) {
+                            const code = this.selectedSalesArea.code;
+                            this.selectedSalesAreaGroups = [...(this.salesAreaGroupAssignments[code] || [])];
+                        }
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки назначений Sales Areas:', error);
+                }
+            },
+
+            selectSalesArea(area) {
+                this.selectedSalesArea = area;
+                this.selectedSalesAreaGroups = [...(this.salesAreaGroupAssignments[area.code] || [])];
+            },
+
+            getSalesAreaGroupCount(areaCode) {
+                const groups = this.salesAreaGroupAssignments[areaCode];
+                return groups ? groups.length : 0;
+            },
+
+            isGroupAssignedToSelectedSalesArea(groupCode) {
+                if (!this.selectedSalesArea) return false;
+                return this.selectedSalesAreaGroups.includes(groupCode);
+            },
+
+            async toggleGroupForSalesArea(groupCode, isChecked) {
+                if (!this.selectedSalesArea) return;
+                if (isChecked) {
+                    if (!this.selectedSalesAreaGroups.includes(groupCode)) {
+                        this.selectedSalesAreaGroups.push(groupCode);
+                    }
+                } else {
+                    this.selectedSalesAreaGroups = this.selectedSalesAreaGroups.filter(g => g !== groupCode);
+                }
+                await this.persistSalesAreaGroups();
+            },
+
+            async selectAllGroupsForSalesArea() {
+                if (!this.selectedSalesArea) return;
+                this.selectedSalesAreaGroups = this.groupsWithStats.map(g => g.fGROUP);
+                await this.persistSalesAreaGroups();
+            },
+
+            async clearSalesAreaGroups() {
+                if (!this.selectedSalesArea) return;
+                this.selectedSalesAreaGroups = [];
+                await this.persistSalesAreaGroups();
+            },
+
+            async persistSalesAreaGroups() {
+                if (!this.selectedSalesArea) return;
+                try {
+                    const response = await fetch('/api/settings/sales-areas/groups/set', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            areaCode: this.selectedSalesArea.code,
+                            groups: this.selectedSalesAreaGroups
+                        })
+                    });
+                    const result = await response.json();
+                    if (result.success) {
+                        this.salesAreaGroupAssignments[this.selectedSalesArea.code] = [...this.selectedSalesAreaGroups];
+                        this.showSuccess(`Сохранены группы для территории ${this.selectedSalesArea.code}`);
+                    } else {
+                        alert(result.error || 'Ошибка сохранения групп Territory');
+                    }
+                } catch (error) {
+                    console.error('Ошибка сохранения групп Territory:', error);
                 }
             },
 
@@ -1198,39 +1475,80 @@
 
             getManagerGroupsCount(managerId) {
                 return Object.entries(this.groupManagerAssignments)
-                    .filter(([group, mgr]) => mgr === managerId)
+                    .filter(([group, managers]) => {
+                        // Поддержка старого формата (int) и нового (array)
+                        if (Array.isArray(managers)) {
+                            return managers.includes(managerId);
+                        }
+                        return managers === managerId;
+                    })
                     .length;
             },
 
             isGroupAssignedToSelectedManager(groupCode) {
                 if (!this.selectedManagerForGroups) return false;
-                return this.groupManagerAssignments[groupCode] === this.selectedManagerForGroups.fID;
+                const managers = this.groupManagerAssignments[groupCode];
+                if (!managers) return false;
+                // Поддержка старого формата (int) и нового (array)
+                if (Array.isArray(managers)) {
+                    return managers.includes(this.selectedManagerForGroups.fID);
+                }
+                return managers === this.selectedManagerForGroups.fID;
             },
 
             async toggleGroupForManager(groupCode, isChecked, showToast = true) {
                 if (!this.selectedManagerForGroups) return;
                 
-                const managerId = isChecked ? this.selectedManagerForGroups.fID : '';
+                const managerId = this.selectedManagerForGroups.fID;
                 
                 try {
-                    const response = await fetch('/api/settings/group-manager-assignments/set', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ groupCode, managerId })
-                    });
+                    let response;
+                    if (isChecked) {
+                        // Добавить менеджера к группе
+                        response = await fetch('/api/settings/group-manager-assignments/set', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ groupCode, managerId })
+                        });
+                    } else {
+                        // Удалить менеджера из группы
+                        response = await fetch('/api/settings/group-manager-assignments/remove', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ groupCode, managerId })
+                        });
+                    }
 
                     const result = await response.json();
                     if (result.success) {
                         // Обновить локальные данные
                         if (isChecked) {
-                            this.groupManagerAssignments[groupCode] = managerId;
+                            if (!this.groupManagerAssignments[groupCode]) {
+                                this.groupManagerAssignments[groupCode] = [];
+                            }
+                            if (!Array.isArray(this.groupManagerAssignments[groupCode])) {
+                                this.groupManagerAssignments[groupCode] = [this.groupManagerAssignments[groupCode]];
+                            }
+                            if (!this.groupManagerAssignments[groupCode].includes(managerId)) {
+                                this.groupManagerAssignments[groupCode].push(managerId);
+                            }
                             if (showToast) {
-                                this.showSuccess(`✅ Группа ${groupCode} назначена менеджеру ${this.selectedManagerForGroups.fNAME}`);
+                                this.showSuccess(`Группа ${groupCode} назначена менеджеру ${this.selectedManagerForGroups.fNAME}`);
                             }
                         } else {
-                            delete this.groupManagerAssignments[groupCode];
+                            if (Array.isArray(this.groupManagerAssignments[groupCode])) {
+                                const idx = this.groupManagerAssignments[groupCode].indexOf(managerId);
+                                if (idx > -1) {
+                                    this.groupManagerAssignments[groupCode].splice(idx, 1);
+                                }
+                                if (this.groupManagerAssignments[groupCode].length === 0) {
+                                    delete this.groupManagerAssignments[groupCode];
+                                }
+                            } else if (this.groupManagerAssignments[groupCode] === managerId) {
+                                delete this.groupManagerAssignments[groupCode];
+                            }
                             if (showToast) {
-                                this.showSuccess(`🗑️ Группа ${groupCode} снята с менеджера ${this.selectedManagerForGroups.fNAME}`);
+                                this.showSuccess(`Группа ${groupCode} снята с менеджера ${this.selectedManagerForGroups.fNAME}`);
                             }
                         }
                         return true;
@@ -1259,7 +1577,7 @@
                 }
 
                 if (assigned > 0) {
-                    this.showSuccess(`✅ Назначено ${assigned} групп менеджеру ${this.selectedManagerForGroups.fNAME}`);
+                    this.showSuccess(`Назначено ${assigned} групп менеджеру ${this.selectedManagerForGroups.fNAME}`);
                 }
             },
 
@@ -1267,8 +1585,14 @@
                 if (!this.selectedManagerForGroups) return;
                 if (!confirm(`Снять все группы с менеджера "${this.selectedManagerForGroups.fNAME}"?`)) return;
 
+                const managerId = this.selectedManagerForGroups.fID;
                 const managerGroups = Object.entries(this.groupManagerAssignments)
-                    .filter(([group, mgr]) => mgr === this.selectedManagerForGroups.fID)
+                    .filter(([group, managers]) => {
+                        if (Array.isArray(managers)) {
+                            return managers.includes(managerId);
+                        }
+                        return managers === managerId;
+                    })
                     .map(([group]) => group);
 
                 let cleared = 0;
@@ -1278,7 +1602,7 @@
                 }
 
                 if (cleared > 0) {
-                    this.showSuccess(`🗑️ Снято ${cleared} групп с менеджера ${this.selectedManagerForGroups.fNAME}`);
+                    this.showSuccess(`Снято ${cleared} групп с менеджера ${this.selectedManagerForGroups.fNAME}`);
                 }
             },
 
@@ -1301,8 +1625,13 @@
                 let updated = 0;
                 for (const managerId of this.selectedManagersForBulk) {
                     for (const groupCode of this.selectedGroupsForBulk) {
-                        // Проверить, не назначена ли уже эта группа
-                        if (this.groupManagerAssignments[groupCode] !== managerId) {
+                        // Проверить, не назначена ли уже эта группа этому менеджеру
+                        const managers = this.groupManagerAssignments[groupCode];
+                        const alreadyAssigned = managers && (
+                            Array.isArray(managers) ? managers.includes(managerId) : managers === managerId
+                        );
+                        
+                        if (!alreadyAssigned) {
                             await this.assignGroupToManager(groupCode, managerId);
                             updated++;
                         }
@@ -1310,7 +1639,7 @@
                 }
 
                 await this.loadGroupsWithStats();
-                this.showSuccess(`✅ Выполнено ${updated} назначений (${this.selectedManagersForBulk.length} менеджеров × ${this.selectedGroupsForBulk.length} групп)`);
+                this.showSuccess(`Выполнено ${updated} назначений (${this.selectedManagersForBulk.length} менеджеров x ${this.selectedGroupsForBulk.length} групп)`);
             },
 
             async bulkReplaceGroups() {
@@ -1324,11 +1653,16 @@
                 // Сначала очистить все группы у выбранных менеджеров
                 for (const managerId of this.selectedManagersForBulk) {
                     const managerGroups = Object.entries(this.groupManagerAssignments)
-                        .filter(([group, mgr]) => mgr === managerId)
+                        .filter(([group, managers]) => {
+                            if (Array.isArray(managers)) {
+                                return managers.includes(managerId);
+                            }
+                            return managers === managerId;
+                        })
                         .map(([group]) => group);
                     
                     for (const groupCode of managerGroups) {
-                        await this.assignGroupToManager(groupCode, '');
+                        await this.removeManagerFromGroup(groupCode, managerId);
                         cleared++;
                     }
                 }
@@ -1342,7 +1676,7 @@
                 }
 
                 await this.loadGroupsWithStats();
-                this.showSuccess(`🔄 Замена завершена: удалено ${cleared}, назначено ${assigned} групп`);
+                this.showSuccess(`Замена завершена: удалено ${cleared}, назначено ${assigned} групп`);
             },
 
             async bulkClearGroups() {
@@ -1353,17 +1687,22 @@
                 let cleared = 0;
                 for (const managerId of this.selectedManagersForBulk) {
                     const managerGroups = Object.entries(this.groupManagerAssignments)
-                        .filter(([group, mgr]) => mgr === managerId)
+                        .filter(([group, managers]) => {
+                            if (Array.isArray(managers)) {
+                                return managers.includes(managerId);
+                            }
+                            return managers === managerId;
+                        })
                         .map(([group]) => group);
                     
                     for (const groupCode of managerGroups) {
-                        await this.assignGroupToManager(groupCode, '');
+                        await this.removeManagerFromGroup(groupCode, managerId);
                         cleared++;
                     }
                 }
 
                 await this.loadGroupsWithStats();
-                this.showSuccess(`🗑️ Удалено ${cleared} назначений у ${this.selectedManagersForBulk.length} менеджеров`);
+                this.showSuccess(`Удалено ${cleared} назначений у ${this.selectedManagersForBulk.length} менеджеров`);
             },
 
             async assignGroupToManager(groupCode, managerId) {
@@ -1375,11 +1714,123 @@
 
                 const result = await response.json();
                 if (result.success) {
-                    if (managerId) {
-                        this.groupManagerAssignments[groupCode] = managerId;
-                    } else {
+                    // Обновить локальные данные
+                    if (!this.groupManagerAssignments[groupCode]) {
+                        this.groupManagerAssignments[groupCode] = [];
+                    }
+                    if (!Array.isArray(this.groupManagerAssignments[groupCode])) {
+                        this.groupManagerAssignments[groupCode] = [this.groupManagerAssignments[groupCode]];
+                    }
+                    if (!this.groupManagerAssignments[groupCode].includes(managerId)) {
+                        this.groupManagerAssignments[groupCode].push(managerId);
+                    }
+                }
+            },
+
+            async removeManagerFromGroup(groupCode, managerId) {
+                const response = await fetch('/api/settings/group-manager-assignments/remove', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ groupCode, managerId })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    // Обновить локальные данные
+                    if (Array.isArray(this.groupManagerAssignments[groupCode])) {
+                        const idx = this.groupManagerAssignments[groupCode].indexOf(managerId);
+                        if (idx > -1) {
+                            this.groupManagerAssignments[groupCode].splice(idx, 1);
+                        }
+                        if (this.groupManagerAssignments[groupCode].length === 0) {
+                            delete this.groupManagerAssignments[groupCode];
+                        }
+                    } else if (this.groupManagerAssignments[groupCode] === managerId) {
                         delete this.groupManagerAssignments[groupCode];
                     }
+                }
+            },
+
+            // Загрузка всех групп товаров
+            async loadProductGroups() {
+                try {
+                    const response = await fetch('/api/settings/product-groups');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.productGroups = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки групп товаров:', error);
+                }
+            },
+
+            // Загрузка выбранных групп товаров
+            async loadSelectedProductGroups() {
+                try {
+                    const response = await fetch('/api/settings/selected-product-groups');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.selectedProductGroups = result.data || [];
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки выбранных групп товаров:', error);
+                }
+            },
+
+            // Переключить выбор группы товара
+            toggleProductGroup(groupCode) {
+                const index = this.selectedProductGroups.indexOf(groupCode);
+                if (index > -1) {
+                    this.selectedProductGroups.splice(index, 1);
+                } else {
+                    this.selectedProductGroups.push(groupCode);
+                }
+            },
+
+            // Переключить все группы товаров
+            toggleAllProductGroups(event) {
+                if (event.target.checked) {
+                    this.selectedProductGroups = this.productGroups.map(g => g.fGROUP);
+                } else {
+                    this.selectedProductGroups = [];
+                }
+            },
+
+            // Выбрать все группы товаров
+            selectAllProductGroups() {
+                this.selectedProductGroups = this.productGroups.map(g => g.fGROUP);
+            },
+
+            // Очистить выбор групп товаров
+            clearAllProductGroups() {
+                this.selectedProductGroups = [];
+            },
+
+            // Получить общее количество товаров в выбранных группах
+            getTotalSelectedProducts() {
+                return this.productGroups
+                    .filter(g => this.selectedProductGroups.includes(g.fGROUP))
+                    .reduce((sum, g) => sum + g.product_count, 0);
+            },
+
+            // Сохранить выбранные группы товаров
+            async saveProductGroups() {
+                try {
+                    const response = await fetch('/api/settings/selected-product-groups/set', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ selectedGroups: this.selectedProductGroups })
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        this.showSuccess('Выбор групп товаров сохранен!');
+                    } else {
+                        alert('Ошибка при сохранении: ' + result.message);
+                    }
+                } catch (error) {
+                    console.error('Ошибка сохранения групп товаров:', error);
+                    alert('Ошибка при сохранении групп товаров');
                 }
             },
 

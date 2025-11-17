@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ru" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <title>Test Purchases Display</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-dark text-light p-4">
+    <div class="container" x-data="testData()">
+        <h2>Test: Purchases Display</h2>
+        <button @click="loadPurchases()" class="btn btn-primary mb-3">Load Purchases for Customer 465</button>
+        
+        <div class="alert alert-info">
+            Loading: <span x-text="loading"></span><br>
+            Purchases count: <span x-text="purchases.length"></span>
+        </div>
+
+        <table class="table table-dark">
+            <thead>
+                <tr>
+                    <th style="width: 30px;"></th>
+                    <th>Date</th>
+                    <th>Sum</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="purchase in purchases" :key="purchase.SaleId">
+                    <template>
+                        <tr class="cursor-pointer" @click="purchase.expanded = !purchase.expanded">
+                            <td>
+                                <i class="bi" :class="purchase.expanded ? 'bi-chevron-down' : 'bi-chevron-right'"></i>
+                            </td>
+                            <td x-text="purchase.SaleDate"></td>
+                            <td x-text="purchase.TotalSum"></td>
+                        </tr>
+                        <tr x-show="purchase.expanded" x-collapse>
+                            <td colspan="4" class="bg-secondary p-3">
+                                <strong>Products:</strong>
+                                <template x-if="purchase.Products && purchase.Products.length > 0">
+                                    <ul>
+                                        <template x-for="prod in purchase.Products" :key="prod.LineNo">
+                                            <li x-text="`${prod.ProductCode}: ${prod.ProductName} - ${prod.Quantity}`"></li>
+                                        </template>
+                                    </ul>
+                                </template>
+                                <template x-if="!purchase.Products || purchase.Products.length === 0">
+                                    <p>No products</p>
+                                </template>
+                            </td>
+                        </tr>
+                    </template>
+                </template>
+            </tbody>
+            <tbody x-show="loading">
+                <tr>
+                    <td colspan="4" class="text-center">Loading...</td>
+                </tr>
+            </tbody>
+            <tbody x-show="!loading && purchases.length === 0">
+                <tr>
+                    <td colspan="4" class="text-center">No purchases</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <pre class="bg-dark text-light p-3 mt-4" x-text="JSON.stringify(purchases, null, 2)"></pre>
+    </div>
+
+    <script>
+        function testData() {
+            return {
+                loading: false,
+                purchases: [],
+                async loadPurchases() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/customers/465/purchases?date_from=2025-11-01&date_to=2025-11-30');
+                        const result = await response.json();
+                        console.log('API Response:', result);
+                        if (result.success) {
+                            this.purchases = result.data.map(p => ({...p, expanded: false}));
+                            console.log('Purchases loaded:', this.purchases);
+                        }
+                    } catch (error) {
+                        console.error('Error:', error);
+                    } finally {
+                        this.loading = false;
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>

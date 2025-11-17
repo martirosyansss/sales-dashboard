@@ -1,241 +1,1156 @@
-{% extends "base.html" %}
+{% extends "base_v2.html" %}
 
-{% block title %}Клиенты - Sales Management{% endblock %}
+{% block title %}Клиенты и долги - Sales Dashboard v2.0{% endblock %}
+
+{% block extra_css %}
+<style>
+    [x-cloak] {
+        display: none !important;
+    }
+    .filter-tile {
+        display: flex;
+        gap: 0.5rem;
+        align-items: flex-start;
+        padding: 0.65rem;
+        border-radius: 0.65rem;
+        background-color: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        cursor: pointer;
+        transition: border-color 0.15s ease, background-color 0.15s ease;
+    }
+    .filter-tile:hover {
+        border-color: rgba(13, 110, 253, 0.6);
+        background-color: rgba(13, 110, 253, 0.08);
+    }
+    .filter-tile input[type="checkbox"] {
+        margin-top: 0.2rem;
+    }
+    .customer-detail-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(5, 5, 5, 0.7);
+        backdrop-filter: blur(2px);
+        display: flex;
+        justify-content: flex-end;
+        z-index: 1050;
+    }
+    .customer-detail-panel {
+        width: 100%;
+        max-width: 900px;
+        background: #111319;
+        box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+        border-left: 1px solid rgba(255, 255, 255, 0.08);
+        display: flex;
+        flex-direction: column;
+    }
+    @media (max-width: 768px) {
+        .customer-detail-panel {
+            max-width: 100%;
+        }
+        .customer-detail-panel .panel-header {
+            padding: 1rem !important;
+        }
+        .customer-detail-panel .panel-body {
+            padding: 1rem !important;
+        }
+    }
+    .customer-detail-panel .panel-header {
+        padding: 1.5rem;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .customer-detail-panel .panel-body {
+        padding: 1.5rem;
+        overflow-y: auto;
+    }
+    .customer-row {
+        cursor: pointer;
+        transition: background-color 0.15s ease;
+    }
+    .customer-row:hover {
+        background-color: rgba(255, 255, 255, 0.04) !important;
+    }
+    .table-danger {
+        background-color: rgba(220, 53, 69, 0.15) !important;
+    }
+    .table-danger:hover {
+        background-color: rgba(220, 53, 69, 0.25) !important;
+    }
+    .cursor-pointer {
+        cursor: pointer;
+    }
+    .sortable-header {
+        cursor: pointer;
+        user-select: none;
+        transition: background-color 0.2s;
+    }
+    .sortable-header:hover {
+        background-color: rgba(255, 255, 255, 0.1);
+    }
+    .sortable-header i.fa-sort {
+        opacity: 0.3;
+    }
+    .sortable-header:hover i.fa-sort {
+        opacity: 0.6;
+    }
+</style>
+{% endblock %}
 
 {% block content %}
-<div class="row">
-    <div class="col-12">
-        <h1 class="mb-4">
-            <i class="fas fa-users text-primary"></i> Управление клиентами
-        </h1>
-    </div>
-</div>
-
-<div class="row">
-    <div class="col-12">
-        <div class="card shadow">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">
-                    <i class="fas fa-list"></i> Список клиентов
-                </h5>
-                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#customerModal" onclick="openAddModal()">
-                    <i class="fas fa-plus"></i> Добавить клиента
+<div class="container-fluid" x-data="customersData()" x-init="init()">
+    <div class="row mb-4">
+        <div class="col-12 d-flex justify-content-between align-items-center flex-wrap gap-3">
+            <div>
+                <h1 class="display-5 mb-0">
+                    <i class="fas fa-store text-primary"></i>
+                    Клиенты и задолженности
+                </h1>
+                <p class="text-muted mb-0">Фильтр по Sales Area с детализацией продаж и долгов</p>
+            </div>
+            <div>
+                <button class="btn btn-outline-light me-2" @click="setCurrentMonth()">
+                    <i class="fas fa-calendar"></i> Этот месяц
+                </button>
+                <button class="btn btn-outline-light" @click="loadCustomers()">
+                    <i class="fas fa-sync-alt"></i> Обновить
                 </button>
             </div>
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table table-hover" id="customersTable">
+        </div>
+    </div>
+
+    <div class="row g-3 mb-4">
+        <div class="col-md-4">
+            <label class="form-label text-muted">Sales Area</label>
+            <select class="form-select" x-model="selectedArea" @change="onAreaChange()">
+                <template x-for="area in salesAreas" :key="area.code">
+                    <option :value="area.code" x-text="`${area.code} - ${area.name}`"></option>
+                </template>
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label text-muted">Дата с</label>
+            <input type="date" class="form-control" x-model="dateFrom" @change="loadCustomers()">
+        </div>
+        <div class="col-md-2">
+            <label class="form-label text-muted">Дата по</label>
+            <input type="date" class="form-control" x-model="dateTo" @change="loadCustomers()">
+        </div>
+        <div class="col-md-4">
+            <label class="form-label text-muted">Поиск клиента</label>
+            <div class="input-group">
+                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                <input type="text" class="form-control" placeholder="Код, имя, менеджер..." x-model.debounce.300ms="searchQuery" @input="filterCustomers()">
+            </div>
+        </div>
+    </div>
+
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card bg-dark">
+                <div class="card-header bg-transparent border-secondary-subtle d-flex justify-content-between align-items-center" style="cursor: pointer;" @click="filtersOpen = !filtersOpen">
+                    <div class="d-flex align-items-center gap-3">
+                        <div>
+                            <i class="fas fa-filter me-2"></i>
+                            <strong>Фильтры по дивизионам и группам</strong>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <span class="badge bg-primary" x-text="'Дивизионы: ' + selectedDivisions.length"></span>
+                            <span class="badge bg-info" x-text="'Группы: ' + selectedGroups.length"></span>
+                        </div>
+                    </div>
+                    <div>
+                        <i class="fas" :class="filtersOpen ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+                    </div>
+                </div>
+                <div class="card-body pt-3" x-show="filtersOpen" x-collapse>
+                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
+                        <div class="btn-group btn-group-sm">
+                            <button type="button" class="btn" :class="activeFilterTab === 'divisions' ? 'btn-primary' : 'btn-outline-primary'" @click="activeFilterTab = 'divisions'">
+                                <i class="fas fa-layer-group me-1"></i>
+                                Дивизионы
+                                <span class="badge bg-light text-dark ms-2" x-text="selectedDivisions.length"></span>
+                            </button>
+                            <button type="button" class="btn" :class="activeFilterTab === 'groups' ? 'btn-primary' : 'btn-outline-primary'" @click="activeFilterTab = 'groups'">
+                                <i class="fas fa-users me-1"></i>
+                                Клиентские группы
+                                <span class="badge bg-light text-dark ms-2" x-text="selectedGroups.length"></span>
+                            </button>
+                        </div>
+                        <div class="text-muted small" x-show="activeFilterTab === 'divisions'">
+                            <span class="me-2">Управление доступом к ассортименту</span>
+                        </div>
+                        <div class="text-muted small" x-show="activeFilterTab === 'groups'">
+                            <span class="me-2">Ограничения по клиентским сегментам</span>
+                        </div>
+                    </div>
+                    <div x-show="activeFilterTab === 'divisions'" x-cloak>
+                        <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+                            <template x-if="selectedDivisions.length === 0">
+                                <span class="text-muted small">Выбраны все дивизионы</span>
+                            </template>
+                            <template x-for="code in selectedDivisions" :key="code">
+                                <span class="badge rounded-pill bg-primary-subtle text-primary border border-primary" x-text="`${code} · ${getDivisionName(code)}`"></span>
+                            </template>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2 mb-3">
+                            <div class="flex-grow-1">
+                                <div class="input-group input-group-sm">
+                                    <span class="input-group-text"><i class="fas fa-search"></i></span>
+                                    <input type="text" class="form-control" placeholder="Поиск дивизионов" x-model="divisionSearch">
+                                </div>
+                            </div>
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-primary" @click="selectAllDivisions()">Все</button>
+                                <button class="btn btn-outline-secondary" @click="clearDivisions()">Очистить</button>
+                            </div>
+                        </div>
+                        <div class="accordion" id="divisionsAccordion">
+                            <template x-for="division in filteredDivisions()" :key="division.fGROUP">
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light" type="button" :data-bs-target="`#collapse-div-${division.fGROUP}`" data-bs-toggle="collapse">
+                                            <input type="checkbox" class="form-check-input me-3" :value="division.fGROUP" x-model="selectedDivisions" @change="applyDivisionFilter()" @click.stop>
+                                            <strong x-text="division.fGROUP" class="me-2"></strong>
+                                            <span class="text-muted" x-text="'· ' + division.name"></span>
+                                        </button>
+                                    </h2>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                    <div x-show="activeFilterTab === 'groups'" x-cloak>
+                        <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+                            <template x-if="selectedGroups.length === 0">
+                                <span class="text-muted small">Клиентские группы не ограничены</span>
+                            </template>
+                            <template x-for="group in selectedGroups" :key="group">
+                                <span class="badge rounded-pill bg-info-subtle text-info border border-info" x-text="group"></span>
+                            </template>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2 mb-3">
+                            <div class="flex-grow-1">
+                                <div class="input-group input-group-sm">
+                                    <span class="input-group-text"><i class="fas fa-search"></i></span>
+                                    <input type="text" class="form-control" placeholder="Поиск групп" x-model="groupSearch">
+                                </div>
+                            </div>
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-primary" @click="selectAllGroups()">Все</button>
+                                <button class="btn btn-outline-secondary" @click="clearGroups()">Очистить</button>
+                            </div>
+                        </div>
+                        <div class="accordion" id="groupsAccordion" style="max-height: 300px; overflow-y: auto;">
+                            <template x-for="group in filteredGroups()" :key="group">
+                                <div class="accordion-item bg-dark border-secondary">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed bg-dark text-light" type="button">
+                                            <input type="checkbox" class="form-check-input me-3" :value="group" x-model="selectedGroups" @change="onGroupsChanged()" @click.stop>
+                                            <strong x-text="group"></strong>
+                                        </button>
+                                    </h2>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-4">
+        <div class="col-md-4">
+            <div class="stat-card">
+                <div class="stat-label">Клиентов</div>
+                <div class="stat-value" x-text="summary.count"></div>
+                <small class="text-muted" x-text="includeZeroSales ? 'включая клиентов с 0 продаж' : 'с продажами в выбранный период'"></small>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="stat-card">
+                <div class="stat-label">Продажи (AMD)</div>
+                <div class="stat-value" x-text="formatCurrency(summary.total_sales)"></div>
+                <small class="text-muted" x-text="`Период: ${summary.period.from} — ${summary.period.to}`"></small>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="stat-card">
+                <div class="stat-label">Долги (AMD)</div>
+                <div class="stat-value" :class="summary.total_debt > 0 ? 'text-danger' : 'text-success'" x-text="formatCurrency(summary.total_debt)"></div>
+                <small class="text-muted">Расчет: HICUSTOMERSDEBT − |Type01| − |Type02|</small>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-body">
+            <div class="mb-3">
+                <div class="d-flex align-items-center mb-2">
+                    <div class="form-check form-check-inline me-3">
+                        <input class="form-check-input" type="checkbox" id="filterProblematic" x-model="showOnlyProblematic" @change="saveProblematicSettings(); applyFilters()">
+                        <label class="form-check-label" for="filterProblematic">
+                            <i class="fas fa-exclamation-triangle text-danger"></i>
+                            Показать только проблемных клиентов
+                        </label>
+                    </div>
+                    <div class="form-check form-check-inline me-3">
+                        <input class="form-check-input" type="checkbox" id="includeZeroSales" x-model="includeZeroSales" @change="loadCustomers()">
+                        <label class="form-check-label" for="includeZeroSales">
+                            <i class="fas fa-ban text-muted"></i>
+                            Включить клиентов с 0 продаж
+                        </label>
+                    </div>
+                    <button class="btn btn-sm btn-outline-secondary" @click="openProblematicSettings()">
+                        <i class="fas" :class="problematicSettingsOpen ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+                        Настройки критериев
+                    </button>
+                </div>
+                <div x-show="problematicSettingsOpen" x-collapse style="display: none;">
+                    <div class="card bg-dark border-secondary p-3 mb-2">
+                        <div class="small text-muted mb-2"><strong>Критерии проблемных клиентов:</strong></div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="criteriaDebt" x-model="tempProblematicCriteria.debt">
+                            <label class="form-check-label" for="criteriaDebt">
+                                <i class="fas fa-money-bill-wave text-danger"></i>
+                                Долг больше <input type="number" x-model.number="tempProblematicThresholds.debt" class="form-control form-control-sm d-inline-block" style="width: 100px;"> AMD
+                            </label>
+                        </div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="criteriaDays" x-model="tempProblematicCriteria.days">
+                            <label class="form-check-label" for="criteriaDays">
+                                <i class="fas fa-calendar-times text-warning"></i>
+                                Не платили больше <input type="number" x-model.number="tempProblematicThresholds.days" class="form-control form-control-sm d-inline-block" style="width: 70px;"> дней
+                            </label>
+                        </div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="criteriaPercent" x-model="tempProblematicCriteria.percent">
+                            <label class="form-check-label" for="criteriaPercent">
+                                <i class="fas fa-percentage text-info"></i>
+                                Долг больше <input type="number" x-model.number="tempProblematicThresholds.percent" class="form-control form-control-sm d-inline-block" style="width: 60px;">% от продаж
+                            </label>
+                        </div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="criteriaSaleDays" x-model="tempProblematicCriteria.saleDays">
+                            <label class="form-check-label" for="criteriaSaleDays">
+                                <i class="fas fa-shopping-cart text-primary"></i>
+                                Не покупал больше <input type="number" x-model.number="tempProblematicThresholds.saleDays" class="form-control form-control-sm d-inline-block" style="width: 70px;"> дней
+                            </label>
+                        </div>
+                        <div class="d-flex gap-2 mt-3">
+                            <button class="btn btn-sm btn-success" @click="applyProblematicSettings()">
+                                <i class="fas fa-check"></i> Сохранить
+                            </button>
+                            <button class="btn btn-sm btn-secondary" @click="problematicSettingsOpen = false">
+                                <i class="fas fa-times"></i> Отмена
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-dark table-hover align-middle">
+                    <thead class="table-dark">
+                        <tr>
+                            <th style="width: 30px;"></th>
+                            <th @click="sortBy('CustomerCode')" class="sortable-header">
+                                Код <i class="fas" :class="sortField === 'CustomerCode' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                            <th @click="sortBy('CustomerName')" class="sortable-header">
+                                Название <i class="fas" :class="sortField === 'CustomerName' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                            <th @click="sortBy('GroupCode')" class="sortable-header">
+                                Группа <i class="fas" :class="sortField === 'GroupCode' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                            <th @click="sortBy('ManagerName')" class="sortable-header">
+                                Менеджер <i class="fas" :class="sortField === 'ManagerName' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                            <th class="text-end sortable-header" title="Количество продаж за выбранный период" @click="sortBy('SalesCount')">
+                                Продаж <i class="fas" :class="sortField === 'SalesCount' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                            <th class="text-end sortable-header" title="Сумма продаж за выбранный период" @click="sortBy('TotalSales')">
+                                Сумма <i class="fas" :class="sortField === 'TotalSales' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                            <th class="text-end sortable-header" title="Сумма платежей за выбранный период" @click="sortBy('TotalPayments')">
+                                Платежи <i class="fas" :class="sortField === 'TotalPayments' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                            <th class="text-end sortable-header" title="Общий накопленный долг клиента" @click="sortBy('Debt')">
+                                Долг <i class="fas" :class="sortField === 'Debt' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                            <th class="text-end sortable-header" title="Процент долга от продаж за период" @click="sortBy('DebtPercent')">
+                                % долга <i class="fas" :class="sortField === 'DebtPercent' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                            <th class="sortable-header" title="Дата последнего платежа за всё время" @click="sortBy('LastPaymentDate')">
+                                Посл. платеж <i class="fas" :class="sortField === 'LastPaymentDate' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                            <th class="text-end sortable-header" title="Дней с последнего платежа" @click="sortBy('DaysSinceLastPayment')">
+                                Дней <i class="fas" :class="sortField === 'DaysSinceLastPayment' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                            <th class="sortable-header" title="Дата последней покупки за всё время" @click="sortBy('LastSaleDate')">
+                                Посл. покупка <i class="fas" :class="sortField === 'LastSaleDate' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                            <th class="text-end sortable-header" title="Дней с последней покупки" @click="sortBy('DaysSinceLastSale')">
+                                Дней <i class="fas" :class="sortField === 'DaysSinceLastSale' ? (sortDesc ? 'fa-sort-down text-primary' : 'fa-sort-up text-primary') : 'fa-sort text-muted'"></i>
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="(customer, index) in filteredCustomers" :key="customer.CustomerId">
+                            <tr class="customer-row" 
+                                @click="openCustomerPurchases(customer)"
+                                :class="customer.IsProblematic ? 'table-danger' : ''">
+                                <td>
+                                    <i x-show="customer.IsProblematic" class="fas fa-exclamation-triangle text-danger" title="Проблемный клиент"></i>
+                                </td>
+                                <td>
+                                    <span class="badge" :class="customer.IsProblematic ? 'bg-danger' : 'bg-secondary'" x-text="customer.CustomerCode"></span>
+                                </td>
+                                <td>
+                                    <strong x-text="customer.CustomerName"></strong>
+                                    <br>
+                                    <small class="text-muted" x-text="`${customer.ManagerCode} - ${customer.ManagerName}`"></small>
+                                </td>
+                                <td x-text="customer.GroupCode || '—'"></td>
+                                <td>
+                                    <span class="badge bg-primary" x-text="customer.ManagerCode"></span>
+                                </td>
+                                <td class="text-end" x-text="formatNumber(customer.SalesCount)"></td>
+                                <td class="text-end" x-text="formatCurrency(customer.TotalSales)"></td>
+                                <td class="text-end text-success" x-text="formatCurrency(customer.TotalPayments || 0)"></td>
+                                <td class="text-end" :class="customer.Debt > 0 ? 'text-danger fw-bold' : 'text-success'" x-text="formatCurrency(customer.Debt)"></td>
+                                <td class="text-end">
+                                    <span :class="customer.DebtPercent > 50 ? 'badge bg-danger' : customer.DebtPercent > 25 ? 'badge bg-warning' : 'text-muted'" 
+                                          x-text="(customer.DebtPercent || 0) + '%'"></span>
+                                </td>
+                                <td>
+                                    <small x-text="customer.LastPaymentDate || '—'"></small>
+                                </td>
+                                <td class="text-end">
+                                    <span x-show="customer.DaysSinceLastPayment" 
+                                          :class="customer.DaysSinceLastPayment > 60 ? 'badge bg-danger' : customer.DaysSinceLastPayment > 30 ? 'badge bg-warning' : 'text-muted'"\n                                          x-text="customer.DaysSinceLastPayment"></span>
+                                    <small x-show="!customer.DaysSinceLastPayment" class="text-muted">—</small>
+                                </td>
+                                <td>
+                                    <small x-text="customer.LastSaleDate || '—'"></small>
+                                </td>
+                                <td class="text-end">
+                                    <span x-show="customer.DaysSinceLastSale" 
+                                          :class="customer.DaysSinceLastSale > 90 ? 'badge bg-danger' : customer.DaysSinceLastSale > 60 ? 'badge bg-warning' : 'text-muted'" 
+                                          x-text="customer.DaysSinceLastSale"></span>
+                                    <small x-show="!customer.DaysSinceLastSale" class="text-muted">—</small>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                    <tfoot class="table-secondary border-top border-primary border-2">
+                        <tr class="fw-bold">
+                            <td colspan="5" class="text-end">
+                                <i class="fas fa-calculator me-2"></i>ИТОГО:
+                            </td>
+                            <td class="text-end" x-text="formatNumber(getTotalSalesCount())"></td>
+                            <td class="text-end text-primary" x-text="formatCurrency(getTotalSales())"></td>
+                            <td class="text-end text-success" x-text="formatCurrency(getTotalPayments())"></td>
+                            <td class="text-end" :class="getTotalDebt() > 0 ? 'text-danger' : 'text-success'" x-text="formatCurrency(getTotalDebt())"></td>
+                            <td class="text-end">
+                                <span class="badge" :class="getAvgDebtPercent() > 50 ? 'bg-danger' : getAvgDebtPercent() > 25 ? 'bg-warning' : 'bg-secondary'" x-text="getAvgDebtPercent().toFixed(1) + '%'"></span>
+                            </td>
+                            <td colspan="4" class="text-muted text-center">
+                                <small>Клиентов: <span x-text="filteredCustomers.length"></span></small>
+                            </td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+            <div x-show="!loading && filteredCustomers.length === 0" class="text-center text-muted py-4">
+                <i class="fas fa-info-circle fa-2x mb-2"></i>
+                <p class="mb-0">Клиенты не найдены для выбранных параметров.</p>
+            </div>
+            <div x-show="loading" class="text-center text-muted py-4">
+                <div class="spinner-border text-primary" role="status"></div>
+                <p class="mt-2 mb-0">Загрузка данных...</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="customer-detail-overlay" x-show="detailPanel.open" x-cloak>
+        <div class="customer-detail-panel">
+            <div class="panel-header">
+                <div class="d-flex justify-content-between align-items-start gap-3">
+                    <div>
+                        <div class="text-muted text-uppercase small">Клиент</div>
+                        <div class="d-flex align-items-center gap-2">
+                            <h4 class="mb-0" x-text="detailPanel.customer ? detailPanel.customer.CustomerName : ''"></h4>
+                            <span class="badge bg-secondary" x-text="detailPanel.customer ? detailPanel.customer.CustomerCode : ''"></span>
+                        </div>
+                        <div class="small text-muted" x-text="detailPanel.customer ? `${detailPanel.customer.ManagerCode} · ${detailPanel.customer.ManagerName}` : ''"></div>
+                    </div>
+                    <div class="text-end">
+                        <button class="btn btn-sm btn-outline-light" @click="closeCustomerPurchases()">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="d-flex flex-wrap gap-4 mt-3">
+                    <div>
+                        <div class="text-muted small">Продажи</div>
+                        <div class="h5 mb-0">
+                            <span class="badge bg-primary me-1" x-text="detailPanel.summary.count"></span>
+                            <span x-text="formatCurrency(detailPanel.summary.total_sales)"></span>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="text-muted small">Платежи</div>
+                        <div class="h5 mb-0">
+                            <span class="badge bg-success me-1" x-text="detailPanel.summary.payment_count"></span>
+                            <span class="text-success" x-text="formatCurrency(detailPanel.summary.total_payments)"></span>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="text-muted small">Период</div>
+                        <div class="fw-semibold" x-text="`${detailPanel.summary.period.from} — ${detailPanel.summary.period.to}`"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="panel-body">
+                <div class="row g-3 mb-3">
+                    <div class="col-sm-6">
+                        <label class="form-label text-muted">Дата с</label>
+                        <input type="date" class="form-control" x-model="detailPanel.filters.dateFrom" @change="loadCustomerPurchases(true)">
+                    </div>
+                    <div class="col-sm-6">
+                        <label class="form-label text-muted">Дата по</label>
+                        <input type="date" class="form-control" x-model="detailPanel.filters.dateTo" @change="loadCustomerPurchases(true)">
+                    </div>
+                </div>
+                <div class="mb-3" style="display: none;">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <strong>Тип оплаты</strong>
+                        <button class="btn btn-link btn-sm text-decoration-none" @click="resetPaymentFilter()" :disabled="detailPanel.filters.payments.length === 0">Сбросить</button>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2">
+                        <template x-if="detailPanel.paymentTypes.length === 0">
+                            <span class="text-muted small">Типы оплаты не указаны в данных</span>
+                        </template>
+                        <template x-for="payment in detailPanel.paymentTypes" :key="payment">
+                            <label class="filter-tile flex-grow-0">
+                                <input type="checkbox" class="form-check-input" :value="payment" x-model="detailPanel.filters.payments" @change="loadCustomerPurchases(true)">
+                                <span>
+                                    <strong x-text="payment"></strong>
+                                </span>
+                            </label>
+                        </template>
+                    </div>
+                </div>
+
+                <div class="table-responsive mb-4">
+                    <h6 class="text-primary mb-3">
+                        <i class="bi bi-cart-check"></i> Продажи
+                        <span class="badge bg-primary ms-2" x-text="detailPanel.purchases.length"></span>
+                    </h6>
+                    <table class="table table-sm table-dark align-middle">
                         <thead>
                             <tr>
-                                <th>ID</th>
-                                <th>Имя</th>
-                                <th>Email</th>
-                                <th>Телефон</th>
-                                <th>Город</th>
-                                <th>Страна</th>
-                                <th>Заказов</th>
-                                <th>Потрачено</th>
-                                <th>Действия</th>
+                                <th style="width: 30px;"></th>
+                                <th>Дата</th>
+                                <th>Оплата</th>
+                                <th>Территория</th>
+                                <th>Менеджер</th>
+                                <th class="text-end">Сумма</th>
                             </tr>
                         </thead>
-                        <tbody></tbody>
+                        <tbody>
+                            <template x-for="(purchase, index) in detailPanel.purchases" :key="purchase.SaleId">
+                                <tr>
+                                    <td colspan="7" class="p-0">
+                                        <table class="table table-dark mb-0">
+                                            <tr class="cursor-pointer" @click="purchase.expanded = !purchase.expanded">
+                                                <td style="width: 30px;">
+                                                    <i class="bi" :class="purchase.expanded ? 'bi-chevron-down' : 'bi-chevron-right'"></i>
+                                                </td>
+                                                <td x-text="purchase.SaleDate"></td>
+                                                <td>
+                                                    <span class="badge bg-secondary" x-text="purchase.PaymentType || 'N/A'"></span>
+                                                </td>
+                                                <td x-text="purchase.SalesArea || '—'"></td>
+                                                <td>
+                                                    <div class="fw-semibold" x-text="purchase.ManagerCode || 'N/A'"></div>
+                                                    <small class="text-muted" x-text="purchase.ManagerName || ''"></small>
+                                                </td>
+                                                <td class="text-end" x-text="formatCurrency(purchase.TotalSum)"></td>
+                                            </tr>
+                                            <tr x-show="purchase.expanded" x-collapse>
+                                                <td colspan="6" class="p-3 bg-dark bg-opacity-25">
+                                                    <div x-show="!purchase.Products || purchase.Products.length === 0">
+                                                        <p class="text-muted mb-0">Нет товаров в этой продаже</p>
+                                                    </div>
+                                                    <div x-show="purchase.Products && purchase.Products.length > 0">
+                                                        <table class="table table-sm table-dark mb-0">
+                                                            <thead>
+                                                                <tr class="text-muted">
+                                                                    <th>Код</th>
+                                                                    <th>Товар</th>
+                                                                    <th class="text-end">Кол-во</th>
+                                                                    <th class="text-end">Цена</th>
+                                                                    <th class="text-end">Сумма</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                <template x-for="product in purchase.Products" :key="product.LineNo">
+                                                                    <tr>
+                                                                        <td><span class="badge bg-secondary" x-text="product.ProductCode"></span></td>
+                                                                        <td x-text="product.ProductName"></td>
+                                                                        <td class="text-end" x-text="formatNumber(product.Quantity)"></td>
+                                                                        <td class="text-end" x-text="formatCurrency(product.Price)"></td>
+                                                                        <td class="text-end fw-semibold" x-text="formatCurrency(product.LineTotal)"></td>
+                                                                    </tr>
+                                                                </template>
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                        <tbody x-show="detailPanel.loading">
+                            <tr>
+                                <td colspan="6" class="text-center py-4">
+                                    <div class="spinner-border text-primary" role="status"></div>
+                                    <p class="text-muted mt-2 mb-0">Загрузка данных...</p>
+                                </td>
+                            </tr>
+                        </tbody>
+                        <tbody x-show="!detailPanel.loading && detailPanel.purchases.length === 0">
+                            <tr>
+                                <td colspan="6" class="text-center text-muted py-4">Нет продаж для выбранных фильтров.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Payments Section -->
+                <div class="table-responsive">
+                    <h6 class="text-success mb-3">
+                        <i class="bi bi-credit-card"></i> Платежи
+                        <span class="badge bg-success ms-2" x-text="detailPanel.payments.length"></span>
+                    </h6>
+                    <table class="table table-sm table-dark align-middle">
+                        <thead>
+                            <tr>
+                                <th>Дата</th>
+                                <th>Номер</th>
+                                <th>Тип</th>
+                                <th>Территория</th>
+                                <th>Менеджер</th>
+                                <th class="text-end">Сумма</th>
+                                <th>Комментарий</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="payment in detailPanel.payments" :key="payment.PaymentId">
+                                <tr>
+                                    <td x-text="payment.PaymentDate"></td>
+                                    <td><small class="text-muted" x-text="payment.DocNumber"></small></td>
+                                    <td>
+                                        <span class="badge bg-success" x-text="payment.PaymentType || 'N/A'"></span>
+                                    </td>
+                                    <td x-text="payment.SalesArea || '—'"></td>
+                                    <td>
+                                        <div class="fw-semibold" x-text="payment.ManagerCode || 'N/A'"></div>
+                                        <small class="text-muted" x-text="payment.ManagerName || ''"></small>
+                                    </td>
+                                    <td class="text-end text-success fw-bold" x-text="formatCurrency(payment.Amount)"></td>
+                                    <td><small class="text-muted" x-text="payment.Comment || '—'"></small></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                        <tbody x-show="detailPanel.loading">
+                            <tr>
+                                <td colspan="7" class="text-center py-4">
+                                    <div class="spinner-border text-success" role="status"></div>
+                                    <p class="text-muted mt-2 mb-0">Загрузка платежей...</p>
+                                </td>
+                            </tr>
+                        </tbody>
+                        <tbody x-show="!detailPanel.loading && detailPanel.payments.length === 0">
+                            <tr>
+                                <td colspan="7" class="text-center text-muted py-4">Нет платежей для выбранных фильтров.</td>
+                            </tr>
+                        </tbody>
                     </table>
                 </div>
             </div>
         </div>
     </div>
 </div>
-
-<!-- Customer Modal -->
-<div class="modal fade" id="customerModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="modalTitle">Добавить клиента</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <form id="customerForm">
-                    <input type="hidden" id="customerId">
-                    <div class="mb-3">
-                        <label for="customerName" class="form-label">Имя *</label>
-                        <input type="text" class="form-control" id="customerName" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="customerEmail" class="form-label">Email</label>
-                        <input type="email" class="form-control" id="customerEmail">
-                    </div>
-                    <div class="mb-3">
-                        <label for="customerPhone" class="form-label">Телефон</label>
-                        <input type="text" class="form-control" id="customerPhone">
-                    </div>
-                    <div class="mb-3">
-                        <label for="customerAddress" class="form-label">Адрес</label>
-                        <input type="text" class="form-control" id="customerAddress">
-                    </div>
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
-                            <label for="customerCity" class="form-label">Город</label>
-                            <input type="text" class="form-control" id="customerCity">
-                        </div>
-                        <div class="col-md-6 mb-3">
-                            <label for="customerCountry" class="form-label">Страна</label>
-                            <input type="text" class="form-control" id="customerCountry">
-                        </div>
-                    </div>
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
-                <button type="button" class="btn btn-primary" onclick="saveCustomer()">Сохранить</button>
-            </div>
-        </div>
-    </div>
-</div>
-
 {% endblock %}
 
 {% block extra_js %}
 <script>
-let customersTable;
-
-$(document).ready(function() {
-    loadCustomers();
-});
-
-function loadCustomers() {
-    $.get('/api/customers', function(data) {
-        customersTable = $('#customersTable').DataTable({
-            data: data,
-            columns: [
-                { data: 'id' },
-                { data: 'name' },
-                { data: 'email' },
-                { data: 'phone' },
-                { data: 'city' },
-                { data: 'country' },
-                { data: 'orders' },
-                { 
-                    data: 'spent',
-                    render: function(data) {
-                        return formatCurrency(data);
+function customersData() {
+    return {
+        customers: [],
+        filteredCustomers: [],
+        salesAreas: [],
+        selectedArea: '101',
+        dateFrom: '',
+        dateTo: '',
+        divisions: [],
+        selectedDivisions: [],
+        customerGroups: [],
+        selectedGroups: [],
+        areaGroupAssignments: {},
+        groupsManuallyChanged: false,
+        activeFilterTab: 'divisions',
+        filtersOpen: false,
+        divisionSearch: '',
+        groupSearch: '',
+        searchQuery: '',
+        showOnlyProblematic: false,
+        includeZeroSales: false,
+        sortField: 'TotalSales',
+        sortDesc: true,
+        problematicSettingsOpen: false,
+        problematicCriteria: {
+            debt: true,
+            days: true,
+            percent: true,
+            saleDays: true
+        },
+        problematicThresholds: {
+            debt: 100000,
+            days: 60,
+            percent: 50,
+            saleDays: 90
+        },
+        tempProblematicCriteria: {
+            debt: true,
+            days: true,
+            percent: true,
+            saleDays: true
+        },
+        tempProblematicThresholds: {
+            debt: 100000,
+            days: 60,
+            percent: 50,
+            saleDays: 90
+        },
+        loading: false,
+        
+        // Загрузка сохраненных настроек
+        loadProblematicSettings() {
+            try {
+                const saved = localStorage.getItem('problematicSettings');
+                if (saved) {
+                    const settings = JSON.parse(saved);
+                    if (settings.criteria) {
+                        this.problematicCriteria = settings.criteria;
+                        this.tempProblematicCriteria = { ...settings.criteria };
                     }
-                },
-                {
-                    data: null,
-                    render: function(data) {
-                        return `
-                            <button class="btn btn-sm btn-info" onclick="editCustomer(${data.id})">
-                                <i class="fas fa-edit"></i>
-                            </button>
-                            <button class="btn btn-sm btn-danger" onclick="deleteCustomer(${data.id})">
-                                <i class="fas fa-trash"></i>
-                            </button>
-                        `;
+                    if (settings.thresholds) {
+                        this.problematicThresholds = settings.thresholds;
+                        this.tempProblematicThresholds = { ...settings.thresholds };
+                    }
+                    if (settings.showOnly !== undefined) this.showOnlyProblematic = settings.showOnly;
+                }
+            } catch (e) {
+                console.error('Ошибка загрузки настроек:', e);
+            }
+        },
+        
+        // Сохранение настроек
+        saveProblematicSettings() {
+            try {
+                const settings = {
+                    criteria: this.problematicCriteria,
+                    thresholds: this.problematicThresholds,
+                    showOnly: this.showOnlyProblematic
+                };
+                localStorage.setItem('problematicSettings', JSON.stringify(settings));
+            } catch (e) {
+                console.error('Ошибка сохранения настроек:', e);
+            }
+        },
+        
+        // Открытие панели настроек
+        openProblematicSettings() {
+            // Копируем текущие настройки во временные
+            this.tempProblematicCriteria = { ...this.problematicCriteria };
+            this.tempProblematicThresholds = { ...this.problematicThresholds };
+            this.problematicSettingsOpen = !this.problematicSettingsOpen;
+        },
+        
+        // Применение настроек
+        applyProblematicSettings() {
+            // Копируем временные настройки в основные
+            this.problematicCriteria = { ...this.tempProblematicCriteria };
+            this.problematicThresholds = { ...this.tempProblematicThresholds };
+            // Пересчитываем IsProblematic для всех клиентов
+            this.customers = this.customers.map(customer => {
+                const isProblematic = this.checkIsProblematic(customer);
+                return { ...customer, IsProblematic: isProblematic };
+            });
+            // Сохраняем в localStorage
+            this.saveProblematicSettings();
+            // Применяем фильтры
+            this.applyFilters();
+            // Закрываем панель
+            this.problematicSettingsOpen = false;
+        },
+        summary: {
+            count: 0,
+            total_sales: 0,
+            total_debt: 0,
+            period: { from: '', to: '' }
+        },
+        detailPanel: {
+            open: false,
+            loading: false,
+            customer: null,
+            purchases: [],
+            payments: [],
+            paymentTypes: [],
+            filters: {
+                dateFrom: '',
+                dateTo: '',
+                payments: []
+            },
+            summary: {
+                count: 0,
+                total_sales: 0,
+                payment_count: 0,
+                total_payments: 0,
+                period: { from: '', to: '' }
+            }
+        },
+        async init() {
+            this.loadProblematicSettings();
+            this.setCurrentMonth();
+            await this.loadSalesAreas();
+            await this.loadDivisions();
+            await this.loadCustomerGroups();
+            await this.loadAreaGroupAssignments();
+            await this.loadCustomers();
+        },
+        setCurrentMonth() {
+            const today = new Date();
+            const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+            const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+            this.dateFrom = this.formatDate(firstDay);
+            this.dateTo = this.formatDate(lastDay);
+        },
+        formatDate(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        },
+        async loadSalesAreas() {
+            try {
+                const response = await fetch('/api/settings/sales-areas/list');
+                const result = await response.json();
+                if (result.success) {
+                    this.salesAreas = result.data;
+                    if (!this.salesAreas.find(area => area.code === this.selectedArea) && this.salesAreas.length > 0) {
+                        this.selectedArea = this.salesAreas[0].code;
                     }
                 }
-            ],
-            language: {
-                url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/ru.json'
-            },
-            pageLength: 25,
-            order: [[7, 'desc']]
-        });
-    });
-}
-
-function openAddModal() {
-    $('#modalTitle').text('Добавить клиента');
-    $('#customerForm')[0].reset();
-    $('#customerId').val('');
-}
-
-function editCustomer(id) {
-    $.get(`/api/customers/${id}`, function(data) {
-        $('#modalTitle').text('Редактировать клиента');
-        $('#customerId').val(data.id);
-        $('#customerName').val(data.name);
-        $('#customerEmail').val(data.email);
-        $('#customerPhone').val(data.phone);
-        $('#customerAddress').val(data.address);
-        $('#customerCity').val(data.city);
-        $('#customerCountry').val(data.country);
-        $('#customerModal').modal('show');
-    });
-}
-
-function saveCustomer() {
-    const id = $('#customerId').val();
-    const data = {
-        name: $('#customerName').val(),
-        email: $('#customerEmail').val(),
-        phone: $('#customerPhone').val(),
-        address: $('#customerAddress').val(),
-        city: $('#customerCity').val(),
-        country: $('#customerCountry').val()
-    };
-
-    if (!data.name) {
-        alert('Введите имя клиента!');
-        return;
-    }
-
-    const method = id ? 'PUT' : 'POST';
-    const url = id ? `/api/customers/${id}` : '/api/customers';
-
-    $.ajax({
-        url: url,
-        method: method,
-        contentType: 'application/json',
-        data: JSON.stringify(data),
-        success: function() {
-            $('#customerModal').modal('hide');
-            customersTable.destroy();
-            loadCustomers();
-            showNotification('Успех', 'Клиент сохранен!', 'success');
+            } catch (error) {
+                console.error('Ошибка загрузки территорий:', error);
+            }
         },
-        error: function() {
-            showNotification('Ошибка', 'Не удалось сохранить клиента', 'danger');
-        }
-    });
-}
-
-function deleteCustomer(id) {
-    if (!confirm('Вы уверены, что хотите удалить этого клиента?')) {
-        return;
-    }
-
-    $.ajax({
-        url: `/api/customers/${id}`,
-        method: 'DELETE',
-        success: function() {
-            customersTable.destroy();
-            loadCustomers();
-            showNotification('Успех', 'Клиент удален!', 'success');
+        async loadDivisions() {
+            try {
+                const [divisionsRes, selectedRes] = await Promise.all([
+                    fetch('/api/settings/product-groups'),
+                    fetch('/api/settings/selected-product-groups')
+                ]);
+                const divisionsData = await divisionsRes.json();
+                if (divisionsData.success) {
+                    this.divisions = divisionsData.data || [];
+                }
+                const selectedData = await selectedRes.json();
+                if (selectedData.success) {
+                    this.selectedDivisions = selectedData.data || [];
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки дивизионов:', error);
+            }
         },
-        error: function() {
-            showNotification('Ошибка', 'Не удалось удалить клиента. Возможно, у него есть продажи.', 'danger');
+        async loadCustomerGroups() {
+            try {
+                const response = await fetch('/api/settings/groups');
+                const result = await response.json();
+                if (result.success) {
+                    this.customerGroups = result.data || [];
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки групп клиентов:', error);
+            }
+        },
+        async loadAreaGroupAssignments() {
+            try {
+                const response = await fetch('/api/settings/sales-areas/groups');
+                const result = await response.json();
+                if (result.success) {
+                    this.areaGroupAssignments = result.data || {};
+                    this.applyAreaDefaultGroups();
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки назначений групп:', error);
+            }
+        },
+        applyAreaDefaultGroups() {
+            const assigned = this.areaGroupAssignments[this.selectedArea];
+            if (!this.groupsManuallyChanged) {
+                this.selectedGroups = assigned ? [...assigned] : [];
+            }
+        },
+        onAreaChange() {
+            this.groupsManuallyChanged = false;
+            this.applyAreaDefaultGroups();
+            this.loadCustomers();
+        },
+        async loadCustomers() {
+            if (!this.selectedArea) {
+                return;
+            }
+            this.loading = true;
+            try {
+                const divisionQuery = this.selectedDivisions.length ? `&divisions=${this.selectedDivisions.join(',')}` : '';
+                const groupQuery = this.selectedGroups.length ? `&groups=${this.selectedGroups.join(',')}` : '';
+                const includeZero = this.includeZeroSales ? '&include_zero_sales=1' : '';
+                const url = `/api/customers?sales_area=${this.selectedArea}&date_from=${this.dateFrom}&date_to=${this.dateTo}${divisionQuery}${groupQuery}${includeZero}`;
+                const response = await fetch(url);
+                const result = await response.json();
+                if (result.success) {
+                    // Добавляем IsProblematic на основе настроек
+                    this.customers = result.data.map(customer => {
+                        const isProblematic = this.checkIsProblematic(customer);
+                        return { ...customer, IsProblematic: isProblematic };
+                    });
+                    this.summary = result.summary;
+                    this.filterCustomers();
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки клиентов:', error);
+            } finally {
+                this.loading = false;
+            }
+        },
+        // Проверка является ли клиент проблемным на основе настроек
+        checkIsProblematic(customer) {
+            const meetsCriteria = [];
+            if (this.problematicCriteria.debt) {
+                meetsCriteria.push(customer.Debt > this.problematicThresholds.debt);
+            }
+            if (this.problematicCriteria.days) {
+                meetsCriteria.push(customer.DaysSinceLastPayment && customer.DaysSinceLastPayment > this.problematicThresholds.days);
+            }
+            if (this.problematicCriteria.percent) {
+                meetsCriteria.push(customer.DebtPercent > this.problematicThresholds.percent);
+            }
+            if (this.problematicCriteria.saleDays) {
+                meetsCriteria.push(customer.DaysSinceLastSale && customer.DaysSinceLastSale > this.problematicThresholds.saleDays);
+            }
+            // Хотя бы один критерий должен сработать (OR логика)
+            return meetsCriteria.length > 0 && meetsCriteria.some(c => c);
+        },
+        filterCustomers() {
+            const query = this.searchQuery.toLowerCase();
+            this.filteredCustomers = this.customers.filter(customer => {
+                // Текстовый поиск
+                const matchesSearch = customer.CustomerCode.toLowerCase().includes(query) ||
+                    customer.CustomerName.toLowerCase().includes(query) ||
+                    customer.ManagerName.toLowerCase().includes(query);
+                
+                // Фильтр проблемных с настраиваемыми критериями
+                let isProblematicBySettings = false;
+                if (this.showOnlyProblematic) {
+                    const meetsCriteria = [];
+                    if (this.problematicCriteria.debt) {
+                        meetsCriteria.push(customer.Debt > this.problematicThresholds.debt);
+                    }
+                    if (this.problematicCriteria.days) {
+                        meetsCriteria.push(customer.DaysSinceLastPayment && customer.DaysSinceLastPayment > this.problematicThresholds.days);
+                    }
+                    if (this.problematicCriteria.percent) {
+                        meetsCriteria.push(customer.DebtPercent > this.problematicThresholds.percent);
+                    }
+                    if (this.problematicCriteria.saleDays) {
+                        meetsCriteria.push(customer.DaysSinceLastSale && customer.DaysSinceLastSale > this.problematicThresholds.saleDays);
+                    }
+                    // Хотя бы один критерий должен сработать (OR логика)
+                    // Если ни один критерий не выбран - показываем всех
+                    isProblematicBySettings = meetsCriteria.length === 0 ? true : meetsCriteria.some(c => c);
+                } else {
+                    isProblematicBySettings = true;
+                }
+                
+                return matchesSearch && isProblematicBySettings;
+            });
+            
+            // Применяем сортировку
+            this.sortCustomers();
+        },
+        sortBy(field) {
+            // Если кликнули на ту же колонку - меняем направление
+            if (this.sortField === field) {
+                this.sortDesc = !this.sortDesc;
+            } else {
+                // Новая колонка - сортируем по убыванию
+                this.sortField = field;
+                this.sortDesc = true;
+            }
+            this.sortCustomers();
+        },
+        sortCustomers() {
+            this.filteredCustomers.sort((a, b) => {
+                let aVal = a[this.sortField];
+                let bVal = b[this.sortField];
+                
+                // Обработка null/undefined значений
+                if (aVal === null || aVal === undefined) aVal = this.sortDesc ? -Infinity : Infinity;
+                if (bVal === null || bVal === undefined) bVal = this.sortDesc ? -Infinity : Infinity;
+                
+                // Сравнение
+                if (aVal < bVal) return this.sortDesc ? 1 : -1;
+                if (aVal > bVal) return this.sortDesc ? -1 : 1;
+                return 0;
+            });
+        },
+        selectAllDivisions() {
+            this.selectedDivisions = this.divisions.map(d => d.fGROUP);
+            this.applyDivisionFilter();
+        },
+        clearDivisions() {
+            this.selectedDivisions = [];
+            this.applyDivisionFilter();
+        },
+        async applyDivisionFilter() {
+            try {
+                await fetch('/api/settings/selected-product-groups/set', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ selectedGroups: this.selectedDivisions })
+                });
+                this.loadCustomers();
+            } catch (error) {
+                console.error('Ошибка применения дивизионов:', error);
+            }
+        },
+        selectAllGroups() {
+            this.groupsManuallyChanged = true;
+            this.selectedGroups = [...this.customerGroups];
+            this.loadCustomers();
+        },
+        clearGroups() {
+            this.groupsManuallyChanged = true;
+            this.selectedGroups = [];
+            this.loadCustomers();
+        },
+        onGroupsChanged() {
+            this.groupsManuallyChanged = true;
+            this.loadCustomers();
+        },
+        openCustomerPurchases(customer) {
+            this.detailPanel.customer = customer;
+            this.detailPanel.filters.dateFrom = this.dateFrom;
+            this.detailPanel.filters.dateTo = this.dateTo;
+            this.detailPanel.filters.payments = [];
+            this.detailPanel.open = true;
+            this.loadCustomerPurchases();
+        },
+        closeCustomerPurchases() {
+            this.detailPanel.open = false;
+            this.detailPanel.customer = null;
+            this.detailPanel.purchases = [];
+            this.detailPanel.payments = [];
+            this.detailPanel.paymentTypes = [];
+        },
+        resetPaymentFilter() {
+            this.detailPanel.filters.payments = [];
+            this.loadCustomerPurchases(true);
+        },
+        async loadCustomerPurchases(force = false) {
+            if (!this.detailPanel.customer || (!this.detailPanel.open && !force)) {
+                return;
+            }
+            const { filters } = this.detailPanel;
+            if (!filters.dateFrom || !filters.dateTo) {
+                filters.dateFrom = this.dateFrom;
+                filters.dateTo = this.dateTo;
+            }
+            this.detailPanel.loading = true;
+            try {
+                const params = new URLSearchParams({
+                    date_from: filters.dateFrom,
+                    date_to: filters.dateTo
+                });
+                if (filters.payments.length) {
+                    params.append('payments', filters.payments.join(','));
+                }
+                const url = `/api/customers/${this.detailPanel.customer.CustomerId}/purchases?${params.toString()}`;
+                const response = await fetch(url);
+                const result = await response.json();
+                if (result.success) {
+                    // Инициализировать expanded для каждой покупки
+                    this.detailPanel.purchases = result.data.map(p => ({...p, expanded: false}));
+                    this.detailPanel.payments = result.payments || [];
+                    this.detailPanel.summary = result.summary;
+                    this.detailPanel.paymentTypes = result.payment_types || [];
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки покупок клиента:', error);
+            } finally {
+                this.detailPanel.loading = false;
+            }
+        },
+        filteredDivisions() {
+            const query = this.divisionSearch.trim().toLowerCase();
+            if (!query) {
+                return this.divisions;
+            }
+            return this.divisions.filter(div => {
+                const code = String(div.fGROUP || '').toLowerCase();
+                const name = String(div.name || '').toLowerCase();
+                return code.includes(query) || name.includes(query);
+            });
+        },
+        filteredGroups() {
+            const query = this.groupSearch.trim().toLowerCase();
+            if (!query) {
+                return this.customerGroups;
+            }
+            return this.customerGroups.filter(group => group.toLowerCase().includes(query));
+        },
+        getDivisionName(code) {
+            const division = this.divisions.find(d => d.fGROUP === code);
+            return division ? division.name : code;
+        },
+        // Функции для расчета итогов
+        getTotalSalesCount() {
+            return this.filteredCustomers.reduce((sum, c) => sum + (c.SalesCount || 0), 0);
+        },
+        getTotalSales() {
+            return this.filteredCustomers.reduce((sum, c) => sum + (c.TotalSales || 0), 0);
+        },
+        getTotalPayments() {
+            return this.filteredCustomers.reduce((sum, c) => sum + (c.TotalPayments || 0), 0);
+        },
+        getTotalDebt() {
+            return this.filteredCustomers.reduce((sum, c) => sum + (c.Debt || 0), 0);
+        },
+        getAvgDebtPercent() {
+            if (this.filteredCustomers.length === 0) return 0;
+            const totalSales = this.getTotalSales();
+            const totalDebt = this.getTotalDebt();
+            return totalSales > 0 ? (totalDebt / totalSales * 100) : 0;
+        },
+        applyFilters() {
+            // Фильтрация в computed property filteredCustomers будет применена автоматически
+            // при изменении showOnlyProblematic
         }
-    });
-}
-
-function formatCurrency(amount) {
-    return new Intl.NumberFormat('ru-RU', {
-        style: 'currency',
-        currency: 'RUB',
-        minimumFractionDigits: 0
-    }).format(amount);
-}
-
-function showNotification(title, message, type) {
-    const alertHtml = `
-        <div class="alert alert-${type} alert-dismissible fade show position-fixed top-0 end-0 m-3" role="alert" style="z-index: 9999;">
-            <strong>${title}:</strong> ${message}
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        </div>
-    `;
-    $('body').append(alertHtml);
-    setTimeout(() => $('.alert').alert('close'), 3000);
+    }
 }
 </script>
 {% endblock %}

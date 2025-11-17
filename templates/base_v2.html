@@ -18,7 +18,13 @@
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     
     <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    
+    <!-- AG Grid Community -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/styles/ag-grid.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/styles/ag-theme-alpine-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.0.0/dist/ag-grid-community.min.js"></script>
     
     <!-- SortableJS -->
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
@@ -145,6 +151,16 @@
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/groups' %}active{% endif %}" href="/groups">
                             <i class="fas fa-layer-group me-1"></i> Дистрибьюторы
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/customers' %}active{% endif %}" href="/customers">
+                            <i class="fas fa-store me-1"></i> Клиенты
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/customers-grid' %}active{% endif %}" href="/customers-grid">
+                            <i class="fas fa-table me-1"></i> Клиенты Grid
                         </a>
                     </li>
                     <li class="nav-item">

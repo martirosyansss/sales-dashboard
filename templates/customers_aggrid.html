@@ -1,0 +1,2122 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Клиенты и долги (AG Grid) - Sales Dashboard v2.0{% endblock %}
+
+{% block extra_css %}
+<style>
+    [x-cloak] {
+        display: none !important;
+    }
+    
+    /* AG Grid custom styling for dark theme */
+    .ag-theme-alpine-dark {
+        --ag-background-color: #212529;
+        --ag-header-background-color: #2c3135;
+        --ag-odd-row-background-color: #1a1d20;
+        --ag-row-hover-color: rgba(13, 110, 253, 0.1);
+        --ag-selected-row-background-color: rgba(13, 110, 253, 0.2);
+        --ag-border-color: #495057;
+        --ag-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    
+    .customer-detail-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(5, 5, 5, 0.7);
+        backdrop-filter: blur(3px);
+        z-index: 9998;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+    }
+    .customer-detail-panel {
+        width: 900px;
+        max-width: 95vw;
+        height: 100vh;
+        background: #1a1d20;
+        border-left: 1px solid #495057;
+        box-shadow: -4px 0 20px rgba(0,0,0,0.5);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        animation: slideInFromRight 0.3s ease-out;
+    }
+    @keyframes slideInFromRight {
+        from { transform: translateX(100%); }
+        to { transform: translateX(0); }
+    }
+    .customer-detail-panel .panel-header {
+        padding: 1.5rem;
+        border-bottom: 1px solid #495057;
+        background: #212529;
+    }
+    .customer-detail-panel .panel-body {
+        padding: 1.5rem;
+        overflow-y: auto;
+    }
+    
+    /* Modal styling */
+    .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.8);
+        backdrop-filter: blur(3px);
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .modal-content {
+        background: #212529;
+        border: 1px solid #495057;
+        border-radius: 8px;
+        width: 500px;
+        max-width: 90vw;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    .modal-header {
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid #495057;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .modal-body {
+        padding: 1.5rem;
+    }
+    .modal-footer {
+        padding: 1rem 1.5rem;
+        border-top: 1px solid #495057;
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.5rem;
+    }
+    
+    /* Stat cards */
+    .stat-card {
+        background: linear-gradient(135deg, #1e2a3a 0%, #0f1419 100%);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        padding: 1.5rem;
+        transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        height: 100%;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .stat-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: linear-gradient(90deg, transparent, var(--accent-color), transparent);
+        opacity: 0;
+        transition: opacity 0.4s ease;
+    }
+    
+    .stat-card:hover::before {
+        opacity: 1;
+    }
+    
+    .stat-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--accent-color);
+        border-color: var(--accent-color);
+    }
+    
+    .stat-card.clients {
+        --accent-color: #00d4ff;
+    }
+    
+    .stat-card.sales {
+        --accent-color: #00ff88;
+    }
+    
+    .stat-card.payments {
+        --accent-color: #00ff88;
+    }
+    
+    .stat-card.debts {
+        --accent-color: #ff4d4d;
+    }
+    
+    .stat-icon {
+        font-size: 2rem;
+        opacity: 0.15;
+        position: absolute;
+        right: 1rem;
+        top: 50%;
+        transform: translateY(-50%);
+        transition: all 0.4s ease;
+    }
+    
+    .stat-card:hover .stat-icon {
+        opacity: 0.25;
+        transform: translateY(-50%) scale(1.1);
+    }
+    
+    .stat-label {
+        font-size: 0.75rem;
+        color: #8b95a5;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 0.75rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    
+    .stat-label i {
+        font-size: 0.9rem;
+        color: var(--accent-color);
+    }
+    
+    .stat-value {
+        font-size: 2rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #ffffff 0%, #e0e0e0 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        line-height: 1.2;
+        margin-bottom: 0.5rem;
+        position: relative;
+        z-index: 1;
+    }
+    
+    .stat-card.sales .stat-value,
+    .stat-card.payments .stat-value {
+        background: linear-gradient(135deg, #00ff88 0%, #00d4ff 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+    
+    .stat-card.debts .stat-value {
+        background: linear-gradient(135deg, #ff4d4d 0%, #ff8a8a 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+    
+    .stat-card small {
+        font-size: 0.7rem;
+        color: #6c757d;
+        font-weight: 500;
+        display: block;
+        margin-top: 0.25rem;
+    }
+    
+    /* Mobile optimizations */
+    @media (max-width: 768px) {
+        .customer-detail-panel {
+            width: 100%;
+            max-width: 100%;
+        }
+        .stat-card {
+            padding: 1rem;
+        }
+        .stat-value {
+            font-size: 1.5rem;
+        }
+        #customersGrid {
+            height: 500px !important;
+        }
+        .card-body {
+            padding: 1rem !important;
+        }
+    }
+    
+    @media (max-width: 576px) {
+        .stat-value {
+            font-size: 1.25rem;
+        }
+        .stat-label {
+            font-size: 0.7rem;
+        }
+        .stat-icon {
+            font-size: 1.5rem;
+        }
+    }
+    
+    /* Enhanced buttons */
+    .btn {
+        border-radius: 8px;
+        font-weight: 500;
+        transition: all 0.3s ease;
+        border: none;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .btn::before {
+        content: '';
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 0;
+        height: 0;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.1);
+        transform: translate(-50%, -50%);
+        transition: width 0.6s, height 0.6s;
+    }
+    
+    .btn:hover::before {
+        width: 300px;
+        height: 300px;
+    }
+    
+    .btn-primary {
+        background: linear-gradient(135deg, #0d6efd 0%, #0a58ca 100%);
+        box-shadow: 0 4px 12px rgba(13, 110, 253, 0.3);
+    }
+    
+    .btn-primary:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(13, 110, 253, 0.4);
+    }
+    
+    .btn-outline-primary {
+        border: 2px solid #0d6efd;
+        color: #0d6efd;
+        background: transparent;
+    }
+    
+    .btn-outline-primary:hover {
+        background: #0d6efd;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(13, 110, 253, 0.3);
+    }
+    
+    .btn-outline-warning {
+        border: 2px solid #ffc107;
+        color: #ffc107;
+        background: transparent;
+    }
+    
+    .btn-outline-warning:hover {
+        background: #ffc107;
+        color: #000;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(255, 193, 7, 0.3);
+    }
+    
+    .btn-outline-light {
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        color: #fff;
+    }
+    
+    .btn-outline-light:hover {
+        background: rgba(255, 255, 255, 0.1);
+        border-color: #fff;
+        transform: translateY(-2px);
+    }
+    
+    /* Enhanced inputs */
+    .form-control, .form-select {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        color: #fff;
+        transition: all 0.3s ease;
+        padding: 0.6rem 0.75rem;
+    }
+    
+    .form-select option {
+        background: #1a1d20;
+        color: #fff;
+        padding: 0.5rem;
+    }
+    
+    .form-select option:hover {
+        background: #2c3135;
+    }
+    
+    .input-group .form-control {
+        border-top-right-radius: 0;
+        border-bottom-right-radius: 0;
+    }
+    
+    .input-group .btn-outline-secondary {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-top-right-radius: 8px;
+        border-bottom-right-radius: 8px;
+        color: #adb5bd;
+        transition: all 0.3s ease;
+    }
+    
+    .input-group .btn-outline-secondary:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: #0d6efd;
+        border-color: #0d6efd;
+    }
+    
+    .form-control:focus, .form-select:focus {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: #0d6efd;
+        box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15);
+        color: #fff;
+    }
+    
+    .form-control::placeholder {
+        color: rgba(255, 255, 255, 0.4);
+    }
+    
+    .form-label {
+        font-weight: 600;
+        font-size: 0.85rem;
+        margin-bottom: 0.5rem;
+        color: #adb5bd;
+    }
+    
+    .is-invalid {
+        border-color: #ff4d4d !important;
+        background: rgba(255, 77, 77, 0.1) !important;
+        animation: shake 0.4s ease;
+        box-shadow: 0 0 0 3px rgba(255, 77, 77, 0.2) !important;
+    }
+    
+    @keyframes shake {
+        0%, 100% { transform: translateX(0); }
+        10%, 30%, 50%, 70%, 90% { transform: translateX(-3px); }
+        20%, 40%, 60%, 80% { transform: translateX(3px); }
+    }
+    
+    .invalid-feedback {
+        color: #ff4d4d;
+        font-size: 0.75rem;
+        margin-top: 0.35rem;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        background: rgba(255, 77, 77, 0.15);
+        padding: 0.4rem 0.6rem;
+        border-radius: 6px;
+        border-left: 3px solid #ff4d4d;
+        animation: slideDown 0.3s ease;
+    }
+    
+    .invalid-feedback::before {
+        content: '⚠️';
+        font-size: 0.9rem;
+    }
+    
+    @keyframes slideDown {
+        from {
+            opacity: 0;
+            transform: translateY(-10px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+    
+    /* Card improvements */
+    .card {
+        background: linear-gradient(135deg, #1e2a3a 0%, #0f1419 100%);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 16px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        transition: all 0.3s ease;
+    }
+    
+    .card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+    }
+    
+    .card.border-danger:hover {
+        box-shadow: 0 8px 30px rgba(255, 77, 77, 0.3);
+    }
+    
+    /* Badges */
+    .badge {
+        padding: 0.35rem 0.65rem;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.75rem;
+    }
+    
+    /* Loading animation */
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+    
+    .loading {
+        animation: pulse 1.5s ease-in-out infinite;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid" x-data="customersData()" x-init="init()">
+    <!-- Header Section -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
+                <div>
+                    <h1 class="display-5 mb-2" style="background: linear-gradient(135deg, #00d4ff 0%, #0d6efd 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; font-weight: 700;">
+                        <i class="fas fa-table" style="-webkit-text-fill-color: #00d4ff;"></i>
+                        Клиенты и задолженности
+                    </h1>
+                    <p class="text-muted mb-0" style="font-size: 0.9rem;">
+                        <i class="fas fa-filter"></i>
+                        Профессиональная таблица с фильтрами, сортировкой и экспортом
+                    </p>
+                </div>
+                <div class="d-flex gap-2">
+                    <div class="btn-group" role="group">
+                        <button class="btn btn-sm btn-outline-light" @click="setDateRange('today')" title="Сегодня">
+                            Сегодня
+                        </button>
+                        <button class="btn btn-sm btn-outline-light" @click="setDateRange('currentMonth')" title="Текущий месяц">
+                            Месяц
+                        </button>
+                        <button class="btn btn-sm btn-outline-light" @click="setDateRange('lastMonth')" title="Последний месяц">
+                            Прошл. месяц
+                        </button>
+                        <button class="btn btn-sm btn-outline-light" @click="setDateRange('quarter')" title="Последний квартал">
+                            Квартал
+                        </button>
+                        <button class="btn btn-sm btn-outline-light" @click="setDateRange('year')" title="Последний год">
+                            Год
+                        </button>
+                        <button class="btn btn-sm btn-outline-light" @click="setDateRange('lastYear')" title="Прошлый год">
+                            Прошл. год
+                        </button>
+                    </div>
+                    <div class="btn-group" role="group">
+                        <button class="btn" :class="viewMode === 'cards' ? 'btn-primary' : 'btn-outline-primary'" @click="viewMode = 'cards'; localStorage.setItem('viewMode', 'cards')">
+                            <i class="fas fa-th-large"></i> Карточки
+                        </button>
+                        <button class="btn" :class="viewMode === 'table' ? 'btn-primary' : 'btn-outline-primary'" @click="viewMode = 'table'; localStorage.setItem('viewMode', 'table'); initAGGrid()">
+                            <i class="fas fa-table"></i> Таблица
+                        </button>
+                    </div>
+                    <button class="btn btn-primary" @click="loadCustomers()" :disabled="loading">
+                        <i class="fas fa-sync-alt" :class="{'fa-spin': loading}"></i> 
+                        <span x-text="loading ? 'Загрузка...' : 'Обновить'"></span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Filters Section -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <div class="row g-3 align-items-end">
+                <!-- Sales Area -->
+                <div class="col-lg-3 col-md-4 col-12">
+                    <label class="form-label">
+                        <i class="fas fa-map-marker-alt text-primary"></i> Sales Area
+                    </label>
+                    <select class="form-select" x-model="selectedArea" @change="onAreaChange()">
+                        <option value="">Выберите Sales Area...</option>
+                        <template x-for="area in salesAreas" :key="area.code">
+                            <option :value="area.code" x-text="`${area.code} - ${area.name}`"></option>
+                        </template>
+                    </select>
+                </div>
+
+                <!-- Date From -->
+                <div class="col-lg-2 col-md-3 col-6">
+                    <label class="form-label">
+                        <i class="fas fa-calendar-day text-success"></i> Дата с
+                    </label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" :class="{'is-invalid': dateFromError}" x-model="dateFromDisplay" @blur="updateDateFrom()" @keydown.enter="updateDateFrom()" placeholder="ДД.ММ.ГГГГ" maxlength="10">
+                        <button class="btn btn-outline-secondary" type="button" @click="$refs.dateFromPicker.showPicker()" title="Открыть календарь">
+                            <i class="fas fa-calendar-alt"></i>
+                        </button>
+                        <input type="date" x-ref="dateFromPicker" style="position: absolute; opacity: 0; pointer-events: none;" x-model="dateFrom" @change="dateFromDisplay = formatDateForDisplay(dateFrom); loadCustomers()">
+                    </div>
+                    <div class="invalid-feedback" x-show="dateFromError && dateFromError.length > 0" x-text="dateFromError" x-transition style="display: none;"></div>
+                </div>
+
+                <!-- Date To -->
+                <div class="col-lg-2 col-md-3 col-6">
+                    <label class="form-label">
+                        <i class="fas fa-calendar-check text-success"></i> Дата по
+                    </label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" :class="{'is-invalid': dateToError}" x-model="dateToDisplay" @blur="updateDateTo()" @keydown.enter="updateDateTo()" placeholder="ДД.ММ.ГГГГ" maxlength="10">
+                        <button class="btn btn-outline-secondary" type="button" @click="$refs.dateToPicker.showPicker()" title="Открыть календарь">
+                            <i class="fas fa-calendar-alt"></i>
+                        </button>
+                        <input type="date" x-ref="dateToPicker" style="position: absolute; opacity: 0; pointer-events: none;" x-model="dateTo" @change="dateToDisplay = formatDateForDisplay(dateTo); loadCustomers()">
+                    </div>
+                    <div class="invalid-feedback" x-show="dateToError && dateToError.length > 0" x-text="dateToError" x-transition style="display: none;"></div>
+                </div>
+
+                <!-- Checkboxes -->
+                <div class="col-lg-2 col-md-6 col-12">
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="includeZeroSales" x-model="includeZeroSales" @change="loadCustomers()">
+                        <label class="form-check-label" for="includeZeroSales">
+                            <i class="fas fa-users-slash"></i> Клиенты с 0 продаж
+                        </label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="showOnlyProblematic" x-model="showOnlyProblematic" @change="applyProblematicFilter()">
+                        <label class="form-check-label" for="showOnlyProblematic">
+                            <i class="fas fa-exclamation-triangle text-warning"></i> Только проблемные
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Configure Button -->
+                <div class="col-lg-2 col-md-6 col-12">
+                    <button class="btn btn-outline-warning w-100" @click="showCriteriaModal = true">
+                        <i class="fas fa-cog"></i> Настроить критерии
+                    </button>
+                </div>
+
+                <!-- Divisions/Groups Filter Toggle -->
+                <div class="col-12">
+                    <button class="btn btn-sm btn-outline-secondary w-100" @click="showFiltersPanel = !showFiltersPanel">
+                        <i class="fas" :class="showFiltersPanel ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+                        <span x-text="showFiltersPanel ? 'Скрыть фильтры по дивизионам и группам' : 'Показать фильтры по дивизионам и группам'"></span>
+                        <template x-if="selectedDivisions.length > 0 || selectedGroups.length > 0">
+                            <span class="badge bg-primary ms-2" x-text="`${selectedDivisions.length + selectedGroups.length} выбрано`"></span>
+                        </template>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно настройки критериев -->
+    <div x-show="showCriteriaModal" class="modal-overlay" @click.self="showCriteriaModal = false" x-cloak>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5>Критерии проблемных клиентов</h5>
+                <button class="btn-close btn-close-white" @click="showCriteriaModal = false"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-3">Выберите критерии для определения проблемных клиентов (хотя бы один должен совпадать):</p>
+                
+                <div class="mb-3">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="useDebtCriteria" x-model="criteria.useDebt">
+                        <label class="form-check-label" for="useDebtCriteria">
+                            <strong>Использовать критерий долга</strong>
+                        </label>
+                    </div>
+                    <label class="form-label">Долг больше (֏)</label>
+                    <input type="number" class="form-control" x-model.number="criteria.minDebt" step="10000" :disabled="!criteria.useDebt">
+                </div>
+                
+                <div class="mb-3">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="usePaymentDaysCriteria" x-model="criteria.usePaymentDays">
+                        <label class="form-check-label" for="usePaymentDaysCriteria">
+                            <strong>Использовать критерий дней без платежей</strong>
+                        </label>
+                    </div>
+                    <label class="form-label">Не платили больше (дней)</label>
+                    <input type="number" class="form-control" x-model.number="criteria.maxDaysSincePayment" step="10" :disabled="!criteria.usePaymentDays">
+                </div>
+                
+                <div class="mb-3">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="useDebtPercentCriteria" x-model="criteria.useDebtPercent">
+                        <label class="form-check-label" for="useDebtPercentCriteria">
+                            <strong>Использовать критерий % долга</strong>
+                        </label>
+                    </div>
+                    <label class="form-label">Долг больше (% от продаж)</label>
+                    <input type="number" class="form-control" x-model.number="criteria.maxDebtPercent" step="5" :disabled="!criteria.useDebtPercent">
+                </div>
+                
+                <div class="mb-3">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="useSaleDaysCriteria" x-model="criteria.useSaleDays">
+                        <label class="form-check-label" for="useSaleDaysCriteria">
+                            <strong>Использовать критерий дней без покупок</strong>
+                        </label>
+                    </div>
+                    <label class="form-label">Не покупал больше (дней)</label>
+                    <input type="number" class="form-control" x-model.number="criteria.maxDaysSinceSale" step="10" :disabled="!criteria.useSaleDays">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" @click="showCriteriaModal = false">Закрыть</button>
+                <button class="btn btn-primary" @click="applyCriteria()">Применить</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Фильтры по дивизионам и группам (Collapsible) -->
+    <div class="card mb-4" x-show="showFiltersPanel" x-transition x-cloak>
+        <div class="card-header">
+            <div class="d-flex justify-content-between align-items-center">
+                <h6 class="mb-0">
+                    <i class="fas fa-filter"></i> Фильтры по дивизионам и группам
+                </h6>
+                <div>
+                    <span class="badge bg-info me-2">Дивизионы: <span x-text="selectedDivisions.length"></span></span>
+                    <span class="badge bg-primary me-2">Группы: <span x-text="selectedGroups.length"></span></span>
+                    <button class="btn btn-sm btn-outline-light" @click="selectedDivisions = []; selectedGroups = []; saveDivisionsToStorage(); saveGroupsToStorage(); loadCustomers()">
+                        <i class="fas fa-times"></i> Очистить
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <h6><i class="fas fa-boxes"></i> Дивизионы</h6>
+                    <button class="btn btn-sm btn-outline-primary w-100 mb-2" @click="selectAllDivisions()">
+                        <i class="fas fa-check-double"></i> Выбрать все
+                    </button>
+                    <div class="input-group input-group-sm mb-2">
+                        <span class="input-group-text"><i class="fas fa-search"></i></span>
+                        <input type="text" class="form-control" placeholder="Поиск" x-model="divisionSearch">
+                    </div>
+                    <div style="max-height: 250px; overflow-y: auto;" class="border rounded p-2">
+                        <template x-for="division in filteredDivisions()" :key="division.fGROUP">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" :id="'div_' + division.fGROUP" 
+                                       :value="division.fGROUP" x-model="selectedDivisions" @change="saveDivisionsToStorage(); loadCustomers()">
+                                <label class="form-check-label" :for="'div_' + division.fGROUP">
+                                    <strong x-text="division.fGROUP"></strong> · <span x-text="division.name"></span>
+                                </label>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <h6><i class="fas fa-users"></i> Группы клиентов</h6>
+                    <button class="btn btn-sm btn-outline-primary w-100 mb-2" @click="selectAllGroups()">
+                        <i class="fas fa-check-double"></i> Выбрать все
+                    </button>
+                    <div class="input-group input-group-sm mb-2">
+                        <span class="input-group-text"><i class="fas fa-search"></i></span>
+                        <input type="text" class="form-control" placeholder="Поиск" x-model="groupSearch">
+                    </div>
+                    <div style="max-height: 250px; overflow-y: auto;" class="border rounded p-2">
+                        <template x-for="group in filteredGroups()" :key="group">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" :id="'grp_' + group" 
+                                       :value="group" x-model="selectedGroups" @change="saveGroupsToStorage(); loadCustomers()">
+                                <label class="form-check-label" :for="'grp_' + group" x-text="group"></label>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Статистика -->
+    <div class="row g-3 mb-4">
+        <div class="col-lg-3 col-md-6 col-6">
+            <div class="stat-card clients">
+                <i class="fas fa-users stat-icon"></i>
+                <div class="stat-label">
+                    <i class="fas fa-users"></i>
+                    Клиентов
+                </div>
+                <div class="stat-value" x-text="summary.count"></div>
+                <small class="text-muted d-block" x-text="includeZeroSales ? 'включая клиентов с 0 продаж' : 'с продажами в выбранный период'"></small>
+                <small class="badge bg-info mt-1" x-show="viewMode === 'table'" x-transition>
+                    <i class="fas fa-filter"></i> при фильтре в гриде
+                </small>
+            </div>
+        </div>
+        <div class="col-lg-3 col-md-6 col-6">
+            <div class="stat-card sales">
+                <i class="fas fa-chart-line stat-icon"></i>
+                <div class="stat-label">
+                    <i class="fas fa-shopping-cart"></i>
+                    Продажи
+                </div>
+                <div class="stat-value"><span x-text="formatCurrency(summary.total_sales)"></span> ֏</div>
+                <small class="text-muted d-block">за выбранный период</small>
+                <small class="badge bg-info mt-1" x-show="viewMode === 'table'" x-transition>
+                    <i class="fas fa-filter"></i> при фильтре в гриде
+                </small>
+            </div>
+        </div>
+        <div class="col-lg-3 col-md-6 col-6">
+            <div class="stat-card payments">
+                <i class="fas fa-money-bill-wave stat-icon"></i>
+                <div class="stat-label">
+                    <i class="fas fa-credit-card"></i>
+                    Платежи
+                </div>
+                <div class="stat-value"><span x-text="formatCurrency(summary.total_payments || 0)"></span> ֏</div>
+                <small class="text-muted d-block">за выбранный период</small>
+                <small class="badge bg-info mt-1" x-show="viewMode === 'table'" x-transition>
+                    <i class="fas fa-filter"></i> при фильтре в гриде
+                </small>
+            </div>
+        </div>
+        <div class="col-lg-3 col-md-6 col-6">
+            <div class="stat-card debts">
+                <i class="fas fa-exclamation-triangle stat-icon"></i>
+                <div class="stat-label">
+                    <i class="fas fa-wallet"></i>
+                    Долги
+                </div>
+                <div class="stat-value"><span x-text="formatCurrency(summary.total_debt)"></span> ֏</div>
+                <small class="text-muted d-block">на текущую дату</small>
+                <small class="badge bg-info mt-1" x-show="viewMode === 'table'" x-transition>
+                    <i class="fas fa-filter"></i> при фильтре в гриде
+                </small>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <div>
+                    <h5 class="mb-0"><i class="fas fa-list me-2"></i>Список клиентов</h5>
+                    <small class="text-muted">
+                        Всего клиентов: <strong x-text="customers.length"></strong>
+                    </small>
+                </div>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-primary" @click="exportToExcel()">
+                        <i class="fas fa-file-excel"></i> Excel
+                    </button>
+                    <button class="btn btn-outline-secondary" @click="exportToCsv()">
+                        <i class="fas fa-file-csv"></i> CSV
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Cards View -->
+            <div x-show="viewMode === 'cards' && !loading && customers.length > 0">
+                <div class="row g-3">
+                    <template x-for="customer in customers" :key="customer.CustomerCode">
+                        <div class="col-xl-4 col-lg-6 col-12">
+                            <div class="card h-100" 
+                                 :class="{'border-danger': customer.IsProblematic, 'border-secondary': !customer.IsProblematic}"
+                                 @click="openCustomerPurchases(customer)"
+                                 style="cursor: pointer; transition: all 0.3s ease;">
+                                <div class="card-body">
+                                    <!-- Header -->
+                                    <div class="d-flex justify-content-between align-items-start mb-3">
+                                        <div class="flex-grow-1">
+                                            <div class="d-flex align-items-center gap-2 mb-2">
+                                                <template x-if="customer.IsProblematic">
+                                                    <i class="fas fa-exclamation-triangle text-danger"></i>
+                                                </template>
+                                                <span class="badge" :class="customer.IsProblematic ? 'bg-danger' : 'bg-secondary'" x-text="customer.CustomerCode"></span>
+                                            </div>
+                                            <h6 class="mb-2" x-text="customer.CustomerName"></h6>
+                                            <div class="small text-muted">
+                                                <div><i class="fas fa-users me-1"></i> <span x-text="customer.GroupCode"></span></div>
+                                                <div><i class="fas fa-user-tie me-1"></i> <span x-text="customer.ManagerName || 'N/A'"></span></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Financial Info -->
+                                    <div class="row g-2 mb-3">
+                                        <div class="col-6">
+                                            <div class="p-2 bg-dark rounded">
+                                                <small class="text-muted d-block">Продажи</small>
+                                                <strong class="text-primary" x-text="formatCurrency(customer.TotalSales) + ' ֏'"></strong>
+                                            </div>
+                                        </div>
+                                        <div class="col-6">
+                                            <div class="p-2 bg-dark rounded">
+                                                <small class="text-muted d-block">Платежи</small>
+                                                <strong class="text-success" x-text="formatCurrency(customer.TotalPayments) + ' ֏'"></strong>
+                                            </div>
+                                        </div>
+                                        <div class="col-6">
+                                            <div class="p-2 bg-dark rounded">
+                                                <small class="text-muted d-block">Долг</small>
+                                                <strong :class="customer.Debt > 0 ? 'text-danger' : 'text-success'" x-text="formatCurrency(customer.Debt) + ' ֏'"></strong>
+                                            </div>
+                                        </div>
+                                        <div class="col-6">
+                                            <div class="p-2 bg-dark rounded">
+                                                <small class="text-muted d-block">% долга</small>
+                                                <span class="badge" 
+                                                      :class="customer.DebtPercent > 50 ? 'bg-danger' : (customer.DebtPercent > 25 ? 'bg-warning' : 'bg-secondary')"
+                                                      x-text="(customer.DebtPercent || 0).toFixed(1) + '%'"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Activity Info -->
+                                    <div class="border-top border-secondary pt-2">
+                                        <div class="d-flex justify-content-between align-items-center mb-1">
+                                            <small class="text-muted">Последний платеж:</small>
+                                            <div class="d-flex align-items-center gap-2">
+                                                <small x-text="customer.LastPaymentDate || 'N/A'"></small>
+                                                <template x-if="customer.DaysSinceLastPayment">
+                                                    <span class="badge badge-sm"
+                                                          :class="customer.DaysSinceLastPayment > 60 ? 'bg-danger' : (customer.DaysSinceLastPayment > 30 ? 'bg-warning' : 'bg-success')"
+                                                          x-text="customer.DaysSinceLastPayment + 'д'"></span>
+                                                </template>
+                                            </div>
+                                        </div>
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <small class="text-muted">Последняя покупка:</small>
+                                            <div class="d-flex align-items-center gap-2">
+                                                <small x-text="customer.LastSaleDate || 'N/A'"></small>
+                                                <template x-if="customer.DaysSinceLastSale">
+                                                    <span class="badge badge-sm"
+                                                          :class="customer.DaysSinceLastSale > 90 ? 'bg-danger' : (customer.DaysSinceLastSale > 60 ? 'bg-warning' : 'bg-success')"
+                                                          x-text="customer.DaysSinceLastSale + 'д'"></span>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="card-footer bg-transparent border-secondary">
+                                    <small class="text-muted">
+                                        <i class="fas fa-shopping-cart me-1"></i>
+                                        <span x-text="customer.SalesCount || 0"></span> продаж
+                                        · Нажмите для деталей
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+            
+            <!-- Table View (AG Grid) -->
+            <div x-show="viewMode === 'table' && !loading && customers.length > 0">
+                <div class="mb-2">
+                    <small class="text-muted">
+                        💡 <strong>Возможности таблицы:</strong> Фильтры под каждой колонкой, сортировка по клику, поиск по тексту
+                    </small>
+                </div>
+                <div id="customersGrid" class="ag-theme-alpine-dark" style="width: 100%;"></div>
+            </div>
+            
+            <div x-show="loading" class="text-center text-muted py-4">
+                <div class="spinner-border text-primary" role="status"></div>
+                <p class="mt-2 mb-0">Загрузка данных...</p>
+            </div>
+            
+            <!-- No Data Message -->
+            <div x-show="!loading && customers.length === 0" class="text-center py-5">
+                <div class="mb-3">
+                    <i class="fas fa-inbox fa-3x text-muted"></i>
+                </div>
+                <h5 class="text-muted mb-3">Данные не найдены</h5>
+                <template x-if="selectedGroups.length > 0">
+                    <div class="alert alert-info d-inline-block">
+                        <i class="fas fa-info-circle me-2"></i>
+                        <strong>Подсказка:</strong> Для Sales Area <span x-text="selectedArea"></span> нет данных с выбранными группами (<span x-text="selectedGroups.join(', ')"></span>).
+                        <br>
+                        <button class="btn btn-sm btn-primary mt-2" @click="selectedGroups = []; saveGroupsToStorage(); loadCustomers()">
+                            <i class="fas fa-times-circle"></i> Очистить фильтр групп
+                        </button>
+                    </div>
+                </template>
+                <template x-if="selectedGroups.length === 0">
+                    <p class="text-muted">
+                        Попробуйте изменить параметры фильтра или выбрать другой период
+                    </p>
+                </template>
+            </div>
+        </div>
+    </div>
+
+    <!-- Customer Detail Panel (unchanged) -->
+    <div class="customer-detail-overlay" x-show="detailPanel.open" x-cloak>
+        <div class="customer-detail-panel">
+            <div class="panel-header">
+                <div class="d-flex justify-content-between align-items-start gap-3">
+                    <div>
+                        <div class="text-muted text-uppercase small">Клиент</div>
+                        <div class="d-flex align-items-center gap-2">
+                            <h4 class="mb-0" x-text="detailPanel.customer ? detailPanel.customer.CustomerName : ''"></h4>
+                            <span class="badge bg-secondary" x-text="detailPanel.customer ? detailPanel.customer.CustomerCode : ''"></span>
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-light" @click="closeCustomerPurchases()">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="panel-body">
+                <template x-if="detailPanel.customer">
+                    <div>
+                        <!-- Основная информация -->
+                        <div class="row mb-2">
+                            <div class="col-md-6">
+                                <div class="card bg-dark border-secondary mb-2">
+                                    <div class="card-body p-2">
+                                        <small class="text-muted text-uppercase d-block mb-1">Информация о клиенте</small>
+                                        <div class="mb-1">
+                                            <small class="text-muted">Группа:</small>
+                                            <strong class="ms-1" x-text="detailPanel.customer.GroupCode"></strong>
+                                        </div>
+                                        <div>
+                                            <small class="text-muted">Менеджер:</small>
+                                            <span class="badge bg-primary ms-1" x-text="detailPanel.customer.ManagerCode"></span>
+                                            <small x-text="detailPanel.customer.ManagerName"></small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card bg-dark border-secondary mb-2">
+                                    <div class="card-body p-2">
+                                        <small class="text-muted text-uppercase d-block mb-1">Статистика</small>
+                                        <div class="mb-1">
+                                            <small class="text-muted">Продаж:</small>
+                                            <strong class="ms-1" x-text="detailPanel.customer.SalesCount || 0"></strong>
+                                        </div>
+                                        <div>
+                                            <small class="text-muted">Сумма:</small>
+                                            <strong class="text-primary ms-1" x-text="formatCurrency(detailPanel.customer.TotalSales) + ' ֏'"></strong>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Финансы -->
+                        <div class="row mb-2">
+                            <div class="col-md-4">
+                                <div class="card bg-dark border-secondary mb-2">
+                                    <div class="card-body text-center p-2">
+                                        <small class="text-muted d-block">Платежи</small>
+                                        <h5 class="text-success mb-0" x-text="formatCurrency(detailPanel.customer.TotalPayments) + ' ֏'"></h5>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card bg-dark border-secondary mb-2">
+                                    <div class="card-body text-center p-2">
+                                        <small class="text-muted d-block">Долг</small>
+                                        <h5 class="mb-0" :class="detailPanel.customer.Debt > 0 ? 'text-danger' : 'text-success'" x-text="formatCurrency(detailPanel.customer.Debt) + ' ֏'"></h5>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card bg-dark border-secondary mb-2">
+                                    <div class="card-body text-center p-2">
+                                        <small class="text-muted d-block">% долга</small>
+                                        <h5 class="mb-0" x-text="(detailPanel.customer.DebtPercent || 0).toFixed(1) + '%'"></h5>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Активность -->
+                        <div class="row mb-2">
+                            <div class="col-md-6">
+                                <div class="card bg-dark border-secondary mb-2">
+                                    <div class="card-body p-2">
+                                        <small class="text-muted text-uppercase d-block mb-1">Последний платеж</small>
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <small x-text="detailPanel.customer.LastPaymentDate || 'Нет данных'"></small>
+                                            <template x-if="detailPanel.customer.DaysSinceLastPayment">
+                                                <span 
+                                                    class="badge" 
+                                                    :class="detailPanel.customer.DaysSinceLastPayment > 60 ? 'bg-danger' : (detailPanel.customer.DaysSinceLastPayment > 30 ? 'bg-warning' : 'bg-success')"
+                                                    x-text="detailPanel.customer.DaysSinceLastPayment + 'д'">
+                                                </span>
+                                            </template>
+                                            <template x-if="!detailPanel.customer.DaysSinceLastPayment">
+                                                <span class="text-muted">—</span>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card bg-dark border-secondary mb-2">
+                                    <div class="card-body p-2">
+                                        <small class="text-muted text-uppercase d-block mb-1">Последняя покупка</small>
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <small x-text="detailPanel.customer.LastSaleDate || 'Нет данных'"></small>
+                                            <template x-if="detailPanel.customer.DaysSinceLastSale">
+                                                <span 
+                                                    class="badge" 
+                                                    :class="detailPanel.customer.DaysSinceLastSale > 90 ? 'bg-danger' : (detailPanel.customer.DaysSinceLastSale > 60 ? 'bg-warning' : 'bg-success')"
+                                                    x-text="detailPanel.customer.DaysSinceLastSale + 'д'">
+                                                </span>
+                                            </template>
+                                            <template x-if="!detailPanel.customer.DaysSinceLastSale">
+                                                <span class="text-muted">—</span>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Предупреждение о проблемах -->
+                        <template x-if="detailPanel.customer.IsProblematic">
+                            <div class="alert alert-warning">
+                                <i class="fas fa-exclamation-triangle me-2"></i>
+                                <strong>Проблемный клиент!</strong> Требует внимания.
+                            </div>
+                        </template>
+
+                        <!-- Продажи -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h6 class="mb-0">
+                                    <i class="fas fa-shopping-cart text-primary me-2"></i>
+                                    Продажи
+                                </h6>
+                                <span class="badge bg-primary" x-text="detailPanel.purchases.length"></span>
+                            </div>
+                            <div class="card-body">
+                                <template x-if="detailPanel.loadingPurchases">
+                                    <div class="text-center py-3">
+                                        <div class="spinner-border spinner-border-sm text-primary"></div>
+                                        <p class="text-muted small mt-2 mb-0">Загрузка продаж...</p>
+                                    </div>
+                                </template>
+                                <template x-if="!detailPanel.loadingPurchases && detailPanel.purchases.length === 0">
+                                    <p class="text-muted text-center mb-0">Нет продаж за выбранный период</p>
+                                </template>
+                                <template x-if="!detailPanel.loadingPurchases && detailPanel.purchases.length > 0">
+                                    <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                                        <table class="table table-dark table-sm">
+                                            <thead class="sticky-top bg-dark">
+                                                <tr>
+                                                    <th style="width: 30px;"></th>
+                                                    <th>Дата</th>
+                                                    <th>Тип оплаты</th>
+                                                    <th>Менеджер</th>
+                                                    <th class="text-end">Сумма</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <template x-for="purchase in detailPanel.purchases" :key="purchase.SaleId">
+                                                    <tr style="cursor: pointer;" 
+                                                        @click="detailPanel.selectedPurchase = purchase"
+                                                        :class="{'table-active': detailPanel.selectedPurchase?.SaleId === purchase.SaleId}">
+                                                        <td>
+                                                            <i class="fas" 
+                                                               :class="detailPanel.selectedPurchase?.SaleId === purchase.SaleId ? 'fa-chevron-down text-primary' : 'fa-chevron-right'"
+                                                               style="font-size: 0.75rem;"></i>
+                                                        </td>
+                                                        <td><small x-text="purchase.SaleDate"></small></td>
+                                                        <td><span class="badge bg-info" x-text="purchase.PaymentType"></span></td>
+                                                        <td><small x-text="purchase.ManagerName || 'N/A'"></small></td>
+                                                        <td class="text-end text-primary fw-bold">
+                                                            <small x-text="formatCurrency(purchase.TotalSum) + ' ֏'"></small>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                            <tfoot class="border-top border-secondary">
+                                                <tr class="fw-bold">
+                                                    <td colspan="4" class="text-end">Итого:</td>
+                                                    <td class="text-end text-primary" x-text="formatCurrency(detailPanel.purchases.reduce((sum, p) => sum + (p.TotalSum || 0), 0)) + ' ֏'"></td>
+                                                </tr>
+                                            </tfoot>
+                                        </table>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <!-- Детали выбранной продажи -->
+                        <div x-show="detailPanel.selectedPurchase" class="card bg-dark border-secondary mb-3">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h6 class="mb-0">
+                                    <i class="fas fa-box-open text-info me-2"></i>
+                                    Товары в продаже
+                                </h6>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" @click="detailPanel.selectedPurchase = null">
+                                    <i class="fas fa-times"></i>
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-2">
+                                    <small class="text-muted">Дата:</small>
+                                    <strong x-text="detailPanel.selectedPurchase?.SaleDate"></strong>
+                                    <span class="ms-3">
+                                        <small class="text-muted">Тип оплаты:</small>
+                                        <span class="badge bg-info" x-text="detailPanel.selectedPurchase?.PaymentType"></span>
+                                    </span>
+                                </div>
+                                <template x-if="detailPanel.selectedPurchase?.Products && detailPanel.selectedPurchase.Products.length > 0">
+                                    <div class="table-responsive">
+                                        <table class="table table-dark table-sm mb-0" style="font-size: 0.85rem;">
+                                            <thead style="background-color: #1a1d20;">
+                                                <tr>
+                                                    <th style="width: 60px;">Код</th>
+                                                    <th>Товар</th>
+                                                    <th class="text-end" style="width: 80px;">Кол-во</th>
+                                                    <th class="text-end" style="width: 100px;">Цена</th>
+                                                    <th class="text-end" style="width: 100px;">Сумма</th>
+                                                    <th class="text-end" style="width: 80px;">% скидки</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <template x-for="product in detailPanel.selectedPurchase.Products" :key="product.LineNo">
+                                                    <tr>
+                                                        <td><span class="badge bg-secondary" x-text="product.ProductCode"></span></td>
+                                                        <td><small x-text="product.ProductName"></small></td>
+                                                        <td class="text-end"><small x-text="product.Quantity"></small></td>
+                                                        <td class="text-end"><small x-text="formatCurrency(product.Price) + ' ֏'"></small></td>
+                                                        <td class="text-end text-primary"><small x-text="formatCurrency(product.LineTotal) + ' ֏'"></small></td>
+                                                        <td class="text-end">
+                                                            <span class="badge" 
+                                                                  :class="product.DiscountPercent > 0 ? 'bg-warning' : 'bg-secondary'"
+                                                                  x-text="(product.DiscountPercent || 0).toFixed(1) + '%'"></span>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </template>
+                                <template x-if="!detailPanel.selectedPurchase?.Products || detailPanel.selectedPurchase.Products.length === 0">
+                                    <p class="text-muted small mb-0">
+                                        <i class="fas fa-info-circle me-1"></i>
+                                        Нет данных о товарах
+                                    </p>
+                                </template>
+                            </div>
+                        </div>
+
+                        <!-- Платежи -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h6 class="mb-0">
+                                    <i class="fas fa-money-bill-wave text-success me-2"></i>
+                                    Платежи
+                                </h6>
+                                <span class="badge bg-success" x-text="detailPanel.payments.length"></span>
+                            </div>
+                            <div class="card-body">
+                                <template x-if="detailPanel.loadingPayments">
+                                    <div class="text-center py-3">
+                                        <div class="spinner-border spinner-border-sm text-success"></div>
+                                        <p class="text-muted small mt-2 mb-0">Загрузка платежей...</p>
+                                    </div>
+                                </template>
+                                <template x-if="!detailPanel.loadingPayments && detailPanel.payments.length === 0">
+                                    <p class="text-muted text-center mb-0">Нет платежей за выбранный период</p>
+                                </template>
+                                <template x-if="!detailPanel.loadingPayments && detailPanel.payments.length > 0">
+                                    <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                                        <table class="table table-dark table-sm table-hover">
+                                            <thead class="sticky-top bg-dark">
+                                                <tr>
+                                                    <th>Дата</th>
+                                                    <th>Тип</th>
+                                                    <th>Менеджер</th>
+                                                    <th class="text-end">Сумма</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <template x-for="payment in detailPanel.payments" :key="payment.PaymentId">
+                                                    <tr>
+                                                        <td><small x-text="payment.PaymentDate"></small></td>
+                                                        <td><span class="badge bg-success" x-text="payment.PaymentType"></span></td>
+                                                        <td><small x-text="payment.ManagerName || 'N/A'"></small></td>
+                                                        <td class="text-end text-success">
+                                                            <small x-text="formatCurrency(Math.abs(payment.Amount)) + ' ֏'"></small>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                            <tfoot class="border-top border-secondary">
+                                                <tr class="fw-bold">
+                                                    <td colspan="3" class="text-end">Итого:</td>
+                                                    <td class="text-end text-success" x-text="formatCurrency(detailPanel.payments.reduce((sum, p) => sum + Math.abs(p.Amount || 0), 0)) + ' ֏'"></td>
+                                                </tr>
+                                            </tfoot>
+                                        </table>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function customersData() {
+    return {
+        customers: [],
+        filteredCustomers: [],
+        salesAreas: [],
+        selectedArea: '',
+        viewMode: localStorage.getItem('viewMode') || 'cards', // 'cards' or 'table' - сохраняем выбор
+        dateFrom: '',
+        dateTo: '',
+        dateFromDisplay: '',
+        dateToDisplay: '',
+        dateFromError: '',
+        dateToError: '',
+        includeZeroSales: false,
+        showOnlyProblematic: false,
+        showCriteriaModal: false,
+        criteria: JSON.parse(localStorage.getItem('criteriaSettings') || JSON.stringify({
+            useDebt: true,
+            minDebt: 100000,
+            usePaymentDays: true,
+            maxDaysSincePayment: 60,
+            useDebtPercent: true,
+            maxDebtPercent: 50,
+            useSaleDays: true,
+            maxDaysSinceSale: 90
+        })),
+        divisions: [],
+        selectedDivisions: JSON.parse(localStorage.getItem('selectedDivisions') || '[]'),
+        divisionSearch: '',
+        customerGroups: [],
+        selectedGroups: JSON.parse(localStorage.getItem('selectedGroups') || '[]'),
+        groupSearch: '',
+        showFiltersPanel: false,
+        loading: false,
+        summary: {
+            count: 0,
+            total_sales: 0,
+            total_payments: 0,
+            total_debt: 0,
+            period: { from: '', to: '' }
+        },
+        gridApi: null,
+        gridInitialized: false,
+        detailPanel: {
+            open: false,
+            customer: null,
+            purchases: [],
+            payments: [],
+            selectedPurchase: null,
+            loadingPurchases: false,
+            loadingPayments: false
+        },
+        
+        init() {
+            this.setCurrentMonth();
+            // Explicitly clear any validation errors on init
+            this.dateFromError = '';
+            this.dateToError = '';
+            this.loadSalesAreas().then(() => {
+                // После загрузки Sales Areas, если есть selectedArea, загружаем данные
+                if (this.selectedArea && this.salesAreas.length > 0) {
+                    // Загружаем данные (грид инициализируется только при переключении на него)
+                    this.loadCustomers().then(() => {
+                        // После загрузки данных, если viewMode = 'table', инициализируем грид
+                        if (this.viewMode === 'table') {
+                            this.$nextTick(() => {
+                                this.initAGGrid();
+                            });
+                        }
+                    });
+                }
+            });
+            this.loadDivisions();
+            this.loadCustomerGroups();
+        },
+        
+        initAGGrid() {
+            if (this.gridInitialized) {
+                // Если грид уже инициализирован, просто обновляем данные
+                if (this.gridApi) {
+                    this.gridApi.setGridOption('rowData', this.customers);
+                }
+                return;
+            }
+            
+            const gridDiv = document.querySelector('#customersGrid');
+            if (!gridDiv) {
+                console.error('Grid container not found');
+                return;
+            }
+            
+            const gridOptions = {
+                columnDefs: [
+                    {
+                        headerName: '',
+                        field: 'IsProblematic',
+                        width: 50,
+                        cellRenderer: params => params.value ? '<i class="fas fa-exclamation-triangle text-danger"></i>' : '',
+                        filter: 'agSetColumnFilter',
+                        filterParams: {
+                            values: [true, false],
+                            valueFormatter: params => params.value ? 'Проблемный' : 'OK'
+                        }
+                    },
+                    {
+                        headerName: 'Код',
+                        field: 'CustomerCode',
+                        width: 120,
+                        filter: 'agSetColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true
+                        },
+                        cellRenderer: params => {
+                            const isProblematic = params.data.IsProblematic;
+                            const badgeClass = isProblematic ? 'bg-danger' : 'bg-secondary';
+                            return `<span class="badge ${badgeClass}">${params.value}</span>`;
+                        }
+                    },
+                    {
+                        headerName: 'Название',
+                        field: 'CustomerName',
+                        width: 250,
+                        filter: 'agSetColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true
+                        },
+                        cellRenderer: params => `<strong>${params.value}</strong>`
+                    },
+                    {
+                        headerName: 'Группа',
+                        field: 'GroupCode',
+                        width: 120,
+                        filter: 'agSetColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true
+                        }
+                    },
+                    {
+                        headerName: 'Менеджер',
+                        field: 'ManagerName',
+                        width: 180,
+                        filter: 'agSetColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true
+                        },
+                        cellRenderer: params => {
+                            if (params.value) {
+                                return `<span class="badge bg-primary">${params.data.ManagerCode}</span> ${params.value}`;
+                            }
+                            return '';
+                        }
+                    },
+                    {
+                        headerName: 'Продаж',
+                        field: 'SalesCount',
+                        width: 100,
+                        type: 'numericColumn',
+                        filter: 'agNumberColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true,
+                            allowedCharPattern: '\\d\\-\\,',
+                            numberParser: text => {
+                                return text == null ? null : parseFloat(text.replace(/,/g, ''));
+                            }
+                        },
+                        valueFormatter: params => params.value ? params.value.toLocaleString('ru-RU') : '0'
+                    },
+                    {
+                        headerName: 'Сумма',
+                        field: 'TotalSales',
+                        width: 150,
+                        type: 'numericColumn',
+                        filter: 'agNumberColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true,
+                            allowedCharPattern: '\\d\\-\\,',
+                            numberParser: text => {
+                                return text == null ? null : parseFloat(text.replace(/,/g, ''));
+                            }
+                        },
+                        cellClass: 'text-primary fw-bold',
+                        valueFormatter: params => params.value ? params.value.toLocaleString('ru-RU', {minimumFractionDigits: 0, maximumFractionDigits: 0}) + ' AMD' : '0 AMD'
+                    },
+                    {
+                        headerName: 'Платежи',
+                        field: 'TotalPayments',
+                        width: 150,
+                        type: 'numericColumn',
+                        filter: 'agNumberColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true,
+                            allowedCharPattern: '\\d\\-\\,',
+                            numberParser: text => {
+                                return text == null ? null : parseFloat(text.replace(/,/g, ''));
+                            }
+                        },
+                        cellClass: 'text-success',
+                        valueFormatter: params => params.value ? params.value.toLocaleString('ru-RU', {minimumFractionDigits: 0, maximumFractionDigits: 0}) + ' AMD' : '0 AMD'
+                    },
+                    {
+                        headerName: 'Долг',
+                        field: 'Debt',
+                        width: 150,
+                        type: 'numericColumn',
+                        filter: 'agNumberColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true,
+                            allowedCharPattern: '\\d\\-\\,',
+                            numberParser: text => {
+                                return text == null ? null : parseFloat(text.replace(/,/g, ''));
+                            }
+                        },
+                        cellClass: params => params.value > 0 ? 'text-danger fw-bold' : 'text-success',
+                        valueFormatter: params => params.value ? params.value.toLocaleString('ru-RU', {minimumFractionDigits: 0, maximumFractionDigits: 0}) + ' AMD' : '0 AMD'
+                    },
+                    {
+                        headerName: '% долга',
+                        field: 'DebtPercent',
+                        width: 120,
+                        type: 'numericColumn',
+                        filter: 'agNumberColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true
+                        },
+                        cellRenderer: params => {
+                            const value = params.value || 0;
+                            let badgeClass = 'bg-secondary';
+                            if (value > 50) badgeClass = 'bg-danger';
+                            else if (value > 25) badgeClass = 'bg-warning';
+                            return `<span class="badge ${badgeClass}">${value.toFixed(1)}%</span>`;
+                        }
+                    },
+                    {
+                        headerName: 'Посл. платеж',
+                        field: 'LastPaymentDate',
+                        width: 130,
+                        filter: 'agDateColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true,
+                            comparator: (filterLocalDateAtMidnight, cellValue) => {
+                                if (cellValue == null) return -1;
+                                const dateParts = cellValue.split('-');
+                                const cellDate = new Date(parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]));
+                                if (filterLocalDateAtMidnight.getTime() === cellDate.getTime()) {
+                                    return 0;
+                                }
+                                if (cellDate < filterLocalDateAtMidnight) {
+                                    return -1;
+                                }
+                                if (cellDate > filterLocalDateAtMidnight) {
+                                    return 1;
+                                }
+                            }
+                        },
+                        cellRenderer: params => {
+                            if (!params.value) return '<small class="text-muted">—</small>';
+                            return `<span style="color: #adb5bd;">${params.value}</span>`;
+                        }
+                    },
+                    {
+                        headerName: 'Дней (платеж)',
+                        field: 'DaysSinceLastPayment',
+                        width: 130,
+                        type: 'numericColumn',
+                        filter: 'agNumberColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true
+                        },
+                        cellRenderer: params => {
+                            if (!params.value) return '<small class="text-muted">—</small>';
+                            let badgeClass = 'text-muted';
+                            if (params.value > 60) badgeClass = 'badge bg-danger';
+                            else if (params.value > 30) badgeClass = 'badge bg-warning';
+                            return `<span class="${badgeClass}">${params.value}</span>`;
+                        }
+                    },
+                    {
+                        headerName: 'Посл. покупка',
+                        field: 'LastSaleDate',
+                        width: 130,
+                        filter: 'agDateColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true,
+                            comparator: (filterLocalDateAtMidnight, cellValue) => {
+                                if (cellValue == null) return -1;
+                                const dateParts = cellValue.split('-');
+                                const cellDate = new Date(parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]));
+                                if (filterLocalDateAtMidnight.getTime() === cellDate.getTime()) {
+                                    return 0;
+                                }
+                                if (cellDate < filterLocalDateAtMidnight) {
+                                    return -1;
+                                }
+                                if (cellDate > filterLocalDateAtMidnight) {
+                                    return 1;
+                                }
+                            }
+                        },
+                        cellRenderer: params => {
+                            if (!params.value) return '<small class="text-muted">—</small>';
+                            return `<span style="color: #adb5bd;">${params.value}</span>`;
+                        }
+                    },
+                    {
+                        headerName: 'Дней (покупка)',
+                        field: 'DaysSinceLastSale',
+                        width: 130,
+                        type: 'numericColumn',
+                        filter: 'agNumberColumnFilter',
+                        filterParams: {
+                            buttons: ['reset', 'apply'],
+                            closeOnApply: true
+                        },
+                        filter: 'agNumberColumnFilter',
+                        cellRenderer: params => {
+                            if (!params.value) return '<small class="text-muted">—</small>';
+                            let badgeClass = 'text-muted';
+                            if (params.value > 90) badgeClass = 'badge bg-danger';
+                            else if (params.value > 60) badgeClass = 'badge bg-warning';
+                            return `<span class="${badgeClass}">${params.value}</span>`;
+                        }
+                    }
+                ],
+                defaultColDef: {
+                    sortable: true,
+                    resizable: true,
+                    flex: 0
+                },
+                rowData: [],
+                pagination: false, // Отключаем пагинацию, показываем все
+                domLayout: 'autoHeight', // Автоматическая высота
+                animateRows: true,
+                onRowClicked: (event) => {
+                    if (event.data) {
+                        console.log('Row clicked:', event.data);
+                        // Используем Alpine store или прямой вызов через window
+                        const alpineComponent = Alpine.$data(document.querySelector('[x-data]'));
+                        if (alpineComponent && alpineComponent.openCustomerPurchases) {
+                            alpineComponent.openCustomerPurchases(event.data);
+                        }
+                    }
+                },
+                onFilterChanged: (params) => {
+                    // Обновляем итоги при изменении фильтров
+                    this.updateFilteredSummary();
+                },
+                localeText: {
+                    page: 'Страница',
+                    more: 'Ещё',
+                    to: 'до',
+                    of: 'из',
+                    next: 'Следующая',
+                    last: 'Последняя',
+                    first: 'Первая',
+                    previous: 'Предыдущая',
+                    loadingOoo: 'Загрузка...',
+                    noRowsToShow: 'Нет данных для отображения',
+                    filterOoo: 'Фильтр...',
+                    searchOoo: 'Поиск...',
+                    equals: 'Равно',
+                    notEqual: 'Не равно',
+                    lessThan: 'Меньше',
+                    greaterThan: 'Больше',
+                    contains: 'Содержит',
+                    notContains: 'Не содержит',
+                    startsWith: 'Начинается с',
+                    endsWith: 'Заканчивается на',
+                    columns: 'Колонки',
+                    filters: 'Фильтры'
+                }
+            };
+            
+            this.gridApi = agGrid.createGrid(gridDiv, gridOptions);
+            this.gridInitialized = true; // Отмечаем что грид инициализирован
+            
+            // Устанавливаем данные, если они уже загружены
+            if (this.customers.length > 0) {
+                this.gridApi.setGridOption('rowData', this.customers);
+            }
+        },
+        
+        updateFilteredSummary() {
+            if (!this.gridApi) return;
+            
+            let count = 0;
+            let totalSales = 0;
+            let totalPayments = 0;
+            let totalDebt = 0;
+            
+            // Проходим по всем отфильтрованным строкам
+            this.gridApi.forEachNodeAfterFilter((node) => {
+                if (node.data) {
+                    count++;
+                    totalSales += node.data.TotalSales || 0;
+                    totalPayments += node.data.TotalPayments || 0;
+                    totalDebt += node.data.Debt || 0;
+                }
+            });
+            
+            // Обновляем summary
+            this.summary.count = count;
+            this.summary.total_sales = totalSales;
+            this.summary.total_payments = totalPayments;
+            this.summary.total_debt = totalDebt;
+        },
+        
+        setCurrentMonth() {
+            const today = new Date();
+            const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+            const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+            this.dateFrom = firstDay.toISOString().split('T')[0];
+            this.dateTo = lastDay.toISOString().split('T')[0];
+            this.dateFromDisplay = this.formatDateForDisplay(this.dateFrom);
+            this.dateToDisplay = this.formatDateForDisplay(this.dateTo);
+            this.dateFromError = '';
+            this.dateToError = '';
+        },
+        
+        setDateRange(range) {
+            const today = new Date();
+            let fromDate, toDate;
+            
+            switch(range) {
+                case 'today':
+                    fromDate = today;
+                    toDate = today;
+                    break;
+                    
+                case 'currentMonth':
+                    fromDate = new Date(today.getFullYear(), today.getMonth(), 1);
+                    toDate = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+                    break;
+                    
+                case 'lastMonth':
+                    fromDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+                    toDate = new Date(today.getFullYear(), today.getMonth(), 0);
+                    break;
+                    
+                case 'quarter':
+                    // Последние 3 месяца
+                    fromDate = new Date(today.getFullYear(), today.getMonth() - 2, 1);
+                    toDate = today;
+                    break;
+                    
+                case 'year':
+                    // Последний год от сегодня
+                    fromDate = new Date(today.getFullYear() - 1, today.getMonth(), today.getDate());
+                    toDate = today;
+                    break;
+                    
+                case 'lastYear':
+                    // Прошлый календарный год
+                    fromDate = new Date(today.getFullYear() - 1, 0, 1);
+                    toDate = new Date(today.getFullYear() - 1, 11, 31);
+                    break;
+                    
+                default:
+                    return;
+            }
+            
+            this.dateFrom = fromDate.toISOString().split('T')[0];
+            this.dateTo = toDate.toISOString().split('T')[0];
+            this.dateFromDisplay = this.formatDateForDisplay(this.dateFrom);
+            this.dateToDisplay = this.formatDateForDisplay(this.dateTo);
+            this.dateFromError = '';
+            this.dateToError = '';
+            
+            // Автоматически загружаем данные
+            this.loadCustomers();
+        },
+        
+        async loadSalesAreas() {
+            try {
+                const response = await fetch('/api/settings/sales-areas/list');
+                const result = await response.json();
+                if (result.success) {
+                    // Remove duplicates by code
+                    const uniqueAreas = [];
+                    const seenCodes = new Set();
+                    result.data.forEach(area => {
+                        const code = area.Code || area.code || area.SalesAreaCode;
+                        const name = area.Name || area.name || area.SalesAreaName;
+                        if (code && !seenCodes.has(code)) {
+                            seenCodes.add(code);
+                            uniqueAreas.push({
+                                code: String(code),
+                                name: name
+                            });
+                        }
+                    });
+                    this.salesAreas = uniqueAreas;
+                    
+                    // Устанавливаем первую Sales Area по умолчанию или '101' если есть
+                    if (this.salesAreas.length > 0) {
+                        const area101 = this.salesAreas.find(a => a.code === '101');
+                        this.selectedArea = area101 ? area101.code : this.salesAreas[0].code;
+                    }
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки Sales Areas:', error);
+            }
+        },
+        
+        async loadDivisions() {
+            try {
+                const response = await fetch('/api/settings/product-groups');
+                const result = await response.json();
+                if (result.success) {
+                    this.divisions = result.data || [];
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки дивизионов:', error);
+            }
+        },
+        
+        async loadCustomerGroups() {
+            try {
+                const response = await fetch('/api/settings/groups');
+                const result = await response.json();
+                if (result.success) {
+                    this.customerGroups = result.data || [];
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки групп клиентов:', error);
+            }
+        },
+        
+        filteredDivisions() {
+            if (!this.divisionSearch.trim()) return this.divisions;
+            const search = this.divisionSearch.toLowerCase();
+            return this.divisions.filter(d => 
+                d.fGROUP.toLowerCase().includes(search) || 
+                (d.name && d.name.toLowerCase().includes(search))
+            );
+        },
+        
+        filteredGroups() {
+            if (!this.groupSearch.trim()) return this.customerGroups;
+            const search = this.groupSearch.toLowerCase();
+            return this.customerGroups.filter(g => g.toLowerCase().includes(search));
+        },
+        
+        selectAllDivisions() {
+            if (this.selectedDivisions.length === this.divisions.length) {
+                this.selectedDivisions = [];
+            } else {
+                this.selectedDivisions = this.divisions.map(d => d.fGROUP);
+            }
+            this.saveDivisionsToStorage();
+            this.loadCustomers();
+        },
+        
+        selectAllGroups() {
+            if (this.selectedGroups.length === this.customerGroups.length) {
+                this.selectedGroups = [];
+            } else {
+                this.selectedGroups = [...this.customerGroups];
+            }
+            this.saveGroupsToStorage();
+            this.loadCustomers();
+        },
+        
+        saveDivisionsToStorage() {
+            localStorage.setItem('selectedDivisions', JSON.stringify(this.selectedDivisions));
+        },
+        
+        saveGroupsToStorage() {
+            localStorage.setItem('selectedGroups', JSON.stringify(this.selectedGroups));
+        },
+        
+        onAreaChange() {
+            // Проверяем совместимость выбранных групп с новой Sales Area
+            if (this.selectedGroups.length > 0) {
+                // Показываем предупреждение, если могут быть проблемы
+                console.log(`Changed Sales Area to ${this.selectedArea} with groups ${this.selectedGroups.join(',')}`);
+            }
+            this.loadCustomers();
+        },
+        
+        async loadCustomers() {
+            if (!this.selectedArea) return;
+            
+            this.loading = true;
+            try {
+                const includeZero = this.includeZeroSales ? '&include_zero_sales=1' : '';
+                let url = `/api/customers?sales_area=${this.selectedArea}&date_from=${this.dateFrom}&date_to=${this.dateTo}${includeZero}`;
+                
+                // Добавляем фильтры дивизионов
+                if (this.selectedDivisions.length > 0) {
+                    url += `&divisions=${this.selectedDivisions.join(',')}`;
+                }
+                
+                // Добавляем фильтры групп
+                if (this.selectedGroups.length > 0) {
+                    url += `&groups=${this.selectedGroups.join(',')}`;
+                }
+                
+                const response = await fetch(url);
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Добавляем IsProblematic к каждому клиенту
+                    this.customers = result.data.map(customer => ({
+                        ...customer,
+                        IsProblematic: this.checkIsProblematic(customer)
+                    }));
+                    this.summary = result.summary;
+                    
+                    // Показываем предупреждение если данных нет при активных фильтрах групп
+                    if (this.customers.length === 0 && this.selectedGroups.length > 0) {
+                        console.warn(`No data found for Sales Area ${this.selectedArea} with groups ${this.selectedGroups.join(',')}. Try clearing group filters.`);
+                        // Можно добавить toast уведомление
+                    }
+                    
+                    // Update AG Grid only if in table mode and grid is initialized
+                    if (this.viewMode === 'table' && this.gridApi) {
+                        this.gridApi.setGridOption('rowData', this.customers);
+                    }
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки клиентов:', error);
+            } finally {
+                this.loading = false;
+            }
+        },
+        
+        checkIsProblematic(customer) {
+            // Проверяем по настраиваемым критериям (хотя бы один должен совпадать)
+            let isProblematic = false;
+            
+            if (this.criteria.useDebt) {
+                isProblematic = isProblematic || (customer.Debt > this.criteria.minDebt);
+            }
+            
+            if (this.criteria.usePaymentDays) {
+                isProblematic = isProblematic || (customer.DaysSinceLastPayment && customer.DaysSinceLastPayment > this.criteria.maxDaysSincePayment);
+            }
+            
+            if (this.criteria.useDebtPercent) {
+                isProblematic = isProblematic || (customer.DebtPercent > this.criteria.maxDebtPercent);
+            }
+            
+            if (this.criteria.useSaleDays) {
+                isProblematic = isProblematic || (customer.DaysSinceLastSale && customer.DaysSinceLastSale > this.criteria.maxDaysSinceSale);
+            }
+            
+            return isProblematic;
+        },
+        
+        applyProblematicFilter() {
+            if (!this.gridApi) return;
+            
+            if (this.showOnlyProblematic) {
+                // Фильтруем только проблемных клиентов
+                this.gridApi.setGridOption('quickFilterText', '');
+                const problematicCustomers = this.customers.filter(c => c.IsProblematic);
+                this.gridApi.setGridOption('rowData', problematicCustomers);
+            } else {
+                // Показываем всех клиентов
+                this.gridApi.setGridOption('rowData', this.customers);
+            }
+        },
+        
+        applyCriteria() {
+            // Сохраняем критерии в localStorage
+            localStorage.setItem('criteriaSettings', JSON.stringify(this.criteria));
+            
+            // Пересчитываем IsProblematic для всех клиентов
+            this.customers = this.customers.map(customer => ({
+                ...customer,
+                IsProblematic: this.checkIsProblematic(customer)
+            }));
+            
+            // Обновляем грид
+            if (this.gridApi) {
+                if (this.showOnlyProblematic) {
+                    const problematicCustomers = this.customers.filter(c => c.IsProblematic);
+                    this.gridApi.setGridOption('rowData', problematicCustomers);
+                } else {
+                    this.gridApi.setGridOption('rowData', this.customers);
+                }
+            }
+            
+            this.showCriteriaModal = false;
+        },
+        
+        exportToExcel() {
+            if (this.gridApi) {
+                this.gridApi.exportDataAsExcel({
+                    fileName: `customers_${this.selectedArea}_${this.dateFrom}_${this.dateTo}.xlsx`,
+                    sheetName: 'Клиенты'
+                });
+            }
+        },
+        
+        exportToCsv() {
+            if (this.gridApi) {
+                this.gridApi.exportDataAsCsv({
+                    fileName: `customers_${this.selectedArea}_${this.dateFrom}_${this.dateTo}.csv`
+                });
+            }
+        },
+        
+        async openCustomerPurchases(customer) {
+            console.log('Opening customer details:', customer);
+            this.detailPanel.customer = customer;
+            this.detailPanel.open = true;
+            this.detailPanel.purchases = [];
+            this.detailPanel.payments = [];
+            
+            // Загружаем продажи (используем CustomerId если есть, иначе CustomerCode)
+            const customerId = customer.CustomerId || customer.CustomerCode;
+            this.loadCustomerPurchases(customerId);
+        },
+        
+        async loadCustomerPurchases(customerId) {
+            this.detailPanel.loadingPurchases = true;
+            this.detailPanel.loadingPayments = true;
+            try {
+                const params = new URLSearchParams({
+                    date_from: this.dateFrom,
+                    date_to: this.dateTo
+                });
+                const url = `/api/customers/${customerId}/purchases?${params.toString()}`;
+                console.log('Loading purchases from:', url);
+                const response = await fetch(url);
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Инициализируем expanded=false для каждой покупки
+                    this.detailPanel.purchases = (result.data || []).map(purchase => ({
+                        ...purchase,
+                        expanded: false
+                    }));
+                    this.detailPanel.payments = result.payments || [];
+                    console.log('Loaded purchases:', this.detailPanel.purchases.length);
+                    console.log('Loaded payments:', this.detailPanel.payments.length);
+                    console.log('First purchase:', this.detailPanel.purchases[0]);
+                } else {
+                    console.error('API returned error:', result);
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки продаж:', error);
+            } finally {
+                this.detailPanel.loadingPurchases = false;
+                this.detailPanel.loadingPayments = false;
+            }
+        },
+        
+        closeCustomerPurchases() {
+            this.detailPanel.open = false;
+            this.detailPanel.customer = null;
+            this.detailPanel.purchases = [];
+            this.detailPanel.payments = [];
+            this.detailPanel.selectedPurchase = null;
+        },
+        
+        formatCurrency(value) {
+            if (!value) return '0';
+            return value.toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+        },
+        
+        formatDateForDisplay(isoDate) {
+            if (!isoDate) return '';
+            const [year, month, day] = isoDate.split('-');
+            return `${day}.${month}.${year}`;
+        },
+        
+        parseDateFromDisplay(displayDate) {
+            if (!displayDate) return '';
+            
+            // Удаляем лишние символы и пробелы
+            let cleaned = displayDate.trim().replace(/[^\d.\/\-]/g, '');
+            
+            // Поддержка разных разделителей: . / -
+            let parts = cleaned.split(/[.\/\-]/);
+            if (parts.length !== 3) return '';
+            
+            let [day, month, year] = parts;
+            
+            // Валидация
+            if (!day || !month || !year) return '';
+            
+            // Дополняем нулями если нужно
+            day = day.padStart(2, '0');
+            month = month.padStart(2, '0');
+            
+            // Проверяем год (если 2 цифры, добавляем 20)
+            if (year.length === 2) {
+                year = '20' + year;
+            }
+            
+            // Базовая валидация диапазонов
+            const dayNum = parseInt(day);
+            const monthNum = parseInt(month);
+            const yearNum = parseInt(year);
+            
+            if (dayNum < 1 || dayNum > 31) return '';
+            if (monthNum < 1 || monthNum > 12) return '';
+            if (yearNum < 2000 || yearNum > 2100) return '';
+            
+            // Проверяем валидность даты через JavaScript Date
+            const testDate = new Date(yearNum, monthNum - 1, dayNum);
+            if (testDate.getFullYear() !== yearNum || 
+                testDate.getMonth() !== monthNum - 1 || 
+                testDate.getDate() !== dayNum) {
+                return ''; // Невалидная дата (например, 31 февраля)
+            }
+            
+            return `${year}-${month}-${day}`;
+        },
+        
+        updateDateFrom() {
+            const parsed = this.parseDateFromDisplay(this.dateFromDisplay);
+            if (parsed) {
+                this.dateFrom = parsed;
+                this.dateFromDisplay = this.formatDateForDisplay(parsed);
+                this.dateFromError = '';
+                this.loadCustomers();
+            } else if (this.dateFromDisplay && this.dateFromDisplay.trim()) {
+                // Показываем ошибку только если поле не пустое
+                this.dateFromError = 'Такой даты не существует в календаре';
+                // Восстанавливаем предыдущее значение через 3 секунды
+                setTimeout(() => {
+                    this.dateFromDisplay = this.formatDateForDisplay(this.dateFrom);
+                    this.dateFromError = '';
+                }, 3000);
+            } else {
+                // Если поле пустое, просто очищаем ошибку
+                this.dateFromError = '';
+            }
+        },
+        
+        updateDateTo() {
+            const parsed = this.parseDateFromDisplay(this.dateToDisplay);
+            if (parsed) {
+                this.dateTo = parsed;
+                this.dateToDisplay = this.formatDateForDisplay(parsed);
+                this.dateToError = '';
+                this.loadCustomers();
+            } else if (this.dateToDisplay && this.dateToDisplay.trim()) {
+                // Показываем ошибку только если поле не пустое
+                this.dateToError = 'Такой даты не существует в календаре';
+                // Восстанавливаем предыдущее значение через 3 секунды
+                setTimeout(() => {
+                    this.dateToDisplay = this.formatDateForDisplay(this.dateTo);
+                    this.dateToError = '';
+                }, 3000);
+            } else {
+                // Если поле пустое, просто очищаем ошибку
+                this.dateToError = '';
+            }
+        }
+    }
+}
+</script>
+{% endblock %}
