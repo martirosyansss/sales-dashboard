@@ -643,6 +643,8 @@ def get_sales_areas():
                 'SalesCount': 0,
                 'AvgSale': 0,
                 'Debt': 0,
+                'InitialDebt': 0,
+                'Payments': 0,
                 'Managers': []
             }
         
@@ -798,6 +800,52 @@ def get_sales_areas():
                 
                 area_data['Debt'] = total_debt
         
+        # Получить платежи и начальный долг по Sales Areas
+        for area_code, area_data in all_areas.items():
+            total_payments = 0
+            if area_data['Managers']:
+                for manager_info in area_data['Managers']:
+                    manager_id = manager_info['id']
+                    effective_groups = resolve_effective_groups(manager_id, area_code)
+                    if effective_groups is None:
+                        continue
+
+                    if effective_groups:
+                        placeholders = ','.join(['?'] * len(effective_groups))
+                        group_filter = f" AND c.fGROUP IN ({placeholders})"
+                        group_params = tuple(effective_groups)
+                    else:
+                        group_filter = ""
+                        group_params = tuple()
+                    
+                    # Получить платежи
+                    payments_query = f"""
+                        SELECT ISNULL(SUM(ABS(d.fSUM)), 0) as TotalPayments
+                        FROM HICUSTOMERSDEBT d
+                        INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                        INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                        WHERE doc.fCUSTOMERID IN (
+                            SELECT DISTINCT fCUSTOMERID
+                            FROM SALES
+                            WHERE fSALESAGENTID = ?
+                        )
+                            AND d.fDBCR = 'C'
+                            AND doc.fDATE >= ?
+                            AND doc.fDATE <= ?
+                            {excluded_filter}
+                            {group_filter}
+                    """
+                    
+                    all_params = (manager_id, date_from, date_to) + excluded_params + group_params
+                    cursor.execute(payments_query, all_params)
+                    payments_row = cursor.fetchone()
+                    manager_payments = float(payments_row.TotalPayments) if payments_row and payments_row.TotalPayments else 0
+                    total_payments += manager_payments
+                
+                area_data['Payments'] = total_payments
+                # InitialDebt = CurrentDebt - SalesForPeriod + PaymentsForPeriod
+                area_data['InitialDebt'] = area_data['Debt'] - area_data['TotalSales'] + area_data['Payments']
+        
         conn.close()
         
         # Конвертировать в список и сортировать по продажам
@@ -880,7 +928,8 @@ def customers_api():
                         c.fID AS CustomerId,
                         c.fCODE AS CustomerCode,
                         c.fNAME AS CustomerName,
-                        c.fGROUP AS GroupCode
+                        c.fGROUP AS GroupCode,
+                        c.fADDRESS AS CustomerAddress
                     FROM CUSTOMERS c
                     INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
                     WHERE csa.fSALESAREA = ?
@@ -910,11 +959,12 @@ def customers_api():
                         ac.CustomerCode,
                         ac.CustomerName,
                         ac.GroupCode,
+                        ac.CustomerAddress,
                         ISNULL(SUM(fs.SalesCount), 0) AS SalesCount,
                         ISNULL(SUM(fs.TotalSales), 0) AS TotalSales
                     FROM AllCustomers ac
                     LEFT JOIN FilteredSales fs ON ac.CustomerId = fs.CustomerId
-                    GROUP BY ac.CustomerId, ac.CustomerCode, ac.CustomerName, ac.GroupCode
+                    GROUP BY ac.CustomerId, ac.CustomerCode, ac.CustomerName, ac.GroupCode, ac.CustomerAddress
                 ),
                 Managers AS (
                     SELECT 
@@ -974,6 +1024,7 @@ def customers_api():
                     t.CustomerCode,
                     t.CustomerName,
                     ISNULL(t.GroupCode, '') AS GroupCode,
+                    ISNULL(t.CustomerAddress, '') AS CustomerAddress,
                     t.SalesCount,
                     t.TotalSales,
                     ISNULL(m.ManagerCode, 'N/A') AS ManagerCode,
@@ -983,6 +1034,7 @@ def customers_api():
                     ISNULL(rd.Type02, 0) AS Type02,
                     (ISNULL(dd.DebtFromDocs, 0) - ABS(ISNULL(rd.Type01, 0)) - ABS(ISNULL(rd.Type02, 0))) AS Debt,
                     ISNULL(pd.TotalPayments, 0) AS TotalPayments,
+                    ((ISNULL(dd.DebtFromDocs, 0) - ABS(ISNULL(rd.Type01, 0)) - ABS(ISNULL(rd.Type02, 0))) - t.TotalSales + ISNULL(pd.TotalPayments, 0)) AS InitialDebt,
                     lpd.LastPaymentDate,
                     lpd.DaysSinceLastPayment,
                     lsd.LastSaleDate,
@@ -1008,6 +1060,7 @@ def customers_api():
                         c.fCODE AS CustomerCode,
                         c.fNAME AS CustomerName,
                         c.fGROUP AS GroupCode,
+                        c.fADDRESS AS CustomerAddress,
                         sa.fCODE AS ManagerCode,
                         sa.fNAME AS ManagerName,
                         COUNT(s.fISN) AS SalesCount,
@@ -1023,7 +1076,7 @@ def customers_api():
                         {division_clause}
                         {group_clause}
                         {product_groups_filter}
-                    GROUP BY c.fID, c.fCODE, c.fNAME, c.fGROUP, sa.fCODE, sa.fNAME
+                    GROUP BY c.fID, c.fCODE, c.fNAME, c.fGROUP, c.fADDRESS, sa.fCODE, sa.fNAME
                 ),
                 Totals AS (
                     SELECT 
@@ -1031,6 +1084,7 @@ def customers_api():
                         MAX(CustomerCode) AS CustomerCode,
                         MAX(CustomerName) AS CustomerName,
                         MAX(GroupCode) AS GroupCode,
+                        MAX(CustomerAddress) AS CustomerAddress,
                         SUM(SalesCount) AS SalesCount,
                         SUM(TotalSales) AS TotalSales
                     FROM FilteredSales
@@ -1050,6 +1104,7 @@ def customers_api():
                     t.CustomerCode,
                     t.CustomerName,
                     ISNULL(t.GroupCode, '') AS GroupCode,
+                    ISNULL(t.CustomerAddress, '') AS CustomerAddress,
                     t.SalesCount,
                     t.TotalSales,
                     ISNULL(m.ManagerCode, 'N/A') AS ManagerCode,
@@ -1059,6 +1114,7 @@ def customers_api():
                     rest_data.Type02,
                     (debt_data.DebtFromDocs - ABS(rest_data.Type01) - ABS(rest_data.Type02)) AS Debt,
                     payment_data.TotalPayments,
+                    ((debt_data.DebtFromDocs - ABS(rest_data.Type01) - ABS(rest_data.Type02)) - t.TotalSales + payment_data.TotalPayments) AS InitialDebt,
                     last_payment_data.LastPaymentDate,
                     last_payment_data.DaysSinceLastPayment,
                     last_sale_data.LastSaleDate,
@@ -1122,6 +1178,7 @@ def customers_api():
         total_sales = 0.0
         total_debt = 0.0
         total_payments = 0.0
+        total_initial_debt = 0.0
 
         # Log first 5 rows with debt info for debugging
         if include_zero_sales and len(rows) > 0:
@@ -1132,6 +1189,7 @@ def customers_api():
 
         for row in rows:
             debt_value = float(row.Debt) if row.Debt else 0.0
+            initial_debt_value = float(row.InitialDebt) if row.InitialDebt else 0.0
             sales_value = float(row.TotalSales) if row.TotalSales else 0.0
             payments_value = float(row.TotalPayments) if row.TotalPayments else 0.0
             days_since_payment = row.DaysSinceLastPayment if row.DaysSinceLastPayment else None
@@ -1145,10 +1203,15 @@ def customers_api():
             total_sales += sales_value
             total_debt += debt_value
             total_payments += payments_value
+            total_initial_debt += initial_debt_value
+            
+            customer_address = row.CustomerAddress if hasattr(row, 'CustomerAddress') and row.CustomerAddress else ''
+            
             customers.append({
                 'CustomerId': row.CustomerId,
                 'CustomerCode': row.CustomerCode,
                 'CustomerName': row.CustomerName,
+                'CustomerAddress': customer_address,
                 'GroupCode': row.GroupCode,
                 'ManagerCode': row.ManagerCode,
                 'ManagerName': row.ManagerName,
@@ -1156,6 +1219,7 @@ def customers_api():
                 'TotalSales': sales_value,
                 'TotalPayments': payments_value,
                 'Debt': debt_value,
+                'InitialDebt': initial_debt_value,
                 'DebtPercent': round(debt_percent, 1),
                 'LastPaymentDate': last_payment_date,
                 'DaysSinceLastPayment': days_since_payment,
@@ -1171,6 +1235,7 @@ def customers_api():
                 'total_sales': total_sales,
                 'total_debt': total_debt,
                 'total_payments': total_payments,
+                'total_initial_debt': total_initial_debt,
                 'sales_area': sales_area,
                 'period': {
                     'from': date_from,

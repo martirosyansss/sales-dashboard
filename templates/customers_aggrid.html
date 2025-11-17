@@ -27,37 +27,83 @@
     .customer-detail-overlay {
         position: fixed;
         inset: 0;
-        background: rgba(5, 5, 5, 0.7);
-        backdrop-filter: blur(3px);
+        background: rgba(5, 5, 5, 0.8);
+        backdrop-filter: blur(4px);
         z-index: 9998;
         display: flex;
         align-items: center;
-        justify-content: flex-end;
+        justify-content: center;
     }
     .customer-detail-panel {
-        width: 900px;
-        max-width: 95vw;
-        height: 100vh;
+        width: 100%;
+        max-width: 1400px;
+        height: 95vh;
+        margin: 0 auto;
         background: #1a1d20;
-        border-left: 1px solid #495057;
-        box-shadow: -4px 0 20px rgba(0,0,0,0.5);
+        border: 1px solid #495057;
+        border-radius: 8px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.6);
         overflow: hidden;
         display: flex;
         flex-direction: column;
-        animation: slideInFromRight 0.3s ease-out;
+        animation: zoomIn 0.3s ease-out;
     }
-    @keyframes slideInFromRight {
-        from { transform: translateX(100%); }
-        to { transform: translateX(0); }
+    
+    @keyframes zoomIn {
+        from { 
+            opacity: 0;
+            transform: scale(0.95);
+        }
+        to { 
+            opacity: 1;
+            transform: scale(1);
+        }
     }
+    
     .customer-detail-panel .panel-header {
-        padding: 1.5rem;
+        padding: 1rem 1.5rem;
         border-bottom: 1px solid #495057;
         background: #212529;
+        flex-shrink: 0;
     }
     .customer-detail-panel .panel-body {
         padding: 1.5rem;
         overflow-y: auto;
+        flex: 1;
+    }
+    
+    /* Responsive adjustments */
+    @media (max-width: 1200px) {
+        .customer-detail-panel {
+            max-width: 95vw;
+            height: 90vh;
+        }
+        .customer-detail-panel .panel-body {
+            padding: 1rem;
+        }
+    }
+    
+    @media (max-width: 768px) {
+        .customer-detail-panel {
+            width: 100%;
+            height: 100vh;
+            border-radius: 0;
+        }
+        .customer-detail-panel .panel-header {
+            padding: 0.75rem 1rem;
+        }
+        .customer-detail-panel .panel-body {
+            padding: 0.75rem;
+        }
+    }
+    
+    @media (max-width: 576px) {
+        .customer-detail-panel .panel-header h5 {
+            font-size: 1rem;
+        }
+        .customer-detail-panel .panel-body {
+            padding: 0.5rem;
+        }
     }
     
     /* Modal styling */
@@ -724,48 +770,59 @@
 
     <!-- Статистика -->
     <div class="row g-3 mb-4">
-        <div class="col-lg-3 col-md-6 col-6">
+        <div class="col-xl-3 col-lg-6 col-md-6">
             <div class="stat-card clients">
-                <i class="fas fa-users stat-icon"></i>
-                <div class="stat-label">
-                    <i class="fas fa-users"></i>
-                    Клиентов
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-users stat-icon me-3" style="font-size: 2.5rem; opacity: 0.3;"></i>
+                    <div class="flex-grow-1">
+                        <div class="stat-label mb-1">Клиентов</div>
+                        <div class="stat-value mb-1" x-text="summary.count"></div>
+                        <small class="text-muted" style="font-size: 0.7rem;" x-text="includeZeroSales ? 'вкл. с 0 продаж' : 'с продажами'"></small>
+                    </div>
                 </div>
-                <div class="stat-value" x-text="summary.count"></div>
-                <small class="text-muted d-block" x-text="includeZeroSales ? 'включая клиентов с 0 продаж' : 'с продажами в выбранный период'"></small>
             </div>
         </div>
-        <div class="col-lg-3 col-md-6 col-6">
+        <div class="col-xl-3 col-lg-6 col-md-6">
             <div class="stat-card sales">
-                <i class="fas fa-chart-line stat-icon"></i>
-                <div class="stat-label">
-                    <i class="fas fa-shopping-cart"></i>
-                    Продажи
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-chart-line stat-icon me-3" style="font-size: 2.5rem; opacity: 0.3;"></i>
+                    <div class="flex-grow-1">
+                        <div class="stat-label mb-1">Продажи</div>
+                        <div class="stat-value mb-1"><span x-text="formatCurrency(summary.total_sales)"></span> ֏</div>
+                        <small class="text-muted" style="font-size: 0.7rem;">за период</small>
+                    </div>
                 </div>
-                <div class="stat-value"><span x-text="formatCurrency(summary.total_sales)"></span> ֏</div>
-                <small class="text-muted d-block">за выбранный период</small>
             </div>
         </div>
-        <div class="col-lg-3 col-md-6 col-6">
+        <div class="col-xl-3 col-lg-6 col-md-6">
             <div class="stat-card payments">
-                <i class="fas fa-money-bill-wave stat-icon"></i>
-                <div class="stat-label">
-                    <i class="fas fa-credit-card"></i>
-                    Платежи
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-money-bill-wave stat-icon me-3" style="font-size: 2.5rem; opacity: 0.3;"></i>
+                    <div class="flex-grow-1">
+                        <div class="stat-label mb-1">Платежи</div>
+                        <div class="stat-value mb-1"><span x-text="formatCurrency(summary.total_payments || 0)"></span> ֏</div>
+                        <small class="text-muted" style="font-size: 0.7rem;">за период</small>
+                    </div>
                 </div>
-                <div class="stat-value"><span x-text="formatCurrency(summary.total_payments || 0)"></span> ֏</div>
-                <small class="text-muted d-block">за выбранный период</small>
             </div>
         </div>
-        <div class="col-lg-3 col-md-6 col-6">
+        <div class="col-xl-3 col-lg-6 col-md-6">
             <div class="stat-card debts">
-                <i class="fas fa-exclamation-triangle stat-icon"></i>
-                <div class="stat-label">
-                    <i class="fas fa-wallet"></i>
-                    Долги
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-exclamation-triangle stat-icon me-3" style="font-size: 2.5rem; opacity: 0.3;"></i>
+                    <div class="flex-grow-1">
+                        <div class="stat-label mb-1">Долги</div>
+                        <div class="stat-value mb-1" style="font-size: 1.4rem;">
+                            <span x-text="formatCurrency(summary.total_debt)"></span> ֏
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center">
+                            <small class="text-muted" style="font-size: 0.65rem;">Начальный:</small>
+                            <div style="font-size: 1.1rem; color: #3498db; font-weight: 600;">
+                                <span x-text="formatCurrency(summary.total_initial_debt || 0)"></span> ֏
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div class="stat-value"><span x-text="formatCurrency(summary.total_debt)"></span> ֏</div>
-                <small class="text-muted d-block">на текущую дату</small>
             </div>
         </div>
     </div>
@@ -922,120 +979,171 @@
             <div class="panel-body">
                 <template x-if="detailPanel.customer">
                     <div>
-                        <!-- Основная информация -->
-                        <div class="row mb-2">
-                            <div class="col-md-6">
-                                <div class="card bg-dark border-secondary mb-2">
-                                    <div class="card-body p-2">
-                                        <small class="text-muted text-uppercase d-block mb-1">Информация о клиенте</small>
-                                        <div class="mb-1">
-                                            <small class="text-muted">Группа:</small>
-                                            <strong class="ms-1" x-text="detailPanel.customer.GroupCode"></strong>
+                        <!-- Информация и финансы -->
+                        <div class="row mb-3">
+                            <!-- Левая колонка: Информация -->
+                            <div class="col-lg-4">
+                                <div class="card bg-dark border-secondary h-100">
+                                    <div class="card-body p-3">
+                                        <h6 class="text-uppercase text-muted mb-3" style="font-size: 0.75rem; letter-spacing: 1px;">
+                                            <i class="fas fa-info-circle me-2"></i>Информация
+                                        </h6>
+                                        
+                                        <div class="mb-3">
+                                            <div class="text-muted small mb-1">Группа</div>
+                                            <div class="fw-bold" x-text="detailPanel.customer.GroupCode"></div>
                                         </div>
-                                        <div>
-                                            <small class="text-muted">Менеджер:</small>
-                                            <span class="badge bg-primary ms-1" x-text="detailPanel.customer.ManagerCode"></span>
-                                            <small x-text="detailPanel.customer.ManagerName"></small>
+                                        
+                                        <div class="mb-3">
+                                            <div class="text-muted small mb-1">Менеджер</div>
+                                            <div>
+                                                <span class="badge bg-primary me-1" x-text="detailPanel.customer.ManagerCode"></span>
+                                                <span class="small" x-text="detailPanel.customer.ManagerName"></span>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="mb-3" x-show="detailPanel.customer.CustomerAddress">
+                                            <div class="text-muted small mb-1">Адрес</div>
+                                            <div class="small" x-text="detailPanel.customer.CustomerAddress"></div>
+                                        </div>
+                                        
+                                        <div class="border-top border-secondary pt-3 mt-3">
+                                            <div class="text-muted small mb-1">Продаж за период</div>
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <span class="fs-5 fw-bold text-primary" x-text="detailPanel.customer.SalesCount || 0"></span>
+                                                <span class="small text-muted" x-text="formatCurrency(detailPanel.customer.TotalSales) + ' ֏'"></span>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
                             </div>
-                            <div class="col-md-6">
-                                <div class="card bg-dark border-secondary mb-2">
-                                    <div class="card-body p-2">
-                                        <small class="text-muted text-uppercase d-block mb-1">Статистика</small>
-                                        <div class="mb-1">
-                                            <small class="text-muted">Продаж:</small>
-                                            <strong class="ms-1" x-text="detailPanel.customer.SalesCount || 0"></strong>
+                            
+                            <!-- Правая колонка: Финансы -->
+                            <div class="col-lg-8">
+                                <div class="card bg-dark border-secondary h-100">
+                                    <div class="card-body p-3">
+                                        <h6 class="text-uppercase text-muted mb-3" style="font-size: 0.75rem; letter-spacing: 1px;">
+                                            <i class="fas fa-chart-line me-2"></i>Финансовые показатели
+                                        </h6>
+                                        
+                                        <div class="row g-3">
+                                            <!-- Платежи -->
+                                            <div class="col-md-4">
+                                                <div class="text-center p-3 rounded" style="background: rgba(46, 204, 113, 0.1); border: 1px solid rgba(46, 204, 113, 0.3);">
+                                                    <div class="text-muted small mb-2">Платежи</div>
+                                                    <div class="fs-4 fw-bold text-success" x-text="formatCurrency(detailPanel.customer.TotalPayments) + ' ֏'"></div>
+                                                    <div class="text-muted small mt-2">
+                                                        <span x-text="detailPanel.customer.LastPaymentDate || 'Нет данных'"></span>
+                                                        <template x-if="detailPanel.customer.DaysSinceLastPayment">
+                                                            <span class="badge ms-1" 
+                                                                :class="detailPanel.customer.DaysSinceLastPayment > 60 ? 'bg-danger' : (detailPanel.customer.DaysSinceLastPayment > 30 ? 'bg-warning' : 'bg-success')"
+                                                                x-text="detailPanel.customer.DaysSinceLastPayment + 'д'">
+                                                            </span>
+                                                        </template>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- Долги -->
+                                            <div class="col-md-4">
+                                                <div class="text-center p-3 rounded" style="background: rgba(52, 73, 94, 0.3); border: 1px solid rgba(52, 73, 94, 0.5);">
+                                                    <div class="text-muted small mb-2">Долги</div>
+                                                    <div class="d-flex justify-content-around mb-2">
+                                                        <div>
+                                                            <div class="small text-muted">Начальный</div>
+                                                            <div class="fs-6 fw-bold text-info" x-text="formatCurrency(detailPanel.customer.InitialDebt)"></div>
+                                                        </div>
+                                                        <div class="border-start border-secondary px-2"></div>
+                                                        <div>
+                                                            <div class="small text-muted">Текущий</div>
+                                                            <div class="fs-6 fw-bold text-danger" x-text="formatCurrency(detailPanel.customer.Debt)"></div>
+                                                        </div>
+                                                    </div>
+                                                    <div class="small" x-text="'AMD'"></div>
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- Процент долга -->
+                                            <div class="col-md-4">
+                                                <div class="text-center p-3 rounded" style="background: rgba(241, 196, 15, 0.1); border: 1px solid rgba(241, 196, 15, 0.3);">
+                                                    <div class="text-muted small mb-2">Процент долга</div>
+                                                    <div class="fs-4 fw-bold text-warning" x-text="(detailPanel.customer.DebtPercent || 0).toFixed(1) + '%'"></div>
+                                                    <div class="text-muted small mt-2">
+                                                        Последняя покупка
+                                                        <div>
+                                                            <span x-text="detailPanel.customer.LastSaleDate || 'Нет данных'"></span>
+                                                            <template x-if="detailPanel.customer.DaysSinceLastSale">
+                                                                <span class="badge ms-1" 
+                                                                    :class="detailPanel.customer.DaysSinceLastSale > 90 ? 'bg-danger' : (detailPanel.customer.DaysSinceLastSale > 60 ? 'bg-warning' : 'bg-success')"
+                                                                    x-text="detailPanel.customer.DaysSinceLastSale + 'д'">
+                                                                </span>
+                                                            </template>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <small class="text-muted">Сумма:</small>
-                                            <strong class="text-primary ms-1" x-text="formatCurrency(detailPanel.customer.TotalSales) + ' ֏'"></strong>
+                                        
+                                        <!-- График активности -->
+                                        <div class="mt-3">
+                                            <div class="text-muted small mb-2" style="font-size: 0.7rem;">
+                                                <i class="fas fa-chart-bar me-1"></i>График активности
+                                            </div>
+                                            <div class="p-2 rounded" style="background: rgba(52, 73, 94, 0.2); border: 1px solid rgba(52, 73, 94, 0.4); height: 180px;">
+                                                <template x-if="!detailPanel.loadingPurchases && (detailPanel.purchases.length > 0 || detailPanel.payments.length > 0)">
+                                                    <canvas x-ref="activityChart" style="height: 160px; width: 100%;"></canvas>
+                                                </template>
+                                                <template x-if="!detailPanel.loadingPurchases && detailPanel.purchases.length === 0 && detailPanel.payments.length === 0">
+                                                    <div class="text-center text-muted py-3 small">
+                                                        <i class="fas fa-chart-line me-1"></i>
+                                                        Нет данных для отображения
+                                                    </div>
+                                                </template>
+                                                <template x-if="detailPanel.loadingPurchases">
+                                                    <div class="text-center py-3">
+                                                        <div class="spinner-border spinner-border-sm text-primary"></div>
+                                                        <p class="text-muted small mt-2 mb-0">Загрузка...</p>
+                                                    </div>
+                                                </template>
+                                            </div>
                                         </div>
+                                        
+                                        <!-- Предупреждение -->
+                                        <template x-if="detailPanel.customer.IsProblematic">
+                                            <div class="alert alert-warning mt-3 mb-0 py-2">
+                                                <i class="fas fa-exclamation-triangle me-2"></i>
+                                                <strong>Проблемный клиент!</strong> Требует внимания.
+                                            </div>
+                                        </template>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Финансы -->
-                        <div class="row mb-2">
-                            <div class="col-md-4">
-                                <div class="card bg-dark border-secondary mb-2">
-                                    <div class="card-body text-center p-2">
-                                        <small class="text-muted d-block">Платежи</small>
-                                        <h5 class="text-success mb-0" x-text="formatCurrency(detailPanel.customer.TotalPayments) + ' ֏'"></h5>
+                        <!-- Фильтр по датам для продаж и платежей -->
+                        <div class="card bg-dark border-secondary mb-3">
+                            <div class="card-body p-3">
+                                <div class="row g-2 align-items-end">
+                                    <div class="col-lg-4 col-md-5 col-12">
+                                        <label class="form-label small text-muted mb-1">
+                                            <i class="fas fa-calendar-alt me-1"></i>Дата с
+                                        </label>
+                                        <input type="date" class="form-control form-control-sm" x-model="detailPanel.dateFrom" @change="reloadCustomerData()">
                                     </div>
-                                </div>
-                            </div>
-                            <div class="col-md-4">
-                                <div class="card bg-dark border-secondary mb-2">
-                                    <div class="card-body text-center p-2">
-                                        <small class="text-muted d-block">Долг</small>
-                                        <h5 class="mb-0" :class="detailPanel.customer.Debt > 0 ? 'text-danger' : 'text-success'" x-text="formatCurrency(detailPanel.customer.Debt) + ' ֏'"></h5>
+                                    <div class="col-lg-4 col-md-5 col-12">
+                                        <label class="form-label small text-muted mb-1">
+                                            <i class="fas fa-calendar-alt me-1"></i>Дата по
+                                        </label>
+                                        <input type="date" class="form-control form-control-sm" x-model="detailPanel.dateTo" @change="reloadCustomerData()">
                                     </div>
-                                </div>
-                            </div>
-                            <div class="col-md-4">
-                                <div class="card bg-dark border-secondary mb-2">
-                                    <div class="card-body text-center p-2">
-                                        <small class="text-muted d-block">% долга</small>
-                                        <h5 class="mb-0" x-text="(detailPanel.customer.DebtPercent || 0).toFixed(1) + '%'"></h5>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Активность -->
-                        <div class="row mb-2">
-                            <div class="col-md-6">
-                                <div class="card bg-dark border-secondary mb-2">
-                                    <div class="card-body p-2">
-                                        <small class="text-muted text-uppercase d-block mb-1">Последний платеж</small>
-                                        <div class="d-flex justify-content-between align-items-center">
-                                            <small x-text="detailPanel.customer.LastPaymentDate || 'Нет данных'"></small>
-                                            <template x-if="detailPanel.customer.DaysSinceLastPayment">
-                                                <span 
-                                                    class="badge" 
-                                                    :class="detailPanel.customer.DaysSinceLastPayment > 60 ? 'bg-danger' : (detailPanel.customer.DaysSinceLastPayment > 30 ? 'bg-warning' : 'bg-success')"
-                                                    x-text="detailPanel.customer.DaysSinceLastPayment + 'д'">
-                                                </span>
-                                            </template>
-                                            <template x-if="!detailPanel.customer.DaysSinceLastPayment">
-                                                <span class="text-muted">—</span>
-                                            </template>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-md-6">
-                                <div class="card bg-dark border-secondary mb-2">
-                                    <div class="card-body p-2">
-                                        <small class="text-muted text-uppercase d-block mb-1">Последняя покупка</small>
-                                        <div class="d-flex justify-content-between align-items-center">
-                                            <small x-text="detailPanel.customer.LastSaleDate || 'Нет данных'"></small>
-                                            <template x-if="detailPanel.customer.DaysSinceLastSale">
-                                                <span 
-                                                    class="badge" 
-                                                    :class="detailPanel.customer.DaysSinceLastSale > 90 ? 'bg-danger' : (detailPanel.customer.DaysSinceLastSale > 60 ? 'bg-warning' : 'bg-success')"
-                                                    x-text="detailPanel.customer.DaysSinceLastSale + 'д'">
-                                                </span>
-                                            </template>
-                                            <template x-if="!detailPanel.customer.DaysSinceLastSale">
-                                                <span class="text-muted">—</span>
-                                            </template>
-                                        </div>
+                                    <div class="col-lg-4 col-md-2 col-12">
+                                        <button class="btn btn-sm btn-outline-primary w-100" @click="resetDetailDates()">
+                                            <i class="fas fa-undo"></i> Сброс
+                                        </button>
                                     </div>
                                 </div>
                             </div>
                         </div>
-
-                        <!-- Предупреждение о проблемах -->
-                        <template x-if="detailPanel.customer.IsProblematic">
-                            <div class="alert alert-warning">
-                                <i class="fas fa-exclamation-triangle me-2"></i>
-                                <strong>Проблемный клиент!</strong> Требует внимания.
-                            </div>
-                        </template>
 
                         <!-- Продажи -->
                         <div class="card bg-dark border-secondary mb-3">
@@ -1057,7 +1165,7 @@
                                     <p class="text-muted text-center mb-0">Нет продаж за выбранный период</p>
                                 </template>
                                 <template x-if="!detailPanel.loadingPurchases && detailPanel.purchases.length > 0">
-                                    <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                                    <div class="table-responsive" style="max-height: 50vh; overflow-y: auto;">
                                         <table class="table table-dark table-sm">
                                             <thead class="sticky-top bg-dark">
                                                 <tr>
@@ -1168,7 +1276,7 @@
                                     <p class="text-muted text-center mb-0">Нет платежей за выбранный период</p>
                                 </template>
                                 <template x-if="!detailPanel.loadingPayments && detailPanel.payments.length > 0">
-                                    <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                                    <div class="table-responsive" style="max-height: 50vh; overflow-y: auto;">
                                         <table class="table table-dark table-sm table-hover">
                                             <thead class="sticky-top bg-dark">
                                                 <tr>
@@ -1248,17 +1356,23 @@ function customersData() {
             total_sales: 0,
             total_payments: 0,
             total_debt: 0,
+            total_initial_debt: 0,
             period: { from: '', to: '' }
         },
         gridApi: null,
         gridInitialized: false,
+        activityChart: null, // Для хранения экземпляра графика
         detailPanel: {
             open: false,
             customer: null,
             purchases: [],
             payments: [],
+            chartPurchases: [],
+            chartPayments: [],
             loadingPurchases: false,
-            loadingPayments: false
+            loadingPayments: false,
+            dateFrom: '',
+            dateTo: ''
         },
         
         init() {
@@ -1372,6 +1486,15 @@ function customersData() {
                         type: 'numericColumn',
                         filter: 'agNumberColumnFilter',
                         cellClass: 'text-success',
+                        valueFormatter: params => params.value ? params.value.toLocaleString('ru-RU', {minimumFractionDigits: 0, maximumFractionDigits: 0}) + ' AMD' : '0 AMD'
+                    },
+                    {
+                        headerName: 'Нач. долг',
+                        field: 'InitialDebt',
+                        width: 150,
+                        type: 'numericColumn',
+                        filter: 'agNumberColumnFilter',
+                        cellClass: params => params.value > 0 ? 'text-warning' : 'text-success',
                         valueFormatter: params => params.value ? params.value.toLocaleString('ru-RU', {minimumFractionDigits: 0, maximumFractionDigits: 0}) + ' AMD' : '0 AMD'
                     },
                     {
@@ -1782,11 +1905,11 @@ function customersData() {
                     onlySelectedAllPages: false,
                     // Column customization for Excel
                     columnKeys: ['CustomerCode', 'CustomerName', 'GroupCode', 'ManagerCode', 'ManagerName', 
-                                 'SalesCount', 'TotalSales', 'TotalPayments', 'Debt', 'DebtPercent',
+                                 'SalesCount', 'TotalSales', 'TotalPayments', 'InitialDebt', 'Debt', 'DebtPercent',
                                  'LastPaymentDate', 'DaysSinceLastPayment', 'LastSaleDate', 'DaysSinceLastSale'],
                     processCellCallback: (params) => {
                         // Format numeric values for Excel
-                        if (['TotalSales', 'TotalPayments', 'Debt'].includes(params.column.getColId())) {
+                        if (['TotalSales', 'TotalPayments', 'InitialDebt', 'Debt'].includes(params.column.getColId())) {
                             return params.value || 0;
                         }
                         if (params.column.getColId() === 'DebtPercent') {
@@ -1815,7 +1938,7 @@ function customersData() {
                     onlySelected: false,
                     onlySelectedAllPages: false,
                     columnKeys: ['CustomerCode', 'CustomerName', 'GroupCode', 'ManagerCode', 'ManagerName', 
-                                 'SalesCount', 'TotalSales', 'TotalPayments', 'Debt', 'DebtPercent',
+                                 'SalesCount', 'TotalSales', 'TotalPayments', 'InitialDebt', 'Debt', 'DebtPercent',
                                  'LastPaymentDate', 'DaysSinceLastPayment', 'LastSaleDate', 'DaysSinceLastSale']
                 });
                 
@@ -1834,6 +1957,14 @@ function customersData() {
             this.detailPanel.purchases = [];
             this.detailPanel.payments = [];
             
+            // Устанавливаем даты из основных фильтров, если еще не установлены
+            if (!this.detailPanel.dateFrom) {
+                this.detailPanel.dateFrom = this.dateFrom;
+            }
+            if (!this.detailPanel.dateTo) {
+                this.detailPanel.dateTo = this.dateTo;
+            }
+            
             // Загружаем продажи (используем CustomerId если есть, иначе CustomerCode)
             const customerId = customer.CustomerId || customer.CustomerCode;
             this.loadCustomerPurchases(customerId);
@@ -1843,9 +1974,10 @@ function customersData() {
             this.detailPanel.loadingPurchases = true;
             this.detailPanel.loadingPayments = true;
             try {
+                // Используем даты из detailPanel для таблиц
                 const params = new URLSearchParams({
-                    date_from: this.dateFrom,
-                    date_to: this.dateTo
+                    date_from: this.detailPanel.dateFrom || this.dateFrom,
+                    date_to: this.detailPanel.dateTo || this.dateTo
                 });
                 const url = `/api/customers/${customerId}/purchases?${params.toString()}`;
                 console.log('Loading purchases from:', url);
@@ -1857,6 +1989,9 @@ function customersData() {
                     this.detailPanel.payments = result.payments || [];
                     console.log('Loaded purchases:', this.detailPanel.purchases.length);
                     console.log('Loaded payments:', this.detailPanel.payments.length);
+                    
+                    // Загружаем данные для графика за последний год
+                    this.loadChartData(customerId);
                 } else {
                     console.error('API returned error:', result);
                 }
@@ -1868,11 +2003,254 @@ function customersData() {
             }
         },
         
+        async loadChartData(customerId) {
+            try {
+                // Вычисляем даты для последнего года
+                const today = new Date();
+                const oneYearAgo = new Date(today);
+                oneYearAgo.setFullYear(today.getFullYear() - 1);
+                
+                const dateFrom = oneYearAgo.toISOString().split('T')[0];
+                const dateTo = today.toISOString().split('T')[0];
+                
+                const params = new URLSearchParams({
+                    date_from: dateFrom,
+                    date_to: dateTo
+                });
+                const url = `/api/customers/${customerId}/purchases?${params.toString()}`;
+                console.log('Loading chart data from:', url);
+                const response = await fetch(url);
+                const result = await response.json();
+                
+                if (result.success) {
+                    this.detailPanel.chartPurchases = result.data || [];
+                    this.detailPanel.chartPayments = result.payments || [];
+                    
+                    // Обновляем график после загрузки данных
+                    this.$nextTick(() => {
+                        this.updateActivityChart();
+                    });
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки данных для графика:', error);
+            }
+        },
+        
+        reloadCustomerData() {
+            // Перезагружаем данные с новыми датами
+            if (this.detailPanel.customer) {
+                const customerId = this.detailPanel.customer.CustomerId || this.detailPanel.customer.CustomerCode;
+                this.loadCustomerPurchases(customerId);
+            }
+        },
+        
+        resetDetailDates() {
+            // Сбрасываем даты на основные фильтры
+            this.detailPanel.dateFrom = this.dateFrom;
+            this.detailPanel.dateTo = this.dateTo;
+            this.reloadCustomerData();
+        },
+        
         closeCustomerPurchases() {
             this.detailPanel.open = false;
             this.detailPanel.customer = null;
             this.detailPanel.purchases = [];
             this.detailPanel.payments = [];
+            
+            // Уничтожаем график при закрытии
+            if (this.activityChart) {
+                this.activityChart.destroy();
+                this.activityChart = null;
+            }
+        },
+        
+        updateActivityChart() {
+            // Уничтожаем предыдущий график если есть
+            if (this.activityChart) {
+                this.activityChart.destroy();
+                this.activityChart = null;
+            }
+            
+            // Проверяем наличие данных для графика (из chartPurchases/chartPayments)
+            if (!this.detailPanel.chartPurchases || !this.detailPanel.chartPayments) {
+                console.log('Chart data not loaded yet');
+                return;
+            }
+            
+            if (this.detailPanel.chartPurchases.length === 0 && this.detailPanel.chartPayments.length === 0) {
+                console.log('No data for chart');
+                return;
+            }
+            
+            // Даем Alpine время отрендерить canvas
+            setTimeout(() => {
+                const canvas = this.$refs.activityChart;
+                if (!canvas) {
+                    console.log('Canvas not found after timeout');
+                    return;
+                }
+                
+                console.log('Purchases data:', this.detailPanel.chartPurchases.length);
+                console.log('Payments data:', this.detailPanel.chartPayments.length);
+                
+                // Группируем данные по дням
+                const dailyData = {};
+                
+            // Добавляем покупки
+            this.detailPanel.chartPurchases.forEach(purchase => {
+                console.log('Purchase object keys:', Object.keys(purchase));
+                console.log('Purchase dates - DocDate:', purchase.DocDate, 'SaleDate:', purchase.SaleDate, 'Date:', purchase.Date);
+                
+                const date = purchase.DocDate || purchase.SaleDate || purchase.Date;
+                const dateStr = date ? (date.split ? date.split('T')[0] : date) : null;
+                
+                if (dateStr && !dailyData[dateStr]) {
+                    dailyData[dateStr] = { purchases: 0, payments: 0 };
+                }
+                if (dateStr) {
+                    // Пробуем разные поля или считаем из Products
+                    let sum = purchase.TotalSum || purchase.TotalWithDiscount || purchase.Total || 0;
+                    
+                    // Если нет прямого поля суммы, считаем из продуктов
+                    if (!sum && purchase.Products && Array.isArray(purchase.Products)) {
+                        sum = purchase.Products.reduce((total, product) => {
+                            return total + (product.TotalWithDiscount || product.Total || 0);
+                        }, 0);
+                    }
+                    
+                    dailyData[dateStr].purchases += sum;
+                    console.log(`Added purchase for ${dateStr}: ${sum}, total now: ${dailyData[dateStr].purchases}`);
+                }
+            });
+            
+            // Добавляем платежи
+            this.detailPanel.chartPayments.forEach(payment => {
+                console.log('Payment:', payment);
+                const date = payment.PaymentDate ? payment.PaymentDate.split('T')[0] : payment.PaymentDate;
+                if (date && !dailyData[date]) {
+                    dailyData[date] = { purchases: 0, payments: 0 };
+                }
+                if (date) {
+                    const sum = payment.Amount || payment.PaymentSum || payment.Sum || 0;
+                    dailyData[date].payments += sum;
+                    console.log(`Added payment for ${date}: ${sum}, total now: ${dailyData[date].payments}`);
+                }
+            });                console.log('Daily data:', dailyData);
+                
+                // Сортируем даты
+                const sortedDates = Object.keys(dailyData).sort();
+                
+                if (sortedDates.length === 0) {
+                    console.log('No dates to display');
+                    return;
+                }
+                
+                // Форматируем даты для отображения
+                const labels = sortedDates.map(date => {
+                    const [y, m, d] = date.split('-');
+                    return `${d}.${m}`;
+                });
+                
+                const purchasesData = sortedDates.map(date => dailyData[date].purchases);
+                const paymentsData = sortedDates.map(date => dailyData[date].payments);
+                
+                console.log('Chart labels:', labels);
+                console.log('Chart data - Purchases:', purchasesData);
+                console.log('Chart data - Payments:', paymentsData);
+                
+                // Создаем график
+                const ctx = canvas.getContext('2d');
+                this.activityChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: 'Покупки',
+                                data: purchasesData,
+                                backgroundColor: 'rgba(13, 110, 253, 0.1)',
+                                borderColor: 'rgba(13, 110, 253, 1)',
+                                borderWidth: 2,
+                                fill: true,
+                                tension: 0.4,
+                                pointBackgroundColor: 'rgba(13, 110, 253, 1)',
+                                pointBorderColor: '#fff',
+                                pointBorderWidth: 2,
+                                pointRadius: 4,
+                                pointHoverRadius: 6
+                            },
+                            {
+                                label: 'Платежи',
+                                data: paymentsData,
+                                backgroundColor: 'rgba(46, 204, 113, 0.1)',
+                                borderColor: 'rgba(46, 204, 113, 1)',
+                                borderWidth: 2,
+                                fill: true,
+                                tension: 0.4,
+                                pointBackgroundColor: 'rgba(46, 204, 113, 1)',
+                                pointBorderColor: '#fff',
+                                pointBorderWidth: 2,
+                                pointRadius: 4,
+                                pointHoverRadius: 6
+                            }
+                        ]
+                    },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            labels: {
+                                color: '#adb5bd',
+                                font: {
+                                    size: 11
+                                },
+                                padding: 8,
+                                usePointStyle: true
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    let label = context.dataset.label || '';
+                                    if (label) {
+                                        label += ': ';
+                                    }
+                                    label += context.parsed.y.toLocaleString('ru-RU') + ' ֏';
+                                    return label;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                color: '#adb5bd',
+                                callback: function(value) {
+                                    return value.toLocaleString('ru-RU') + ' ֏';
+                                }
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                color: '#adb5bd',
+                                maxRotation: 45,
+                                minRotation: 45
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.05)'
+                            }
+                        }
+                    }
+                }
+            });
+            }, 100); // Закрытие setTimeout
         },
         
         formatCurrency(value) {
