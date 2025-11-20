@@ -2,26 +2,239 @@
 
 {% block title %}Территории - Sales Dashboard v2.0{% endblock %}
 
+{% block head %}
+<style>
+    /* Professional card styling */
+    .card[style*="cursor: pointer"] {
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        border: none;
+        background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+    .card[style*="cursor: pointer"]:hover {
+        transform: translateY(-8px) scale(1.02);
+        box-shadow: 0 12px 24px rgba(0,0,0,0.15);
+    }
+
+    .circular-chart {
+        display: block;
+        margin: 0 auto;
+        max-width: 80%;
+        max-height: 250px;
+        filter: drop-shadow(0 4px 12px rgba(0,0,0,0.12));
+        transition: transform 0.3s ease;
+    }
+    .circular-chart:hover {
+        transform: scale(1.05);
+    }
+    .circle-bg {
+        fill: none;
+        stroke: #eee;
+        stroke-width: 3.8;
+    }
+    .circle {
+        fill: none;
+        stroke-width: 2.8;
+        stroke-linecap: round;
+        animation: progress 1.5s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+        filter: drop-shadow(0 0 4px currentColor);
+    }
+    @keyframes progress {
+        0% { stroke-dasharray: 0 100; }
+    }
+    .circular-chart.blue .circle { 
+        stroke: url(#blueGradient);
+    }
+    .circular-chart.green .circle { 
+        stroke: url(#greenGradient);
+    }
+    .circular-chart.info .circle { 
+        stroke: url(#infoGradient);
+    }
+    .percentage {
+        fill: #2d3748;
+        font-family: 'Segoe UI', sans-serif;
+        font-weight: 800;
+        font-size: 0.55em;
+        text-anchor: middle;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.7; }
+    }
+
+    /* iOS Glassmorphism for Modal */
+    #areaDetailsModal .modal-content {
+        background-color: rgba(255, 255, 255, 0.75);
+        backdrop-filter: blur(20px) saturate(180%);
+        -webkit-backdrop-filter: blur(20px) saturate(180%);
+        border: 1px solid rgba(255, 255, 255, 0.5);
+        box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+    }
+
+    #areaDetailsModal .modal-header {
+        background: linear-gradient(135deg, rgba(13, 110, 253, 0.85) 0%, rgba(13, 202, 240, 0.85) 100%) !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+    }
+
+    #areaDetailsModal .modal-footer {
+        background-color: transparent;
+        border-top: 1px solid rgba(0, 0, 0, 0.05);
+    }
+
+    /* Semi-transparent cards inside modal */
+    #areaDetailsModal .card {
+        background-color: rgba(255, 255, 255, 0.6);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.4);
+    }
+
+    #areaDetailsModal .list-group-item {
+        background-color: rgba(255, 255, 255, 0.4);
+    }
+    
+    #areaDetailsModal .nav-tabs .nav-link.active {
+        background-color: rgba(255, 255, 255, 0.6);
+        border-color: rgba(0,0,0,0.1) rgba(0,0,0,0.1) transparent;
+    }
+
+    /* Override Bootstrap bg-white inside modal to maintain transparency */
+    #areaDetailsModal .bg-white {
+        background-color: rgba(255, 255, 255, 0.4) !important;
+    }
+
+    /* Professional page header */
+    .page-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 2rem 0;
+        border-radius: 15px;
+        box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+        margin-bottom: 2rem;
+    }
+
+    /* Enhanced filter cards */
+    .filter-card {
+        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        border: none;
+        border-radius: 12px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+    }
+
+    /* Territory card header gradients */
+    .territory-card-header {
+        background: linear-gradient(135deg, rgba(13, 110, 253, 0.9), rgba(13, 202, 240, 0.9)) !important;
+        border-radius: 10px 10px 0 0 !important;
+        padding: 1.5rem !important;
+        border: none !important;
+    }
+
+    /* Animated badges */
+    .badge {
+        transition: all 0.3s ease;
+    }
+    .badge:hover {
+        transform: scale(1.1);
+    }
+
+    /* Progress bars with gradients */
+    .progress {
+        background-color: rgba(0,0,0,0.05);
+        border-radius: 10px;
+        overflow: hidden;
+    }
+    .progress-bar {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+    }
+
+    /* Stats cards */
+    .stat-card {
+        background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+        border: none;
+        border-radius: 15px;
+        padding: 1.5rem;
+        transition: all 0.3s ease;
+    }
+    .stat-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 8px 20px rgba(252, 182, 159, 0.4);
+    }
+
+    /* Buttons enhancement */
+    .btn-primary {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border: none;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        transition: all 0.3s ease;
+    }
+    .btn-primary:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
+    }
+
+    /* Table styling */
+    .table {
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+    }
+    .table thead {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+    }
+    .table tbody tr {
+        transition: background-color 0.2s ease;
+    }
+    .table tbody tr:hover {
+        background-color: rgba(102, 126, 234, 0.05);
+    }
+
+    /* Circular chart enhancements */
+    .circular-chart {
+        filter: drop-shadow(0 4px 8px rgba(0,0,0,0.1));
+    }
+
+    /* Input fields */
+    .form-control, .form-select {
+        border-radius: 8px;
+        border: 2px solid #e0e0e0;
+        transition: all 0.3s ease;
+    }
+    .form-control:focus, .form-select:focus {
+        border-color: #667eea;
+        box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="container-fluid" x-data="areasData()">
     <div class="row mb-4">
         <div class="col-12">
-            <h1 class="display-4">
-                <i class="fas fa-map-marked-alt text-primary"></i>
-                Территории продаж
-            </h1>
-            <p class="lead text-muted">
-                <i class="fas fa-info-circle"></i> 
-                Всего территорий: <span x-text="areas.length" class="badge bg-primary">0</span>
-            </p>
+            <div class="page-header">
+                <div class="container-fluid">
+                    <h1 class="display-4 mb-2">
+                        <i class="fas fa-map-marked-alt me-3"></i>
+                        Территории продаж
+                    </h1>
+                    <p class="lead mb-0" style="opacity: 0.9;">
+                        <i class="fas fa-chart-line me-2"></i> 
+                        Всего территорий: <span x-text="areas.length" class="badge bg-light text-dark">0</span>
+                        <span class="ms-3">|</span>
+                        <span class="ms-3"><i class="fas fa-calendar-alt me-2"></i>Период: <span x-text="dateFrom"></span> - <span x-text="dateTo"></span></span>
+                    </p>
+                </div>
+            </div>
         </div>
     </div>
 
-    <!-- Карточки территорий -->
+    <!-- Фильтры -->
     <div class="row mb-4">
         <!-- Фильтры даты -->
         <div class="col-12 mb-3">
-            <div class="card">
+            <div class="card filter-card">
                 <div class="card-body">
                     <div class="row align-items-end">
                         <div class="col-md-4">
@@ -41,57 +254,254 @@
                 </div>
             </div>
         </div>
+
+        <!-- Toggle Divisions/Groups Filter -->
+        <div class="col-12 mb-3">
+            <button class="btn btn-sm btn-outline-secondary w-100" @click="showFiltersPanel = !showFiltersPanel">
+                <i class="fas" :class="showFiltersPanel ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+                <span x-text="showFiltersPanel ? 'Скрыть фильтры по дивизионам и группам' : 'Показать фильтры по дивизионам и группам'"></span>
+                <template x-if="selectedDivisions.length > 0 || selectedSalesGroups.length > 0 || selectedDebtGroups.length > 0">
+                    <span class="badge bg-primary ms-2" x-text="`${selectedDivisions.length + selectedSalesGroups.length + selectedDebtGroups.length} выбрано`"></span>
+                </template>
+            </button>
+        </div>
     </div>
+
+    <!-- Фильтры по дивизионам и группам (Collapsible) -->
+    <div class="card mb-4" x-show="showFiltersPanel" x-transition x-cloak>
+        <div class="card-header">
+            <div class="d-flex justify-content-between align-items-center">
+                <h6 class="mb-0">
+                    <i class="fas fa-filter"></i> Фильтры
+                </h6>
+                <button class="btn btn-sm btn-outline-light" @click="clearFilters()">
+                    <i class="fas fa-times"></i> Очистить всё
+                </button>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <div class="card border-primary">
+                        <div class="card-header bg-primary text-white">
+                            <h6 class="mb-0"><i class="fas fa-shopping-cart me-2"></i>Фильтр для ПРОДАЖ</h6>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-2"><i class="fas fa-info-circle"></i> Дивизионы товаров</p>
+                            <span class="badge bg-primary mb-2">Выбрано: <span x-text="selectedDivisions.length"></span></span>
+                            <button class="btn btn-sm btn-outline-primary w-100 mb-2" @click="selectAllDivisions()">
+                                <i class="fas fa-check-double"></i> Выбрать все
+                            </button>
+                            <div class="input-group input-group-sm mb-2">
+                                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                                <input type="text" class="form-control" placeholder="Поиск" x-model="divisionSearch">
+                            </div>
+                            <div style="max-height: 250px; overflow-y: auto;" class="border rounded p-2 mb-3">
+                                <template x-for="division in filteredDivisions()" :key="division.fGROUP">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" :id="'div_' + division.fGROUP" 
+                                               :value="division.fGROUP" x-model="selectedDivisions" @change="saveDivisionsToStorage(); loadAreas()">
+                                        <label class="form-check-label" :for="'div_' + division.fGROUP">
+                                            <strong x-text="division.fGROUP"></strong> · <span x-text="division.name"></span>
+                                        </label>
+                                    </div>
+                                </template>
+                            </div>
+                            
+                            <hr>
+                            <p class="text-muted small mb-2"><i class="fas fa-info-circle"></i> Группы клиентов для продаж</p>
+                            <span class="badge bg-primary mb-2">Выбрано: <span x-text="selectedSalesGroups.length"></span></span>
+                            <button class="btn btn-sm btn-outline-primary w-100 mb-2" @click="selectAllSalesGroups()">
+                                <i class="fas fa-check-double"></i> Выбрать все
+                            </button>
+                            <div class="input-group input-group-sm mb-2">
+                                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                                <input type="text" class="form-control" placeholder="Поиск" x-model="salesGroupSearch">
+                            </div>
+                            <div style="max-height: 250px; overflow-y: auto;" class="border rounded p-2">
+                                <template x-for="parentGroup in groupListByParent(filteredSalesGroups())" :key="parentGroup.parent">
+                                    <div class="mb-2">
+                                        <div class="fw-bold text-muted small bg-light p-1 mb-1" x-text="parentGroup.parent"></div>
+                                        <div class="ms-2">
+                                            <template x-for="group in parentGroup.items" :key="group.code">
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="checkbox" :id="'sales_grp_' + group.code" 
+                                                           :value="group.code" x-model="selectedSalesGroups" @change="saveSalesGroupsToStorage(); loadAreas()">
+                                                    <label class="form-check-label" :for="'sales_grp_' + group.code">
+                                                        <strong x-text="group.code"></strong> · <span x-text="group.name"></span>
+                                                    </label>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card border-danger">
+                        <div class="card-header bg-danger text-white">
+                            <h6 class="mb-0"><i class="fas fa-exclamation-triangle me-2"></i>Фильтр для ДОЛГОВ</h6>
+                        </div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-2"><i class="fas fa-info-circle"></i> Группы клиентов для долгов</p>
+                            <span class="badge bg-danger mb-2">Выбрано: <span x-text="selectedDebtGroups.length"></span></span>
+                            <button class="btn btn-sm btn-outline-danger w-100 mb-2" @click="selectAllDebtGroups()">
+                                <i class="fas fa-check-double"></i> Выбрать все
+                            </button>
+                            <div class="input-group input-group-sm mb-2">
+                                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                                <input type="text" class="form-control" placeholder="Поиск" x-model="debtGroupSearch">
+                            </div>
+                            <div style="max-height: 550px; overflow-y: auto;" class="border rounded p-2">
+                                <template x-for="parentGroup in groupListByParent(filteredDebtGroups())" :key="parentGroup.parent">
+                                    <div class="mb-2">
+                                        <div class="fw-bold text-muted small bg-light p-1 mb-1" x-text="parentGroup.parent"></div>
+                                        <div class="ms-2">
+                                            <template x-for="group in parentGroup.items" :key="group.code">
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="checkbox" :id="'debt_grp_' + group.code" 
+                                                           :value="group.code" x-model="selectedDebtGroups" @change="saveDebtGroupsToStorage(); loadAreas()">
+                                                    <label class="form-check-label" :for="'debt_grp_' + group.code">
+                                                        <strong x-text="group.code"></strong> · <span x-text="group.name"></span>
+                                                    </label>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Карточки территорий -->
 
     <div class="row mb-4" id="areas-container">
         <template x-for="(area, index) in areas" :key="index">
             <div class="col-xl-3 col-lg-4 col-md-6 mb-4">
-                <div class="card h-100">
-                    <div class="card-header text-center" 
-                         :style="`background: linear-gradient(135deg, rgba(13, 110, 253, 0.2), rgba(13, 202, 240, 0.2))`">
-                        <h2 class="mb-0" x-text="area.code || 'N/A'"></h2>
-                        <small class="text-muted" x-text="area.name"></small>
+                <div class="card h-100" style="cursor: pointer; overflow: hidden;" @click="openAreaDetails(area)">
+                    <div class="card-header text-center territory-card-header text-white">
+                        <h2 class="mb-0 fw-bold" x-text="area.code || 'N/A'" style="text-shadow: 0 2px 4px rgba(0,0,0,0.1);"></h2>
+                        <small class="d-block mt-1" x-text="area.name" style="opacity: 0.95; font-weight: 500;"></small>
                     </div>
                     <div class="card-body">
                         <!-- Статистика -->
                         <div class="mb-3">
-                            <div class="d-flex justify-content-between mb-2">
-                                <span class="text-muted">
-                                    <i class="fas fa-shopping-cart"></i> Продаж:
+                            <div class="d-flex justify-content-between mb-2 p-2 rounded" style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.05), rgba(118, 75, 162, 0.05));">
+                                <span class="text-muted fw-semibold">
+                                    <i class="fas fa-shopping-cart text-primary"></i> Продаж:
                                 </span>
-                                <strong x-text="formatNumber(area.SalesCount)"></strong>
+                                <strong class="text-primary" x-text="formatNumber(area.SalesCount)"></strong>
                             </div>
-                            <div class="d-flex justify-content-between mb-2">
-                                <span class="text-muted">
-                                    <i class="fas fa-users"></i> Клиентов:
+                            <div class="d-flex justify-content-between mb-2 p-2 rounded" style="background: linear-gradient(135deg, rgba(13, 202, 240, 0.05), rgba(13, 110, 253, 0.05));">
+                                <span class="text-muted fw-semibold">
+                                    <i class="fas fa-users text-info"></i> Клиентов:
                                 </span>
-                                <strong x-text="formatNumber(area.CustomerCount)"></strong>
+                                <strong class="text-info" x-text="formatNumber(area.CustomerCount)"></strong>
                             </div>
-                            <div class="d-flex justify-content-between mb-2">
-                                <span class="text-muted">
-                                    <i class="fas fa-dollar-sign"></i> Сумма:
+                            <div class="d-flex justify-content-between mb-2 p-2 rounded" style="background: linear-gradient(135deg, rgba(25, 135, 84, 0.05), rgba(32, 201, 151, 0.05));">
+                                <span class="text-muted fw-semibold">
+                                    <i class="fas fa-dollar-sign text-success"></i> Сумма:
                                 </span>
-                                <strong x-text="formatCurrency(area.TotalSales)" class="text-success"></strong>
+                                <strong x-text="formatCurrency(area.TotalSales)" class="text-success fw-bold"></strong>
                             </div>
-                            <div class="d-flex justify-content-between mb-2">
-                                <span class="text-muted">
-                                    <i class="fas fa-exclamation-triangle"></i> Долг:
-                                </span>
-                                <div>
-                                    <strong x-text="formatCurrency(area.Debt)" class="text-danger" style="font-size: 1.1rem;"></strong>
-                                    <div class="d-flex justify-content-between align-items-center mt-1">
-                                        <small class="text-muted" style="font-size: 0.65rem;">Начальный:</small>
-                                        <div style="font-size: 0.9rem; color: #3498db; font-weight: 600;">
-                                            <span x-text="formatCurrency(area.InitialDebt || 0)"></span>
-                                        </div>
+                            
+                            <!-- Прошлый месяц (тот же период) -->
+                            <div class="border-top pt-2 mb-2" x-show="area.PrevMonthSales !== undefined">
+                                <div class="d-flex justify-content-between align-items-center" style="font-size: 0.85rem;">
+                                    <span class="text-muted">
+                                        <i class="fas fa-calendar-minus"></i> Прошлый месяц:
+                                    </span>
+                                    <div class="d-flex align-items-center">
+                                        <span x-text="formatCurrency(area.PrevMonthSales)" class="text-secondary me-2"></span>
+                                        <template x-if="area.TotalSales > area.PrevMonthSales">
+                                            <span class="badge bg-success" x-text="`+${((area.TotalSales - area.PrevMonthSales) / area.PrevMonthSales * 100).toFixed(1)}%`"></span>
+                                        </template>
+                                        <template x-if="area.TotalSales < area.PrevMonthSales">
+                                            <span class="badge bg-danger" x-text="`${((area.TotalSales - area.PrevMonthSales) / area.PrevMonthSales * 100).toFixed(1)}%`"></span>
+                                        </template>
                                     </div>
                                 </div>
                             </div>
-                            <div class="d-flex justify-content-between">
+                            
+                            <!-- Прошлый год (тот же период) -->
+                            <div class="mb-2" x-show="area.LastYearSales !== undefined" style="font-size: 0.85rem;">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="text-muted">
+                                        <i class="fas fa-history"></i> Прошлый год:
+                                    </span>
+                                    <div class="d-flex align-items-center">
+                                        <span x-text="formatCurrency(area.LastYearSales)" class="text-secondary me-2"></span>
+                                        <template x-if="area.TotalSales > area.LastYearSales">
+                                            <span class="badge bg-success" x-text="`+${((area.TotalSales - area.LastYearSales) / area.LastYearSales * 100).toFixed(1)}%`"></span>
+                                        </template>
+                                        <template x-if="area.TotalSales < area.LastYearSales">
+                                            <span class="badge bg-danger" x-text="`${((area.TotalSales - area.LastYearSales) / area.LastYearSales * 100).toFixed(1)}%`"></span>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="d-flex justify-content-between mb-2 border-top pt-2">
+                                <span class="text-muted">
+                                    <i class="fas fa-exclamation-triangle"></i> Долг:
+                                </span>
+                                <strong x-text="formatCurrency(area.Debt)" class="text-danger"></strong>
+                            </div>
+                            
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">
+                                    <i class="fas fa-money-bill-wave"></i> Оплаты:
+                                </span>
+                                <strong x-text="formatCurrency(area.Payments)" class="text-success"></strong>
+                            </div>
+                            
+                            <!-- Ключевые коэффициенты -->
+                            <div class="border-top pt-2 mb-2">
+                                <div class="d-flex justify-content-between mb-1" style="font-size: 0.85rem;">
+                                    <span class="text-muted">
+                                        <i class="fas fa-percent"></i> Долг/Продажи:
+                                    </span>
+                                    <span class="badge" 
+                                          :class="area.TotalSales > 0 ? (area.Debt / area.TotalSales > 0.8 ? 'bg-danger' : (area.Debt / area.TotalSales > 0.5 ? 'bg-warning text-dark' : 'bg-success')) : 'bg-secondary'"
+                                          x-text="area.TotalSales > 0 ? ((area.Debt / area.TotalSales * 100).toFixed(1) + '%') : 'N/A'">
+                                    </span>
+                                </div>
+                                <div class="d-flex justify-content-between mb-1" style="font-size: 0.85rem;">
+                                    <span class="text-muted">
+                                        <i class="fas fa-hand-holding-usd"></i> Оплаты/Продажи:
+                                    </span>
+                                    <span class="badge"
+                                          :class="area.TotalSales > 0 ? (area.Payments / area.TotalSales < 0.5 ? 'bg-danger' : (area.Payments / area.TotalSales < 0.8 ? 'bg-warning text-dark' : 'bg-success')) : 'bg-secondary'"
+                                          x-text="area.TotalSales > 0 ? ((area.Payments / area.TotalSales * 100).toFixed(1) + '%') : 'N/A'">
+                                    </span>
+                                </div>
+                            </div>
+                            
+                            <div class="d-flex justify-content-between border-top pt-2">
                                 <span class="text-muted">
                                     <i class="fas fa-receipt"></i> Средний чек:
                                 </span>
                                 <strong x-text="formatCurrency(area.AvgSale)"></strong>
+                            </div>
+
+                            <div class="d-flex justify-content-between pt-2" x-show="area.DiscountPercent > 0">
+                                <span class="text-muted">
+                                    <i class="fas fa-tags"></i> Скидка:
+                                </span>
+                                <span class="badge bg-warning text-dark" x-text="area.DiscountPercent.toFixed(2) + '%'"></span>
+                            </div>
+                            
+                            <div class="d-flex justify-content-between" style="font-size: 0.85rem;">
+                                <span class="text-muted">
+                                    <i class="fas fa-user-tag"></i> Долг на клиента:
+                                </span>
+                                <span x-text="area.CustomerCount > 0 ? formatCurrency(area.Debt / area.CustomerCount) : 'N/A'"></span>
                             </div>
                         </div>
 
@@ -147,6 +557,11 @@
                             </template>
                         </div>
                     </div>
+                    
+                    <!-- Добавить footer с иконкой -->
+                    <div class="card-footer text-center text-muted" style="font-size: 0.85rem;">
+                        <i class="fas fa-mouse-pointer"></i> Нажмите для подробностей
+                    </div>
                 </div>
             </div>
         </template>
@@ -160,13 +575,546 @@
         </div>
     </div>
 
+    <!-- Модальное окно с детальной аналитикой территории -->
+    <div class="modal fade" id="areaDetailsModal" tabindex="-1">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header" style="background: linear-gradient(135deg, #0d6efd 0%, #0dcaf0 100%);">
+                    <h4 class="modal-title text-white">
+                        <i class="fas fa-map-marker-alt"></i>
+                        <span x-text="selectedArea ? `Территория ${selectedArea.code} - ${selectedArea.name}` : ''"></span>
+                    </h4>
+                    <button type="button" class="btn-close btn-close-white" @click="closeAreaDetails()"></button>
+                </div>
+                
+                <div class="modal-body p-4">
+                    <template x-if="selectedArea">
+                    <div>
+                        <!-- Nav Tabs -->
+                        <ul class="nav nav-tabs nav-fill mb-4" id="areaDetailsTab" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link active" id="financials-tab" data-bs-toggle="tab" data-bs-target="#financials" type="button" role="tab" aria-controls="financials" aria-selected="true">
+                                    <i class="fas fa-coins me-2"></i>Финансовый анализ
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="dynamics-tab" data-bs-toggle="tab" data-bs-target="#dynamics" type="button" role="tab" aria-controls="dynamics" aria-selected="false">
+                                    <i class="fas fa-chart-line me-2"></i>Историческая динамика
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="managers-tab" data-bs-toggle="tab" data-bs-target="#managers" type="button" role="tab" aria-controls="managers" aria-selected="false">
+                                    <i class="fas fa-user-tie me-2"></i>Менеджеры
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="routes-tab" data-bs-toggle="tab" data-bs-target="#routes" type="button" role="tab" aria-controls="routes" aria-selected="false" @click="loadRouteStats()">
+                                    <i class="fas fa-route me-2"></i>Маршруты
+                                </button>
+                            </li>
+                        </ul>
+
+                        <!-- Tab Content -->
+                        <div class="tab-content" id="areaDetailsTabContent">
+                            <!-- Financials Tab -->
+                            <div class="tab-pane fade show active" id="financials" role="tabpanel" aria-labelledby="financials-tab">
+                                <div class="row">
+                                    <div class="col-lg-6 mb-4">
+                                        <div class="card h-100">
+                                            <div class="card-header">
+                                                <h5 class="mb-0"><i class="fas fa-percentage me-2"></i>Ключевые коэффициенты</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <ul class="list-group list-group-flush">
+                                                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                                                        <span>Отношение Долг/Продажи</span>
+                                                        <span class="badge fs-6" :class="getDebtRatioClass(selectedArea)" x-text="calculateRatio(selectedArea.Debt, selectedArea.TotalSales)"></span>
+                                                    </li>
+                                                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                                                        <span>Покрытие оплат (Оплаты/Продажи)</span>
+                                                        <span class="badge fs-6" :class="getPaymentRatioClass(selectedArea)" x-text="calculateRatio(selectedArea.Payments, selectedArea.TotalSales)"></span>
+                                                    </li>
+                                                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                                                        <span>Средний долг на клиента</span>
+                                                        <strong x-text="formatCurrency(selectedArea.Debt / selectedArea.CustomerCount)"></strong>
+                                                    </li>
+                                                     <li class="list-group-item d-flex justify-content-between align-items-center">
+                                                        <span>Средние продажи на клиента</span>
+                                                        <strong x-text="formatCurrency(selectedArea.TotalSales / selectedArea.CustomerCount)"></strong>
+                                                    </li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-lg-6 mb-4">
+                                        <div class="card h-100">
+                                            <div class="card-header">
+                                                <h5 class="mb-0"><i class="fas fa-exchange-alt me-2"></i>Движение долга</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <ul class="list-group list-group-flush">
+                                                    <li class="list-group-item d-flex justify-content-between">
+                                                        <span><i class="fas fa-flag text-muted me-2"></i>Начальный долг</span>
+                                                        <strong x-text="formatCurrency(selectedArea.InitialDebt)"></strong>
+                                                    </li>
+                                                    <li class="list-group-item d-flex justify-content-between">
+                                                        <span><i class="fas fa-plus-circle text-success me-2"></i>Продажи (+)</span>
+                                                        <span class="text-success" x-text="`+ ${formatCurrency(selectedArea.TotalSales)}`"></span>
+                                                    </li>
+                                                    <li class="list-group-item d-flex justify-content-between">
+                                                        <span><i class="fas fa-minus-circle text-danger me-2"></i>Оплаты (-)</span>
+                                                        <span class="text-danger" x-text="`- ${formatCurrency(selectedArea.Payments)}`"></span>
+                                                    </li>
+                                                    <li class="list-group-item d-flex justify-content-between bg-light">
+                                                        <span><i class="fas fa-flag-checkered text-primary me-2"></i>Итоговый долг</span>
+                                                        <strong class="fs-5" x-text="formatCurrency(selectedArea.Debt)"></strong>
+                                                    </li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Dynamics Tab -->
+                            <div class="tab-pane fade" id="dynamics" role="tabpanel" aria-labelledby="dynamics-tab">
+                                <div class="row mb-4">
+                                    <div class="col-md-6">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="mb-0"><i class="fas fa-shopping-cart me-2"></i>Продажи и оплаты</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <canvas id="areaSalesPaymentsChart" style="max-height: 300px;"></canvas>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="mb-0"><i class="fas fa-exclamation-triangle me-2"></i>Динамика долга</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <canvas id="areaDebtChart" style="max-height: 300px;"></canvas>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="row mb-4">
+                                    <div class="col-12">
+                                        <div class="card">
+                                            <div class="card-header">
+                                                <h5 class="mb-0"><i class="fas fa-users me-2"></i>Динамика клиентов за последние 24 месяца</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <canvas id="areaCustomersHistoryChart" style="max-height: 250px;"></canvas>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="row">
+                                    <div class="col-12 mb-4">
+                                        <div class="card h-100">
+                                            <div class="card-header">
+                                                <h5 class="mb-0"><i class="fas fa-table me-2"></i>Сравнительная таблица</h5>
+                                            </div>
+                                            <div class="table-responsive">
+                                                <table class="table table-hover mb-0">
+                                                    <thead class="table-light">
+                                                        <tr class="text-center">
+                                                            <th class="text-start" style="width: 25%;">Метрика</th>
+                                                            <th style="width: 25%;">
+                                                                <span x-text="getHistoricalMonth(12) || 'Прошлый год'"></span>
+                                                            </th>
+                                                            <th style="width: 25%;">
+                                                                <span x-text="getHistoricalMonth(1) || 'Прошлый месяц'"></span>
+                                                            </th>
+                                                            <th style="width: 25%;">
+                                                                <span x-text="getHistoricalMonth(0) || 'Текущий период'"></span>
+                                                            </th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody class="text-center">
+                                                        <tr>
+                                                            <td class="text-start"><strong><i class="fas fa-dollar-sign text-success me-2"></i>Продажи</strong></td>
+                                                            <td class="fs-6" x-text="formatCurrency(selectedArea.LastYearSales)"></td>
+                                                            <td class="fs-6" x-text="formatCurrency(selectedArea.PrevMonthSales)"></td>
+                                                            <td class="fs-5"><strong x-text="formatCurrency(selectedArea.TotalSales)"></strong></td>
+                                                        </tr>
+                                                        <tr>
+                                                            <td class="text-start"></td>
+                                                            <td colspan="3" class="text-center">
+                                                                <span class="badge fs-6 me-2" 
+                                                                    :class="getChangeClass(selectedArea.TotalSales, selectedArea.LastYearSales)"
+                                                                    x-text="getChangePercent(selectedArea.TotalSales, selectedArea.LastYearSales) + ' (год к году)'">
+                                                                </span>
+                                                                <span class="badge fs-6" 
+                                                                    :class="getChangeClass(selectedArea.TotalSales, selectedArea.PrevMonthSales)"
+                                                                    x-text="getChangePercent(selectedArea.TotalSales, selectedArea.PrevMonthSales) + ' (месяц к месяцу)'">
+                                                                </span>
+                                                            </td>
+                                                        </tr>
+                                                        <tr class="border-top">
+                                                            <td class="text-start"><strong><i class="fas fa-users text-primary me-2"></i>Клиенты</strong></td>
+                                                            <td class="fs-6" x-text="formatNumber(getLastYearCustomers())"></td>
+                                                            <td class="fs-6" x-text="formatNumber(getPrevMonthCustomers())"></td>
+                                                            <td class="fs-5"><strong x-text="formatNumber(selectedArea.CustomerCount)"></strong></td>
+                                                        </tr>
+                                                        <tr class="border-top">
+                                                            <td class="text-start"><strong><i class="fas fa-shopping-cart text-info me-2"></i>Кол-во продаж</strong></td>
+                                                            <td class="fs-6" x-text="formatNumber(getLastYearSalesCount())"></td>
+                                                            <td class="fs-6" x-text="formatNumber(getPrevMonthSalesCount())"></td>
+                                                            <td class="fs-5"><strong x-text="formatNumber(selectedArea.SalesCount)"></strong></td>
+                                                        </tr>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="row">
+                                    <div class="col-12 mb-4">
+                                        <div class="card h-100">
+                                            <div class="card-header">
+                                                <h5 class="mb-0"><i class="fas fa-chart-bar me-2"></i>Сравнение ключевых периодов</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <canvas id="areaSalesComparisonChart" style="max-height: 300px;"></canvas>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Managers Tab -->
+                            <div class="tab-pane fade" id="managers" role="tabpanel" aria-labelledby="managers-tab">
+                                <div class="card" x-show="selectedArea.Managers && selectedArea.Managers.length > 0">
+                                    <div class="card-body" style="max-height: 400px; overflow-y: auto;">
+                                        <ul class="list-group list-group-flush">
+                                            <template x-for="manager in selectedArea.Managers" :key="manager.id">
+                                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                                    <div class="d-flex align-items-center">
+                                                        <i class="fas fa-user-circle fa-2x me-3" :class="manager.is_default ? 'text-primary' : 'text-secondary'"></i>
+                                                        <div>
+                                                            <strong x-text="manager.name"></strong>
+                                                            <div class="text-muted" x-text="manager.code"></div>
+                                                        </div>
+                                                    </div>
+                                                    <template x-if="manager.is_default">
+                                                        <span class="badge bg-primary">Основной</span>
+                                                    </template>
+                                                </li>
+                                            </template>
+                                        </ul>
+                                    </div>
+                                </div>
+                                <div x-show="!selectedArea.Managers || selectedArea.Managers.length === 0" class="text-center text-muted p-5">
+                                    <i class="fas fa-user-slash fa-3x mb-3"></i>
+                                    <p>Для этой территории не назначены менеджеры.</p>
+                                </div>
+                            </div>
+
+                            <!-- Routes Tab -->
+                            <div class="tab-pane fade" id="routes" role="tabpanel" aria-labelledby="routes-tab">
+                                <div class="row">
+                                    <div class="col-12 mb-4">
+                                        <div class="card border-0 h-100" style="box-shadow: 0 6px 20px rgba(0,0,0,0.1); border-radius: 15px; overflow: hidden;">
+                                            <div class="card-header border-bottom-0 pt-4 px-4" style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.08), rgba(118, 75, 162, 0.08));">
+                                                <h5 class="mb-0 fw-bold" style="color: #667eea;"><i class="fas fa-route me-2"></i>Эффективность маршрутов</h5>
+                                            </div>
+                                            
+                                            <!-- Loading State -->
+                                            <div class="card-body text-center py-5" x-show="routeStatsLoading">
+                                                <div class="mb-3">
+                                                    <div class="spinner-border" role="status" style="width: 3.5rem; height: 3.5rem; border-width: 0.3rem; color: #667eea;">
+                                                        <span class="visually-hidden">Загрузка...</span>
+                                                    </div>
+                                                </div>
+                                                <p class="fw-semibold" style="color: #667eea;">Загрузка статистики...</p>
+                                            </div>
+
+                                            <!-- Empty State -->
+                                            <div class="card-body text-center py-5" x-show="!routeStatsLoading && !routeStats">
+                                                <div class="py-4">
+                                                    <div class="mb-4">
+                                                        <div class="d-inline-block p-4 rounded-circle" style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));">
+                                                            <i class="fas fa-route fa-3x" style="color: #667eea; opacity: 0.6;"></i>
+                                                        </div>
+                                                    </div>
+                                                    <h5 class="fw-bold" style="color: #667eea;">Нет данных о маршрутах</h5>
+                                                    <p class="mb-0 text-muted">За выбранный период маршруты не найдены</p>
+                                                </div>
+                                            </div>
+
+                                            <!-- Data State -->
+                                            <div class="card-body px-4 pb-4" x-show="!routeStatsLoading && routeStats">
+                                                <template x-if="routeStats">
+                                                <div>
+                                                    <!-- Main Metrics Row -->
+                                                    <div class="row g-3 mb-4">
+                                                        <!-- Plan Card -->
+                                                        <div class="col-md-4">
+                                                            <div class="card h-100 border-0 rounded-4" style="background: linear-gradient(135deg, rgba(13, 110, 253, 0.12), rgba(13, 202, 240, 0.12)); box-shadow: 0 4px 15px rgba(13, 110, 253, 0.15);">
+                                                                <div class="card-body p-3 position-relative overflow-hidden">
+                                                                    <div class="d-flex justify-content-between align-items-start">
+                                                                        <div>
+                                                                            <p class="text-primary fw-bold text-uppercase small mb-1" style="letter-spacing: 1px;">План посещений</p>
+                                                                            <h2 class="display-6 fw-bold text-primary mb-0" x-text="routeStats.planned"></h2>
+                                                                        </div>
+                                                                        <div class="bg-white rounded-circle p-2 shadow-sm">
+                                                                            <i class="fas fa-map-marked-alt fa-lg text-primary"></i>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div class="mt-3 pt-2 border-top border-primary border-opacity-25">
+                                                                        <div class="d-flex align-items-center text-muted small">
+                                                                            <i class="fas fa-user-times me-2 text-danger"></i>
+                                                                            <span class="fw-bold text-danger me-1" x-text="routeStats.missed"></span>
+                                                                            <span>не посещено</span>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+
+                                                        <!-- Fact Card -->
+                                                        <div class="col-md-4">
+                                                            <div class="card h-100 border-0 rounded-4" style="background: linear-gradient(135deg, rgba(13, 202, 240, 0.12), rgba(32, 201, 151, 0.12)); box-shadow: 0 4px 15px rgba(13, 202, 240, 0.15);">
+                                                                <div class="card-body p-3 position-relative overflow-hidden">
+                                                                    <div class="d-flex justify-content-between align-items-start">
+                                                                        <div>
+                                                                            <p class="text-info fw-bold text-uppercase small mb-1" style="letter-spacing: 1px;">Фактически посещено</p>
+                                                                            <h2 class="display-6 fw-bold text-info mb-0" x-text="routeStats.visited"></h2>
+                                                                        </div>
+                                                                        <div class="bg-white rounded-circle p-2 shadow-sm">
+                                                                            <i class="fas fa-check fa-lg text-info"></i>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div class="mt-3 pt-2 border-top border-info border-opacity-25">
+                                                                        <div class="d-flex align-items-center text-muted small">
+                                                                            <i class="fas fa-user-plus me-2 text-secondary"></i>
+                                                                            <span class="fw-bold text-dark me-1" x-text="routeStats.unplanned"></span>
+                                                                            <span>вне плана</span>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+
+                                                        <!-- Order Card -->
+                                                        <div class="col-md-4">
+                                                            <div class="card h-100 border-0 rounded-4" style="background: linear-gradient(135deg, rgba(25, 135, 84, 0.12), rgba(32, 201, 151, 0.12)); box-shadow: 0 4px 15px rgba(25, 135, 84, 0.15);">
+                                                                <div class="card-body p-3 position-relative overflow-hidden">
+                                                                    <div class="d-flex justify-content-between align-items-start">
+                                                                        <div>
+                                                                            <p class="text-success fw-bold text-uppercase small mb-1" style="letter-spacing: 1px;">Сделали заказ</p>
+                                                                            <h2 class="display-6 fw-bold text-success mb-0" x-text="routeStats.ordered"></h2>
+                                                                        </div>
+                                                                        <div class="bg-white rounded-circle p-2 shadow-sm">
+                                                                            <i class="fas fa-shopping-cart fa-lg text-success"></i>
+                                                                        </div>
+                                                                    </div>
+                                                                    <div class="mt-3 pt-2 border-top border-success border-opacity-25">
+                                                                        <div class="d-flex align-items-center text-muted small">
+                                                                            <i class="fas fa-percentage me-2"></i>
+                                                                            <span class="fw-bold text-success me-1" x-text="getEfficiencyPercent(routeStats.ordered, routeStats.visited)"></span>
+                                                                            <span>конверсия</span>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    
+                                                    <!-- Efficiency Dashboard -->
+                                                    <div class="card border-0 rounded-4" style="box-shadow: 0 8px 30px rgba(102, 126, 234, 0.3);">
+                                                        <div class="card-header py-4 border-bottom-0" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%); border-radius: 15px 15px 0 0; position: relative; overflow: hidden;">
+                                                            <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(circle at 30% 50%, rgba(255,255,255,0.2), transparent); pointer-events: none;"></div>
+                                                            <h6 class="mb-0 fw-bold text-uppercase text-white" style="letter-spacing: 2px; font-size: 0.95rem; position: relative;">
+                                                                <i class="fas fa-chart-pie me-2" style="animation: pulse 2s infinite;"></i>Эффективность работы
+                                                            </h6>
+                                                        </div>
+                                                        <div class="card-body pt-0 pb-4">
+                                                            <div class="row align-items-center g-4">
+                                                                <!-- Execution Rate -->
+                                                                <div class="col-md-4 text-center border-end">
+                                                                    <div class="py-3 px-3" style="background: linear-gradient(135deg, rgba(13, 202, 240, 0.08), rgba(13, 110, 253, 0.08)); border-radius: 12px; transition: all 0.3s ease; box-shadow: 0 2px 8px rgba(13, 202, 240, 0.15);" onmouseover="this.style.transform='scale(1.05)'; this.style.boxShadow='0 8px 20px rgba(13, 202, 240, 0.4)';" onmouseout="this.style.transform='scale(1)'; this.style.boxShadow='0 4px 12px rgba(13, 202, 240, 0.2)';">
+                                                                        <div class="position-relative d-inline-block mb-3">
+                                                                            <svg viewBox="0 0 36 36" class="circular-chart info" style="width: 80px; height: 80px; opacity: 0.85;">
+                                                                                <defs>
+                                                                                    <linearGradient id="infoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                                                        <stop offset="0%" style="stop-color:#0dcaf0;stop-opacity:1" />
+                                                                                        <stop offset="50%" style="stop-color:#3b82f6;stop-opacity:1" />
+                                                                                        <stop offset="100%" style="stop-color:#0d6efd;stop-opacity:1" />
+                                                                                    </linearGradient>
+                                                                                </defs>
+                                                                                <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                                                                <path class="circle" :stroke-dasharray="`${calculatePercent(routeStats.visited, routeStats.planned)}, 100`" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" stroke="url(#infoGradient)" />
+                                                                                <text x="18" y="20.35" class="percentage" style="font-size: 0.5em; font-weight: 600; fill: #0d6efd; text-anchor: middle;" x-text="getEfficiencyPercent(routeStats.visited, routeStats.planned)"></text>
+                                                                            </svg>
+                                                                        </div>
+                                                                        <h6 class="fw-bold mb-1" style="color: #0d6efd; font-size: 1.05rem;">Исполнение плана</h6>
+                                                                        <small class="d-block fw-semibold" style="color: #0dcaf0;">Execution Rate</small>
+                                                                        <div class="mt-2 badge bg-light text-dark border">
+                                                                            <span x-text="routeStats.visited"></span> / <span x-text="routeStats.planned"></span>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+
+                                                                <!-- Strike Rate -->
+                                                                <div class="col-md-4 text-center border-end">
+                                                                    <div class="py-3 px-3" style="background: linear-gradient(135deg, rgba(25, 135, 84, 0.08), rgba(32, 201, 151, 0.08)); border-radius: 12px; transition: all 0.3s ease; box-shadow: 0 2px 8px rgba(25, 135, 84, 0.15);" onmouseover="this.style.transform='scale(1.05)'; this.style.boxShadow='0 8px 20px rgba(25, 135, 84, 0.4)';" onmouseout="this.style.transform='scale(1)'; this.style.boxShadow='0 4px 12px rgba(25, 135, 84, 0.2)';">
+                                                                        <div class="position-relative d-inline-block mb-3">
+                                                                            <svg viewBox="0 0 36 36" class="circular-chart green" style="width: 80px; height: 80px; opacity: 0.85;">
+                                                                                <defs>
+                                                                                    <linearGradient id="greenGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                                                        <stop offset="0%" style="stop-color:#198754;stop-opacity:1" />
+                                                                                        <stop offset="50%" style="stop-color:#10b981;stop-opacity:1" />
+                                                                                        <stop offset="100%" style="stop-color:#20c997;stop-opacity:1" />
+                                                                                    </linearGradient>
+                                                                                </defs>
+                                                                                <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                                                                <path class="circle" :stroke-dasharray="`${calculatePercent(routeStats.ordered, routeStats.visited)}, 100`" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" stroke="url(#greenGradient)" />
+                                                                                <text x="18" y="20.35" class="percentage" style="font-size: 0.5em; font-weight: 600; fill: #198754; text-anchor: middle;" x-text="getEfficiencyPercent(routeStats.ordered, routeStats.visited)"></text>
+                                                                            </svg>
+                                                                        </div>
+                                                                        <h6 class="fw-bold mb-1" style="color: #198754; font-size: 1.05rem;">Конверсия в заказ</h6>
+                                                                        <small class="d-block fw-semibold" style="color: #20c997;">Strike Rate</small>
+                                                                        <div class="mt-2 badge bg-light text-dark border">
+                                                                            <span x-text="routeStats.ordered"></span> / <span x-text="routeStats.visited"></span>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+
+                                                                <!-- Overall Efficiency -->
+                                                                <div class="col-md-4 text-center">
+                                                                    <div class="py-3 px-3" style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.08), rgba(118, 75, 162, 0.08)); border-radius: 12px; transition: all 0.3s ease; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.15);" onmouseover="this.style.transform='scale(1.05)'; this.style.boxShadow='0 8px 20px rgba(102, 126, 234, 0.4)';" onmouseout="this.style.transform='scale(1)'; this.style.boxShadow='0 4px 12px rgba(102, 126, 234, 0.2)';">
+                                                                        <div class="position-relative d-inline-block mb-3">
+                                                                            <svg viewBox="0 0 36 36" class="circular-chart blue" style="width: 80px; height: 80px; opacity: 0.85;">
+                                                                                <defs>
+                                                                                    <linearGradient id="blueGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                                                        <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
+                                                                                        <stop offset="50%" style="stop-color:#8b5cf6;stop-opacity:1" />
+                                                                                        <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
+                                                                                    </linearGradient>
+                                                                                </defs>
+                                                                                <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                                                                <path class="circle" :stroke-dasharray="`${calculatePercent(routeStats.ordered, routeStats.planned)}, 100`" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" stroke="url(#blueGradient)" />
+                                                                                <text x="18" y="20.35" class="percentage" style="font-size: 0.5em; font-weight: 600; fill: #667eea; text-anchor: middle;" x-text="getEfficiencyPercent(routeStats.ordered, routeStats.planned)"></text>
+                                                                            </svg>
+                                                                        </div>
+                                                                        <h6 class="fw-bold mb-1" style="color: #667eea; font-size: 1.05rem;">Общая эффективность</h6>
+                                                                        <small class="d-block fw-semibold" style="color: #764ba2;">Orders / Plan</small>
+                                                                        <div class="mt-2 badge bg-light text-dark border">
+                                                                            <span x-text="routeStats.ordered"></span> / <span x-text="routeStats.planned"></span>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                </template>
+                                            </div>
+                                                    
+                                                    <!-- Funnel Section -->
+                                                    <div class="card border-0 rounded-4 mt-4" style="box-shadow: 0 6px 20px rgba(0,0,0,0.1);">
+                                                        <div class="card-header border-bottom-0 py-3" style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.08), rgba(118, 75, 162, 0.08)); border-radius: 15px 15px 0 0;">
+                                                            <h6 class="mb-0 fw-bold" style="color: #667eea;"><i class="fas fa-filter me-2"></i>Воронка продаж и эффективность</h6>
+                                                        </div>
+                                                        <div class="card-body p-4">
+                                                            <!-- Execution Rate -->
+                                                            <div class="mb-4">
+                                                                <div class="d-flex justify-content-between align-items-end mb-2">
+                                                                    <div>
+                                                                        <span class="fw-bold text-dark">Исполнение плана</span>
+                                                                        <span class="text-muted small ms-2">(Execution Rate)</span>
+                                                                    </div>
+                                                                    <span class="fw-bold text-info" x-text="getEfficiencyPercent(routeStats.visited, routeStats.planned)"></span>
+                                                                </div>
+                                                                <div class="progress" style="height: 16px; border-radius: 10px; background-color: rgba(0,0,0,0.08); box-shadow: inset 0 3px 6px rgba(0,0,0,0.15);">
+                                                                    <div class="progress-bar" style="background: linear-gradient(90deg, #0dcaf0 0%, #3b82f6 50%, #0d6efd 100%); box-shadow: 0 3px 8px rgba(13, 110, 253, 0.4); animation: shimmer 2s infinite;" role="progressbar" 
+                                                                        :style="`width: ${calculatePercent(routeStats.visited, routeStats.planned)}%`" 
+                                                                        :aria-valuenow="calculatePercent(routeStats.visited, routeStats.planned)" aria-valuemin="0" aria-valuemax="100"></div>
+                                                                </div>
+                                                                <div class="d-flex justify-content-between mt-1">
+                                                                    <small class="text-muted">План: <span x-text="routeStats.planned"></span></small>
+                                                                    <small class="text-muted">Факт: <span x-text="routeStats.visited"></span></small>
+                                                                </div>
+                                                            </div>
+
+                                                            <!-- Conversion Rate -->
+                                                            <div class="mb-4">
+                                                                <div class="d-flex justify-content-between align-items-end mb-2">
+                                                                    <div>
+                                                                        <span class="fw-bold text-dark">Конверсия в заказ</span>
+                                                                        <span class="text-muted small ms-2">(Strike Rate)</span>
+                                                                    </div>
+                                                                    <span class="fw-bold text-success" x-text="getEfficiencyPercent(routeStats.ordered, routeStats.visited)"></span>
+                                                                </div>
+                                                                <div class="progress" style="height: 16px; border-radius: 10px; background-color: rgba(0,0,0,0.08); box-shadow: inset 0 3px 6px rgba(0,0,0,0.15);">
+                                                                    <div class="progress-bar" style="background: linear-gradient(90deg, #198754 0%, #10b981 50%, #20c997 100%); box-shadow: 0 3px 8px rgba(25, 135, 84, 0.4); animation: shimmer 2s infinite;" role="progressbar" 
+                                                                        :style="`width: ${calculatePercent(routeStats.ordered, routeStats.visited)}%`" 
+                                                                        :aria-valuenow="calculatePercent(routeStats.ordered, routeStats.visited)" aria-valuemin="0" aria-valuemax="100"></div>
+                                                                </div>
+                                                                <div class="d-flex justify-content-between mt-1">
+                                                                    <small class="text-muted">Посещено: <span x-text="routeStats.visited"></span></small>
+                                                                    <small class="text-muted">Заказали: <span x-text="routeStats.ordered"></span></small>
+                                                                </div>
+                                                            </div>
+                                                            
+                                                            <!-- Overall Efficiency -->
+                                                            <div>
+                                                                <div class="d-flex justify-content-between align-items-end mb-2">
+                                                                    <div>
+                                                                        <span class="fw-bold text-dark">Общая эффективность</span>
+                                                                        <span class="text-muted small ms-2">(Orders / Plan)</span>
+                                                                    </div>
+                                                                    <span class="fw-bold text-primary" x-text="getEfficiencyPercent(routeStats.ordered, routeStats.planned)"></span>
+                                                                </div>
+                                                                <div class="progress" style="height: 16px; border-radius: 10px; background-color: rgba(0,0,0,0.08); box-shadow: inset 0 3px 6px rgba(0,0,0,0.15);">
+                                                                    <div class="progress-bar" style="background: linear-gradient(90deg, #667eea 0%, #8b5cf6 50%, #764ba2 100%); box-shadow: 0 3px 8px rgba(102, 126, 234, 0.4); animation: shimmer 2s infinite;" role="progressbar" 
+                                                                        :style="`width: ${calculatePercent(routeStats.ordered, routeStats.planned)}%`" 
+                                                                        :aria-valuenow="calculatePercent(routeStats.ordered, routeStats.planned)" aria-valuemin="0" aria-valuemax="100"></div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    </template>
+                </div>
+                
+                <div class="modal-footer">
+                    <template x-if="selectedArea">
+                    <button type="button" class="btn btn-primary" @click="viewCustomers(selectedArea)">
+                        <i class="fas fa-users"></i> Показать клиентов
+                    </button>
+                    </template>
+                    <button type="button" class="btn btn-secondary" @click="closeAreaDetails()">
+                        Закрыть
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- График сравнения территорий -->
     <div class="row">
         <div class="col-12">
-            <div class="card">
-                <div class="card-header d-flex justify-content-between align-items-center">
+            <div class="card" style="border: none; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border-radius: 15px; overflow: hidden;">
+                <div class="card-header d-flex justify-content-between align-items-center" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none;">
                     <h5 class="mb-0">
-                        <i class="fas fa-chart-bar"></i>
+                        <i class="fas fa-chart-bar me-2"></i>
                         Сравнение продаж по территориям
                     </h5>
                     <button class="btn btn-outline-primary btn-sm" @click="loadAreas()">
@@ -183,10 +1131,10 @@
     <!-- Таблица детальной статистики -->
     <div class="row mt-4">
         <div class="col-12">
-            <div class="card">
-                <div class="card-header">
+            <div class="card" style="border: none; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border-radius: 15px; overflow: hidden;">
+                <div class="card-header" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none;">
                     <h5 class="mb-0">
-                        <i class="fas fa-table"></i>
+                        <i class="fas fa-table me-2"></i>
                         Детальная статистика
                     </h5>
                 </div>
@@ -202,7 +1150,6 @@
                                     <th>Клиентов</th>
                                     <th>Общая сумма</th>
                                     <th>Долг</th>
-                                    <th>Нач. долг</th>
                                     <th>Средний чек</th>
                                     <th>Доля</th>
                                 </tr>
@@ -230,9 +1177,6 @@
                                         <td>
                                             <strong x-text="formatCurrency(area.Debt)" class="text-danger"></strong>
                                         </td>
-                                        <td>
-                                            <span x-text="formatCurrency(area.InitialDebt || 0)" class="text-info"></span>
-                                        </td>
                                         <td x-text="formatCurrency(area.AvgSale)"></td>
                                         <td>
                                             <span x-text="`${calculateShare(area.TotalSales).toFixed(1)}%`"></span>
@@ -247,7 +1191,6 @@
                                     <td><strong x-text="formatNumber(totalCustomers)"></strong></td>
                                     <td><strong x-text="formatCurrency(totalSales)" class="text-success"></strong></td>
                                     <td><strong x-text="formatCurrency(totalDebt)" class="text-danger"></strong></td>
-                                    <td><strong x-text="formatCurrency(totalInitialDebt)" class="text-info"></strong></td>
                                     <td><strong x-text="formatCurrency(totalSales / totalSalesCount)"></strong></td>
                                     <td>100%</td>
                                 </tr>
@@ -269,14 +1212,178 @@
             loading: true,
             totalSales: 0,
             totalDebt: 0,
-            totalInitialDebt: 0,
             totalSalesCount: 0,
             totalCustomers: 0,
             chart: null,
             dateFrom: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
             dateTo: new Date().toISOString().split('T')[0],
+            
+            // Filters
+            showFiltersPanel: false,
+            divisions: [],
+            groups: [],
+            selectedDivisions: [],
+            selectedSalesGroups: [],  // Группы для продаж
+            selectedDebtGroups: [],   // Группы для долгов
+            divisionSearch: '',
+            salesGroupSearch: '',
+            debtGroupSearch: '',
+            
+            // Modal для детальной информации
+            selectedArea: null,
+            areaChart: null,
+            salesPaymentsChart: null,
+            debtChart: null,
+            customersHistoryChart: null,
+
+            // Route Stats
+            routeStats: null,
+            routeStatsLoading: false,
 
             init() {
+                this.loadSavedFilters();
+                this.loadDivisions();
+                this.loadGroups();
+                this.loadAreas();
+            },
+
+            loadSavedFilters() {
+                try {
+                    const savedDivisions = localStorage.getItem('areas_selectedDivisions');
+                    const savedSalesGroups = localStorage.getItem('areas_selectedSalesGroups');
+                    const savedDebtGroups = localStorage.getItem('areas_selectedDebtGroups');
+                    
+                    if (savedDivisions) {
+                        this.selectedDivisions = JSON.parse(savedDivisions);
+                    }
+                    if (savedSalesGroups) {
+                        this.selectedSalesGroups = JSON.parse(savedSalesGroups);
+                    }
+                    if (savedDebtGroups) {
+                        this.selectedDebtGroups = JSON.parse(savedDebtGroups);
+                    }
+                } catch (error) {
+                    console.error('Error loading saved filters:', error);
+                }
+            },
+
+            saveDivisionsToStorage() {
+                try {
+                    localStorage.setItem('areas_selectedDivisions', JSON.stringify(this.selectedDivisions));
+                } catch (error) {
+                    console.error('Error saving divisions:', error);
+                }
+            },
+
+            saveSalesGroupsToStorage() {
+                try {
+                    localStorage.setItem('areas_selectedSalesGroups', JSON.stringify(this.selectedSalesGroups));
+                } catch (error) {
+                    console.error('Error saving sales groups:', error);
+                }
+            },
+
+            saveDebtGroupsToStorage() {
+                try {
+                    localStorage.setItem('areas_selectedDebtGroups', JSON.stringify(this.selectedDebtGroups));
+                } catch (error) {
+                    console.error('Error saving debt groups:', error);
+                }
+            },
+
+            async loadDivisions() {
+                try {
+                    const response = await fetch('/api/settings/product-groups');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.divisions = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки дивизионов:', error);
+                }
+            },
+
+            async loadGroups() {
+                try {
+                    const response = await fetch('/api/settings/groups');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.groups = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки групп:', error);
+                }
+            },
+
+            filteredDivisions() {
+                if (!this.divisionSearch) return this.divisions;
+                const search = this.divisionSearch.toLowerCase();
+                return this.divisions.filter(d => 
+                    d.fGROUP.toLowerCase().includes(search) || 
+                    d.name.toLowerCase().includes(search)
+                );
+            },
+
+            filteredSalesGroups() {
+                if (!this.salesGroupSearch) return this.groups;
+                const search = this.salesGroupSearch.toLowerCase();
+                return this.groups.filter(g => 
+                    g.code.toLowerCase().includes(search) || 
+                    g.name.toLowerCase().includes(search)
+                );
+            },
+
+            filteredDebtGroups() {
+                if (!this.debtGroupSearch) return this.groups;
+                const search = this.debtGroupSearch.toLowerCase();
+                return this.groups.filter(g => 
+                    g.code.toLowerCase().includes(search) || 
+                    g.name.toLowerCase().includes(search)
+                );
+            },
+
+            groupListByParent(list) {
+                const groups = {};
+                list.forEach(g => {
+                    let parentLabel = g.parent_name ? `${g.parent_name}` : (g.parent_code ? g.parent_code : 'Прочие');
+                    
+                    if (!groups[parentLabel]) {
+                        groups[parentLabel] = [];
+                    }
+                    groups[parentLabel].push(g);
+                });
+                
+                return Object.keys(groups).sort().map(key => ({
+                    parent: key,
+                    items: groups[key]
+                }));
+            },
+
+            selectAllDivisions() {
+                this.selectedDivisions = this.divisions.map(d => d.fGROUP);
+                this.saveDivisionsToStorage();
+                this.loadAreas();
+            },
+
+            selectAllSalesGroups() {
+                this.selectedSalesGroups = this.groups.map(g => g.code);
+                this.saveSalesGroupsToStorage();
+                this.loadAreas();
+            },
+
+            selectAllDebtGroups() {
+                this.selectedDebtGroups = this.groups.map(g => g.code);
+                this.saveDebtGroupsToStorage();
+                this.loadAreas();
+            },
+
+            clearFilters() {
+                this.selectedDivisions = [];
+                this.selectedSalesGroups = [];
+                this.selectedDebtGroups = [];
+                this.saveDivisionsToStorage();
+                this.saveSalesGroupsToStorage();
+                this.saveDebtGroupsToStorage();
                 this.loadAreas();
             },
 
@@ -288,6 +1395,16 @@
                         date_to: this.dateTo
                     });
                     
+                    if (this.selectedDivisions.length > 0) {
+                        params.append('divisions', this.selectedDivisions.join(','));
+                    }
+                    if (this.selectedSalesGroups.length > 0) {
+                        params.append('sales_groups', this.selectedSalesGroups.join(','));
+                    }
+                    if (this.selectedDebtGroups.length > 0) {
+                        params.append('groups', this.selectedDebtGroups.join(','));
+                    }
+                    
                     const response = await fetch(`/api/sales-areas?${params}`);
                     const result = await response.json();
                     
@@ -297,7 +1414,6 @@
                         // Подсчитать итоги
                         this.totalSales = this.areas.reduce((sum, a) => sum + a.TotalSales, 0);
                         this.totalDebt = this.areas.reduce((sum, a) => sum + a.Debt, 0);
-                        this.totalInitialDebt = this.areas.reduce((sum, a) => sum + (a.InitialDebt || 0), 0);
                         this.totalSalesCount = this.areas.reduce((sum, a) => sum + a.SalesCount, 0);
                         this.totalCustomers = this.areas.reduce((sum, a) => sum + a.CustomerCount, 0);
                         
@@ -320,6 +1436,433 @@
             getColorByRank(index) {
                 const colors = ['warning', 'info', 'success', 'primary', 'secondary'];
                 return colors[Math.min(index, colors.length - 1)];
+            },
+
+            openAreaDetails(area) {
+                this.selectedArea = area;
+                this.routeStats = null; // Reset route stats
+                const modal = new bootstrap.Modal(document.getElementById('areaDetailsModal'));
+                modal.show();
+                
+                // Render charts after a short delay to ensure modal is fully visible
+                setTimeout(() => {
+                    // Check which tab is active and render accordingly
+                    const activeTab = document.querySelector('#areaDetailsTab .nav-link.active');
+                    if (activeTab && activeTab.id === 'dynamics-tab') {
+                        this.renderMonthlyHistoryCharts();
+                        this.renderAreaComparisonChart();
+                    }
+                }, 300);
+            },
+            
+            closeAreaDetails() {
+                const modal = bootstrap.Modal.getInstance(document.getElementById('areaDetailsModal'));
+                if (modal) {
+                    modal.hide();
+                }
+                this.selectedArea = null;
+                if (this.areaChart) {
+                    this.areaChart.destroy();
+                    this.areaChart = null;
+                }
+                if (this.salesPaymentsChart) {
+                    this.salesPaymentsChart.destroy();
+                    this.salesPaymentsChart = null;
+                }
+                if (this.debtChart) {
+                    this.debtChart.destroy();
+                    this.debtChart = null;
+                }
+                if (this.customersHistoryChart) {
+                    this.customersHistoryChart.destroy();
+                    this.customersHistoryChart = null;
+                }
+            },
+            
+            viewCustomers(area) {
+                // Перейти на страницу клиентов из модального окна
+                const params = new URLSearchParams({
+                    sales_area: area.code,
+                    date_from: this.dateFrom,
+                    date_to: this.dateTo
+                });
+                
+                if (this.selectedDivisions.length > 0) {
+                    params.append('divisions', this.selectedDivisions.join(','));
+                }
+                if (this.selectedGroups.length > 0) {
+                    params.append('groups', this.selectedGroups.join(','));
+                }
+                
+                window.location.href = `/customers-grid?${params}`;
+            },
+
+            async loadRouteStats() {
+                if (!this.selectedArea) return;
+                
+                this.routeStatsLoading = true;
+                this.routeStats = null;
+                
+                try {
+                    const params = new URLSearchParams({
+                        date_from: this.dateFrom,
+                        date_to: this.dateTo
+                    });
+                    
+                    const response = await fetch(`/api/sales-areas/${this.selectedArea.code}/route-stats?${params}`);
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        this.routeStats = result.data;
+                    }
+                } catch (error) {
+                    console.error('Error loading route stats:', error);
+                } finally {
+                    this.routeStatsLoading = false;
+                }
+            },
+            
+            calculatePercent(value, total) {
+                if (!total || total === 0) return 0;
+                return Math.min(100, Math.round((value / total) * 100));
+            },
+            
+            getEfficiencyPercent(value, total) {
+                if (!total || total === 0) return '0%';
+                return ((value / total) * 100).toFixed(1) + '%';
+            },
+            
+            getEfficiencyClass(value, total) {
+                if (!total || total === 0) return 'bg-secondary';
+                const percent = value / total;
+                if (percent >= 0.8) return 'bg-success';
+                if (percent >= 0.5) return 'bg-warning text-dark';
+                return 'bg-danger';
+            },
+
+            // Helper functions for new metrics
+            calculateRatio(numerator, denominator) {
+                if (denominator === 0) return 'N/A';
+                const ratio = (numerator / denominator * 100);
+                return `${ratio.toFixed(1)}%`;
+            },
+
+            getDebtRatioClass(area) {
+                if (area.TotalSales === 0) return 'bg-secondary';
+                const ratio = area.Debt / area.TotalSales;
+                if (ratio > 0.8) return 'bg-danger';
+                if (ratio > 0.5) return 'bg-warning text-dark';
+                return 'bg-success';
+            },
+
+            getPaymentRatioClass(area) {
+                if (area.TotalSales === 0) return 'bg-secondary';
+                const ratio = area.Payments / area.TotalSales;
+                if (ratio < 0.5) return 'bg-danger';
+                if (ratio < 0.8) return 'bg-warning text-dark';
+                return 'bg-success';
+            },
+
+            getChangeClass(current, previous) {
+                if (previous === 0) return 'bg-info';
+                return current > previous ? 'bg-success' : 'bg-danger';
+            },
+
+            getChangePercent(current, previous) {
+                if (previous === 0) return 'N/A';
+                const change = ((current - previous) / previous * 100);
+                const sign = change > 0 ? '+' : '';
+                return `${sign}${change.toFixed(1)}%`;
+            },
+            
+            getHistoricalData(monthsBack, metric) {
+                if (!this.selectedArea || !this.selectedArea.MonthlyHistory) return 0;
+                const history = this.selectedArea.MonthlyHistory;
+                if (history.length === 0) return 0;
+                
+                // Получить данные за указанное количество месяцев назад от последнего месяца в истории
+                const index = history.length - 1 - monthsBack;
+                if (index < 0 || index >= history.length) return 0;
+                
+                return history[index][metric] || 0;
+            },
+            
+            getHistoricalMonth(monthsBack) {
+                if (!this.selectedArea || !this.selectedArea.MonthlyHistory) return '';
+                const history = this.selectedArea.MonthlyHistory;
+                if (history.length === 0) return '';
+                
+                const index = history.length - 1 - monthsBack;
+                if (index < 0 || index >= history.length) return '';
+                
+                return history[index].monthName || '';
+            },
+            
+            getLastYearCustomers() {
+                return this.getHistoricalData(12, 'customerCount');
+            },
+            
+            getPrevMonthCustomers() {
+                return this.getHistoricalData(1, 'customerCount');
+            },
+            
+            getLastYearSalesCount() {
+                return this.getHistoricalData(12, 'salesCount');
+            },
+            
+            getPrevMonthSalesCount() {
+                return this.getHistoricalData(1, 'salesCount');
+            },
+
+            renderAreaComparisonChart() {
+                this.$nextTick(() => {
+                    const ctx = document.getElementById('areaSalesComparisonChart');
+                    if (!ctx || !this.selectedArea) return;
+
+                    if (this.areaChart) {
+                        this.areaChart.destroy();
+                    }
+
+                    const labels = ['Прошлый год', 'Прошлый месяц', 'Текущий период'];
+                    const data = [
+                        this.selectedArea.LastYearSales,
+                        this.selectedArea.PrevMonthSales,
+                        this.selectedArea.TotalSales
+                    ];
+
+                    this.areaChart = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: 'Сумма продаж',
+                                data: data,
+                                backgroundColor: [
+                                    'rgba(108, 117, 125, 0.6)',
+                                    'rgba(25, 135, 84, 0.6)',
+                                    'rgba(13, 110, 253, 0.6)'
+                                ],
+                                borderColor: [
+                                    'rgba(108, 117, 125, 1)',
+                                    'rgba(25, 135, 84, 1)',
+                                    'rgba(13, 110, 253, 1)'
+                                ],
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    callbacks: {
+                                        label: (context) => `Сумма: ${this.formatCurrency(context.raw)}`
+                                    }
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: {
+                                        callback: (value) => this.formatCurrency(value)
+                                    }
+                                }
+                            }
+                        }
+                    });
+                });
+            },
+
+            renderMonthlyHistoryCharts() {
+                if (!this.selectedArea || !this.selectedArea.MonthlyHistory) {
+                    console.warn('No selected area or monthly history data');
+                    return;
+                }
+                
+                const history = this.selectedArea.MonthlyHistory;
+                if (history.length === 0) {
+                    console.warn('Monthly history is empty');
+                    return;
+                }
+
+                this.$nextTick(() => {
+                    const labels = history.map(h => h.monthName);
+                    const salesData = history.map(h => h.totalSales);
+                    const paymentsData = history.map(h => h.totalPayments || 0);
+                    const debtData = history.map(h => h.totalDebt || 0);
+                    const customersData = history.map(h => h.customerCount);
+                    
+                    console.log('Rendering monthly history charts with', history.length, 'data points');
+
+                    // График продаж и оплат
+                    const salesPaymentsCtx = document.getElementById('areaSalesPaymentsChart');
+                    if (salesPaymentsCtx) {
+                        if (this.salesPaymentsChart) {
+                            this.salesPaymentsChart.destroy();
+                        }
+
+                        this.salesPaymentsChart = new Chart(salesPaymentsCtx, {
+                            type: 'line',
+                            data: {
+                                labels: labels,
+                                datasets: [
+                                    {
+                                        label: 'Продажи',
+                                        data: salesData,
+                                        borderColor: 'rgba(13, 110, 253, 1)',
+                                        backgroundColor: 'rgba(13, 110, 253, 0.1)',
+                                        borderWidth: 2,
+                                        tension: 0.4,
+                                        fill: true
+                                    },
+                                    {
+                                        label: 'Оплаты',
+                                        data: paymentsData,
+                                        borderColor: 'rgba(25, 135, 84, 1)',
+                                        backgroundColor: 'rgba(25, 135, 84, 0.1)',
+                                        borderWidth: 2,
+                                        borderDash: [6, 4],
+                                        tension: 0.4,
+                                        fill: true
+                                    }
+                                ]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: { 
+                                        display: true,
+                                        position: 'top'
+                                    },
+                                    tooltip: {
+                                        callbacks: {
+                                            label: (context) => `${context.dataset.label}: ${this.formatCurrency(context.raw)}`
+                                        }
+                                    }
+                                },
+                                scales: {
+                                    y: {
+                                        beginAtZero: true,
+                                        ticks: {
+                                            callback: (value) => this.formatCurrency(value)
+                                        }
+                                    },
+                                    x: {
+                                        ticks: {
+                                            maxRotation: 45,
+                                            minRotation: 45
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    // Отдельный график долга
+                    const debtCtx = document.getElementById('areaDebtChart');
+                    if (debtCtx) {
+                        if (this.debtChart) {
+                            this.debtChart.destroy();
+                        }
+
+                        this.debtChart = new Chart(debtCtx, {
+                            type: 'line',
+                            data: {
+                                labels: labels,
+                                datasets: [
+                                    {
+                                        label: 'Долг',
+                                        data: debtData,
+                                        borderColor: 'rgba(220, 53, 69, 1)',
+                                        backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                                        borderWidth: 3,
+                                        tension: 0.4,
+                                        fill: true
+                                    }
+                                ]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: { 
+                                        display: true,
+                                        position: 'top'
+                                    },
+                                    tooltip: {
+                                        callbacks: {
+                                            label: (context) => `Долг: ${this.formatCurrency(context.raw)}`
+                                        }
+                                    }
+                                },
+                                scales: {
+                                    y: {
+                                        beginAtZero: true,
+                                        ticks: {
+                                            callback: (value) => this.formatCurrency(value)
+                                        }
+                                    },
+                                    x: {
+                                        ticks: {
+                                            maxRotation: 45,
+                                            minRotation: 45
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    // График клиентов по месяцам
+                    const customersCtx = document.getElementById('areaCustomersHistoryChart');
+                    if (customersCtx) {
+                        if (this.customersHistoryChart) {
+                            this.customersHistoryChart.destroy();
+                        }
+
+                        this.customersHistoryChart = new Chart(customersCtx, {
+                            type: 'bar',
+                            data: {
+                                labels: labels,
+                                datasets: [{
+                                    label: 'Количество клиентов',
+                                    data: customersData,
+                                    backgroundColor: 'rgba(25, 135, 84, 0.7)',
+                                    borderColor: 'rgba(25, 135, 84, 1)',
+                                    borderWidth: 1
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: { display: false },
+                                    tooltip: {
+                                        callbacks: {
+                                            label: (context) => `Клиентов: ${this.formatNumber(context.raw)}`
+                                        }
+                                    }
+                                },
+                                scales: {
+                                    y: {
+                                        beginAtZero: true,
+                                        ticks: {
+                                            callback: (value) => this.formatNumber(value)
+                                        }
+                                    },
+                                    x: {
+                                        ticks: {
+                                            maxRotation: 45,
+                                            minRotation: 45
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
             },
 
             renderChart() {
@@ -449,6 +1992,29 @@
                 handle: '.card-header',
                 onEnd: function() {
                     console.log('Порядок территорий изменён');
+                }
+            });
+        }
+        
+        // Инициализация обработчика для вкладки динамики
+        const modal = document.getElementById('areaDetailsModal');
+        if (modal) {
+            modal.addEventListener('shown.bs.modal', () => {
+                console.log('Modal shown');
+                // Добавить обработчик для переключения вкладок
+                const dynamicsTab = document.querySelector('#dynamics-tab');
+                if (dynamicsTab) {
+                    dynamicsTab.addEventListener('shown.bs.tab', function(e) {
+                        console.log('Dynamics tab activated');
+                        // Получить Alpine компонент
+                        const alpineComponent = Alpine.$data(document.querySelector('[x-data]'));
+                        if (alpineComponent && alpineComponent.selectedArea) {
+                            setTimeout(() => {
+                                alpineComponent.renderAreaComparisonChart();
+                                alpineComponent.renderMonthlyHistoryCharts();
+                            }, 150);
+                        }
+                    }, { once: false });
                 }
             });
         }

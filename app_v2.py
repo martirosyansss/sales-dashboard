@@ -586,6 +586,22 @@ def get_sales_areas():
                 grp = grp.strip()
                 if grp and grp not in requested_groups:
                     requested_groups.append(grp)
+
+        raw_sales_groups_filter = request.args.get('sales_groups')
+        requested_sales_groups = []
+        if raw_sales_groups_filter:
+            for grp in raw_sales_groups_filter.split(','):
+                grp = grp.strip()
+                if grp and grp not in requested_sales_groups:
+                    requested_sales_groups.append(grp)
+
+        raw_division_filter = request.args.get('divisions')
+        requested_divisions = []
+        if raw_division_filter:
+            for div in raw_division_filter.split(','):
+                div = div.strip()
+                if div and div not in requested_divisions:
+                    requested_divisions.append(div)
         
         conn = db.get_connection()
         cursor = conn.cursor()
@@ -645,7 +661,8 @@ def get_sales_areas():
                 'Debt': 0,
                 'InitialDebt': 0,
                 'Payments': 0,
-                'Managers': []
+                'Managers': [],
+                'MonthlyHistory': []  # Новое поле для истории по месяцам
             }
         
         # Получить менеджеров для каждой Sales Area
@@ -675,181 +692,431 @@ def get_sales_areas():
             if area_code in all_areas:
                 all_areas[area_code]['Managers'] = managers
         
-        # Получить продажи по Sales Areas через менеджеров
-        # ВАЖНО: Продажи считаем только для клиентов из назначенных групп (как и долг)
-        for area_code, area_data in all_areas.items():
-            total_sales = 0
-            customer_ids = set()
-            sales_count = 0
-            all_sales = []
+        # Вычислить исторические диапазоны дат
+        date_from_dt = datetime.strptime(date_from, '%Y-%m-%d')
+        date_to_dt = datetime.strptime(date_to, '%Y-%m-%d')
+        
+        # Прошлый месяц (сдвиг на 1 месяц назад)
+        # Безопасный способ вычитания месяца
+        def subtract_month(dt):
+            """Вычесть один месяц от даты, обрабатывая переполнение дней"""
+            month = dt.month - 1
+            year = dt.year
+            if month < 1:
+                month = 12
+                year -= 1
             
-            if area_data['Managers']:
-                for manager_info in area_data['Managers']:
-                    manager_id = manager_info['id']
-                    effective_groups = resolve_effective_groups(manager_id, area_code)
-                    if effective_groups is None:
-                        continue
-
-                    # Если группы не назначены, временно считаем всех клиентов (fallback)
-                    if effective_groups:
-                        placeholders = ','.join(['?'] * len(effective_groups))
-                        group_filter = f" AND c.fGROUP IN ({placeholders})"
-                        group_params = tuple(effective_groups)
-                    else:
-                        group_filter = ""
-                        group_params = tuple()
-                    
-                    query_manager_sales = f"""
-                        SELECT 
-                            s.fCUSTOMERID,
-                            s.fISN,
-                            s.fTOTALSUM
-                        FROM SALES s
-                        INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-                        WHERE s.fSALESAGENTID = ?
-                            AND s.fDATE >= ? 
-                            AND s.fDATE <= ?
-                            AND s.fSTATE = 2
-                            {excluded_filter}
-                            {product_groups_filter}
-                            {group_filter}
-                    """
-                    
-                    all_params = (manager_id, date_from, date_to) + excluded_params + product_groups_params + group_params
-                    cursor.execute(query_manager_sales, all_params)
-                    
-                    for row in cursor.fetchall():
-                        customer_ids.add(row.fCUSTOMERID)
-                        sales_count += 1
-                        total_sales += float(row.fTOTALSUM)
-                        all_sales.append(float(row.fTOTALSUM))
-                
-                area_data['TotalSales'] = total_sales
-                area_data['CustomerCount'] = len(customer_ids)
-                area_data['SalesCount'] = sales_count
-                area_data['AvgSale'] = sum(all_sales) / len(all_sales) if all_sales else 0
+            # Обработка дней - если день больше чем дней в целевом месяце
+            import calendar
+            max_day = calendar.monthrange(year, month)[1]
+            day = min(dt.day, max_day)
+            
+            return dt.replace(year=year, month=month, day=day)
         
-        # Получить долг по Sales Areas
-        # ВАЖНО: Долг считаем только для менеджеров с назначенными группами в settings
-        for area_code, area_data in all_areas.items():
-            total_debt = 0
-            if area_data['Managers']:
-                for manager_info in area_data['Managers']:
-                    manager_id = manager_info['id']
-                    effective_groups = resolve_effective_groups(manager_id, area_code)
-                    if effective_groups is None:
-                        continue
-
-                    # Если групп нет, временно считаем всех клиентов (fallback)
-                    if effective_groups:
-                        placeholders = ','.join(['?'] * len(effective_groups))
-                        group_filter = f" AND c.fGROUP IN ({placeholders})"
-                        group_params = tuple(effective_groups)
-                    else:
-                        group_filter = ""
-                        group_params = tuple()
-                    
-                    # ПРАВИЛЬНАЯ ФОРМУЛА ДОЛГА:
-                    # ДОЛГ = debtFromDocuments - |type01| - |type02|
-                    
-                    # 1. Долг из документов
-                    debt_query = f"""
-                        SELECT 
-                            ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as DebtFromDocs
-                        FROM HICUSTOMERSDEBT d
-                        INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-                        INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-                        WHERE doc.fCUSTOMERID IN (
-                            SELECT DISTINCT fCUSTOMERID
-                            FROM SALES
-                            WHERE fSALESAGENTID = ?
-                        )
-                            {excluded_filter}
-                            {group_filter}
-                    """
-                    
-                    all_params = (manager_id,) + excluded_params + group_params
-                    cursor.execute(debt_query, all_params)
-                    debt_row = cursor.fetchone()
-                    debt_from_docs = float(debt_row.DebtFromDocs) if debt_row and debt_row.DebtFromDocs else 0
-                    
-                    # 2. Остатки Type01 и Type02
-                    rest_query = f"""
-                        SELECT 
-                            ISNULL(SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END), 0) as Type01,
-                            ISNULL(SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END), 0) as Type02
-                        FROM HIRESTCUSTOMERSSUM r
-                        INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
-                        WHERE r.fCUSTOMERID IN (
-                            SELECT DISTINCT fCUSTOMERID
-                            FROM SALES
-                            WHERE fSALESAGENTID = ?
-                        )
-                            {excluded_filter}
-                            {group_filter}
-                    """
-                    
-                    cursor.execute(rest_query, all_params)
-                    rest_row = cursor.fetchone()
-                    type01 = float(rest_row.Type01) if rest_row and rest_row.Type01 else 0
-                    type02 = float(rest_row.Type02) if rest_row and rest_row.Type02 else 0
-                    
-                    # 3. Итоговый долг
-                    manager_debt = debt_from_docs - abs(type01) - abs(type02)
-                    total_debt += manager_debt
-                
-                area_data['Debt'] = total_debt
+        prev_month_from = subtract_month(date_from_dt)
+        prev_month_to = subtract_month(date_to_dt)
         
-        # Получить платежи и начальный долг по Sales Areas
+        # Прошлый год (сдвиг на 1 год назад)
+        # Обработка 29 февраля
+        def subtract_year(dt):
+            """Вычесть один год от даты, обрабатывая високосные года"""
+            year = dt.year - 1
+            # Если исходная дата - 29 февраля, а прошлый год не високосный
+            if dt.month == 2 and dt.day == 29:
+                import calendar
+                if not calendar.isleap(year):
+                    return dt.replace(year=year, day=28)
+            return dt.replace(year=year)
+        
+        last_year_from = subtract_year(date_from_dt)
+        last_year_to = subtract_year(date_to_dt)
+        
+        prev_month_from_str = prev_month_from.strftime('%Y-%m-%d')
+        prev_month_to_str = prev_month_to.strftime('%Y-%m-%d')
+        last_year_from_str = last_year_from.strftime('%Y-%m-%d')
+        last_year_to_str = last_year_to.strftime('%Y-%m-%d')
+        
+        # Получить продажи и долги по Sales Areas
+        # Используем тот же подход, что и в /api/customers - через CUSTOMERSALESAREAS
         for area_code, area_data in all_areas.items():
-            total_payments = 0
-            if area_data['Managers']:
-                for manager_info in area_data['Managers']:
-                    manager_id = manager_info['id']
-                    effective_groups = resolve_effective_groups(manager_id, area_code)
-                    if effective_groups is None:
-                        continue
-
-                    if effective_groups:
-                        placeholders = ','.join(['?'] * len(effective_groups))
-                        group_filter = f" AND c.fGROUP IN ({placeholders})"
-                        group_params = tuple(effective_groups)
-                    else:
-                        group_filter = ""
-                        group_params = tuple()
-                    
-                    # Получить платежи
-                    payments_query = f"""
-                        SELECT ISNULL(SUM(ABS(d.fSUM)), 0) as TotalPayments
-                        FROM HICUSTOMERSDEBT d
-                        INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-                        INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-                        WHERE doc.fCUSTOMERID IN (
-                            SELECT DISTINCT fCUSTOMERID
-                            FROM SALES
-                            WHERE fSALESAGENTID = ?
-                        )
-                            AND d.fDBCR = 'C'
-                            AND doc.fDATE >= ?
-                            AND doc.fDATE <= ?
-                            {excluded_filter}
-                            {group_filter}
-                    """
-                    
-                    all_params = (manager_id, date_from, date_to) + excluded_params + group_params
-                    cursor.execute(payments_query, all_params)
-                    payments_row = cursor.fetchone()
-                    manager_payments = float(payments_row.TotalPayments) if payments_row and payments_row.TotalPayments else 0
-                    total_payments += manager_payments
+            # Divisions filter: для продаж (фильтр по товарным группам)
+            division_filter = ""
+            division_params = tuple()
+            if requested_divisions:
+                placeholders = ','.join(['?'] * len(requested_divisions))
+                division_filter = f"""
+                    AND s.fSALESAGENTID IN (
+                        SELECT DISTINCT fSALESAGENTID 
+                        FROM SALESAGENTDIVISIONS 
+                        WHERE fDIVISION IN ({placeholders})
+                    )
+                """
+                division_params = tuple(requested_divisions)
+            
+            # Sales groups filter: для продаж (фильтр по группам клиентов)
+            sales_group_filter = ""
+            sales_group_params = tuple()
+            if requested_sales_groups:
+                placeholders = ','.join(['?'] * len(requested_sales_groups))
+                sales_group_filter = f" AND c.fGROUP IN ({placeholders})"
+                sales_group_params = tuple(requested_sales_groups)
+            
+            # 1. Получить продажи для клиентов этой Sales Area (используем divisions + sales_groups filter)
+            query_sales = f"""
+                SELECT 
+                    COUNT(DISTINCT s.fCUSTOMERID) AS CustomerCount,
+                    COUNT(s.fISN) AS SalesCount,
+                    ISNULL(SUM(s.fTOTALSUM), 0) AS TotalSales,
+                    ISNULL(AVG(s.fTOTALSUM), 0) AS AvgSale,
+                    ISNULL(SUM(d.DiscountAmount), 0) AS TotalDiscount
+                FROM SALES s
+                INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+                OUTER APPLY (
+                    SELECT SUM(sd.fPRICE * sd.fQUANTITY - sd.fSUM) as DiscountAmount
+                    FROM SALEDOCDETAILS sd
+                    WHERE sd.fISN = s.fISN
+                ) d
+                WHERE csa.fSALESAREA = ?
+                    AND s.fSALESAREA = ?
+                    AND s.fDATE >= ?
+                    AND s.fDATE <= ?
+                    AND s.fSTATE = 2
+                    {excluded_filter}
+                    {product_groups_filter}
+                    {division_filter}
+                    {sales_group_filter}
+            """
+            
+            sales_params = (area_code, area_code, date_from, date_to) + excluded_params + product_groups_params + division_params + sales_group_params
+            cursor.execute(query_sales, sales_params)
+            sales_row = cursor.fetchone()
+            
+            if sales_row:
+                area_data['CustomerCount'] = sales_row.CustomerCount or 0
+                area_data['SalesCount'] = sales_row.SalesCount or 0
+                area_data['TotalSales'] = float(sales_row.TotalSales) if sales_row.TotalSales else 0
+                area_data['AvgSale'] = float(sales_row.AvgSale) if sales_row.AvgSale else 0
+                area_data['TotalDiscount'] = float(sales_row.TotalDiscount) if sales_row.TotalDiscount else 0
                 
-                area_data['Payments'] = total_payments
-                # InitialDebt = CurrentDebt - SalesForPeriod + PaymentsForPeriod
-                area_data['InitialDebt'] = area_data['Debt'] - area_data['TotalSales'] + area_data['Payments']
+                # Calculate Discount Percent
+                total_original = area_data['TotalSales'] + area_data['TotalDiscount']
+                if total_original > 0:
+                    area_data['DiscountPercent'] = (area_data['TotalDiscount'] / total_original) * 100
+                else:
+                    area_data['DiscountPercent'] = 0
+            
+            # Groups filter: для долгов и оплат (фильтр по группам клиентов)
+            group_filter = ""
+            group_params = tuple()
+            if requested_groups:
+                placeholders = ','.join(['?'] * len(requested_groups))
+                group_filter = f" AND c.fGROUP IN ({placeholders})"
+                group_params = tuple(requested_groups)
+            
+            # 2. Получить долг для клиентов этой Sales Area (используем ТОЛЬКО groups filter)
+            query_debt = f"""
+                SELECT 
+                    ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as DebtFromDocs
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+                WHERE csa.fSALESAREA = ?
+                    {excluded_filter}
+                    {group_filter}
+            """
+            
+            debt_params = (area_code,) + excluded_params + group_params
+            cursor.execute(query_debt, debt_params)
+            debt_row = cursor.fetchone()
+            debt_from_docs = float(debt_row.DebtFromDocs) if debt_row and debt_row.DebtFromDocs else 0
+            
+            # 3. Получить остатки Type01 и Type02 (divisions не применяются)
+            query_rest = f"""
+                SELECT 
+                    ISNULL(SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END), 0) as Type01,
+                    ISNULL(SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END), 0) as Type02
+                FROM HIRESTCUSTOMERSSUM r
+                INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
+                INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+                WHERE csa.fSALESAREA = ?
+                    {excluded_filter}
+                    {group_filter}
+            """
+            
+            cursor.execute(query_rest, debt_params)  # Reuse debt_params (same structure without divisions)
+            rest_row = cursor.fetchone()
+            type01 = float(rest_row.Type01) if rest_row and rest_row.Type01 else 0
+            type02 = float(rest_row.Type02) if rest_row and rest_row.Type02 else 0
+            
+            # 4. Итоговый долг (текущий)
+            area_data['Debt'] = debt_from_docs - abs(type01) - abs(type02)
+            
+            # 5. Получить данные за прошлый месяц (те же даты, но месяц назад)
+            prev_month_sales_params = (area_code, area_code, prev_month_from_str, prev_month_to_str) + excluded_params + product_groups_params + division_params + sales_group_params
+            cursor.execute(query_sales, prev_month_sales_params)
+            prev_month_row = cursor.fetchone()
+            
+            area_data['PrevMonthSales'] = float(prev_month_row.TotalSales) if prev_month_row and prev_month_row.TotalSales else 0
+            
+            # 6. Получить данные за прошлый год (те же даты, но год назад)
+            last_year_sales_params = (area_code, area_code, last_year_from_str, last_year_to_str) + excluded_params + product_groups_params + division_params + sales_group_params
+            cursor.execute(query_sales, last_year_sales_params)
+            last_year_row = cursor.fetchone()
+            
+            area_data['LastYearSales'] = float(last_year_row.TotalSales) if last_year_row and last_year_row.TotalSales else 0
+        
+        # Получить платежи и начальный долг по Sales Areas (через CUSTOMERSALESAREAS, divisions не применяются)
+        for area_code, area_data in all_areas.items():
+            # Группы
+            group_filter = ""
+            group_params = tuple()
+            if requested_groups:
+                placeholders = ','.join(['?'] * len(requested_groups))
+                group_filter = f" AND c.fGROUP IN ({placeholders})"
+                group_params = tuple(requested_groups)
+
+            payments_query = f"""
+                SELECT ISNULL(SUM(ABS(d.fSUM)), 0) as TotalPayments
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+                WHERE csa.fSALESAREA = ?
+                    AND d.fDBCR = 'C'
+                    AND doc.fDATE >= ?
+                    AND doc.fDATE <= ?
+                    {excluded_filter}
+                    {group_filter}
+            """
+
+            pay_params = (area_code, date_from, date_to) + excluded_params + group_params
+            cursor.execute(payments_query, pay_params)
+            payments_row = cursor.fetchone()
+            total_payments = float(payments_row.TotalPayments) if payments_row and payments_row.TotalPayments else 0
+
+            area_data['Payments'] = total_payments
+            # InitialDebt = CurrentDebt - SalesForPeriod + PaymentsForPeriod
+            area_data['InitialDebt'] = area_data['Debt'] - area_data['TotalSales'] + area_data['Payments']
+        
+        # Получить историю по месяцам за последние 24 месяца (ОПТИМИЗИРОВАННЫЙ ЗАПРОС)
+        logger.info("[HISTORY] Starting monthly history calculation...")
+        current_date = datetime.strptime(date_to, '%Y-%m-%d')
+        
+        # Вычислить дату начала (24 месяца назад)
+        start_history_date = current_date.replace(day=1)
+        for _ in range(24):
+            if start_history_date.month == 1:
+                start_history_date = start_history_date.replace(year=start_history_date.year - 1, month=12)
+            else:
+                start_history_date = start_history_date.replace(month=start_history_date.month - 1)
+        
+        logger.info(f"[HISTORY] Date range: {start_history_date.strftime('%Y-%m-%d')} to {date_to}")
+        
+        # Divisions filter для истории продаж (только товарные группы)
+        division_filter = ""
+        division_params = tuple()
+        if requested_divisions:
+            placeholders = ','.join(['?'] * len(requested_divisions))
+            division_filter = f"""
+                AND s.fSALESAGENTID IN (
+                    SELECT DISTINCT fSALESAGENTID 
+                    FROM SALESAGENTDIVISIONS 
+                    WHERE fDIVISION IN ({placeholders})
+                )
+            """
+            division_params = tuple(requested_divisions)
+        
+        # Sales groups filter для истории продаж (группы клиентов)
+        sales_group_filter = ""
+        sales_group_params = tuple()
+        if requested_sales_groups:
+            placeholders = ','.join(['?'] * len(requested_sales_groups))
+            sales_group_filter = f" AND c.fGROUP IN ({placeholders})"
+            sales_group_params = tuple(requested_sales_groups)
+        
+        # ОДИН запрос для получения всех исторических данных продаж (divisions + sales_groups filter)
+        history_query = f"""
+            SELECT 
+                csa.fSALESAREA AS AreaCode,
+                FORMAT(s.fDATE, 'yyyy-MM') AS Month,
+                COUNT(DISTINCT s.fCUSTOMERID) AS CustomerCount,
+                COUNT(s.fISN) AS SalesCount,
+                ISNULL(SUM(s.fTOTALSUM), 0) AS TotalSales
+            FROM SALES s
+            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+            INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+            WHERE s.fSALESAREA = csa.fSALESAREA
+                AND s.fDATE >= ?
+                AND s.fDATE <= ?
+                AND s.fSTATE = 2
+                {excluded_filter}
+                {product_groups_filter}
+                {division_filter}
+                {sales_group_filter}
+            GROUP BY csa.fSALESAREA, FORMAT(s.fDATE, 'yyyy-MM')
+            ORDER BY csa.fSALESAREA, FORMAT(s.fDATE, 'yyyy-MM')
+        """
+        
+        history_params = (start_history_date.strftime('%Y-%m-%d'), date_to) + excluded_params + product_groups_params + division_params + sales_group_params
+        logger.info(f"[SALES HISTORY] Query has {history_query.count('?')} placeholders")
+        logger.info(f"[SALES HISTORY] Supplying {len(history_params)} params")
+        cursor.execute(history_query, history_params)
+        history_rows = cursor.fetchall()
+        logger.info(f"[HISTORY] Got {len(history_rows)} history rows")
+        
+        # Сгруппировать результаты по территориям (month -> metrics)
+        history_by_area = {}
+        for row in history_rows:
+            area_code = row.AreaCode
+            area_history = history_by_area.setdefault(area_code, {})
+            
+            # Преобразовать строку месяца в datetime для форматирования
+            try:
+                month_date = datetime.strptime(row.Month, '%Y-%m')
+            except ValueError:
+                continue
+
+            area_history[row.Month] = {
+                'month': row.Month,
+                'monthName': month_date.strftime('%b %Y'),
+                'customerCount': row.CustomerCount or 0,
+                'salesCount': row.SalesCount or 0,
+                'totalSales': float(row.TotalSales) if row.TotalSales else 0,
+                'totalPayments': 0,
+                'totalDebt': 0
+            }
+
+        # Получить историю оплат по месяцам (divisions не применяются)
+        payments_group_filter = ""
+        payments_group_params = tuple()
+        if requested_groups:
+            placeholders = ','.join(['?'] * len(requested_groups))
+            payments_group_filter = f" AND c.fGROUP IN ({placeholders})"
+            payments_group_params = tuple(requested_groups)
+
+        payments_history_query = f"""
+            SELECT 
+                csa.fSALESAREA AS AreaCode,
+                FORMAT(doc.fDATE, 'yyyy-MM') AS Month,
+                ISNULL(SUM(ABS(d.fSUM)), 0) AS TotalPayments
+            FROM HICUSTOMERSDEBT d
+            INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+            INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+            INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+            WHERE d.fDBCR = 'C'
+                AND doc.fDATE >= ?
+                AND doc.fDATE <= ?
+                {excluded_filter}
+                {payments_group_filter}
+            GROUP BY csa.fSALESAREA, FORMAT(doc.fDATE, 'yyyy-MM')
+            ORDER BY csa.fSALESAREA, FORMAT(doc.fDATE, 'yyyy-MM')
+        """
+
+        payments_history_params = (start_history_date.strftime('%Y-%m-%d'), date_to) + excluded_params + payments_group_params
+        logger.info(f"[PAYMENTS HISTORY] Query has {payments_history_query.count('?')} placeholders")
+        logger.info(f"[PAYMENTS HISTORY] Supplying {len(payments_history_params)} params")
+        cursor.execute(payments_history_query, payments_history_params)
+        payments_history_rows = cursor.fetchall()
+
+        for row in payments_history_rows:
+            area_code = row.AreaCode
+            area_history = history_by_area.setdefault(area_code, {})
+
+            month_key = row.Month
+            try:
+                month_date = datetime.strptime(month_key, '%Y-%m')
+            except ValueError:
+                continue
+
+            if month_key not in area_history:
+                area_history[month_key] = {
+                    'month': month_key,
+                    'monthName': month_date.strftime('%b %Y'),
+                    'customerCount': 0,
+                    'salesCount': 0,
+                    'totalSales': 0,
+                    'totalPayments': 0,
+                    'totalDebt': 0
+                }
+
+            area_history[month_key]['totalPayments'] = float(row.TotalPayments) if row.TotalPayments else 0
+        
+        # Получить историю долга по месяцам (используем groups filter, БЕЗ divisions)
+        debt_group_filter = ""
+        debt_group_params = tuple()
+        if requested_groups:
+            placeholders = ','.join(['?'] * len(requested_groups))
+            debt_group_filter = f" AND c.fGROUP IN ({placeholders})"
+            debt_group_params = tuple(requested_groups)
+
+        debt_history_query = f"""
+            SELECT 
+                csa.fSALESAREA AS AreaCode,
+                FORMAT(doc.fDATE, 'yyyy-MM') AS Month,
+                ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) AS TotalDebt
+            FROM HICUSTOMERSDEBT d
+            INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+            INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+            INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+            WHERE doc.fDATE >= ?
+                AND doc.fDATE <= ?
+                {excluded_filter}
+                {debt_group_filter}
+            GROUP BY csa.fSALESAREA, FORMAT(doc.fDATE, 'yyyy-MM')
+            ORDER BY csa.fSALESAREA, FORMAT(doc.fDATE, 'yyyy-MM')
+        """
+
+        debt_history_params = (start_history_date.strftime('%Y-%m-%d'), date_to) + excluded_params + debt_group_params
+        logger.info(f"[DEBT HISTORY] Query has {debt_history_query.count('?')} placeholders")
+        logger.info(f"[DEBT HISTORY] Supplying {len(debt_history_params)} params: {debt_history_params}")
+        cursor.execute(debt_history_query, debt_history_params)
+        debt_history_rows = cursor.fetchall()
+
+        for row in debt_history_rows:
+            area_code = row.AreaCode
+            area_history = history_by_area.setdefault(area_code, {})
+
+            month_key = row.Month
+            try:
+                month_date = datetime.strptime(month_key, '%Y-%m')
+            except ValueError:
+                continue
+
+            if month_key not in area_history:
+                area_history[month_key] = {
+                    'month': month_key,
+                    'monthName': month_date.strftime('%b %Y'),
+                    'customerCount': 0,
+                    'salesCount': 0,
+                    'totalSales': 0,
+                    'totalPayments': 0,
+                    'totalDebt': 0
+                }
+
+            area_history[month_key]['totalDebt'] = float(row.TotalDebt) if row.TotalDebt else 0
+        
+        # Добавить историю к каждой территории
+        logger.info(f"[HISTORY] Assigning history to {len(all_areas)} areas...")
+        for area_code, area_data in all_areas.items():
+            area_history = history_by_area.get(area_code, {})
+            if isinstance(area_history, dict):
+                sorted_history = [area_history[key] for key in sorted(area_history.keys())]
+            else:
+                sorted_history = area_history
+            area_data['MonthlyHistory'] = sorted_history
+        logger.info("[HISTORY] History assignment complete")
         
         conn.close()
         
-        # Конвертировать в список и сортировать по продажам
-        areas_list = list(all_areas.values())
+        # Конвертировать в список и отфильтровать области без продаж и долгов
+        areas_list = [
+            area for area in all_areas.values()
+            if area['TotalSales'] > 0 or area['Debt'] != 0
+        ]
+        
+        # Сортировать по продажам
         areas_list.sort(key=lambda x: x['TotalSales'], reverse=True)
         
         return jsonify({'success': True, 'data': areas_list})
@@ -1704,7 +1971,7 @@ def ten_years_chart():
             query = """
                 SELECT 
                     COUNT(*) as SalesCount,
-                    ISNULL(SUM(fTOTALSUM), 0) as TotalSum
+                    ISNULL(SUM(fTOTALSUM), 0) as TotalSales
                 FROM SALES
                 WHERE fDATE >= ? AND fDATE < ?
                 AND fSTATE = 2
@@ -1717,7 +1984,7 @@ def ten_years_chart():
                     'Year': year,
                     'Month': month_start.strftime('%Y-%m'),
                     'SalesCount': data[0]['SalesCount'],
-                    'TotalSum': float(data[0]['TotalSum'])
+                    'TotalSum': float(data[0]['TotalSales'])
                 })
         
         return jsonify({
@@ -2047,7 +2314,7 @@ def get_debts():
         """
         rest_result = db.execute_query(query_rest_sums, excluded_params)
         type01 = float(rest_result[0]['Type01']) if rest_result else 0
-        type02 = float(rest_result[0]['Type02']) if rest_result else 0
+        type02 = float(rest_result[0]['Type02']) if rest_result and rest_result[0]['Type02'] is not None else 0
         
         # 3. Конечный долг = debtFromDocuments - |type01| - |type02|
         final_debt = debt_from_documents - abs(type01) - abs(type02)
@@ -2289,20 +2556,56 @@ def update_store_group():
 # ===== Группы =====
 @app.route('/api/settings/groups')
 def get_settings_groups():
-    """Получить список всех групп"""
+    """Получить список всех групп клиентов с названиями и родителями из TREES"""
     try:
         conn = db.get_connection()
         cursor = conn.cursor()
         
-        query = """
+        # Сначала получаем все группы из CUSTOMERS
+        query_groups = """
             SELECT DISTINCT fGROUP
             FROM CUSTOMERS
             WHERE fGROUP IS NOT NULL AND fGROUP != ''
             ORDER BY fGROUP
         """
-        cursor.execute(query)
+        cursor.execute(query_groups)
+        customer_groups = [row.fGROUP for row in cursor.fetchall()]
         
-        groups = [row.fGROUP for row in cursor.fetchall()]
+        # Затем получаем названия и родителей из TREES
+        query_trees = """
+            SELECT fCODE, fCAPTION, fPARENT
+            FROM TREES
+            WHERE fTREEID = 'CustGrp'
+        """
+        cursor.execute(query_trees)
+        tree_data = {}
+        for row in cursor.fetchall():
+            tree_data[row.fCODE] = {
+                'name': row.fCAPTION,
+                'parent': row.fPARENT
+            }
+        
+        # Формируем результат с названиями и родителями
+        groups = []
+        for group_code in customer_groups:
+            info = tree_data.get(group_code, {})
+            name = info.get('name', group_code)
+            parent_code = info.get('parent')
+            
+            parent_name = ""
+            if parent_code:
+                parent_info = tree_data.get(parent_code, {})
+                parent_name = parent_info.get('name', parent_code)
+            
+            groups.append({
+                'code': group_code,
+                'name': name,
+                'parent_code': parent_code,
+                'parent_name': parent_name
+            })
+        
+        # Сортируем: сначала по родителю, потом по коду
+        groups.sort(key=lambda x: (x['parent_code'] or '', x['code']))
         
         conn.close()
         return jsonify({'success': True, 'data': groups})
@@ -2593,10 +2896,14 @@ def get_product_groups_filter_sql():
 
 def get_excluded_customer_ids():
     """Получить список ID исключенных клиентов (включая клиентов из исключенных групп)"""
-    excluded = load_excluded_customers()
-    excluded_ids = [item['customerId'] for item in excluded]
+    excluded_ids = load_excluded_customers()
+    if not excluded_ids:
+        excluded_ids = []
+    else:
+        # Преобразуем в список ID
+        excluded_ids = [item['customerId'] for item in excluded_ids]
     
-    # Добавить клиентов из исключенных групп
+    # Добавляем клиентов из исключенных групп
     excluded_groups = load_excluded_groups()
     if excluded_groups:
         try:
@@ -2605,7 +2912,7 @@ def get_excluded_customer_ids():
             
             placeholders = ','.join('?' * len(excluded_groups))
             query = f"SELECT fID FROM CUSTOMERS WHERE fGROUP IN ({placeholders})"
-            cursor.execute(query, excluded_groups)
+            cursor.execute(query, tuple(excluded_groups))
             
             for row in cursor.fetchall():
                 if row.fID not in excluded_ids:
@@ -3038,438 +3345,6 @@ def debug_check_group_products(group_code):
         
         query = """
             SELECT TOP 10
-                fID,
-                fCODE,
-                fNAME,
-                fGROUP
-            FROM PRODUCTS
-            WHERE fGROUP = ?
-            ORDER BY fNAME
-        """
-        cursor.execute(query, (group_code,))
-        
-        products = []
-        for row in cursor.fetchall():
-            products.append({
-                'id': row.fID,
-                'code': row.fCODE,
-                'name': row.fNAME,
-                'group': row.fGROUP
-            })
-        
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'group_code': group_code,
-            'product_count': len(products),
-            'products': products
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/debug/check-divisions')
-def debug_check_divisions():
-    """Проверить таблицу SALESAGENTDIVISIONS"""
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        # Получить структуру таблицы
-        cursor.execute("""
-            SELECT COLUMN_NAME, DATA_TYPE
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME = 'SALESAGENTDIVISIONS'
-            ORDER BY ORDINAL_POSITION
-        """)
-        columns = [{'name': row[0], 'type': row[1]} for row in cursor.fetchall()]
-        
-        # Получить данные
-        cursor.execute("SELECT TOP 20 * FROM SALESAGENTDIVISIONS")
-        rows = cursor.fetchall()
-        
-        data = []
-        for row in rows:
-            row_dict = {}
-            for idx, col in enumerate(cursor.description):
-                value = row[idx]
-                # Конвертировать bytes в строку
-                if isinstance(value, bytes):
-                    value = value.decode('utf-8', errors='ignore')
-                row_dict[col[0]] = value
-            data.append(row_dict)
-        
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'columns': columns,
-            'row_count': len(data),
-            'data': data
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/debug/all-divisions')
-def debug_all_divisions():
-    """Получить все уникальные дивизионы"""
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT DISTINCT fDIVISION 
-            FROM SALESAGENTDIVISIONS 
-            ORDER BY fDIVISION
-        """)
-        
-        divisions = [row[0] for row in cursor.fetchall()]
-        
-        cursor.close()
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'divisions': divisions,
-            'count': len(divisions)
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/debug/manager-detail/<code>')
-def debug_manager_detail(code):
-    """Детальная информация о менеджере"""
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        # Найти менеджера
-        cursor.execute("SELECT fID, fCODE, fNAME FROM SALESAGENTS WHERE fCODE = ?", (code,))
-        manager = cursor.fetchone()
-        
-        if not manager:
-            return jsonify({'success': False, 'error': 'Менеджер не найден'}), 404
-        
-        manager_id = manager.fID
-        
-        # Получить дивизионы менеджера
-        cursor.execute("""
-            SELECT fDIVISION, fDEFAULT, fROWNUM
-            FROM SALESAGENTDIVISIONS
-            WHERE fSALESAGENTID = ?
-            ORDER BY fROWNUM
-        """, (manager_id,))
-        divisions = [{'division': row[0], 'is_default': row[1], 'row_num': row[2]} for row in cursor.fetchall()]
-        
-        # Получить продажи за ноябрь 2024 БЕЗ фильтра по дивизионам
-        cursor.execute("""
-            SELECT 
-                COUNT(s.fISN) as SalesCount,
-                ISNULL(SUM(s.fTOTALSUM), 0) as TotalSales
-            FROM SALES s
-            WHERE s.fSALESAGENTID = ?
-            AND s.fDATE >= '2024-11-01'
-            AND s.fDATE < '2024-12-01'
-            AND s.fSTATE = 2
-        """, (manager_id,))
-        sales_all = cursor.fetchone()
-        
-        # Получить продажи С фильтром по дивизиону 000000
-        cursor.execute("""
-            SELECT 
-                COUNT(s.fISN) as SalesCount,
-                ISNULL(SUM(s.fTOTALSUM), 0) as TotalSales
-            FROM SALES s
-            WHERE s.fSALESAGENTID = ?
-            AND s.fDATE >= '2024-11-01'
-            AND s.fDATE < '2024-12-01'
-            AND s.fSTATE = 2
-            AND s.fSALESAGENTID IN (
-                SELECT DISTINCT fSALESAGENTID 
-                FROM SALESAGENTDIVISIONS 
-                WHERE fDIVISION = '000000'
-            )
-        """, (manager_id,))
-        sales_filtered = cursor.fetchone()
-        
-        # Получить долг
-        cursor.execute("""
-            SELECT ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as TotalDebt
-            FROM HICUSTOMERSDEBT d
-            INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-            WHERE doc.fSALESAGENTID = ?
-        """, (manager_id,))
-        debt = cursor.fetchone()
-        
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'manager': {
-                'id': manager.fID,
-                'code': manager.fCODE,
-                'name': manager.fNAME
-            },
-            'divisions': divisions,
-            'sales': {
-                'all_november': {
-                    'count': sales_all.SalesCount if sales_all else 0,
-                    'total': float(sales_all.TotalSales) if sales_all else 0
-                },
-                'filtered_000000': {
-                    'count': sales_filtered.SalesCount if sales_filtered else 0,
-                    'total': float(sales_filtered.TotalSales) if sales_filtered else 0
-                }
-            },
-            'debt': {
-                'total': float(debt.TotalDebt) if debt else 0
-            }
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/debug/salesagent-areas')
-def debug_salesagent_areas():
-    """Проверить таблицу SALESAGENTAREAS"""
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        # Получить структуру таблицы
-        cursor.execute("""
-            SELECT COLUMN_NAME, DATA_TYPE
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME = 'SALESAGENTAREAS'
-            ORDER BY ORDINAL_POSITION
-        """)
-        columns = [{'name': row[0], 'type': row[1]} for row in cursor.fetchall()]
-        
-        # Получить данные
-        cursor.execute("SELECT TOP 50 * FROM SALESAGENTAREAS")
-        rows = cursor.fetchall()
-        
-        data = []
-        for row in rows:
-            row_dict = {}
-            for idx, col in enumerate(cursor.description):
-                value = row[idx]
-                if isinstance(value, bytes):
-                    value = value.decode('utf-8', errors='ignore')
-                row_dict[col[0]] = value
-            data.append(row_dict)
-        
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'columns': columns,
-            'row_count': len(data),
-            'data': data
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/debug/trees-salesarea')
-def debug_trees_salesarea():
-    """Получить Sales Areas из TREES"""
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT 
-                fCODE,
-                fCAPTION,
-                fTREEID,
-                fISN
-            FROM TREES
-            WHERE fTREEID = 'SArea'
-            AND fCLOSED = 0
-            ORDER BY fCODE
-        """)
-        
-        areas = []
-        for row in cursor.fetchall():
-            areas.append({
-                'code': row[0],
-                'name': row[1],
-                'tree_id': row[2],
-                'isn': row[3]
-            })
-        
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'areas': areas,
-            'count': len(areas)
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/debug/trees-custgrp')
-def debug_trees_custgrp():
-    """Получить Customer Groups из TREES"""
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT 
-                fCODE,
-                fCAPTION,
-                fTREEID,
-                fISN
-            FROM TREES
-            WHERE fTREEID = 'CustGrp'
-            AND fCLOSED = 0
-            ORDER BY fCODE
-        """)
-        
-        groups = []
-        for row in cursor.fetchall():
-            groups.append({
-                'code': row[0],
-                'name': row[1],
-                'tree_id': row[2],
-                'isn': row[3]
-            })
-        
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'groups': groups,
-            'count': len(groups)
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/debug/trees-types')
-def debug_trees_types():
-    """Получить все типы из TREES"""
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT DISTINCT fTREEID FROM TREES WHERE fTREEID IS NOT NULL ORDER BY fTREEID")
-        
-        types = [row[0] for row in cursor.fetchall()]
-        
-        # Для каждого типа получить количество записей
-        result = {}
-        for tree_type in types:
-            cursor.execute("SELECT COUNT(*) FROM TREES WHERE fTREEID = ?", (tree_type,))
-            count = cursor.fetchone()[0]
-            result[tree_type] = count
-        
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'types': result
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/debug/check-trees')
-def debug_check_trees():
-    """Проверить таблицу TREES"""
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        # Получить структуру таблицы
-        cursor.execute("""
-            SELECT COLUMN_NAME, DATA_TYPE
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME = 'TREES'
-            ORDER BY ORDINAL_POSITION
-        """)
-        columns = [{'name': row[0], 'type': row[1]} for row in cursor.fetchall()]
-        
-        # Получить данные
-        cursor.execute("SELECT TOP 50 * FROM TREES")
-        rows = cursor.fetchall()
-        
-        data = []
-        for row in rows:
-            row_dict = {}
-            for idx, col in enumerate(cursor.description):
-                value = row[idx]
-                # Конвертировать bytes в строку
-                if isinstance(value, bytes):
-                    value = value.decode('utf-8', errors='ignore')
-                row_dict[col[0]] = value
-            data.append(row_dict)
-        
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'columns': columns,
-            'row_count': len(data),
-            'data': data
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/debug/list-tables')
-def debug_list_tables():
-    """Получить список таблиц с DETAIL в названии"""
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        # Получить параметр filter из query string
-        filter_text = request.args.get('filter', 'DETAIL')
-        
-        cursor.execute(f"""
-            SELECT TABLE_NAME 
-            FROM INFORMATION_SCHEMA.TABLES 
-            WHERE TABLE_TYPE = 'BASE TABLE'
-            AND TABLE_NAME LIKE '%{filter_text}%'
-            ORDER BY TABLE_NAME
-        """)
-        
-        tables = [row[0] for row in cursor.fetchall()]
-        
-        # Для каждой таблицы с DETAIL получить колонки
-        table_info = {}
-        for table_name in tables:
-            if 'DETAIL' in table_name:
-                cursor.execute(f"""
-                    SELECT COLUMN_NAME 
-                    FROM INFORMATION_SCHEMA.COLUMNS 
-                    WHERE TABLE_NAME = '{table_name}'
-                    ORDER BY ORDINAL_POSITION
-                """)
-                columns = [row[0] for row in cursor.fetchall()]
-                table_info[table_name] = columns
-        
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'tables': tables,
-            'detail_tables': table_info
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/debug/test-product-filter')
-def debug_test_product_filter():
-    """Тестовый endpoint для проверки фильтра по группам товаров"""
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        # Проверка 1: Есть ли продажи с товарами из группы 20
-        query1 = """
-            SELECT TOP 5 
                 s.fISN,
                 s.fTOTALSUM,
                 p.fGROUP,
@@ -3481,11 +3356,11 @@ def debug_test_product_filter():
             AND s.fSTATE = 2
             AND p.fGROUP = '20'
         """
-        cursor.execute(query1)
-        rows1 = cursor.fetchall()
+        cursor.execute(query)
+        rows = cursor.fetchall()
         
         test1_results = []
-        for row in rows1:
+        for row in rows:
             test1_results.append({
                 'sale_isn': row.fISN,
                 'total': float(row.fTOTALSUM),
@@ -3553,6 +3428,111 @@ def debug_test_product_filter():
             'selected_groups': load_selected_product_groups()
         })
     except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/sales-areas/<path:area_code>/route-stats')
+def get_area_route_stats(area_code):
+    """Получить статистику маршрутов для территории"""
+    try:
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        
+        if not date_from or not date_to:
+            today = datetime.now()
+            date_from = today.strftime('%Y-%m-%d')
+            date_to = today.strftime('%Y-%m-%d')
+            
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Оптимизированный запрос: объединяем все метрики в один запрос
+        # Используем CTE для списка клиентов территории и предварительной выборки посещений
+        query = """
+            WITH AreaCustomers AS (
+                SELECT fCUSTOMERID 
+                FROM CUSTOMERSALESAREAS 
+                WHERE fSALESAREA = ?
+            ),
+            PlannedVisits AS (
+                SELECT l.fCUSTOMERID, CAST(d.fDATE as DATE) as VisitDate
+                FROM DOCUMENTS d
+                JOIN PLANNEDROUTESLIST l ON d.fISN = l.fISN
+                WHERE d.fDOCTYPE = 10
+                  AND d.fDATE >= ? AND d.fDATE <= ?
+                  AND l.fCUSTOMERID IN (SELECT fCUSTOMERID FROM AreaCustomers)
+            ),
+            ActualVisits AS (
+                SELECT a.fCUSTOMERID, CAST(a.fDATE as DATE) as VisitDate
+                FROM ACTUALROUTES a
+                WHERE a.fDATE >= ? AND a.fDATE <= ?
+                  AND a.fCUSTOMERID IN (SELECT fCUSTOMERID FROM AreaCustomers)
+            )
+            SELECT
+                (SELECT COUNT(*) FROM PlannedVisits) as PlannedCount,
+                (SELECT COUNT(*) FROM ActualVisits) as VisitedCount,
+                (
+                    SELECT COUNT(*) 
+                    FROM PlannedVisits p
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM ActualVisits a 
+                        WHERE a.fCUSTOMERID = p.fCUSTOMERID 
+                          AND a.VisitDate = p.VisitDate
+                    )
+                ) as MissedCount,
+                (
+                    SELECT COUNT(*) 
+                    FROM ActualVisits a
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM PlannedVisits p 
+                        WHERE p.fCUSTOMERID = a.fCUSTOMERID 
+                          AND p.VisitDate = a.VisitDate
+                    )
+                ) as UnplannedCount,
+                (
+                    SELECT COUNT(DISTINCT s.fCUSTOMERID)
+                    FROM SALES s
+                    WHERE s.fSALESAREA = ?
+                      AND s.fDATE >= ? AND s.fDATE <= ?
+                      AND s.fSTATE = 2
+                ) as OrderedCount
+        """
+        
+        # Параметры:
+        # 1. AreaCustomers: area_code
+        # 2. PlannedVisits: date_from, date_to
+        # 3. ActualVisits: date_from, date_to
+        # 4. OrderedCount: area_code, date_from, date_to
+        params = (
+            area_code, 
+            date_from, date_to, 
+            date_from, date_to, 
+            area_code, date_from, date_to
+        )
+        
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        
+        planned = row[0] or 0
+        visited = row[1] or 0
+        missed = row[2] or 0
+        unplanned = row[3] or 0
+        ordered = row[4] or 0
+        
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'planned': planned,
+                'visited': visited,
+                'missed': missed,
+                'unplanned': unplanned,
+                'ordered': ordered
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики маршрутов: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/test-purchases')

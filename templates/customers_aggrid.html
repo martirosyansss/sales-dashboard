@@ -755,11 +755,13 @@
                         <input type="text" class="form-control" placeholder="Поиск" x-model="groupSearch">
                     </div>
                     <div style="max-height: 250px; overflow-y: auto;" class="border rounded p-2">
-                        <template x-for="group in filteredGroups()" :key="group">
+                        <template x-for="group in filteredGroups()" :key="group.code">
                             <div class="form-check">
-                                <input class="form-check-input" type="checkbox" :id="'grp_' + group" 
-                                       :value="group" x-model="selectedGroups" @change="saveGroupsToStorage(); loadCustomers()">
-                                <label class="form-check-label" :for="'grp_' + group" x-text="group"></label>
+                                <input class="form-check-input" type="checkbox" :id="'grp_' + group.code" 
+                                       :value="group.code" x-model="selectedGroups" @change="saveGroupsToStorage(); loadCustomers()">
+                                <label class="form-check-label" :for="'grp_' + group.code">
+                                    <strong x-text="group.code"></strong> · <span x-text="group.name"></span>
+                                </label>
                             </div>
                         </template>
                     </div>
@@ -1756,7 +1758,10 @@ function customersData() {
         filteredGroups() {
             if (!this.groupSearch.trim()) return this.customerGroups;
             const search = this.groupSearch.toLowerCase();
-            return this.customerGroups.filter(g => g.toLowerCase().includes(search));
+            return this.customerGroups.filter(g => 
+                g.code.toLowerCase().includes(search) || 
+                g.name.toLowerCase().includes(search)
+            );
         },
         
         selectAllDivisions() {
@@ -1773,7 +1778,7 @@ function customersData() {
             if (this.selectedGroups.length === this.customerGroups.length) {
                 this.selectedGroups = [];
             } else {
-                this.selectedGroups = [...this.customerGroups];
+                this.selectedGroups = this.customerGroups.map(g => g.code);
             }
             this.saveGroupsToStorage();
             this.loadCustomers();

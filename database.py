@@ -51,18 +51,17 @@ class DatabaseConnection:
             
         except pyodbc.Error as e:
             logger.error(f"Database connection error: {str(e)}")
-            # Try to create database if it doesn't exist
-            return self._create_database_if_not_exists()
-    
-    def _create_database_if_not_exists(self) -> bool:
+            return False
+
+    def ensure_database_exists(self) -> bool:
         """
-        Create database if it doesn't exist
+        Create database if it doesn't exist by connecting to the master database.
         
         Returns:
-            bool: True if database created/connected successfully
+            bool: True if database exists or was created successfully.
         """
         try:
-            # Connect to master database to create new database
+            # Connect to master database to check for and potentially create the new database
             connection_string = (
                 f"DRIVER={{ODBC Driver 17 for SQL Server}};"
                 f"SERVER={self.server};"
@@ -72,24 +71,24 @@ class DatabaseConnection:
                 f"TrustServerCertificate=yes;"
             )
             
-            master_conn = pyodbc.connect(connection_string)
-            master_conn.autocommit = True
+            master_conn = pyodbc.connect(connection_string, autocommit=True)
             cursor = master_conn.cursor()
             
             # Check if database exists
             cursor.execute(f"SELECT database_id FROM sys.databases WHERE name = '{self.database}'")
             if cursor.fetchone() is None:
+                logger.info(f"Database '{self.database}' not found. Attempting to create it.")
                 cursor.execute(f"CREATE DATABASE [{self.database}]")
-                logger.info(f"Database '{self.database}' created successfully")
+                logger.info(f"Database '{self.database}' created successfully.")
+            else:
+                logger.info(f"Database '{self.database}' already exists.")
             
             cursor.close()
             master_conn.close()
-            
-            # Now connect to the new database
-            return self.connect()
+            return True
             
         except pyodbc.Error as e:
-            logger.error(f"Error creating database: {str(e)}")
+            logger.error(f"Error during database existence check/creation: {str(e)}")
             return False
     
     def disconnect(self):
@@ -109,6 +108,9 @@ class DatabaseConnection:
         Returns:
             List of tuples containing query results, or None on error
         """
+        if not self.connection:
+            logger.error("Cannot execute query, no database connection.")
+            return None
         try:
             cursor = self.connection.cursor()
             if params:
@@ -135,6 +137,9 @@ class DatabaseConnection:
         Returns:
             bool: True if successful, False otherwise
         """
+        if not self.connection:
+            logger.error("Cannot execute non-query, no database connection.")
+            return False
         try:
             cursor = self.connection.cursor()
             if params:
@@ -159,6 +164,9 @@ class DatabaseConnection:
         Returns:
             bool: True if tables created successfully
         """
+        if not self.connection:
+            logger.error("Cannot initialize tables, no database connection.")
+            return False
         try:
             cursor = self.connection.cursor()
             
@@ -231,11 +239,33 @@ class DatabaseConnection:
 # Singleton instance
 _db_instance = None
 
-def get_database() -> DatabaseConnection:
-    """Get or create database connection instance"""
+def get_database() -> Optional[DatabaseConnection]:
+    """
+    Get the database connection instance, creating the database and tables if necessary.
+    
+    Returns:
+        An initialized DatabaseConnection object or None if connection fails.
+    """
     global _db_instance
     if _db_instance is None:
         _db_instance = DatabaseConnection()
-        if _db_instance.connect():
-            _db_instance.initialize_tables()
+        # First, ensure the database exists.
+        if not _db_instance.ensure_database_exists():
+            logger.error("Failed to ensure database existence. Aborting.")
+            _db_instance = None  # Reset on failure
+            return None
+        
+        # Second, connect to the specific database.
+        if not _db_instance.connect():
+            logger.error("Failed to connect to the database after ensuring its existence. Aborting.")
+            _db_instance = None # Reset on failure
+            return None
+
+        # Third, initialize the tables.
+        if not _db_instance.initialize_tables():
+            logger.error("Failed to initialize database tables. Aborting.")
+            _db_instance.disconnect()
+            _db_instance = None # Reset on failure
+            return None
+            
     return _db_instance
