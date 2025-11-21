@@ -2095,41 +2095,51 @@ def generate_plans():
         # 2. Получить СРЕДНИЙ долг за последние 12 месяцев по Sales Areas
         # Считаем баланс долга на конец каждого из последних 12 месяцев, затем среднее
         query_debt = f"""
-        WITH Months AS (
-            SELECT 
-                DATEADD(MONTH, -n, DATEADD(MONTH, DATEDIFF(MONTH, 0, GETDATE()), 0)) AS month_start,
-                DATEADD(DAY, -1, DATEADD(MONTH, -n + 1, DATEADD(MONTH, DATEDIFF(MONTH, 0, GETDATE()), 0))) AS month_end
+        WITH MonthEnds AS (
+            -- Генерируем даты конца месяца для последних 12 месяцев
+            SELECT DATEADD(DAY, -1, DATEADD(MONTH, -n + 1, DATEADD(MONTH, DATEDIFF(MONTH, 0, GETDATE()), 0))) AS month_end
             FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11)) AS Numbers(n)
         ),
-        MonthlyBalances AS (
+        CustomerDebtByMonth AS (
             SELECT 
                 csa.fSALESAREA as area_code,
-                m.month_end,
+                me.month_end,
+                c.fID as customer_id,
                 (
-                    SELECT ISNULL(SUM(CASE WHEN d2.fDBCR = 'D' THEN d2.fSUM ELSE -d2.fSUM END), 0)
-                    FROM HICUSTOMERSDEBT d2 WITH (NOLOCK)
-                    INNER JOIN DOCUMENTS doc2 WITH (NOLOCK) ON d2.fDEBTDOCISN = doc2.fISN
-                    INNER JOIN CUSTOMERS c2 WITH (NOLOCK) ON doc2.fCUSTOMERID = c2.fID
-                    WHERE c2.fID = c.fID
-                        AND d2.fDATE <= m.month_end
-                ) as balance
-            FROM Months m
+                    -- Кумулятивный баланс долга на конец месяца (через DOCUMENTS)
+                    SELECT ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0)
+                    FROM HICUSTOMERSDEBT d
+                    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                    WHERE doc.fCUSTOMERID = c.fID
+                        AND d.fDATE <= me.month_end
+                ) as debt_balance
+            FROM MonthEnds me
             CROSS JOIN CUSTOMERSALESAREAS csa
-            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON csa.fCUSTOMERID = c.fID
+            INNER JOIN CUSTOMERS c ON csa.fCUSTOMERID = c.fID
             WHERE 1=1
                 {excluded_filter}
                 {group_clause}
+        ),
+        AreaMonthlyDebt AS (
+            SELECT 
+                area_code,
+                month_end,
+                SUM(debt_balance) as total_debt
+            FROM CustomerDebtByMonth
+            GROUP BY area_code, month_end
         )
         SELECT 
             area_code,
-            AVG(balance) as avg_monthly_debt
-        FROM MonthlyBalances
+            AVG(total_debt) as avg_monthly_debt
+        FROM AreaMonthlyDebt
         GROUP BY area_code
         """
         
         debt_params = excluded_params + group_params
+        logger.info(f"[PLAN DEBT] Starting debt calculation for {len(selected_groups) if selected_groups else 'all'} groups")
         cursor.execute(query_debt, debt_params)
         debt_results = cursor.fetchall()
+        logger.info(f"[PLAN DEBT] Got {len(debt_results)} area debt results")
         
         # 3. Получить Type01 и Type02 (возвраты и предоплаты) для вычета
         query_rest = f"""

@@ -1764,7 +1764,7 @@
                                     = <strong class="text-warning" x-text="formatCurrency(getAreaPlan(area.code, 'credit'))"></strong> AMD
                                     <div class="mt-2 pt-2" style="border-top: 1px solid rgba(255, 193, 7, 0.2);">
                                         <i class="fas fa-info-circle me-1"></i>
-                                        Это <strong x-text="((areaHistory[area.code]?.avgCredit || 0) / (areaHistory[area.code]?.avgSales || 1) * 100).toFixed(1)"></strong>% от общих продаж
+                                        Это <strong x-text="((getAreaPlan(area.code, 'credit') || 0) / (getAreaPlan(area.code, 'sales') || 1) * 100).toFixed(1)"></strong>% от плана продаж
                                     </div>
                                 </small>
                             </div>
