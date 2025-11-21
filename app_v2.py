@@ -2093,53 +2093,51 @@ def generate_plans():
         sales_results = cursor.fetchall()
         
         # 2. Получить СРЕДНИЙ долг за последние 12 месяцев по Sales Areas
-        # Считаем баланс долга на конец каждого из последних 12 месяцев, затем среднее
-        query_debt = f"""
-        WITH MonthEnds AS (
-            -- Генерируем даты конца месяца для последних 12 месяцев
-            SELECT DATEADD(DAY, -1, DATEADD(MONTH, -n + 1, DATEADD(MONTH, DATEDIFF(MONTH, 0, GETDATE()), 0))) AS month_end
-            FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11)) AS Numbers(n)
-        ),
-        CustomerDebtByMonth AS (
-            SELECT 
-                csa.fSALESAREA as area_code,
-                me.month_end,
-                c.fID as customer_id,
-                (
-                    -- Кумулятивный баланс долга на конец месяца (через DOCUMENTS)
-                    SELECT ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0)
-                    FROM HICUSTOMERSDEBT d
-                    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-                    WHERE doc.fCUSTOMERID = c.fID
-                        AND d.fDATE <= me.month_end
-                ) as debt_balance
-            FROM MonthEnds me
-            CROSS JOIN CUSTOMERSALESAREAS csa
-            INNER JOIN CUSTOMERS c ON csa.fCUSTOMERID = c.fID
-            WHERE 1=1
-                {excluded_filter}
-                {group_clause}
-        ),
-        AreaMonthlyDebt AS (
-            SELECT 
-                area_code,
-                month_end,
-                SUM(debt_balance) as total_debt
-            FROM CustomerDebtByMonth
-            GROUP BY area_code, month_end
-        )
+        # ОПТИМИЗИРОВАННЫЙ МЕТОД:
+        # 1. Берем текущий баланс (Current Debt)
+        # 2. Берем изменения за каждый месяц (Monthly Changes)
+        # 3. Восстанавливаем баланс на конец каждого месяца обратным счетом
+        
+        # 2.1 Текущий долг
+        query_current_debt = f"""
         SELECT 
-            area_code,
-            AVG(total_debt) as avg_monthly_debt
-        FROM AreaMonthlyDebt
-        GROUP BY area_code
+            csa.fSALESAREA as area_code,
+            ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as current_debt
+        FROM HICUSTOMERSDEBT d WITH (NOLOCK)
+        INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON d.fDEBTDOCISN = doc.fISN
+        INNER JOIN CUSTOMERS c WITH (NOLOCK) ON doc.fCUSTOMERID = c.fID
+        INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        WHERE 1=1
+            {excluded_filter}
+            {group_clause}
+        GROUP BY csa.fSALESAREA
         """
         
         debt_params = excluded_params + group_params
-        logger.info(f"[PLAN DEBT] Starting debt calculation for {len(selected_groups) if selected_groups else 'all'} groups")
-        cursor.execute(query_debt, debt_params)
-        debt_results = cursor.fetchall()
-        logger.info(f"[PLAN DEBT] Got {len(debt_results)} area debt results")
+        logger.info(f"[PLAN DEBT] Starting debt calculation (Optimized)")
+        cursor.execute(query_current_debt, debt_params)
+        current_debt_results = cursor.fetchall()
+        
+        # 2.2 Изменения по месяцам
+        query_changes = f"""
+        SELECT 
+            csa.fSALESAREA as area_code,
+            YEAR(d.fDATE) as year,
+            MONTH(d.fDATE) as month,
+            ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as net_change
+        FROM HICUSTOMERSDEBT d WITH (NOLOCK)
+        INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON d.fDEBTDOCISN = doc.fISN
+        INNER JOIN CUSTOMERS c WITH (NOLOCK) ON doc.fCUSTOMERID = c.fID
+        INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        WHERE d.fDATE >= DATEADD(MONTH, -13, GETDATE())
+            {excluded_filter}
+            {group_clause}
+        GROUP BY csa.fSALESAREA, YEAR(d.fDATE), MONTH(d.fDATE)
+        """
+        
+        cursor.execute(query_changes, debt_params)
+        changes_results = cursor.fetchall()
+        logger.info(f"[PLAN DEBT] Got {len(current_debt_results)} areas and {len(changes_results)} monthly changes")
         
         # 3. Получить Type01 и Type02 (возвраты и предоплаты) для вычета
         query_rest = f"""
@@ -2171,10 +2169,48 @@ def generate_plans():
                 'type02': 0
             }
             
-        for row in debt_results:
-            if row.area_code not in area_stats:
-                area_stats[row.area_code] = {'avg_sales': 0, 'avg_debt': 0, 'type01': 0, 'type02': 0}
-            area_stats[row.area_code]['avg_debt'] = float(row.avg_monthly_debt) if row.avg_monthly_debt else 0
+        # Обработка истории долга
+        current_debts = {row.area_code: float(row.current_debt) for row in current_debt_results}
+        changes_map = {} 
+        for row in changes_results:
+            if row.area_code not in changes_map: changes_map[row.area_code] = {}
+            changes_map[row.area_code][(row.year, row.month)] = float(row.net_change)
+            
+        today = datetime.now()
+        current_year = today.year
+        current_month = today.month
+        
+        for area_code, current_balance in current_debts.items():
+            if area_code not in area_stats:
+                area_stats[area_code] = {'avg_sales': 0, 'avg_debt': 0, 'type01': 0, 'type02': 0}
+                
+            balances = []
+            running_balance = current_balance
+            
+            # Точка 0: Текущий баланс (конец текущего месяца - прогноз)
+            balances.append(running_balance)
+            
+            curr_y, curr_m = current_year, current_month
+            
+            # Идем назад на 11 месяцев
+            for i in range(11):
+                # Изменение за текущий рассматриваемый месяц
+                change = changes_map.get(area_code, {}).get((curr_y, curr_m), 0)
+                
+                # Баланс на конец предыдущего месяца = Баланс(конец этого) - Изменение(этот)
+                prev_balance = running_balance - change
+                balances.append(prev_balance)
+                running_balance = prev_balance
+                
+                # Сдвигаем месяц назад
+                curr_m -= 1
+                if curr_m == 0:
+                    curr_m = 12
+                    curr_y -= 1
+            
+            # Среднее за 12 точек
+            avg_debt = sum(balances) / len(balances)
+            area_stats[area_code]['avg_debt'] = avg_debt
         
         for row in rest_results:
             if row.area_code in area_stats:
