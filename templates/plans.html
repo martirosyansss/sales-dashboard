@@ -1992,6 +1992,13 @@
                         
                         // Применяем сгенерированные планы с нашими настройками
                         for (const [areaCode, planData] of Object.entries(data.data)) {
+                            // Обновляем историю, чтобы отображаемые средние значения совпадали с расчетом
+                            if (!this.areaHistory[areaCode]) {
+                                this.areaHistory[areaCode] = {};
+                            }
+                            this.areaHistory[areaCode].avgSales = planData.avg_sales || 0;
+                            this.areaHistory[areaCode].avgCredit = planData.avg_credit || 0;
+
                             // Пересчитываем с учетом наших параметров
                             const baseSales = planData.avg_sales * seasonCoeff * growthFactor;
                             const baseCredit = planData.avg_credit * seasonCoeff * growthFactor;
