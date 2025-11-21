@@ -223,7 +223,7 @@
                         <i class="fas fa-chart-line me-2"></i> 
                         Всего территорий: <span x-text="areas.length" class="badge bg-light text-dark">0</span>
                         <span class="ms-3">|</span>
-                        <span class="ms-3"><i class="fas fa-calendar-alt me-2"></i>Период: <span x-text="formatDateDisplay(dateFrom)"></span> - <span x-text="formatDateDisplay(dateTo)"></span></span>
+                        <span class="ms-3"><i class="fas fa-calendar-alt me-2"></i>Период: <span x-text="dateFromDisplay"></span> - <span x-text="dateToDisplay"></span></span>
                     </p>
                 </div>
             </div>
@@ -254,12 +254,36 @@
 
                     <div class="row align-items-end">
                         <div class="col-md-4">
-                            <label class="form-label">Дата от</label>
-                            <input type="date" class="form-control" x-model="dateFrom" @change="loadAreas()">
+                            <label class="form-label"><i class="fas fa-calendar-day text-success"></i> Дата от</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" 
+                                       x-model="dateFromDisplay" 
+                                       @input="updateDateFrom(dateFromDisplay)"
+                                       placeholder="ДД.ММ.ГГГГ"
+                                       maxlength="10">
+                                <button class="btn btn-outline-secondary" type="button" @click="$refs.dateFromPicker.showPicker()" title="Открыть календарь">
+                                    <i class="fas fa-calendar-alt"></i>
+                                </button>
+                                <input type="date" x-ref="dateFromPicker" style="position: absolute; opacity: 0; pointer-events: none;" 
+                                       x-model="dateFrom" 
+                                       @change="dateFromDisplay = formatDateForDisplay(dateFrom); loadAreas()">
+                            </div>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label">Дата до</label>
-                            <input type="date" class="form-control" x-model="dateTo" @change="loadAreas()">
+                            <label class="form-label"><i class="fas fa-calendar-check text-success"></i> Дата до</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" 
+                                       x-model="dateToDisplay" 
+                                       @input="updateDateTo(dateToDisplay)"
+                                       placeholder="ДД.ММ.ГГГГ"
+                                       maxlength="10">
+                                <button class="btn btn-outline-secondary" type="button" @click="$refs.dateToPicker.showPicker()" title="Открыть календарь">
+                                    <i class="fas fa-calendar-alt"></i>
+                                </button>
+                                <input type="date" x-ref="dateToPicker" style="position: absolute; opacity: 0; pointer-events: none;" 
+                                       x-model="dateTo" 
+                                       @change="dateToDisplay = formatDateForDisplay(dateTo); loadAreas()">
+                            </div>
                         </div>
                         <div class="col-md-4 mt-3 mt-md-0">
                             <button class="btn btn-primary w-100" @click="loadAreas()">
@@ -1231,8 +1255,10 @@
             totalSalesCount: 0,
             totalCustomers: 0,
             chart: null,
-            dateFrom: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
-            dateTo: new Date().toISOString().split('T')[0],
+            dateFrom: '',
+            dateTo: '',
+            dateFromDisplay: '',
+            dateToDisplay: '',
             
             // Filters
             showFiltersPanel: false,
@@ -1257,6 +1283,16 @@
             routeStatsLoading: false,
 
             init() {
+                // Инициализация дат: последние 3 недели
+                const today = new Date();
+                const threeWeeksAgo = new Date();
+                threeWeeksAgo.setDate(today.getDate() - 21);
+                
+                this.dateFrom = this.formatDate(threeWeeksAgo);
+                this.dateTo = this.formatDate(today);
+                this.dateFromDisplay = this.formatDateForDisplay(this.dateFrom);
+                this.dateToDisplay = this.formatDateForDisplay(this.dateTo);
+                
                 this.loadSavedFilters();
                 this.loadDivisions();
                 this.loadGroups();
@@ -1276,18 +1312,116 @@
                 return [year, month, day].join('-');
             },
 
-            formatDateDisplay(dateStr) {
-                if (!dateStr) return '';
-                const parts = dateStr.split('-');
-                if (parts.length !== 3) return dateStr;
-                // Format as DD.MM.YYYY
-                return `${parts[2]}.${parts[1]}.${parts[0]}`;
+            formatDateForDisplay(isoDate) {
+                if (!isoDate) return '';
+                const [year, month, day] = isoDate.split('-');
+                return `${day}.${month}.${year}`;
+            },
+
+            parseDateDisplay(displayStr) {
+                // Преобразует DD.MM.YYYY в YYYY-MM-DD
+                if (!displayStr) return '';
+                const cleaned = displayStr.replace(/[^\d.]/g, '');
+                const parts = cleaned.split('.');
+                if (parts.length === 3 && parts[0].length <= 2 && parts[1].length <= 2 && parts[2].length === 4) {
+                    return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+                }
+                return '';
+            },
+
+            updateDateFrom(value) {
+                // Сохраняем позицию курсора
+                const input = event.target;
+                const cursorPos = input.selectionStart;
+                
+                // Удаляем все нецифровые символы
+                let cleaned = value.replace(/[^\d]/g, '');
+                
+                // Ограничиваем длину
+                cleaned = cleaned.slice(0, 8);
+                
+                // Добавляем точки автоматически
+                let formatted = '';
+                for (let i = 0; i < cleaned.length; i++) {
+                    if (i === 2 || i === 4) {
+                        formatted += '.';
+                    }
+                    formatted += cleaned[i];
+                }
+                
+                this.dateFromDisplay = formatted;
+                
+                // Восстанавливаем курсор с учетом добавленных точек
+                this.$nextTick(() => {
+                    let newPos = cursorPos;
+                    if (cursorPos === 2 || cursorPos === 5) {
+                        newPos = cursorPos + 1;
+                    }
+                    input.setSelectionRange(newPos, newPos);
+                });
+                
+                // Если дата полная (DD.MM.YYYY), проверяем и загружаем
+                if (formatted.length === 10) {
+                    const parsed = this.parseDateDisplay(formatted);
+                    if (parsed && this.isValidDate(parsed)) {
+                        this.dateFrom = parsed;
+                        this.loadAreas();
+                    }
+                }
+            },
+
+            updateDateTo(value) {
+                // Сохраняем позицию курсора
+                const input = event.target;
+                const cursorPos = input.selectionStart;
+                
+                // Удаляем все нецифровые символы
+                let cleaned = value.replace(/[^\d]/g, '');
+                
+                // Ограничиваем длину
+                cleaned = cleaned.slice(0, 8);
+                
+                // Добавляем точки автоматически
+                let formatted = '';
+                for (let i = 0; i < cleaned.length; i++) {
+                    if (i === 2 || i === 4) {
+                        formatted += '.';
+                    }
+                    formatted += cleaned[i];
+                }
+                
+                this.dateToDisplay = formatted;
+                
+                // Восстанавливаем курсор с учетом добавленных точек
+                this.$nextTick(() => {
+                    let newPos = cursorPos;
+                    if (cursorPos === 2 || cursorPos === 5) {
+                        newPos = cursorPos + 1;
+                    }
+                    input.setSelectionRange(newPos, newPos);
+                });
+                
+                // Если дата полная (DD.MM.YYYY), проверяем и загружаем
+                if (formatted.length === 10) {
+                    const parsed = this.parseDateDisplay(formatted);
+                    if (parsed && this.isValidDate(parsed)) {
+                        this.dateTo = parsed;
+                        this.loadAreas();
+                    }
+                }
+            },
+
+            isValidDate(dateStr) {
+                const date = new Date(dateStr);
+                return date instanceof Date && !isNaN(date);
             },
 
             setToday() {
                 const today = new Date();
                 this.dateFrom = this.formatDate(today);
                 this.dateTo = this.formatDate(today);
+                this.dateFromDisplay = this.formatDateForDisplay(this.dateFrom);
+                this.dateToDisplay = this.formatDateForDisplay(this.dateTo);
                 this.loadAreas();
             },
 
@@ -1296,6 +1430,8 @@
                 yesterday.setDate(yesterday.getDate() - 1);
                 this.dateFrom = this.formatDate(yesterday);
                 this.dateTo = this.formatDate(yesterday);
+                this.dateFromDisplay = this.formatDateForDisplay(this.dateFrom);
+                this.dateToDisplay = this.formatDateForDisplay(this.dateTo);
                 this.loadAreas();
             },
 
@@ -1305,6 +1441,8 @@
                 const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
                 this.dateFrom = this.formatDate(firstDay);
                 this.dateTo = this.formatDate(lastDay);
+                this.dateFromDisplay = this.formatDateForDisplay(this.dateFrom);
+                this.dateToDisplay = this.formatDateForDisplay(this.dateTo);
                 this.loadAreas();
             },
 
@@ -1314,6 +1452,8 @@
                 const lastDay = new Date(today.getFullYear(), today.getMonth(), 0);
                 this.dateFrom = this.formatDate(firstDay);
                 this.dateTo = this.formatDate(lastDay);
+                this.dateFromDisplay = this.formatDateForDisplay(this.dateFrom);
+                this.dateToDisplay = this.formatDateForDisplay(this.dateTo);
                 this.loadAreas();
             },
 

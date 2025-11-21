@@ -767,6 +767,7 @@ def get_sales_areas():
                     COUNT(DISTINCT s.fCUSTOMERID) AS CustomerCount,
                     COUNT(s.fISN) AS SalesCount,
                     ISNULL(SUM(s.fTOTALSUM), 0) AS TotalSales,
+                    ISNULL(SUM(CASE WHEN s.fPAYTYPE = 2 THEN s.fTOTALSUM ELSE 0 END), 0) AS CreditSales,
                     ISNULL(AVG(s.fTOTALSUM), 0) AS AvgSale,
                     ISNULL(SUM(d.DiscountAmount), 0) AS TotalDiscount
                 FROM SALES s
@@ -796,6 +797,7 @@ def get_sales_areas():
                 area_data['CustomerCount'] = sales_row.CustomerCount or 0
                 area_data['SalesCount'] = sales_row.SalesCount or 0
                 area_data['TotalSales'] = float(sales_row.TotalSales) if sales_row.TotalSales else 0
+                area_data['CreditSales'] = float(sales_row.CreditSales) if sales_row.CreditSales else 0
                 area_data['AvgSale'] = float(sales_row.AvgSale) if sales_row.AvgSale else 0
                 area_data['TotalDiscount'] = float(sales_row.TotalDiscount) if sales_row.TotalDiscount else 0
                 
@@ -943,11 +945,12 @@ def get_sales_areas():
                 FORMAT(s.fDATE, 'yyyy-MM') AS Month,
                 COUNT(DISTINCT s.fCUSTOMERID) AS CustomerCount,
                 COUNT(s.fISN) AS SalesCount,
-                ISNULL(SUM(s.fTOTALSUM), 0) AS TotalSales
+                ISNULL(SUM(s.fTOTALSUM), 0) AS TotalSales,
+                ISNULL(SUM(CASE WHEN s.fPAYTYPE = 2 THEN s.fTOTALSUM ELSE 0 END), 0) AS CreditSales
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
             INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE s.fSALESAREA = csa.fSALESAREA
+            WHERE csa.fSALESAREA = s.fSALESAREA
                 AND s.fDATE >= ?
                 AND s.fDATE <= ?
                 AND s.fSTATE = 2
@@ -984,6 +987,7 @@ def get_sales_areas():
                 'customerCount': row.CustomerCount or 0,
                 'salesCount': row.SalesCount or 0,
                 'totalSales': float(row.TotalSales) if row.TotalSales else 0,
+                'creditSales': float(row.CreditSales) if row.CreditSales else 0,
                 'totalPayments': 0,
                 'totalDebt': 0
             }
@@ -2016,6 +2020,114 @@ def groups_page():
 def areas_page():
     """Страница с территориями"""
     return render_template('areas.html')
+
+@app.route('/plans')
+def plans_page():
+    """Страница планов продаж и кредитов по территориям"""
+    return render_template('plans.html')
+
+@app.route('/api/generate-plans')
+def generate_plans():
+    """Генерация планов продаж и кредитов с учетом сезонности"""
+    try:
+        target_month = int(request.args.get('month', datetime.now().month))
+        target_year = int(request.args.get('year', datetime.now().year))
+        
+        # Получить параметры фильтров
+        raw_groups = request.args.get('groups', '').strip()
+        selected_groups = [grp.strip() for grp in raw_groups.split(',') if grp.strip()]
+        
+        # Коэффициенты сезонности (на основе анализа данных)
+        seasonality = {
+            1: 0.45, 2: 0.57, 3: 0.63, 4: 0.77,
+            5: 0.88, 6: 1.09, 7: 1.29, 8: 1.24,
+            9: 0.64, 10: 0.84, 11: 0.60, 12: 0.88
+        }
+        
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Фильтры исключенных клиентов
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        
+        # Фильтр по группам клиентов
+        group_clause = ""
+        group_params = tuple()
+        if selected_groups:
+            placeholders = ','.join('?' * len(selected_groups))
+            group_clause = f" AND c.fGROUP IN ({placeholders})"
+            group_params = tuple(selected_groups)
+        
+        # Получить средние продажи за последние 12 месяцев по территориям
+        query = f"""
+        SELECT 
+            csa.fSALESAREA as area_code,
+            AVG(monthly_sales.total_sales) as avg_monthly_sales,
+            AVG(monthly_sales.credit_sales) as avg_monthly_credit
+        FROM (
+            SELECT 
+                csa.fSALESAREA,
+                YEAR(s.fDATE) as year,
+                MONTH(s.fDATE) as month,
+                SUM(CASE WHEN s.fPAYTYPE = 2 THEN s.fTOTALSUM ELSE 0 END) as credit_sales,
+                SUM(s.fTOTALSUM) as total_sales
+            FROM SALES s
+            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+            INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+            WHERE s.fDATE >= DATEADD(MONTH, -12, GETDATE())
+                AND s.fSTATE = 2
+                AND s.fTOTALSUM > 0
+                AND csa.fSALESAREA = s.fSALESAREA
+                {excluded_filter}
+                {group_clause}
+            GROUP BY csa.fSALESAREA, YEAR(s.fDATE), MONTH(s.fDATE)
+        ) as monthly_sales
+        INNER JOIN CUSTOMERSALESAREAS csa ON monthly_sales.fSALESAREA = csa.fSALESAREA
+        GROUP BY csa.fSALESAREA
+        ORDER BY csa.fSALESAREA
+        """
+        
+        query_params = excluded_params + group_params
+        logger.info(f"[GENERATE PLANS] Query has {query.count('?')} placeholders")
+        logger.info(f"[GENERATE PLANS] Supplying {len(query_params)} params: selected_groups={selected_groups}")
+        
+        cursor.execute(query, query_params)
+        results = cursor.fetchall()
+        
+        plans = {}
+        season_coeff = seasonality.get(target_month, 1.0)
+        
+        for row in results:
+            area_code = row.area_code
+            avg_sales = float(row.avg_monthly_sales) if row.avg_monthly_sales else 0
+            avg_credit = float(row.avg_monthly_credit) if row.avg_monthly_credit else 0
+            
+            # Применяем сезонный коэффициент и добавляем 10% роста
+            growth_factor = 1.10
+            plan_sales = round(avg_sales * season_coeff * growth_factor, 0)
+            plan_credit = round(avg_credit * season_coeff * growth_factor, 0)
+            
+            plans[area_code] = {
+                'sales': plan_sales,
+                'credit': plan_credit,
+                'seasonality': season_coeff,
+                'avg_sales': round(avg_sales, 0),
+                'avg_credit': round(avg_credit, 0)
+            }
+        
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'data': plans,
+            'month': target_month,
+            'year': target_year,
+            'seasonality_coefficient': season_coeff
+        })
+        
+    except Exception as e:
+        logger.error(f"Ошибка генерации планов: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/customers-grid')
 def customers_grid_page():
