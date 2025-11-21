@@ -1622,8 +1622,8 @@ def customer_purchases(customer_id: int):
                 discount_amount = float(product_row.DiscountAmount) if product_row.DiscountAmount else 0
                 price = float(product_row.Price) if product_row.Price else 0
                 
-                # Рассчитать процент скидки: (сумма_скидки / исходная_цена) * 100
-                discount_percent = (discount_amount / original_price * 100) if original_price > 0 else 0
+                # fDISCOUNT в базе хранит процент скидки, а не сумму
+                discount_percent = discount_amount
                 
                 products.append({
                     'LineNo': product_row.LineNo,

@@ -223,7 +223,7 @@
                         <i class="fas fa-chart-line me-2"></i> 
                         Всего территорий: <span x-text="areas.length" class="badge bg-light text-dark">0</span>
                         <span class="ms-3">|</span>
-                        <span class="ms-3"><i class="fas fa-calendar-alt me-2"></i>Период: <span x-text="dateFrom"></span> - <span x-text="dateTo"></span></span>
+                        <span class="ms-3"><i class="fas fa-calendar-alt me-2"></i>Период: <span x-text="formatDateDisplay(dateFrom)"></span> - <span x-text="formatDateDisplay(dateTo)"></span></span>
                     </p>
                 </div>
             </div>
@@ -236,6 +236,22 @@
         <div class="col-12 mb-3">
             <div class="card filter-card">
                 <div class="card-body">
+                    <!-- Quick Date Selectors -->
+                    <div class="d-flex flex-wrap gap-2 mb-3 justify-content-center justify-content-md-start">
+                        <button class="btn btn-sm btn-outline-primary" @click="setToday()">
+                            <i class="fas fa-calendar-day me-1"></i>Сегодня
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" @click="setYesterday()">
+                            <i class="fas fa-history me-1"></i>Вчера
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" @click="setThisMonth()">
+                            <i class="fas fa-calendar-alt me-1"></i>Этот месяц
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" @click="setLastMonth()">
+                            <i class="fas fa-calendar-minus me-1"></i>Прошлый месяц
+                        </button>
+                    </div>
+
                     <div class="row align-items-end">
                         <div class="col-md-4">
                             <label class="form-label">Дата от</label>
@@ -245,9 +261,9 @@
                             <label class="form-label">Дата до</label>
                             <input type="date" class="form-control" x-model="dateTo" @change="loadAreas()">
                         </div>
-                        <div class="col-md-4">
-                            <button class="btn btn-primary" @click="loadAreas()">
-                                <i class="fas fa-sync-alt"></i> Обновить
+                        <div class="col-md-4 mt-3 mt-md-0">
+                            <button class="btn btn-primary w-100" @click="loadAreas()">
+                                <i class="fas fa-sync-alt me-2"></i> Обновить
                             </button>
                         </div>
                     </div>
@@ -1244,6 +1260,60 @@
                 this.loadSavedFilters();
                 this.loadDivisions();
                 this.loadGroups();
+                this.loadAreas();
+            },
+
+            // Date Helpers
+            formatDate(date) {
+                const d = new Date(date);
+                let month = '' + (d.getMonth() + 1);
+                let day = '' + d.getDate();
+                const year = d.getFullYear();
+
+                if (month.length < 2) month = '0' + month;
+                if (day.length < 2) day = '0' + day;
+
+                return [year, month, day].join('-');
+            },
+
+            formatDateDisplay(dateStr) {
+                if (!dateStr) return '';
+                const parts = dateStr.split('-');
+                if (parts.length !== 3) return dateStr;
+                // Format as DD.MM.YYYY
+                return `${parts[2]}.${parts[1]}.${parts[0]}`;
+            },
+
+            setToday() {
+                const today = new Date();
+                this.dateFrom = this.formatDate(today);
+                this.dateTo = this.formatDate(today);
+                this.loadAreas();
+            },
+
+            setYesterday() {
+                const yesterday = new Date();
+                yesterday.setDate(yesterday.getDate() - 1);
+                this.dateFrom = this.formatDate(yesterday);
+                this.dateTo = this.formatDate(yesterday);
+                this.loadAreas();
+            },
+
+            setThisMonth() {
+                const today = new Date();
+                const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+                const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+                this.dateFrom = this.formatDate(firstDay);
+                this.dateTo = this.formatDate(lastDay);
+                this.loadAreas();
+            },
+
+            setLastMonth() {
+                const today = new Date();
+                const firstDay = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+                const lastDay = new Date(today.getFullYear(), today.getMonth(), 0);
+                this.dateFrom = this.formatDate(firstDay);
+                this.dateTo = this.formatDate(lastDay);
                 this.loadAreas();
             },
 
