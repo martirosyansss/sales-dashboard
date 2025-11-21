@@ -855,6 +855,10 @@ def get_sales_areas():
             # 4. Итоговый долг (текущий)
             area_data['Debt'] = debt_from_docs - abs(type01) - abs(type02)
             
+            # ЛОГИРОВАНИЕ для Area 105
+            if area_code == '105':
+                logger.info(f"[AREA 105] debt_from_docs: {debt_from_docs:,.2f}, type01: {type01:,.2f}, type02: {type02:,.2f}, final_debt: {area_data['Debt']:,.2f}")
+            
             # 5. Получить данные за прошлый месяц (те же даты, но месяц назад)
             prev_month_sales_params = (area_code, area_code, prev_month_from_str, prev_month_to_str) + excluded_params + product_groups_params + division_params + sales_group_params
             cursor.execute(query_sales, prev_month_sales_params)
@@ -862,12 +866,20 @@ def get_sales_areas():
             
             area_data['PrevMonthSales'] = float(prev_month_row.TotalSales) if prev_month_row and prev_month_row.TotalSales else 0
             
+            # 5a. Долг за прошлый месяц (с формулой Type01/Type02)
+            # Используем ТЕКУЩИЙ долг (без фильтра по датам), так как долг кумулятивный
+            area_data['PrevMonthDebt'] = area_data['Debt']  # Копируем текущий долг
+            
             # 6. Получить данные за прошлый год (те же даты, но год назад)
             last_year_sales_params = (area_code, area_code, last_year_from_str, last_year_to_str) + excluded_params + product_groups_params + division_params + sales_group_params
             cursor.execute(query_sales, last_year_sales_params)
             last_year_row = cursor.fetchone()
             
             area_data['LastYearSales'] = float(last_year_row.TotalSales) if last_year_row and last_year_row.TotalSales else 0
+            
+            # 6a. Долг за прошлый год (с формулой Type01/Type02)
+            # Используем ТЕКУЩИЙ долг (без фильтра по датам), так как долг кумулятивный
+            area_data['LastYearDebt'] = area_data['Debt']  # Копируем текущий долг
         
         # Получить платежи и начальный долг по Sales Areas (через CUSTOMERSALESAREAS, divisions не применяются)
         for area_code, area_data in all_areas.items():
@@ -1055,26 +1067,26 @@ def get_sales_areas():
             debt_group_filter = f" AND c.fGROUP IN ({placeholders})"
             debt_group_params = tuple(requested_groups)
 
+        # История долга: транзакции за период (НЕ кумулятивный баланс)
         debt_history_query = f"""
             SELECT 
                 csa.fSALESAREA AS AreaCode,
-                FORMAT(doc.fDATE, 'yyyy-MM') AS Month,
+                FORMAT(d.fDATE, 'yyyy-MM') AS Month,
                 ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) AS TotalDebt
-            FROM HICUSTOMERSDEBT d
-            INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-            INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-            INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE doc.fDATE >= ?
-                AND doc.fDATE <= ?
+            FROM HICUSTOMERSDEBT d WITH (NOLOCK)
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON d.fDEBTDOCISN = doc.fISN
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON doc.fCUSTOMERID = c.fID
+            INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON c.fID = csa.fCUSTOMERID
+            WHERE d.fDATE >= ? AND d.fDATE <= ?
                 {excluded_filter}
                 {debt_group_filter}
-            GROUP BY csa.fSALESAREA, FORMAT(doc.fDATE, 'yyyy-MM')
-            ORDER BY csa.fSALESAREA, FORMAT(doc.fDATE, 'yyyy-MM')
+            GROUP BY csa.fSALESAREA, FORMAT(d.fDATE, 'yyyy-MM')
+            ORDER BY csa.fSALESAREA, FORMAT(d.fDATE, 'yyyy-MM')
         """
 
         debt_history_params = (start_history_date.strftime('%Y-%m-%d'), date_to) + excluded_params + debt_group_params
         logger.info(f"[DEBT HISTORY] Query has {debt_history_query.count('?')} placeholders")
-        logger.info(f"[DEBT HISTORY] Supplying {len(debt_history_params)} params: {debt_history_params}")
+        logger.info(f"[DEBT HISTORY] Supplying {len(debt_history_params)} params")
         cursor.execute(debt_history_query, debt_history_params)
         debt_history_rows = cursor.fetchall()
 
@@ -2049,6 +2061,7 @@ def generate_plans():
         
         # Фильтры исключенных клиентов
         excluded_filter, excluded_params = get_excluded_filter_sql()
+        product_groups_filter, product_groups_params = get_product_groups_filter_sql()
         
         # Фильтр по группам клиентов
         group_clause = ""
@@ -2058,61 +2071,130 @@ def generate_plans():
             group_clause = f" AND c.fGROUP IN ({placeholders})"
             group_params = tuple(selected_groups)
         
-        # Получить средние продажи за последние 12 месяцев по территориям
-        query = f"""
+        # 1. Получить средние продажи (Turnover) за последние 12 месяцев по территориям
+        query_sales = f"""
         SELECT 
             csa.fSALESAREA as area_code,
-            AVG(monthly_sales.total_sales) as avg_monthly_sales,
-            AVG(monthly_sales.credit_sales) as avg_monthly_credit
-        FROM (
-            SELECT 
-                csa.fSALESAREA,
-                YEAR(s.fDATE) as year,
-                MONTH(s.fDATE) as month,
-                SUM(CASE WHEN s.fPAYTYPE = 2 THEN s.fTOTALSUM ELSE 0 END) as credit_sales,
-                SUM(s.fTOTALSUM) as total_sales
-            FROM SALES s
-            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-            INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE s.fDATE >= DATEADD(MONTH, -12, GETDATE())
-                AND s.fSTATE = 2
-                AND s.fTOTALSUM > 0
-                AND csa.fSALESAREA = s.fSALESAREA
-                {excluded_filter}
-                {group_clause}
-            GROUP BY csa.fSALESAREA, YEAR(s.fDATE), MONTH(s.fDATE)
-        ) as monthly_sales
-        INNER JOIN CUSTOMERSALESAREAS csa ON monthly_sales.fSALESAREA = csa.fSALESAREA
+            ISNULL(SUM(s.fTOTALSUM), 0) / 12.0 as avg_monthly_sales
+        FROM SALES s
+        INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+        INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        WHERE s.fSALESAREA = csa.fSALESAREA
+            AND s.fDATE >= DATEADD(MONTH, -12, GETDATE())
+            AND s.fSTATE = 2
+            {excluded_filter}
+            {product_groups_filter}
+            {group_clause}
         GROUP BY csa.fSALESAREA
-        ORDER BY csa.fSALESAREA
         """
         
-        query_params = excluded_params + group_params
-        logger.info(f"[GENERATE PLANS] Query has {query.count('?')} placeholders")
-        logger.info(f"[GENERATE PLANS] Supplying {len(query_params)} params: selected_groups={selected_groups}")
+        sales_params = excluded_params + product_groups_params + group_params
+        cursor.execute(query_sales, sales_params)
+        sales_results = cursor.fetchall()
         
-        cursor.execute(query, query_params)
-        results = cursor.fetchall()
+        # 2. Получить СРЕДНИЙ долг за последние 12 месяцев по Sales Areas
+        # Считаем баланс долга на конец каждого из последних 12 месяцев, затем среднее
+        query_debt = f"""
+        WITH Months AS (
+            SELECT 
+                DATEADD(MONTH, -n, DATEADD(MONTH, DATEDIFF(MONTH, 0, GETDATE()), 0)) AS month_start,
+                DATEADD(DAY, -1, DATEADD(MONTH, -n + 1, DATEADD(MONTH, DATEDIFF(MONTH, 0, GETDATE()), 0))) AS month_end
+            FROM (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11)) AS Numbers(n)
+        ),
+        MonthlyBalances AS (
+            SELECT 
+                csa.fSALESAREA as area_code,
+                m.month_end,
+                (
+                    SELECT ISNULL(SUM(CASE WHEN d2.fDBCR = 'D' THEN d2.fSUM ELSE -d2.fSUM END), 0)
+                    FROM HICUSTOMERSDEBT d2 WITH (NOLOCK)
+                    INNER JOIN DOCUMENTS doc2 WITH (NOLOCK) ON d2.fDEBTDOCISN = doc2.fISN
+                    INNER JOIN CUSTOMERS c2 WITH (NOLOCK) ON doc2.fCUSTOMERID = c2.fID
+                    WHERE c2.fID = c.fID
+                        AND d2.fDATE <= m.month_end
+                ) as balance
+            FROM Months m
+            CROSS JOIN CUSTOMERSALESAREAS csa
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON csa.fCUSTOMERID = c.fID
+            WHERE 1=1
+                {excluded_filter}
+                {group_clause}
+        )
+        SELECT 
+            area_code,
+            AVG(balance) as avg_monthly_debt
+        FROM MonthlyBalances
+        GROUP BY area_code
+        """
+        
+        debt_params = excluded_params + group_params
+        cursor.execute(query_debt, debt_params)
+        debt_results = cursor.fetchall()
+        
+        # 3. Получить Type01 и Type02 (возвраты и предоплаты) для вычета
+        query_rest = f"""
+        SELECT 
+            csa.fSALESAREA as area_code,
+            ISNULL(SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END), 0) as Type01,
+            ISNULL(SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END), 0) as Type02
+        FROM HIRESTCUSTOMERSSUM r WITH (NOLOCK)
+        INNER JOIN CUSTOMERS c WITH (NOLOCK) ON r.fCUSTOMERID = c.fID
+        INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        WHERE 1=1
+            {excluded_filter}
+            {group_clause}
+        GROUP BY csa.fSALESAREA
+        """
+        
+        rest_params = excluded_params + group_params
+        cursor.execute(query_rest, rest_params)
+        rest_results = cursor.fetchall()
+        
+        # Объединяем результаты
+        area_stats = {}
+        
+        for row in sales_results:
+            area_stats[row.area_code] = {
+                'avg_sales': float(row.avg_monthly_sales) if row.avg_monthly_sales else 0,
+                'avg_debt': 0,
+                'type01': 0,
+                'type02': 0
+            }
+            
+        for row in debt_results:
+            if row.area_code not in area_stats:
+                area_stats[row.area_code] = {'avg_sales': 0, 'avg_debt': 0, 'type01': 0, 'type02': 0}
+            area_stats[row.area_code]['avg_debt'] = float(row.avg_monthly_debt) if row.avg_monthly_debt else 0
+        
+        for row in rest_results:
+            if row.area_code in area_stats:
+                area_stats[row.area_code]['type01'] = float(row.Type01) if row.Type01 else 0
+                area_stats[row.area_code]['type02'] = float(row.Type02) if row.Type02 else 0
         
         plans = {}
         season_coeff = seasonality.get(target_month, 1.0)
         
-        for row in results:
-            area_code = row.area_code
-            avg_sales = float(row.avg_monthly_sales) if row.avg_monthly_sales else 0
-            avg_credit = float(row.avg_monthly_credit) if row.avg_monthly_credit else 0
+        for area_code, stats in area_stats.items():
+            avg_sales = stats['avg_sales']
+            avg_debt = stats['avg_debt']
+            type01 = stats['type01']
+            type02 = stats['type02']
+            
+            # ФОРМУЛА: Средний ДОЛГ = Средний кумулятивный баланс - ВОЗВРАТЫ - ПРЕДОПЛАТА
+            avg_debt_adjusted = avg_debt - abs(type01) - abs(type02)
             
             # Применяем сезонный коэффициент и добавляем 10% роста
             growth_factor = 1.10
             plan_sales = round(avg_sales * season_coeff * growth_factor, 0)
-            plan_credit = round(avg_credit * season_coeff * growth_factor, 0)
+            # План по кредиту = Средний Долг × Сезонность × Рост
+            plan_credit = round(avg_debt_adjusted * season_coeff * growth_factor, 0)
             
             plans[area_code] = {
                 'sales': plan_sales,
                 'credit': plan_credit,
                 'seasonality': season_coeff,
                 'avg_sales': round(avg_sales, 0),
-                'avg_credit': round(avg_credit, 0)
+                'avg_credit': round(avg_debt_adjusted, 0)  # Средний долг за 12 месяцев
             }
         
         conn.close()

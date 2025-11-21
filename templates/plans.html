@@ -1700,8 +1700,8 @@
                                 </div>
                                 <div class="history-badge">
                                     <div class="history-badge-label">
-                                        <i class="fas fa-credit-card text-warning"></i>
-                                        <span>Кредиты</span>
+                                        <i class="fas fa-exclamation-triangle text-danger"></i>
+                                        <span>Долг</span>
                                     </div>
                                     <div class="history-badge-value">
                                         <span x-text="formatCurrency(areaHistory[area.code]?.credit || 0)"></span> AMD
@@ -1726,8 +1726,8 @@
                                 </div>
                                 <div class="history-badge">
                                     <div class="history-badge-label">
-                                        <i class="fas fa-credit-card text-info"></i>
-                                        <span>Кредиты</span>
+                                        <i class="fas fa-exclamation-triangle text-danger"></i>
+                                        <span>Долг</span>
                                     </div>
                                     <div class="history-badge-value">
                                         <span x-text="formatCurrency(areaHistory[area.code]?.lastYearCredit || 0)"></span> AMD
@@ -2148,7 +2148,7 @@
                         prevMonthData.data.forEach(area => {
                             this.areaHistory[area.code] = {
                                 sales: area.TotalSales || 0,
-                                credit: area.CreditSales || 0
+                                credit: area.PrevMonthDebt || 0  // ДОЛГ за прошлый месяц
                             };
                         });
                     }
@@ -2159,7 +2159,7 @@
                                 this.areaHistory[area.code] = {};
                             }
                             this.areaHistory[area.code].lastYearSales = area.TotalSales || 0;
-                            this.areaHistory[area.code].lastYearCredit = area.CreditSales || 0;
+                            this.areaHistory[area.code].lastYearCredit = area.LastYearDebt || 0;  // ДОЛГ за прошлый год
                         });
                     }
                     
