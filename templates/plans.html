@@ -589,107 +589,6 @@
         margin-top: 1.5rem;
     }
 
-    .seasonality-summary-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 20px;
-        padding: 2rem;
-        margin-bottom: 2rem;
-        box-shadow: 0 15px 50px rgba(102, 126, 234, 0.4), 0 0 30px rgba(118, 75, 162, 0.3);
-        border: 2px solid rgba(255, 255, 255, 0.2);
-        position: relative;
-        overflow: hidden;
-    }
-
-    .seasonality-summary-card::before {
-        content: '';
-        position: absolute;
-        top: -50%;
-        right: -50%;
-        width: 200%;
-        height: 200%;
-        background: radial-gradient(circle, rgba(255, 255, 255, 0.1) 0%, transparent 70%);
-        animation: rotate 20s linear infinite;
-    }
-
-    @keyframes rotate {
-        0% { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
-    }
-
-    .seasonality-summary-content {
-        position: relative;
-        z-index: 1;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 2rem;
-    }
-
-    .summary-main {
-        flex: 1;
-    }
-
-    .summary-label {
-        color: rgba(255, 255, 255, 0.9);
-        font-size: 0.95rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 1.5px;
-        margin-bottom: 0.5rem;
-    }
-
-    .summary-value {
-        color: white;
-        font-size: 3.5rem;
-        font-weight: 800;
-        line-height: 1;
-        margin-bottom: 0.25rem;
-        text-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-    }
-
-    .summary-description {
-        color: rgba(255, 255, 255, 0.85);
-        font-size: 0.9rem;
-        line-height: 1.5;
-    }
-
-    .summary-stats {
-        display: flex;
-        gap: 1.5rem;
-    }
-
-    .stat-item {
-        background: rgba(255, 255, 255, 0.15);
-        backdrop-filter: blur(10px);
-        border-radius: 16px;
-        padding: 1.25rem 1.5rem;
-        border: 1px solid rgba(255, 255, 255, 0.25);
-        text-align: center;
-        min-width: 120px;
-    }
-
-    .stat-label {
-        color: rgba(255, 255, 255, 0.85);
-        font-size: 0.75rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        margin-bottom: 0.5rem;
-    }
-
-    .stat-value {
-        color: white;
-        font-size: 1.8rem;
-        font-weight: 700;
-        line-height: 1;
-    }
-
-    .stat-icon {
-        font-size: 1.5rem;
-        margin-bottom: 0.5rem;
-        filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.3));
-    }
-
     .seasonality-item {
         display: flex;
         flex-direction: column;
@@ -844,6 +743,98 @@
         0% { transform: scale(0) rotate(-45deg); }
         50% { transform: scale(1.2) rotate(0deg); }
         100% { transform: scale(1) rotate(0deg); }
+    }
+
+    /* Дополнительные стили для итоговой карточки */
+    .summary-stat-badge {
+        padding: 0.4rem 0.9rem;
+        border-radius: 10px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        backdrop-filter: blur(10px);
+    }
+
+    .summary-stat-badge.sales {
+        background: rgba(17, 153, 142, 0.3);
+        color: #38ef7d;
+        border: 1px solid rgba(56, 239, 125, 0.4);
+    }
+
+    .summary-stat-badge.warning {
+        background: rgba(255, 193, 7, 0.3);
+        color: #ffd200;
+        border: 1px solid rgba(255, 210, 0, 0.4);
+    }
+
+    .summary-stat-badge.info {
+        background: rgba(79, 172, 254, 0.3);
+        color: #4facfe;
+        border: 1px solid rgba(79, 172, 254, 0.4);
+    }
+
+    .summary-stat-details {
+        margin-top: 1rem;
+        font-size: 0.9rem;
+    }
+
+    .summary-additional-stats {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 20px;
+        padding: 1.5rem;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .summary-mini-stat {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        background: rgba(255, 255, 255, 0.08);
+        padding: 1.2rem;
+        border-radius: 15px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        transition: all 0.3s ease;
+        height: 100%;
+    }
+
+    .summary-mini-stat:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+        border-color: rgba(255, 255, 255, 0.25);
+    }
+
+    .summary-mini-icon {
+        width: 50px;
+        height: 50px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 12px;
+        font-size: 1.3rem;
+        color: white;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        flex-shrink: 0;
+    }
+
+    .summary-mini-content {
+        flex: 1;
+    }
+
+    .summary-mini-label {
+        font-size: 0.8rem;
+        color: rgba(255, 255, 255, 0.7);
+        margin-bottom: 0.35rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .summary-mini-value {
+        font-size: 1.3rem;
+        font-weight: 800;
+        color: white;
+        text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
     }
 
     /* Адаптивность */
@@ -1435,26 +1426,6 @@
             font-size: 1rem;
             padding: 0.55rem;
         }
-
-        .seasonality-summary-content {
-            flex-direction: column;
-            gap: 1.5rem;
-        }
-
-        .summary-value {
-            font-size: 2.5rem;
-        }
-
-        .summary-stats {
-            width: 100%;
-            justify-content: space-between;
-        }
-
-        .stat-item {
-            min-width: auto;
-            flex: 1;
-            padding: 1rem;
-        }
     }
 
     @media (max-width: 576px) {
@@ -1469,23 +1440,6 @@
         
         .seasonality-item label .season-emoji {
             font-size: 1.1rem;
-        }
-
-        .seasonality-summary-card {
-            padding: 1.5rem;
-        }
-
-        .summary-value {
-            font-size: 2rem;
-        }
-
-        .summary-stats {
-            flex-direction: column;
-            gap: 1rem;
-        }
-
-        .stat-value {
-            font-size: 1.5rem;
         }
     }
 
@@ -1632,38 +1586,6 @@
                             Коэффициенты сезонности
                         </h6>
                         <p class="text-white-50 small mb-0" style="font-size: 0.95rem;">Корректировка планов в зависимости от месяца</p>
-                    </div>
-                </div>
-
-                <!-- Summary Card -->
-                <div class="seasonality-summary-card">
-                    <div class="seasonality-summary-content">
-                        <div class="summary-main">
-                            <div class="summary-label">
-                                <i class="fas fa-chart-bar me-2"></i>Средний коэффициент
-                            </div>
-                            <div class="summary-value" x-text="(Object.values(settings.seasonality).reduce((a, b) => a + parseFloat(b), 0) / 12).toFixed(2)"></div>
-                            <div class="summary-description">
-                                Базовый уровень для расчёта планов по всем месяцам
-                            </div>
-                        </div>
-                        <div class="summary-stats">
-                            <div class="stat-item">
-                                <div class="stat-icon">📈</div>
-                                <div class="stat-label">Макс</div>
-                                <div class="stat-value" x-text="Math.max(...Object.values(settings.seasonality).map(v => parseFloat(v))).toFixed(2)"></div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-icon">📉</div>
-                                <div class="stat-label">Мин</div>
-                                <div class="stat-value" x-text="Math.min(...Object.values(settings.seasonality).map(v => parseFloat(v))).toFixed(2)"></div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-icon">📊</div>
-                                <div class="stat-label">Разброс</div>
-                                <div class="stat-value" x-text="(Math.max(...Object.values(settings.seasonality).map(v => parseFloat(v))) - Math.min(...Object.values(settings.seasonality).map(v => parseFloat(v)))).toFixed(2)"></div>
-                            </div>
-                        </div>
                     </div>
                 </div>
                 
@@ -1987,6 +1909,153 @@
                         <i class="fas fa-lightbulb text-warning me-2"></i>
                         <strong class="text-white">Формула:</strong> План = Среднее за 12 мес × Сезонность × (1 + Рост%)
                     </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Итоговая карточка -->
+    <div class="summary-card" x-show="areas.length > 0" x-cloak>
+        <div class="summary-card-header">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <h3 class="text-white mb-2">
+                        <i class="fas fa-chart-pie me-3"></i>Итоговая сводка по всем территориям
+                    </h3>
+                    <p class="text-white-50 mb-0" style="font-size: 1rem;">
+                        <i class="fas fa-calendar-alt me-2"></i>
+                        <span x-text="getMonthName(selectedMonth) + ' ' + selectedYear"></span>
+                        <span class="mx-3">•</span>
+                        <i class="fas fa-percentage me-2"></i>
+                        Рост: <strong x-text="settings.growthFactor + '%'"></strong>
+                        <span class="mx-3">•</span>
+                        <i class="fas fa-snowflake me-2"></i>
+                        Сезонность: <strong x-text="seasonalityCoeff ? seasonalityCoeff.toFixed(2) : '-'"></strong>
+                    </p>
+                </div>
+            </div>
+        </div>
+        <div class="summary-card-body">
+            <!-- Основные показатели -->
+            <div class="summary-stats-grid mb-4">
+                <div class="summary-stat-item">
+                    <div class="d-flex justify-content-between align-items-start mb-3">
+                        <div class="summary-stat-icon sales">
+                            <i class="fas fa-chart-line"></i>
+                        </div>
+                        <div class="text-end">
+                            <div class="summary-stat-badge sales">
+                                <i class="fas fa-arrow-up me-1"></i>План
+                            </div>
+                        </div>
+                    </div>
+                    <div class="summary-stat-label">
+                        <i class="fas fa-shopping-cart me-2"></i>Общий план продаж
+                    </div>
+                    <div class="summary-stat-value" x-text="formatCurrency(getTotalSales())"></div>
+                    <div class="summary-stat-currency">AMD</div>
+                    <div class="summary-stat-details">
+                        <div class="d-flex justify-content-between mt-3 pt-3" style="border-top: 1px solid rgba(255,255,255,0.1);">
+                            <span class="text-white-50">Средний план:</span>
+                            <span class="text-white fw-bold" x-text="formatCurrency(Math.round(getTotalSales() / areas.length)) + ' AMD'"></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="summary-stat-item">
+                    <div class="d-flex justify-content-between align-items-start mb-3">
+                        <div class="summary-stat-icon credit">
+                            <i class="fas fa-credit-card"></i>
+                        </div>
+                        <div class="text-end">
+                            <div class="summary-stat-badge warning">
+                                <i class="fas fa-exclamation-circle me-1"></i>Долг
+                            </div>
+                        </div>
+                    </div>
+                    <div class="summary-stat-label">
+                        <i class="fas fa-hand-holding-usd me-2"></i>Общий план кредитов
+                    </div>
+                    <div class="summary-stat-value" x-text="formatCurrency(getTotalCredit())"></div>
+                    <div class="summary-stat-currency">AMD</div>
+                    <div class="summary-stat-details">
+                        <div class="d-flex justify-content-between mt-3 pt-3" style="border-top: 1px solid rgba(255,255,255,0.1);">
+                            <span class="text-white-50">Доля кредитов:</span>
+                            <span class="text-warning fw-bold" x-text="(getTotalSales() > 0 ? ((getTotalCredit() / getTotalSales()) * 100).toFixed(1) : '0') + '%'"></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="summary-stat-item">
+                    <div class="d-flex justify-content-between align-items-start mb-3">
+                        <div class="summary-stat-icon areas">
+                            <i class="fas fa-map-marked-alt"></i>
+                        </div>
+                        <div class="text-end">
+                            <div class="summary-stat-badge info">
+                                <i class="fas fa-check-circle me-1"></i>Активно
+                            </div>
+                        </div>
+                    </div>
+                    <div class="summary-stat-label">
+                        <i class="fas fa-building me-2"></i>Территорий с планами
+                    </div>
+                    <div class="summary-stat-value" x-text="areas.length"></div>
+                    <div class="summary-stat-currency">территорий</div>
+                    <div class="summary-stat-details">
+                        <div class="d-flex justify-content-between mt-3 pt-3" style="border-top: 1px solid rgba(255,255,255,0.1);">
+                            <span class="text-white-50">Всего данных:</span>
+                            <span class="text-info fw-bold" x-text="getTotalCustomers() + ' клиентов'"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Дополнительная статистика -->
+            <div class="summary-additional-stats">
+                <div class="row g-3">
+                    <div class="col-md-3">
+                        <div class="summary-mini-stat">
+                            <div class="summary-mini-icon" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                                <i class="fas fa-users"></i>
+                            </div>
+                            <div class="summary-mini-content">
+                                <div class="summary-mini-label">Всего клиентов</div>
+                                <div class="summary-mini-value" x-text="formatCurrency(getTotalCustomers())"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="summary-mini-stat">
+                            <div class="summary-mini-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                                <i class="fas fa-user-tie"></i>
+                            </div>
+                            <div class="summary-mini-content">
+                                <div class="summary-mini-label">Всего менеджеров</div>
+                                <div class="summary-mini-value" x-text="getTotalManagers()"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="summary-mini-stat">
+                            <div class="summary-mini-icon" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
+                                <i class="fas fa-calculator"></i>
+                            </div>
+                            <div class="summary-mini-content">
+                                <div class="summary-mini-label">На клиента (план)</div>
+                                <div class="summary-mini-value" x-text="formatCurrency(Math.round(getTotalSales() / getTotalCustomers())) + ' ֏'"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="summary-mini-stat">
+                            <div class="summary-mini-icon" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">
+                                <i class="fas fa-chart-bar"></i>
+                            </div>
+                            <div class="summary-mini-content">
+                                <div class="summary-mini-label">На менеджера</div>
+                                <div class="summary-mini-value" x-text="formatCurrency(Math.round(getTotalSales() / getTotalManagers())) + ' ֏'"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2447,6 +2516,40 @@
             formatCurrency(value) {
                 if (!value) return '0';
                 return parseFloat(value).toLocaleString('ru-RU');
+            },
+
+            getTotalSales() {
+                let total = 0;
+                this.areas.forEach(area => {
+                    const plan = this.getAreaPlan(area.code, 'sales');
+                    total += parseFloat(plan) || 0;
+                });
+                return Math.round(total);
+            },
+
+            getTotalCredit() {
+                let total = 0;
+                this.areas.forEach(area => {
+                    const plan = this.getAreaPlan(area.code, 'credit');
+                    total += parseFloat(plan) || 0;
+                });
+                return Math.round(total);
+            },
+
+            getTotalCustomers() {
+                let total = 0;
+                this.areas.forEach(area => {
+                    total += parseInt(area.CustomerCount) || 0;
+                });
+                return total;
+            },
+
+            getTotalManagers() {
+                let total = 0;
+                this.areas.forEach(area => {
+                    total += parseInt(area.ManagerCount) || 0;
+                });
+                return total;
             },
 
             getMonthName(month) {
