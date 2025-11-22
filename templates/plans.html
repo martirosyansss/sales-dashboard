@@ -1841,6 +1841,9 @@
 
 {% block extra_js %}
 <script>
+    // Отключаем плагин DataLabels глобально
+    Chart.defaults.plugins.datalabels.display = false;
+    
     function plansData() {
         return {
             areas: [],
@@ -2547,6 +2550,7 @@
                 
                 this.seasonalityChart = new Chart(ctx, {
                     type: 'bar',
+                    plugins: [ChartDataLabels],  // Включаем плагин для этого графика
                     data: {
                         labels: monthNames,
                         datasets: [{
@@ -2586,6 +2590,23 @@
                             mode: 'index'
                         },
                         plugins: {
+                            datalabels: {
+                                display: true,
+                                color: 'rgba(255, 255, 255, 0.95)',
+                                anchor: 'end',
+                                align: 'top',
+                                offset: 4,
+                                font: {
+                                    size: 12,
+                                    weight: 'bold'
+                                },
+                                formatter: function(value, context) {
+                                    if (context.datasetIndex === 0) {
+                                        return value.toFixed(2);
+                                    }
+                                    return '';
+                                }
+                            },
                             legend: {
                                 display: true,
                                 position: 'top',
