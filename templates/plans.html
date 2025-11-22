@@ -584,21 +584,223 @@
 
     .seasonality-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-        gap: 1rem;
-        margin-top: 1rem;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1.25rem;
+        margin-top: 1.5rem;
+    }
+
+    .seasonality-summary-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 20px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 15px 50px rgba(102, 126, 234, 0.4), 0 0 30px rgba(118, 75, 162, 0.3);
+        border: 2px solid rgba(255, 255, 255, 0.2);
+        position: relative;
+        overflow: hidden;
+    }
+
+    .seasonality-summary-card::before {
+        content: '';
+        position: absolute;
+        top: -50%;
+        right: -50%;
+        width: 200%;
+        height: 200%;
+        background: radial-gradient(circle, rgba(255, 255, 255, 0.1) 0%, transparent 70%);
+        animation: rotate 20s linear infinite;
+    }
+
+    @keyframes rotate {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+
+    .seasonality-summary-content {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 2rem;
+    }
+
+    .summary-main {
+        flex: 1;
+    }
+
+    .summary-label {
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 0.95rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        margin-bottom: 0.5rem;
+    }
+
+    .summary-value {
+        color: white;
+        font-size: 3.5rem;
+        font-weight: 800;
+        line-height: 1;
+        margin-bottom: 0.25rem;
+        text-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+    }
+
+    .summary-description {
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 0.9rem;
+        line-height: 1.5;
+    }
+
+    .summary-stats {
+        display: flex;
+        gap: 1.5rem;
+    }
+
+    .stat-item {
+        background: rgba(255, 255, 255, 0.15);
+        backdrop-filter: blur(10px);
+        border-radius: 16px;
+        padding: 1.25rem 1.5rem;
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        text-align: center;
+        min-width: 120px;
+    }
+
+    .stat-label {
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 0.5rem;
+    }
+
+    .stat-value {
+        color: white;
+        font-size: 1.8rem;
+        font-weight: 700;
+        line-height: 1;
+    }
+
+    .stat-icon {
+        font-size: 1.5rem;
+        margin-bottom: 0.5rem;
+        filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.3));
     }
 
     .seasonality-item {
         display: flex;
         flex-direction: column;
+        background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.05) 100%);
+        border: 2px solid rgba(102, 126, 234, 0.2);
+        border-radius: 16px;
+        padding: 1rem;
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        position: relative;
+        overflow: hidden;
+    }
+
+    .seasonality-item::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 4px;
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+        opacity: 0;
+        transition: opacity 0.3s ease;
+    }
+
+    .seasonality-item:hover {
+        transform: translateY(-4px);
+        border-color: rgba(102, 126, 234, 0.5);
+        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3), 0 0 20px rgba(102, 126, 234, 0.2);
+        background: linear-gradient(135deg, rgba(102, 126, 234, 0.15) 0%, rgba(118, 75, 162, 0.1) 100%);
+    }
+
+    .seasonality-item:hover::before {
+        opacity: 1;
     }
 
     .seasonality-item label {
-        font-size: 0.8rem;
-        font-weight: 600;
-        margin-bottom: 0.5rem;
-        color: rgba(255, 255, 255, 0.7);
+        font-size: 0.95rem;
+        font-weight: 700;
+        margin-bottom: 0.75rem;
+        color: rgba(255, 255, 255, 0.95);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .seasonality-item label .season-emoji {
+        font-size: 1.3rem;
+        filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+    }
+
+    .seasonality-item input {
+        background: rgba(255, 255, 255, 0.08);
+        border: 2px solid rgba(255, 255, 255, 0.15);
+        color: white;
+        font-weight: 700;
+        font-size: 1.1rem;
+        text-align: center;
+        padding: 0.65rem;
+        border-radius: 10px;
+        transition: all 0.3s ease;
+    }
+
+    .seasonality-item input:focus {
+        background: rgba(255, 255, 255, 0.12);
+        border-color: #667eea;
+        outline: none;
+        box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.25), 0 4px 12px rgba(102, 126, 234, 0.3);
+    }
+
+    .seasonality-item input:hover {
+        background: rgba(255, 255, 255, 0.1);
+        border-color: rgba(255, 255, 255, 0.25);
+    }
+
+    /* Season indicators */
+    .seasonality-item[data-season="winter"] {
+        background: linear-gradient(135deg, rgba(79, 172, 254, 0.12) 0%, rgba(13, 202, 240, 0.08) 100%);
+        border-color: rgba(79, 172, 254, 0.3);
+    }
+
+    .seasonality-item[data-season="winter"]::before {
+        background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
+    }
+
+    .seasonality-item[data-season="spring"] {
+        background: linear-gradient(135deg, rgba(56, 239, 125, 0.12) 0%, rgba(17, 153, 142, 0.08) 100%);
+        border-color: rgba(56, 239, 125, 0.3);
+    }
+
+    .seasonality-item[data-season="spring"]::before {
+        background: linear-gradient(90deg, #11998e 0%, #38ef7d 100%);
+    }
+
+    .seasonality-item[data-season="summer"] {
+        background: linear-gradient(135deg, rgba(255, 193, 7, 0.15) 0%, rgba(255, 152, 0, 0.1) 100%);
+        border-color: rgba(255, 193, 7, 0.4);
+    }
+
+    .seasonality-item[data-season="summer"]::before {
+        background: linear-gradient(90deg, #ffc107 0%, #ff9800 100%);
+    }
+
+    .seasonality-item[data-season="fall"] {
+        background: linear-gradient(135deg, rgba(245, 87, 108, 0.12) 0%, rgba(240, 147, 251, 0.08) 100%);
+        border-color: rgba(245, 87, 108, 0.3);
+    }
+
+    .seasonality-item[data-season="fall"]::before {
+        background: linear-gradient(90deg, #f5576c 0%, #f093fb 100%);
     }
 
     /* Индикатор сохранения */
@@ -1212,19 +1414,78 @@
 
     @media (max-width: 1200px) {
         .seasonality-grid {
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(3, 1fr);
         }
     }
 
     @media (max-width: 768px) {
         .seasonality-grid {
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(2, 1fr);
+        }
+        
+        .seasonality-item {
+            padding: 0.85rem;
+        }
+        
+        .seasonality-item label {
+            font-size: 0.9rem;
+        }
+        
+        .seasonality-item input {
+            font-size: 1rem;
+            padding: 0.55rem;
+        }
+
+        .seasonality-summary-content {
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .summary-value {
+            font-size: 2.5rem;
+        }
+
+        .summary-stats {
+            width: 100%;
+            justify-content: space-between;
+        }
+
+        .stat-item {
+            min-width: auto;
+            flex: 1;
+            padding: 1rem;
         }
     }
 
     @media (max-width: 576px) {
         .seasonality-grid {
             grid-template-columns: repeat(2, 1fr);
+            gap: 1rem;
+        }
+        
+        .seasonality-item {
+            padding: 0.75rem;
+        }
+        
+        .seasonality-item label .season-emoji {
+            font-size: 1.1rem;
+        }
+
+        .seasonality-summary-card {
+            padding: 1.5rem;
+        }
+
+        .summary-value {
+            font-size: 2rem;
+        }
+
+        .summary-stats {
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
         }
     }
 
@@ -1361,27 +1622,104 @@
                 </div>
             </div>
 
-            <div class="settings-group">
-                <h6 class="text-white mb-3">
-                    <i class="fas fa-chart-line me-2"></i>Коэффициенты сезонности
-                </h6>
-                <p class="text-white-50 small mb-3">Корректировка планов в зависимости от месяца</p>
+            <div class="settings-group" style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(118, 75, 162, 0.05) 100%); border: 2px solid rgba(102, 126, 234, 0.2); border-radius: 20px; padding: 2rem;">
+                <div class="d-flex align-items-center mb-4">
+                    <div style="width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; margin-right: 1rem; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);">
+                        <i class="fas fa-chart-line" style="font-size: 1.5rem; color: white;"></i>
+                    </div>
+                    <div>
+                        <h6 class="text-white mb-1" style="font-size: 1.3rem; font-weight: 700; letter-spacing: 0.5px;">
+                            Коэффициенты сезонности
+                        </h6>
+                        <p class="text-white-50 small mb-0" style="font-size: 0.95rem;">Корректировка планов в зависимости от месяца</p>
+                    </div>
+                </div>
+
+                <!-- Summary Card -->
+                <div class="seasonality-summary-card">
+                    <div class="seasonality-summary-content">
+                        <div class="summary-main">
+                            <div class="summary-label">
+                                <i class="fas fa-chart-bar me-2"></i>Средний коэффициент
+                            </div>
+                            <div class="summary-value" x-text="(Object.values(settings.seasonality).reduce((a, b) => a + parseFloat(b), 0) / 12).toFixed(2)"></div>
+                            <div class="summary-description">
+                                Базовый уровень для расчёта планов по всем месяцам
+                            </div>
+                        </div>
+                        <div class="summary-stats">
+                            <div class="stat-item">
+                                <div class="stat-icon">📈</div>
+                                <div class="stat-label">Макс</div>
+                                <div class="stat-value" x-text="Math.max(...Object.values(settings.seasonality).map(v => parseFloat(v))).toFixed(2)"></div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-icon">📉</div>
+                                <div class="stat-label">Мин</div>
+                                <div class="stat-value" x-text="Math.min(...Object.values(settings.seasonality).map(v => parseFloat(v))).toFixed(2)"></div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-icon">📊</div>
+                                <div class="stat-label">Разброс</div>
+                                <div class="stat-value" x-text="(Math.max(...Object.values(settings.seasonality).map(v => parseFloat(v))) - Math.min(...Object.values(settings.seasonality).map(v => parseFloat(v)))).toFixed(2)"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 
                 <div class="seasonality-grid">
-                    <template x-for="month in [1,2,3,4,5,6,7,8,9,10,11,12]" :key="month">
-                        <div class="seasonality-item">
-                            <label x-text="getMonthNameShort(month)"></label>
-                            <input type="number" 
-                                   x-model="settings.seasonality[month]"
-                                   step="0.01"
-                                   min="0.1"
-                                   max="2.0">
-                        </div>
-                    </template>
+                    <div class="seasonality-item" data-season="winter">
+                        <label><span class="season-emoji">❄️</span> Янв</label>
+                        <input type="number" x-model="settings.seasonality[1]" step="0.01" min="0.1" max="2.0">
+                    </div>
+                    <div class="seasonality-item" data-season="winter">
+                        <label><span class="season-emoji">❄️</span> Фев</label>
+                        <input type="number" x-model="settings.seasonality[2]" step="0.01" min="0.1" max="2.0">
+                    </div>
+                    <div class="seasonality-item" data-season="spring">
+                        <label><span class="season-emoji">🌱</span> Мар</label>
+                        <input type="number" x-model="settings.seasonality[3]" step="0.01" min="0.1" max="2.0">
+                    </div>
+                    <div class="seasonality-item" data-season="spring">
+                        <label><span class="season-emoji">🌱</span> Апр</label>
+                        <input type="number" x-model="settings.seasonality[4]" step="0.01" min="0.1" max="2.0">
+                    </div>
+                    <div class="seasonality-item" data-season="spring">
+                        <label><span class="season-emoji">🌸</span> Май</label>
+                        <input type="number" x-model="settings.seasonality[5]" step="0.01" min="0.1" max="2.0">
+                    </div>
+                    <div class="seasonality-item" data-season="summer">
+                        <label><span class="season-emoji">☀️</span> Июн</label>
+                        <input type="number" x-model="settings.seasonality[6]" step="0.01" min="0.1" max="2.0">
+                    </div>
+                    <div class="seasonality-item" data-season="summer">
+                        <label><span class="season-emoji">☀️</span> Июл</label>
+                        <input type="number" x-model="settings.seasonality[7]" step="0.01" min="0.1" max="2.0">
+                    </div>
+                    <div class="seasonality-item" data-season="summer">
+                        <label><span class="season-emoji">☀️</span> Авг</label>
+                        <input type="number" x-model="settings.seasonality[8]" step="0.01" min="0.1" max="2.0">
+                    </div>
+                    <div class="seasonality-item" data-season="fall">
+                        <label><span class="season-emoji">🍂</span> Сен</label>
+                        <input type="number" x-model="settings.seasonality[9]" step="0.01" min="0.1" max="2.0">
+                    </div>
+                    <div class="seasonality-item" data-season="fall">
+                        <label><span class="season-emoji">🍂</span> Окт</label>
+                        <input type="number" x-model="settings.seasonality[10]" step="0.01" min="0.1" max="2.0">
+                    </div>
+                    <div class="seasonality-item" data-season="fall">
+                        <label><span class="season-emoji">🍂</span> Ноя</label>
+                        <input type="number" x-model="settings.seasonality[11]" step="0.01" min="0.1" max="2.0">
+                    </div>
+                    <div class="seasonality-item" data-season="winter">
+                        <label><span class="season-emoji">❄️</span> Дек</label>
+                        <input type="number" x-model="settings.seasonality[12]" step="0.01" min="0.1" max="2.0">
+                    </div>
                 </div>
-                <small class="text-white-50 d-block mt-3">
-                    <i class="fas fa-info-circle me-1"></i>
-                    1.0 = средний уровень, &gt;1.0 = высокий сезон, &lt;1.0 = низкий сезон
+                <small class="text-white-50 d-block mt-4 text-center" style="font-size: 0.9rem; line-height: 1.6;">
+                    <i class="fas fa-info-circle me-2"></i>
+                    <strong>1.0</strong> = средний уровень&nbsp;&nbsp;|&nbsp;&nbsp;<strong>&gt;1.0</strong> = высокий сезон&nbsp;&nbsp;|&nbsp;&nbsp;<strong>&lt;1.0</strong> = низкий сезон
                 </small>
             </div>
 
