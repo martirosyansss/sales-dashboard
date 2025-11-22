@@ -2593,21 +2593,44 @@
                         },
                         plugins: {
                             datalabels: {
-                                display: true,
-                                color: 'rgba(255, 255, 255, 0.95)',
-                                anchor: 'end',
-                                align: 'top',
-                                offset: 4,
-                                font: {
-                                    size: 12,
-                                    weight: 'bold'
+                                display: function(context) {
+                                    return true;  // Показываем для всех датасетов
+                                },
+                                color: function(context) {
+                                    // Для линии тренда - серый цвет, для столбцов - белый
+                                    return context.datasetIndex === 1 ? 'rgba(200, 200, 200, 0.9)' : 'rgba(255, 255, 255, 0.95)';
+                                },
+                                anchor: function(context) {
+                                    // Для линии - center, для столбцов - end
+                                    return context.datasetIndex === 1 ? 'center' : 'end';
+                                },
+                                align: function(context) {
+                                    // Для линии - top, для столбцов - top
+                                    return 'top';
+                                },
+                                offset: function(context) {
+                                    // Для линии меньший отступ
+                                    return context.datasetIndex === 1 ? -20 : 4;
+                                },
+                                font: function(context) {
+                                    return {
+                                        size: context.datasetIndex === 1 ? 11 : 12,
+                                        weight: context.datasetIndex === 1 ? 'normal' : 'bold'
+                                    };
                                 },
                                 formatter: function(value, context) {
-                                    // Показываем только для первого датасета (столбцы), не для линии
-                                    if (context.datasetIndex === 0 && typeof value === 'number') {
+                                    if (typeof value === 'number') {
+                                        // Для линии тренда показываем только на первом и последнем месяце
+                                        if (context.datasetIndex === 1) {
+                                            if (context.dataIndex === 0 || context.dataIndex === 11) {
+                                                return 'Ср: ' + value.toFixed(2);
+                                            }
+                                            return null;  // Скрываем для остальных точек
+                                        }
+                                        // Для столбцов показываем всегда
                                         return value.toFixed(2);
                                     }
-                                    return null;  // null скрывает метку
+                                    return null;
                                 }
                             },
                             legend: {
