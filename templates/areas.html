@@ -451,6 +451,87 @@
                                 <strong x-text="formatCurrency(area.TotalSales)" class="text-success fw-bold"></strong>
                             </div>
                             
+                            <!-- ПЛАН, ФАКТ И ПРОГНОЗ -->
+                            <div class="border rounded p-3 mb-3" style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(139, 92, 246, 0.05)); border: 2px solid rgba(99, 102, 241, 0.2) !important;">
+                                <h6 class="mb-3 fw-bold" style="color: #6366f1;">
+                                    <i class="fas fa-chart-line"></i> План и Прогноз
+                                </h6>
+                                
+                                <!-- План продаж -->
+                                <div class="mb-2">
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span class="small text-muted">
+                                            <i class="fas fa-target"></i> План месяца:
+                                        </span>
+                                        <strong class="text-primary" x-text="area.MonthlyPlan ? formatCurrency(area.MonthlyPlan) : 'Не задан'"></strong>
+                                    </div>
+                                    <template x-if="area.MonthlyPlan && area.MonthlyPlan > 0">
+                                        <div>
+                                            <div class="progress" style="height: 8px;">
+                                                <div class="progress-bar" 
+                                                     :class="(area.TotalSales / area.MonthlyPlan * 100) >= 100 ? 'bg-success' : (area.TotalSales / area.MonthlyPlan * 100) >= 75 ? 'bg-warning' : 'bg-danger'"
+                                                     :style="`width: ${Math.min((area.TotalSales / area.MonthlyPlan * 100), 100)}%`"></div>
+                                            </div>
+                                            <div class="d-flex justify-content-between mt-1" style="font-size: 0.75rem;">
+                                                <span class="text-muted">Выполнено:</span>
+                                                <span class="fw-bold" 
+                                                      :class="(area.TotalSales / area.MonthlyPlan * 100) >= 100 ? 'text-success' : (area.TotalSales / area.MonthlyPlan * 100) >= 75 ? 'text-warning' : 'text-danger'"
+                                                      x-text="`${((area.TotalSales / area.MonthlyPlan * 100).toFixed(1))}%`"></span>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+
+                                <!-- Текущий факт -->
+                                <div class="mb-2 p-2 rounded" style="background: rgba(16, 185, 129, 0.1);">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <span class="small fw-semibold">
+                                            <i class="fas fa-check-circle text-success"></i> Факт (текущий):
+                                        </span>
+                                        <strong class="text-success" x-text="formatCurrency(area.TotalSales)"></strong>
+                                    </div>
+                                </div>
+
+                                <!-- Прогноз на конец месяца -->
+                                <template x-if="area.MonthlyPlan && area.MonthlyPlan > 0">
+                                    <div class="p-2 rounded" style="background: rgba(245, 158, 11, 0.1);" x-data="{
+                                        getDaysInMonth() {
+                                            const now = new Date();
+                                            return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+                                        },
+                                        getCurrentDay() {
+                                            return new Date().getDate();
+                                        },
+                                        calculateForecast() {
+                                            const daysTotal = this.getDaysInMonth();
+                                            const daysPassed = this.getCurrentDay();
+                                            if (daysPassed === 0) return 0;
+                                            const avgPerDay = area.TotalSales / daysPassed;
+                                            return avgPerDay * daysTotal;
+                                        },
+                                        getForecastClass() {
+                                            const forecast = this.calculateForecast();
+                                            if (forecast >= area.MonthlyPlan) return 'text-success';
+                                            if (forecast >= area.MonthlyPlan * 0.9) return 'text-warning';
+                                            return 'text-danger';
+                                        }
+                                    }">
+                                        <div class="d-flex justify-content-between align-items-center mb-1">
+                                            <span class="small fw-semibold">
+                                                <i class="fas fa-chart-area"></i> Прогноз на месяц:
+                                            </span>
+                                            <strong :class="getForecastClass()" x-text="formatCurrency(calculateForecast())"></strong>
+                                        </div>
+                                        <div class="d-flex justify-content-between" style="font-size: 0.7rem;">
+                                            <span class="text-muted">
+                                                <i class="fas fa-calendar-day"></i> День <span x-text="getCurrentDay()"></span> из <span x-text="getDaysInMonth()"></span>
+                                            </span>
+                                            <span :class="getForecastClass()" x-text="`${((calculateForecast() / area.MonthlyPlan * 100).toFixed(0))}% плана`"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                            
                             <!-- Прошлый месяц (тот же период) -->
                             <div class="border-top pt-2 mb-2" x-show="area.PrevMonthSales !== undefined">
                                 <div class="d-flex justify-content-between align-items-center" style="font-size: 0.85rem;">
@@ -1621,6 +1702,9 @@
                     if (result.success) {
                         this.areas = result.data;
                         
+                        // Загрузить планы для текущего месяца
+                        await this.loadPlans();
+                        
                         // Подсчитать итоги
                         this.totalSales = this.areas.reduce((sum, a) => sum + a.TotalSales, 0);
                         this.totalDebt = this.areas.reduce((sum, a) => sum + a.Debt, 0);
@@ -1636,6 +1720,49 @@
                     console.error('Ошибка загрузки территорий:', error);
                 } finally {
                     this.loading = false;
+                }
+            },
+
+            async loadPlans() {
+                try {
+                    // Получить текущий месяц и год из dateFrom
+                    const date = new Date(this.dateFrom);
+                    const month = date.getMonth() + 1; // JavaScript месяцы 0-11
+                    const year = date.getFullYear();
+                    
+                    const planParams = new URLSearchParams({
+                        month: month,
+                        year: year
+                    });
+                    
+                    // Добавить группы если выбраны
+                    if (this.selectedDebtGroups.length > 0) {
+                        planParams.append('groups', this.selectedDebtGroups.join(','));
+                    }
+                    
+                    const planResponse = await fetch(`/api/generate-plans?${planParams}`);
+                    const planResult = await planResponse.json();
+                    
+                    if (planResult.success && planResult.data) {
+                        // Добавить планы к каждой территории
+                        this.areas.forEach(area => {
+                            const planData = planResult.data[area.code];
+                            if (planData) {
+                                area.MonthlyPlan = planData.sales || 0;
+                                area.PlanCredit = planData.credit || 0;
+                            } else {
+                                area.MonthlyPlan = 0;
+                                area.PlanCredit = 0;
+                            }
+                        });
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки планов:', error);
+                    // Если ошибка, установить планы в 0
+                    this.areas.forEach(area => {
+                        area.MonthlyPlan = 0;
+                        area.PlanCredit = 0;
+                    });
                 }
             },
 
