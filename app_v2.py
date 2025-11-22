@@ -2044,16 +2044,18 @@ def generate_plans():
     try:
         target_month = int(request.args.get('month', datetime.now().month))
         target_year = int(request.args.get('year', datetime.now().year))
+        growth_percent = float(request.args.get('growth', 10))  # Параметр роста из запроса
         
         # Получить параметры фильтров
         raw_groups = request.args.get('groups', '').strip()
         selected_groups = [grp.strip() for grp in raw_groups.split(',') if grp.strip()]
         
         # Коэффициенты сезонности (на основе анализа данных)
+        # Синхронизировано с frontend (templates/plans.html)
         seasonality = {
-            1: 0.45, 2: 0.57, 3: 0.63, 4: 0.77,
-            5: 0.88, 6: 1.09, 7: 1.29, 8: 1.24,
-            9: 0.64, 10: 0.84, 11: 0.60, 12: 0.88
+            1: 0.53, 2: 0.67, 3: 0.80, 4: 0.86,
+            5: 1.14, 6: 1.31, 7: 1.49, 8: 1.43,
+            9: 1.10, 10: 1.02, 11: 0.88, 12: 0.93
         }
         
         conn = db.get_connection()
@@ -2219,6 +2221,7 @@ def generate_plans():
         
         plans = {}
         season_coeff = seasonality.get(target_month, 1.0)
+        growth_factor = 1 + (growth_percent / 100)  # Преобразуем 10% → 1.10, 20% → 1.20
         
         for area_code, stats in area_stats.items():
             avg_sales = stats['avg_sales']
@@ -2229,11 +2232,11 @@ def generate_plans():
             # ФОРМУЛА: Средний ДОЛГ = Средний кумулятивный баланс - ВОЗВРАТЫ - ПРЕДОПЛАТА
             avg_debt_adjusted = avg_debt - abs(type01) - abs(type02)
             
-            # Применяем сезонный коэффициент и добавляем 10% роста
-            growth_factor = 1.10
-            plan_sales = round(avg_sales * season_coeff * growth_factor, 0)
-            # План по кредиту = Средний Долг × Сезонность × Рост
-            plan_credit = round(avg_debt_adjusted * season_coeff * growth_factor, 0)
+            # Применяем сезонный коэффициент и настраиваемый рост
+            # Округляем до 10,000
+            plan_sales = int(round(avg_sales * season_coeff * growth_factor / 10000) * 10000)
+            # План по кредиту = Средний Долг × Сезонность × Рост (округлено до 10,000)
+            plan_credit = int(round(avg_debt_adjusted * season_coeff * growth_factor / 10000) * 10000)
             
             plans[area_code] = {
                 'sales': plan_sales,
@@ -2255,6 +2258,104 @@ def generate_plans():
         
     except Exception as e:
         logger.error(f"Ошибка генерации планов: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/calculate-seasonality')
+def calculate_seasonality_api():
+    """Рассчитать коэффициенты сезонности на основе исторических данных"""
+    try:
+        history_years = int(request.args.get('years', 2))
+        
+        # Получить параметры фильтров
+        raw_groups = request.args.get('groups', '').strip()
+        selected_groups = [grp.strip() for grp in raw_groups.split(',') if grp.strip()]
+        
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Фильтры исключенных клиентов
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        product_groups_filter, product_groups_params = get_product_groups_filter_sql()
+        
+        # Фильтр по группам клиентов
+        group_clause = ""
+        group_params = tuple()
+        if selected_groups:
+            placeholders = ','.join('?' * len(selected_groups))
+            group_clause = f" AND c.fGROUP IN ({placeholders})"
+            group_params = tuple(selected_groups)
+        
+        # Получить продажи по месяцам за указанный период
+        query = f"""
+        SELECT 
+            MONTH(s.fDATE) as month_num,
+            ISNULL(SUM(s.fTOTALSUM), 0) as total_sales
+        FROM SALES s
+        INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+        WHERE s.fDATE >= DATEADD(YEAR, -{history_years}, GETDATE())
+            AND s.fSTATE = 2
+            {excluded_filter}
+            {product_groups_filter}
+            {group_clause}
+        GROUP BY MONTH(s.fDATE)
+        ORDER BY MONTH(s.fDATE)
+        """
+        
+        params = excluded_params + product_groups_params + group_params
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+        
+        # Рассчитать среднемесячные продажи
+        monthly_sales = {}
+        for row in results:
+            month_num = row[0]
+            total_sales = row[1]
+            monthly_sales[month_num] = total_sales
+        
+        # Если нет данных, вернуть дефолтные коэффициенты
+        if not monthly_sales:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                'success': True,
+                'seasonality': {
+                    1: 0.53, 2: 0.67, 3: 0.80, 4: 0.86,
+                    5: 1.14, 6: 1.31, 7: 1.49, 8: 1.43,
+                    9: 1.10, 10: 1.02, 11: 0.72, 12: 0.93
+                },
+                'years': history_years,
+                'message': 'Нет данных за указанный период, используются дефолтные коэффициенты'
+            })
+        
+        # Рассчитать средний уровень продаж
+        total_sum = sum(monthly_sales.values())
+        average_monthly = total_sum / len(monthly_sales)
+        
+        # Рассчитать коэффициенты сезонности для каждого месяца
+        seasonality_coeffs = {}
+        for month in range(1, 13):
+            if month in monthly_sales:
+                # Коэффициент = продажи месяца / средние продажи
+                coeff = monthly_sales[month] / average_monthly if average_monthly > 0 else 1.0
+                seasonality_coeffs[month] = round(coeff, 2)
+            else:
+                # Если данных нет, используем 1.0 (средний уровень)
+                seasonality_coeffs[month] = 1.0
+        
+        cursor.close()
+        conn.close()
+        
+        logger.info(f"Рассчитаны коэффициенты сезонности за {history_years} лет: {seasonality_coeffs}")
+        
+        return jsonify({
+            'success': True,
+            'seasonality': seasonality_coeffs,
+            'years': history_years,
+            'average': round(average_monthly, 2)
+        })
+        
+    except Exception as e:
+        logger.error(f"Ошибка расчета сезонности: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/customers-grid')
@@ -3803,5 +3904,5 @@ if __name__ == '__main__':
     print()
     print("=" * 80)
     
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5000)
 
