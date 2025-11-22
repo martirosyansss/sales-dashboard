@@ -1841,8 +1841,10 @@
 
 {% block extra_js %}
 <script>
-    // Отключаем плагин DataLabels глобально
-    Chart.defaults.plugins.datalabels.display = false;
+    // Отключаем плагин DataLabels глобально (если он загружен)
+    if (Chart.defaults.plugins && Chart.defaults.plugins.datalabels) {
+        Chart.defaults.plugins.datalabels.display = false;
+    }
     
     function plansData() {
         return {
@@ -2601,10 +2603,11 @@
                                     weight: 'bold'
                                 },
                                 formatter: function(value, context) {
-                                    if (context.datasetIndex === 0) {
+                                    // Показываем только для первого датасета (столбцы), не для линии
+                                    if (context.datasetIndex === 0 && typeof value === 'number') {
                                         return value.toFixed(2);
                                     }
-                                    return '';
+                                    return null;  // null скрывает метку
                                 }
                             },
                             legend: {
