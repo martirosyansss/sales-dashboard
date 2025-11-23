@@ -430,137 +430,122 @@
                         <small class="d-block mt-1" x-text="area.name" style="opacity: 0.95; font-weight: 500;"></small>
                     </div>
                     <div class="card-body">
-                        <!-- Статистика -->
-                        <div class="mb-3">
-                            <div class="d-flex justify-content-between mb-2 p-2 rounded" style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.05), rgba(118, 75, 162, 0.05));">
-                                <span class="text-muted fw-semibold">
-                                    <i class="fas fa-shopping-cart text-primary"></i> Продаж:
-                                </span>
-                                <strong class="text-primary" x-text="formatNumber(area.SalesCount)"></strong>
+                        <!-- Краткая статистика -->
+                        <div class="row g-2 mb-3">
+                            <div class="col-4">
+                                <div class="text-center p-2 rounded" style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.05));">
+                                    <div style="font-size: 0.7rem; color: #6366f1; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Продаж</div>
+                                    <div class="fw-bold text-primary" style="font-size: 1.1rem;" x-text="formatNumber(area.SalesCount)"></div>
+                                </div>
                             </div>
-                            <div class="d-flex justify-content-between mb-2 p-2 rounded" style="background: linear-gradient(135deg, rgba(13, 202, 240, 0.05), rgba(13, 110, 253, 0.05));">
-                                <span class="text-muted fw-semibold">
-                                    <i class="fas fa-users text-info"></i> Клиентов:
-                                </span>
-                                <strong class="text-info" x-text="formatNumber(area.CustomerCount)"></strong>
+                            <div class="col-4">
+                                <div class="text-center p-2 rounded" style="background: linear-gradient(135deg, rgba(13, 202, 240, 0.1), rgba(13, 110, 253, 0.05));">
+                                    <div style="font-size: 0.7rem; color: #0dcaf0; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Клиенты</div>
+                                    <div class="fw-bold text-info" style="font-size: 1.1rem;" x-text="formatNumber(area.CustomerCount)"></div>
+                                </div>
                             </div>
-                            <div class="d-flex justify-content-between mb-2 p-2 rounded" style="background: linear-gradient(135deg, rgba(25, 135, 84, 0.05), rgba(32, 201, 151, 0.05));">
-                                <span class="text-muted fw-semibold">
-                                    <i class="fas fa-dollar-sign text-success"></i> Сумма:
-                                </span>
-                                <strong x-text="formatCurrency(area.TotalSales)" class="text-success fw-bold"></strong>
+                            <div class="col-4">
+                                <div class="text-center p-2 rounded" style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(5, 150, 105, 0.05));">
+                                    <div style="font-size: 0.7rem; color: #10b981; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Оплаты</div>
+                                    <div class="fw-bold text-success" style="font-size: 1.1rem;" x-text="formatNumber(area.Payments)"></div>
+                                </div>
                             </div>
+                        </div>
                             
-                            <!-- ПЛАН, ФАКТ И ПРОГНОЗ -->
-                            <div class="border rounded p-3 mb-3" style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(139, 92, 246, 0.05)); border: 2px solid rgba(99, 102, 241, 0.2) !important;">
-                                <h6 class="mb-3 fw-bold" style="color: #6366f1;">
-                                    <i class="fas fa-chart-line"></i> План и Прогноз
+                        <!-- ПЛАН ПРОДАЖ -->
+                        <div class="border rounded p-3 mb-3" style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(139, 92, 246, 0.05)); border: 2px solid rgba(99, 102, 241, 0.2) !important; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.1);">
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <h6 class="mb-0 fw-bold" style="color: #6366f1;">
+                                    <i class="fas fa-chart-line"></i> Продажи
                                 </h6>
-                                
-                                <!-- План продаж -->
-                                <div class="mb-2">
-                                    <div class="d-flex justify-content-between align-items-center mb-1">
-                                        <span class="small text-muted">
-                                            <i class="fas fa-target"></i> План месяца:
-                                        </span>
-                                        <strong class="text-primary" x-text="area.MonthlyPlan ? formatCurrency(area.MonthlyPlan) : 'Не задан'"></strong>
-                                    </div>
-                                    <template x-if="area.MonthlyPlan && area.MonthlyPlan > 0">
-                                        <div>
-                                            <div class="progress" style="height: 8px;">
-                                                <div class="progress-bar" 
-                                                     :class="(area.TotalSales / area.MonthlyPlan * 100) >= 100 ? 'bg-success' : (area.TotalSales / area.MonthlyPlan * 100) >= 75 ? 'bg-warning' : 'bg-danger'"
-                                                     :style="`width: ${Math.min((area.TotalSales / area.MonthlyPlan * 100), 100)}%`"></div>
-                                            </div>
-                                            <div class="d-flex justify-content-between mt-1" style="font-size: 0.75rem;">
-                                                <span class="text-muted">Выполнено:</span>
-                                                <span class="fw-bold" 
-                                                      :class="(area.TotalSales / area.MonthlyPlan * 100) >= 100 ? 'text-success' : (area.TotalSales / area.MonthlyPlan * 100) >= 75 ? 'text-warning' : 'text-danger'"
-                                                      x-text="`${((area.TotalSales / area.MonthlyPlan * 100).toFixed(1))}%`"></span>
-                                            </div>
-                                        </div>
-                                    </template>
-                                </div>
-
-                                <!-- Текущий факт -->
-                                <div class="mb-2 p-2 rounded" style="background: rgba(16, 185, 129, 0.1);">
-                                    <div class="d-flex justify-content-between align-items-center">
-                                        <span class="small fw-semibold">
-                                            <i class="fas fa-check-circle text-success"></i> Факт (текущий):
-                                        </span>
-                                        <strong class="text-success" x-text="formatCurrency(area.TotalSales)"></strong>
-                                    </div>
-                                </div>
-
-                                <!-- Прогноз на конец месяца -->
-                                <template x-if="area.MonthlyPlan && area.MonthlyPlan > 0">
-                                    <div class="p-2 rounded" style="background: rgba(245, 158, 11, 0.1);" x-data="{
-                                        getWorkingDaysInMonth() {
-                                            const now = new Date();
-                                            const year = now.getFullYear();
-                                            const month = now.getMonth();
-                                            const daysInMonth = new Date(year, month + 1, 0).getDate();
-                                            let workingDays = 0;
-                                            for (let day = 1; day <= daysInMonth; day++) {
-                                                const date = new Date(year, month, day);
-                                                if (date.getDay() !== 0) { // 0 = воскресенье
-                                                    workingDays++;
-                                                }
-                                            }
-                                            return workingDays;
-                                        },
-                                        getWorkingDaysPassed() {
-                                            const now = new Date();
-                                            const year = now.getFullYear();
-                                            const month = now.getMonth();
-                                            const currentDay = now.getDate();
-                                            let workingDays = 0;
-                                            for (let day = 1; day <= currentDay; day++) {
-                                                const date = new Date(year, month, day);
-                                                if (date.getDay() !== 0) { // 0 = воскресенье
-                                                    workingDays++;
-                                                }
-                                            }
-                                            return workingDays;
-                                        },
-                                        getCurrentDay() {
-                                            return new Date().getDate();
-                                        },
-                                        getDaysInMonth() {
-                                            const now = new Date();
-                                            return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-                                        },
-                                        calculateForecast() {
-                                            const workingDaysTotal = this.getWorkingDaysInMonth();
-                                            const workingDaysPassed = this.getWorkingDaysPassed();
-                                            if (workingDaysPassed === 0) return 0;
-                                            const avgPerWorkingDay = area.TotalSales / workingDaysPassed;
-                                            return avgPerWorkingDay * workingDaysTotal;
-                                        },
-                                        getForecastClass() {
-                                            const forecast = this.calculateForecast();
-                                            if (forecast >= area.MonthlyPlan) return 'text-success';
-                                            if (forecast >= area.MonthlyPlan * 0.9) return 'text-warning';
-                                            return 'text-danger';
-                                        }
-                                    }">
-                                        <div class="d-flex justify-content-between align-items-center mb-1">
-                                            <span class="small fw-semibold">
-                                                <i class="fas fa-chart-area"></i> Прогноз на месяц:
-                                            </span>
-                                            <strong :class="getForecastClass()" x-text="formatCurrency(calculateForecast())"></strong>
-                                        </div>
-                                        <div class="d-flex justify-content-between" style="font-size: 0.7rem;">
-                                            <span class="text-muted">
-                                                <i class="fas fa-briefcase"></i> Раб. день <span x-text="getWorkingDaysPassed()"></span> из <span x-text="getWorkingDaysInMonth()"></span>
-                                            </span>
-                                            <span :class="getForecastClass()" x-text="`${((calculateForecast() / area.MonthlyPlan * 100).toFixed(0))}% плана`"></span>
-                                        </div>
-                                    </div>
-                                </template>
+                                <span class="badge" style="background: rgba(99, 102, 241, 0.15); color: #6366f1; font-size: 0.75rem;">
+                                    <i class="fas fa-briefcase"></i> <span x-text="getWorkingDaysPassed()"></span>/<span x-text="getWorkingDaysInMonth()"></span> дней
+                                </span>
                             </div>
                             
-                            <!-- Прошлый месяц (тот же период) -->
+                            <template x-if="area.MonthlyPlan && area.MonthlyPlan > 0">
+                                <div x-data="{
+                                    getWorkingDaysInMonth() {
+                                        const now = new Date();
+                                        const year = now.getFullYear();
+                                        const month = now.getMonth();
+                                        const daysInMonth = new Date(year, month + 1, 0).getDate();
+                                        let workingDays = 0;
+                                        for (let day = 1; day <= daysInMonth; day++) {
+                                            const date = new Date(year, month, day);
+                                            if (date.getDay() !== 0) workingDays++;
+                                        }
+                                        return workingDays;
+                                    },
+                                    getWorkingDaysPassed() {
+                                        const now = new Date();
+                                        const year = now.getFullYear();
+                                        const month = now.getMonth();
+                                        const currentDay = now.getDate();
+                                        let workingDays = 0;
+                                        for (let day = 1; day <= currentDay; day++) {
+                                            const date = new Date(year, month, day);
+                                            if (date.getDay() !== 0) workingDays++;
+                                        }
+                                        return workingDays;
+                                    },
+                                    calculateForecast() {
+                                        const workingDaysTotal = this.getWorkingDaysInMonth();
+                                        const workingDaysPassed = this.getWorkingDaysPassed();
+                                        if (workingDaysPassed === 0) return 0;
+                                        const avgPerWorkingDay = area.TotalSales / workingDaysPassed;
+                                        return avgPerWorkingDay * workingDaysTotal;
+                                    },
+                                    getForecastClass() {
+                                        const forecast = this.calculateForecast();
+                                        if (forecast >= area.MonthlyPlan) return 'success';
+                                        if (forecast >= area.MonthlyPlan * 0.9) return 'warning';
+                                        return 'danger';
+                                    }
+                                }">
+                                    <!-- Прогресс -->
+                                    <div class="mb-3">
+                                        <div class="d-flex justify-content-between mb-1" style="font-size: 0.8rem;">
+                                            <span style="color: #6366f1; font-weight: 600;">
+                                                <i class="fas fa-check-circle"></i> Факт
+                                            </span>
+                                            <span class="fw-bold" style="color: #6366f1;" x-text="formatCurrency(area.TotalSales)"></span>
+                                        </div>
+                                        <div class="progress mb-1" style="height: 10px; background: rgba(99, 102, 241, 0.1);">
+                                            <div class="progress-bar" 
+                                                 :class="'bg-' + getForecastClass()"
+                                                 :style="`width: ${Math.min((area.TotalSales / area.MonthlyPlan * 100), 100)}%`"></div>
+                                        </div>
+                                        <div class="d-flex justify-content-between" style="font-size: 0.75rem; color: #6b7280;">
+                                            <span><i class="fas fa-bullseye"></i> План: <strong x-text="formatCurrency(area.MonthlyPlan)"></strong></span>
+                                            <span class="fw-bold" 
+                                                  :class="'text-' + getForecastClass()"
+                                                  x-text="`${((area.TotalSales / area.MonthlyPlan * 100).toFixed(1))}%`"></span>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Прогноз -->
+                                    <div class="p-2 rounded" style="background: rgba(245, 158, 11, 0.1); border-left: 3px solid #f59e0b;">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <span style="font-size: 0.8rem; color: #d97706; font-weight: 600;">
+                                                <i class="fas fa-chart-area"></i> Прогноз
+                                            </span>
+                                            <span class="fw-bold" :class="'text-' + getForecastClass()" x-text="formatCurrency(calculateForecast())"></span>
+                                        </div>
+                                        <div class="text-end mt-1" style="font-size: 0.7rem; color: #9ca3af;">
+                                            <span :class="'text-' + getForecastClass() + ' fw-bold'" x-text="`${((calculateForecast() / area.MonthlyPlan * 100).toFixed(0))}%`"></span> от плана
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
+                            <template x-if="!area.MonthlyPlan || area.MonthlyPlan === 0">
+                                <div class="text-center py-2" style="color: #9ca3af; font-size: 0.85rem;">
+                                    <i class="fas fa-info-circle"></i> План не задан<br>
+                                    <strong class="text-primary" x-text="formatCurrency(area.TotalSales)"></strong>
+                                </div>
+                            </template>
+                            
+                            <!-- Сравнение с прошлыми периодами -->
                             <div class="border-top pt-2 mb-2" x-show="area.PrevMonthSales !== undefined">
                                 <div class="d-flex justify-content-between align-items-center" style="font-size: 0.85rem;">
                                     <span class="text-muted">
@@ -596,145 +581,80 @@
                                 </div>
                             </div>
                             
-                            <!-- ПЛАН И ПРОГНОЗ ЗАДОЛЖЕННОСТИ -->
-                            <div class="border rounded p-3 mb-3" style="background: linear-gradient(135deg, rgba(239, 68, 68, 0.08), rgba(220, 38, 38, 0.05)); border: 2px solid rgba(239, 68, 68, 0.2) !important;">
-                                <h6 class="mb-3 fw-bold" style="color: #ef4444;">
-                                    <i class="fas fa-hand-holding-usd"></i> План Задолженности
-                                </h6>
+                            <!-- ПЛАН ЗАДОЛЖЕННОСТИ -->
+                            <div class="border rounded p-3 mb-3" style="background: linear-gradient(135deg, rgba(239, 68, 68, 0.08), rgba(220, 38, 38, 0.05)); border: 2px solid rgba(239, 68, 68, 0.2) !important; box-shadow: 0 2px 8px rgba(239, 68, 68, 0.1);">
+                                <div class="d-flex justify-content-between align-items-center mb-3">
+                                    <h6 class="mb-0 fw-bold" style="color: #ef4444;">
+                                        <i class="fas fa-hand-holding-usd"></i> Задолженность
+                                    </h6>
+                                </div>
                                 
-                                <!-- План кредита -->
-                                <div class="mb-2">
-                                    <div class="d-flex justify-content-between align-items-center mb-1">
-                                        <span class="small text-muted">
-                                            <i class="fas fa-bullseye"></i> План кредита:
-                                        </span>
-                                        <strong class="text-danger" x-text="area.PlanCredit ? formatCurrency(area.PlanCredit) : 'Не задан'"></strong>
-                                    </div>
-                                    <template x-if="area.PlanCredit && area.PlanCredit > 0">
-                                        <div>
-                                            <div class="progress" style="height: 8px;">
+                                <template x-if="area.PlanCredit && area.PlanCredit > 0">
+                                    <div>
+                                        <!-- Прогресс -->
+                                        <div class="mb-3">
+                                            <div class="d-flex justify-content-between mb-1" style="font-size: 0.8rem;">
+                                                <span style="color: #ef4444; font-weight: 600;">
+                                                    <i class="fas fa-exclamation-triangle"></i> Текущий долг
+                                                </span>
+                                                <span class="fw-bold" style="color: #ef4444;" x-text="formatCurrency(area.Debt)"></span>
+                                            </div>
+                                            <div class="progress mb-1" style="height: 10px; background: rgba(239, 68, 68, 0.1);">
                                                 <div class="progress-bar bg-danger" 
                                                      :style="`width: ${Math.min((area.Debt / area.PlanCredit * 100), 100)}%`"></div>
                                             </div>
-                                            <div class="d-flex justify-content-between mt-1" style="font-size: 0.75rem;">
-                                                <span class="text-muted">Текущий долг:</span>
+                                            <div class="d-flex justify-content-between" style="font-size: 0.75rem; color: #6b7280;">
+                                                <span><i class="fas fa-bullseye"></i> План кредита: <strong x-text="formatCurrency(area.PlanCredit)"></strong></span>
                                                 <span class="fw-bold text-danger" 
                                                       x-text="`${((area.Debt / area.PlanCredit * 100).toFixed(1))}%`"></span>
                                             </div>
                                         </div>
-                                    </template>
-                                </div>
-
-                                <!-- Текущий долг -->
-                                <div class="mb-2 p-2 rounded" style="background: rgba(239, 68, 68, 0.15);">
-                                    <div class="d-flex justify-content-between align-items-center">
-                                        <span class="small fw-semibold">
-                                            <i class="fas fa-exclamation-triangle text-danger"></i> Долг (текущий):
-                                        </span>
-                                        <strong class="text-danger" x-text="formatCurrency(area.Debt)"></strong>
+                                        
+                                        <!-- Прогноз долга -->
+                                        <div class="p-2 rounded" style="background: rgba(245, 158, 11, 0.1); border-left: 3px solid #f59e0b;">
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <span style="font-size: 0.8rem; color: #d97706; font-weight: 600;">
+                                                    <i class="fas fa-chart-area"></i> Прогноз
+                                                </span>
+                                                <span class="fw-bold text-warning" x-text="formatCurrency(area.Debt)"></span>
+                                            </div>
+                                            <div class="text-end mt-1" style="font-size: 0.7rem; color: #9ca3af;">
+                                                Стабильно
+                                            </div>
+                                        </div>
                                     </div>
-                                </div>
-
-                                <!-- Прогноз задолженности на конец месяца -->
-                                <template x-if="area.PlanCredit && area.PlanCredit > 0">
-                                    <div class="p-2 rounded" style="background: rgba(245, 158, 11, 0.1);" x-data="{
-                                        getWorkingDaysInMonth() {
-                                            const now = new Date();
-                                            const year = now.getFullYear();
-                                            const month = now.getMonth();
-                                            const daysInMonth = new Date(year, month + 1, 0).getDate();
-                                            let workingDays = 0;
-                                            for (let day = 1; day <= daysInMonth; day++) {
-                                                const date = new Date(year, month, day);
-                                                if (date.getDay() !== 0) {
-                                                    workingDays++;
-                                                }
-                                            }
-                                            return workingDays;
-                                        },
-                                        getWorkingDaysPassed() {
-                                            const now = new Date();
-                                            const year = now.getFullYear();
-                                            const month = now.getMonth();
-                                            const currentDay = now.getDate();
-                                            let workingDays = 0;
-                                            for (let day = 1; day <= currentDay; day++) {
-                                                const date = new Date(year, month, day);
-                                                if (date.getDay() !== 0) {
-                                                    workingDays++;
-                                                }
-                                            }
-                                            return workingDays;
-                                        },
-                                        calculateDebtForecast() {
-                                            const workingDaysTotal = this.getWorkingDaysInMonth();
-                                            const workingDaysPassed = this.getWorkingDaysPassed();
-                                            if (workingDaysPassed === 0) return area.Debt;
-                                            
-                                            // Прогноз: текущий долг как базовый показатель
-                                            // Можно добавить динамику если нужно
-                                            return area.Debt;
-                                        },
-                                        getDebtForecastClass() {
-                                            const forecast = this.calculateDebtForecast();
-                                            if (forecast <= area.PlanCredit) return 'text-success';
-                                            if (forecast <= area.PlanCredit * 1.1) return 'text-warning';
-                                            return 'text-danger';
-                                        }
-                                    }">
-                                        <div class="d-flex justify-content-between align-items-center mb-1">
-                                            <span class="small fw-semibold">
-                                                <i class="fas fa-chart-area"></i> Прогноз долга:
-                                            </span>
-                                            <strong :class="getDebtForecastClass()" x-text="formatCurrency(calculateDebtForecast())"></strong>
-                                        </div>
-                                        <div class="d-flex justify-content-between" style="font-size: 0.7rem;">
-                                            <span class="text-muted">
-                                                <i class="fas fa-briefcase"></i> Раб. день <span x-text="getWorkingDaysPassed()"></span> из <span x-text="getWorkingDaysInMonth()"></span>
-                                            </span>
-                                            <span :class="getDebtForecastClass()" x-text="`${((calculateDebtForecast() / area.PlanCredit * 100).toFixed(0))}% плана`"></span>
-                                        </div>
+                                </template>
+                                <template x-if="!area.PlanCredit || area.PlanCredit === 0">
+                                    <div class="text-center py-2" style="color: #9ca3af; font-size: 0.85rem;">
+                                        <i class="fas fa-info-circle"></i> План не задан<br>
+                                        <strong class="text-danger" x-text="formatCurrency(area.Debt)"></strong>
                                     </div>
                                 </template>
                             </div>
                             
-                            <div class="d-flex justify-content-between mb-2 border-top pt-2">
-                                <span class="text-muted">
-                                    <i class="fas fa-exclamation-triangle"></i> Долг:
-                                </span>
-                                <strong x-text="formatCurrency(area.Debt)" class="text-danger"></strong>
-                            </div>
-                            
-                            <div class="d-flex justify-content-between mb-2">
-                                <span class="text-muted">
-                                    <i class="fas fa-money-bill-wave"></i> Оплаты:
-                                </span>
-                                <strong x-text="formatCurrency(area.Payments)" class="text-success"></strong>
-                            </div>
-                            
-                            <!-- Ключевые коэффициенты -->
-                            <div class="border-top pt-2 mb-2">
-                                <div class="d-flex justify-content-between mb-1" style="font-size: 0.85rem;">
-                                    <span class="text-muted">
-                                        <i class="fas fa-percent"></i> Долг/Продажи:
-                                    </span>
-                                    <span class="badge" 
-                                          :class="area.TotalSales > 0 ? (area.Debt / area.TotalSales > 0.8 ? 'bg-danger' : (area.Debt / area.TotalSales > 0.5 ? 'bg-warning text-dark' : 'bg-success')) : 'bg-secondary'"
-                                          x-text="area.TotalSales > 0 ? ((area.Debt / area.TotalSales * 100).toFixed(1) + '%') : 'N/A'">
-                                    </span>
+                            <!-- Дополнительные метрики -->
+                            <div class="row g-2 mb-3">
+                                <div class="col-6">
+                                    <div class="p-2 rounded" style="background: rgba(99, 102, 241, 0.05); border-left: 3px solid #6366f1;">
+                                        <div style="font-size: 0.7rem; color: #6b7280; font-weight: 600;">Долг/Продажи</div>
+                                        <div class="fw-bold" 
+                                             :class="area.TotalSales > 0 ? (area.Debt / area.TotalSales > 0.8 ? 'text-danger' : (area.Debt / area.TotalSales > 0.5 ? 'text-warning' : 'text-success')) : 'text-secondary'"
+                                             x-text="area.TotalSales > 0 ? ((area.Debt / area.TotalSales * 100).toFixed(1) + '%') : 'N/A'">
+                                        </div>
+                                    </div>
                                 </div>
-                                <div class="d-flex justify-content-between mb-1" style="font-size: 0.85rem;">
-                                    <span class="text-muted">
-                                        <i class="fas fa-hand-holding-usd"></i> Оплаты/Продажи:
-                                    </span>
-                                    <span class="badge"
-                                          :class="area.TotalSales > 0 ? (area.Payments / area.TotalSales < 0.5 ? 'bg-danger' : (area.Payments / area.TotalSales < 0.8 ? 'bg-warning text-dark' : 'bg-success')) : 'bg-secondary'"
-                                          x-text="area.TotalSales > 0 ? ((area.Payments / area.TotalSales * 100).toFixed(1) + '%') : 'N/A'">
-                                    </span>
+                                <div class="col-6">
+                                    <div class="p-2 rounded" style="background: rgba(16, 185, 129, 0.05); border-left: 3px solid #10b981;">
+                                        <div style="font-size: 0.7rem; color: #6b7280; font-weight: 600;">Оплаты/Продажи</div>
+                                        <div class="fw-bold"
+                                             :class="area.TotalSales > 0 ? (area.Payments / area.TotalSales < 0.5 ? 'text-danger' : (area.Payments / area.TotalSales < 0.8 ? 'text-warning' : 'text-success')) : 'text-secondary'"
+                                             x-text="area.TotalSales > 0 ? ((area.Payments / area.TotalSales * 100).toFixed(1) + '%') : 'N/A'">
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             
-                            <div class="d-flex justify-content-between border-top pt-2">
+                            <div class="d-flex justify-content-between border-top pt-2" style="font-size: 0.85rem;">
                                 <span class="text-muted">
                                     <i class="fas fa-receipt"></i> Средний чек:
                                 </span>
