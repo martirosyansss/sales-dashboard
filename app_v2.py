@@ -3883,23 +3883,26 @@ def test_purchases():
 
 @app.route('/api/sales-areas/<area_code>/unpaid-documents')
 def get_unpaid_documents(area_code):
-    """Получить информацию о задолженности клиентов территории (используем ту же формулу, что и в карточках)"""
+    """Получить информацию о задолженности клиентов территории (с поддержкой фильтров)"""
     try:
-        date_from = request.args.get('date_from')
-        date_to = request.args.get('date_to')
-        
-        if not date_from or not date_to:
-            today = datetime.now()
-            date_from = today.replace(day=1).strftime('%Y-%m-%d')
-            last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-            date_to = last_day.strftime('%Y-%m-%d')
+        # Получить параметры фильтрации
+        groups_param = request.args.get('groups', '')
+        requested_groups = [g.strip() for g in groups_param.split(',') if g.strip()] if groups_param else []
         
         conn = db.get_connection()
         cursor = conn.cursor()
         
+        # Построить фильтр по группам клиентов
+        group_filter = ""
+        group_params = tuple()
+        if requested_groups:
+            placeholders = ','.join(['?'] * len(requested_groups))
+            group_filter = f" AND c.fGROUP IN ({placeholders})"
+            group_params = tuple(requested_groups)
+        
         # Получить клиентов с задолженностью, используя ТУ ЖЕ ФОРМУЛУ что и в карточках:
         # Долг = DebtFromDocs - |Type01| - |Type02|
-        query = """
+        query = f"""
             SELECT 
                 c.fCODE as CustomerCode,
                 c.fNAME as CustomerName,
@@ -3924,11 +3927,13 @@ def get_unpaid_documents(area_code):
                 WHERE r.fCUSTOMERID = c.fID
             ) rest_data
             WHERE csa.fSALESAREA = ?
+                {group_filter}
                 AND (ISNULL(debt_data.DebtFromDocs, 0) - ABS(ISNULL(rest_data.Type01, 0)) - ABS(ISNULL(rest_data.Type02, 0))) > 0
             ORDER BY RemainingDebt DESC
         """
         
-        cursor.execute(query, (area_code,))
+        params = (area_code,) + group_params
+        cursor.execute(query, params)
         
         customers = []
         for row in cursor.fetchall():

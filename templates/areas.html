@@ -1962,6 +1962,11 @@
                         date_to: this.dateTo
                     });
                     
+                    // Добавить фильтр по группам клиентов
+                    if (this.selectedGroups.length > 0) {
+                        params.append('groups', this.selectedGroups.join(','));
+                    }
+                    
                     const response = await fetch(`/api/sales-areas/${this.selectedArea.code}/unpaid-documents?${params}`);
                     const result = await response.json();
                     
