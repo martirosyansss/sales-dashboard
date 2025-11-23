@@ -3881,6 +3881,83 @@ def test_purchases():
     """Тестовая страница для проверки отображения покупок"""
     return render_template('test_purchases.html')
 
+@app.route('/api/sales-areas/<area_code>/unpaid-documents')
+def get_unpaid_documents(area_code):
+    """Получить информацию о задолженности клиентов территории"""
+    try:
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        
+        if not date_from or not date_to:
+            today = datetime.now()
+            date_from = today.replace(day=1).strftime('%Y-%m-%d')
+            last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            date_to = last_day.strftime('%Y-%m-%d')
+        
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Получить клиентов с задолженностью для данной территории
+        query = """
+            SELECT 
+                c.fCODE as CustomerCode,
+                c.fNAME as CustomerName,
+                ISNULL(sales_data.TotalSales, 0) as TotalSales,
+                ISNULL(payment_data.TotalPayments, 0) as TotalPayments,
+                ISNULL(sales_data.TotalSales, 0) - ISNULL(payment_data.TotalPayments, 0) as RemainingDebt
+            FROM CUSTOMERS c
+            INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+            OUTER APPLY (
+                SELECT SUM(s.fTOTALSUM) as TotalSales
+                FROM SALES s
+                WHERE s.fCUSTOMERID = c.fID
+                    AND s.fSTATE = 2
+                    AND s.fSALESAREA = ?
+                    AND s.fDATE >= ?
+                    AND s.fDATE <= ?
+            ) sales_data
+            OUTER APPLY (
+                SELECT SUM(p.fSUM) as TotalPayments
+                FROM PAYMENTS p
+                WHERE p.fCUSTOMERID = c.fID
+                    AND p.fSTATE = 2
+                    AND p.fSALESAREA = ?
+                    AND p.fDATE >= ?
+                    AND p.fDATE <= ?
+            ) payment_data
+            WHERE csa.fSALESAREA = ?
+                AND (ISNULL(sales_data.TotalSales, 0) - ISNULL(payment_data.TotalPayments, 0)) > 0
+            ORDER BY RemainingDebt DESC
+        """
+        
+        cursor.execute(query, (area_code, date_from, date_to, area_code, date_from, date_to, area_code))
+        
+        customers = []
+        for row in cursor.fetchall():
+            customers.append({
+                'customerCode': row.CustomerCode,
+                'customerName': row.CustomerName,
+                'totalSales': float(row.TotalSales) if row.TotalSales else 0,
+                'totalPayments': float(row.TotalPayments) if row.TotalPayments else 0,
+                'remainingDebt': float(row.RemainingDebt) if row.RemainingDebt else 0
+            })
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'data': customers,
+            'total_customers': len(customers),
+            'total_debt': sum(c['remainingDebt'] for c in customers)
+        })
+        
+    except Exception as e:
+        print(f"Error getting unpaid documents: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # =============================================
 # ЗАПУСК ПРИЛОЖЕНИЯ
 # =============================================

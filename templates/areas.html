@@ -465,33 +465,9 @@
                             
                             <template x-if="area.MonthlyPlan && area.MonthlyPlan > 0">
                                 <div x-data="{
-                                    getWorkingDaysInMonth() {
-                                        const now = new Date();
-                                        const year = now.getFullYear();
-                                        const month = now.getMonth();
-                                        const daysInMonth = new Date(year, month + 1, 0).getDate();
-                                        let workingDays = 0;
-                                        for (let day = 1; day <= daysInMonth; day++) {
-                                            const date = new Date(year, month, day);
-                                            if (date.getDay() !== 0) workingDays++;
-                                        }
-                                        return workingDays;
-                                    },
-                                    getWorkingDaysPassed() {
-                                        const now = new Date();
-                                        const year = now.getFullYear();
-                                        const month = now.getMonth();
-                                        const currentDay = now.getDate();
-                                        let workingDays = 0;
-                                        for (let day = 1; day <= currentDay; day++) {
-                                            const date = new Date(year, month, day);
-                                            if (date.getDay() !== 0) workingDays++;
-                                        }
-                                        return workingDays;
-                                    },
                                     calculateForecast() {
-                                        const workingDaysTotal = this.getWorkingDaysInMonth();
-                                        const workingDaysPassed = this.getWorkingDaysPassed();
+                                        const workingDaysTotal = getWorkingDaysInMonth();
+                                        const workingDaysPassed = getWorkingDaysPassed();
                                         if (workingDaysPassed === 0) return 0;
                                         const avgPerWorkingDay = area.TotalSales / workingDaysPassed;
                                         return avgPerWorkingDay * workingDaysTotal;
@@ -607,44 +583,6 @@
                                                 <span><i class="fas fa-bullseye"></i> План кредита: <strong x-text="formatCurrency(area.PlanCredit)"></strong></span>
                                                 <span class="fw-bold text-danger" 
                                                       x-text="`${((area.Debt / area.PlanCredit * 100).toFixed(1))}%`"></span>
-                                            </div>
-                                        </div>
-                                        
-                                        <!-- Прогноз долга -->
-                                        <div class="p-2 rounded" style="background: rgba(245, 158, 11, 0.1); border-left: 3px solid #f59e0b;">
-                                            <div class="d-flex justify-content-between align-items-center">
-                                                <span style="font-size: 0.8rem; color: #d97706; font-weight: 600;">
-                                                    <i class="fas fa-chart-area"></i> Прогноз долга
-                                                </span>
-                                                <span class="fw-bold text-warning" x-text="formatCurrency(area.Debt)"></span>
-                                            </div>
-                                            <div x-data="{
-                                                workingDaysInMonth() {
-                                                    const now = new Date();
-                                                    const year = now.getFullYear();
-                                                    const month = now.getMonth();
-                                                    const daysInMonth = new Date(year, month + 1, 0).getDate();
-                                                    let workingDays = 0;
-                                                    for (let day = 1; day <= daysInMonth; day++) {
-                                                        const date = new Date(year, month, day);
-                                                        if (date.getDay() !== 0) workingDays++;
-                                                    }
-                                                    return workingDays;
-                                                },
-                                                workingDaysPassed() {
-                                                    const now = new Date();
-                                                    const year = now.getFullYear();
-                                                    const month = now.getMonth();
-                                                    const today = now.getDate();
-                                                    let workingDays = 0;
-                                                    for (let day = 1; day <= today; day++) {
-                                                        const date = new Date(year, month, day);
-                                                        if (date.getDay() !== 0) workingDays++;
-                                                    }
-                                                    return workingDays;
-                                                }
-                                            }" class="text-end mt-1" style="font-size: 0.7rem; color: #9ca3af;">
-                                                <i class="fas fa-calendar-day"></i> Раб. день <span x-text="workingDaysPassed()"></span> из <span x-text="workingDaysInMonth()"></span>
                                             </div>
                                         </div>
                                     </div>
@@ -764,6 +702,11 @@
                                 </button>
                             </li>
                             <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="unpaid-tab" data-bs-toggle="tab" data-bs-target="#unpaid" type="button" role="tab" aria-controls="unpaid" aria-selected="false" @click="loadUnpaidDocuments()">
+                                    <i class="fas fa-file-invoice-dollar me-2"></i>Неоплаченные документы
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
                                 <button class="nav-link" id="dynamics-tab" data-bs-toggle="tab" data-bs-target="#dynamics" type="button" role="tab" aria-controls="dynamics" aria-selected="false">
                                     <i class="fas fa-chart-line me-2"></i>Историческая динамика
                                 </button>
@@ -838,6 +781,82 @@
                                                 </ul>
                                             </div>
                                         </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Unpaid Documents Tab -->
+                            <div class="tab-pane fade" id="unpaid" role="tabpanel" aria-labelledby="unpaid-tab">
+                                <div x-show="unpaidDocumentsLoading" class="text-center py-5">
+                                    <div class="spinner-border text-primary" role="status">
+                                        <span class="visually-hidden">Загрузка...</span>
+                                    </div>
+                                    <p class="mt-3 text-muted">Загрузка неоплаченных документов...</p>
+                                </div>
+
+                                <div x-show="!unpaidDocumentsLoading">
+                                    <div class="row mb-3">
+                                        <div class="col-md-6">
+                                            <div class="card bg-light">
+                                                <div class="card-body">
+                                                    <h6 class="text-muted mb-2"><i class="fas fa-file-invoice me-2"></i>Всего документов</h6>
+                                                    <h3 class="mb-0" x-text="unpaidDocuments.length"></h3>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="card bg-light">
+                                                <div class="card-body">
+                                                    <h6 class="text-muted mb-2"><i class="fas fa-dollar-sign me-2"></i>Общий остаток долга</h6>
+                                                    <h3 class="mb-0 text-danger" x-text="formatCurrency(unpaidTotalDebt)"></h3>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="card" x-show="unpaidDocuments.length > 0">
+                                        <div class="card-header">
+                                            <h5 class="mb-0"><i class="fas fa-list me-2"></i>Список неоплаченных документов</h5>
+                                        </div>
+                                        <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
+                                            <table class="table table-hover table-sm mb-0">
+                                                <thead class="table-light sticky-top">
+                                                    <tr>
+                                                        <th style="width: 10%;">Документ №</th>
+                                                        <th style="width: 10%;">Дата</th>
+                                                        <th style="width: 10%;">Код клиента</th>
+                                                        <th style="width: 30%;">Клиент</th>
+                                                        <th class="text-end" style="width: 13%;">Сумма</th>
+                                                        <th class="text-end" style="width: 13%;">Оплачено</th>
+                                                        <th class="text-end" style="width: 14%;">Остаток</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    <template x-for="doc in unpaidDocuments" :key="doc.docNo">
+                                                        <tr>
+                                                            <td><strong x-text="doc.docNo"></strong></td>
+                                                            <td x-text="doc.docDate"></td>
+                                                            <td x-text="doc.customerCode"></td>
+                                                            <td x-text="doc.customerName"></td>
+                                                            <td class="text-end" x-text="formatCurrency(doc.totalSum)"></td>
+                                                            <td class="text-end text-success" x-text="formatCurrency(doc.paidAmount)"></td>
+                                                            <td class="text-end text-danger"><strong x-text="formatCurrency(doc.remainingDebt)"></strong></td>
+                                                        </tr>
+                                                    </template>
+                                                </tbody>
+                                                <tfoot class="table-light border-top border-2">
+                                                    <tr>
+                                                        <td colspan="6" class="text-end"><strong>Итого:</strong></td>
+                                                        <td class="text-end text-danger"><strong x-text="formatCurrency(unpaidTotalDebt)"></strong></td>
+                                                    </tr>
+                                                </tfoot>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <div x-show="unpaidDocuments.length === 0" class="text-center text-muted p-5">
+                                        <i class="fas fa-check-circle fa-3x mb-3 text-success"></i>
+                                        <p>Все документы оплачены!</p>
                                     </div>
                                 </div>
                             </div>
@@ -1003,7 +1022,7 @@
                                             </div>
 
                                             <!-- Empty State -->
-                                            <div class="card-body text-center py-5" x-show="!routeStatsLoading && !routeStats">
+                                            <div class="card-body text-center py-5" x-show="!routeStatsLoading && !routeStatsLoaded">
                                                 <div class="py-4">
                                                     <div class="mb-4">
                                                         <div class="d-inline-block p-4 rounded-circle" style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));">
@@ -1016,8 +1035,8 @@
                                             </div>
 
                                             <!-- Data State -->
-                                            <div class="card-body px-4 pb-4" x-show="!routeStatsLoading && routeStats">
-                                                <template x-if="routeStats">
+                                            <div class="card-body px-4 pb-4" x-show="!routeStatsLoading && routeStatsLoaded">
+                                                <template x-if="routeStatsLoaded">
                                                 <div>
                                                     <!-- Main Metrics Row -->
                                                     <div class="row g-3 mb-4">
@@ -1405,8 +1424,20 @@
             customersHistoryChart: null,
 
             // Route Stats
-            routeStats: null,
+            routeStats: {
+                planned: 0,
+                visited: 0,
+                missed: 0,
+                unplanned: 0,
+                ordered: 0
+            },
             routeStatsLoading: false,
+            routeStatsLoaded: false,
+
+            // Unpaid Documents
+            unpaidDocuments: [],
+            unpaidTotalDebt: 0,
+            unpaidDocumentsLoading: false,
 
             init() {
                 // Инициализация дат: последние 3 недели
@@ -1822,7 +1853,14 @@
 
             openAreaDetails(area) {
                 this.selectedArea = area;
-                this.routeStats = null; // Reset route stats
+                this.routeStatsLoaded = false; // Reset route stats loaded flag
+                this.routeStats = {
+                    planned: 0,
+                    visited: 0,
+                    missed: 0,
+                    unplanned: 0,
+                    ordered: 0
+                };
                 const modal = new bootstrap.Modal(document.getElementById('areaDetailsModal'));
                 modal.show();
                 
@@ -1883,7 +1921,14 @@
                 if (!this.selectedArea) return;
                 
                 this.routeStatsLoading = true;
-                this.routeStats = null;
+                this.routeStatsLoaded = false;
+                this.routeStats = {
+                    planned: 0,
+                    visited: 0,
+                    missed: 0,
+                    unplanned: 0,
+                    ordered: 0
+                };
                 
                 try {
                     const params = new URLSearchParams({
@@ -1896,6 +1941,7 @@
                     
                     if (result.success) {
                         this.routeStats = result.data;
+                        this.routeStatsLoaded = true;
                     }
                 } catch (error) {
                     console.error('Error loading route stats:', error);
@@ -1903,14 +1949,41 @@
                     this.routeStatsLoading = false;
                 }
             },
+
+            async loadUnpaidDocuments() {
+                if (!this.selectedArea) return;
+                
+                this.unpaidDocumentsLoading = true;
+                this.unpaidDocuments = [];
+                this.unpaidTotalDebt = 0;
+                
+                try {
+                    const params = new URLSearchParams({
+                        date_from: this.dateFrom,
+                        date_to: this.dateTo
+                    });
+                    
+                    const response = await fetch(`/api/sales-areas/${this.selectedArea.code}/unpaid-documents?${params}`);
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        this.unpaidDocuments = result.data;
+                        this.unpaidTotalDebt = result.total_debt;
+                    }
+                } catch (error) {
+                    console.error('Error loading unpaid documents:', error);
+                } finally {
+                    this.unpaidDocumentsLoading = false;
+                }
+            },
             
             calculatePercent(value, total) {
-                if (!total || total === 0) return 0;
+                if (!value || !total || total === 0) return 0;
                 return Math.min(100, Math.round((value / total) * 100));
             },
             
             getEfficiencyPercent(value, total) {
-                if (!total || total === 0) return '0%';
+                if (!value || !total || total === 0) return '0%';
                 return ((value / total) * 100).toFixed(1) + '%';
             },
             
@@ -2360,6 +2433,32 @@
                     currency: 'AMD',
                     minimumFractionDigits: 0
                 }).format(num);
+            },
+
+            getWorkingDaysInMonth() {
+                const now = new Date();
+                const year = now.getFullYear();
+                const month = now.getMonth();
+                const daysInMonth = new Date(year, month + 1, 0).getDate();
+                let workingDays = 0;
+                for (let day = 1; day <= daysInMonth; day++) {
+                    const date = new Date(year, month, day);
+                    if (date.getDay() !== 0) workingDays++;
+                }
+                return workingDays;
+            },
+
+            getWorkingDaysPassed() {
+                const now = new Date();
+                const year = now.getFullYear();
+                const month = now.getMonth();
+                const currentDay = now.getDate();
+                let workingDays = 0;
+                for (let day = 1; day <= currentDay; day++) {
+                    const date = new Date(year, month, day);
+                    if (date.getDay() !== 0) workingDays++;
+                }
+                return workingDays;
             }
         }
     }
