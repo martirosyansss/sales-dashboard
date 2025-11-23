@@ -3883,7 +3883,7 @@ def test_purchases():
 
 @app.route('/api/sales-areas/<area_code>/unpaid-documents')
 def get_unpaid_documents(area_code):
-    """Получить информацию о задолженности клиентов территории"""
+    """Получить информацию о задолженности клиентов территории (используем ту же формулу, что и в карточках)"""
     try:
         date_from = request.args.get('date_from')
         date_to = request.args.get('date_to')
@@ -3897,48 +3897,47 @@ def get_unpaid_documents(area_code):
         conn = db.get_connection()
         cursor = conn.cursor()
         
-        # Получить клиентов с задолженностью для данной территории
+        # Получить клиентов с задолженностью, используя ТУ ЖЕ ФОРМУЛУ что и в карточках:
+        # Долг = DebtFromDocs - |Type01| - |Type02|
         query = """
             SELECT 
                 c.fCODE as CustomerCode,
                 c.fNAME as CustomerName,
-                ISNULL(sales_data.TotalSales, 0) as TotalSales,
-                ISNULL(payment_data.TotalPayments, 0) as TotalPayments,
-                ISNULL(sales_data.TotalSales, 0) - ISNULL(payment_data.TotalPayments, 0) as RemainingDebt
+                c.fID as CustomerID,
+                ISNULL(debt_data.DebtFromDocs, 0) as DebtFromDocs,
+                ISNULL(rest_data.Type01, 0) as Type01,
+                ISNULL(rest_data.Type02, 0) as Type02,
+                ISNULL(debt_data.DebtFromDocs, 0) - ABS(ISNULL(rest_data.Type01, 0)) - ABS(ISNULL(rest_data.Type02, 0)) as RemainingDebt
             FROM CUSTOMERS c
             INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
             OUTER APPLY (
-                SELECT SUM(s.fTOTALSUM) as TotalSales
-                FROM SALES s
-                WHERE s.fCUSTOMERID = c.fID
-                    AND s.fSTATE = 2
-                    AND s.fSALESAREA = ?
-                    AND s.fDATE >= ?
-                    AND s.fDATE <= ?
-            ) sales_data
+                SELECT SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END) as DebtFromDocs
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                WHERE doc.fCUSTOMERID = c.fID
+            ) debt_data
             OUTER APPLY (
-                SELECT SUM(p.fSUM) as TotalPayments
-                FROM PAYMENTS p
-                WHERE p.fCUSTOMERID = c.fID
-                    AND p.fSTATE = 2
-                    AND p.fSALESAREA = ?
-                    AND p.fDATE >= ?
-                    AND p.fDATE <= ?
-            ) payment_data
+                SELECT 
+                    SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END) as Type01,
+                    SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END) as Type02
+                FROM HIRESTCUSTOMERSSUM r
+                WHERE r.fCUSTOMERID = c.fID
+            ) rest_data
             WHERE csa.fSALESAREA = ?
-                AND (ISNULL(sales_data.TotalSales, 0) - ISNULL(payment_data.TotalPayments, 0)) > 0
+                AND (ISNULL(debt_data.DebtFromDocs, 0) - ABS(ISNULL(rest_data.Type01, 0)) - ABS(ISNULL(rest_data.Type02, 0))) > 0
             ORDER BY RemainingDebt DESC
         """
         
-        cursor.execute(query, (area_code, date_from, date_to, area_code, date_from, date_to, area_code))
+        cursor.execute(query, (area_code,))
         
         customers = []
         for row in cursor.fetchall():
             customers.append({
                 'customerCode': row.CustomerCode,
                 'customerName': row.CustomerName,
-                'totalSales': float(row.TotalSales) if row.TotalSales else 0,
-                'totalPayments': float(row.TotalPayments) if row.TotalPayments else 0,
+                'debtFromDocs': float(row.DebtFromDocs) if row.DebtFromDocs else 0,
+                'type01': float(row.Type01) if row.Type01 else 0,
+                'type02': float(row.Type02) if row.Type02 else 0,
                 'remainingDebt': float(row.RemainingDebt) if row.RemainingDebt else 0
             })
         
