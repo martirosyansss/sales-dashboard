@@ -495,19 +495,47 @@
                                 <!-- Прогноз на конец месяца -->
                                 <template x-if="area.MonthlyPlan && area.MonthlyPlan > 0">
                                     <div class="p-2 rounded" style="background: rgba(245, 158, 11, 0.1);" x-data="{
-                                        getDaysInMonth() {
+                                        getWorkingDaysInMonth() {
                                             const now = new Date();
-                                            return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+                                            const year = now.getFullYear();
+                                            const month = now.getMonth();
+                                            const daysInMonth = new Date(year, month + 1, 0).getDate();
+                                            let workingDays = 0;
+                                            for (let day = 1; day <= daysInMonth; day++) {
+                                                const date = new Date(year, month, day);
+                                                if (date.getDay() !== 0) { // 0 = воскресенье
+                                                    workingDays++;
+                                                }
+                                            }
+                                            return workingDays;
+                                        },
+                                        getWorkingDaysPassed() {
+                                            const now = new Date();
+                                            const year = now.getFullYear();
+                                            const month = now.getMonth();
+                                            const currentDay = now.getDate();
+                                            let workingDays = 0;
+                                            for (let day = 1; day <= currentDay; day++) {
+                                                const date = new Date(year, month, day);
+                                                if (date.getDay() !== 0) { // 0 = воскресенье
+                                                    workingDays++;
+                                                }
+                                            }
+                                            return workingDays;
                                         },
                                         getCurrentDay() {
                                             return new Date().getDate();
                                         },
+                                        getDaysInMonth() {
+                                            const now = new Date();
+                                            return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+                                        },
                                         calculateForecast() {
-                                            const daysTotal = this.getDaysInMonth();
-                                            const daysPassed = this.getCurrentDay();
-                                            if (daysPassed === 0) return 0;
-                                            const avgPerDay = area.TotalSales / daysPassed;
-                                            return avgPerDay * daysTotal;
+                                            const workingDaysTotal = this.getWorkingDaysInMonth();
+                                            const workingDaysPassed = this.getWorkingDaysPassed();
+                                            if (workingDaysPassed === 0) return 0;
+                                            const avgPerWorkingDay = area.TotalSales / workingDaysPassed;
+                                            return avgPerWorkingDay * workingDaysTotal;
                                         },
                                         getForecastClass() {
                                             const forecast = this.calculateForecast();
@@ -524,7 +552,7 @@
                                         </div>
                                         <div class="d-flex justify-content-between" style="font-size: 0.7rem;">
                                             <span class="text-muted">
-                                                <i class="fas fa-calendar-day"></i> День <span x-text="getCurrentDay()"></span> из <span x-text="getDaysInMonth()"></span>
+                                                <i class="fas fa-briefcase"></i> Раб. день <span x-text="getWorkingDaysPassed()"></span> из <span x-text="getWorkingDaysInMonth()"></span>
                                             </span>
                                             <span :class="getForecastClass()" x-text="`${((calculateForecast() / area.MonthlyPlan * 100).toFixed(0))}% плана`"></span>
                                         </div>
