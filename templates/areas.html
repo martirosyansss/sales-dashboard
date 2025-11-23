@@ -596,6 +596,108 @@
                                 </div>
                             </div>
                             
+                            <!-- ПЛАН И ПРОГНОЗ ЗАДОЛЖЕННОСТИ -->
+                            <div class="border rounded p-3 mb-3" style="background: linear-gradient(135deg, rgba(239, 68, 68, 0.08), rgba(220, 38, 38, 0.05)); border: 2px solid rgba(239, 68, 68, 0.2) !important;">
+                                <h6 class="mb-3 fw-bold" style="color: #ef4444;">
+                                    <i class="fas fa-hand-holding-usd"></i> План Задолженности
+                                </h6>
+                                
+                                <!-- План кредита -->
+                                <div class="mb-2">
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span class="small text-muted">
+                                            <i class="fas fa-bullseye"></i> План кредита:
+                                        </span>
+                                        <strong class="text-danger" x-text="area.PlanCredit ? formatCurrency(area.PlanCredit) : 'Не задан'"></strong>
+                                    </div>
+                                    <template x-if="area.PlanCredit && area.PlanCredit > 0">
+                                        <div>
+                                            <div class="progress" style="height: 8px;">
+                                                <div class="progress-bar bg-danger" 
+                                                     :style="`width: ${Math.min((area.Debt / area.PlanCredit * 100), 100)}%`"></div>
+                                            </div>
+                                            <div class="d-flex justify-content-between mt-1" style="font-size: 0.75rem;">
+                                                <span class="text-muted">Текущий долг:</span>
+                                                <span class="fw-bold text-danger" 
+                                                      x-text="`${((area.Debt / area.PlanCredit * 100).toFixed(1))}%`"></span>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+
+                                <!-- Текущий долг -->
+                                <div class="mb-2 p-2 rounded" style="background: rgba(239, 68, 68, 0.15);">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <span class="small fw-semibold">
+                                            <i class="fas fa-exclamation-triangle text-danger"></i> Долг (текущий):
+                                        </span>
+                                        <strong class="text-danger" x-text="formatCurrency(area.Debt)"></strong>
+                                    </div>
+                                </div>
+
+                                <!-- Прогноз задолженности на конец месяца -->
+                                <template x-if="area.PlanCredit && area.PlanCredit > 0">
+                                    <div class="p-2 rounded" style="background: rgba(245, 158, 11, 0.1);" x-data="{
+                                        getWorkingDaysInMonth() {
+                                            const now = new Date();
+                                            const year = now.getFullYear();
+                                            const month = now.getMonth();
+                                            const daysInMonth = new Date(year, month + 1, 0).getDate();
+                                            let workingDays = 0;
+                                            for (let day = 1; day <= daysInMonth; day++) {
+                                                const date = new Date(year, month, day);
+                                                if (date.getDay() !== 0) {
+                                                    workingDays++;
+                                                }
+                                            }
+                                            return workingDays;
+                                        },
+                                        getWorkingDaysPassed() {
+                                            const now = new Date();
+                                            const year = now.getFullYear();
+                                            const month = now.getMonth();
+                                            const currentDay = now.getDate();
+                                            let workingDays = 0;
+                                            for (let day = 1; day <= currentDay; day++) {
+                                                const date = new Date(year, month, day);
+                                                if (date.getDay() !== 0) {
+                                                    workingDays++;
+                                                }
+                                            }
+                                            return workingDays;
+                                        },
+                                        calculateDebtForecast() {
+                                            const workingDaysTotal = this.getWorkingDaysInMonth();
+                                            const workingDaysPassed = this.getWorkingDaysPassed();
+                                            if (workingDaysPassed === 0) return area.Debt;
+                                            
+                                            // Прогноз: текущий долг как базовый показатель
+                                            // Можно добавить динамику если нужно
+                                            return area.Debt;
+                                        },
+                                        getDebtForecastClass() {
+                                            const forecast = this.calculateDebtForecast();
+                                            if (forecast <= area.PlanCredit) return 'text-success';
+                                            if (forecast <= area.PlanCredit * 1.1) return 'text-warning';
+                                            return 'text-danger';
+                                        }
+                                    }">
+                                        <div class="d-flex justify-content-between align-items-center mb-1">
+                                            <span class="small fw-semibold">
+                                                <i class="fas fa-chart-area"></i> Прогноз долга:
+                                            </span>
+                                            <strong :class="getDebtForecastClass()" x-text="formatCurrency(calculateDebtForecast())"></strong>
+                                        </div>
+                                        <div class="d-flex justify-content-between" style="font-size: 0.7rem;">
+                                            <span class="text-muted">
+                                                <i class="fas fa-briefcase"></i> Раб. день <span x-text="getWorkingDaysPassed()"></span> из <span x-text="getWorkingDaysInMonth()"></span>
+                                            </span>
+                                            <span :class="getDebtForecastClass()" x-text="`${((calculateDebtForecast() / area.PlanCredit * 100).toFixed(0))}% плана`"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                            
                             <div class="d-flex justify-content-between mb-2 border-top pt-2">
                                 <span class="text-muted">
                                     <i class="fas fa-exclamation-triangle"></i> Долг:
