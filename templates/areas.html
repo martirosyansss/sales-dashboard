@@ -701,23 +701,6 @@
                             </div>
                         </div>
 
-                        <!-- Менеджеры -->
-                        <div class="mb-3" x-show="area.Managers && area.Managers.length > 0">
-                            <small class="text-muted">Менеджеры:</small>
-                            <div class="mt-1">
-                                <template x-for="manager in area.Managers.slice(0, 3)" :key="manager.id">
-                                    <span class="badge me-1 mb-1" 
-                                          :class="manager.is_default ? 'bg-primary' : 'bg-secondary'"
-                                          :title="manager.name"
-                                          x-text="manager.code">
-                                    </span>
-                                </template>
-                                <template x-if="area.Managers.length > 3">
-                                    <span class="badge bg-secondary" x-text="`+${area.Managers.length - 3}`"></span>
-                                </template>
-                            </div>
-                        </div>
-
                         <!-- Рейтинг -->
                         <div class="text-center">
                             <template x-if="index === 0">
