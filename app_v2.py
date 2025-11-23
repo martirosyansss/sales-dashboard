@@ -886,19 +886,22 @@ def get_sales_areas():
             # Используем ТЕКУЩИЙ долг (без фильтра по датам), так как долг кумулятивный
             area_data['LastYearDebt'] = area_data['Debt']  # Копируем текущий долг
         
-        # Получить платежи по Sales Areas из таблицы PAYMENTS
-        logger.info("[PAYMENTS] Calculating actual payments from PAYMENTS table...")
+        # Получить платежи по Sales Areas из таблицы HICUSTOMERSDEBT
+        logger.info("[PAYMENTS] Calculating actual payments from HICUSTOMERSDEBT table...")
         for area_code, area_data in all_areas.items():
-            # Получить фактические платежи из таблицы PAYMENTS
+            # Получить фактические платежи из таблицы HICUSTOMERSDEBT (история движения долгов)
+            # fOP = 'PAY' - платежные операции
+            # fDBCR = 'C' - кредит (уменьшение долга, т.е. платеж от клиента)
             query_payments = f"""
                 SELECT 
-                    ISNULL(SUM(p.fSUM), 0) as TotalPayments
-                FROM PAYMENTS p
-                INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
-                WHERE p.fSALESAREA = ?
-                    AND p.fDATE >= ?
-                    AND p.fDATE <= ?
-                    AND p.fSTATE = 2
+                    ISNULL(SUM(CASE WHEN h.fDBCR = 'C' THEN h.fSUM ELSE 0 END), 0) as TotalPayments
+                FROM HICUSTOMERSDEBT h
+                INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
+                INNER JOIN CUSTOMERS c ON d.fCUSTOMERID = c.fID
+                WHERE d.fSALESAREA = ?
+                    AND h.fDATE >= ?
+                    AND h.fDATE <= ?
+                    AND h.fOP = 'PAY'
                     {excluded_filter}
                     {group_filter}
             """
@@ -1010,19 +1013,19 @@ def get_sales_areas():
 
         payments_history_query = f"""
             SELECT 
-                p.fSALESAREA AS AreaCode,
-                FORMAT(p.fDATE, 'yyyy-MM') AS Month,
-                ISNULL(SUM(p.fSUM), 0) AS TotalPayments
-            FROM PAYMENTS p
-            INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
-            WHERE p.fDATE >= ?
-                AND p.fDATE <= ?
-                AND p.fSTATE = 2
-                AND p.fPREPAYMENT = 0
+                d.fSALESAREA AS AreaCode,
+                FORMAT(h.fDATE, 'yyyy-MM') AS Month,
+                ISNULL(SUM(CASE WHEN h.fDBCR = 'C' THEN h.fSUM ELSE 0 END), 0) AS TotalPayments
+            FROM HICUSTOMERSDEBT h
+            INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
+            INNER JOIN CUSTOMERS c ON d.fCUSTOMERID = c.fID
+            WHERE h.fDATE >= ?
+                AND h.fDATE <= ?
+                AND h.fOP = 'PAY'
                 {excluded_filter}
                 {payments_group_filter}
-            GROUP BY p.fSALESAREA, FORMAT(p.fDATE, 'yyyy-MM')
-            ORDER BY p.fSALESAREA, FORMAT(p.fDATE, 'yyyy-MM')
+            GROUP BY d.fSALESAREA, FORMAT(h.fDATE, 'yyyy-MM')
+            ORDER BY d.fSALESAREA, FORMAT(h.fDATE, 'yyyy-MM')
         """
 
         payments_history_params = (start_history_date.strftime('%Y-%m-%d'), date_to) + excluded_params + payments_group_params
@@ -1269,22 +1272,24 @@ def customers_api():
                 ),
                 PaymentData AS (
                     SELECT 
-                        fCUSTOMERID AS CustomerId,
-                        ISNULL(SUM(fSUM), 0) AS TotalPayments
-                    FROM PAYMENTS
-                    WHERE fSTATE = 2
-                        AND fDATE >= ?
-                        AND fDATE <= ?
-                    GROUP BY fCUSTOMERID
+                        d.fCUSTOMERID AS CustomerId,
+                        ISNULL(SUM(CASE WHEN h.fDBCR = 'C' THEN h.fSUM ELSE 0 END), 0) AS TotalPayments
+                    FROM HICUSTOMERSDEBT h
+                    INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
+                    WHERE h.fOP = 'PAY'
+                        AND h.fDATE >= ?
+                        AND h.fDATE <= ?
+                    GROUP BY d.fCUSTOMERID
                 ),
                 LastPaymentData AS (
                     SELECT 
-                        fCUSTOMERID AS CustomerId,
-                        MAX(fDATE) AS LastPaymentDate,
-                        DATEDIFF(DAY, MAX(fDATE), GETDATE()) AS DaysSinceLastPayment
-                    FROM PAYMENTS
-                    WHERE fSTATE = 2
-                    GROUP BY fCUSTOMERID
+                        d.fCUSTOMERID AS CustomerId,
+                        MAX(h.fDATE) AS LastPaymentDate,
+                        DATEDIFF(DAY, MAX(h.fDATE), GETDATE()) AS DaysSinceLastPayment
+                    FROM HICUSTOMERSDEBT h
+                    INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
+                    WHERE h.fOP = 'PAY' AND h.fDBCR = 'C'
+                    GROUP BY d.fCUSTOMERID
                 ),
                 LastSaleData AS (
                     SELECT 
@@ -1413,20 +1418,23 @@ def customers_api():
                 ) AS rest_data
                 OUTER APPLY (
                     SELECT 
-                        ISNULL(SUM(p.fSUM), 0) AS TotalPayments
-                    FROM PAYMENTS p
-                    WHERE p.fCUSTOMERID = t.CustomerId
-                        AND p.fSTATE = 2
-                        AND p.fDATE >= ?
-                        AND p.fDATE <= ?
+                        ISNULL(SUM(CASE WHEN h.fDBCR = 'C' THEN h.fSUM ELSE 0 END), 0) AS TotalPayments
+                    FROM HICUSTOMERSDEBT h
+                    INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
+                    WHERE d.fCUSTOMERID = t.CustomerId
+                        AND h.fOP = 'PAY'
+                        AND h.fDATE >= ?
+                        AND h.fDATE <= ?
                 ) AS payment_data
                 OUTER APPLY (
                     SELECT 
-                        MAX(p.fDATE) AS LastPaymentDate,
-                        DATEDIFF(DAY, MAX(p.fDATE), GETDATE()) AS DaysSinceLastPayment
-                    FROM PAYMENTS p
-                    WHERE p.fCUSTOMERID = t.CustomerId
-                        AND p.fSTATE = 2
+                        MAX(h.fDATE) AS LastPaymentDate,
+                        DATEDIFF(DAY, MAX(h.fDATE), GETDATE()) AS DaysSinceLastPayment
+                    FROM HICUSTOMERSDEBT h
+                    INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
+                    WHERE d.fCUSTOMERID = t.CustomerId
+                        AND h.fOP = 'PAY'
+                        AND h.fDBCR = 'C'
                 ) AS last_payment_data
                 OUTER APPLY (
                     SELECT 
@@ -1660,22 +1668,24 @@ def customer_purchases(customer_id: int):
         # Получить платежи клиента из таблицы PAYMENTS
         cursor.execute("""
             SELECT 
-                p.fISN AS PaymentId,
-                p.fDATE AS PaymentDate,
-                p.fDOCNUM AS DocNumber,
-                p.fPAYMENTTYPE AS PaymentType,
-                p.fSUM AS Amount,
-                p.fCOMMENT AS Comment,
+                h.fBASE AS PaymentId,
+                h.fDATE AS PaymentDate,
+                '' AS DocNumber,
+                '' AS PaymentType,
+                CASE WHEN h.fDBCR = 'C' THEN h.fSUM ELSE 0 END AS Amount,
+                'Платеж из истории долга' AS Comment,
                 sa.fCODE AS ManagerCode,
                 sa.fNAME AS ManagerName,
-                p.fSALESAREA AS SalesArea
-            FROM PAYMENTS p
-            LEFT JOIN SALESAGENTS sa ON p.fSALESAGENTID = sa.fID
-            WHERE p.fCUSTOMERID = ?
-                AND p.fSTATE = 2
-                AND p.fDATE >= ?
-                AND p.fDATE <= ?
-            ORDER BY p.fDATE DESC, p.fISN DESC
+                d.fSALESAREA AS SalesArea
+            FROM HICUSTOMERSDEBT h
+            INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
+            LEFT JOIN SALESAGENTS sa ON d.fSALESAGENTID = sa.fID
+            WHERE d.fCUSTOMERID = ?
+                AND h.fOP = 'PAY'
+                AND h.fDBCR = 'C'
+                AND h.fDATE >= ?
+                AND h.fDATE <= ?
+            ORDER BY h.fDATE DESC, h.fBASE DESC
         """, (customer_id, date_from, date_to))
         
         payments = []
@@ -1683,20 +1693,18 @@ def customer_purchases(customer_id: int):
         for row in cursor.fetchall():
             payment_amount = float(row.Amount) if row.Amount else 0.0
             total_payments += payment_amount
-            payment_type_code = row.PaymentType.strip() if row.PaymentType else ''
-            payment_type_name = get_payment_type_name(payment_type_code)
             payment_date_str = row.PaymentDate.strftime('%Y-%m-%d') if row.PaymentDate else None
             
             payments.append({
                 'PaymentId': row.PaymentId,
                 'PaymentDate': payment_date_str,
-                'DocNumber': row.DocNumber,
-                'PaymentType': payment_type_name,
+                'DocNumber': row.DocNumber or '',
+                'PaymentType': 'Платеж',
                 'Amount': payment_amount,
                 'Comment': row.Comment or '',
-                'ManagerCode': row.ManagerCode,
-                'ManagerName': row.ManagerName,
-                'SalesArea': row.SalesArea
+                'ManagerCode': row.ManagerCode or '',
+                'ManagerName': row.ManagerName or '',
+                'SalesArea': row.SalesArea or ''
             })
         
         conn.close()
