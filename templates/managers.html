@@ -144,21 +144,6 @@
                             </div>
                         </div>
 
-                        <!-- Прогресс бар (доля от общих продаж) -->
-                        <div class="mb-3">
-                            <small class="text-muted">Доля от общих продаж</small>
-                            <div class="progress" style="height: 8px;">
-                                <div class="progress-bar bg-primary" 
-                                     role="progressbar" 
-                                     :style="`width: ${calculateShare(manager.TotalSales)}%`"
-                                     :aria-valuenow="calculateShare(manager.TotalSales)"
-                                     aria-valuemin="0" 
-                                     aria-valuemax="100">
-                                </div>
-                            </div>
-                            <small x-text="`${calculateShare(manager.TotalSales).toFixed(1)}%`" class="text-muted"></small>
-                        </div>
-
                         <!-- Кнопка детали -->
                         <button class="btn btn-outline-primary btn-sm w-100" 
                                 @click="showManagerDetail(manager.fID)">
