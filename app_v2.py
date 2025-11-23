@@ -3,13 +3,17 @@ Sales Dashboard v2.0 - READ-ONLY Analytics Platform
 Работает с реальной БД AS-Sales Management
 """
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, send_file
 import pyodbc
 from datetime import datetime, timedelta
 import os
 import json
 from typing import Dict, List, Any
 import logging
+import io
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -882,15 +886,8 @@ def get_sales_areas():
             area_data['LastYearDebt'] = area_data['Debt']  # Копируем текущий долг
         
         # Получить платежи и начальный долг по Sales Areas (через CUSTOMERSALESAREAS, divisions не применяются)
+        # ВАЖНО: Платежи НЕ фильтруются по группам клиентов - показываем ВСЕ оплаты по территории
         for area_code, area_data in all_areas.items():
-            # Группы
-            group_filter = ""
-            group_params = tuple()
-            if requested_groups:
-                placeholders = ','.join(['?'] * len(requested_groups))
-                group_filter = f" AND c.fGROUP IN ({placeholders})"
-                group_params = tuple(requested_groups)
-
             payments_query = f"""
                 SELECT ISNULL(SUM(ABS(d.fSUM)), 0) as TotalPayments
                 FROM HICUSTOMERSDEBT d
@@ -902,10 +899,9 @@ def get_sales_areas():
                     AND doc.fDATE >= ?
                     AND doc.fDATE <= ?
                     {excluded_filter}
-                    {group_filter}
             """
 
-            pay_params = (area_code, date_from, date_to) + excluded_params + group_params
+            pay_params = (area_code, date_from, date_to) + excluded_params
             cursor.execute(payments_query, pay_params)
             payments_row = cursor.fetchone()
             total_payments = float(payments_row.TotalPayments) if payments_row and payments_row.TotalPayments else 0
@@ -1005,12 +1001,9 @@ def get_sales_areas():
             }
 
         # Получить историю оплат по месяцам (divisions не применяются)
+        # ВАЖНО: Платежи НЕ фильтруются по группам - показываем ВСЕ оплаты по территории
         payments_group_filter = ""
         payments_group_params = tuple()
-        if requested_groups:
-            placeholders = ','.join(['?'] * len(requested_groups))
-            payments_group_filter = f" AND c.fGROUP IN ({placeholders})"
-            payments_group_params = tuple(requested_groups)
 
         payments_history_query = f"""
             SELECT 
@@ -1025,12 +1018,11 @@ def get_sales_areas():
                 AND doc.fDATE >= ?
                 AND doc.fDATE <= ?
                 {excluded_filter}
-                {payments_group_filter}
             GROUP BY csa.fSALESAREA, FORMAT(doc.fDATE, 'yyyy-MM')
             ORDER BY csa.fSALESAREA, FORMAT(doc.fDATE, 'yyyy-MM')
         """
 
-        payments_history_params = (start_history_date.strftime('%Y-%m-%d'), date_to) + excluded_params + payments_group_params
+        payments_history_params = (start_history_date.strftime('%Y-%m-%d'), date_to) + excluded_params
         logger.info(f"[PAYMENTS HISTORY] Query has {payments_history_query.count('?')} placeholders")
         logger.info(f"[PAYMENTS HISTORY] Supplying {len(payments_history_params)} params")
         cursor.execute(payments_history_query, payments_history_params)
@@ -3881,16 +3873,170 @@ def test_purchases():
     """Тестовая страница для проверки отображения покупок"""
     return render_template('test_purchases.html')
 
+@app.route('/api/sales-areas/<area_code>/unpaid-documents/export')
+def export_unpaid_documents(area_code):
+    """Export unpaid documents to Excel file"""
+    conn = None
+    try:
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        groups_param = request.args.get('groups', '')
+        selected_groups = [g.strip() for g in groups_param.split(',') if g.strip()] if groups_param else []
+        
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Build date filter
+        date_filter = ""
+        date_params = ()
+        if date_from and date_to:
+            date_filter = "AND doc.fDATE BETWEEN ? AND ?"
+            date_params = (date_from, date_to)
+        
+        # Build group filter
+        group_filter = ""
+        group_params = ()
+        if selected_groups:
+            placeholders = ','.join(['?' for _ in selected_groups])
+            group_filter = f"AND c.fGROUP IN ({placeholders})"
+            group_params = tuple(selected_groups)
+        
+        # Same query as the regular endpoint
+        query = f"""
+            SELECT 
+                c.fCODE as CustomerCode,
+                c.fNAME as CustomerName,
+                debt.fDEBTDOCISN as DocNumber,
+                doc.fDATE as DocDate,
+                debt.fSUM as DocSum,
+                ISNULL(payments.PaidAmount, 0) as PaidAmount,
+                debt.fSUM - ISNULL(payments.PaidAmount, 0) as UnpaidAmount
+            FROM HICUSTOMERSDEBT debt
+            INNER JOIN DOCUMENTS doc ON debt.fDEBTDOCISN = doc.fISN
+            INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+            INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+            OUTER APPLY (
+                SELECT SUM(p.fSUM) as PaidAmount
+                FROM HICUSTOMERSDEBT p
+                WHERE p.fDEBTDOCISN = doc.fISN 
+                    AND p.fDBCR = 'C'
+            ) payments
+            WHERE debt.fDBCR = 'D'
+                AND csa.fSALESAREA = ?
+                {date_filter}
+                {group_filter}
+                AND (debt.fSUM - ISNULL(payments.PaidAmount, 0)) > 0
+            ORDER BY c.fNAME, doc.fDATE DESC
+        """
+        
+        params = (area_code,) + date_params + group_params
+        cursor.execute(query, params)
+        
+        # Create Excel workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = f"Неоплаченные документы {area_code}"
+        
+        # Define styles
+        header_fill = PatternFill(start_color="667eea", end_color="667eea", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF", size=12)
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        # Add headers
+        headers = ["Код клиента", "Название клиента", "№ документа", "Дата документа", 
+                   "Сумма документа", "Оплачено", "Остаток долга"]
+        for col_num, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_num, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.border = border
+        
+        # Add data
+        row_num = 2
+        total_debt = 0
+        
+        for row in cursor.fetchall():
+            ws.cell(row=row_num, column=1, value=row.CustomerCode).border = border
+            ws.cell(row=row_num, column=2, value=row.CustomerName).border = border
+            ws.cell(row=row_num, column=3, value=row.DocNumber).border = border
+            ws.cell(row=row_num, column=4, value=row.DocDate.strftime('%d.%m.%Y') if row.DocDate else '').border = border
+            
+            doc_sum = float(row.DocSum) if row.DocSum else 0
+            paid_amount = float(row.PaidAmount) if row.PaidAmount else 0
+            unpaid_amount = float(row.UnpaidAmount) if row.UnpaidAmount else 0
+            
+            ws.cell(row=row_num, column=5, value=doc_sum).border = border
+            ws.cell(row=row_num, column=6, value=paid_amount).border = border
+            ws.cell(row=row_num, column=7, value=unpaid_amount).border = border
+            
+            # Format number cells
+            for col in [5, 6, 7]:
+                ws.cell(row=row_num, column=col).number_format = '#,##0.00'
+            
+            total_debt += unpaid_amount
+            row_num += 1
+        
+        # Add total row
+        total_row = row_num + 1
+        ws.cell(row=total_row, column=6, value="Итого:").font = Font(bold=True)
+        ws.cell(row=total_row, column=7, value=total_debt).font = Font(bold=True)
+        ws.cell(row=total_row, column=7).number_format = '#,##0.00'
+        
+        # Adjust column widths
+        ws.column_dimensions['A'].width = 15
+        ws.column_dimensions['B'].width = 40
+        ws.column_dimensions['C'].width = 15
+        ws.column_dimensions['D'].width = 15
+        ws.column_dimensions['E'].width = 18
+        ws.column_dimensions['F'].width = 18
+        ws.column_dimensions['G'].width = 18
+        
+        # Save to BytesIO
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        
+        filename = f"unpaid_documents_{area_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename
+        )
+        
+    except Exception as e:
+        logger.error(f"Error exporting unpaid documents for area {area_code}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
 @app.route('/api/sales-areas/<area_code>/unpaid-documents')
 def get_unpaid_documents(area_code):
-    """Получить информацию о задолженности клиентов территории (с поддержкой фильтров)"""
+    """Получить документы продаж с неоплаченными суммами, сгруппированные по клиентам"""
     try:
         # Получить параметры фильтрации
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
         groups_param = request.args.get('groups', '')
         requested_groups = [g.strip() for g in groups_param.split(',') if g.strip()] if groups_param else []
         
         conn = db.get_connection()
         cursor = conn.cursor()
+        
+        # Построить фильтр по датам
+        date_filter = ""
+        date_params = tuple()
+        if date_from and date_to:
+            date_filter = " AND doc.fDATE BETWEEN ? AND ?"
+            date_params = (date_from, date_to)
         
         # Построить фильтр по группам клиентов
         group_filter = ""
@@ -3900,60 +4046,78 @@ def get_unpaid_documents(area_code):
             group_filter = f" AND c.fGROUP IN ({placeholders})"
             group_params = tuple(requested_groups)
         
-        # Получить клиентов с задолженностью, используя ТУ ЖЕ ФОРМУЛУ что и в карточках:
-        # Долг = DebtFromDocs - |Type01| - |Type02|
+        # Получить документы продаж с неоплаченными суммами
+        # Берём из HICUSTOMERSDEBT записи типа 'D' (дебет = долг клиента)
         query = f"""
             SELECT 
                 c.fCODE as CustomerCode,
                 c.fNAME as CustomerName,
-                c.fID as CustomerID,
-                ISNULL(debt_data.DebtFromDocs, 0) as DebtFromDocs,
-                ISNULL(rest_data.Type01, 0) as Type01,
-                ISNULL(rest_data.Type02, 0) as Type02,
-                ISNULL(debt_data.DebtFromDocs, 0) - ABS(ISNULL(rest_data.Type01, 0)) - ABS(ISNULL(rest_data.Type02, 0)) as RemainingDebt
-            FROM CUSTOMERS c
+                debt.fDEBTDOCISN as DocNumber,
+                doc.fDATE as DocDate,
+                debt.fSUM as DocSum,
+                ISNULL(payments.PaidAmount, 0) as PaidAmount,
+                debt.fSUM - ISNULL(payments.PaidAmount, 0) as UnpaidAmount
+            FROM HICUSTOMERSDEBT debt
+            INNER JOIN DOCUMENTS doc ON debt.fDEBTDOCISN = doc.fISN
+            INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
             INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
             OUTER APPLY (
-                SELECT SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END) as DebtFromDocs
-                FROM HICUSTOMERSDEBT d
-                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-                WHERE doc.fCUSTOMERID = c.fID
-            ) debt_data
-            OUTER APPLY (
-                SELECT 
-                    SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END) as Type01,
-                    SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END) as Type02
-                FROM HIRESTCUSTOMERSSUM r
-                WHERE r.fCUSTOMERID = c.fID
-            ) rest_data
-            WHERE csa.fSALESAREA = ?
+                SELECT SUM(p.fSUM) as PaidAmount
+                FROM HICUSTOMERSDEBT p
+                WHERE p.fDEBTDOCISN = doc.fISN 
+                    AND p.fDBCR = 'C'
+            ) payments
+            WHERE debt.fDBCR = 'D'
+                AND csa.fSALESAREA = ?
+                {date_filter}
                 {group_filter}
-                AND (ISNULL(debt_data.DebtFromDocs, 0) - ABS(ISNULL(rest_data.Type01, 0)) - ABS(ISNULL(rest_data.Type02, 0))) > 0
-            ORDER BY RemainingDebt DESC
+                AND (debt.fSUM - ISNULL(payments.PaidAmount, 0)) > 0
+            ORDER BY c.fNAME, doc.fDATE DESC
         """
         
-        params = (area_code,) + group_params
+        params = (area_code,) + date_params + group_params
         cursor.execute(query, params)
         
-        customers = []
+        # Группировка по клиентам
+        customers_dict = {}
+        total_debt = 0
+        
         for row in cursor.fetchall():
-            customers.append({
-                'customerCode': row.CustomerCode,
-                'customerName': row.CustomerName,
-                'debtFromDocs': float(row.DebtFromDocs) if row.DebtFromDocs else 0,
-                'type01': float(row.Type01) if row.Type01 else 0,
-                'type02': float(row.Type02) if row.Type02 else 0,
-                'remainingDebt': float(row.RemainingDebt) if row.RemainingDebt else 0
+            customer_code = row.CustomerCode
+            
+            if customer_code not in customers_dict:
+                customers_dict[customer_code] = {
+                    'customerCode': customer_code,
+                    'customerName': row.CustomerName,
+                    'documents': [],
+                    'totalDebt': 0
+                }
+            
+            unpaid = float(row.UnpaidAmount) if row.UnpaidAmount else 0
+            
+            customers_dict[customer_code]['documents'].append({
+                'docNumber': row.DocNumber,
+                'docDate': row.DocDate.strftime('%Y-%m-%d') if row.DocDate else '',
+                'docSum': float(row.DocSum) if row.DocSum else 0,
+                'paidAmount': float(row.PaidAmount) if row.PaidAmount else 0,
+                'unpaidAmount': unpaid
             })
+            
+            customers_dict[customer_code]['totalDebt'] += unpaid
+            total_debt += unpaid
+        
+        # Преобразовать в список и отсортировать по долгу
+        customers_list = list(customers_dict.values())
+        customers_list.sort(key=lambda x: x['totalDebt'], reverse=True)
         
         cursor.close()
         conn.close()
         
         return jsonify({
             'success': True,
-            'data': customers,
-            'total_customers': len(customers),
-            'total_debt': sum(c['remainingDebt'] for c in customers)
+            'data': customers_list,
+            'total_customers': len(customers_list),
+            'total_debt': total_debt
         })
         
     except Exception as e:
