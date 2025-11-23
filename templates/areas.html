@@ -614,12 +614,37 @@
                                         <div class="p-2 rounded" style="background: rgba(245, 158, 11, 0.1); border-left: 3px solid #f59e0b;">
                                             <div class="d-flex justify-content-between align-items-center">
                                                 <span style="font-size: 0.8rem; color: #d97706; font-weight: 600;">
-                                                    <i class="fas fa-chart-area"></i> Прогноз
+                                                    <i class="fas fa-chart-area"></i> Прогноз долга
                                                 </span>
                                                 <span class="fw-bold text-warning" x-text="formatCurrency(area.Debt)"></span>
                                             </div>
-                                            <div class="text-end mt-1" style="font-size: 0.7rem; color: #9ca3af;">
-                                                Стабильно
+                                            <div x-data="{
+                                                workingDaysInMonth() {
+                                                    const now = new Date();
+                                                    const year = now.getFullYear();
+                                                    const month = now.getMonth();
+                                                    const daysInMonth = new Date(year, month + 1, 0).getDate();
+                                                    let workingDays = 0;
+                                                    for (let day = 1; day <= daysInMonth; day++) {
+                                                        const date = new Date(year, month, day);
+                                                        if (date.getDay() !== 0) workingDays++;
+                                                    }
+                                                    return workingDays;
+                                                },
+                                                workingDaysPassed() {
+                                                    const now = new Date();
+                                                    const year = now.getFullYear();
+                                                    const month = now.getMonth();
+                                                    const today = now.getDate();
+                                                    let workingDays = 0;
+                                                    for (let day = 1; day <= today; day++) {
+                                                        const date = new Date(year, month, day);
+                                                        if (date.getDay() !== 0) workingDays++;
+                                                    }
+                                                    return workingDays;
+                                                }
+                                            }" class="text-end mt-1" style="font-size: 0.7rem; color: #9ca3af;">
+                                                <i class="fas fa-calendar-day"></i> Раб. день <span x-text="workingDaysPassed()"></span> из <span x-text="workingDaysInMonth()"></span>
                                             </div>
                                         </div>
                                     </div>
