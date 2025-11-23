@@ -718,19 +718,6 @@
                             </div>
                         </div>
 
-                        <!-- Прогресс бар -->
-                        <div class="mb-3">
-                            <small class="text-muted">Доля от общих продаж</small>
-                            <div class="progress" style="height: 8px;">
-                                <div class="progress-bar" 
-                                     :class="`bg-${getColorByRank(index)}`"
-                                     role="progressbar" 
-                                     :style="`width: ${calculateShare(area.TotalSales)}%`">
-                                </div>
-                            </div>
-                            <small x-text="`${calculateShare(area.TotalSales).toFixed(1)}%`" class="text-muted"></small>
-                        </div>
-
                         <!-- Рейтинг -->
                         <div class="text-center">
                             <template x-if="index === 0">
