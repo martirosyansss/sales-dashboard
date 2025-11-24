@@ -4168,6 +4168,43 @@ def get_unpaid_documents(area_code):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # =============================================
+# ADMIN - Restart Service
+# =============================================
+
+@app.route('/api/admin/restart', methods=['POST'])
+def restart_service():
+    """API endpoint to restart the Flask service"""
+    try:
+        import signal
+        import sys
+        
+        logger.info("Restart requested - shutting down gracefully...")
+        
+        # Schedule restart after response is sent
+        def restart():
+            import time
+            time.sleep(1)  # Give time for response to be sent
+            logger.info("Restarting service...")
+            # Send SIGTERM to the current process
+            os.kill(os.getpid(), signal.SIGTERM)
+        
+        # Start restart in background thread
+        import threading
+        threading.Thread(target=restart, daemon=True).start()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Service restart initiated. Please refresh the page in a few seconds.'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error restarting service: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# =============================================
 # ЗАПУСК ПРИЛОЖЕНИЯ
 # =============================================
 

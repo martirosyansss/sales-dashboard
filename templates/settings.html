@@ -68,6 +68,12 @@
                 <i class="fas fa-boxes text-primary"></i> Дивизионы
             </button>
         </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="system-tab" data-bs-toggle="tab" 
+                    data-bs-target="#system-pane" type="button" role="tab">
+                <i class="fas fa-cog text-warning"></i> Система
+            </button>
+        </li>
     </ul>
 
     <!-- Tab Content -->
@@ -752,6 +758,71 @@
                 </div>
             </div>
         </div>
+
+        <!-- Система -->
+        <div class="tab-pane fade" id="system-pane" role="tabpanel">
+            <div class="card">
+                <div class="card-header bg-warning bg-opacity-10 border-warning">
+                    <h5 class="mb-0">
+                        <i class="fas fa-cog text-warning"></i> Системные настройки
+                    </h5>
+                    <p class="text-muted small mb-0 mt-2">
+                        <i class="fas fa-info-circle"></i> Управление системой и техническое обслуживание
+                    </p>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <!-- Restart Service Card -->
+                        <div class="col-md-6">
+                            <div class="card border-warning">
+                                <div class="card-body">
+                                    <h5 class="card-title">
+                                        <i class="fas fa-sync-alt text-warning"></i> Перезапуск службы
+                                    </h5>
+                                    <p class="card-text text-muted">
+                                        Перезапустить веб-сервер для применения изменений или восстановления работы системы.
+                                    </p>
+                                    <div class="alert alert-warning" role="alert">
+                                        <i class="fas fa-exclamation-triangle"></i>
+                                        <strong>Внимание!</strong> Все активные пользователи будут отключены на несколько секунд.
+                                    </div>
+                                    <button class="btn btn-warning" @click="restartService()" 
+                                            :disabled="restartInProgress">
+                                        <i class="fas fa-sync-alt" :class="{'fa-spin': restartInProgress}"></i>
+                                        <span x-text="restartInProgress ? 'Перезапуск...' : 'Перезапустить службу'"></span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- System Info Card -->
+                        <div class="col-md-6">
+                            <div class="card border-info">
+                                <div class="card-body">
+                                    <h5 class="card-title">
+                                        <i class="fas fa-info-circle text-info"></i> Информация о системе
+                                    </h5>
+                                    <table class="table table-sm">
+                                        <tr>
+                                            <td><strong>Версия:</strong></td>
+                                            <td>Sales Dashboard v2.0</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>База данных:</strong></td>
+                                            <td>SalesManagement</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Статус:</strong></td>
+                                            <td><span class="badge bg-success">Работает</span></td>
+                                        </tr>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Модальное окно добавления магазина -->
@@ -895,6 +966,7 @@
             salesAreaGroupAssignments: {},  // Назначения групп для Sales Areas
             selectedSalesArea: null,
             selectedSalesAreaGroups: [],
+            restartInProgress: false,  // Флаг перезапуска системы
 
             async init() {
                 // Загружаем только критически важные данные параллельно
@@ -1831,6 +1903,39 @@
                 } catch (error) {
                     console.error('Ошибка сохранения групп товаров:', error);
                     alert('Ошибка при сохранении групп товаров');
+                }
+            },
+
+            // Перезапуск службы
+            async restartService() {
+                if (!confirm('Вы уверены, что хотите перезапустить службу? Все активные пользователи будут отключены на несколько секунд.')) {
+                    return;
+                }
+
+                this.restartInProgress = true;
+
+                try {
+                    const response = await fetch('/api/admin/restart', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+
+                    const result = await response.json();
+                    if (result.success) {
+                        this.showSuccess('Служба перезапускается... Страница обновится через несколько секунд.');
+                        
+                        // Подождать 3 секунды и обновить страницу
+                        setTimeout(() => {
+                            location.reload();
+                        }, 3000);
+                    } else {
+                        alert('Ошибка при перезапуске: ' + (result.error || 'Неизвестная ошибка'));
+                        this.restartInProgress = false;
+                    }
+                } catch (error) {
+                    console.error('Ошибка при перезапуске службы:', error);
+                    alert('Ошибка при перезапуске службы. Попробуйте снова.');
+                    this.restartInProgress = false;
                 }
             },
 
