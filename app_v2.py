@@ -3515,24 +3515,20 @@ def get_groups_with_stats():
             SELECT 
                 c.fGROUP,
                 COUNT(DISTINCT c.fID) as customerCount,
-                ISNULL(SUM(sd.fSUMMA), 0) as totalSales,
-                ISNULL(SUM(CASE WHEN p.fTYPE IN ('01', '02') THEN ABS(p.fSUM) ELSE 0 END), 0) as totalPayments,
-                ISNULL(SUM(sd.fSUMMA), 0) - ISNULL(SUM(CASE WHEN p.fTYPE IN ('01', '02') THEN ABS(p.fSUM) ELSE 0 END), 0) as totalDebt,
-                ISNULL(AVG(sd.fSUMMA), 0) as avgOrderSize
+                ISNULL(SUM(CASE WHEN h.fDC = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) as totalSales,
+                ISNULL(SUM(CASE WHEN h.fDC = 'C' AND h.fTYPE IN ('01', '02') THEN ABS(h.fSUM) ELSE 0 END), 0) as totalPayments,
+                ISNULL(SUM(CASE WHEN h.fDC = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) - 
+                ISNULL(SUM(CASE WHEN h.fDC = 'C' AND h.fTYPE IN ('01', '02') THEN ABS(h.fSUM) ELSE 0 END), 0) as totalDebt,
+                ISNULL(AVG(CASE WHEN h.fDC = 'D' THEN ABS(h.fSUM) ELSE NULL END), 0) as avgOrderSize
             FROM CUSTOMERS c
-            LEFT JOIN SALEDOC s ON c.fID = s.fCUSTID
-                AND s.fDATE >= ?
-                AND s.fDATE <= ?
-                AND s.fFLAG = 0
-            LEFT JOIN SALEDOCDETAILS sd ON s.fID = sd.fSALEDOCID
-            LEFT JOIN PAYMENTS p ON c.fID = p.fCUSTID
-                AND p.fDATE >= ?
-                AND p.fDATE <= ?
+            LEFT JOIN HICUSTOMERSDEBT h ON c.fID = h.fCUSTID
+                AND h.fDATE >= ?
+                AND h.fDATE <= ?
             WHERE c.fGROUP IS NOT NULL AND c.fGROUP != ''
             GROUP BY c.fGROUP
             ORDER BY totalSales DESC
         """
-        cursor.execute(query, (date_from, date_to, date_from, date_to))
+        cursor.execute(query, (date_from, date_to))
         
         groups = []
         for row in cursor.fetchall():
