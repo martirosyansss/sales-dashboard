@@ -787,6 +787,39 @@
 
                             <!-- Unpaid Documents Tab -->
                             <div class="tab-pane fade" id="unpaid" role="tabpanel" aria-labelledby="unpaid-tab">
+                                <div class="mb-3">
+                                    <div class="row g-3 align-items-end mb-2">
+                                        <div class="col-md-2">
+                                            <label class="form-label small text-muted fw-semibold">Дата от</label>
+                                            <input type="date" class="form-control" x-model="unpaidDateFrom" @change="loadUnpaidDocuments()">
+                                        </div>
+                                        <div class="col-md-2">
+                                            <label class="form-label small text-muted fw-semibold">Дата до</label>
+                                            <input type="date" class="form-control" x-model="unpaidDateTo" @change="loadUnpaidDocuments()">
+                                        </div>
+                                        <div class="col-md-2">
+                                            <button class="btn btn-outline-primary w-100" @click="unpaidDateFrom = dateFrom; unpaidDateTo = dateTo; loadUnpaidDocuments()">
+                                                <i class="fas fa-sync-alt me-2"></i>Основной период
+                                            </button>
+                                        </div>
+                                        <div class="col-md-2">
+                                            <button class="btn btn-outline-secondary w-100" @click="const today = new Date(); unpaidDateFrom = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0]; unpaidDateTo = today.toISOString().split('T')[0]; loadUnpaidDocuments()">
+                                                <i class="fas fa-calendar-alt me-2"></i>Текущий месяц
+                                            </button>
+                                        </div>
+                                        <div class="col-md-2">
+                                            <button class="btn btn-outline-info w-100" @click="const today = new Date(); const lastYear = today.getFullYear() - 1; unpaidDateFrom = new Date(lastYear, 0, 1).toISOString().split('T')[0]; unpaidDateTo = new Date(lastYear, 11, 31).toISOString().split('T')[0]; loadUnpaidDocuments()">
+                                                <i class="fas fa-calendar-check me-2"></i>Прошлый год
+                                            </button>
+                                        </div>
+                                        <div class="col-md-2">
+                                            <button class="btn btn-success w-100" @click="exportUnpaidToExcel()" :disabled="unpaidDocuments.length === 0">
+                                                <i class="fas fa-file-excel me-2"></i>Экспорт в Excel
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div x-show="unpaidDocumentsLoading" class="text-center py-5">
                                     <div class="spinner-border text-primary" role="status">
                                         <span class="visually-hidden">Загрузка...</span>
@@ -795,67 +828,142 @@
                                 </div>
 
                                 <div x-show="!unpaidDocumentsLoading">
-                                    <div class="row mb-3">
+                                    <div class="row mb-4">
                                         <div class="col-md-6">
-                                            <div class="card bg-light">
-                                                <div class="card-body">
-                                                    <h6 class="text-muted mb-2"><i class="fas fa-users me-2"></i>Клиентов с задолженностью</h6>
-                                                    <h3 class="mb-0" x-text="unpaidDocuments.length"></h3>
+                                            <div class="card border-0 shadow-sm" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                                                <div class="card-body text-white">
+                                                    <div class="d-flex align-items-center">
+                                                        <div class="flex-shrink-0">
+                                                            <div class="rounded-circle bg-white bg-opacity-25 p-3">
+                                                                <i class="fas fa-users fa-2x"></i>
+                                                            </div>
+                                                        </div>
+                                                        <div class="flex-grow-1 ms-3">
+                                                            <h6 class="text-white-50 mb-1 fw-normal">Клиентов с задолженностью</h6>
+                                                            <h2 class="mb-0 fw-bold" x-text="unpaidDocuments.length"></h2>
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
                                         <div class="col-md-6">
-                                            <div class="card bg-light">
-                                                <div class="card-body">
-                                                    <h6 class="text-muted mb-2"><i class="fas fa-dollar-sign me-2"></i>Общий остаток долга</h6>
-                                                    <h3 class="mb-0 text-danger" x-text="formatCurrency(unpaidTotalDebt)"></h3>
+                                            <div class="card border-0 shadow-sm" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                                                <div class="card-body text-white">
+                                                    <div class="d-flex align-items-center">
+                                                        <div class="flex-shrink-0">
+                                                            <div class="rounded-circle bg-white bg-opacity-25 p-3">
+                                                                <i class="fas fa-exclamation-triangle fa-2x"></i>
+                                                            </div>
+                                                        </div>
+                                                        <div class="flex-grow-1 ms-3">
+                                                            <h6 class="text-white-50 mb-1 fw-normal">Общий остаток долга</h6>
+                                                            <h2 class="mb-0 fw-bold" x-text="formatCurrency(unpaidTotalDebt)"></h2>
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
                                     </div>
 
-                                    <div class="card" x-show="unpaidDocuments.length > 0">
-                                        <div class="card-header">
-                                            <h5 class="mb-0"><i class="fas fa-users me-2"></i>Клиенты с задолженностью</h5>
-                                            <small class="text-muted">Формула: Долг = Долг из документов - |Type01| - |Type02|</small>
-                                        </div>
-                                        <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
-                                            <table class="table table-hover table-sm mb-0">
-                                                <thead class="table-light sticky-top">
-                                                    <tr>
-                                                        <th style="width: 12%;">Код клиента</th>
-                                                        <th style="width: 30%;">Клиент</th>
-                                                        <th class="text-end" style="width: 16%;">Долг из док.</th>
-                                                        <th class="text-end" style="width: 13%;">Type01</th>
-                                                        <th class="text-end" style="width: 13%;">Type02</th>
-                                                        <th class="text-end" style="width: 16%;">Остаток</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    <template x-for="customer in unpaidDocuments" :key="customer.customerCode">
-                                                        <tr>
-                                                            <td><strong x-text="customer.customerCode"></strong></td>
-                                                            <td x-text="customer.customerName"></td>
-                                                            <td class="text-end" x-text="formatCurrency(customer.debtFromDocs)"></td>
-                                                            <td class="text-end text-info" x-text="formatCurrency(customer.type01)"></td>
-                                                            <td class="text-end text-info" x-text="formatCurrency(customer.type02)"></td>
-                                                            <td class="text-end text-danger"><strong x-text="formatCurrency(customer.remainingDebt)"></strong></td>
-                                                        </tr>
-                                                    </template>
-                                                </tbody>
-                                                <tfoot class="table-light border-top border-2">
-                                                    <tr>
-                                                        <td colspan="5" class="text-end"><strong>Итого:</strong></td>
-                                                        <td class="text-end text-danger"><strong x-text="formatCurrency(unpaidTotalDebt)"></strong></td>
-                                                    </tr>
-                                                </tfoot>
-                                            </table>
-                                        </div>
+                                    <div x-show="unpaidDocuments.length > 0">
+                                        <template x-for="(customer, index) in unpaidDocuments" :key="customer.customerCode">
+                                            <div class="card mb-3 border-0 shadow-sm hover-shadow transition" x-data="{ expanded: false }" style="transition: all 0.3s ease;">
+                                                <div class="card-header border-0 py-3" 
+                                                     style="cursor: pointer; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);" 
+                                                     @click="expanded = !expanded"
+                                                     @mouseenter="$el.style.transform = 'translateY(-2px)'"
+                                                     @mouseleave="$el.style.transform = 'translateY(0)'">
+                                                    <div class="row align-items-center">
+                                                        <div class="col">
+                                                            <div class="d-flex align-items-center">
+                                                                <div class="me-3">
+                                                                    <div class="rounded-circle bg-white bg-opacity-25 d-flex align-items-center justify-content-center" style="width: 45px; height: 45px;">
+                                                                        <i class="fas fa-user text-white"></i>
+                                                                    </div>
+                                                                </div>
+                                                                <div>
+                                                                    <h6 class="mb-1 fw-bold text-white">
+                                                                        <span x-text="customer.customerCode"></span>
+                                                                        <span class="mx-2 text-white-50">•</span>
+                                                                        <span x-text="customer.customerName"></span>
+                                                                    </h6>
+                                                                    <small class="text-white text-opacity-75">
+                                                                        <i class="fas fa-file-invoice me-1"></i>
+                                                                        <span x-text="customer.documents.length"></span> документов
+                                                                    </small>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="col-auto">
+                                                            <div class="d-flex align-items-center gap-2">
+                                                                <span class="badge bg-white text-danger px-3 py-2 fs-6 fw-bold" x-text="formatCurrency(customer.totalDebt)"></span>
+                                                                <div class="rounded-circle bg-white bg-opacity-25 d-flex align-items-center justify-content-center" style="width: 32px; height: 32px;">
+                                                                    <i class="fas fa-chevron-down text-white transition-transform" :class="expanded ? 'rotate-180' : ''" style="font-size: 12px; transition: transform 0.3s;"></i>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div x-show="expanded" x-collapse>
+                                                    <div class="card-body pt-0">
+                                                        <div class="table-responsive">
+                                                            <table class="table table-hover align-middle mb-0">
+                                                                <thead>
+                                                                    <tr class="border-bottom">
+                                                                        <th class="text-muted fw-normal small" style="width: 20%;">№ Документа</th>
+                                                                        <th class="text-muted fw-normal small" style="width: 15%;">Дата</th>
+                                                                        <th class="text-muted fw-normal small text-end" style="width: 20%;">Сумма документа</th>
+                                                                        <th class="text-muted fw-normal small text-end" style="width: 20%;">Оплачено</th>
+                                                                        <th class="text-muted fw-normal small text-end" style="width: 25%;">Не оплачено</th>
+                                                                    </tr>
+                                                                </thead>
+                                                                <tbody>
+                                                                    <template x-for="doc in customer.documents" :key="doc.docNumber">
+                                                                        <tr class="border-bottom border-light">
+                                                                            <td>
+                                                                                <span class="badge bg-light text-dark" x-text="doc.docNumber"></span>
+                                                                            </td>
+                                                                            <td>
+                                                                                <small class="text-muted" x-text="doc.docDate"></small>
+                                                                            </td>
+                                                                            <td class="text-end">
+                                                                                <span class="fw-semibold" x-text="formatCurrency(doc.docSum)"></span>
+                                                                            </td>
+                                                                            <td class="text-end">
+                                                                                <span class="text-success fw-semibold" x-text="formatCurrency(doc.paidAmount)"></span>
+                                                                            </td>
+                                                                            <td class="text-end">
+                                                                                <span class="badge bg-danger bg-opacity-10 text-danger px-3 py-2" x-text="formatCurrency(doc.unpaidAmount)"></span>
+                                                                            </td>
+                                                                        </tr>
+                                                                    </template>
+                                                                </tbody>
+                                                                <tfoot class="border-top">
+                                                                    <tr>
+                                                                        <td colspan="4" class="text-end pt-3">
+                                                                            <strong class="text-muted">Итого по клиенту:</strong>
+                                                                        </td>
+                                                                        <td class="text-end pt-3">
+                                                                            <strong class="fs-5 text-danger" x-text="formatCurrency(customer.totalDebt)"></strong>
+                                                                        </td>
+                                                                    </tr>
+                                                                </tfoot>
+                                                            </table>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </template>
                                     </div>
 
-                                    <div x-show="unpaidDocuments.length === 0" class="text-center text-muted p-5">
-                                        <i class="fas fa-check-circle fa-3x mb-3 text-success"></i>
-                                        <p>Нет клиентов с задолженностью!</p>
+                                    <div x-show="unpaidDocuments.length === 0" class="text-center py-5">
+                                        <div class="mb-4">
+                                            <div class="rounded-circle bg-success bg-opacity-10 d-inline-flex align-items-center justify-content-center" style="width: 80px; height: 80px;">
+                                                <i class="fas fa-check-circle fa-3x text-success"></i>
+                                            </div>
+                                        </div>
+                                        <h5 class="text-muted mb-2">Отличные новости!</h5>
+                                        <p class="text-muted">Нет неоплаченных документов</p>
                                     </div>
                                 </div>
                             </div>
@@ -1411,6 +1519,7 @@
             selectedDivisions: [],
             selectedSalesGroups: [],  // Группы для продаж
             selectedDebtGroups: [],   // Группы для долгов
+            selectedGroups: [],       // Группы для общего использования
             divisionSearch: '',
             salesGroupSearch: '',
             debtGroupSearch: '',
@@ -1437,17 +1546,22 @@
             unpaidDocuments: [],
             unpaidTotalDebt: 0,
             unpaidDocumentsLoading: false,
+            unpaidDateFrom: '',
+            unpaidDateTo: '',
 
             init() {
-                // Инициализация дат: последние 3 недели
+                // Инициализация дат: текущий месяц (с 1-го числа до сегодня)
                 const today = new Date();
-                const threeWeeksAgo = new Date();
-                threeWeeksAgo.setDate(today.getDate() - 21);
+                const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
                 
-                this.dateFrom = this.formatDate(threeWeeksAgo);
+                this.dateFrom = this.formatDate(firstDayOfMonth);
                 this.dateTo = this.formatDate(today);
                 this.dateFromDisplay = this.formatDateForDisplay(this.dateFrom);
                 this.dateToDisplay = this.formatDateForDisplay(this.dateTo);
+                
+                // Инициализация дат для неоплаченных документов
+                this.unpaidDateFrom = this.dateFrom;
+                this.unpaidDateTo = this.dateTo;
                 
                 this.loadSavedFilters();
                 this.loadDivisions();
@@ -1958,27 +2072,57 @@
                 
                 try {
                     const params = new URLSearchParams({
-                        date_from: this.dateFrom,
-                        date_to: this.dateTo
+                        date_from: this.unpaidDateFrom || this.dateFrom,
+                        date_to: this.unpaidDateTo || this.dateTo
                     });
                     
-                    // Добавить фильтр по группам клиентов
-                    if (this.selectedGroups.length > 0) {
-                        params.append('groups', this.selectedGroups.join(','));
+                    // Добавить фильтр по группам клиентов (используем selectedDebtGroups для долгов)
+                    const groupsToUse = this.selectedDebtGroups.length > 0 ? this.selectedDebtGroups : this.selectedGroups;
+                    if (groupsToUse.length > 0) {
+                        params.append('groups', groupsToUse.join(','));
                     }
                     
                     const response = await fetch(`/api/sales-areas/${this.selectedArea.code}/unpaid-documents?${params}`);
                     const result = await response.json();
                     
-                    if (result.success) {
+                    console.log('Unpaid documents API response:', result);
+                    console.log('Data length:', result.data ? result.data.length : 0);
+                    
+                    if (result.success && result.data) {
                         this.unpaidDocuments = result.data;
-                        this.unpaidTotalDebt = result.total_debt;
+                        this.unpaidTotalDebt = result.total_debt || 0;
+                        console.log('Set unpaidDocuments:', this.unpaidDocuments.length, 'customers');
+                        console.log('First customer structure:', JSON.stringify(this.unpaidDocuments[0], null, 2));
+                    } else {
+                        console.error('API returned error or no data:', result);
+                        this.unpaidDocuments = [];
+                        this.unpaidTotalDebt = 0;
                     }
                 } catch (error) {
                     console.error('Error loading unpaid documents:', error);
+                    this.unpaidDocuments = [];
+                    this.unpaidTotalDebt = 0;
                 } finally {
                     this.unpaidDocumentsLoading = false;
                 }
+            },
+
+            exportUnpaidToExcel() {
+                if (!this.selectedArea) return;
+                
+                const params = new URLSearchParams({
+                    date_from: this.unpaidDateFrom || this.dateFrom,
+                    date_to: this.unpaidDateTo || this.dateTo
+                });
+                
+                // Добавить фильтр по группам клиентов
+                const groupsToUse = this.selectedDebtGroups.length > 0 ? this.selectedDebtGroups : this.selectedGroups;
+                if (groupsToUse.length > 0) {
+                    params.append('groups', groupsToUse.join(','));
+                }
+                
+                const url = `/api/sales-areas/${this.selectedArea.code}/unpaid-documents/export?${params}`;
+                window.location.href = url;
             },
             
             calculatePercent(value, total) {
