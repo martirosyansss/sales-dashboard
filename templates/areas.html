@@ -818,6 +818,31 @@
                                             </button>
                                         </div>
                                     </div>
+                                    <div class="row g-3 align-items-end">
+                                        <div class="col-md-3">
+                                            <label class="form-label small text-muted fw-semibold">
+                                                <i class="fas fa-search me-1"></i>Код клиента
+                                            </label>
+                                            <input type="text" class="form-control" x-model="unpaidFilterCustomerCode" placeholder="Поиск по коду..." @input="filterUnpaidDocuments()">
+                                        </div>
+                                        <div class="col-md-4">
+                                            <label class="form-label small text-muted fw-semibold">
+                                                <i class="fas fa-search me-1"></i>Имя клиента
+                                            </label>
+                                            <input type="text" class="form-control" x-model="unpaidFilterCustomerName" placeholder="Поиск по имени..." @input="filterUnpaidDocuments()">
+                                        </div>
+                                        <div class="col-md-3">
+                                            <label class="form-label small text-muted fw-semibold">
+                                                <i class="fas fa-filter me-1"></i>Мин. сумма долга
+                                            </label>
+                                            <input type="number" class="form-control" x-model.number="unpaidFilterMinDebt" placeholder="0" @input="filterUnpaidDocuments()">
+                                        </div>
+                                        <div class="col-md-2">
+                                            <button class="btn btn-outline-danger w-100" @click="unpaidFilterCustomerCode = ''; unpaidFilterCustomerName = ''; unpaidFilterMinDebt = 0; filterUnpaidDocuments()">
+                                                <i class="fas fa-times me-2"></i>Сброс
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
 
                                 <div x-show="unpaidDocumentsLoading" class="text-center py-5">
@@ -840,7 +865,12 @@
                                                         </div>
                                                         <div class="flex-grow-1 ms-3">
                                                             <h6 class="text-white-50 mb-1 fw-normal">Клиентов с задолженностью</h6>
-                                                            <h2 class="mb-0 fw-bold" x-text="unpaidDocuments.length"></h2>
+                                                            <h2 class="mb-0 fw-bold">
+                                                                <span x-text="unpaidDocumentsFiltered.length"></span>
+                                                                <template x-if="unpaidDocumentsFiltered.length !== unpaidDocuments.length">
+                                                                    <small class="fs-6 text-white-50"> / <span x-text="unpaidDocuments.length"></span></small>
+                                                                </template>
+                                                            </h2>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -857,7 +887,7 @@
                                                         </div>
                                                         <div class="flex-grow-1 ms-3">
                                                             <h6 class="text-white-50 mb-1 fw-normal">Общий остаток долга</h6>
-                                                            <h2 class="mb-0 fw-bold" x-text="formatCurrency(unpaidTotalDebt)"></h2>
+                                                            <h2 class="mb-0 fw-bold" x-text="formatCurrency(unpaidDocumentsFiltered.reduce((sum, c) => sum + c.totalDebt, 0))"></h2>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -865,8 +895,8 @@
                                         </div>
                                     </div>
 
-                                    <div x-show="unpaidDocuments.length > 0">
-                                        <template x-for="(customer, index) in unpaidDocuments" :key="customer.customerCode">
+                                    <div x-show="unpaidDocumentsFiltered.length > 0">
+                                        <template x-for="(customer, index) in unpaidDocumentsFiltered" :key="customer.customerCode">
                                             <div class="card mb-3 border-0 shadow-sm hover-shadow transition" x-data="{ expanded: false }" style="transition: all 0.3s ease;">
                                                 <div class="card-header border-0 py-3" 
                                                      style="cursor: pointer; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);" 
@@ -956,7 +986,7 @@
                                         </template>
                                     </div>
 
-                                    <div x-show="unpaidDocuments.length === 0" class="text-center py-5">
+                                    <div x-show="unpaidDocuments.length === 0 && !unpaidDocumentsLoading" class="text-center py-5">
                                         <div class="mb-4">
                                             <div class="rounded-circle bg-success bg-opacity-10 d-inline-flex align-items-center justify-content-center" style="width: 80px; height: 80px;">
                                                 <i class="fas fa-check-circle fa-3x text-success"></i>
@@ -964,6 +994,19 @@
                                         </div>
                                         <h5 class="text-muted mb-2">Отличные новости!</h5>
                                         <p class="text-muted">Нет неоплаченных документов</p>
+                                    </div>
+
+                                    <div x-show="unpaidDocuments.length > 0 && unpaidDocumentsFiltered.length === 0 && !unpaidDocumentsLoading" class="text-center py-5">
+                                        <div class="mb-4">
+                                            <div class="rounded-circle bg-warning bg-opacity-10 d-inline-flex align-items-center justify-content-center" style="width: 80px; height: 80px;">
+                                                <i class="fas fa-filter fa-3x text-warning"></i>
+                                            </div>
+                                        </div>
+                                        <h5 class="text-muted mb-2">Нет результатов</h5>
+                                        <p class="text-muted">По выбранным фильтрам ничего не найдено</p>
+                                        <button class="btn btn-outline-primary mt-2" @click="unpaidFilterCustomerCode = ''; unpaidFilterCustomerName = ''; unpaidFilterMinDebt = 0; filterUnpaidDocuments()">
+                                            <i class="fas fa-times me-2"></i>Сбросить фильтры
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -1544,10 +1587,14 @@
 
             // Unpaid Documents
             unpaidDocuments: [],
+            unpaidDocumentsFiltered: [],
             unpaidTotalDebt: 0,
             unpaidDocumentsLoading: false,
             unpaidDateFrom: '',
             unpaidDateTo: '',
+            unpaidFilterCustomerCode: '',
+            unpaidFilterCustomerName: '',
+            unpaidFilterMinDebt: 0,
 
             init() {
                 // Инициализация дат: текущий месяц (с 1-го числа до сегодня)
@@ -2093,18 +2140,51 @@
                         this.unpaidTotalDebt = result.total_debt || 0;
                         console.log('Set unpaidDocuments:', this.unpaidDocuments.length, 'customers');
                         console.log('First customer structure:', JSON.stringify(this.unpaidDocuments[0], null, 2));
+                        this.filterUnpaidDocuments();
                     } else {
                         console.error('API returned error or no data:', result);
                         this.unpaidDocuments = [];
+                        this.unpaidDocumentsFiltered = [];
                         this.unpaidTotalDebt = 0;
                     }
                 } catch (error) {
                     console.error('Error loading unpaid documents:', error);
                     this.unpaidDocuments = [];
+                    this.unpaidDocumentsFiltered = [];
                     this.unpaidTotalDebt = 0;
                 } finally {
                     this.unpaidDocumentsLoading = false;
                 }
+            },
+
+            filterUnpaidDocuments() {
+                if (!this.unpaidDocuments || this.unpaidDocuments.length === 0) {
+                    this.unpaidDocumentsFiltered = [];
+                    return;
+                }
+
+                const codeFilter = this.unpaidFilterCustomerCode.toLowerCase().trim();
+                const nameFilter = this.unpaidFilterCustomerName.toLowerCase().trim();
+                const minDebt = this.unpaidFilterMinDebt || 0;
+
+                this.unpaidDocumentsFiltered = this.unpaidDocuments.filter(customer => {
+                    // Фильтр по коду клиента
+                    if (codeFilter && !customer.customerCode.toLowerCase().includes(codeFilter)) {
+                        return false;
+                    }
+
+                    // Фильтр по имени клиента
+                    if (nameFilter && !customer.customerName.toLowerCase().includes(nameFilter)) {
+                        return false;
+                    }
+
+                    // Фильтр по минимальной сумме долга
+                    if (minDebt > 0 && customer.totalDebt < minDebt) {
+                        return false;
+                    }
+
+                    return true;
+                });
             },
 
             exportUnpaidToExcel() {
