@@ -99,6 +99,11 @@
         background-color: rgba(255, 255, 255, 0.6);
         border-color: rgba(0,0,0,0.1) rgba(0,0,0,0.1) transparent;
     }
+    
+    /* Purple text color for route stats */
+    .text-purple {
+        color: #a855f7 !important;
+    }
 
     /* Override Bootstrap bg-white inside modal to maintain transparency */
     #areaDetailsModal .bg-white {
@@ -623,6 +628,68 @@
                                 </span>
                                 <strong x-text="formatCurrency(area.AvgSale)"></strong>
                             </div>
+                        </div>
+                        
+                        <!-- Эффективность маршрутов -->
+                        <template x-if="area.routeStats">
+                            <div class="border rounded p-3 mb-3" style="background: linear-gradient(135deg, rgba(168, 85, 247, 0.08), rgba(147, 51, 234, 0.05)); border: 2px solid rgba(168, 85, 247, 0.2) !important; box-shadow: 0 2px 8px rgba(168, 85, 247, 0.1);">
+                                <div class="d-flex justify-content-between align-items-center mb-3">
+                                    <h6 class="mb-0 fw-bold" style="color: #a855f7;">
+                                        <i class="fas fa-route"></i> Эффективность маршрутов
+                                    </h6>
+                                </div>
+                                
+                                <!-- План посещений -->
+                                <div class="row g-2 mb-2">
+                                    <div class="col-6">
+                                        <div class="p-2 rounded" style="background: rgba(168, 85, 247, 0.05); border-left: 3px solid #a855f7;">
+                                            <div style="font-size: 0.7rem; color: #6b7280; font-weight: 600;">План посещений</div>
+                                            <div class="fw-bold text-purple" x-text="area.routeStats.planned"></div>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="p-2 rounded" style="background: rgba(59, 130, 246, 0.05); border-left: 3px solid #3b82f6;">
+                                            <div style="font-size: 0.7rem; color: #6b7280; font-weight: 600;">Посещено</div>
+                                            <div class="fw-bold text-primary" x-text="area.routeStats.visited"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Не посещено и Вне плана -->
+                                <div class="row g-2 mb-2">
+                                    <div class="col-6">
+                                        <div class="p-2 rounded" style="background: rgba(239, 68, 68, 0.05); border-left: 3px solid #ef4444;">
+                                            <div style="font-size: 0.7rem; color: #6b7280; font-weight: 600;">Не посещено</div>
+                                            <div class="fw-bold text-danger" x-text="area.routeStats.missed"></div>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="p-2 rounded" style="background: rgba(245, 158, 11, 0.05); border-left: 3px solid #f59e0b;">
+                                            <div style="font-size: 0.7rem; color: #6b7280; font-weight: 600;">Вне плана</div>
+                                            <div class="fw-bold text-warning" x-text="area.routeStats.unplanned"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Сделали заказ и Конверсия -->
+                                <div class="row g-2">
+                                    <div class="col-6">
+                                        <div class="p-2 rounded" style="background: rgba(16, 185, 129, 0.05); border-left: 3px solid #10b981;">
+                                            <div style="font-size: 0.7rem; color: #6b7280; font-weight: 600;">Сделали заказ</div>
+                                            <div class="fw-bold text-success" x-text="area.routeStats.ordered"></div>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="p-2 rounded" style="background: rgba(99, 102, 241, 0.05); border-left: 3px solid #6366f1;">
+                                            <div style="font-size: 0.7rem; color: #6b7280; font-weight: 600;">Конверсия</div>
+                                            <div class="fw-bold" 
+                                                 :class="area.routeStats.visited > 0 && (area.routeStats.ordered / area.routeStats.visited * 100) > 20 ? 'text-success' : (area.routeStats.visited > 0 && (area.routeStats.ordered / area.routeStats.visited * 100) > 15 ? 'text-warning' : 'text-danger')" 
+                                                 x-text="area.routeStats.visited > 0 ? ((area.routeStats.ordered / area.routeStats.visited * 100).toFixed(1) + '%') : 'N/A'"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
 
                             <div class="d-flex justify-content-between pt-2" x-show="area.DiscountPercent > 0">
                                 <span class="text-muted">
@@ -1952,11 +2019,43 @@
                         this.$nextTick(() => {
                             this.renderChart();
                         });
+                        
+                        // Загрузить данные о посещениях для всех территорий
+                        await this.loadRouteStatsForAll();
                     }
                 } catch (error) {
                     console.error('Ошибка загрузки территорий:', error);
                 } finally {
                     this.loading = false;
+                }
+            },
+
+            async loadRouteStatsForAll() {
+                try {
+                    const params = new URLSearchParams({
+                        date_from: this.dateFrom,
+                        date_to: this.dateTo
+                    });
+                    
+                    // Загрузить статистику для каждой территории
+                    const promises = this.areas.map(async (area) => {
+                        try {
+                            const response = await fetch(`/api/sales-areas/${area.code}/route-stats?${params}`);
+                            const result = await response.json();
+                            if (result.success) {
+                                area.routeStats = result.data;
+                            } else {
+                                area.routeStats = { planned: 0, visited: 0, missed: 0, unplanned: 0, ordered: 0 };
+                            }
+                        } catch (error) {
+                            console.error(`Error loading route stats for area ${area.code}:`, error);
+                            area.routeStats = { planned: 0, visited: 0, missed: 0, unplanned: 0, ordered: 0 };
+                        }
+                    });
+                    
+                    await Promise.all(promises);
+                } catch (error) {
+                    console.error('Error loading route stats for all areas:', error);
                 }
             },
 
