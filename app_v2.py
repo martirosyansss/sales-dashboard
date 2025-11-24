@@ -2067,11 +2067,6 @@ def groups_page():
     """Страница групп (дистрибьюторы)"""
     return render_template('groups.html')
 
-@app.route('/distributors')
-def distributors_page():
-    """Страница управления дистрибьюторами"""
-    return render_template('distributors.html')
-
 @app.route('/areas')
 def areas_page():
     """Страница с территориями"""
@@ -3032,57 +3027,6 @@ def delete_group():
         app.logger.error(f"[Settings] Error deleting group: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# ===== Дистрибьюторы =====
-@app.route('/api/settings/distributors')
-def get_settings_distributors():
-    """Получить список дистрибьюторов (групп из CUSTOMERS.fGROUP)"""
-    try:
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        query = """
-            SELECT 
-                c.fGROUP,
-                COUNT(DISTINCT c.fID) as customerCount
-            FROM CUSTOMERS c
-            WHERE c.fGROUP IS NOT NULL AND c.fGROUP != ''
-            GROUP BY c.fGROUP
-            ORDER BY c.fGROUP
-        """
-        cursor.execute(query)
-        
-        distributors = []
-        for row in cursor.fetchall():
-            distributors.append({
-                'fGROUP': row.fGROUP,
-                'customerCount': row.customerCount,
-                'assignedManager': ''  # Заглушка, т.к. нет таблицы связей
-            })
-        
-        conn.close()
-        return jsonify({'success': True, 'data': distributors})
-    except Exception as e:
-        app.logger.error(f"[Settings] Error loading distributors: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/api/settings/distributors/assign', methods=['POST'])
-def assign_distributor():
-    """Назначить дистрибьютора менеджеру (READ-ONLY: не выполняется)"""
-    try:
-        data = request.get_json()
-        distributor_group = data.get('distributorGroup')
-        manager_id = data.get('managerId')
-        
-        app.logger.warning(f"[Settings] READ-ONLY: Cannot assign distributor {distributor_group} to manager {manager_id}")
-        
-        return jsonify({
-            'success': True,
-            'message': 'READ-ONLY режим: связи определяются через SALES'
-        })
-    except Exception as e:
-        app.logger.error(f"[Settings] Error assigning distributor: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
 # ===== Sales Areas → Groups =====
 @app.route('/api/settings/sales-areas/list')
 def get_settings_sales_areas_list():
@@ -3487,72 +3431,6 @@ def remove_excluded_customer():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # ===== Исключенные группы =====
-@app.route('/api/settings/groups-with-stats')
-def get_groups_with_stats():
-    """Получить группы с количеством клиентов и продажами"""
-    try:
-        app.logger.info("[Groups] Loading groups with stats...")
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        
-        # Получаем текущий месяц и год
-        current_date = datetime.now()
-        current_year = current_date.year
-        current_month = current_date.month
-        
-        # Даты для текущего месяца
-        date_from = f"{current_year}-{current_month:02d}-01"
-        # Последний день текущего месяца
-        if current_month == 12:
-            next_month = 1
-            next_year = current_year + 1
-        else:
-            next_month = current_month + 1
-            next_year = current_year
-        date_to = (datetime(next_year, next_month, 1) - timedelta(days=1)).strftime('%Y-%m-%d')
-        
-        query = """
-            SELECT 
-                c.fGROUP,
-                COUNT(DISTINCT c.fID) as customerCount,
-                ISNULL(SUM(CASE WHEN h.fDC = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) as totalSales,
-                ISNULL(SUM(CASE WHEN h.fDC = 'C' AND h.fTYPE IN ('01', '02') THEN ABS(h.fSUM) ELSE 0 END), 0) as totalPayments,
-                ISNULL(SUM(CASE WHEN h.fDC = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) - 
-                ISNULL(SUM(CASE WHEN h.fDC = 'C' AND h.fTYPE IN ('01', '02') THEN ABS(h.fSUM) ELSE 0 END), 0) as totalDebt,
-                ISNULL(AVG(CASE WHEN h.fDC = 'D' THEN ABS(h.fSUM) ELSE NULL END), 0) as avgOrderSize
-            FROM CUSTOMERS c
-            LEFT JOIN HICUSTOMERSDEBT h ON c.fID = h.fCUSTID
-                AND h.fDATE >= ?
-                AND h.fDATE <= ?
-            WHERE c.fGROUP IS NOT NULL AND c.fGROUP != ''
-            GROUP BY c.fGROUP
-            ORDER BY totalSales DESC
-        """
-        cursor.execute(query, (date_from, date_to))
-        
-        groups = []
-        for row in cursor.fetchall():
-            total_sales = float(row.totalSales or 0)
-            total_payments = float(row.totalPayments or 0)
-            groups.append({
-                'fGROUP': row.fGROUP,
-                'customerCount': row.customerCount,
-                'totalSales': total_sales,
-                'totalPayments': total_payments,
-                'totalDebt': float(row.totalDebt or 0),
-                'avgOrderSize': float(row.avgOrderSize or 0),
-                'paymentRate': (total_payments / total_sales * 100) if total_sales > 0 else 0,
-                'isExcluded': False,  # Будет обновлено на клиенте
-                'assignedManager': ''  # Будет обновлено на клиенте
-            })
-        
-        conn.close()
-        app.logger.info(f"[Groups] Loaded {len(groups)} groups with sales data")
-        return jsonify({'success': True, 'data': groups, 'period': {'from': date_from, 'to': date_to}})
-    except Exception as e:
-        app.logger.error(f"[Groups] Error loading with stats: {e}", exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
-
 @app.route('/api/settings/excluded-groups')
 def get_excluded_groups():
     """Получить список исключенных групп"""
