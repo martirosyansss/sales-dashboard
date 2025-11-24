@@ -993,13 +993,26 @@
                 // loadGroups() убран - он нужен только если есть dropdown для групп
             },
 
-            // Показать toast-уведомление
-            showSuccess(message) {
-                const toastEl = document.getElementById('successToast');
-                const messageEl = document.getElementById('successToastMessage');
+            // Показать toast-уведомление (общая утилита)
+            showToast(type, message, delay = 3000) {
+                const toastId = type === 'success' ? 'successToast' : 'errorToast';
+                const messageId = type === 'success' ? 'successToastMessage' : 'errorToastMessage';
+                
+                const toastEl = document.getElementById(toastId);
+                const messageEl = document.getElementById(messageId);
                 messageEl.textContent = message;
-                const toast = new bootstrap.Toast(toastEl, { delay: 3000 });
+                const toast = new bootstrap.Toast(toastEl, { delay: delay });
                 toast.show();
+            },
+
+            // Показать успешное уведомление
+            showSuccess(message) {
+                this.showToast('success', message, 3000);
+            },
+
+            // Показать сообщение об ошибке
+            showError(message) {
+                this.showToast('error', message, 5000);
             },
 
             async loadManagers() {
@@ -1949,15 +1962,6 @@
                     this.showError('Ошибка при перезапуске службы. Попробуйте снова.');
                     this.restartInProgress = false;
                 }
-            },
-
-            // Показать сообщение об ошибке
-            showError(message) {
-                const toastEl = document.getElementById('errorToast');
-                const messageEl = document.getElementById('errorToastMessage');
-                messageEl.textContent = message;
-                const toast = new bootstrap.Toast(toastEl, { delay: 5000 });
-                toast.show();
             },
 
             formatCurrency(num) {

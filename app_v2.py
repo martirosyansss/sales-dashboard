@@ -4207,8 +4207,9 @@ def restart_service():
             # Send SIGTERM to the current process
             os.kill(os.getpid(), signal.SIGTERM)
         
-        # Start restart in background thread
-        threading.Thread(target=perform_restart, daemon=True).start()
+        # Start restart in background thread (non-daemon to ensure restart signal is sent)
+        restart_thread = threading.Thread(target=perform_restart, daemon=False)
+        restart_thread.start()
         
         return jsonify({
             'success': True,
