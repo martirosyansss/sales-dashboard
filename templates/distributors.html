@@ -173,6 +173,285 @@
         </div>
     </div>
 
+    <!-- Аналитика продаж дистрибьюторов -->
+    <div class="row mb-4" x-show="selectedDistributors.length > 0">
+        <div class="col-md-6">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-header text-white" style="background: linear-gradient(135deg, #6f42c1 0%, #d63384 100%);">
+                    <h6 class="mb-0">
+                        <i class="fas fa-chart-line"></i>
+                        ТОП-5 Дистрибьюторов по продажам
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <template x-for="(group, index) in topDistributorsBySales" :key="group.fGROUP">
+                        <div class="mb-3 pb-3 border-bottom">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <div class="d-flex align-items-center gap-3">
+                                    <div class="text-center" style="min-width: 35px;">
+                                        <span class="badge fs-6" 
+                                              :class="index === 0 ? 'bg-warning text-dark' : index === 1 ? 'bg-secondary' : index === 2 ? 'bg-info' : 'bg-light text-dark'"
+                                              x-text="`#${index + 1}`"></span>
+                                    </div>
+                                    <div>
+                                        <div class="fw-bold" x-text="group.fGROUP"></div>
+                                        <small class="text-muted">
+                                            <i class="fas fa-users me-1"></i>
+                                            <span x-text="formatNumber(group.customerCount)"></span> клиентов
+                                        </small>
+                                    </div>
+                                </div>
+                                <div class="text-end">
+                                    <div class="fw-bold text-primary" x-text="formatCurrency(group.totalSales)"></div>
+                                    <small class="text-muted" x-text="`${((group.totalSales / totalDistributorSales) * 100).toFixed(1)}%`"></small>
+                                </div>
+                            </div>
+                            <div class="progress" style="height: 8px;">
+                                <div class="progress-bar" 
+                                     style="background: linear-gradient(135deg, #6f42c1 0%, #d63384 100%);"
+                                     :style="`width: ${(group.totalSales / topDistributorsBySales[0].totalSales * 100)}%`"></div>
+                            </div>
+                        </div>
+                    </template>
+                    <div x-show="topDistributorsBySales.length === 0" class="text-center text-muted py-3">
+                        <i class="fas fa-inbox fa-2x mb-2"></i>
+                        <p class="mb-0">Нет данных о продажах</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-header text-white" style="background: linear-gradient(135deg, #0d6efd 0%, #0dcaf0 100%);">
+                    <h6 class="mb-0">
+                        <i class="fas fa-chart-bar"></i>
+                        Сравнение продаж
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="mb-4">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="text-muted">
+                                <i class="fas fa-building me-2"></i>Дистрибьюторы
+                            </span>
+                            <span class="fw-bold text-success" x-text="formatCurrency(totalDistributorSales)"></span>
+                        </div>
+                        <div class="progress mb-1" style="height: 20px;">
+                            <div class="progress-bar bg-success" 
+                                 :style="`width: ${totalAllSales > 0 ? (totalDistributorSales / totalAllSales * 100) : 0}%`">
+                                <span x-text="`${totalAllSales > 0 ? ((totalDistributorSales / totalAllSales) * 100).toFixed(1) : 0}%`"></span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="text-muted">
+                                <i class="fas fa-store me-2"></i>Обычные группы
+                            </span>
+                            <span class="fw-bold text-info" x-text="formatCurrency(totalRegularSales)"></span>
+                        </div>
+                        <div class="progress mb-1" style="height: 20px;">
+                            <div class="progress-bar bg-info" 
+                                 :style="`width: ${totalAllSales > 0 ? (totalRegularSales / totalAllSales * 100) : 0}%`">
+                                <span x-text="`${totalAllSales > 0 ? ((totalRegularSales / totalAllSales) * 100).toFixed(1) : 0}%`"></span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="border-top pt-3">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span class="fw-bold">
+                                <i class="fas fa-chart-pie me-2"></i>Общие продажи
+                            </span>
+                            <span class="fw-bold fs-5 text-primary" x-text="formatCurrency(totalAllSales)"></span>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-4 p-3 rounded" style="background: linear-gradient(135deg, rgba(13,110,253,0.1) 0%, rgba(13,202,240,0.1) 100%);">
+                        <div class="row text-center">
+                            <div class="col-6">
+                                <div class="small text-muted mb-1">Средняя продажа</div>
+                                <div class="fw-bold" x-text="formatCurrency(selectedDistributors.length > 0 ? totalDistributorSales / selectedDistributors.length : 0)"></div>
+                                <div class="small text-muted">на группу</div>
+                            </div>
+                            <div class="col-6 border-start">
+                                <div class="small text-muted mb-1">Продажи на клиента</div>
+                                <div class="fw-bold" x-text="formatCurrency(totalDistributorCustomers > 0 ? totalDistributorSales / totalDistributorCustomers : 0)"></div>
+                                <div class="small text-muted">в среднем</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Детальные финансовые показатели -->
+    <div class="row mb-4" x-show="selectedDistributors.length > 0">
+        <div class="col-12">
+            <div class="card border-0 shadow-sm">
+                <div class="card-header text-white" style="background: linear-gradient(135deg, #198754 0%, #20c997 100%);">
+                    <h6 class="mb-0">
+                        <i class="fas fa-coins"></i>
+                        Финансовые показатели дистрибьюторов
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="row g-4">
+                        <!-- Продажи -->
+                        <div class="col-md-3">
+                            <div class="text-center p-3 rounded" style="background: linear-gradient(135deg, rgba(25,135,84,0.1) 0%, rgba(32,201,151,0.1) 100%);">
+                                <i class="fas fa-chart-line fa-2x text-success mb-2"></i>
+                                <div class="small text-muted mb-1">Всего продаж</div>
+                                <div class="h4 mb-0 fw-bold text-success" x-text="formatCurrency(totalDistributorSales)"></div>
+                                <small class="text-muted" x-text="`${totalAllSales > 0 ? ((totalDistributorSales / totalAllSales) * 100).toFixed(1) : 0}% от общих`"></small>
+                            </div>
+                        </div>
+                        
+                        <!-- Платежи -->
+                        <div class="col-md-3">
+                            <div class="text-center p-3 rounded" style="background: linear-gradient(135deg, rgba(13,110,253,0.1) 0%, rgba(13,202,240,0.1) 100%);">
+                                <i class="fas fa-credit-card fa-2x text-primary mb-2"></i>
+                                <div class="small text-muted mb-1">Платежи</div>
+                                <div class="h4 mb-0 fw-bold text-primary" x-text="formatCurrency(totalDistributorPayments)"></div>
+                                <small class="text-muted" x-text="`${totalAllPayments > 0 ? ((totalDistributorPayments / totalAllPayments) * 100).toFixed(1) : 0}% от общих`"></small>
+                            </div>
+                        </div>
+                        
+                        <!-- Долги -->
+                        <div class="col-md-3">
+                            <div class="text-center p-3 rounded" style="background: linear-gradient(135deg, rgba(220,53,69,0.1) 0%, rgba(253,126,20,0.1) 100%);">
+                                <i class="fas fa-exclamation-triangle fa-2x text-danger mb-2"></i>
+                                <div class="small text-muted mb-1">Долги</div>
+                                <div class="h4 mb-0 fw-bold text-danger" x-text="formatCurrency(totalDistributorDebt)"></div>
+                                <small class="text-muted" x-text="`${totalAllDebt > 0 ? ((totalDistributorDebt / totalAllDebt) * 100).toFixed(1) : 0}% от общих`"></small>
+                            </div>
+                        </div>
+                        
+                        <!-- Процент оплаты -->
+                        <div class="col-md-3">
+                            <div class="text-center p-3 rounded" style="background: linear-gradient(135deg, rgba(111,66,193,0.1) 0%, rgba(214,51,132,0.1) 100%);">
+                                <i class="fas fa-percentage fa-2x text-purple mb-2"></i>
+                                <div class="small text-muted mb-1">Процент оплаты</div>
+                                <div class="h4 mb-0 fw-bold" :class="distributorPaymentRate >= 80 ? 'text-success' : distributorPaymentRate >= 50 ? 'text-warning' : 'text-danger'" 
+                                     x-text="`${distributorPaymentRate.toFixed(1)}%`"></div>
+                                <small class="text-muted">платежей от продаж</small>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Средние показатели -->
+                    <div class="row g-3 mt-3">
+                        <div class="col-md-4">
+                            <div class="d-flex align-items-center p-3 border rounded">
+                                <i class="fas fa-shopping-cart fa-2x text-info me-3"></i>
+                                <div class="flex-grow-1">
+                                    <div class="small text-muted">Средний заказ</div>
+                                    <div class="fw-bold" x-text="formatCurrency(avgDistributorOrderSize)"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="d-flex align-items-center p-3 border rounded">
+                                <i class="fas fa-user-circle fa-2x text-success me-3"></i>
+                                <div class="flex-grow-1">
+                                    <div class="small text-muted">Продажи на клиента</div>
+                                    <div class="fw-bold" x-text="formatCurrency(totalDistributorCustomers > 0 ? totalDistributorSales / totalDistributorCustomers : 0)"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="d-flex align-items-center p-3 border rounded">
+                                <i class="fas fa-building fa-2x text-warning me-3"></i>
+                                <div class="flex-grow-1">
+                                    <div class="small text-muted">Продажи на группу</div>
+                                    <div class="fw-bold" x-text="formatCurrency(selectedDistributors.length > 0 ? totalDistributorSales / selectedDistributors.length : 0)"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Сравнение дистрибьюторов и обычных групп -->
+    <div class="row mb-4" x-show="selectedDistributors.length > 0">
+        <div class="col-12">
+            <div class="card border-0 shadow-sm">
+                <div class="card-header text-white" style="background: linear-gradient(135deg, #6f42c1 0%, #d63384 100%);">
+                    <h6 class="mb-0">
+                        <i class="fas fa-balance-scale"></i>
+                        Сравнение: Дистрибьюторы vs Обычные группы
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Показатель</th>
+                                    <th class="text-end">Дистрибьюторы</th>
+                                    <th class="text-end">Обычные группы</th>
+                                    <th class="text-end">Разница</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><i class="fas fa-chart-line me-2 text-success"></i>Продажи</td>
+                                    <td class="text-end fw-bold" x-text="formatCurrency(totalDistributorSales)"></td>
+                                    <td class="text-end fw-bold" x-text="formatCurrency(totalRegularSales)"></td>
+                                    <td class="text-end">
+                                        <span class="badge" :class="totalDistributorSales > totalRegularSales ? 'bg-success' : 'bg-danger'"
+                                              x-text="totalDistributorSales > totalRegularSales ? `+${((totalDistributorSales / totalRegularSales - 1) * 100).toFixed(1)}%` : `${((totalDistributorSales / totalRegularSales - 1) * 100).toFixed(1)}%`"></span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td><i class="fas fa-credit-card me-2 text-primary"></i>Платежи</td>
+                                    <td class="text-end fw-bold" x-text="formatCurrency(totalDistributorPayments)"></td>
+                                    <td class="text-end fw-bold" x-text="formatCurrency(totalRegularPayments)"></td>
+                                    <td class="text-end">
+                                        <span class="badge" :class="totalDistributorPayments > totalRegularPayments ? 'bg-success' : 'bg-danger'"
+                                              x-text="totalRegularPayments > 0 ? (totalDistributorPayments > totalRegularPayments ? `+${((totalDistributorPayments / totalRegularPayments - 1) * 100).toFixed(1)}%` : `${((totalDistributorPayments / totalRegularPayments - 1) * 100).toFixed(1)}%`) : 'N/A'"></span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td><i class="fas fa-exclamation-triangle me-2 text-danger"></i>Долги</td>
+                                    <td class="text-end fw-bold text-danger" x-text="formatCurrency(totalDistributorDebt)"></td>
+                                    <td class="text-end fw-bold text-danger" x-text="formatCurrency(totalRegularDebt)"></td>
+                                    <td class="text-end">
+                                        <span class="badge" :class="totalDistributorDebt < totalRegularDebt ? 'bg-success' : 'bg-danger'"
+                                              x-text="totalRegularDebt > 0 ? (totalDistributorDebt < totalRegularDebt ? `${((totalDistributorDebt / totalRegularDebt - 1) * 100).toFixed(1)}%` : `+${((totalDistributorDebt / totalRegularDebt - 1) * 100).toFixed(1)}%`) : 'N/A'"></span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td><i class="fas fa-percentage me-2 text-info"></i>Процент оплаты</td>
+                                    <td class="text-end fw-bold" x-text="`${distributorPaymentRate.toFixed(1)}%`"></td>
+                                    <td class="text-end fw-bold" x-text="`${regularPaymentRate.toFixed(1)}%`"></td>
+                                    <td class="text-end">
+                                        <span class="badge" :class="distributorPaymentRate > regularPaymentRate ? 'bg-success' : 'bg-danger'"
+                                              x-text="`${(distributorPaymentRate - regularPaymentRate).toFixed(1)}%`"></span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td><i class="fas fa-shopping-cart me-2 text-warning"></i>Средний заказ</td>
+                                    <td class="text-end fw-bold" x-text="formatCurrency(avgDistributorOrderSize)"></td>
+                                    <td class="text-end fw-bold" x-text="formatCurrency(avgRegularOrderSize)"></td>
+                                    <td class="text-end">
+                                        <span class="badge" :class="avgDistributorOrderSize > avgRegularOrderSize ? 'bg-success' : 'bg-danger'"
+                                              x-text="avgRegularOrderSize > 0 ? (avgDistributorOrderSize > avgRegularOrderSize ? `+${((avgDistributorOrderSize / avgRegularOrderSize - 1) * 100).toFixed(1)}%` : `${((avgDistributorOrderSize / avgRegularOrderSize - 1) * 100).toFixed(1)}%`) : 'N/A'"></span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Кнопки действий -->
     <div class="row mb-4">
         <div class="col-12">
@@ -269,7 +548,11 @@
                                                :checked="allFilteredSelected">
                                     </th>
                                     <th>Код группы</th>
-                                    <th>Количество клиентов</th>
+                                    <th>Клиентов</th>
+                                    <th>Продажи</th>
+                                    <th>Платежи</th>
+                                    <th>Долги</th>
+                                    <th>% оплаты</th>
                                     <th>Статус</th>
                                 </tr>
                             </thead>
@@ -294,6 +577,22 @@
                                             <span x-text="formatNumber(group.customerCount)"></span>
                                         </td>
                                         <td>
+                                            <span class="fw-bold" :class="(group.totalSales || 0) > 0 ? 'text-success' : 'text-muted'" 
+                                                  x-text="formatCurrency(group.totalSales || 0)"></span>
+                                        </td>
+                                        <td>
+                                            <span class="fw-bold text-primary" x-text="formatCurrency(group.totalPayments || 0)"></span>
+                                        </td>
+                                        <td>
+                                            <span class="fw-bold" :class="(group.totalDebt || 0) > 0 ? 'text-danger' : 'text-muted'" 
+                                                  x-text="formatCurrency(group.totalDebt || 0)"></span>
+                                        </td>
+                                        <td>
+                                            <span class="badge" 
+                                                  :class="(group.paymentRate || 0) >= 80 ? 'bg-success' : (group.paymentRate || 0) >= 50 ? 'bg-warning' : 'bg-danger'"
+                                                  x-text="`${(group.paymentRate || 0).toFixed(1)}%`"></span>
+                                        </td>
+                                        <td>
                                             <span x-show="isSelected(group.fGROUP)" class="badge bg-success">
                                                 <i class="fas fa-check"></i> Дистрибьютор
                                             </span>
@@ -306,7 +605,7 @@
                             </tbody>
                             <tfoot x-show="filteredGroups.length === 0 && !loading" class="table-light">
                                 <tr>
-                                    <td colspan="4" class="text-center text-muted py-4">
+                                    <td colspan="8" class="text-center text-muted py-4">
                                         <i class="fas fa-search fa-2x mb-2"></i>
                                         <p class="mb-0">Нет групп, соответствующих критериям поиска</p>
                                     </td>
@@ -491,8 +790,97 @@
                     .slice(0, 5);
             },
 
+            get topDistributorsBySales() {
+                return this.allGroups
+                    .filter(g => this.isSelected(g.fGROUP) && (g.totalSales || 0) > 0)
+                    .sort((a, b) => (b.totalSales || 0) - (a.totalSales || 0))
+                    .slice(0, 5);
+            },
+
+            get totalDistributorSales() {
+                return this.allGroups
+                    .filter(g => this.isSelected(g.fGROUP))
+                    .reduce((sum, g) => sum + (g.totalSales || 0), 0);
+            },
+
+            get totalRegularSales() {
+                return this.allGroups
+                    .filter(g => !this.isSelected(g.fGROUP))
+                    .reduce((sum, g) => sum + (g.totalSales || 0), 0);
+            },
+
+            get totalAllSales() {
+                return this.allGroups.reduce((sum, g) => sum + (g.totalSales || 0), 0);
+            },
+
+            get totalDistributorPayments() {
+                return this.allGroups
+                    .filter(g => this.isSelected(g.fGROUP))
+                    .reduce((sum, g) => sum + (g.totalPayments || 0), 0);
+            },
+
+            get totalRegularPayments() {
+                return this.allGroups
+                    .filter(g => !this.isSelected(g.fGROUP))
+                    .reduce((sum, g) => sum + (g.totalPayments || 0), 0);
+            },
+
+            get totalAllPayments() {
+                return this.allGroups.reduce((sum, g) => sum + (g.totalPayments || 0), 0);
+            },
+
+            get totalDistributorDebt() {
+                return this.allGroups
+                    .filter(g => this.isSelected(g.fGROUP))
+                    .reduce((sum, g) => sum + (g.totalDebt || 0), 0);
+            },
+
+            get totalRegularDebt() {
+                return this.allGroups
+                    .filter(g => !this.isSelected(g.fGROUP))
+                    .reduce((sum, g) => sum + (g.totalDebt || 0), 0);
+            },
+
+            get totalAllDebt() {
+                return this.allGroups.reduce((sum, g) => sum + (g.totalDebt || 0), 0);
+            },
+
+            get distributorPaymentRate() {
+                return this.totalDistributorSales > 0 
+                    ? (this.totalDistributorPayments / this.totalDistributorSales * 100) 
+                    : 0;
+            },
+
+            get regularPaymentRate() {
+                return this.totalRegularSales > 0 
+                    ? (this.totalRegularPayments / this.totalRegularSales * 100) 
+                    : 0;
+            },
+
+            get avgDistributorOrderSize() {
+                const distributorGroups = this.allGroups.filter(g => this.isSelected(g.fGROUP));
+                if (distributorGroups.length === 0) return 0;
+                const totalAvg = distributorGroups.reduce((sum, g) => sum + (g.avgOrderSize || 0), 0);
+                return totalAvg / distributorGroups.length;
+            },
+
+            get avgRegularOrderSize() {
+                const regularGroups = this.allGroups.filter(g => !this.isSelected(g.fGROUP));
+                if (regularGroups.length === 0) return 0;
+                const totalAvg = regularGroups.reduce((sum, g) => sum + (g.avgOrderSize || 0), 0);
+                return totalAvg / regularGroups.length;
+            },
+
             formatNumber(num) {
                 return new Intl.NumberFormat('ru-RU').format(num);
+            },
+
+            formatCurrency(amount) {
+                return new Intl.NumberFormat('ru-RU', {
+                    style: 'decimal',
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 0
+                }).format(amount) + ' ֏';
             }
         }
     }
