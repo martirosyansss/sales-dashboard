@@ -2025,6 +2025,92 @@
         }
     }
 
+    /* ============================================ */
+    /* RESPONSIVE DESIGN FOR PLANS PAGE */
+    /* ============================================ */
+    
+    @media (max-width: 767px) {
+        /* Compact month selector */
+        .plans-header {
+            padding: 1rem;
+        }
+        
+        .plans-header h1 {
+            font-size: 1.5rem;
+        }
+        
+        /* Stack controls vertically */
+        .plans-controls {
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        
+        .plans-controls .btn {
+            width: 100%;
+        }
+        
+        /* Compact cards */
+        .plan-card {
+            padding: 1rem;
+        }
+        
+        .plan-card h5 {
+            font-size: 1rem;
+        }
+        
+        .plan-value {
+            font-size: 1.5rem;
+        }
+        
+        /* Smaller charts */
+        canvas {
+            max-height: 200px !important;
+        }
+        
+        /* Settings modal full screen */
+        .settings-modal .settings-content {
+            width: 95%;
+            margin: 1rem;
+            padding: 1.5rem;
+        }
+        
+        .settings-group {
+            margin-bottom: 1.5rem;
+        }
+        
+        /* Compact input groups */
+        .input-group {
+            flex-wrap: wrap;
+        }
+    }
+    
+    @media (min-width: 768px) and (max-width: 991px) {
+        .plan-card {
+            padding: 1.25rem;
+        }
+        
+        .plan-value {
+            font-size: 1.75rem;
+        }
+    }
+    
+    /* Touch device optimizations */
+    @media (hover: none) and (pointer: coarse) {
+        .plan-card {
+            cursor: default;
+        }
+        
+        .btn {
+            min-height: 44px;
+            padding: 0.75rem 1.5rem;
+        }
+        
+        .settings-input, select, input[type="number"] {
+            font-size: 16px;
+            min-height: 44px;
+        }
+    }
+
 </style>
 {% endblock %}
 
@@ -2715,9 +2801,35 @@
                                         × Сезонность: <strong class="text-warning" x-text="seasonalityCoeff"></strong><br>
                                         × Рост: <strong class="text-success" x-text="(settings.growthFactor >= 0 ? '+' : '') + settings.growthFactor + '%'"></strong><br>
                                         = <strong class="text-warning" x-text="formatCurrency(getAreaPlan(area.code, 'credit'))"></strong> AMD
-                                        <div class="mt-2 pt-2" style="border-top: 1px solid rgba(255, 193, 7, 0.2);">
-                                            <i class="fas fa-info-circle me-1"></i>
-                                            Это <strong x-text="((getAreaPlan(area.code, 'credit') || 0) / (getAreaPlan(area.code, 'sales') || 1) * 100).toFixed(1)"></strong>% от плана продаж
+                                        
+                                        <!-- Процент от плана - МАКСИМАЛЬНО ВЫРАЗИТЕЛЬНЫЙ БЛОК -->
+                                        <div class="mt-4 pt-4 pb-4 px-4 rounded-4" 
+                                             style="border: 3px solid rgba(251, 191, 36, 0.6); 
+                                                    background: linear-gradient(135deg, rgba(251, 191, 36, 0.25) 0%, rgba(245, 158, 11, 0.2) 100%);
+                                                    box-shadow: 0 8px 32px rgba(251, 191, 36, 0.4), 0 0 50px rgba(251, 191, 36, 0.2);
+                                                    animation: pulse-glow 2s ease-in-out infinite;
+                                                    position: relative;
+                                                    overflow: hidden;">
+                                            <!-- Блик эффект -->
+                                            <div style="position: absolute; top: 0; left: -100%; width: 100%; height: 100%; 
+                                                        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+                                                        animation: shimmer 3s infinite;"></div>
+                                            
+                                            <div class="text-center position-relative">
+                                                <div class="mb-2">
+                                                    <i class="fas fa-chart-line me-2" style="color: #fbbf24; font-size: 1.5rem;"></i>
+                                                    <span class="text-white fw-bold" style="font-size: 1.1rem; letter-spacing: 2px;">ПРОГНОЗ ОТ ПЛАНА</span>
+                                                </div>
+                                                <div class="display-1 fw-bold mb-2" 
+                                                     style="color: #fbbf24; 
+                                                            text-shadow: 0 4px 20px rgba(251, 191, 36, 0.8), 0 0 40px rgba(251, 191, 36, 0.5);
+                                                            font-size: 4.5rem;
+                                                            line-height: 1;
+                                                            letter-spacing: -2px;"
+                                                     x-text="((getAreaPlan(area.code, 'credit') || 0) / (getAreaPlan(area.code, 'sales') || 1) * 100).toFixed(1) + '%'">
+                                                </div>
+                                                <div class="text-white fw-semibold mt-2" style="font-size: 1rem; opacity: 0.9;">от плана продаж</div>
+                                            </div>
                                         </div>
                                     </small>
                                 </div>
