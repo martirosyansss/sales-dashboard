@@ -418,6 +418,111 @@
         </div>
     </div>
     
+    <!-- Сравнение сегодняшнего дня -->
+    <div class="row mb-4">
+        <div class="col-12 mb-2">
+            <h5 class="text-muted">
+                <i class="fas fa-calendar-day me-2"></i>
+                Сегодня vs Прошлый год в этот день
+            </h5>
+        </div>
+
+        <!-- Выручка сегодня -->
+        <div class="col-xl-3 col-md-6 mb-3">
+            <div class="card stat-card" style="border-left: 4px solid #0d6efd;">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="flex-grow-1">
+                            <p class="stat-label mb-1 text-muted small">ВЫРУЧКА СЕГОДНЯ</p>
+                            <h3 class="stat-value mb-1" x-text="formatCurrency(stats.today_revenue.value)">
+                                Загрузка...
+                            </h3>
+                            <small class="text-muted d-block mb-1">
+                                <i class="fas fa-calendar-day"></i> 
+                                <span x-text="new Date().toLocaleDateString('ru-RU')"></span>
+                            </small>
+                            <small class="text-muted d-block" x-show="stats.today_revenue.last_year > 0">
+                                Прошл. год в этот день: <strong x-text="formatCurrency(stats.today_revenue.last_year)"></strong>
+                            </small>
+                        </div>
+                        <div class="stat-icon">
+                            <i class="fas fa-calendar-check fa-2x text-primary"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Продажи сегодня -->
+        <div class="col-xl-3 col-md-6 mb-3">
+            <div class="card stat-card" style="border-left: 4px solid #198754;">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="flex-grow-1">
+                            <p class="stat-label mb-1 text-muted small">ПРОДАЖИ СЕГОДНЯ</p>
+                            <h3 class="stat-value mb-1" x-text="formatNumber(stats.today_sales.value)">
+                                Загрузка...
+                            </h3>
+                            <small class="text-muted d-block mb-1">количество</small>
+                            <small class="text-muted d-block" x-show="stats.today_sales.last_year > 0">
+                                Прошл. год в этот день: <strong x-text="formatNumber(stats.today_sales.last_year)"></strong>
+                            </small>
+                        </div>
+                        <div class="stat-icon">
+                            <i class="fas fa-calendar-check fa-2x text-success"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Средний чек сегодня -->
+        <div class="col-xl-3 col-md-6 mb-3">
+            <div class="card stat-card" style="border-left: 4px solid #0dcaf0;">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="flex-grow-1">
+                            <p class="stat-label mb-1 text-muted small">СРЕДНИЙ ЧЕК СЕГОДНЯ</p>
+                            <h3 class="stat-value mb-1" x-text="formatCurrency(stats.today_avg_check.value)">
+                                Загрузка...
+                            </h3>
+                            <small class="text-muted d-block mb-1">за сегодня</small>
+                            <small class="text-muted d-block" x-show="stats.today_avg_check.last_year > 0">
+                                Прошл. год в этот день: <strong x-text="formatCurrency(stats.today_avg_check.last_year)"></strong>
+                            </small>
+                        </div>
+                        <div class="stat-icon">
+                            <i class="fas fa-calendar-check fa-2x text-info"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Клиенты сегодня -->
+        <div class="col-xl-3 col-md-6 mb-3">
+            <div class="card stat-card" style="border-left: 4px solid #ffc107;">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="flex-grow-1">
+                            <p class="stat-label mb-1 text-muted small">КЛИЕНТЫ СЕГОДНЯ</p>
+                            <h3 class="stat-value mb-1" x-text="formatNumber(stats.today_customers.value)">
+                                Загрузка...
+                            </h3>
+                            <small class="text-muted d-block mb-1">купили сегодня</small>
+                            <small class="text-muted d-block" x-show="stats.today_customers.last_year > 0">
+                                Прошл. год в этот день: <strong x-text="formatNumber(stats.today_customers.last_year)"></strong>
+                            </small>
+                        </div>
+                        <div class="stat-icon">
+                            <i class="fas fa-calendar-check fa-2x text-warning"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
     <!-- Дополнительные метрики - Краткая сводка из всех разделов -->
     <div class="row mb-4">
         <div class="col-12">
@@ -720,6 +825,10 @@
                 sales_count: { value: 0, growth: 0, growth_yoy: 0, growth_10y: 0, prev_month: 0, last_year: 0, ten_years_ago: 0 },
                 avg_check: { value: 0, prev_month: 0, last_year: 0 },
                 active_customers: { value: 0, prev_month: 0, last_year: 0 },
+                today_revenue: { value: 0, last_year: 0 },
+                today_sales: { value: 0, last_year: 0 },
+                today_avg_check: { value: 0, last_year: 0 },
+                today_customers: { value: 0, last_year: 0 },
                 top_manager: { name: 'Загрузка...', sales: 0 }
             },
             debts: {
