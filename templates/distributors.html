@@ -1,0 +1,377 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Управление дистрибьюторами - Sales Dashboard v2.0{% endblock %}
+
+{% block content %}
+<div class="container-fluid" x-data="distributorsData()">
+    <div class="row mb-4">
+        <div class="col-12">
+            <h1 class="display-4">
+                <i class="fas fa-building text-primary"></i>
+                Управление дистрибьюторами
+            </h1>
+            <p class="lead text-muted">
+                <i class="fas fa-info-circle"></i> 
+                Выберите группы клиентов, которые являются дистрибьюторами
+            </p>
+        </div>
+    </div>
+
+    <!-- Статистика -->
+    <div class="row mb-4">
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm h-100" style="background: linear-gradient(135deg, #0d6efd 0%, #0dcaf0 100%);">
+                <div class="card-body text-white">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <p class="mb-1 opacity-75" style="font-size: 0.85rem;">Всего групп</p>
+                            <h3 class="mb-0 fw-bold" x-text="allGroups.length"></h3>
+                        </div>
+                        <div class="p-2 rounded" style="background: rgba(255,255,255,0.2);">
+                            <i class="fas fa-layer-group fa-lg"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm h-100" style="background: linear-gradient(135deg, #198754 0%, #20c997 100%);">
+                <div class="card-body text-white">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <p class="mb-1 opacity-75" style="font-size: 0.85rem;">Выбрано дистрибьюторов</p>
+                            <h3 class="mb-0 fw-bold" x-text="selectedDistributors.length"></h3>
+                        </div>
+                        <div class="p-2 rounded" style="background: rgba(255,255,255,0.2);">
+                            <i class="fas fa-check-circle fa-lg"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-4">
+            <div class="card border-0 shadow-sm h-100" style="background: linear-gradient(135deg, #6f42c1 0%, #d63384 100%);">
+                <div class="card-body text-white">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <p class="mb-1 opacity-75" style="font-size: 0.85rem;">Клиентов в дистр.</p>
+                            <h3 class="mb-0 fw-bold" x-text="totalDistributorCustomers"></h3>
+                        </div>
+                        <div class="p-2 rounded" style="background: rgba(255,255,255,0.2);">
+                            <i class="fas fa-users fa-lg"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Кнопки действий -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-cog"></i>
+                        Действия
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="btn-group" role="group">
+                        <button class="btn btn-success" @click="saveDistributors()" :disabled="saving || !hasChanges">
+                            <i class="fas" :class="saving ? 'fa-spinner fa-spin' : 'fa-save'"></i>
+                            <span x-text="saving ? 'Сохранение...' : 'Сохранить изменения'"></span>
+                        </button>
+                        <button class="btn btn-outline-primary" @click="selectAll()">
+                            <i class="fas fa-check-double"></i>
+                            Выбрать все
+                        </button>
+                        <button class="btn btn-outline-secondary" @click="deselectAll()">
+                            <i class="fas fa-times"></i>
+                            Снять все
+                        </button>
+                        <button class="btn btn-outline-info" @click="loadData()">
+                            <i class="fas fa-sync-alt"></i>
+                            Обновить
+                        </button>
+                    </div>
+                    
+                    <div x-show="hasChanges" class="alert alert-warning mt-3 mb-0" role="alert">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        У вас есть несохраненные изменения
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Список групп -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-list"></i>
+                        Группы клиентов
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <!-- Поиск -->
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <div class="input-group">
+                                <span class="input-group-text">
+                                    <i class="fas fa-search"></i>
+                                </span>
+                                <input type="text" 
+                                       class="form-control" 
+                                       placeholder="Поиск по коду группы..." 
+                                       x-model="searchQuery">
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" 
+                                       type="checkbox" 
+                                       id="showOnlySelected" 
+                                       x-model="showOnlySelected">
+                                <label class="form-check-label" for="showOnlySelected">
+                                    Показать только выбранные
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Загрузка -->
+                    <div x-show="loading" class="text-center py-5">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Загрузка...</span>
+                        </div>
+                        <p class="text-muted mt-2">Загрузка данных...</p>
+                    </div>
+
+                    <!-- Таблица групп -->
+                    <div x-show="!loading" class="table-responsive">
+                        <table class="table table-hover align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th style="width: 60px;">
+                                        <input type="checkbox" 
+                                               class="form-check-input" 
+                                               @change="toggleAll($event.target.checked)"
+                                               :checked="allFilteredSelected">
+                                    </th>
+                                    <th>Код группы</th>
+                                    <th>Количество клиентов</th>
+                                    <th>Статус</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="group in filteredGroups" :key="group.fGROUP">
+                                    <tr :class="isSelected(group.fGROUP) ? 'table-success' : ''"
+                                        style="cursor: pointer;"
+                                        @click="toggleGroup(group.fGROUP)">
+                                        <td>
+                                            <input type="checkbox" 
+                                                   class="form-check-input" 
+                                                   :checked="isSelected(group.fGROUP)"
+                                                   @change.stop="toggleGroup(group.fGROUP)">
+                                        </td>
+                                        <td>
+                                            <span class="badge fs-6" 
+                                                  :class="isSelected(group.fGROUP) ? 'bg-success' : 'bg-secondary'"
+                                                  x-text="group.fGROUP"></span>
+                                        </td>
+                                        <td>
+                                            <i class="fas fa-users text-muted me-2"></i>
+                                            <span x-text="formatNumber(group.customerCount)"></span>
+                                        </td>
+                                        <td>
+                                            <span x-show="isSelected(group.fGROUP)" class="badge bg-success">
+                                                <i class="fas fa-check"></i> Дистрибьютор
+                                            </span>
+                                            <span x-show="!isSelected(group.fGROUP)" class="badge bg-secondary">
+                                                <i class="fas fa-minus"></i> Обычная группа
+                                            </span>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                            <tfoot x-show="filteredGroups.length === 0 && !loading" class="table-light">
+                                <tr>
+                                    <td colspan="4" class="text-center text-muted py-4">
+                                        <i class="fas fa-search fa-2x mb-2"></i>
+                                        <p class="mb-0">Нет групп, соответствующих критериям поиска</p>
+                                    </td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+
+                    <!-- Информация о фильтрации -->
+                    <div x-show="!loading && searchQuery" class="alert alert-info mt-3">
+                        <i class="fas fa-info-circle"></i>
+                        Показано <strong x-text="filteredGroups.length"></strong> из <strong x-text="allGroups.length"></strong> групп
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function distributorsData() {
+        return {
+            allGroups: [],
+            selectedDistributors: [],
+            originalSelection: [],
+            loading: true,
+            saving: false,
+            searchQuery: '',
+            showOnlySelected: false,
+
+            init() {
+                this.loadData();
+            },
+
+            async loadData() {
+                this.loading = true;
+                try {
+                    // Загрузить все группы
+                    const groupsResponse = await fetch('/api/settings/groups-with-stats');
+                    const groupsResult = await groupsResponse.json();
+                    
+                    if (groupsResult.success) {
+                        this.allGroups = groupsResult.data;
+                    }
+
+                    // Загрузить выбранных дистрибьюторов
+                    const distResponse = await fetch('/api/settings/distributor-groups');
+                    const distResult = await distResponse.json();
+                    
+                    if (distResult.success) {
+                        this.selectedDistributors = distResult.data || [];
+                        this.originalSelection = [...this.selectedDistributors];
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки данных:', error);
+                    alert('Ошибка загрузки данных: ' + error.message);
+                } finally {
+                    this.loading = false;
+                }
+            },
+
+            async saveDistributors() {
+                if (this.saving) return;
+                
+                this.saving = true;
+                try {
+                    const response = await fetch('/api/settings/distributor-groups/set', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            groups: this.selectedDistributors
+                        })
+                    });
+
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        this.originalSelection = [...this.selectedDistributors];
+                        alert('✓ Изменения сохранены успешно');
+                    } else {
+                        alert('Ошибка сохранения: ' + (result.error || 'Неизвестная ошибка'));
+                    }
+                } catch (error) {
+                    console.error('Ошибка сохранения:', error);
+                    alert('Ошибка сохранения: ' + error.message);
+                } finally {
+                    this.saving = false;
+                }
+            },
+
+            isSelected(groupCode) {
+                return this.selectedDistributors.includes(groupCode);
+            },
+
+            toggleGroup(groupCode) {
+                if (this.isSelected(groupCode)) {
+                    this.selectedDistributors = this.selectedDistributors.filter(g => g !== groupCode);
+                } else {
+                    this.selectedDistributors.push(groupCode);
+                }
+            },
+
+            selectAll() {
+                this.selectedDistributors = this.filteredGroups.map(g => g.fGROUP);
+            },
+
+            deselectAll() {
+                if (this.showOnlySelected || this.searchQuery) {
+                    // Убрать только отфильтрованные
+                    const filtered = this.filteredGroups.map(g => g.fGROUP);
+                    this.selectedDistributors = this.selectedDistributors.filter(g => !filtered.includes(g));
+                } else {
+                    // Убрать все
+                    this.selectedDistributors = [];
+                }
+            },
+
+            toggleAll(checked) {
+                if (checked) {
+                    this.selectAll();
+                } else {
+                    this.deselectAll();
+                }
+            },
+
+            get filteredGroups() {
+                let groups = this.allGroups;
+
+                // Фильтр по поиску
+                if (this.searchQuery) {
+                    const query = this.searchQuery.toLowerCase();
+                    groups = groups.filter(g => 
+                        g.fGROUP.toLowerCase().includes(query)
+                    );
+                }
+
+                // Фильтр "только выбранные"
+                if (this.showOnlySelected) {
+                    groups = groups.filter(g => this.isSelected(g.fGROUP));
+                }
+
+                return groups;
+            },
+
+            get allFilteredSelected() {
+                if (this.filteredGroups.length === 0) return false;
+                return this.filteredGroups.every(g => this.isSelected(g.fGROUP));
+            },
+
+            get hasChanges() {
+                if (this.selectedDistributors.length !== this.originalSelection.length) {
+                    return true;
+                }
+                return !this.selectedDistributors.every(g => this.originalSelection.includes(g));
+            },
+
+            get totalDistributorCustomers() {
+                return this.allGroups
+                    .filter(g => this.isSelected(g.fGROUP))
+                    .reduce((sum, g) => sum + (g.customerCount || 0), 0);
+            },
+
+            formatNumber(num) {
+                return new Intl.NumberFormat('ru-RU').format(num);
+            }
+        }
+    }
+</script>
+{% endblock %}

@@ -2067,6 +2067,11 @@ def groups_page():
     """Страница групп (дистрибьюторы)"""
     return render_template('groups.html')
 
+@app.route('/distributors')
+def distributors_page():
+    """Страница управления дистрибьюторами"""
+    return render_template('distributors.html')
+
 @app.route('/areas')
 def areas_page():
     """Страница с территориями"""
@@ -3148,6 +3153,7 @@ EXCLUDED_GROUPS_FILE = 'excluded_groups.json'
 GROUP_MANAGER_ASSIGNMENTS_FILE = 'group_manager_assignments.json'
 SELECTED_PRODUCT_GROUPS_FILE = 'selected_product_groups.json'
 SALES_AREA_GROUP_ASSIGNMENTS_FILE = 'sales_area_group_assignments.json'
+DISTRIBUTOR_GROUPS_FILE = 'distributor_groups.json'
 
 def load_excluded_customers():
     """Загрузить список исключенных клиентов из файла"""
@@ -3189,6 +3195,27 @@ def save_excluded_groups(groups_list):
         return True
     except Exception as e:
         app.logger.error(f"[ExcludedGroups] Error saving: {e}")
+        return False
+
+def load_distributor_groups():
+    """Загрузить список групп-дистрибьюторов"""
+    try:
+        if os.path.exists(DISTRIBUTOR_GROUPS_FILE):
+            with open(DISTRIBUTOR_GROUPS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return []
+    except Exception as e:
+        app.logger.error(f"[DistributorGroups] Error loading: {e}")
+        return []
+
+def save_distributor_groups(groups_list):
+    """Сохранить список групп-дистрибьюторов"""
+    try:
+        with open(DISTRIBUTOR_GROUPS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(groups_list, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        app.logger.error(f"[DistributorGroups] Error saving: {e}")
         return False
 
 def load_group_manager_assignments():
@@ -3545,6 +3572,33 @@ def remove_excluded_group():
             return jsonify({'success': False, 'error': 'Ошибка сохранения'})
     except Exception as e:
         app.logger.error(f"[ExcludedGroups] Error removing: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# ===== Управление дистрибьюторами =====
+@app.route('/api/settings/distributor-groups')
+def get_distributor_groups():
+    """Получить список групп-дистрибьюторов"""
+    try:
+        distributor_groups = load_distributor_groups()
+        return jsonify({'success': True, 'data': distributor_groups})
+    except Exception as e:
+        app.logger.error(f"[DistributorGroups] Error loading: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/settings/distributor-groups/set', methods=['POST'])
+def set_distributor_groups():
+    """Установить список групп-дистрибьюторов"""
+    try:
+        data = request.get_json()
+        distributor_groups = data.get('groups', [])
+        
+        if save_distributor_groups(distributor_groups):
+            app.logger.info(f"[DistributorGroups] Saved {len(distributor_groups)} distributor groups")
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': 'Ошибка сохранения'})
+    except Exception as e:
+        app.logger.error(f"[DistributorGroups] Error saving: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # ===== Назначение менеджеров группам =====
@@ -4049,8 +4103,10 @@ if __name__ == '__main__':
     print("Available pages:")
     print("  - http://localhost:5000/          - Dashboard")
     print("  - http://localhost:5000/managers  - Managers")
-    print("  - http://localhost:5000/groups    - Distributors")
+    print("  - http://localhost:5000/groups    - Groups Statistics")
+    print("  - http://localhost:5000/distributors - Distributor Management")
     print("  - http://localhost:5000/areas     - Territories")
+    print("  - http://localhost:5000/plans     - Plans")
     print("  - http://localhost:5000/settings  - Settings")
     print("  - http://localhost:5000/test-db   - Test DB")
     print()
