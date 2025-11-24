@@ -1876,6 +1876,72 @@ def get_groups():
         logger.error(f"Ошибка получения групп: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/distributors')
+def get_distributors():
+    """Получить расширенную аналитику по дистрибьюторам (группам клиентов)"""
+    try:
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        
+        if not date_from or not date_to:
+            today = datetime.now()
+            date_from = today.replace(day=1).strftime('%Y-%m-%d')
+            date_to = today.strftime('%Y-%m-%d')
+        
+        query = """
+            SELECT 
+                c.fGROUP as GroupCode,
+                COUNT(DISTINCT c.fID) as CustomerCount,
+                ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) as TotalSales,
+                ISNULL(SUM(CASE WHEN h.fDBCR = 'C' AND h.fOP = 'PAY' THEN ABS(h.fSUM) ELSE 0 END), 0) as TotalPayments,
+                ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) - 
+                ISNULL(SUM(CASE WHEN h.fDBCR = 'C' AND h.fOP = 'PAY' THEN ABS(h.fSUM) ELSE 0 END), 0) as TotalDebt,
+                CASE 
+                    WHEN COUNT(CASE WHEN h.fDBCR = 'D' THEN 1 END) > 0 THEN
+                        ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) / 
+                        COUNT(CASE WHEN h.fDBCR = 'D' THEN 1 END)
+                    ELSE 0
+                END as AvgSale
+            FROM CUSTOMERS c
+            LEFT JOIN DOCUMENTS d ON c.fID = d.fCUSTOMERID
+            LEFT JOIN HICUSTOMERSDEBT h ON d.fISN = h.fDEBTDOCISN
+                AND h.fDATE >= ?
+                AND h.fDATE <= ?
+            WHERE c.fGROUP IS NOT NULL AND c.fGROUP <> ''
+            GROUP BY c.fGROUP
+            HAVING ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) > 0
+            ORDER BY TotalSales DESC
+        """
+        
+        distributors = db.execute_query(query, (date_from, date_to))
+        
+        # Преобразовать Decimal в float и добавить расчет процента оплаты
+        for dist in distributors:
+            dist['TotalSales'] = float(dist['TotalSales'])
+            dist['TotalPayments'] = float(dist['TotalPayments'])
+            dist['TotalDebt'] = float(dist['TotalDebt'])
+            dist['AvgSale'] = float(dist['AvgSale'])
+            
+            # Процент оплаты
+            if dist['TotalSales'] > 0:
+                dist['PaymentRate'] = (dist['TotalPayments'] / dist['TotalSales']) * 100
+            else:
+                dist['PaymentRate'] = 0
+        
+        return jsonify({
+            'success': True,
+            'data': distributors,
+            'count': len(distributors),
+            'period': {
+                'from': date_from,
+                'to': date_to
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения дистрибьюторов: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # =============================================
 # API: ТЕРРИТОРИИ (SALES AREAS)
 # =============================================
@@ -2066,6 +2132,11 @@ def managers_page():
 def groups_page():
     """Страница групп (дистрибьюторы)"""
     return render_template('groups.html')
+
+@app.route('/distributors')
+def distributors_page():
+    """Страница анализа дистрибьюторов"""
+    return render_template('distributors.html')
 
 @app.route('/areas')
 def areas_page():
