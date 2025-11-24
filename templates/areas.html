@@ -814,7 +814,8 @@
                                         </div>
                                         <div class="col-md-2">
                                             <button class="btn btn-success w-100" @click="exportUnpaidToExcel()" :disabled="unpaidDocuments.length === 0">
-                                                <i class="fas fa-file-excel me-2"></i>Экспорт в Excel
+                                                <i class="fas fa-file-excel me-2"></i>
+                                                <span x-text="unpaidDocumentsFiltered.length !== unpaidDocuments.length ? `Экспорт (${unpaidDocumentsFiltered.length})` : 'Экспорт в Excel'"></span>
                                             </button>
                                         </div>
                                     </div>
@@ -2190,19 +2191,46 @@
             exportUnpaidToExcel() {
                 if (!this.selectedArea) return;
                 
-                const params = new URLSearchParams({
-                    date_from: this.unpaidDateFrom || this.dateFrom,
-                    date_to: this.unpaidDateTo || this.dateTo
-                });
+                // Используем отфильтрованные данные для экспорта
+                const dataToExport = this.unpaidDocumentsFiltered.length > 0 
+                    ? this.unpaidDocumentsFiltered 
+                    : this.unpaidDocuments;
                 
-                // Добавить фильтр по группам клиентов
-                const groupsToUse = this.selectedDebtGroups.length > 0 ? this.selectedDebtGroups : this.selectedGroups;
-                if (groupsToUse.length > 0) {
-                    params.append('groups', groupsToUse.join(','));
+                if (dataToExport.length === 0) {
+                    alert('Нет данных для экспорта');
+                    return;
                 }
                 
-                const url = `/api/sales-areas/${this.selectedArea.code}/unpaid-documents/export?${params}`;
-                window.location.href = url;
+                // Подготовить данные для Excel
+                const excelData = dataToExport.map(customer => ({
+                    'Код клиента': customer.customerCode,
+                    'Имя клиента': customer.customerName,
+                    'Продажи': customer.totalSales,
+                    'Оплаты': customer.totalPayments,
+                    'Долг': customer.remainingDebt
+                }));
+                
+                // Создать рабочую книгу
+                const wb = XLSX.utils.book_new();
+                const ws = XLSX.utils.json_to_sheet(excelData);
+                
+                // Установить ширину колонок
+                ws['!cols'] = [
+                    { wch: 15 },  // Код клиента
+                    { wch: 40 },  // Имя клиента
+                    { wch: 15 },  // Продажи
+                    { wch: 15 },  // Оплаты
+                    { wch: 15 }   // Долг
+                ];
+                
+                // Добавить лист в книгу
+                XLSX.utils.book_append_sheet(wb, ws, 'Неоплаченные документы');
+                
+                // Сформировать имя файла
+                const fileName = `Unpaid_${this.selectedArea.code}_${this.unpaidDateFrom}_${this.unpaidDateTo}${this.unpaidDocumentsFiltered.length !== this.unpaidDocuments.length ? '_filtered' : ''}.xlsx`;
+                
+                // Сохранить файл
+                XLSX.writeFile(wb, fileName);
             },
             
             calculatePercent(value, total) {
