@@ -129,8 +129,18 @@
         </div>
     </div>
 
+    <!-- Loading Spinner -->
+    <div class="row mb-4" x-show="loading" x-cloak>
+        <div class="col-12 text-center py-5">
+            <div class="spinner-border text-primary" style="width: 3rem; height: 3rem;" role="status">
+                <span class="visually-hidden">Загрузка...</span>
+            </div>
+            <p class="mt-3 text-muted">Загрузка данных...</p>
+        </div>
+    </div>
+
     <!-- Сводные карточки -->
-    <div class="row mb-4" x-show="!loading">
+    <div class="row mb-4" x-show="!loading" x-cloak>
         <div class="col-md-3">
             <div class="card bg-primary text-white">
                 <div class="card-body">
@@ -165,8 +175,112 @@
         </div>
     </div>
 
+    <!-- View Mode Toggle -->
+    <div class="row mb-3" x-show="!loading" x-cloak>
+        <div class="col-12 d-flex justify-content-between align-items-center">
+            <div class="btn-group" role="group">
+                <button type="button" class="btn" :class="viewMode === 'cards' ? 'btn-primary' : 'btn-outline-primary'" 
+                        @click="viewMode = 'cards'">
+                    <i class="fas fa-th-large"></i> Карточки
+                </button>
+                <button type="button" class="btn" :class="viewMode === 'table' ? 'btn-primary' : 'btn-outline-primary'" 
+                        @click="viewMode = 'table'">
+                    <i class="fas fa-table"></i> Таблица
+                </button>
+            </div>
+            <div class="input-group" style="max-width: 300px;">
+                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                <input type="text" class="form-control" placeholder="Поиск..." x-model="searchQuery">
+            </div>
+        </div>
+    </div>
+
+    <!-- Карточки дистрибьюторов -->
+    <div x-show="viewMode === 'cards' && !loading" x-cloak class="row g-4 mb-4">
+        <template x-for="dist in filteredDistributors" :key="dist.CustomerCode">
+            <div class="col-xl-3 col-lg-4 col-md-6">
+                <div class="card h-100 border-0 shadow-sm" style="cursor: pointer; transition: all 0.3s ease; background: linear-gradient(135deg, rgba(33, 37, 41, 0.95), rgba(44, 49, 53, 0.95));" 
+                     @click="openDetailModal(dist)"
+                     @mouseenter="$el.style.transform = 'translateY(-5px)'; $el.style.boxShadow = '0 12px 24px rgba(13, 110, 253, 0.3)'"
+                     @mouseleave="$el.style.transform = 'translateY(0)'; $el.style.boxShadow = '0 0.125rem 0.25rem rgba(0,0,0,0.075)'">
+                    
+                    <!-- Card Header -->
+                    <div class="card-header border-0 pb-0" style="background: linear-gradient(135deg, rgba(13, 110, 253, 0.2), rgba(13, 202, 240, 0.1));">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                            <span class="badge" :class="dist.PaymentRate >= 80 ? 'bg-success' : (dist.PaymentRate >= 50 ? 'bg-warning' : 'bg-danger')" 
+                                  x-text="dist.CustomerCode"></span>
+                            <!-- Circular Progress -->
+                            <div style="position: relative; width: 60px; height: 60px;">
+                                <svg width="60" height="60" style="transform: rotate(-90deg);">
+                                    <circle cx="30" cy="30" r="26" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="5"/>
+                                    <circle cx="30" cy="30" r="26" fill="none" 
+                                            :stroke="dist.PaymentRate >= 80 ? '#28a745' : (dist.PaymentRate >= 50 ? '#ffc107' : '#dc3545')"
+                                            stroke-width="5"
+                                            :stroke-dasharray="2 * Math.PI * 26"
+                                            :stroke-dashoffset="2 * Math.PI * 26 * (1 - dist.PaymentRate / 100)"
+                                            style="transition: stroke-dashoffset 1s ease;"/>
+                                </svg>
+                                <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 0.75rem; font-weight: 700;" 
+                                     x-text="Math.round(dist.PaymentRate) + '%'"></div>
+                            </div>
+                        </div>
+                        <h6 class="mb-1 fw-bold text-truncate" x-text="dist.CustomerName" :title="dist.CustomerName"></h6>
+                        <small class="text-muted">
+                            <i class="fas fa-users"></i>
+                            <span x-text="dist.GroupCode || 'N/A'"></span>
+                        </small>
+                    </div>
+
+                    <!-- Card Body -->
+                    <div class="card-body">
+                        <!-- Sales -->
+                        <div class="mb-3 pb-3 border-bottom border-secondary">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <small class="text-muted d-block">Продажи</small>
+                                    <h5 class="mb-0 text-primary" x-text="formatCurrency(dist.TotalSales)"></h5>
+                                </div>
+                                <div class="text-end">
+                                    <span class="badge bg-primary" x-text="dist.TransactionCount + ' сделок'"></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Payments -->
+                        <div class="mb-3 pb-3 border-bottom border-secondary">
+                            <small class="text-muted d-block">Платежи</small>
+                            <h5 class="mb-1 text-success" x-text="formatCurrency(dist.TotalPayments)"></h5>
+                            <div class="progress" style="height: 5px;">
+                                <div class="progress-bar" :class="dist.PaymentRate >= 80 ? 'bg-success' : (dist.PaymentRate >= 50 ? 'bg-warning' : 'bg-danger')" 
+                                     :style="`width: ${dist.PaymentRate}%`"></div>
+                            </div>
+                        </div>
+
+                        <!-- Debt -->
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <small class="text-muted d-block">Задолженность</small>
+                                <h5 class="mb-0" :class="dist.TotalDebt > 0 ? 'text-danger' : 'text-success'" 
+                                    x-text="formatCurrency(Math.abs(dist.TotalDebt))"></h5>
+                            </div>
+                            <i class="fas fa-2x" :class="dist.TotalDebt > 0 ? 'fa-exclamation-triangle text-danger' : 'fa-check-circle text-success'"></i>
+                        </div>
+                    </div>
+
+                    <!-- Card Footer -->
+                    <div class="card-footer bg-transparent border-top border-secondary">
+                        <small class="text-muted">
+                            <i class="fas fa-receipt"></i>
+                            Ср. продажа: <strong x-text="formatCurrency(dist.AvgSale)"></strong>
+                        </small>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
+
     <!-- Таблица дистрибьюторов -->
-    <div class="row">
+    <div class="row" x-show="viewMode === 'table' && !loading" x-cloak>
         <div class="col-12">
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
@@ -174,10 +288,6 @@
                         <i class="fas fa-table"></i>
                         Детальная статистика по группам
                     </h5>
-                    <div class="input-group" style="max-width: 300px;">
-                        <span class="input-group-text"><i class="fas fa-search"></i></span>
-                        <input type="text" class="form-control" placeholder="Поиск..." x-model="searchQuery">
-                    </div>
                 </div>
                 <div class="card-body">
                     <div x-show="loading" class="text-center py-5">
@@ -281,7 +391,7 @@
     </div>
 
     <!-- Графики -->
-    <div class="row mt-4">
+    <div class="row mt-4" x-show="!loading" x-cloak>
         <div class="col-md-6">
             <div class="card">
                 <div class="card-header">
@@ -311,7 +421,7 @@
     </div>
 
     <!-- График оплачиваемости -->
-    <div class="row mt-4">
+    <div class="row mt-4" x-show="!loading" x-cloak>
         <div class="col-12">
             <div class="card">
                 <div class="card-header">
@@ -326,7 +436,163 @@
             </div>
         </div>
     </div>
+
+    <!-- Detail Modal -->
+    <div x-show="detailModal.open" 
+         x-cloak
+         class="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center" 
+         style="background: rgba(0, 0, 0, 0.85); backdrop-filter: blur(8px); z-index: 9999; padding: 1rem; display: none;"
+         @click.self="closeDetailModal()">
+        <div class="card border-0 shadow-lg" 
+             style="width: 100%; max-width: 1200px; max-height: 90vh; overflow-y: auto; background: linear-gradient(135deg, #1a1d20, #2c3135); border-radius: 16px; animation: modalZoom 0.3s ease-out;"
+             @click.stop>
+            <template x-if="detailModal.distributor">
+                <div>
+                    <!-- Modal Header -->
+                    <div class="card-header border-0 p-4" style="background: linear-gradient(135deg, rgba(13, 110, 253, 0.2), rgba(13, 202, 240, 0.1));">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div>
+                                <h2 class="mb-2" x-text="detailModal.distributor.CustomerName"></h2>
+                                <div class="d-flex gap-2">
+                                    <span class="badge bg-primary" x-text="detailModal.distributor.CustomerCode"></span>
+                                    <span class="badge bg-secondary" x-text="detailModal.distributor.GroupCode"></span>
+                                    <span class="badge" 
+                                          :class="detailModal.distributor.PaymentRate >= 80 ? 'bg-success' : (detailModal.distributor.PaymentRate >= 50 ? 'bg-warning' : 'bg-danger')"
+                                          x-text="'Оплачено: ' + Math.round(detailModal.distributor.PaymentRate) + '%'"></span>
+                                </div>
+                            </div>
+                            <button class="btn btn-outline-light" @click="closeDetailModal()">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Modal Body -->
+                    <div class="card-body p-4">
+                        <div class="row g-4">
+                            <!-- Финансовые показатели -->
+                            <div class="col-lg-4">
+                                <div class="card h-100 bg-dark border-secondary">
+                                    <div class="card-header border-secondary">
+                                        <h5 class="mb-0"><i class="fas fa-chart-pie me-2"></i>Финансы</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="mb-4">
+                                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                                <span class="text-muted">Продажи</span>
+                                                <span class="badge bg-primary" x-text="detailModal.distributor.TransactionCount + ' сделок'"></span>
+                                            </div>
+                                            <h3 class="text-primary mb-0" x-text="formatCurrency(detailModal.distributor.TotalSales) + ' ֏'"></h3>
+                                        </div>
+
+                                        <div class="mb-4">
+                                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                                <span class="text-muted">Платежи</span>
+                                                <span class="badge bg-success" x-text="Math.round(detailModal.distributor.PaymentRate) + '%'"></span>
+                                            </div>
+                                            <h3 class="text-success mb-0" x-text="formatCurrency(detailModal.distributor.TotalPayments) + ' ֏'"></h3>
+                                        </div>
+
+                                        <div class="mb-4">
+                                            <span class="text-muted d-block mb-2">Задолженность</span>
+                                            <h3 class="mb-0" 
+                                                :class="detailModal.distributor.TotalDebt > 0 ? 'text-danger' : 'text-success'"
+                                                x-text="formatCurrency(Math.abs(detailModal.distributor.TotalDebt)) + ' ֏'"></h3>
+                                        </div>
+
+                                        <div>
+                                            <span class="text-muted d-block mb-2">Средняя продажа</span>
+                                            <h4 class="text-info mb-0" x-text="formatCurrency(detailModal.distributor.AvgSale) + ' ֏'"></h4>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- График -->
+                            <div class="col-lg-8">
+                                <div class="card h-100 bg-dark border-secondary">
+                                    <div class="card-header border-secondary">
+                                        <h5 class="mb-0"><i class="fas fa-chart-bar me-2"></i>Детальная аналитика</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <canvas id="distributorDetailChart" style="max-height: 300px;"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Дополнительные метрики -->
+                        <div class="row g-4 mt-2">
+                            <div class="col-12">
+                                <div class="card bg-dark border-secondary">
+                                    <div class="card-header border-secondary">
+                                        <h5 class="mb-0"><i class="fas fa-info-circle me-2"></i>Показатели</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="row g-3">
+                                            <div class="col-md-3">
+                                                <div class="p-3 rounded bg-primary bg-opacity-10 border border-primary">
+                                                    <i class="fas fa-percentage text-primary mb-2"></i>
+                                                    <div>
+                                                        <small class="text-muted d-block">% оплаты</small>
+                                                        <h4 class="mb-0" x-text="Math.round(detailModal.distributor.PaymentRate) + '%'"></h4>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <div class="p-3 rounded bg-info bg-opacity-10 border border-info">
+                                                    <i class="fas fa-shopping-cart text-info mb-2"></i>
+                                                    <div>
+                                                        <small class="text-muted d-block">Транзакций</small>
+                                                        <h4 class="mb-0" x-text="detailModal.distributor.TransactionCount"></h4>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <div class="p-3 rounded bg-success bg-opacity-10 border border-success">
+                                                    <i class="fas fa-receipt text-success mb-2"></i>
+                                                    <div>
+                                                        <small class="text-muted d-block">Ср. продажа</small>
+                                                        <h4 class="mb-0" x-text="formatCurrency(detailModal.distributor.AvgSale)"></h4>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <div class="p-3 rounded bg-opacity-10 border" 
+                                                     :class="detailModal.distributor.TotalDebt > 0 ? 'bg-danger border-danger' : 'bg-success border-success'">
+                                                    <i class="fas mb-2" 
+                                                       :class="detailModal.distributor.TotalDebt > 0 ? 'fa-exclamation-triangle text-danger' : 'fa-check-circle text-success'"></i>
+                                                    <div>
+                                                        <small class="text-muted d-block">Статус</small>
+                                                        <h4 class="mb-0" x-text="detailModal.distributor.TotalDebt > 0 ? 'Долг' : 'OK'"></h4>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
 </div>
+
+<style>
+@keyframes modalZoom {
+    from {
+        opacity: 0;
+        transform: scale(0.9);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+</style>
+
 {% endblock %}
 
 {% block extra_js %}
@@ -340,6 +606,7 @@
             searchQuery: '',
             sortColumn: 'TotalSales',
             sortDirection: 'desc',
+            viewMode: 'cards', // 'cards' or 'table'
             salesChart: null,
             topChart: null,
             paymentRateChart: null,
@@ -353,10 +620,19 @@
             divisionSearch: '',
             groupSearch: '',
 
-            init() {
+            // Detail Modal
+            detailModal: {
+                open: false,
+                distributor: null,
+                chart: null
+            },
+
+            async init() {
+                console.log('Distributors page initializing...');
                 this.resetDates();
-                this.loadFiltersData();
-                this.loadDistributors();
+                await this.loadFiltersData();
+                await this.loadDistributors();
+                console.log('Distributors page initialized. Loading:', this.loading);
             },
 
             resetDates() {
@@ -429,6 +705,7 @@
             },
 
             async loadDistributors() {
+                console.log('Loading distributors...');
                 this.loading = true;
                 try {
                     const params = new URLSearchParams({
@@ -446,20 +723,27 @@
                         params.append('groups', this.selectedGroups.join(','));
                     }
                     
+                    console.log('Fetching:', `/api/distributors?${params}`);
                     const response = await fetch(`/api/distributors?${params}`);
                     const result = await response.json();
                     
+                    console.log('API Response:', result);
+                    
                     if (result.success) {
                         this.distributors = result.data;
+                        console.log('Loaded distributors:', this.distributors.length);
                         
-                        this.$nextTick(() => {
-                            this.renderCharts();
-                        });
+                        // Дождаться следующего тика для отрисовки DOM
+                        await this.$nextTick();
+                        this.renderCharts();
+                    } else {
+                        console.error('API returned success=false');
                     }
                 } catch (error) {
                     console.error('Ошибка загрузки дистрибьюторов:', error);
                 } finally {
                     this.loading = false;
+                    console.log('Loading finished. loading =', this.loading);
                 }
             },
 
@@ -715,6 +999,86 @@
                     currency: 'AMD',
                     minimumFractionDigits: 0
                 }).format(num);
+            },
+
+            openDetailModal(distributor) {
+                this.detailModal.distributor = distributor;
+                this.detailModal.open = true;
+                
+                this.$nextTick(() => {
+                    this.renderDetailChart();
+                });
+            },
+
+            closeDetailModal() {
+                if (this.detailModal.chart) {
+                    this.detailModal.chart.destroy();
+                    this.detailModal.chart = null;
+                }
+                this.detailModal.open = false;
+                this.detailModal.distributor = null;
+            },
+
+            renderDetailChart() {
+                const canvas = document.getElementById('distributorDetailChart');
+                if (!canvas) return;
+
+                const ctx = canvas.getContext('2d');
+                const dist = this.detailModal.distributor;
+
+                if (this.detailModal.chart) {
+                    this.detailModal.chart.destroy();
+                }
+
+                this.detailModal.chart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: ['Продажи', 'Платежи', 'Задолженность'],
+                        datasets: [{
+                            label: 'Сумма (֏)',
+                            data: [
+                                dist.TotalSales,
+                                dist.TotalPayments,
+                                Math.abs(dist.TotalDebt)
+                            ],
+                            backgroundColor: [
+                                'rgba(13, 110, 253, 0.7)',
+                                'rgba(25, 135, 84, 0.7)',
+                                dist.TotalDebt > 0 ? 'rgba(220, 53, 69, 0.7)' : 'rgba(25, 135, 84, 0.7)'
+                            ],
+                            borderColor: [
+                                '#0d6efd',
+                                '#198754',
+                                dist.TotalDebt > 0 ? '#dc3545' : '#198754'
+                            ],
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: (context) => {
+                                        return this.formatCurrency(context.parsed.y) + ' ֏';
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: (value) => this.formatCurrency(value)
+                                }
+                            }
+                        }
+                    }
+                });
             }
         }
     }
