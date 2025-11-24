@@ -18,50 +18,155 @@
     </div>
 
     <!-- Статистика -->
-    <div class="row mb-4">
-        <div class="col-md-4">
+    <div class="row g-3 mb-4">
+        <div class="col-xl-3 col-lg-6 col-md-6">
             <div class="card border-0 shadow-sm h-100" style="background: linear-gradient(135deg, #0d6efd 0%, #0dcaf0 100%);">
                 <div class="card-body text-white">
                     <div class="d-flex justify-content-between align-items-center">
-                        <div>
+                        <div class="flex-grow-1">
                             <p class="mb-1 opacity-75" style="font-size: 0.85rem;">Всего групп</p>
                             <h3 class="mb-0 fw-bold" x-text="allGroups.length"></h3>
+                            <small class="opacity-75" style="font-size: 0.75rem;">Все клиентские группы</small>
                         </div>
                         <div class="p-2 rounded" style="background: rgba(255,255,255,0.2);">
-                            <i class="fas fa-layer-group fa-lg"></i>
+                            <i class="fas fa-layer-group fa-2x"></i>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
         
-        <div class="col-md-4">
+        <div class="col-xl-3 col-lg-6 col-md-6">
             <div class="card border-0 shadow-sm h-100" style="background: linear-gradient(135deg, #198754 0%, #20c997 100%);">
                 <div class="card-body text-white">
                     <div class="d-flex justify-content-between align-items-center">
-                        <div>
+                        <div class="flex-grow-1">
                             <p class="mb-1 opacity-75" style="font-size: 0.85rem;">Выбрано дистрибьюторов</p>
                             <h3 class="mb-0 fw-bold" x-text="selectedDistributors.length"></h3>
+                            <small class="opacity-75" style="font-size: 0.75rem;" x-text="selectedDistributors.length > 0 ? `${((selectedDistributors.length / allGroups.length) * 100).toFixed(0)}% от всех` : 'Не выбрано'"></small>
                         </div>
                         <div class="p-2 rounded" style="background: rgba(255,255,255,0.2);">
-                            <i class="fas fa-check-circle fa-lg"></i>
+                            <i class="fas fa-check-circle fa-2x"></i>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
         
-        <div class="col-md-4">
+        <div class="col-xl-3 col-lg-6 col-md-6">
             <div class="card border-0 shadow-sm h-100" style="background: linear-gradient(135deg, #6f42c1 0%, #d63384 100%);">
                 <div class="card-body text-white">
                     <div class="d-flex justify-content-between align-items-center">
-                        <div>
+                        <div class="flex-grow-1">
                             <p class="mb-1 opacity-75" style="font-size: 0.85rem;">Клиентов в дистр.</p>
-                            <h3 class="mb-0 fw-bold" x-text="totalDistributorCustomers"></h3>
+                            <h3 class="mb-0 fw-bold" x-text="formatNumber(totalDistributorCustomers)"></h3>
+                            <small class="opacity-75" style="font-size: 0.75rem;" x-text="totalCustomers > 0 ? `${((totalDistributorCustomers / totalCustomers) * 100).toFixed(0)}% от всех` : '0%'"></small>
                         </div>
                         <div class="p-2 rounded" style="background: rgba(255,255,255,0.2);">
-                            <i class="fas fa-users fa-lg"></i>
+                            <i class="fas fa-users fa-2x"></i>
                         </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-xl-3 col-lg-6 col-md-6">
+            <div class="card border-0 shadow-sm h-100" style="background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%);">
+                <div class="card-body text-white">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="flex-grow-1">
+                            <p class="mb-1 opacity-75" style="font-size: 0.85rem;">Обычных групп</p>
+                            <h3 class="mb-0 fw-bold" x-text="allGroups.length - selectedDistributors.length"></h3>
+                            <small class="opacity-75" style="font-size: 0.75rem;" x-text="`${formatNumber(totalCustomers - totalDistributorCustomers)} клиентов`"></small>
+                        </div>
+                        <div class="p-2 rounded" style="background: rgba(255,255,255,0.2);">
+                            <i class="fas fa-store fa-2x"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Анализ ТОП-5 дистрибьюторов и обычных групп -->
+    <div class="row mb-4" x-show="selectedDistributors.length > 0">
+        <div class="col-md-6">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-header bg-success text-white">
+                    <h6 class="mb-0">
+                        <i class="fas fa-trophy"></i>
+                        ТОП-5 Дистрибьюторов (по количеству клиентов)
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <template x-for="(group, index) in topDistributors" :key="group.fGROUP">
+                        <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
+                            <div class="d-flex align-items-center gap-3">
+                                <div class="text-center" style="min-width: 35px;">
+                                    <span class="badge fs-6" 
+                                          :class="index === 0 ? 'bg-warning text-dark' : index === 1 ? 'bg-secondary' : index === 2 ? 'bg-info' : 'bg-light text-dark'"
+                                          x-text="`#${index + 1}`"></span>
+                                </div>
+                                <div>
+                                    <div class="fw-bold" x-text="group.fGROUP"></div>
+                                    <small class="text-muted">
+                                        <i class="fas fa-users me-1"></i>
+                                        <span x-text="formatNumber(group.customerCount)"></span> клиентов
+                                    </small>
+                                </div>
+                            </div>
+                            <div class="text-end">
+                                <div class="progress" style="width: 120px; height: 8px;">
+                                    <div class="progress-bar bg-success" 
+                                         :style="`width: ${(group.customerCount / topDistributors[0].customerCount * 100)}%`"></div>
+                                </div>
+                                <small class="text-muted" x-text="`${((group.customerCount / totalDistributorCustomers) * 100).toFixed(1)}%`"></small>
+                            </div>
+                        </div>
+                    </template>
+                    <div x-show="topDistributors.length === 0" class="text-center text-muted py-3">
+                        <i class="fas fa-inbox fa-2x mb-2"></i>
+                        <p class="mb-0">Нет данных</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card border-0 shadow-sm h-100">
+                <div class="card-header bg-secondary text-white">
+                    <h6 class="mb-0">
+                        <i class="fas fa-store"></i>
+                        ТОП-5 Обычных групп (по количеству клиентов)
+                    </h6>
+                </div>
+                <div class="card-body">
+                    <template x-for="(group, index) in topRegularGroups" :key="group.fGROUP">
+                        <div class="d-flex justify-content-between align-items-center mb-3 pb-3 border-bottom">
+                            <div class="d-flex align-items-center gap-3">
+                                <div class="text-center" style="min-width: 35px;">
+                                    <span class="badge bg-light text-dark fs-6" x-text="`#${index + 1}`"></span>
+                                </div>
+                                <div>
+                                    <div class="fw-bold" x-text="group.fGROUP"></div>
+                                    <small class="text-muted">
+                                        <i class="fas fa-users me-1"></i>
+                                        <span x-text="formatNumber(group.customerCount)"></span> клиентов
+                                    </small>
+                                </div>
+                            </div>
+                            <div class="text-end">
+                                <div class="progress" style="width: 120px; height: 8px;">
+                                    <div class="progress-bar bg-secondary" 
+                                         :style="`width: ${(group.customerCount / topRegularGroups[0].customerCount * 100)}%`"></div>
+                                </div>
+                                <small class="text-muted" x-text="`${((group.customerCount / (totalCustomers - totalDistributorCustomers)) * 100).toFixed(1)}%`"></small>
+                            </div>
+                        </div>
+                    </template>
+                    <div x-show="topRegularGroups.length === 0" class="text-center text-muted py-3">
+                        <i class="fas fa-inbox fa-2x mb-2"></i>
+                        <p class="mb-0">Нет данных</p>
                     </div>
                 </div>
             </div>
@@ -366,6 +471,24 @@
                 return this.allGroups
                     .filter(g => this.isSelected(g.fGROUP))
                     .reduce((sum, g) => sum + (g.customerCount || 0), 0);
+            },
+
+            get totalCustomers() {
+                return this.allGroups.reduce((sum, g) => sum + (g.customerCount || 0), 0);
+            },
+
+            get topDistributors() {
+                return this.allGroups
+                    .filter(g => this.isSelected(g.fGROUP))
+                    .sort((a, b) => (b.customerCount || 0) - (a.customerCount || 0))
+                    .slice(0, 5);
+            },
+
+            get topRegularGroups() {
+                return this.allGroups
+                    .filter(g => !this.isSelected(g.fGROUP))
+                    .sort((a, b) => (b.customerCount || 0) - (a.customerCount || 0))
+                    .slice(0, 5);
             },
 
             formatNumber(num) {
