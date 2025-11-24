@@ -1916,11 +1916,13 @@ def get_customer_groups_list():
         
         query = """
             SELECT DISTINCT
-                fGROUP
-            FROM CUSTOMERS
-            WHERE fGROUP IS NOT NULL
-            AND fGROUP != ''
-            ORDER BY fGROUP
+                c.fGROUP,
+                ISNULL(t.fCAPTION, c.fGROUP) as GroupName
+            FROM CUSTOMERS c
+            LEFT JOIN TREES t ON t.fCODE = c.fGROUP AND t.fTREEID = 'CustGrp'
+            WHERE c.fGROUP IS NOT NULL
+            AND c.fGROUP != ''
+            ORDER BY c.fGROUP
         """
         cursor.execute(query)
         
@@ -1928,7 +1930,7 @@ def get_customer_groups_list():
         for row in cursor.fetchall():
             groups.append({
                 'code': row[0],
-                'name': row[0]  # Используем код как название, если нет таблицы названий
+                'name': row[1]
             })
         
         conn.close()
@@ -2230,6 +2232,11 @@ def groups_page():
 def distributors_page():
     """Страница анализа дистрибьюторов"""
     return render_template('distributors.html')
+
+@app.route('/customer-cards')
+def customer_cards_page():
+    """Страница с карточками клиентов и детальной аналитикой"""
+    return render_template('customer_cards.html')
 
 @app.route('/areas')
 def areas_page():
