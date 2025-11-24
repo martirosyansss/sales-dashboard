@@ -82,12 +82,12 @@
                                 <input type="text" class="form-control" placeholder="Поиск" x-model="divisionSearch">
                             </div>
                             <div style="max-height: 250px; overflow-y: auto;" class="border rounded p-2">
-                                <template x-for="division in filteredDivisions()" :key="division.fGROUP">
+                                <template x-for="division in filteredDivisions()" :key="division.code">
                                     <div class="form-check">
-                                        <input class="form-check-input" type="checkbox" :id="'div_' + division.fGROUP" 
-                                               :value="division.fGROUP" x-model="selectedDivisions" @change="loadDistributors()">
-                                        <label class="form-check-label" :for="'div_' + division.fGROUP">
-                                            <strong x-text="division.fGROUP"></strong> · <span x-text="division.name"></span>
+                                        <input class="form-check-input" type="checkbox" :id="'div_' + division.code" 
+                                               :value="division.code" x-model="selectedDivisions" @change="loadDistributors()">
+                                        <label class="form-check-label" :for="'div_' + division.code">
+                                            <strong x-text="division.code"></strong> · <span x-text="division.name"></span>
                                         </label>
                                     </div>
                                 </template>
@@ -112,12 +112,12 @@
                                 <input type="text" class="form-control" placeholder="Поиск" x-model="groupSearch">
                             </div>
                             <div style="max-height: 250px; overflow-y: auto;" class="border rounded p-2">
-                                <template x-for="group in filteredGroups()" :key="group.fGROUP">
+                                <template x-for="group in filteredGroups()" :key="group.code">
                                     <div class="form-check">
-                                        <input class="form-check-input" type="checkbox" :id="'grp_' + group.fGROUP" 
-                                               :value="group.fGROUP" x-model="selectedGroups" @change="loadDistributors()">
-                                        <label class="form-check-label" :for="'grp_' + group.fGROUP">
-                                            <strong x-text="group.fGROUP"></strong> · <span x-text="group.name"></span>
+                                        <input class="form-check-input" type="checkbox" :id="'grp_' + group.code" 
+                                               :value="group.code" x-model="selectedGroups" @change="loadDistributors()">
+                                        <label class="form-check-label" :for="'grp_' + group.code">
+                                            <strong x-text="group.code"></strong> · <span x-text="group.name"></span>
                                         </label>
                                     </div>
                                 </template>
@@ -390,7 +390,7 @@
                 if (!this.divisionSearch) return this.divisions;
                 const search = this.divisionSearch.toLowerCase();
                 return this.divisions.filter(d => 
-                    d.fGROUP.toLowerCase().includes(search) || 
+                    d.code.toLowerCase().includes(search) || 
                     d.name.toLowerCase().includes(search)
                 );
             },
@@ -399,7 +399,7 @@
                 if (!this.groupSearch) return this.customerGroups;
                 const search = this.groupSearch.toLowerCase();
                 return this.customerGroups.filter(g => 
-                    g.fGROUP.toLowerCase().includes(search) || 
+                    g.code.toLowerCase().includes(search) || 
                     g.name.toLowerCase().includes(search)
                 );
             },
@@ -408,7 +408,7 @@
                 if (this.selectedDivisions.length === this.divisions.length) {
                     this.selectedDivisions = [];
                 } else {
-                    this.selectedDivisions = this.divisions.map(d => d.fGROUP);
+                    this.selectedDivisions = this.divisions.map(d => d.code);
                 }
                 this.loadDistributors();
             },
@@ -417,7 +417,7 @@
                 if (this.selectedGroups.length === this.customerGroups.length) {
                     this.selectedGroups = [];
                 } else {
-                    this.selectedGroups = this.customerGroups.map(g => g.fGROUP);
+                    this.selectedGroups = this.customerGroups.map(g => g.code);
                 }
                 this.loadDistributors();
             },
