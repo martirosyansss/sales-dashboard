@@ -265,6 +265,37 @@ def dashboard_stats():
         revenue_growth_10y = ((current_rev - ten_years_rev) / ten_years_rev * 100) if ten_years_rev > 0 else 0
         sales_growth_10y = ((current_cnt - ten_years_cnt) / ten_years_cnt * 100) if ten_years_cnt > 0 else 0
         
+        # === СЕГОДНЯШНИЕ МЕТРИКИ ===
+        # Выручка, продажи, средний чек и клиенты за сегодня
+        today_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_date + timedelta(days=1)
+        last_year_today = today_date.replace(year=today_date.year - 1)
+        last_year_today_end = last_year_today + timedelta(days=1)
+        
+        params_today = (today_date, today_end) + excluded_params + product_groups_params
+        params_last_year_today = (last_year_today, last_year_today_end) + excluded_params + product_groups_params
+        
+        # Выручка сегодня
+        today_revenue = db.execute_query(query_revenue, params_today)
+        last_year_today_revenue = db.execute_query(query_revenue, params_last_year_today)
+        
+        # Продажи сегодня
+        today_sales = db.execute_query(query_sales_count, params_today)
+        last_year_today_sales = db.execute_query(query_sales_count, params_last_year_today)
+        
+        # Клиенты сегодня
+        today_customers = db.execute_query(query_customers, params_today)
+        last_year_today_customers = db.execute_query(query_customers, params_last_year_today)
+        
+        # Средний чек сегодня
+        today_rev = float(today_revenue[0]['TotalRevenue']) if today_revenue else 0
+        today_cnt = today_sales[0]['SalesCount'] if today_sales else 0
+        today_avg_check = today_rev / today_cnt if today_cnt > 0 else 0
+        
+        last_year_today_rev = float(last_year_today_revenue[0]['TotalRevenue']) if last_year_today_revenue else 0
+        last_year_today_cnt = last_year_today_sales[0]['SalesCount'] if last_year_today_sales else 0
+        last_year_today_avg_check = last_year_today_rev / last_year_today_cnt if last_year_today_cnt > 0 else 0
+        
         return jsonify({
             'success': True,
             'data': {
@@ -295,6 +326,22 @@ def dashboard_stats():
                 },
                 'active_customers': {
                     'value': active_customers[0]['ActiveCustomers'] if active_customers else 0
+                },
+                'today_revenue': {
+                    'value': today_rev,
+                    'last_year': last_year_today_rev
+                },
+                'today_sales': {
+                    'value': today_cnt,
+                    'last_year': last_year_today_cnt
+                },
+                'today_avg_check': {
+                    'value': today_avg_check,
+                    'last_year': last_year_today_avg_check
+                },
+                'today_customers': {
+                    'value': today_customers[0]['ActiveCustomers'] if today_customers else 0,
+                    'last_year': last_year_today_customers[0]['ActiveCustomers'] if last_year_today_customers else 0
                 },
                 'top_manager': {
                     'name': top_manager[0]['ManagerName'] if top_manager else 'N/A',
