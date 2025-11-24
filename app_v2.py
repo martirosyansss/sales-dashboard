@@ -1876,9 +1876,70 @@ def get_groups():
         logger.error(f"Ошибка получения групп: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/product-groups')
+def get_product_groups_list():
+    """Получить список дивизионов для фильтра дистрибьюторов"""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT DISTINCT
+                fCODE,
+                fCAPTION
+            FROM TREES
+            WHERE fTREEID = 'Division'
+            AND fCLOSED = 0
+            ORDER BY fCODE
+        """
+        cursor.execute(query)
+        
+        divisions = []
+        for row in cursor.fetchall():
+            divisions.append({
+                'code': row[0],
+                'name': row[1]
+            })
+        
+        conn.close()
+        return jsonify({'success': True, 'data': divisions})
+    except Exception as e:
+        logger.error(f"Ошибка загрузки дивизионов: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/customer-groups')
+def get_customer_groups_list():
+    """Получить список групп клиентов для фильтра дистрибьюторов"""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT DISTINCT
+                fGROUP
+            FROM CUSTOMERS
+            WHERE fGROUP IS NOT NULL
+            AND fGROUP != ''
+            ORDER BY fGROUP
+        """
+        cursor.execute(query)
+        
+        groups = []
+        for row in cursor.fetchall():
+            groups.append({
+                'code': row[0],
+                'name': row[0]  # Используем код как название, если нет таблицы названий
+            })
+        
+        conn.close()
+        return jsonify({'success': True, 'data': groups})
+    except Exception as e:
+        logger.error(f"Ошибка загрузки групп клиентов: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/distributors')
 def get_distributors():
-    """Получить расширенную аналитику по дистрибьюторам (группам клиентов)"""
+    """Получить расширенную аналитику по клиентам-дистрибьюторам"""
     try:
         date_from = request.args.get('date_from')
         date_to = request.args.get('date_to')
@@ -1890,11 +1951,12 @@ def get_distributors():
             date_from = today.replace(day=1).strftime('%Y-%m-%d')
             date_to = today.strftime('%Y-%m-%d')
         
-        # Базовый запрос
+        # Запрос по отдельным клиентам
         query = """
             SELECT 
+                c.fCODE as CustomerCode,
+                c.fNAME as CustomerName,
                 c.fGROUP as GroupCode,
-                COUNT(DISTINCT c.fID) as CustomerCount,
                 ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) as TotalSales,
                 ISNULL(SUM(CASE WHEN h.fDBCR = 'C' AND h.fOP = 'PAY' THEN ABS(h.fSUM) ELSE 0 END), 0) as TotalPayments,
                 ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) - 
@@ -1904,7 +1966,8 @@ def get_distributors():
                         ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) / 
                         COUNT(CASE WHEN h.fDBCR = 'D' THEN 1 END)
                     ELSE 0
-                END as AvgSale
+                END as AvgSale,
+                COUNT(CASE WHEN h.fDBCR = 'D' THEN 1 END) as TransactionCount
             FROM CUSTOMERS c
             LEFT JOIN DOCUMENTS d ON c.fID = d.fCUSTOMERID
             LEFT JOIN HICUSTOMERSDEBT h ON d.fISN = h.fDEBTDOCISN
@@ -1931,11 +1994,10 @@ def get_distributors():
         
         # Добавляем условия WHERE
         if where_conditions:
-            query += " AND " + " AND ".join(where_conditions)
+            query += " WHERE " + " AND ".join(where_conditions)
         
         query += """
-            WHERE c.fGROUP IS NOT NULL AND c.fGROUP <> ''
-            GROUP BY c.fGROUP
+            GROUP BY c.fCODE, c.fNAME, c.fGROUP
             HAVING ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) > 0
             ORDER BY TotalSales DESC
         """

@@ -134,7 +134,7 @@
         <div class="col-md-3">
             <div class="card bg-primary text-white">
                 <div class="card-body">
-                    <h6 class="card-title">Всего групп</h6>
+                    <h6 class="card-title">Всего клиентов</h6>
                     <h2 class="mb-0" x-text="distributors.length"></h2>
                 </div>
             </div>
@@ -142,8 +142,8 @@
         <div class="col-md-3">
             <div class="card bg-success text-white">
                 <div class="card-body">
-                    <h6 class="card-title">Всего клиентов</h6>
-                    <h2 class="mb-0" x-text="formatNumber(totalCustomers)"></h2>
+                    <h6 class="card-title">Всего транзакций</h6>
+                    <h2 class="mb-0" x-text="formatNumber(totalTransactions)"></h2>
                 </div>
             </div>
         </div>
@@ -191,11 +191,17 @@
                             <thead class="table-dark">
                                 <tr>
                                     <th>#</th>
+                                    <th @click="sortBy('CustomerCode')" style="cursor: pointer;">
+                                        Код <i class="fas fa-sort"></i>
+                                    </th>
+                                    <th @click="sortBy('CustomerName')" style="cursor: pointer;">
+                                        Наименование <i class="fas fa-sort"></i>
+                                    </th>
                                     <th @click="sortBy('GroupCode')" style="cursor: pointer;">
                                         Группа <i class="fas fa-sort"></i>
                                     </th>
-                                    <th @click="sortBy('CustomerCount')" style="cursor: pointer;">
-                                        Клиентов <i class="fas fa-sort"></i>
+                                    <th @click="sortBy('TransactionCount')" style="cursor: pointer;">
+                                        Транзакций <i class="fas fa-sort"></i>
                                     </th>
                                     <th @click="sortBy('TotalSales')" style="cursor: pointer;">
                                         Продажи <i class="fas fa-sort"></i>
@@ -207,19 +213,25 @@
                                         Долг <i class="fas fa-sort"></i>
                                     </th>
                                     <th>% Оплаты</th>
-                                    <th>Ср. чек</th>
+                                    <th>Ср. продажа</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <template x-for="(dist, index) in filteredDistributors" :key="dist.GroupCode">
+                                <template x-for="(dist, index) in filteredDistributors" :key="dist.CustomerCode">
                                     <tr>
                                         <td x-text="index + 1"></td>
                                         <td>
-                                            <span class="badge bg-primary" x-text="dist.GroupCode"></span>
+                                            <code x-text="dist.CustomerCode"></code>
                                         </td>
                                         <td>
-                                            <i class="fas fa-users text-muted me-2"></i>
-                                            <span x-text="formatNumber(dist.CustomerCount)"></span>
+                                            <strong x-text="dist.CustomerName"></strong>
+                                        </td>
+                                        <td>
+                                            <span class="badge bg-secondary" x-text="dist.GroupCode || '-'"></span>
+                                        </td>
+                                        <td>
+                                            <i class="fas fa-exchange-alt text-muted me-2"></i>
+                                            <span x-text="formatNumber(dist.TransactionCount)"></span>
                                         </td>
                                         <td>
                                             <strong x-text="formatCurrency(dist.TotalSales)" class="text-success"></strong>
@@ -250,8 +262,8 @@
                             </tbody>
                             <tfoot class="table-secondary">
                                 <tr>
-                                    <td colspan="2"><strong>ИТОГО:</strong></td>
-                                    <td><strong x-text="formatNumber(totalCustomers)"></strong></td>
+                                    <td colspan="4"><strong>ИТОГО:</strong></td>
+                                    <td><strong x-text="formatNumber(totalTransactions)"></strong></td>
                                     <td><strong x-text="formatCurrency(totalSales)" class="text-success"></strong></td>
                                     <td><strong x-text="formatCurrency(totalPayments)" class="text-info"></strong></td>
                                     <td><strong x-text="formatCurrency(totalDebt)" class="text-danger"></strong></td>
@@ -305,7 +317,7 @@
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-chart-line"></i>
-                        Анализ оплачиваемости по группам
+                        Анализ оплачиваемости по клиентам
                     </h5>
                 </div>
                 <div class="card-body">
@@ -457,7 +469,9 @@
                 if (this.searchQuery) {
                     const query = this.searchQuery.toLowerCase();
                     filtered = filtered.filter(d => 
-                        d.GroupCode.toLowerCase().includes(query)
+                        d.CustomerName.toLowerCase().includes(query) ||
+                        d.CustomerCode.toLowerCase().includes(query) ||
+                        (d.GroupCode && d.GroupCode.toLowerCase().includes(query))
                     );
                 }
                 
@@ -481,8 +495,8 @@
                 }
             },
 
-            get totalCustomers() {
-                return this.distributors.reduce((sum, d) => sum + d.CustomerCount, 0);
+            get totalTransactions() {
+                return this.distributors.reduce((sum, d) => sum + d.TransactionCount, 0);
             },
 
             get totalSales() {
@@ -526,7 +540,7 @@
                     .sort((a, b) => b.TotalSales - a.TotalSales)
                     .slice(0, 10);
 
-                const labels = top10.map(d => 'Группа ' + d.GroupCode);
+                const labels = top10.map(d => d.CustomerName);
                 const values = top10.map(d => d.TotalSales);
 
                 this.salesChart = new Chart(ctx, {
@@ -583,7 +597,7 @@
                     .sort((a, b) => b.TotalSales - a.TotalSales)
                     .slice(0, 10);
 
-                const labels = top10.map(d => d.GroupCode);
+                const labels = top10.map(d => d.CustomerName);
                 const sales = top10.map(d => d.TotalSales);
                 const payments = top10.map(d => d.TotalPayments);
 
@@ -641,7 +655,7 @@
                 const sorted = [...this.distributors]
                     .sort((a, b) => a.PaymentRate - b.PaymentRate);
 
-                const labels = sorted.map(d => d.GroupCode);
+                const labels = sorted.map(d => d.CustomerName);
                 const rates = sorted.map(d => d.PaymentRate);
                 const colors = rates.map(rate => {
                     if (rate >= 80) return 'rgba(25, 135, 84, 0.8)';
