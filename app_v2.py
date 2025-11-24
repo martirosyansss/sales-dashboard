@@ -3904,7 +3904,7 @@ def get_unpaid_documents(area_code):
         date_filter = ""
         date_params = tuple()
         if date_from and date_to:
-            date_filter = " AND doc.fDATE BETWEEN ? AND ?"
+            date_filter = " AND doc.fDATE >= ? AND doc.fDATE <= ?"
             date_params = (date_from, date_to)
         
         # Построить фильтр по группам клиентов
