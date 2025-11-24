@@ -1882,12 +1882,15 @@ def get_distributors():
     try:
         date_from = request.args.get('date_from')
         date_to = request.args.get('date_to')
+        divisions = request.args.get('divisions', '')
+        groups = request.args.get('groups', '')
         
         if not date_from or not date_to:
             today = datetime.now()
             date_from = today.replace(day=1).strftime('%Y-%m-%d')
             date_to = today.strftime('%Y-%m-%d')
         
+        # Базовый запрос
         query = """
             SELECT 
                 c.fGROUP as GroupCode,
@@ -1907,13 +1910,37 @@ def get_distributors():
             LEFT JOIN HICUSTOMERSDEBT h ON d.fISN = h.fDEBTDOCISN
                 AND h.fDATE >= ?
                 AND h.fDATE <= ?
+        """
+        
+        params = [date_from, date_to]
+        where_conditions = []
+        
+        # Фильтр по дивизионам (товарным группам)
+        if divisions:
+            division_list = divisions.split(',')
+            placeholders = ','.join(['?'] * len(division_list))
+            where_conditions.append(f"h.fPRODUCTGROUP IN ({placeholders})")
+            params.extend(division_list)
+        
+        # Фильтр по группам клиентов
+        if groups:
+            group_list = groups.split(',')
+            placeholders = ','.join(['?'] * len(group_list))
+            where_conditions.append(f"c.fGROUP IN ({placeholders})")
+            params.extend(group_list)
+        
+        # Добавляем условия WHERE
+        if where_conditions:
+            query += " AND " + " AND ".join(where_conditions)
+        
+        query += """
             WHERE c.fGROUP IS NOT NULL AND c.fGROUP <> ''
             GROUP BY c.fGROUP
             HAVING ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) > 0
             ORDER BY TotalSales DESC
         """
         
-        distributors = db.execute_query(query, (date_from, date_to))
+        distributors = db.execute_query(query, tuple(params))
         
         # Преобразовать Decimal в float и добавить расчет процента оплаты
         for dist in distributors:
@@ -1935,6 +1962,10 @@ def get_distributors():
             'period': {
                 'from': date_from,
                 'to': date_to
+            },
+            'filters': {
+                'divisions': divisions,
+                'groups': groups
             }
         })
         

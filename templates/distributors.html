@@ -39,6 +39,96 @@
         </div>
     </div>
 
+    <!-- Toggle Divisions/Groups Filter -->
+    <div class="row mb-3">
+        <div class="col-12">
+            <button class="btn btn-sm btn-outline-secondary w-100" @click="showFiltersPanel = !showFiltersPanel">
+                <i class="fas" :class="showFiltersPanel ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+                <span x-text="showFiltersPanel ? 'Скрыть фильтры по дивизионам и группам' : 'Показать фильтры по дивизионам и группам'"></span>
+                <template x-if="selectedDivisions.length > 0 || selectedGroups.length > 0">
+                    <span class="badge bg-primary ms-2" x-text="`${selectedDivisions.length + selectedGroups.length} выбрано`"></span>
+                </template>
+            </button>
+        </div>
+    </div>
+
+    <!-- Фильтры по дивизионам и группам (Collapsible) -->
+    <div class="card mb-4" x-show="showFiltersPanel" x-transition x-cloak>
+        <div class="card-header bg-primary text-white">
+            <div class="d-flex justify-content-between align-items-center">
+                <h6 class="mb-0">
+                    <i class="fas fa-filter"></i> Фильтры по дивизионам и группам
+                </h6>
+                <button class="btn btn-sm btn-outline-light" @click="clearFilters()">
+                    <i class="fas fa-times"></i> Очистить всё
+                </button>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
+                <!-- Дивизионы -->
+                <div class="col-md-6">
+                    <div class="card border-primary">
+                        <div class="card-header bg-light">
+                            <h6 class="mb-0"><i class="fas fa-shopping-cart me-2"></i>Дивизионы товаров</h6>
+                        </div>
+                        <div class="card-body">
+                            <span class="badge bg-primary mb-2">Выбрано: <span x-text="selectedDivisions.length"></span></span>
+                            <button class="btn btn-sm btn-outline-primary w-100 mb-2" @click="selectAllDivisions()">
+                                <i class="fas fa-check-double"></i> Выбрать все
+                            </button>
+                            <div class="input-group input-group-sm mb-2">
+                                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                                <input type="text" class="form-control" placeholder="Поиск" x-model="divisionSearch">
+                            </div>
+                            <div style="max-height: 250px; overflow-y: auto;" class="border rounded p-2">
+                                <template x-for="division in filteredDivisions()" :key="division.fGROUP">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" :id="'div_' + division.fGROUP" 
+                                               :value="division.fGROUP" x-model="selectedDivisions" @change="loadDistributors()">
+                                        <label class="form-check-label" :for="'div_' + division.fGROUP">
+                                            <strong x-text="division.fGROUP"></strong> · <span x-text="division.name"></span>
+                                        </label>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Группы клиентов -->
+                <div class="col-md-6">
+                    <div class="card border-success">
+                        <div class="card-header bg-light">
+                            <h6 class="mb-0"><i class="fas fa-users me-2"></i>Группы клиентов</h6>
+                        </div>
+                        <div class="card-body">
+                            <span class="badge bg-success mb-2">Выбрано: <span x-text="selectedGroups.length"></span></span>
+                            <button class="btn btn-sm btn-outline-success w-100 mb-2" @click="selectAllGroups()">
+                                <i class="fas fa-check-double"></i> Выбрать все
+                            </button>
+                            <div class="input-group input-group-sm mb-2">
+                                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                                <input type="text" class="form-control" placeholder="Поиск" x-model="groupSearch">
+                            </div>
+                            <div style="max-height: 250px; overflow-y: auto;" class="border rounded p-2">
+                                <template x-for="group in filteredGroups()" :key="group.fGROUP">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" :id="'grp_' + group.fGROUP" 
+                                               :value="group.fGROUP" x-model="selectedGroups" @change="loadDistributors()">
+                                        <label class="form-check-label" :for="'grp_' + group.fGROUP">
+                                            <strong x-text="group.fGROUP"></strong> · <span x-text="group.name"></span>
+                                        </label>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Сводные карточки -->
     <div class="row mb-4" x-show="!loading">
         <div class="col-md-3">
@@ -241,9 +331,19 @@
             salesChart: null,
             topChart: null,
             paymentRateChart: null,
+            
+            // Фильтры
+            showFiltersPanel: false,
+            divisions: [],
+            customerGroups: [],
+            selectedDivisions: [],
+            selectedGroups: [],
+            divisionSearch: '',
+            groupSearch: '',
 
             init() {
                 this.resetDates();
+                this.loadFiltersData();
                 this.loadDistributors();
             },
 
@@ -253,6 +353,68 @@
                 this.dateFrom = firstDay.toISOString().split('T')[0];
                 this.dateTo = today.toISOString().split('T')[0];
             },
+            
+            async loadFiltersData() {
+                try {
+                    // Загрузка дивизионов
+                    const divisionsResponse = await fetch('/api/product-groups');
+                    const divisionsResult = await divisionsResponse.json();
+                    if (divisionsResult.success) {
+                        this.divisions = divisionsResult.data;
+                    }
+                    
+                    // Загрузка групп клиентов
+                    const groupsResponse = await fetch('/api/customer-groups');
+                    const groupsResult = await groupsResponse.json();
+                    if (groupsResult.success) {
+                        this.customerGroups = groupsResult.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки фильтров:', error);
+                }
+            },
+            
+            filteredDivisions() {
+                if (!this.divisionSearch) return this.divisions;
+                const search = this.divisionSearch.toLowerCase();
+                return this.divisions.filter(d => 
+                    d.fGROUP.toLowerCase().includes(search) || 
+                    d.name.toLowerCase().includes(search)
+                );
+            },
+            
+            filteredGroups() {
+                if (!this.groupSearch) return this.customerGroups;
+                const search = this.groupSearch.toLowerCase();
+                return this.customerGroups.filter(g => 
+                    g.fGROUP.toLowerCase().includes(search) || 
+                    g.name.toLowerCase().includes(search)
+                );
+            },
+            
+            selectAllDivisions() {
+                if (this.selectedDivisions.length === this.divisions.length) {
+                    this.selectedDivisions = [];
+                } else {
+                    this.selectedDivisions = this.divisions.map(d => d.fGROUP);
+                }
+                this.loadDistributors();
+            },
+            
+            selectAllGroups() {
+                if (this.selectedGroups.length === this.customerGroups.length) {
+                    this.selectedGroups = [];
+                } else {
+                    this.selectedGroups = this.customerGroups.map(g => g.fGROUP);
+                }
+                this.loadDistributors();
+            },
+            
+            clearFilters() {
+                this.selectedDivisions = [];
+                this.selectedGroups = [];
+                this.loadDistributors();
+            },
 
             async loadDistributors() {
                 this.loading = true;
@@ -261,6 +423,16 @@
                         date_from: this.dateFrom,
                         date_to: this.dateTo
                     });
+                    
+                    // Добавляем фильтры по дивизионам
+                    if (this.selectedDivisions.length > 0) {
+                        params.append('divisions', this.selectedDivisions.join(','));
+                    }
+                    
+                    // Добавляем фильтры по группам клиентов
+                    if (this.selectedGroups.length > 0) {
+                        params.append('groups', this.selectedGroups.join(','));
+                    }
                     
                     const response = await fetch(`/api/distributors?${params}`);
                     const result = await response.json();
