@@ -4,63 +4,143 @@
 
 {% block content %}
 <div class="container-fluid" x-data="dashboardData()">
-    <!-- Заголовок и фильтры -->
+    <!-- Заголовок, поиск и фильтры -->
     <div class="row mb-4">
-        <div class="col-md-6">
-            <h1 class="display-4">
+        <div class="col-md-4">
+            <h1 class="display-5 mb-2">
                 <i class="fas fa-chart-line text-primary"></i>
-                Панель управления продажами
+                Панель управления
             </h1>
-            <p class="lead text-muted">
+            <p class="text-muted mb-0">
                 <i class="fas fa-calendar-alt"></i> 
-                <span x-text="selectedPeriodText"></span> | 
+                <span x-text="selectedPeriodText"></span>
+            </p>
+            <p class="text-muted small">
                 <i class="fas fa-clock"></i> Обновлено: <span x-text="currentTime"></span>
             </p>
         </div>
-        <div class="col-md-6">
+        
+        <div class="col-md-8">
+            <!-- Глобальный поиск -->
+            <div class="card mb-3">
+                <div class="card-body p-3">
+                    <div class="input-group">
+                        <span class="input-group-text">
+                            <i class="fas fa-search"></i>
+                        </span>
+                        <input type="text" 
+                               class="form-control" 
+                               placeholder="Поиск клиентов, менеджеров, территорий..."
+                               x-model="searchQuery"
+                               @input="debounceSearch()">
+                        <button class="btn btn-outline-secondary" 
+                                @click="clearSearch()"
+                                x-show="searchQuery.length > 0">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <!-- Результаты поиска -->
+                    <div x-show="searchResults.length > 0" 
+                         class="mt-2 border-top pt-2"
+                         style="max-height: 300px; overflow-y: auto;">
+                        <template x-for="result in searchResults" :key="result.id">
+                            <div class="search-result-item p-2 rounded mb-1" 
+                                 style="cursor: pointer; background: rgba(13, 110, 253, 0.1);"
+                                 @click="navigateToResult(result)">
+                                <strong x-text="result.name"></strong>
+                                <small class="text-muted ms-2" x-text="result.type"></small>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Расширенные фильтры -->
             <div class="card">
-                <div class="card-body">
-                    <h6 class="mb-3">
-                        <i class="fas fa-filter"></i> Фильтры по дате
-                    </h6>
-                    <div class="row">
-                        <div class="col-md-5">
-                            <label class="form-label small">От:</label>
+                <div class="card-body p-3">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="mb-0">
+                            <i class="fas fa-filter"></i> Фильтры
+                        </h6>
+                        <button class="btn btn-sm btn-link" @click="showAdvancedFilters = !showAdvancedFilters">
+                            <i :class="showAdvancedFilters ? 'fas fa-chevron-up' : 'fas fa-chevron-down'"></i>
+                        </button>
+                    </div>
+                    
+                    <div class="row g-2">
+                        <!-- Даты -->
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">От:</label>
                             <input type="date" 
                                    class="form-control form-control-sm" 
                                    x-model="dateFrom"
-                                   @change="loadStats()">
+                                   @change="applyFilters()">
                         </div>
-                        <div class="col-md-5">
-                            <label class="form-label small">До:</label>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1">До:</label>
                             <input type="date" 
                                    class="form-control form-control-sm" 
                                    x-model="dateTo"
-                                   @change="loadStats()">
+                                   @change="applyFilters()">
                         </div>
-                        <div class="col-md-2 d-flex align-items-end">
-                            <button class="btn btn-sm btn-outline-secondary w-100" 
-                                    @click="resetDates()"
-                                    title="Сбросить на текущий месяц">
-                                <i class="fas fa-undo"></i>
-                            </button>
+                        <div class="col-md-6">
+                            <label class="form-label small mb-1">Быстрый выбор:</label>
+                            <div class="btn-group btn-group-sm w-100" role="group">
+                                <button type="button" class="btn btn-outline-primary" @click="setThisMonth()">
+                                    Этот месяц
+                                </button>
+                                <button type="button" class="btn btn-outline-primary" @click="setLastMonth()">
+                                    Прошлый
+                                </button>
+                                <button type="button" class="btn btn-outline-primary" @click="setThisYear()">
+                                    Год
+                                </button>
+                                <button class="btn btn-outline-secondary" 
+                                        @click="resetFilters()"
+                                        title="Сбросить все">
+                                    <i class="fas fa-undo"></i>
+                                </button>
+                            </div>
                         </div>
                     </div>
-                    <div class="mt-2">
-                        <small class="text-muted">
-                            <i class="fas fa-info-circle"></i>
-                            Быстрый выбор:
-                        </small>
-                        <div class="btn-group btn-group-sm mt-1" role="group">
-                            <button type="button" class="btn btn-outline-primary" @click="setThisMonth()">
-                                Этот месяц
-                            </button>
-                            <button type="button" class="btn btn-outline-primary" @click="setLastMonth()">
-                                Прошлый месяц
-                            </button>
-                            <button type="button" class="btn btn-outline-primary" @click="setThisYear()">
-                                Этот год
-                            </button>
+                    
+                    <!-- Расширенные фильтры -->
+                    <div x-show="showAdvancedFilters" x-collapse>
+                        <hr class="my-2">
+                        <div class="row g-2">
+                            <div class="col-md-4">
+                                <label class="form-label small mb-1">Территория:</label>
+                                <select class="form-select form-select-sm" 
+                                        x-model="selectedArea"
+                                        @change="applyFilters()">
+                                    <option value="">Все территории</option>
+                                    <template x-for="area in salesAreas" :key="area.code">
+                                        <option :value="area.code" x-text="area.name"></option>
+                                    </template>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label small mb-1">Менеджер:</label>
+                                <select class="form-select form-select-sm" 
+                                        x-model="selectedManager"
+                                        @change="applyFilters()">
+                                    <option value="">Все менеджеры</option>
+                                    <template x-for="manager in managers" :key="manager.fID">
+                                        <option :value="manager.fID" x-text="manager.fNAME"></option>
+                                    </template>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label small mb-1">Группа клиентов:</label>
+                                <select class="form-select form-select-sm" 
+                                        x-model="selectedGroup"
+                                        @change="applyFilters()">
+                                    <option value="">Все группы</option>
+                                    <template x-for="group in customerGroups" :key="group.code">
+                                        <option :value="group.code" x-text="group.name"></option>
+                                    </template>
+                                </select>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -75,66 +155,132 @@
                 <div class="card-header">
                     <h6 class="mb-0">
                         <i class="fas fa-chart-bar"></i>
-                        Сравнение с предыдущими периодами
+                        Сравнение с предыдущими периодами (за эти же дни)
                     </h6>
                 </div>
                 <div class="card-body">
                     <div class="row">
                         <div class="col-md-4">
-                            <h6 class="text-muted">К прошлому месяцу:</h6>
+                            <h6 class="text-muted">
+                                <i class="fas fa-calendar-minus me-1"></i>
+                                К прошлому месяцу (за эти же дни):
+                            </h6>
                             <div class="d-flex justify-content-between mb-2">
                                 <span>Выручка:</span>
-                                <strong>
-                                    <span :class="stats.total_revenue.growth >= 0 ? 'text-success' : 'text-danger'"
-                                          x-text="formatPercent(stats.total_revenue.growth)"></span>
-                                    <small class="text-muted" x-text="`(${formatCurrency(stats.total_revenue.prev_month)})`"></small>
-                                </strong>
+                                <div class="text-end">
+                                    <strong>
+                                        <span :class="stats.total_revenue.growth >= 0 ? 'text-success' : 'text-danger'"
+                                              x-text="formatPercent(stats.total_revenue.growth)"></span>
+                                    </strong>
+                                    <br>
+                                    <small class="text-muted">
+                                        Текущий: <strong x-text="formatCurrency(stats.total_revenue.value)"></strong>
+                                    </small>
+                                    <br>
+                                    <small class="text-muted">
+                                        Прошлый: <strong x-text="formatCurrency(stats.total_revenue.prev_month)"></strong>
+                                    </small>
+                                </div>
                             </div>
+                            <hr class="my-2">
                             <div class="d-flex justify-content-between">
                                 <span>Продажи:</span>
-                                <strong>
-                                    <span :class="stats.sales_count.growth >= 0 ? 'text-success' : 'text-danger'"
-                                          x-text="formatPercent(stats.sales_count.growth)"></span>
-                                    <small class="text-muted" x-text="`(${formatNumber(stats.sales_count.prev_month)})`"></small>
-                                </strong>
+                                <div class="text-end">
+                                    <strong>
+                                        <span :class="stats.sales_count.growth >= 0 ? 'text-success' : 'text-danger'"
+                                              x-text="formatPercent(stats.sales_count.growth)"></span>
+                                    </strong>
+                                    <br>
+                                    <small class="text-muted">
+                                        Текущий: <strong x-text="formatNumber(stats.sales_count.value)"></strong>
+                                    </small>
+                                    <br>
+                                    <small class="text-muted">
+                                        Прошлый: <strong x-text="formatNumber(stats.sales_count.prev_month)"></strong>
+                                    </small>
+                                </div>
                             </div>
                         </div>
                         <div class="col-md-4">
-                            <h6 class="text-muted">К прошлому году (этот же месяц):</h6>
+                            <h6 class="text-muted">
+                                <i class="fas fa-calendar-alt me-1"></i>
+                                К прошлому году (за эти же дни):
+                            </h6>
                             <div class="d-flex justify-content-between mb-2">
                                 <span>Выручка:</span>
-                                <strong>
-                                    <span :class="stats.total_revenue.growth_yoy >= 0 ? 'text-success' : 'text-danger'"
-                                          x-text="formatPercent(stats.total_revenue.growth_yoy)"></span>
-                                    <small class="text-muted" x-text="`(${formatCurrency(stats.total_revenue.last_year)})`"></small>
-                                </strong>
+                                <div class="text-end">
+                                    <strong>
+                                        <span :class="stats.total_revenue.growth_yoy >= 0 ? 'text-success' : 'text-danger'"
+                                              x-text="formatPercent(stats.total_revenue.growth_yoy)"></span>
+                                    </strong>
+                                    <br>
+                                    <small class="text-muted">
+                                        Текущий: <strong x-text="formatCurrency(stats.total_revenue.value)"></strong>
+                                    </small>
+                                    <br>
+                                    <small class="text-muted">
+                                        Прошлый год: <strong x-text="formatCurrency(stats.total_revenue.last_year)"></strong>
+                                    </small>
+                                </div>
                             </div>
+                            <hr class="my-2">
                             <div class="d-flex justify-content-between">
                                 <span>Продажи:</span>
-                                <strong>
-                                    <span :class="stats.sales_count.growth_yoy >= 0 ? 'text-success' : 'text-danger'"
-                                          x-text="formatPercent(stats.sales_count.growth_yoy)"></span>
-                                    <small class="text-muted" x-text="`(${formatNumber(stats.sales_count.last_year)})`"></small>
-                                </strong>
+                                <div class="text-end">
+                                    <strong>
+                                        <span :class="stats.sales_count.growth_yoy >= 0 ? 'text-success' : 'text-danger'"
+                                              x-text="formatPercent(stats.sales_count.growth_yoy)"></span>
+                                    </strong>
+                                    <br>
+                                    <small class="text-muted">
+                                        Текущий: <strong x-text="formatNumber(stats.sales_count.value)"></strong>
+                                    </small>
+                                    <br>
+                                    <small class="text-muted">
+                                        Прошлый год: <strong x-text="formatNumber(stats.sales_count.last_year)"></strong>
+                                    </small>
+                                </div>
                             </div>
                         </div>
                         <div class="col-md-4">
-                            <h6 class="text-muted">К 10 лет назад (этот же месяц):</h6>
+                            <h6 class="text-muted">
+                                <i class="fas fa-history me-1"></i>
+                                К 10 лет назад (за эти же дни):
+                            </h6>
                             <div class="d-flex justify-content-between mb-2">
                                 <span>Выручка:</span>
-                                <strong>
-                                    <span :class="stats.total_revenue.growth_10y >= 0 ? 'text-success' : 'text-danger'"
-                                          x-text="formatPercent(stats.total_revenue.growth_10y)"></span>
-                                    <small class="text-muted" x-text="`(${formatCurrency(stats.total_revenue.ten_years_ago)})`"></small>
-                                </strong>
+                                <div class="text-end">
+                                    <strong>
+                                        <span :class="stats.total_revenue.growth_10y >= 0 ? 'text-success' : 'text-danger'"
+                                              x-text="formatPercent(stats.total_revenue.growth_10y)"></span>
+                                    </strong>
+                                    <br>
+                                    <small class="text-muted">
+                                        Текущий: <strong x-text="formatCurrency(stats.total_revenue.value)"></strong>
+                                    </small>
+                                    <br>
+                                    <small class="text-muted">
+                                        10 лет назад: <strong x-text="formatCurrency(stats.total_revenue.ten_years_ago)"></strong>
+                                    </small>
+                                </div>
                             </div>
+                            <hr class="my-2">
                             <div class="d-flex justify-content-between">
                                 <span>Продажи:</span>
-                                <strong>
-                                    <span :class="stats.sales_count.growth_10y >= 0 ? 'text-success' : 'text-danger'"
-                                          x-text="formatPercent(stats.sales_count.growth_10y)"></span>
-                                    <small class="text-muted" x-text="`(${formatNumber(stats.sales_count.ten_years_ago)})`"></small>
-                                </strong>
+                                <div class="text-end">
+                                    <strong>
+                                        <span :class="stats.sales_count.growth_10y >= 0 ? 'text-success' : 'text-danger'"
+                                              x-text="formatPercent(stats.sales_count.growth_10y)"></span>
+                                    </strong>
+                                    <br>
+                                    <small class="text-muted">
+                                        Текущий: <strong x-text="formatNumber(stats.sales_count.value)"></strong>
+                                    </small>
+                                    <br>
+                                    <small class="text-muted">
+                                        10 лет назад: <strong x-text="formatNumber(stats.sales_count.ten_years_ago)"></strong>
+                                    </small>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -146,82 +292,191 @@
     <!-- Статистические карточки -->
     <div class="row mb-4" id="stats-container">
         <!-- Общая выручка -->
-        <div class="col-xl-3 col-md-6 mb-4">
-            <div class="card stat-card" style="border-left-color: #0d6efd;">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <p class="stat-label mb-1">Общая выручка</p>
-                        <h2 class="stat-value mb-0" x-text="formatCurrency(stats.total_revenue.value)">
-                            Загрузка...
-                        </h2>
-                        <span class="growth-badge" 
-                              :class="stats.total_revenue.growth >= 0 ? 'growth-positive' : 'growth-negative'"
-                              x-show="stats.total_revenue.growth !== undefined">
-                            <i :class="stats.total_revenue.growth >= 0 ? 'fas fa-arrow-up' : 'fas fa-arrow-down'"></i>
-                            <span x-text="formatPercent(stats.total_revenue.growth)"></span>
-                        </span>
-                    </div>
-                    <div class="stat-icon">
-                        <i class="fas fa-dollar-sign text-primary"></i>
+        <div class="col-xl-3 col-md-6 mb-3">
+            <div class="card stat-card" style="border-left: 4px solid #0d6efd;">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="flex-grow-1">
+                            <p class="stat-label mb-1 text-muted small">ОБЩАЯ ВЫРУЧКА</p>
+                            <h3 class="stat-value mb-1" x-text="formatCurrency(stats.total_revenue.value)">
+                                Загрузка...
+                            </h3>
+                            <div class="mb-2">
+                                <span class="badge" 
+                                      :class="stats.total_revenue.growth >= 0 ? 'bg-success' : 'bg-danger'"
+                                      x-show="stats.total_revenue.growth !== undefined">
+                                    <i :class="stats.total_revenue.growth >= 0 ? 'fas fa-arrow-up' : 'fas fa-arrow-down'"></i>
+                                    <span x-text="formatPercent(stats.total_revenue.growth)"></span> к прошл. месяцу
+                                </span>
+                            </div>
+                            <small class="text-muted d-block mb-1">
+                                <i class="fas fa-calendar-day"></i> 
+                                <span x-text="currentDaysInMonth"></span> дней в месяце
+                            </small>
+                            <small class="text-muted d-block" x-show="stats.total_revenue.prev_month > 0">
+                                Прошл. месяц (эти дни): <strong x-text="formatCurrency(stats.total_revenue.prev_month)"></strong>
+                            </small>
+                            <small class="text-muted d-block" x-show="stats.total_revenue.last_year > 0">
+                                Прошл. год (этот месяц): <strong x-text="formatCurrency(stats.total_revenue.last_year)"></strong>
+                            </small>
+                        </div>
+                        <div class="stat-icon">
+                            <i class="fas fa-dollar-sign fa-2x text-primary"></i>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
 
         <!-- Количество продаж -->
-        <div class="col-xl-3 col-md-6 mb-4">
-            <div class="card stat-card" style="border-left-color: #198754;">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <p class="stat-label mb-1">Количество продаж</p>
-                        <h2 class="stat-value mb-0" x-text="formatNumber(stats.sales_count.value)">
-                            Загрузка...
-                        </h2>
-                        <span class="growth-badge" 
-                              :class="stats.sales_count.growth >= 0 ? 'growth-positive' : 'growth-negative'"
-                              x-show="stats.sales_count.growth !== undefined">
-                            <i :class="stats.sales_count.growth >= 0 ? 'fas fa-arrow-up' : 'fas fa-arrow-down'"></i>
-                            <span x-text="formatPercent(stats.sales_count.growth)"></span>
-                        </span>
-                    </div>
-                    <div class="stat-icon">
-                        <i class="fas fa-shopping-cart text-success"></i>
+        <div class="col-xl-3 col-md-6 mb-3">
+            <div class="card stat-card" style="border-left: 4px solid #198754;">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="flex-grow-1">
+                            <p class="stat-label mb-1 text-muted small">КОЛИЧЕСТВО ПРОДАЖ</p>
+                            <h3 class="stat-value mb-1" x-text="formatNumber(stats.sales_count.value)">
+                                Загрузка...
+                            </h3>
+                            <div class="mb-2">
+                                <span class="badge" 
+                                      :class="stats.sales_count.growth >= 0 ? 'bg-success' : 'bg-danger'"
+                                      x-show="stats.sales_count.growth !== undefined">
+                                    <i :class="stats.sales_count.growth >= 0 ? 'fas fa-arrow-up' : 'fas fa-arrow-down'"></i>
+                                    <span x-text="formatPercent(stats.sales_count.growth)"></span> к прошл. месяцу
+                                </span>
+                            </div>
+                            <small class="text-muted d-block mb-1">
+                                <i class="fas fa-calendar-day"></i> 
+                                <span x-text="currentDaysInMonth"></span> дней в месяце
+                            </small>
+                            <small class="text-muted d-block" x-show="stats.sales_count.prev_month > 0">
+                                Прошл. месяц (эти дни): <strong x-text="formatNumber(stats.sales_count.prev_month)"></strong>
+                            </small>
+                            <small class="text-muted d-block" x-show="stats.sales_count.last_year > 0">
+                                Прошл. год (этот месяц): <strong x-text="formatNumber(stats.sales_count.last_year)"></strong>
+                            </small>
+                        </div>
+                        <div class="stat-icon">
+                            <i class="fas fa-shopping-cart fa-2x text-success"></i>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
 
         <!-- Средний чек -->
-        <div class="col-xl-3 col-md-6 mb-4">
-            <div class="card stat-card" style="border-left-color: #0dcaf0;">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <p class="stat-label mb-1">Средний чек</p>
-                        <h2 class="stat-value mb-0" x-text="formatCurrency(stats.avg_check.value)">
-                            Загрузка...
-                        </h2>
-                        <small class="text-muted">за текущий месяц</small>
-                    </div>
-                    <div class="stat-icon">
-                        <i class="fas fa-receipt text-info"></i>
+        <div class="col-xl-3 col-md-6 mb-3">
+            <div class="card stat-card" style="border-left: 4px solid #0dcaf0;">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="flex-grow-1">
+                            <p class="stat-label mb-1 text-muted small">СРЕДНИЙ ЧЕК</p>
+                            <h3 class="stat-value mb-1" x-text="formatCurrency(stats.avg_check.value)">
+                                Загрузка...
+                            </h3>
+                            <small class="text-muted d-block mb-1">за выбранный период</small>
+                            <small class="text-muted d-block" x-show="stats.avg_check.prev_month > 0">
+                                Прошл. месяц (эти дни): <strong x-text="formatCurrency(stats.avg_check.prev_month)"></strong>
+                            </small>
+                            <small class="text-muted d-block" x-show="stats.avg_check.last_year > 0">
+                                Прошл. год (этот месяц): <strong x-text="formatCurrency(stats.avg_check.last_year)"></strong>
+                            </small>
+                        </div>
+                        <div class="stat-icon">
+                            <i class="fas fa-receipt fa-2x text-info"></i>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
 
         <!-- Активные клиенты -->
-        <div class="col-xl-3 col-md-6 mb-4">
-            <div class="card stat-card" style="border-left-color: #ffc107;">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <p class="stat-label mb-1">Активные клиенты</p>
-                        <h2 class="stat-value mb-0" x-text="formatNumber(stats.active_customers.value)">
-                            Загрузка...
-                        </h2>
-                        <small class="text-muted">покупали в этом месяце</small>
+        <div class="col-xl-3 col-md-6 mb-3">
+            <div class="card stat-card" style="border-left: 4px solid #ffc107;">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div class="flex-grow-1">
+                            <p class="stat-label mb-1 text-muted small">АКТИВНЫЕ КЛИЕНТЫ</p>
+                            <h3 class="stat-value mb-1" x-text="formatNumber(stats.active_customers.value)">
+                                Загрузка...
+                            </h3>
+                            <small class="text-muted d-block mb-1">покупали в периоде</small>
+                            <small class="text-muted d-block" x-show="stats.active_customers.prev_month > 0">
+                                Прошл. месяц (эти дни): <strong x-text="formatNumber(stats.active_customers.prev_month)"></strong>
+                            </small>
+                            <small class="text-muted d-block" x-show="stats.active_customers.last_year > 0">
+                                Прошл. год (этот месяц): <strong x-text="formatNumber(stats.active_customers.last_year)"></strong>
+                            </small>
+                        </div>
+                        <div class="stat-icon">
+                            <i class="fas fa-users fa-2x text-warning"></i>
+                        </div>
                     </div>
-                    <div class="stat-icon">
-                        <i class="fas fa-users text-warning"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Дополнительные метрики - Краткая сводка из всех разделов -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-chart-pie me-2"></i>
+                        Краткая сводка по разделам
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <!-- Менеджеры -->
+                        <div class="col-md-3 border-end">
+                            <div class="text-center p-3">
+                                <i class="fas fa-user-tie fa-3x text-primary mb-2"></i>
+                                <h4 class="mb-1" x-text="summary.managersCount">0</h4>
+                                <p class="text-muted mb-0 small">Активных менеджеров</p>
+                                <a href="/managers" class="btn btn-sm btn-outline-primary mt-2">
+                                    Подробнее <i class="fas fa-arrow-right ms-1"></i>
+                                </a>
+                            </div>
+                        </div>
+                        
+                        <!-- Территории -->
+                        <div class="col-md-3 border-end">
+                            <div class="text-center p-3">
+                                <i class="fas fa-map-marked-alt fa-3x text-success mb-2"></i>
+                                <h4 class="mb-1" x-text="summary.areasCount">0</h4>
+                                <p class="text-muted mb-0 small">Территорий продаж</p>
+                                <a href="/areas" class="btn btn-sm btn-outline-success mt-2">
+                                    Подробнее <i class="fas fa-arrow-right ms-1"></i>
+                                </a>
+                            </div>
+                        </div>
+                        
+                        <!-- Клиенты -->
+                        <div class="col-md-3 border-end">
+                            <div class="text-center p-3">
+                                <i class="fas fa-building fa-3x text-info mb-2"></i>
+                                <h4 class="mb-1" x-text="summary.customersCount">0</h4>
+                                <p class="text-muted mb-0 small">Всего клиентов</p>
+                                <a href="/customers-grid" class="btn btn-sm btn-outline-info mt-2">
+                                    Подробнее <i class="fas fa-arrow-right ms-1"></i>
+                                </a>
+                            </div>
+                        </div>
+                        
+                        <!-- Группы -->
+                        <div class="col-md-3">
+                            <div class="text-center p-3">
+                                <i class="fas fa-layer-group fa-3x text-warning mb-2"></i>
+                                <h4 class="mb-1" x-text="summary.groupsCount">0</h4>
+                                <p class="text-muted mb-0 small">Групп клиентов</p>
+                                <a href="/groups" class="btn btn-sm btn-outline-warning mt-2">
+                                    Подробнее <i class="fas fa-arrow-right ms-1"></i>
+                                </a>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -269,7 +524,13 @@
                             <div class="text-center p-3 bg-warning rounded">
                                 <small class="text-dark d-block mb-1"><strong>Конечный долг</strong></small>
                                 <h3 class="mb-0 text-dark" x-text="formatCurrency(debts.final_debt)">0</h3>
-                                <small class="text-dark" x-text="`${debts.debt_customers_count} клиентов с долгами`"></small>
+                                <small class="text-dark d-block mb-1" x-text="`${debts.debt_customers_count} клиентов с долгами`"></small>
+                                <small class="text-muted d-block" x-show="debts.prev_month_debt > 0">
+                                    Прошл. месяц: <strong x-text="formatCurrency(debts.prev_month_debt)"></strong>
+                                </small>
+                                <small class="text-muted d-block" x-show="debts.last_year_debt > 0">
+                                    Прошл. год: <strong x-text="formatCurrency(debts.last_year_debt)"></strong>
+                                </small>
                             </div>
                         </div>
                     </div>
@@ -436,15 +697,29 @@
         return {
             loading: true,
             loadingDebts: true,
+            showAdvancedFilters: false,
             currentTime: new Date().toLocaleString('ru-RU'),
             dateFrom: '',
             dateTo: '',
             selectedPeriodText: 'Текущий месяц',
+            currentDaysInMonth: 0,
+            
+            // Filters
+            selectedArea: '',
+            selectedManager: '',
+            selectedGroup: '',
+            
+            // Search
+            searchQuery: '',
+            searchResults: [],
+            searchTimeout: null,
+            
+            // Data
             stats: {
                 total_revenue: { value: 0, growth: 0, growth_yoy: 0, growth_10y: 0, prev_month: 0, last_year: 0, ten_years_ago: 0 },
                 sales_count: { value: 0, growth: 0, growth_yoy: 0, growth_10y: 0, prev_month: 0, last_year: 0, ten_years_ago: 0 },
-                avg_check: { value: 0 },
-                active_customers: { value: 0 },
+                avg_check: { value: 0, prev_month: 0, last_year: 0 },
+                active_customers: { value: 0, prev_month: 0, last_year: 0 },
                 top_manager: { name: 'Загрузка...', sales: 0 }
             },
             debts: {
@@ -453,8 +728,23 @@
                 type02: 0,
                 final_debt: 0,
                 debt_customers_count: 0,
+                prev_month_debt: 0,
+                last_year_debt: 0,
                 top_debtors: []
             },
+            summary: {
+                managersCount: 0,
+                areasCount: 0,
+                customersCount: 0,
+                groupsCount: 0
+            },
+            
+            // Filter data
+            salesAreas: [],
+            managers: [],
+            customerGroups: [],
+            
+            // Charts
             salesChart: null,
             managersChart: null,
             tenYearsChart: null,
@@ -464,6 +754,8 @@
             init() {
                 // Установить текущий месяц по умолчанию
                 this.setThisMonth();
+                this.loadFilterData();
+                this.loadSummary();
                 this.loadCharts();
                 this.loadDebts();
                 
@@ -474,12 +766,180 @@
 
                 // Автообновление данных каждые 5 минут
                 setInterval(() => {
-                    this.loadStats();
-                    this.loadCharts();
-                    this.loadDebts();
+                    this.applyFilters();
                 }, 300000);
             },
+            
+            // ===== Filters =====
+            async loadFilterData() {
+                try {
+                    // Load sales areas
+                    const areasRes = await fetch('/api/sales-areas?date_from=' + this.dateFrom + '&date_to=' + this.dateTo);
+                    const areasData = await areasRes.json();
+                    if (areasData.success) {
+                        this.salesAreas = areasData.data.map(a => ({ code: a.code, name: a.name }));
+                    }
+                    
+                    // Load managers
+                    const managersRes = await fetch('/api/managers?date_from=' + this.dateFrom + '&date_to=' + this.dateTo);
+                    const managersData = await managersRes.json();
+                    if (managersData.success) {
+                        this.managers = managersData.data;
+                    }
+                    
+                    // Load groups
+                    const groupsRes = await fetch('/api/settings/groups');
+                    const groupsData = await groupsRes.json();
+                    if (groupsData.success) {
+                        this.customerGroups = groupsData.data;
+                    }
+                } catch (error) {
+                    console.error('Error loading filter data:', error);
+                }
+            },
+            
+            async loadSummary() {
+                try {
+                    // Managers count
+                    const managersRes = await fetch('/api/managers?date_from=' + this.dateFrom + '&date_to=' + this.dateTo);
+                    const managersData = await managersRes.json();
+                    if (managersData.success) {
+                        this.summary.managersCount = managersData.data.length;
+                    }
+                    
+                    // Areas count
+                    const areasRes = await fetch('/api/sales-areas?date_from=' + this.dateFrom + '&date_to=' + this.dateTo);
+                    const areasData = await areasRes.json();
+                    if (areasData.success) {
+                        this.summary.areasCount = areasData.data.length;
+                    }
+                    
+                    // Groups count
+                    const groupsRes = await fetch('/api/groups');
+                    const groupsData = await groupsRes.json();
+                    if (groupsData.success) {
+                        this.summary.groupsCount = groupsData.data.length;
+                        // Sum up customer count
+                        this.summary.customersCount = groupsData.data.reduce((sum, g) => sum + (g.CustomerCount || 0), 0);
+                    }
+                } catch (error) {
+                    console.error('Error loading summary:', error);
+                }
+            },
+            
+            applyFilters() {
+                this.updateDaysCount();
+                this.loadStats();
+                this.loadCharts();
+                this.loadDebts();
+                this.loadSummary();
+            },
+            
+            updateDaysCount() {
+                if (this.dateFrom && this.dateTo) {
+                    const from = new Date(this.dateFrom);
+                    const to = new Date(this.dateTo);
+                    const diffTime = Math.abs(to - from);
+                    this.currentDaysInMonth = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+                } else {
+                    this.currentDaysInMonth = new Date().getDate();
+                }
+            },
+            
+            resetFilters() {
+                this.selectedArea = '';
+                this.selectedManager = '';
+                this.selectedGroup = '';
+                this.setThisMonth();
+            },
 
+            // ===== Search =====
+            debounceSearch() {
+                clearTimeout(this.searchTimeout);
+                if (this.searchQuery.length < 2) {
+                    this.searchResults = [];
+                    return;
+                }
+                
+                this.searchTimeout = setTimeout(() => {
+                    this.performSearch();
+                }, 300);
+            },
+            
+            async performSearch() {
+                try {
+                    const query = encodeURIComponent(this.searchQuery);
+                    
+                    // Search in multiple endpoints
+                    const [customersRes, managersRes, areasRes] = await Promise.all([
+                        fetch(`/api/settings/search-customers?query=${query}`),
+                        fetch(`/api/managers?date_from=${this.dateFrom}&date_to=${this.dateTo}`),
+                        fetch(`/api/sales-areas?date_from=${this.dateFrom}&date_to=${this.dateTo}`)
+                    ]);
+                    
+                    const customers = await customersRes.json();
+                    const managers = await managersRes.json();
+                    const areas = await areasRes.json();
+                    
+                    this.searchResults = [];
+                    
+                    // Add customers
+                    if (customers.success && customers.data) {
+                        customers.data.forEach(c => {
+                            this.searchResults.push({
+                                id: c.fID,
+                                name: c.fNAME + ' (' + c.fCODE + ')',
+                                type: 'Клиент',
+                                url: '/customers-grid'
+                            });
+                        });
+                    }
+                    
+                    // Add managers (filter by name)
+                    if (managers.success && managers.data) {
+                        managers.data
+                            .filter(m => m.fNAME.toLowerCase().includes(this.searchQuery.toLowerCase()))
+                            .forEach(m => {
+                                this.searchResults.push({
+                                    id: m.fID,
+                                    name: m.fNAME + ' (' + m.fCODE + ')',
+                                    type: 'Менеджер',
+                                    url: '/managers'
+                                });
+                            });
+                    }
+                    
+                    // Add areas (filter by name)
+                    if (areas.success && areas.data) {
+                        areas.data
+                            .filter(a => a.name.toLowerCase().includes(this.searchQuery.toLowerCase()))
+                            .forEach(a => {
+                                this.searchResults.push({
+                                    id: a.code,
+                                    name: a.name + ' (' + a.code + ')',
+                                    type: 'Территория',
+                                    url: '/areas'
+                                });
+                            });
+                    }
+                    
+                    // Limit to 10 results
+                    this.searchResults = this.searchResults.slice(0, 10);
+                } catch (error) {
+                    console.error('Search error:', error);
+                }
+            },
+            
+            navigateToResult(result) {
+                window.location.href = result.url;
+            },
+            
+            clearSearch() {
+                this.searchQuery = '';
+                this.searchResults = [];
+            },
+
+            // ===== Date filters =====
             setThisMonth() {
                 const today = new Date();
                 const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
@@ -488,8 +948,8 @@
                 this.dateFrom = this.formatDate(firstDay);
                 this.dateTo = this.formatDate(lastDay);
                 this.selectedPeriodText = 'Текущий месяц';
-                this.loadStats();
-                this.loadDebts();
+                this.currentDaysInMonth = today.getDate();
+                this.applyFilters();
             },
 
             setLastMonth() {
@@ -500,8 +960,8 @@
                 this.dateFrom = this.formatDate(firstDay);
                 this.dateTo = this.formatDate(lastDay);
                 this.selectedPeriodText = 'Прошлый месяц';
-                this.loadStats();
-                this.loadDebts();
+                this.currentDaysInMonth = lastDay.getDate();
+                this.applyFilters();
             },
 
             setThisYear() {
@@ -512,8 +972,9 @@
                 this.dateFrom = this.formatDate(firstDay);
                 this.dateTo = this.formatDate(lastDay);
                 this.selectedPeriodText = 'Текущий год';
-                this.loadStats();
-                this.loadDebts();
+                const diffTime = Math.abs(lastDay - firstDay);
+                this.currentDaysInMonth = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+                this.applyFilters();
             },
 
             resetDates() {
@@ -530,10 +991,12 @@
             async loadStats() {
                 try {
                     let url = '/api/dashboard/stats';
-                    if (this.dateFrom && this.dateTo) {
-                        url += `?date_from=${this.dateFrom}&date_to=${this.dateTo}`;
-                        this.selectedPeriodText = `${this.dateFrom} — ${this.dateTo}`;
-                    }
+                    const params = new URLSearchParams();
+                    if (this.dateFrom) params.append('date_from', this.dateFrom);
+                    if (this.dateTo) params.append('date_to', this.dateTo);
+                    if (this.selectedArea) params.append('sales_area', this.selectedArea);
+                    
+                    if (params.toString()) url += '?' + params.toString();
                     
                     const response = await fetch(url);
                     const result = await response.json();
@@ -542,9 +1005,6 @@
                         this.stats = result.data;
                         this.loading = false;
                     }
-                    
-                    // Обновить долги при изменении даты через input
-                    this.loadDebts();
                 } catch (error) {
                     console.error('Ошибка загрузки статистики:', error);
                     this.loading = false;
