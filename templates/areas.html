@@ -794,58 +794,335 @@
                         <div class="tab-content" id="areaDetailsTabContent">
                             <!-- Financials Tab -->
                             <div class="tab-pane fade show active" id="financials" role="tabpanel" aria-labelledby="financials-tab">
-                                <div class="row">
-                                    <div class="col-lg-6 mb-4">
-                                        <div class="card h-100">
-                                            <div class="card-header">
-                                                <h5 class="mb-0"><i class="fas fa-percentage me-2"></i>Ключевые коэффициенты</h5>
-                                            </div>
-                                            <div class="card-body">
-                                                <ul class="list-group list-group-flush">
-                                                    <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                        <span>Отношение Долг/Продажи</span>
-                                                        <span class="badge fs-6" :class="getDebtRatioClass(selectedArea)" x-text="calculateRatio(selectedArea.Debt, selectedArea.TotalSales)"></span>
-                                                    </li>
-                                                    <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                        <span>Покрытие оплат (Оплаты/Продажи)</span>
-                                                        <span class="badge fs-6" :class="getPaymentRatioClass(selectedArea)" x-text="calculateRatio(selectedArea.Payments, selectedArea.TotalSales)"></span>
-                                                    </li>
-                                                    <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                        <span>Средний долг на клиента</span>
-                                                        <strong x-text="formatCurrency(selectedArea.Debt / selectedArea.CustomerCount)"></strong>
-                                                    </li>
-                                                     <li class="list-group-item d-flex justify-content-between align-items-center">
-                                                        <span>Средние продажи на клиента</span>
-                                                        <strong x-text="formatCurrency(selectedArea.TotalSales / selectedArea.CustomerCount)"></strong>
-                                                    </li>
-                                                </ul>
+                                <!-- Общий финансовый обзор -->
+                                <div class="row mb-4">
+                                    <div class="col-12">
+                                        <div class="alert alert-info d-flex align-items-center" style="background: linear-gradient(135deg, rgba(13, 202, 240, 0.1), rgba(13, 110, 253, 0.05)); border-left: 4px solid #0dcaf0;">
+                                            <i class="fas fa-info-circle fa-2x me-3" style="color: #0dcaf0;"></i>
+                                            <div>
+                                                <h5 class="mb-1">Финансовое состояние территории</h5>
+                                                <p class="mb-0" x-text="`Период анализа: ${dateFrom} - ${dateTo}`"></p>
                                             </div>
                                         </div>
                                     </div>
+                                </div>
+                                
+                                <!-- Ключевые метрики -->
+                                <div class="row mb-4">
+                                    <div class="col-md-3 mb-3">
+                                        <div class="card border-0 shadow-sm h-100" style="background: linear-gradient(135deg, #0d6efd 0%, #0dcaf0 100%);">
+                                            <div class="card-body text-white">
+                                                <div class="d-flex justify-content-between align-items-start">
+                                                    <div>
+                                                        <p class="mb-1 opacity-75" style="font-size: 0.85rem;">Общие продажи</p>
+                                                        <h3 class="mb-0 fw-bold" x-text="formatCurrency(selectedArea.TotalSales)"></h3>
+                                                    </div>
+                                                    <div class="p-2 rounded" style="background: rgba(255,255,255,0.2);">
+                                                        <i class="fas fa-chart-line fa-lg"></i>
+                                                    </div>
+                                                </div>
+                                                <div class="mt-2 pt-2 border-top border-light">
+                                                    <small x-text="`${selectedArea.SalesCount} продаж`"></small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="col-md-3 mb-3">
+                                        <div class="card border-0 shadow-sm h-100" style="background: linear-gradient(135deg, #198754 0%, #20c997 100%);">
+                                            <div class="card-body text-white">
+                                                <div class="d-flex justify-content-between align-items-start">
+                                                    <div>
+                                                        <p class="mb-1 opacity-75" style="font-size: 0.85rem;">Получено оплат</p>
+                                                        <h3 class="mb-0 fw-bold" x-text="formatCurrency(selectedArea.Payments)"></h3>
+                                                    </div>
+                                                    <div class="p-2 rounded" style="background: rgba(255,255,255,0.2);">
+                                                        <i class="fas fa-money-bill-wave fa-lg"></i>
+                                                    </div>
+                                                </div>
+                                                <div class="mt-2 pt-2 border-top border-light">
+                                                    <small x-text="`${selectedArea.TotalSales > 0 ? ((selectedArea.Payments / selectedArea.TotalSales * 100).toFixed(1)) : 0}% от продаж`"></small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="col-md-3 mb-3">
+                                        <div class="card border-0 shadow-sm h-100" style="background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%);">
+                                            <div class="card-body text-white">
+                                                <div class="d-flex justify-content-between align-items-start">
+                                                    <div>
+                                                        <p class="mb-1 opacity-75" style="font-size: 0.85rem;">Текущий долг</p>
+                                                        <h3 class="mb-0 fw-bold" x-text="formatCurrency(selectedArea.Debt)"></h3>
+                                                    </div>
+                                                    <div class="p-2 rounded" style="background: rgba(255,255,255,0.2);">
+                                                        <i class="fas fa-exclamation-triangle fa-lg"></i>
+                                                    </div>
+                                                </div>
+                                                <div class="mt-2 pt-2 border-top border-light">
+                                                    <small x-text="`${selectedArea.TotalSales > 0 ? ((selectedArea.Debt / selectedArea.TotalSales * 100).toFixed(1)) : 0}% от продаж`"></small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="col-md-3 mb-3">
+                                        <div class="card border-0 shadow-sm h-100" style="background: linear-gradient(135deg, #6f42c1 0%, #d63384 100%);">
+                                            <div class="card-body text-white">
+                                                <div class="d-flex justify-content-between align-items-start">
+                                                    <div>
+                                                        <p class="mb-1 opacity-75" style="font-size: 0.85rem;">Активных клиентов</p>
+                                                        <h3 class="mb-0 fw-bold" x-text="selectedArea.CustomerCount"></h3>
+                                                    </div>
+                                                    <div class="p-2 rounded" style="background: rgba(255,255,255,0.2);">
+                                                        <i class="fas fa-users fa-lg"></i>
+                                                    </div>
+                                                </div>
+                                                <div class="mt-2 pt-2 border-top border-light">
+                                                    <small x-text="`Средний чек: ${formatCurrency(selectedArea.AvgSale)}`"></small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Движение долга и коэффициенты -->
+                                <div class="row mb-4">
+                                    <!-- Движение долга -->
                                     <div class="col-lg-6 mb-4">
-                                        <div class="card h-100">
-                                            <div class="card-header">
-                                                <h5 class="mb-0"><i class="fas fa-exchange-alt me-2"></i>Движение долга</h5>
+                                        <div class="card shadow-sm h-100">
+                                            <div class="card-header bg-gradient" style="background: linear-gradient(135deg, #0d6efd 0%, #0dcaf0 100%);">
+                                                <h5 class="mb-0 text-white"><i class="fas fa-exchange-alt me-2"></i>Движение долга за период</h5>
                                             </div>
                                             <div class="card-body">
-                                                <ul class="list-group list-group-flush">
-                                                    <li class="list-group-item d-flex justify-content-between">
-                                                        <span><i class="fas fa-flag text-muted me-2"></i>Начальный долг</span>
-                                                        <strong x-text="formatCurrency(selectedArea.InitialDebt)"></strong>
-                                                    </li>
-                                                    <li class="list-group-item d-flex justify-content-between">
-                                                        <span><i class="fas fa-plus-circle text-success me-2"></i>Продажи (+)</span>
-                                                        <span class="text-success" x-text="`+ ${formatCurrency(selectedArea.TotalSales)}`"></span>
-                                                    </li>
-                                                    <li class="list-group-item d-flex justify-content-between">
-                                                        <span><i class="fas fa-minus-circle text-danger me-2"></i>Оплаты (-)</span>
-                                                        <span class="text-danger" x-text="`- ${formatCurrency(selectedArea.Payments)}`"></span>
-                                                    </li>
-                                                    <li class="list-group-item d-flex justify-content-between bg-light">
-                                                        <span><i class="fas fa-flag-checkered text-primary me-2"></i>Итоговый долг</span>
-                                                        <strong class="fs-5" x-text="formatCurrency(selectedArea.Debt)"></strong>
-                                                    </li>
-                                                </ul>
+                                                <div class="mb-3 p-3 rounded" style="background: linear-gradient(135deg, rgba(13, 110, 253, 0.05), rgba(13, 202, 240, 0.02));">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <span class="text-muted"><i class="fas fa-flag me-2"></i>Начальный долг</span>
+                                                        <strong class="fs-5" x-text="formatCurrency(selectedArea.InitialDebt)"></strong>
+                                                    </div>
+                                                </div>
+                                                
+                                                <div class="mb-3 p-3 rounded" style="background: linear-gradient(135deg, rgba(25, 135, 84, 0.05), rgba(32, 201, 151, 0.02));">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <span class="text-success"><i class="fas fa-plus-circle me-2"></i>Новые продажи</span>
+                                                        <strong class="fs-5 text-success" x-text="`+ ${formatCurrency(selectedArea.TotalSales)}`"></strong>
+                                                    </div>
+                                                    <small class="text-muted" x-text="`${selectedArea.SalesCount} транзакций • Средний чек: ${formatCurrency(selectedArea.AvgSale)}`"></small>
+                                                </div>
+                                                
+                                                <div class="mb-3 p-3 rounded" style="background: linear-gradient(135deg, rgba(220, 53, 69, 0.05), rgba(253, 126, 20, 0.02));">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <span class="text-danger"><i class="fas fa-minus-circle me-2"></i>Получено оплат</span>
+                                                        <strong class="fs-5 text-danger" x-text="`- ${formatCurrency(selectedArea.Payments)}`"></strong>
+                                                    </div>
+                                                    <small class="text-muted" x-text="`Покрытие: ${selectedArea.TotalSales > 0 ? ((selectedArea.Payments / selectedArea.TotalSales * 100).toFixed(1)) : 0}% продаж`"></small>
+                                                </div>
+                                                
+                                                <div class="border-top pt-3 mt-3">
+                                                    <div class="d-flex justify-content-between align-items-center p-3 rounded" style="background: linear-gradient(135deg, rgba(13, 110, 253, 0.1), rgba(13, 202, 240, 0.05));">
+                                                        <span class="fw-bold text-primary"><i class="fas fa-equals me-2"></i>Текущий долг</span>
+                                                        <h4 class="mb-0 fw-bold text-primary" x-text="formatCurrency(selectedArea.Debt)"></h4>
+                                                    </div>
+                                                    <div class="mt-2 text-center">
+                                                        <small class="text-muted">
+                                                            Изменение: 
+                                                            <span :class="selectedArea.Debt > selectedArea.InitialDebt ? 'text-danger' : 'text-success'" 
+                                                                  x-text="selectedArea.InitialDebt !== 0 ? `${selectedArea.Debt > selectedArea.InitialDebt ? '+' : ''}${((selectedArea.Debt - selectedArea.InitialDebt) / selectedArea.InitialDebt * 100).toFixed(1)}%` : 'N/A'">
+                                                            </span>
+                                                        </small>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Финансовые коэффициенты -->
+                                    <div class="col-lg-6 mb-4">
+                                        <div class="card shadow-sm h-100">
+                                            <div class="card-header bg-gradient" style="background: linear-gradient(135deg, #6f42c1 0%, #d63384 100%);">
+                                                <h5 class="mb-0 text-white"><i class="fas fa-chart-pie me-2"></i>Финансовые коэффициенты</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <!-- Коэффициент долговой нагрузки -->
+                                                <div class="mb-4">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <div>
+                                                            <span class="fw-semibold">Коэффициент долговой нагрузки</span>
+                                                            <div class="text-muted small">Долг / Продажи</div>
+                                                        </div>
+                                                        <span class="badge fs-6" :class="getDebtRatioClass(selectedArea)" 
+                                                              x-text="calculateRatio(selectedArea.Debt, selectedArea.TotalSales)"></span>
+                                                    </div>
+                                                    <div class="progress" style="height: 8px;">
+                                                        <div class="progress-bar" :class="getDebtRatioProgressClass(selectedArea)" 
+                                                             :style="`width: ${Math.min((selectedArea.Debt / selectedArea.TotalSales * 100), 100)}%`"></div>
+                                                    </div>
+                                                    <div class="mt-1 text-end">
+                                                        <small class="text-muted" x-text="getDebtRatioStatus(selectedArea)"></small>
+                                                    </div>
+                                                </div>
+                                                
+                                                <!-- Коэффициент покрытия оплат -->
+                                                <div class="mb-4">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <div>
+                                                            <span class="fw-semibold">Коэффициент покрытия оплат</span>
+                                                            <div class="text-muted small">Оплаты / Продажи</div>
+                                                        </div>
+                                                        <span class="badge fs-6" :class="getPaymentRatioClass(selectedArea)" 
+                                                              x-text="calculateRatio(selectedArea.Payments, selectedArea.TotalSales)"></span>
+                                                    </div>
+                                                    <div class="progress" style="height: 8px;">
+                                                        <div class="progress-bar" :class="getPaymentRatioProgressClass(selectedArea)" 
+                                                             :style="`width: ${Math.min((selectedArea.Payments / selectedArea.TotalSales * 100), 100)}%`"></div>
+                                                    </div>
+                                                    <div class="mt-1 text-end">
+                                                        <small class="text-muted" x-text="getPaymentRatioStatus(selectedArea)"></small>
+                                                    </div>
+                                                </div>
+                                                
+                                                <!-- Эффективность взыскания -->
+                                                <div class="mb-4">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <div>
+                                                            <span class="fw-semibold">Эффективность взыскания</span>
+                                                            <div class="text-muted small">Оплаты / (Начальный долг + Продажи)</div>
+                                                        </div>
+                                                        <span class="badge fs-6" 
+                                                              :class="getCollectionEfficiencyClass(selectedArea)" 
+                                                              x-text="calculateCollectionEfficiency(selectedArea)"></span>
+                                                    </div>
+                                                    <div class="progress" style="height: 8px;">
+                                                        <div class="progress-bar" :class="getCollectionEfficiencyProgressClass(selectedArea)" 
+                                                             :style="`width: ${Math.min(selectedArea.InitialDebt + selectedArea.TotalSales > 0 ? (selectedArea.Payments / (selectedArea.InitialDebt + selectedArea.TotalSales) * 100) : 0, 100)}%`"></div>
+                                                    </div>
+                                                </div>
+                                                
+                                                <!-- Оборачиваемость дебиторской задолженности -->
+                                                <div class="mb-3">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <div>
+                                                            <span class="fw-semibold">Оборачиваемость ДЗ (дни)</span>
+                                                            <div class="text-muted small">Средний долг / (Продажи за день)</div>
+                                                        </div>
+                                                        <span class="badge bg-info fs-6" x-text="calculateDaysToCollect(selectedArea)"></span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Показатели на клиента и сравнительный анализ -->
+                                <div class="row mb-4">
+                                    <!-- Показатели на клиента -->
+                                    <div class="col-lg-6 mb-4">
+                                        <div class="card shadow-sm h-100">
+                                            <div class="card-header bg-gradient" style="background: linear-gradient(135deg, #198754 0%, #20c997 100%);">
+                                                <h5 class="mb-0 text-white"><i class="fas fa-user-check me-2"></i>Показатели на клиента</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <div class="row g-3">
+                                                    <div class="col-6">
+                                                        <div class="p-3 rounded text-center" style="background: linear-gradient(135deg, rgba(13, 110, 253, 0.1), rgba(13, 202, 240, 0.05));">
+                                                            <div class="text-muted small mb-1">Средние продажи</div>
+                                                            <h4 class="mb-0 fw-bold text-primary" x-text="formatCurrency(selectedArea.TotalSales / selectedArea.CustomerCount)"></h4>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-6">
+                                                        <div class="p-3 rounded text-center" style="background: linear-gradient(135deg, rgba(25, 135, 84, 0.1), rgba(32, 201, 151, 0.05));">
+                                                            <div class="text-muted small mb-1">Средние оплаты</div>
+                                                            <h4 class="mb-0 fw-bold text-success" x-text="formatCurrency(selectedArea.Payments / selectedArea.CustomerCount)"></h4>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-6">
+                                                        <div class="p-3 rounded text-center" style="background: linear-gradient(135deg, rgba(220, 53, 69, 0.1), rgba(253, 126, 20, 0.05));">
+                                                            <div class="text-muted small mb-1">Средний долг</div>
+                                                            <h4 class="mb-0 fw-bold text-danger" x-text="formatCurrency(selectedArea.Debt / selectedArea.CustomerCount)"></h4>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-6">
+                                                        <div class="p-3 rounded text-center" style="background: linear-gradient(135deg, rgba(111, 66, 193, 0.1), rgba(214, 51, 132, 0.05));">
+                                                            <div class="text-muted small mb-1">Продаж на клиента</div>
+                                                            <h4 class="mb-0 fw-bold" style="color: #6f42c1;" x-text="(selectedArea.SalesCount / selectedArea.CustomerCount).toFixed(1)"></h4>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                
+                                                <div class="mt-4 pt-3 border-top">
+                                                    <h6 class="mb-3">Распределение клиентов</h6>
+                                                    <div class="mb-2">
+                                                        <div class="d-flex justify-content-between mb-1">
+                                                            <small>Платежная дисциплина</small>
+                                                            <small class="text-muted" x-text="getPaymentDisciplinePercentage(selectedArea)"></small>
+                                                        </div>
+                                                        <div class="progress" style="height: 6px;">
+                                                            <div class="progress-bar bg-success" :style="`width: ${getPaymentDisciplineValue(selectedArea)}%`"></div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- Сравнительный анализ -->
+                                    <div class="col-lg-6 mb-4">
+                                        <div class="card shadow-sm h-100">
+                                            <div class="card-header bg-gradient" style="background: linear-gradient(135deg, #fd7e14 0%, #ffc107 100%);">
+                                                <h5 class="mb-0 text-white"><i class="fas fa-balance-scale me-2"></i>Сравнительный анализ</h5>
+                                            </div>
+                                            <div class="card-body">
+                                                <!-- Сравнение с прошлым месяцем -->
+                                                <div class="mb-4" x-show="selectedArea.PrevMonthSales !== undefined">
+                                                    <h6 class="mb-3">Сравнение с прошлым месяцем</h6>
+                                                    <div class="row g-2">
+                                                        <div class="col-12">
+                                                            <div class="d-flex justify-content-between align-items-center p-2 rounded" style="background: rgba(13, 110, 253, 0.05);">
+                                                                <div>
+                                                                    <small class="text-muted">Продажи</small>
+                                                                    <div class="d-flex align-items-center">
+                                                                        <strong x-text="formatCurrency(selectedArea.PrevMonthSales)"></strong>
+                                                                        <i class="fas fa-arrow-right mx-2 text-muted"></i>
+                                                                        <strong class="text-primary" x-text="formatCurrency(selectedArea.TotalSales)"></strong>
+                                                                    </div>
+                                                                </div>
+                                                                <span class="badge" 
+                                                                      :class="getChangeClass(selectedArea.TotalSales, selectedArea.PrevMonthSales)"
+                                                                      x-text="getChangePercent(selectedArea.TotalSales, selectedArea.PrevMonthSales)">
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                
+                                                <!-- Сравнение с прошлым годом -->
+                                                <div class="mb-4" x-show="selectedArea.LastYearSales !== undefined">
+                                                    <h6 class="mb-3">Сравнение с прошлым годом</h6>
+                                                    <div class="row g-2">
+                                                        <div class="col-12">
+                                                            <div class="d-flex justify-content-between align-items-center p-2 rounded" style="background: rgba(25, 135, 84, 0.05);">
+                                                                <div>
+                                                                    <small class="text-muted">Продажи</small>
+                                                                    <div class="d-flex align-items-center">
+                                                                        <strong x-text="formatCurrency(selectedArea.LastYearSales)"></strong>
+                                                                        <i class="fas fa-arrow-right mx-2 text-muted"></i>
+                                                                        <strong class="text-success" x-text="formatCurrency(selectedArea.TotalSales)"></strong>
+                                                                    </div>
+                                                                </div>
+                                                                <span class="badge" 
+                                                                      :class="getChangeClass(selectedArea.TotalSales, selectedArea.LastYearSales)"
+                                                                      x-text="getChangePercent(selectedArea.TotalSales, selectedArea.LastYearSales)">
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                
+                                                <!-- Финансовые рекомендации -->
+                                                <div class="mt-4 pt-3 border-top">
+                                                    <h6 class="mb-3"><i class="fas fa-lightbulb text-warning me-2"></i>Рекомендации</h6>
+                                                    <div x-html="getFinancialRecommendations(selectedArea)"></div>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
@@ -2371,6 +2648,128 @@
                 if (ratio < 0.5) return 'bg-danger';
                 if (ratio < 0.8) return 'bg-warning text-dark';
                 return 'bg-success';
+            },
+            
+            getDebtRatioProgressClass(area) {
+                if (area.TotalSales === 0) return 'bg-secondary';
+                const ratio = area.Debt / area.TotalSales;
+                if (ratio > 0.8) return 'bg-danger';
+                if (ratio > 0.5) return 'bg-warning';
+                return 'bg-success';
+            },
+            
+            getPaymentRatioProgressClass(area) {
+                if (area.TotalSales === 0) return 'bg-secondary';
+                const ratio = area.Payments / area.TotalSales;
+                if (ratio < 0.5) return 'bg-danger';
+                if (ratio < 0.8) return 'bg-warning';
+                return 'bg-success';
+            },
+            
+            getDebtRatioStatus(area) {
+                if (area.TotalSales === 0) return 'Нет данных';
+                const ratio = area.Debt / area.TotalSales;
+                if (ratio > 0.8) return 'Критический уровень';
+                if (ratio > 0.5) return 'Требует внимания';
+                return 'Нормальный уровень';
+            },
+            
+            getPaymentRatioStatus(area) {
+                if (area.TotalSales === 0) return 'Нет данных';
+                const ratio = area.Payments / area.TotalSales;
+                if (ratio < 0.5) return 'Низкое покрытие';
+                if (ratio < 0.8) return 'Среднее покрытие';
+                return 'Хорошее покрытие';
+            },
+            
+            calculateCollectionEfficiency(area) {
+                const total = area.InitialDebt + area.TotalSales;
+                if (total === 0) return '0%';
+                return ((area.Payments / total * 100).toFixed(1)) + '%';
+            },
+            
+            getCollectionEfficiencyClass(area) {
+                const total = area.InitialDebt + area.TotalSales;
+                if (total === 0) return 'bg-secondary';
+                const efficiency = area.Payments / total;
+                if (efficiency >= 0.8) return 'bg-success';
+                if (efficiency >= 0.6) return 'bg-warning text-dark';
+                return 'bg-danger';
+            },
+            
+            getCollectionEfficiencyProgressClass(area) {
+                const total = area.InitialDebt + area.TotalSales;
+                if (total === 0) return 'bg-secondary';
+                const efficiency = area.Payments / total;
+                if (efficiency >= 0.8) return 'bg-success';
+                if (efficiency >= 0.6) return 'bg-warning';
+                return 'bg-danger';
+            },
+            
+            calculateDaysToCollect(area) {
+                // Количество дней в периоде
+                const dateFrom = new Date(this.dateFrom);
+                const dateTo = new Date(this.dateTo);
+                const days = Math.ceil((dateTo - dateFrom) / (1000 * 60 * 60 * 24)) + 1;
+                
+                if (area.TotalSales === 0 || days === 0) return 'N/A';
+                
+                const salesPerDay = area.TotalSales / days;
+                const avgDebt = (area.InitialDebt + area.Debt) / 2;
+                
+                if (salesPerDay === 0) return 'N/A';
+                
+                const daysToCollect = Math.round(avgDebt / salesPerDay);
+                return `${daysToCollect} дн.`;
+            },
+            
+            getPaymentDisciplinePercentage(area) {
+                if (area.TotalSales === 0) return '0%';
+                const ratio = area.Payments / area.TotalSales;
+                return (ratio * 100).toFixed(1) + '%';
+            },
+            
+            getPaymentDisciplineValue(area) {
+                if (area.TotalSales === 0) return 0;
+                return Math.min((area.Payments / area.TotalSales * 100), 100);
+            },
+            
+            getFinancialRecommendations(area) {
+                const recommendations = [];
+                
+                // Анализ долговой нагрузки
+                if (area.TotalSales > 0) {
+                    const debtRatio = area.Debt / area.TotalSales;
+                    if (debtRatio > 0.8) {
+                        recommendations.push('<div class="alert alert-danger py-2 mb-2"><i class="fas fa-exclamation-triangle me-2"></i><strong>Критично:</strong> Долговая нагрузка превышает 80%. Срочно усилить работу по взысканию.</div>');
+                    } else if (debtRatio > 0.5) {
+                        recommendations.push('<div class="alert alert-warning py-2 mb-2"><i class="fas fa-exclamation-circle me-2"></i><strong>Внимание:</strong> Долговая нагрузка выше 50%. Рекомендуется активизировать работу с дебиторами.</div>');
+                    }
+                    
+                    // Анализ покрытия оплат
+                    const paymentRatio = area.Payments / area.TotalSales;
+                    if (paymentRatio < 0.5) {
+                        recommendations.push('<div class="alert alert-danger py-2 mb-2"><i class="fas fa-money-bill-wave me-2"></i><strong>Критично:</strong> Низкое покрытие оплат (менее 50%). Необходим контроль кредитных лимитов.</div>');
+                    } else if (paymentRatio < 0.8) {
+                        recommendations.push('<div class="alert alert-warning py-2 mb-2"><i class="fas fa-hand-holding-usd me-2"></i><strong>Рекомендация:</strong> Увеличить работу по сбору оплат для достижения целевого уровня 80%+.</div>');
+                    }
+                    
+                    // Анализ роста долга
+                    if (area.Debt > area.InitialDebt * 1.2) {
+                        recommendations.push('<div class="alert alert-danger py-2 mb-2"><i class="fas fa-chart-line me-2"></i><strong>Тревога:</strong> Долг вырос более чем на 20%. Требуется срочный анализ причин и план действий.</div>');
+                    }
+                }
+                
+                // Сравнение с прошлыми периодами
+                if (area.PrevMonthSales && area.TotalSales < area.PrevMonthSales * 0.9) {
+                    recommendations.push('<div class="alert alert-warning py-2 mb-2"><i class="fas fa-arrow-down me-2"></i><strong>Внимание:</strong> Продажи снизились более чем на 10% по сравнению с прошлым месяцем.</div>');
+                }
+                
+                if (recommendations.length === 0) {
+                    return '<div class="alert alert-success py-2 mb-0"><i class="fas fa-check-circle me-2"></i><strong>Отлично:</strong> Финансовое состояние территории стабильное. Продолжайте поддерживать текущий уровень работы.</div>';
+                }
+                
+                return recommendations.join('');
             },
 
             getChangeClass(current, previous) {
