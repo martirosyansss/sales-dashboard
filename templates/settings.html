@@ -15,6 +15,15 @@
                 <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
             </div>
         </div>
+        <div id="errorToast" class="toast align-items-center text-white bg-danger border-0" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="d-flex">
+                <div class="toast-body">
+                    <i class="fas fa-exclamation-circle me-2"></i>
+                    <span id="errorToastMessage">Произошла ошибка!</span>
+                </div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+            </div>
+        </div>
     </div>
     
     <!-- Заголовок -->
@@ -1914,6 +1923,9 @@
 
                 this.restartInProgress = true;
 
+                // Time to wait before reloading the page (milliseconds)
+                const PAGE_RELOAD_DELAY_MS = 3000;
+
                 try {
                     const response = await fetch('/api/admin/restart', {
                         method: 'POST',
@@ -1924,19 +1936,28 @@
                     if (result.success) {
                         this.showSuccess('Служба перезапускается... Страница обновится через несколько секунд.');
                         
-                        // Подождать 3 секунды и обновить страницу
+                        // Wait before reloading the page to give service time to restart
                         setTimeout(() => {
                             location.reload();
-                        }, 3000);
+                        }, PAGE_RELOAD_DELAY_MS);
                     } else {
-                        alert('Ошибка при перезапуске: ' + (result.error || 'Неизвестная ошибка'));
+                        this.showError('Ошибка при перезапуске: ' + (result.error || 'Неизвестная ошибка'));
                         this.restartInProgress = false;
                     }
                 } catch (error) {
                     console.error('Ошибка при перезапуске службы:', error);
-                    alert('Ошибка при перезапуске службы. Попробуйте снова.');
+                    this.showError('Ошибка при перезапуске службы. Попробуйте снова.');
                     this.restartInProgress = false;
                 }
+            },
+
+            // Показать сообщение об ошибке
+            showError(message) {
+                const toastEl = document.getElementById('errorToast');
+                const messageEl = document.getElementById('errorToastMessage');
+                messageEl.textContent = message;
+                const toast = new bootstrap.Toast(toastEl, { delay: 5000 });
+                toast.show();
             },
 
             formatCurrency(num) {

@@ -10,6 +10,9 @@ import os
 import json
 from typing import Dict, List, Any
 import logging
+import signal
+import threading
+import time
 # import io
 # from openpyxl import Workbook
 # from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -4173,24 +4176,39 @@ def get_unpaid_documents(area_code):
 
 @app.route('/api/admin/restart', methods=['POST'])
 def restart_service():
-    """API endpoint to restart the Flask service"""
+    """
+    API endpoint to restart the Flask service.
+    
+    This endpoint triggers a graceful restart of the web service by:
+    1. Sending a success response to the client
+    2. Waiting 1 second for the response to be sent
+    3. Sending SIGTERM to the current process to trigger shutdown
+    
+    The service should be managed by a process supervisor (systemd, supervisor, etc.)
+    that will automatically restart it after shutdown.
+    
+    Note: This endpoint has no authentication. In a production environment,
+    you should add authentication/authorization checks to restrict access.
+    
+    Returns:
+        JSON response with success status and message
+    """
     try:
-        import signal
-        import sys
+        logger.info("Restart requested - initiating graceful shutdown...")
         
-        logger.info("Restart requested - shutting down gracefully...")
+        # Response delay in seconds - time to wait before sending SIGTERM
+        # This allows the HTTP response to be sent before the process terminates
+        RESTART_DELAY_SECONDS = 1
         
         # Schedule restart after response is sent
-        def restart():
-            import time
-            time.sleep(1)  # Give time for response to be sent
-            logger.info("Restarting service...")
+        def perform_restart():
+            time.sleep(RESTART_DELAY_SECONDS)
+            logger.info("Sending SIGTERM to initiate service restart...")
             # Send SIGTERM to the current process
             os.kill(os.getpid(), signal.SIGTERM)
         
         # Start restart in background thread
-        import threading
-        threading.Thread(target=restart, daemon=True).start()
+        threading.Thread(target=perform_restart, daemon=True).start()
         
         return jsonify({
             'success': True,
