@@ -2672,14 +2672,21 @@
                     return;
                 }
                 
-                // Подготовить данные для Excel
-                const excelData = dataToExport.map(customer => ({
-                    'Код клиента': customer.customerCode,
-                    'Имя клиента': customer.customerName,
-                    'Продажи': customer.totalSales,
-                    'Оплаты': customer.totalPayments,
-                    'Долг': customer.remainingDebt
-                }));
+                // Подготовить данные для Excel - разворачиваем документы
+                const excelData = [];
+                dataToExport.forEach(customer => {
+                    customer.documents.forEach(doc => {
+                        excelData.push({
+                            'Код клиента': customer.customerCode,
+                            'Имя клиента': customer.customerName,
+                            '№ Документа': doc.docNumber,
+                            'Дата': doc.docDate,
+                            'Сумма документа': doc.docSum,
+                            'Оплачено': doc.paidAmount,
+                            'Не оплачено': doc.unpaidAmount
+                        });
+                    });
+                });
                 
                 // Создать рабочую книгу
                 const wb = XLSX.utils.book_new();
@@ -2689,9 +2696,11 @@
                 ws['!cols'] = [
                     { wch: 15 },  // Код клиента
                     { wch: 40 },  // Имя клиента
-                    { wch: 15 },  // Продажи
-                    { wch: 15 },  // Оплаты
-                    { wch: 15 }   // Долг
+                    { wch: 15 },  // № Документа
+                    { wch: 12 },  // Дата
+                    { wch: 18 },  // Сумма документа
+                    { wch: 18 },  // Оплачено
+                    { wch: 18 }   // Не оплачено
                 ];
                 
                 // Добавить лист в книгу
