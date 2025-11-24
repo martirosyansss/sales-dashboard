@@ -1063,12 +1063,36 @@ def get_sales_areas():
             debt_group_filter = f" AND c.fGROUP IN ({placeholders})"
             debt_group_params = tuple(requested_groups)
 
-        # История долга: транзакции за период (НЕ кумулятивный баланс)
+        # История долга: получаем начальный баланс и изменения по месяцам
+        # Сначала получим начальный баланс на начало периода истории
+        initial_debt_query = f"""
+            SELECT 
+                csa.fSALESAREA AS AreaCode,
+                ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) AS InitialDebt
+            FROM HICUSTOMERSDEBT d WITH (NOLOCK)
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON d.fDEBTDOCISN = doc.fISN
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON doc.fCUSTOMERID = c.fID
+            INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON c.fID = csa.fCUSTOMERID
+            WHERE d.fDATE < ?
+                {excluded_filter}
+                {debt_group_filter}
+            GROUP BY csa.fSALESAREA
+        """
+        
+        initial_debt_params = (start_history_date.strftime('%Y-%m-%d'),) + excluded_params + debt_group_params
+        cursor.execute(initial_debt_query, initial_debt_params)
+        initial_debt_rows = cursor.fetchall()
+        
+        # Словарь начальных балансов по территориям
+        initial_debts = {row.AreaCode: float(row.InitialDebt) if row.InitialDebt else 0 
+                         for row in initial_debt_rows}
+        
+        # Теперь получим изменения долга помесячно
         debt_history_query = f"""
             SELECT 
                 csa.fSALESAREA AS AreaCode,
                 FORMAT(d.fDATE, 'yyyy-MM') AS Month,
-                ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) AS TotalDebt
+                ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) AS DebtChange
             FROM HICUSTOMERSDEBT d WITH (NOLOCK)
             INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON d.fDEBTDOCISN = doc.fISN
             INNER JOIN CUSTOMERS c WITH (NOLOCK) ON doc.fCUSTOMERID = c.fID
@@ -1104,10 +1128,24 @@ def get_sales_areas():
                     'salesCount': 0,
                     'totalSales': 0,
                     'totalPayments': 0,
-                    'totalDebt': 0
+                    'totalDebt': 0,
+                    'debtChange': 0  # Изменение долга за месяц
                 }
 
-            area_history[month_key]['totalDebt'] = float(row.TotalDebt) if row.TotalDebt else 0
+            # Сохраняем изменение долга (не кумулятивный баланс)
+            area_history[month_key]['debtChange'] = float(row.DebtChange) if row.DebtChange else 0
+        
+        # Рассчитать кумулятивный баланс долга для каждой территории
+        logger.info(f"[HISTORY] Calculating cumulative debt balances...")
+        for area_code, area_history in history_by_area.items():
+            # Начальный баланс для этой территории
+            cumulative_debt = initial_debts.get(area_code, 0)
+            
+            # Сортируем месяцы и пересчитываем баланс
+            for month_key in sorted(area_history.keys()):
+                debt_change = area_history[month_key].get('debtChange', 0)
+                cumulative_debt += debt_change
+                area_history[month_key]['totalDebt'] = cumulative_debt
         
         # Добавить историю к каждой территории
         logger.info(f"[HISTORY] Assigning history to {len(all_areas)} areas...")
