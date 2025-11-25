@@ -215,6 +215,15 @@ def dashboard_stats():
         current_cnt = current_sales[0]['SalesCount'] if current_sales else 0
         avg_check = current_rev / current_cnt if current_cnt > 0 else 0
         
+        # Средний чек прошлого месяца и прошлого года
+        prev_rev = float(prev_revenue[0]['TotalRevenue']) if prev_revenue else 0
+        prev_cnt = prev_sales[0]['SalesCount'] if prev_sales else 0
+        prev_avg_check = prev_rev / prev_cnt if prev_cnt > 0 else 0
+        
+        last_year_rev = float(last_year_revenue[0]['TotalRevenue']) if last_year_revenue else 0
+        last_year_cnt = last_year_sales[0]['SalesCount'] if last_year_sales else 0
+        last_year_avg_check = last_year_rev / last_year_cnt if last_year_cnt > 0 else 0
+        
         # Активные клиенты (покупали в выбранном периоде)
         query_customers = f"""
             SELECT COUNT(DISTINCT s.fCUSTOMERID) as ActiveCustomers
@@ -226,6 +235,8 @@ def dashboard_stats():
             {product_groups_filter}
         """
         active_customers = db.execute_query(query_customers, params_current)
+        prev_customers = db.execute_query(query_customers, params_prev)
+        last_year_customers = db.execute_query(query_customers, params_last_year)
         
         # Топ менеджер периода
         query_top_manager = f"""
@@ -245,16 +256,10 @@ def dashboard_stats():
         top_manager = db.execute_query(query_top_manager, params_current)
         
         # Расчет процентов роста к прошлому месяцу
-        prev_rev = float(prev_revenue[0]['TotalRevenue']) if prev_revenue else 0
-        prev_cnt = prev_sales[0]['SalesCount'] if prev_sales else 0
-        
         revenue_growth = ((current_rev - prev_rev) / prev_rev * 100) if prev_rev > 0 else 0
         sales_growth = ((current_cnt - prev_cnt) / prev_cnt * 100) if prev_cnt > 0 else 0
         
         # Сравнение с прошлым годом
-        last_year_rev = float(last_year_revenue[0]['TotalRevenue']) if last_year_revenue else 0
-        last_year_cnt = last_year_sales[0]['SalesCount'] if last_year_sales else 0
-        
         revenue_growth_yoy = ((current_rev - last_year_rev) / last_year_rev * 100) if last_year_rev > 0 else 0
         sales_growth_yoy = ((current_cnt - last_year_cnt) / last_year_cnt * 100) if last_year_cnt > 0 else 0
         
@@ -296,6 +301,33 @@ def dashboard_stats():
         last_year_today_cnt = last_year_today_sales[0]['SalesCount'] if last_year_today_sales else 0
         last_year_today_avg_check = last_year_today_rev / last_year_today_cnt if last_year_today_cnt > 0 else 0
         
+        # === ПРОГНОЗ ПРОДАЖ НА МЕСЯЦ ===
+        # Рассчитываем прогноз на основе текущих темпов продаж (исключая воскресенья)
+        
+        # Считаем рабочие дни (исключая воскресенья)
+        working_days_passed = 0
+        check_date = current_start
+        end_date = min(today, current_end)  # Берем минимум из сегодня и конца периода
+        
+        while check_date <= end_date:
+            if check_date.weekday() != 6:  # 6 = воскресенье
+                working_days_passed += 1
+            check_date += timedelta(days=1)
+        
+        # Считаем общее количество рабочих дней в месяце
+        total_working_days = 0
+        check_date = current_start
+        while check_date < current_end:  # Используем < вместо <= для конца периода
+            if check_date.weekday() != 6:  # 6 = воскресенье
+                total_working_days += 1
+            check_date += timedelta(days=1)
+        
+        if working_days_passed > 0 and total_working_days > 0:
+            daily_average = current_rev / working_days_passed
+            monthly_forecast = daily_average * total_working_days
+        else:
+            monthly_forecast = 0
+        
         return jsonify({
             'success': True,
             'data': {
@@ -322,10 +354,14 @@ def dashboard_stats():
                     'ten_years_ago': ten_years_cnt
                 },
                 'avg_check': {
-                    'value': avg_check
+                    'value': avg_check,
+                    'prev_month': prev_avg_check,
+                    'last_year': last_year_avg_check
                 },
                 'active_customers': {
-                    'value': active_customers[0]['ActiveCustomers'] if active_customers else 0
+                    'value': active_customers[0]['ActiveCustomers'] if active_customers else 0,
+                    'prev_month': prev_customers[0]['ActiveCustomers'] if prev_customers else 0,
+                    'last_year': last_year_customers[0]['ActiveCustomers'] if last_year_customers else 0
                 },
                 'today_revenue': {
                     'value': today_rev,
@@ -342,6 +378,12 @@ def dashboard_stats():
                 'today_customers': {
                     'value': today_customers[0]['ActiveCustomers'] if today_customers else 0,
                     'last_year': last_year_today_customers[0]['ActiveCustomers'] if last_year_today_customers else 0
+                },
+                'monthly_forecast': {
+                    'value': monthly_forecast,
+                    'days_passed': working_days_passed,
+                    'total_days': total_working_days,
+                    'current_sales': current_rev
                 },
                 'top_manager': {
                     'name': top_manager[0]['ManagerName'] if top_manager else 'N/A',
@@ -1988,7 +2030,16 @@ def get_customer_groups_list():
 
 @app.route('/api/distributors')
 def get_distributors():
-    """Получить расширенную аналитику по клиентам-дистрибьюторам"""
+    """
+    Получить расширенную аналитику по клиентам-дистрибьюторам
+    
+    ФОРМУЛЫ РАСЧЁТА (такие же как на странице Areas):
+    1. Продажи (TotalSales) - из таблицы SALES где fSTATE=2
+    2. Платежи (Payments) - из HICUSTOMERSDEBT где fOP='PAY' и fDBCR='C'
+    3. Долг (Debt) = ДолгИзДокументов - |Type01| - |Type02|
+       - ДолгИзДокументов: HICUSTOMERSDEBT (D - C по fDEBTDOCISN)
+       - Type01, Type02: HIRESTCUSTOMERSSUM (предоплаты)
+    """
     try:
         date_from = request.args.get('date_from')
         date_to = request.args.get('date_to')
@@ -2000,71 +2051,189 @@ def get_distributors():
             date_from = today.replace(day=1).strftime('%Y-%m-%d')
             date_to = today.strftime('%Y-%m-%d')
         
-        # Запрос по отдельным клиентам
-        query = """
-            SELECT 
-                c.fCODE as CustomerCode,
-                c.fNAME as CustomerName,
-                c.fGROUP as GroupCode,
-                ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) as TotalSales,
-                ISNULL(SUM(CASE WHEN h.fDBCR = 'C' AND h.fOP = 'PAY' THEN ABS(h.fSUM) ELSE 0 END), 0) as TotalPayments,
-                ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) - 
-                ISNULL(SUM(CASE WHEN h.fDBCR = 'C' AND h.fOP = 'PAY' THEN ABS(h.fSUM) ELSE 0 END), 0) as TotalDebt,
-                CASE 
-                    WHEN COUNT(CASE WHEN h.fDBCR = 'D' THEN 1 END) > 0 THEN
-                        ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) / 
-                        COUNT(CASE WHEN h.fDBCR = 'D' THEN 1 END)
-                    ELSE 0
-                END as AvgSale,
-                COUNT(CASE WHEN h.fDBCR = 'D' THEN 1 END) as TransactionCount
-            FROM CUSTOMERS c
-            LEFT JOIN DOCUMENTS d ON c.fID = d.fCUSTOMERID
-            LEFT JOIN HICUSTOMERSDEBT h ON d.fISN = h.fDEBTDOCISN
-                AND h.fDATE >= ?
-                AND h.fDATE <= ?
-        """
+        conn = db.get_connection()
+        cursor = conn.cursor()
         
-        params = [date_from, date_to]
-        where_conditions = []
-        
-        # Фильтр по дивизионам (товарным группам)
-        if divisions:
-            division_list = divisions.split(',')
-            placeholders = ','.join(['?'] * len(division_list))
-            where_conditions.append(f"h.fPRODUCTGROUP IN ({placeholders})")
-            params.extend(division_list)
-        
-        # Фильтр по группам клиентов
+        # Строим условия фильтрации для групп клиентов
+        group_filter = ""
+        group_params = []
         if groups:
             group_list = groups.split(',')
             placeholders = ','.join(['?'] * len(group_list))
-            where_conditions.append(f"c.fGROUP IN ({placeholders})")
-            params.extend(group_list)
+            group_filter = f"AND c.fGROUP IN ({placeholders})"
+            group_params = group_list
         
-        # Добавляем условия WHERE
-        if where_conditions:
-            query += " WHERE " + " AND ".join(where_conditions)
+        # Строим условия фильтрации для дивизионов (по продажам)
+        division_filter = ""
+        division_params = []
+        if divisions:
+            division_list = divisions.split(',')
+            placeholders = ','.join(['?'] * len(division_list))
+            division_filter = f"AND s.fDIVISION IN ({placeholders})"
+            division_params = division_list
         
-        query += """
-            GROUP BY c.fCODE, c.fNAME, c.fGROUP
-            HAVING ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) > 0
-            ORDER BY TotalSales DESC
+        # ============================================================
+        # 1. ПРОДАЖИ - из таблицы SALES где fSTATE=2
+        # ============================================================
+        sales_query = f"""
+            SELECT 
+                c.fID as CustomerID,
+                c.fCODE as CustomerCode,
+                c.fNAME as CustomerName,
+                c.fGROUP as GroupCode,
+                ISNULL(SUM(s.fTOTALSUM), 0) as TotalSales,
+                COUNT(s.fISN) as SalesCount
+            FROM CUSTOMERS c
+            LEFT JOIN SALES s ON c.fID = s.fCUSTOMERID
+                AND s.fDATE >= ?
+                AND s.fDATE <= ?
+                AND s.fSTATE = 2
+                {division_filter}
+            WHERE 1=1 {group_filter}
+            GROUP BY c.fID, c.fCODE, c.fNAME, c.fGROUP
+            HAVING ISNULL(SUM(s.fTOTALSUM), 0) > 0
         """
         
-        distributors = db.execute_query(query, tuple(params))
+        sales_params = [date_from, date_to] + division_params + group_params
+        cursor.execute(sales_query, sales_params)
         
-        # Преобразовать Decimal в float и добавить расчет процента оплаты
-        for dist in distributors:
-            dist['TotalSales'] = float(dist['TotalSales'])
-            dist['TotalPayments'] = float(dist['TotalPayments'])
-            dist['TotalDebt'] = float(dist['TotalDebt'])
-            dist['AvgSale'] = float(dist['AvgSale'])
+        customers_data = {}
+        for row in cursor.fetchall():
+            customer_id = row[0]
+            customers_data[customer_id] = {
+                'CustomerID': customer_id,
+                'CustomerCode': row[1],
+                'CustomerName': row[2],
+                'GroupCode': row[3] or '',
+                'TotalSales': float(row[4] or 0),
+                'SalesCount': row[5] or 0,
+                'TotalPayments': 0,
+                'DebtFromDocs': 0,
+                'Type01': 0,
+                'Type02': 0,
+                'TotalDebt': 0
+            }
+        
+        if not customers_data:
+            conn.close()
+            return jsonify({
+                'success': True,
+                'data': [],
+                'count': 0,
+                'period': {'from': date_from, 'to': date_to},
+                'filters': {'divisions': divisions, 'groups': groups}
+            })
+        
+        customer_ids = list(customers_data.keys())
+        placeholders = ','.join(['?'] * len(customer_ids))
+        
+        # ============================================================
+        # 2. ПЛАТЕЖИ - из HICUSTOMERSDEBT где fOP='PAY' и fDBCR='C'
+        # ============================================================
+        payments_query = f"""
+            SELECT 
+                d.fCUSTOMERID,
+                ISNULL(SUM(ABS(h.fSUM)), 0) as TotalPayments
+            FROM HICUSTOMERSDEBT h
+            INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
+            WHERE d.fCUSTOMERID IN ({placeholders})
+                AND h.fDATE >= ?
+                AND h.fDATE <= ?
+                AND h.fOP = 'PAY'
+                AND h.fDBCR = 'C'
+            GROUP BY d.fCUSTOMERID
+        """
+        
+        payments_params = customer_ids + [date_from, date_to]
+        cursor.execute(payments_query, payments_params)
+        
+        for row in cursor.fetchall():
+            customer_id = row[0]
+            if customer_id in customers_data:
+                customers_data[customer_id]['TotalPayments'] = float(row[1] or 0)
+        
+        # ============================================================
+        # 3. ДОЛГ ИЗ ДОКУМЕНТОВ (DebtFromDocs) - на конец периода
+        #    D (дебет) = увеличение долга
+        #    C (кредит) = уменьшение долга (оплата)
+        #    DebtFromDocs = SUM(D) - SUM(C)
+        # ============================================================
+        debt_query = f"""
+            SELECT 
+                d.fCUSTOMERID,
+                ISNULL(SUM(CASE WHEN h.fDBCR = 'D' THEN ABS(h.fSUM) ELSE 0 END), 0) -
+                ISNULL(SUM(CASE WHEN h.fDBCR = 'C' THEN ABS(h.fSUM) ELSE 0 END), 0) as DebtFromDocs
+            FROM HICUSTOMERSDEBT h
+            INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
+            WHERE d.fCUSTOMERID IN ({placeholders})
+                AND h.fDATE <= ?
+            GROUP BY d.fCUSTOMERID
+        """
+        
+        debt_params = customer_ids + [date_to]
+        cursor.execute(debt_query, debt_params)
+        
+        for row in cursor.fetchall():
+            customer_id = row[0]
+            if customer_id in customers_data:
+                customers_data[customer_id]['DebtFromDocs'] = float(row[1] or 0)
+        
+        # ============================================================
+        # 4. ПРЕДОПЛАТЫ (Type01, Type02) - из HIRESTCUSTOMERSSUM
+        #    Вычитаются из долга по модулю
+        #    Примечание: таблица не имеет колонку даты - берём все записи
+        # ============================================================
+        rest_query = f"""
+            SELECT 
+                fCUSTOMERID,
+                fTYPE,
+                ISNULL(SUM(fSUM), 0) as RestSum
+            FROM HIRESTCUSTOMERSSUM
+            WHERE fCUSTOMERID IN ({placeholders})
+                AND fTYPE IN ('01', '02')
+            GROUP BY fCUSTOMERID, fTYPE
+        """
+        
+        rest_params = customer_ids
+        cursor.execute(rest_query, rest_params)
+        
+        for row in cursor.fetchall():
+            customer_id = row[0]
+            rest_type = row[1]
+            rest_sum = float(row[2] or 0)
+            
+            if customer_id in customers_data:
+                if rest_type == '01':
+                    customers_data[customer_id]['Type01'] = rest_sum
+                elif rest_type == '02':
+                    customers_data[customer_id]['Type02'] = rest_sum
+        
+        conn.close()
+        
+        # ============================================================
+        # 5. ИТОГОВЫЙ РАСЧЁТ ДОЛГА
+        #    Долг = ДолгИзДокументов - |Type01| - |Type02|
+        # ============================================================
+        distributors = []
+        for customer_id, data in customers_data.items():
+            debt_from_docs = data['DebtFromDocs']
+            type01 = abs(data['Type01'])
+            type02 = abs(data['Type02'])
+            
+            # Формула долга (как на странице Areas)
+            total_debt = debt_from_docs - type01 - type02
+            data['TotalDebt'] = total_debt
             
             # Процент оплаты
-            if dist['TotalSales'] > 0:
-                dist['PaymentRate'] = (dist['TotalPayments'] / dist['TotalSales']) * 100
+            if data['TotalSales'] > 0:
+                data['PaymentRate'] = (data['TotalPayments'] / data['TotalSales']) * 100
             else:
-                dist['PaymentRate'] = 0
+                data['PaymentRate'] = 0
+            
+            distributors.append(data)
+        
+        # Сортировка по продажам (убывание)
+        distributors.sort(key=lambda x: x['TotalSales'], reverse=True)
         
         return jsonify({
             'success': True,
@@ -2082,6 +2251,8 @@ def get_distributors():
         
     except Exception as e:
         logger.error(f"Ошибка получения дистрибьюторов: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # =============================================
