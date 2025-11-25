@@ -1,0 +1,888 @@
+{% extends "base_v2.html" %}
+
+{% block title %}AI Помощник - Анализ проблем{% endblock %}
+
+{% block content %}
+<div x-data="aiAssistantData()" x-init="init()">
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="mb-1">
+                <i class="fas fa-robot text-info me-2"></i>
+                AI Помощник - Claude
+            </h2>
+            <p class="text-muted mb-0">Анализ данных и рекомендации с помощью Claude AI (Anthropic)</p>
+        </div>
+        <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" @click="showGroupsPanel = !showGroupsPanel">
+                <i class="fas fa-filter"></i> 
+                Группы клиентов
+                <span class="badge bg-info ms-1" x-show="selectedGroups.length > 0" x-text="selectedGroups.length"></span>
+            </button>
+            <button class="btn btn-outline-primary" @click="showChat = !showChat">
+                <i class="fas fa-comments"></i> 
+                <span x-text="showChat ? 'Скрыть чат' : 'Открыть чат'"></span>
+            </button>
+            <button class="btn btn-outline-info" @click="refreshAnalysis()" :disabled="loading">
+                <i class="fas fa-sync-alt" :class="{'fa-spin': loading}"></i> Обновить анализ
+            </button>
+        </div>
+    </div>
+
+    <!-- Groups Selection Panel -->
+    <div x-show="showGroupsPanel" x-cloak class="mb-4">
+        <div class="card border-secondary">
+            <div class="card-header bg-secondary bg-opacity-10 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-layer-group text-secondary me-2"></i>
+                    Выбор групп клиентов для анализа
+                </h5>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-outline-secondary" @click="selectAllGroups()">
+                        <i class="fas fa-check-double"></i> Выбрать все
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" @click="clearAllGroups()">
+                        <i class="fas fa-times"></i> Очистить
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <!-- Search -->
+                <div class="mb-3">
+                    <input type="text" class="form-control" placeholder="Поиск группы..." x-model="groupSearchQuery">
+                </div>
+                
+                <!-- Groups Grid -->
+                <div class="row g-2" style="max-height: 300px; overflow-y: auto;">
+                    <template x-for="group in filteredAvailableGroups" :key="group.code">
+                        <div class="col-md-3 col-sm-4 col-6">
+                            <div class="form-check p-2 rounded border" 
+                                 :class="{'bg-info bg-opacity-10 border-info': selectedGroups.includes(group.code), 'border-secondary': !selectedGroups.includes(group.code)}"
+                                 style="cursor: pointer;"
+                                 @click="toggleGroup(group.code)">
+                                <input class="form-check-input" type="checkbox" 
+                                       :checked="selectedGroups.includes(group.code)"
+                                       @click.stop="toggleGroup(group.code)">
+                                <label class="form-check-label w-100" style="cursor: pointer;">
+                                    <span class="badge bg-primary me-1" x-text="group.code"></span>
+                                    <small x-text="group.name"></small>
+                                </label>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+                
+                <!-- Selected Groups Summary -->
+                <div class="mt-3 pt-3 border-top d-flex justify-content-between align-items-center">
+                    <div>
+                        <span class="text-muted">Выбрано групп: </span>
+                        <span class="badge bg-info" x-text="selectedGroups.length"></span>
+                        <span class="text-muted ms-2" x-show="selectedGroups.length === 0">(все группы)</span>
+                    </div>
+                    <button class="btn btn-success" @click="saveGroups()" :disabled="savingGroups">
+                        <i class="fas fa-save me-1" :class="{'fa-spin fa-spinner': savingGroups}"></i>
+                        <span x-text="savingGroups ? 'Сохранение...' : 'Сохранить и обновить'"></span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Claude Chat Panel -->
+    <div x-show="showChat" x-cloak class="mb-4">
+        <div class="card border-info">
+            <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-brain text-info me-2"></i>
+                    Чат с Claude AI
+                </h5>
+                <button class="btn btn-sm btn-outline-secondary" @click="clearChat()">
+                    <i class="fas fa-trash"></i> Очистить
+                </button>
+            </div>
+            <div class="card-body">
+                <!-- Chat Messages -->
+                <div class="chat-messages mb-3" style="max-height: 400px; overflow-y: auto;" x-ref="chatContainer">
+                    <template x-if="chatMessages.length === 0">
+                        <div class="text-center text-muted py-4">
+                            <i class="fas fa-comments fa-3x mb-3 opacity-50"></i>
+                            <p>Задайте вопрос о данных продаж, клиентах или попросите рекомендации</p>
+                            <div class="d-flex flex-wrap gap-2 justify-content-center mt-3">
+                                <button class="btn btn-sm btn-outline-info" @click="sendQuickQuestion('Какие клиенты требуют срочного внимания?')">
+                                    🔥 Срочные проблемы
+                                </button>
+                                <button class="btn btn-sm btn-outline-info" @click="sendQuickQuestion('Дай общий анализ текущей ситуации с долгами')">
+                                    📊 Анализ долгов
+                                </button>
+                                <button class="btn btn-sm btn-outline-info" @click="sendQuickQuestion('Какие территории работают хуже всего?')">
+                                    🗺️ Анализ территорий
+                                </button>
+                            </div>
+                        </div>
+                    </template>
+                    
+                    <template x-for="(msg, index) in chatMessages" :key="index">
+                        <div class="mb-3" :class="msg.role === 'user' ? 'text-end' : ''">
+                            <div class="d-inline-block p-3 rounded-3" 
+                                 :class="msg.role === 'user' ? 'bg-primary text-white' : 'bg-dark bg-opacity-50'"
+                                 style="max-width: 80%;">
+                                <div class="small mb-1" :class="msg.role === 'user' ? 'text-white-50' : 'text-muted'">
+                                    <i :class="msg.role === 'user' ? 'fas fa-user' : 'fas fa-robot'"></i>
+                                    <span x-text="msg.role === 'user' ? 'Вы' : 'Claude AI'"></span>
+                                </div>
+                                <div x-html="formatMessage(msg.content)" style="white-space: pre-wrap;"></div>
+                            </div>
+                        </div>
+                    </template>
+                    
+                    <div x-show="chatLoading" class="text-center py-3">
+                        <div class="spinner-border spinner-border-sm text-info" role="status"></div>
+                        <span class="ms-2 text-muted">Claude думает...</span>
+                    </div>
+                </div>
+                
+                <!-- Chat Input -->
+                <div class="input-group">
+                    <input type="text" class="form-control" 
+                           placeholder="Задайте вопрос о продажах, клиентах или проблемах..."
+                           x-model="chatInput"
+                           @keyup.enter="sendMessage()"
+                           :disabled="chatLoading">
+                    <button class="btn btn-info" @click="sendMessage()" :disabled="chatLoading || !chatInput.trim()">
+                        <i class="fas fa-paper-plane"></i> Отправить
+                    </button>
+                </div>
+                <div class="small text-muted mt-2">
+                    <i class="fas fa-info-circle"></i> 
+                    Claude имеет доступ к текущим данным о проблемных клиентах и статистике
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading State -->
+    <div x-show="loading" class="text-center py-5">
+        <div class="spinner-border text-info" style="width: 3rem; height: 3rem;" role="status">
+            <span class="visually-hidden">Загрузка...</span>
+        </div>
+        <p class="mt-3 text-muted">AI анализирует данные...</p>
+    </div>
+
+    <!-- Summary Cards -->
+    <div x-show="!loading" x-cloak>
+        <!-- Problem Summary Cards -->
+        <div class="row g-3 mb-4">
+            <div class="col-md-3">
+                <div class="card stat-card h-100" style="border-left: 4px solid #dc3545;">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h6 class="text-muted mb-1">Критические проблемы</h6>
+                                <h3 class="mb-0 text-danger" x-text="stats.critical"></h3>
+                            </div>
+                            <div class="stat-icon bg-danger bg-opacity-10 text-danger">
+                                <i class="fas fa-exclamation-triangle"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card stat-card h-100" style="border-left: 4px solid #ffc107;">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h6 class="text-muted mb-1">Предупреждения</h6>
+                                <h3 class="mb-0 text-warning" x-text="stats.warnings"></h3>
+                            </div>
+                            <div class="stat-icon bg-warning bg-opacity-10 text-warning">
+                                <i class="fas fa-exclamation-circle"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card stat-card h-100" style="border-left: 4px solid #0dcaf0;">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h6 class="text-muted mb-1">Требуют внимания</h6>
+                                <h3 class="mb-0 text-info" x-text="stats.attention"></h3>
+                            </div>
+                            <div class="stat-icon bg-info bg-opacity-10 text-info">
+                                <i class="fas fa-info-circle"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card stat-card h-100" style="border-left: 4px solid #198754;">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <h6 class="text-muted mb-1">Всего клиентов</h6>
+                                <h3 class="mb-0 text-success" x-text="stats.totalCustomers"></h3>
+                            </div>
+                            <div class="stat-icon bg-success bg-opacity-10 text-success">
+                                <i class="fas fa-users"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Problem Categories Tabs -->
+        <ul class="nav nav-tabs mb-4" role="tablist">
+            <li class="nav-item">
+                <button class="nav-link" :class="{'active': activeTab === 'all'}" @click="activeTab = 'all'">
+                    <i class="fas fa-list me-1"></i> Все проблемы
+                    <span class="badge bg-secondary ms-1" x-text="allProblems.length"></span>
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" :class="{'active': activeTab === 'debt'}" @click="activeTab = 'debt'">
+                    <i class="fas fa-hand-holding-usd me-1"></i> Высокий долг
+                    <span class="badge bg-danger ms-1" x-text="problems.highDebt?.length || 0"></span>
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" :class="{'active': activeTab === 'payment'}" @click="activeTab = 'payment'">
+                    <i class="fas fa-money-bill-wave me-1"></i> Низкие платежи
+                    <span class="badge bg-warning ms-1" x-text="problems.lowPayment?.length || 0"></span>
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" :class="{'active': activeTab === 'sales'}" @click="activeTab = 'sales'">
+                    <i class="fas fa-chart-line me-1"></i> Падение продаж
+                    <span class="badge bg-info ms-1" x-text="problems.salesDrop?.length || 0"></span>
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" :class="{'active': activeTab === 'inactive'}" @click="activeTab = 'inactive'">
+                    <i class="fas fa-user-clock me-1"></i> Неактивные
+                    <span class="badge bg-secondary ms-1" x-text="problems.inactive?.length || 0"></span>
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" :class="{'active': activeTab === 'irregular'}" @click="activeTab = 'irregular'">
+                    <i class="fas fa-random me-1"></i> Нерегулярные
+                    <span class="badge bg-purple ms-1" x-text="problems.irregular?.length || 0"></span>
+                </button>
+            </li>
+        </ul>
+
+        <!-- Problems List -->
+        <div class="row">
+            <!-- Left: Problems Table -->
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">
+                            <i class="fas fa-clipboard-list me-2"></i>
+                            <span x-text="getTabTitle()"></span>
+                        </h5>
+                        <div class="d-flex gap-2">
+                            <input type="text" class="form-control form-control-sm" 
+                                   placeholder="Поиск..." x-model="searchQuery" style="width: 200px;">
+                            <select class="form-select form-select-sm" x-model="sortBy" style="width: 150px;">
+                                <option value="severity">По важности</option>
+                                <option value="amount">По сумме</option>
+                                <option value="area">По территории</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive" style="max-height: 600px; overflow-y: auto;">
+                            <table class="table table-hover mb-0">
+                                <thead class="sticky-top" style="background: var(--card-bg);">
+                                    <tr>
+                                        <th style="width: 60px;">Уровень</th>
+                                        <th>Клиент</th>
+                                        <th>Территория</th>
+                                        <th>Проблема</th>
+                                        <th class="text-end">Сумма</th>
+                                        <th style="width: 100px;">Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="problem in filteredProblems" :key="problem.id">
+                                        <tr @click="selectProblem(problem)" 
+                                            :class="{'table-active': selectedProblem?.id === problem.id}"
+                                            style="cursor: pointer;">
+                                            <td>
+                                                <span class="badge" 
+                                                      :class="{
+                                                          'bg-danger': problem.severity === 'critical',
+                                                          'bg-warning': problem.severity === 'warning',
+                                                          'bg-info': problem.severity === 'info'
+                                                      }">
+                                                    <i class="fas" :class="{
+                                                        'fa-exclamation-triangle': problem.severity === 'critical',
+                                                        'fa-exclamation-circle': problem.severity === 'warning',
+                                                        'fa-info-circle': problem.severity === 'info'
+                                                    }"></i>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <div class="fw-bold" x-text="problem.customerName"></div>
+                                                <small class="text-muted" x-text="'#' + problem.customerCode"></small>
+                                            </td>
+                                            <td>
+                                                <span class="badge bg-primary" x-text="problem.areaCode"></span>
+                                                <small class="d-block text-muted" x-text="problem.areaName"></small>
+                                            </td>
+                                            <td>
+                                                <span x-text="problem.problemType"></span>
+                                                <small class="d-block text-muted" x-text="problem.description"></small>
+                                            </td>
+                                            <td class="text-end">
+                                                <span class="fw-bold" :class="{
+                                                    'text-danger': problem.amount > 0,
+                                                    'text-success': problem.amount < 0
+                                                }" x-text="formatNumber(Math.abs(problem.amount)) + ' ֏'"></span>
+                                            </td>
+                                            <td>
+                                                <button class="btn btn-sm btn-outline-info" @click.stop="showDetails(problem)">
+                                                    <i class="fas fa-eye"></i>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                    <tr x-show="filteredProblems.length === 0">
+                                        <td colspan="6" class="text-center py-4">
+                                            <i class="fas fa-check-circle text-success fa-3x mb-3"></i>
+                                            <p class="text-muted mb-0">Проблем не обнаружено</p>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Details Panel -->
+            <div class="col-lg-4">
+                <!-- Selected Problem Details -->
+                <div class="card mb-3" x-show="selectedProblem">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <i class="fas fa-user-circle me-2"></i>
+                            Детали клиента
+                        </h5>
+                    </div>
+                    <div class="card-body" x-show="selectedProblem">
+                        <div class="mb-3">
+                            <h6 x-text="selectedProblem?.customerName" class="mb-1"></h6>
+                            <small class="text-muted">Код: <span x-text="selectedProblem?.customerCode"></span></small>
+                        </div>
+                        
+                        <div class="row g-2 mb-3">
+                            <div class="col-6">
+                                <div class="p-2 rounded" style="background: rgba(13, 110, 253, 0.1);">
+                                    <small class="text-muted d-block">Территория</small>
+                                    <span class="fw-bold" x-text="selectedProblem?.areaCode + ' - ' + selectedProblem?.areaName"></span>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="p-2 rounded" style="background: rgba(220, 53, 69, 0.1);">
+                                    <small class="text-muted d-block">Сумма</small>
+                                    <span class="fw-bold text-danger" x-text="formatNumber(selectedProblem?.amount) + ' ֏'"></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="alert" :class="{
+                            'alert-danger': selectedProblem?.severity === 'critical',
+                            'alert-warning': selectedProblem?.severity === 'warning',
+                            'alert-info': selectedProblem?.severity === 'info'
+                        }">
+                            <i class="fas fa-lightbulb me-2"></i>
+                            <strong>Рекомендация:</strong>
+                            <p class="mb-0 mt-1" x-text="selectedProblem?.recommendation"></p>
+                        </div>
+
+                        <!-- Customer Metrics -->
+                        <div class="mt-3">
+                            <h6 class="mb-2"><i class="fas fa-chart-bar me-2"></i>Метрики</h6>
+                            <div class="row g-2">
+                                <div class="col-6">
+                                    <div class="border rounded p-2 text-center">
+                                        <small class="text-muted d-block">Продажи (месяц)</small>
+                                        <span class="fw-bold text-success" x-text="formatNumber(selectedProblem?.metrics?.sales || 0) + ' ֏'"></span>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="border rounded p-2 text-center">
+                                        <small class="text-muted d-block">Платежи (месяц)</small>
+                                        <span class="fw-bold text-info" x-text="formatNumber(selectedProblem?.metrics?.payments || 0) + ' ֏'"></span>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="border rounded p-2 text-center">
+                                        <small class="text-muted d-block">Текущий долг</small>
+                                        <span class="fw-bold text-danger" x-text="formatNumber(selectedProblem?.metrics?.debt || 0) + ' ֏'"></span>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="border rounded p-2 text-center">
+                                        <small class="text-muted d-block">% оплаты</small>
+                                        <span class="fw-bold" :class="{
+                                            'text-success': (selectedProblem?.metrics?.paymentRate || 0) >= 80,
+                                            'text-warning': (selectedProblem?.metrics?.paymentRate || 0) >= 50 && (selectedProblem?.metrics?.paymentRate || 0) < 80,
+                                            'text-danger': (selectedProblem?.metrics?.paymentRate || 0) < 50
+                                        }" x-text="(selectedProblem?.metrics?.paymentRate || 0).toFixed(1) + '%'"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Ask Claude Button -->
+                        <div class="mt-3">
+                            <button class="btn btn-info w-100" @click="analyzeCustomerWithAI(selectedProblem)" :disabled="chatLoading">
+                                <i class="fas fa-brain me-2"></i>
+                                <span x-text="chatLoading ? 'Claude анализирует...' : 'Спросить Claude AI'"></span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Area Summary -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <i class="fas fa-map-marker-alt me-2"></i>
+                            Проблемы по территориям
+                        </h5>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="list-group list-group-flush" style="max-height: 300px; overflow-y: auto;">
+                            <template x-for="area in areaStats" :key="area.code">
+                                <a href="#" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center"
+                                   @click.prevent="filterByArea(area.code)">
+                                    <div>
+                                        <span class="badge bg-primary me-2" x-text="area.code"></span>
+                                        <span x-text="area.name"></span>
+                                    </div>
+                                    <div>
+                                        <span class="badge bg-danger" x-show="area.critical > 0" x-text="area.critical"></span>
+                                        <span class="badge bg-warning" x-show="area.warnings > 0" x-text="area.warnings"></span>
+                                        <span class="badge bg-info" x-show="area.attention > 0" x-text="area.attention"></span>
+                                    </div>
+                                </a>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .stat-icon {
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.5rem;
+    }
+    
+    .bg-purple {
+        background-color: #9b59b6 !important;
+    }
+    
+    .table-active {
+        background-color: rgba(13, 110, 253, 0.15) !important;
+    }
+    
+    .sticky-top th {
+        background: var(--card-bg);
+        z-index: 10;
+    }
+</style>
+
+<script>
+function aiAssistantData() {
+    return {
+        loading: true,
+        activeTab: 'all',
+        searchQuery: '',
+        sortBy: 'severity',
+        selectedProblem: null,
+        selectedArea: null,
+        
+        // Chat with Claude
+        showChat: false,
+        chatMessages: [],
+        chatInput: '',
+        chatLoading: false,
+        
+        // Groups selection
+        showGroupsPanel: false,
+        availableGroups: [],
+        selectedGroups: [],
+        groupSearchQuery: '',
+        savingGroups: false,
+        
+        stats: {
+            critical: 0,
+            warnings: 0,
+            attention: 0,
+            totalCustomers: 0
+        },
+        
+        problems: {
+            highDebt: [],
+            lowPayment: [],
+            salesDrop: [],
+            inactive: [],
+            irregular: []
+        },
+        
+        areaStats: [],
+        
+        async init() {
+            await this.loadGroups();
+            await this.loadSelectedGroups();
+            await this.loadAnalysis();
+        },
+        
+        // Groups methods
+        async loadGroups() {
+            try {
+                const response = await fetch('/api/customer-groups');
+                const data = await response.json();
+                if (data.success) {
+                    this.availableGroups = data.data;
+                }
+            } catch (error) {
+                console.error('Error loading groups:', error);
+            }
+        },
+        
+        async loadSelectedGroups() {
+            try {
+                const response = await fetch('/api/ai-assistant/groups');
+                const data = await response.json();
+                if (data.success) {
+                    this.selectedGroups = data.data || [];
+                }
+            } catch (error) {
+                console.error('Error loading selected groups:', error);
+            }
+        },
+        
+        get filteredAvailableGroups() {
+            if (!this.groupSearchQuery) return this.availableGroups;
+            const query = this.groupSearchQuery.toLowerCase();
+            return this.availableGroups.filter(g => 
+                g.code.toLowerCase().includes(query) || 
+                g.name.toLowerCase().includes(query)
+            );
+        },
+        
+        toggleGroup(code) {
+            const index = this.selectedGroups.indexOf(code);
+            if (index === -1) {
+                this.selectedGroups.push(code);
+            } else {
+                this.selectedGroups.splice(index, 1);
+            }
+        },
+        
+        selectAllGroups() {
+            this.selectedGroups = this.availableGroups.map(g => g.code);
+        },
+        
+        clearAllGroups() {
+            this.selectedGroups = [];
+        },
+        
+        async saveGroups() {
+            this.savingGroups = true;
+            try {
+                const response = await fetch('/api/ai-assistant/groups', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ groups: this.selectedGroups })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    this.showGroupsPanel = false;
+                    await this.loadAnalysis();
+                } else {
+                    alert('Ошибка сохранения: ' + data.error);
+                }
+            } catch (error) {
+                console.error('Error saving groups:', error);
+                alert('Ошибка сохранения');
+            }
+            this.savingGroups = false;
+        },
+        
+        async loadAnalysis() {
+            this.loading = true;
+            try {
+                const response = await fetch('/api/ai-analysis');
+                const data = await response.json();
+                
+                if (data.success) {
+                    this.problems = data.problems;
+                    this.stats = data.stats;
+                    this.areaStats = data.areaStats;
+                }
+            } catch (error) {
+                console.error('Error loading analysis:', error);
+            }
+            this.loading = false;
+        },
+        
+        async refreshAnalysis() {
+            await this.loadAnalysis();
+        },
+        
+        // Claude Chat Methods
+        async sendMessage() {
+            if (!this.chatInput.trim() || this.chatLoading) return;
+            
+            const userMessage = this.chatInput.trim();
+            this.chatInput = '';
+            
+            // Add user message to chat
+            this.chatMessages.push({
+                role: 'user',
+                content: userMessage
+            });
+            
+            this.chatLoading = true;
+            this.scrollChatToBottom();
+            
+            try {
+                // Build context with current data
+                const context = {
+                    stats: this.stats,
+                    areaStats: this.areaStats,
+                    topProblems: this.allProblems.slice(0, 10).map(p => ({
+                        customer: p.customerName,
+                        code: p.customerCode,
+                        area: p.areaName,
+                        problem: p.problemType,
+                        description: p.description,
+                        amount: p.amount,
+                        severity: p.severity
+                    }))
+                };
+                
+                const response = await fetch('/api/ai-chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: userMessage,
+                        context: context
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    this.chatMessages.push({
+                        role: 'assistant',
+                        content: data.response
+                    });
+                } else {
+                    this.chatMessages.push({
+                        role: 'assistant',
+                        content: `❌ Ошибка: ${data.error}`
+                    });
+                }
+            } catch (error) {
+                console.error('Chat error:', error);
+                this.chatMessages.push({
+                    role: 'assistant',
+                    content: `❌ Ошибка подключения к Claude AI: ${error.message}`
+                });
+            }
+            
+            this.chatLoading = false;
+            this.scrollChatToBottom();
+        },
+        
+        sendQuickQuestion(question) {
+            this.chatInput = question;
+            this.sendMessage();
+        },
+        
+        clearChat() {
+            this.chatMessages = [];
+        },
+        
+        scrollChatToBottom() {
+            this.$nextTick(() => {
+                if (this.$refs.chatContainer) {
+                    this.$refs.chatContainer.scrollTop = this.$refs.chatContainer.scrollHeight;
+                }
+            });
+        },
+        
+        formatMessage(text) {
+            // Convert markdown-like formatting to HTML
+            return text
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                .replace(/`(.*?)`/g, '<code>$1</code>')
+                .replace(/^### (.*$)/gm, '<h6 class="mt-2 mb-1">$1</h6>')
+                .replace(/^## (.*$)/gm, '<h5 class="mt-2 mb-1">$1</h5>')
+                .replace(/^# (.*$)/gm, '<h4 class="mt-2 mb-1">$1</h4>')
+                .replace(/^- (.*$)/gm, '• $1')
+                .replace(/^\d+\. (.*$)/gm, '<span class="text-info">$&</span>');
+        },
+        
+        // AI Analysis for selected customer
+        async analyzeCustomerWithAI(customer) {
+            if (!customer) return;
+            
+            this.chatLoading = true;
+            this.showChat = true;
+            
+            try {
+                const response = await fetch('/api/ai-analyze-customer', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ customer: customer })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    this.chatMessages.push({
+                        role: 'user',
+                        content: `Проанализируй клиента: ${customer.customerName} (${customer.customerCode})`
+                    });
+                    this.chatMessages.push({
+                        role: 'assistant',
+                        content: data.analysis
+                    });
+                }
+            } catch (error) {
+                console.error('Analysis error:', error);
+            }
+            
+            this.chatLoading = false;
+            this.scrollChatToBottom();
+        },
+        
+        get allProblems() {
+            const all = [
+                ...(this.problems.highDebt || []),
+                ...(this.problems.lowPayment || []),
+                ...(this.problems.salesDrop || []),
+                ...(this.problems.inactive || []),
+                ...(this.problems.irregular || [])
+            ];
+            return all;
+        },
+        
+        get filteredProblems() {
+            let list = [];
+            
+            switch(this.activeTab) {
+                case 'all':
+                    list = this.allProblems;
+                    break;
+                case 'debt':
+                    list = this.problems.highDebt || [];
+                    break;
+                case 'payment':
+                    list = this.problems.lowPayment || [];
+                    break;
+                case 'sales':
+                    list = this.problems.salesDrop || [];
+                    break;
+                case 'inactive':
+                    list = this.problems.inactive || [];
+                    break;
+                case 'irregular':
+                    list = this.problems.irregular || [];
+                    break;
+            }
+            
+            // Filter by search
+            if (this.searchQuery) {
+                const query = this.searchQuery.toLowerCase();
+                list = list.filter(p => 
+                    p.customerName.toLowerCase().includes(query) ||
+                    p.customerCode.toString().includes(query) ||
+                    p.areaCode.toLowerCase().includes(query)
+                );
+            }
+            
+            // Filter by area
+            if (this.selectedArea) {
+                list = list.filter(p => p.areaCode === this.selectedArea);
+            }
+            
+            // Sort
+            list.sort((a, b) => {
+                switch(this.sortBy) {
+                    case 'severity':
+                        const severityOrder = { critical: 0, warning: 1, info: 2 };
+                        return severityOrder[a.severity] - severityOrder[b.severity];
+                    case 'amount':
+                        return Math.abs(b.amount) - Math.abs(a.amount);
+                    case 'area':
+                        return a.areaCode.localeCompare(b.areaCode);
+                    default:
+                        return 0;
+                }
+            });
+            
+            return list;
+        },
+        
+        getTabTitle() {
+            const titles = {
+                'all': 'Все проблемы',
+                'debt': 'Высокий долг (>30% от продаж)',
+                'payment': 'Низкий уровень платежей (<50%)',
+                'sales': 'Падение продаж (>30% от среднего)',
+                'inactive': 'Неактивные клиенты (>30 дней)',
+                'irregular': 'Нерегулярные заказы'
+            };
+            return titles[this.activeTab] || 'Проблемы';
+        },
+        
+        selectProblem(problem) {
+            this.selectedProblem = problem;
+        },
+        
+        showDetails(problem) {
+            this.selectedProblem = problem;
+            // Could open a modal here if needed
+        },
+        
+        filterByArea(areaCode) {
+            if (this.selectedArea === areaCode) {
+                this.selectedArea = null;
+            } else {
+                this.selectedArea = areaCode;
+            }
+        },
+        
+        formatNumber(num) {
+            if (num === null || num === undefined) return '0';
+            return Math.round(num).toLocaleString('ru-RU');
+        }
+    };
+}
+</script>
+{% endblock %}

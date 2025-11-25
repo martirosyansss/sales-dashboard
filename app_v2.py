@@ -10,17 +10,25 @@ import os
 import json
 from typing import Dict, List, Any
 import logging
+from dotenv import load_dotenv
+import anthropic
 # import io
 # from openpyxl import Workbook
 # from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 # from openpyxl.utils import get_column_letter
 
 # Настройка логирования
+# Load environment variables from .env file
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'sales-dashboard-secret-key-2025'
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'sales-dashboard-secret-key-2025')
+
+# API Keys
+ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 
 # =============================================
 # ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ
@@ -2466,6 +2474,528 @@ def plans_page():
     """Страница планов продаж и кредитов по территориям"""
     return render_template('plans.html')
 
+@app.route('/ai-assistant')
+def ai_assistant_page():
+    """Страница AI помощника для анализа проблем"""
+    return render_template('ai_assistant.html')
+
+@app.route('/api/ai-analysis')
+def ai_analysis():
+    """AI анализ проблем: высокий долг, низкие платежи, падение продаж, неактивные клиенты"""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Получить фильтры
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        ai_groups_filter, ai_groups_params = get_ai_groups_filter_sql()
+        
+        # Объединяем параметры
+        combined_filter = excluded_filter + " " + ai_groups_filter
+        combined_params = excluded_params + ai_groups_params
+        
+        problems = {
+            'highDebt': [],
+            'lowPayment': [],
+            'salesDrop': [],
+            'inactive': [],
+            'irregular': []
+        }
+        
+        # Счетчик для уникальных ID
+        problem_id = 0
+        
+        # 1. ВЫСОКИЙ ДОЛГ - клиенты с долгом из HICUSTOMERSDEBT
+        query_high_debt = f"""
+        SELECT 
+            c.fID as CustomerID,
+            c.fCODE as CustomerCode,
+            c.fNAME as CustomerName,
+            ISNULL(csa.fSALESAREA, 'N/A') as AreaCode,
+            ISNULL(sa.fCAPTION, 'Не указана') as AreaName,
+            ISNULL(debt.TotalDebt, 0) as Debt,
+            ISNULL(sales.MonthlySales, 0) as MonthlySales,
+            ISNULL(pay.MonthlyPayments, 0) as MonthlyPayments
+        FROM CUSTOMERS c
+        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SalesAreas'
+        LEFT JOIN (
+            SELECT doc.fCUSTOMERID, 
+                   SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END) as TotalDebt
+            FROM HICUSTOMERSDEBT d
+            INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+            GROUP BY doc.fCUSTOMERID
+        ) debt ON c.fID = debt.fCUSTOMERID
+        LEFT JOIN (
+            SELECT fCUSTOMERID, SUM(fTOTALSUM) as MonthlySales
+            FROM SALES 
+            WHERE fDATE >= DATEADD(MONTH, -1, GETDATE()) AND fSTATE = 2
+            GROUP BY fCUSTOMERID
+        ) sales ON c.fID = sales.fCUSTOMERID
+        LEFT JOIN (
+            SELECT fCUSTOMERID, SUM(fSUM) as MonthlyPayments
+            FROM PAYMENTS 
+            WHERE fDATE >= DATEADD(MONTH, -1, GETDATE())
+            GROUP BY fCUSTOMERID
+        ) pay ON c.fID = pay.fCUSTOMERID
+        WHERE ISNULL(debt.TotalDebt, 0) > 100000
+            {combined_filter}
+        ORDER BY debt.TotalDebt DESC
+        """
+        
+        cursor.execute(query_high_debt, combined_params)
+        for row in cursor.fetchall():
+            debt = float(row.Debt) if row.Debt else 0
+            sales = float(row.MonthlySales) if row.MonthlySales else 0
+            payments = float(row.MonthlyPayments) if row.MonthlyPayments else 0
+            
+            # Высокий долг: долг > 30% от продаж или долг > 500,000 при отсутствии продаж
+            if sales > 0:
+                debt_ratio = (debt / sales) * 100
+                if debt_ratio > 30:
+                    problem_id += 1
+                    severity = 'critical' if debt_ratio > 100 else ('warning' if debt_ratio > 50 else 'info')
+                    problems['highDebt'].append({
+                        'id': problem_id,
+                        'customerCode': row.CustomerCode,
+                        'customerName': row.CustomerName,
+                        'areaCode': row.AreaCode or 'N/A',
+                        'areaName': row.AreaName or 'Не указана',
+                        'problemType': 'Высокий долг',
+                        'description': f'Долг составляет {debt_ratio:.0f}% от месячных продаж',
+                        'amount': debt,
+                        'severity': severity,
+                        'recommendation': 'Связаться с клиентом для согласования графика погашения. При долге >100% рассмотреть ограничение отгрузок.',
+                        'metrics': {
+                            'sales': sales,
+                            'payments': payments,
+                            'debt': debt,
+                            'paymentRate': (payments / sales * 100) if sales > 0 else 0
+                        }
+                    })
+            elif debt > 500000:
+                problem_id += 1
+                problems['highDebt'].append({
+                    'id': problem_id,
+                    'customerCode': row.CustomerCode,
+                    'customerName': row.CustomerName,
+                    'areaCode': row.AreaCode or 'N/A',
+                    'areaName': row.AreaName or 'Не указана',
+                    'problemType': 'Высокий долг без продаж',
+                    'description': f'Долг {debt:,.0f} ֏ при отсутствии продаж за месяц',
+                    'amount': debt,
+                    'severity': 'critical',
+                    'recommendation': 'Срочно связаться с клиентом! Возможно прекращение сотрудничества или проблемы с оплатой.',
+                    'metrics': {
+                        'sales': 0,
+                        'payments': payments,
+                        'debt': debt,
+                        'paymentRate': 0
+                    }
+                })
+        
+        # 2. НИЗКИЙ УРОВЕНЬ ПЛАТЕЖЕЙ (платежи < 50% от продаж)
+        query_low_payment = f"""
+        SELECT 
+            c.fID,
+            c.fCODE as CustomerCode,
+            c.fNAME as CustomerName,
+            ISNULL(csa.fSALESAREA, 'N/A') as AreaCode,
+            ISNULL(sa.fCAPTION, 'Не указана') as AreaName,
+            ISNULL(sales.MonthlySales, 0) as MonthlySales,
+            ISNULL(pay.MonthlyPayments, 0) as MonthlyPayments
+        FROM CUSTOMERS c
+        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SalesAreas'
+        LEFT JOIN (
+            SELECT fCUSTOMERID, SUM(fTOTALSUM) as MonthlySales
+            FROM SALES 
+            WHERE fDATE >= DATEADD(MONTH, -1, GETDATE()) AND fSTATE = 2
+            GROUP BY fCUSTOMERID
+        ) sales ON c.fID = sales.fCUSTOMERID
+        LEFT JOIN (
+            SELECT fCUSTOMERID, SUM(fSUM) as MonthlyPayments
+            FROM PAYMENTS 
+            WHERE fDATE >= DATEADD(MONTH, -1, GETDATE())
+            GROUP BY fCUSTOMERID
+        ) pay ON c.fID = pay.fCUSTOMERID
+        WHERE ISNULL(sales.MonthlySales, 0) > 100000
+            {combined_filter}
+        ORDER BY sales.MonthlySales DESC
+        """
+        
+        cursor.execute(query_low_payment, combined_params)
+        for row in cursor.fetchall():
+            sales = float(row.MonthlySales) if row.MonthlySales else 0
+            payments = float(row.MonthlyPayments) if row.MonthlyPayments else 0
+            
+            if sales > 0:
+                payment_rate = (payments / sales) * 100
+                if payment_rate < 50:
+                    problem_id += 1
+                    severity = 'critical' if payment_rate < 20 else ('warning' if payment_rate < 35 else 'info')
+                    problems['lowPayment'].append({
+                        'id': problem_id,
+                        'customerCode': row.CustomerCode,
+                        'customerName': row.CustomerName,
+                        'areaCode': row.AreaCode or 'N/A',
+                        'areaName': row.AreaName or 'Не указана',
+                        'problemType': 'Низкий уровень платежей',
+                        'description': f'Оплачено только {payment_rate:.0f}% от продаж за месяц',
+                        'amount': sales - payments,
+                        'severity': severity,
+                        'recommendation': 'Напомнить клиенту о необходимости оплаты. Рассмотреть изменение условий отсрочки.',
+                        'metrics': {
+                            'sales': sales,
+                            'payments': payments,
+                            'debt': sales - payments,
+                            'paymentRate': payment_rate
+                        }
+                    })
+        
+        # 3. ПАДЕНИЕ ПРОДАЖ (продажи упали более чем на 30% по сравнению со средним)
+        query_sales_drop = f"""
+        SELECT 
+            c.fID,
+            c.fCODE as CustomerCode,
+            c.fNAME as CustomerName,
+            ISNULL(csa.fSALESAREA, 'N/A') as AreaCode,
+            ISNULL(sa.fCAPTION, 'Не указана') as AreaName,
+            ISNULL(curr.CurrentSales, 0) as CurrentMonthSales,
+            ISNULL(prev.AvgPrevSales, 0) as AvgPrevMonthsSales
+        FROM CUSTOMERS c
+        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SalesAreas'
+        LEFT JOIN (
+            SELECT fCUSTOMERID, SUM(fTOTALSUM) as CurrentSales
+            FROM SALES 
+            WHERE fDATE >= DATEADD(MONTH, -1, GETDATE()) AND fSTATE = 2
+            GROUP BY fCUSTOMERID
+        ) curr ON c.fID = curr.fCUSTOMERID
+        LEFT JOIN (
+            SELECT fCUSTOMERID, SUM(fTOTALSUM) / 3.0 as AvgPrevSales
+            FROM SALES 
+            WHERE fDATE >= DATEADD(MONTH, -4, GETDATE())
+              AND fDATE < DATEADD(MONTH, -1, GETDATE())
+              AND fSTATE = 2
+            GROUP BY fCUSTOMERID
+        ) prev ON c.fID = prev.fCUSTOMERID
+        WHERE ISNULL(prev.AvgPrevSales, 0) > 100000
+            {combined_filter}
+        """
+        
+        cursor.execute(query_sales_drop, combined_params)
+        for row in cursor.fetchall():
+            current = float(row.CurrentMonthSales) if row.CurrentMonthSales else 0
+            avg_prev = float(row.AvgPrevMonthsSales) if row.AvgPrevMonthsSales else 0
+            
+            if avg_prev > 100000:  # Только для клиентов со средними продажами > 100k
+                if current < avg_prev * 0.7:  # Падение более 30%
+                    drop_percent = ((avg_prev - current) / avg_prev) * 100
+                    problem_id += 1
+                    severity = 'critical' if drop_percent > 70 else ('warning' if drop_percent > 50 else 'info')
+                    problems['salesDrop'].append({
+                        'id': problem_id,
+                        'customerCode': row.CustomerCode,
+                        'customerName': row.CustomerName,
+                        'areaCode': row.AreaCode or 'N/A',
+                        'areaName': row.AreaName or 'Не указана',
+                        'problemType': 'Падение продаж',
+                        'description': f'Продажи упали на {drop_percent:.0f}% (было {avg_prev:,.0f}, стало {current:,.0f})',
+                        'amount': avg_prev - current,
+                        'severity': severity,
+                        'recommendation': 'Выяснить причину снижения активности. Возможно клиент перешел к конкуренту или изменились потребности.',
+                        'metrics': {
+                            'sales': current,
+                            'payments': 0,
+                            'debt': 0,
+                            'paymentRate': 0
+                        }
+                    })
+        
+        # 4. НЕАКТИВНЫЕ КЛИЕНТЫ (нет продаж более 30 дней)
+        query_inactive = f"""
+        SELECT 
+            c.fID,
+            c.fCODE as CustomerCode,
+            c.fNAME as CustomerName,
+            ISNULL(csa.fSALESAREA, 'N/A') as AreaCode,
+            ISNULL(sa.fCAPTION, 'Не указана') as AreaName,
+            last_sale.LastSaleDate,
+            DATEDIFF(DAY, last_sale.LastSaleDate, GETDATE()) as DaysSinceLastSale,
+            ISNULL(avg_sales.AvgMonthlySales, 0) as AvgMonthlySales
+        FROM CUSTOMERS c
+        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SalesAreas'
+        INNER JOIN (
+            SELECT fCUSTOMERID, MAX(fDATE) as LastSaleDate
+            FROM SALES 
+            WHERE fSTATE = 2
+            GROUP BY fCUSTOMERID
+        ) last_sale ON c.fID = last_sale.fCUSTOMERID
+        LEFT JOIN (
+            SELECT fCUSTOMERID, SUM(fTOTALSUM) / 5.0 as AvgMonthlySales
+            FROM SALES 
+            WHERE fDATE >= DATEADD(MONTH, -6, GETDATE())
+              AND fDATE < DATEADD(MONTH, -1, GETDATE())
+              AND fSTATE = 2
+            GROUP BY fCUSTOMERID
+        ) avg_sales ON c.fID = avg_sales.fCUSTOMERID
+        WHERE DATEDIFF(DAY, last_sale.LastSaleDate, GETDATE()) > 30
+          AND ISNULL(avg_sales.AvgMonthlySales, 0) > 50000
+            {combined_filter}
+        ORDER BY DaysSinceLastSale DESC
+        """
+        
+        cursor.execute(query_inactive, combined_params)
+        for row in cursor.fetchall():
+            days = int(row.DaysSinceLastSale) if row.DaysSinceLastSale else 0
+            avg_sales = float(row.AvgMonthlySales) if row.AvgMonthlySales else 0
+            
+            problem_id += 1
+            severity = 'critical' if days > 60 else ('warning' if days > 45 else 'info')
+            problems['inactive'].append({
+                'id': problem_id,
+                'customerCode': row.CustomerCode,
+                'customerName': row.CustomerName,
+                'areaCode': row.AreaCode or 'N/A',
+                'areaName': row.AreaName or 'Не указана',
+                'problemType': 'Неактивный клиент',
+                'description': f'Нет продаж {days} дней (средние продажи были {avg_sales:,.0f} ֏/мес)',
+                'amount': avg_sales,
+                'severity': severity,
+                'recommendation': 'Связаться с клиентом для выяснения причин. Предложить специальные условия для возобновления сотрудничества.',
+                'metrics': {
+                    'sales': 0,
+                    'payments': 0,
+                    'debt': 0,
+                    'paymentRate': 0
+                }
+            })
+        
+        # Подсчет статистики
+        all_problems = (
+            problems['highDebt'] + 
+            problems['lowPayment'] + 
+            problems['salesDrop'] + 
+            problems['inactive'] + 
+            problems['irregular']
+        )
+        
+        stats = {
+            'critical': len([p for p in all_problems if p['severity'] == 'critical']),
+            'warnings': len([p for p in all_problems if p['severity'] == 'warning']),
+            'attention': len([p for p in all_problems if p['severity'] == 'info']),
+            'totalCustomers': len(set([p['customerCode'] for p in all_problems]))
+        }
+        
+        # Статистика по территориям
+        area_stats_dict = {}
+        for p in all_problems:
+            area = p['areaCode']
+            if area not in area_stats_dict:
+                area_stats_dict[area] = {
+                    'code': area,
+                    'name': p['areaName'],
+                    'critical': 0,
+                    'warnings': 0,
+                    'attention': 0
+                }
+            if p['severity'] == 'critical':
+                area_stats_dict[area]['critical'] += 1
+            elif p['severity'] == 'warning':
+                area_stats_dict[area]['warnings'] += 1
+            else:
+                area_stats_dict[area]['attention'] += 1
+        
+        area_stats = sorted(area_stats_dict.values(), key=lambda x: x['critical'] + x['warnings'], reverse=True)
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'problems': problems,
+            'stats': stats,
+            'areaStats': area_stats
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in AI analysis: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# =============================================
+# CLAUDE AI CHAT ENDPOINT
+# =============================================
+
+@app.route('/api/ai-chat', methods=['POST'])
+def ai_chat():
+    """Chat with Claude AI about sales data and problems"""
+    try:
+        if not ANTHROPIC_API_KEY:
+            return jsonify({
+                'success': False, 
+                'error': 'ANTHROPIC_API_KEY not configured. Please add it to .env file.'
+            }), 400
+        
+        data = request.get_json()
+        user_message = data.get('message', '')
+        context_data = data.get('context', {})
+        
+        if not user_message:
+            return jsonify({'success': False, 'error': 'Message is required'}), 400
+        
+        # Build context about the sales data
+        system_prompt = """Ты - AI помощник для анализа данных о продажах. Ты работаешь с Sales Dashboard - системой аналитики продаж.
+
+Твои возможности:
+1. Анализ проблем с клиентами (долги, низкие платежи, падение продаж)
+2. Рекомендации по работе с проблемными клиентами
+3. Анализ территорий и менеджеров
+4. Прогнозирование и планирование
+
+Отвечай на русском языке. Будь конкретен и давай практичные советы.
+Используй данные, которые тебе предоставляют, для формирования ответов.
+
+Формат ответа: структурированный, с выделением ключевых моментов."""
+
+        # Add context if provided
+        if context_data:
+            context_str = f"\n\nТекущий контекст данных:\n{json.dumps(context_data, ensure_ascii=False, indent=2)}"
+            system_prompt += context_str
+        
+        # Create Anthropic client
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        
+        # Call Claude API
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2048,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": user_message}
+            ]
+        )
+        
+        # Extract response
+        response_text = message.content[0].text
+        
+        return jsonify({
+            'success': True,
+            'response': response_text,
+            'model': message.model,
+            'usage': {
+                'input_tokens': message.usage.input_tokens,
+                'output_tokens': message.usage.output_tokens
+            }
+        })
+        
+    except anthropic.APIError as e:
+        logger.error(f"Anthropic API error: {e}")
+        return jsonify({'success': False, 'error': f'Claude API error: {str(e)}'}), 500
+    except Exception as e:
+        logger.error(f"Error in AI chat: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/ai-analyze-customer', methods=['POST'])
+def ai_analyze_customer():
+    """Get AI analysis and recommendations for a specific customer"""
+    try:
+        if not ANTHROPIC_API_KEY:
+            return jsonify({
+                'success': False, 
+                'error': 'ANTHROPIC_API_KEY not configured'
+            }), 400
+        
+        data = request.get_json()
+        customer_data = data.get('customer', {})
+        
+        if not customer_data:
+            return jsonify({'success': False, 'error': 'Customer data is required'}), 400
+        
+        # Build prompt for customer analysis
+        prompt = f"""Проанализируй данные клиента и дай рекомендации:
+
+Клиент: {customer_data.get('customerName', 'Неизвестно')}
+Код: {customer_data.get('customerCode', 'N/A')}
+Территория: {customer_data.get('areaName', 'Не указана')}
+
+Метрики:
+- Продажи за месяц: {customer_data.get('metrics', {}).get('sales', 0):,.0f} ֏
+- Платежи за месяц: {customer_data.get('metrics', {}).get('payments', 0):,.0f} ֏
+- Текущий долг: {customer_data.get('metrics', {}).get('debt', 0):,.0f} ֏
+- Процент оплаты: {customer_data.get('metrics', {}).get('paymentRate', 0):.1f}%
+
+Проблема: {customer_data.get('problemType', 'Не указана')}
+Описание: {customer_data.get('description', '')}
+
+Дай:
+1. Краткий анализ ситуации (2-3 предложения)
+2. Конкретные рекомендации по работе с клиентом (3-5 пунктов)
+3. Возможные риски если не принять меры
+4. Приоритет действий (высокий/средний/низкий)"""
+
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1024,
+            system="Ты - эксперт по управлению дебиторской задолженностью и работе с клиентами. Давай практичные и конкретные рекомендации на русском языке.",
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+        
+        return jsonify({
+            'success': True,
+            'analysis': message.content[0].text,
+            'customer': customer_data.get('customerCode')
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in AI customer analysis: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/ai-assistant/groups')
+def get_ai_assistant_groups():
+    """Получить выбранные группы клиентов для AI Assistant"""
+    try:
+        selected_groups = load_ai_selected_groups()
+        return jsonify({
+            'success': True,
+            'data': selected_groups
+        })
+    except Exception as e:
+        logger.error(f"Error getting AI groups: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/ai-assistant/groups', methods=['POST'])
+def save_ai_assistant_groups():
+    """Сохранить выбранные группы клиентов для AI Assistant"""
+    try:
+        data = request.get_json()
+        groups = data.get('groups', [])
+        
+        if save_ai_selected_groups(groups):
+            app.logger.info(f"[AIGroups] Saved {len(groups)} groups: {groups}")
+            return jsonify({
+                'success': True,
+                'message': f'Сохранено {len(groups)} групп'
+            })
+        else:
+            return jsonify({'success': False, 'error': 'Ошибка сохранения'}), 500
+    except Exception as e:
+        logger.error(f"Error saving AI groups: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/generate-plans')
 def generate_plans():
     """Генерация планов продаж и кредитов с учетом сезонности"""
@@ -3487,6 +4017,7 @@ GROUP_MANAGER_ASSIGNMENTS_FILE = 'group_manager_assignments.json'
 SELECTED_PRODUCT_GROUPS_FILE = 'selected_product_groups.json'
 SALES_AREA_GROUP_ASSIGNMENTS_FILE = 'sales_area_group_assignments.json'
 DISTRIBUTOR_GROUPS_FILE = 'distributor_groups.json'
+AI_SELECTED_GROUPS_FILE = 'ai_selected_groups.json'
 
 def load_excluded_customers():
     """Загрузить список исключенных клиентов из файла"""
@@ -3550,6 +4081,36 @@ def save_distributor_groups(groups_list):
     except Exception as e:
         app.logger.error(f"[DistributorGroups] Error saving: {e}")
         return False
+
+def load_ai_selected_groups():
+    """Загрузить выбранные группы клиентов для AI Assistant"""
+    try:
+        if os.path.exists(AI_SELECTED_GROUPS_FILE):
+            with open(AI_SELECTED_GROUPS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return []  # Пустой список = все группы
+    except Exception as e:
+        app.logger.error(f"[AIGroups] Error loading: {e}")
+        return []
+
+def save_ai_selected_groups(groups_list):
+    """Сохранить выбранные группы клиентов для AI Assistant"""
+    try:
+        with open(AI_SELECTED_GROUPS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(groups_list, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        app.logger.error(f"[AIGroups] Error saving: {e}")
+        return False
+
+def get_ai_groups_filter_sql():
+    """Получить SQL фильтр для выбранных групп AI Assistant"""
+    selected_groups = load_ai_selected_groups()
+    if not selected_groups or len(selected_groups) == 0:
+        return "", ()
+    placeholders = ','.join('?' * len(selected_groups))
+    filter_clause = f"AND c.fGROUP IN ({placeholders})"
+    return filter_clause, tuple(selected_groups)
 
 def load_group_manager_assignments():
     """Загрузить назначения менеджеров группам"""
@@ -4405,6 +4966,7 @@ if __name__ == '__main__':
     print("  - http://localhost:5000/distributors - Distributor Management")
     print("  - http://localhost:5000/areas     - Territories")
     print("  - http://localhost:5000/plans     - Plans")
+    print("  - http://localhost:5000/ai-assistant - AI Problem Analysis")
     print("  - http://localhost:5000/settings  - Settings")
     print("  - http://localhost:5000/test-db   - Test DB")
     print()
