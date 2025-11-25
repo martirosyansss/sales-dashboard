@@ -36,6 +36,11 @@
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     
     <style>
+        /* Alpine.js cloak */
+        [x-cloak] {
+            display: none !important;
+        }
+
         :root {
             --primary-color: #0d6efd;
             --card-bg: #212529;
@@ -126,6 +131,48 @@
         .growth-negative {
             background: rgba(220, 53, 69, 0.2);
             color: #dc3545;
+        }
+        
+        /* ============================================ */
+        /* SEARCH & FILTER STYLES */
+        /* ============================================ */
+        
+        .search-result-item {
+            transition: all 0.2s ease;
+            border-left: 3px solid transparent;
+        }
+        
+        .search-result-item:hover {
+            background: rgba(13, 110, 253, 0.2) !important;
+            border-left-color: #0d6efd;
+            transform: translateX(5px);
+        }
+        
+        .input-group-text {
+            background: var(--card-bg);
+            border-color: var(--border-color);
+            color: #adb5bd;
+        }
+        
+        .form-control, .form-select {
+            background: var(--card-bg);
+            border-color: var(--border-color);
+            color: #fff;
+        }
+        
+        .form-control:focus, .form-select:focus {
+            background: var(--card-bg);
+            border-color: #0d6efd;
+            color: #fff;
+            box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+        }
+        
+        .btn-group .btn {
+            transition: all 0.2s ease;
+        }
+        
+        .btn-group .btn:hover {
+            transform: translateY(-2px);
         }
 
         /* ============================================ */
