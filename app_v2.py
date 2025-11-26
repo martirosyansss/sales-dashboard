@@ -2996,6 +2996,37 @@ def save_ai_assistant_groups():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/ai-assistant/settings')
+def get_ai_assistant_settings():
+    """Получить настройки AI анализа"""
+    try:
+        settings = load_ai_analysis_settings()
+        return jsonify({
+            'success': True,
+            'data': settings
+        })
+    except Exception as e:
+        logger.error(f"Error getting AI settings: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/ai-assistant/settings', methods=['POST'])
+def save_ai_assistant_settings():
+    """Сохранить настройки AI анализа"""
+    try:
+        data = request.get_json()
+        if save_ai_analysis_settings(data):
+            app.logger.info(f"[AISettings] Saved settings: {data}")
+            return jsonify({
+                'success': True,
+                'message': 'Настройки сохранены'
+            })
+        else:
+            return jsonify({'success': False, 'error': 'Ошибка сохранения'}), 500
+    except Exception as e:
+        logger.error(f"Error saving AI settings: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/generate-plans')
 def generate_plans():
     """Генерация планов продаж и кредитов с учетом сезонности"""
@@ -4018,6 +4049,7 @@ SELECTED_PRODUCT_GROUPS_FILE = 'selected_product_groups.json'
 SALES_AREA_GROUP_ASSIGNMENTS_FILE = 'sales_area_group_assignments.json'
 DISTRIBUTOR_GROUPS_FILE = 'distributor_groups.json'
 AI_SELECTED_GROUPS_FILE = 'ai_selected_groups.json'
+AI_ANALYSIS_SETTINGS_FILE = 'ai_analysis_settings.json'
 
 def load_excluded_customers():
     """Загрузить список исключенных клиентов из файла"""
@@ -4111,6 +4143,48 @@ def get_ai_groups_filter_sql():
     placeholders = ','.join('?' * len(selected_groups))
     filter_clause = f"AND c.fGROUP IN ({placeholders})"
     return filter_clause, tuple(selected_groups)
+
+def load_ai_analysis_settings():
+    """Загрузить настройки AI анализа"""
+    default_settings = {
+        'minDebt': 100000,
+        'debtRatioInfo': 30,
+        'debtRatioWarning': 50,
+        'debtRatioCritical': 100,
+        'minSalesForPayment': 100000,
+        'paymentRateInfo': 50,
+        'paymentRateWarning': 35,
+        'paymentRateCritical': 20,
+        'minAvgSales': 100000,
+        'salesDropInfo': 30,
+        'salesDropWarning': 50,
+        'salesDropCritical': 70,
+        'minAvgSalesInactive': 50000,
+        'inactiveDaysInfo': 30,
+        'inactiveDaysWarning': 45,
+        'inactiveDaysCritical': 60
+    }
+    try:
+        if os.path.exists(AI_ANALYSIS_SETTINGS_FILE):
+            with open(AI_ANALYSIS_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                saved = json.load(f)
+                # Merge with defaults to ensure all keys exist
+                default_settings.update(saved)
+                return default_settings
+        return default_settings
+    except Exception as e:
+        app.logger.error(f"[AISettings] Error loading: {e}")
+        return default_settings
+
+def save_ai_analysis_settings(settings):
+    """Сохранить настройки AI анализа"""
+    try:
+        with open(AI_ANALYSIS_SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        app.logger.error(f"[AISettings] Error saving: {e}")
+        return False
 
 def load_group_manager_assignments():
     """Загрузить назначения менеджеров группам"""
