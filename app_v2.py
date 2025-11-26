@@ -2489,10 +2489,11 @@ def ai_analysis():
         # Получить фильтры
         excluded_filter, excluded_params = get_excluded_filter_sql()
         ai_groups_filter, ai_groups_params = get_ai_groups_filter_sql()
+        ai_areas_filter, ai_areas_params = get_ai_areas_filter_sql()
         
         # Объединяем параметры
-        combined_filter = excluded_filter + " " + ai_groups_filter
-        combined_params = excluded_params + ai_groups_params
+        combined_filter = excluded_filter + " " + ai_groups_filter + " " + ai_areas_filter
+        combined_params = excluded_params + ai_groups_params + ai_areas_params
         
         problems = {
             'highDebt': [],
@@ -3024,6 +3025,71 @@ def save_ai_assistant_settings():
             return jsonify({'success': False, 'error': 'Ошибка сохранения'}), 500
     except Exception as e:
         logger.error(f"Error saving AI settings: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/ai-assistant/areas')
+def get_ai_assistant_areas():
+    """Получить выбранные территории для AI Assistant"""
+    try:
+        selected_areas = load_ai_selected_areas()
+        return jsonify({
+            'success': True,
+            'data': selected_areas
+        })
+    except Exception as e:
+        logger.error(f"Error getting AI areas: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/ai-assistant/areas', methods=['POST'])
+def save_ai_assistant_areas():
+    """Сохранить выбранные территории для AI Assistant"""
+    try:
+        data = request.get_json()
+        areas = data.get('areas', [])
+        
+        if save_ai_selected_areas(areas):
+            app.logger.info(f"[AIAreas] Saved {len(areas)} areas: {areas}")
+            return jsonify({
+                'success': True,
+                'message': f'Сохранено {len(areas)} территорий'
+            })
+        else:
+            return jsonify({'success': False, 'error': 'Ошибка сохранения'}), 500
+    except Exception as e:
+        logger.error(f"Error saving AI areas: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/sales-areas-list')
+def get_sales_areas_list():
+    """Получить список территорий (только код и имя)"""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT fCODE, fCAPTION 
+            FROM TREES 
+            WHERE fTREEID = 'SArea' 
+            ORDER BY fCODE
+        """)
+        
+        areas = []
+        for row in cursor.fetchall():
+            areas.append({
+                'code': row[0].strip() if row[0] else '',
+                'name': row[1].strip() if row[1] else ''
+            })
+        
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'data': areas
+        })
+    except Exception as e:
+        logger.error(f"Error getting sales areas list: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -4050,6 +4116,7 @@ SALES_AREA_GROUP_ASSIGNMENTS_FILE = 'sales_area_group_assignments.json'
 DISTRIBUTOR_GROUPS_FILE = 'distributor_groups.json'
 AI_SELECTED_GROUPS_FILE = 'ai_selected_groups.json'
 AI_ANALYSIS_SETTINGS_FILE = 'ai_analysis_settings.json'
+AI_SELECTED_AREAS_FILE = 'ai_selected_areas.json'
 
 def load_excluded_customers():
     """Загрузить список исключенных клиентов из файла"""
@@ -4185,6 +4252,36 @@ def save_ai_analysis_settings(settings):
     except Exception as e:
         app.logger.error(f"[AISettings] Error saving: {e}")
         return False
+
+def load_ai_selected_areas():
+    """Загрузить выбранные территории для AI Assistant"""
+    try:
+        if os.path.exists(AI_SELECTED_AREAS_FILE):
+            with open(AI_SELECTED_AREAS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return []  # Пустой список = все территории
+    except Exception as e:
+        app.logger.error(f"[AIAreas] Error loading: {e}")
+        return []
+
+def save_ai_selected_areas(areas_list):
+    """Сохранить выбранные территории для AI Assistant"""
+    try:
+        with open(AI_SELECTED_AREAS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(areas_list, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        app.logger.error(f"[AIAreas] Error saving: {e}")
+        return False
+
+def get_ai_areas_filter_sql():
+    """Получить SQL фильтр для выбранных территорий AI Assistant"""
+    selected_areas = load_ai_selected_areas()
+    if not selected_areas or len(selected_areas) == 0:
+        return "", ()
+    placeholders = ','.join('?' * len(selected_areas))
+    filter_clause = f"AND csa.fSALESAREA IN ({placeholders})"
+    return filter_clause, tuple(selected_areas)
 
 def load_group_manager_assignments():
     """Загрузить назначения менеджеров группам"""

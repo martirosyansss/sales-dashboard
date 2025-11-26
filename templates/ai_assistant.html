@@ -14,18 +14,228 @@
             <p class="text-muted mb-0">Анализ данных и рекомендации с помощью Claude AI (Anthropic)</p>
         </div>
         <div class="d-flex gap-2">
+            <button class="btn btn-outline-warning" @click="showSettingsPanel = !showSettingsPanel">
+                <i class="fas fa-sliders-h"></i> 
+                Параметры
+            </button>
+            <button class="btn btn-outline-success" @click="showAreasPanel = !showAreasPanel">
+                <i class="fas fa-map-marker-alt"></i> 
+                Территории
+                <span class="badge bg-success ms-1" x-show="selectedAreas.length > 0" x-text="selectedAreas.length"></span>
+            </button>
             <button class="btn btn-outline-secondary" @click="showGroupsPanel = !showGroupsPanel">
                 <i class="fas fa-filter"></i> 
-                Группы клиентов
+                Группы
                 <span class="badge bg-info ms-1" x-show="selectedGroups.length > 0" x-text="selectedGroups.length"></span>
             </button>
             <button class="btn btn-outline-primary" @click="showChat = !showChat">
                 <i class="fas fa-comments"></i> 
-                <span x-text="showChat ? 'Скрыть чат' : 'Открыть чат'"></span>
+                <span x-text="showChat ? 'Скрыть чат' : 'Чат с AI'"></span>
             </button>
             <button class="btn btn-outline-info" @click="refreshAnalysis()" :disabled="loading">
-                <i class="fas fa-sync-alt" :class="{'fa-spin': loading}"></i> Обновить анализ
+                <i class="fas fa-sync-alt" :class="{'fa-spin': loading}"></i> Обновить
             </button>
+        </div>
+    </div>
+
+    <!-- Settings Panel - Параметры анализа -->
+    <div x-show="showSettingsPanel" x-cloak class="mb-4">
+        <div class="card border-warning">
+            <div class="card-header bg-warning bg-opacity-10">
+                <h5 class="mb-0">
+                    <i class="fas fa-sliders-h text-warning me-2"></i>
+                    Параметры определения проблем
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-4">
+                    <!-- Высокий долг -->
+                    <div class="col-md-6 col-lg-3">
+                        <div class="card h-100 border-danger">
+                            <div class="card-header bg-danger bg-opacity-10 py-2">
+                                <h6 class="mb-0 text-danger"><i class="fas fa-hand-holding-usd me-1"></i> Высокий долг</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label small">Мин. долг (֏)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.minDebt" step="10000">
+                                    <small class="text-muted">Минимальная сумма долга</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label small">Долг/Продажи % (info)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.debtRatioInfo" step="5">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label small">Долг/Продажи % (warning)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.debtRatioWarning" step="5">
+                                </div>
+                                <div class="mb-0">
+                                    <label class="form-label small">Долг/Продажи % (critical)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.debtRatioCritical" step="5">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Низкие платежи -->
+                    <div class="col-md-6 col-lg-3">
+                        <div class="card h-100 border-warning">
+                            <div class="card-header bg-warning bg-opacity-10 py-2">
+                                <h6 class="mb-0 text-warning"><i class="fas fa-money-bill-wave me-1"></i> Низкие платежи</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label small">Мин. продажи (֏)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.minSalesForPayment" step="10000">
+                                    <small class="text-muted">Для расчета % оплаты</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label small">Платеж % (info)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.paymentRateInfo" step="5">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label small">Платеж % (warning)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.paymentRateWarning" step="5">
+                                </div>
+                                <div class="mb-0">
+                                    <label class="form-label small">Платеж % (critical)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.paymentRateCritical" step="5">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Падение продаж -->
+                    <div class="col-md-6 col-lg-3">
+                        <div class="card h-100 border-info">
+                            <div class="card-header bg-info bg-opacity-10 py-2">
+                                <h6 class="mb-0 text-info"><i class="fas fa-chart-line me-1"></i> Падение продаж</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label small">Мин. ср. продажи (֏)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.minAvgSales" step="10000">
+                                    <small class="text-muted">За предыдущие месяцы</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label small">Падение % (info)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.salesDropInfo" step="5">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label small">Падение % (warning)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.salesDropWarning" step="5">
+                                </div>
+                                <div class="mb-0">
+                                    <label class="form-label small">Падение % (critical)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.salesDropCritical" step="5">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Неактивные клиенты -->
+                    <div class="col-md-6 col-lg-3">
+                        <div class="card h-100 border-secondary">
+                            <div class="card-header bg-secondary bg-opacity-10 py-2">
+                                <h6 class="mb-0 text-secondary"><i class="fas fa-user-clock me-1"></i> Неактивные</h6>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label class="form-label small">Мин. ср. продажи (֏)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.minAvgSalesInactive" step="10000">
+                                    <small class="text-muted">Средние за 6 мес</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label small">Дней без продаж (info)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.inactiveDaysInfo" step="5">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label small">Дней (warning)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.inactiveDaysWarning" step="5">
+                                </div>
+                                <div class="mb-0">
+                                    <label class="form-label small">Дней (critical)</label>
+                                    <input type="number" class="form-control form-control-sm" x-model.number="settings.inactiveDaysCritical" step="5">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Actions -->
+                <div class="mt-4 pt-3 border-top d-flex justify-content-between align-items-center">
+                    <div>
+                        <button class="btn btn-outline-secondary btn-sm" @click="resetSettings()">
+                            <i class="fas fa-undo me-1"></i> Сбросить по умолчанию
+                        </button>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-success" @click="saveSettings()" :disabled="savingSettings">
+                            <i class="fas fa-save me-1" :class="{'fa-spin fa-spinner': savingSettings}"></i>
+                            <span x-text="savingSettings ? 'Сохранение...' : 'Сохранить и обновить'"></span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Areas Selection Panel -->
+    <div x-show="showAreasPanel" x-cloak class="mb-4">
+        <div class="card border-success">
+            <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-map-marker-alt text-success me-2"></i>
+                    Выбор территорий для анализа
+                </h5>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-outline-success" @click="selectAllAreas()">
+                        <i class="fas fa-check-double"></i> Выбрать все
+                    </button>
+                    <button class="btn btn-sm btn-outline-success" @click="clearAllAreas()">
+                        <i class="fas fa-times"></i> Очистить
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <!-- Search -->
+                <div class="mb-3">
+                    <input type="text" class="form-control" placeholder="Поиск территории..." x-model="areaSearchQuery">
+                </div>
+                
+                <!-- Areas Grid -->
+                <div class="row g-2" style="max-height: 300px; overflow-y: auto;">
+                    <template x-for="area in filteredAvailableAreas" :key="area.code">
+                        <div class="col-md-3 col-sm-4 col-6">
+                            <div class="form-check p-2 rounded border" 
+                                 :class="{'bg-success bg-opacity-10 border-success': selectedAreas.includes(area.code), 'border-secondary': !selectedAreas.includes(area.code)}"
+                                 style="cursor: pointer;"
+                                 @click="toggleArea(area.code)">
+                                <input class="form-check-input" type="checkbox" 
+                                       :checked="selectedAreas.includes(area.code)"
+                                       @click.stop="toggleArea(area.code)">
+                                <label class="form-check-label w-100" style="cursor: pointer;">
+                                    <span class="badge bg-success me-1" x-text="area.code"></span>
+                                    <small x-text="area.name"></small>
+                                </label>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+                
+                <!-- Selected Areas Summary -->
+                <div class="mt-3 pt-3 border-top d-flex justify-content-between align-items-center">
+                    <div>
+                        <span class="text-muted">Выбрано территорий: </span>
+                        <span class="badge bg-success" x-text="selectedAreas.length"></span>
+                        <span class="text-muted ms-2" x-show="selectedAreas.length === 0">(все территории)</span>
+                    </div>
+                    <button class="btn btn-success" @click="saveAreas()" :disabled="savingAreas">
+                        <i class="fas fa-save me-1" :class="{'fa-spin fa-spinner': savingAreas}"></i>
+                        <span x-text="savingAreas ? 'Сохранение...' : 'Сохранить и обновить'"></span>
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -523,12 +733,46 @@ function aiAssistantData() {
         chatInput: '',
         chatLoading: false,
         
+        // Areas selection
+        showAreasPanel: false,
+        availableAreas: [],
+        selectedAreas: [],
+        areaSearchQuery: '',
+        savingAreas: false,
+        
         // Groups selection
         showGroupsPanel: false,
         availableGroups: [],
         selectedGroups: [],
         groupSearchQuery: '',
         savingGroups: false,
+        
+        // Settings panel
+        showSettingsPanel: false,
+        savingSettings: false,
+        settings: {
+            // Высокий долг
+            minDebt: 100000,
+            debtRatioInfo: 30,
+            debtRatioWarning: 50,
+            debtRatioCritical: 100,
+            // Низкие платежи
+            minSalesForPayment: 100000,
+            paymentRateInfo: 50,
+            paymentRateWarning: 35,
+            paymentRateCritical: 20,
+            // Падение продаж
+            minAvgSales: 100000,
+            salesDropInfo: 30,
+            salesDropWarning: 50,
+            salesDropCritical: 70,
+            // Неактивные клиенты
+            minAvgSalesInactive: 50000,
+            inactiveDaysInfo: 30,
+            inactiveDaysWarning: 45,
+            inactiveDaysCritical: 60
+        },
+        defaultSettings: null,
         
         stats: {
             critical: 0,
@@ -548,9 +792,125 @@ function aiAssistantData() {
         areaStats: [],
         
         async init() {
+            this.defaultSettings = JSON.parse(JSON.stringify(this.settings));
+            await this.loadSettings();
+            await this.loadAreas();
+            await this.loadSelectedAreas();
             await this.loadGroups();
             await this.loadSelectedGroups();
             await this.loadAnalysis();
+        },
+        
+        // Settings methods
+        async loadSettings() {
+            try {
+                const response = await fetch('/api/ai-assistant/settings');
+                const data = await response.json();
+                if (data.success && data.data) {
+                    this.settings = { ...this.settings, ...data.data };
+                }
+            } catch (error) {
+                console.error('Error loading settings:', error);
+            }
+        },
+        
+        async saveSettings() {
+            this.savingSettings = true;
+            try {
+                const response = await fetch('/api/ai-assistant/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ settings: this.settings })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    this.showSettingsPanel = false;
+                    await this.loadAnalysis();
+                } else {
+                    alert('Ошибка сохранения: ' + data.error);
+                }
+            } catch (error) {
+                console.error('Error saving settings:', error);
+                alert('Ошибка сохранения');
+            }
+            this.savingSettings = false;
+        },
+        
+        resetSettings() {
+            this.settings = JSON.parse(JSON.stringify(this.defaultSettings));
+        },
+        
+        // Areas (Territories) methods
+        async loadAreas() {
+            try {
+                const response = await fetch('/api/sales-areas-list');
+                const data = await response.json();
+                if (data.success) {
+                    this.availableAreas = data.data;
+                }
+            } catch (error) {
+                console.error('Error loading areas:', error);
+            }
+        },
+        
+        async loadSelectedAreas() {
+            try {
+                const response = await fetch('/api/ai-assistant/areas');
+                const data = await response.json();
+                if (data.success) {
+                    this.selectedAreas = data.data || [];
+                }
+            } catch (error) {
+                console.error('Error loading selected areas:', error);
+            }
+        },
+        
+        get filteredAvailableAreas() {
+            if (!this.areaSearchQuery) return this.availableAreas;
+            const query = this.areaSearchQuery.toLowerCase();
+            return this.availableAreas.filter(a => 
+                a.code.toLowerCase().includes(query) || 
+                a.name.toLowerCase().includes(query)
+            );
+        },
+        
+        toggleArea(code) {
+            const index = this.selectedAreas.indexOf(code);
+            if (index === -1) {
+                this.selectedAreas.push(code);
+            } else {
+                this.selectedAreas.splice(index, 1);
+            }
+        },
+        
+        selectAllAreas() {
+            this.selectedAreas = this.availableAreas.map(a => a.code);
+        },
+        
+        clearAllAreas() {
+            this.selectedAreas = [];
+        },
+        
+        async saveAreas() {
+            this.savingAreas = true;
+            try {
+                const response = await fetch('/api/ai-assistant/areas', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ areas: this.selectedAreas })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    this.showAreasPanel = false;
+                    await this.loadAnalysis();
+                } else {
+                    alert('Ошибка сохранения: ' + data.error);
+                }
+            } catch (error) {
+                console.error('Error saving areas:', error);
+                alert('Ошибка сохранения');
+            }
+            this.savingAreas = false;
         },
         
         // Groups methods
@@ -629,7 +989,9 @@ function aiAssistantData() {
         async loadAnalysis() {
             this.loading = true;
             try {
-                const response = await fetch('/api/ai-analysis');
+                // Передаем параметры в API
+                const params = new URLSearchParams(this.settings);
+                const response = await fetch('/api/ai-analysis?' + params.toString());
                 const data = await response.json();
                 
                 if (data.success) {
