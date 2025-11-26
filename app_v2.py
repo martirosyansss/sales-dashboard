@@ -2518,7 +2518,7 @@ def ai_analysis():
             ISNULL(pay.MonthlyPayments, 0) as MonthlyPayments
         FROM CUSTOMERS c
         LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-        LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SalesAreas'
+        LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SArea'
         LEFT JOIN (
             SELECT doc.fCUSTOMERID, 
                    SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END) as TotalDebt
@@ -2606,7 +2606,7 @@ def ai_analysis():
             ISNULL(pay.MonthlyPayments, 0) as MonthlyPayments
         FROM CUSTOMERS c
         LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-        LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SalesAreas'
+        LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SArea'
         LEFT JOIN (
             SELECT fCUSTOMERID, SUM(fTOTALSUM) as MonthlySales
             FROM SALES 
@@ -2665,7 +2665,7 @@ def ai_analysis():
             ISNULL(prev.AvgPrevSales, 0) as AvgPrevMonthsSales
         FROM CUSTOMERS c
         LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-        LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SalesAreas'
+        LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SArea'
         LEFT JOIN (
             SELECT fCUSTOMERID, SUM(fTOTALSUM) as CurrentSales
             FROM SALES 
@@ -2726,7 +2726,7 @@ def ai_analysis():
             ISNULL(avg_sales.AvgMonthlySales, 0) as AvgMonthlySales
         FROM CUSTOMERS c
         LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-        LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SalesAreas'
+        LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SArea'
         INNER JOIN (
             SELECT fCUSTOMERID, MAX(fDATE) as LastSaleDate
             FROM SALES 
