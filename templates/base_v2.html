@@ -60,6 +60,17 @@
             box-shadow: 0 2px 10px rgba(0,0,0,0.3);
         }
 
+        /* 14 пунктов навигации в развёрнутом виде занимают ~1736px. Ниже 1400px
+           меню сворачивается в гамбургер (navbar-expand-xxl). В промежутке
+           1400–1750px оно не помещалось в строку и давало горизонтальный скролл
+           всей страницы — здесь разрешаем перенос на вторую строку. На ≥1750px
+           меню помещается в одну строку, поэтому исходный вид не трогаем. */
+        @media (min-width: 1400px) and (max-width: 1750px) {
+            .navbar-nav {
+                flex-wrap: wrap;
+            }
+        }
+
         .navbar-brand {
             font-weight: 700;
             font-size: 1.5rem;
@@ -416,7 +427,10 @@
     {% block extra_css %}{% endblock %}
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark sticky-top">
+    <!-- expand-xxl: 14 пунктов навигации не помещаются в одну строку на ширинах
+         992–~1450px и вызывали горизонтальный скролл всей страницы. Сворачиваем в
+         гамбургер ниже 1400px; на широких мониторах (≥1400) меню как прежде. -->
+    <nav class="navbar navbar-expand-xxl navbar-dark sticky-top">
         <div class="container-fluid">
             <a class="navbar-brand" href="/">
                 <i class="fas fa-chart-line me-2"></i>Sales Dashboard v2.0
