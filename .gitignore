@@ -31,6 +31,9 @@ instance/
 .env
 .env.local
 
+# DBHub MCP server config (contains DB credentials)
+dbhub.toml
+
 # Database
 *.db
 *.sqlite

@@ -97,6 +97,23 @@
             box-shadow: 0 8px 25px rgba(13, 110, 253, 0.3);
         }
 
+        /* Выпадающие меню фильтров: непрозрачный фон, чтобы список групп не
+           просвечивал контент под собой. */
+        .dropdown-menu {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+        }
+
+        /* Карточка с ОТКРЫТЫМ дропдауном должна лежать НАД соседними карточками.
+           Иначе меню, будучи потомком карточки-фильтра, проваливается под
+           карточки сводки: .card:hover и draggable .stat-card применяют
+           transform и создают stacking-context, ломающий обычный порядок z. */
+        .card:has(.dropdown-menu.show) {
+            position: relative;
+            z-index: 1000;
+        }
+
         .stat-card {
             background: linear-gradient(135deg, var(--card-bg) 0%, rgba(13, 110, 253, 0.1) 100%);
             border-left: 4px solid var(--primary-color);
@@ -422,6 +439,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/managers-kpi' %}active{% endif %}" href="/managers-kpi">
+                            <i class="fas fa-ranking-star me-1"></i> KPI менеджеров
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link {% if request.path == '/groups' %}active{% endif %}" href="/groups">
                             <i class="fas fa-layer-group me-1"></i> Группы
                         </a>
@@ -454,6 +476,16 @@
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/plans' %}active{% endif %}" href="/plans">
                             <i class="fas fa-chart-line me-1"></i> Планы
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/ai-assistant' %}active{% endif %}" href="/ai-assistant">
+                            <i class="fas fa-robot me-1"></i> AI Помощник
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/dashboard-builder' %}active{% endif %}" href="/dashboard-builder">
+                            <i class="fas fa-puzzle-piece me-1"></i> Конструктор
                         </a>
                     </li>
                     <li class="nav-item">

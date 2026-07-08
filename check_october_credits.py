@@ -23,6 +23,7 @@ if data.get('success'):
         print("ТЕРРИТОРИЯ 106 - ОКТЯБРЬ 2025:")
         print(f"  Всего продаж:  {area106.get('TotalSales', 0):,.2f} AMD")
         print(f"  Кредитов:      {area106.get('CreditSales', 0):,.2f} AMD")
+        print(f"  Долг (API):    {area106.get('Debt', 0):,.2f} AMD")
         print(f"  Клиентов:      {area106.get('CustomerCount', 0)}")
     else:
         print("Территория 106 не найдена!")

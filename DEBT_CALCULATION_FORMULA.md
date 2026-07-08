@@ -225,10 +225,122 @@ AND csa.fGROUP IN ('002', '036')
 ---
 
 ## История изменений
+- **27.11.2025**: Добавлен расчёт долга для Dashboard Builder (карточки и графики)
+- **27.11.2025**: Графики долга показывают накопленный (кумулятивный) долг
 - **22.11.2025**: Реализована полная формула с Type01/Type02
 - **22.11.2025**: Исправлена история долга с транзакционной на кумулятивную
 - **22.11.2025**: Оптимизирован запрос долга (убран JOIN через DOCUMENTS)
 - **22.11.2025**: Добавлены NOLOCK hints для ускорения запросов
+
+---
+
+## Dashboard Builder - Расчёт долга
+
+### Карточка долга (`/api/dashboard-builder/card-data?metric=total_debt`)
+
+```python
+# Используем 3 отдельных подзапроса:
+
+# 1. DebtFromDocs из HICUSTOMERSDEBT
+debt_query = """
+    SELECT ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0)
+    FROM HICUSTOMERSDEBT d
+    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+    INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+    LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+    WHERE 1=1
+    {area_filter}  -- AND csa.fSALESAREA IN (...)
+    {group_filter} -- AND c.fGROUP IN (...)
+"""
+
+# 2. Type01 из HIRESTCUSTOMERSSUM
+type01_query = """
+    SELECT ISNULL(SUM(r.fSUM), 0)
+    FROM HIRESTCUSTOMERSSUM r
+    INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
+    LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+    WHERE r.fTYPE = '01'
+    {area_filter}
+    {group_filter}
+"""
+
+# 3. Type02 из HIRESTCUSTOMERSSUM  
+type02_query = """
+    SELECT ISNULL(SUM(r.fSUM), 0)
+    FROM HIRESTCUSTOMERSSUM r
+    INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
+    LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+    WHERE r.fTYPE = '02'
+    {area_filter}
+    {group_filter}
+"""
+
+# Итоговый долг
+total_debt = debt_from_docs - type01 - type02
+```
+
+### График долга (`/api/dashboard-builder/chart-data?metrics=debt`)
+
+Для графика используем **НАКОПЛЕННЫЙ (кумулятивный)** подход:
+
+```python
+# 1. Базовый долг ДО начала периода
+base_debt_query = """
+    SELECT ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0)
+    FROM HICUSTOMERSDEBT d
+    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+    INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+    LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+    WHERE d.fDATE < @period_start  -- ДО начала периода!
+    {area_filter}
+    {group_filter}
+"""
+
+# 2. Type01 и Type02 (остатки, не зависят от даты)
+rest_query = """
+    SELECT 
+        ISNULL(SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END), 0) as Type01,
+        ISNULL(SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END), 0) as Type02
+    FROM HIRESTCUSTOMERSSUM r
+    INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
+    LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+    WHERE 1=1
+    {area_filter}
+    {group_filter}
+"""
+
+# 3. Изменения долга по дням в периоде
+daily_changes_query = """
+    SELECT 
+        CONVERT(VARCHAR(10), d.fDATE, 120) as period_label,
+        ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as value
+    FROM HICUSTOMERSDEBT d
+    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+    INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+    LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+    WHERE d.fDATE BETWEEN @start AND @end
+    {area_filter}
+    {group_filter}
+    GROUP BY CONVERT(VARCHAR(10), d.fDATE, 120)
+    ORDER BY period_label
+"""
+
+# 4. Вычисляем кумулятивный долг для каждого дня
+cumulative_debt = base_debt - abs(type01) - abs(type02)
+chart_values = []
+
+for day, daily_change in daily_changes:
+    cumulative_debt += daily_change
+    chart_values.append(cumulative_debt)
+
+# Последнее значение на графике = текущий итоговый долг
+```
+
+### Важно для графиков:
+- ✅ Показываем **накопленный** долг, а не изменения за день
+- ✅ Последняя точка графика = значению карточки долга
+- ✅ График показывает динамику роста/уменьшения долга
+- ❌ НЕ показываем просто D-C за каждый день (это было бы изменение, не баланс)
 
 ---
 

@@ -2,14 +2,40 @@
 
 {% block title %}Dashboard - Sales Dashboard v2.0{% endblock %}
 
+{% block styles %}
+<style>
+    .sortable-ghost {
+        opacity: 0.4;
+        background: #fff3cd;
+    }
+    .sortable-drag {
+        opacity: 1;
+    }
+    .widget-drag-handle {
+        cursor: move;
+        border-radius: 4px 4px 0 0;
+    }
+    .widget-drag-handle:hover {
+        background: #ffe69c !important;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="container-fluid" x-data="dashboardData()">
+<div class="container-fluid" x-data="dashboardData()" x-init="initDashboard()">
     <!-- Заголовок, поиск и фильтры -->
     <div class="row mb-4">
         <div class="col-md-4">
             <h1 class="display-5 mb-2">
                 <i class="fas fa-chart-line text-primary"></i>
                 Панель управления
+                <!-- Кнопка настройки виджетов -->
+                <button class="btn btn-sm btn-outline-secondary ms-2" 
+                        @click="showWidgetSettings = !showWidgetSettings"
+                        :class="{'btn-warning': editMode}"
+                        title="Настройка виджетов">
+                    <i class="fas fa-cog"></i>
+                </button>
             </h1>
             <p class="text-muted mb-0">
                 <i class="fas fa-calendar-alt"></i> 
@@ -21,6 +47,58 @@
         </div>
         
         <div class="col-md-8">
+            <!-- Панель настройки виджетов -->
+            <div x-show="showWidgetSettings" x-collapse class="mb-3">
+                <div class="card border-warning">
+                    <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                        <span><i class="fas fa-palette me-2"></i>Настройка Dashboard</span>
+                        <button class="btn btn-sm btn-dark" @click="showWidgetSettings = false">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="d-flex gap-2 mb-3">
+                                    <button class="btn btn-sm" 
+                                            :class="editMode ? 'btn-success' : 'btn-outline-success'"
+                                            @click="toggleEditMode()">
+                                        <i class="fas fa-arrows-alt me-1"></i>
+                                        <span x-text="editMode ? 'Режим перемещения ВКЛ' : 'Перемещать карточки'"></span>
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-primary" @click="showAddWidget = true">
+                                        <i class="fas fa-plus me-1"></i>Добавить карточку
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-danger" @click="resetWidgets()">
+                                        <i class="fas fa-undo me-1"></i>Сбросить
+                                    </button>
+                                </div>
+                                <p class="text-muted small mb-0">
+                                    <i class="fas fa-info-circle me-1"></i>
+                                    <span x-show="editMode">Перетащите карточки для изменения порядка</span>
+                                    <span x-show="!editMode">Включите режим перемещения для изменения порядка карточек</span>
+                                </p>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="d-flex flex-wrap gap-1">
+                                    <template x-for="widget in widgets" :key="widget.id">
+                                        <span class="badge cursor-pointer"
+                                              :class="widget.visible ? 'bg-success' : 'bg-secondary'"
+                                              @click="toggleWidgetVisibility(widget.id)"
+                                              style="cursor: pointer;">
+                                            <i class="fas" :class="widget.icon"></i>
+                                            <span x-text="widget.title" class="ms-1"></span>
+                                            <i class="fas fa-eye ms-1" x-show="widget.visible"></i>
+                                            <i class="fas fa-eye-slash ms-1" x-show="!widget.visible"></i>
+                                        </span>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <!-- Глобальный поиск -->
             <div class="card mb-3">
                 <div class="card-body p-3">
@@ -100,6 +178,152 @@
                                         title="Сбросить все">
                                     <i class="fas fa-undo"></i>
                                 </button>
+                                <!-- Кнопка выбора территорий -->
+                                <button class="btn btn-outline-success position-relative" 
+                                        @click="showAreasPanel = !showAreasPanel; showGroupsPanel = false"
+                                        title="Выбрать территории">
+                                    <i class="fas fa-map-marker-alt"></i>
+                                    <span class="badge bg-success position-absolute top-0 start-100 translate-middle"
+                                          x-show="selectedAreasForFilter.length > 0"
+                                          x-text="selectedAreasForFilter.length"></span>
+                                </button>
+                                <!-- Кнопка выбора групп клиентов -->
+                                <button class="btn btn-outline-info position-relative" 
+                                        @click="showGroupsPanel = !showGroupsPanel; showAreasPanel = false"
+                                        title="Выбрать группы клиентов">
+                                    <i class="fas fa-users"></i>
+                                    <span class="badge bg-info position-absolute top-0 start-100 translate-middle"
+                                          x-show="selectedGroupsForFilter.length > 0"
+                                          x-text="selectedGroupsForFilter.length"></span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Панель выбора территорий -->
+                    <div x-show="showAreasPanel" x-collapse class="mt-3">
+                        <div class="card border-success">
+                            <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                                <span><i class="fas fa-map-marked-alt me-2"></i>Выбор территорий для анализа</span>
+                                <button class="btn btn-sm btn-light" @click="showAreasPanel = false">
+                                    <i class="fas fa-times"></i>
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <!-- Поиск -->
+                                <div class="mb-3">
+                                    <input type="text" class="form-control form-control-sm" 
+                                           placeholder="Поиск территорий..."
+                                           x-model="areaSearchQuery">
+                                </div>
+                                
+                                <!-- Кнопки выбора -->
+                                <div class="mb-3 d-flex gap-2">
+                                    <button class="btn btn-sm btn-outline-primary" @click="selectAllAreas()">
+                                        <i class="fas fa-check-double me-1"></i>Выбрать все
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-secondary" @click="clearAllAreas()">
+                                        <i class="fas fa-times me-1"></i>Снять все
+                                    </button>
+                                    <span class="ms-auto text-muted small" x-text="'Выбрано: ' + selectedAreasForFilter.length + ' из ' + availableAreas.length"></span>
+                                </div>
+                                
+                                <!-- Список территорий -->
+                                <div style="max-height: 250px; overflow-y: auto;" class="border rounded p-2">
+                                    <div class="row g-2">
+                                        <template x-for="area in filteredAvailableAreas" :key="area.code">
+                                            <div class="col-md-4 col-sm-6">
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="checkbox"
+                                                           :id="'area-' + area.code"
+                                                           :value="area.code"
+                                                           :checked="selectedAreasForFilter.includes(area.code)"
+                                                           @change="toggleAreaFilter(area.code)">
+                                                    <label class="form-check-label small" :for="'area-' + area.code">
+                                                        <span x-text="area.code"></span> - <span x-text="area.name"></span>
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                                
+                                <!-- Кнопка сохранения -->
+                                <div class="mt-3 d-flex justify-content-end gap-2">
+                                    <button class="btn btn-secondary btn-sm" @click="showAreasPanel = false">
+                                        Отмена
+                                    </button>
+                                    <button class="btn btn-success btn-sm" 
+                                            @click="saveAreasFilter()"
+                                            :disabled="savingAreas">
+                                        <i class="fas fa-save me-1"></i>
+                                        <span x-text="savingAreas ? 'Сохранение...' : 'Сохранить и применить'"></span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Панель выбора групп клиентов -->
+                    <div x-show="showGroupsPanel" x-collapse class="mt-3">
+                        <div class="card border-info">
+                            <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+                                <span><i class="fas fa-users me-2"></i>Выбор групп клиентов для анализа</span>
+                                <button class="btn btn-sm btn-light" @click="showGroupsPanel = false">
+                                    <i class="fas fa-times"></i>
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <!-- Поиск -->
+                                <div class="mb-3">
+                                    <input type="text" class="form-control form-control-sm" 
+                                           placeholder="Поиск групп..."
+                                           x-model="groupSearchQuery">
+                                </div>
+                                
+                                <!-- Кнопки выбора -->
+                                <div class="mb-3 d-flex gap-2">
+                                    <button class="btn btn-sm btn-outline-primary" @click="selectAllGroups()">
+                                        <i class="fas fa-check-double me-1"></i>Выбрать все
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-secondary" @click="clearAllGroups()">
+                                        <i class="fas fa-times me-1"></i>Снять все
+                                    </button>
+                                    <span class="ms-auto text-muted small" x-text="'Выбрано: ' + selectedGroupsForFilter.length + ' из ' + availableGroups.length"></span>
+                                </div>
+                                
+                                <!-- Список групп -->
+                                <div style="max-height: 300px; overflow-y: auto;" class="border rounded p-2">
+                                    <div class="row g-2">
+                                        <template x-for="group in filteredAvailableGroups" :key="group.code">
+                                            <div class="col-md-4 col-sm-6">
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="checkbox"
+                                                           :id="'group-' + group.code"
+                                                           :value="group.code"
+                                                           :checked="selectedGroupsForFilter.includes(group.code)"
+                                                           @change="toggleGroupFilter(group.code)">
+                                                    <label class="form-check-label small" :for="'group-' + group.code">
+                                                        <span x-text="group.code"></span> - <span x-text="group.name"></span>
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                                
+                                <!-- Кнопка сохранения -->
+                                <div class="mt-3 d-flex justify-content-end gap-2">
+                                    <button class="btn btn-secondary btn-sm" @click="showGroupsPanel = false">
+                                        Отмена
+                                    </button>
+                                    <button class="btn btn-info btn-sm" 
+                                            @click="saveGroupsFilter()"
+                                            :disabled="savingGroups">
+                                        <i class="fas fa-save me-1"></i>
+                                        <span x-text="savingGroups ? 'Сохранение...' : 'Сохранить и применить'"></span>
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -290,10 +514,13 @@
     </div>
 
     <!-- Статистические карточки -->
-    <div class="row mb-4" id="stats-container">
+    <div class="row mb-4" id="widgets-container">
         <!-- Общая выручка -->
-        <div class="col-xl-3 col-md-6 mb-3">
-            <div class="card stat-card" style="border-left: 4px solid #0d6efd;">
+        <div class="col-xl-3 col-md-6 mb-3" data-widget-id="total_revenue" x-show="isWidgetVisible('total_revenue')">
+            <div class="card stat-card" style="border-left: 4px solid #0d6efd;" :class="{'border-warning border-2': editMode}">
+                <div class="widget-drag-handle" x-show="editMode" style="cursor: move; padding: 5px; text-align: center; background: #fff3cd;">
+                    <i class="fas fa-grip-horizontal text-muted"></i>
+                </div>
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center">
                         <div class="flex-grow-1">
@@ -333,8 +560,11 @@
         </div>
 
         <!-- Количество продаж -->
-        <div class="col-xl-3 col-md-6 mb-3">
-            <div class="card stat-card" style="border-left: 4px solid #198754;">
+        <div class="col-xl-3 col-md-6 mb-3" data-widget-id="sales_count" x-show="isWidgetVisible('sales_count')">
+            <div class="card stat-card" style="border-left: 4px solid #198754;" :class="{'border-warning border-2': editMode}">
+                <div class="widget-drag-handle" x-show="editMode" style="cursor: move; padding: 5px; text-align: center; background: #fff3cd;">
+                    <i class="fas fa-grip-horizontal text-muted"></i>
+                </div>
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center">
                         <div class="flex-grow-1">
@@ -374,8 +604,11 @@
         </div>
 
         <!-- Средний чек -->
-        <div class="col-xl-3 col-md-6 mb-3">
-            <div class="card stat-card" style="border-left: 4px solid #0dcaf0;">
+        <div class="col-xl-3 col-md-6 mb-3" data-widget-id="avg_check" x-show="isWidgetVisible('avg_check')">
+            <div class="card stat-card" style="border-left: 4px solid #0dcaf0;" :class="{'border-warning border-2': editMode}">
+                <div class="widget-drag-handle" x-show="editMode" style="cursor: move; padding: 5px; text-align: center; background: #fff3cd;">
+                    <i class="fas fa-grip-horizontal text-muted"></i>
+                </div>
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center">
                         <div class="flex-grow-1">
@@ -410,8 +643,11 @@
         </div>
 
         <!-- Активные клиенты -->
-        <div class="col-xl-3 col-md-6 mb-3">
-            <div class="card stat-card" style="border-left: 4px solid #ffc107;">
+        <div class="col-xl-3 col-md-6 mb-3" data-widget-id="active_customers" x-show="isWidgetVisible('active_customers')">
+            <div class="card stat-card" style="border-left: 4px solid #ffc107;" :class="{'border-warning border-2': editMode}">
+                <div class="widget-drag-handle" x-show="editMode" style="cursor: move; padding: 5px; text-align: center; background: #fff3cd;">
+                    <i class="fas fa-grip-horizontal text-muted"></i>
+                </div>
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center">
                         <div class="flex-grow-1">
@@ -456,8 +692,11 @@
         </div>
 
         <!-- Выручка сегодня -->
-        <div class="col-xl-3 col-md-6 mb-3">
-            <div class="card stat-card" style="border-left: 4px solid #0d6efd;">
+        <div class="col-xl-3 col-md-6 mb-3" data-widget-id="today_revenue" x-show="isWidgetVisible('today_revenue')">
+            <div class="card stat-card" style="border-left: 4px solid #0d6efd;" :class="{'border-warning border-2': editMode}">
+                <div class="widget-drag-handle" x-show="editMode" style="cursor: move; padding: 5px; text-align: center; background: #fff3cd;">
+                    <i class="fas fa-grip-horizontal text-muted"></i>
+                </div>
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center">
                         <div class="flex-grow-1">
@@ -489,8 +728,11 @@
         </div>
 
         <!-- Продажи сегодня -->
-        <div class="col-xl-3 col-md-6 mb-3">
-            <div class="card stat-card" style="border-left: 4px solid #198754;">
+        <div class="col-xl-3 col-md-6 mb-3" data-widget-id="today_sales" x-show="isWidgetVisible('today_sales')">
+            <div class="card stat-card" style="border-left: 4px solid #198754;" :class="{'border-warning border-2': editMode}">
+                <div class="widget-drag-handle" x-show="editMode" style="cursor: move; padding: 5px; text-align: center; background: #fff3cd;">
+                    <i class="fas fa-grip-horizontal text-muted"></i>
+                </div>
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center">
                         <div class="flex-grow-1">
@@ -519,8 +761,11 @@
         </div>
 
         <!-- Средний чек сегодня -->
-        <div class="col-xl-3 col-md-6 mb-3">
-            <div class="card stat-card" style="border-left: 4px solid #0dcaf0;">
+        <div class="col-xl-3 col-md-6 mb-3" data-widget-id="today_avg_check" x-show="isWidgetVisible('today_avg_check')">
+            <div class="card stat-card" style="border-left: 4px solid #0dcaf0;" :class="{'border-warning border-2': editMode}">
+                <div class="widget-drag-handle" x-show="editMode" style="cursor: move; padding: 5px; text-align: center; background: #fff3cd;">
+                    <i class="fas fa-grip-horizontal text-muted"></i>
+                </div>
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center">
                         <div class="flex-grow-1">
@@ -549,8 +794,11 @@
         </div>
 
         <!-- Клиенты сегодня -->
-        <div class="col-xl-3 col-md-6 mb-3">
-            <div class="card stat-card" style="border-left: 4px solid #ffc107;">
+        <div class="col-xl-3 col-md-6 mb-3" data-widget-id="today_customers" x-show="isWidgetVisible('today_customers')">
+            <div class="card stat-card" style="border-left: 4px solid #ffc107;" :class="{'border-warning border-2': editMode}">
+                <div class="widget-drag-handle" x-show="editMode" style="cursor: move; padding: 5px; text-align: center; background: #fff3cd;">
+                    <i class="fas fa-grip-horizontal text-muted"></i>
+                </div>
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center">
                         <div class="flex-grow-1">
@@ -589,8 +837,11 @@
         </div>
 
         <!-- Долги сегодня -->
-        <div class="col-xl-6 col-md-6 mb-3">
-            <div class="card stat-card" style="border-left: 4px solid #dc3545;">
+        <div class="col-xl-6 col-md-6 mb-3" data-widget-id="total_debt" x-show="isWidgetVisible('total_debt')">
+            <div class="card stat-card" style="border-left: 4px solid #dc3545;" :class="{'border-warning border-2': editMode}">
+                <div class="widget-drag-handle" x-show="editMode" style="cursor: move; padding: 5px; text-align: center; background: #fff3cd;">
+                    <i class="fas fa-grip-horizontal text-muted"></i>
+                </div>
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center">
                         <div class="flex-grow-1">
@@ -629,8 +880,11 @@
         </div>
 
         <!-- Прогноз продаж на месяц -->
-        <div class="col-xl-6 col-md-6 mb-3">
-            <div class="card stat-card" style="border-left: 4px solid #198754;">
+        <div class="col-xl-6 col-md-6 mb-3" data-widget-id="monthly_forecast" x-show="isWidgetVisible('monthly_forecast')">
+            <div class="card stat-card" style="border-left: 4px solid #198754;" :class="{'border-warning border-2': editMode}">
+                <div class="widget-drag-handle" x-show="editMode" style="cursor: move; padding: 5px; text-align: center; background: #fff3cd;">
+                    <i class="fas fa-grip-horizontal text-muted"></i>
+                </div>
                 <div class="card-body">
                     <div class="d-flex justify-content-between align-items-center">
                         <div class="flex-grow-1">
@@ -955,6 +1209,189 @@
         </div>
         <p class="mt-3 text-muted">Загрузка данных из базы...</p>
     </div>
+    
+    <!-- Модальное окно добавления виджета -->
+    <div x-show="showAddWidget" 
+         x-cloak
+         @click="showAddWidget = false"
+         @keydown.escape.window="showAddWidget = false"
+         class="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center"
+         style="background: rgba(0,0,0,0.5); z-index: 1050;">
+        <div class="card shadow-lg" @click.stop style="max-width: 600px; max-height: 80vh; overflow-y: auto;">
+            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-plus-circle me-2"></i>Добавить карточку</span>
+                <button type="button" class="btn btn-sm btn-light" @click="showAddWidget = false">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="card-body">
+                <p class="text-muted mb-3">Выберите карточки для отображения на Dashboard:</p>
+                <div class="row g-2">
+                    <!-- Общая выручка -->
+                    <div class="col-6">
+                        <div class="card h-100" 
+                             :class="{'border-success border-2': isWidgetVisible('total_revenue'), 'border-secondary': !isWidgetVisible('total_revenue')}"
+                             @click="toggleWidgetVisibility('total_revenue')"
+                             style="cursor: pointer;">
+                            <div class="card-body p-2 text-center">
+                                <i class="fas fa-dollar-sign fa-2x mb-2" style="color: #0d6efd"></i>
+                                <p class="mb-0 small">Общая выручка</p>
+                                <span class="badge mt-1" :class="isWidgetVisible('total_revenue') ? 'bg-success' : 'bg-secondary'">
+                                    <span x-text="isWidgetVisible('total_revenue') ? 'Показана' : 'Скрыта'"></span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Количество продаж -->
+                    <div class="col-6">
+                        <div class="card h-100" 
+                             :class="{'border-success border-2': isWidgetVisible('sales_count'), 'border-secondary': !isWidgetVisible('sales_count')}"
+                             @click="toggleWidgetVisibility('sales_count')"
+                             style="cursor: pointer;">
+                            <div class="card-body p-2 text-center">
+                                <i class="fas fa-shopping-cart fa-2x mb-2" style="color: #198754"></i>
+                                <p class="mb-0 small">Количество продаж</p>
+                                <span class="badge mt-1" :class="isWidgetVisible('sales_count') ? 'bg-success' : 'bg-secondary'">
+                                    <span x-text="isWidgetVisible('sales_count') ? 'Показана' : 'Скрыта'"></span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Средний чек -->
+                    <div class="col-6">
+                        <div class="card h-100" 
+                             :class="{'border-success border-2': isWidgetVisible('avg_check'), 'border-secondary': !isWidgetVisible('avg_check')}"
+                             @click="toggleWidgetVisibility('avg_check')"
+                             style="cursor: pointer;">
+                            <div class="card-body p-2 text-center">
+                                <i class="fas fa-receipt fa-2x mb-2" style="color: #0dcaf0"></i>
+                                <p class="mb-0 small">Средний чек</p>
+                                <span class="badge mt-1" :class="isWidgetVisible('avg_check') ? 'bg-success' : 'bg-secondary'">
+                                    <span x-text="isWidgetVisible('avg_check') ? 'Показана' : 'Скрыта'"></span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Активные клиенты -->
+                    <div class="col-6">
+                        <div class="card h-100" 
+                             :class="{'border-success border-2': isWidgetVisible('active_customers'), 'border-secondary': !isWidgetVisible('active_customers')}"
+                             @click="toggleWidgetVisibility('active_customers')"
+                             style="cursor: pointer;">
+                            <div class="card-body p-2 text-center">
+                                <i class="fas fa-users fa-2x mb-2" style="color: #ffc107"></i>
+                                <p class="mb-0 small">Активные клиенты</p>
+                                <span class="badge mt-1" :class="isWidgetVisible('active_customers') ? 'bg-success' : 'bg-secondary'">
+                                    <span x-text="isWidgetVisible('active_customers') ? 'Показана' : 'Скрыта'"></span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Выручка сегодня -->
+                    <div class="col-6">
+                        <div class="card h-100" 
+                             :class="{'border-success border-2': isWidgetVisible('today_revenue'), 'border-secondary': !isWidgetVisible('today_revenue')}"
+                             @click="toggleWidgetVisibility('today_revenue')"
+                             style="cursor: pointer;">
+                            <div class="card-body p-2 text-center">
+                                <i class="fas fa-calendar-check fa-2x mb-2" style="color: #0d6efd"></i>
+                                <p class="mb-0 small">Выручка сегодня</p>
+                                <span class="badge mt-1" :class="isWidgetVisible('today_revenue') ? 'bg-success' : 'bg-secondary'">
+                                    <span x-text="isWidgetVisible('today_revenue') ? 'Показана' : 'Скрыта'"></span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Продажи сегодня -->
+                    <div class="col-6">
+                        <div class="card h-100" 
+                             :class="{'border-success border-2': isWidgetVisible('today_sales'), 'border-secondary': !isWidgetVisible('today_sales')}"
+                             @click="toggleWidgetVisibility('today_sales')"
+                             style="cursor: pointer;">
+                            <div class="card-body p-2 text-center">
+                                <i class="fas fa-shopping-bag fa-2x mb-2" style="color: #198754"></i>
+                                <p class="mb-0 small">Продажи сегодня</p>
+                                <span class="badge mt-1" :class="isWidgetVisible('today_sales') ? 'bg-success' : 'bg-secondary'">
+                                    <span x-text="isWidgetVisible('today_sales') ? 'Показана' : 'Скрыта'"></span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Средний чек сегодня -->
+                    <div class="col-6">
+                        <div class="card h-100" 
+                             :class="{'border-success border-2': isWidgetVisible('today_avg_check'), 'border-secondary': !isWidgetVisible('today_avg_check')}"
+                             @click="toggleWidgetVisibility('today_avg_check')"
+                             style="cursor: pointer;">
+                            <div class="card-body p-2 text-center">
+                                <i class="fas fa-receipt fa-2x mb-2" style="color: #0dcaf0"></i>
+                                <p class="mb-0 small">Средний чек сегодня</p>
+                                <span class="badge mt-1" :class="isWidgetVisible('today_avg_check') ? 'bg-success' : 'bg-secondary'">
+                                    <span x-text="isWidgetVisible('today_avg_check') ? 'Показана' : 'Скрыта'"></span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Клиенты сегодня -->
+                    <div class="col-6">
+                        <div class="card h-100" 
+                             :class="{'border-success border-2': isWidgetVisible('today_customers'), 'border-secondary': !isWidgetVisible('today_customers')}"
+                             @click="toggleWidgetVisibility('today_customers')"
+                             style="cursor: pointer;">
+                            <div class="card-body p-2 text-center">
+                                <i class="fas fa-user-check fa-2x mb-2" style="color: #ffc107"></i>
+                                <p class="mb-0 small">Клиенты сегодня</p>
+                                <span class="badge mt-1" :class="isWidgetVisible('today_customers') ? 'bg-success' : 'bg-secondary'">
+                                    <span x-text="isWidgetVisible('today_customers') ? 'Показана' : 'Скрыта'"></span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Прогноз на месяц -->
+                    <div class="col-6">
+                        <div class="card h-100" 
+                             :class="{'border-success border-2': isWidgetVisible('monthly_forecast'), 'border-secondary': !isWidgetVisible('monthly_forecast')}"
+                             @click="toggleWidgetVisibility('monthly_forecast')"
+                             style="cursor: pointer;">
+                            <div class="card-body p-2 text-center">
+                                <i class="fas fa-chart-line fa-2x mb-2" style="color: #6f42c1"></i>
+                                <p class="mb-0 small">Прогноз на месяц</p>
+                                <span class="badge mt-1" :class="isWidgetVisible('monthly_forecast') ? 'bg-success' : 'bg-secondary'">
+                                    <span x-text="isWidgetVisible('monthly_forecast') ? 'Показана' : 'Скрыта'"></span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Общая задолженность -->
+                    <div class="col-6">
+                        <div class="card h-100" 
+                             :class="{'border-success border-2': isWidgetVisible('total_debt'), 'border-secondary': !isWidgetVisible('total_debt')}"
+                             @click="toggleWidgetVisibility('total_debt')"
+                             style="cursor: pointer;">
+                            <div class="card-body p-2 text-center">
+                                <i class="fas fa-hand-holding-usd fa-2x mb-2" style="color: #dc3545"></i>
+                                <p class="mb-0 small">Общая задолженность</p>
+                                <span class="badge mt-1" :class="isWidgetVisible('total_debt') ? 'bg-success' : 'bg-secondary'">
+                                    <span x-text="isWidgetVisible('total_debt') ? 'Показана' : 'Скрыта'"></span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-footer d-flex justify-content-between">
+                <button type="button" class="btn btn-outline-warning" @click.stop="showAllWidgets()">
+                    <i class="fas fa-eye me-1"></i>Показать все
+                </button>
+                <button type="button" class="btn btn-outline-danger" @click.stop="hideAllWidgets()">
+                    <i class="fas fa-eye-slash me-1"></i>Скрыть все
+                </button>
+                <button type="button" class="btn btn-primary" @click.stop="showAddWidget = false">
+                    <i class="fas fa-check me-1"></i>Готово
+                </button>
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
@@ -1022,10 +1459,50 @@
             tenYearsChart: null,
             debtsChart: null,
             topDebtorsChart: null,
+            
+            // Territory filter for dashboard
+            showAreasPanel: false,
+            availableAreas: [],
+            selectedAreasForFilter: [],
+            areaSearchQuery: '',
+            savingAreas: false,
+            
+            // Customer groups filter for dashboard
+            showGroupsPanel: false,
+            availableGroups: [],
+            selectedGroupsForFilter: [],
+            groupSearchQuery: '',
+            savingGroups: false,
+            
+            // Widget settings
+            showWidgetSettings: false,
+            showAddWidget: false,
+            editMode: false,
+            widgets: [],
+            sortableInstance: null,
+            
+            // Available widget types for adding
+            availableWidgetTypes: [
+                { id: 'total_revenue', title: 'Общая выручка', icon: 'fa-dollar-sign', color: '#0d6efd' },
+                { id: 'sales_count', title: 'Количество продаж', icon: 'fa-shopping-cart', color: '#198754' },
+                { id: 'avg_check', title: 'Средний чек', icon: 'fa-receipt', color: '#0dcaf0' },
+                { id: 'active_customers', title: 'Активные клиенты', icon: 'fa-users', color: '#ffc107' },
+                { id: 'today_revenue', title: 'Выручка сегодня', icon: 'fa-calendar-check', color: '#0d6efd' },
+                { id: 'today_sales', title: 'Продажи сегодня', icon: 'fa-shopping-bag', color: '#198754' },
+                { id: 'today_avg_check', title: 'Средний чек сегодня', icon: 'fa-receipt', color: '#0dcaf0' },
+                { id: 'today_customers', title: 'Клиенты сегодня', icon: 'fa-user-check', color: '#ffc107' },
+                { id: 'monthly_forecast', title: 'Прогноз на месяц', icon: 'fa-chart-line', color: '#6f42c1' },
+                { id: 'total_debt', title: 'Общая задолженность', icon: 'fa-hand-holding-usd', color: '#dc3545' }
+            ],
 
             init() {
                 // Установить текущий месяц по умолчанию
                 this.setThisMonth();
+                this.loadAvailableAreas();
+                this.loadSelectedAreasFilter();
+                this.loadAvailableGroups();
+                this.loadSelectedGroupsFilter();
+                this.loadWidgets();
                 this.loadFilterData();
                 this.loadSummary();
                 this.loadCharts();
@@ -1040,6 +1517,123 @@
                 setInterval(() => {
                     this.applyFilters();
                 }, 300000);
+            },
+            
+            async initDashboard() {
+                // Дополнительная инициализация после загрузки виджетов
+                await this.loadWidgets();
+            },
+            
+            // ===== Widget Management =====
+            async loadWidgets() {
+                try {
+                    const res = await fetch('/api/dashboard/widgets');
+                    const data = await res.json();
+                    if (data.success) {
+                        this.widgets = data.widgets || [];
+                    }
+                } catch (error) {
+                    console.error('Error loading widgets:', error);
+                }
+            },
+            
+            async saveWidgets() {
+                try {
+                    const res = await fetch('/api/dashboard/widgets', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ widgets: this.widgets })
+                    });
+                    const data = await res.json();
+                    if (!data.success) {
+                        console.error('Error saving widgets:', data.error);
+                    }
+                } catch (error) {
+                    console.error('Error saving widgets:', error);
+                }
+            },
+            
+            toggleWidgetVisibility(widgetId) {
+                const widget = this.widgets.find(w => w.id === widgetId);
+                if (widget) {
+                    widget.visible = !widget.visible;
+                    this.saveWidgets();
+                }
+            },
+            
+            isWidgetVisible(widgetId) {
+                const widget = this.widgets.find(w => w.id === widgetId);
+                return widget ? widget.visible : true;
+            },
+            
+            showAllWidgets() {
+                this.widgets.forEach(w => w.visible = true);
+                this.saveWidgets();
+            },
+            
+            hideAllWidgets() {
+                this.widgets.forEach(w => w.visible = false);
+                this.saveWidgets();
+            },
+            
+            toggleEditMode() {
+                this.editMode = !this.editMode;
+                if (this.editMode) {
+                    this.$nextTick(() => {
+                        this.initSortable();
+                    });
+                } else {
+                    this.destroySortable();
+                }
+            },
+            
+            initSortable() {
+                const container = document.getElementById('widgets-container');
+                if (container && typeof Sortable !== 'undefined') {
+                    this.sortableInstance = Sortable.create(container, {
+                        animation: 150,
+                        ghostClass: 'sortable-ghost',
+                        dragClass: 'sortable-drag',
+                        handle: '.widget-drag-handle',
+                        onEnd: (evt) => {
+                            // Обновить порядок виджетов
+                            const items = container.querySelectorAll('[data-widget-id]');
+                            items.forEach((item, index) => {
+                                const widgetId = item.dataset.widgetId;
+                                const widget = this.widgets.find(w => w.id === widgetId);
+                                if (widget) {
+                                    widget.order = index + 1;
+                                }
+                            });
+                            this.widgets.sort((a, b) => a.order - b.order);
+                            this.saveWidgets();
+                        }
+                    });
+                }
+            },
+            
+            destroySortable() {
+                if (this.sortableInstance) {
+                    this.sortableInstance.destroy();
+                    this.sortableInstance = null;
+                }
+            },
+            
+            async resetWidgets() {
+                if (confirm('Сбросить все настройки виджетов?')) {
+                    try {
+                        const res = await fetch('/api/dashboard/widgets/reset', {
+                            method: 'POST'
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            this.widgets = data.widgets;
+                            location.reload();
+                        }
+                    } catch (error) {
+                        console.error('Error resetting widgets:', error);
+                    }
+                }
             },
             
             // ===== Filters =====
@@ -1068,6 +1662,144 @@
                 } catch (error) {
                     console.error('Error loading filter data:', error);
                 }
+            },
+            
+            // ===== Territory Filter Methods =====
+            async loadAvailableAreas() {
+                try {
+                    const res = await fetch('/api/sales-areas-list');
+                    const data = await res.json();
+                    if (data.success) {
+                        this.availableAreas = data.data;
+                    }
+                } catch (error) {
+                    console.error('Error loading available areas:', error);
+                }
+            },
+            
+            async loadSelectedAreasFilter() {
+                try {
+                    const res = await fetch('/api/dashboard/areas');
+                    const data = await res.json();
+                    if (data.success) {
+                        this.selectedAreasForFilter = data.areas || [];
+                    }
+                } catch (error) {
+                    console.error('Error loading selected areas filter:', error);
+                }
+            },
+            
+            get filteredAvailableAreas() {
+                if (!this.areaSearchQuery) return this.availableAreas;
+                const query = this.areaSearchQuery.toLowerCase();
+                return this.availableAreas.filter(a => 
+                    a.name.toLowerCase().includes(query) || a.code.toLowerCase().includes(query)
+                );
+            },
+            
+            toggleAreaFilter(code) {
+                const idx = this.selectedAreasForFilter.indexOf(code);
+                if (idx >= 0) {
+                    this.selectedAreasForFilter.splice(idx, 1);
+                } else {
+                    this.selectedAreasForFilter.push(code);
+                }
+            },
+            
+            selectAllAreas() {
+                this.selectedAreasForFilter = this.availableAreas.map(a => a.code);
+            },
+            
+            clearAllAreas() {
+                this.selectedAreasForFilter = [];
+            },
+            
+            async saveAreasFilter() {
+                this.savingAreas = true;
+                try {
+                    const res = await fetch('/api/dashboard/areas', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ areas: this.selectedAreasForFilter })
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        this.showAreasPanel = false;
+                        this.applyFilters();
+                    }
+                } catch (error) {
+                    console.error('Error saving areas filter:', error);
+                }
+                this.savingAreas = false;
+            },
+            
+            // ===== Customer Groups Filter Methods =====
+            async loadAvailableGroups() {
+                try {
+                    const res = await fetch('/api/customer-groups');
+                    const data = await res.json();
+                    if (data.success) {
+                        this.availableGroups = data.data;
+                    }
+                } catch (error) {
+                    console.error('Error loading available groups:', error);
+                }
+            },
+            
+            async loadSelectedGroupsFilter() {
+                try {
+                    const res = await fetch('/api/dashboard/groups');
+                    const data = await res.json();
+                    if (data.success) {
+                        this.selectedGroupsForFilter = data.groups || [];
+                    }
+                } catch (error) {
+                    console.error('Error loading selected groups filter:', error);
+                }
+            },
+            
+            get filteredAvailableGroups() {
+                if (!this.groupSearchQuery) return this.availableGroups;
+                const query = this.groupSearchQuery.toLowerCase();
+                return this.availableGroups.filter(g => 
+                    g.name.toLowerCase().includes(query) || g.code.toLowerCase().includes(query)
+                );
+            },
+            
+            toggleGroupFilter(code) {
+                const idx = this.selectedGroupsForFilter.indexOf(code);
+                if (idx >= 0) {
+                    this.selectedGroupsForFilter.splice(idx, 1);
+                } else {
+                    this.selectedGroupsForFilter.push(code);
+                }
+            },
+            
+            selectAllGroups() {
+                this.selectedGroupsForFilter = this.availableGroups.map(g => g.code);
+            },
+            
+            clearAllGroups() {
+                this.selectedGroupsForFilter = [];
+            },
+            
+            async saveGroupsFilter() {
+                this.savingGroups = true;
+                try {
+                    const res = await fetch('/api/dashboard/groups', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ groups: this.selectedGroupsForFilter })
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        this.showGroupsPanel = false;
+                        this.applyFilters();
+                    }
+                } catch (error) {
+                    console.error('Error saving groups filter:', error);
+                }
+                this.savingGroups = false;
             },
             
             async loadSummary() {
@@ -1351,6 +2083,7 @@
 
             render10YearsChart(data, monthName) {
                 const ctx = document.getElementById('tenYearsChart');
+                if (!ctx) return; // Элемент не найден (виджет скрыт)
                 
                 if (this.tenYearsChart) {
                     this.tenYearsChart.destroy();
@@ -1470,6 +2203,7 @@
 
             renderSalesChart(data) {
                 const ctx = document.getElementById('salesChart');
+                if (!ctx) return; // Элемент не найден (виджет скрыт)
                 
                 if (this.salesChart) {
                     this.salesChart.destroy();
@@ -1523,6 +2257,7 @@
 
             renderManagersChart(data) {
                 const ctx = document.getElementById('managersChart');
+                if (!ctx) return; // Элемент не найден (виджет скрыт)
                 
                 if (this.managersChart) {
                     this.managersChart.destroy();
@@ -1586,6 +2321,7 @@
 
             renderDebtsChart() {
                 const ctx = document.getElementById('debtsChart');
+                if (!ctx) return; // Элемент не найден (виджет скрыт)
                 
                 if (this.debtsChart) {
                     this.debtsChart.destroy();
@@ -1638,6 +2374,7 @@
 
             renderTopDebtorsChart() {
                 const ctx = document.getElementById('topDebtorsChart');
+                if (!ctx) return; // Элемент не найден (виджет скрыт)
                 
                 if (this.topDebtorsChart) {
                     this.topDebtorsChart.destroy();
