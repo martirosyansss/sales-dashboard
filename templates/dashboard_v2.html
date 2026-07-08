@@ -1210,11 +1210,11 @@
     </div>
     
     <!-- Модальное окно добавления виджета -->
-    <div x-show="showAddWidget" 
-         x-cloak
+    <div x-cloak
+         :class="showAddWidget ? 'd-flex' : 'd-none'"
          @click="showAddWidget = false"
          @keydown.escape.window="showAddWidget = false"
-         class="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center"
+         class="position-fixed top-0 start-0 w-100 h-100 align-items-center justify-content-center"
          style="background: rgba(0,0,0,0.5); z-index: 1050;">
         <div class="card shadow-lg" @click.stop style="max-width: 600px; max-height: 80vh; overflow-y: auto;">
             <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
