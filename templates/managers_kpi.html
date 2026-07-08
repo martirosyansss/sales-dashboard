@@ -1,0 +1,734 @@
+{% extends "base_v2.html" %}
+
+{% block title %}KPI менеджеров - Sales Dashboard v2.0{% endblock %}
+
+{% block extra_css %}
+<style>
+    .kpi-table { font-size: 0.86rem; }
+    .kpi-table thead th {
+        position: sticky; top: 0; z-index: 5;
+        background: var(--card-bg, #212529);
+        cursor: pointer; white-space: nowrap; user-select: none;
+        border-bottom: 2px solid rgba(255,255,255,0.12);
+    }
+    .kpi-table thead th:hover { color: #6ea8fe; }
+    .kpi-table td, .kpi-table th { vertical-align: middle; text-align: center; }
+    .kpi-table td.mgr-name, .kpi-table th.mgr-name { text-align: left; }
+    .kpi-table tbody tr { cursor: pointer; transition: background .12s; }
+    .kpi-table tbody tr:hover { background: rgba(110,168,254,0.10) !important; }
+    .kpi-cell { border-radius: 6px; font-variant-numeric: tabular-nums; }
+    .score-bar-wrap { background: rgba(255,255,255,0.08); border-radius: 6px; height: 22px; position: relative; min-width: 90px; }
+    .score-bar { height: 100%; border-radius: 6px; transition: width .3s; }
+    .score-bar-txt { position: absolute; inset: 0; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:.78rem; }
+    .rank-badge { width: 30px; height: 30px; border-radius: 50%; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:.8rem; }
+    .rank-1 { background: linear-gradient(135deg,#ffd700,#b8860b); color:#000; }
+    .rank-2 { background: linear-gradient(135deg,#e0e0e0,#9e9e9e); color:#000; }
+    .rank-3 { background: linear-gradient(135deg,#cd7f32,#8b5a2b); color:#fff; }
+    .rank-n { background: rgba(255,255,255,0.10); color:#adb5bd; }
+    .score-ring { width: 76px; height: 76px; border-radius: 50%; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:1.35rem;
+        background: conic-gradient(var(--ring-color) calc(var(--ring)*1%), rgba(255,255,255,0.08) 0); }
+    .score-ring-inner { width: 60px; height: 60px; border-radius:50%; background: var(--card-bg,#212529); display:flex; align-items:center; justify-content:center; }
+    .kpi-mini { margin-bottom: 6px; }
+    .kpi-mini-label { display:flex; justify-content:space-between; font-size:.72rem; color:#adb5bd; margin-bottom:2px; }
+    .kpi-mini-track { background: rgba(255,255,255,0.08); border-radius:4px; height:6px; overflow:hidden; }
+    .kpi-mini-fill { height:100%; border-radius:4px; }
+    .scorecard { transition: box-shadow .12s, border-color .12s; cursor:pointer; height:100%; }
+    .scorecard:hover { box-shadow: 0 8px 22px rgba(0,0,0,0.45); border-color: #6ea8fe; }
+    .legend-dot { width:12px; height:12px; border-radius:3px; display:inline-block; }
+
+    /* Сводные KPI-карточки узкие (col-lg-2): при 32px крупные суммы AMD рвались
+       посреди числа на 3 строки. Уменьшаем значение и включаем табличные цифры,
+       чтобы суммы читались чисто. Область правила — только эта страница. */
+    .stat-card .stat-value {
+        font-size: 1.15rem;
+        line-height: 1.2;
+        font-variant-numeric: tabular-nums;
+    }
+
+    /* Глобальное .card:hover (base_v2.html) поднимает карточку на 5px через transform.
+       У нижней кромки карточки это создаёт полосу, где указатель «теряет» hover →
+       карточка опускается → снова hover → и так по кругу: список начинает моргать.
+       На этой странице геометрию на hover не двигаем — оставляем только тень-подсветку. */
+    .card:hover { transform: none; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid" x-data="managersKpiData()" x-init="init()">
+
+    <!-- Заголовок -->
+    <div class="row mb-3 align-items-center">
+        <div class="col-md-7">
+            <h1 class="h2 mb-1"><i class="fas fa-ranking-star text-warning me-2"></i>KPI по менеджерам</h1>
+            <p class="text-muted mb-0">
+                Рейтинг эффективности по отраслевым метрикам van-sales · период
+                <span class="badge bg-secondary" x-text="period.date_from"></span> —
+                <span class="badge bg-secondary" x-text="period.date_to"></span>
+            </p>
+        </div>
+        <div class="col-md-5 text-md-end mt-2 mt-md-0">
+            <button class="btn btn-sm btn-outline-info" type="button" data-bs-toggle="collapse" data-bs-target="#kpiHelp" aria-expanded="false">
+                <i class="fas fa-circle-info me-1"></i>Как считается рейтинг?
+            </button>
+        </div>
+    </div>
+
+    <!-- Описание методики -->
+    <div class="collapse mb-3" id="kpiHelp">
+        <div class="card border-info">
+            <div class="card-body">
+                <h5 class="card-title"><i class="fas fa-circle-info text-info me-2"></i>Описание страницы и методики расчёта</h5>
+                <p class="text-muted mb-3">
+                    Страница ранжирует менеджеров (торговых агентов van-sales) по эффективности за выбранный период.
+                    Учитываются только проведённые продажи (статус документа = 2). Все показатели рассчитываются
+                    по данным ERP <strong>только на чтение</strong> и пересчитываются при смене периода или фильтров по группам.
+                </p>
+
+                <h6 class="text-info"><i class="fas fa-calculator me-1"></i>Итоговый балл (0–100)</h6>
+                <p class="mb-2">
+                    По каждому KPI менеджеры сравниваются между собой и получают <strong>перцентильный ранг</strong>:
+                    лучший результат = 100 баллов, худший = 0 (при равных значениях — усреднённый ранг).
+                    Такой подход устойчив к выбросам. Итоговый балл — это <strong>взвешенное среднее</strong> этих рангов:
+                </p>
+                <div class="bg-dark rounded p-2 mb-3 small font-monospace">
+                    Балл = Σ(перцентильный_ранг<sub>KPI</sub> × вес<sub>KPI</sub>) / Σ(вес<sub>KPI</sub>) &nbsp;·&nbsp; сумма весов = 100
+                </div>
+
+                <h6 class="text-info"><i class="fas fa-list-check me-1"></i>Показатели (KPI) и их веса</h6>
+                <div class="table-responsive mb-3">
+                    <table class="table table-sm table-dark table-bordered align-middle mb-0" style="font-size:.84rem">
+                        <thead>
+                            <tr>
+                                <th>KPI</th>
+                                <th class="text-center">Вес</th>
+                                <th class="text-center">Лучше когда</th>
+                                <th>Что показывает</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><strong>Выручка</strong></td>
+                                <td class="text-center"><span class="badge bg-primary">25%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
+                                <td>Сумма продаж за период. Главный показатель с наибольшим весом.</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Покрытие</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">12%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
+                                <td>Доля активных клиентов от назначенных на территории агента (активные ÷ назначенные, максимум 100%).</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Strike rate</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">10%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
+                                <td>Результативность визитов: продажи ÷ визиты (по GPS-маршрутам) × 100%.</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Средний чек</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">10%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
+                                <td>Средняя сумма одной накладной за период.</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Строк/накл.</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">8%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
+                                <td>Глубина корзины — среднее число товарных позиций (SKU) в накладной.</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Новые клиенты</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">8%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
+                                <td>Клиенты, у которых первая в истории продажа пришлась на выбранный период.</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Сбор долга</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">10%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
+                                <td>Собранные платежи ÷ выручка × 100%. Насколько активно менеджер закрывает дебиторку.</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Возвраты</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">7%</span></td>
+                                <td class="text-center text-danger"><i class="fas fa-arrow-down"></i> меньше</td>
+                                <td>Сумма возвратов ÷ выручка × 100%. Единственный KPI, где меньше — лучше.</td>
+                            </tr>
+                            <tr>
+                                <td><strong>План/факт</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">10%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
+                                <td>Факт ÷ план × 100%. План = среднемесячная выручка за 12 мес. до периода × число месяцев периода.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <h6 class="text-warning"><i class="fas fa-hand-holding-dollar me-1"></i>Долг (полная формула)</h6>
+                <p class="mb-2">
+                    Столбец «Долг» — это <strong>чистая дебиторская задолженность</strong> по клиентам, которым менеджер
+                    продавал в периоде:
+                </p>
+                <div class="bg-dark rounded p-2 mb-2 small font-monospace">
+                    Долг = Дебет − Возвраты (тип 01) − Переплаты (тип 02)
+                </div>
+                <p class="text-muted small mb-0">
+                    Цвет ячеек KPI: <span class="badge" style="background:hsl(120,60%,45%)">зелёный</span> — лучше по группе,
+                    <span class="badge text-dark" style="background:hsl(60,60%,45%)">жёлтый</span> — средне,
+                    <span class="badge" style="background:hsl(0,60%,45%)">красный</span> — хуже.
+                    Клик по строке или скоркарте открывает детализацию менеджера.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Фильтры -->
+    <div class="row g-2 mb-3">
+        <div class="col-6 col-md-2"><input type="date" class="form-control form-control-sm" x-model="dateFrom" @change="loadKpi()"></div>
+        <div class="col-6 col-md-2"><input type="date" class="form-control form-control-sm" x-model="dateTo" @change="loadKpi()"></div>
+        <div class="col-12 col-md-4">
+            <div class="btn-group btn-group-sm w-100">
+                <button class="btn btn-outline-secondary" @click="setThisMonth()">Этот месяц</button>
+                <button class="btn btn-outline-secondary" @click="setLastMonth()">Прошлый</button>
+                <button class="btn btn-outline-secondary" @click="setThisYear()">Год</button>
+                <button class="btn btn-outline-primary" @click="loadKpi()"><i class="fas fa-sync-alt"></i></button>
+            </div>
+        </div>
+        <div class="col-12 col-md-4">
+            <div class="input-group input-group-sm">
+                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                <input type="text" class="form-control" placeholder="Поиск менеджера…" x-model="searchQuery">
+            </div>
+        </div>
+    </div>
+
+    <!-- Фильтры по группам (раздельно ПРОДАЖИ / ДОЛГ, с запоминанием) -->
+    <div class="card mb-3">
+        <div class="card-body py-2">
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <span class="badge bg-success"><i class="fas fa-shopping-cart me-1"></i>ПРОДАЖИ</span>
+
+                <!-- Продажи: группы клиентов -->
+                <div class="dropdown">
+                    <button class="btn btn-sm btn-outline-success dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                        <i class="fas fa-user-tag"></i> Группы клиентов
+                        <span class="badge bg-success ms-1" x-show="salesClientGroups.length" x-text="salesClientGroups.length"></span>
+                    </button>
+                    <div class="dropdown-menu p-2" style="width:340px;max-height:360px;overflow:auto">
+                        <input class="form-control form-control-sm mb-2" placeholder="поиск группы…" x-model="cgSearch">
+                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="salesClientGroups=[]; saveFilters()">Очистить</button>
+                        <template x-for="g in optFilter(clientGroupOptions, cgSearch)" :key="'scg'+g.code">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" :id="'scg-'+g.code" :value="g.code" x-model="salesClientGroups" @change="saveFilters()">
+                                <label class="form-check-label" :for="'scg-'+g.code"><strong x-text="g.code"></strong> — <span x-text="g.name"></span></label>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Продажи: группы товаров (дивизионы) -->
+                <div class="dropdown">
+                    <button class="btn btn-sm btn-outline-success dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                        <i class="fas fa-boxes-stacked"></i> Группы товаров
+                        <span class="badge bg-success ms-1" x-show="salesDivisions.length" x-text="salesDivisions.length"></span>
+                    </button>
+                    <div class="dropdown-menu p-2" style="width:340px;max-height:360px;overflow:auto">
+                        <input class="form-control form-control-sm mb-2" placeholder="поиск группы…" x-model="divSearch">
+                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="salesDivisions=[]; saveFilters()">Очистить</button>
+                        <template x-for="g in optFilter(divisionOptions, divSearch)" :key="'sdiv'+g.code">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" :id="'sdiv-'+g.code" :value="g.code" x-model="salesDivisions" @change="saveFilters()">
+                                <label class="form-check-label" :for="'sdiv-'+g.code"><strong x-text="g.code"></strong> — <span x-text="g.name"></span></label>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <span class="badge bg-warning text-dark ms-lg-3"><i class="fas fa-hand-holding-dollar me-1"></i>ДОЛГ</span>
+
+                <!-- Долг: группы клиентов -->
+                <div class="dropdown">
+                    <button class="btn btn-sm btn-outline-warning dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                        <i class="fas fa-user-tag"></i> Группы клиентов
+                        <span class="badge bg-warning text-dark ms-1" x-show="debtClientGroups.length" x-text="debtClientGroups.length"></span>
+                    </button>
+                    <div class="dropdown-menu p-2" style="width:340px;max-height:360px;overflow:auto">
+                        <input class="form-control form-control-sm mb-2" placeholder="поиск группы…" x-model="cgSearch">
+                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="debtClientGroups=[]; saveFilters()">Очистить</button>
+                        <template x-for="g in optFilter(clientGroupOptions, cgSearch)" :key="'dcg'+g.code">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" :id="'dcg-'+g.code" :value="g.code" x-model="debtClientGroups" @change="saveFilters()">
+                                <label class="form-check-label" :for="'dcg-'+g.code"><strong x-text="g.code"></strong> — <span x-text="g.name"></span></label>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Долг: группы товаров (дивизионы) -->
+                <div class="dropdown">
+                    <button class="btn btn-sm btn-outline-warning dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                        <i class="fas fa-boxes-stacked"></i> Группы товаров
+                        <span class="badge bg-warning text-dark ms-1" x-show="debtDivisions.length" x-text="debtDivisions.length"></span>
+                    </button>
+                    <div class="dropdown-menu p-2" style="width:340px;max-height:360px;overflow:auto">
+                        <input class="form-control form-control-sm mb-2" placeholder="поиск группы…" x-model="divSearch">
+                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="debtDivisions=[]; saveFilters()">Очистить</button>
+                        <template x-for="g in optFilter(divisionOptions, divSearch)" :key="'ddiv'+g.code">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" :id="'ddiv-'+g.code" :value="g.code" x-model="debtDivisions" @change="saveFilters()">
+                                <label class="form-check-label" :for="'ddiv-'+g.code"><strong x-text="g.code"></strong> — <span x-text="g.name"></span></label>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <button class="btn btn-sm btn-outline-danger ms-auto" x-show="anyFilterActive()" @click="clearAllFilters()">
+                    <i class="fas fa-filter-circle-xmark me-1"></i>Сбросить фильтры
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Сводка команды -->
+    <div class="row g-3 mb-4">
+        <template x-for="c in teamCards" :key="c.label">
+            <div class="col-6 col-lg-2">
+                <div class="card stat-card h-100" :style="`border-left:4px solid ${c.color}`">
+                    <div class="card-body py-2 px-3">
+                        <div class="stat-label small text-muted" x-text="c.label"></div>
+                        <div class="stat-value h5 mb-0" x-text="c.value"></div>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- Загрузка -->
+    <div x-show="loading" class="text-center py-5">
+        <div class="spinner-border text-primary" style="width:3rem;height:3rem"></div>
+        <p class="text-muted mt-2">Загрузка KPI…</p>
+    </div>
+
+    <div x-show="!loading && rows.length === 0" class="alert alert-info">Нет данных за выбранный период.</div>
+
+    <!-- ЛИДЕРБОРД -->
+    <div class="card mb-4" x-show="!loading && rows.length > 0">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="fas fa-trophy text-warning me-2"></i>Рейтинг менеджеров</span>
+            <span class="small text-muted">
+                <span class="legend-dot" style="background:hsl(120,60%,45%)"></span> лучше
+                <span class="legend-dot ms-2" style="background:hsl(60,60%,45%)"></span> средне
+                <span class="legend-dot ms-2" style="background:hsl(0,60%,45%)"></span> хуже
+                · клик по строке — детали
+            </span>
+        </div>
+        <div class="card-body p-0" style="max-height:70vh; overflow:auto;">
+            <table class="table table-dark table-hover kpi-table mb-0">
+                <thead>
+                    <tr>
+                        <th @click="sortBy('rank')" style="width:44px">#</th>
+                        <th class="mgr-name" @click="sortBy('fNAME')">Менеджер <span x-html="ind('fNAME')"></span></th>
+                        <th @click="sortBy('score')" style="min-width:110px">Балл <span x-html="ind('score')"></span></th>
+                        <template x-for="k in kpis" :key="k.key">
+                            <th @click="sortBy(k.key)">
+                                <span x-text="k.label"></span> <span x-html="ind(k.key)"></span>
+                            </th>
+                        </template>
+                        <th @click="sortBy('debt')" title="Дебет − возвраты − переплаты">Долг <span x-html="ind('debt')"></span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="m in filteredRows" :key="m.fID">
+                        <tr @click="openDetail(m)">
+                            <td><span class="rank-badge" :class="rankClass(m.rank)" x-text="m.rank"></span></td>
+                            <td class="mgr-name">
+                                <div class="fw-semibold" x-text="m.fNAME"></div>
+                                <div class="small text-muted">
+                                    <span x-text="m.fCODE"></span>
+                                    <template x-for="a in m.SalesAreas.slice(0,2)" :key="a.code">
+                                        <span class="badge bg-secondary ms-1" x-text="a.name"></span>
+                                    </template>
+                                </div>
+                            </td>
+                            <td>
+                                <div class="score-bar-wrap">
+                                    <div class="score-bar" :style="`width:${m.score}%; background:${scoreColor(m.score)}`"></div>
+                                    <div class="score-bar-txt" x-text="m.score"></div>
+                                </div>
+                            </td>
+                            <template x-for="k in kpis" :key="k.key">
+                                <td class="kpi-cell" :style="cellStyle(m.scores[k.key])">
+                                    <span x-text="fmt(k.key, m[k.key])"></span>
+                                </td>
+                            </template>
+                            <td class="text-warning fw-semibold" x-text="formatCurrency(m.debt)"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- СКОРКАРТЫ -->
+    <h5 class="mb-3" x-show="!loading && rows.length > 0"><i class="fas fa-id-card me-2 text-info"></i>Скоркарты менеджеров</h5>
+    <div class="row g-3" x-show="!loading">
+        <template x-for="m in filteredRows" :key="'card-'+m.fID">
+            <div class="col-xl-3 col-lg-4 col-md-6">
+                <div class="card scorecard" @click="openDetail(m)">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                            <div>
+                                <div class="fw-bold" x-text="m.fNAME"></div>
+                                <div class="small text-muted" x-text="m.fCODE"></div>
+                            </div>
+                            <span class="rank-badge" :class="rankClass(m.rank)" x-text="m.rank"></span>
+                        </div>
+                        <div class="d-flex align-items-center gap-3 mb-3">
+                            <div class="score-ring" :style="`--ring:${m.score}; --ring-color:${scoreColor(m.score)}`">
+                                <div class="score-ring-inner" x-text="m.score"></div>
+                            </div>
+                            <div class="flex-grow-1">
+                                <div class="small text-muted">Выручка</div>
+                                <div class="h6 mb-0 text-success" x-text="formatCurrency(m.revenue)"></div>
+                                <div class="small text-warning" title="Дебет − возвраты − переплаты">
+                                    <i class="fas fa-hand-holding-dollar"></i> Долг: <span x-text="formatCurrency(m.debt)"></span>
+                                </div>
+                                <div class="small text-muted mt-1">
+                                    <i class="fas fa-users"></i> <span x-text="m.activeCustomers"></span> кл.
+                                    · <span x-text="m.salesCount"></span> прод.
+                                </div>
+                            </div>
+                        </div>
+                        <template x-for="k in cardKpis" :key="'mini-'+m.fID+k">
+                            <div class="kpi-mini" x-show="m.scores[k] !== null">
+                                <div class="kpi-mini-label">
+                                    <span x-text="kpiLabel(k)"></span>
+                                    <span class="text-light" x-text="fmt(k, m[k])"></span>
+                                </div>
+                                <div class="kpi-mini-track">
+                                    <div class="kpi-mini-fill" :style="`width:${m.scores[k]||0}%; background:${scoreColor(m.scores[k])}`"></div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- МОДАЛКА ДЕТАЛЕЙ -->
+    <div class="modal fade" id="detailModal" tabindex="-1">
+        <div class="modal-dialog modal-xl modal-dialog-centered">
+            <div class="modal-content" x-show="detail.m">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <span class="rank-badge me-2" :class="detail.m ? rankClass(detail.m.rank) : ''" x-text="detail.m ? detail.m.rank : ''"></span>
+                        <span x-text="detail.m ? detail.m.fNAME : ''"></span>
+                        <span class="badge bg-primary ms-2" x-text="detail.m ? 'Балл '+detail.m.score : ''"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <div class="col-lg-7">
+                            <h6 class="text-muted">Динамика выручки (12 мес)</h6>
+                            <canvas id="mgrMonthlyChart" height="150"></canvas>
+                        </div>
+                        <div class="col-lg-5">
+                            <h6 class="text-muted">Профиль KPI (балл 0–100)</h6>
+                            <canvas id="mgrRadarChart" height="150"></canvas>
+                        </div>
+                    </div>
+                    <hr>
+                    <div class="alert alert-secondary py-2 mb-3" x-show="detail.m" style="background:rgba(253,126,20,.12);border-color:rgba(253,126,20,.4)">
+                        <strong><i class="fas fa-hand-holding-dollar me-1"></i>Долг (полная формула):</strong>
+                        Дебет <span x-text="detail.m ? formatCurrency(detail.m.debtDebit) : ''"></span>
+                        − Возвраты <span class="text-info" x-text="detail.m ? formatCurrency(detail.m.returnsType01) : ''"></span>
+                        − Переплаты <span class="text-info" x-text="detail.m ? formatCurrency(detail.m.overpayType02) : ''"></span>
+                        = <strong class="text-warning" x-text="detail.m ? formatCurrency(detail.m.debt) : ''"></strong>
+                    </div>
+                    <div class="row g-3">
+                        <div class="col-lg-7">
+                            <h6 class="text-muted">Все показатели</h6>
+                            <div class="row g-2">
+                                <template x-for="k in kpis" :key="'d-'+k.key">
+                                    <div class="col-6 col-xl-4">
+                                        <div class="p-2 rounded" :style="cellStyle(detail.m ? detail.m.scores[k.key] : null)">
+                                            <div class="small text-muted" x-text="k.label"></div>
+                                            <div class="fw-bold" x-text="detail.m ? fmt(k.key, detail.m[k.key]) : ''"></div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                        <div class="col-lg-5">
+                            <h6 class="text-muted">Топ клиентов периода/года</h6>
+                            <div style="max-height:230px; overflow:auto;">
+                                <table class="table table-sm table-dark mb-0">
+                                    <tbody>
+                                        <template x-for="c in detail.topCustomers" :key="c.fCODE">
+                                            <tr>
+                                                <td class="small" x-text="c.fNAME"></td>
+                                                <td class="small text-end text-success" x-text="formatCurrency(c.TotalSum)"></td>
+                                            </tr>
+                                        </template>
+                                        <tr x-show="detail.topCustomers.length === 0"><td class="text-muted small">Нет данных</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function managersKpiData() {
+    return {
+        loading: true,
+        rows: [],
+        kpis: [],
+        team: {},
+        period: { date_from: '', date_to: '' },
+        dateFrom: '', dateTo: '',
+        searchQuery: '',
+        sortKey: 'score', sortDir: 'desc',
+        cardKpis: ['coverage', 'strikeRate', 'avgCheck', 'collectRate', 'returnsRate', 'planFact'],
+        detail: { m: null, topCustomers: [] },
+        monthlyChart: null, radarChart: null,
+        salesClientGroups: [], debtClientGroups: [], salesDivisions: [], debtDivisions: [],
+        clientGroupOptions: [], divisionOptions: [],
+        cgSearch: '', divSearch: '',
+
+        async init() {
+            const p = new URLSearchParams(location.search);
+            if (p.get('date_from') && p.get('date_to')) {
+                this.dateFrom = p.get('date_from');
+                this.dateTo = p.get('date_to');
+            } else {
+                this.setThisMonth(false);
+            }
+            await this.loadFilterOptions();
+            await this.loadSavedFilters();
+            this.loadKpi();
+        },
+
+        async loadFilterOptions() {
+            try {
+                const [cg, dv] = await Promise.all([
+                    fetch('/api/customer-groups').then(r => r.json()),
+                    fetch('/api/settings/product-groups').then(r => r.json())
+                ]);
+                if (cg.success) this.clientGroupOptions = (cg.data || []).map(g => ({ code: g.code, name: g.name }));
+                if (dv.data) this.divisionOptions = (dv.data || []).map(g => ({ code: g.fGROUP, name: g.name }));
+            } catch (e) { console.error(e); }
+        },
+        async loadSavedFilters() {
+            try {
+                const d = await fetch('/api/managers/kpi/filters').then(r => r.json());
+                if (d.success) {
+                    this.salesClientGroups = d.sales_client_groups || [];
+                    this.debtClientGroups = d.debt_client_groups || [];
+                    this.salesDivisions = d.sales_divisions || [];
+                    this.debtDivisions = d.debt_divisions || [];
+                }
+            } catch (e) { console.error(e); }
+        },
+        async saveFilters() {
+            try {
+                await fetch('/api/managers/kpi/filters', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sales_client_groups: this.salesClientGroups,
+                        debt_client_groups: this.debtClientGroups,
+                        sales_divisions: this.salesDivisions,
+                        debt_divisions: this.debtDivisions
+                    })
+                });
+            } catch (e) { console.error(e); }
+            this.loadKpi();
+        },
+        clearAllFilters() {
+            this.salesClientGroups = []; this.debtClientGroups = [];
+            this.salesDivisions = []; this.debtDivisions = [];
+            this.saveFilters();
+        },
+        anyFilterActive() {
+            return this.salesClientGroups.length || this.debtClientGroups.length ||
+                   this.salesDivisions.length || this.debtDivisions.length;
+        },
+        optFilter(list, q) {
+            q = (q || '').trim().toLowerCase();
+            if (!q) return list;
+            return list.filter(g => (g.code || '').toLowerCase().includes(q) || (g.name || '').toLowerCase().includes(q));
+        },
+
+        async loadKpi() {
+            this.loading = true;
+            try {
+                const r = await fetch(`/api/managers/kpi?date_from=${this.dateFrom}&date_to=${this.dateTo}`);
+                const d = await r.json();
+                if (d.success) {
+                    this.rows = d.managers;
+                    this.kpis = d.kpis;
+                    this.team = d.team;
+                    this.period = d.period;
+                }
+            } catch (e) { console.error(e); }
+            this.loading = false;
+        },
+
+        get filteredRows() {
+            let list = this.rows;
+            const q = this.searchQuery.trim().toLowerCase();
+            if (q) list = list.filter(m => (m.fNAME || '').toLowerCase().includes(q) || (m.fCODE || '').toLowerCase().includes(q));
+            const dir = this.sortDir === 'asc' ? 1 : -1;
+            const key = this.sortKey;
+            return [...list].sort((a, b) => {
+                let va = key === 'fNAME' ? (a.fNAME || '') : a[key];
+                let vb = key === 'fNAME' ? (b.fNAME || '') : b[key];
+                if (va === null || va === undefined) va = -Infinity;
+                if (vb === null || vb === undefined) vb = -Infinity;
+                if (va < vb) return -1 * dir;
+                if (va > vb) return 1 * dir;
+                return 0;
+            });
+        },
+
+        get teamCards() {
+            const t = this.team;
+            return [
+                { label: 'Выручка команды', value: formatCurrency(t.revenue || 0), color: '#198754' },
+                { label: 'Менеджеров', value: (t.managers || 0), color: '#0d6efd' },
+                { label: 'Ср. покрытие', value: (t.avgCoverage || 0) + '%', color: '#6f42c1' },
+                { label: 'Собрано', value: formatCurrency(t.collected || 0), color: '#20c997' },
+                { label: 'Долг (чистый)', value: formatCurrency(t.debt || 0), color: '#fd7e14' },
+                { label: 'Новых клиентов', value: formatNumber(t.newCustomers || 0), color: '#0dcaf0' },
+                { label: 'Возвраты', value: formatCurrency(t.returnsSum || 0), color: '#dc3545' },
+            ];
+        },
+
+        kpiLabel(key) { const k = this.kpis.find(x => x.key === key); return k ? k.label : key; },
+
+        fmt(key, v) {
+            if (v === null || v === undefined) return '—';
+            const k = this.kpis.find(x => x.key === key);
+            if (!k) return v;
+            if (k.unit === 'currency') return formatCurrency(v);
+            if (k.unit === 'percent') return (Math.round(v * 10) / 10) + '%';
+            if (key === 'linesPerInvoice') return v.toFixed(2);
+            return formatNumber(v);
+        },
+
+        scoreColor(s) {
+            if (s === null || s === undefined) return 'rgba(255,255,255,0.15)';
+            const h = s * 1.2;               // 0=красный … 120=зелёный
+            return `hsl(${h}, 62%, 45%)`;
+        },
+        cellStyle(s) {
+            if (s === null || s === undefined) return 'color:#6c757d';
+            const h = s * 1.2;
+            const a = 0.12 + s / 100 * 0.30;
+            return `background: hsla(${h},60%,45%,${a}); color:#f1f3f5;`;
+        },
+        rankClass(r) { return r === 1 ? 'rank-1' : r === 2 ? 'rank-2' : r === 3 ? 'rank-3' : 'rank-n'; },
+
+        sortBy(key) {
+            if (this.sortKey === key) { this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc'; }
+            else { this.sortKey = key; this.sortDir = (key === 'fNAME') ? 'asc' : 'desc'; }
+        },
+        ind(key) {
+            if (this.sortKey !== key) return '';
+            return this.sortDir === 'asc' ? '<i class="fas fa-caret-up"></i>' : '<i class="fas fa-caret-down"></i>';
+        },
+
+        localDate(d) {
+            const p = n => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+        },
+        setThisMonth(reload = true) {
+            const d = new Date();
+            this.dateFrom = this.localDate(new Date(d.getFullYear(), d.getMonth(), 1));
+            this.dateTo = this.localDate(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+            if (reload) this.loadKpi();
+        },
+        setLastMonth() {
+            const d = new Date();
+            this.dateFrom = this.localDate(new Date(d.getFullYear(), d.getMonth() - 1, 1));
+            this.dateTo = this.localDate(new Date(d.getFullYear(), d.getMonth(), 0));
+            this.loadKpi();
+        },
+        setThisYear() {
+            const d = new Date();
+            this.dateFrom = this.localDate(new Date(d.getFullYear(), 0, 1));
+            this.dateTo = this.localDate(new Date(d.getFullYear(), 11, 31));
+            this.loadKpi();
+        },
+
+        async openDetail(m) {
+            this.detail.m = m;
+            this.detail.topCustomers = [];
+            const modal = new bootstrap.Modal(document.getElementById('detailModal'));
+            modal.show();
+            this.$nextTick(() => this.renderRadar(m));
+            try {
+                const r = await fetch(`/api/managers/${m.fID}`);
+                const d = await r.json();
+                if (d.success && d.data) {
+                    this.detail.topCustomers = d.data.top_customers || [];
+                    this.$nextTick(() => this.renderMonthly(d.data.sales_by_month || []));
+                }
+            } catch (e) { console.error(e); }
+        },
+
+        renderMonthly(data) {
+            const ctx = document.getElementById('mgrMonthlyChart');
+            if (!ctx) return;
+            if (this.monthlyChart) this.monthlyChart.destroy();
+            this.monthlyChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.map(x => x.Month),
+                    datasets: [{
+                        label: 'Выручка', data: data.map(x => x.TotalSum),
+                        borderColor: 'rgb(13,110,253)', backgroundColor: 'rgba(13,110,253,0.15)',
+                        fill: true, tension: 0.3, pointRadius: 3
+                    }]
+                },
+                options: {
+                    responsive: true, plugins: { legend: { display: false }, datalabels: { display: false } },
+                    scales: { y: { ticks: { callback: v => formatNumber(v) } } }
+                }
+            });
+        },
+
+        renderRadar(m) {
+            const ctx = document.getElementById('mgrRadarChart');
+            if (!ctx) return;
+            if (this.radarChart) this.radarChart.destroy();
+            const labels = this.kpis.map(k => k.label);
+            const vals = this.kpis.map(k => m.scores[k.key] === null ? 0 : m.scores[k.key]);
+            this.radarChart = new Chart(ctx, {
+                type: 'radar',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Балл KPI', data: vals,
+                        borderColor: 'rgb(255,193,7)', backgroundColor: 'rgba(255,193,7,0.2)', pointRadius: 3
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { display: false }, datalabels: { display: false } },
+                    scales: { r: { min: 0, max: 100, ticks: { display: false }, pointLabels: { font: { size: 10 } } } }
+                }
+            });
+        }
+    };
+}
+</script>
+{% endblock %}
