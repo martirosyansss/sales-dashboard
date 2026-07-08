@@ -1,0 +1,96 @@
+{
+ "schema": "dbo",
+ "name": "SALESAGENTPRODUCTSACCESS",
+ "row_count": 846,
+ "columns": [
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTTYPE",
+   "ordinal": 2,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTGROUP",
+   "ordinal": 4,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fACCESS",
+   "ordinal": 5,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 6,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 7,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_SALESAGENTPRODUCTSACCESS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fSALESAGENTID, fPRODUCTTYPE, fPRODUCTID, fPRODUCTGROUP"
+  }
+ ],
+ "samples": [
+  {
+   "fSALESAGENTID": 7,
+   "fPRODUCTTYPE": "0",
+   "fPRODUCTID": null,
+   "fPRODUCTGROUP": null,
+   "fACCESS": true,
+   "fROWNUM": 1,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fPRODUCTTYPE": "1",
+   "fPRODUCTID": null,
+   "fPRODUCTGROUP": "100",
+   "fACCESS": false,
+   "fROWNUM": 2,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fPRODUCTTYPE": "1",
+   "fPRODUCTID": null,
+   "fPRODUCTGROUP": "101",
+   "fACCESS": false,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

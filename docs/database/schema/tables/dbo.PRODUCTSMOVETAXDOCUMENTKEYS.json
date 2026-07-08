@@ -1,0 +1,61 @@
+{
+ "schema": "dbo",
+ "name": "PRODUCTSMOVETAXDOCUMENTKEYS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 2,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUPPLYLOCATION",
+   "ordinal": 3,
+   "type": "nvarchar(4000)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCONVEYLOCATION",
+   "ordinal": 4,
+   "type": "nvarchar(4000)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTOTALQUANTITY",
+   "ordinal": 5,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWSCOUNT",
+   "ordinal": 6,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_PRODUCTSMOVETAXDOCUMENTKEYS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fISN"
+  }
+ ],
+ "samples": []
+}

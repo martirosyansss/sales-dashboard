@@ -1,0 +1,75 @@
+{
+ "schema": "dbo",
+ "name": "TASKFOLLOWERSSCHEMEDETAILS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fSCHEMECODE",
+   "ordinal": 1,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTASKTYPEMETHOD",
+   "ordinal": 2,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTASKTYPE",
+   "ordinal": 3,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fEXECUTORMETHOD",
+   "ordinal": 4,
+   "type": "varchar(1)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fEXECUTORID",
+   "ordinal": 5,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fACCESS",
+   "ordinal": 6,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 7,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 8,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_TASKFOLLOWERSSCHEMEDETAILS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fSCHEMECODE, fTASKTYPEMETHOD, fTASKTYPE, fEXECUTORMETHOD, fEXECUTORID"
+  }
+ ],
+ "samples": []
+}

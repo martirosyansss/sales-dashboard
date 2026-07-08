@@ -1,0 +1,67 @@
+{
+ "schema": "dbo",
+ "name": "IBPAYMENTS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fDOCDATE",
+   "ordinal": 1,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fACCOUNT",
+   "ordinal": 2,
+   "type": "nvarchar(22)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUM",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPAYERACCOUNT",
+   "ordinal": 4,
+   "type": "nvarchar(22)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 5,
+   "type": "nvarchar(max)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSMDOCISN",
+   "ordinal": 6,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_IBPAYMENTS1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDOCDATE, fACCOUNT"
+  },
+  {
+   "name": "PK_IBPAYMENTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fSMDOCISN"
+  }
+ ],
+ "samples": []
+}

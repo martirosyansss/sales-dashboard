@@ -1,0 +1,342 @@
+{
+ "schema": "dbo",
+ "name": "CUSTCHANGEREQUESTS",
+ "row_count": 4373,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISN",
+   "ordinal": 2,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCREATIONDATE",
+   "ordinal": 3,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 4,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSTATE",
+   "ordinal": 5,
+   "type": "smallint",
+   "nullable": false,
+   "default": "((0))"
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 6,
+   "type": "nvarchar(50)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fFULLNAME",
+   "ordinal": 7,
+   "type": "nvarchar(100)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTAXCODE",
+   "ordinal": 8,
+   "type": "nvarchar(20)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRICELIST",
+   "ordinal": 9,
+   "type": "nvarchar(2)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fGROUP",
+   "ordinal": 10,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fADDRESS",
+   "ordinal": 11,
+   "type": "nvarchar(250)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fBUSINESSADDRESS",
+   "ordinal": 12,
+   "type": "nvarchar(250)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fREGION",
+   "ordinal": 13,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fLATITUDE",
+   "ordinal": 14,
+   "type": "decimal(10,6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fLONGITUDE",
+   "ordinal": 15,
+   "type": "decimal(10,6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fACCURACY",
+   "ordinal": 16,
+   "type": "money",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPAYMENTTYPE",
+   "ordinal": 17,
+   "type": "nvarchar(1)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDELAYDAYS",
+   "ordinal": 18,
+   "type": "smallint",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCONTDEPOSIT",
+   "ordinal": 19,
+   "type": "bit",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCONTDEPSCHEME",
+   "ordinal": 20,
+   "type": "nvarchar(3)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fVATFREE",
+   "ordinal": 21,
+   "type": "bit",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCLOSED",
+   "ordinal": 22,
+   "type": "bit",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPASSPORT",
+   "ordinal": 23,
+   "type": "nvarchar(50)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fSOCCARDNUM",
+   "ordinal": 24,
+   "type": "nvarchar(10)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPHONE",
+   "ordinal": 25,
+   "type": "nvarchar(50)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fEMAIL",
+   "ordinal": 26,
+   "type": "nvarchar(129)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fMANAGER",
+   "ordinal": 27,
+   "type": "nvarchar(50)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fMANAGERPOST",
+   "ordinal": 28,
+   "type": "nvarchar(50)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCONTACTSCHANGED",
+   "ordinal": 29,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYADDRESSESCHANGED",
+   "ordinal": 30,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISNEW",
+   "ordinal": 31,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I1_CUSTCHANGEREQUESTS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALESAGENTID"
+  },
+  {
+   "name": "PK_CUSTCHANGEREQUESTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  }
+ ],
+ "samples": [
+  {
+   "fID": 1,
+   "fISN": "86AD3E4D-8243-4E79-84C2-78297F76D57B",
+   "fCREATIONDATE": "2019-08-02T09:21:22.603000",
+   "fSALESAGENTID": 10,
+   "fSTATE": 1,
+   "fNAME": null,
+   "fFULLNAME": null,
+   "fTAXCODE": null,
+   "fPRICELIST": null,
+   "fGROUP": null,
+   "fADDRESS": null,
+   "fBUSINESSADDRESS": null,
+   "fREGION": null,
+   "fLATITUDE": 40.286221,
+   "fLONGITUDE": 44.359655,
+   "fACCURACY": 3.0,
+   "fPAYMENTTYPE": null,
+   "fDELAYDAYS": null,
+   "fCONTDEPOSIT": null,
+   "fCONTDEPSCHEME": null,
+   "fVATFREE": null,
+   "fCLOSED": null,
+   "fPASSPORT": null,
+   "fSOCCARDNUM": null,
+   "fPHONE": null,
+   "fEMAIL": null,
+   "fMANAGER": null,
+   "fMANAGERPOST": null,
+   "fCONTACTSCHANGED": false,
+   "fDELIVERYADDRESSESCHANGED": false,
+   "fISNEW": false
+  },
+  {
+   "fID": 2,
+   "fISN": "F5C4D0FD-A350-4040-8907-CFCCD0C95367",
+   "fCREATIONDATE": "2021-07-20T09:56:48.557000",
+   "fSALESAGENTID": 1027,
+   "fSTATE": 1,
+   "fNAME": null,
+   "fFULLNAME": null,
+   "fTAXCODE": null,
+   "fPRICELIST": null,
+   "fGROUP": null,
+   "fADDRESS": null,
+   "fBUSINESSADDRESS": null,
+   "fREGION": null,
+   "fLATITUDE": 40.145263,
+   "fLONGITUDE": 44.539247,
+   "fACCURACY": 0.0,
+   "fPAYMENTTYPE": null,
+   "fDELAYDAYS": null,
+   "fCONTDEPOSIT": null,
+   "fCONTDEPSCHEME": null,
+   "fVATFREE": null,
+   "fCLOSED": null,
+   "fPASSPORT": null,
+   "fSOCCARDNUM": null,
+   "fPHONE": null,
+   "fEMAIL": null,
+   "fMANAGER": null,
+   "fMANAGERPOST": null,
+   "fCONTACTSCHANGED": false,
+   "fDELIVERYADDRESSESCHANGED": false,
+   "fISNEW": false
+  },
+  {
+   "fID": 3,
+   "fISN": "C3B21ECA-C730-4131-9DB6-6D5BB9699519",
+   "fCREATIONDATE": "2021-10-14T17:07:54.760000",
+   "fSALESAGENTID": 2045,
+   "fSTATE": 1,
+   "fNAME": null,
+   "fFULLNAME": null,
+   "fTAXCODE": null,
+   "fPRICELIST": null,
+   "fGROUP": null,
+   "fADDRESS": null,
+   "fBUSINESSADDRESS": null,
+   "fREGION": null,
+   "fLATITUDE": 40.21669,
+   "fLONGITUDE": 44.580861,
+   "fACCURACY": 3.216,
+   "fPAYMENTTYPE": null,
+   "fDELAYDAYS": null,
+   "fCONTDEPOSIT": null,
+   "fCONTDEPSCHEME": null,
+   "fVATFREE": null,
+   "fCLOSED": null,
+   "fPASSPORT": null,
+   "fSOCCARDNUM": null,
+   "fPHONE": null,
+   "fEMAIL": null,
+   "fMANAGER": null,
+   "fMANAGERPOST": null,
+   "fCONTACTSCHANGED": false,
+   "fDELIVERYADDRESSESCHANGED": false,
+   "fISNEW": false
+  }
+ ]
+}

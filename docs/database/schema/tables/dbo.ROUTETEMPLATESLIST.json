@@ -1,0 +1,93 @@
+{
+ "schema": "dbo",
+ "name": "ROUTETEMPLATESLIST",
+ "row_count": 1572,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 4,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 5,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYADDRESSID",
+   "ordinal": 6,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [
+  {
+   "column": "fID",
+   "ref_table": "dbo.ROUTETEMPLATES",
+   "ref_column": "fID",
+   "fk": "FK_ROUTETEMPLATESLIST_fID"
+  }
+ ],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_ROUTETEMPLATESLIST",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID, fROWNUM"
+  }
+ ],
+ "samples": [
+  {
+   "fID": 1299,
+   "fCUSTOMERID": 44040,
+   "fCOMMENT": "",
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fDELIVERYADDRESSID": 4837
+  },
+  {
+   "fID": 1299,
+   "fCUSTOMERID": 26503,
+   "fCOMMENT": "",
+   "fROWNUM": 1,
+   "fTS": "<binary 8 bytes>",
+   "fDELIVERYADDRESSID": 3429
+  },
+  {
+   "fID": 1299,
+   "fCUSTOMERID": 46450,
+   "fCOMMENT": "",
+   "fROWNUM": 2,
+   "fTS": "<binary 8 bytes>",
+   "fDELIVERYADDRESSID": 5215
+  }
+ ]
+}

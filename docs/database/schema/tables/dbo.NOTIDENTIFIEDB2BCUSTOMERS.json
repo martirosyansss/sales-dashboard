@@ -1,0 +1,60 @@
+{
+ "schema": "dbo",
+ "name": "NOTIDENTIFIEDB2BCUSTOMERS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fB2BID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSTATE",
+   "ordinal": 4,
+   "type": "smallint",
+   "nullable": false,
+   "default": "((0))"
+  },
+  {
+   "name": "fCREATIONDATE",
+   "ordinal": 5,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I1_NOTIDENTIFIEDB2BCUSTOMERS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fB2BID"
+  },
+  {
+   "name": "PK_NOTIDENTIFIEDB2BCUSTOMERS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  }
+ ],
+ "samples": []
+}

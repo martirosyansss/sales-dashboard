@@ -1,0 +1,89 @@
+{
+ "schema": "dbo",
+ "name": "CUSTOMERSALESAREAS",
+ "row_count": 9691,
+ "columns": [
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAREA",
+   "ordinal": 2,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFAULT",
+   "ordinal": 3,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 4,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 5,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [
+  {
+   "column": "fCUSTOMERID",
+   "ref_table": "dbo.CUSTOMERS",
+   "ref_column": "fID",
+   "fk": "FK_CUSTOMERSALESAREAS_fCUSTOMERID"
+  }
+ ],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_CUSTOMERSALESAREAS1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALESAREA"
+  },
+  {
+   "name": "PK_CUSTOMERSALESAREAS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCUSTOMERID, fSALESAREA"
+  }
+ ],
+ "samples": [
+  {
+   "fCUSTOMERID": 1,
+   "fSALESAREA": "105",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCUSTOMERID": 2,
+   "fSALESAREA": "120",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCUSTOMERID": 3,
+   "fSALESAREA": "102",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

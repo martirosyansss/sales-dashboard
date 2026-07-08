@@ -1,0 +1,66 @@
+{
+ "schema": "dbo",
+ "name": "SALESAGENTPREFEREDPRODUCTS",
+ "row_count": 1155,
+ "columns": [
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fORDER",
+   "ordinal": 3,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 4,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_SALESAGENTPREFEREDPRODUCTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fSALESAGENTID, fPRODUCTID"
+  }
+ ],
+ "samples": [
+  {
+   "fSALESAGENTID": 7,
+   "fPRODUCTID": 2,
+   "fORDER": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fPRODUCTID": 17,
+   "fORDER": 1,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fPRODUCTID": 38,
+   "fORDER": 2,
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

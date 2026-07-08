@@ -1,0 +1,46 @@
+{
+ "schema": "dbo",
+ "name": "VISITRESULTSACCESSSCHEMES",
+ "row_count": 1,
+ "columns": [
+  {
+   "name": "fCODE",
+   "ordinal": 1,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 3,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_VISITRESULTSACCESSSCHEMES1",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCODE"
+  }
+ ],
+ "samples": [
+  {
+   "fCODE": "000",
+   "fNAME": "Բոլորը",
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

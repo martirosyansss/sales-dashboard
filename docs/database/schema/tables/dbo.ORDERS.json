@@ -1,0 +1,424 @@
+{
+ "schema": "dbo",
+ "name": "ORDERS",
+ "row_count": 328587,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 2,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDIVISION",
+   "ordinal": 3,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCNUM",
+   "ordinal": 4,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 5,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 6,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVANAGENTID",
+   "ordinal": 7,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYCAR",
+   "ordinal": 8,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYDATE",
+   "ordinal": 9,
+   "type": "smalldatetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRICELISTTYPE",
+   "ordinal": 10,
+   "type": "nvarchar(2)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDELAYDAYS",
+   "ordinal": 11,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRIORITY",
+   "ordinal": 12,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPAYTYPE",
+   "ordinal": 13,
+   "type": "nvarchar(1)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTOTALSUM",
+   "ordinal": 14,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVATSUM",
+   "ordinal": 15,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXCISESUM",
+   "ordinal": 16,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 17,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAREA",
+   "ordinal": 18,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXPTOTAXPROG",
+   "ordinal": 19,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTAXSERIANUMBER",
+   "ordinal": 20,
+   "type": "nvarchar(11)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDOCGROUP",
+   "ordinal": 21,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCREATIONTYPEID",
+   "ordinal": 22,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fSTATE",
+   "ordinal": 23,
+   "type": "tinyint",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCONTACT",
+   "ordinal": 24,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fB2BID",
+   "ordinal": 25,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCREATEMETHOD",
+   "ordinal": 26,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDITIONALDISCOUNT",
+   "ordinal": 27,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUNDISCOUNTEDSUM",
+   "ordinal": 28,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOTHSYSSENDSTATUS",
+   "ordinal": 29,
+   "type": "nvarchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUBMITDATE",
+   "ordinal": 30,
+   "type": "smalldatetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fORGANIZATIONACCOUNT",
+   "ordinal": 31,
+   "type": "nvarchar(22)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fENVFEESUM",
+   "ordinal": 32,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fASSIGNOR",
+   "ordinal": 33,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOSIGNDATE",
+   "ordinal": 34,
+   "type": "smalldatetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYADDRESSID",
+   "ordinal": 35,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_ORDERS1",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fISN"
+  },
+  {
+   "name": "I_ORDERS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCUSTOMERID"
+  },
+  {
+   "name": "I_ORDERS3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCREATIONTYPEID"
+  },
+  {
+   "name": "I_ORDERS4",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fB2BID"
+  },
+  {
+   "name": "I_ORDERS5",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDATE, fSTATE, fCUSTOMERID, fSALESAGENTID"
+  },
+  {
+   "name": "I_ORDERS6",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDIVISION, fSTATE"
+  },
+  {
+   "name": "I_ORDERS7",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSTATE"
+  },
+  {
+   "name": "I_ORDERS8",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALESAGENTID"
+  },
+  {
+   "name": "PK_ORDERS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fDOCNUM"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "55A93D50-0948-4FCC-8237-7364C390F367",
+   "fDATE": "2017-02-01T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000003",
+   "fCUSTOMERID": 1999,
+   "fSALESAGENTID": 10,
+   "fVANAGENTID": 4,
+   "fDELIVERYCAR": "",
+   "fDELIVERYDATE": null,
+   "fPRICELISTTYPE": "01",
+   "fDELAYDAYS": 0,
+   "fPRIORITY": 0,
+   "fPAYTYPE": "",
+   "fTOTALSUM": 4410.0,
+   "fVATSUM": 735.0,
+   "fEXCISESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "104",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fDOCGROUP": "",
+   "fCREATIONTYPEID": "D94530B3-AAA1-44E3-AE49-9296FC81EF5E",
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fB2BID": null,
+   "fCREATEMETHOD": "1",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 4410.0,
+   "fOTHSYSSENDSTATUS": "",
+   "fSUBMITDATE": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fENVFEESUM": 0.0,
+   "fASSIGNOR": "",
+   "fCOSIGNDATE": null,
+   "fDELIVERYADDRESSID": 0
+  },
+  {
+   "fISN": "D09EADB6-86E3-4293-B3BF-0203FC396DE9",
+   "fDATE": "2017-02-01T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000004",
+   "fCUSTOMERID": 842,
+   "fSALESAGENTID": 10,
+   "fVANAGENTID": 4,
+   "fDELIVERYCAR": "",
+   "fDELIVERYDATE": null,
+   "fPRICELISTTYPE": "01",
+   "fDELAYDAYS": 0,
+   "fPRIORITY": 0,
+   "fPAYTYPE": "",
+   "fTOTALSUM": 9072.0,
+   "fVATSUM": 1512.0,
+   "fEXCISESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "104",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fDOCGROUP": "",
+   "fCREATIONTYPEID": "093DB935-BA33-4EF1-B865-ADFD709048AF",
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fB2BID": null,
+   "fCREATEMETHOD": "1",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 9072.0,
+   "fOTHSYSSENDSTATUS": "",
+   "fSUBMITDATE": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fENVFEESUM": 0.0,
+   "fASSIGNOR": "",
+   "fCOSIGNDATE": null,
+   "fDELIVERYADDRESSID": 0
+  },
+  {
+   "fISN": "D6B2F368-9919-4B50-B3C4-AC5905E9E0DD",
+   "fDATE": "2017-02-01T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000005",
+   "fCUSTOMERID": 1409,
+   "fSALESAGENTID": 10,
+   "fVANAGENTID": 4,
+   "fDELIVERYCAR": "",
+   "fDELIVERYDATE": null,
+   "fPRICELISTTYPE": "01",
+   "fDELAYDAYS": 0,
+   "fPRIORITY": 0,
+   "fPAYTYPE": "",
+   "fTOTALSUM": 1400.0,
+   "fVATSUM": 233.33,
+   "fEXCISESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "104",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fDOCGROUP": "",
+   "fCREATIONTYPEID": "1DE9FFA2-01B9-493B-B2F1-D10AC2E643C9",
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fB2BID": null,
+   "fCREATEMETHOD": "1",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 1400.0,
+   "fOTHSYSSENDSTATUS": "",
+   "fSUBMITDATE": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fENVFEESUM": 0.0,
+   "fASSIGNOR": "",
+   "fCOSIGNDATE": null,
+   "fDELIVERYADDRESSID": 0
+  }
+ ]
+}

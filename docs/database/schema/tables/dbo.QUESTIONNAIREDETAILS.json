@@ -1,0 +1,66 @@
+{
+ "schema": "dbo",
+ "name": "QUESTIONNAIREDETAILS",
+ "row_count": 3,
+ "columns": [
+  {
+   "name": "fQUESTIONNAIRECODE",
+   "ordinal": 1,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISREQUIRED",
+   "ordinal": 2,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 3,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUESTIONID",
+   "ordinal": 4,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_QUESTIONNAIREDETAILS1",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fQUESTIONNAIRECODE, fQUESTIONID"
+  }
+ ],
+ "samples": [
+  {
+   "fQUESTIONNAIRECODE": "001",
+   "fISREQUIRED": true,
+   "fROWNUM": 0,
+   "fQUESTIONID": 1
+  },
+  {
+   "fQUESTIONNAIRECODE": "001",
+   "fISREQUIRED": true,
+   "fROWNUM": 1,
+   "fQUESTIONID": 2
+  },
+  {
+   "fQUESTIONNAIRECODE": "001",
+   "fISREQUIRED": true,
+   "fROWNUM": 2,
+   "fQUESTIONID": 3
+  }
+ ]
+}

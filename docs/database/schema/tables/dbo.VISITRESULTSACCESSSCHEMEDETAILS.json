@@ -1,0 +1,62 @@
+{
+ "schema": "dbo",
+ "name": "VISITRESULTSACCESSSCHEMEDETAILS",
+ "row_count": 1,
+ "columns": [
+  {
+   "name": "fSCHEMECODE",
+   "ordinal": 1,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVISITRESULTMETHOD",
+   "ordinal": 2,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVISITRESULT",
+   "ordinal": 3,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fACCESS",
+   "ordinal": 4,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 5,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_VISITRESULTSACCESSSCHEMEDETAILS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fSCHEMECODE, fVISITRESULTMETHOD, fVISITRESULT"
+  }
+ ],
+ "samples": [
+  {
+   "fSCHEMECODE": "000",
+   "fVISITRESULTMETHOD": "0",
+   "fVISITRESULT": null,
+   "fACCESS": true,
+   "fROWNUM": 0
+  }
+ ]
+}

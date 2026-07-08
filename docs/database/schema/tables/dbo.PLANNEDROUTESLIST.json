@@ -1,0 +1,76 @@
+{
+ "schema": "dbo",
+ "name": "PLANNEDROUTESLIST",
+ "row_count": 1081449,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 4,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYADDRESSID",
+   "ordinal": 5,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_PLANNEDROUTESLIST",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fISN, fROWNUM"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "4A36E41A-AD89-4434-A428-0005446E2D7C",
+   "fCUSTOMERID": 57,
+   "fCOMMENT": "",
+   "fROWNUM": 0,
+   "fDELIVERYADDRESSID": 56
+  },
+  {
+   "fISN": "4A36E41A-AD89-4434-A428-0005446E2D7C",
+   "fCUSTOMERID": 66,
+   "fCOMMENT": "",
+   "fROWNUM": 1,
+   "fDELIVERYADDRESSID": 65
+  },
+  {
+   "fISN": "4A36E41A-AD89-4434-A428-0005446E2D7C",
+   "fCUSTOMERID": 104,
+   "fCOMMENT": "",
+   "fROWNUM": 2,
+   "fDELIVERYADDRESSID": 103
+  }
+ ]
+}

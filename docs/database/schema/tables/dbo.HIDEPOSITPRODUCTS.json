@@ -1,0 +1,156 @@
+{
+ "schema": "dbo",
+ "name": "HIDEPOSITPRODUCTS",
+ "row_count": 46622,
+ "columns": [
+  {
+   "name": "fDATE",
+   "ordinal": 1,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDIVISION",
+   "ordinal": 2,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 4,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 5,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOP",
+   "ordinal": 6,
+   "type": "varchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDBCR",
+   "ordinal": 7,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBASE",
+   "ordinal": 8,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUSERID",
+   "ordinal": 9,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALEISN",
+   "ordinal": 10,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_HIDEPOSITPRODUCTS1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fBASE"
+  },
+  {
+   "name": "I_HIDEPOSITPRODUCTS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDATE"
+  },
+  {
+   "name": "I_HIDEPOSITPRODUCTS3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALEISN"
+  },
+  {
+   "name": "I_HIDEPOSITPRODUCTS4",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fOP"
+  },
+  {
+   "name": "I_HIDEPOSITPRODUCTS5",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fPRODUCTID, fCUSTOMERID"
+  },
+  {
+   "name": "PK_HIDEPOSITPRODUCTS",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fDIVISION, fCUSTOMERID, fPRODUCTID, fDATE"
+  }
+ ],
+ "samples": [
+  {
+   "fDATE": "2015-12-31T00:00:00",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 56,
+   "fQUANTITY": 1.0,
+   "fOP": "DEP",
+   "fDBCR": "D",
+   "fBASE": "BC83470A-917D-4909-9B90-9763A58B98C9",
+   "fUSERID": 0,
+   "fSALEISN": "BC83470A-917D-4909-9B90-9763A58B98C9"
+  },
+  {
+   "fDATE": "2016-05-11T00:00:00",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 56,
+   "fQUANTITY": 1.0,
+   "fOP": "RET",
+   "fDBCR": "C",
+   "fBASE": "828D77E6-6C04-4CDE-B375-3BA84E30DE59",
+   "fUSERID": 0,
+   "fSALEISN": null
+  },
+  {
+   "fDATE": "2015-01-01T00:00:00",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 2,
+   "fPRODUCTID": 54,
+   "fQUANTITY": 244.0,
+   "fOP": "DEP",
+   "fDBCR": "D",
+   "fBASE": "23861BC1-9F7C-4A8D-B058-46F3A38B1FD5",
+   "fUSERID": 0,
+   "fSALEISN": "23861BC1-9F7C-4A8D-B058-46F3A38B1FD5"
+  }
+ ]
+}

@@ -1,0 +1,56 @@
+{
+ "schema": "dbo",
+ "name": "SUBSYSTEMACCESS",
+ "row_count": 36,
+ "columns": [
+  {
+   "name": "fROLE",
+   "ordinal": 1,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUBSYSTEMID",
+   "ordinal": 2,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPARTLY",
+   "ordinal": 3,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_SUBSYSTEMACCESS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fROLE, fSUBSYSTEMID"
+  }
+ ],
+ "samples": [
+  {
+   "fROLE": "000",
+   "fSUBSYSTEMID": 1,
+   "fPARTLY": false
+  },
+  {
+   "fROLE": "000",
+   "fSUBSYSTEMID": 2,
+   "fPARTLY": false
+  },
+  {
+   "fROLE": "000",
+   "fSUBSYSTEMID": 3,
+   "fPARTLY": false
+  }
+ ]
+}

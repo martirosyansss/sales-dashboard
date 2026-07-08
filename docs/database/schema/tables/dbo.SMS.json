@@ -1,0 +1,116 @@
+{
+ "schema": "dbo",
+ "name": "SMS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISN",
+   "ordinal": 2,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 3,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 4,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSENTDATE",
+   "ordinal": 5,
+   "type": "smalldatetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPHONENUMBER",
+   "ordinal": 6,
+   "type": "nvarchar(16)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBASEDOCISN",
+   "ordinal": 7,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fBASEDOCTYPE",
+   "ordinal": 8,
+   "type": "tinyint",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fBASEDOCNUM",
+   "ordinal": 9,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 10,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISSENT",
+   "ordinal": 11,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fMESSAGE",
+   "ordinal": 12,
+   "type": "nvarchar(1000)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 13,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_SMS1",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fISN"
+  },
+  {
+   "name": "PK_SMS1",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  }
+ ],
+ "samples": []
+}

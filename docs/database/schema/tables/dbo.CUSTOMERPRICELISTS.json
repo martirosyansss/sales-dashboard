@@ -1,0 +1,138 @@
+{
+ "schema": "dbo",
+ "name": "CUSTOMERPRICELISTS",
+ "row_count": 64557,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 2,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVALIDUNTIL",
+   "ordinal": 3,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERTYPE",
+   "ordinal": 4,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 5,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERGROUP",
+   "ordinal": 6,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 7,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRICE",
+   "ordinal": 8,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSE",
+   "ordinal": 9,
+   "type": "bit",
+   "nullable": false,
+   "default": "((0))"
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 10,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_CUSTOMERPRICELISTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCUSTOMERTYPE, fCUSTOMERID, fCUSTOMERGROUP, fPRODUCTID, fDATE"
+  },
+  {
+   "name": "i_CUSTOMERPRICELISTS1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fISN"
+  },
+  {
+   "name": "i_CUSTOMERPRICELISTS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCLOSE"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "CEEA134F-A6B9-42E8-89B9-50CE093FC283",
+   "fDATE": "2017-01-01T00:00:00",
+   "fVALIDUNTIL": "2021-09-01T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGROUP": "003",
+   "fPRODUCTID": 38,
+   "fPRICE": 75.0,
+   "fCLOSE": false,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "E724D97F-FD68-45BD-BE9F-AAFBDD79224C",
+   "fDATE": "2019-12-03T00:00:00",
+   "fVALIDUNTIL": "2019-12-31T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGROUP": "003",
+   "fPRODUCTID": 38,
+   "fPRICE": 72.25,
+   "fCLOSE": false,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "31D5E743-0423-49B6-A957-ADEA99BFC5C3",
+   "fDATE": "2021-09-01T00:00:00",
+   "fVALIDUNTIL": "2023-07-30T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGROUP": "003",
+   "fPRODUCTID": 38,
+   "fPRICE": 79.42,
+   "fCLOSE": false,
+   "fROWNUM": 0
+  }
+ ]
+}

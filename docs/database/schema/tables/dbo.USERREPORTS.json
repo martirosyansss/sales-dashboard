@@ -1,0 +1,116 @@
+{
+ "schema": "dbo",
+ "name": "USERREPORTS",
+ "row_count": 3,
+ "columns": [
+  {
+   "name": "fNAME",
+   "ordinal": 1,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCAPTIONID",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATAPROVIDER",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSYSTEM",
+   "ordinal": 4,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFINITION",
+   "ordinal": 5,
+   "type": "nvarchar(max)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fUPDATEDATE",
+   "ordinal": 6,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fLASTEXEC",
+   "ordinal": 7,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXECCOUNT",
+   "ordinal": 8,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 9,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_USERREPORTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fNAME"
+  }
+ ],
+ "samples": [
+  {
+   "fNAME": "ProductsRemsPrint",
+   "fCAPTIONID": "ProductsRemsPrint",
+   "fDATAPROVIDER": "Products",
+   "fSYSTEM": false,
+   "fDEFINITION": "<Extensions><UserReport Name=\"ProductsRemsPrint\" CaptionId=\"ProductsRemsPrint\" DataProvider=\"Products\" ShowMode=\"Excel\">…",
+   "fUPDATEDATE": "2025-09-22T11:59:53.980000",
+   "fLASTEXEC": "2025-09-22T11:59:53.980000",
+   "fEXECCOUNT": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fNAME": "UD_InvAcc",
+   "fCAPTIONID": "UD_InvAcc",
+   "fDATAPROVIDER": "SalesAnalyse",
+   "fSYSTEM": false,
+   "fDEFINITION": "<Extensions><UserReport Name=\"UD_InvAcc\" CaptionId=\"UD_InvAcc\" DataProvider=\"SalesAnalyse\" ShowMode=\"Excel\"><UserReportD…",
+   "fUPDATEDATE": "2025-09-22T11:59:54",
+   "fLASTEXEC": "2025-09-22T11:59:54",
+   "fEXECCOUNT": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fNAME": "UD_SalesRems",
+   "fCAPTIONID": "UD_CustomerAgent",
+   "fDATAPROVIDER": "SalesRems",
+   "fSYSTEM": false,
+   "fDEFINITION": "<Extensions><UserReport Name=\"UD_SalesRems\" CaptionId=\"UD_CustomerAgent\" DataProvider=\"SalesRems\" ShowMode=\"Folder\"><Use…",
+   "fUPDATEDATE": "2025-09-22T11:59:54.023000",
+   "fLASTEXEC": "2025-09-22T11:59:54.023000",
+   "fEXECCOUNT": 0,
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

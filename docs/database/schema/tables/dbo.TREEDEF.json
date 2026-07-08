@@ -1,0 +1,216 @@
+{
+ "schema": "dbo",
+ "name": "TREEDEF",
+ "row_count": 31,
+ "columns": [
+  {
+   "name": "fNAME",
+   "ordinal": 1,
+   "type": "nvarchar(8)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCAPTIONID",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNODECAPTIONID",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCODECAPTIONID",
+   "ordinal": 4,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCODELEN",
+   "ordinal": 5,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCAPTIONLEN",
+   "ordinal": 6,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fMULTILEVEL",
+   "ordinal": 7,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPREFIXBASED",
+   "ordinal": 8,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCUMENTBASED",
+   "ordinal": 9,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSYSTEM",
+   "ordinal": 10,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISLOGAVAILABLE",
+   "ordinal": 11,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISCLOSEDAVAILABLE",
+   "ordinal": 12,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fATTACHMENTSTYPES",
+   "ordinal": 13,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXTENSION",
+   "ordinal": 14,
+   "type": "nvarchar(max)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 15,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSPECCAPTIONID",
+   "ordinal": 16,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSPECLEN",
+   "ordinal": 17,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNEXTCODEPARAMID",
+   "ordinal": 18,
+   "type": "smallint",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCACHEID",
+   "ordinal": 19,
+   "type": "smallint",
+   "nullable": true,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_TREEDEF",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fNAME"
+  }
+ ],
+ "samples": [
+  {
+   "fNAME": "AddInfo",
+   "fCAPTIONID": "AdditionalInfo",
+   "fNODECAPTIONID": "AdditionalInfo",
+   "fCODECAPTIONID": "",
+   "fCODELEN": 3,
+   "fCAPTIONLEN": 50,
+   "fMULTILEVEL": false,
+   "fPREFIXBASED": false,
+   "fDOCUMENTBASED": false,
+   "fSYSTEM": true,
+   "fISLOGAVAILABLE": false,
+   "fISCLOSEDAVAILABLE": false,
+   "fATTACHMENTSTYPES": 0,
+   "fEXTENSION": "",
+   "fTS": "<binary 8 bytes>",
+   "fSPECCAPTIONID": "",
+   "fSPECLEN": 0,
+   "fNEXTCODEPARAMID": null,
+   "fCACHEID": null
+  },
+  {
+   "fNAME": "AssetGrp",
+   "fCAPTIONID": "AssetGroups",
+   "fNODECAPTIONID": "AssetGroups",
+   "fCODECAPTIONID": "",
+   "fCODELEN": 6,
+   "fCAPTIONLEN": 150,
+   "fMULTILEVEL": true,
+   "fPREFIXBASED": false,
+   "fDOCUMENTBASED": false,
+   "fSYSTEM": true,
+   "fISLOGAVAILABLE": false,
+   "fISCLOSEDAVAILABLE": false,
+   "fATTACHMENTSTYPES": 0,
+   "fEXTENSION": "",
+   "fTS": "<binary 8 bytes>",
+   "fSPECCAPTIONID": "",
+   "fSPECLEN": 0,
+   "fNEXTCODEPARAMID": null,
+   "fCACHEID": null
+  },
+  {
+   "fNAME": "CsDscGrp",
+   "fCAPTIONID": "CustomerDiscountGroups",
+   "fNODECAPTIONID": "CustomerDiscountGroup",
+   "fCODECAPTIONID": "",
+   "fCODELEN": 6,
+   "fCAPTIONLEN": 150,
+   "fMULTILEVEL": true,
+   "fPREFIXBASED": false,
+   "fDOCUMENTBASED": false,
+   "fSYSTEM": true,
+   "fISLOGAVAILABLE": false,
+   "fISCLOSEDAVAILABLE": false,
+   "fATTACHMENTSTYPES": 0,
+   "fEXTENSION": "",
+   "fTS": "<binary 8 bytes>",
+   "fSPECCAPTIONID": "",
+   "fSPECLEN": 0,
+   "fNEXTCODEPARAMID": null,
+   "fCACHEID": null
+  }
+ ]
+}

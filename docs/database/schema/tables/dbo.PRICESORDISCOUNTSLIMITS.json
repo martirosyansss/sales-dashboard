@@ -1,0 +1,122 @@
+{
+ "schema": "dbo",
+ "name": "PRICESORDISCOUNTSLIMITS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 2,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVALIDUNTIL",
+   "ordinal": 3,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERTYPE",
+   "ordinal": 4,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 5,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERGROUP",
+   "ordinal": 6,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTTYPE",
+   "ordinal": 7,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 8,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTGROUP",
+   "ordinal": 9,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fLIMITTYPE",
+   "ordinal": 10,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fLIMIT",
+   "ordinal": 11,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSTATE",
+   "ordinal": 12,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 13,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_PRICESORDISCOUNTSLIMITS1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fISN"
+  },
+  {
+   "name": "I_PRICESORDISCOUNTSLIMITS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDATE, fVALIDUNTIL, fSTATE"
+  },
+  {
+   "name": "PK_PRICESORDISCOUNTSLIMITS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fISN, fROWNUM"
+  }
+ ],
+ "samples": []
+}

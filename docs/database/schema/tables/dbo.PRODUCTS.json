@@ -1,0 +1,572 @@
+{
+ "schema": "dbo",
+ "name": "PRODUCTS",
+ "row_count": 791,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCODE",
+   "ordinal": 2,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 3,
+   "type": "nvarchar(250)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fFULLNAME",
+   "ordinal": 4,
+   "type": "nvarchar(250)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fMEASUREUNIT",
+   "ordinal": 5,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fGROUP",
+   "ordinal": 6,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDISCOUNTGROUP",
+   "ordinal": 7,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fHASFRACTION",
+   "ordinal": 8,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fFORSALE",
+   "ordinal": 9,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCONTAINER",
+   "ordinal": 10,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fGIFT",
+   "ordinal": 11,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXTERNALCODE",
+   "ordinal": 12,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fINCONTAINER",
+   "ordinal": 13,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fKIT",
+   "ordinal": 14,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVATFREE",
+   "ordinal": 15,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTAXABLEBYEXCISE",
+   "ordinal": 16,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXCISECODE",
+   "ordinal": 17,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXCISEFACTOR",
+   "ordinal": 18,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCER",
+   "ordinal": 19,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCPACLASSIFIER",
+   "ordinal": 20,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fWEIGHT",
+   "ordinal": 21,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVOLUME",
+   "ordinal": 22,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVOLUMEINCAR",
+   "ordinal": 23,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDITIONALUNITUSED",
+   "ordinal": 24,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDITIONALUNIT",
+   "ordinal": 25,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDITIONALUNITHASFRACTION",
+   "ordinal": 26,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fB2BPUBLISHED",
+   "ordinal": 27,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSED",
+   "ordinal": 28,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISN",
+   "ordinal": 29,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBODY",
+   "ordinal": 30,
+   "type": "nvarchar(3000)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 31,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXCHANGEABLEPRODUCTGROUP",
+   "ordinal": 32,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBASEUNITQUANTITY",
+   "ordinal": 33,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDITIONALUNITQUANTITY",
+   "ordinal": 34,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCONTAINERROUNDINGMETHOD",
+   "ordinal": 35,
+   "type": "varchar(1)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTAXABLEBYENVFEE",
+   "ordinal": 36,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fENVFEEPERCENT",
+   "ordinal": 37,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSCALEDISCOUNTCONDITIONALPRODUCT",
+   "ordinal": 38,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fGIFTPROMOTIONCONDITIONALPRODUCT",
+   "ordinal": 39,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fRESERVABLE",
+   "ordinal": 40,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fRETURNABLE",
+   "ordinal": 41,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEPOSITABLE",
+   "ordinal": 42,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fWEIGHTINCAR",
+   "ordinal": 43,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSPECIFICATION",
+   "ordinal": 44,
+   "type": "nvarchar(1800)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXTERNALBODY",
+   "ordinal": 45,
+   "type": "nvarchar(max)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fRETURNSDISTRIBUTIONUSED",
+   "ordinal": 46,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fRETURNSDISTRIBUTIONMODE",
+   "ordinal": 47,
+   "type": "nvarchar(4)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDAYSQUANTITY",
+   "ordinal": 48,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSKIPDAYSQUANTITYUSED",
+   "ordinal": 49,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSKIPDAYSQUANTITY",
+   "ordinal": 50,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fMARKABLE",
+   "ordinal": 51,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_PRODUCTS2",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fCODE"
+  },
+  {
+   "name": "I_PRODUCTS3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fGROUP"
+  },
+  {
+   "name": "I_PRODUCTS4",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCLOSED"
+  },
+  {
+   "name": "I_PRODUCTS5",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fISN"
+  },
+  {
+   "name": "I_PRODUCTS6",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fFORSALE, fGIFT, fCONTAINER, fKIT, fCLOSED, fVATFREE, fTAXABLEBYEXCISE, fTAXABLEBYENVFEE, fB2BPUBLISHED, fRESERVABLE, fRETURNABLE, fDEPOSITABLE"
+  },
+  {
+   "name": "I_PRODUCTS7",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDISCOUNTGROUP"
+  },
+  {
+   "name": "PK_PRODUCTS1",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  }
+ ],
+ "samples": [
+  {
+   "fID": 1,
+   "fCODE": "0000",
+   "fNAME": "Մնացորդ",
+   "fFULLNAME": "Մնացորդ",
+   "fMEASUREUNIT": "հատ",
+   "fGROUP": "",
+   "fDISCOUNTGROUP": "",
+   "fHASFRACTION": true,
+   "fFORSALE": true,
+   "fCONTAINER": false,
+   "fGIFT": false,
+   "fEXTERNALCODE": "",
+   "fINCONTAINER": false,
+   "fKIT": false,
+   "fVATFREE": false,
+   "fTAXABLEBYEXCISE": false,
+   "fEXCISECODE": "",
+   "fEXCISEFACTOR": 0.0,
+   "fPRODUCER": "",
+   "fCPACLASSIFIER": "",
+   "fWEIGHT": 0.0,
+   "fVOLUME": 0.0,
+   "fVOLUMEINCAR": 0.0,
+   "fADDITIONALUNITUSED": false,
+   "fADDITIONALUNIT": "",
+   "fADDITIONALUNITHASFRACTION": false,
+   "fB2BPUBLISHED": false,
+   "fCLOSED": false,
+   "fISN": "A077C886-3FBA-4CBA-978E-48D2DB7AEE86",
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fEXCHANGEABLEPRODUCTGROUP": "",
+   "fBASEUNITQUANTITY": 0.0,
+   "fADDITIONALUNITQUANTITY": 0.0,
+   "fCONTAINERROUNDINGMETHOD": null,
+   "fTAXABLEBYENVFEE": false,
+   "fENVFEEPERCENT": 0.0,
+   "fSCALEDISCOUNTCONDITIONALPRODUCT": "",
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": "",
+   "fRESERVABLE": true,
+   "fRETURNABLE": true,
+   "fDEPOSITABLE": false,
+   "fWEIGHTINCAR": 0.0,
+   "fSPECIFICATION": "",
+   "fEXTERNALBODY": null,
+   "fRETURNSDISTRIBUTIONUSED": false,
+   "fRETURNSDISTRIBUTIONMODE": "",
+   "fDAYSQUANTITY": 0,
+   "fSKIPDAYSQUANTITYUSED": false,
+   "fSKIPDAYSQUANTITY": 0,
+   "fMARKABLE": false
+  },
+  {
+   "fID": 2,
+   "fCODE": "1000",
+   "fNAME": "Գառնի կոլա 0.5լ",
+   "fFULLNAME": "Գառնի կոլա 0.5լ",
+   "fMEASUREUNIT": "հատ",
+   "fGROUP": "",
+   "fDISCOUNTGROUP": "",
+   "fHASFRACTION": true,
+   "fFORSALE": true,
+   "fCONTAINER": false,
+   "fGIFT": true,
+   "fEXTERNALCODE": "11025",
+   "fINCONTAINER": false,
+   "fKIT": false,
+   "fVATFREE": false,
+   "fTAXABLEBYEXCISE": false,
+   "fEXCISECODE": "",
+   "fEXCISEFACTOR": 0.0,
+   "fPRODUCER": "",
+   "fCPACLASSIFIER": "",
+   "fWEIGHT": 0.0,
+   "fVOLUME": 1.0,
+   "fVOLUMEINCAR": 0.0,
+   "fADDITIONALUNITUSED": false,
+   "fADDITIONALUNIT": "",
+   "fADDITIONALUNITHASFRACTION": false,
+   "fB2BPUBLISHED": false,
+   "fCLOSED": false,
+   "fISN": "FF481059-0376-4A21-95E4-83E52FC95AAC",
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fEXCHANGEABLEPRODUCTGROUP": "",
+   "fBASEUNITQUANTITY": 0.0,
+   "fADDITIONALUNITQUANTITY": 0.0,
+   "fCONTAINERROUNDINGMETHOD": null,
+   "fTAXABLEBYENVFEE": false,
+   "fENVFEEPERCENT": 0.0,
+   "fSCALEDISCOUNTCONDITIONALPRODUCT": "",
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": "",
+   "fRESERVABLE": true,
+   "fRETURNABLE": true,
+   "fDEPOSITABLE": false,
+   "fWEIGHTINCAR": 0.0,
+   "fSPECIFICATION": "",
+   "fEXTERNALBODY": "\r\nCOSTACCOUNT:7111\r\nINCOMEACCOUNT:61111\r\n",
+   "fRETURNSDISTRIBUTIONUSED": false,
+   "fRETURNSDISTRIBUTIONMODE": "",
+   "fDAYSQUANTITY": 0,
+   "fSKIPDAYSQUANTITYUSED": false,
+   "fSKIPDAYSQUANTITY": 0,
+   "fMARKABLE": false
+  },
+  {
+   "fID": 3,
+   "fCODE": "1001",
+   "fNAME": "Գառնի կոլա 0.5լ կոլա",
+   "fFULLNAME": "Գառնի կոլա 0.5լ",
+   "fMEASUREUNIT": "հատ",
+   "fGROUP": "100",
+   "fDISCOUNTGROUP": "100",
+   "fHASFRACTION": true,
+   "fFORSALE": true,
+   "fCONTAINER": false,
+   "fGIFT": true,
+   "fEXTERNALCODE": "11025",
+   "fINCONTAINER": false,
+   "fKIT": false,
+   "fVATFREE": false,
+   "fTAXABLEBYEXCISE": false,
+   "fEXCISECODE": "",
+   "fEXCISEFACTOR": 0.0,
+   "fPRODUCER": "",
+   "fCPACLASSIFIER": "2202",
+   "fWEIGHT": 0.543,
+   "fVOLUME": 1.0,
+   "fVOLUMEINCAR": 0.0,
+   "fADDITIONALUNITUSED": true,
+   "fADDITIONALUNIT": "փաթեթ",
+   "fADDITIONALUNITHASFRACTION": true,
+   "fB2BPUBLISHED": false,
+   "fCLOSED": false,
+   "fISN": "C635CB8D-DE9C-45C7-BF9D-BA29CB32ED0D",
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fEXCHANGEABLEPRODUCTGROUP": "",
+   "fBASEUNITQUANTITY": 12.0,
+   "fADDITIONALUNITQUANTITY": 1.0,
+   "fCONTAINERROUNDINGMETHOD": null,
+   "fTAXABLEBYENVFEE": false,
+   "fENVFEEPERCENT": 0.0,
+   "fSCALEDISCOUNTCONDITIONALPRODUCT": "000002",
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": "001",
+   "fRESERVABLE": true,
+   "fRETURNABLE": true,
+   "fDEPOSITABLE": false,
+   "fWEIGHTINCAR": 0.0,
+   "fSPECIFICATION": "",
+   "fEXTERNALBODY": "\r\nEXPENSEACCOUNT:7111\r\nCOSTACCOUNT:7111\r\nINCOMEACCOUNT:61111\r\n",
+   "fRETURNSDISTRIBUTIONUSED": false,
+   "fRETURNSDISTRIBUTIONMODE": "",
+   "fDAYSQUANTITY": 0,
+   "fSKIPDAYSQUANTITYUSED": false,
+   "fSKIPDAYSQUANTITY": 0,
+   "fMARKABLE": false
+  }
+ ]
+}

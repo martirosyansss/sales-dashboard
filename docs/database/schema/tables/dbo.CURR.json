@@ -1,0 +1,60 @@
+{
+ "schema": "dbo",
+ "name": "CURR",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fCUR",
+   "ordinal": 1,
+   "type": "nchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCAPTION",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUNITNAME",
+   "ordinal": 3,
+   "type": "nvarchar(10)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCENTNAME",
+   "ordinal": 4,
+   "type": "nvarchar(10)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 5,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [
+  {
+   "table": "dbo.CURREXCHG",
+   "column": "fCUR",
+   "ref_column": "fCUR"
+  }
+ ],
+ "indexes": [
+  {
+   "name": "PK_CURR",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCUR"
+  }
+ ],
+ "samples": []
+}

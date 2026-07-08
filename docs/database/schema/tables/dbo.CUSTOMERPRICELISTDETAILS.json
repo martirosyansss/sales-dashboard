@@ -1,0 +1,96 @@
+{
+ "schema": "dbo",
+ "name": "CUSTOMERPRICELISTDETAILS",
+ "row_count": 224,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERTYPE",
+   "ordinal": 2,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERGROUP",
+   "ordinal": 4,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 5,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRICE",
+   "ordinal": 6,
+   "type": "money",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 7,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_CUSTOMERPRICELISTDETAILS1",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fISN"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "23DFE799-E242-4A49-AE39-014E6EB365B7",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGROUP": "004",
+   "fPRODUCTID": 52,
+   "fPRICE": 380.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "D13D314E-D8C4-473F-B596-01D3FE172124",
+   "fCUSTOMERTYPE": "2",
+   "fCUSTOMERID": 1704,
+   "fCUSTOMERGROUP": null,
+   "fPRODUCTID": 42,
+   "fPRICE": 120.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "FD01C6D0-2EAD-4616-8309-08883A9D76A5",
+   "fCUSTOMERTYPE": "2",
+   "fCUSTOMERID": 44052,
+   "fCUSTOMERGROUP": null,
+   "fPRODUCTID": 25,
+   "fPRICE": 177.0,
+   "fROWNUM": 0
+  }
+ ]
+}

@@ -1,0 +1,180 @@
+{
+ "schema": "dbo",
+ "name": "PRODUCTSDISCOUNTS",
+ "row_count": 6663,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 3,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVALIDUNTIL",
+   "ordinal": 4,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERTYPE",
+   "ordinal": 5,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 6,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERDISCOUNTGROUP",
+   "ordinal": 7,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTTYPE",
+   "ordinal": 8,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 9,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTDISCOUNTGROUP",
+   "ordinal": 10,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDISCOUNT",
+   "ordinal": 11,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 12,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSE",
+   "ordinal": 13,
+   "type": "bit",
+   "nullable": false,
+   "default": "((0))"
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_PRODUCTSDISCOUNTS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fISN"
+  },
+  {
+   "name": "I_PRODUCTSDISCOUNTS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCLOSE"
+  },
+  {
+   "name": "I_PRODUCTSDISCOUNTS3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCUSTOMERTYPE, fPRODUCTTYPE, fCLOSE"
+  },
+  {
+   "name": "I_PRODUCTSDISCOUNTS4",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDATE, fVALIDUNTIL, fCLOSE"
+  },
+  {
+   "name": "PK_PRODUCTSDISCOUNTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCUSTOMERTYPE, fCUSTOMERID, fCUSTOMERDISCOUNTGROUP, fPRODUCTTYPE, fPRODUCTID, fPRODUCTDISCOUNTGROUP, fDATE"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "D3FBF776-562D-499E-80F5-B4174F1623DA",
+   "fSALESAGENTID": -1,
+   "fDATE": "2023-07-31T00:00:00",
+   "fVALIDUNTIL": "2079-01-01T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERDISCOUNTGROUP": "003",
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 52,
+   "fPRODUCTDISCOUNTGROUP": null,
+   "fDISCOUNT": 10.0,
+   "fROWNUM": 0,
+   "fCLOSE": false
+  },
+  {
+   "fISN": "7432AB5D-ABD4-46E7-A142-5D0ADB582DD7",
+   "fSALESAGENTID": -1,
+   "fDATE": "2024-09-02T00:00:00",
+   "fVALIDUNTIL": "2024-09-15T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERDISCOUNTGROUP": "003",
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 52,
+   "fPRODUCTDISCOUNTGROUP": null,
+   "fDISCOUNT": 25.0,
+   "fROWNUM": 0,
+   "fCLOSE": false
+  },
+  {
+   "fISN": "6EDE8DD2-E67E-4D31-A594-55D75D89008A",
+   "fSALESAGENTID": -1,
+   "fDATE": "2021-02-16T00:00:00",
+   "fVALIDUNTIL": "2079-01-01T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERDISCOUNTGROUP": "003",
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 138,
+   "fPRODUCTDISCOUNTGROUP": null,
+   "fDISCOUNT": 10.0,
+   "fROWNUM": 0,
+   "fCLOSE": false
+  }
+ ]
+}

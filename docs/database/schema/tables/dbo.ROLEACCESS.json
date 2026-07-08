@@ -1,0 +1,56 @@
+{
+ "schema": "dbo",
+ "name": "ROLEACCESS",
+ "row_count": 5,
+ "columns": [
+  {
+   "name": "fCODE",
+   "ordinal": 1,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 3,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_ROLEACCESS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCODE"
+  }
+ ],
+ "samples": [
+  {
+   "fCODE": "000",
+   "fCOMMENT": "Համակարգի ադմինիստրատոր",
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCODE": "001",
+   "fCOMMENT": "",
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCODE": "002",
+   "fCOMMENT": "",
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

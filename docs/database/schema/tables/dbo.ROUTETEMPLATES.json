@@ -1,0 +1,134 @@
+{
+ "schema": "dbo",
+ "name": "ROUTETEMPLATES",
+ "row_count": 50,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAREA",
+   "ordinal": 2,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fWEEK",
+   "ordinal": 4,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fWEEKDAY",
+   "ordinal": 5,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPERIODICITY",
+   "ordinal": 6,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 7,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 8,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBODY",
+   "ordinal": 9,
+   "type": "nvarchar(3000)",
+   "nullable": true,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [
+  {
+   "table": "dbo.ROUTETEMPLATESLIST",
+   "column": "fID",
+   "ref_column": "fID"
+  }
+ ],
+ "indexes": [
+  {
+   "name": "PK_ROUTETEMPLATES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  },
+  {
+   "name": "iROUTETEMPLATES1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALESAREA"
+  },
+  {
+   "name": "iROUTETEMPLATES2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALESAGENTID"
+  }
+ ],
+ "samples": [
+  {
+   "fID": 1299,
+   "fSALESAREA": "",
+   "fSALESAGENTID": 3144,
+   "fWEEK": 1,
+   "fWEEKDAY": 1,
+   "fPERIODICITY": 1,
+   "fCOMMENT": "",
+   "fTS": "<binary 8 bytes>",
+   "fBODY": null
+  },
+  {
+   "fID": 1300,
+   "fSALESAREA": "",
+   "fSALESAGENTID": 3144,
+   "fWEEK": 1,
+   "fWEEKDAY": 2,
+   "fPERIODICITY": 1,
+   "fCOMMENT": "",
+   "fTS": "<binary 8 bytes>",
+   "fBODY": null
+  },
+  {
+   "fID": 1301,
+   "fSALESAREA": "",
+   "fSALESAGENTID": 3144,
+   "fWEEK": 1,
+   "fWEEKDAY": 3,
+   "fPERIODICITY": 1,
+   "fCOMMENT": "",
+   "fTS": "<binary 8 bytes>",
+   "fBODY": null
+  }
+ ]
+}

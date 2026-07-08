@@ -1,0 +1,108 @@
+{
+ "schema": "dbo",
+ "name": "HICUSTOMERSDEBT",
+ "row_count": 783621,
+ "columns": [
+  {
+   "name": "fDATE",
+   "ordinal": 1,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEBTDOCISN",
+   "ordinal": 2,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUM",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOP",
+   "ordinal": 4,
+   "type": "varchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDBCR",
+   "ordinal": 5,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBASE",
+   "ordinal": 6,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUSERID",
+   "ordinal": 7,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_HICUSTOMERSDEBT1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fBASE"
+  },
+  {
+   "name": "I_HICUSTOMERSDEBT2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDATE"
+  },
+  {
+   "name": "PK_HICUSTOMERSDEBT",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fDEBTDOCISN"
+  }
+ ],
+ "samples": [
+  {
+   "fDATE": "2025-12-22T00:00:00",
+   "fDEBTDOCISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fSUM": 6250.15,
+   "fOP": "RLZ",
+   "fDBCR": "D",
+   "fBASE": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fUSERID": 20
+  },
+  {
+   "fDATE": "2026-01-08T00:00:00",
+   "fDEBTDOCISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fSUM": 6250.15,
+   "fOP": "PAY",
+   "fDBCR": "C",
+   "fBASE": "B40F4646-CDE6-4041-9E7F-B12F5B5BFE58",
+   "fUSERID": 20
+  },
+  {
+   "fDATE": "2023-07-17T00:00:00",
+   "fDEBTDOCISN": "4A1965F5-CAA2-4734-9501-00003E5D1AA3",
+   "fSUM": 20520.0,
+   "fOP": "RLZ",
+   "fDBCR": "D",
+   "fBASE": "4A1965F5-CAA2-4734-9501-00003E5D1AA3",
+   "fUSERID": 15
+  }
+ ]
+}

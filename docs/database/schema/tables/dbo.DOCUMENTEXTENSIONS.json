@@ -1,0 +1,46 @@
+{
+ "schema": "dbo",
+ "name": "DOCUMENTEXTENSIONS",
+ "row_count": 1,
+ "columns": [
+  {
+   "name": "fNAME",
+   "ordinal": 1,
+   "type": "nvarchar(32)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXTENSION",
+   "ordinal": 2,
+   "type": "nvarchar(max)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 3,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_DOCUMENTEXTENSIONS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fNAME"
+  }
+ ],
+ "samples": [
+  {
+   "fNAME": "SalesOrder",
+   "fEXTENSION": "<DocumentExtension Name=\"SalesOrder\"><Data /><script><![CDATA[\n       \n      public class SalesOrder : DocumentExtention…",
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

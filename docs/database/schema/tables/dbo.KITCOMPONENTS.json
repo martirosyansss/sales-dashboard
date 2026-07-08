@@ -1,0 +1,54 @@
+{
+ "schema": "dbo",
+ "name": "KITCOMPONENTS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMPONENTID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRICEPART",
+   "ordinal": 4,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 5,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_KITCOMPONENTS1",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fPRODUCTID, fCOMPONENTID"
+  }
+ ],
+ "samples": []
+}

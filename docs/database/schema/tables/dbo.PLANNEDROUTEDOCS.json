@@ -1,0 +1,72 @@
+{
+ "schema": "dbo",
+ "name": "PLANNEDROUTEDOCS",
+ "row_count": 7,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCISN",
+   "ordinal": 2,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 4,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_PLANNEDROUTEDOCS1",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fISN, fDOCISN"
+  },
+  {
+   "name": "PK_PLANNEDROUTEDOCS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fISN, fROWNUM"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "6D1EA155-3D1C-4749-BFE8-5EF3A5867D51",
+   "fDOCISN": "ECBC6755-9A87-4BE1-8E27-D2187B82CCD8",
+   "fCOMMENT": "",
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "21D42A56-6E0E-4A31-B100-6A9941F07B2B",
+   "fDOCISN": "EF244D1C-73D3-4C7C-AAC6-D327C181DBEE",
+   "fCOMMENT": "",
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "AC4384B0-B3AC-448D-9F7A-7F5D075E6AF6",
+   "fDOCISN": "9770564C-2B92-4E39-B53F-028C31DCE959",
+   "fCOMMENT": "",
+   "fROWNUM": 0
+  }
+ ]
+}

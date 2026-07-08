@@ -1,0 +1,72 @@
+{
+ "schema": "dbo",
+ "name": "HIRESTCUSTOMERSSUM",
+ "row_count": 4621,
+ "columns": [
+  {
+   "name": "fDIVISION",
+   "ordinal": 1,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTYPE",
+   "ordinal": 3,
+   "type": "varchar(2)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUM",
+   "ordinal": 4,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_HIRESTCUSTOMERSSUM1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCUSTOMERID, fTYPE, fDIVISION"
+  },
+  {
+   "name": "PK_HIRESTCUSTOMERSSUM",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fTYPE, fCUSTOMERID, fDIVISION"
+  }
+ ],
+ "samples": [
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 2,
+   "fTYPE": "01",
+   "fSUM": 0.0
+  },
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 3,
+   "fTYPE": "01",
+   "fSUM": -142.5
+  },
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 6,
+   "fTYPE": "01",
+   "fSUM": 0.0
+  }
+ ]
+}

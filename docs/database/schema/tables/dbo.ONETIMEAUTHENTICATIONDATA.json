@@ -1,0 +1,62 @@
+{
+ "schema": "dbo",
+ "name": "ONETIMEAUTHENTICATIONDATA",
+ "row_count": 13,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUSERID",
+   "ordinal": 2,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 3,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I1_ONETIMEAUTHENTICATIONDATA",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fID"
+  },
+  {
+   "name": "PK_ONETIMEAUTHENTICATIONDATA",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fUSERID"
+  }
+ ],
+ "samples": [
+  {
+   "fID": "08C22B4A-D6FF-47A0-82ED-FF91B598B2F6",
+   "fUSERID": -1,
+   "fDATE": "2025-07-18T10:53:14.487000"
+  },
+  {
+   "fID": "81C55DB7-240C-4647-AAA9-111202342A92",
+   "fUSERID": 1,
+   "fDATE": "2024-05-31T11:29:15.793000"
+  },
+  {
+   "fID": "2D0BEF93-5D7F-4DE2-9B54-7A47DE27011D",
+   "fUSERID": 4,
+   "fDATE": "2021-08-16T10:21:48.840000"
+  }
+ ]
+}

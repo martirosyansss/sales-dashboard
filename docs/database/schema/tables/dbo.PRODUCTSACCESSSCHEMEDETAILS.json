@@ -1,0 +1,61 @@
+{
+ "schema": "dbo",
+ "name": "PRODUCTSACCESSSCHEMEDETAILS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fSCHEMECODE",
+   "ordinal": 1,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTTYPE",
+   "ordinal": 2,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTGROUP",
+   "ordinal": 4,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fACCESS",
+   "ordinal": 5,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 6,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_PRODUCTSACCESSSCHEMEDETAILS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fSCHEMECODE, fPRODUCTTYPE, fPRODUCTID, fPRODUCTGROUP"
+  }
+ ],
+ "samples": []
+}

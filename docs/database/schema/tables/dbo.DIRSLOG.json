@@ -1,0 +1,122 @@
+{
+ "schema": "dbo",
+ "name": "DIRSLOG",
+ "row_count": 119544,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fITEMID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 3,
+   "type": "datetime",
+   "nullable": false,
+   "default": "(getdate())"
+  },
+  {
+   "name": "fUSERID",
+   "ordinal": 4,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOP",
+   "ordinal": 5,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 6,
+   "type": "nvarchar(255)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCOMPNAME",
+   "ordinal": 7,
+   "type": "nvarchar(32)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCHANGEDESCRIPTION",
+   "ordinal": 8,
+   "type": "nvarchar(max)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fSOURCE",
+   "ordinal": 9,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_DIRSLOG",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID, fITEMID, fDATE, fOP"
+  },
+  {
+   "name": "iDIRSLOG1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fUSERID"
+  }
+ ],
+ "samples": [
+  {
+   "fID": 51,
+   "fITEMID": 1,
+   "fDATE": "2017-01-27T17:29:47.347000",
+   "fUSERID": 0,
+   "fOP": 4,
+   "fCOMMENT": null,
+   "fCOMPNAME": "USER-PC",
+   "fCHANGEDESCRIPTION": null,
+   "fSOURCE": 0
+  },
+  {
+   "fID": 51,
+   "fITEMID": 1,
+   "fDATE": "2021-07-06T12:13:40.063000",
+   "fUSERID": 8,
+   "fOP": 16,
+   "fCOMMENT": "Խմբագրել նշվածները",
+   "fCOMPNAME": "ANI-PC",
+   "fCHANGEDESCRIPTION": null,
+   "fSOURCE": 0
+  },
+  {
+   "fID": 51,
+   "fITEMID": 1,
+   "fDATE": "2021-09-08T18:30:28.147000",
+   "fUSERID": 0,
+   "fOP": 2,
+   "fCOMMENT": null,
+   "fCOMPNAME": "ANI-PC",
+   "fCHANGEDESCRIPTION": "(\"Զեղչի խումբ\", \"002\" -> \"\"), (\"Չսպասարկվող\", \"Ոչ\" -> \"Այո\")",
+   "fSOURCE": 0
+  }
+ ]
+}

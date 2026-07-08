@@ -1,0 +1,94 @@
+{
+ "schema": "dbo",
+ "name": "HIRESTSOLDPRODUCTS",
+ "row_count": 1339481,
+ "columns": [
+  {
+   "name": "fDIVISION",
+   "ordinal": 1,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 4,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALEISN",
+   "ordinal": 5,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_HIRESTSOLDPRODUCTS1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALEISN"
+  },
+  {
+   "name": "I_HIRESTSOLDPRODUCTS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCUSTOMERID"
+  },
+  {
+   "name": "I_HIRESTSOLDPRODUCTS3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fPRODUCTID, fSALEISN"
+  },
+  {
+   "name": "PK_HIRESTSOLDPRODUCTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fDIVISION, fCUSTOMERID, fPRODUCTID, fSALEISN"
+  }
+ ],
+ "samples": [
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 5784.899,
+   "fSALEISN": "F99030A5-0BB6-47E2-B525-42F934C9935B"
+  },
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 2942.852,
+   "fSALEISN": "F27AF4CD-BA3C-4489-8EC0-EA295D667444"
+  },
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 2,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 6480.0,
+   "fSALEISN": "293EC31D-6812-473A-844B-E19E17F26555"
+  }
+ ]
+}

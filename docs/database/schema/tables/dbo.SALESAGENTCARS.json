@@ -1,0 +1,66 @@
+{
+ "schema": "dbo",
+ "name": "SALESAGENTCARS",
+ "row_count": 51,
+ "columns": [
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCARCODE",
+   "ordinal": 2,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFAULT",
+   "ordinal": 3,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 4,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_SALESAGENTCARS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fSALESAGENTID, fCARCODE"
+  }
+ ],
+ "samples": [
+  {
+   "fSALESAGENTID": 2,
+   "fCARCODE": "2660062",
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  },
+  {
+   "fSALESAGENTID": 1025,
+   "fCARCODE": "504 CQ 61",
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  },
+  {
+   "fSALESAGENTID": 2048,
+   "fCARCODE": "123AV61",
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  }
+ ]
+}
