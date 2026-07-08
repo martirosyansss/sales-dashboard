@@ -1,0 +1,149 @@
+{
+ "schema": "dbo",
+ "name": "CUSTOMERDELIVERYADDRESSES",
+ "row_count": 9323,
+ "columns": [
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDRESS",
+   "ordinal": 2,
+   "type": "nvarchar(250)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fLATITUDE",
+   "ordinal": 3,
+   "type": "decimal(10,6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fLONGITUDE",
+   "ordinal": 4,
+   "type": "decimal(10,6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fACCURACY",
+   "ordinal": 5,
+   "type": "money",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDEFAULT",
+   "ordinal": 6,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDITIONALINFO",
+   "ordinal": 7,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSED",
+   "ordinal": 8,
+   "type": "bit",
+   "nullable": false,
+   "default": "((0))"
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 9,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 10,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fID",
+   "ordinal": 11,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [
+  {
+   "column": "fCUSTOMERID",
+   "ref_table": "dbo.CUSTOMERS",
+   "ref_column": "fID",
+   "fk": "FK_CUSTOMERDELIVERYADDRESSES_fCUSTOMERID"
+  }
+ ],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_CUSTOMERDELIVERYADDRESSES1",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fCUSTOMERID, fADDRESS, fLATITUDE, fLONGITUDE"
+  },
+  {
+   "name": "PK_CUSTOMERDELIVERYADDRESSES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  }
+ ],
+ "samples": [
+  {
+   "fCUSTOMERID": 2,
+   "fADDRESS": "Իսահակյան 27",
+   "fLATITUDE": null,
+   "fLONGITUDE": null,
+   "fACCURACY": null,
+   "fDEFAULT": true,
+   "fADDITIONALINFO": "",
+   "fCLOSED": false,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fID": 1
+  },
+  {
+   "fCUSTOMERID": 3,
+   "fADDRESS": "Նորքի 5-րդ զ., Միկոյան 4",
+   "fLATITUDE": null,
+   "fLONGITUDE": null,
+   "fACCURACY": null,
+   "fDEFAULT": true,
+   "fADDITIONALINFO": "",
+   "fCLOSED": false,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fID": 2
+  },
+  {
+   "fCUSTOMERID": 4,
+   "fADDRESS": "գ. Բյուրական",
+   "fLATITUDE": 40.345745,
+   "fLONGITUDE": 44.269629,
+   "fACCURACY": 60.0,
+   "fDEFAULT": true,
+   "fADDITIONALINFO": "",
+   "fCLOSED": false,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fID": 3
+  }
+ ]
+}

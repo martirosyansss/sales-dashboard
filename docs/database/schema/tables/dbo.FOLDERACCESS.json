@@ -1,0 +1,46 @@
+{
+ "schema": "dbo",
+ "name": "FOLDERACCESS",
+ "row_count": 4,
+ "columns": [
+  {
+   "name": "fROLE",
+   "ordinal": 1,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMANDID",
+   "ordinal": 2,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_FOLDERACCESS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fROLE, fCOMMANDID"
+  }
+ ],
+ "samples": [
+  {
+   "fROLE": "002",
+   "fCOMMANDID": 20155
+  },
+  {
+   "fROLE": "002",
+   "fCOMMANDID": 20156
+  },
+  {
+   "fROLE": "002",
+   "fCOMMANDID": 20157
+  }
+ ]
+}

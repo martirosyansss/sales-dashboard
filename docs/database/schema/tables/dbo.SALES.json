@@ -1,0 +1,474 @@
+{
+ "schema": "dbo",
+ "name": "SALES",
+ "row_count": 370572,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 2,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDIVISION",
+   "ordinal": 3,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCNUM",
+   "ordinal": 4,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 5,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 6,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVANAGENTID",
+   "ordinal": 7,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYCAR",
+   "ordinal": 8,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRICELISTTYPE",
+   "ordinal": 9,
+   "type": "nvarchar(2)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDELAYDAYS",
+   "ordinal": 10,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPAYTYPE",
+   "ordinal": 11,
+   "type": "nvarchar(1)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTOTALSUM",
+   "ordinal": 12,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVATSUM",
+   "ordinal": 13,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXCISESUM",
+   "ordinal": 14,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 15,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAREA",
+   "ordinal": 16,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCGROUP",
+   "ordinal": 17,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXPTOTAXPROG",
+   "ordinal": 18,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTAXSERIANUMBER",
+   "ordinal": 19,
+   "type": "nvarchar(11)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fECRCHECKNUM",
+   "ordinal": 20,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCREATIONTYPEID",
+   "ordinal": 21,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fSTATE",
+   "ordinal": 22,
+   "type": "tinyint",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCONTACT",
+   "ordinal": 23,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCREATEMETHOD",
+   "ordinal": 24,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDITIONALDISCOUNT",
+   "ordinal": 25,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUNDISCOUNTEDSUM",
+   "ordinal": 26,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOTHSYSSENDSTATUS",
+   "ordinal": 27,
+   "type": "nvarchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUBMITDATE",
+   "ordinal": 28,
+   "type": "smalldatetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fB2BID",
+   "ordinal": 29,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fORGANIZATIONACCOUNT",
+   "ordinal": 30,
+   "type": "nvarchar(22)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fENVFEESUM",
+   "ordinal": 31,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fASSIGNOR",
+   "ordinal": 32,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fECRCHECKDATE",
+   "ordinal": 33,
+   "type": "datetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTAXCODEWASPRINTEDONECR",
+   "ordinal": 34,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fECRCASHSUM",
+   "ordinal": 35,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fECRNONCASHSUM",
+   "ordinal": 36,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOSIGNDATE",
+   "ordinal": 37,
+   "type": "smalldatetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fECRPREPAYMENTSUM",
+   "ordinal": 38,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYADDRESSID",
+   "ordinal": 39,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fECRCRN",
+   "ordinal": 40,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_SALES1",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fISN"
+  },
+  {
+   "name": "I_SALES2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCUSTOMERID"
+  },
+  {
+   "name": "I_SALES3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCREATIONTYPEID"
+  },
+  {
+   "name": "I_SALES4",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDATE, fSTATE, fCUSTOMERID, fSALESAGENTID"
+  },
+  {
+   "name": "I_SALES5",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fB2BID"
+  },
+  {
+   "name": "I_SALES6",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSTATE"
+  },
+  {
+   "name": "I_SALES7",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDIVISION"
+  },
+  {
+   "name": "I_SALES8",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALESAGENTID"
+  },
+  {
+   "name": "PK_SALES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fDOCNUM"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "1D5E57AC-7A4E-49F5-AD5D-EB8A9B3734C2",
+   "fDATE": "2017-02-02T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000006",
+   "fCUSTOMERID": 718,
+   "fSALESAGENTID": 7,
+   "fVANAGENTID": 1,
+   "fDELIVERYCAR": "",
+   "fPRICELISTTYPE": "01",
+   "fDELAYDAYS": 0,
+   "fPAYTYPE": "",
+   "fTOTALSUM": 4280.0,
+   "fVATSUM": 713.33,
+   "fEXCISESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "101",
+   "fDOCGROUP": "",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fECRCHECKNUM": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 4280.0,
+   "fOTHSYSSENDSTATUS": "1",
+   "fSUBMITDATE": null,
+   "fB2BID": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fENVFEESUM": 0.0,
+   "fASSIGNOR": "",
+   "fECRCHECKDATE": null,
+   "fTAXCODEWASPRINTEDONECR": false,
+   "fECRCASHSUM": 0.0,
+   "fECRNONCASHSUM": 0.0,
+   "fCOSIGNDATE": null,
+   "fECRPREPAYMENTSUM": 0.0,
+   "fDELIVERYADDRESSID": 0,
+   "fECRCRN": ""
+  },
+  {
+   "fISN": "112FA09B-C5DC-478A-8C3A-586B1D18F33F",
+   "fDATE": "2017-02-02T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000007",
+   "fCUSTOMERID": 2393,
+   "fSALESAGENTID": 7,
+   "fVANAGENTID": 1,
+   "fDELIVERYCAR": "",
+   "fPRICELISTTYPE": "01",
+   "fDELAYDAYS": 0,
+   "fPAYTYPE": "",
+   "fTOTALSUM": 1050.0,
+   "fVATSUM": 175.0,
+   "fEXCISESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "101",
+   "fDOCGROUP": "",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fECRCHECKNUM": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 1050.0,
+   "fOTHSYSSENDSTATUS": "1",
+   "fSUBMITDATE": null,
+   "fB2BID": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fENVFEESUM": 0.0,
+   "fASSIGNOR": "",
+   "fECRCHECKDATE": null,
+   "fTAXCODEWASPRINTEDONECR": false,
+   "fECRCASHSUM": 0.0,
+   "fECRNONCASHSUM": 0.0,
+   "fCOSIGNDATE": null,
+   "fECRPREPAYMENTSUM": 0.0,
+   "fDELIVERYADDRESSID": 0,
+   "fECRCRN": ""
+  },
+  {
+   "fISN": "7822DDD6-31F0-458F-B45F-B282C71DEABB",
+   "fDATE": "2017-02-02T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000008",
+   "fCUSTOMERID": 1564,
+   "fSALESAGENTID": 7,
+   "fVANAGENTID": 1,
+   "fDELIVERYCAR": "",
+   "fPRICELISTTYPE": "01",
+   "fDELAYDAYS": 0,
+   "fPAYTYPE": "",
+   "fTOTALSUM": 2010.0,
+   "fVATSUM": 335.0,
+   "fEXCISESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "101",
+   "fDOCGROUP": "",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fECRCHECKNUM": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 2010.0,
+   "fOTHSYSSENDSTATUS": "1",
+   "fSUBMITDATE": null,
+   "fB2BID": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fENVFEESUM": 0.0,
+   "fASSIGNOR": "",
+   "fECRCHECKDATE": null,
+   "fTAXCODEWASPRINTEDONECR": false,
+   "fECRCASHSUM": 0.0,
+   "fECRNONCASHSUM": 0.0,
+   "fCOSIGNDATE": null,
+   "fECRPREPAYMENTSUM": 0.0,
+   "fDELIVERYADDRESSID": 0,
+   "fECRCRN": ""
+  }
+ ]
+}

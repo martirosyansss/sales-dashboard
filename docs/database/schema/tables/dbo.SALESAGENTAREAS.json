@@ -1,0 +1,72 @@
+{
+ "schema": "dbo",
+ "name": "SALESAGENTAREAS",
+ "row_count": 205,
+ "columns": [
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAREA",
+   "ordinal": 2,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFAULT",
+   "ordinal": 3,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 4,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_SALESAGENTAREAS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALESAREA"
+  },
+  {
+   "name": "PK_SALESAGENTAREAS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fSALESAGENTID, fSALESAREA"
+  }
+ ],
+ "samples": [
+  {
+   "fSALESAGENTID": 1,
+   "fSALESAREA": "101",
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  },
+  {
+   "fSALESAGENTID": 2,
+   "fSALESAREA": "102",
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  },
+  {
+   "fSALESAGENTID": 3,
+   "fSALESAREA": "103",
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  }
+ ]
+}

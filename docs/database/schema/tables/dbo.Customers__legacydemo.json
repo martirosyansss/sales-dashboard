@@ -1,0 +1,83 @@
+{
+ "schema": "dbo",
+ "name": "Customers",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "CustomerID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "CustomerName",
+   "ordinal": 2,
+   "type": "nvarchar(100)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "Email",
+   "ordinal": 3,
+   "type": "nvarchar(100)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "Phone",
+   "ordinal": 4,
+   "type": "nvarchar(20)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "Address",
+   "ordinal": 5,
+   "type": "nvarchar(255)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "City",
+   "ordinal": 6,
+   "type": "nvarchar(50)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "Country",
+   "ordinal": 7,
+   "type": "nvarchar(50)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "CreatedDate",
+   "ordinal": 8,
+   "type": "datetime",
+   "nullable": true,
+   "default": "(getdate())"
+  }
+ ],
+ "primary_key": [
+  "CustomerID"
+ ],
+ "foreign_keys": [],
+ "referenced_by": [
+  {
+   "table": "dbo.Sales",
+   "column": "CustomerID",
+   "ref_column": "CustomerID"
+  }
+ ],
+ "indexes": [
+  {
+   "name": "PK__Customer__A4AE64B8DD986889",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "CustomerID"
+  }
+ ],
+ "samples": []
+}

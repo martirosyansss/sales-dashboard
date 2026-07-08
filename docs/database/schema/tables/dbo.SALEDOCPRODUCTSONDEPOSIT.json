@@ -1,0 +1,92 @@
+{
+ "schema": "dbo",
+ "name": "SALEDOCPRODUCTSONDEPOSIT",
+ "row_count": 64425,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 4,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISPARTIESSELECTEDMANUAL",
+   "ordinal": 5,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDITIONALINFO",
+   "ordinal": 6,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_SALEDOCPRODUCTSONDEPOSIT1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fPRODUCTID, fISN"
+  },
+  {
+   "name": "PK_SALEDOCPRODUCTSONDEPOSIT",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fISN"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fPRODUCTID": 202,
+   "fQUANTITY": 5.0,
+   "fROWNUM": 0,
+   "fISPARTIESSELECTEDMANUAL": false,
+   "fADDITIONALINFO": ""
+  },
+  {
+   "fISN": "F21DEFA1-08FA-46FF-BC63-0002409C4FFE",
+   "fPRODUCTID": 202,
+   "fQUANTITY": 80.0,
+   "fROWNUM": 0,
+   "fISPARTIESSELECTEDMANUAL": false,
+   "fADDITIONALINFO": ""
+  },
+  {
+   "fISN": "1AF4853A-A9A8-4388-9598-0003FAFEAAFA",
+   "fPRODUCTID": 202,
+   "fQUANTITY": 6.0,
+   "fROWNUM": 0,
+   "fISPARTIESSELECTEDMANUAL": false,
+   "fADDITIONALINFO": ""
+  }
+ ]
+}

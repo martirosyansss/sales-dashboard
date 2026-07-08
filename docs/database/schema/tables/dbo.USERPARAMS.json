@@ -1,0 +1,56 @@
+{
+ "schema": "dbo",
+ "name": "USERPARAMS",
+ "row_count": 219,
+ "columns": [
+  {
+   "name": "fUSERID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPARAMID",
+   "ordinal": 2,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVALUE",
+   "ordinal": 3,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_USERPARAMS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fUSERID, fPARAMID"
+  }
+ ],
+ "samples": [
+  {
+   "fUSERID": 0,
+   "fPARAMID": 401,
+   "fVALUE": ""
+  },
+  {
+   "fUSERID": 0,
+   "fPARAMID": 402,
+   "fVALUE": ""
+  },
+  {
+   "fUSERID": 0,
+   "fPARAMID": 403,
+   "fVALUE": ""
+  }
+ ]
+}

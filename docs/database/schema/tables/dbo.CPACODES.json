@@ -1,0 +1,76 @@
+{
+ "schema": "dbo",
+ "name": "CPACODES",
+ "row_count": 1536,
+ "columns": [
+  {
+   "name": "fCODE",
+   "ordinal": 1,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCAPTION",
+   "ordinal": 2,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTYPE",
+   "ordinal": 3,
+   "type": "char(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 4,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fMARKINITDATE",
+   "ordinal": 5,
+   "type": "smalldatetime",
+   "nullable": true,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_CPACODES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCODE"
+  }
+ ],
+ "samples": [
+  {
+   "fCODE": "01.61",
+   "fCAPTION": "Մշակաբույսերի աճեցման հետ կապված օժանադակ ծառայություններ բուսաբուծության բնագավառում",
+   "fTYPE": "2",
+   "fTS": "<binary 8 bytes>",
+   "fMARKINITDATE": null
+  },
+  {
+   "fCODE": "01.62",
+   "fCAPTION": "Կենդանիների բուծման հետ կապված օժանդակ ծառայություններ",
+   "fTYPE": "2",
+   "fTS": "<binary 8 bytes>",
+   "fMARKINITDATE": null
+  },
+  {
+   "fCODE": "01.64",
+   "fCAPTION": "Սերմերի մշակման և սերմացվի ֆոնդի ձևավորման հետ կապված ծառայություններ",
+   "fTYPE": "2",
+   "fTS": "<binary 8 bytes>",
+   "fMARKINITDATE": null
+  }
+ ]
+}

@@ -1,0 +1,154 @@
+{
+ "schema": "dbo",
+ "name": "HITRANSFERREDASSETS",
+ "row_count": 42,
+ "columns": [
+  {
+   "name": "fDATE",
+   "ordinal": 1,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSTORAGE",
+   "ordinal": 2,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fASSETID",
+   "ordinal": 4,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 5,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTYPE",
+   "ordinal": 6,
+   "type": "varchar(2)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOP",
+   "ordinal": 7,
+   "type": "varchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDBCR",
+   "ordinal": 8,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBASE",
+   "ordinal": 9,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUSERID",
+   "ordinal": 10,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fASSETNUMBER",
+   "ordinal": 11,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_HITRANSFERREDASSETS1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fTYPE, fBASE"
+  },
+  {
+   "name": "I_HITRANSFERREDASSETS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fTYPE, fASSETID, fASSETNUMBER, fCUSTOMERID"
+  },
+  {
+   "name": "I_HITRANSFERREDASSETS3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fTYPE, fDATE, fSTORAGE"
+  },
+  {
+   "name": "PK_HITRANSFERREDASSETS",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fTYPE, fCUSTOMERID, fASSETID, fASSETNUMBER, fDATE, fSTORAGE, fBASE"
+  }
+ ],
+ "samples": [
+  {
+   "fDATE": "2024-09-01T00:00:00",
+   "fSTORAGE": "",
+   "fCUSTOMERID": 23413,
+   "fASSETID": 29,
+   "fQUANTITY": 1.0,
+   "fTYPE": "01",
+   "fOP": "TSR",
+   "fDBCR": "D",
+   "fBASE": "A1E6D37C-9418-4B9B-B471-6E7C8FC0210D",
+   "fUSERID": 15,
+   "fASSETNUMBER": ""
+  },
+  {
+   "fDATE": "2024-09-03T00:00:00",
+   "fSTORAGE": "",
+   "fCUSTOMERID": 44042,
+   "fASSETID": 30,
+   "fQUANTITY": 1.0,
+   "fTYPE": "01",
+   "fOP": "TSR",
+   "fDBCR": "D",
+   "fBASE": "AAEDD3B7-80FE-4A77-8AE2-1AB2E2FAA27C",
+   "fUSERID": 15,
+   "fASSETNUMBER": ""
+  },
+  {
+   "fDATE": "2024-09-01T00:00:00",
+   "fSTORAGE": "",
+   "fCUSTOMERID": 46544,
+   "fASSETID": 32,
+   "fQUANTITY": 1.0,
+   "fTYPE": "01",
+   "fOP": "TSR",
+   "fDBCR": "D",
+   "fBASE": "14C51F6E-F093-4B1B-BE9F-1D6DD5C39369",
+   "fUSERID": 15,
+   "fASSETNUMBER": ""
+  }
+ ]
+}

@@ -1,0 +1,86 @@
+{
+ "schema": "dbo",
+ "name": "DOCUMENTACCESS",
+ "row_count": 145,
+ "columns": [
+  {
+   "name": "fDOCTYPE",
+   "ordinal": 1,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fALLOWADD",
+   "ordinal": 2,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fALLOWEDIT",
+   "ordinal": 3,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fALLOWVIEW",
+   "ordinal": 4,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fALLOWDELETE",
+   "ordinal": 5,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROLE",
+   "ordinal": 6,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_DOCUMENTACCESS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fROLE, fDOCTYPE"
+  }
+ ],
+ "samples": [
+  {
+   "fDOCTYPE": 1,
+   "fALLOWADD": true,
+   "fALLOWEDIT": true,
+   "fALLOWVIEW": true,
+   "fALLOWDELETE": true,
+   "fROLE": "000"
+  },
+  {
+   "fDOCTYPE": 2,
+   "fALLOWADD": true,
+   "fALLOWEDIT": true,
+   "fALLOWVIEW": true,
+   "fALLOWDELETE": true,
+   "fROLE": "000"
+  },
+  {
+   "fDOCTYPE": 3,
+   "fALLOWADD": true,
+   "fALLOWEDIT": true,
+   "fALLOWVIEW": true,
+   "fALLOWDELETE": true,
+   "fROLE": "000"
+  }
+ ]
+}

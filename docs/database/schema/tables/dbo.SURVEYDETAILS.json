@@ -1,0 +1,76 @@
+{
+ "schema": "dbo",
+ "name": "SURVEYDETAILS",
+ "row_count": 3,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fANSWER",
+   "ordinal": 2,
+   "type": "nvarchar(4000)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 3,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNOTES",
+   "ordinal": 4,
+   "type": "nvarchar(1000)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fQUESTIONID",
+   "ordinal": 5,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_SURVEYDETAILS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fISN, fQUESTIONID"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "A2F2AB20-1A51-4390-9FC3-FBDAACF5A5D5",
+   "fANSWER": "եռտգըեռտ",
+   "fROWNUM": 0,
+   "fNOTES": null,
+   "fQUESTIONID": 1
+  },
+  {
+   "fISN": "A2F2AB20-1A51-4390-9FC3-FBDAACF5A5D5",
+   "fANSWER": "true",
+   "fROWNUM": 1,
+   "fNOTES": null,
+   "fQUESTIONID": 2
+  },
+  {
+   "fISN": "A2F2AB20-1A51-4390-9FC3-FBDAACF5A5D5",
+   "fANSWER": "ղղհֆդըւյհտռ",
+   "fROWNUM": 2,
+   "fNOTES": null,
+   "fQUESTIONID": 3
+  }
+ ]
+}

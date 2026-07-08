@@ -1,0 +1,92 @@
+{
+ "schema": "dbo",
+ "name": "STORAGESACCESSBYUSERS",
+ "row_count": 114,
+ "columns": [
+  {
+   "name": "fSTORAGE",
+   "ordinal": 1,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUSERID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fINPUT",
+   "ordinal": 3,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOUTPUT",
+   "ordinal": 4,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fREMAINDER",
+   "ordinal": 5,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fINPUTFROMMOVE",
+   "ordinal": 6,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_STORAGESACCESSBYUSERS1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fUSERID"
+  },
+  {
+   "name": "PK_STORAGESACCESSBYUSERS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fSTORAGE, fUSERID"
+  }
+ ],
+ "samples": [
+  {
+   "fSTORAGE": "000",
+   "fUSERID": 0,
+   "fINPUT": true,
+   "fOUTPUT": true,
+   "fREMAINDER": true,
+   "fINPUTFROMMOVE": true
+  },
+  {
+   "fSTORAGE": "000",
+   "fUSERID": 15,
+   "fINPUT": true,
+   "fOUTPUT": true,
+   "fREMAINDER": true,
+   "fINPUTFROMMOVE": true
+  },
+  {
+   "fSTORAGE": "000",
+   "fUSERID": 20,
+   "fINPUT": true,
+   "fOUTPUT": true,
+   "fREMAINDER": true,
+   "fINPUTFROMMOVE": true
+  }
+ ]
+}

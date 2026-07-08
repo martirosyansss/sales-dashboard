@@ -1,0 +1,126 @@
+{
+ "schema": "dbo",
+ "name": "PRODUCTSDISCOUNTSDETAILS",
+ "row_count": 204,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERTYPE",
+   "ordinal": 2,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERDISCOUNTGROUP",
+   "ordinal": 4,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTTYPE",
+   "ordinal": 5,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 6,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTDISCOUNTGROUP",
+   "ordinal": 7,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDISCOUNT",
+   "ordinal": 8,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 9,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSE",
+   "ordinal": 10,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_PRODUCTSDISCOUNTSDETAILS",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fISN"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "7A9DFE3B-6A56-4152-8BBD-01668DDFEFB2",
+   "fCUSTOMERTYPE": "2",
+   "fCUSTOMERID": 2301,
+   "fCUSTOMERDISCOUNTGROUP": null,
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 17,
+   "fPRODUCTDISCOUNTGROUP": null,
+   "fDISCOUNT": 10.0,
+   "fROWNUM": 0,
+   "fCLOSE": false
+  },
+  {
+   "fISN": "7A9DFE3B-6A56-4152-8BBD-01668DDFEFB2",
+   "fCUSTOMERTYPE": "2",
+   "fCUSTOMERID": 2301,
+   "fCUSTOMERDISCOUNTGROUP": null,
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 2,
+   "fPRODUCTDISCOUNTGROUP": null,
+   "fDISCOUNT": 10.0,
+   "fROWNUM": 1,
+   "fCLOSE": false
+  },
+  {
+   "fISN": "7A9DFE3B-6A56-4152-8BBD-01668DDFEFB2",
+   "fCUSTOMERTYPE": "2",
+   "fCUSTOMERID": 2301,
+   "fCUSTOMERDISCOUNTGROUP": null,
+   "fPRODUCTTYPE": "1",
+   "fPRODUCTID": null,
+   "fPRODUCTDISCOUNTGROUP": "200",
+   "fDISCOUNT": 5.0,
+   "fROWNUM": 2,
+   "fCLOSE": false
+  }
+ ]
+}

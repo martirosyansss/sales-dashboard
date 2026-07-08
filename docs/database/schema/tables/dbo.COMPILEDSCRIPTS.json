@@ -1,0 +1,46 @@
+{
+ "schema": "dbo",
+ "name": "COMPILEDSCRIPTS",
+ "row_count": 1,
+ "columns": [
+  {
+   "name": "fASSEMBLYNAME",
+   "ordinal": 1,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVERSION",
+   "ordinal": 2,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSCRIPT",
+   "ordinal": 3,
+   "type": "varbinary(max)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_COMPILEDSCRIPTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fASSEMBLYNAME, fVERSION"
+  }
+ ],
+ "samples": [
+  {
+   "fASSEMBLYNAME": "CompiledScripts",
+   "fVERSION": "7.15.4.0",
+   "fSCRIPT": "<binary 9728 bytes>"
+  }
+ ]
+}

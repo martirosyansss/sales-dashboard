@@ -1,0 +1,46 @@
+{
+ "schema": "dbo",
+ "name": "ONLINEREPORTACCESS",
+ "row_count": 44,
+ "columns": [
+  {
+   "name": "fROLE",
+   "ordinal": 1,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTEMPLATECODE",
+   "ordinal": 2,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_ONLINEREPORTACCESS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fROLE, fTEMPLATECODE"
+  }
+ ],
+ "samples": [
+  {
+   "fROLE": "000",
+   "fTEMPLATECODE": "200"
+  },
+  {
+   "fROLE": "000",
+   "fTEMPLATECODE": "201"
+  },
+  {
+   "fROLE": "000",
+   "fTEMPLATECODE": "202"
+  }
+ ]
+}

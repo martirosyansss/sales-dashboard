@@ -1,0 +1,56 @@
+{
+ "schema": "dbo",
+ "name": "HIRESTRESERVATION",
+ "row_count": 332,
+ "columns": [
+  {
+   "name": "fSTORAGE",
+   "ordinal": 1,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_HIRESTRESERVATION",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fPRODUCTID, fSTORAGE"
+  }
+ ],
+ "samples": [
+  {
+   "fSTORAGE": "000",
+   "fPRODUCTID": 3,
+   "fQUANTITY": 316.0
+  },
+  {
+   "fSTORAGE": "000",
+   "fPRODUCTID": 4,
+   "fQUANTITY": 534.0
+  },
+  {
+   "fSTORAGE": "000",
+   "fPRODUCTID": 7,
+   "fQUANTITY": 108.0
+  }
+ ]
+}

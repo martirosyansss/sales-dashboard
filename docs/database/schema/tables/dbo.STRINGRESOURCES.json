@@ -1,0 +1,66 @@
+{
+ "schema": "dbo",
+ "name": "STRINGRESOURCES",
+ "row_count": 77,
+ "columns": [
+  {
+   "name": "fNAME",
+   "ordinal": 1,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCULTURE",
+   "ordinal": 2,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSYSTEM",
+   "ordinal": 3,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVALUE",
+   "ordinal": 4,
+   "type": "nvarchar(500)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_STRINGRESOURCES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fNAME, fCULTURE"
+  }
+ ],
+ "samples": [
+  {
+   "fNAME": "AWPBO",
+   "fCULTURE": "EN-US",
+   "fSYSTEM": false,
+   "fVALUE": "AWP BackOffice"
+  },
+  {
+   "fNAME": "AWPBO",
+   "fCULTURE": "HY-AM",
+   "fSYSTEM": false,
+   "fVALUE": "Գրասենյակի ԱՇՏ"
+  },
+  {
+   "fNAME": "Date",
+   "fCULTURE": "HY-AM",
+   "fSYSTEM": false,
+   "fVALUE": "Ամսաթիվ"
+  }
+ ]
+}

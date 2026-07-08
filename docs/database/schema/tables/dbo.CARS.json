@@ -1,0 +1,146 @@
+{
+ "schema": "dbo",
+ "name": "CARS",
+ "row_count": 10,
+ "columns": [
+  {
+   "name": "fCODE",
+   "ordinal": 1,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fMAXCAPACITYBYVOLUME",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDESCRINTAXSRV",
+   "ordinal": 4,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 5,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOLOR",
+   "ordinal": 6,
+   "type": "varchar(9)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fMINCAPACITYBYVOLUME",
+   "ordinal": 7,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISCLOSED",
+   "ordinal": 8,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXTERNALCODE",
+   "ordinal": 9,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBODY",
+   "ordinal": 10,
+   "type": "nvarchar(3000)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fMINCAPACITYBYWEIGHT",
+   "ordinal": 11,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fMAXCAPACITYBYWEIGHT",
+   "ordinal": 12,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_CARS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCODE"
+  }
+ ],
+ "samples": [
+  {
+   "fCODE": "1",
+   "fNAME": "991AT61",
+   "fMAXCAPACITYBYVOLUME": 0.0,
+   "fDESCRINTAXSRV": "",
+   "fTS": "<binary 8 bytes>",
+   "fCOLOR": null,
+   "fMINCAPACITYBYVOLUME": 0.0,
+   "fISCLOSED": false,
+   "fEXTERNALCODE": "",
+   "fBODY": null,
+   "fMINCAPACITYBYWEIGHT": 0.0,
+   "fMAXCAPACITYBYWEIGHT": 0.0
+  },
+  {
+   "fCODE": "123AV61",
+   "fNAME": "HOWO",
+   "fMAXCAPACITYBYVOLUME": 0.0,
+   "fDESCRINTAXSRV": "",
+   "fTS": "<binary 8 bytes>",
+   "fCOLOR": null,
+   "fMINCAPACITYBYVOLUME": 0.0,
+   "fISCLOSED": false,
+   "fEXTERNALCODE": "",
+   "fBODY": null,
+   "fMINCAPACITYBYWEIGHT": 0.0,
+   "fMAXCAPACITYBYWEIGHT": 0.0
+  },
+  {
+   "fCODE": "124AV61",
+   "fNAME": "HOWO",
+   "fMAXCAPACITYBYVOLUME": 0.0,
+   "fDESCRINTAXSRV": "",
+   "fTS": "<binary 8 bytes>",
+   "fCOLOR": null,
+   "fMINCAPACITYBYVOLUME": 0.0,
+   "fISCLOSED": false,
+   "fEXTERNALCODE": "",
+   "fBODY": null,
+   "fMINCAPACITYBYWEIGHT": 0.0,
+   "fMAXCAPACITYBYWEIGHT": 0.0
+  }
+ ]
+}

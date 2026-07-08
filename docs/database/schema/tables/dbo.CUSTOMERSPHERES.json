@@ -1,0 +1,61 @@
+{
+ "schema": "dbo",
+ "name": "CUSTOMERSPHERES",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCODE",
+   "ordinal": 2,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 3,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 4,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFAULT",
+   "ordinal": 5,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [
+  {
+   "column": "fCUSTOMERID",
+   "ref_table": "dbo.CUSTOMERS",
+   "ref_column": "fID",
+   "fk": "FK_CUSTOMERSPHERES_fCUSTOMERID"
+  }
+ ],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_CUSTOMERSPHERES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCUSTOMERID, fCODE"
+  }
+ ],
+ "samples": []
+}

@@ -1,0 +1,150 @@
+{
+ "schema": "dbo",
+ "name": "HIRESERVATION",
+ "row_count": 233161,
+ "columns": [
+  {
+   "name": "fORDERISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fSTORAGE",
+   "ordinal": 2,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 4,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOP",
+   "ordinal": 5,
+   "type": "varchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDBCR",
+   "ordinal": 6,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 7,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBASEISN",
+   "ordinal": 8,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUSERID",
+   "ordinal": 9,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fRESERVATIONISN",
+   "ordinal": 10,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_HIRESERVATION",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fBASEISN"
+  },
+  {
+   "name": "I_HIRESERVATION2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDATE"
+  },
+  {
+   "name": "I_HIRESERVATION3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fPRODUCTID, fSTORAGE, fDATE"
+  },
+  {
+   "name": "I_HIRESERVATION4",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSTORAGE, fDATE"
+  },
+  {
+   "name": "PK_HIRESERVATION",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fPRODUCTID, fDATE, fSTORAGE"
+  }
+ ],
+ "samples": [
+  {
+   "fORDERISN": "6C0FF8FB-D2AD-42A2-8F7A-B5E4FA3BEB90",
+   "fSTORAGE": "000",
+   "fPRODUCTID": 3,
+   "fQUANTITY": 60.0,
+   "fOP": "RSV",
+   "fDBCR": "D",
+   "fDATE": "2025-09-20T00:00:00",
+   "fBASEISN": "04F37D24-DF78-443E-8CAE-DABC064C60CA",
+   "fUSERID": 15,
+   "fRESERVATIONISN": "04F37D24-DF78-443E-8CAE-DABC064C60CA"
+  },
+  {
+   "fORDERISN": "6C0FF8FB-D2AD-42A2-8F7A-B5E4FA3BEB90",
+   "fSTORAGE": "000",
+   "fPRODUCTID": 3,
+   "fQUANTITY": 60.0,
+   "fOP": "PRV",
+   "fDBCR": "C",
+   "fDATE": "2025-09-20T00:00:00",
+   "fBASEISN": "A44289FC-E954-4DFB-A6E4-BB4A89BD6D14",
+   "fUSERID": 15,
+   "fRESERVATIONISN": "04F37D24-DF78-443E-8CAE-DABC064C60CA"
+  },
+  {
+   "fORDERISN": "65EBCF27-B267-45E1-9183-31E000823C74",
+   "fSTORAGE": "000",
+   "fPRODUCTID": 3,
+   "fQUANTITY": 36.0,
+   "fOP": "RSV",
+   "fDBCR": "D",
+   "fDATE": "2025-09-20T00:00:00",
+   "fBASEISN": "E398D96D-C50F-4650-A964-D598AFE08293",
+   "fUSERID": 20,
+   "fRESERVATIONISN": "E398D96D-C50F-4650-A964-D598AFE08293"
+  }
+ ]
+}

@@ -1,0 +1,158 @@
+{
+ "schema": "dbo",
+ "name": "CALLS",
+ "row_count": 21343,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fLINKEDID",
+   "ordinal": 2,
+   "type": "nvarchar(100)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSTARTDATE",
+   "ordinal": 3,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERPHONENUMBER",
+   "ordinal": 4,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOPERATORPHONENUMBER",
+   "ordinal": 5,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISINCOMING",
+   "ordinal": 6,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDURATIONINSECONDS",
+   "ordinal": 7,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fNOTES",
+   "ordinal": 8,
+   "type": "nvarchar(1000)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fOPERATORUSERID",
+   "ordinal": 9,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fISREPEATEDCUSTOMER",
+   "ordinal": 10,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCALLSTATE",
+   "ordinal": 11,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCALLPURPOSE",
+   "ordinal": 12,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_CALLS1",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fLINKEDID"
+  },
+  {
+   "name": "I_CALLS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSTARTDATE"
+  },
+  {
+   "name": "PK_CALLS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  }
+ ],
+ "samples": [
+  {
+   "fID": "F7C278B9-0A7F-447A-BB6F-0002E226D41B",
+   "fLINKEDID": "1688637374.6574",
+   "fSTARTDATE": "2023-07-06T13:56:35.310000",
+   "fCUSTOMERPHONENUMBER": "+37495528586",
+   "fOPERATORPHONENUMBER": "200",
+   "fISINCOMING": true,
+   "fDURATIONINSECONDS": 284,
+   "fNOTES": "",
+   "fOPERATORUSERID": 15,
+   "fISREPEATEDCUSTOMER": false,
+   "fCALLSTATE": 2,
+   "fCALLPURPOSE": ""
+  },
+  {
+   "fID": "97B7FB4E-CB3C-43CD-867A-000511592891",
+   "fLINKEDID": "1753878505.6432",
+   "fSTARTDATE": "2025-07-30T16:28:48.160000",
+   "fCUSTOMERPHONENUMBER": "+37477787177",
+   "fOPERATORPHONENUMBER": "200",
+   "fISINCOMING": true,
+   "fDURATIONINSECONDS": 64,
+   "fNOTES": "",
+   "fOPERATORUSERID": 15,
+   "fISREPEATEDCUSTOMER": false,
+   "fCALLSTATE": 2,
+   "fCALLPURPOSE": ""
+  },
+  {
+   "fID": "B9CC8C81-90BA-4800-BF19-0009A4C75C63",
+   "fLINKEDID": "1719819141.362",
+   "fSTARTDATE": "2024-07-01T11:32:42.740000",
+   "fCUSTOMERPHONENUMBER": "+37460808003",
+   "fOPERATORPHONENUMBER": "200",
+   "fISINCOMING": true,
+   "fDURATIONINSECONDS": 20,
+   "fNOTES": "",
+   "fOPERATORUSERID": 15,
+   "fISREPEATEDCUSTOMER": false,
+   "fCALLSTATE": 2,
+   "fCALLPURPOSE": ""
+  }
+ ]
+}

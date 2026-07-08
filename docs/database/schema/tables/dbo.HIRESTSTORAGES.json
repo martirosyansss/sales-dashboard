@@ -1,0 +1,62 @@
+{
+ "schema": "dbo",
+ "name": "HIRESTSTORAGES",
+ "row_count": 1170,
+ "columns": [
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 2,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSTORAGE",
+   "ordinal": 3,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_HIRESTSTORAGES1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSTORAGE"
+  },
+  {
+   "name": "PK_HIRESTSTORAGES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fPRODUCTID, fSTORAGE"
+  }
+ ],
+ "samples": [
+  {
+   "fPRODUCTID": 1,
+   "fQUANTITY": 0.0,
+   "fSTORAGE": "000"
+  },
+  {
+   "fPRODUCTID": 2,
+   "fQUANTITY": 0.0,
+   "fSTORAGE": "000"
+  },
+  {
+   "fPRODUCTID": 3,
+   "fQUANTITY": 7787.0,
+   "fSTORAGE": "000"
+  }
+ ]
+}

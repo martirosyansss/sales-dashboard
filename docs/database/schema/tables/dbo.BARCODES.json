@@ -1,0 +1,92 @@
+{
+ "schema": "dbo",
+ "name": "BARCODES",
+ "row_count": 349,
+ "columns": [
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fMEASUREUNIT",
+   "ordinal": 2,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBARCODE",
+   "ordinal": 3,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBASEUNITQUANTITY",
+   "ordinal": 4,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fMEASUREUNITQUANTITY",
+   "ordinal": 5,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 6,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_BARCODES2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fBARCODE"
+  },
+  {
+   "name": "PK_BARCODES1",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fPRODUCTID, fBARCODE"
+  }
+ ],
+ "samples": [
+  {
+   "fPRODUCTID": 3,
+   "fMEASUREUNIT": "հատ",
+   "fBARCODE": "4850002370146",
+   "fBASEUNITQUANTITY": 1.0,
+   "fMEASUREUNITQUANTITY": 1.0,
+   "fROWNUM": 0
+  },
+  {
+   "fPRODUCTID": 4,
+   "fMEASUREUNIT": "հատ",
+   "fBARCODE": "4850002370122",
+   "fBASEUNITQUANTITY": 1.0,
+   "fMEASUREUNITQUANTITY": 1.0,
+   "fROWNUM": 0
+  },
+  {
+   "fPRODUCTID": 7,
+   "fMEASUREUNIT": "հատ",
+   "fBARCODE": "4850002370351",
+   "fBASEUNITQUANTITY": 1.0,
+   "fMEASUREUNITQUANTITY": 1.0,
+   "fROWNUM": 0
+  }
+ ]
+}

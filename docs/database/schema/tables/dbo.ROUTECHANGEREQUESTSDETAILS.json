@@ -1,0 +1,76 @@
+{
+ "schema": "dbo",
+ "name": "ROUTECHANGEREQUESTSDETAILS",
+ "row_count": 32,
+ "columns": [
+  {
+   "name": "fREQUESTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYADDRESSID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 4,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 5,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_ROUTECHANGEREQUESTSDETAILS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fREQUESTID, fROWNUM"
+  }
+ ],
+ "samples": [
+  {
+   "fREQUESTID": 1,
+   "fCUSTOMERID": 65805,
+   "fDELIVERYADDRESSID": 24517,
+   "fCOMMENT": "",
+   "fROWNUM": 0
+  },
+  {
+   "fREQUESTID": 1,
+   "fCUSTOMERID": 2196,
+   "fDELIVERYADDRESSID": 2149,
+   "fCOMMENT": "",
+   "fROWNUM": 1
+  },
+  {
+   "fREQUESTID": 1,
+   "fCUSTOMERID": 20135,
+   "fDELIVERYADDRESSID": 3081,
+   "fCOMMENT": "",
+   "fROWNUM": 2
+  }
+ ]
+}

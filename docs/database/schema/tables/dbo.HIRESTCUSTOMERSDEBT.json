@@ -1,0 +1,46 @@
+{
+ "schema": "dbo",
+ "name": "HIRESTCUSTOMERSDEBT",
+ "row_count": 368804,
+ "columns": [
+  {
+   "name": "fDEBTDOCISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUM",
+   "ordinal": 2,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_HICUSTOMERSDEBT",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fDEBTDOCISN"
+  }
+ ],
+ "samples": [
+  {
+   "fDEBTDOCISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fSUM": 0.0
+  },
+  {
+   "fDEBTDOCISN": "4A1965F5-CAA2-4734-9501-00003E5D1AA3",
+   "fSUM": 0.0
+  },
+  {
+   "fDEBTDOCISN": "336D9DC8-39D7-4AC5-BD8D-0000602939E2",
+   "fSUM": 0.0
+  }
+ ]
+}

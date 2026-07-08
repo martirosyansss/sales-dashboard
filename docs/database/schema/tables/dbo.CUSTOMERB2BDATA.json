@@ -1,0 +1,187 @@
+{
+ "schema": "dbo",
+ "name": "CUSTOMERB2BDATA",
+ "row_count": 9688,
+ "columns": [
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fB2BID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fACTORID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fB2BQRACTIVATED",
+   "ordinal": 4,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSYNCDATAWITHB2B",
+   "ordinal": 5,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fAVAILABLEFORB2B",
+   "ordinal": 6,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fB2BACSBDATAPR",
+   "ordinal": 7,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fB2BACSBDATAPRQTY",
+   "ordinal": 8,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fB2BACSBDATASINCEDATE",
+   "ordinal": 9,
+   "type": "smalldatetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fREGISTEREDINB2BMOBILE",
+   "ordinal": 10,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fLASTLOGINTIMEINB2BMOBILE",
+   "ordinal": 11,
+   "type": "datetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fB2BSTATEID",
+   "ordinal": 12,
+   "type": "smallint",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fB2BSYNCALLDATA",
+   "ordinal": 13,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [
+  {
+   "column": "fCUSTOMERID",
+   "ref_table": "dbo.CUSTOMERS",
+   "ref_column": "fID",
+   "fk": "FK_CUSTOMERB2BDATA_fCUSTOMERID"
+  }
+ ],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_CUSTOMERB2BDATA1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSYNCDATAWITHB2B, fCUSTOMERID"
+  },
+  {
+   "name": "I_CUSTOMERB2BDATA2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fACTORID, fCUSTOMERID"
+  },
+  {
+   "name": "I_CUSTOMERB2BDATA3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fB2BID, fCUSTOMERID"
+  },
+  {
+   "name": "I_CUSTOMERB2BDATA4",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fB2BID, fREGISTEREDINB2BMOBILE"
+  },
+  {
+   "name": "PK_CUSTOMERB2BDATA",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCUSTOMERID"
+  }
+ ],
+ "samples": [
+  {
+   "fCUSTOMERID": 1,
+   "fB2BID": 0,
+   "fACTORID": 0,
+   "fB2BQRACTIVATED": false,
+   "fSYNCDATAWITHB2B": true,
+   "fAVAILABLEFORB2B": false,
+   "fB2BACSBDATAPR": "",
+   "fB2BACSBDATAPRQTY": 0,
+   "fB2BACSBDATASINCEDATE": null,
+   "fREGISTEREDINB2BMOBILE": false,
+   "fLASTLOGINTIMEINB2BMOBILE": null,
+   "fB2BSTATEID": null,
+   "fB2BSYNCALLDATA": false
+  },
+  {
+   "fCUSTOMERID": 2,
+   "fB2BID": 0,
+   "fACTORID": 0,
+   "fB2BQRACTIVATED": false,
+   "fSYNCDATAWITHB2B": true,
+   "fAVAILABLEFORB2B": false,
+   "fB2BACSBDATAPR": "",
+   "fB2BACSBDATAPRQTY": 0,
+   "fB2BACSBDATASINCEDATE": null,
+   "fREGISTEREDINB2BMOBILE": false,
+   "fLASTLOGINTIMEINB2BMOBILE": null,
+   "fB2BSTATEID": 7,
+   "fB2BSYNCALLDATA": false
+  },
+  {
+   "fCUSTOMERID": 3,
+   "fB2BID": 0,
+   "fACTORID": 0,
+   "fB2BQRACTIVATED": false,
+   "fSYNCDATAWITHB2B": true,
+   "fAVAILABLEFORB2B": false,
+   "fB2BACSBDATAPR": "",
+   "fB2BACSBDATAPRQTY": 0,
+   "fB2BACSBDATASINCEDATE": null,
+   "fREGISTEREDINB2BMOBILE": false,
+   "fLASTLOGINTIMEINB2BMOBILE": null,
+   "fB2BSTATEID": 0,
+   "fB2BSYNCALLDATA": false
+  }
+ ]
+}

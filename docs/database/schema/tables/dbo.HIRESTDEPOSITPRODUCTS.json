@@ -1,0 +1,88 @@
+{
+ "schema": "dbo",
+ "name": "HIRESTDEPOSITPRODUCTS",
+ "row_count": 27752,
+ "columns": [
+  {
+   "name": "fDIVISION",
+   "ordinal": 1,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 4,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALEISN",
+   "ordinal": 5,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_HIRESTDEPOSITPRODUCTS1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALEISN"
+  },
+  {
+   "name": "I_HIRESTDEPOSITPRODUCTS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fPRODUCTID, fSALEISN"
+  },
+  {
+   "name": "PK_HIRESTDEPOSITPRODUCTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fDIVISION, fCUSTOMERID, fPRODUCTID, fSALEISN"
+  }
+ ],
+ "samples": [
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 56,
+   "fQUANTITY": -1.0,
+   "fSALEISN": null
+  },
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 56,
+   "fQUANTITY": 1.0,
+   "fSALEISN": "BC83470A-917D-4909-9B90-9763A58B98C9"
+  },
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 2,
+   "fPRODUCTID": 54,
+   "fQUANTITY": -3024.0,
+   "fSALEISN": null
+  }
+ ]
+}

@@ -1,0 +1,76 @@
+{
+ "schema": "dbo",
+ "name": "Products",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "ProductID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "ProductName",
+   "ordinal": 2,
+   "type": "nvarchar(100)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "Category",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "UnitPrice",
+   "ordinal": 4,
+   "type": "decimal(10,2)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "StockQuantity",
+   "ordinal": 5,
+   "type": "int",
+   "nullable": true,
+   "default": "((0))"
+  },
+  {
+   "name": "Description",
+   "ordinal": 6,
+   "type": "nvarchar(500)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "CreatedDate",
+   "ordinal": 7,
+   "type": "datetime",
+   "nullable": true,
+   "default": "(getdate())"
+  }
+ ],
+ "primary_key": [
+  "ProductID"
+ ],
+ "foreign_keys": [],
+ "referenced_by": [
+  {
+   "table": "dbo.SaleDetails",
+   "column": "ProductID",
+   "ref_column": "ProductID"
+  }
+ ],
+ "indexes": [
+  {
+   "name": "PK__Products__B40CC6ED0932F1C5",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "ProductID"
+  }
+ ],
+ "samples": []
+}

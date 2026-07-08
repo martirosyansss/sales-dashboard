@@ -1,0 +1,129 @@
+{
+ "schema": "dbo",
+ "name": "PRODDISCCHANGEREQUESTS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCREATIONDATE",
+   "ordinal": 2,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 4,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVALIDUNTIL",
+   "ordinal": 5,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSTATE",
+   "ordinal": 6,
+   "type": "smallint",
+   "nullable": false,
+   "default": "((0))"
+  },
+  {
+   "name": "fCUSTOMERTYPE",
+   "ordinal": 7,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 8,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERDISCOUNTGROUP",
+   "ordinal": 9,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTTYPE",
+   "ordinal": 10,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 11,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTDISCOUNTGROUP",
+   "ordinal": 12,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDISCOUNT",
+   "ordinal": 13,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSED",
+   "ordinal": 14,
+   "type": "bit",
+   "nullable": false,
+   "default": "((0))"
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I1_PRODDISCCHANGEREQUESTS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSTATE, fSALESAGENTID"
+  },
+  {
+   "name": "I2_PRODDISCCHANGEREQUESTS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALESAGENTID, fDATE, fCUSTOMERTYPE, fCUSTOMERID, fCUSTOMERDISCOUNTGROUP, fPRODUCTTYPE, fPRODUCTID, fPRODUCTDISCOUNTGROUP"
+  },
+  {
+   "name": "PK_PRODDISCCHANGEREQUESTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  }
+ ],
+ "samples": []
+}

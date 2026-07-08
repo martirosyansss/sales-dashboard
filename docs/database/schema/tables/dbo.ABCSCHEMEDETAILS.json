@@ -1,0 +1,66 @@
+{
+ "schema": "dbo",
+ "name": "ABCSCHEMEDETAILS",
+ "row_count": 3,
+ "columns": [
+  {
+   "name": "fSCHEMECODE",
+   "ordinal": 1,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLASS",
+   "ordinal": 2,
+   "type": "nvarchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPERCENT",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 4,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_ABCSCHEMEDETAILS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fSCHEMECODE, fCLASS"
+  }
+ ],
+ "samples": [
+  {
+   "fSCHEMECODE": "000",
+   "fCLASS": "A",
+   "fPERCENT": 80.0,
+   "fROWNUM": 0
+  },
+  {
+   "fSCHEMECODE": "000",
+   "fCLASS": "B",
+   "fPERCENT": 15.0,
+   "fROWNUM": 1
+  },
+  {
+   "fSCHEMECODE": "000",
+   "fCLASS": "C",
+   "fPERCENT": 5.0,
+   "fROWNUM": 2
+  }
+ ]
+}

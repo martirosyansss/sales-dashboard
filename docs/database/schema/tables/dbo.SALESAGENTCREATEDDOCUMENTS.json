@@ -1,0 +1,76 @@
+{
+ "schema": "dbo",
+ "name": "SALESAGENTCREATEDDOCUMENTS",
+ "row_count": 248370,
+ "columns": [
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 3,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISN",
+   "ordinal": 4,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCTYPE",
+   "ordinal": 5,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_SALESAGENTCREATEDDOCUMENTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fISN"
+  }
+ ],
+ "samples": [
+  {
+   "fSALESAGENTID": 1029,
+   "fCUSTOMERID": 36643,
+   "fDATE": "2024-05-22T00:00:00",
+   "fISN": "D21A4873-0334-4E90-B52E-00001B499211",
+   "fDOCTYPE": 1
+  },
+  {
+   "fSALESAGENTID": 3169,
+   "fCUSTOMERID": 28658,
+   "fDATE": "2025-11-25T00:00:00",
+   "fISN": "79A97A28-6CCC-40F5-BFAB-00005CCDFD1F",
+   "fDOCTYPE": 1
+  },
+  {
+   "fSALESAGENTID": 2101,
+   "fCUSTOMERID": 49151,
+   "fDATE": "2024-04-12T00:00:00",
+   "fISN": "46A515C7-CBD6-4F0B-9B4D-0000FBEE9C3F",
+   "fDOCTYPE": 1
+  }
+ ]
+}

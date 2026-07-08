@@ -1,0 +1,89 @@
+{
+ "schema": "dbo",
+ "name": "CUSTCHANGEREQDELIVERYADDRESSES",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fREQUESTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDRESS",
+   "ordinal": 3,
+   "type": "nvarchar(250)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fLATITUDE",
+   "ordinal": 4,
+   "type": "decimal(10,6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fLONGITUDE",
+   "ordinal": 5,
+   "type": "decimal(10,6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fACCURACY",
+   "ordinal": 6,
+   "type": "money",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDEFAULT",
+   "ordinal": 7,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDITIONALINFO",
+   "ordinal": 8,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSED",
+   "ordinal": 9,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 10,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_CUSTCHANGEREQDELIVERYADDRESSES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fREQUESTID, fID, fADDRESS, fLATITUDE, fLONGITUDE"
+  }
+ ],
+ "samples": []
+}

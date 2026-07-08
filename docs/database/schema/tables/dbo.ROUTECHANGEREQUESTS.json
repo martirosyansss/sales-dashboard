@@ -1,0 +1,94 @@
+{
+ "schema": "dbo",
+ "name": "ROUTECHANGEREQUESTS",
+ "row_count": 1,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCREATIONDATE",
+   "ordinal": 2,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fWEEK",
+   "ordinal": 4,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fWEEKDAY",
+   "ordinal": 5,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPERIODICITY",
+   "ordinal": 6,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 7,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 8,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSTATE",
+   "ordinal": 9,
+   "type": "smallint",
+   "nullable": false,
+   "default": "((0))"
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_ROUTECHANGEREQUESTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  }
+ ],
+ "samples": [
+  {
+   "fID": 1,
+   "fCREATIONDATE": "2026-05-13T14:42:33.657000",
+   "fSALESAGENTID": 3169,
+   "fWEEK": 1,
+   "fWEEKDAY": 3,
+   "fPERIODICITY": 1,
+   "fCOMMENT": "",
+   "fDATE": "2026-05-13T00:00:00",
+   "fSTATE": 0
+  }
+ ]
+}
