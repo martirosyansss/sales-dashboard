@@ -2786,6 +2786,28 @@ def api_managers_kpi():
         ta_area_w, ta_area_p = area_where('csa.fSALESAREA')
         pg_s_w,    pg_s_p    = prod_where('s.fISN')
 
+        # ПОСТРОЧНАЯ выручка при активном фильтре товарных групп: выручка = сумма строк выбранных групп
+        # (SALEDOCDETAILS.fSUM), а не вся накладная. Иначе товарный фильтр завышал бы выручку.
+        # Счётчик накладных — COUNT(DISTINCT s.fISN) (строки размножают документ джойном).
+        # Без товарного фильтра — документный режим (SUM(fTOTALSUM), COUNT(fISN)) = прежнее поведение.
+        if pg:
+            _pg_ph   = ','.join('?' * len(pg))
+            rev_join = (" INNER JOIN SALEDOCDETAILS sdp WITH (NOLOCK) ON sdp.fISN=s.fISN"
+                        " INNER JOIN PRODUCTS pp WITH (NOLOCK) ON pp.fID=sdp.fPRODUCTID")
+            rev_pgw  = " AND pp.fGROUP IN (%s)" % _pg_ph
+            rev_pgp  = tuple(pg)
+            rev_expr = "ISNULL(SUM(sdp.fSUM),0)"
+            doc_cnt  = "COUNT(DISTINCT s.fISN)"
+            # B (глубина корзины): при товарном фильтре считаем только строки выбранных групп
+            b_pg_join = " INNER JOIN PRODUCTS pb WITH (NOLOCK) ON pb.fID=sd.fPRODUCTID"
+            b_pg_w    = " AND pb.fGROUP IN (%s)" % _pg_ph
+            b_pg_p    = tuple(pg)
+        else:
+            rev_join, rev_pgw, rev_pgp = "", "", ()
+            rev_expr = "ISNULL(SUM(s.fTOTALSUM),0)"
+            doc_cnt  = "COUNT(s.fISN)"
+            b_pg_join, b_pg_w, b_pg_p = "", "", ()
+
         conn = db.get_connection()
         cur = conn.cursor()
 
@@ -2808,21 +2830,23 @@ def api_managers_kpi():
             return M[a]
 
         # A: основные метрики продаж (исключённые клиенты + группы клиентов + дивизионы — продажи)
+        # Выручка построчная при товарном фильтре (rev_expr/rev_join/rev_pgw); avgCheck = выручка/накладные
+        # (математически = AVG(fTOTALSUM) в документном режиме, без регрессий).
         cur.execute(f"""
-            SELECT s.fSALESAGENTID AS agent, COUNT(s.fISN) AS SalesCount,
+            SELECT s.fSALESAGENTID AS agent, {doc_cnt} AS SalesCount,
                    COUNT(DISTINCT s.fCUSTOMERID) AS ActiveCustomers,
-                   ISNULL(SUM(s.fTOTALSUM),0) AS Revenue, ISNULL(AVG(s.fTOTALSUM),0) AS AvgCheck
-            FROM SALES s WITH (NOLOCK)
+                   {rev_expr} AS Revenue
+            FROM SALES s WITH (NOLOCK){rev_join}
             INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
-            WHERE s.fDATE>=? AND s.fDATE<=? AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}{ta_s_w}{pg_s_w}
+            WHERE s.fDATE>=? AND s.fDATE<=? AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
             GROUP BY s.fSALESAGENTID
-        """, (date_from, date_to) + excluded_params + sc_p + sd_p + ta_s_p + pg_s_p)
+        """, (date_from, date_to) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp)
         for r in cur.fetchall():
             m = ensure(r.agent)
             m["salesCount"] = r.SalesCount
             m["activeCustomers"] = r.ActiveCustomers
             m["revenue"] = float(r.Revenue)
-            m["avgCheck"] = float(r.AvgCheck)
+            m["avgCheck"] = (m["revenue"] / m["salesCount"]) if m["salesCount"] else 0.0
 
         # СРАВНЕНИЕ ЗА 3 ГОДА: те же метрики агента за тот же период текущего года / год назад / 2 года назад.
         # По ТЕРРИТОРИИ менеджера (устойчиво к текучке — заполнено у всех). Фильтры: территория + группы клиентов + товарные группы.
@@ -2834,14 +2858,14 @@ def api_managers_kpi():
                     FROM SALESAGENTAREAS saa WITH (NOLOCK)
                     INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA = saa.fSALESAREA{ta_area_w}
                 )
-                SELECT ac.agent, COUNT(s.fISN) AS cnt, COUNT(DISTINCT s.fCUSTOMERID) AS clients,
-                       ISNULL(SUM(s.fTOTALSUM),0) AS rev
+                SELECT ac.agent, {doc_cnt} AS cnt, COUNT(DISTINCT s.fCUSTOMERID) AS clients,
+                       {rev_expr} AS rev
                 FROM AgentCustomers ac
-                INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = ac.cust
+                INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = ac.cust{rev_join}
                 INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
-                WHERE s.fDATE>=DATEADD(YEAR,-{years},?) AND s.fDATE<=DATEADD(YEAR,-{years},?) AND s.fSTATE=2 {excluded_filter}{sc_w}{pg_s_w}
+                WHERE s.fDATE>=DATEADD(YEAR,-{years},?) AND s.fDATE<=DATEADD(YEAR,-{years},?) AND s.fSTATE=2 {excluded_filter}{sc_w}{rev_pgw}
                 GROUP BY ac.agent
-            """, ta_area_p + (date_from, asof) + excluded_params + sc_p + pg_s_p)
+            """, ta_area_p + (date_from, asof) + excluded_params + sc_p + rev_pgp)
             out = {}
             for r in cur.fetchall():
                 rev = float(r.rev)
@@ -2856,12 +2880,12 @@ def api_managers_kpi():
             d_from = f"DATEADD(YEAR,-{years},?)" if years else "?"
             d_to   = f"DATEADD(YEAR,-{years},?)" if years else "?"
             cur.execute(f"""
-                SELECT COUNT(s.fISN) AS cnt, COUNT(DISTINCT s.fCUSTOMERID) AS clients,
-                       ISNULL(SUM(s.fTOTALSUM),0) AS rev
-                FROM SALES s WITH (NOLOCK)
+                SELECT {doc_cnt} AS cnt, COUNT(DISTINCT s.fCUSTOMERID) AS clients,
+                       {rev_expr} AS rev
+                FROM SALES s WITH (NOLOCK){rev_join}
                 INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
-                WHERE s.fDATE>={d_from} AND s.fDATE<={d_to} AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}{ta_s_w}{pg_s_w}
-            """, (date_from, asof) + excluded_params + sc_p + sd_p + ta_s_p + pg_s_p)
+                WHERE s.fDATE>={d_from} AND s.fDATE<={d_to} AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
+            """, (date_from, asof) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp)
             r = cur.fetchone()
             rev = float(r.rev)
             return {"revenue": rev, "activeCustomers": r.clients, "salesCount": r.cnt,
@@ -2871,10 +2895,10 @@ def api_managers_kpi():
         # B: строк в накладной (SKU depth)
         cur.execute(f"""
             SELECT s.fSALESAGENTID AS agent, COUNT(sd.fISN) AS Lines
-            FROM SALES s WITH (NOLOCK) INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN=s.fISN
+            FROM SALES s WITH (NOLOCK) INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN=s.fISN{b_pg_join}
             {cust_join(sc, 's.fCUSTOMERID')}
-            WHERE s.fDATE>=? AND s.fDATE<=? AND s.fSTATE=2 {sc_w}{ta_s_w}{pg_s_w} GROUP BY s.fSALESAGENTID
-        """, (date_from, date_to) + sc_p + ta_s_p + pg_s_p)
+            WHERE s.fDATE>=? AND s.fDATE<=? AND s.fSTATE=2 {sc_w}{ta_s_w}{b_pg_w} GROUP BY s.fSALESAGENTID
+        """, (date_from, date_to) + sc_p + ta_s_p + b_pg_p)
         for r in cur.fetchall():
             ensure(r.agent)["lines"] = r.Lines
 
@@ -2950,13 +2974,13 @@ def api_managers_kpi():
                 FROM SALESAGENTAREAS saa WITH (NOLOCK)
                 INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA = saa.fSALESAREA{ta_area_w}
             )
-            SELECT ac.agent, ISNULL(SUM(s.fTOTALSUM),0) AS PrevYear
+            SELECT ac.agent, {rev_expr} AS PrevYear
             FROM AgentCustomers ac
-            INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = ac.cust
+            INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = ac.cust{rev_join}
             INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
-            WHERE s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE<=DATEADD(YEAR,-1,?) AND s.fSTATE=2 {excluded_filter}{sc_w}{pg_s_w}
+            WHERE s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE<=DATEADD(YEAR,-1,?) AND s.fSTATE=2 {excluded_filter}{sc_w}{rev_pgw}
             GROUP BY ac.agent
-        """, ta_area_p + (date_from, asof) + excluded_params + sc_p + pg_s_p)
+        """, ta_area_p + (date_from, asof) + excluded_params + sc_p + rev_pgp)
         for r in cur.fetchall():
             ensure(r.agent)["prevYear"] = float(r.PrevYear)
 
