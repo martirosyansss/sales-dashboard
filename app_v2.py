@@ -1944,7 +1944,7 @@ def get_manager_detail(manager_id):
         if not manager_info:
             return jsonify({'success': False, 'error': 'Менеджер не найден'}), 404
         
-        # Статистика продаж за последние 12 месяцев
+        # Статистика продаж за последние 36 месяцев (3 года)
         query_sales = """
             SELECT 
                 FORMAT(fDATE, 'yyyy-MM') as Month,
@@ -1952,7 +1952,7 @@ def get_manager_detail(manager_id):
                 SUM(fTOTALSUM) as TotalSum
             FROM SALES
             WHERE fSALESAGENTID = ?
-            AND fDATE >= DATEADD(MONTH, -12, GETDATE())
+            AND fDATE >= DATEADD(MONTH, -36, GETDATE())
             AND fSTATE = 2
             GROUP BY FORMAT(fDATE, 'yyyy-MM')
             ORDER BY Month
@@ -2592,15 +2592,17 @@ def managers_page():
 # =============================================
 # Отраслевые KPI van-sales/FMCG. Направление (higher_better) и вес в итоговом балле.
 MANAGER_KPI_DEFS = [
-    ("revenue",         "Выручка",       "currency", True,  25),
-    ("coverage",        "Покрытие",      "percent",  True,  12),
-    ("strikeRate",      "Strike rate",   "percent",  True,  10),
-    ("avgCheck",        "Средний чек",   "currency", True,  10),
-    ("linesPerInvoice", "Строк/накл.",   "number",   True,   8),
-    ("newCustomers",    "Новые клиенты", "number",   True,   8),
-    ("collectRate",     "Сбор долга",    "percent",  True,  10),
-    ("returnsRate",     "Возвраты",      "percent",  False,  7),
-    ("planFact",        "План/факт",     "percent",  True,  10),
+    ("revenue",         "Հասույթ",             "currency", True,  20),
+    ("activeCustomers", "Հաճախորդներ",         "number",   True,   9),
+    ("routeVisit",      "Երթուղու շրջայց",     "percent",  True,   0),  # справочно (в балл не входит)
+    ("routeOrder",      "Պատվեր ըստ երթուղու", "percent",  True,  10),
+    ("strikeRate",      "Strike rate",         "percent",  True,   8),
+    ("avgCheck",        "Միջին չեկ",           "currency", True,  10),
+    ("linesPerInvoice", "Տողեր/ապր.",          "number",   True,   8),
+    ("newCustomers",    "Նոր հաճախորդներ",     "number",   True,   8),
+    ("collectRate",     "Պարտքի հավաքագրում",  "percent",  True,  10),
+    ("returnsRate",     "Վերադարձեր",          "percent",  False,  7),
+    ("planFact",        "Պլան/փաստ",           "percent",  True,  10),
 ]
 
 
@@ -2615,6 +2617,8 @@ KPI_SALES_CLIENT_GROUPS_FILE = 'kpi_sales_client_groups.json'
 KPI_DEBT_CLIENT_GROUPS_FILE  = 'kpi_debt_client_groups.json'
 KPI_SALES_DIVISIONS_FILE     = 'kpi_sales_divisions.json'
 KPI_DEBT_DIVISIONS_FILE      = 'kpi_debt_divisions.json'
+KPI_TERRITORIES_FILE         = 'kpi_territories.json'      # территории (fSALESAREA) — весь анализ
+KPI_PRODUCT_GROUPS_FILE      = 'kpi_product_groups.json'   # товарные группы (PrdctGrp) — весь анализ
 
 
 def _kpi_load_list(path):
@@ -2643,6 +2647,8 @@ def get_managers_kpi_filters():
         'debt_client_groups':  _kpi_load_list(KPI_DEBT_CLIENT_GROUPS_FILE),
         'sales_divisions':     _kpi_load_list(KPI_SALES_DIVISIONS_FILE),
         'debt_divisions':      _kpi_load_list(KPI_DEBT_DIVISIONS_FILE),
+        'territories':         _kpi_load_list(KPI_TERRITORIES_FILE),
+        'product_groups':      _kpi_load_list(KPI_PRODUCT_GROUPS_FILE),
     })
 
 
@@ -2655,9 +2661,40 @@ def set_managers_kpi_filters():
         if 'debt_client_groups'  in d: _kpi_save_list(KPI_DEBT_CLIENT_GROUPS_FILE,  d['debt_client_groups'])
         if 'sales_divisions'     in d: _kpi_save_list(KPI_SALES_DIVISIONS_FILE,     d['sales_divisions'])
         if 'debt_divisions'      in d: _kpi_save_list(KPI_DEBT_DIVISIONS_FILE,      d['debt_divisions'])
+        if 'territories'         in d: _kpi_save_list(KPI_TERRITORIES_FILE,         d['territories'])
+        if 'product_groups'      in d: _kpi_save_list(KPI_PRODUCT_GROUPS_FILE,      d['product_groups'])
         return jsonify({'success': True})
     except Exception as e:
         logger.error(f"Ошибка сохранения KPI-фильтров: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/managers/kpi/filter-options')
+def get_managers_kpi_filter_options():
+    """Опции для новых фильтров KPI: территории (SArea) и товарные группы (PrdctGrp). READ-ONLY."""
+    try:
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT t.fCODE, ISNULL(t.fCAPTION, t.fCODE) AS name
+            FROM TREES t WITH (NOLOCK)
+            WHERE t.fTREEID='SArea'
+              AND t.fCODE IN (SELECT DISTINCT fSALESAREA FROM CUSTOMERSALESAREAS WITH (NOLOCK))
+            ORDER BY t.fCODE
+        """)
+        territories = [{'code': r.fCODE, 'name': r.name} for r in cur.fetchall()]
+        cur.execute("""
+            SELECT t.fCODE, ISNULL(t.fCAPTION, t.fCODE) AS name
+            FROM TREES t WITH (NOLOCK)
+            WHERE t.fTREEID='PrdctGrp'
+              AND t.fCODE IN (SELECT DISTINCT fGROUP FROM PRODUCTS WITH (NOLOCK) WHERE fGROUP IS NOT NULL AND fGROUP<>'')
+            ORDER BY t.fCODE
+        """)
+        product_groups = [{'code': r.fCODE, 'name': r.name} for r in cur.fetchall()]
+        conn.close()
+        return jsonify({'success': True, 'territories': territories, 'product_groups': product_groups})
+    except Exception as e:
+        logger.error(f"Ошибка загрузки опций KPI-фильтров: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -2679,6 +2716,13 @@ def api_managers_kpi():
             last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
             date_to = last_day.strftime('%Y-%m-%d')
 
+        # Целевой рост плана (%) к прошлогоднему периоду. По умолчанию 0 (чистый YoY).
+        try:
+            plan_growth = float(request.args.get('plan_growth', 0) or 0)
+        except (TypeError, ValueError):
+            plan_growth = 0.0
+        plan_growth = max(-100.0, min(1000.0, plan_growth))
+
         excluded_filter, excluded_params = get_excluded_filter_sql()
 
         # Сохранённые фильтры групп (раздельно продажи/долг)
@@ -2686,6 +2730,9 @@ def api_managers_kpi():
         dc = _kpi_load_list(KPI_DEBT_CLIENT_GROUPS_FILE)    # группы клиентов — долг
         sd = _kpi_load_list(KPI_SALES_DIVISIONS_FILE)       # дивизионы — продажи
         dd = _kpi_load_list(KPI_DEBT_DIVISIONS_FILE)        # дивизионы — долг
+        # Новые фильтры «на весь анализ»: территории (клиентская привязка) и товарные группы (по строкам продаж).
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)           # территории (fSALESAREA)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)        # товарные группы (PrdctGrp)
 
         def grp_where(sel):
             if not sel:
@@ -2704,20 +2751,60 @@ def api_managers_kpi():
             return (" AND %s.fSALESAGENTID IN (SELECT DISTINCT fSALESAGENTID FROM SALESAGENTDIVISIONS WITH (NOLOCK) WHERE fDIVISION IN (%s))"
                     % (alias, ','.join('?' * len(sel))), tuple(sel))
 
+        def terr_where(custid_expr):
+            # Территория: клиент принадлежит одной из выбранных зон (CUSTOMERSALESAREAS). Применяется везде.
+            if not sa:
+                return "", ()
+            return (" AND %s IN (SELECT fCUSTOMERID FROM CUSTOMERSALESAREAS WITH (NOLOCK) WHERE fSALESAREA IN (%s))"
+                    % (custid_expr, ','.join('?' * len(sa))), tuple(sa))
+
+        def area_where(area_expr):
+            # Тот же территориальный фильтр, но для запросов, где уже есть CUSTOMERSALESAREAS (ограничиваем зону напрямую).
+            if not sa:
+                return "", ()
+            return (" AND %s IN (%s)" % (area_expr, ','.join('?' * len(sa))), tuple(sa))
+
+        def prod_where(isn_expr):
+            # Товарные группы: документ продажи содержит товар из выбранных групп (PrdctGrp). Только для продаж.
+            if not pg:
+                return "", ()
+            return ((" AND %s IN (SELECT sd2.fISN FROM SALEDOCDETAILS sd2 WITH (NOLOCK)"
+                     " INNER JOIN PRODUCTS p2 WITH (NOLOCK) ON p2.fID=sd2.fPRODUCTID WHERE p2.fGROUP IN (%s))")
+                    % (isn_expr, ','.join('?' * len(pg))), tuple(pg))
+
         sc_w, sc_p = grp_where(sc)          # продажи: клиентские группы (alias c)
         dc_w, dc_p = grp_where(dc)          # долг: клиентские группы (alias c)
         sd_w, sd_p = div_where('s', sd)     # продажи: дивизионы (агент s)
         dd_w, dd_p = div_where('doc', dd)   # долг: дивизионы (агент doc)
 
+        # Территория (по клиенту) — применяется ко ВСЕМ метрикам; товарные группы (по документу продажи) — к продажам.
+        ta_s_w,    ta_s_p    = terr_where('s.fCUSTOMERID')
+        ta_ar_w,   ta_ar_p   = terr_where('ar.fCUSTOMERID')
+        ta_rt_w,   ta_rt_p   = terr_where('rt.fCUSTOMERID')
+        ta_doc_w,  ta_doc_p  = terr_where('doc.fCUSTOMERID')
+        ta_l_w,    ta_l_p    = terr_where('l.fCUSTOMERID')
+        ta_area_w, ta_area_p = area_where('csa.fSALESAREA')
+        pg_s_w,    pg_s_p    = prod_where('s.fISN')
+
         conn = db.get_connection()
         cur = conn.cursor()
+
+        # «As-of» дата = последний день с продажами в пределах периода (≤ date_to).
+        # Для НЕЗАВЕРШЁННОГО периода (напр. текущий месяц: 9 дней) даёт сравнение/план like-for-like —
+        # базовые окна (прошлый месяц/год) и план обрезаются до того же дня, а не берут полный месяц.
+        # Для завершённого периода asof == date_to → поведение прежнее.
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE<=?", (date_to,))
+        _row = cur.fetchone()
+        _last = _row[0] if _row else None
+        asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
 
         M = {}
         def ensure(a):
             if a not in M:
                 M[a] = {k: 0 for k in ["revenue", "salesCount", "activeCustomers", "avgCheck",
                         "assigned", "visits", "visitedCustomers", "lines", "returnsSum",
-                        "returnCount", "newCustomers", "collected", "prev12", "prevMonths"]}
+                        "returnCount", "newCustomers", "collected", "prevYear",
+                        "routePlanned", "routeVisited", "routeOrdered"]}
             return M[a]
 
         # A: основные метрики продаж (исключённые клиенты + группы клиентов + дивизионы — продажи)
@@ -2727,9 +2814,9 @@ def api_managers_kpi():
                    ISNULL(SUM(s.fTOTALSUM),0) AS Revenue, ISNULL(AVG(s.fTOTALSUM),0) AS AvgCheck
             FROM SALES s WITH (NOLOCK)
             INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
-            WHERE s.fDATE>=? AND s.fDATE<=? AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}
+            WHERE s.fDATE>=? AND s.fDATE<=? AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}{ta_s_w}{pg_s_w}
             GROUP BY s.fSALESAGENTID
-        """, (date_from, date_to) + excluded_params + sc_p + sd_p)
+        """, (date_from, date_to) + excluded_params + sc_p + sd_p + ta_s_p + pg_s_p)
         for r in cur.fetchall():
             m = ensure(r.agent)
             m["salesCount"] = r.SalesCount
@@ -2737,13 +2824,57 @@ def api_managers_kpi():
             m["revenue"] = float(r.Revenue)
             m["avgCheck"] = float(r.AvgCheck)
 
+        # СРАВНЕНИЕ ЗА 3 ГОДА: те же метрики агента за тот же период текущего года / год назад / 2 года назад.
+        # По ТЕРРИТОРИИ менеджера (устойчиво к текучке — заполнено у всех). Фильтры: территория + группы клиентов + товарные группы.
+        # years — целое (1 или 2), не пользовательский ввод → безопасно для подстановки.
+        def _cmp_territory(years):
+            cur.execute(f"""
+                WITH AgentCustomers AS (
+                    SELECT DISTINCT saa.fSALESAGENTID AS agent, csa.fCUSTOMERID AS cust
+                    FROM SALESAGENTAREAS saa WITH (NOLOCK)
+                    INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA = saa.fSALESAREA{ta_area_w}
+                )
+                SELECT ac.agent, COUNT(s.fISN) AS cnt, COUNT(DISTINCT s.fCUSTOMERID) AS clients,
+                       ISNULL(SUM(s.fTOTALSUM),0) AS rev
+                FROM AgentCustomers ac
+                INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = ac.cust
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+                WHERE s.fDATE>=DATEADD(YEAR,-{years},?) AND s.fDATE<=DATEADD(YEAR,-{years},?) AND s.fSTATE=2 {excluded_filter}{sc_w}{pg_s_w}
+                GROUP BY ac.agent
+            """, ta_area_p + (date_from, asof) + excluded_params + sc_p + pg_s_p)
+            out = {}
+            for r in cur.fetchall():
+                rev = float(r.rev)
+                out[r.agent] = {"revenue": rev, "activeCustomers": r.clients,
+                                "salesCount": r.cnt, "avgCheck": (rev / r.cnt if r.cnt else 0)}
+            return out
+        cmp_y1 = _cmp_territory(1)   # год назад
+        cmp_y2 = _cmp_territory(2)   # 2 года назад
+
+        # Командные итоги за 3 года (текущий / год назад / 2 года назад) — суммарно по всей команде, те же фильтры.
+        def _team_totals(years):
+            d_from = f"DATEADD(YEAR,-{years},?)" if years else "?"
+            d_to   = f"DATEADD(YEAR,-{years},?)" if years else "?"
+            cur.execute(f"""
+                SELECT COUNT(s.fISN) AS cnt, COUNT(DISTINCT s.fCUSTOMERID) AS clients,
+                       ISNULL(SUM(s.fTOTALSUM),0) AS rev
+                FROM SALES s WITH (NOLOCK)
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fDATE>={d_from} AND s.fDATE<={d_to} AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}{ta_s_w}{pg_s_w}
+            """, (date_from, asof) + excluded_params + sc_p + sd_p + ta_s_p + pg_s_p)
+            r = cur.fetchone()
+            rev = float(r.rev)
+            return {"revenue": rev, "activeCustomers": r.clients, "salesCount": r.cnt,
+                    "avgCheck": (rev / r.cnt if r.cnt else 0)}
+        team_cmp = {"current": _team_totals(0), "y1": _team_totals(1), "y2": _team_totals(2)}
+
         # B: строк в накладной (SKU depth)
         cur.execute(f"""
             SELECT s.fSALESAGENTID AS agent, COUNT(sd.fISN) AS Lines
             FROM SALES s WITH (NOLOCK) INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN=s.fISN
             {cust_join(sc, 's.fCUSTOMERID')}
-            WHERE s.fDATE>=? AND s.fDATE<=? AND s.fSTATE=2 {sc_w} GROUP BY s.fSALESAGENTID
-        """, (date_from, date_to) + sc_p)
+            WHERE s.fDATE>=? AND s.fDATE<=? AND s.fSTATE=2 {sc_w}{ta_s_w}{pg_s_w} GROUP BY s.fSALESAGENTID
+        """, (date_from, date_to) + sc_p + ta_s_p + pg_s_p)
         for r in cur.fetchall():
             ensure(r.agent)["lines"] = r.Lines
 
@@ -2752,8 +2883,8 @@ def api_managers_kpi():
             SELECT ar.fSALESAGENTID AS agent, COUNT(*) AS Visits, COUNT(DISTINCT ar.fCUSTOMERID) AS VC
             FROM ACTUALROUTES ar WITH (NOLOCK)
             {cust_join(sc, 'ar.fCUSTOMERID')}
-            WHERE ar.fDATE>=? AND ar.fDATE<=? {sc_w} GROUP BY ar.fSALESAGENTID
-        """, (date_from, date_to) + sc_p)
+            WHERE ar.fDATE>=? AND ar.fDATE<=? {sc_w}{ta_ar_w} GROUP BY ar.fSALESAGENTID
+        """, (date_from, date_to) + sc_p + ta_ar_p)
         for r in cur.fetchall():
             m = ensure(r.agent)
             m["visits"] = r.Visits
@@ -2764,8 +2895,8 @@ def api_managers_kpi():
             SELECT rt.fSALESAGENTID AS agent, COUNT(*) AS RC, ISNULL(SUM(rt.fTOTALSUM),0) AS RS
             FROM RETURNS rt WITH (NOLOCK)
             {cust_join(sc, 'rt.fCUSTOMERID')}
-            WHERE rt.fDATE>=? AND rt.fDATE<=? AND rt.fSTATE=2 {sc_w} GROUP BY rt.fSALESAGENTID
-        """, (date_from, date_to) + sc_p)
+            WHERE rt.fDATE>=? AND rt.fDATE<=? AND rt.fSTATE=2 {sc_w}{ta_rt_w} GROUP BY rt.fSALESAGENTID
+        """, (date_from, date_to) + sc_p + ta_rt_p)
         for r in cur.fetchall():
             m = ensure(r.agent)
             m["returnCount"] = r.RC
@@ -2777,9 +2908,9 @@ def api_managers_kpi():
             FROM SALESAGENTAREAS saa WITH (NOLOCK)
             INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA=saa.fSALESAREA
             {cust_join(sc, 'csa.fCUSTOMERID')}
-            WHERE 1=1 {sc_w}
+            WHERE 1=1 {sc_w}{ta_area_w}
             GROUP BY saa.fSALESAGENTID
-        """, sc_p)
+        """, sc_p + ta_area_p)
         for r in cur.fetchall():
             ensure(r.agent)["assigned"] = r.Assigned
 
@@ -2791,8 +2922,8 @@ def api_managers_kpi():
             FROM firsts f INNER JOIN SALES s WITH (NOLOCK)
                 ON s.fCUSTOMERID=f.fCUSTOMERID AND s.fDATE=f.firstsale AND s.fSTATE=2
             {cust_join(sc, 's.fCUSTOMERID')}
-            WHERE f.firstsale>=? AND f.firstsale<=? {sc_w} GROUP BY s.fSALESAGENTID
-        """, (date_from, date_to) + sc_p)
+            WHERE f.firstsale>=? AND f.firstsale<=? {sc_w}{ta_s_w}{pg_s_w} GROUP BY s.fSALESAGENTID
+        """, (date_from, date_to) + sc_p + ta_s_p + pg_s_p)
         for r in cur.fetchall():
             ensure(r.agent)["newCustomers"] = r.NewC
 
@@ -2802,31 +2933,77 @@ def api_managers_kpi():
             FROM HICUSTOMERSDEBT h WITH (NOLOCK)
             INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON h.fDEBTDOCISN=doc.fISN
             {cust_join(dc, 'doc.fCUSTOMERID')}
-            WHERE h.fOP='PAY' AND h.fDBCR='C' AND h.fDATE>=? AND h.fDATE<=? {dc_w}{dd_w}
+            WHERE h.fOP='PAY' AND h.fDBCR='C' AND h.fDATE>=? AND h.fDATE<=? {dc_w}{dd_w}{ta_doc_w}
             GROUP BY doc.fSALESAGENTID
-        """, (date_from, date_to) + dc_p + dd_p)
+        """, (date_from, date_to) + dc_p + dd_p + ta_doc_p)
         for r in cur.fetchall():
             ensure(r.agent)["collected"] = float(r.Collected)
 
-        # H: план = среднемесячная выручка за 12 мес до периода
+        # H: план = продажи ТОГО ЖЕ ПЕРИОДА год назад по ТЕРРИТОРИИ менеджера × (1 + рост).
+        #   База — прошлогодние продажи клиентов, которые СЕЙЧАС закреплены за территориями агента
+        #   (SALESAGENTAREAS→CUSTOMERSALESAREAS, как в «Покрытии»), независимо от того, какой агент их тогда
+        #   обслуживал. Устойчиво к текучке/смене агентов. Сезонность — натурально (тот же период год назад).
+        #   Фильтры: исключённые клиенты + группы клиентов. Дивизионы не применяются (атрибуция территориальная).
         cur.execute(f"""
-            SELECT s.fSALESAGENTID AS agent, ISNULL(SUM(s.fTOTALSUM),0) AS Prev12,
-                   COUNT(DISTINCT FORMAT(s.fDATE,'yyyy-MM')) AS Months
-            FROM SALES s WITH (NOLOCK)
-            {cust_join(sc, 's.fCUSTOMERID')}
-            WHERE s.fSTATE=2 AND s.fDATE>=DATEADD(MONTH,-12,?) AND s.fDATE<? {sc_w} GROUP BY s.fSALESAGENTID
-        """, (date_from, date_from) + sc_p)
+            WITH AgentCustomers AS (
+                SELECT DISTINCT saa.fSALESAGENTID AS agent, csa.fCUSTOMERID AS cust
+                FROM SALESAGENTAREAS saa WITH (NOLOCK)
+                INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA = saa.fSALESAREA{ta_area_w}
+            )
+            SELECT ac.agent, ISNULL(SUM(s.fTOTALSUM),0) AS PrevYear
+            FROM AgentCustomers ac
+            INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = ac.cust
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+            WHERE s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE<=DATEADD(YEAR,-1,?) AND s.fSTATE=2 {excluded_filter}{sc_w}{pg_s_w}
+            GROUP BY ac.agent
+        """, ta_area_p + (date_from, asof) + excluded_params + sc_p + pg_s_p)
+        for r in cur.fetchall():
+            ensure(r.agent)["prevYear"] = float(r.PrevYear)
+
+        # R: исполнение планового маршрута — план / подъехал / заказал (по клиентам маршрута агента)
+        #   База = уникальные клиенты из документов планового маршрута (DOCUMENTS.fDOCTYPE=10) агента за период.
+        #   «Подъехал» = клиенты маршрута с фактическим визитом (ACTUALROUTES) того же агента.
+        #   «Заказал»  = клиенты маршрута с проведённой продажей (fSTATE=2) того же агента.
+        #   Фильтр «группы клиентов (продажи)» (sc) применяется к базе маршрута; дивизионы (товары) не влияют.
+        cur.execute(f"""
+            WITH RoutePlan AS (
+                SELECT DISTINCT d.fSALESAGENTID AS agent, l.fCUSTOMERID AS cust
+                FROM DOCUMENTS d WITH (NOLOCK)
+                JOIN PLANNEDROUTESLIST l WITH (NOLOCK) ON d.fISN = l.fISN
+                {cust_join(sc, 'l.fCUSTOMERID')}
+                WHERE d.fDOCTYPE=10 AND d.fDATE>=? AND d.fDATE<=? {sc_w}{ta_l_w}
+            ),
+            Visited AS (
+                SELECT DISTINCT ar.fSALESAGENTID AS agent, ar.fCUSTOMERID AS cust
+                FROM ACTUALROUTES ar WITH (NOLOCK) WHERE ar.fDATE>=? AND ar.fDATE<=?
+            ),
+            Ordered AS (
+                SELECT DISTINCT s.fSALESAGENTID AS agent, s.fCUSTOMERID AS cust
+                FROM SALES s WITH (NOLOCK) WHERE s.fDATE>=? AND s.fDATE<=? AND s.fSTATE=2
+            )
+            SELECT rp.agent,
+                   COUNT(DISTINCT rp.cust) AS Planned,
+                   COUNT(DISTINCT CASE WHEN v.cust IS NOT NULL THEN rp.cust END) AS Visited,
+                   COUNT(DISTINCT CASE WHEN o.cust IS NOT NULL THEN rp.cust END) AS Ordered
+            FROM RoutePlan rp
+            LEFT JOIN Visited v ON v.agent=rp.agent AND v.cust=rp.cust
+            LEFT JOIN Ordered o ON o.agent=rp.agent AND o.cust=rp.cust
+            GROUP BY rp.agent
+        """, (date_from, date_to) + sc_p + ta_l_p + (date_from, date_to) + (date_from, date_to))
         for r in cur.fetchall():
             m = ensure(r.agent)
-            m["prev12"] = float(r.Prev12)
-            m["prevMonths"] = r.Months or 0
+            m["routePlanned"] = r.Planned
+            m["routeVisited"] = r.Visited
+            m["routeOrdered"] = r.Ordered
 
         # G2: ЧИСТЫЙ ДОЛГ по менеджеру (полная формула из DEBT_CALCULATION_FORMULA.md):
         #   ДОЛГ = Дебет(HICUSTOMERSDEBT, D−C) − |Возвраты Type01| − |Переплаты Type02| (HIRESTCUSTOMERSSUM)
         # Атрибутируется по клиентам, которым менеджер продавал в периоде (как в /api/managers).
         # Фильтр «долг: группы клиентов» (dc) применяется к набору клиентов.
+        # Территория применяется и к долгу — через набор клиентов cust_sub (fCUSTOMERID).
+        ta_cust_w, ta_cust_p = terr_where('fCUSTOMERID')
         cust_sub = ("SELECT DISTINCT fCUSTOMERID FROM SALES WITH (NOLOCK) "
-                    "WHERE fSALESAGENTID=? AND fDATE>=? AND fDATE<=? AND fSTATE=2")
+                    "WHERE fSALESAGENTID=? AND fDATE>=? AND fDATE<=? AND fSTATE=2" + ta_cust_w)
         for aid, m in M.items():
             if m["salesCount"] == 0:
                 continue
@@ -2836,7 +3013,7 @@ def api_managers_kpi():
                 INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON h.fDEBTDOCISN=doc.fISN
                 INNER JOIN CUSTOMERS c WITH (NOLOCK) ON doc.fCUSTOMERID=c.fID
                 WHERE doc.fCUSTOMERID IN ({cust_sub}) {dc_w}
-            """, (aid, date_from, date_to) + dc_p)
+            """, (aid, date_from, date_to) + ta_cust_p + dc_p)
             debit = float(cur.fetchone().Debit or 0)
             cur.execute(f"""
                 SELECT ISNULL(SUM(CASE WHEN r.fTYPE='01' THEN r.fSUM ELSE 0 END),0) AS T1,
@@ -2844,7 +3021,7 @@ def api_managers_kpi():
                 FROM HIRESTCUSTOMERSSUM r WITH (NOLOCK)
                 INNER JOIN CUSTOMERS c WITH (NOLOCK) ON r.fCUSTOMERID=c.fID
                 WHERE r.fCUSTOMERID IN ({cust_sub}) {dc_w}
-            """, (aid, date_from, date_to) + dc_p)
+            """, (aid, date_from, date_to) + ta_cust_p + dc_p)
             rr = cur.fetchone()
             t1 = abs(float(rr.T1 or 0))
             t2 = abs(float(rr.T2 or 0))
@@ -2876,24 +3053,32 @@ def api_managers_kpi():
             code, name, closed = names.get(aid, (None, f"#{aid}", 0))
             rev = m["revenue"]
             coverage = min(100.0, m["activeCustomers"] / m["assigned"] * 100) if m["assigned"] else None
+            rp = m["routePlanned"]
+            route_visit = (m["routeVisited"] / rp * 100) if rp else None   # подъехал ÷ план маршрута
+            route_order = (m["routeOrdered"] / rp * 100) if rp else None   # заказал ÷ план маршрута
             strike = (m["salesCount"] / m["visits"] * 100) if m["visits"] else None
             lpi = (m["lines"] / m["salesCount"]) if m["salesCount"] else 0
             returns_rate = (m["returnsSum"] / rev * 100) if rev else 0
             collect_rate = (m["collected"] / rev * 100) if rev else 0
-            plan = (m["prev12"] / m["prevMonths"] * period_months) if m["prevMonths"] else None
+            plan = (m["prevYear"] * (1 + plan_growth / 100.0)) if m["prevYear"] else None
             plan_fact = (rev / plan * 100) if plan else None
             rows.append({
                 "fID": aid, "fCODE": code, "fNAME": name, "closed": int(closed or 0),
                 "revenue": rev, "salesCount": m["salesCount"], "activeCustomers": m["activeCustomers"],
                 "avgCheck": m["avgCheck"], "assigned": m["assigned"],
                 "coverage": round(coverage, 1) if coverage is not None else None,
+                "routePlanned": rp, "routeVisited": m["routeVisited"], "routeOrdered": m["routeOrdered"],
+                "routeVisit": round(route_visit, 1) if route_visit is not None else None,
+                "routeOrder": round(route_order, 1) if route_order is not None else None,
                 "visits": m["visits"], "visitedCustomers": m["visitedCustomers"],
                 "strikeRate": round(strike, 1) if strike is not None else None,
                 "linesPerInvoice": round(lpi, 2), "returnsSum": m["returnsSum"],
                 "returnsRate": round(returns_rate, 2), "newCustomers": m["newCustomers"],
                 "collected": m["collected"], "collectRate": round(collect_rate, 1),
                 "plan": round(plan) if plan else None,
+                "prevYear": round(m["prevYear"]),
                 "planFact": round(plan_fact, 1) if plan_fact is not None else None,
+                "cmp": {"y1": cmp_y1.get(aid), "y2": cmp_y2.get(aid)},
                 "debt": round(m.get("debt", 0), 2),
                 "debtDebit": round(m.get("debtDebit", 0), 2),
                 "returnsType01": round(m.get("returnsType01", 0), 2),
@@ -2952,6 +3137,7 @@ def api_managers_kpi():
             "overpayType02": sum(r["overpayType02"] for r in rows),
             "avgCoverage": round(sum(r["coverage"] for r in rows if r["coverage"] is not None)
                                  / max(1, sum(1 for r in rows if r["coverage"] is not None)), 1),
+            "cmp": team_cmp,
         }
         kpis = [{"key": k, "label": lbl, "unit": u, "higher": hb, "weight": w}
                 for (k, lbl, u, hb, w) in MANAGER_KPI_DEFS]
@@ -2961,6 +3147,220 @@ def api_managers_kpi():
 
     except Exception as e:
         logger.error(f"Ошибка получения KPI менеджеров: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _aggregate_product_groups(rows):
+    """Схлопывает строки (fCODE,fNAME,fMEASUREUNIT,grp,grpname,qcur,qy1,qy2) в группы по товарной группе
+    (PRODUCTS.fGROUP -> PrdctGrp). qcur/qy1/qy2 — количество за тот же период текущего года / год назад / 2 года назад.
+    Товары без группы — отдельными строками (grouped=False). Топ-300 по qcur."""
+    groups = {}
+    for r in rows:
+        qcur, qy1, qy2 = float(r.qcur or 0), float(r.qy1 or 0), float(r.qy2 or 0)
+        if qcur == 0 and qy1 == 0 and qy2 == 0:
+            continue
+        grp = (r.grp or '').strip()
+        if grp:
+            key, name, grouped = 'g:' + grp, (r.grpname or grp), True
+        else:
+            key, name, grouped = 'p:' + r.fCODE, r.fNAME, False
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"code": key, "name": name, "grouped": grouped,
+                               "qcur": 0.0, "qy1": 0.0, "qy2": 0.0, "items": []}
+        g["qcur"] += qcur; g["qy1"] += qy1; g["qy2"] += qy2
+        g["items"].append({"code": r.fCODE, "name": r.fNAME, "unit": r.fMEASUREUNIT or "",
+                           "qcur": round(qcur, 2), "qy1": round(qy1, 2), "qy2": round(qy2, 2)})
+    out = []
+    for g in groups.values():
+        g["items"].sort(key=lambda x: -x["qcur"])
+        g["n"] = len(g["items"])
+        g["unit"] = g["items"][0]["unit"] if g["items"] else ""
+        g["qcur"] = round(g["qcur"], 2); g["qy1"] = round(g["qy1"], 2); g["qy2"] = round(g["qy2"], 2)
+        out.append(g)
+    out.sort(key=lambda x: -x["qcur"])
+    return out[:300]
+
+
+@app.route('/api/managers/<int:agent_id>/product-sales')
+def api_manager_product_sales(agent_id):
+    """Продажи по товарам (количество) по ТЕРРИТОРИИ менеджера: этот период / прошлый месяц / прошлый год.
+    Сравнение like-for-like: базовые окна обрезаются по asof (последний день с данными). READ-ONLY."""
+    try:
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        if not date_from or not date_to:
+            today = datetime.now()
+            date_from = today.replace(day=1).strftime('%Y-%m-%d')
+            last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            date_to = last_day.strftime('%Y-%m-%d')
+
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)
+        sc_w = (" AND c.fGROUP IN (%s)" % ','.join('?' * len(sc))) if sc else ""
+        sc_p = tuple(sc)
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)          # территории (ограничиваем зоны агента)
+        sa_w = (" AND csa.fSALESAREA IN (%s)" % ','.join('?' * len(sa))) if sa else ""
+        sa_p = tuple(sa)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)        # товарные группы (PrdctGrp)
+        pg_w = (" AND p.fGROUP IN (%s)" % ','.join('?' * len(pg))) if pg else ""
+        pg_p = tuple(pg)
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+
+        # asof = последний день с продажами в пределах периода (для like-for-like сдвигов)
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE<=?", (date_to,))
+        _row = cur.fetchone()
+        _last = _row[0] if _row else None
+        asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
+
+        # Товар × 3 периода одним проходом (по клиентам территории агента). Сдвиги окон через DATEADD.
+        cur.execute(f"""
+            WITH AC AS (
+                SELECT DISTINCT csa.fCUSTOMERID AS cust
+                FROM SALESAGENTAREAS saa WITH (NOLOCK)
+                INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA = saa.fSALESAREA
+                WHERE saa.fSALESAGENTID = ?{sa_w}
+            )
+            SELECT p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP AS grp, gt.fCAPTION AS grpname,
+                   SUM(CASE WHEN s.fDATE>=? AND s.fDATE<=? THEN sd.fQUANTITY ELSE 0 END) AS qcur,
+                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE<=DATEADD(YEAR,-1,?) THEN sd.fQUANTITY ELSE 0 END) AS qy1,
+                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-2,?) AND s.fDATE<=DATEADD(YEAR,-2,?) THEN sd.fQUANTITY ELSE 0 END) AS qy2
+            FROM SALES s WITH (NOLOCK)
+            INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN = s.fISN
+            INNER JOIN PRODUCTS p WITH (NOLOCK) ON p.fID = sd.fPRODUCTID
+            LEFT JOIN TREES gt WITH (NOLOCK) ON gt.fCODE = p.fGROUP AND gt.fTREEID = 'PrdctGrp'
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+            WHERE s.fSTATE=2 AND s.fCUSTOMERID IN (SELECT cust FROM AC)
+              AND s.fDATE >= DATEADD(YEAR,-2,?) AND s.fDATE <= ? {excluded_filter}{sc_w}{pg_w}
+            GROUP BY p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP, gt.fCAPTION
+        """, (agent_id,) + sa_p + (date_from, asof, date_from, asof, date_from, asof, date_from, asof) + excluded_params + sc_p + pg_p)
+
+        # Схлопываем товары в группы по PRODUCTS.fGROUP: все вкусы одного продукта в одну строку.
+        rows = cur.fetchall()
+        conn.close()
+        out = _aggregate_product_groups(rows)
+        return jsonify({"success": True, "period": {"date_from": date_from, "date_to": date_to, "asof": asof},
+                        "groups": out})
+    except Exception as e:
+        logger.error(f"Ошибка продаж по товарам менеджера {agent_id}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/managers/product-sales-total')
+def api_managers_product_sales_total():
+    """Итоговые продажи по товарам ПО ВСЕЙ КОМАНДЕ (все продажи с учётом KPI-фильтров):
+    этот период / прошлый месяц / прошлый год, like-for-like (обрезка по asof). READ-ONLY."""
+    try:
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        if not date_from or not date_to:
+            today = datetime.now()
+            date_from = today.replace(day=1).strftime('%Y-%m-%d')
+            last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            date_to = last_day.strftime('%Y-%m-%d')
+
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)
+        sc_w = (" AND c.fGROUP IN (%s)" % ','.join('?' * len(sc))) if sc else ""
+        sc_p = tuple(sc)
+        sd = _kpi_load_list(KPI_SALES_DIVISIONS_FILE)
+        sd_w = (" AND s.fSALESAGENTID IN (SELECT DISTINCT fSALESAGENTID FROM SALESAGENTDIVISIONS WITH (NOLOCK) WHERE fDIVISION IN (%s))"
+                % ','.join('?' * len(sd))) if sd else ""
+        sd_p = tuple(sd)
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)          # территории (клиент в выбранных зонах)
+        sa_w = (" AND s.fCUSTOMERID IN (SELECT fCUSTOMERID FROM CUSTOMERSALESAREAS WITH (NOLOCK) WHERE fSALESAREA IN (%s))"
+                % ','.join('?' * len(sa))) if sa else ""
+        sa_p = tuple(sa)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)        # товарные группы (PrdctGrp)
+        pg_w = (" AND p.fGROUP IN (%s)" % ','.join('?' * len(pg))) if pg else ""
+        pg_p = tuple(pg)
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE<=?", (date_to,))
+        _row = cur.fetchone()
+        _last = _row[0] if _row else None
+        asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
+
+        # Все продажи команды (те же фильтры: исключённые + группы клиентов + дивизионы + территория + товарные группы).
+        cur.execute(f"""
+            SELECT p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP AS grp, gt.fCAPTION AS grpname,
+                   SUM(CASE WHEN s.fDATE>=? AND s.fDATE<=? THEN sd.fQUANTITY ELSE 0 END) AS qcur,
+                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE<=DATEADD(YEAR,-1,?) THEN sd.fQUANTITY ELSE 0 END) AS qy1,
+                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-2,?) AND s.fDATE<=DATEADD(YEAR,-2,?) THEN sd.fQUANTITY ELSE 0 END) AS qy2
+            FROM SALES s WITH (NOLOCK)
+            INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN = s.fISN
+            INNER JOIN PRODUCTS p WITH (NOLOCK) ON p.fID = sd.fPRODUCTID
+            LEFT JOIN TREES gt WITH (NOLOCK) ON gt.fCODE = p.fGROUP AND gt.fTREEID = 'PrdctGrp'
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+            WHERE s.fSTATE=2 AND s.fDATE >= DATEADD(YEAR,-2,?) AND s.fDATE <= ? {excluded_filter}{sc_w}{sd_w}{sa_w}{pg_w}
+            GROUP BY p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP, gt.fCAPTION
+        """, (date_from, asof, date_from, asof, date_from, asof, date_from, asof) + excluded_params + sc_p + sd_p + sa_p + pg_p)
+        rows = cur.fetchall()
+        conn.close()
+        out = _aggregate_product_groups(rows)
+        return jsonify({"success": True, "period": {"date_from": date_from, "date_to": date_to, "asof": asof},
+                        "groups": out})
+    except Exception as e:
+        logger.error(f"Ошибка итоговых продаж по товарам команды: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/managers/<int:agent_id>/revenue-trend')
+def api_manager_revenue_trend(agent_id):
+    """Динамика выручки за 36 месяцев по ТЕРРИТОРИИ менеджера (его нынешние клиенты, независимо от того,
+    какой агент их вёл — устойчиво к текучке). Учитывает KPI-фильтры (территория/группы клиентов/товарные группы),
+    zero-fill по месяцам. READ-ONLY."""
+    try:
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)
+        sc_w = (" AND c.fGROUP IN (%s)" % ','.join('?' * len(sc))) if sc else ""; sc_p = tuple(sc)
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)
+        sa_w = (" AND csa.fSALESAREA IN (%s)" % ','.join('?' * len(sa))) if sa else ""; sa_p = tuple(sa)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)
+        pg_w = (" AND s.fISN IN (SELECT sd2.fISN FROM SALEDOCDETAILS sd2 WITH (NOLOCK)"
+                " INNER JOIN PRODUCTS p2 WITH (NOLOCK) ON p2.fID=sd2.fPRODUCTID WHERE p2.fGROUP IN (%s))"
+                % ','.join('?' * len(pg))) if pg else ""; pg_p = tuple(pg)
+
+        conn = db.get_connection(); cur = conn.cursor()
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2")
+        last = cur.fetchone()[0]
+        ly, lm = (last.year, last.month) if last else (datetime.now().year, datetime.now().month)
+        # 36 ярлыков месяцев, заканчивая последним месяцем с данными
+        labels = []
+        y, mo = ly, lm
+        for _ in range(36):
+            labels.append(f"{y:04d}-{mo:02d}")
+            mo -= 1
+            if mo == 0:
+                y -= 1; mo = 12
+        labels.reverse()
+        start = labels[0] + "-01"
+
+        cur.execute(f"""
+            WITH AC AS (
+                SELECT DISTINCT csa.fCUSTOMERID AS cust
+                FROM SALESAGENTAREAS saa WITH (NOLOCK)
+                INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA = saa.fSALESAREA
+                WHERE saa.fSALESAGENTID = ?{sa_w}
+            )
+            SELECT FORMAT(s.fDATE,'yyyy-MM') AS Month, ISNULL(SUM(s.fTOTALSUM),0) AS TotalSum,
+                   COUNT(s.fISN) AS SalesCount
+            FROM SALES s WITH (NOLOCK)
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+            WHERE s.fSTATE=2 AND s.fCUSTOMERID IN (SELECT cust FROM AC)
+              AND s.fDATE >= ? {excluded_filter}{sc_w}{pg_w}
+            GROUP BY FORMAT(s.fDATE,'yyyy-MM')
+        """, (agent_id,) + sa_p + (start,) + excluded_params + sc_p + pg_p)
+        by_month = {r.Month: (float(r.TotalSum), int(r.SalesCount)) for r in cur.fetchall()}
+        conn.close()
+        series = [{"Month": mth, "TotalSum": by_month.get(mth, (0.0, 0))[0],
+                   "SalesCount": by_month.get(mth, (0.0, 0))[1]} for mth in labels]
+        return jsonify({"success": True, "data": {"sales_by_month": series}})
+    except Exception as e:
+        logger.error(f"Ошибка динамики выручки менеджера {agent_id}: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 

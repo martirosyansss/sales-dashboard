@@ -1,182 +1,472 @@
 {% extends "base_v2.html" %}
 
-{% block title %}KPI менеджеров - Sales Dashboard v2.0{% endblock %}
+{% block title %}Մենեջերների KPI - Sales Dashboard v2.0{% endblock %}
 
 {% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Armenian:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-    .kpi-table { font-size: 0.86rem; }
-    .kpi-table thead th {
+    /* ============================================================
+       МЕНЕДЖЕРЫ KPI — современный data-dashboard стиль.
+       Все правила скоупятся под .kpi-page, чтобы не задеть другие
+       страницы. Дизайн-направление: тёмный BI-дашборд, спокойные
+       поверхности, сдержанный синий акцент, статус-цвета, табличные
+       цифры. Вся логика Alpine.js/разметки сохранена без изменений.
+       ============================================================ */
+
+    .kpi-page {
+        /* Переопределяем --card-bg локально: его читают .card,
+           .score-ring-inner и sticky-заголовок таблицы — так вся
+           страница ретинтится единым тоном. */
+        --card-bg: #171b23;
+        --kpi-surface:    #171b23;
+        --kpi-surface-2:  #1d2230;
+        --kpi-surface-3:  #232a3a;
+        --kpi-line:        rgba(255,255,255,0.07);
+        --kpi-line-strong: rgba(255,255,255,0.13);
+        --kpi-text:  #e8ebf1;
+        --kpi-muted: #93a0b4;
+        --kpi-accent: #4f8cff;
+        --kpi-accent-soft: rgba(79,140,255,0.14);
+
+        font-family: 'Inter', 'Noto Sans Armenian', 'Segoe UI', system-ui, sans-serif;
+        color: var(--kpi-text);
+        letter-spacing: .1px;
+    }
+    .kpi-page .text-muted { color: var(--kpi-muted) !important; }
+
+    /* Тонкие скроллбары под тёмную тему */
+    .kpi-page ::-webkit-scrollbar { width: 10px; height: 10px; }
+    .kpi-page ::-webkit-scrollbar-track { background: transparent; }
+    .kpi-page ::-webkit-scrollbar-thumb {
+        background: rgba(255,255,255,.12); border-radius: 999px;
+        border: 2px solid transparent; background-clip: padding-box;
+    }
+    .kpi-page ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.22); background-clip: padding-box; }
+
+    /* ---------- Карточки: мягче, глубже, ровная тень ---------- */
+    .kpi-page .card {
+        background: var(--kpi-surface);
+        border: 1px solid var(--kpi-line);
+        border-radius: 16px;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.03), 0 10px 26px -16px rgba(0,0,0,.7);
+    }
+    .kpi-page .card-header {
+        background: transparent;
+        border-bottom: 1px solid var(--kpi-line);
+        font-weight: 600; letter-spacing: .2px;
+        padding: .85rem 1.1rem;
+    }
+    /* Глобальное .card:hover (base_v2.html) поднимает карточку на 5px через
+       transform → у нижней кромки указатель «теряет» hover → карточка опускается
+       → снова hover → список моргает. На этой странице геометрию на hover не
+       двигаем: только тень/бордер. */
+    .kpi-page .card:hover { transform: none; }
+
+    /* ---------- HERO-ШАПКА ---------- */
+    .kpi-hero {
+        display: flex; align-items: center; gap: 1rem;
+        padding: 1.15rem 1.35rem; border-radius: 18px;
+        background:
+            radial-gradient(120% 160% at 0% 0%, rgba(79,140,255,.18) 0%, rgba(79,140,255,0) 55%),
+            linear-gradient(180deg, #1b2230 0%, #161a22 100%);
+        border: 1px solid var(--kpi-line);
+        box-shadow: 0 14px 36px -20px rgba(0,0,0,.8);
+    }
+    .kpi-hero-icon {
+        flex: 0 0 auto; width: 54px; height: 54px; border-radius: 14px;
+        display: grid; place-items: center; font-size: 1.5rem; color: #ffd873;
+        background: linear-gradient(145deg, rgba(242,193,78,.24), rgba(242,193,78,.05));
+        border: 1px solid rgba(242,193,78,.35);
+        box-shadow: 0 8px 20px -10px rgba(242,193,78,.55);
+    }
+    .kpi-hero-text { flex: 1 1 auto; min-width: 0; }
+    .kpi-hero-title { margin: 0; font-size: 1.55rem; font-weight: 800; letter-spacing: -.4px; line-height: 1.12; }
+    .kpi-hero-sub {
+        margin: .35rem 0 0; color: var(--kpi-muted); font-size: .9rem;
+        display: flex; flex-wrap: wrap; align-items: center; gap: .55rem;
+    }
+    .kpi-period {
+        display: inline-flex; align-items: center; gap: .45rem;
+        padding: .2rem .65rem; border-radius: 999px;
+        background: var(--kpi-accent-soft); color: #bcd2ff;
+        border: 1px solid rgba(79,140,255,.28);
+        font-variant-numeric: tabular-nums; font-weight: 600; font-size: .82rem;
+    }
+    .kpi-period-arrow { opacity: .55; }
+    .kpi-help-btn {
+        flex: 0 0 auto; align-self: flex-start;
+        border: 1px solid rgba(79,140,255,.35); color: #bcd2ff;
+        background: rgba(79,140,255,.08); border-radius: 10px;
+        font-size: .85rem; font-weight: 500; padding: .5rem .85rem; white-space: nowrap;
+        transition: background .18s, border-color .18s, color .18s;
+    }
+    .kpi-help-btn:hover { background: rgba(79,140,255,.18); color: #eaf1ff; border-color: rgba(79,140,255,.55); }
+    @media (max-width: 575.98px) {
+        .kpi-hero { flex-wrap: wrap; padding: 1rem; }
+        .kpi-help-btn { width: 100%; text-align: center; }
+    }
+
+    /* ---------- STAT-ПЛИТКИ (сводка команды) ---------- */
+    /* Единая полоса KPI: на десктопе все 7 в один ряд (без «одинокой» плитки во
+       второй строке), на планшете 4, на телефоне 2. */
+    .kpi-stats-grid {
+        display: grid; gap: .7rem;
+        grid-template-columns: 1fr;   /* телефон: 1 колонка — крупные суммы AMD влезают в строку */
+    }
+    @media (min-width: 576px)  { .kpi-stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (min-width: 1200px) { .kpi-stats-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+    .kpi-stat {
+        position: relative; display: flex; align-items: center; gap: .65rem;
+        width: 100%; padding: .8rem .85rem;
+        background: linear-gradient(180deg, var(--kpi-surface-2) 0%, var(--kpi-surface) 100%);
+        border: 1px solid var(--kpi-line); border-radius: 14px; overflow: hidden;
+        transition: border-color .18s, box-shadow .18s;
+    }
+    .kpi-stat::before {
+        content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+        background: var(--accent, var(--kpi-accent));
+    }
+    .kpi-stat:hover {
+        border-color: color-mix(in srgb, var(--accent, var(--kpi-accent)) 45%, transparent);
+        box-shadow: 0 12px 28px -18px var(--accent, #000);
+    }
+    .kpi-stat-icon {
+        flex: 0 0 auto; width: 38px; height: 38px; border-radius: 11px;
+        display: grid; place-items: center; font-size: 1rem;
+        color: var(--accent, var(--kpi-accent));
+        background: color-mix(in srgb, var(--accent, var(--kpi-accent)) 16%, transparent);
+        border: 1px solid color-mix(in srgb, var(--accent, var(--kpi-accent)) 30%, transparent);
+    }
+    .kpi-stat-body { min-width: 0; }
+    .kpi-stat-label {
+        font-size: .66rem; text-transform: uppercase; letter-spacing: .5px;
+        color: var(--kpi-muted); font-weight: 600; margin-bottom: .14rem;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .kpi-stat-value {
+        font-size: 1.05rem; font-weight: 700; line-height: 1.2;
+        font-variant-numeric: tabular-nums; letter-spacing: -.2px; color: #f2f5fa;
+        overflow-wrap: anywhere;   /* при нехватке места переносим, а не прячем цифры */
+    }
+
+    /* ---------- Общие таблицы (сравнение / модалка) ---------- */
+    .kpi-page .table {
+        --bs-table-bg: transparent;
+        --bs-table-color: var(--kpi-text);
+        --bs-table-border-color: var(--kpi-line);
+        --bs-table-hover-bg: transparent;
+    }
+    .kpi-page .table thead th {
+        color: var(--kpi-muted); font-weight: 600; font-size: .76rem;
+        text-transform: uppercase; letter-spacing: .4px;
+        border-bottom: 1px solid var(--kpi-line-strong);
+    }
+
+    /* ---------- ЛИДЕРБОРД (signal-стиль) ----------
+       Отказ от сплошной заливки ячеек («лоскутное одеяло»). В каждой
+       KPI-ячейке: фактическое значение + тонкий микро-метр перцентиля
+       под ним (ширина = ранг среди коллег, цвет — красный→зелёный).
+       Колонки #/«Менеджер» липкие при горизонтальном скролле, топ-3 —
+       подиум-акценты слева. Разметка Alpine.js сохранена. */
+    .kpi-page .lb-scroll {
+        position: relative; max-height: 74vh; overflow: auto;
+        border-radius: 0 0 16px 16px;
+    }
+    .kpi-page table.kpi-table {
+        width: 100%; border-collapse: separate; border-spacing: 0;
+        font-size: .84rem;
+    }
+
+    /* Заголовки: приглушённые, кликабельные (сортировка), липкие сверху */
+    .kpi-page .kpi-table thead th {
         position: sticky; top: 0; z-index: 5;
-        background: var(--card-bg, #212529);
-        cursor: pointer; white-space: nowrap; user-select: none;
-        border-bottom: 2px solid rgba(255,255,255,0.12);
+        background: #141821;
+        color: var(--kpi-muted); font-weight: 600; font-size: .68rem;
+        text-transform: uppercase; letter-spacing: .6px; line-height: 1.25;
+        white-space: nowrap; user-select: none; cursor: pointer;
+        padding: .78rem .55rem; text-align: center;
+        border-bottom: 1px solid var(--kpi-line-strong);
+        transition: color .15s, background .15s;
     }
-    .kpi-table thead th:hover { color: #6ea8fe; }
-    .kpi-table td, .kpi-table th { vertical-align: middle; text-align: center; }
-    .kpi-table td.mgr-name, .kpi-table th.mgr-name { text-align: left; }
-    .kpi-table tbody tr { cursor: pointer; transition: background .12s; }
-    .kpi-table tbody tr:hover { background: rgba(110,168,254,0.10) !important; }
-    .kpi-cell { border-radius: 6px; font-variant-numeric: tabular-nums; }
-    .score-bar-wrap { background: rgba(255,255,255,0.08); border-radius: 6px; height: 22px; position: relative; min-width: 90px; }
-    .score-bar { height: 100%; border-radius: 6px; transition: width .3s; }
-    .score-bar-txt { position: absolute; inset: 0; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:.78rem; }
-    .rank-badge { width: 30px; height: 30px; border-radius: 50%; display:inline-flex; align-items:center; justify-content:center; font-weight:700; font-size:.8rem; }
-    .rank-1 { background: linear-gradient(135deg,#ffd700,#b8860b); color:#000; }
-    .rank-2 { background: linear-gradient(135deg,#e0e0e0,#9e9e9e); color:#000; }
-    .rank-3 { background: linear-gradient(135deg,#cd7f32,#8b5a2b); color:#fff; }
-    .rank-n { background: rgba(255,255,255,0.10); color:#adb5bd; }
-    .score-ring { width: 76px; height: 76px; border-radius: 50%; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:1.35rem;
-        background: conic-gradient(var(--ring-color) calc(var(--ring)*1%), rgba(255,255,255,0.08) 0); }
-    .score-ring-inner { width: 60px; height: 60px; border-radius:50%; background: var(--card-bg,#212529); display:flex; align-items:center; justify-content:center; }
-    .kpi-mini { margin-bottom: 6px; }
-    .kpi-mini-label { display:flex; justify-content:space-between; font-size:.72rem; color:#adb5bd; margin-bottom:2px; }
-    .kpi-mini-track { background: rgba(255,255,255,0.08); border-radius:4px; height:6px; overflow:hidden; }
-    .kpi-mini-fill { height:100%; border-radius:4px; }
-    .scorecard { transition: box-shadow .12s, border-color .12s; cursor:pointer; height:100%; }
-    .scorecard:hover { box-shadow: 0 8px 22px rgba(0,0,0,0.45); border-color: #6ea8fe; }
-    .legend-dot { width:12px; height:12px; border-radius:3px; display:inline-block; }
+    .kpi-page .kpi-table thead th:hover { color: #cfe0ff; background: #171d28; }
+    .kpi-page .kpi-table thead th.th-sorted { color: var(--kpi-accent); }
+    .kpi-page .kpi-table thead th .fa-caret-up,
+    .kpi-page .kpi-table thead th .fa-caret-down { color: var(--kpi-accent); }
 
-    /* Сводные KPI-карточки узкие (col-lg-2): при 32px крупные суммы AMD рвались
-       посреди числа на 3 строки. Уменьшаем значение и включаем табличные цифры,
-       чтобы суммы читались чисто. Область правила — только эта страница. */
-    .stat-card .stat-value {
-        font-size: 1.15rem;
-        line-height: 1.2;
-        font-variant-numeric: tabular-nums;
+    /* Тело: воздух, тонкие разделители, мягкий hover */
+    .kpi-page .kpi-table tbody tr { cursor: pointer; transition: background .12s; }
+    .kpi-page .kpi-table tbody td {
+        padding: .6rem .55rem; text-align: center; vertical-align: middle;
+        border-bottom: 1px solid var(--kpi-line);
+    }
+    .kpi-page .kpi-table tbody tr:last-child td { border-bottom: 0; }
+    .kpi-page .kpi-table tbody tr:hover td { background: rgba(79,140,255,.06); }
+
+    /* Липкие колонки # и «Менеджер» (не теряются при прокрутке KPI) */
+    .kpi-page .kpi-table .col-rank, .kpi-page .kpi-table .col-mgr {
+        position: sticky; z-index: 2; background: var(--kpi-surface);
+    }
+    .kpi-page .kpi-table .col-rank {
+        left: 0; width: 54px; min-width: 54px; padding-left: .5rem; padding-right: .5rem;
+    }
+    .kpi-page .kpi-table .col-mgr { left: 54px; text-align: left; min-width: 208px; }
+    .kpi-page .kpi-table thead .col-rank,
+    .kpi-page .kpi-table thead .col-mgr { z-index: 6; background: #141821; }
+    .kpi-page .kpi-table tbody tr:hover .col-rank,
+    .kpi-page .kpi-table tbody tr:hover .col-mgr { background: #1b212d; }
+    .kpi-page .kpi-table tbody tr:hover .col-rank { box-shadow: inset 3px 0 0 var(--kpi-accent); }
+    /* правая кромка липкой зоны — лёгкая тень отделения при скролле */
+    .kpi-page .kpi-table .col-mgr::after {
+        content: ""; position: absolute; top: 0; right: 0; bottom: -1px; width: 16px;
+        transform: translateX(100%); pointer-events: none;
+        background: linear-gradient(90deg, rgba(0,0,0,.30), transparent);
     }
 
-    /* Глобальное .card:hover (base_v2.html) поднимает карточку на 5px через transform.
-       У нижней кромки карточки это создаёт полосу, где указатель «теряет» hover →
-       карточка опускается → снова hover → и так по кругу: список начинает моргать.
-       На этой странице геометрию на hover не двигаем — оставляем только тень-подсветку. */
-    .card:hover { transform: none; }
+    /* Подиум топ-3: левый акцент на липкой rank-ячейке */
+    .kpi-page .kpi-table tbody tr.top-1 .col-rank::before,
+    .kpi-page .kpi-table tbody tr.top-2 .col-rank::before,
+    .kpi-page .kpi-table tbody tr.top-3 .col-rank::before {
+        content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    }
+    .kpi-page .kpi-table tbody tr.top-1 .col-rank::before { background: linear-gradient(#ffe07a,#d9a406); }
+    .kpi-page .kpi-table tbody tr.top-2 .col-rank::before { background: linear-gradient(#eef1f5,#a9b2be); }
+    .kpi-page .kpi-table tbody tr.top-3 .col-rank::before { background: linear-gradient(#e6a463,#a4602c); }
+
+    /* Ранг-бейджи: плоские скруглённые квадраты, медали для топ-3 */
+    .kpi-page .rank-badge {
+        width: 30px; height: 30px; border-radius: 9px;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-weight: 700; font-size: .82rem; font-variant-numeric: tabular-nums;
+    }
+    .kpi-page .rank-1 { background: linear-gradient(145deg,#ffe07a,#d9a406); color:#3a2c00; box-shadow: 0 4px 14px -6px rgba(242,193,78,.75); }
+    .kpi-page .rank-2 { background: linear-gradient(145deg,#eef1f5,#a9b2be); color:#22272e; }
+    .kpi-page .rank-3 { background: linear-gradient(145deg,#e6a463,#a4602c); color:#fff; }
+    .kpi-page .rank-n { background: rgba(255,255,255,.05); color:#9aa6b6; border: 1px solid var(--kpi-line); }
+
+    /* Колонка «Менеджер» */
+    .kpi-page .lb-mgr-name { font-weight: 600; font-size: .9rem; color: var(--kpi-text); line-height: 1.2; }
+    .kpi-page .lb-mgr-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; margin-top: .22rem; }
+    .kpi-page .lb-code { font-size: .72rem; color: var(--kpi-muted); font-variant-numeric: tabular-nums; }
+    .kpi-page .lb-area {
+        font-size: .66rem; color: #aeb9c9; background: rgba(255,255,255,.05);
+        border: 1px solid var(--kpi-line); border-radius: 6px; padding: .04rem .35rem; line-height: 1.5;
+    }
+
+    /* Колонка «Միավոր» — заголовочная метрика: крупное число + градиентный бар */
+    .kpi-page .col-score { min-width: 104px; }
+    .kpi-page .lb-score { display: flex; flex-direction: column; align-items: center; gap: .3rem; }
+    .kpi-page .lb-score-num { font-weight: 800; font-size: 1.06rem; font-variant-numeric: tabular-nums; letter-spacing: -.3px; color: #f2f5fa; }
+    .kpi-page .lb-score-track { width: 100%; max-width: 84px; height: 6px; border-radius: 999px; background: rgba(255,255,255,.07); overflow: hidden; }
+    .kpi-page .lb-score-fill { height: 100%; border-radius: 999px; transition: width .5s cubic-bezier(.4,0,.2,1); }
+
+    /* KPI-ячейка: значение + микро-метр перцентиля */
+    .kpi-page .col-kpi { min-width: 72px; }
+    .kpi-page .lb-val { font-weight: 600; font-size: .84rem; font-variant-numeric: tabular-nums; color: var(--kpi-text); white-space: nowrap; }
+    .kpi-page .lb-val.is-null { color: var(--kpi-muted); font-weight: 500; }
+    .kpi-page .lb-meter { height: 3px; width: 64%; max-width: 58px; margin: .34rem auto 0; border-radius: 999px; background: rgba(255,255,255,.06); overflow: hidden; }
+    .kpi-page .lb-meter-fill { height: 100%; border-radius: 999px; transition: width .5s cubic-bezier(.4,0,.2,1); }
+
+    /* Колонка «Պարտք» */
+    .kpi-page .col-debt { min-width: 96px; }
+    .kpi-page .lb-debt { color: #f7b955; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+    /* Легенда в шапке карточки */
+    .kpi-page .lb-legend { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .6rem; }
+    .kpi-page .lb-legend-item { display: inline-flex; align-items: center; gap: .32rem; }
+    .kpi-page .lb-legend-bar { width: 16px; height: 4px; border-radius: 999px; display: inline-block; }
+    .kpi-page .lb-legend-sep { opacity: .5; }
+
+    /* ---------- СКОРКАРТЫ ---------- */
+    .kpi-page .scorecard {
+        position: relative; height: 100%; cursor: pointer; overflow: hidden;
+        transition: box-shadow .18s, border-color .18s;
+    }
+    .kpi-page .scorecard::before {
+        content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+        background: linear-gradient(90deg, var(--kpi-accent), #0dcaf0);
+        opacity: 0; transition: opacity .18s;
+    }
+    /* Без transform на hover — сохраняем анти-джиттер правило страницы */
+    .kpi-page .scorecard:hover { border-color: rgba(79,140,255,.4); box-shadow: 0 16px 34px -18px rgba(0,0,0,.8); }
+    .kpi-page .scorecard:hover::before { opacity: 1; }
+
+    .kpi-page .score-ring {
+        width: 78px; height: 78px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        background: conic-gradient(var(--ring-color) calc(var(--ring)*1%), rgba(255,255,255,.07) 0);
+        box-shadow: 0 6px 18px -10px rgba(0,0,0,.7);
+    }
+    .kpi-page .score-ring-inner {
+        width: 60px; height: 60px; border-radius: 50%; background: var(--kpi-surface);
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 800; font-size: 1.4rem; font-variant-numeric: tabular-nums;
+    }
+    .kpi-page .kpi-mini { margin-bottom: 7px; }
+    .kpi-page .kpi-mini-label { display: flex; justify-content: space-between; font-size: .72rem; color: var(--kpi-muted); margin-bottom: 3px; }
+    .kpi-page .kpi-mini-label .text-light { font-variant-numeric: tabular-nums; }
+    .kpi-page .kpi-mini-track { background: rgba(255,255,255,.06); border-radius: 999px; height: 6px; overflow: hidden; }
+    .kpi-page .kpi-mini-fill { height: 100%; border-radius: 999px; transition: width .5s cubic-bezier(.4,0,.2,1); }
+
+    /* ---------- Поля ввода / фильтры ---------- */
+    .kpi-page .form-control, .kpi-page .form-select {
+        background: var(--kpi-surface-2); border-color: var(--kpi-line); border-radius: 10px;
+    }
+    .kpi-page .form-control:focus, .kpi-page .form-select:focus {
+        background: var(--kpi-surface-2); border-color: var(--kpi-accent);
+        box-shadow: 0 0 0 .18rem rgba(79,140,255,.22);
+    }
+    .kpi-page .input-group-text { background: var(--kpi-surface-3); border-color: var(--kpi-line); color: var(--kpi-muted); }
+
+    /* ---------- Модалка деталей ---------- */
+    .kpi-page .modal-content {
+        background: var(--kpi-surface); border: 1px solid var(--kpi-line-strong);
+        border-radius: 18px; box-shadow: 0 40px 90px -35px rgba(0,0,0,.9);
+    }
+    .kpi-page .modal-header, .kpi-page .modal-footer { border-color: var(--kpi-line); }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="container-fluid" x-data="managersKpiData()" x-init="init()">
+<div class="container-fluid kpi-page" x-data="managersKpiData()" x-init="init()">
 
     <!-- Заголовок -->
-    <div class="row mb-3 align-items-center">
-        <div class="col-md-7">
-            <h1 class="h2 mb-1"><i class="fas fa-ranking-star text-warning me-2"></i>KPI по менеджерам</h1>
-            <p class="text-muted mb-0">
-                Рейтинг эффективности по отраслевым метрикам van-sales · период
-                <span class="badge bg-secondary" x-text="period.date_from"></span> —
-                <span class="badge bg-secondary" x-text="period.date_to"></span>
+    <div class="kpi-hero mb-4">
+        <div class="kpi-hero-icon"><i class="fas fa-ranking-star"></i></div>
+        <div class="kpi-hero-text">
+            <h1 class="kpi-hero-title">Մենեջերների KPI</h1>
+            <p class="kpi-hero-sub">
+                <span>Արդյունավետության վարկանիշ՝ ըստ van-sales ճյուղային ցուցանիշների</span>
+                <span class="kpi-period">
+                    <i class="fas fa-calendar-day"></i>
+                    <span x-text="period.date_from"></span>
+                    <span class="kpi-period-arrow">→</span>
+                    <span x-text="period.date_to"></span>
+                </span>
             </p>
         </div>
-        <div class="col-md-5 text-md-end mt-2 mt-md-0">
-            <button class="btn btn-sm btn-outline-info" type="button" data-bs-toggle="collapse" data-bs-target="#kpiHelp" aria-expanded="false">
-                <i class="fas fa-circle-info me-1"></i>Как считается рейтинг?
-            </button>
-        </div>
+        <button class="btn kpi-help-btn" type="button" data-bs-toggle="collapse" data-bs-target="#kpiHelp" aria-expanded="false">
+            <i class="fas fa-circle-info me-1"></i>Ինչպե՞ս է հաշվարկվում վարկանիշը
+        </button>
     </div>
 
     <!-- Описание методики -->
     <div class="collapse mb-3" id="kpiHelp">
         <div class="card border-info">
             <div class="card-body">
-                <h5 class="card-title"><i class="fas fa-circle-info text-info me-2"></i>Описание страницы и методики расчёта</h5>
+                <h5 class="card-title"><i class="fas fa-circle-info text-info me-2"></i>Էջի և հաշվարկի մեթոդաբանության նկարագրություն</h5>
                 <p class="text-muted mb-3">
-                    Страница ранжирует менеджеров (торговых агентов van-sales) по эффективности за выбранный период.
-                    Учитываются только проведённые продажи (статус документа = 2). Все показатели рассчитываются
-                    по данным ERP <strong>только на чтение</strong> и пересчитываются при смене периода или фильтров по группам.
+                    Էջը դասակարգում է մենեջերներին (van-sales վաճառքի գործակալներ)՝ ըստ ընտրված ժամանակահատվածի արդյունավետության։
+                    Հաշվի են առնվում միայն անցկացված վաճառքները (փաստաթղթի կարգավիճակ = 2)։ Բոլոր ցուցանիշները հաշվարկվում են
+                    ERP-ի տվյալներով <strong>միայն ընթերցման ռեժիմով</strong> և վերահաշվարկվում են ժամանակահատվածը կամ խմբերի զտիչները փոխելիս։
                 </p>
 
-                <h6 class="text-info"><i class="fas fa-calculator me-1"></i>Итоговый балл (0–100)</h6>
+                <h6 class="text-info"><i class="fas fa-calculator me-1"></i>Ընդհանուր միավոր (0–100)</h6>
                 <p class="mb-2">
-                    По каждому KPI менеджеры сравниваются между собой и получают <strong>перцентильный ранг</strong>:
-                    лучший результат = 100 баллов, худший = 0 (при равных значениях — усреднённый ранг).
-                    Такой подход устойчив к выбросам. Итоговый балл — это <strong>взвешенное среднее</strong> этих рангов:
+                    Ըստ յուրաքանչյուր KPI-ի մենեջերները համեմատվում են միմյանց հետ և ստանում <strong>պերցենտիլային վարկանիշ</strong>.
+                    լավագույն արդյունքը = 100 միավոր, վատագույնը = 0 (հավասար արժեքների դեպքում՝ միջինացված վարկանիշ)։
+                    Այս մոտեցումը կայուն է ծայրահեղ արժեքների նկատմամբ։ Ընդհանուր միավորը այս վարկանիշների <strong>կշռված միջինն</strong> է.
                 </p>
                 <div class="bg-dark rounded p-2 mb-3 small font-monospace">
-                    Балл = Σ(перцентильный_ранг<sub>KPI</sub> × вес<sub>KPI</sub>) / Σ(вес<sub>KPI</sub>) &nbsp;·&nbsp; сумма весов = 100
+                    Միավոր = Σ(պերցենտիլային_վարկանիշ<sub>KPI</sub> × կշիռ<sub>KPI</sub>) / Σ(կշիռ<sub>KPI</sub>) &nbsp;·&nbsp; կշիռների գումարը = 100
                 </div>
 
-                <h6 class="text-info"><i class="fas fa-list-check me-1"></i>Показатели (KPI) и их веса</h6>
+                <h6 class="text-info"><i class="fas fa-list-check me-1"></i>Ցուցանիշները (KPI) և դրանց կշիռները</h6>
                 <div class="table-responsive mb-3">
                     <table class="table table-sm table-dark table-bordered align-middle mb-0" style="font-size:.84rem">
                         <thead>
                             <tr>
                                 <th>KPI</th>
-                                <th class="text-center">Вес</th>
-                                <th class="text-center">Лучше когда</th>
-                                <th>Что показывает</th>
+                                <th class="text-center">Կշիռ</th>
+                                <th class="text-center">Ավելի լավ երբ</th>
+                                <th>Ի՞նչ է ցույց տալիս</th>
                             </tr>
                         </thead>
                         <tbody>
                             <tr>
-                                <td><strong>Выручка</strong></td>
-                                <td class="text-center"><span class="badge bg-primary">25%</span></td>
-                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
-                                <td>Сумма продаж за период. Главный показатель с наибольшим весом.</td>
+                                <td><strong>Հասույթ</strong></td>
+                                <td class="text-center"><span class="badge bg-primary">20%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> ավելի շատ</td>
+                                <td>Ժամանակահատվածի վաճառքների գումարը։ Ամենամեծ կշիռ ունեցող գլխավոր ցուցանիշը։</td>
                             </tr>
                             <tr>
-                                <td><strong>Покрытие</strong></td>
-                                <td class="text-center"><span class="badge bg-secondary">12%</span></td>
-                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
-                                <td>Доля активных клиентов от назначенных на территории агента (активные ÷ назначенные, максимум 100%).</td>
+                                <td><strong>Հաճախորդներ</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">9%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> ավելի շատ</td>
+                                <td>Հաճախորդների թիվը, որոնց մենեջերը վաճառել է ընտրված ժամանակահատվածում (ակտիվ հաճախորդներ)։</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Երթուղու շրջայց</strong></td>
+                                <td class="text-center"><span class="badge bg-dark border">տեղեկատվական</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> ավելի շատ</td>
+                                <td><strong>Պլանային երթուղու</strong> քանի՞ հաճախորդի է գործակալը մոտեցել (GPS այց)՝ այցելածներ ÷ երթուղու հաճախորդներ × 100%։ Ցուցադրվում է աղյուսակում, բայց ընդհանուր միավորի մեջ չի մտնում։</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Պատվեր ըստ երթուղու</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">10%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> ավելի շատ</td>
+                                <td><strong>Պլանային երթուղու</strong> քանի՞ հաճախորդի է գործակալը պատվեր կատարել (անցկացված վաճառք)՝ պատվիրածներ ÷ երթուղու հաճախորդներ × 100%։ Հիմքը՝ պլանային երթուղու փաստաթղթերը (fDOCTYPE=10)։</td>
                             </tr>
                             <tr>
                                 <td><strong>Strike rate</strong></td>
-                                <td class="text-center"><span class="badge bg-secondary">10%</span></td>
-                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
-                                <td>Результативность визитов: продажи ÷ визиты (по GPS-маршрутам) × 100%.</td>
-                            </tr>
-                            <tr>
-                                <td><strong>Средний чек</strong></td>
-                                <td class="text-center"><span class="badge bg-secondary">10%</span></td>
-                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
-                                <td>Средняя сумма одной накладной за период.</td>
-                            </tr>
-                            <tr>
-                                <td><strong>Строк/накл.</strong></td>
                                 <td class="text-center"><span class="badge bg-secondary">8%</span></td>
-                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
-                                <td>Глубина корзины — среднее число товарных позиций (SKU) в накладной.</td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> ավելի շատ</td>
+                                <td>Այցերի արդյունավետությունը՝ վաճառքներ ÷ այցեր (ըստ GPS երթուղիների) × 100%։</td>
                             </tr>
                             <tr>
-                                <td><strong>Новые клиенты</strong></td>
-                                <td class="text-center"><span class="badge bg-secondary">8%</span></td>
-                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
-                                <td>Клиенты, у которых первая в истории продажа пришлась на выбранный период.</td>
-                            </tr>
-                            <tr>
-                                <td><strong>Сбор долга</strong></td>
+                                <td><strong>Միջին չեկ</strong></td>
                                 <td class="text-center"><span class="badge bg-secondary">10%</span></td>
-                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
-                                <td>Собранные платежи ÷ выручка × 100%. Насколько активно менеджер закрывает дебиторку.</td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> ավելի շատ</td>
+                                <td>Ժամանակահատվածում մեկ ապրանքագրի միջին գումարը։</td>
                             </tr>
                             <tr>
-                                <td><strong>Возвраты</strong></td>
+                                <td><strong>Տողեր/ապր.</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">8%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> ավելի շատ</td>
+                                <td>Զամբյուղի խորությունը՝ ապրանքագրի մեջ ապրանքային դիրքերի (SKU) միջին քանակը։</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Նոր հաճախորդներ</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">8%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> ավելի շատ</td>
+                                <td>Հաճախորդներ, որոնց պատմության մեջ առաջին վաճառքը ընկել է ընտրված ժամանակահատվածում։</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Պարտքի հավաքագրում</strong></td>
+                                <td class="text-center"><span class="badge bg-secondary">10%</span></td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> ավելի շատ</td>
+                                <td>Հավաքագրված վճարումներ ÷ հասույթ × 100%։ Որքանո՞վ է մենեջերը ակտիվ փակում դեբիտորական պարտքը։</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Վերադարձեր</strong></td>
                                 <td class="text-center"><span class="badge bg-secondary">7%</span></td>
-                                <td class="text-center text-danger"><i class="fas fa-arrow-down"></i> меньше</td>
-                                <td>Сумма возвратов ÷ выручка × 100%. Единственный KPI, где меньше — лучше.</td>
+                                <td class="text-center text-danger"><i class="fas fa-arrow-down"></i> ավելի քիչ</td>
+                                <td>Վերադարձերի գումար ÷ հասույթ × 100%։ Միակ KPI-ն, որտեղ քիչը՝ ավելի լավ է։</td>
                             </tr>
                             <tr>
-                                <td><strong>План/факт</strong></td>
+                                <td><strong>Պլան/փաստ</strong></td>
                                 <td class="text-center"><span class="badge bg-secondary">10%</span></td>
-                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> больше</td>
-                                <td>Факт ÷ план × 100%. План = среднемесячная выручка за 12 мес. до периода × число месяцев периода.</td>
+                                <td class="text-center text-success"><i class="fas fa-arrow-up"></i> ավելի շատ</td>
+                                <td>Փաստ ÷ պլան × 100%։ Պլան = մենեջերի տարածքի (կցված հաճախորդների) նախորդ տարվա նույն ժամանակահատվածի վաճառք × (1 + աճ%)։ Հենվում է տարածքի պատմության վրա, ուստի կայուն է գործակալների փոփոխման նկատմամբ և ինքնաբերաբար հաշվի է առնում սեզոնայնությունը։ Աճի տոկոսը սահմանվում է վերևի «Աճ%» դաշտում։</td>
                             </tr>
                         </tbody>
                     </table>
                 </div>
 
-                <h6 class="text-warning"><i class="fas fa-hand-holding-dollar me-1"></i>Долг (полная формула)</h6>
+                <h6 class="text-warning"><i class="fas fa-hand-holding-dollar me-1"></i>Պարտք (ամբողջական բանաձև)</h6>
                 <p class="mb-2">
-                    Столбец «Долг» — это <strong>чистая дебиторская задолженность</strong> по клиентам, которым менеджер
-                    продавал в периоде:
+                    «Պարտք» սյունակը <strong>զուտ դեբիտորական պարտքն</strong> է այն հաճախորդների գծով, որոնց մենեջերը
+                    վաճառել է ժամանակահատվածում.
                 </p>
                 <div class="bg-dark rounded p-2 mb-2 small font-monospace">
-                    Долг = Дебет − Возвраты (тип 01) − Переплаты (тип 02)
+                    Պարտք = Դեբետ − Վերադարձեր (տիպ 01) − Գերավճարներ (տիպ 02)
                 </div>
                 <p class="text-muted small mb-0">
-                    Цвет ячеек KPI: <span class="badge" style="background:hsl(120,60%,45%)">зелёный</span> — лучше по группе,
-                    <span class="badge text-dark" style="background:hsl(60,60%,45%)">жёлтый</span> — средне,
-                    <span class="badge" style="background:hsl(0,60%,45%)">красный</span> — хуже.
-                    Клик по строке или скоркарте открывает детализацию менеджера.
+                    KPI բջիջների գույնը՝ <span class="badge" style="background:hsl(120,60%,45%)">կանաչ</span> — խմբում ավելի լավ,
+                    <span class="badge text-dark" style="background:hsl(60,60%,45%)">դեղին</span> — միջին,
+                    <span class="badge" style="background:hsl(0,60%,45%)">կարմիր</span> — ավելի վատ։
+                    Տողի կամ գնահատաքարտի վրա սեղմելը բացում է մենեջերի մանրամասները։
                 </p>
             </div>
         </div>
@@ -188,16 +478,22 @@
         <div class="col-6 col-md-2"><input type="date" class="form-control form-control-sm" x-model="dateTo" @change="loadKpi()"></div>
         <div class="col-12 col-md-4">
             <div class="btn-group btn-group-sm w-100">
-                <button class="btn btn-outline-secondary" @click="setThisMonth()">Этот месяц</button>
-                <button class="btn btn-outline-secondary" @click="setLastMonth()">Прошлый</button>
-                <button class="btn btn-outline-secondary" @click="setThisYear()">Год</button>
+                <button class="btn btn-outline-secondary" @click="setThisMonth()">Այս ամիս</button>
+                <button class="btn btn-outline-secondary" @click="setLastMonth()">Նախորդ</button>
+                <button class="btn btn-outline-secondary" @click="setThisYear()">Տարի</button>
                 <button class="btn btn-outline-primary" @click="loadKpi()"><i class="fas fa-sync-alt"></i></button>
             </div>
         </div>
-        <div class="col-12 col-md-4">
+        <div class="col-6 col-md-1">
+            <div class="input-group input-group-sm" title="Պլանի թիրախային աճ (%) նախորդ տարվա նույն ժամանակահատվածի նկատմամբ — օգտագործվում է «Պլան/փաստ»-ի համար">
+                <span class="input-group-text px-1">Աճ%</span>
+                <input type="number" step="1" class="form-control px-1" x-model.number="planGrowth" @change="setPlanGrowth()">
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
             <div class="input-group input-group-sm">
                 <span class="input-group-text"><i class="fas fa-search"></i></span>
-                <input type="text" class="form-control" placeholder="Поиск менеджера…" x-model="searchQuery">
+                <input type="text" class="form-control" placeholder="Մենեջերի որոնում…" x-model="searchQuery">
             </div>
         </div>
     </div>
@@ -206,21 +502,73 @@
     <div class="card mb-3">
         <div class="card-body py-2">
             <div class="d-flex flex-wrap align-items-center gap-2">
-                <span class="badge bg-success"><i class="fas fa-shopping-cart me-1"></i>ПРОДАЖИ</span>
+                <span class="badge bg-primary" title="Ազդում է ամբողջ վերլուծության վրա (KPI, թիմ, ապրանքներ)"><i class="fas fa-filter me-1"></i>ԱՄԲՈՂՋ ԱՆԱԼԻԶ</span>
+
+                <!-- Территории (весь анализ) -->
+                <div class="dropdown">
+                    <button class="btn btn-sm btn-outline-primary dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                        <i class="fas fa-map-marker-alt"></i> Տարածքներ
+                        <span class="badge bg-primary ms-1" x-show="territories.length" x-text="territories.length"></span>
+                    </button>
+                    <div class="dropdown-menu p-2" style="width:320px;max-height:360px;overflow:auto">
+                        <input class="form-control form-control-sm mb-2" placeholder="տարածքի որոնում…" x-model="terrSearch">
+                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="territories=[]; saveFilters()">Մաքրել</button>
+                        <template x-for="t in optFilter(territoryOptions, terrSearch)" :key="'terr-'+t.code">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" :id="'terr-'+t.code" :value="t.code" x-model="territories" @change="saveFilters()">
+                                <label class="form-check-label" :for="'terr-'+t.code"><strong x-text="t.code"></strong> — <span x-text="t.name"></span></label>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Товарные группы (весь анализ) -->
+                <div class="dropdown">
+                    <button class="btn btn-sm btn-outline-primary dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                        <i class="fas fa-boxes-stacked"></i> Ապրանքախմբեր
+                        <span class="badge bg-primary ms-1" x-show="productGroups.length" x-text="productGroups.length"></span>
+                    </button>
+                    <div class="dropdown-menu p-2" style="width:340px;max-height:360px;overflow:auto">
+                        <input class="form-control form-control-sm mb-2" placeholder="խմբի որոնում…" x-model="pgSearch">
+                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="productGroups=[]; saveFilters()">Մաքրել</button>
+                        <template x-for="g in optFilter(productGroupOptions, pgSearch)" :key="'pg-'+g.code">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" :id="'pg-'+g.code" :value="g.code" x-model="productGroups" @change="saveFilters()">
+                                <label class="form-check-label" :for="'pg-'+g.code"><strong x-text="g.code"></strong> — <span x-text="g.name"></span></label>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <span class="vr d-none d-lg-inline"></span>
+                <span class="badge bg-success"><i class="fas fa-shopping-cart me-1"></i>ՎԱՃԱՌՔ</span>
 
                 <!-- Продажи: группы клиентов -->
                 <div class="dropdown">
                     <button class="btn btn-sm btn-outline-success dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside">
-                        <i class="fas fa-user-tag"></i> Группы клиентов
+                        <i class="fas fa-user-tag"></i> Հաճախորդների խմբեր
                         <span class="badge bg-success ms-1" x-show="salesClientGroups.length" x-text="salesClientGroups.length"></span>
                     </button>
                     <div class="dropdown-menu p-2" style="width:340px;max-height:360px;overflow:auto">
-                        <input class="form-control form-control-sm mb-2" placeholder="поиск группы…" x-model="cgSearch">
-                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="salesClientGroups=[]; saveFilters()">Очистить</button>
-                        <template x-for="g in optFilter(clientGroupOptions, cgSearch)" :key="'scg'+g.code">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" :id="'scg-'+g.code" :value="g.code" x-model="salesClientGroups" @change="saveFilters()">
-                                <label class="form-check-label" :for="'scg-'+g.code"><strong x-text="g.code"></strong> — <span x-text="g.name"></span></label>
+                        <input class="form-control form-control-sm mb-2" placeholder="խմբի որոնում…" x-model="cgSearch">
+                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="salesClientGroups=[]; saveFilters()">Մաքրել</button>
+                        <template x-for="node in clientGroupTree(cgSearch)" :key="'scg-'+node.code">
+                            <div class="mb-1">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" :id="'scg-'+node.code" :checked="salesClientGroups.includes(node.code)" @click="toggleClientGroup('sales', node.code)">
+                                    <label class="form-check-label fw-bold" :for="'scg-'+node.code">
+                                        <span x-text="node.code"></span> — <span x-text="node.name"></span>
+                                        <span x-show="node.hasChildren" class="badge bg-secondary ms-1" x-text="node.children.length + ' ենթ.'"></span>
+                                    </label>
+                                </div>
+                                <div class="ms-4" x-show="node.hasChildren">
+                                    <template x-for="c in node.children" :key="'scg-'+c.code">
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" :id="'scg-'+c.code" :checked="salesClientGroups.includes(c.code)" @click="toggleClientGroup('sales', c.code)">
+                                            <label class="form-check-label" :for="'scg-'+c.code"><span x-text="c.code"></span> — <span x-text="c.name"></span></label>
+                                        </div>
+                                    </template>
+                                </div>
                             </div>
                         </template>
                     </div>
@@ -229,12 +577,12 @@
                 <!-- Продажи: группы товаров (дивизионы) -->
                 <div class="dropdown">
                     <button class="btn btn-sm btn-outline-success dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside">
-                        <i class="fas fa-boxes-stacked"></i> Группы товаров
+                        <i class="fas fa-boxes-stacked"></i> Ապրանքային խմբեր
                         <span class="badge bg-success ms-1" x-show="salesDivisions.length" x-text="salesDivisions.length"></span>
                     </button>
                     <div class="dropdown-menu p-2" style="width:340px;max-height:360px;overflow:auto">
-                        <input class="form-control form-control-sm mb-2" placeholder="поиск группы…" x-model="divSearch">
-                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="salesDivisions=[]; saveFilters()">Очистить</button>
+                        <input class="form-control form-control-sm mb-2" placeholder="խմբի որոնում…" x-model="divSearch">
+                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="salesDivisions=[]; saveFilters()">Մաքրել</button>
                         <template x-for="g in optFilter(divisionOptions, divSearch)" :key="'sdiv'+g.code">
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" :id="'sdiv-'+g.code" :value="g.code" x-model="salesDivisions" @change="saveFilters()">
@@ -244,21 +592,34 @@
                     </div>
                 </div>
 
-                <span class="badge bg-warning text-dark ms-lg-3"><i class="fas fa-hand-holding-dollar me-1"></i>ДОЛГ</span>
+                <span class="badge bg-warning text-dark ms-lg-3"><i class="fas fa-hand-holding-dollar me-1"></i>ՊԱՐՏՔ</span>
 
                 <!-- Долг: группы клиентов -->
                 <div class="dropdown">
                     <button class="btn btn-sm btn-outline-warning dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside">
-                        <i class="fas fa-user-tag"></i> Группы клиентов
+                        <i class="fas fa-user-tag"></i> Հաճախորդների խմբեր
                         <span class="badge bg-warning text-dark ms-1" x-show="debtClientGroups.length" x-text="debtClientGroups.length"></span>
                     </button>
                     <div class="dropdown-menu p-2" style="width:340px;max-height:360px;overflow:auto">
-                        <input class="form-control form-control-sm mb-2" placeholder="поиск группы…" x-model="cgSearch">
-                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="debtClientGroups=[]; saveFilters()">Очистить</button>
-                        <template x-for="g in optFilter(clientGroupOptions, cgSearch)" :key="'dcg'+g.code">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" :id="'dcg-'+g.code" :value="g.code" x-model="debtClientGroups" @change="saveFilters()">
-                                <label class="form-check-label" :for="'dcg-'+g.code"><strong x-text="g.code"></strong> — <span x-text="g.name"></span></label>
+                        <input class="form-control form-control-sm mb-2" placeholder="խմբի որոնում…" x-model="cgSearch">
+                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="debtClientGroups=[]; saveFilters()">Մաքրել</button>
+                        <template x-for="node in clientGroupTree(cgSearch)" :key="'dcg-'+node.code">
+                            <div class="mb-1">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" :id="'dcg-'+node.code" :checked="debtClientGroups.includes(node.code)" @click="toggleClientGroup('debt', node.code)">
+                                    <label class="form-check-label fw-bold" :for="'dcg-'+node.code">
+                                        <span x-text="node.code"></span> — <span x-text="node.name"></span>
+                                        <span x-show="node.hasChildren" class="badge bg-secondary ms-1" x-text="node.children.length + ' ենթ.'"></span>
+                                    </label>
+                                </div>
+                                <div class="ms-4" x-show="node.hasChildren">
+                                    <template x-for="c in node.children" :key="'dcg-'+c.code">
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" :id="'dcg-'+c.code" :checked="debtClientGroups.includes(c.code)" @click="toggleClientGroup('debt', c.code)">
+                                            <label class="form-check-label" :for="'dcg-'+c.code"><span x-text="c.code"></span> — <span x-text="c.name"></span></label>
+                                        </div>
+                                    </template>
+                                </div>
                             </div>
                         </template>
                     </div>
@@ -267,12 +628,12 @@
                 <!-- Долг: группы товаров (дивизионы) -->
                 <div class="dropdown">
                     <button class="btn btn-sm btn-outline-warning dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside">
-                        <i class="fas fa-boxes-stacked"></i> Группы товаров
+                        <i class="fas fa-boxes-stacked"></i> Ապրանքային խմբեր
                         <span class="badge bg-warning text-dark ms-1" x-show="debtDivisions.length" x-text="debtDivisions.length"></span>
                     </button>
                     <div class="dropdown-menu p-2" style="width:340px;max-height:360px;overflow:auto">
-                        <input class="form-control form-control-sm mb-2" placeholder="поиск группы…" x-model="divSearch">
-                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="debtDivisions=[]; saveFilters()">Очистить</button>
+                        <input class="form-control form-control-sm mb-2" placeholder="խմբի որոնում…" x-model="divSearch">
+                        <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="debtDivisions=[]; saveFilters()">Մաքրել</button>
                         <template x-for="g in optFilter(divisionOptions, divSearch)" :key="'ddiv'+g.code">
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" :id="'ddiv-'+g.code" :value="g.code" x-model="debtDivisions" @change="saveFilters()">
@@ -283,85 +644,243 @@
                 </div>
 
                 <button class="btn btn-sm btn-outline-danger ms-auto" x-show="anyFilterActive()" @click="clearAllFilters()">
-                    <i class="fas fa-filter-circle-xmark me-1"></i>Сбросить фильтры
+                    <i class="fas fa-filter-circle-xmark me-1"></i>Զրոյացնել զտիչները
                 </button>
             </div>
         </div>
     </div>
 
     <!-- Сводка команды -->
-    <div class="row g-3 mb-4">
+    <div class="kpi-stats-grid mb-4">
         <template x-for="c in teamCards" :key="c.label">
-            <div class="col-6 col-lg-2">
-                <div class="card stat-card h-100" :style="`border-left:4px solid ${c.color}`">
-                    <div class="card-body py-2 px-3">
-                        <div class="stat-label small text-muted" x-text="c.label"></div>
-                        <div class="stat-value h5 mb-0" x-text="c.value"></div>
-                    </div>
+            <div class="kpi-stat" :style="`--accent:${c.color}`">
+                <div class="kpi-stat-icon"><i class="fas" :class="c.icon"></i></div>
+                <div class="kpi-stat-body">
+                    <div class="kpi-stat-label" x-text="c.label"></div>
+                    <div class="kpi-stat-value" x-text="c.value"></div>
                 </div>
             </div>
         </template>
     </div>
 
+    <!-- Сравнение команды по периодам -->
+    <div class="card mb-4" x-show="!loading && team.cmp">
+        <div class="card-body py-2">
+            <h6 class="text-muted mb-2"><i class="fas fa-scale-balanced me-1"></i>Թիմի համեմատում ժամանակահատվածների հետ</h6>
+            <div class="table-responsive">
+                <table class="table table-sm table-dark align-middle mb-0" style="font-size:.85rem">
+                    <thead>
+                        <tr>
+                            <th>Ցուցանիշ</th>
+                            <th class="text-end" x-text="yearLabel(0)"></th>
+                            <th class="text-end" x-text="yearLabel(1)"></th>
+                            <th class="text-center">Δ</th>
+                            <th class="text-end" x-text="yearLabel(2)"></th>
+                            <th class="text-center">Δ</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="r in teamComparisonRows()" :key="'t-'+r.label">
+                            <tr>
+                                <td x-text="r.label"></td>
+                                <td class="text-end fw-semibold" x-text="fmtVal(r.unit, r.cur)"></td>
+                                <td class="text-end text-muted" x-text="fmtVal(r.unit, r.y1)"></td>
+                                <td class="text-center" x-html="deltaHtml(cmpDelta(r.cur, r.y1))"></td>
+                                <td class="text-end text-muted" x-text="fmtVal(r.unit, r.y2)"></td>
+                                <td class="text-center" x-html="deltaHtml(cmpDelta(r.cur, r.y2))"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+            <div class="small text-muted mt-1">Վերջին 3 տարիները՝ նույն ժամանակահատվածը յուրաքանչյուր տարվա համար։ Չավարտված ժամանակահատվածում համեմատումը՝ մինչև տվյալների վերջին օրը (նույն քանակի օրերով, like-for-like)։</div>
+        </div>
+    </div>
+
+    <!-- Продажи по товарам — командный итог (сворачиваемый) -->
+    <div class="card mb-4" x-show="!loading && rows.length > 0">
+        <div class="card-header py-2 d-flex align-items-center" style="cursor:pointer" @click="toggleTeamProducts()">
+            <i class="fas fa-fw" :class="showTeamProducts ? 'fa-caret-down' : 'fa-caret-right'"></i>
+            <i class="fas fa-boxes-stacked mx-1 text-info"></i>
+            <span class="fw-semibold">Ապրանքների վաճառք — ամբողջ թիմ (ըստ քանակի, խմբավորված)</span>
+            <span class="small text-muted ms-2">սեղմեք բացելու համար</span>
+        </div>
+        <div class="card-body py-2" x-show="showTeamProducts" x-cloak>
+            <input class="form-control form-control-sm mb-2" placeholder="ապրանքի / խմբի որոնում…" x-model="teamProdSearch">
+            <div class="table-responsive" style="max-height:360px; overflow:auto;">
+                <table class="table table-sm table-dark align-middle mb-0" style="font-size:.82rem">
+                    <thead>
+                        <tr>
+                            <th>Ապրանքախումբ</th>
+                            <th class="text-center">Չափ</th>
+                            <th class="text-end" x-text="yearLabel(0)"></th>
+                            <th class="text-end" x-text="yearLabel(1)"></th>
+                            <th class="text-center">Δ</th>
+                            <th class="text-end" x-text="yearLabel(2)"></th>
+                            <th class="text-center">Δ</th>
+                        </tr>
+                    </thead>
+                    <template x-for="g in groupView(teamProductGroups, teamProdSearch, teamExpandedGroups)" :key="'tp-'+g.code">
+                        <tbody>
+                            <tr :style="g.grouped ? 'cursor:pointer' : ''" @click="g.grouped && toggleExpand(teamExpandedGroups, g.code)">
+                                <td class="fw-semibold">
+                                    <i class="fas fa-fw" :class="!g.grouped ? 'fa-minus text-muted' : (g.open ? 'fa-caret-down' : 'fa-caret-right')"></i>
+                                    <span x-text="g.name"></span>
+                                    <span class="badge bg-secondary ms-1" x-show="g.grouped && g.n > 1" x-text="g.n"></span>
+                                </td>
+                                <td class="text-center text-muted" x-text="g.unit"></td>
+                                <td class="text-end fw-semibold" x-text="fmtQty(g.qcur)"></td>
+                                <td class="text-end text-muted" x-text="fmtQty(g.qy1)"></td>
+                                <td class="text-center" x-html="deltaHtml(cmpDelta(g.qcur, g.qy1))"></td>
+                                <td class="text-end text-muted" x-text="fmtQty(g.qy2)"></td>
+                                <td class="text-center" x-html="deltaHtml(cmpDelta(g.qcur, g.qy2))"></td>
+                            </tr>
+                            <template x-for="it in (g.open ? g.itemsShown : [])" :key="'tp-'+g.code+'|'+it.code">
+                                <tr class="small" style="background:rgba(255,255,255,0.02)">
+                                    <td class="ps-4"><span class="text-muted" x-text="it.name"></span> <span class="text-secondary" x-text="it.code"></span></td>
+                                    <td class="text-center text-muted" x-text="it.unit"></td>
+                                    <td class="text-end" x-text="fmtQty(it.qcur)"></td>
+                                    <td class="text-end text-muted" x-text="fmtQty(it.qy1)"></td>
+                                    <td class="text-center" x-html="deltaHtml(cmpDelta(it.qcur, it.qy1))"></td>
+                                    <td class="text-end text-muted" x-text="fmtQty(it.qy2)"></td>
+                                    <td class="text-center" x-html="deltaHtml(cmpDelta(it.qcur, it.qy2))"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </template>
+                    <tbody>
+                        <tr x-show="teamProductsLoaded && !groupView(teamProductGroups, teamProdSearch, teamExpandedGroups).length"><td colspan="7" class="text-muted small">Տվյալներ չկան</td></tr>
+                        <tr x-show="!teamProductsLoaded"><td colspan="7" class="text-muted small">Բեռնում…</td></tr>
+                    </tbody>
+                    <tfoot x-show="teamProductsLoaded && teamProductGroups.length" style="position:sticky;bottom:0;background:var(--card-bg,#212529)">
+                        <template x-for="tt in [groupTotals(teamProductGroups, teamProdSearch)]" :key="'tot'">
+                            <tr class="fw-bold" style="border-top:2px solid rgba(255,255,255,0.18)">
+                                <td>ԸՆԴԱՄԵՆԸ</td>
+                                <td class="text-center text-muted">հատ</td>
+                                <td class="text-end" x-text="fmtQty(tt.qcur)"></td>
+                                <td class="text-end text-muted" x-text="fmtQty(tt.qy1)"></td>
+                                <td class="text-center" x-html="deltaHtml(cmpDelta(tt.qcur, tt.qy1))"></td>
+                                <td class="text-end text-muted" x-text="fmtQty(tt.qy2)"></td>
+                                <td class="text-center" x-html="deltaHtml(cmpDelta(tt.qcur, tt.qy2))"></td>
+                            </tr>
+                        </template>
+                    </tfoot>
+                </table>
+            </div>
+            <div class="small text-muted mt-1">Ամբողջ թիմի վաճառքը՝ ըստ ապրանքախմբի (նույն զտիչներով)։ Սեղմեք խմբին՝ համերը տեսնելու համար։ Ցույց են տրվում վերջին 3 տարիները՝ նույն ժամանակահատվածը (նույն օրերի կտրվածքով, like-for-like)։</div>
+        </div>
+    </div>
+
+    <!-- Итог по продавцам (TOTAL) -->
+    <div class="card mb-4" x-show="!loading && rows.length > 0">
+        <div class="card-header py-2"><i class="fas fa-user-tie me-1 text-info"></i><span class="fw-semibold">Ընդամենը ըստ վաճառողների</span></div>
+        <div class="card-body py-2">
+            <div class="table-responsive" style="max-height:360px;overflow:auto">
+                <table class="table table-sm table-dark table-hover align-middle mb-0" style="font-size:.85rem">
+                    <thead>
+                        <tr>
+                            <th>Վաճառող</th>
+                            <th class="text-end">Հասույթ</th>
+                            <th class="text-end">Բաժին</th>
+                            <th class="text-end">Հաճախորդներ</th>
+                            <th class="text-end">Վաճառքներ</th>
+                            <th class="text-end">Միջին չեկ</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="m in filteredRows" :key="'st-'+m.fID">
+                            <tr style="cursor:pointer" @click="openDetail(m)">
+                                <td><span class="fw-semibold" x-text="m.fNAME"></span> <span class="small text-muted" x-text="m.fCODE"></span></td>
+                                <td class="text-end fw-semibold text-success" x-text="formatCurrency(m.revenue)"></td>
+                                <td class="text-end text-muted" x-text="sellerShare(m)"></td>
+                                <td class="text-end" x-text="formatNumber(m.activeCustomers)"></td>
+                                <td class="text-end" x-text="formatNumber(m.salesCount)"></td>
+                                <td class="text-end text-muted" x-text="formatCurrency(m.avgCheck)"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                    <tfoot style="position:sticky;bottom:0;background:var(--card-bg,#212529)">
+                        <template x-for="tt in [sellerTotals()]" :key="'sttot'">
+                            <tr class="fw-bold" style="border-top:2px solid rgba(255,255,255,0.18)">
+                                <td>ԸՆԴԱՄԵՆԸ (<span x-text="filteredRows.length"></span>)</td>
+                                <td class="text-end text-success" x-text="formatCurrency(tt.revenue)"></td>
+                                <td class="text-end">100%</td>
+                                <td class="text-end" x-text="formatNumber(tt.activeCustomers)"></td>
+                                <td class="text-end" x-text="formatNumber(tt.salesCount)"></td>
+                                <td class="text-end text-muted" x-text="formatCurrency(tt.avgCheck)"></td>
+                            </tr>
+                        </template>
+                    </tfoot>
+                </table>
+            </div>
+            <div class="small text-muted mt-1">Ընդամենը՝ ընթացիկ ժամանակահատվածի համար, ընտրված զտիչներով։ Սեղմեք տողին՝ մանրամասների համար։</div>
+        </div>
+    </div>
+
     <!-- Загрузка -->
     <div x-show="loading" class="text-center py-5">
         <div class="spinner-border text-primary" style="width:3rem;height:3rem"></div>
-        <p class="text-muted mt-2">Загрузка KPI…</p>
+        <p class="text-muted mt-2">KPI-ի բեռնում…</p>
     </div>
 
-    <div x-show="!loading && rows.length === 0" class="alert alert-info">Нет данных за выбранный период.</div>
+    <div x-show="!loading && rows.length === 0" class="alert alert-info">Ընտրված ժամանակահատվածում տվյալներ չկան։</div>
 
-    <!-- ЛИДЕРБОРД -->
-    <div class="card mb-4" x-show="!loading && rows.length > 0">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="fas fa-trophy text-warning me-2"></i>Рейтинг менеджеров</span>
-            <span class="small text-muted">
-                <span class="legend-dot" style="background:hsl(120,60%,45%)"></span> лучше
-                <span class="legend-dot ms-2" style="background:hsl(60,60%,45%)"></span> средне
-                <span class="legend-dot ms-2" style="background:hsl(0,60%,45%)"></span> хуже
-                · клик по строке — детали
+    <!-- ЛИДЕРБОРД (signal-стиль) -->
+    <div class="card lb-card mb-4" x-show="!loading && rows.length > 0">
+        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <span><i class="fas fa-trophy text-warning me-2"></i>Մենեջերների վարկանիշ</span>
+            <span class="lb-legend small text-muted">
+                <span class="lb-legend-item"><span class="lb-legend-bar" style="background:hsl(120,62%,45%)"></span> ավելի լավ</span>
+                <span class="lb-legend-item"><span class="lb-legend-bar" style="background:hsl(60,62%,45%)"></span> միջին</span>
+                <span class="lb-legend-item"><span class="lb-legend-bar" style="background:hsl(0,62%,45%)"></span> ավելի վատ</span>
+                <span class="lb-legend-sep">·</span> սեղմեք տողին՝ մանրամասներ
             </span>
         </div>
-        <div class="card-body p-0" style="max-height:70vh; overflow:auto;">
-            <table class="table table-dark table-hover kpi-table mb-0">
+        <div class="card-body p-0 lb-scroll">
+            <table class="table kpi-table mb-0">
                 <thead>
                     <tr>
-                        <th @click="sortBy('rank')" style="width:44px">#</th>
-                        <th class="mgr-name" @click="sortBy('fNAME')">Менеджер <span x-html="ind('fNAME')"></span></th>
-                        <th @click="sortBy('score')" style="min-width:110px">Балл <span x-html="ind('score')"></span></th>
+                        <th class="col-rank" @click="sortBy('rank')" :class="{'th-sorted': sortKey==='rank'}">#</th>
+                        <th class="col-mgr" @click="sortBy('fNAME')" :class="{'th-sorted': sortKey==='fNAME'}">Մենեջեր <span x-html="ind('fNAME')"></span></th>
+                        <th class="col-score" @click="sortBy('score')" :class="{'th-sorted': sortKey==='score'}">Միավոր <span x-html="ind('score')"></span></th>
                         <template x-for="k in kpis" :key="k.key">
-                            <th @click="sortBy(k.key)">
+                            <th class="col-kpi" @click="sortBy(k.key)" :class="{'th-sorted': sortKey===k.key}">
                                 <span x-text="k.label"></span> <span x-html="ind(k.key)"></span>
                             </th>
                         </template>
-                        <th @click="sortBy('debt')" title="Дебет − возвраты − переплаты">Долг <span x-html="ind('debt')"></span></th>
+                        <th class="col-debt" @click="sortBy('debt')" :class="{'th-sorted': sortKey==='debt'}" title="Դեբետ − վերադարձեր − գերավճարներ">Պարտք <span x-html="ind('debt')"></span></th>
                     </tr>
                 </thead>
                 <tbody>
                     <template x-for="m in filteredRows" :key="m.fID">
-                        <tr @click="openDetail(m)">
-                            <td><span class="rank-badge" :class="rankClass(m.rank)" x-text="m.rank"></span></td>
-                            <td class="mgr-name">
-                                <div class="fw-semibold" x-text="m.fNAME"></div>
-                                <div class="small text-muted">
-                                    <span x-text="m.fCODE"></span>
+                        <tr :class="m.rank <= 3 ? 'top-' + m.rank : ''" @click="openDetail(m)">
+                            <td class="col-rank"><span class="rank-badge" :class="rankClass(m.rank)" x-text="m.rank"></span></td>
+                            <td class="col-mgr">
+                                <div class="lb-mgr-name" x-text="m.fNAME"></div>
+                                <div class="lb-mgr-meta">
+                                    <span class="lb-code" x-text="m.fCODE"></span>
                                     <template x-for="a in m.SalesAreas.slice(0,2)" :key="a.code">
-                                        <span class="badge bg-secondary ms-1" x-text="a.name"></span>
+                                        <span class="lb-area" x-text="a.name"></span>
                                     </template>
                                 </div>
                             </td>
-                            <td>
-                                <div class="score-bar-wrap">
-                                    <div class="score-bar" :style="`width:${m.score}%; background:${scoreColor(m.score)}`"></div>
-                                    <div class="score-bar-txt" x-text="m.score"></div>
+                            <td class="col-score">
+                                <div class="lb-score">
+                                    <span class="lb-score-num" x-text="m.score"></span>
+                                    <div class="lb-score-track">
+                                        <div class="lb-score-fill" :style="`width:${m.score}%; background:${scoreColor(m.score)}`"></div>
+                                    </div>
                                 </div>
                             </td>
                             <template x-for="k in kpis" :key="k.key">
-                                <td class="kpi-cell" :style="cellStyle(m.scores[k.key])">
-                                    <span x-text="fmt(k.key, m[k.key])"></span>
+                                <td class="col-kpi" :title="cellTitle(m, k.key)">
+                                    <div class="lb-val" :class="{'is-null': m.scores[k.key] === null || m.scores[k.key] === undefined}" x-text="fmt(k.key, m[k.key])"></div>
+                                    <div class="lb-meter" x-show="m.scores[k.key] !== null && m.scores[k.key] !== undefined">
+                                        <div class="lb-meter-fill" :style="`width:${m.scores[k.key] || 0}%; background:${scoreColor(m.scores[k.key])}`"></div>
+                                    </div>
                                 </td>
                             </template>
-                            <td class="text-warning fw-semibold" x-text="formatCurrency(m.debt)"></td>
+                            <td class="col-debt"><span class="lb-debt" x-text="formatCurrency(m.debt)"></span></td>
                         </tr>
                     </template>
                 </tbody>
@@ -370,7 +889,7 @@
     </div>
 
     <!-- СКОРКАРТЫ -->
-    <h5 class="mb-3" x-show="!loading && rows.length > 0"><i class="fas fa-id-card me-2 text-info"></i>Скоркарты менеджеров</h5>
+    <h5 class="mb-3" x-show="!loading && rows.length > 0"><i class="fas fa-id-card me-2 text-info"></i>Մենեջերների գնահատաքարտեր</h5>
     <div class="row g-3" x-show="!loading">
         <template x-for="m in filteredRows" :key="'card-'+m.fID">
             <div class="col-xl-3 col-lg-4 col-md-6">
@@ -388,14 +907,14 @@
                                 <div class="score-ring-inner" x-text="m.score"></div>
                             </div>
                             <div class="flex-grow-1">
-                                <div class="small text-muted">Выручка</div>
+                                <div class="small text-muted">Հասույթ</div>
                                 <div class="h6 mb-0 text-success" x-text="formatCurrency(m.revenue)"></div>
-                                <div class="small text-warning" title="Дебет − возвраты − переплаты">
-                                    <i class="fas fa-hand-holding-dollar"></i> Долг: <span x-text="formatCurrency(m.debt)"></span>
+                                <div class="small text-warning" title="Դեբետ − վերադարձեր − գերավճարներ">
+                                    <i class="fas fa-hand-holding-dollar"></i> Պարտք՝ <span x-text="formatCurrency(m.debt)"></span>
                                 </div>
                                 <div class="small text-muted mt-1">
-                                    <i class="fas fa-users"></i> <span x-text="m.activeCustomers"></span> кл.
-                                    · <span x-text="m.salesCount"></span> прод.
+                                    <i class="fas fa-users"></i> <span x-text="m.activeCustomers"></span> հաճ.
+                                    · <span x-text="m.salesCount"></span> վաճ.
                                 </div>
                             </div>
                         </div>
@@ -424,32 +943,60 @@
                     <h5 class="modal-title">
                         <span class="rank-badge me-2" :class="detail.m ? rankClass(detail.m.rank) : ''" x-text="detail.m ? detail.m.rank : ''"></span>
                         <span x-text="detail.m ? detail.m.fNAME : ''"></span>
-                        <span class="badge bg-primary ms-2" x-text="detail.m ? 'Балл '+detail.m.score : ''"></span>
+                        <span class="badge bg-primary ms-2" x-text="detail.m ? 'Միավոր '+detail.m.score : ''"></span>
                     </h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
                     <div class="row g-3">
                         <div class="col-lg-7">
-                            <h6 class="text-muted">Динамика выручки (12 мес)</h6>
+                            <h6 class="text-muted">Հասույթի դինամիկան (3 տարի)</h6>
                             <canvas id="mgrMonthlyChart" height="150"></canvas>
                         </div>
                         <div class="col-lg-5">
-                            <h6 class="text-muted">Профиль KPI (балл 0–100)</h6>
+                            <h6 class="text-muted">KPI պրոֆիլ (միավոր 0–100)</h6>
                             <canvas id="mgrRadarChart" height="150"></canvas>
                         </div>
                     </div>
                     <hr>
                     <div class="alert alert-secondary py-2 mb-3" x-show="detail.m" style="background:rgba(253,126,20,.12);border-color:rgba(253,126,20,.4)">
-                        <strong><i class="fas fa-hand-holding-dollar me-1"></i>Долг (полная формула):</strong>
-                        Дебет <span x-text="detail.m ? formatCurrency(detail.m.debtDebit) : ''"></span>
-                        − Возвраты <span class="text-info" x-text="detail.m ? formatCurrency(detail.m.returnsType01) : ''"></span>
-                        − Переплаты <span class="text-info" x-text="detail.m ? formatCurrency(detail.m.overpayType02) : ''"></span>
+                        <strong><i class="fas fa-hand-holding-dollar me-1"></i>Պարտք (ամբողջական բանաձև)՝</strong>
+                        Դեբետ <span x-text="detail.m ? formatCurrency(detail.m.debtDebit) : ''"></span>
+                        − Վերադարձեր <span class="text-info" x-text="detail.m ? formatCurrency(detail.m.returnsType01) : ''"></span>
+                        − Գերավճարներ <span class="text-info" x-text="detail.m ? formatCurrency(detail.m.overpayType02) : ''"></span>
                         = <strong class="text-warning" x-text="detail.m ? formatCurrency(detail.m.debt) : ''"></strong>
+                    </div>
+                    <h6 class="text-muted"><i class="fas fa-scale-balanced me-1"></i>Համեմատում ժամանակահատվածների հետ</h6>
+                    <div class="table-responsive mb-3">
+                        <table class="table table-sm table-dark align-middle mb-0" style="font-size:.85rem">
+                            <thead>
+                                <tr>
+                                    <th>Ցուցանիշ</th>
+                                    <th class="text-end" x-text="yearLabel(0)"></th>
+                                    <th class="text-end" title="Տարածքի (կցված հաճախորդների) վաճառքը" x-text="yearLabel(1)"></th>
+                                    <th class="text-center">Δ</th>
+                                    <th class="text-end" title="Տարածքի (կցված հաճախորդների) վաճառքը" x-text="yearLabel(2)"></th>
+                                    <th class="text-center">Δ</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="r in comparisonRows(detail.m)" :key="r.label">
+                                    <tr>
+                                        <td x-text="r.label"></td>
+                                        <td class="text-end fw-semibold" x-text="fmtVal(r.unit, r.cur)"></td>
+                                        <td class="text-end text-muted" x-text="fmtVal(r.unit, r.y1)"></td>
+                                        <td class="text-center" x-html="deltaHtml(cmpDelta(r.cur, r.y1))"></td>
+                                        <td class="text-end text-muted" x-text="fmtVal(r.unit, r.y2)"></td>
+                                        <td class="text-center" x-html="deltaHtml(cmpDelta(r.cur, r.y2))"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                        <div class="small text-muted mt-1">Վերջին 3 տարիները՝ նույն ժամանակահատվածը՝ ըստ մենեջերի ընթացիկ տարածքի (կցված հաճախորդների)՝ անկախ նրանից, թե ով է սպասարկել — կայուն է գործակալների փոփոխման նկատմամբ։ Չավարտված ժամանակահատվածում համեմատումը՝ մինչև տվյալների վերջին օրը (like-for-like)։</div>
                     </div>
                     <div class="row g-3">
                         <div class="col-lg-7">
-                            <h6 class="text-muted">Все показатели</h6>
+                            <h6 class="text-muted">Բոլոր ցուցանիշները</h6>
                             <div class="row g-2">
                                 <template x-for="k in kpis" :key="'d-'+k.key">
                                     <div class="col-6 col-xl-4">
@@ -462,7 +1009,7 @@
                             </div>
                         </div>
                         <div class="col-lg-5">
-                            <h6 class="text-muted">Топ клиентов периода/года</h6>
+                            <h6 class="text-muted">Ժամանակահատվածի/տարվա թոփ հաճախորդներ</h6>
                             <div style="max-height:230px; overflow:auto;">
                                 <table class="table table-sm table-dark mb-0">
                                     <tbody>
@@ -472,12 +1019,75 @@
                                                 <td class="small text-end text-success" x-text="formatCurrency(c.TotalSum)"></td>
                                             </tr>
                                         </template>
-                                        <tr x-show="detail.topCustomers.length === 0"><td class="text-muted small">Нет данных</td></tr>
+                                        <tr x-show="detail.topCustomers.length === 0"><td class="text-muted small">Տվյալներ չկան</td></tr>
                                     </tbody>
                                 </table>
                             </div>
                         </div>
                     </div>
+                    <hr>
+                    <h6 class="text-muted"><i class="fas fa-boxes-stacked me-1"></i>Ապրանքների վաճառք ըստ քանակի (տարածք, խմբավորված)</h6>
+                    <input class="form-control form-control-sm mb-2" placeholder="ապրանքի / խմբի որոնում…" x-model="prodSearch">
+                    <div class="table-responsive" style="max-height:320px; overflow:auto;">
+                        <table class="table table-sm table-dark align-middle mb-0" style="font-size:.82rem">
+                            <thead>
+                                <tr>
+                                    <th>Ապրանքախումբ</th>
+                                    <th class="text-center">Չափ</th>
+                                    <th class="text-end" x-text="yearLabel(0)"></th>
+                                    <th class="text-end" x-text="yearLabel(1)"></th>
+                                    <th class="text-center">Δ</th>
+                                    <th class="text-end" x-text="yearLabel(2)"></th>
+                                    <th class="text-center">Δ</th>
+                                </tr>
+                            </thead>
+                            <template x-for="g in groupView(detail.productGroups, prodSearch, expandedGroups)" :key="g.code">
+                                <tbody>
+                                    <tr :style="g.grouped ? 'cursor:pointer' : ''" @click="g.grouped && toggleExpand(expandedGroups, g.code)">
+                                        <td class="fw-semibold">
+                                            <i class="fas fa-fw" :class="!g.grouped ? 'fa-minus text-muted' : (g.open ? 'fa-caret-down' : 'fa-caret-right')"></i>
+                                            <span x-text="g.name"></span>
+                                            <span class="badge bg-secondary ms-1" x-show="g.grouped && g.n > 1" x-text="g.n"></span>
+                                        </td>
+                                        <td class="text-center text-muted" x-text="g.unit"></td>
+                                        <td class="text-end fw-semibold" x-text="fmtQty(g.qcur)"></td>
+                                        <td class="text-end text-muted" x-text="fmtQty(g.qy1)"></td>
+                                        <td class="text-center" x-html="deltaHtml(cmpDelta(g.qcur, g.qy1))"></td>
+                                        <td class="text-end text-muted" x-text="fmtQty(g.qy2)"></td>
+                                        <td class="text-center" x-html="deltaHtml(cmpDelta(g.qcur, g.qy2))"></td>
+                                    </tr>
+                                    <template x-for="it in (g.open ? g.itemsShown : [])" :key="g.code+'|'+it.code">
+                                        <tr class="small" style="background:rgba(255,255,255,0.02)">
+                                            <td class="ps-4"><span class="text-muted" x-text="it.name"></span> <span class="text-secondary" x-text="it.code"></span></td>
+                                            <td class="text-center text-muted" x-text="it.unit"></td>
+                                            <td class="text-end" x-text="fmtQty(it.qcur)"></td>
+                                            <td class="text-end text-muted" x-text="fmtQty(it.qy1)"></td>
+                                            <td class="text-center" x-html="deltaHtml(cmpDelta(it.qcur, it.qy1))"></td>
+                                            <td class="text-end text-muted" x-text="fmtQty(it.qy2)"></td>
+                                            <td class="text-center" x-html="deltaHtml(cmpDelta(it.qcur, it.qy2))"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </template>
+                            <tbody>
+                                <tr x-show="!groupView(detail.productGroups, prodSearch, expandedGroups).length"><td colspan="7" class="text-muted small">Տվյալներ չկան</td></tr>
+                            </tbody>
+                            <tfoot x-show="detail.productGroups.length" style="position:sticky;bottom:0;background:var(--card-bg,#212529)">
+                                <template x-for="tt in [groupTotals(detail.productGroups, prodSearch)]" :key="'mtot'">
+                                    <tr class="fw-bold" style="border-top:2px solid rgba(255,255,255,0.18)">
+                                        <td>ԸՆԴԱՄԵՆԸ</td>
+                                        <td class="text-center text-muted">հատ</td>
+                                        <td class="text-end" x-text="fmtQty(tt.qcur)"></td>
+                                        <td class="text-end text-muted" x-text="fmtQty(tt.qy1)"></td>
+                                        <td class="text-center" x-html="deltaHtml(cmpDelta(tt.qcur, tt.qy1))"></td>
+                                        <td class="text-end text-muted" x-text="fmtQty(tt.qy2)"></td>
+                                        <td class="text-center" x-html="deltaHtml(cmpDelta(tt.qcur, tt.qy2))"></td>
+                                    </tr>
+                                </template>
+                            </tfoot>
+                        </table>
+                    </div>
+                    <div class="small text-muted mt-1">Խմբավորված ըստ ապրանքախմբի (օր. «Զովացուցիչ ըմպելիք 1.5լ»՝ բոլոր համերը մեկ տողում)։ Սեղմեք խմբին՝ համերը տեսնելու համար։ Քանակը՝ ըստ տարածքի, վերջին 3 տարիները՝ նույն ժամանակահատվածը (like-for-like)։</div>
                 </div>
             </div>
         </div>
@@ -496,13 +1106,18 @@ function managersKpiData() {
         period: { date_from: '', date_to: '' },
         dateFrom: '', dateTo: '',
         searchQuery: '',
+        planGrowth: 0,
         sortKey: 'score', sortDir: 'desc',
-        cardKpis: ['coverage', 'strikeRate', 'avgCheck', 'collectRate', 'returnsRate', 'planFact'],
-        detail: { m: null, topCustomers: [] },
+        cardKpis: ['activeCustomers', 'routeVisit', 'routeOrder', 'strikeRate', 'avgCheck', 'collectRate', 'returnsRate', 'planFact'],
+        detail: { m: null, topCustomers: [], productGroups: [] },
+        prodSearch: '', expandedGroups: [],
+        teamProductGroups: [], teamProdSearch: '', teamExpandedGroups: [], showTeamProducts: false, teamProductsLoaded: false,
         monthlyChart: null, radarChart: null,
         salesClientGroups: [], debtClientGroups: [], salesDivisions: [], debtDivisions: [],
         clientGroupOptions: [], divisionOptions: [],
         cgSearch: '', divSearch: '',
+        territories: [], productGroups: [], territoryOptions: [], productGroupOptions: [],
+        terrSearch: '', pgSearch: '',
 
         async init() {
             const p = new URLSearchParams(location.search);
@@ -512,19 +1127,33 @@ function managersKpiData() {
             } else {
                 this.setThisMonth(false);
             }
+            const g = parseFloat(localStorage.getItem('kpi_plan_growth'));
+            if (!isNaN(g)) this.planGrowth = g;
             await this.loadFilterOptions();
             await this.loadSavedFilters();
             this.loadKpi();
         },
 
+        setPlanGrowth() {
+            if (this.planGrowth === '' || this.planGrowth === null || isNaN(this.planGrowth)) this.planGrowth = 0;
+            localStorage.setItem('kpi_plan_growth', this.planGrowth);
+            this.loadKpi();
+        },
+
         async loadFilterOptions() {
             try {
-                const [cg, dv] = await Promise.all([
-                    fetch('/api/customer-groups').then(r => r.json()),
-                    fetch('/api/settings/product-groups').then(r => r.json())
+                const [cg, dv, fo] = await Promise.all([
+                    fetch('/api/customer-groups-hierarchy').then(r => r.json()),
+                    fetch('/api/settings/product-groups').then(r => r.json()),
+                    fetch('/api/managers/kpi/filter-options').then(r => r.json())
                 ]);
-                if (cg.success) this.clientGroupOptions = (cg.data || []).map(g => ({ code: g.code, name: g.name }));
+                // Группы клиентов: берём плоский список из иерархии (группы + подгруппы, с полем parent)
+                if (cg.success) this.clientGroupOptions = (cg.data.flat || []).map(g => ({ code: g.code, name: g.name, parent: g.parent || '' }));
                 if (dv.data) this.divisionOptions = (dv.data || []).map(g => ({ code: g.fGROUP, name: g.name }));
+                if (fo.success) {
+                    this.territoryOptions = fo.territories || [];
+                    this.productGroupOptions = fo.product_groups || [];
+                }
             } catch (e) { console.error(e); }
         },
         async loadSavedFilters() {
@@ -535,6 +1164,8 @@ function managersKpiData() {
                     this.debtClientGroups = d.debt_client_groups || [];
                     this.salesDivisions = d.sales_divisions || [];
                     this.debtDivisions = d.debt_divisions || [];
+                    this.territories = d.territories || [];
+                    this.productGroups = d.product_groups || [];
                 }
             } catch (e) { console.error(e); }
         },
@@ -546,7 +1177,9 @@ function managersKpiData() {
                         sales_client_groups: this.salesClientGroups,
                         debt_client_groups: this.debtClientGroups,
                         sales_divisions: this.salesDivisions,
-                        debt_divisions: this.debtDivisions
+                        debt_divisions: this.debtDivisions,
+                        territories: this.territories,
+                        product_groups: this.productGroups
                     })
                 });
             } catch (e) { console.error(e); }
@@ -555,22 +1188,49 @@ function managersKpiData() {
         clearAllFilters() {
             this.salesClientGroups = []; this.debtClientGroups = [];
             this.salesDivisions = []; this.debtDivisions = [];
+            this.territories = []; this.productGroups = [];
             this.saveFilters();
         },
         anyFilterActive() {
             return this.salesClientGroups.length || this.debtClientGroups.length ||
-                   this.salesDivisions.length || this.debtDivisions.length;
+                   this.salesDivisions.length || this.debtDivisions.length ||
+                   this.territories.length || this.productGroups.length;
         },
         optFilter(list, q) {
             q = (q || '').trim().toLowerCase();
             if (!q) return list;
             return list.filter(g => (g.code || '').toLowerCase().includes(q) || (g.name || '').toLowerCase().includes(q));
         },
+        // Дерево групп клиентов: корневые группы + вложенные подгруппы (с учётом поиска)
+        clientGroupTree(q) {
+            const all = this.clientGroupOptions;
+            const ql = (q || '').trim().toLowerCase();
+            const match = g => !ql || (g.code || '').toLowerCase().includes(ql) || (g.name || '').toLowerCase().includes(ql);
+            const roots = all.filter(g => !g.parent).sort((a, b) => a.code.localeCompare(b.code));
+            const nodes = roots.map(r => {
+                const kids = all.filter(g => g.parent === r.code).sort((a, b) => a.code.localeCompare(b.code));
+                const shownKids = ql ? kids.filter(match) : kids;
+                return { code: r.code, name: r.name, hasChildren: kids.length > 0, children: shownKids };
+            });
+            // при поиске показываем корень, если совпал он сам или есть подходящие подгруппы
+            return ql ? nodes.filter(n => match(n) || n.children.length) : nodes;
+        },
+        // Клик по группе выбирает её целиком (каскадом тянет все подгруппы); повторный клик снимает
+        toggleClientGroup(which, code) {
+            const arr = which === 'sales' ? this.salesClientGroups : this.debtClientGroups;
+            const children = this.clientGroupOptions.filter(g => g.parent === code).map(g => g.code);
+            const all = [code, ...children];
+            const next = arr.includes(code)
+                ? arr.filter(c => !all.includes(c))
+                : [...new Set([...arr, ...all])];
+            if (which === 'sales') this.salesClientGroups = next; else this.debtClientGroups = next;
+            this.saveFilters();
+        },
 
         async loadKpi() {
             this.loading = true;
             try {
-                const r = await fetch(`/api/managers/kpi?date_from=${this.dateFrom}&date_to=${this.dateTo}`);
+                const r = await fetch(`/api/managers/kpi?date_from=${this.dateFrom}&date_to=${this.dateTo}&plan_growth=${this.planGrowth || 0}`);
                 const d = await r.json();
                 if (d.success) {
                     this.rows = d.managers;
@@ -580,6 +1240,9 @@ function managersKpiData() {
                 }
             } catch (e) { console.error(e); }
             this.loading = false;
+            // Командный итог по товарам зависит от периода — помечаем устаревшим и перезагружаем, если открыт
+            this.teamProductsLoaded = false;
+            if (this.showTeamProducts) this.loadTeamProducts();
         },
 
         get filteredRows() {
@@ -602,17 +1265,88 @@ function managersKpiData() {
         get teamCards() {
             const t = this.team;
             return [
-                { label: 'Выручка команды', value: formatCurrency(t.revenue || 0), color: '#198754' },
-                { label: 'Менеджеров', value: (t.managers || 0), color: '#0d6efd' },
-                { label: 'Ср. покрытие', value: (t.avgCoverage || 0) + '%', color: '#6f42c1' },
-                { label: 'Собрано', value: formatCurrency(t.collected || 0), color: '#20c997' },
-                { label: 'Долг (чистый)', value: formatCurrency(t.debt || 0), color: '#fd7e14' },
-                { label: 'Новых клиентов', value: formatNumber(t.newCustomers || 0), color: '#0dcaf0' },
-                { label: 'Возвраты', value: formatCurrency(t.returnsSum || 0), color: '#dc3545' },
+                { label: 'Թիմի հասույթ', value: formatCurrency(t.revenue || 0), color: '#22c55e', icon: 'fa-coins' },
+                { label: 'Մենեջերներ', value: (t.managers || 0), color: '#4f8cff', icon: 'fa-users' },
+                { label: 'Հաճախորդներ', value: formatNumber((t.cmp && t.cmp.current ? t.cmp.current.activeCustomers : 0)), color: '#a78bfa', icon: 'fa-users' },
+                { label: 'Հավաքագրված', value: formatCurrency(t.collected || 0), color: '#2dd4bf', icon: 'fa-hand-holding-dollar' },
+                { label: 'Պարտք (զուտ)', value: formatCurrency(t.debt || 0), color: '#fb923c', icon: 'fa-file-invoice-dollar' },
+                { label: 'Նոր հաճախորդներ', value: formatNumber(t.newCustomers || 0), color: '#38bdf8', icon: 'fa-user-plus' },
+                { label: 'Վերադարձեր', value: formatCurrency(t.returnsSum || 0), color: '#f43f5e', icon: 'fa-rotate-left' },
             ];
         },
 
         kpiLabel(key) { const k = this.kpis.find(x => x.key === key); return k ? k.label : key; },
+
+        // Подсказка с абсолютом для колонок маршрута (подъехал/заказал из плана)
+        cellTitle(m, key) {
+            if (key === 'routeVisit') return m.routePlanned ? `Մոտեցել է պլանային երթուղու ${m.routePlanned} հաճախորդից ${m.routeVisited}-ին` : 'Պլանային երթուղի սահմանված չէ';
+            if (key === 'routeOrder') return m.routePlanned ? `Պատվեր է կատարել պլանային երթուղու ${m.routePlanned} հաճախորդից ${m.routeOrdered}-ին` : 'Պլանային երթուղի սահմանված չէ';
+            if (key === 'planFact') return m.plan ? `Պլան = տարածքի (կցված հաճախորդների) նախորդ տարվա նույն ժամանակահատվածի վաճառք ${formatCurrency(m.prevYear)} × (1 + ${this.planGrowth || 0}%) = ${formatCurrency(m.plan)}` : 'Տարածքի համար նախորդ տարվա տվյալ չկա';
+            return '';
+        },
+
+        // Сравнение периодов в карточке менеджера: текущий vs прош. месяц / прош. год (тот же период)
+        // Сравнение менеджера за 3 года: текущий год / год назад / 2 года назад (по территории)
+        comparisonRows(m) {
+            if (!m) return [];
+            const y1 = (m.cmp && m.cmp.y1) || null;
+            const y2 = (m.cmp && m.cmp.y2) || null;
+            const mk = (label, key, unit) => ({
+                label, unit, cur: m[key],
+                y1: y1 ? y1[key] : null,
+                y2: y2 ? y2[key] : null
+            });
+            return [
+                mk('Հասույթ', 'revenue', 'currency'),
+                mk('Հաճախորդներ', 'activeCustomers', 'number'),
+                mk('Վաճառքներ', 'salesCount', 'number'),
+                mk('Միջին չեկ', 'avgCheck', 'currency')
+            ];
+        },
+        fmtVal(unit, v) {
+            if (v === null || v === undefined) return '—';
+            return unit === 'currency' ? formatCurrency(v) : formatNumber(v);
+        },
+        // Сравнение по команде за 3 года: текущий / год назад / 2 года назад (итоги всей команды)
+        teamComparisonRows() {
+            const c = this.team && this.team.cmp;
+            if (!c) return [];
+            const mk = (label, key, unit) => ({
+                label, unit,
+                cur: c.current ? c.current[key] : null,
+                y1: c.y1 ? c.y1[key] : null,
+                y2: c.y2 ? c.y2[key] : null
+            });
+            return [
+                mk('Հասույթ', 'revenue', 'currency'),
+                mk('Հաճախորդներ', 'activeCustomers', 'number'),
+                mk('Վաճառքներ', 'salesCount', 'number'),
+                mk('Միջին չեկ', 'avgCheck', 'currency')
+            ];
+        },
+        // Итог по продавцам: суммы по отображаемым менеджерам (текущий период)
+        sellerTotals() {
+            let revenue = 0, activeCustomers = 0, salesCount = 0;
+            for (const m of this.filteredRows) {
+                revenue += m.revenue || 0; activeCustomers += m.activeCustomers || 0; salesCount += m.salesCount || 0;
+            }
+            return { revenue, activeCustomers, salesCount, avgCheck: salesCount ? revenue / salesCount : 0 };
+        },
+        sellerShare(m) {
+            const t = this.sellerTotals().revenue;
+            return t ? (Math.round((m.revenue || 0) / t * 1000) / 10) + '%' : '—';
+        },
+        cmpDelta(cur, base) {
+            if (base === null || base === undefined || base === 0) return null;
+            return (cur - base) / base * 100;
+        },
+        deltaHtml(pct) {
+            if (pct === null) return '<span class="text-muted">—</span>';
+            const up = pct >= 0;
+            const cls = up ? 'text-success' : 'text-danger';
+            const arrow = up ? '▲' : '▼';
+            return `<span class="${cls}">${arrow} ${Math.abs(Math.round(pct * 10) / 10)}%</span>`;
+        },
 
         fmt(key, v) {
             if (v === null || v === undefined) return '—';
@@ -672,17 +1406,78 @@ function managersKpiData() {
         async openDetail(m) {
             this.detail.m = m;
             this.detail.topCustomers = [];
+            this.detail.productGroups = [];
+            this.prodSearch = '';
+            this.expandedGroups = [];
             const modal = new bootstrap.Modal(document.getElementById('detailModal'));
             modal.show();
             this.$nextTick(() => this.renderRadar(m));
             try {
                 const r = await fetch(`/api/managers/${m.fID}`);
                 const d = await r.json();
-                if (d.success && d.data) {
-                    this.detail.topCustomers = d.data.top_customers || [];
-                    this.$nextTick(() => this.renderMonthly(d.data.sales_by_month || []));
-                }
+                if (d.success && d.data) this.detail.topCustomers = d.data.top_customers || [];
             } catch (e) { console.error(e); }
+            // Динамика выручки за 3 года — по территории менеджера (заполнено даже у новых, устойчиво к текучке)
+            try {
+                const rt = await fetch(`/api/managers/${m.fID}/revenue-trend`);
+                const dt = await rt.json();
+                if (dt.success) this.$nextTick(() => this.renderMonthly(dt.data.sales_by_month || []));
+            } catch (e) { console.error(e); }
+            // Продажи по товарам (по территории), сгруппированные по продукту, 3 периода — грузим отдельно
+            try {
+                const rp = await fetch(`/api/managers/${m.fID}/product-sales?date_from=${this.dateFrom}&date_to=${this.dateTo}`);
+                const dp = await rp.json();
+                if (dp.success) this.detail.productGroups = dp.groups || [];
+            } catch (e) { console.error(e); }
+        },
+
+        toggleExpand(arr, code) {
+            const i = arr.indexOf(code);
+            if (i >= 0) arr.splice(i, 1); else arr.push(code);
+        },
+        // Группы товаров с учётом поиска: при поиске фильтруем вкусы и авто-раскрываем совпавшие группы.
+        // Универсально — используется и в карточке менеджера, и в командном итоге.
+        groupView(groups, q, expanded) {
+            q = (q || '').trim().toLowerCase();
+            groups = groups || [];
+            if (!q) return groups.map(g => ({ ...g, itemsShown: g.items, open: expanded.includes(g.code) }));
+            const res = [];
+            for (const g of groups) {
+                const gm = (g.name || '').toLowerCase().includes(q);
+                const items = (g.items || []).filter(it => (it.name || '').toLowerCase().includes(q) || (it.code || '').toLowerCase().includes(q));
+                if (gm || items.length) res.push({ ...g, itemsShown: gm ? g.items : items, open: true });
+            }
+            return res;
+        },
+        // Итог по видимым товарам (сумма количеств по всем показанным группам/вкусам) за 3 года
+        groupTotals(groups, q) {
+            const shown = this.groupView(groups, q, []);
+            const t = { qcur: 0, qy1: 0, qy2: 0 };
+            for (const g of shown) for (const it of (g.itemsShown || [])) {
+                t.qcur += it.qcur || 0; t.qy1 += it.qy1 || 0; t.qy2 += it.qy2 || 0;
+            }
+            return t;
+        },
+        async loadTeamProducts() {
+            try {
+                const r = await fetch(`/api/managers/product-sales-total?date_from=${this.dateFrom}&date_to=${this.dateTo}`);
+                const d = await r.json();
+                if (d.success) { this.teamProductGroups = d.groups || []; this.teamProductsLoaded = true; }
+            } catch (e) { console.error(e); }
+        },
+        async toggleTeamProducts() {
+            this.showTeamProducts = !this.showTeamProducts;
+            if (this.showTeamProducts && !this.teamProductsLoaded) await this.loadTeamProducts();
+        },
+        fmtQty(v) {
+            if (v === null || v === undefined) return '—';
+            const r = Math.round(v * 100) / 100;
+            return r.toLocaleString('ru-RU');
+        },
+        // Год для заголовков таблиц товаров: offset 0 = текущий год периода, 1 = год назад, 2 = 2 года назад
+        yearLabel(offset) {
+            const y = parseInt((this.dateFrom || '').slice(0, 4), 10);
+            return isNaN(y) ? '' : (y - offset);
         },
 
         renderMonthly(data) {
@@ -694,7 +1489,7 @@ function managersKpiData() {
                 data: {
                     labels: data.map(x => x.Month),
                     datasets: [{
-                        label: 'Выручка', data: data.map(x => x.TotalSum),
+                        label: 'Հասույթ', data: data.map(x => x.TotalSum),
                         borderColor: 'rgb(13,110,253)', backgroundColor: 'rgba(13,110,253,0.15)',
                         fill: true, tension: 0.3, pointRadius: 3
                     }]
@@ -717,7 +1512,7 @@ function managersKpiData() {
                 data: {
                     labels,
                     datasets: [{
-                        label: 'Балл KPI', data: vals,
+                        label: 'KPI միավոր', data: vals,
                         borderColor: 'rgb(255,193,7)', backgroundColor: 'rgba(255,193,7,0.2)', pointRadius: 3
                     }]
                 },
