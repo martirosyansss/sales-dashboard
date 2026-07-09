@@ -3024,31 +3024,40 @@ def api_managers_kpi():
         #   ДОЛГ = Дебет(HICUSTOMERSDEBT, D−C) − |Возвраты Type01| − |Переплаты Type02| (HIRESTCUSTOMERSSUM)
         # Атрибутируется по клиентам, которым менеджер продавал в периоде (как в /api/managers).
         # Фильтр «долг: группы клиентов» (dc) применяется к набору клиентов.
-        # Территория применяется и к долгу — через набор клиентов cust_sub (fCUSTOMERID).
-        ta_cust_w, ta_cust_p = terr_where('fCUSTOMERID')
-        cust_sub = ("SELECT DISTINCT fCUSTOMERID FROM SALES WITH (NOLOCK) "
-                    "WHERE fSALESAGENTID=? AND fDATE>=? AND fDATE<=? AND fSTATE=2" + ta_cust_w)
+        # Территория применяется и к долгу — через набор «агент → его клиенты» (по клиенту).
+        # Set-based: 2 запроса на всю команду вместо 2×N в цикле. Числа идентичны прежнему.
+        agent_cust_cte = f"""
+            WITH AgentCust AS (
+                SELECT DISTINCT s.fSALESAGENTID AS agent, s.fCUSTOMERID AS cust
+                FROM SALES s WITH (NOLOCK)
+                WHERE s.fSTATE=2 AND s.fDATE>=? AND s.fDATE<=?{ta_s_w}
+            )"""
+        cur.execute(f"""{agent_cust_cte}
+            SELECT ac.agent, ISNULL(SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END),0) AS Debit
+            FROM AgentCust ac
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON doc.fCUSTOMERID = ac.cust
+            INNER JOIN HICUSTOMERSDEBT h WITH (NOLOCK) ON h.fDEBTDOCISN = doc.fISN
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = ac.cust
+            WHERE 1=1 {dc_w}
+            GROUP BY ac.agent
+        """, (date_from, date_to) + ta_s_p + dc_p)
+        debit_by = {r.agent: float(r.Debit or 0) for r in cur.fetchall()}
+        cur.execute(f"""{agent_cust_cte}
+            SELECT ac.agent,
+                   ISNULL(SUM(CASE WHEN r.fTYPE='01' THEN r.fSUM ELSE 0 END),0) AS T1,
+                   ISNULL(SUM(CASE WHEN r.fTYPE='02' THEN r.fSUM ELSE 0 END),0) AS T2
+            FROM AgentCust ac
+            INNER JOIN HIRESTCUSTOMERSSUM r WITH (NOLOCK) ON r.fCUSTOMERID = ac.cust
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = ac.cust
+            WHERE 1=1 {dc_w}
+            GROUP BY ac.agent
+        """, (date_from, date_to) + ta_s_p + dc_p)
+        rest_by = {r.agent: (abs(float(r.T1 or 0)), abs(float(r.T2 or 0))) for r in cur.fetchall()}
         for aid, m in M.items():
             if m["salesCount"] == 0:
                 continue
-            cur.execute(f"""
-                SELECT ISNULL(SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END),0) AS Debit
-                FROM HICUSTOMERSDEBT h WITH (NOLOCK)
-                INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON h.fDEBTDOCISN=doc.fISN
-                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON doc.fCUSTOMERID=c.fID
-                WHERE doc.fCUSTOMERID IN ({cust_sub}) {dc_w}
-            """, (aid, date_from, date_to) + ta_cust_p + dc_p)
-            debit = float(cur.fetchone().Debit or 0)
-            cur.execute(f"""
-                SELECT ISNULL(SUM(CASE WHEN r.fTYPE='01' THEN r.fSUM ELSE 0 END),0) AS T1,
-                       ISNULL(SUM(CASE WHEN r.fTYPE='02' THEN r.fSUM ELSE 0 END),0) AS T2
-                FROM HIRESTCUSTOMERSSUM r WITH (NOLOCK)
-                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON r.fCUSTOMERID=c.fID
-                WHERE r.fCUSTOMERID IN ({cust_sub}) {dc_w}
-            """, (aid, date_from, date_to) + ta_cust_p + dc_p)
-            rr = cur.fetchone()
-            t1 = abs(float(rr.T1 or 0))
-            t2 = abs(float(rr.T2 or 0))
+            debit = debit_by.get(aid, 0.0)
+            t1, t2 = rest_by.get(aid, (0.0, 0.0))
             m["debtDebit"] = debit
             m["returnsType01"] = t1
             m["overpayType02"] = t2
