@@ -27,7 +27,7 @@
         padding: 22px;
         position: relative;
         cursor: grab;
-        transition: all 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
         overflow: hidden;
         touch-action: none;
         user-select: none;
@@ -162,7 +162,7 @@
             inset 0 0 0 2px rgba(255,255,255,0.08),
             inset 0 2px 20px rgba(0,0,0,0.2) !important;
         border-radius: 24px;
-        transition: all 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
         animation: none !important;
     }
     
@@ -177,7 +177,7 @@
     
     /* iOS Spring анимации для карточек */
     .dashboard-card.moving {
-        transition: all 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+        transition: transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) , opacity 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) , box-shadow 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) , background-color 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) , border-color 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) , color 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
     }
     
     /* iOS Drop эффект - пружинка */
@@ -205,7 +205,7 @@
     .dashboard-card.drop-target {
         transform: scale(0.95);
         opacity: 0.7;
-        transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
     
     /* Анимация новой карточки */
@@ -251,7 +251,7 @@
     .drop-zone-end {
         grid-column: 1 / -1;
         min-height: 120px;
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
     
     .drop-zone-end.drag-active {
@@ -450,13 +450,13 @@
     .areas-table td {
         padding: 1cqh 1.2cqw;
         border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-        transition: all 0.15s ease;
+        transition: transform 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
         font-size: clamp(0.45rem, min(3cqw, 4.5cqh), 1.1rem);
         color: #e2e8f0;
     }
     
     .areas-table tbody tr {
-        transition: all 0.2s ease;
+        transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
     }
     
     .areas-table tbody tr:hover {
@@ -625,7 +625,7 @@
         height: 20px;
         cursor: se-resize;
         opacity: 0;
-        transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
         z-index: 10;
     }
     
@@ -689,7 +689,7 @@
         -webkit-backdrop-filter: blur(10px);
         border-radius: 24px;
         z-index: 999;
-        transition: all 0.1s cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: transform 0.1s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.1s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.1s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.1s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.1s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.1s cubic-bezier(0.2, 0.8, 0.2, 1);
         box-shadow: 0 20px 50px rgba(0,0,0,0.3);
     }
     
@@ -765,7 +765,7 @@
         right: 10px;
         bottom: 10px;
         z-index: 1;
-        transition: all 0.2s ease;
+        transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
     }
     
     .dashboard-card:hover .card-icon {
@@ -866,7 +866,7 @@
         right: 5%;
         top: 50%;
         transform: translateY(-50%);
-        transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
     
     .dashboard-card .filter-tag {
@@ -875,7 +875,7 @@
         background: rgba(255,255,255,0.1);
         border-radius: 4px;
         backdrop-filter: blur(4px);
-        transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
     
     .dashboard-card .trend-badge {
@@ -884,7 +884,7 @@
         gap: 0.8cqw;
         border-radius: 6px;
         font-weight: 700;
-        transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
     
     .dashboard-card .comparison-block {
@@ -895,7 +895,7 @@
         background: rgba(0,0,0,0.2);
         border-radius: 6px;
         backdrop-filter: blur(4px);
-        transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
     
     .dashboard-card .comparison-item {
@@ -1083,7 +1083,7 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
         cursor: pointer;
     }
     
@@ -1329,7 +1329,7 @@
         border-radius: 8px;
         cursor: pointer;
         border: 3px solid transparent;
-        transition: all 0.2s ease;
+        transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
         position: relative;
     }
     .color-swatch:hover {
@@ -1372,7 +1372,7 @@
     
     /* Кастомный цвет карточки */
     .dashboard-card.has-custom-color {
-        transition: all 0.3s ease;
+        transition: transform 0.3s ease, opacity 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
     }
     
     /* Modal стили */
@@ -1446,7 +1446,7 @@
     .filter-tag-collapse {
         background: rgba(255,255,255,0.2) !important;
         border: 1px dashed rgba(255,255,255,0.3) !important;
-        transition: all 0.2s ease;
+        transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
     }
     
     .filter-tag-more:hover,
@@ -1564,7 +1564,7 @@
         background: rgba(255,255,255,0.2);
         color: white;
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -1615,7 +1615,7 @@
         font-size: 0.9rem;
         font-weight: 500;
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
         position: relative;
     }
     
@@ -1667,7 +1667,7 @@
         background: rgba(0,0,0,0.3);
         color: white;
         font-size: 1rem;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .config-input:focus {
@@ -1689,7 +1689,7 @@
         color: white;
         font-size: 0.95rem;
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .config-select:focus {
@@ -1715,7 +1715,7 @@
         background: rgba(0,0,0,0.2);
         color: rgba(255,255,255,0.7);
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .config-metric-btn i {
@@ -1773,7 +1773,7 @@
         background: rgba(0,0,0,0.2);
         color: rgba(255,255,255,0.7);
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
         font-size: 0.9rem;
     }
     
@@ -1805,7 +1805,7 @@
         background: rgba(0,0,0,0.2);
         color: rgba(255,255,255,0.7);
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
         font-size: 0.85rem;
     }
     
@@ -1845,7 +1845,7 @@
         background: rgba(0,0,0,0.2);
         color: rgba(255,255,255,0.7);
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
         font-size: 0.9rem;
     }
     
@@ -1878,7 +1878,7 @@
         border-radius: 12px;
         background: rgba(0,0,0,0.2);
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .config-toggle-card:hover {
@@ -1963,7 +1963,7 @@
     .config-tag-remove {
         cursor: pointer;
         opacity: 0.7;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .config-tag-remove:hover {
@@ -1979,7 +1979,7 @@
         border-radius: 15px;
         font-size: 0.8rem;
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .config-tag-clear:hover {
@@ -2020,7 +2020,7 @@
         background: rgba(139, 92, 246, 0.15);
         border-radius: 10px;
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .config-hierarchy-parent:hover {
@@ -2055,7 +2055,7 @@
     .config-hierarchy-child {
         padding: 8px 12px;
         border-radius: 8px;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .config-hierarchy-child:hover {
@@ -2100,7 +2100,7 @@
         font-size: 1rem;
         font-weight: 600;
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .config-size-btn:hover {
@@ -2134,7 +2134,7 @@
         height: 20px;
         border-radius: 4px;
         background: rgba(255,255,255,0.1);
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .config-size-preview-cell.active {
@@ -2164,7 +2164,7 @@
         background: rgba(0,0,0,0.2);
         color: rgba(255,255,255,0.6);
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .config-format-btn:hover {
@@ -2202,7 +2202,7 @@
         border-radius: 8px;
         margin-bottom: 4px;
         cursor: grab;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .config-column-item:last-child {
@@ -2265,7 +2265,7 @@
         font-size: 0.95rem;
         font-weight: 600;
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
         display: flex;
         align-items: center;
     }
@@ -2396,7 +2396,7 @@
         color: rgba(255,255,255,0.25);
         font-size: 1rem;
         font-weight: 500;
-        transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
         cursor: pointer;
         margin-top: 15px;
         background: rgba(255,255,255,0.02);
@@ -2953,7 +2953,7 @@
         border-radius: 8px;
         color: rgba(255,255,255,0.7);
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
         user-select: none;
     }
     
@@ -3001,7 +3001,7 @@
         border-radius: 4px;
         color: rgba(255,255,255,0.5);
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
         padding: 0;
         font-size: 0.7rem;
     }
@@ -3022,7 +3022,7 @@
         border-radius: 8px;
         color: rgba(255,255,255,0.5);
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     }
     
     .page-tab-add:hover {
@@ -3078,7 +3078,7 @@
     body.light-theme .navbar .nav-link {
         color: #475569 !important;
         font-weight: 500;
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         border-radius: 10px;
         padding: 8px 16px !important;
     }
@@ -3118,7 +3118,7 @@
             0 10px 25px rgba(0, 0, 0, 0.04),
             0 1px 0 rgba(255, 255, 255, 1) inset,
             inset 0 -1px 0 rgba(0, 0, 0, 0.02);
-        transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.4s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.4s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.4s cubic-bezier(0.4, 0, 0.2, 1), color 0.4s cubic-bezier(0.4, 0, 0.2, 1);
         overflow: visible;
         position: relative;
     }
@@ -3149,7 +3149,7 @@
         border-radius: 0 8px 8px 0 !important;
         opacity: 1 !important;
         z-index: 10 !important;
-        transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) , opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1) , box-shadow 0.4s cubic-bezier(0.4, 0, 0.2, 1) , background-color 0.4s cubic-bezier(0.4, 0, 0.2, 1) , border-color 0.4s cubic-bezier(0.4, 0, 0.2, 1) , color 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
     }
     
     body.light-theme .dashboard-card:hover::after {
@@ -3414,7 +3414,7 @@
     body.light-theme .dashboard-card .card-icon {
         color: rgba(148, 163, 184, 0.12);
         font-size: 4.5rem;
-        transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.4s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.4s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.4s cubic-bezier(0.4, 0, 0.2, 1), color 0.4s cubic-bezier(0.4, 0, 0.2, 1);
         filter: blur(0.5px);
     }
     
@@ -3612,7 +3612,7 @@
         color: #64748b;
         border-radius: 12px;
         font-weight: 600;
-        transition: all 0.25s ease;
+        transition: transform 0.25s ease, opacity 0.25s ease, box-shadow 0.25s ease, background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
     }
     
     body.light-theme .pages-nav .page-tab:hover {
@@ -3633,7 +3633,7 @@
         border: 2px dashed #cbd5e1;
         color: #94a3b8;
         border-radius: 12px;
-        transition: all 0.25s ease;
+        transition: transform 0.25s ease, opacity 0.25s ease, box-shadow 0.25s ease, background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
     }
     
     body.light-theme .pages-nav .page-tab-add:hover {
@@ -3719,7 +3719,7 @@
         color: #64748b;
         border-bottom: 3px solid transparent;
         font-weight: 600;
-        transition: all 0.2s ease;
+        transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
     }
     
     body.light-theme .config-tabs .config-tab:hover {
@@ -3748,7 +3748,7 @@
         border: 2px solid #e2e8f0;
         color: #1e293b;
         border-radius: 10px;
-        transition: all 0.2s ease;
+        transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
     }
     
     body.light-theme .form-control:focus,
@@ -3855,7 +3855,7 @@
         border-radius: 999px;
         font-size: 0.75rem;
         font-weight: 600;
-        transition: all 0.2s ease;
+        transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
     }
     
     body.light-theme .trend-badge.trend-up {
@@ -4238,7 +4238,7 @@
         border-radius: 8px;
         padding: 4px 10px;
         font-weight: 500;
-        transition: all 0.2s ease;
+        transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
     }
     
     body.light-theme .filter-tag:hover {
@@ -4285,7 +4285,7 @@
         border-radius: 8px;
         padding: 10px 14px;
         font-weight: 500;
-        transition: all 0.15s ease;
+        transition: transform 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
     }
     
     body.light-theme .dropdown-menu-dark .dropdown-item:hover {
@@ -4410,7 +4410,7 @@
     /* Кнопки в хедере */
     body.light-theme .d-flex.gap-2 > .btn {
         border-radius: 10px;
-        transition: all 0.2s ease;
+        transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
     }
     
     /* Разделитель в тулбаре */
@@ -4421,7 +4421,7 @@
     /* Иконка темы */
     body.light-theme .btn-outline-secondary i.fa-sun,
     body.light-theme .btn-outline-secondary i.fa-moon {
-        transition: all 0.3s ease;
+        transition: transform 0.3s ease, opacity 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
     }
     
     body.light-theme .btn-outline-secondary:hover i.fa-sun,
