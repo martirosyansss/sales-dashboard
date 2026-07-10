@@ -4924,6 +4924,78 @@
     }
 
     .dropdown-menu .dropdown-item i { color: var(--bt-ink-soft) !important; }
+
+    /* --- Bento size-picker: пресеты размеров карточки --- */
+    [x-cloak] { display: none !important; }
+
+    .size-picker {
+        position: absolute;
+        top: 46px;
+        right: 5px;
+        z-index: 120;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        padding: 6px;
+        max-width: calc(100% - 10px);
+        background: var(--bt-tile);
+        border: 1px solid var(--bt-line);
+        border-radius: var(--bt-r-ctl);
+        box-shadow: 0 12px 32px rgba(22, 19, 13, 0.16);
+        animation: sizePickerIn 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    @keyframes sizePickerIn {
+        from { opacity: 0; transform: translateY(-4px) scale(0.96); }
+        to   { opacity: 1; transform: none; }
+    }
+
+    .size-preset {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 34px;
+        padding: 0;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        cursor: pointer;
+    }
+
+    .size-preset:hover {
+        background: var(--bt-tile-soft);
+        border-color: var(--bt-line);
+    }
+
+    .size-preset.active {
+        background: var(--bt-tile-soft);
+        border-color: var(--bt-ink);
+    }
+
+    .size-preset-shape {
+        display: block;
+        background: var(--bt-line);
+        border: 1px solid var(--bt-ink-soft);
+        border-radius: 3px;
+        transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .size-preset:hover .size-preset-shape,
+    .size-preset.active .size-preset-shape {
+        background: var(--bt-accent);
+        border-color: var(--bt-accent-deep);
+    }
+
+    .dashboard-card.size-pop {
+        animation: sizePop 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    @keyframes sizePop {
+        0%   { transform: scale(0.97); }
+        60%  { transform: scale(1.012); }
+        100% { transform: scale(1); }
+    }
 </style>
 {% endblock %}
 
@@ -5103,12 +5175,27 @@
                     <button class="btn btn-sm btn-outline-success me-1" @click="cloneCard(card)" title="Клонировать">
                         <i class="fas fa-copy"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-light me-1" @click="resizeCard(card)" title="Размер">
+                    <button class="btn btn-sm btn-outline-light me-1" @click="toggleSizePicker(card.id)" title="Размер">
                         <i class="fas fa-expand-arrows-alt"></i>
                     </button>
                     <button class="btn btn-sm btn-outline-danger" @click="removeCard(card.id)" title="Удалить">
                         <i class="fas fa-times"></i>
                     </button>
+                </div>
+
+                <!-- Bento-переключатель размера: пресеты-пиктограммы -->
+                <div class="size-picker" x-show="sizePickerId === card.id" x-cloak
+                     @mousedown.stop @touchstart.stop @click.stop
+                     @click.outside="sizePickerId === card.id ? sizePickerId = null : null">
+                    <template x-for="p in sizePresets" :key="p.w + 'x' + p.h">
+                        <button type="button" class="size-preset"
+                                :class="(card.width === p.w && card.height === p.h) ? 'active' : ''"
+                                :title="p.w + '×' + p.h"
+                                @click="applySizePreset(card, p)">
+                            <span class="size-preset-shape"
+                                  :style="'width:' + (p.w * 6 + 2) + 'px; height:' + (p.h * 6 + 2) + 'px'"></span>
+                        </button>
+                    </template>
                 </div>
                 
                 <!-- Иконка -->
@@ -6325,6 +6412,17 @@ function dashboardBuilder() {
         // Тема (true = темная, false = светлая)
         /* Bento-редизайн: страница конструктора — светлая, тема фиксирована */
         darkTheme: false,
+
+        /* Bento size-picker: пресеты размеров карточки */
+        sizePickerId: null,
+        sizePresets: [
+            { w: 1, h: 1 },
+            { w: 2, h: 1 },
+            { w: 1, h: 2 },
+            { w: 2, h: 2 },
+            { w: 4, h: 1 },
+            { w: 4, h: 2 }
+        ],
         
         // iOS Edit Mode - режим редактирования
         editMode: false,
@@ -7468,18 +7566,29 @@ function dashboardBuilder() {
             this.saveLayout(); // Автосохранение после изменения
         },
         
-        resizeCard(card) {
-            // Циклическое изменение размера
-            if (card.width < 4) {
-                card.width++;
-            } else {
-                card.width = 1;
-                if (card.height < 2) {
-                    card.height++;
-                } else {
-                    card.height = 1;
+        toggleSizePicker(cardId) {
+            this.sizePickerId = this.sizePickerId === cardId ? null : cardId;
+        },
+
+        applySizePreset(card, preset) {
+            card.width = preset.w;
+            card.height = preset.h;
+            this.sizePickerId = null;
+
+            this.$nextTick(() => {
+                // Мягкий «поп» плитки при смене размера
+                const el = document.querySelector(`.dashboard-card[data-id="${card.id}"]`);
+                if (el) {
+                    el.classList.remove('size-pop');
+                    void el.offsetWidth;
+                    el.classList.add('size-pop');
+                    setTimeout(() => el.classList.remove('size-pop'), 500);
                 }
-            }
+                // График перерисовываем под новый размер холста
+                if (card.type === 'chart' && card.chartData) {
+                    this.renderChart(card);
+                }
+            });
         },
         
         cloneCard(card) {
