@@ -249,7 +249,7 @@
     
     /* Drop zone стиль */
     .drop-zone-end {
-        grid-column: span 12;
+        grid-column: 1 / -1;
         min-height: 120px;
         transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
@@ -1120,7 +1120,7 @@
         padding: 40px;
         text-align: center;
         color: #6c757d;
-        grid-column: span 12;
+        grid-column: 1 / -1;
     }
     
     .metric-badge {
@@ -2332,7 +2332,7 @@
     
     /* Зона для перетаскивания в конец */
     .drop-zone-end {
-        grid-column: span 12;
+        grid-column: 1 / -1;
         min-height: 100px;
         border: 3px dashed rgba(255,255,255,0.15);
         border-radius: 16px;
@@ -2391,23 +2391,23 @@
     /* Большие экраны (десктоп) */
     @media (min-width: 1400px) {
         .card-grid {
-            grid-template-columns: repeat(12, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 15px;
         }
     }
-    
+
     /* Средние экраны (ноутбуки) */
     @media (max-width: 1399px) and (min-width: 1200px) {
         .card-grid {
-            grid-template-columns: repeat(12, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 12px;
         }
     }
-    
+
     /* Планшеты (альбомная ориентация) */
     @media (max-width: 1199px) and (min-width: 992px) {
         .card-grid {
-            grid-template-columns: repeat(12, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 10px;
         }
         
@@ -2427,7 +2427,7 @@
         }
         
         .card-grid {
-            grid-template-columns: repeat(12, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 10px;
             padding: 10px;
         }
@@ -2471,10 +2471,18 @@
         }
         
         .card-grid {
-            grid-template-columns: repeat(6, 1fr);
+            grid-template-columns: repeat(2, 1fr);
             gap: 8px;
             padding: 8px;
         }
+
+        .size-1x1, .size-1x2, .size-1x3, .size-1x4 { grid-column: span 1; }
+        .size-2x1, .size-3x1, .size-4x1,
+        .size-2x2, .size-3x2, .size-4x2,
+        .size-2x3, .size-3x3, .size-4x3,
+        .size-2x4, .size-3x4, .size-4x4,
+        [class*="size-5x"], [class*="size-6x"], [class*="size-7x"],
+        [class*="size-8x"], [class*="size-9x"], [class*="size-10x"] { grid-column: span 2; }
         
         .dashboard-card {
             padding: 14px;
@@ -2554,8 +2562,10 @@
         .size-1x1, .size-2x1, .size-3x1, .size-4x1,
         .size-1x2, .size-2x2, .size-3x2, .size-4x2,
         .size-1x3, .size-2x3, .size-3x3, .size-4x3,
-        .size-1x4, .size-2x4, .size-3x4, .size-4x4 { 
-            grid-column: span 1; 
+        .size-1x4, .size-2x4, .size-3x4, .size-4x4,
+        [class*="size-5x"], [class*="size-6x"], [class*="size-7x"],
+        [class*="size-8x"], [class*="size-9x"], [class*="size-10x"] {
+            grid-column: span 1;
         }
         
         .dashboard-card {
@@ -2780,6 +2790,10 @@
         .size-3x1, .size-4x1 { grid-column: span 2; }
         .size-1x2, .size-2x2 { grid-column: span 1; }
         .size-3x2, .size-4x2 { grid-column: span 2; }
+        .size-1x3, .size-2x3, .size-1x4, .size-2x4 { grid-column: span 1; }
+        .size-3x3, .size-4x3, .size-3x4, .size-4x4,
+        [class*="size-5x"], [class*="size-6x"], [class*="size-7x"],
+        [class*="size-8x"], [class*="size-9x"], [class*="size-10x"] { grid-column: span 2; }
         
         .config-modal-content {
             max-height: 100vh;
