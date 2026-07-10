@@ -1108,14 +1108,30 @@
         content: '';
         position: absolute;
         inset: 0;
-        border: 2px solid transparent;
+        border: 2px dashed rgba(255, 255, 255, 0.22);
         border-radius: 24px;
-        transition: all 0.2s ease;
+        transition: border-color 0.2s ease;
         pointer-events: none;
     }
-    
+
     .card-grid.edit-mode .dashboard-card:hover::after {
         border-color: rgba(59, 130, 246, 0.5);
+        border-style: solid;
+    }
+
+    /* Контролы карточки видимы постоянно в режиме редактирования:
+       hover-only аффордансы недоступны на тач-устройствах и невидимы до наведения */
+    .card-grid.edit-mode .dashboard-card .card-actions {
+        opacity: 1;
+        background: rgba(15, 18, 25, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        padding: 2px;
+        backdrop-filter: blur(4px);
+    }
+
+    .card-grid.edit-mode .dashboard-card .resize-handle {
+        opacity: 0.45;
     }
     
     .empty-placeholder {
