@@ -4996,6 +4996,59 @@
         60%  { transform: scale(1.012); }
         100% { transform: scale(1); }
     }
+
+    /* --- Drag-ресайз: ручка-уголок видима на светлых плитках --- */
+    .dashboard-card .resize-handle {
+        width: 28px;
+        height: 28px;
+        bottom: 6px;
+        right: 6px;
+    }
+
+    .dashboard-card .resize-handle::before,
+    .dashboard-card .resize-handle::after {
+        background: var(--bt-ink-soft);
+    }
+
+    .dashboard-card .resize-handle::before { width: 14px; height: 3px; }
+    .dashboard-card .resize-handle::after { width: 3px; height: 14px; }
+
+    .dashboard-card .resize-handle:hover::before,
+    .dashboard-card .resize-handle:hover::after,
+    .dashboard-card.resizing .resize-handle::before,
+    .dashboard-card.resizing .resize-handle::after {
+        background: var(--bt-accent);
+    }
+
+    .card-grid.edit-mode .dashboard-card .resize-handle {
+        opacity: 0.9;
+    }
+
+    .dashboard-card.resizing,
+    body.light-theme .dashboard-card.resizing {
+        box-shadow: 0 20px 44px rgba(22, 19, 13, 0.18), 0 0 0 2px var(--bt-accent) !important;
+        border-radius: var(--bt-r-tile);
+    }
+
+    /* Живое превью растягивания */
+    .resize-preview {
+        border: 2px dashed var(--bt-accent);
+        background: rgba(226, 55, 31, 0.05);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        border-radius: var(--bt-r-tile);
+        box-shadow: none;
+    }
+
+    /* Пилюля-индикатор W × H */
+    .resize-indicator {
+        background: var(--bt-ink);
+        color: var(--bt-paper);
+        font-family: var(--bt-font-ui);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        box-shadow: 0 10px 30px rgba(22, 19, 13, 0.25);
+    }
 </style>
 {% endblock %}
 
@@ -8154,7 +8207,7 @@ function dashboardBuilder() {
             const grid = document.getElementById('cardGrid');
             if (!grid) return;
             const gridRect = grid.getBoundingClientRect();
-            const gap = 16; // gap размер из CSS
+            const gap = parseFloat(getComputedStyle(grid).columnGap) || 16;
             const cellWidth = (gridRect.width - gap * 3) / 4; // (ширина - 3 промежутка) / 4 колонки
             const cellHeight = 120; // фиксированная высота строки из CSS
             
