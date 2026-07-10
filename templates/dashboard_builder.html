@@ -2875,6 +2875,23 @@
         }
     }
     
+    /* Тач-устройства: интерактивные элементы не меньше 44px */
+    @media (pointer: coarse) {
+        .toolbar .btn-sm,
+        .toolbar .btn,
+        .card-actions .btn,
+        .page-tab-close,
+        .page-tab-add,
+        .edit-mode-btn {
+            min-width: 44px;
+            min-height: 44px;
+        }
+
+        .page-tab {
+            min-height: 44px;
+        }
+    }
+
     /* Print стили */
     @media print {
         .toolbar, .card-actions, .resize-handle, .d-flex.gap-2 {
