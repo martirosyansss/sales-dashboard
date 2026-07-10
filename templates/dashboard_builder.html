@@ -1579,6 +1579,12 @@
         padding: 0;
         overflow-y: auto;
         flex: 1;
+        /* Видимая индикация, что контент продолжается под фолдом */
+        scrollbar-width: thin;
+        scrollbar-gutter: stable;
+        background:
+            linear-gradient(rgba(15, 18, 25, 0) 0%, rgba(0, 0, 0, 0.35) 100%) bottom / 100% 18px no-repeat local,
+            linear-gradient(rgba(0, 0, 0, 0.35) 0%, rgba(15, 18, 25, 0) 100%) top / 100% 18px no-repeat local;
     }
     
     .config-modal-footer {
