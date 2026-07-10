@@ -2881,6 +2881,18 @@
         }
     }
     
+    /* Клавиатурная навигация: видимое фокус-кольцо (только для focus-visible,
+       мышиные клики колец не показывают) */
+    button:focus-visible,
+    .btn:focus-visible,
+    a:focus-visible,
+    .page-tab:focus-visible,
+    .dropdown-item:focus-visible,
+    .edit-mode-btn:focus-visible {
+        outline: 2px solid #3b82f6;
+        outline-offset: 2px;
+    }
+
     /* Тач-устройства: интерактивные элементы не меньше 44px */
     @media (pointer: coarse) {
         .toolbar .btn-sm,
