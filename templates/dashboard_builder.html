@@ -1040,7 +1040,35 @@
         padding: 15px;
         margin-bottom: 20px;
     }
-    
+
+    /* Единый нейтральный стиль кнопок добавления виджетов:
+       тип виджета различается цветом иконки, а не цветом всей кнопки */
+    .toolbar .btn-add-widget {
+        color: rgba(255, 255, 255, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        background: transparent;
+    }
+
+    .toolbar .btn-add-widget:hover,
+    .toolbar .btn-add-widget:focus {
+        color: #fff;
+        border-color: rgba(255, 255, 255, 0.5);
+        background: rgba(255, 255, 255, 0.08);
+    }
+
+    body.light-theme .toolbar .btn-add-widget {
+        color: #333;
+        border-color: rgba(0, 0, 0, 0.3);
+    }
+
+    body.light-theme .toolbar .btn-add-widget:hover,
+    body.light-theme .toolbar .btn-add-widget:focus {
+        color: #000;
+        border-color: rgba(0, 0, 0, 0.5);
+        background: rgba(0, 0, 0, 0.06);
+    }
+
+
     /* ========================================
        iOS EDIT MODE BUTTON & STYLES
        ======================================== */
@@ -4538,29 +4566,29 @@
             </div>
             <div class="col">
                 <div class="d-flex flex-wrap gap-2">
-                    <button class="btn btn-sm btn-outline-primary" @click="addCard('sales')">
-                        <i class="fas fa-dollar-sign me-1"></i><span class="d-none d-sm-inline">Продажи</span>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('sales')">
+                        <i class="fas fa-dollar-sign me-1 text-primary"></i><span class="d-none d-sm-inline">Продажи</span>
                     </button>
-                    <button class="btn btn-sm btn-outline-success" @click="addCard('payments')">
-                        <i class="fas fa-credit-card me-1"></i><span class="d-none d-sm-inline">Оплаты</span>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('payments')">
+                        <i class="fas fa-credit-card me-1 text-success"></i><span class="d-none d-sm-inline">Оплаты</span>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" @click="addCard('debt')">
-                        <i class="fas fa-hand-holding-usd me-1"></i><span class="d-none d-sm-inline">Долг</span>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('debt')">
+                        <i class="fas fa-hand-holding-usd me-1 text-danger"></i><span class="d-none d-sm-inline">Долг</span>
                     </button>
-                    <button class="btn btn-sm btn-outline-warning" @click="addCard('customers')">
-                        <i class="fas fa-users me-1"></i><span class="d-none d-sm-inline">Клиенты</span>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('customers')">
+                        <i class="fas fa-users me-1 text-warning"></i><span class="d-none d-sm-inline">Клиенты</span>
                     </button>
-                    <button class="btn btn-sm btn-outline-info" @click="addCard('chart')">
-                        <i class="fas fa-chart-line me-1"></i><span class="d-none d-sm-inline">График</span>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('chart')">
+                        <i class="fas fa-chart-line me-1 text-info"></i><span class="d-none d-sm-inline">График</span>
                     </button>
-                    <button class="btn btn-sm btn-outline-secondary" @click="addCard('custom')">
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('custom')">
                         <i class="fas fa-cog me-1"></i><span class="d-none d-sm-inline">Произвольная</span>
                     </button>
                     <span class="border-start border-secondary mx-2 d-none d-md-inline"></span>
                     <!-- Прогнозирование -->
                     <div class="dropdown">
-                        <button class="btn btn-sm btn-outline-success dropdown-toggle" type="button" data-bs-toggle="dropdown">
-                            <i class="fas fa-chart-line me-1"></i><span class="d-none d-md-inline">Прогноз</span>
+                        <button class="btn btn-sm btn-add-widget dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                            <i class="fas fa-chart-line me-1 text-success"></i><span class="d-none d-md-inline">Прогноз</span>
                         </button>
                         <ul class="dropdown-menu dropdown-menu-dark">
                             <li><a class="dropdown-item" href="#" @click.prevent="addCard('forecast')">
@@ -4583,14 +4611,14 @@
                             </a></li>
                         </ul>
                     </div>
-                    <button class="btn btn-sm btn-outline-info" @click="addCard('areas_table')" title="Сводная таблица по территориям">
-                        <i class="fas fa-table me-1"></i>Сводка
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('areas_table')" title="Сводная таблица по территориям">
+                        <i class="fas fa-table me-1 text-info"></i>Сводка
                     </button>
                     <span class="border-start border-secondary mx-2"></span>
-                    <button class="btn btn-sm btn-outline-dark" @click="addCard('header')">
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('header')">
                         <i class="fas fa-heading me-1"></i>Заголовок
                     </button>
-                    <button class="btn btn-sm btn-outline-secondary" @click="addCard('text')">
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('text')">
                         <i class="fas fa-font me-1"></i>Текст
                     </button>
                 </div>
