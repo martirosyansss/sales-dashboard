@@ -4643,7 +4643,7 @@
         
         <template x-for="(card, index) in cards" :key="card.id">
             <div class="dashboard-card" 
-                 :class="['size-' + card.width + 'x' + card.height, 'card-' + card.type, {'card-placeholder': card.isPlaceholder, 'has-custom-color': card.customColor}]"
+                 :class="['size-' + card.width + 'x' + card.height, 'card-' + card.type, card.isPlaceholder ? 'card-placeholder' : '', card.customColor ? 'has-custom-color' : ''].join(' ')"
                  :style="getCardFullStyle(card)"
                  :data-id="card.id"
                  :data-index="index"
