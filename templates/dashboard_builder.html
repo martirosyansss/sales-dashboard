@@ -3,6 +3,9 @@
 {% block title %}Конструктор Dashboard{% endblock %}
 
 {% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;800&family=Unbounded:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
     .builder-container {
         min-height: calc(100vh - 150px);
@@ -4511,6 +4514,416 @@
             0 10px 40px rgba(0, 0, 0, 0.1),
             0 0 0 2px rgba(59, 130, 246, 0.3);
     }
+    /* ================================================================
+       BENTO GRID — светлая швейцарская вёрстка
+       Плитки на бумаге: равномерные зазоры, скругление 20px, один
+       красный акцент, Golos Text + Unbounded (кириллица).
+       Слой идёт последним и намеренно перекрывает обе легаси-темы.
+       ================================================================ */
+    :root {
+        --bt-paper: #F2EFE9;
+        --bt-tile: #FFFFFF;
+        --bt-tile-soft: #FAF8F3;
+        --bt-line: #E3DED2;
+        --bt-ink: #16130D;
+        --bt-ink-soft: #6F6858;
+        --bt-accent: #E2371F;
+        --bt-accent-deep: #B92C18;
+        --bt-r-tile: 20px;
+        --bt-r-ctl: 12px;
+        --bt-gap: 14px;
+        --bt-font-ui: 'Golos Text', 'Segoe UI', sans-serif;
+        --bt-font-display: 'Unbounded', 'Golos Text', sans-serif;
+    }
+
+    body.light-theme, body.dark-theme {
+        background: var(--bt-paper) !important;
+        color: var(--bt-ink);
+        font-family: var(--bt-font-ui);
+    }
+
+    /* --- Заголовок страницы --- */
+    .display-6 {
+        font-family: var(--bt-font-display);
+        font-weight: 700 !important;
+        font-size: 1.9rem;
+        letter-spacing: -0.01em;
+        color: var(--bt-ink) !important;
+    }
+
+    .display-6 i { color: var(--bt-accent) !important; }
+    .display-6 + p, p.text-muted { color: var(--bt-ink-soft) !important; }
+
+    /* --- Кнопки страницы: нейтральные, один красный акцент --- */
+    .btn-outline-info, .btn-outline-warning, .btn-outline-secondary,
+    label.btn-outline-warning {
+        color: var(--bt-ink) !important;
+        border: 1px solid var(--bt-line) !important;
+        background: var(--bt-tile) !important;
+        border-radius: var(--bt-r-ctl) !important;
+        font-weight: 500;
+    }
+
+    .btn-outline-info:hover, .btn-outline-warning:hover, .btn-outline-secondary:hover,
+    label.btn-outline-warning:hover {
+        border-color: var(--bt-ink) !important;
+        background: var(--bt-tile) !important;
+        color: var(--bt-ink) !important;
+    }
+
+    .btn-primary {
+        background: var(--bt-accent) !important;
+        border: 1px solid var(--bt-accent) !important;
+        border-radius: var(--bt-r-ctl) !important;
+        font-weight: 600;
+    }
+
+    .btn-primary:hover { background: var(--bt-accent-deep) !important; border-color: var(--bt-accent-deep) !important; }
+
+    .btn-outline-danger {
+        color: var(--bt-accent) !important;
+        border: 1px solid var(--bt-accent) !important;
+        background: var(--bt-tile) !important;
+        border-radius: var(--bt-r-ctl) !important;
+    }
+
+    .btn-outline-danger:hover { background: var(--bt-accent) !important; color: #fff !important; }
+
+    /* --- Вкладки страниц: плитка-полоса --- */
+    body.light-theme .pages-nav, body.dark-theme .pages-nav,
+    .pages-nav {
+        background: var(--bt-tile) !important;
+        border: 1px solid var(--bt-line) !important;
+        border-radius: var(--bt-r-tile) !important;
+    }
+
+    .page-tab {
+        background: var(--bt-tile-soft) !important;
+        border: 1px solid var(--bt-line) !important;
+        border-radius: var(--bt-r-ctl) !important;
+        color: var(--bt-ink) !important;
+    }
+
+    .page-tab:hover { border-color: var(--bt-ink) !important; }
+
+    .page-tab.active {
+        background: var(--bt-ink) !important;
+        border-color: var(--bt-ink) !important;
+        color: var(--bt-paper) !important;
+    }
+
+    .page-tab.active .page-tab-title { color: var(--bt-paper) !important; }
+    .page-tab-close { background: transparent; color: inherit; }
+    .page-tab-close:hover { background: var(--bt-accent); color: #fff; }
+
+    .page-tab-add {
+        background: var(--bt-tile-soft) !important;
+        border: 1.5px dashed var(--bt-ink-soft) !important;
+        color: var(--bt-ink-soft) !important;
+        border-radius: var(--bt-r-ctl) !important;
+    }
+
+    .page-tab-add:hover { border-color: var(--bt-ink) !important; color: var(--bt-ink) !important; }
+
+    /* --- Тулбар: отдельная плитка --- */
+    .toolbar {
+        background: var(--bt-tile) !important;
+        border: 1px solid var(--bt-line);
+        border-radius: var(--bt-r-tile);
+    }
+
+    .toolbar .text-muted { color: var(--bt-ink-soft) !important; }
+
+    .toolbar .btn-add-widget {
+        color: var(--bt-ink);
+        border: 1px solid var(--bt-line);
+        background: var(--bt-tile);
+        border-radius: 10px;
+        font-weight: 500;
+    }
+
+    .toolbar .btn-add-widget:hover, .toolbar .btn-add-widget:focus {
+        color: var(--bt-ink);
+        border-color: var(--bt-ink);
+        background: var(--bt-tile-soft);
+    }
+
+    .toolbar .badge {
+        background: transparent !important;
+        border: 1px solid var(--bt-line);
+        color: var(--bt-ink-soft) !important;
+        border-radius: 8px;
+        font-weight: 500;
+    }
+
+    .toolbar .border-start { border-color: var(--bt-line) !important; }
+
+    .edit-mode-btn {
+        background: var(--bt-tile);
+        border: 1px solid var(--bt-ink);
+        border-radius: var(--bt-r-ctl);
+        color: var(--bt-ink);
+        font-weight: 600;
+    }
+
+    .edit-mode-btn:hover { background: var(--bt-tile-soft); border-color: var(--bt-ink); }
+
+    /* Активный режим правки — красный, вместо фиолетового градиента */
+    .edit-mode-btn.active, .edit-mode-btn.active:hover {
+        background: var(--bt-accent) !important;
+        border-color: var(--bt-accent) !important;
+        color: #fff !important;
+        box-shadow: none !important;
+    }
+
+    /* --- Сетка: плитки прямо на бумаге --- */
+    .card-grid {
+        background: transparent !important;
+        border-radius: 0;
+        padding: 0 !important;
+        gap: var(--bt-gap) !important;
+    }
+
+    /* --- Плитка bento ---
+       Специфичность с запасом: легаси-темы красят card-<type> с !important */
+    body.light-theme .dashboard-card,
+    body.dark-theme .dashboard-card,
+    body.light-theme .dashboard-card[class*="card-"],
+    body.dark-theme .dashboard-card[class*="card-"] {
+        background: var(--bt-tile) !important;
+        border: 1px solid var(--bt-line) !important;
+        border-left: 1px solid var(--bt-line) !important;
+        border-radius: var(--bt-r-tile) !important;
+        box-shadow: none !important;
+    }
+
+    .dashboard-card::before { display: none; }
+
+    body.light-theme .dashboard-card:hover,
+    body.light-theme .dashboard-card[class*="card-"]:hover,
+    body.dark-theme .dashboard-card:hover,
+    body.dark-theme .dashboard-card[class*="card-"]:hover {
+        transform: translateY(-2px);
+        border-color: var(--bt-ink) !important;
+        box-shadow: none !important;
+    }
+
+    /* Значения: чернила; долг — красный. Пользовательские цвета уважаем */
+    body.light-theme .dashboard-card:not(.has-custom-color) .card-value,
+    body.dark-theme .dashboard-card:not(.has-custom-color) .card-value {
+        color: var(--bt-ink) !important;
+        text-shadow: none;
+    }
+
+    body.light-theme .dashboard-card.card-debt:not(.has-custom-color) .card-value,
+    body.dark-theme .dashboard-card.card-debt:not(.has-custom-color) .card-value {
+        color: var(--bt-accent) !important;
+    }
+
+    body.light-theme .dashboard-card .card-label,
+    body.dark-theme .dashboard-card .card-label {
+        font-family: var(--bt-font-display);
+        font-weight: 500;
+        letter-spacing: 0.05em;
+        color: var(--bt-ink-soft) !important;
+        opacity: 1;
+    }
+
+    body.light-theme .dashboard-card .card-icon,
+    body.light-theme .dashboard-card[class*="card-"] .card-icon,
+    body.dark-theme .dashboard-card .card-icon {
+        color: var(--bt-line) !important;
+        opacity: 1 !important;
+    }
+
+    body.light-theme .dashboard-card:hover .card-icon,
+    body.dark-theme .dashboard-card:hover .card-icon {
+        color: var(--bt-ink-soft) !important;
+    }
+
+    /* --- Drop-зоны --- */
+    .drop-zone-end, .empty-placeholder {
+        border: 1.5px dashed var(--bt-ink-soft) !important;
+        border-radius: var(--bt-r-tile) !important;
+        background: transparent !important;
+        color: var(--bt-ink-soft) !important;
+    }
+
+    /* Цветные полоски-::after легаси-темы отключаем полностью */
+    body.light-theme .dashboard-card::after,
+    body.light-theme .dashboard-card:hover::after,
+    body.light-theme .dashboard-card[class*="card-"]::after {
+        display: none !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+
+    /* --- Режим правки: ::after возвращается как пунктирная рамка --- */
+    body.light-theme .card-grid.edit-mode .dashboard-card::after,
+    body.dark-theme .card-grid.edit-mode .dashboard-card::after,
+    .card-grid.edit-mode .dashboard-card::after {
+        content: '' !important;
+        display: block !important;
+        position: absolute !important;
+        inset: 0 !important;
+        top: 0 !important;
+        bottom: 0 !important;
+        left: 0 !important;
+        width: auto !important;
+        background: transparent !important;
+        border: 2px dashed var(--bt-line) !important;
+        border-radius: var(--bt-r-tile) !important;
+        box-shadow: none !important;
+        z-index: 5 !important;
+        pointer-events: none;
+    }
+
+    body.light-theme .card-grid.edit-mode .dashboard-card:hover::after,
+    body.dark-theme .card-grid.edit-mode .dashboard-card:hover::after,
+    .card-grid.edit-mode .dashboard-card:hover::after {
+        border-color: var(--bt-accent) !important;
+        border-style: solid !important;
+        top: 0 !important;
+        bottom: 0 !important;
+        width: auto !important;
+    }
+
+    .card-grid.edit-mode .dashboard-card .card-actions {
+        background: var(--bt-tile);
+        border: 1px solid var(--bt-line);
+        border-radius: 10px;
+    }
+
+    .dashboard-card .card-actions .btn { border-radius: 8px !important; }
+
+    /* --- Модалка настройки --- */
+    .config-modal-content {
+        background: var(--bt-tile) !important;
+        border: 1px solid var(--bt-line) !important;
+        border-radius: var(--bt-r-tile) !important;
+        box-shadow: 0 24px 60px rgba(22, 19, 13, 0.18) !important;
+        color: var(--bt-ink);
+    }
+
+    .config-modal-header {
+        background: var(--bt-tile) !important;
+        border-bottom: 1px solid var(--bt-line) !important;
+        color: var(--bt-ink) !important;
+    }
+
+    .config-modal-header h5 { color: var(--bt-ink) !important; font-family: var(--bt-font-display); font-weight: 500; }
+    .config-modal-icon { background: var(--bt-ink) !important; color: var(--bt-paper) !important; border-radius: var(--bt-r-ctl) !important; }
+    .config-modal-header small, .config-modal-header .text-muted { color: var(--bt-ink-soft) !important; }
+
+    .config-tabs-nav {
+        background: var(--bt-tile-soft) !important;
+        border-bottom: 1px solid var(--bt-line);
+    }
+
+    .config-tab-btn { color: var(--bt-ink-soft) !important; border-radius: 10px !important; }
+    .config-tab-btn:hover { color: var(--bt-ink) !important; background: var(--bt-tile) !important; }
+
+    .config-tab-btn.active {
+        background: var(--bt-ink) !important;
+        color: var(--bt-paper) !important;
+        box-shadow: none !important;
+    }
+
+    .config-modal-body {
+        background:
+            linear-gradient(rgba(22, 19, 13, 0) 0%, rgba(22, 19, 13, 0.12) 100%) bottom / 100% 18px no-repeat local,
+            linear-gradient(rgba(22, 19, 13, 0.12) 0%, rgba(22, 19, 13, 0) 100%) top / 100% 18px no-repeat local;
+    }
+
+    .config-modal-footer {
+        background: var(--bt-tile-soft) !important;
+        border-top: 1px solid var(--bt-line) !important;
+    }
+
+    /* --- Контролы модалки: светлые, читаемые --- */
+    .config-input, .config-select, textarea.config-input {
+        background: var(--bt-tile) !important;
+        border: 1px solid var(--bt-line) !important;
+        border-radius: var(--bt-r-ctl) !important;
+        color: var(--bt-ink) !important;
+    }
+
+    .config-input::placeholder { color: var(--bt-ink-soft) !important; }
+
+    .config-input:focus, .config-select:focus {
+        border-color: var(--bt-ink) !important;
+        box-shadow: 0 0 0 3px rgba(226, 55, 31, 0.15) !important;
+    }
+
+    .config-metric-btn {
+        background: var(--bt-tile) !important;
+        border: 1px solid var(--bt-line) !important;
+        border-radius: var(--bt-r-ctl) !important;
+        color: var(--bt-ink-soft) !important;
+    }
+
+    .config-metric-btn i, .config-metric-btn span { color: inherit !important; }
+
+    .config-metric-btn:hover {
+        border-color: var(--bt-ink) !important;
+        color: var(--bt-ink) !important;
+        background: var(--bt-tile-soft) !important;
+        box-shadow: none !important;
+    }
+
+    .config-metric-btn.active {
+        background: var(--bt-tile-soft) !important;
+        border: 2px solid var(--bt-ink) !important;
+        color: var(--bt-ink) !important;
+        box-shadow: none !important;
+    }
+
+    .config-section-title, .config-label, .config-modal-body label {
+        color: var(--bt-ink) !important;
+    }
+
+    .config-modal-body .text-muted, .config-modal-body small {
+        color: var(--bt-ink-soft) !important;
+    }
+
+    .config-btn { border-radius: var(--bt-r-ctl) !important; font-weight: 600; }
+
+    .config-btn-secondary {
+        background: var(--bt-tile) !important;
+        border: 1px solid var(--bt-line) !important;
+        color: var(--bt-ink) !important;
+    }
+
+    .config-btn-secondary:hover { border-color: var(--bt-ink) !important; background: var(--bt-tile-soft) !important; }
+
+    .config-btn-primary {
+        background: var(--bt-accent) !important;
+        border: 1px solid var(--bt-accent) !important;
+        color: #fff !important;
+        box-shadow: none !important;
+    }
+
+    .config-btn-primary:hover { background: var(--bt-accent-deep) !important; border-color: var(--bt-accent-deep) !important; }
+
+    /* --- Дропдауны на светлой странице --- */
+    .dropdown-menu-dark, .dropdown-menu {
+        background: var(--bt-tile) !important;
+        border: 1px solid var(--bt-line) !important;
+        border-radius: var(--bt-r-ctl) !important;
+        box-shadow: 0 12px 32px rgba(22, 19, 13, 0.12) !important;
+    }
+
+    .dropdown-menu-dark .dropdown-item, .dropdown-menu .dropdown-item {
+        color: var(--bt-ink) !important;
+        border-radius: 8px;
+    }
+
+    .dropdown-menu-dark .dropdown-item:hover, .dropdown-menu .dropdown-item:hover {
+        background: var(--bt-tile-soft) !important;
+        color: var(--bt-ink) !important;
+    }
+
+    .dropdown-menu .dropdown-item i { color: var(--bt-ink-soft) !important; }
 </style>
 {% endblock %}
 
@@ -4526,9 +4939,6 @@
             <p class="text-muted mb-0">Создавайте и настраивайте карточки для вашего Dashboard</p>
         </div>
         <div class="d-flex gap-2 flex-wrap">
-            <button class="btn btn-outline-secondary" @click="toggleTheme()" :title="darkTheme ? 'Светлая тема' : 'Темная тема'">
-                <i class="fas" :class="darkTheme ? 'fa-sun' : 'fa-moon'"></i>
-            </button>
             <button class="btn btn-outline-danger" @click="resetLayout()">
                 <i class="fas fa-undo me-1"></i><span class="d-none d-md-inline">Сбросить</span>
             </button>
@@ -5913,7 +6323,8 @@
 function dashboardBuilder() {
     return {
         // Тема (true = темная, false = светлая)
-        darkTheme: localStorage.getItem('dashboardTheme') !== 'light',
+        /* Bento-редизайн: страница конструктора — светлая, тема фиксирована */
+        darkTheme: false,
         
         // iOS Edit Mode - режим редактирования
         editMode: false,
