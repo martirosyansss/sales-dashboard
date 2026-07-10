@@ -837,7 +837,11 @@
         /* Размер текста зависит от ширины и высоты контейнера */
         font-size: clamp(1rem, min(12cqw, 22cqh), 8rem);
         line-height: 1;
-        word-break: break-word;
+        /* Число не должно рваться посреди разряда: переносы только по обычным пробелам */
+        word-break: normal;
+        overflow-wrap: normal;
+        font-variant-numeric: tabular-nums;
+        text-wrap: balance;
         color: #fff;
         font-weight: 800;
         max-width: 100%;
@@ -7813,7 +7817,7 @@ function dashboardBuilder() {
             
             switch (format) {
                 case 'currency':
-                    return new Intl.NumberFormat('ru-RU').format(Math.round(value)) + ' ֏';
+                    return new Intl.NumberFormat('ru-RU').format(Math.round(value)) + ' ֏';
                 case 'percent':
                     return value.toFixed(1) + '%';
                 case 'number':
