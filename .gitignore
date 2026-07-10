@@ -63,3 +63,5 @@ logs/
 # Sensitive data
 config.ini
 secrets.json
+.gstack/
+__pycache__/

@@ -292,6 +292,20 @@
     .kpi-page .scorecard:hover { border-color: rgba(79,140,255,.4); box-shadow: 0 16px 34px -18px rgba(0,0,0,.8); }
     .kpi-page .scorecard:hover::before { opacity: 1; }
 
+    /* Рискованные менеджеры — мигание красным (пульсация рамки и свечения) */
+    @keyframes kpiRiskPulse {
+        0%, 100% { border-color: rgba(220,53,69,.35); box-shadow: 0 0 0 0 rgba(220,53,69,0); }
+        50%      { border-color: rgba(220,53,69,1);   box-shadow: 0 0 20px 2px rgba(220,53,69,.65); }
+    }
+    .kpi-page .scorecard.risky {
+        border-color: rgba(220,53,69,.7);
+        animation: kpiRiskPulse 1.1s ease-in-out infinite;
+    }
+    .kpi-page .scorecard.risky:hover { animation-play-state: paused; }
+    @media (prefers-reduced-motion: reduce) {
+        .kpi-page .scorecard.risky { animation: none; box-shadow: 0 0 16px 1px rgba(220,53,69,.55); }
+    }
+
     .kpi-page .score-ring {
         width: 78px; height: 78px; border-radius: 50%;
         display: flex; align-items: center; justify-content: center;
@@ -340,9 +354,9 @@
                 <span>Արդյունավետության վարկանիշ՝ ըստ van-sales ճյուղային ցուցանիշների</span>
                 <span class="kpi-period">
                     <i class="fas fa-calendar-day"></i>
-                    <span x-text="period.date_from"></span>
+                    <span x-text="fmtDate(period.date_from)"></span>
                     <span class="kpi-period-arrow">→</span>
-                    <span x-text="period.date_to"></span>
+                    <span x-text="fmtDate(period.date_to)"></span>
                 </span>
             </p>
         </div>
@@ -456,8 +470,12 @@
 
                 <h6 class="text-warning"><i class="fas fa-hand-holding-dollar me-1"></i>Պարտք (ամբողջական բանաձև)</h6>
                 <p class="mb-2">
-                    «Պարտք» սյունակը <strong>զուտ դեբիտորական պարտքն</strong> է այն հաճախորդների գծով, որոնց մենեջերը
-                    վաճառել է ժամանակահատվածում.
+                    «Պարտք» սյունակը <strong>զուտ դեբիտորական պարտքն</strong> է այն հաճախորդների գծով, որոնց
+                    <strong>ընթացիկ սպասարկող մենեջերը</strong> հենց այս մենեջերն է (վերջինը, ով վաճառել է հաճախորդին)։
+                    Յուրաքանչյուր հաճախորդ կապված է մեկ մենեջերի հետ, ուստի պարտքը չի կրկնապատկվում։
+                    Աղյուսակի ներքևի <strong>ԸՆԴԱՄԵՆԸ</strong> տողը հավասար է տարածքի ամբողջ պարտքին (ինչպես ERP ծրագրում)։
+                    Ժամանակահատվածում առանց վաճառքի մենեջերների և բացվող մնացորդների պարտքը ցուցադրվում է առանձին
+                    <strong>«Առանց կապի»</strong> տողով, որպեսզի սյունակի գումարը միշտ համընկնի ընդհանուրի հետ։
                 </p>
                 <div class="bg-dark rounded p-2 mb-2 small font-monospace">
                     Պարտք = Դեբետ − Վերադարձեր (տիպ 01) − Գերավճարներ (տիպ 02)
@@ -648,6 +666,21 @@
                 </button>
             </div>
         </div>
+    </div>
+
+    <!-- Задержка ввода оплат: долг as-of = date_to − N дней -->
+    <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+        <span class="badge bg-warning text-dark"><i class="fas fa-clock me-1"></i>ՊԱՐՏՔ</span>
+        <label class="small mb-0" for="debtLagInput"
+               title="Օպերատորները վճարումները ծրագրում մուտքագրում են մինչև մի քանի օր ուշացումով. Պարտքը հաշվվում է «ամսաթիվ − օրեր» դրությամբ (կայունացած մնացորդ).">
+            Վճարումների մուտքի ուշացում (օր):
+        </label>
+        <input id="debtLagInput" type="number" min="0" max="60" step="1"
+               class="form-control form-control-sm" style="width:90px"
+               x-model.number="debtLagDays" @change="setDebtLag()">
+        <span class="small text-muted" x-show="debtLagDays > 0">
+            → պարտք <span class="text-warning fw-semibold" x-text="debtAsofLabel()"></span> դրությամբ
+        </span>
     </div>
 
     <!-- Сводка команды -->
@@ -884,6 +917,20 @@
                         </tr>
                     </template>
                 </tbody>
+                <tfoot style="position:sticky;bottom:0;background:var(--card-bg,#212529);box-shadow:0 -1px 0 rgba(255,255,255,.08)">
+                    <tr x-show="team && Math.abs(team.debtUnattributed || 0) >= 1" style="color:#adb5bd">
+                        <td :colspan="3 + kpis.length" class="text-end small py-1" style="font-style:italic">
+                            <i class="fas fa-user-slash me-1"></i>Առանց կապի (ժամանակահատվածում ոչ ակտիվ մենեջերներ / բացվող մնացորդ)
+                        </td>
+                        <td class="col-debt py-1"><span class="lb-debt" style="opacity:.7" x-text="formatCurrency(team.debtUnattributed)"></span></td>
+                    </tr>
+                    <tr x-show="team && team.debt" style="border-top:1px solid rgba(255,255,255,.12)">
+                        <td :colspan="3 + kpis.length" class="text-end fw-bold py-2">
+                            ԸՆԴԱՄԵՆԸ <span class="text-muted small fw-normal">(= տարածքի պարտք, ինչպես ERP)</span>
+                        </td>
+                        <td class="col-debt py-2"><span class="lb-debt" x-text="formatCurrency(team.debt)"></span></td>
+                    </tr>
+                </tfoot>
             </table>
         </div>
     </div>
@@ -893,14 +940,21 @@
     <div class="row g-3" x-show="!loading">
         <template x-for="m in filteredRows" :key="'card-'+m.fID">
             <div class="col-xl-3 col-lg-4 col-md-6">
-                <div class="card scorecard" @click="openDetail(m)">
+                <div class="card scorecard" :class="{ risky: isRisky(m) }" @click="openDetail(m)">
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-start mb-2">
                             <div>
                                 <div class="fw-bold" x-text="m.fNAME"></div>
                                 <div class="small text-muted" x-text="m.fCODE"></div>
                             </div>
-                            <span class="rank-badge" :class="rankClass(m.rank)" x-text="m.rank"></span>
+                            <div class="text-end">
+                                <template x-if="isRisky(m)">
+                                    <span class="badge bg-danger d-block mb-1" :title="riskReason(m)">
+                                        <i class="fas fa-triangle-exclamation"></i> Ռիսկ
+                                    </span>
+                                </template>
+                                <span class="rank-badge" :class="rankClass(m.rank)" x-text="m.rank"></span>
+                            </div>
                         </div>
                         <div class="d-flex align-items-center gap-3 mb-3">
                             <div class="score-ring" :style="`--ring:${m.score}; --ring-color:${scoreColor(m.score)}`">
@@ -1107,6 +1161,7 @@ function managersKpiData() {
         dateFrom: '', dateTo: '',
         searchQuery: '',
         planGrowth: 0,
+        debtLagDays: 0,
         sortKey: 'score', sortDir: 'desc',
         cardKpis: ['activeCustomers', 'routeVisit', 'routeOrder', 'strikeRate', 'avgCheck', 'collectRate', 'returnsRate', 'planFact'],
         detail: { m: null, topCustomers: [], productGroups: [] },
@@ -1121,14 +1176,22 @@ function managersKpiData() {
 
         async init() {
             const p = new URLSearchParams(location.search);
-            if (p.get('date_from') && p.get('date_to')) {
+            const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '');
+            const lsFrom = localStorage.getItem('kpi_date_from');
+            const lsTo = localStorage.getItem('kpi_date_to');
+            if (isDate(p.get('date_from')) && isDate(p.get('date_to'))) {
                 this.dateFrom = p.get('date_from');
                 this.dateTo = p.get('date_to');
+            } else if (isDate(lsFrom) && isDate(lsTo)) {
+                this.dateFrom = lsFrom;
+                this.dateTo = lsTo;
             } else {
                 this.setThisMonth(false);
             }
             const g = parseFloat(localStorage.getItem('kpi_plan_growth'));
             if (!isNaN(g)) this.planGrowth = g;
+            const dl = parseInt(localStorage.getItem('kpi_debt_lag'));
+            if (!isNaN(dl)) this.debtLagDays = dl;
             await this.loadFilterOptions();
             await this.loadSavedFilters();
             this.loadKpi();
@@ -1138,6 +1201,41 @@ function managersKpiData() {
             if (this.planGrowth === '' || this.planGrowth === null || isNaN(this.planGrowth)) this.planGrowth = 0;
             localStorage.setItem('kpi_plan_growth', this.planGrowth);
             this.loadKpi();
+        },
+
+        setDebtLag() {
+            let n = parseInt(this.debtLagDays);
+            if (isNaN(n) || n < 0) n = 0;
+            if (n > 60) n = 60;
+            this.debtLagDays = n;
+            localStorage.setItem('kpi_debt_lag', n);
+            this.loadKpi();
+        },
+        fmtDate(s) {
+            if (!s) return '';
+            const [y, m, d] = String(s).split('-');
+            return (d && m && y) ? `${d}.${m}.${y}` : s;
+        },
+        debtAsofLabel() {
+            // Эффективная дата долга = min(date_to, сегодня − N). Для давнего периода = date_to (без сдвига).
+            const p = n => String(n).padStart(2, '0');
+            const [y, mo, da] = this.dateTo.split('-').map(Number);
+            const dt = new Date(y, mo - 1, da);
+            const settled = new Date(); settled.setHours(0, 0, 0, 0);
+            settled.setDate(settled.getDate() - (this.debtLagDays || 0));
+            const eff = settled < dt ? settled : dt;
+            return `${p(eff.getDate())}.${p(eff.getMonth() + 1)}.${eff.getFullYear()}`;
+        },
+
+        // Рискованный менеджер: низкий общий балл ИЛИ сильное недовыполнение плана.
+        isRisky(m) {
+            return (m.score != null && m.score < 40) || (m.planFact != null && m.planFact < 70);
+        },
+        riskReason(m) {
+            const r = [];
+            if (m.score != null && m.score < 40) r.push('վարկանիշ ' + m.score + ' < 40');
+            if (m.planFact != null && m.planFact < 70) r.push('Պլան/փաստ ' + m.planFact + '% < 70%');
+            return 'Ռիսկային՝ ' + r.join(', ');
         },
 
         async loadFilterOptions() {
@@ -1229,8 +1327,17 @@ function managersKpiData() {
 
         async loadKpi() {
             this.loading = true;
+            // Запоминаем выбранный период: переживает перезагрузку страницы (localStorage + URL)
+            if (/^\d{4}-\d{2}-\d{2}$/.test(this.dateFrom) && /^\d{4}-\d{2}-\d{2}$/.test(this.dateTo)) {
+                localStorage.setItem('kpi_date_from', this.dateFrom);
+                localStorage.setItem('kpi_date_to', this.dateTo);
+                const u = new URL(location.href);
+                u.searchParams.set('date_from', this.dateFrom);
+                u.searchParams.set('date_to', this.dateTo);
+                history.replaceState(null, '', u);
+            }
             try {
-                const r = await fetch(`/api/managers/kpi?date_from=${this.dateFrom}&date_to=${this.dateTo}&plan_growth=${this.planGrowth || 0}`);
+                const r = await fetch(`/api/managers/kpi?date_from=${this.dateFrom}&date_to=${this.dateTo}&plan_growth=${this.planGrowth || 0}&debt_lag_days=${this.debtLagDays || 0}`);
                 const d = await r.json();
                 if (d.success) {
                     this.rows = d.managers;

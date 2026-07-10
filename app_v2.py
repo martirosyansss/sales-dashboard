@@ -100,6 +100,13 @@ CURRENT_MONTH_START_SQL = "DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)"
 # УТИЛИТЫ ДЛЯ ИСКЛЮЧЕННЫХ КЛИЕНТОВ
 # =============================================
 
+def _years_ago(d, years):
+    """Сдвинуть дату на N лет назад; 29 февраля вне високосного года прижимается к 28-му"""
+    try:
+        return d.replace(year=d.year - years)
+    except ValueError:
+        return d.replace(year=d.year - years, day=28)
+
 def get_excluded_filter_sql():
     """Получить SQL условие для фильтрации исключенных клиентов"""
     excluded_ids = get_excluded_customer_ids()
@@ -161,7 +168,9 @@ def dashboard_stats():
         today = datetime.now()
         if date_from and date_to:
             current_start = datetime.strptime(date_from, '%Y-%m-%d')
-            current_end = datetime.strptime(date_to, '%Y-%m-%d')
+            # date_to — включительный последний день периода; запросы используют fDATE < current_end,
+            # поэтому сдвигаем на день вперёд, иначе теряются все продажи date_to после полуночи
+            current_end = datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=1)
         else:
             current_start = today.replace(day=1)
             if today.month == 12:
@@ -180,22 +189,29 @@ def dashboard_stats():
         else:
             prev_end = prev_start.replace(month=prev_start.month+1, day=1)
         
-        # Сравнение с тем же месяцем прошлого года (10 лет назад)
-        last_year_start = current_start.replace(year=current_start.year-1)
-        last_year_end = current_end.replace(year=current_end.year-1)
-        
-        ten_years_ago_start = current_start.replace(year=current_start.year-10)
-        ten_years_ago_end = current_end.replace(year=current_end.year-10)
+        # Сравнение с тем же месяцем прошлого года (10 лет назад).
+        # Сдвиг года — через включительный последний день, чтобы 29 февраля не давало ValueError
+        inclusive_end = current_end - timedelta(days=1)
+        last_year_start = _years_ago(current_start, 1)
+        last_year_end = _years_ago(inclusive_end, 1) + timedelta(days=1)
+
+        ten_years_ago_start = _years_ago(current_start, 10)
+        ten_years_ago_end = _years_ago(inclusive_end, 10) + timedelta(days=1)
         
         # Фильтры
         excluded_filter, excluded_params = get_excluded_filter_sql()
         product_groups_filter, product_groups_params = get_product_groups_filter_sql()
         
-        # Фильтр по территориям Dashboard
+        # Фильтр по территориям Dashboard.
+        # EXISTS вместо INNER JOIN: клиент с несколькими выбранными территориями
+        # размножал строки SALES → задвоение SUM/COUNT
         dashboard_areas_filter, dashboard_areas_params = get_dashboard_areas_filter_sql()
         areas_join = ""
         if dashboard_areas_params:
-            areas_join = "INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID"
+            dashboard_areas_filter = (
+                "AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                f"WHERE csa.fCUSTOMERID = c.fID {dashboard_areas_filter})"
+            )
         
         # Фильтр по группам клиентов Dashboard
         dashboard_groups_filter, dashboard_groups_params = get_dashboard_groups_filter_sql()
@@ -341,11 +357,12 @@ def dashboard_stats():
         # === ПРОГНОЗ ПРОДАЖ НА МЕСЯЦ ===
         # Рассчитываем прогноз на основе текущих темпов продаж (исключая воскресенья)
         
-        # Считаем рабочие дни (исключая воскресенья)
+        # Считаем рабочие дни (исключая воскресенья).
+        # current_end — эксклюзивная граница, поэтому последний день периода = current_end - 1
         working_days_passed = 0
         check_date = current_start
-        end_date = min(today, current_end)  # Берем минимум из сегодня и конца периода
-        
+        end_date = min(today, current_end - timedelta(days=1))
+
         while check_date <= end_date:
             if check_date.weekday() != 6:  # 6 = воскресенье
                 working_days_passed += 1
@@ -370,7 +387,7 @@ def dashboard_stats():
             'data': {
                 'period': {
                     'from': current_start.strftime('%Y-%m-%d'),
-                    'to': current_end.strftime('%Y-%m-%d')
+                    'to': (current_end - timedelta(days=1)).strftime('%Y-%m-%d')
                 },
                 'total_revenue': {
                     'value': current_rev,
@@ -493,9 +510,9 @@ def get_managers():
                 ISNULL(SUM(s.fTOTALSUM), 0) as TotalSales,
                 ISNULL(AVG(s.fTOTALSUM), 0) as AvgSale
             FROM SALESAGENTS sa
-            LEFT JOIN SALES s ON s.fSALESAGENTID = sa.fID 
-                AND s.fDATE >= ? 
-                AND s.fDATE <= ?
+            LEFT JOIN SALES s ON s.fSALESAGENTID = sa.fID
+                AND s.fDATE >= ?
+                AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND s.fSTATE = 2
                 {sales_area_clause}
             LEFT JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
@@ -552,8 +569,8 @@ def get_managers():
                         ISNULL(AVG(s.fTOTALSUM), 0) as AvgSale
                     FROM SALES s
                     INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-                    WHERE s.fDATE >= ? 
-                        AND s.fDATE <= ?
+                    WHERE s.fDATE >= ?
+                        AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                         AND s.fSALESAGENTID = ?
                         AND s.fSTATE = 2
                         {sales_area_clause}
@@ -606,86 +623,67 @@ def get_managers():
         # Фильтровать только менеджеров с продажами за выбранный период
         active_managers = [m for m in managers if m['SalesCount'] > 0]
         
-        # Добавить расчет долга для активных менеджеров
+        # Расчёт долга для активных менеджеров — ТЕРРИТОРИАЛЬНАЯ модель «текущий менеджер»
+        # (единая с /managers-kpi, см. [debt-per-manager-territorial]): каждый клиент привязан к ОДНОМУ
+        # менеджеру = кто ПОСЛЕДНИМ ему продавал → долг клиента считается один раз, без задвоения.
+        # Долг менеджера = долг его клиентов из закреплённых за ним групп. Долг — это баланс, поэтому
+        # товарный фильтр к нему НЕ применяется. As-of = конец периода (d.fDATE < date_to + 1 день).
         if active_managers:
+            from collections import defaultdict
             conn = db.get_connection()
             cursor = conn.cursor()
-            customer_subquery = f"""
-                SELECT DISTINCT s.fCUSTOMERID
-                FROM SALES s
-                WHERE s.fSALESAGENTID = ?
-                    AND s.fDATE >= ?
-                    AND s.fDATE <= ?
-                    AND s.fSTATE = 2
-                    {sales_area_clause}
-                    {product_groups_filter}
-            """
-            
+
+            # 1. Клиент → текущий менеджер (последний продавец) + группа клиента, в пределах территории.
+            cursor.execute(f"""
+                SELECT cust, agent, grp FROM (
+                    SELECT s.fCUSTOMERID AS cust, s.fSALESAGENTID AS agent, c.fGROUP AS grp,
+                           ROW_NUMBER() OVER (PARTITION BY s.fCUSTOMERID ORDER BY s.fDATE DESC, s.fISN DESC) rn
+                    FROM SALES s WITH (NOLOCK)
+                    INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = s.fCUSTOMERID
+                    WHERE s.fSTATE = 2 {sales_area_clause}{excluded_filter}
+                ) x WHERE rn = 1
+            """, sales_area_params + excluded_params)
+            # fGROUP может быть CHAR с хвостовыми пробелами — нормализуем ключ,
+            # иначе .get() по коду из JSON-настроек промахнётся и долг станет 0
+            cust_agent = {r.cust: (r.agent, (r.grp or '').strip()) for r in cursor.fetchall()}
+
+            # 2. Долг по каждому клиенту: дебет (D−C) на конец периода − |Type01| − |Type02|.
+            cursor.execute("""
+                SELECT doc.fCUSTOMERID AS cust,
+                       ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) AS debit
+                FROM HICUSTOMERSDEBT d WITH (NOLOCK)
+                INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON d.fDEBTDOCISN = doc.fISN
+                WHERE d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                GROUP BY doc.fCUSTOMERID
+            """, (date_to,))
+            debit_by_cust = {r.cust: float(r.debit or 0) for r in cursor.fetchall()}
+            cursor.execute("""
+                SELECT r.fCUSTOMERID AS cust,
+                       ISNULL(SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END), 0) AS t1,
+                       ISNULL(SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END), 0) AS t2
+                FROM HIRESTCUSTOMERSSUM r WITH (NOLOCK)
+                GROUP BY r.fCUSTOMERID
+            """)
+            rest_by_cust = {r.cust: (abs(float(r.t1 or 0)), abs(float(r.t2 or 0))) for r in cursor.fetchall()}
+            conn.close()
+
+            # 3. Долг менеджера = Σ по его клиентам (где он текущий менеджер) из закреплённых за ним групп.
+            debt_by_mgr = defaultdict(lambda: defaultdict(float))   # agent -> group -> net
+            for cust, (agent, grp) in cust_agent.items():
+                debit = debit_by_cust.get(cust, 0.0)
+                t1, t2 = rest_by_cust.get(cust, (0.0, 0.0))
+                net = debit - t1 - t2
+                if net:
+                    debt_by_mgr[agent][grp] += net
+
             for manager in active_managers:
-                manager_id = manager['fID']
-                responsible_groups = managers_with_groups.get(manager_id, [])
-                
-                # ВАЖНО: Показываем долг ТОЛЬКО если у менеджера есть назначенные группы в settings
+                # Показываем долг ТОЛЬКО если у менеджера есть назначенные группы в settings
+                responsible_groups = managers_with_groups.get(manager['fID'], [])
                 if not responsible_groups:
                     manager['Debt'] = 0
                     continue
-
-                if manager['SalesCount'] == 0:
-                    manager['Debt'] = 0
-                    continue
-                
-                # Формируем запрос долга с учетом групп (ОБЯЗАТЕЛЬНО фильтруем по группам)
-                placeholders = ','.join(['?'] * len(responsible_groups))
-                group_filter = f" AND c.fGROUP IN ({placeholders})"
-                group_params = tuple(responsible_groups)
-                
-                # ПРАВИЛЬНАЯ ФОРМУЛА ДОЛГА:
-                # ДОЛГ = debtFromDocuments - |type01| - |type02|
-                # где debtFromDocuments = SUM(D) - SUM(C) из HICUSTOMERSDEBT
-                
-                # 1. Получаем долг из документов
-                debt_query = f"""
-                    SELECT 
-                        ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as DebtFromDocs
-                    FROM HICUSTOMERSDEBT d
-                    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-                    INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-                    WHERE doc.fCUSTOMERID IN (
-                        {customer_subquery}
-                    )
-                        {excluded_filter}
-                        {group_filter}
-                """
-                
-                customer_subquery_params = (manager_id, date_from, date_to) + sales_area_params + product_groups_params
-                all_params = customer_subquery_params + excluded_params + group_params
-                cursor.execute(debt_query, all_params)
-                debt_row = cursor.fetchone()
-                debt_from_docs = float(debt_row.DebtFromDocs) if debt_row and debt_row.DebtFromDocs else 0
-                
-                # 2. Получаем остатки Type01 и Type02
-                rest_query = f"""
-                    SELECT 
-                        ISNULL(SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END), 0) as Type01,
-                        ISNULL(SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END), 0) as Type02
-                    FROM HIRESTCUSTOMERSSUM r
-                    INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
-                    WHERE r.fCUSTOMERID IN (
-                        {customer_subquery}
-                    )
-                        {excluded_filter}
-                        {group_filter}
-                """
-                
-                cursor.execute(rest_query, all_params)
-                rest_row = cursor.fetchone()
-                type01 = float(rest_row.Type01) if rest_row and rest_row.Type01 else 0
-                type02 = float(rest_row.Type02) if rest_row and rest_row.Type02 else 0
-                
-                # 3. Итоговый долг = debtFromDocuments - |type01| - |type02|
-                manager['Debt'] = debt_from_docs - abs(type01) - abs(type02)
-            
-            conn.close()
+                by_grp = debt_by_mgr.get(manager['fID'], {})
+                manager['Debt'] = round(sum(by_grp.get(str(g).strip(), 0.0) for g in responsible_groups), 2)
         
         # Сортировать по продажам
         active_managers.sort(key=lambda x: x['TotalSales'], reverse=True)
@@ -879,7 +877,11 @@ def get_sales_areas():
             placeholders = ','.join(['?'] * len(requested_groups))
             group_filter = f" AND c.fGROUP IN ({placeholders})"
             group_params = tuple(requested_groups)
-        
+
+        # |Type01|+|Type02| по территориям — нужен и для карточки долга, и для
+        # выравнивания графика/начального долга с карточкой
+        rest_by_area = {}
+
         # Получить продажи и долги по Sales Areas
         # Используем тот же подход, что и в /api/customers - через CUSTOMERSALESAREAS
         for area_code, area_data in all_areas.items():
@@ -951,20 +953,23 @@ def get_sales_areas():
                 else:
                     area_data['DiscountPercent'] = 0
             
-            # 2. Получить долг для клиентов этой Sales Area (используем ТОЛЬКО groups filter)
+            # 2. Получить долг для клиентов этой Sales Area (используем ТОЛЬКО groups filter).
+            # Баланс на конец выбранного периода: без даты карточка показывала бы «долг сейчас»
+            # и не согласовывалась бы с PrevMonthDebt/LastYearDebt при выборе прошлых периодов
             query_debt = f"""
-                SELECT 
+                SELECT
                     ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as DebtFromDocs
                 FROM HICUSTOMERSDEBT d
                 INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
                 INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
                 INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
                 WHERE csa.fSALESAREA = ?
+                    AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                     {excluded_filter}
                     {group_filter}
             """
-            
-            debt_params = (area_code,) + excluded_params + group_params
+
+            debt_params = (area_code, date_to) + excluded_params + group_params
             cursor.execute(query_debt, debt_params)
             debt_row = cursor.fetchone()
             debt_from_docs = float(debt_row.DebtFromDocs) if debt_row and debt_row.DebtFromDocs else 0
@@ -982,11 +987,13 @@ def get_sales_areas():
                     {group_filter}
             """
             
-            cursor.execute(query_rest, debt_params)  # Reuse debt_params (same structure without divisions)
+            rest_params = (area_code,) + excluded_params + group_params  # HIRESTCUSTOMERSSUM — без даты (истории нет)
+            cursor.execute(query_rest, rest_params)
             rest_row = cursor.fetchone()
             type01 = float(rest_row.Type01) if rest_row and rest_row.Type01 else 0
             type02 = float(rest_row.Type02) if rest_row and rest_row.Type02 else 0
-            
+            rest_by_area[area_code] = abs(type01) + abs(type02)
+
             # 4. Итоговый долг (текущий)
             area_data['Debt'] = debt_from_docs - abs(type01) - abs(type02)
             
@@ -1011,15 +1018,17 @@ def get_sales_areas():
                 INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
                 INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
                 WHERE csa.fSALESAREA = ?
-                    AND d.fDATE <= ?
+                    AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                     {excluded_filter}
                     {group_filter}
             """
             prev_debt_params = (area_code, prev_month_to_str) + excluded_params + group_params
             cursor.execute(query_prev_debt, prev_debt_params)
             prev_debt_row = cursor.fetchone()
-            # Для истории игнорируем Type01/02, так как HIRESTCUSTOMERSSUM не имеет истории
-            area_data['PrevMonthDebt'] = float(prev_debt_row.DebtFromDocs) if prev_debt_row and prev_debt_row.DebtFromDocs else 0
+            # У HIRESTCUSTOMERSSUM нет истории — вычитаем ТЕКУЩИЕ |Type01|+|Type02| как константу
+            # (та же база, что у карточки Debt, иначе дельта «долг vs прошлый месяц» искажена на их сумму)
+            prev_debt_docs = float(prev_debt_row.DebtFromDocs) if prev_debt_row and prev_debt_row.DebtFromDocs else 0
+            area_data['PrevMonthDebt'] = prev_debt_docs - rest_by_area.get(area_code, 0)
             
             # 6. Получить данные за прошлый год (те же даты, но год назад)
             last_year_sales_params = (area_code, last_year_from_str, last_year_to_str) + excluded_params + product_groups_params + division_params + sales_group_params
@@ -1038,14 +1047,15 @@ def get_sales_areas():
                 INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
                 INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
                 WHERE csa.fSALESAREA = ?
-                    AND d.fDATE <= ?
+                    AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                     {excluded_filter}
                     {group_filter}
             """
             last_year_debt_params = (area_code, last_year_to_str) + excluded_params + group_params
             cursor.execute(query_last_year_debt, last_year_debt_params)
             last_year_debt_row = cursor.fetchone()
-            area_data['LastYearDebt'] = float(last_year_debt_row.DebtFromDocs) if last_year_debt_row and last_year_debt_row.DebtFromDocs else 0
+            last_year_debt_docs = float(last_year_debt_row.DebtFromDocs) if last_year_debt_row and last_year_debt_row.DebtFromDocs else 0
+            area_data['LastYearDebt'] = last_year_debt_docs - rest_by_area.get(area_code, 0)
         
         # Получить платежи по Sales Areas из таблицы HICUSTOMERSDEBT
         logger.info("[PAYMENTS] Calculating actual payments from HICUSTOMERSDEBT table...")
@@ -1061,18 +1071,37 @@ def get_sales_areas():
                 INNER JOIN CUSTOMERS c ON d.fCUSTOMERID = c.fID
                 WHERE d.fSALESAREA = ?
                     AND h.fDATE >= ?
-                    AND h.fDATE <= ?
+                    AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                     AND h.fOP = 'PAY'
                     {excluded_filter}
                     {group_filter}
             """
-            
+
             payments_params = (area_code, date_from, date_to) + excluded_params + group_params
             cursor.execute(query_payments, payments_params)
             payments_row = cursor.fetchone()
-            
+
             area_data['Payments'] = float(payments_row.TotalPayments) if payments_row and payments_row.TotalPayments else 0
-            area_data['InitialDebt'] = area_data['Debt'] - area_data['TotalSales'] + area_data['Payments']
+
+            # Начальный долг = баланс движений ДО начала периода − |Type01|+|Type02| (как в карточке,
+            # чтобы дельта Debt−InitialDebt не искажалась). Старая формула Debt − TotalSales + Payments
+            # вычитала и наличные продажи, которые долгом никогда не были
+            query_initial_debt = f"""
+                SELECT
+                    ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as DebtFromDocs
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+                WHERE csa.fSALESAREA = ?
+                    AND d.fDATE < CAST(? AS DATE)
+                    {excluded_filter}
+                    {group_filter}
+            """
+            cursor.execute(query_initial_debt, (area_code, date_from) + excluded_params + group_params)
+            initial_row = cursor.fetchone()
+            initial_docs = float(initial_row.DebtFromDocs) if initial_row and initial_row.DebtFromDocs else 0
+            area_data['InitialDebt'] = initial_docs - rest_by_area.get(area_code, 0)
         
         # Получить историю по месяцам за последние 24 месяца (ОПТИМИЗИРОВАННЫЙ ЗАПРОС)
         logger.info("[HISTORY] Starting monthly history calculation...")
@@ -1122,9 +1151,8 @@ def get_sales_areas():
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
             INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE csa.fSALESAREA = s.fSALESAREA
-                AND s.fDATE >= ?
-                AND s.fDATE <= ?
+            WHERE s.fDATE >= ?
+                AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND s.fSTATE = 2
                 {excluded_filter}
                 {product_groups_filter}
@@ -1133,6 +1161,9 @@ def get_sales_areas():
             GROUP BY csa.fSALESAREA, FORMAT(s.fDATE, 'yyyy-MM')
             ORDER BY csa.fSALESAREA, FORMAT(s.fDATE, 'yyyy-MM')
         """
+        # ВАЖНО: территория — по членству клиента (CUSTOMERSALESAREAS), как в карточке (query_sales).
+        # Раньше здесь стояло csa.fSALESAREA = s.fSALESAREA — из-за разной логики
+        # последний бар графика не совпадал с карточкой территории
         
         history_params = (start_history_date.strftime('%Y-%m-%d'), date_to) + excluded_params + product_groups_params + division_params + sales_group_params
         logger.info(f"[SALES HISTORY] Query has {history_query.count('?')} placeholders")
@@ -1181,7 +1212,7 @@ def get_sales_areas():
             INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
             INNER JOIN CUSTOMERS c ON d.fCUSTOMERID = c.fID
             WHERE h.fDATE >= ?
-                AND h.fDATE <= ?
+                AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND h.fOP = 'PAY'
                 {excluded_filter}
                 {payments_group_filter}
@@ -1258,7 +1289,7 @@ def get_sales_areas():
             INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON d.fDEBTDOCISN = doc.fISN
             INNER JOIN CUSTOMERS c WITH (NOLOCK) ON doc.fCUSTOMERID = c.fID
             INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON c.fID = csa.fCUSTOMERID
-            WHERE d.fDATE >= ? AND d.fDATE <= ?
+            WHERE d.fDATE >= ? AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 {excluded_filter}
                 {debt_group_filter}
             GROUP BY csa.fSALESAREA, FORMAT(d.fDATE, 'yyyy-MM')
@@ -1299,9 +1330,10 @@ def get_sales_areas():
         # Рассчитать кумулятивный баланс долга для каждой территории
         logger.info(f"[HISTORY] Calculating cumulative debt balances...")
         for area_code, area_history in history_by_area.items():
-            # Начальный баланс для этой территории
-            cumulative_debt = initial_debts.get(area_code, 0)
-            
+            # Начальный баланс минус текущие |Type01|+|Type02| — постоянный сдвиг всей кривой,
+            # чтобы последняя точка графика совпадала с карточкой долга (Debt)
+            cumulative_debt = initial_debts.get(area_code, 0) - rest_by_area.get(area_code, 0)
+
             # Сортируем месяцы и пересчитываем баланс
             for month_key in sorted(area_history.keys()):
                 debt_change = area_history[month_key].get('debtChange', 0)
@@ -1412,9 +1444,10 @@ def customers_api():
                     INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
                     WHERE csa.fSALESAREA = ?
                         {base_customer_clause}
+                        {excluded_filter}
                 ),
                 FilteredSales AS (
-                    SELECT 
+                    SELECT
                         ac.CustomerId,
                         sa.fCODE AS ManagerCode,
                         sa.fNAME AS ManagerName,
@@ -1425,9 +1458,8 @@ def customers_api():
                     LEFT JOIN SALESAGENTS sa ON s.fSALESAGENTID = sa.fID
                     WHERE s.fSTATE = 2
                         AND s.fDATE >= ?
-                        AND s.fDATE <= ?
+                        AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                         AND s.fSALESAREA = ?
-                        {excluded_filter}
                         {product_groups_filter}
                     GROUP BY ac.CustomerId, sa.fCODE, sa.fNAME
                 ),
@@ -1470,15 +1502,24 @@ def customers_api():
                     GROUP BY fCUSTOMERID
                 ),
                 PaymentData AS (
-                    SELECT 
+                    SELECT
                         d.fCUSTOMERID AS CustomerId,
                         ISNULL(SUM(CASE WHEN h.fDBCR = 'C' THEN h.fSUM ELSE 0 END), 0) AS TotalPayments
                     FROM HICUSTOMERSDEBT h
                     INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
                     WHERE h.fOP = 'PAY'
                         AND h.fDATE >= ?
-                        AND h.fDATE <= ?
+                        AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                     GROUP BY d.fCUSTOMERID
+                ),
+                InitialDebtData AS (
+                    SELECT
+                        doc.fCUSTOMERID AS CustomerId,
+                        ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) AS InitialDebtFromDocs
+                    FROM HICUSTOMERSDEBT d
+                    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                    WHERE d.fDATE < CAST(? AS DATE)
+                    GROUP BY doc.fCUSTOMERID
                 ),
                 LastPaymentData AS (
                     SELECT 
@@ -1514,7 +1555,7 @@ def customers_api():
                     ISNULL(rd.Type02, 0) AS Type02,
                     (ISNULL(dd.DebtFromDocs, 0) - ABS(ISNULL(rd.Type01, 0)) - ABS(ISNULL(rd.Type02, 0))) AS Debt,
                     ISNULL(pd.TotalPayments, 0) AS TotalPayments,
-                    ((ISNULL(dd.DebtFromDocs, 0) - ABS(ISNULL(rd.Type01, 0)) - ABS(ISNULL(rd.Type02, 0))) - t.TotalSales + ISNULL(pd.TotalPayments, 0)) AS InitialDebt,
+                    (ISNULL(idd.InitialDebtFromDocs, 0) - ABS(ISNULL(rd.Type01, 0)) - ABS(ISNULL(rd.Type02, 0))) AS InitialDebt,
                     lpd.LastPaymentDate,
                     lpd.DaysSinceLastPayment,
                     lsd.LastSaleDate,
@@ -1524,13 +1565,16 @@ def customers_api():
                 LEFT JOIN DebtData dd ON t.CustomerId = dd.CustomerId
                 LEFT JOIN RestData rd ON t.CustomerId = rd.CustomerId
                 LEFT JOIN PaymentData pd ON t.CustomerId = pd.CustomerId
+                LEFT JOIN InitialDebtData idd ON t.CustomerId = idd.CustomerId
                 LEFT JOIN LastPaymentData lpd ON t.CustomerId = lpd.CustomerId
                 LEFT JOIN LastSaleData lsd ON t.CustomerId = lsd.CustomerId
                 WHERE (ISNULL(dd.DebtFromDocs, 0) - ABS(ISNULL(rd.Type01, 0)) - ABS(ISNULL(rd.Type02, 0))) > 0
                 ORDER BY t.TotalSales DESC
             """
-            # Parameters: sales_area (for CUSTOMERSALESAREAS), customer_params_base (groups/divisions), dates, sales_area (for FilteredSales), excluded, product_groups, dates (for PaymentData)
-            params = (sales_area,) + tuple(customer_params_base) + (date_from, date_to, sales_area) + excluded_params + product_groups_params + (date_from, date_to)
+            # Parameters (в порядке '?': AllCustomers → FilteredSales → PaymentData → InitialDebtData):
+            # sales_area, customer_params_base, excluded (в AllCustomers), dates+sales_area (FilteredSales),
+            # product_groups, dates (PaymentData), date_from (InitialDebtData)
+            params = (sales_area,) + tuple(customer_params_base) + excluded_params + (date_from, date_to, sales_area) + product_groups_params + (date_from, date_to) + (date_from,)
         else:
             # Стандартный запрос только с клиентами, у которых есть продажи
             query = f"""
@@ -1550,7 +1594,7 @@ def customers_api():
                     LEFT JOIN SALESAGENTS sa ON s.fSALESAGENTID = sa.fID
                     WHERE s.fSTATE = 2
                         AND s.fDATE >= ?
-                        AND s.fDATE <= ?
+                        AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                         AND s.fSALESAREA = ?
                         {excluded_filter}
                         {division_clause}
@@ -1594,7 +1638,7 @@ def customers_api():
                     rest_data.Type02,
                     (debt_data.DebtFromDocs - ABS(rest_data.Type01) - ABS(rest_data.Type02)) AS Debt,
                     payment_data.TotalPayments,
-                    ((debt_data.DebtFromDocs - ABS(rest_data.Type01) - ABS(rest_data.Type02)) - t.TotalSales + payment_data.TotalPayments) AS InitialDebt,
+                    (initial_debt_data.InitialDebtFromDocs - ABS(rest_data.Type01) - ABS(rest_data.Type02)) AS InitialDebt,
                     last_payment_data.LastPaymentDate,
                     last_payment_data.DaysSinceLastPayment,
                     last_sale_data.LastSaleDate,
@@ -1623,8 +1667,16 @@ def customers_api():
                     WHERE d.fCUSTOMERID = t.CustomerId
                         AND h.fOP = 'PAY'
                         AND h.fDATE >= ?
-                        AND h.fDATE <= ?
+                        AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 ) AS payment_data
+                OUTER APPLY (
+                    SELECT
+                        ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) AS InitialDebtFromDocs
+                    FROM HICUSTOMERSDEBT d
+                    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                    WHERE doc.fCUSTOMERID = t.CustomerId
+                        AND d.fDATE < CAST(? AS DATE)
+                ) AS initial_debt_data
                 OUTER APPLY (
                     SELECT 
                         MAX(h.fDATE) AS LastPaymentDate,
@@ -1645,7 +1697,7 @@ def customers_api():
                 ) AS last_sale_data
                 ORDER BY t.TotalSales DESC
             """
-            params = (date_from, date_to, sales_area) + excluded_params + division_params + group_params + product_groups_params + (date_from, date_to)
+            params = (date_from, date_to, sales_area) + excluded_params + division_params + group_params + product_groups_params + (date_from, date_to) + (date_from,)
         
         app.logger.info(f"[Query params] Total params count: {len(params)}")
         app.logger.info(f"[Query params] params={params[:10]}..." if len(params) > 10 else f"[Query params] params={params}")
@@ -1787,7 +1839,8 @@ def customer_purchases(customer_id: int):
             WHERE s.fCUSTOMERID = ?
                 AND s.fSTATE = 2
                 AND s.fDATE >= ?
-                AND s.fDATE <= ?
+                AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                {payment_clause}
             ORDER BY s.fDATE DESC, s.fISN DESC
         """
 
@@ -1883,7 +1936,7 @@ def customer_purchases(customer_id: int):
                 AND h.fOP = 'PAY'
                 AND h.fDBCR = 'C'
                 AND h.fDATE >= ?
-                AND h.fDATE <= ?
+                AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             ORDER BY h.fDATE DESC, h.fBASE DESC
         """, (customer_id, date_from, date_to))
         
@@ -2231,7 +2284,7 @@ def get_distributors():
             FROM CUSTOMERS c
             LEFT JOIN SALES s ON c.fID = s.fCUSTOMERID
                 AND s.fDATE >= ?
-                AND s.fDATE <= ?
+                AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND s.fSTATE = 2
                 {division_filter}
             WHERE 1=1 {group_filter}
@@ -2283,7 +2336,7 @@ def get_distributors():
             INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
             WHERE d.fCUSTOMERID IN ({placeholders})
                 AND h.fDATE >= ?
-                AND h.fDATE <= ?
+                AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND h.fOP = 'PAY'
                 AND h.fDBCR = 'C'
             GROUP BY d.fCUSTOMERID
@@ -2311,7 +2364,7 @@ def get_distributors():
             FROM HICUSTOMERSDEBT h
             INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
             WHERE d.fCUSTOMERID IN ({placeholders})
-                AND h.fDATE <= ?
+                AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             GROUP BY d.fCUSTOMERID
         """
         
@@ -2723,7 +2776,19 @@ def api_managers_kpi():
             plan_growth = 0.0
         plan_growth = max(-100.0, min(1000.0, plan_growth))
 
+        # Задержка ввода оплат операторами (дней): свежие платежи ещё не внесены в программу,
+        # поэтому долг «на сегодня» завышен. Считаем долг как-of = date_to − N дней («устоявшийся» баланс).
+        try:
+            debt_lag_days = int(request.args.get('debt_lag_days', 0) or 0)
+        except (TypeError, ValueError):
+            debt_lag_days = 0
+        debt_lag_days = max(0, min(60, debt_lag_days))
+
         excluded_filter, excluded_params = get_excluded_filter_sql()
+        # Тот же фильтр для запросов БЕЗ join CUSTOMERS (иначе исключённые клиенты попадали
+        # в возвраты/визиты/сбор/долг, но не в выручку → проценты считались от разных баз)
+        def _excl(custid_expr):
+            return excluded_filter.replace('c.fID', custid_expr)
 
         # Сохранённые фильтры групп (раздельно продажи/долг)
         sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)   # группы клиентов — продажи
@@ -2815,7 +2880,7 @@ def api_managers_kpi():
         # Для НЕЗАВЕРШЁННОГО периода (напр. текущий месяц: 9 дней) даёт сравнение/план like-for-like —
         # базовые окна (прошлый месяц/год) и план обрезаются до того же дня, а не берут полный месяц.
         # Для завершённого периода asof == date_to → поведение прежнее.
-        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE<=?", (date_to,))
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE < DATEADD(day, 1, CAST(? AS DATE))", (date_to,))
         _row = cur.fetchone()
         _last = _row[0] if _row else None
         asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
@@ -2838,7 +2903,7 @@ def api_managers_kpi():
                    {rev_expr} AS Revenue
             FROM SALES s WITH (NOLOCK){rev_join}
             INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
-            WHERE s.fDATE>=? AND s.fDATE<=? AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
+            WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
             GROUP BY s.fSALESAGENTID
         """, (date_from, date_to) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp)
         for r in cur.fetchall():
@@ -2863,7 +2928,7 @@ def api_managers_kpi():
                 FROM AgentCustomers ac
                 INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = ac.cust{rev_join}
                 INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
-                WHERE s.fDATE>=DATEADD(YEAR,-{years},?) AND s.fDATE<=DATEADD(YEAR,-{years},?) AND s.fSTATE=2 {excluded_filter}{sc_w}{rev_pgw}
+                WHERE s.fDATE>=DATEADD(YEAR,-{years},?) AND s.fDATE < DATEADD(day, 1, DATEADD(YEAR,-{years}, CAST(? AS DATE))) AND s.fSTATE=2 {excluded_filter}{sc_w}{rev_pgw}
                 GROUP BY ac.agent
             """, ta_area_p + (date_from, asof) + excluded_params + sc_p + rev_pgp)
             out = {}
@@ -2872,19 +2937,20 @@ def api_managers_kpi():
                 out[r.agent] = {"revenue": rev, "activeCustomers": r.clients,
                                 "salesCount": r.cnt, "avgCheck": (rev / r.cnt if r.cnt else 0)}
             return out
-        cmp_y1 = _cmp_territory(1)   # год назад
-        cmp_y2 = _cmp_territory(2)   # 2 года назад
+        cmp_y0 = _cmp_territory(0)   # текущий период, ТЕРРИТОРИАЛЬНО — та же база, что y1/y2:
+        cmp_y1 = _cmp_territory(1)   # год назад       иначе YoY сравнивал личные продажи менеджера
+        cmp_y2 = _cmp_territory(2)   # 2 года назад    с оборотом всей его территории
 
         # Командные итоги за 3 года (текущий / год назад / 2 года назад) — суммарно по всей команде, те же фильтры.
         def _team_totals(years):
             d_from = f"DATEADD(YEAR,-{years},?)" if years else "?"
-            d_to   = f"DATEADD(YEAR,-{years},?)" if years else "?"
+            d_to   = f"DATEADD(day, 1, DATEADD(YEAR,-{years}, CAST(? AS DATE)))" if years else "DATEADD(day, 1, CAST(? AS DATE))"
             cur.execute(f"""
                 SELECT {doc_cnt} AS cnt, COUNT(DISTINCT s.fCUSTOMERID) AS clients,
                        {rev_expr} AS rev
                 FROM SALES s WITH (NOLOCK){rev_join}
                 INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
-                WHERE s.fDATE>={d_from} AND s.fDATE<={d_to} AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
+                WHERE s.fDATE>={d_from} AND s.fDATE<{d_to} AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
             """, (date_from, asof) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp)
             r = cur.fetchone()
             rev = float(r.rev)
@@ -2897,8 +2963,8 @@ def api_managers_kpi():
             SELECT s.fSALESAGENTID AS agent, COUNT(sd.fISN) AS Lines
             FROM SALES s WITH (NOLOCK) INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN=s.fISN{b_pg_join}
             {cust_join(sc, 's.fCUSTOMERID')}
-            WHERE s.fDATE>=? AND s.fDATE<=? AND s.fSTATE=2 {sc_w}{ta_s_w}{b_pg_w} GROUP BY s.fSALESAGENTID
-        """, (date_from, date_to) + sc_p + ta_s_p + b_pg_p)
+            WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2 {_excl('s.fCUSTOMERID')}{sc_w}{ta_s_w}{b_pg_w} GROUP BY s.fSALESAGENTID
+        """, (date_from, date_to) + excluded_params + sc_p + ta_s_p + b_pg_p)
         for r in cur.fetchall():
             ensure(r.agent)["lines"] = r.Lines
 
@@ -2907,8 +2973,8 @@ def api_managers_kpi():
             SELECT ar.fSALESAGENTID AS agent, COUNT(*) AS Visits, COUNT(DISTINCT ar.fCUSTOMERID) AS VC
             FROM ACTUALROUTES ar WITH (NOLOCK)
             {cust_join(sc, 'ar.fCUSTOMERID')}
-            WHERE ar.fDATE>=? AND ar.fDATE<=? {sc_w}{ta_ar_w} GROUP BY ar.fSALESAGENTID
-        """, (date_from, date_to) + sc_p + ta_ar_p)
+            WHERE ar.fDATE>=? AND ar.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {_excl('ar.fCUSTOMERID')}{sc_w}{ta_ar_w} GROUP BY ar.fSALESAGENTID
+        """, (date_from, date_to) + excluded_params + sc_p + ta_ar_p)
         for r in cur.fetchall():
             m = ensure(r.agent)
             m["visits"] = r.Visits
@@ -2919,8 +2985,8 @@ def api_managers_kpi():
             SELECT rt.fSALESAGENTID AS agent, COUNT(*) AS RC, ISNULL(SUM(rt.fTOTALSUM),0) AS RS
             FROM RETURNS rt WITH (NOLOCK)
             {cust_join(sc, 'rt.fCUSTOMERID')}
-            WHERE rt.fDATE>=? AND rt.fDATE<=? AND rt.fSTATE=2 {sc_w}{ta_rt_w} GROUP BY rt.fSALESAGENTID
-        """, (date_from, date_to) + sc_p + ta_rt_p)
+            WHERE rt.fDATE>=? AND rt.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND rt.fSTATE=2 {_excl('rt.fCUSTOMERID')}{sc_w}{ta_rt_w} GROUP BY rt.fSALESAGENTID
+        """, (date_from, date_to) + excluded_params + sc_p + ta_rt_p)
         for r in cur.fetchall():
             m = ensure(r.agent)
             m["returnCount"] = r.RC
@@ -2932,9 +2998,9 @@ def api_managers_kpi():
             FROM SALESAGENTAREAS saa WITH (NOLOCK)
             INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA=saa.fSALESAREA
             {cust_join(sc, 'csa.fCUSTOMERID')}
-            WHERE 1=1 {sc_w}{ta_area_w}
+            WHERE 1=1 {_excl('csa.fCUSTOMERID')}{sc_w}{ta_area_w}
             GROUP BY saa.fSALESAGENTID
-        """, sc_p + ta_area_p)
+        """, excluded_params + sc_p + ta_area_p)
         for r in cur.fetchall():
             ensure(r.agent)["assigned"] = r.Assigned
 
@@ -2946,8 +3012,8 @@ def api_managers_kpi():
             FROM firsts f INNER JOIN SALES s WITH (NOLOCK)
                 ON s.fCUSTOMERID=f.fCUSTOMERID AND s.fDATE=f.firstsale AND s.fSTATE=2
             {cust_join(sc, 's.fCUSTOMERID')}
-            WHERE f.firstsale>=? AND f.firstsale<=? {sc_w}{ta_s_w}{pg_s_w} GROUP BY s.fSALESAGENTID
-        """, (date_from, date_to) + sc_p + ta_s_p + pg_s_p)
+            WHERE f.firstsale>=? AND f.firstsale < DATEADD(day, 1, CAST(? AS DATE)) {_excl('s.fCUSTOMERID')}{sc_w}{ta_s_w}{pg_s_w} GROUP BY s.fSALESAGENTID
+        """, (date_from, date_to) + excluded_params + sc_p + ta_s_p + pg_s_p)
         for r in cur.fetchall():
             ensure(r.agent)["newCustomers"] = r.NewC
 
@@ -2957,9 +3023,9 @@ def api_managers_kpi():
             FROM HICUSTOMERSDEBT h WITH (NOLOCK)
             INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON h.fDEBTDOCISN=doc.fISN
             {cust_join(dc, 'doc.fCUSTOMERID')}
-            WHERE h.fOP='PAY' AND h.fDBCR='C' AND h.fDATE>=? AND h.fDATE<=? {dc_w}{dd_w}{ta_doc_w}
+            WHERE h.fOP='PAY' AND h.fDBCR='C' AND h.fDATE>=? AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {_excl('doc.fCUSTOMERID')}{dc_w}{dd_w}{ta_doc_w}
             GROUP BY doc.fSALESAGENTID
-        """, (date_from, date_to) + dc_p + dd_p + ta_doc_p)
+        """, (date_from, date_to) + excluded_params + dc_p + dd_p + ta_doc_p)
         for r in cur.fetchall():
             ensure(r.agent)["collected"] = float(r.Collected)
 
@@ -2978,7 +3044,7 @@ def api_managers_kpi():
             FROM AgentCustomers ac
             INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = ac.cust{rev_join}
             INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
-            WHERE s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE<=DATEADD(YEAR,-1,?) AND s.fSTATE=2 {excluded_filter}{sc_w}{rev_pgw}
+            WHERE s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE < DATEADD(day, 1, DATEADD(YEAR,-1, CAST(? AS DATE))) AND s.fSTATE=2 {excluded_filter}{sc_w}{rev_pgw}
             GROUP BY ac.agent
         """, ta_area_p + (date_from, asof) + excluded_params + sc_p + rev_pgp)
         for r in cur.fetchall():
@@ -2995,15 +3061,15 @@ def api_managers_kpi():
                 FROM DOCUMENTS d WITH (NOLOCK)
                 JOIN PLANNEDROUTESLIST l WITH (NOLOCK) ON d.fISN = l.fISN
                 {cust_join(sc, 'l.fCUSTOMERID')}
-                WHERE d.fDOCTYPE=10 AND d.fDATE>=? AND d.fDATE<=? {sc_w}{ta_l_w}
+                WHERE d.fDOCTYPE=10 AND d.fDATE>=? AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {_excl('l.fCUSTOMERID')}{sc_w}{ta_l_w}
             ),
             Visited AS (
                 SELECT DISTINCT ar.fSALESAGENTID AS agent, ar.fCUSTOMERID AS cust
-                FROM ACTUALROUTES ar WITH (NOLOCK) WHERE ar.fDATE>=? AND ar.fDATE<=?
+                FROM ACTUALROUTES ar WITH (NOLOCK) WHERE ar.fDATE>=? AND ar.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             ),
             Ordered AS (
                 SELECT DISTINCT s.fSALESAGENTID AS agent, s.fCUSTOMERID AS cust
-                FROM SALES s WITH (NOLOCK) WHERE s.fDATE>=? AND s.fDATE<=? AND s.fSTATE=2
+                FROM SALES s WITH (NOLOCK) WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
             )
             SELECT rp.agent,
                    COUNT(DISTINCT rp.cust) AS Planned,
@@ -3013,45 +3079,90 @@ def api_managers_kpi():
             LEFT JOIN Visited v ON v.agent=rp.agent AND v.cust=rp.cust
             LEFT JOIN Ordered o ON o.agent=rp.agent AND o.cust=rp.cust
             GROUP BY rp.agent
-        """, (date_from, date_to) + sc_p + ta_l_p + (date_from, date_to) + (date_from, date_to))
+        """, (date_from, date_to) + excluded_params + sc_p + ta_l_p + (date_from, date_to) + (date_from, date_to))
         for r in cur.fetchall():
             m = ensure(r.agent)
             m["routePlanned"] = r.Planned
             m["routeVisited"] = r.Visited
             m["routeOrdered"] = r.Ordered
 
-        # G2: ЧИСТЫЙ ДОЛГ по менеджеру (полная формула из DEBT_CALCULATION_FORMULA.md):
+        # G2: ЧИСТЫЙ ДОЛГ (полная формула из DEBT_CALCULATION_FORMULA.md):
         #   ДОЛГ = Дебет(HICUSTOMERSDEBT, D−C) − |Возвраты Type01| − |Переплаты Type02| (HIRESTCUSTOMERSSUM)
-        # Атрибутируется по клиентам, которым менеджер продавал в периоде (как в /api/managers).
-        # Фильтр «долг: группы клиентов» (dc) применяется к набору клиентов.
-        # Территория применяется и к долгу — через набор «агент → его клиенты» (по клиенту).
-        # Set-based: 2 запроса на всю команду вместо 2×N в цикле. Числа идентичны прежнему.
-        agent_cust_cte = f"""
-            WITH AgentCust AS (
-                SELECT DISTINCT s.fSALESAGENTID AS agent, s.fCUSTOMERID AS cust
-                FROM SALES s WITH (NOLOCK)
-                WHERE s.fSTATE=2 AND s.fDATE>=? AND s.fDATE<=?{ta_s_w}
-            )"""
-        cur.execute(f"""{agent_cust_cte}
-            SELECT ac.agent, ISNULL(SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END),0) AS Debit
-            FROM AgentCust ac
-            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON doc.fCUSTOMERID = ac.cust
+        #
+        # ТЕРРИТОРИАЛЬНАЯ модель (совпадает с боевой программой ERP до копейки):
+        #   • Команда (team_debit/t1/t2): долг ВСЕХ клиентов территории напрямую, каждый клиент 1 раз = ERP.
+        #   • По менеджеру: каждый клиент привязан к ОДНОМУ «текущему» менеджеру = кто ПОСЛЕДНИМ ему продавал
+        #     (без задвоения). ВНИМАНИЕ: Σ(показанных строк) обычно < команды — в лидерборде видны только
+        #     менеджеры с продажами в периоде (salesCount>0), а долг клиентов, чей текущий менеджер сейчас
+        #     неактивен, плюс клиентов без единой продажи (открытые сальдо), попадает в team, но не в строки.
+        #     Эта разница отдаётся отдельно — team["debtUnattributed"] — и показывается строкой «без привязки».
+        #     Инвариант: Σ(строки) + debtUnattributed = team долг = ERP.
+        #   Прежняя привязка «кому продавал в периоде» задваивала долг (клиент у нескольких агентов) — исправлено.
+        # Фильтры: территория (по клиенту) + «долг: группы клиентов» (dc). As-of = date_to (долг на конец периода).
+        # HIRESTCUSTOMERSSUM без истории → возвраты/переплаты — текущий снимок (корректно только для as-of=сегодня).
+        ta_r_w, ta_r_p = terr_where('r.fCUSTOMERID')   # территория для HIRESTCUSTOMERSSUM (alias r)
+
+        # As-of дата долга с поправкой на задержку ввода оплат.
+        # Поправка нужна ТОЛЬКО для «неустоявшегося» окна: as-of = min(date_to, сегодня − N дней).
+        # Если период давний (сегодня − date_to ≥ N) — оплаты уже введены, сдвиг НЕ применяется (берём date_to).
+        # Смещается только дебет (HICUSTOMERSDEBT по дате); Type01/Type02 — текущий снимок (истории нет).
+        debt_asof = date_to
+        if debt_lag_days:
+            settled = (datetime.now() - timedelta(days=debt_lag_days)).strftime('%Y-%m-%d')
+            if settled < date_to:
+                debt_asof = settled
+
+        # --- КОМАНДА: долг территории напрямую (уникальные клиенты) = ERP ---
+        cur.execute(f"""
+            SELECT ISNULL(SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END),0)
+            FROM DOCUMENTS doc WITH (NOLOCK)
             INNER JOIN HICUSTOMERSDEBT h WITH (NOLOCK) ON h.fDEBTDOCISN = doc.fISN
-            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = ac.cust
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = doc.fCUSTOMERID
+            WHERE h.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {excluded_filter}{ta_doc_w}{dc_w}
+        """, (debt_asof,) + excluded_params + ta_doc_p + dc_p)
+        team_debit = float(cur.fetchone()[0] or 0)
+        cur.execute(f"""
+            SELECT ISNULL(SUM(CASE WHEN r.fTYPE='01' THEN r.fSUM ELSE 0 END),0),
+                   ISNULL(SUM(CASE WHEN r.fTYPE='02' THEN r.fSUM ELSE 0 END),0)
+            FROM HIRESTCUSTOMERSSUM r WITH (NOLOCK)
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = r.fCUSTOMERID
+            WHERE 1=1 {excluded_filter}{ta_r_w}{dc_w}
+        """, excluded_params + ta_r_p + dc_p)
+        _tr = cur.fetchone()
+        team_t1 = abs(float(_tr[0] or 0)); team_t2 = abs(float(_tr[1] or 0))
+
+        # --- ПО МЕНЕДЖЕРУ: клиент → текущий менеджер (последний продавец) ---
+        # Window по всем продажам fSTATE=2 территории; внешние INNER JOIN к долгу/остаткам сами отсекают
+        # не-должников. Ограничивать окно должниками не нужно — это медленнее, результат байт-в-байт тот же.
+        custagent_cte = f"""
+            WITH CustAgent AS (
+                SELECT cust, agent FROM (
+                    SELECT s.fCUSTOMERID AS cust, s.fSALESAGENTID AS agent,
+                           ROW_NUMBER() OVER (PARTITION BY s.fCUSTOMERID ORDER BY s.fDATE DESC, s.fISN DESC) rn
+                    FROM SALES s WITH (NOLOCK)
+                    WHERE s.fSTATE=2{_excl('s.fCUSTOMERID')}{ta_s_w}
+                ) x WHERE rn=1
+            )"""
+        cur.execute(f"""{custagent_cte}
+            SELECT ca.agent, ISNULL(SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END),0) AS Debit
+            FROM CustAgent ca
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON doc.fCUSTOMERID = ca.cust
+            INNER JOIN HICUSTOMERSDEBT h WITH (NOLOCK) ON h.fDEBTDOCISN = doc.fISN AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = ca.cust
             WHERE 1=1 {dc_w}
-            GROUP BY ac.agent
-        """, (date_from, date_to) + ta_s_p + dc_p)
+            GROUP BY ca.agent
+        """, excluded_params + ta_s_p + (debt_asof,) + dc_p)
         debit_by = {r.agent: float(r.Debit or 0) for r in cur.fetchall()}
-        cur.execute(f"""{agent_cust_cte}
-            SELECT ac.agent,
+        cur.execute(f"""{custagent_cte}
+            SELECT ca.agent,
                    ISNULL(SUM(CASE WHEN r.fTYPE='01' THEN r.fSUM ELSE 0 END),0) AS T1,
                    ISNULL(SUM(CASE WHEN r.fTYPE='02' THEN r.fSUM ELSE 0 END),0) AS T2
-            FROM AgentCust ac
-            INNER JOIN HIRESTCUSTOMERSSUM r WITH (NOLOCK) ON r.fCUSTOMERID = ac.cust
-            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = ac.cust
+            FROM CustAgent ca
+            INNER JOIN HIRESTCUSTOMERSSUM r WITH (NOLOCK) ON r.fCUSTOMERID = ca.cust
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = ca.cust
             WHERE 1=1 {dc_w}
-            GROUP BY ac.agent
-        """, (date_from, date_to) + ta_s_p + dc_p)
+            GROUP BY ca.agent
+        """, excluded_params + ta_s_p + dc_p)
         rest_by = {r.agent: (abs(float(r.T1 or 0)), abs(float(r.T2 or 0))) for r in cur.fetchall()}
         for aid, m in M.items():
             if m["salesCount"] == 0:
@@ -3111,7 +3222,7 @@ def api_managers_kpi():
                 "plan": round(plan) if plan else None,
                 "prevYear": round(m["prevYear"]),
                 "planFact": round(plan_fact, 1) if plan_fact is not None else None,
-                "cmp": {"y1": cmp_y1.get(aid), "y2": cmp_y2.get(aid)},
+                "cmp": {"current": cmp_y0.get(aid), "y1": cmp_y1.get(aid), "y2": cmp_y2.get(aid)},
                 "debt": round(m.get("debt", 0), 2),
                 "debtDebit": round(m.get("debtDebit", 0), 2),
                 "returnsType01": round(m.get("returnsType01", 0), 2),
@@ -3165,9 +3276,15 @@ def api_managers_kpi():
             "salesCount": sum(r["salesCount"] for r in rows),
             "newCustomers": sum(r["newCustomers"] for r in rows),
             "returnsSum": sum(r["returnsSum"] for r in rows),
-            "debt": sum(r["debt"] for r in rows),
-            "returnsType01": sum(r["returnsType01"] for r in rows),
-            "overpayType02": sum(r["overpayType02"] for r in rows),
+            # Долг команды — территориальный (уникальные клиенты) = ERP, а не сумма строк-менеджеров
+            # (у части должников «текущий» менеджер может быть неактивен в периоде → его нет в строках).
+            "debt": round(team_debit - team_t1 - team_t2, 2),
+            "debtDebit": round(team_debit, 2),
+            "returnsType01": round(team_t1, 2),
+            "overpayType02": round(team_t2, 2),
+            # Долг «без привязки»: неактивные в периоде менеджеры + клиенты без продаж (открытые сальдо).
+            # Инвариант: Σ(строки m.debt) + debtUnattributed = team.debt (= ERP). Показывается отдельной строкой.
+            "debtUnattributed": round((team_debit - team_t1 - team_t2) - sum(r["debt"] for r in rows), 2),
             "avgCoverage": round(sum(r["coverage"] for r in rows if r["coverage"] is not None)
                                  / max(1, sum(1 for r in rows if r["coverage"] is not None)), 1),
             "cmp": team_cmp,
@@ -3243,7 +3360,7 @@ def api_manager_product_sales(agent_id):
         cur = conn.cursor()
 
         # asof = последний день с продажами в пределах периода (для like-for-like сдвигов)
-        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE<=?", (date_to,))
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE < DATEADD(day, 1, CAST(? AS DATE))", (date_to,))
         _row = cur.fetchone()
         _last = _row[0] if _row else None
         asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
@@ -3257,16 +3374,16 @@ def api_manager_product_sales(agent_id):
                 WHERE saa.fSALESAGENTID = ?{sa_w}
             )
             SELECT p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP AS grp, gt.fCAPTION AS grpname,
-                   SUM(CASE WHEN s.fDATE>=? AND s.fDATE<=? THEN sd.fQUANTITY ELSE 0 END) AS qcur,
-                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE<=DATEADD(YEAR,-1,?) THEN sd.fQUANTITY ELSE 0 END) AS qy1,
-                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-2,?) AND s.fDATE<=DATEADD(YEAR,-2,?) THEN sd.fQUANTITY ELSE 0 END) AS qy2
+                   SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) THEN sd.fQUANTITY ELSE 0 END) AS qcur,
+                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE < DATEADD(day, 1, DATEADD(YEAR,-1, CAST(? AS DATE))) THEN sd.fQUANTITY ELSE 0 END) AS qy1,
+                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-2,?) AND s.fDATE < DATEADD(day, 1, DATEADD(YEAR,-2, CAST(? AS DATE))) THEN sd.fQUANTITY ELSE 0 END) AS qy2
             FROM SALES s WITH (NOLOCK)
             INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN = s.fISN
             INNER JOIN PRODUCTS p WITH (NOLOCK) ON p.fID = sd.fPRODUCTID
             LEFT JOIN TREES gt WITH (NOLOCK) ON gt.fCODE = p.fGROUP AND gt.fTREEID = 'PrdctGrp'
             INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
             WHERE s.fSTATE=2 AND s.fCUSTOMERID IN (SELECT cust FROM AC)
-              AND s.fDATE >= DATEADD(YEAR,-2,?) AND s.fDATE <= ? {excluded_filter}{sc_w}{pg_w}
+              AND s.fDATE >= DATEADD(YEAR,-2,?) AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {excluded_filter}{sc_w}{pg_w}
             GROUP BY p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP, gt.fCAPTION
         """, (agent_id,) + sa_p + (date_from, asof, date_from, asof, date_from, asof, date_from, asof) + excluded_params + sc_p + pg_p)
 
@@ -3312,7 +3429,7 @@ def api_managers_product_sales_total():
 
         conn = db.get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE<=?", (date_to,))
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE < DATEADD(day, 1, CAST(? AS DATE))", (date_to,))
         _row = cur.fetchone()
         _last = _row[0] if _row else None
         asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
@@ -3320,15 +3437,15 @@ def api_managers_product_sales_total():
         # Все продажи команды (те же фильтры: исключённые + группы клиентов + дивизионы + территория + товарные группы).
         cur.execute(f"""
             SELECT p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP AS grp, gt.fCAPTION AS grpname,
-                   SUM(CASE WHEN s.fDATE>=? AND s.fDATE<=? THEN sd.fQUANTITY ELSE 0 END) AS qcur,
-                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE<=DATEADD(YEAR,-1,?) THEN sd.fQUANTITY ELSE 0 END) AS qy1,
-                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-2,?) AND s.fDATE<=DATEADD(YEAR,-2,?) THEN sd.fQUANTITY ELSE 0 END) AS qy2
+                   SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) THEN sd.fQUANTITY ELSE 0 END) AS qcur,
+                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE < DATEADD(day, 1, DATEADD(YEAR,-1, CAST(? AS DATE))) THEN sd.fQUANTITY ELSE 0 END) AS qy1,
+                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-2,?) AND s.fDATE < DATEADD(day, 1, DATEADD(YEAR,-2, CAST(? AS DATE))) THEN sd.fQUANTITY ELSE 0 END) AS qy2
             FROM SALES s WITH (NOLOCK)
             INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN = s.fISN
             INNER JOIN PRODUCTS p WITH (NOLOCK) ON p.fID = sd.fPRODUCTID
             LEFT JOIN TREES gt WITH (NOLOCK) ON gt.fCODE = p.fGROUP AND gt.fTREEID = 'PrdctGrp'
             INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
-            WHERE s.fSTATE=2 AND s.fDATE >= DATEADD(YEAR,-2,?) AND s.fDATE <= ? {excluded_filter}{sc_w}{sd_w}{sa_w}{pg_w}
+            WHERE s.fSTATE=2 AND s.fDATE >= DATEADD(YEAR,-2,?) AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {excluded_filter}{sc_w}{sd_w}{sa_w}{pg_w}
             GROUP BY p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP, gt.fCAPTION
         """, (date_from, asof, date_from, asof, date_from, asof, date_from, asof) + excluded_params + sc_p + sd_p + sa_p + pg_p)
         rows = cur.fetchall()
@@ -3462,11 +3579,16 @@ def ai_analysis():
             c.fNAME as CustomerName,
             ISNULL(csa.fSALESAREA, 'N/A') as AreaCode,
             ISNULL(sa.fCAPTION, 'Не указана') as AreaName,
-            ISNULL(debt.TotalDebt, 0) as Debt,
+            (ISNULL(debt.TotalDebt, 0) - ABS(ISNULL(rest.Type01, 0)) - ABS(ISNULL(rest.Type02, 0))) as Debt,
             ISNULL(sales.MonthlySales, 0) as MonthlySales,
             ISNULL(pay.MonthlyPayments, 0) as MonthlyPayments
         FROM CUSTOMERS c
-        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        OUTER APPLY (
+            SELECT TOP 1 csa0.fSALESAREA
+            FROM CUSTOMERSALESAREAS csa0 WITH (NOLOCK)
+            WHERE csa0.fCUSTOMERID = c.fID
+            ORDER BY csa0.fDEFAULT DESC
+        ) csa
         LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SArea'
         LEFT JOIN (
             SELECT doc.fCUSTOMERID, 
@@ -3476,20 +3598,29 @@ def ai_analysis():
             GROUP BY doc.fCUSTOMERID
         ) debt ON c.fID = debt.fCUSTOMERID
         LEFT JOIN (
+            SELECT fCUSTOMERID,
+                   SUM(CASE WHEN fTYPE = '01' THEN fSUM ELSE 0 END) as Type01,
+                   SUM(CASE WHEN fTYPE = '02' THEN fSUM ELSE 0 END) as Type02
+            FROM HIRESTCUSTOMERSSUM WITH (NOLOCK)
+            GROUP BY fCUSTOMERID
+        ) rest ON c.fID = rest.fCUSTOMERID
+        LEFT JOIN (
             SELECT fCUSTOMERID, SUM(fTOTALSUM) as MonthlySales
-            FROM SALES 
+            FROM SALES
             WHERE fDATE >= DATEADD(MONTH, -1, GETDATE()) AND fSTATE = 2
             GROUP BY fCUSTOMERID
         ) sales ON c.fID = sales.fCUSTOMERID
         LEFT JOIN (
-            SELECT fCUSTOMERID, SUM(fSUM) as MonthlyPayments
-            FROM PAYMENTS 
-            WHERE fDATE >= DATEADD(MONTH, -1, GETDATE())
-            GROUP BY fCUSTOMERID
+            SELECT d.fCUSTOMERID, SUM(h.fSUM) as MonthlyPayments
+            FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+            INNER JOIN DOCUMENTS d WITH (NOLOCK) ON h.fDEBTDOCISN = d.fISN
+            WHERE h.fOP = 'PAY' AND h.fDBCR = 'C'
+              AND h.fDATE >= DATEADD(MONTH, -1, GETDATE())
+            GROUP BY d.fCUSTOMERID
         ) pay ON c.fID = pay.fCUSTOMERID
-        WHERE ISNULL(debt.TotalDebt, 0) > 100000
+        WHERE (ISNULL(debt.TotalDebt, 0) - ABS(ISNULL(rest.Type01, 0)) - ABS(ISNULL(rest.Type02, 0))) > 100000
             {combined_filter}
-        ORDER BY debt.TotalDebt DESC
+        ORDER BY Debt DESC
         """
         
         cursor.execute(query_high_debt, combined_params)
@@ -3554,7 +3685,12 @@ def ai_analysis():
             ISNULL(sales.MonthlySales, 0) as MonthlySales,
             ISNULL(pay.MonthlyPayments, 0) as MonthlyPayments
         FROM CUSTOMERS c
-        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        OUTER APPLY (
+            SELECT TOP 1 csa0.fSALESAREA
+            FROM CUSTOMERSALESAREAS csa0 WITH (NOLOCK)
+            WHERE csa0.fCUSTOMERID = c.fID
+            ORDER BY csa0.fDEFAULT DESC
+        ) csa
         LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SArea'
         LEFT JOIN (
             SELECT fCUSTOMERID, SUM(fTOTALSUM) as MonthlySales
@@ -3563,10 +3699,12 @@ def ai_analysis():
             GROUP BY fCUSTOMERID
         ) sales ON c.fID = sales.fCUSTOMERID
         LEFT JOIN (
-            SELECT fCUSTOMERID, SUM(fSUM) as MonthlyPayments
-            FROM PAYMENTS 
-            WHERE fDATE >= DATEADD(MONTH, -1, GETDATE())
-            GROUP BY fCUSTOMERID
+            SELECT d.fCUSTOMERID, SUM(h.fSUM) as MonthlyPayments
+            FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+            INNER JOIN DOCUMENTS d WITH (NOLOCK) ON h.fDEBTDOCISN = d.fISN
+            WHERE h.fOP = 'PAY' AND h.fDBCR = 'C'
+              AND h.fDATE >= DATEADD(MONTH, -1, GETDATE())
+            GROUP BY d.fCUSTOMERID
         ) pay ON c.fID = pay.fCUSTOMERID
         WHERE ISNULL(sales.MonthlySales, 0) > 100000
             {combined_filter}
@@ -3613,7 +3751,12 @@ def ai_analysis():
             ISNULL(curr.CurrentSales, 0) as CurrentMonthSales,
             ISNULL(prev.AvgPrevSales, 0) as AvgPrevMonthsSales
         FROM CUSTOMERS c
-        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        OUTER APPLY (
+            SELECT TOP 1 csa0.fSALESAREA
+            FROM CUSTOMERSALESAREAS csa0 WITH (NOLOCK)
+            WHERE csa0.fCUSTOMERID = c.fID
+            ORDER BY csa0.fDEFAULT DESC
+        ) csa
         LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SArea'
         LEFT JOIN (
             SELECT fCUSTOMERID, SUM(fTOTALSUM) as CurrentSales
@@ -3674,7 +3817,12 @@ def ai_analysis():
             DATEDIFF(DAY, last_sale.LastSaleDate, GETDATE()) as DaysSinceLastSale,
             ISNULL(avg_sales.AvgMonthlySales, 0) as AvgMonthlySales
         FROM CUSTOMERS c
-        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        OUTER APPLY (
+            SELECT TOP 1 csa0.fSALESAREA
+            FROM CUSTOMERSALESAREAS csa0 WITH (NOLOCK)
+            WHERE csa0.fCUSTOMERID = c.fID
+            ORDER BY csa0.fDEFAULT DESC
+        ) csa
         LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SArea'
         INNER JOIN (
             SELECT fCUSTOMERID, MAX(fDATE) as LastSaleDate
@@ -4833,9 +4981,9 @@ def reports_managers():
             COALESCE(SUM(CASE WHEN CAST(s.fDATE AS DATE) = CAST(? AS DATE) THEN s.fTOTALSUM ELSE 0 END), 0) as TodaySales,
             COUNT(DISTINCT CAST(s.fDATE AS DATE)) as WorkingDays
         FROM SALESAGENTS sa
-        LEFT JOIN SALES s ON sa.fID = s.fSALESAGENTID 
-            AND s.fDATE >= ? 
-            AND s.fDATE <= ? 
+        LEFT JOIN SALES s ON sa.fID = s.fSALESAGENTID
+            AND s.fDATE >= ?
+            AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
         WHERE sa.fCLOSED = 0
         GROUP BY sa.fCODE, sa.fNAME, sa.fID
@@ -4892,9 +5040,9 @@ def reports_managers():
             credit_plan = credit_plans.get(code, 3_000_000)
             credit_query = """
                 SELECT COALESCE(SUM(fTOTALSUM), 0) 
-                FROM SALES 
-                WHERE fSALESAGENTID = (SELECT fID FROM SALESAGENTS WHERE fCODE = ?) 
-                AND fDATE >= ? AND fDATE <= ?
+                FROM SALES
+                WHERE fSALESAGENTID = (SELECT fID FROM SALESAGENTS WHERE fCODE = ?)
+                AND fDATE >= ? AND fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND fSTATE = 2
             """
             cursor.execute(credit_query, (code, date_from, date_to))
@@ -4971,7 +5119,7 @@ def reports_daily_sales():
             COALESCE(SUM(fTOTALSUM), 0) as TotalSales,
             COUNT(*) as SalesCount
         FROM SALES
-        WHERE fDATE >= ? AND fDATE <= ? AND fSTATE = 2
+        WHERE fDATE >= ? AND fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND fSTATE = 2
         GROUP BY CAST(fDATE AS DATE)
         ORDER BY SaleDate
         """
@@ -5054,14 +5202,20 @@ def get_debts():
         # 3. Конечный долг = debtFromDocuments - |type01| - |type02|
         final_debt = debt_from_documents - abs(type01) - abs(type02)
         
-        # 4. Количество клиентов с долгами (исключая неблагонадежных)
+        # 4. Количество клиентов с долгами (исключая неблагонадежных).
+        # Считаем клиентов с ПОЛОЖИТЕЛЬНЫМ нетто-долгом (D−C > 0) — согласовано с top_debtors,
+        # иначе клиент с полностью погашенным долгом всё равно попадал в счётчик
         query_customers_with_debt = f"""
-            SELECT COUNT(DISTINCT doc.fCUSTOMERID) as DebtCustomersCount
-            FROM HICUSTOMERSDEBT d
-            INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-            INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-            WHERE d.fDBCR = 'D' AND d.fSUM > 0
-            {excluded_filter}
+            SELECT COUNT(*) as DebtCustomersCount FROM (
+                SELECT doc.fCUSTOMERID
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                WHERE 1=1
+                {excluded_filter}
+                GROUP BY doc.fCUSTOMERID
+                HAVING SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END) > 0
+            ) t
         """
         debt_customers_result = db.execute_query(query_customers_with_debt, excluded_params)
         debt_customers_count = debt_customers_result[0]['DebtCustomersCount'] if debt_customers_result else 0
@@ -6364,13 +6518,13 @@ def get_area_route_stats(area_code):
                 FROM DOCUMENTS d
                 JOIN PLANNEDROUTESLIST l ON d.fISN = l.fISN
                 WHERE d.fDOCTYPE = 10
-                  AND d.fDATE >= ? AND d.fDATE <= ?
+                  AND d.fDATE >= ? AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                   AND l.fCUSTOMERID IN (SELECT fCUSTOMERID FROM AreaCustomers)
             ),
             ActualVisits AS (
                 SELECT a.fCUSTOMERID, CAST(a.fDATE as DATE) as VisitDate
                 FROM ACTUALROUTES a
-                WHERE a.fDATE >= ? AND a.fDATE <= ?
+                WHERE a.fDATE >= ? AND a.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                   AND a.fCUSTOMERID IN (SELECT fCUSTOMERID FROM AreaCustomers)
             )
             SELECT
@@ -6398,7 +6552,7 @@ def get_area_route_stats(area_code):
                     SELECT COUNT(DISTINCT s.fCUSTOMERID)
                     FROM SALES s
                     WHERE s.fSALESAREA = ?
-                      AND s.fDATE >= ? AND s.fDATE <= ?
+                      AND s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                       AND s.fSTATE = 2
                 ) as OrderedCount
         """
@@ -6468,7 +6622,7 @@ def get_unpaid_documents(area_code):
         date_filter = ""
         date_params = tuple()
         if date_from and date_to:
-            date_filter = " AND doc.fDATE >= ? AND doc.fDATE <= ?"
+            date_filter = " AND doc.fDATE >= ? AND doc.fDATE < DATEADD(day, 1, CAST(? AS DATE))"
             date_params = (date_from, date_to)
         
         # Построить фильтр по группам клиентов
@@ -6693,7 +6847,8 @@ def get_card_data():
         
         if areas and len(areas) > 0:
             placeholders = ','.join(['?' for _ in areas])
-            area_filter = f"AND csa.fSALESAREA IN ({placeholders})"
+            area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                           f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
             params.extend(areas)
         
         if groups and len(groups) > 0:
@@ -6719,8 +6874,7 @@ def get_card_data():
                 SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
                 FROM SALES s
                 INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-                LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                WHERE s.fDATE BETWEEN ? AND ?
+                                WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND s.fSTATE = 2
                 {area_filter}
                 {group_filter}
@@ -6730,7 +6884,7 @@ def get_card_data():
                 query = """
                 SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
                 FROM SALES s
-                WHERE s.fDATE BETWEEN ? AND ?
+                WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND s.fSTATE = 2
                 """
                 params = [date_from, date_to]  # без фильтров - только даты
@@ -6742,8 +6896,7 @@ def get_card_data():
                 SELECT ISNULL(SUM(ABS(p.fSUM)), 0) as value
                 FROM PAYMENTS p
                 INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
-                LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                WHERE p.fDATE BETWEEN ? AND ?
+                                WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 {area_filter}
                 {group_filter}
                 """
@@ -6757,7 +6910,7 @@ def get_card_data():
                 query = """
                 SELECT ISNULL(SUM(ABS(p.fSUM)), 0) as value
                 FROM PAYMENTS p
-                WHERE p.fDATE BETWEEN ? AND ?
+                WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 """
                 params = [date_from, date_to]
         elif metric == 'total_debt':
@@ -6769,7 +6922,8 @@ def get_card_data():
             
             if areas and len(areas) > 0:
                 placeholders = ','.join(['?' for _ in areas])
-                debt_area_filter = f"AND csa.fSALESAREA IN ({placeholders})"
+                debt_area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                                    f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
                 debt_params.extend(areas)
             if groups and len(groups) > 0:
                 placeholders = ','.join(['?' for _ in groups])
@@ -6784,22 +6938,19 @@ def get_card_data():
                     FROM HICUSTOMERSDEBT d
                     INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
                     INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-                    LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                    WHERE 1=1 {debt_area_filter} {debt_group_filter}
+                                        WHERE 1=1 {debt_area_filter} {debt_group_filter}
                 ), 0) 
                 - ISNULL((
                     SELECT SUM(CASE WHEN r.fTYPE = '01' THEN ABS(r.fSUM) ELSE 0 END)
                     FROM HIRESTCUSTOMERSSUM r
                     INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
-                    LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                    WHERE 1=1 {debt_area_filter} {debt_group_filter}
+                                        WHERE 1=1 {debt_area_filter} {debt_group_filter}
                 ), 0)
                 - ISNULL((
                     SELECT SUM(CASE WHEN r.fTYPE = '02' THEN ABS(r.fSUM) ELSE 0 END)
                     FROM HIRESTCUSTOMERSSUM r
                     INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
-                    LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                    WHERE 1=1 {debt_area_filter} {debt_group_filter}
+                                        WHERE 1=1 {debt_area_filter} {debt_group_filter}
                 ), 0)
             as value
             """
@@ -6810,8 +6961,7 @@ def get_card_data():
             SELECT COUNT(DISTINCT s.fCUSTOMERID) as value
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE s.fDATE BETWEEN ? AND ?
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
             {area_filter}
             {group_filter}
@@ -6822,8 +6972,7 @@ def get_card_data():
             SELECT COUNT(*) as value
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE s.fDATE BETWEEN ? AND ?
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
             {area_filter}
             {group_filter}
@@ -6834,8 +6983,7 @@ def get_card_data():
             SELECT ISNULL(AVG(s.fTOTALSUM), 0) as value
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE s.fDATE BETWEEN ? AND ?
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
             {area_filter}
             {group_filter}
@@ -6853,8 +7001,7 @@ def get_card_data():
                 SELECT s.fCUSTOMERID, SUM(s.fTOTALSUM) as TotalSales
                 FROM SALES s
                 INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-                LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                WHERE s.fDATE BETWEEN ? AND ?
+                                WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND s.fSTATE = 2
                 {area_filter}
                 {group_filter}
@@ -6865,8 +7012,7 @@ def get_card_data():
                 SELECT p.fCUSTOMERID, SUM(p.fSUM) as TotalPayments
                 FROM PAYMENTS p
                 INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
-                LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                WHERE p.fDATE BETWEEN ? AND ?
+                                WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 {area_filter}
                 {group_filter}
                 GROUP BY p.fCUSTOMERID
@@ -6894,22 +7040,28 @@ def get_card_data():
             
             if areas and len(areas) > 0:
                 placeholders = ','.join(['?' for _ in areas])
-                debt_area_filter = f"AND csa.fSALESAREA IN ({placeholders})"
+                debt_area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                                    f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
                 debt_params.extend(areas)
             if groups and len(groups) > 0:
                 placeholders = ','.join(['?' for _ in groups])
                 debt_group_filter = f"AND c.fGROUP IN ({placeholders})"
                 debt_params.extend(groups)
                 
+            # Клиенты с ПОЛОЖИТЕЛЬНЫМ нетто-долгом (D−C > 0), а не «с любым дебетовым документом» —
+            # иначе полностью погасившие долг клиенты завышали счётчик
             query = f"""
-            SELECT COUNT(DISTINCT doc.fCUSTOMERID) as value
-            FROM HICUSTOMERSDEBT d
-            INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-            INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE d.fDBCR = 'D'
-            {debt_area_filter}
-            {debt_group_filter}
+            SELECT COUNT(*) as value FROM (
+                SELECT doc.fCUSTOMERID
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                WHERE 1=1
+                {debt_area_filter}
+                {debt_group_filter}
+                GROUP BY doc.fCUSTOMERID
+                HAVING SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END) > 0
+            ) t
             """
             params = debt_params
         elif metric in ['forecast_sales', 'forecast_completion', 'days_remaining', 'daily_avg', 'needed_daily', 'plan_gap']:
@@ -6922,8 +7074,7 @@ def get_card_data():
                 SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
                 FROM SALES s
                 INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-                LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                WHERE s.fDATE BETWEEN ? AND ?
+                                WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND s.fSTATE = 2
                 {area_filter}
                 {group_filter}
@@ -6934,7 +7085,7 @@ def get_card_data():
                 sales_query = """
                 SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
                 FROM SALES s
-                WHERE s.fDATE BETWEEN ? AND ?
+                WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND s.fSTATE = 2
                 """
                 sales_params = [date_from, date_to]
@@ -7043,6 +7194,8 @@ def get_card_data():
                     cursor, conn, metric, comp_dates['from'], comp_dates['to'],
                     areas, groups, divisions
                 )
+                if comp_value is None:
+                    continue  # метрика без поддержки сравнения — не показываем ложный «рост от нуля»
                 comparison_data[comp_key] = {
                     'value': float(comp_value) if comp_value else 0,
                     'from': comp_dates['from'],
@@ -7132,7 +7285,8 @@ def get_metric_value_for_period(cursor, conn, metric, date_from, date_to, areas=
     
     if areas and len(areas) > 0:
         placeholders = ','.join(['?' for _ in areas])
-        area_filter = f"AND csa.fSALESAREA IN ({placeholders})"
+        area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                       f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
         params.extend(areas)
     
     if groups and len(groups) > 0:
@@ -7151,8 +7305,7 @@ def get_metric_value_for_period(cursor, conn, metric, date_from, date_to, areas=
             SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE s.fDATE BETWEEN ? AND ?
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
             {area_filter}
             {group_filter}
@@ -7162,7 +7315,7 @@ def get_metric_value_for_period(cursor, conn, metric, date_from, date_to, areas=
             query = """
             SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
             FROM SALES s
-            WHERE s.fDATE BETWEEN ? AND ?
+            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
             """
     elif metric == 'total_payments':
@@ -7171,25 +7324,27 @@ def get_metric_value_for_period(cursor, conn, metric, date_from, date_to, areas=
             SELECT ISNULL(SUM(ABS(p.fSUM)), 0) as value
             FROM PAYMENTS p
             INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
-            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE p.fDATE BETWEEN ? AND ?
+            WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             {area_filter}
             {group_filter}
             """
+            # В запросе оплат нет division-плейсхолдеров — пересобираем params без divisions,
+            # иначе pyodbc падал на несовпадении числа параметров и сравнение тихо было 0
+            params = [date_from, date_to] + list(areas or []) + list(groups or [])
         else:
             query = """
             SELECT ISNULL(SUM(ABS(p.fSUM)), 0) as value
             FROM PAYMENTS p
-            WHERE p.fDATE BETWEEN ? AND ?
+            WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             """
+            params = [date_from, date_to]
     elif metric == 'customer_count':
         if needs_joins:
             query = f"""
             SELECT COUNT(DISTINCT s.fCUSTOMERID) as value
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE s.fDATE BETWEEN ? AND ?
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
             {area_filter}
             {group_filter}
@@ -7199,7 +7354,7 @@ def get_metric_value_for_period(cursor, conn, metric, date_from, date_to, areas=
             query = """
             SELECT COUNT(DISTINCT s.fCUSTOMERID) as value
             FROM SALES s
-            WHERE s.fDATE BETWEEN ? AND ?
+            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
             """
     elif metric == 'sales_count':
@@ -7208,8 +7363,7 @@ def get_metric_value_for_period(cursor, conn, metric, date_from, date_to, areas=
             SELECT COUNT(*) as value
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE s.fDATE BETWEEN ? AND ?
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
             {area_filter}
             {group_filter}
@@ -7219,7 +7373,7 @@ def get_metric_value_for_period(cursor, conn, metric, date_from, date_to, areas=
             query = """
             SELECT COUNT(*) as value
             FROM SALES s
-            WHERE s.fDATE BETWEEN ? AND ?
+            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
             """
     elif metric == 'avg_check':
@@ -7228,8 +7382,7 @@ def get_metric_value_for_period(cursor, conn, metric, date_from, date_to, areas=
             SELECT ISNULL(AVG(s.fTOTALSUM), 0) as value
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE s.fDATE BETWEEN ? AND ?
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
             {area_filter}
             {group_filter}
@@ -7239,12 +7392,47 @@ def get_metric_value_for_period(cursor, conn, metric, date_from, date_to, areas=
             query = """
             SELECT ISNULL(AVG(s.fTOTALSUM), 0) as value
             FROM SALES s
-            WHERE s.fDATE BETWEEN ? AND ?
+            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
             """
+    elif metric == 'total_debt':
+        # Долг — баланс на конец периода сравнения: дебет(D−C) до date_to+1
+        # минус текущие |Type01|+|Type02| (истории по остаткам нет) — та же база, что у карточки
+        debt_area_filter = ""
+        debt_group_filter = ""
+        debt_params = []
+        if areas and len(areas) > 0:
+            placeholders = ','.join(['?' for _ in areas])
+            debt_area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                                f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
+            debt_params.extend(areas)
+        if groups and len(groups) > 0:
+            placeholders = ','.join(['?' for _ in groups])
+            debt_group_filter = f"AND c.fGROUP IN ({placeholders})"
+            debt_params.extend(groups)
+        query = f"""
+        SELECT
+            ISNULL((
+                SELECT SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END)
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                WHERE d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                {debt_area_filter} {debt_group_filter}
+            ), 0)
+            - ISNULL((
+                SELECT SUM(ABS(r.fSUM))
+                FROM HIRESTCUSTOMERSSUM r
+                INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
+                WHERE r.fTYPE IN ('01','02')
+                {debt_area_filter} {debt_group_filter}
+            ), 0)
+        as value
+        """
+        params = [date_to] + debt_params + debt_params
     else:
-        return 0
-    
+        return None  # метрика не поддерживается — сравнение не показываем (вместо ложной базы 0)
+
     try:
         new_conn = db.get_connection()
         new_cursor = new_conn.cursor()
@@ -7352,7 +7540,8 @@ def get_chart_data():
         
         if areas and len(areas) > 0:
             placeholders = ','.join(['?' for _ in areas])
-            area_filter = f"AND csa.fSALESAREA IN ({placeholders})"
+            area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                           f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
             base_params.extend(areas)
         
         if groups and len(groups) > 0:
@@ -7453,7 +7642,7 @@ def get_chart_data():
                             query = """
                             SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
                             FROM SALES s
-                            WHERE s.fDATE BETWEEN ? AND ?
+                            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                             AND s.fSTATE = 2
                             """
                             params = [year_from.strftime('%Y-%m-%d'), year_to.strftime('%Y-%m-%d')]
@@ -7463,8 +7652,7 @@ def get_chart_data():
                             SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
                             FROM SALES s
                             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-                            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                            WHERE s.fDATE BETWEEN ? AND ?
+                                                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                             AND s.fSTATE = 2
                             {area_filter}
                             {group_filter}
@@ -7477,7 +7665,7 @@ def get_chart_data():
                             query = """
                             SELECT ISNULL(SUM(p.fSUM), 0) as value
                             FROM PAYMENTS p
-                            WHERE p.fDATE BETWEEN ? AND ?
+                            WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                             """
                             params = [year_from.strftime('%Y-%m-%d'), year_to.strftime('%Y-%m-%d')]
                         else:
@@ -7485,8 +7673,7 @@ def get_chart_data():
                             SELECT ISNULL(SUM(p.fSUM), 0) as value
                             FROM PAYMENTS p
                             INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
-                            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                            WHERE p.fDATE BETWEEN ? AND ?
+                                                        WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                             {area_filter}
                             {group_filter}
                             """
@@ -7505,7 +7692,8 @@ def get_chart_data():
                         
                         if areas and len(areas) > 0:
                             placeholders = ','.join(['?' for _ in areas])
-                            debt_area_filter = f"AND csa.fSALESAREA IN ({placeholders})"
+                            debt_area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                                    f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
                             debt_params.extend(areas)
                         
                         if groups and len(groups) > 0:
@@ -7513,17 +7701,30 @@ def get_chart_data():
                             debt_group_filter = f"AND c.fGROUP IN ({placeholders})"
                             debt_params.extend(groups)
                         
+                        # Полная формула долга (как в карточке total_debt): дебет на конец года
+                        # минус текущие |Type01|+|Type02| — иначе точка года не совпадала с карточкой
                         query = f"""
-                        SELECT ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as value
-                        FROM HICUSTOMERSDEBT d
-                        INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-                        INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-                        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                        WHERE d.fDATE <= ?
-                        {debt_area_filter}
-                        {debt_group_filter}
+                        SELECT
+                            ISNULL((
+                                SELECT SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END)
+                                FROM HICUSTOMERSDEBT d
+                                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                                WHERE d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                                {debt_area_filter}
+                                {debt_group_filter}
+                            ), 0)
+                            - ISNULL((
+                                SELECT SUM(ABS(r.fSUM))
+                                FROM HIRESTCUSTOMERSSUM r
+                                INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
+                                WHERE r.fTYPE IN ('01','02')
+                                {debt_area_filter}
+                                {debt_group_filter}
+                            ), 0)
+                        as value
                         """
-                        params = [year_to.strftime('%Y-%m-%d')] + debt_params
+                        params = [year_to.strftime('%Y-%m-%d')] + debt_params + debt_params
                     else:
                         continue
                     
@@ -7597,8 +7798,7 @@ def get_chart_data():
                                    ISNULL(SUM(s.fTOTALSUM), 0) as value
                             FROM SALES s
                             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-                            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                            WHERE s.fDATE BETWEEN ? AND ?
+                                                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                             AND s.fSTATE = 2
                             {area_filter}
                             {group_filter}
@@ -7612,8 +7812,7 @@ def get_chart_data():
                                    ISNULL(SUM(s.fTOTALSUM), 0) as value
                             FROM SALES s
                             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-                            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                            WHERE s.fDATE BETWEEN ? AND ?
+                                                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                             AND s.fSTATE = 2
                             {area_filter}
                             {group_filter}
@@ -7627,7 +7826,7 @@ def get_chart_data():
                             SELECT CONVERT(VARCHAR(10), s.fDATE, 120) as period_label, 
                                    ISNULL(SUM(s.fTOTALSUM), 0) as value
                             FROM SALES s
-                            WHERE s.fDATE BETWEEN ? AND ?
+                            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                             AND s.fSTATE = 2
                             GROUP BY CONVERT(VARCHAR(10), s.fDATE, 120)
                             ORDER BY period_label
@@ -7637,7 +7836,7 @@ def get_chart_data():
                             SELECT FORMAT(s.fDATE, 'yyyy-MM') as period_label,
                                    ISNULL(SUM(s.fTOTALSUM), 0) as value
                             FROM SALES s
-                            WHERE s.fDATE BETWEEN ? AND ?
+                            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                             AND s.fSTATE = 2
                             GROUP BY FORMAT(s.fDATE, 'yyyy-MM')
                             ORDER BY period_label
@@ -7662,8 +7861,7 @@ def get_chart_data():
                                    ISNULL(SUM(ABS(p.fSUM)), 0) as value
                             FROM PAYMENTS p
                             INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
-                            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                            WHERE p.fDATE BETWEEN ? AND ?
+                                                        WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                             {area_filter_p}
                             {group_filter_p}
                             GROUP BY CONVERT(VARCHAR(10), p.fDATE, 120)
@@ -7675,8 +7873,7 @@ def get_chart_data():
                                    ISNULL(SUM(ABS(p.fSUM)), 0) as value
                             FROM PAYMENTS p
                             INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
-                            LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                            WHERE p.fDATE BETWEEN ? AND ?
+                                                        WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                             {area_filter_p}
                             {group_filter_p}
                             GROUP BY FORMAT(p.fDATE, 'yyyy-MM')
@@ -7689,7 +7886,7 @@ def get_chart_data():
                             SELECT CONVERT(VARCHAR(10), p.fDATE, 120) as period_label,
                                    ISNULL(SUM(ABS(p.fSUM)), 0) as value
                             FROM PAYMENTS p
-                            WHERE p.fDATE BETWEEN ? AND ?
+                            WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                             GROUP BY CONVERT(VARCHAR(10), p.fDATE, 120)
                             ORDER BY period_label
                             """
@@ -7698,7 +7895,7 @@ def get_chart_data():
                             SELECT FORMAT(p.fDATE, 'yyyy-MM') as period_label,
                                    ISNULL(SUM(ABS(p.fSUM)), 0) as value
                             FROM PAYMENTS p
-                            WHERE p.fDATE BETWEEN ? AND ?
+                            WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                             GROUP BY FORMAT(p.fDATE, 'yyyy-MM')
                             ORDER BY period_label
                             """
@@ -7716,7 +7913,8 @@ def get_chart_data():
                     debt_group_params = []
                     if areas and len(areas) > 0:
                         placeholders = ','.join(['?' for _ in areas])
-                        debt_area_filter = f"AND csa.fSALESAREA IN ({placeholders})"
+                        debt_area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                                    f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
                         debt_area_params = list(areas)
                     if groups and len(groups) > 0:
                         placeholders = ','.join(['?' for _ in groups])
@@ -7731,8 +7929,7 @@ def get_chart_data():
                     FROM HICUSTOMERSDEBT d
                     INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
                     INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-                    LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                    WHERE d.fDATE < ?
+                                        WHERE d.fDATE < ?
                     {debt_area_filter}
                     {debt_group_filter}
                     """
@@ -7749,8 +7946,7 @@ def get_chart_data():
                         ISNULL(SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END), 0) as Type02
                     FROM HIRESTCUSTOMERSSUM r
                     INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
-                    LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                    WHERE 1=1
+                                        WHERE 1=1
                     {debt_area_filter}
                     {debt_group_filter}
                     """
@@ -7770,8 +7966,7 @@ def get_chart_data():
                         FROM HICUSTOMERSDEBT d
                         INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
                         INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-                        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                        WHERE d.fDATE BETWEEN ? AND ?
+                                                WHERE d.fDATE >= ? AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                         {debt_area_filter}
                         {debt_group_filter}
                         GROUP BY CONVERT(VARCHAR(10), d.fDATE, 120)
@@ -7784,8 +7979,7 @@ def get_chart_data():
                         FROM HICUSTOMERSDEBT d
                         INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
                         INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-                        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-                        WHERE d.fDATE BETWEEN ? AND ?
+                                                WHERE d.fDATE >= ? AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                         {debt_area_filter}
                         {debt_group_filter}
                         GROUP BY FORMAT(d.fDATE, 'yyyy-MM')
@@ -7859,70 +8053,73 @@ def get_chart_data():
                     continue  # Пропускаем общую обработку ниже
                 else:
                     continue
-            
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
-            
-            data_values = []
-            labels = []
-            
-            for row in rows:
-                label = row[0]
-                value = float(row[1]) if row[1] else 0
-                
-                # Форматируем label
-                if group_by == 'day' and label:
-                    # Показываем только день месяца
-                    try:
-                        day = label.split('-')[2] if '-' in label else label
-                        labels.append(day)
-                    except:
-                        labels.append(label)
-                elif group_by == 'month' and label:
-                    # Показываем месяц
-                    month_names = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 
-                                   'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек']
-                    try:
-                        month_num = int(label.split('-')[1])
-                        labels.append(month_names[month_num - 1])
-                    except:
-                        labels.append(label)
-                else:
-                    labels.append(label or '')
-                
-                data_values.append(value)
-            
-            # Устанавливаем labels только один раз (от первой метрики)
-            if not labels_set and labels:
-                chart_data['labels'] = labels
-                labels_set = True
-            
-            # Добавляем dataset для метрики
-            # Цвет берем из period_colors
-            bg_color = f"rgba({int(base_color[1:3], 16)}, {int(base_color[3:5], 16)}, {int(base_color[5:7], 16)}, 0.2)"
-            border_color = base_color
-            
-            # Формируем label с суффиксом периода
-            label_text = metric_labels.get(metric, metric)
-            if period_label_suffix:
-                label_text = f"{label_text} {period_label_suffix}"
-            
-            dataset = {
-                'label': label_text,
-                'data': data_values,
-                'backgroundColor': bg_color,
-                'borderColor': border_color,
-                'borderWidth': 2,
-                'fill': chart_type == 'area',
-                'tension': 0.4
-            }
-            
-            # Добавляем пунктир для периодов сравнения
-            if line_dash:
-                dataset['borderDash'] = line_dash
-            
-            chart_data['datasets'].append(dataset)
-        
+
+                # ВАЖНО: блок ниже — внутри цикла по метрикам. Раньше он стоял на уровень выше,
+                # из-за чего выполнялся ОДИН раз после цикла (только последняя метрика попадала на график,
+                # а после ветки debt query/params рассинхронизировались)
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+
+                data_values = []
+                labels = []
+
+                for row in rows:
+                    label = row[0]
+                    value = float(row[1]) if row[1] else 0
+
+                    # Форматируем label
+                    if group_by == 'day' and label:
+                        # Показываем только день месяца
+                        try:
+                            day = label.split('-')[2] if '-' in label else label
+                            labels.append(day)
+                        except:
+                            labels.append(label)
+                    elif group_by == 'month' and label:
+                        # Показываем месяц
+                        month_names = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн',
+                                       'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек']
+                        try:
+                            month_num = int(label.split('-')[1])
+                            labels.append(month_names[month_num - 1])
+                        except:
+                            labels.append(label)
+                    else:
+                        labels.append(label or '')
+
+                    data_values.append(value)
+
+                # Устанавливаем labels только один раз (от первой метрики)
+                if not labels_set and labels:
+                    chart_data['labels'] = labels
+                    labels_set = True
+
+                # Добавляем dataset для метрики
+                # Цвет берем из period_colors
+                bg_color = f"rgba({int(base_color[1:3], 16)}, {int(base_color[3:5], 16)}, {int(base_color[5:7], 16)}, 0.2)"
+                border_color = base_color
+
+                # Формируем label с суффиксом периода
+                label_text = metric_labels.get(metric, metric)
+                if period_label_suffix:
+                    label_text = f"{label_text} {period_label_suffix}"
+
+                dataset = {
+                    'label': label_text,
+                    'data': data_values,
+                    'backgroundColor': bg_color,
+                    'borderColor': border_color,
+                    'borderWidth': 2,
+                    'fill': chart_type == 'area',
+                    'tension': 0.4
+                }
+
+                # Добавляем пунктир для периодов сравнения
+                if line_dash:
+                    dataset['borderDash'] = line_dash
+
+                chart_data['datasets'].append(dataset)
+
         cursor.close()
         conn.close()
         
@@ -7983,18 +8180,30 @@ def get_areas_table_data():
         
         # Дополнительные даты для расчётов
         today = now.strftime('%Y-%m-%d')
-        
-        # Прошлый год - те же даты
+
+        # «Прошлый год» — тот же диапазон, что выбранный период, минус год
+        # (раньше всегда брался текущий месяц по now, из-за чего при period=current_year
+        # сравнение YTD шло с ОДНИМ месяцем прошлого года)
         import calendar
-        last_year = now.year - 1
-        last_year_month = now.month
-        last_year_day = min(now.day, calendar.monthrange(last_year, last_year_month)[1])
-        last_year_from = datetime(last_year, last_year_month, 1)
-        last_year_to = datetime(last_year, last_year_month, last_year_day)
-        
-        # Расчёт прогноза: дней прошло и всего дней в месяце
-        days_elapsed = now.day
-        days_in_month = calendar.monthrange(now.year, now.month)[1]
+        def _minus_year(d):
+            try:
+                return d.replace(year=d.year - 1)
+            except ValueError:  # 29 февраля
+                return d.replace(year=d.year - 1, day=28)
+        last_year_from = _minus_year(date_from)
+        last_year_to = _minus_year(date_to)
+
+        # Расчёт прогноза: дней прошло и всего дней — от ВЫБРАННОГО периода, а не от текущего месяца
+        if period in ('current_month', 'today') or period not in ('last_month', 'current_year', 'last_year'):
+            days_elapsed = now.day
+            days_in_month = calendar.monthrange(now.year, now.month)[1]
+        elif period == 'current_year':
+            days_elapsed = (now - date_from).days + 1
+            days_in_month = 366 if calendar.isleap(now.year) else 365
+        else:
+            # Завершённые периоды (last_month/last_year): прогноз = факт, экстраполяция не нужна
+            days_elapsed = (date_to - date_from).days + 1
+            days_in_month = days_elapsed
         
         # Планы по территориям (продажи и долг)
         sales_plans = {
@@ -8062,7 +8271,7 @@ def get_areas_table_data():
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
             INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE s.fDATE BETWEEN ? AND ?
+            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
             AND csa.fSALESAREA = ?
             {excluded_filter}
@@ -8100,7 +8309,7 @@ def get_areas_table_data():
             INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
             INNER JOIN CUSTOMERS c ON d.fCUSTOMERID = c.fID
             INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE h.fDATE BETWEEN ? AND ?
+            WHERE h.fDATE >= ? AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND h.fOP = 'PAY'
             AND csa.fSALESAREA = ?
             {excluded_filter}
@@ -8167,13 +8376,13 @@ def get_areas_table_data():
                 FROM DOCUMENTS d
                 JOIN PLANNEDROUTESLIST l ON d.fISN = l.fISN
                 WHERE d.fDOCTYPE = 10
-                  AND d.fDATE >= ? AND d.fDATE <= ?
+                  AND d.fDATE >= ? AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                   AND l.fCUSTOMERID IN (SELECT fCUSTOMERID FROM AreaCustomers)
             ),
             ActualVisits AS (
                 SELECT a.fCUSTOMERID, CAST(a.fDATE as DATE) as VisitDate
                 FROM ACTUALROUTES a
-                WHERE a.fDATE >= ? AND a.fDATE <= ?
+                WHERE a.fDATE >= ? AND a.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                   AND a.fCUSTOMERID IN (SELECT fCUSTOMERID FROM AreaCustomers)
             )
             SELECT

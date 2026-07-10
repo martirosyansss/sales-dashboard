@@ -629,10 +629,10 @@
                                     </span>
                                     <div class="d-flex align-items-center">
                                         <span x-text="formatCurrency(area.PrevMonthSales)" class="text-secondary me-2"></span>
-                                        <template x-if="area.TotalSales > area.PrevMonthSales">
+                                        <template x-if="area.PrevMonthSales > 0 && area.TotalSales > area.PrevMonthSales">
                                             <span class="badge bg-success" x-text="`+${((area.TotalSales - area.PrevMonthSales) / area.PrevMonthSales * 100).toFixed(1)}%`"></span>
                                         </template>
-                                        <template x-if="area.TotalSales < area.PrevMonthSales">
+                                        <template x-if="area.PrevMonthSales > 0 && area.TotalSales < area.PrevMonthSales">
                                             <span class="badge bg-danger" x-text="`${((area.TotalSales - area.PrevMonthSales) / area.PrevMonthSales * 100).toFixed(1)}%`"></span>
                                         </template>
                                     </div>
@@ -647,10 +647,10 @@
                                     </span>
                                     <div class="d-flex align-items-center">
                                         <span x-text="formatCurrency(area.LastYearSales)" class="text-secondary me-2"></span>
-                                        <template x-if="area.TotalSales > area.LastYearSales">
+                                        <template x-if="area.LastYearSales > 0 && area.TotalSales > area.LastYearSales">
                                             <span class="badge bg-success" x-text="`+${((area.TotalSales - area.LastYearSales) / area.LastYearSales * 100).toFixed(1)}%`"></span>
                                         </template>
-                                        <template x-if="area.TotalSales < area.LastYearSales">
+                                        <template x-if="area.LastYearSales > 0 && area.TotalSales < area.LastYearSales">
                                             <span class="badge bg-danger" x-text="`${((area.TotalSales - area.LastYearSales) / area.LastYearSales * 100).toFixed(1)}%`"></span>
                                         </template>
                                     </div>
@@ -1966,7 +1966,7 @@
                                     <td><strong x-text="formatNumber(totalCustomers)"></strong></td>
                                     <td><strong x-text="formatCurrency(totalSales)" class="text-success"></strong></td>
                                     <td><strong x-text="formatCurrency(totalDebt)" class="text-danger"></strong></td>
-                                    <td><strong x-text="formatCurrency(totalSales / totalSalesCount)"></strong></td>
+                                    <td><strong x-text="formatCurrency(totalSalesCount > 0 ? totalSales / totalSalesCount : 0)"></strong></td>
                                     <td>100%</td>
                                 </tr>
                             </tfoot>
