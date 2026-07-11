@@ -4997,31 +4997,57 @@
         100% { transform: scale(1); }
     }
 
-    /* --- Drag-ресайз: ручка-уголок видима на светлых плитках --- */
+    /* --- Drag-ресайз: ручка — заметный чип-уголок, работает мышью и пальцем --- */
     .dashboard-card .resize-handle {
-        width: 28px;
-        height: 28px;
+        width: 34px;
+        height: 34px;
         bottom: 6px;
         right: 6px;
+        background: var(--bt-tile);
+        border: 1px solid var(--bt-line);
+        border-radius: 10px;
+        box-shadow: 0 2px 8px rgba(22, 19, 13, 0.10);
+        touch-action: none;
     }
 
+    /* Две диагональные линии-грип */
     .dashboard-card .resize-handle::before,
     .dashboard-card .resize-handle::after {
         background: var(--bt-ink-soft);
+        border-radius: 2px;
+        left: 50%;
+        top: 50%;
+        right: auto;
+        bottom: auto;
     }
 
-    .dashboard-card .resize-handle::before { width: 14px; height: 3px; }
-    .dashboard-card .resize-handle::after { width: 3px; height: 14px; }
+    .dashboard-card .resize-handle::before {
+        width: 16px;
+        height: 2px;
+        transform: translate(-50%, -50%) rotate(-45deg);
+    }
+
+    .dashboard-card .resize-handle::after {
+        width: 8px;
+        height: 2px;
+        transform: translate(calc(-50% + 5px), calc(-50% + 5px)) rotate(-45deg);
+    }
+
+    .dashboard-card .resize-handle:hover,
+    .dashboard-card.resizing .resize-handle {
+        background: var(--bt-accent);
+        border-color: var(--bt-accent-deep);
+    }
 
     .dashboard-card .resize-handle:hover::before,
     .dashboard-card .resize-handle:hover::after,
     .dashboard-card.resizing .resize-handle::before,
     .dashboard-card.resizing .resize-handle::after {
-        background: var(--bt-accent);
+        background: #fff;
     }
 
     .card-grid.edit-mode .dashboard-card .resize-handle {
-        opacity: 0.9;
+        opacity: 1;
     }
 
     .dashboard-card.resizing,
@@ -5640,7 +5666,7 @@
                 </div>
                 
                 <!-- Resize handle -->
-                <div class="resize-handle" @mousedown="startResize($event, card)"></div>
+                <div class="resize-handle" @mousedown="startResize($event, card)" @touchstart.stop.prevent="startResize($event, card)"></div>
             </div>
         </template>
         
@@ -8139,13 +8165,16 @@ function dashboardBuilder() {
         startResize(event, card) {
             // Только в режиме редактирования
             if (!this.editMode) return;
-            
+
             event.preventDefault();
             event.stopPropagation();
-            
+
+            // Мышь или палец — берём общие координаты
+            const pt = event.touches ? event.touches[0] : event;
+
             this.resizingCard = card;
-            this.resizeStartX = event.clientX;
-            this.resizeStartY = event.clientY;
+            this.resizeStartX = pt.clientX;
+            this.resizeStartY = pt.clientY;
             this.resizeStartWidth = card.width;
             this.resizeStartHeight = card.height;
             
@@ -8180,19 +8209,26 @@ function dashboardBuilder() {
             this.resizeIndicator.className = 'resize-indicator';
             this.resizeIndicator.innerHTML = `<span style="opacity:0.6">${card.width}</span> × <span style="opacity:0.6">${card.height}</span>`;
             document.body.appendChild(this.resizeIndicator);
-            this.updateIndicatorPosition(event);
+            this.updateIndicatorPosition(pt);
             
             // iOS haptic feedback
             if (navigator.vibrate) {
                 navigator.vibrate(10);
             }
             
-            // Обработчики
+            // Обработчики (мышь + тач)
             this.boundHandleResize = (e) => this.handleResize(e);
             this.boundStopResize = (e) => this.stopResize(e);
-            
+            this.boundHandleResizeTouch = (e) => {
+                e.preventDefault();
+                if (e.touches && e.touches[0]) this.handleResize(e.touches[0]);
+            };
+
             document.addEventListener('mousemove', this.boundHandleResize);
             document.addEventListener('mouseup', this.boundStopResize);
+            document.addEventListener('touchmove', this.boundHandleResizeTouch, { passive: false });
+            document.addEventListener('touchend', this.boundStopResize);
+            document.addEventListener('touchcancel', this.boundStopResize);
             document.body.style.userSelect = 'none';
             document.body.style.cursor = 'se-resize';
         },
@@ -8319,6 +8355,9 @@ function dashboardBuilder() {
             
             document.removeEventListener('mousemove', this.boundHandleResize);
             document.removeEventListener('mouseup', this.boundStopResize);
+            document.removeEventListener('touchmove', this.boundHandleResizeTouch);
+            document.removeEventListener('touchend', this.boundStopResize);
+            document.removeEventListener('touchcancel', this.boundStopResize);
             document.body.style.userSelect = '';
             document.body.style.cursor = '';
             
