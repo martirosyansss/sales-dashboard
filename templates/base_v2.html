@@ -60,6 +60,17 @@
             box-shadow: 0 2px 10px rgba(0,0,0,0.3);
         }
 
+        /* 14 пунктов навигации в развёрнутом виде занимают ~1736px. Ниже 1400px
+           меню сворачивается в гамбургер (navbar-expand-xxl). В промежутке
+           1400–1750px оно не помещалось в строку и давало горизонтальный скролл
+           всей страницы — здесь разрешаем перенос на вторую строку. На ≥1750px
+           меню помещается в одну строку, поэтому исходный вид не трогаем. */
+        @media (min-width: 1400px) and (max-width: 1750px) {
+            .navbar-nav {
+                flex-wrap: wrap;
+            }
+        }
+
         .navbar-brand {
             font-weight: 700;
             font-size: 1.5rem;
@@ -95,6 +106,23 @@
         .card:hover {
             transform: translateY(-5px);
             box-shadow: 0 8px 25px rgba(13, 110, 253, 0.3);
+        }
+
+        /* Выпадающие меню фильтров: непрозрачный фон, чтобы список групп не
+           просвечивал контент под собой. */
+        .dropdown-menu {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+        }
+
+        /* Карточка с ОТКРЫТЫМ дропдауном должна лежать НАД соседними карточками.
+           Иначе меню, будучи потомком карточки-фильтра, проваливается под
+           карточки сводки: .card:hover и draggable .stat-card применяют
+           transform и создают stacking-context, ломающий обычный порядок z. */
+        .card:has(.dropdown-menu.show) {
+            position: relative;
+            z-index: 1000;
         }
 
         .stat-card {
@@ -399,7 +427,10 @@
     {% block extra_css %}{% endblock %}
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark sticky-top">
+    <!-- expand-xxl: 14 пунктов навигации не помещаются в одну строку на ширинах
+         992–~1450px и вызывали горизонтальный скролл всей страницы. Сворачиваем в
+         гамбургер ниже 1400px; на широких мониторах (≥1400) меню как прежде. -->
+    <nav class="navbar navbar-expand-xxl navbar-dark sticky-top">
         <div class="container-fluid">
             <a class="navbar-brand" href="/">
                 <i class="fas fa-chart-line me-2"></i>Sales Dashboard v2.0
@@ -419,6 +450,11 @@
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/managers' %}active{% endif %}" href="/managers">
                             <i class="fas fa-users me-1"></i> Менеджеры
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/managers-kpi' %}active{% endif %}" href="/managers-kpi">
+                            <i class="fas fa-ranking-star me-1"></i> KPI менеджеров
                         </a>
                     </li>
                     <li class="nav-item">
@@ -454,6 +490,16 @@
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/plans' %}active{% endif %}" href="/plans">
                             <i class="fas fa-chart-line me-1"></i> Планы
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/ai-assistant' %}active{% endif %}" href="/ai-assistant">
+                            <i class="fas fa-robot me-1"></i> AI Помощник
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/dashboard-builder' %}active{% endif %}" href="/dashboard-builder">
+                            <i class="fas fa-puzzle-piece me-1"></i> Конструктор
                         </a>
                     </li>
                     <li class="nav-item">

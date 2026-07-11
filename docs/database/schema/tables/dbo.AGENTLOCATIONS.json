@@ -1,0 +1,76 @@
+{
+ "schema": "dbo",
+ "name": "AGENTLOCATIONS",
+ "row_count": 4064596,
+ "columns": [
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATETIME",
+   "ordinal": 2,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fLATITUDE",
+   "ordinal": 3,
+   "type": "decimal(10,6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fLONGITUDE",
+   "ordinal": 4,
+   "type": "decimal(10,6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fACCURACY",
+   "ordinal": 5,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_AGENTLOCATIONS",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fSALESAGENTID, fDATETIME"
+  }
+ ],
+ "samples": [
+  {
+   "fSALESAGENTID": 7,
+   "fDATETIME": "2017-02-01T11:30:01.390000",
+   "fLATITUDE": 40.179344,
+   "fLONGITUDE": 44.518537,
+   "fACCURACY": 15.0
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fDATETIME": "2017-02-01T11:30:01.390000",
+   "fLATITUDE": 40.179344,
+   "fLONGITUDE": 44.518537,
+   "fACCURACY": 15.0
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fDATETIME": "2017-02-01T11:32:52.837000",
+   "fLATITUDE": 40.177352,
+   "fLONGITUDE": 44.519695,
+   "fACCURACY": 40.0
+  }
+ ]
+}

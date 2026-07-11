@@ -1,0 +1,54 @@
+{
+ "schema": "dbo",
+ "name": "EXCISETAXTARIFF",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fDATE",
+   "ordinal": 1,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXCISECODE",
+   "ordinal": 2,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTARIFFPERCENT",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTARIFFMINSUM",
+   "ordinal": 4,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 5,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_EXCISETAXTARIFF",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fEXCISECODE, fDATE"
+  }
+ ],
+ "samples": []
+}

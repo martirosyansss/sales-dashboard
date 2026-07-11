@@ -1,0 +1,82 @@
+{
+ "schema": "dbo",
+ "name": "PRODUCTCONTAINERS",
+ "row_count": 17,
+ "columns": [
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCONTAINERID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTQUANTITY",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCONTAINERQUANTITY",
+   "ordinal": 4,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 5,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_PRODUCTCONTAINERS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCONTAINERID"
+  },
+  {
+   "name": "PK_PRODUCTCONTAINERS1",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fPRODUCTID, fCONTAINERID"
+  }
+ ],
+ "samples": [
+  {
+   "fPRODUCTID": 135,
+   "fCONTAINERID": 54,
+   "fPRODUCTQUANTITY": 20.0,
+   "fCONTAINERQUANTITY": 20.0,
+   "fROWNUM": 0
+  },
+  {
+   "fPRODUCTID": 135,
+   "fCONTAINERID": 55,
+   "fPRODUCTQUANTITY": 20.0,
+   "fCONTAINERQUANTITY": 1.0,
+   "fROWNUM": 1
+  },
+  {
+   "fPRODUCTID": 136,
+   "fCONTAINERID": 55,
+   "fPRODUCTQUANTITY": 20.0,
+   "fCONTAINERQUANTITY": 1.0,
+   "fROWNUM": 1
+  }
+ ]
+}

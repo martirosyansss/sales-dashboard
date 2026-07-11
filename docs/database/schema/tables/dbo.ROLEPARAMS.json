@@ -1,0 +1,56 @@
+{
+ "schema": "dbo",
+ "name": "ROLEPARAMS",
+ "row_count": 25,
+ "columns": [
+  {
+   "name": "fPARAMID",
+   "ordinal": 1,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROLE",
+   "ordinal": 2,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVALUE",
+   "ordinal": 3,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_ROLEPARAMS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fROLE, fPARAMID"
+  }
+ ],
+ "samples": [
+  {
+   "fPARAMID": 24001,
+   "fROLE": "000",
+   "fVALUE": "20150101"
+  },
+  {
+   "fPARAMID": 24002,
+   "fROLE": "000",
+   "fVALUE": "20261231"
+  },
+  {
+   "fPARAMID": 24003,
+   "fROLE": "000",
+   "fVALUE": "0"
+  }
+ ]
+}

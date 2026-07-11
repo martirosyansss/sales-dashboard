@@ -1,0 +1,162 @@
+{
+ "schema": "dbo",
+ "name": "ACTUALROUTES",
+ "row_count": 460333,
+ "columns": [
+  {
+   "name": "fROWISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 2,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 4,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSTARTTIME",
+   "ordinal": 5,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fENDTIME",
+   "ordinal": 6,
+   "type": "datetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fLATITUDE",
+   "ordinal": 7,
+   "type": "decimal(10,6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fLONGITUDE",
+   "ordinal": 8,
+   "type": "decimal(10,6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fACCURACY",
+   "ordinal": 9,
+   "type": "money",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fVISITRESULT",
+   "ordinal": 10,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 11,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 12,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fFORMOBILEPLANNED",
+   "ordinal": 13,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_ACTUALROUTES",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fROWISN"
+  },
+  {
+   "name": "PK_ACTUALROUTES",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fSALESAGENTID, fDATE"
+  }
+ ],
+ "samples": [
+  {
+   "fROWISN": "3E09357E-BB33-42FC-829A-0B4B83BAD7FF",
+   "fDATE": "2017-02-01T00:00:00",
+   "fSALESAGENTID": 7,
+   "fCUSTOMERID": 718,
+   "fSTARTTIME": "2017-02-01T11:22:39.133000",
+   "fENDTIME": "2017-02-01T11:23:37.027000",
+   "fLATITUDE": null,
+   "fLONGITUDE": null,
+   "fACCURACY": null,
+   "fVISITRESULT": "01",
+   "fCOMMENT": "",
+   "fROWNUM": 0,
+   "fFORMOBILEPLANNED": false
+  },
+  {
+   "fROWISN": "49B05887-B0E9-40EF-AD89-7368C00C6B3F",
+   "fDATE": "2017-02-01T00:00:00",
+   "fSALESAGENTID": 7,
+   "fCUSTOMERID": 2393,
+   "fSTARTTIME": "2017-02-01T11:28:51.377000",
+   "fENDTIME": "2017-02-01T11:29:04.237000",
+   "fLATITUDE": null,
+   "fLONGITUDE": null,
+   "fACCURACY": null,
+   "fVISITRESULT": "01",
+   "fCOMMENT": "",
+   "fROWNUM": 1,
+   "fFORMOBILEPLANNED": false
+  },
+  {
+   "fROWISN": "CADBDB30-CDEC-4497-A079-665DB26F9152",
+   "fDATE": "2017-02-01T00:00:00",
+   "fSALESAGENTID": 7,
+   "fCUSTOMERID": 1564,
+   "fSTARTTIME": "2017-02-01T11:30:01.390000",
+   "fENDTIME": "2017-02-01T11:30:18.003000",
+   "fLATITUDE": 40.179344,
+   "fLONGITUDE": 44.518537,
+   "fACCURACY": 15.0,
+   "fVISITRESULT": "01",
+   "fCOMMENT": "",
+   "fROWNUM": 2,
+   "fFORMOBILEPLANNED": false
+  }
+ ]
+}

@@ -1,0 +1,99 @@
+{
+ "schema": "dbo",
+ "name": "CUSTOMERACCOUNTSINBANK",
+ "row_count": 5,
+ "columns": [
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fACCOUNT",
+   "ordinal": 3,
+   "type": "nvarchar(22)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFAULT",
+   "ordinal": 4,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 5,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 6,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [
+  {
+   "column": "fCUSTOMERID",
+   "ref_table": "dbo.CUSTOMERS",
+   "ref_column": "fID",
+   "fk": "FK_CUSTOMERACCOUNTSINBANK_fCUSTOMERID"
+  }
+ ],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_CUSTOMERACCOUNT",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fACCOUNT"
+  },
+  {
+   "name": "PK_CUSTOMERACCOUNT",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCUSTOMERID, fACCOUNT"
+  }
+ ],
+ "samples": [
+  {
+   "fCUSTOMERID": 264,
+   "fNAME": "ԱրդՇինԻնվեստԲանկի  ՙԿապան՚ մասճյուղ",
+   "fACCOUNT": "2470801237450010",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCUSTOMERID": 2088,
+   "fNAME": "Արարատ Բանկ",
+   "fACCOUNT": "1510018523760100",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCUSTOMERID": 2562,
+   "fNAME": ".",
+   "fACCOUNT": "23165813",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

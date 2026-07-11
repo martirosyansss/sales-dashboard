@@ -1,0 +1,76 @@
+{
+ "schema": "dbo",
+ "name": "Sales",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "SaleID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "CustomerID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "SaleDate",
+   "ordinal": 3,
+   "type": "datetime",
+   "nullable": true,
+   "default": "(getdate())"
+  },
+  {
+   "name": "TotalAmount",
+   "ordinal": 4,
+   "type": "decimal(10,2)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "Status",
+   "ordinal": 5,
+   "type": "nvarchar(20)",
+   "nullable": true,
+   "default": "('Completed')"
+  },
+  {
+   "name": "Notes",
+   "ordinal": 6,
+   "type": "nvarchar(500)",
+   "nullable": true,
+   "default": null
+  }
+ ],
+ "primary_key": [
+  "SaleID"
+ ],
+ "foreign_keys": [
+  {
+   "column": "CustomerID",
+   "ref_table": "dbo.Customers",
+   "ref_column": "CustomerID",
+   "fk": "FK__Sales__CustomerI__396FF562"
+  }
+ ],
+ "referenced_by": [
+  {
+   "table": "dbo.SaleDetails",
+   "column": "SaleID",
+   "ref_column": "SaleID"
+  }
+ ],
+ "indexes": [
+  {
+   "name": "PK__Sales__1EE3C41FD3D12905",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "SaleID"
+  }
+ ],
+ "samples": []
+}

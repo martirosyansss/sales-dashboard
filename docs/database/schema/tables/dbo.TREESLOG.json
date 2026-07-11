@@ -1,0 +1,106 @@
+{
+ "schema": "dbo",
+ "name": "TREESLOG",
+ "row_count": 52,
+ "columns": [
+  {
+   "name": "fTREEID",
+   "ordinal": 1,
+   "type": "nvarchar(8)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCODE",
+   "ordinal": 2,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 3,
+   "type": "datetime",
+   "nullable": false,
+   "default": "(getdate())"
+  },
+  {
+   "name": "fUSERID",
+   "ordinal": 4,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOP",
+   "ordinal": 5,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 6,
+   "type": "nvarchar(255)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCOMPNAME",
+   "ordinal": 7,
+   "type": "nvarchar(32)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSOURCE",
+   "ordinal": 8,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_TREESLOG",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fTREEID, fCODE, fDATE, fOP"
+  }
+ ],
+ "samples": [
+  {
+   "fTREEID": "Division",
+   "fCODE": "000000",
+   "fDATE": "2017-01-25T17:20:44.993000",
+   "fUSERID": 0,
+   "fOP": 4,
+   "fCOMMENT": null,
+   "fCOMPNAME": "SMART_BASE",
+   "fSOURCE": 0
+  },
+  {
+   "fTREEID": "Division",
+   "fCODE": "000000",
+   "fDATE": "2021-01-26T14:32:26.843000",
+   "fUSERID": 8,
+   "fOP": 2,
+   "fCOMMENT": null,
+   "fCOMPNAME": "ANI-PC",
+   "fSOURCE": 0
+  },
+  {
+   "fTREEID": "Division",
+   "fCODE": "000000",
+   "fDATE": "2022-09-20T16:17:02.063000",
+   "fUSERID": 15,
+   "fOP": 2,
+   "fCOMMENT": null,
+   "fCOMPNAME": "TNOREN-PC",
+   "fSOURCE": 0
+  }
+ ]
+}

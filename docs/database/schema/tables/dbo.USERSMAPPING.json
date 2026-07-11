@@ -1,0 +1,39 @@
+{
+ "schema": "dbo",
+ "name": "USERSMAPPING",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fINNERUSERID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOUTERUSERID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_USERSMAPPING",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fOUTERUSERID"
+  },
+  {
+   "name": "iUSERSMAPPING2",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fINNERUSERID"
+  }
+ ],
+ "samples": []
+}

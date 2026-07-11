@@ -42,10 +42,10 @@ class DatabaseConnection:
         db_name = os.environ.get('SALES_DB', 'SalesManagement')
         self.connection_string = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
-            "SERVER=192.168.1.3;"
+            f"SERVER={os.environ.get('DB_SERVER', '192.168.1.4')};"
             f"DATABASE={db_name};"
-            "UID=garni;"
-            "PWD=garni2023;"
+            f"UID={os.environ.get('DB_USER', 'sa')};"
+            f"PWD={os.environ.get('DB_PASSWORD', '')};"
             "TrustServerCertificate=yes;"
         )
     
@@ -88,9 +88,24 @@ class DatabaseConnection:
 # Глобальный экземпляр БД
 db = DatabaseConnection()
 
+# SQL-выражение: первый день ТЕКУЩЕГО календарного месяца.
+# Используется как ПРАВАЯ (верхняя) граница окон истории в планах и сезонности,
+# чтобы окна состояли строго из ПОЛНЫХ завершённых месяцев. Иначе скользящее окно
+# от GETDATE() захватывает текущий месяц частично на обоих концах (текущий месяц
+# попадает в 24-мес. окно трижды вместо двух раз) и систематически искажает
+# коэффициенты сезонности и средние продажи именно для текущего месяца.
+CURRENT_MONTH_START_SQL = "DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)"
+
 # =============================================
 # УТИЛИТЫ ДЛЯ ИСКЛЮЧЕННЫХ КЛИЕНТОВ
 # =============================================
+
+def _years_ago(d, years):
+    """Сдвинуть дату на N лет назад; 29 февраля вне високосного года прижимается к 28-му"""
+    try:
+        return d.replace(year=d.year - years)
+    except ValueError:
+        return d.replace(year=d.year - years, day=28)
 
 def get_excluded_filter_sql():
     """Получить SQL условие для фильтрации исключенных клиентов"""
@@ -143,7 +158,7 @@ def index():
 
 @app.route('/api/dashboard/stats')
 def dashboard_stats():
-    """Получить основную статистику для Dashboard с фильтрами по датам"""
+    """Получить основную статистику для Dashboard с фильтрами по датам и территориям"""
     try:
         # Получить параметры фильтра из запроса
         date_from = request.args.get('date_from', None)
@@ -153,7 +168,9 @@ def dashboard_stats():
         today = datetime.now()
         if date_from and date_to:
             current_start = datetime.strptime(date_from, '%Y-%m-%d')
-            current_end = datetime.strptime(date_to, '%Y-%m-%d')
+            # date_to — включительный последний день периода; запросы используют fDATE < current_end,
+            # поэтому сдвигаем на день вперёд, иначе теряются все продажи date_to после полуночи
+            current_end = datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=1)
         else:
             current_start = today.replace(day=1)
             if today.month == 12:
@@ -172,31 +189,50 @@ def dashboard_stats():
         else:
             prev_end = prev_start.replace(month=prev_start.month+1, day=1)
         
-        # Сравнение с тем же месяцем прошлого года (10 лет назад)
-        last_year_start = current_start.replace(year=current_start.year-1)
-        last_year_end = current_end.replace(year=current_end.year-1)
+        # Сравнение с тем же месяцем прошлого года (10 лет назад).
+        # Сдвиг года — через включительный последний день, чтобы 29 февраля не давало ValueError
+        inclusive_end = current_end - timedelta(days=1)
+        last_year_start = _years_ago(current_start, 1)
+        last_year_end = _years_ago(inclusive_end, 1) + timedelta(days=1)
+
+        ten_years_ago_start = _years_ago(current_start, 10)
+        ten_years_ago_end = _years_ago(inclusive_end, 10) + timedelta(days=1)
         
-        ten_years_ago_start = current_start.replace(year=current_start.year-10)
-        ten_years_ago_end = current_end.replace(year=current_end.year-10)
-        
-        # Общая выручка текущего периода
+        # Фильтры
         excluded_filter, excluded_params = get_excluded_filter_sql()
         product_groups_filter, product_groups_params = get_product_groups_filter_sql()
+        
+        # Фильтр по территориям Dashboard.
+        # EXISTS вместо INNER JOIN: клиент с несколькими выбранными территориями
+        # размножал строки SALES → задвоение SUM/COUNT
+        dashboard_areas_filter, dashboard_areas_params = get_dashboard_areas_filter_sql()
+        areas_join = ""
+        if dashboard_areas_params:
+            dashboard_areas_filter = (
+                "AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                f"WHERE csa.fCUSTOMERID = c.fID {dashboard_areas_filter})"
+            )
+        
+        # Фильтр по группам клиентов Dashboard
+        dashboard_groups_filter, dashboard_groups_params = get_dashboard_groups_filter_sql()
         
         query_revenue = f"""
             SELECT ISNULL(SUM(s.fTOTALSUM), 0) as TotalRevenue
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+            {areas_join}
             WHERE s.fDATE >= ? AND s.fDATE < ?
             AND s.fSTATE = 2
             {excluded_filter}
             {product_groups_filter}
+            {dashboard_areas_filter}
+            {dashboard_groups_filter}
         """
         
-        params_current = (current_start, current_end) + excluded_params + product_groups_params
-        params_prev = (prev_start, prev_end) + excluded_params + product_groups_params
-        params_last_year = (last_year_start, last_year_end) + excluded_params + product_groups_params
-        params_ten_years = (ten_years_ago_start, ten_years_ago_end) + excluded_params + product_groups_params
+        params_current = (current_start, current_end) + excluded_params + product_groups_params + dashboard_areas_params + dashboard_groups_params
+        params_prev = (prev_start, prev_end) + excluded_params + product_groups_params + dashboard_areas_params + dashboard_groups_params
+        params_last_year = (last_year_start, last_year_end) + excluded_params + product_groups_params + dashboard_areas_params + dashboard_groups_params
+        params_ten_years = (ten_years_ago_start, ten_years_ago_end) + excluded_params + product_groups_params + dashboard_areas_params + dashboard_groups_params
         
         current_revenue = db.execute_query(query_revenue, params_current)
         prev_revenue = db.execute_query(query_revenue, params_prev)
@@ -208,10 +244,13 @@ def dashboard_stats():
             SELECT COUNT(s.fISN) as SalesCount
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+            {areas_join}
             WHERE s.fDATE >= ? AND s.fDATE < ?
             AND s.fSTATE = 2
             {excluded_filter}
             {product_groups_filter}
+            {dashboard_areas_filter}
+            {dashboard_groups_filter}
         """
         current_sales = db.execute_query(query_sales_count, params_current)
         prev_sales = db.execute_query(query_sales_count, params_prev)
@@ -237,10 +276,13 @@ def dashboard_stats():
             SELECT COUNT(DISTINCT s.fCUSTOMERID) as ActiveCustomers
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+            {areas_join}
             WHERE s.fDATE >= ? AND s.fDATE < ?
             AND s.fSTATE = 2
             {excluded_filter}
             {product_groups_filter}
+            {dashboard_areas_filter}
+            {dashboard_groups_filter}
         """
         active_customers = db.execute_query(query_customers, params_current)
         prev_customers = db.execute_query(query_customers, params_prev)
@@ -254,10 +296,13 @@ def dashboard_stats():
             FROM SALES s
             INNER JOIN SALESAGENTS sa ON s.fSALESAGENTID = sa.fID
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+            {areas_join}
             WHERE s.fDATE >= ? AND s.fDATE < ?
             AND s.fSTATE = 2
             {excluded_filter}
             {product_groups_filter}
+            {dashboard_areas_filter}
+            {dashboard_groups_filter}
             GROUP BY sa.fNAME
             ORDER BY TotalSales DESC
         """
@@ -285,8 +330,8 @@ def dashboard_stats():
         last_year_today = today_date.replace(year=today_date.year - 1)
         last_year_today_end = last_year_today + timedelta(days=1)
         
-        params_today = (today_date, today_end) + excluded_params + product_groups_params
-        params_last_year_today = (last_year_today, last_year_today_end) + excluded_params + product_groups_params
+        params_today = (today_date, today_end) + excluded_params + product_groups_params + dashboard_areas_params + dashboard_groups_params
+        params_last_year_today = (last_year_today, last_year_today_end) + excluded_params + product_groups_params + dashboard_areas_params + dashboard_groups_params
         
         # Выручка сегодня
         today_revenue = db.execute_query(query_revenue, params_today)
@@ -312,11 +357,12 @@ def dashboard_stats():
         # === ПРОГНОЗ ПРОДАЖ НА МЕСЯЦ ===
         # Рассчитываем прогноз на основе текущих темпов продаж (исключая воскресенья)
         
-        # Считаем рабочие дни (исключая воскресенья)
+        # Считаем рабочие дни (исключая воскресенья).
+        # current_end — эксклюзивная граница, поэтому последний день периода = current_end - 1
         working_days_passed = 0
         check_date = current_start
-        end_date = min(today, current_end)  # Берем минимум из сегодня и конца периода
-        
+        end_date = min(today, current_end - timedelta(days=1))
+
         while check_date <= end_date:
             if check_date.weekday() != 6:  # 6 = воскресенье
                 working_days_passed += 1
@@ -341,7 +387,7 @@ def dashboard_stats():
             'data': {
                 'period': {
                     'from': current_start.strftime('%Y-%m-%d'),
-                    'to': current_end.strftime('%Y-%m-%d')
+                    'to': (current_end - timedelta(days=1)).strftime('%Y-%m-%d')
                 },
                 'total_revenue': {
                     'value': current_rev,
@@ -464,9 +510,9 @@ def get_managers():
                 ISNULL(SUM(s.fTOTALSUM), 0) as TotalSales,
                 ISNULL(AVG(s.fTOTALSUM), 0) as AvgSale
             FROM SALESAGENTS sa
-            LEFT JOIN SALES s ON s.fSALESAGENTID = sa.fID 
-                AND s.fDATE >= ? 
-                AND s.fDATE <= ?
+            LEFT JOIN SALES s ON s.fSALESAGENTID = sa.fID
+                AND s.fDATE >= ?
+                AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND s.fSTATE = 2
                 {sales_area_clause}
             LEFT JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
@@ -523,8 +569,8 @@ def get_managers():
                         ISNULL(AVG(s.fTOTALSUM), 0) as AvgSale
                     FROM SALES s
                     INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-                    WHERE s.fDATE >= ? 
-                        AND s.fDATE <= ?
+                    WHERE s.fDATE >= ?
+                        AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                         AND s.fSALESAGENTID = ?
                         AND s.fSTATE = 2
                         {sales_area_clause}
@@ -577,86 +623,67 @@ def get_managers():
         # Фильтровать только менеджеров с продажами за выбранный период
         active_managers = [m for m in managers if m['SalesCount'] > 0]
         
-        # Добавить расчет долга для активных менеджеров
+        # Расчёт долга для активных менеджеров — ТЕРРИТОРИАЛЬНАЯ модель «текущий менеджер»
+        # (единая с /managers-kpi, см. [debt-per-manager-territorial]): каждый клиент привязан к ОДНОМУ
+        # менеджеру = кто ПОСЛЕДНИМ ему продавал → долг клиента считается один раз, без задвоения.
+        # Долг менеджера = долг его клиентов из закреплённых за ним групп. Долг — это баланс, поэтому
+        # товарный фильтр к нему НЕ применяется. As-of = конец периода (d.fDATE < date_to + 1 день).
         if active_managers:
+            from collections import defaultdict
             conn = db.get_connection()
             cursor = conn.cursor()
-            customer_subquery = f"""
-                SELECT DISTINCT s.fCUSTOMERID
-                FROM SALES s
-                WHERE s.fSALESAGENTID = ?
-                    AND s.fDATE >= ?
-                    AND s.fDATE <= ?
-                    AND s.fSTATE = 2
-                    {sales_area_clause}
-                    {product_groups_filter}
-            """
-            
+
+            # 1. Клиент → текущий менеджер (последний продавец) + группа клиента, в пределах территории.
+            cursor.execute(f"""
+                SELECT cust, agent, grp FROM (
+                    SELECT s.fCUSTOMERID AS cust, s.fSALESAGENTID AS agent, c.fGROUP AS grp,
+                           ROW_NUMBER() OVER (PARTITION BY s.fCUSTOMERID ORDER BY s.fDATE DESC, s.fISN DESC) rn
+                    FROM SALES s WITH (NOLOCK)
+                    INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = s.fCUSTOMERID
+                    WHERE s.fSTATE = 2 {sales_area_clause}{excluded_filter}
+                ) x WHERE rn = 1
+            """, sales_area_params + excluded_params)
+            # fGROUP может быть CHAR с хвостовыми пробелами — нормализуем ключ,
+            # иначе .get() по коду из JSON-настроек промахнётся и долг станет 0
+            cust_agent = {r.cust: (r.agent, (r.grp or '').strip()) for r in cursor.fetchall()}
+
+            # 2. Долг по каждому клиенту: дебет (D−C) на конец периода − |Type01| − |Type02|.
+            cursor.execute("""
+                SELECT doc.fCUSTOMERID AS cust,
+                       ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) AS debit
+                FROM HICUSTOMERSDEBT d WITH (NOLOCK)
+                INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON d.fDEBTDOCISN = doc.fISN
+                WHERE d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                GROUP BY doc.fCUSTOMERID
+            """, (date_to,))
+            debit_by_cust = {r.cust: float(r.debit or 0) for r in cursor.fetchall()}
+            cursor.execute("""
+                SELECT r.fCUSTOMERID AS cust,
+                       ISNULL(SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END), 0) AS t1,
+                       ISNULL(SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END), 0) AS t2
+                FROM HIRESTCUSTOMERSSUM r WITH (NOLOCK)
+                GROUP BY r.fCUSTOMERID
+            """)
+            rest_by_cust = {r.cust: (abs(float(r.t1 or 0)), abs(float(r.t2 or 0))) for r in cursor.fetchall()}
+            conn.close()
+
+            # 3. Долг менеджера = Σ по его клиентам (где он текущий менеджер) из закреплённых за ним групп.
+            debt_by_mgr = defaultdict(lambda: defaultdict(float))   # agent -> group -> net
+            for cust, (agent, grp) in cust_agent.items():
+                debit = debit_by_cust.get(cust, 0.0)
+                t1, t2 = rest_by_cust.get(cust, (0.0, 0.0))
+                net = debit - t1 - t2
+                if net:
+                    debt_by_mgr[agent][grp] += net
+
             for manager in active_managers:
-                manager_id = manager['fID']
-                responsible_groups = managers_with_groups.get(manager_id, [])
-                
-                # ВАЖНО: Показываем долг ТОЛЬКО если у менеджера есть назначенные группы в settings
+                # Показываем долг ТОЛЬКО если у менеджера есть назначенные группы в settings
+                responsible_groups = managers_with_groups.get(manager['fID'], [])
                 if not responsible_groups:
                     manager['Debt'] = 0
                     continue
-
-                if manager['SalesCount'] == 0:
-                    manager['Debt'] = 0
-                    continue
-                
-                # Формируем запрос долга с учетом групп (ОБЯЗАТЕЛЬНО фильтруем по группам)
-                placeholders = ','.join(['?'] * len(responsible_groups))
-                group_filter = f" AND c.fGROUP IN ({placeholders})"
-                group_params = tuple(responsible_groups)
-                
-                # ПРАВИЛЬНАЯ ФОРМУЛА ДОЛГА:
-                # ДОЛГ = debtFromDocuments - |type01| - |type02|
-                # где debtFromDocuments = SUM(D) - SUM(C) из HICUSTOMERSDEBT
-                
-                # 1. Получаем долг из документов
-                debt_query = f"""
-                    SELECT 
-                        ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as DebtFromDocs
-                    FROM HICUSTOMERSDEBT d
-                    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-                    INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-                    WHERE doc.fCUSTOMERID IN (
-                        {customer_subquery}
-                    )
-                        {excluded_filter}
-                        {group_filter}
-                """
-                
-                customer_subquery_params = (manager_id, date_from, date_to) + sales_area_params + product_groups_params
-                all_params = customer_subquery_params + excluded_params + group_params
-                cursor.execute(debt_query, all_params)
-                debt_row = cursor.fetchone()
-                debt_from_docs = float(debt_row.DebtFromDocs) if debt_row and debt_row.DebtFromDocs else 0
-                
-                # 2. Получаем остатки Type01 и Type02
-                rest_query = f"""
-                    SELECT 
-                        ISNULL(SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END), 0) as Type01,
-                        ISNULL(SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END), 0) as Type02
-                    FROM HIRESTCUSTOMERSSUM r
-                    INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
-                    WHERE r.fCUSTOMERID IN (
-                        {customer_subquery}
-                    )
-                        {excluded_filter}
-                        {group_filter}
-                """
-                
-                cursor.execute(rest_query, all_params)
-                rest_row = cursor.fetchone()
-                type01 = float(rest_row.Type01) if rest_row and rest_row.Type01 else 0
-                type02 = float(rest_row.Type02) if rest_row and rest_row.Type02 else 0
-                
-                # 3. Итоговый долг = debtFromDocuments - |type01| - |type02|
-                manager['Debt'] = debt_from_docs - abs(type01) - abs(type02)
-            
-            conn.close()
+                by_grp = debt_by_mgr.get(manager['fID'], {})
+                manager['Debt'] = round(sum(by_grp.get(str(g).strip(), 0.0) for g in responsible_groups), 2)
         
         # Сортировать по продажам
         active_managers.sort(key=lambda x: x['TotalSales'], reverse=True)
@@ -666,6 +693,11 @@ def get_managers():
     except Exception as e:
         logger.error(f"Ошибка получения менеджеров: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(os.path.join(app.root_path, 'static'),
+                               'favicon.ico', mimetype='image/vnd.microsoft.icon')
 
 @app.route('/api/sales-areas')
 def get_sales_areas():
@@ -845,7 +877,11 @@ def get_sales_areas():
             placeholders = ','.join(['?'] * len(requested_groups))
             group_filter = f" AND c.fGROUP IN ({placeholders})"
             group_params = tuple(requested_groups)
-        
+
+        # |Type01|+|Type02| по территориям — нужен и для карточки долга, и для
+        # выравнивания графика/начального долга с карточкой
+        rest_by_area = {}
+
         # Получить продажи и долги по Sales Areas
         # Используем тот же подход, что и в /api/customers - через CUSTOMERSALESAREAS
         for area_code, area_data in all_areas.items():
@@ -889,9 +925,8 @@ def get_sales_areas():
                     WHERE sd.fISN = s.fISN
                 ) d
                 WHERE csa.fSALESAREA = ?
-                    AND s.fSALESAREA = ?
                     AND s.fDATE >= ?
-                    AND s.fDATE <= ?
+                    AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                     AND s.fSTATE = 2
                     {excluded_filter}
                     {product_groups_filter}
@@ -899,7 +934,7 @@ def get_sales_areas():
                     {sales_group_filter}
             """
             
-            sales_params = (area_code, area_code, date_from, date_to) + excluded_params + product_groups_params + division_params + sales_group_params
+            sales_params = (area_code, date_from, date_to) + excluded_params + product_groups_params + division_params + sales_group_params
             cursor.execute(query_sales, sales_params)
             sales_row = cursor.fetchone()
             
@@ -918,20 +953,23 @@ def get_sales_areas():
                 else:
                     area_data['DiscountPercent'] = 0
             
-            # 2. Получить долг для клиентов этой Sales Area (используем ТОЛЬКО groups filter)
+            # 2. Получить долг для клиентов этой Sales Area (используем ТОЛЬКО groups filter).
+            # Баланс на конец выбранного периода: без даты карточка показывала бы «долг сейчас»
+            # и не согласовывалась бы с PrevMonthDebt/LastYearDebt при выборе прошлых периодов
             query_debt = f"""
-                SELECT 
+                SELECT
                     ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as DebtFromDocs
                 FROM HICUSTOMERSDEBT d
                 INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
                 INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
                 INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
                 WHERE csa.fSALESAREA = ?
+                    AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                     {excluded_filter}
                     {group_filter}
             """
-            
-            debt_params = (area_code,) + excluded_params + group_params
+
+            debt_params = (area_code, date_to) + excluded_params + group_params
             cursor.execute(query_debt, debt_params)
             debt_row = cursor.fetchone()
             debt_from_docs = float(debt_row.DebtFromDocs) if debt_row and debt_row.DebtFromDocs else 0
@@ -949,11 +987,13 @@ def get_sales_areas():
                     {group_filter}
             """
             
-            cursor.execute(query_rest, debt_params)  # Reuse debt_params (same structure without divisions)
+            rest_params = (area_code,) + excluded_params + group_params  # HIRESTCUSTOMERSSUM — без даты (истории нет)
+            cursor.execute(query_rest, rest_params)
             rest_row = cursor.fetchone()
             type01 = float(rest_row.Type01) if rest_row and rest_row.Type01 else 0
             type02 = float(rest_row.Type02) if rest_row and rest_row.Type02 else 0
-            
+            rest_by_area[area_code] = abs(type01) + abs(type02)
+
             # 4. Итоговый долг (текущий)
             area_data['Debt'] = debt_from_docs - abs(type01) - abs(type02)
             
@@ -962,26 +1002,60 @@ def get_sales_areas():
                 logger.info(f"[AREA 105] debt_from_docs: {debt_from_docs:,.2f}, type01: {type01:,.2f}, type02: {type02:,.2f}, final_debt: {area_data['Debt']:,.2f}")
             
             # 5. Получить данные за прошлый месяц (те же даты, но месяц назад)
-            prev_month_sales_params = (area_code, area_code, prev_month_from_str, prev_month_to_str) + excluded_params + product_groups_params + division_params + sales_group_params
+            prev_month_sales_params = (area_code, prev_month_from_str, prev_month_to_str) + excluded_params + product_groups_params + division_params + sales_group_params
             cursor.execute(query_sales, prev_month_sales_params)
             prev_month_row = cursor.fetchone()
             
             area_data['PrevMonthSales'] = float(prev_month_row.TotalSales) if prev_month_row and prev_month_row.TotalSales else 0
             
             # 5a. Долг за прошлый месяц (с формулой Type01/Type02)
-            # Используем ТЕКУЩИЙ долг (без фильтра по датам), так как долг кумулятивный
-            area_data['PrevMonthDebt'] = area_data['Debt']  # Копируем текущий долг
+            # 5a. Долг за прошлый месяц (с учетом даты)
+            query_prev_debt = f"""
+                SELECT 
+                    ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as DebtFromDocs
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+                WHERE csa.fSALESAREA = ?
+                    AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                    {excluded_filter}
+                    {group_filter}
+            """
+            prev_debt_params = (area_code, prev_month_to_str) + excluded_params + group_params
+            cursor.execute(query_prev_debt, prev_debt_params)
+            prev_debt_row = cursor.fetchone()
+            # У HIRESTCUSTOMERSSUM нет истории — вычитаем ТЕКУЩИЕ |Type01|+|Type02| как константу
+            # (та же база, что у карточки Debt, иначе дельта «долг vs прошлый месяц» искажена на их сумму)
+            prev_debt_docs = float(prev_debt_row.DebtFromDocs) if prev_debt_row and prev_debt_row.DebtFromDocs else 0
+            area_data['PrevMonthDebt'] = prev_debt_docs - rest_by_area.get(area_code, 0)
             
             # 6. Получить данные за прошлый год (те же даты, но год назад)
-            last_year_sales_params = (area_code, area_code, last_year_from_str, last_year_to_str) + excluded_params + product_groups_params + division_params + sales_group_params
+            last_year_sales_params = (area_code, last_year_from_str, last_year_to_str) + excluded_params + product_groups_params + division_params + sales_group_params
             cursor.execute(query_sales, last_year_sales_params)
             last_year_row = cursor.fetchone()
             
             area_data['LastYearSales'] = float(last_year_row.TotalSales) if last_year_row and last_year_row.TotalSales else 0
             
             # 6a. Долг за прошлый год (с формулой Type01/Type02)
-            # Используем ТЕКУЩИЙ долг (без фильтра по датам), так как долг кумулятивный
-            area_data['LastYearDebt'] = area_data['Debt']  # Копируем текущий долг
+            # 6a. Долг за прошлый год (с учетом даты)
+            query_last_year_debt = f"""
+                SELECT 
+                    ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as DebtFromDocs
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+                WHERE csa.fSALESAREA = ?
+                    AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                    {excluded_filter}
+                    {group_filter}
+            """
+            last_year_debt_params = (area_code, last_year_to_str) + excluded_params + group_params
+            cursor.execute(query_last_year_debt, last_year_debt_params)
+            last_year_debt_row = cursor.fetchone()
+            last_year_debt_docs = float(last_year_debt_row.DebtFromDocs) if last_year_debt_row and last_year_debt_row.DebtFromDocs else 0
+            area_data['LastYearDebt'] = last_year_debt_docs - rest_by_area.get(area_code, 0)
         
         # Получить платежи по Sales Areas из таблицы HICUSTOMERSDEBT
         logger.info("[PAYMENTS] Calculating actual payments from HICUSTOMERSDEBT table...")
@@ -997,18 +1071,37 @@ def get_sales_areas():
                 INNER JOIN CUSTOMERS c ON d.fCUSTOMERID = c.fID
                 WHERE d.fSALESAREA = ?
                     AND h.fDATE >= ?
-                    AND h.fDATE <= ?
+                    AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                     AND h.fOP = 'PAY'
                     {excluded_filter}
                     {group_filter}
             """
-            
+
             payments_params = (area_code, date_from, date_to) + excluded_params + group_params
             cursor.execute(query_payments, payments_params)
             payments_row = cursor.fetchone()
-            
+
             area_data['Payments'] = float(payments_row.TotalPayments) if payments_row and payments_row.TotalPayments else 0
-            area_data['InitialDebt'] = area_data['Debt'] - area_data['TotalSales'] + area_data['Payments']
+
+            # Начальный долг = баланс движений ДО начала периода − |Type01|+|Type02| (как в карточке,
+            # чтобы дельта Debt−InitialDebt не искажалась). Старая формула Debt − TotalSales + Payments
+            # вычитала и наличные продажи, которые долгом никогда не были
+            query_initial_debt = f"""
+                SELECT
+                    ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as DebtFromDocs
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+                WHERE csa.fSALESAREA = ?
+                    AND d.fDATE < CAST(? AS DATE)
+                    {excluded_filter}
+                    {group_filter}
+            """
+            cursor.execute(query_initial_debt, (area_code, date_from) + excluded_params + group_params)
+            initial_row = cursor.fetchone()
+            initial_docs = float(initial_row.DebtFromDocs) if initial_row and initial_row.DebtFromDocs else 0
+            area_data['InitialDebt'] = initial_docs - rest_by_area.get(area_code, 0)
         
         # Получить историю по месяцам за последние 24 месяца (ОПТИМИЗИРОВАННЫЙ ЗАПРОС)
         logger.info("[HISTORY] Starting monthly history calculation...")
@@ -1058,9 +1151,8 @@ def get_sales_areas():
             FROM SALES s
             INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
             INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-            WHERE csa.fSALESAREA = s.fSALESAREA
-                AND s.fDATE >= ?
-                AND s.fDATE <= ?
+            WHERE s.fDATE >= ?
+                AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND s.fSTATE = 2
                 {excluded_filter}
                 {product_groups_filter}
@@ -1069,6 +1161,9 @@ def get_sales_areas():
             GROUP BY csa.fSALESAREA, FORMAT(s.fDATE, 'yyyy-MM')
             ORDER BY csa.fSALESAREA, FORMAT(s.fDATE, 'yyyy-MM')
         """
+        # ВАЖНО: территория — по членству клиента (CUSTOMERSALESAREAS), как в карточке (query_sales).
+        # Раньше здесь стояло csa.fSALESAREA = s.fSALESAREA — из-за разной логики
+        # последний бар графика не совпадал с карточкой территории
         
         history_params = (start_history_date.strftime('%Y-%m-%d'), date_to) + excluded_params + product_groups_params + division_params + sales_group_params
         logger.info(f"[SALES HISTORY] Query has {history_query.count('?')} placeholders")
@@ -1117,7 +1212,7 @@ def get_sales_areas():
             INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
             INNER JOIN CUSTOMERS c ON d.fCUSTOMERID = c.fID
             WHERE h.fDATE >= ?
-                AND h.fDATE <= ?
+                AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND h.fOP = 'PAY'
                 {excluded_filter}
                 {payments_group_filter}
@@ -1194,7 +1289,7 @@ def get_sales_areas():
             INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON d.fDEBTDOCISN = doc.fISN
             INNER JOIN CUSTOMERS c WITH (NOLOCK) ON doc.fCUSTOMERID = c.fID
             INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON c.fID = csa.fCUSTOMERID
-            WHERE d.fDATE >= ? AND d.fDATE <= ?
+            WHERE d.fDATE >= ? AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 {excluded_filter}
                 {debt_group_filter}
             GROUP BY csa.fSALESAREA, FORMAT(d.fDATE, 'yyyy-MM')
@@ -1235,9 +1330,10 @@ def get_sales_areas():
         # Рассчитать кумулятивный баланс долга для каждой территории
         logger.info(f"[HISTORY] Calculating cumulative debt balances...")
         for area_code, area_history in history_by_area.items():
-            # Начальный баланс для этой территории
-            cumulative_debt = initial_debts.get(area_code, 0)
-            
+            # Начальный баланс минус текущие |Type01|+|Type02| — постоянный сдвиг всей кривой,
+            # чтобы последняя точка графика совпадала с карточкой долга (Debt)
+            cumulative_debt = initial_debts.get(area_code, 0) - rest_by_area.get(area_code, 0)
+
             # Сортируем месяцы и пересчитываем баланс
             for month_key in sorted(area_history.keys()):
                 debt_change = area_history[month_key].get('debtChange', 0)
@@ -1348,9 +1444,10 @@ def customers_api():
                     INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
                     WHERE csa.fSALESAREA = ?
                         {base_customer_clause}
+                        {excluded_filter}
                 ),
                 FilteredSales AS (
-                    SELECT 
+                    SELECT
                         ac.CustomerId,
                         sa.fCODE AS ManagerCode,
                         sa.fNAME AS ManagerName,
@@ -1361,9 +1458,8 @@ def customers_api():
                     LEFT JOIN SALESAGENTS sa ON s.fSALESAGENTID = sa.fID
                     WHERE s.fSTATE = 2
                         AND s.fDATE >= ?
-                        AND s.fDATE <= ?
+                        AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                         AND s.fSALESAREA = ?
-                        {excluded_filter}
                         {product_groups_filter}
                     GROUP BY ac.CustomerId, sa.fCODE, sa.fNAME
                 ),
@@ -1406,15 +1502,24 @@ def customers_api():
                     GROUP BY fCUSTOMERID
                 ),
                 PaymentData AS (
-                    SELECT 
+                    SELECT
                         d.fCUSTOMERID AS CustomerId,
                         ISNULL(SUM(CASE WHEN h.fDBCR = 'C' THEN h.fSUM ELSE 0 END), 0) AS TotalPayments
                     FROM HICUSTOMERSDEBT h
                     INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
                     WHERE h.fOP = 'PAY'
                         AND h.fDATE >= ?
-                        AND h.fDATE <= ?
+                        AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                     GROUP BY d.fCUSTOMERID
+                ),
+                InitialDebtData AS (
+                    SELECT
+                        doc.fCUSTOMERID AS CustomerId,
+                        ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) AS InitialDebtFromDocs
+                    FROM HICUSTOMERSDEBT d
+                    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                    WHERE d.fDATE < CAST(? AS DATE)
+                    GROUP BY doc.fCUSTOMERID
                 ),
                 LastPaymentData AS (
                     SELECT 
@@ -1450,7 +1555,7 @@ def customers_api():
                     ISNULL(rd.Type02, 0) AS Type02,
                     (ISNULL(dd.DebtFromDocs, 0) - ABS(ISNULL(rd.Type01, 0)) - ABS(ISNULL(rd.Type02, 0))) AS Debt,
                     ISNULL(pd.TotalPayments, 0) AS TotalPayments,
-                    ((ISNULL(dd.DebtFromDocs, 0) - ABS(ISNULL(rd.Type01, 0)) - ABS(ISNULL(rd.Type02, 0))) - t.TotalSales + ISNULL(pd.TotalPayments, 0)) AS InitialDebt,
+                    (ISNULL(idd.InitialDebtFromDocs, 0) - ABS(ISNULL(rd.Type01, 0)) - ABS(ISNULL(rd.Type02, 0))) AS InitialDebt,
                     lpd.LastPaymentDate,
                     lpd.DaysSinceLastPayment,
                     lsd.LastSaleDate,
@@ -1460,13 +1565,16 @@ def customers_api():
                 LEFT JOIN DebtData dd ON t.CustomerId = dd.CustomerId
                 LEFT JOIN RestData rd ON t.CustomerId = rd.CustomerId
                 LEFT JOIN PaymentData pd ON t.CustomerId = pd.CustomerId
+                LEFT JOIN InitialDebtData idd ON t.CustomerId = idd.CustomerId
                 LEFT JOIN LastPaymentData lpd ON t.CustomerId = lpd.CustomerId
                 LEFT JOIN LastSaleData lsd ON t.CustomerId = lsd.CustomerId
                 WHERE (ISNULL(dd.DebtFromDocs, 0) - ABS(ISNULL(rd.Type01, 0)) - ABS(ISNULL(rd.Type02, 0))) > 0
                 ORDER BY t.TotalSales DESC
             """
-            # Parameters: sales_area (for CUSTOMERSALESAREAS), customer_params_base (groups/divisions), dates, sales_area (for FilteredSales), excluded, product_groups, dates (for PaymentData)
-            params = (sales_area,) + tuple(customer_params_base) + (date_from, date_to, sales_area) + excluded_params + product_groups_params + (date_from, date_to)
+            # Parameters (в порядке '?': AllCustomers → FilteredSales → PaymentData → InitialDebtData):
+            # sales_area, customer_params_base, excluded (в AllCustomers), dates+sales_area (FilteredSales),
+            # product_groups, dates (PaymentData), date_from (InitialDebtData)
+            params = (sales_area,) + tuple(customer_params_base) + excluded_params + (date_from, date_to, sales_area) + product_groups_params + (date_from, date_to) + (date_from,)
         else:
             # Стандартный запрос только с клиентами, у которых есть продажи
             query = f"""
@@ -1486,7 +1594,7 @@ def customers_api():
                     LEFT JOIN SALESAGENTS sa ON s.fSALESAGENTID = sa.fID
                     WHERE s.fSTATE = 2
                         AND s.fDATE >= ?
-                        AND s.fDATE <= ?
+                        AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                         AND s.fSALESAREA = ?
                         {excluded_filter}
                         {division_clause}
@@ -1530,7 +1638,7 @@ def customers_api():
                     rest_data.Type02,
                     (debt_data.DebtFromDocs - ABS(rest_data.Type01) - ABS(rest_data.Type02)) AS Debt,
                     payment_data.TotalPayments,
-                    ((debt_data.DebtFromDocs - ABS(rest_data.Type01) - ABS(rest_data.Type02)) - t.TotalSales + payment_data.TotalPayments) AS InitialDebt,
+                    (initial_debt_data.InitialDebtFromDocs - ABS(rest_data.Type01) - ABS(rest_data.Type02)) AS InitialDebt,
                     last_payment_data.LastPaymentDate,
                     last_payment_data.DaysSinceLastPayment,
                     last_sale_data.LastSaleDate,
@@ -1559,8 +1667,16 @@ def customers_api():
                     WHERE d.fCUSTOMERID = t.CustomerId
                         AND h.fOP = 'PAY'
                         AND h.fDATE >= ?
-                        AND h.fDATE <= ?
+                        AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 ) AS payment_data
+                OUTER APPLY (
+                    SELECT
+                        ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) AS InitialDebtFromDocs
+                    FROM HICUSTOMERSDEBT d
+                    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                    WHERE doc.fCUSTOMERID = t.CustomerId
+                        AND d.fDATE < CAST(? AS DATE)
+                ) AS initial_debt_data
                 OUTER APPLY (
                     SELECT 
                         MAX(h.fDATE) AS LastPaymentDate,
@@ -1581,7 +1697,7 @@ def customers_api():
                 ) AS last_sale_data
                 ORDER BY t.TotalSales DESC
             """
-            params = (date_from, date_to, sales_area) + excluded_params + division_params + group_params + product_groups_params + (date_from, date_to)
+            params = (date_from, date_to, sales_area) + excluded_params + division_params + group_params + product_groups_params + (date_from, date_to) + (date_from,)
         
         app.logger.info(f"[Query params] Total params count: {len(params)}")
         app.logger.info(f"[Query params] params={params[:10]}..." if len(params) > 10 else f"[Query params] params={params}")
@@ -1723,7 +1839,8 @@ def customer_purchases(customer_id: int):
             WHERE s.fCUSTOMERID = ?
                 AND s.fSTATE = 2
                 AND s.fDATE >= ?
-                AND s.fDATE <= ?
+                AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                {payment_clause}
             ORDER BY s.fDATE DESC, s.fISN DESC
         """
 
@@ -1819,7 +1936,7 @@ def customer_purchases(customer_id: int):
                 AND h.fOP = 'PAY'
                 AND h.fDBCR = 'C'
                 AND h.fDATE >= ?
-                AND h.fDATE <= ?
+                AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             ORDER BY h.fDATE DESC, h.fBASE DESC
         """, (customer_id, date_from, date_to))
         
@@ -1880,7 +1997,7 @@ def get_manager_detail(manager_id):
         if not manager_info:
             return jsonify({'success': False, 'error': 'Менеджер не найден'}), 404
         
-        # Статистика продаж за последние 12 месяцев
+        # Статистика продаж за последние 36 месяцев (3 года)
         query_sales = """
             SELECT 
                 FORMAT(fDATE, 'yyyy-MM') as Month,
@@ -1888,7 +2005,7 @@ def get_manager_detail(manager_id):
                 SUM(fTOTALSUM) as TotalSum
             FROM SALES
             WHERE fSALESAGENTID = ?
-            AND fDATE >= DATEADD(MONTH, -12, GETDATE())
+            AND fDATE >= DATEADD(MONTH, -36, GETDATE())
             AND fSTATE = 2
             GROUP BY FORMAT(fDATE, 'yyyy-MM')
             ORDER BY Month
@@ -2036,6 +2153,79 @@ def get_customer_groups_list():
         logger.error(f"Ошибка загрузки групп клиентов: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/customer-groups-hierarchy')
+def get_customer_groups_hierarchy():
+    """Получить иерархический список групп клиентов (группы и подгруппы)"""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Получаем все группы из TREES с их родителями
+        query = """
+            SELECT 
+                t.fCODE,
+                t.fCAPTION,
+                t.fPARENT
+            FROM TREES t
+            WHERE t.fTREEID = 'CustGrp'
+            ORDER BY t.fPARENT, t.fCODE
+        """
+        cursor.execute(query)
+        
+        all_groups = []
+        for row in cursor.fetchall():
+            all_groups.append({
+                'code': row[0],
+                'name': row[1] or row[0],
+                'parent': row[2]
+            })
+        
+        # Строим иерархию
+        # Сначала находим корневые группы (без родителя или родитель пустой)
+        root_groups = [g for g in all_groups if not g['parent'] or g['parent'] == '']
+        
+        # Функция для получения детей группы
+        def get_children(parent_code):
+            return [g for g in all_groups if g['parent'] == parent_code]
+        
+        # Строим иерархическую структуру
+        hierarchy = []
+        for root in root_groups:
+            children = get_children(root['code'])
+            hierarchy.append({
+                'code': root['code'],
+                'name': root['name'],
+                'parent': None,
+                'children': [{
+                    'code': child['code'],
+                    'name': child['name'],
+                    'parent': root['code']
+                } for child in children]
+            })
+        
+        # Также добавляем группы которые используются в CUSTOMERS но могут не быть в иерархии
+        cursor.execute("""
+            SELECT DISTINCT c.fGROUP
+            FROM CUSTOMERS c
+            WHERE c.fGROUP IS NOT NULL AND c.fGROUP != ''
+        """)
+        used_groups = set(row[0] for row in cursor.fetchall())
+        all_codes = set(g['code'] for g in all_groups)
+        
+        conn.close()
+        
+        return jsonify({
+            'success': True, 
+            'data': {
+                'hierarchy': hierarchy,
+                'flat': all_groups,
+                'used': list(used_groups)
+            }
+        })
+    except Exception as e:
+        logger.error(f"Ошибка загрузки иерархии групп: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/distributors')
 def get_distributors():
     """
@@ -2094,7 +2284,7 @@ def get_distributors():
             FROM CUSTOMERS c
             LEFT JOIN SALES s ON c.fID = s.fCUSTOMERID
                 AND s.fDATE >= ?
-                AND s.fDATE <= ?
+                AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND s.fSTATE = 2
                 {division_filter}
             WHERE 1=1 {group_filter}
@@ -2146,7 +2336,7 @@ def get_distributors():
             INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
             WHERE d.fCUSTOMERID IN ({placeholders})
                 AND h.fDATE >= ?
-                AND h.fDATE <= ?
+                AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND h.fOP = 'PAY'
                 AND h.fDBCR = 'C'
             GROUP BY d.fCUSTOMERID
@@ -2174,7 +2364,7 @@ def get_distributors():
             FROM HICUSTOMERSDEBT h
             INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
             WHERE d.fCUSTOMERID IN ({placeholders})
-                AND h.fDATE <= ?
+                AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             GROUP BY d.fCUSTOMERID
         """
         
@@ -2449,6 +2639,1006 @@ def managers_page():
     """Страница менеджеров"""
     return render_template('managers.html')
 
+
+# =============================================
+# KPI ПО МЕНЕДЖЕРАМ (страница + API)
+# =============================================
+# Отраслевые KPI van-sales/FMCG. Направление (higher_better) и вес в итоговом балле.
+# (key, label, unit, higher_better, weight, layer, target)
+#   layer:  'act' = leading/активность (управляемо сейчас), 'res' = lagging/результат.
+#   target: абсолютный отраслевой FMCG-бенчмарк (None = только peer-перцентиль).
+#           Балл KPI = 50% перцентиль по команде + 50% достижение таргета (где таргет задан) —
+#           устраняет zero-sum «худший всегда 0 / лучший всегда 100» чистого peer-скоринга.
+#   Сумма весов = 100. Веса с weight=0 — справочные (не входят в композит).
+MANAGER_KPI_DEFS = [
+    ("revenue",         "Հասույթ",              "currency", True,  18, "res", None),
+    ("activeCustomers", "Հաճախորդներ",          "number",   True,   8, "res", None),
+    ("routeVisit",      "Երթուղու շրջայց",      "percent",  True,   0, "act", 95),    # beat compliance 95%+
+    ("routeOrder",      "Պատվեր ըստ երթուղու",  "percent",  True,   9, "act", None),
+    ("strikeRate",      "Strike rate",          "percent",  True,   8, "act", 70),    # продуктивные визиты 70%+
+    ("avgCheck",        "Միջին չեկ",            "currency", True,   9, "res", None),
+    ("linesPerInvoice", "SKU/ապր.",             "number",   True,   8, "act", None),
+    ("newCustomers",    "Նոր հաճախորդներ",      "number",   True,   7, "act", None),
+    ("retention",       "Պահպանում",            "percent",  True,   8, "res", 80),    # удержание клиентов 80%+
+    ("collectRate",     "Հավաքագրում/վաճառք",   "percent",  True,   9, "res", 85),    # collections 85%+
+    ("returnsRate",     "Վերադարձեր",           "percent",  False,  7, "res", 2),     # возвраты ≤2%
+    ("planFact",        "Պլան/փաստ",            "percent",  True,   9, "res", 100),   # план = 100%
+    ("vpo",             "VPO",                  "currency", True,   0, "res", None),  # справочно: выручка/точку
+    ("mslCompliance",   "MSL ծածկույթ",         "percent",  True,   0, "act", None),  # справочно, пока не задан MSL
+]
+
+# Гейт малых выборок для метрик-отношений: при знаменателе ниже порога значение показывается,
+# но помечается «мало данных» и НЕ участвует в балле (усадка/anti-noise, см. KPI_EVALUATION.md).
+KPI_MIN_DENOM = {
+    "avgCheck": ("salesCount", 10),
+    "linesPerInvoice": ("salesCount", 10),
+    "strikeRate": ("visitedCustomers", 10),
+    "retention": ("retentionBase", 5),
+}
+
+
+def _months_between(d_from, d_to):
+    a = datetime.strptime(d_from, "%Y-%m-%d")
+    b = datetime.strptime(d_to, "%Y-%m-%d")
+    return max(1, (b.year - a.year) * 12 + (b.month - a.month) + 1)
+
+
+# --- Персистентные фильтры групп для страницы KPI (раздельно продажи/долг) ---
+KPI_SALES_CLIENT_GROUPS_FILE = 'kpi_sales_client_groups.json'
+KPI_DEBT_CLIENT_GROUPS_FILE  = 'kpi_debt_client_groups.json'
+KPI_SALES_DIVISIONS_FILE     = 'kpi_sales_divisions.json'
+KPI_DEBT_DIVISIONS_FILE      = 'kpi_debt_divisions.json'
+KPI_TERRITORIES_FILE         = 'kpi_territories.json'      # территории (fSALESAREA) — весь анализ
+KPI_PRODUCT_GROUPS_FILE      = 'kpi_product_groups.json'   # товарные группы (PrdctGrp) — весь анализ
+KPI_MSL_GROUPS_FILE          = 'kpi_msl_groups.json'       # MSL: обязательные товарные группы (PrdctGrp)
+
+
+def _kpi_load_list(path):
+    try:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.error(f"Ошибка чтения {path}: {e}")
+    return []
+
+
+def _kpi_save_list(path, items):
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(items or [], f, ensure_ascii=False, indent=2)
+    return True
+
+
+@app.route('/api/managers/kpi/filters', methods=['GET'])
+def get_managers_kpi_filters():
+    """Сохранённые фильтры групп (товары/клиенты) отдельно для продаж и долга."""
+    return jsonify({
+        'success': True,
+        'sales_client_groups': _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE),
+        'debt_client_groups':  _kpi_load_list(KPI_DEBT_CLIENT_GROUPS_FILE),
+        'sales_divisions':     _kpi_load_list(KPI_SALES_DIVISIONS_FILE),
+        'debt_divisions':      _kpi_load_list(KPI_DEBT_DIVISIONS_FILE),
+        'territories':         _kpi_load_list(KPI_TERRITORIES_FILE),
+        'product_groups':      _kpi_load_list(KPI_PRODUCT_GROUPS_FILE),
+        'msl_groups':          _kpi_load_list(KPI_MSL_GROUPS_FILE),
+    })
+
+
+@app.route('/api/managers/kpi/filters', methods=['POST'])
+def set_managers_kpi_filters():
+    """Сохранить (запомнить) выбор фильтров групп для страницы KPI."""
+    try:
+        d = request.get_json() or {}
+        if 'sales_client_groups' in d: _kpi_save_list(KPI_SALES_CLIENT_GROUPS_FILE, d['sales_client_groups'])
+        if 'debt_client_groups'  in d: _kpi_save_list(KPI_DEBT_CLIENT_GROUPS_FILE,  d['debt_client_groups'])
+        if 'sales_divisions'     in d: _kpi_save_list(KPI_SALES_DIVISIONS_FILE,     d['sales_divisions'])
+        if 'debt_divisions'      in d: _kpi_save_list(KPI_DEBT_DIVISIONS_FILE,      d['debt_divisions'])
+        if 'territories'         in d: _kpi_save_list(KPI_TERRITORIES_FILE,         d['territories'])
+        if 'product_groups'      in d: _kpi_save_list(KPI_PRODUCT_GROUPS_FILE,      d['product_groups'])
+        if 'msl_groups'          in d: _kpi_save_list(KPI_MSL_GROUPS_FILE,          d['msl_groups'])
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Ошибка сохранения KPI-фильтров: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/managers/kpi/filter-options')
+def get_managers_kpi_filter_options():
+    """Опции для новых фильтров KPI: территории (SArea) и товарные группы (PrdctGrp). READ-ONLY."""
+    try:
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT t.fCODE, ISNULL(t.fCAPTION, t.fCODE) AS name
+            FROM TREES t WITH (NOLOCK)
+            WHERE t.fTREEID='SArea'
+              AND t.fCODE IN (SELECT DISTINCT fSALESAREA FROM CUSTOMERSALESAREAS WITH (NOLOCK))
+            ORDER BY t.fCODE
+        """)
+        territories = [{'code': r.fCODE, 'name': r.name} for r in cur.fetchall()]
+        cur.execute("""
+            SELECT t.fCODE, ISNULL(t.fCAPTION, t.fCODE) AS name
+            FROM TREES t WITH (NOLOCK)
+            WHERE t.fTREEID='PrdctGrp'
+              AND t.fCODE IN (SELECT DISTINCT fGROUP FROM PRODUCTS WITH (NOLOCK) WHERE fGROUP IS NOT NULL AND fGROUP<>'')
+            ORDER BY t.fCODE
+        """)
+        product_groups = [{'code': r.fCODE, 'name': r.name} for r in cur.fetchall()]
+        conn.close()
+        return jsonify({'success': True, 'territories': territories, 'product_groups': product_groups})
+    except Exception as e:
+        logger.error(f"Ошибка загрузки опций KPI-фильтров: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/managers-kpi')
+def managers_kpi_page():
+    """Страница KPI по менеджерам (рейтинг + скоркарты)"""
+    return render_template('managers_kpi.html')
+
+
+@app.route('/api/managers/kpi')
+def api_managers_kpi():
+    """API: полный набор KPI по менеджерам с перцентильным скорингом и рейтингом. READ-ONLY."""
+    try:
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        if not date_from or not date_to:
+            today = datetime.now()
+            date_from = today.replace(day=1).strftime('%Y-%m-%d')
+            last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            date_to = last_day.strftime('%Y-%m-%d')
+
+        # Целевой рост плана (%) к прошлогоднему периоду. По умолчанию 0 (чистый YoY).
+        try:
+            plan_growth = float(request.args.get('plan_growth', 0) or 0)
+        except (TypeError, ValueError):
+            plan_growth = 0.0
+        plan_growth = max(-100.0, min(1000.0, plan_growth))
+
+        # Задержка ввода оплат операторами (дней): свежие платежи ещё не внесены в программу,
+        # поэтому долг «на сегодня» завышен. Считаем долг как-of = date_to − N дней («устоявшийся» баланс).
+        try:
+            debt_lag_days = int(request.args.get('debt_lag_days', 0) or 0)
+        except (TypeError, ValueError):
+            debt_lag_days = 0
+        debt_lag_days = max(0, min(60, debt_lag_days))
+
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        # Тот же фильтр для запросов БЕЗ join CUSTOMERS (иначе исключённые клиенты попадали
+        # в возвраты/визиты/сбор/долг, но не в выручку → проценты считались от разных баз)
+        def _excl(custid_expr):
+            return excluded_filter.replace('c.fID', custid_expr)
+
+        # Сохранённые фильтры групп (раздельно продажи/долг)
+        sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)   # группы клиентов — продажи
+        dc = _kpi_load_list(KPI_DEBT_CLIENT_GROUPS_FILE)    # группы клиентов — долг
+        sd = _kpi_load_list(KPI_SALES_DIVISIONS_FILE)       # дивизионы — продажи
+        dd = _kpi_load_list(KPI_DEBT_DIVISIONS_FILE)        # дивизионы — долг
+        # Новые фильтры «на весь анализ»: территории (клиентская привязка) и товарные группы (по строкам продаж).
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)           # территории (fSALESAREA)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)        # товарные группы (PrdctGrp)
+        msl = _kpi_load_list(KPI_MSL_GROUPS_FILE)           # MSL: обязательные товарные группы (PrdctGrp)
+
+        def grp_where(sel):
+            if not sel:
+                return "", ()
+            return " AND c.fGROUP IN (%s)" % ','.join('?' * len(sel)), tuple(sel)
+
+        def cust_join(sel, custid_expr):
+            # INNER JOIN CUSTOMERS c добавляем ТОЛЬКО когда фильтр задан (иначе цифры не меняются)
+            if not sel:
+                return ""
+            return " INNER JOIN CUSTOMERS c WITH (NOLOCK) ON %s = c.fID" % custid_expr
+
+        def div_where(alias, sel):
+            if not sel:
+                return "", ()
+            return (" AND %s.fSALESAGENTID IN (SELECT DISTINCT fSALESAGENTID FROM SALESAGENTDIVISIONS WITH (NOLOCK) WHERE fDIVISION IN (%s))"
+                    % (alias, ','.join('?' * len(sel))), tuple(sel))
+
+        def terr_where(custid_expr):
+            # Территория: клиент принадлежит одной из выбранных зон (CUSTOMERSALESAREAS). Применяется везде.
+            if not sa:
+                return "", ()
+            return (" AND %s IN (SELECT fCUSTOMERID FROM CUSTOMERSALESAREAS WITH (NOLOCK) WHERE fSALESAREA IN (%s))"
+                    % (custid_expr, ','.join('?' * len(sa))), tuple(sa))
+
+        def area_where(area_expr):
+            # Тот же территориальный фильтр, но для запросов, где уже есть CUSTOMERSALESAREAS (ограничиваем зону напрямую).
+            if not sa:
+                return "", ()
+            return (" AND %s IN (%s)" % (area_expr, ','.join('?' * len(sa))), tuple(sa))
+
+        def prod_where(isn_expr):
+            # Товарные группы: документ продажи содержит товар из выбранных групп (PrdctGrp). Только для продаж.
+            if not pg:
+                return "", ()
+            return ((" AND %s IN (SELECT sd2.fISN FROM SALEDOCDETAILS sd2 WITH (NOLOCK)"
+                     " INNER JOIN PRODUCTS p2 WITH (NOLOCK) ON p2.fID=sd2.fPRODUCTID WHERE p2.fGROUP IN (%s))")
+                    % (isn_expr, ','.join('?' * len(pg))), tuple(pg))
+
+        sc_w, sc_p = grp_where(sc)          # продажи: клиентские группы (alias c)
+        dc_w, dc_p = grp_where(dc)          # долг: клиентские группы (alias c)
+        sd_w, sd_p = div_where('s', sd)     # продажи: дивизионы (агент s)
+        dd_w, dd_p = div_where('doc', dd)   # долг: дивизионы (агент doc)
+
+        # Территория (по клиенту) — применяется ко ВСЕМ метрикам; товарные группы (по документу продажи) — к продажам.
+        ta_s_w,    ta_s_p    = terr_where('s.fCUSTOMERID')
+        ta_ar_w,   ta_ar_p   = terr_where('ar.fCUSTOMERID')
+        ta_rt_w,   ta_rt_p   = terr_where('rt.fCUSTOMERID')
+        ta_doc_w,  ta_doc_p  = terr_where('doc.fCUSTOMERID')
+        ta_l_w,    ta_l_p    = terr_where('l.fCUSTOMERID')
+        ta_area_w, ta_area_p = area_where('csa.fSALESAREA')
+        pg_s_w,    pg_s_p    = prod_where('s.fISN')
+
+        # ПОСТРОЧНАЯ выручка при активном фильтре товарных групп: выручка = сумма строк выбранных групп
+        # (SALEDOCDETAILS.fSUM), а не вся накладная. Иначе товарный фильтр завышал бы выручку.
+        # Счётчик накладных — COUNT(DISTINCT s.fISN) (строки размножают документ джойном).
+        # Без товарного фильтра — документный режим (SUM(fTOTALSUM), COUNT(fISN)) = прежнее поведение.
+        if pg:
+            _pg_ph   = ','.join('?' * len(pg))
+            rev_join = (" INNER JOIN SALEDOCDETAILS sdp WITH (NOLOCK) ON sdp.fISN=s.fISN"
+                        " INNER JOIN PRODUCTS pp WITH (NOLOCK) ON pp.fID=sdp.fPRODUCTID")
+            rev_pgw  = " AND pp.fGROUP IN (%s)" % _pg_ph
+            rev_pgp  = tuple(pg)
+            rev_expr = "ISNULL(SUM(sdp.fSUM),0)"
+            doc_cnt  = "COUNT(DISTINCT s.fISN)"
+            # B (глубина корзины): при товарном фильтре считаем только строки выбранных групп
+            b_pg_join = " INNER JOIN PRODUCTS pb WITH (NOLOCK) ON pb.fID=sd.fPRODUCTID"
+            b_pg_w    = " AND pb.fGROUP IN (%s)" % _pg_ph
+            b_pg_p    = tuple(pg)
+        else:
+            rev_join, rev_pgw, rev_pgp = "", "", ()
+            rev_expr = "ISNULL(SUM(s.fTOTALSUM),0)"
+            doc_cnt  = "COUNT(s.fISN)"
+            b_pg_join, b_pg_w, b_pg_p = "", "", ()
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+
+        # «As-of» дата = последний день с продажами в пределах периода (≤ date_to).
+        # Для НЕЗАВЕРШЁННОГО периода (напр. текущий месяц: 9 дней) даёт сравнение/план like-for-like —
+        # базовые окна (прошлый месяц/год) и план обрезаются до того же дня, а не берут полный месяц.
+        # Для завершённого периода asof == date_to → поведение прежнее.
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE < DATEADD(day, 1, CAST(? AS DATE))", (date_to,))
+        _row = cur.fetchone()
+        _last = _row[0] if _row else None
+        asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
+
+        M = {}
+        def ensure(a):
+            if a not in M:
+                M[a] = {k: 0 for k in ["revenue", "salesCount", "activeCustomers", "avgCheck",
+                        "assigned", "visits", "visitedCustomers", "prodCust", "lines", "returnsSum",
+                        "returnCount", "newCustomers", "collected", "prevYear",
+                        "routePlanned", "routeVisited", "routeOrdered",
+                        "retBase", "retKept", "mslCust"]}
+            return M[a]
+
+        # A: основные метрики продаж (исключённые клиенты + группы клиентов + дивизионы — продажи)
+        # Выручка построчная при товарном фильтре (rev_expr/rev_join/rev_pgw); avgCheck = выручка/накладные
+        # (математически = AVG(fTOTALSUM) в документном режиме, без регрессий).
+        cur.execute(f"""
+            SELECT s.fSALESAGENTID AS agent, {doc_cnt} AS SalesCount,
+                   COUNT(DISTINCT s.fCUSTOMERID) AS ActiveCustomers,
+                   {rev_expr} AS Revenue
+            FROM SALES s WITH (NOLOCK){rev_join}
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+            WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
+            GROUP BY s.fSALESAGENTID
+        """, (date_from, date_to) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp)
+        for r in cur.fetchall():
+            m = ensure(r.agent)
+            m["salesCount"] = r.SalesCount
+            m["activeCustomers"] = r.ActiveCustomers
+            m["revenue"] = float(r.Revenue)
+            m["avgCheck"] = (m["revenue"] / m["salesCount"]) if m["salesCount"] else 0.0
+
+        # СРАВНЕНИЕ ЗА 3 ГОДА: те же метрики агента за тот же период текущего года / год назад / 2 года назад.
+        # По ТЕРРИТОРИИ менеджера (устойчиво к текучке — заполнено у всех). Фильтры: территория + группы клиентов + товарные группы.
+        # years — целое (1 или 2), не пользовательский ввод → безопасно для подстановки.
+        def _cmp_territory(years):
+            cur.execute(f"""
+                WITH AgentCustomers AS (
+                    SELECT DISTINCT saa.fSALESAGENTID AS agent, csa.fCUSTOMERID AS cust
+                    FROM SALESAGENTAREAS saa WITH (NOLOCK)
+                    INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA = saa.fSALESAREA{ta_area_w}
+                )
+                SELECT ac.agent, {doc_cnt} AS cnt, COUNT(DISTINCT s.fCUSTOMERID) AS clients,
+                       {rev_expr} AS rev
+                FROM AgentCustomers ac
+                INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = ac.cust{rev_join}
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+                WHERE s.fDATE>=DATEADD(YEAR,-{years},?) AND s.fDATE < DATEADD(day, 1, DATEADD(YEAR,-{years}, CAST(? AS DATE))) AND s.fSTATE=2 {excluded_filter}{sc_w}{rev_pgw}
+                GROUP BY ac.agent
+            """, ta_area_p + (date_from, asof) + excluded_params + sc_p + rev_pgp)
+            out = {}
+            for r in cur.fetchall():
+                rev = float(r.rev)
+                out[r.agent] = {"revenue": rev, "activeCustomers": r.clients,
+                                "salesCount": r.cnt, "avgCheck": (rev / r.cnt if r.cnt else 0)}
+            return out
+        cmp_y0 = _cmp_territory(0)   # текущий период, ТЕРРИТОРИАЛЬНО — та же база, что y1/y2:
+        cmp_y1 = _cmp_territory(1)   # год назад       иначе YoY сравнивал личные продажи менеджера
+        cmp_y2 = _cmp_territory(2)   # 2 года назад    с оборотом всей его территории
+
+        # Командные итоги за 3 года (текущий / год назад / 2 года назад) — суммарно по всей команде, те же фильтры.
+        def _team_totals(years):
+            d_from = f"DATEADD(YEAR,-{years},?)" if years else "?"
+            d_to   = f"DATEADD(day, 1, DATEADD(YEAR,-{years}, CAST(? AS DATE)))" if years else "DATEADD(day, 1, CAST(? AS DATE))"
+            cur.execute(f"""
+                SELECT {doc_cnt} AS cnt, COUNT(DISTINCT s.fCUSTOMERID) AS clients,
+                       {rev_expr} AS rev
+                FROM SALES s WITH (NOLOCK){rev_join}
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fDATE>={d_from} AND s.fDATE<{d_to} AND s.fSTATE=2 {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
+            """, (date_from, asof) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp)
+            r = cur.fetchone()
+            rev = float(r.rev)
+            return {"revenue": rev, "activeCustomers": r.clients, "salesCount": r.cnt,
+                    "avgCheck": (rev / r.cnt if r.cnt else 0)}
+        team_cmp = {"current": _team_totals(0), "y1": _team_totals(1), "y2": _team_totals(2)}
+
+        # B: глубина корзины = УНИКАЛЬНЫХ SKU на накладную (DISTINCT (накладная, товар)),
+        #    а не COUNT строк — повторные строки одного товара не задваивают метрику (range selling).
+        cur.execute(f"""
+            SELECT q.agent, COUNT(*) AS Lines FROM (
+                SELECT DISTINCT s.fSALESAGENTID AS agent, sd.fISN AS isn, sd.fPRODUCTID AS pid
+                FROM SALES s WITH (NOLOCK) INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN=s.fISN{b_pg_join}
+                {cust_join(sc, 's.fCUSTOMERID')}
+                WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2 {_excl('s.fCUSTOMERID')}{sc_w}{ta_s_w}{b_pg_w}
+            ) q GROUP BY q.agent
+        """, (date_from, date_to) + excluded_params + sc_p + ta_s_p + b_pg_p)
+        for r in cur.fetchall():
+            ensure(r.agent)["lines"] = r.Lines
+
+        # C: визиты (GPS, ACTUALROUTES) + ПРОДУКТИВНЫЕ клиенты (визит И продажа в периоде тем же агентом).
+        #    Strike rate = продуктивные ÷ посещённые (клиентский уровень) — отраслевое определение, всегда ≤100%
+        #    (прежнее «накладные ÷ визиты» структурно превышало 100% при нескольких накладных за визит).
+        cur.execute(f"""
+            SELECT ar.fSALESAGENTID AS agent, COUNT(*) AS Visits, COUNT(DISTINCT ar.fCUSTOMERID) AS VC,
+                   COUNT(DISTINCT pv.cust) AS PC
+            FROM ACTUALROUTES ar WITH (NOLOCK)
+            LEFT JOIN (SELECT DISTINCT fSALESAGENTID AS a2, fCUSTOMERID AS cust FROM SALES WITH (NOLOCK)
+                       WHERE fSTATE=2 AND fDATE>=? AND fDATE < DATEADD(day, 1, CAST(? AS DATE))) pv
+                ON pv.a2 = ar.fSALESAGENTID AND pv.cust = ar.fCUSTOMERID
+            {cust_join(sc, 'ar.fCUSTOMERID')}
+            WHERE ar.fDATE>=? AND ar.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {_excl('ar.fCUSTOMERID')}{sc_w}{ta_ar_w} GROUP BY ar.fSALESAGENTID
+        """, (date_from, date_to) + (date_from, date_to) + excluded_params + sc_p + ta_ar_p)
+        for r in cur.fetchall():
+            m = ensure(r.agent)
+            m["visits"] = r.Visits
+            m["visitedCustomers"] = r.VC
+            m["prodCust"] = r.PC
+
+        # D: возвраты
+        cur.execute(f"""
+            SELECT rt.fSALESAGENTID AS agent, COUNT(*) AS RC, ISNULL(SUM(rt.fTOTALSUM),0) AS RS
+            FROM RETURNS rt WITH (NOLOCK)
+            {cust_join(sc, 'rt.fCUSTOMERID')}
+            WHERE rt.fDATE>=? AND rt.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND rt.fSTATE=2 {_excl('rt.fCUSTOMERID')}{sc_w}{ta_rt_w} GROUP BY rt.fSALESAGENTID
+        """, (date_from, date_to) + excluded_params + sc_p + ta_rt_p)
+        for r in cur.fetchall():
+            m = ensure(r.agent)
+            m["returnCount"] = r.RC
+            m["returnsSum"] = float(r.RS)
+
+        # E: назначено клиентов (покрытие территорий агента)
+        cur.execute(f"""
+            SELECT saa.fSALESAGENTID AS agent, COUNT(DISTINCT csa.fCUSTOMERID) AS Assigned
+            FROM SALESAGENTAREAS saa WITH (NOLOCK)
+            INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA=saa.fSALESAREA
+            {cust_join(sc, 'csa.fCUSTOMERID')}
+            WHERE 1=1 {_excl('csa.fCUSTOMERID')}{sc_w}{ta_area_w}
+            GROUP BY saa.fSALESAGENTID
+        """, excluded_params + sc_p + ta_area_p)
+        for r in cur.fetchall():
+            ensure(r.agent)["assigned"] = r.Assigned
+
+        # F: новые клиенты (первая продажа в периоде)
+        cur.execute(f"""
+            WITH firsts AS (SELECT fCUSTOMERID, MIN(fDATE) AS firstsale FROM SALES WITH (NOLOCK)
+                            WHERE fSTATE=2 GROUP BY fCUSTOMERID)
+            SELECT s.fSALESAGENTID AS agent, COUNT(DISTINCT s.fCUSTOMERID) AS NewC
+            FROM firsts f INNER JOIN SALES s WITH (NOLOCK)
+                ON s.fCUSTOMERID=f.fCUSTOMERID AND s.fDATE=f.firstsale AND s.fSTATE=2
+            {cust_join(sc, 's.fCUSTOMERID')}
+            WHERE f.firstsale>=? AND f.firstsale < DATEADD(day, 1, CAST(? AS DATE)) {_excl('s.fCUSTOMERID')}{sc_w}{ta_s_w}{pg_s_w} GROUP BY s.fSALESAGENTID
+        """, (date_from, date_to) + excluded_params + sc_p + ta_s_p + pg_s_p)
+        for r in cur.fetchall():
+            ensure(r.agent)["newCustomers"] = r.NewC
+
+        # F2: УДЕРЖАНИЕ/ОТТОК клиентов (retention): база = клиенты агента в предыдущем окне той же длины
+        #     (сразу перед date_from); удержан = купил у ТОГО ЖЕ агента в текущем периоде.
+        #     Симметрия к newCustomers: приводить новых, теряя старых, больше не «бесплатно».
+        _pdays = (datetime.strptime(date_to, '%Y-%m-%d') - datetime.strptime(date_from, '%Y-%m-%d')).days + 1
+        prev_from = (datetime.strptime(date_from, '%Y-%m-%d') - timedelta(days=_pdays)).strftime('%Y-%m-%d')
+        prev_to = (datetime.strptime(date_from, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
+        cur.execute(f"""
+            WITH PrevCust AS (
+                SELECT DISTINCT s.fSALESAGENTID AS agent, s.fCUSTOMERID AS cust
+                FROM SALES s WITH (NOLOCK)
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fSTATE=2 AND s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {excluded_filter}{sc_w}{ta_s_w}
+            ),
+            CurCust AS (
+                SELECT DISTINCT fSALESAGENTID AS agent, fCUSTOMERID AS cust FROM SALES WITH (NOLOCK)
+                WHERE fSTATE=2 AND fDATE>=? AND fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            )
+            SELECT p.agent, COUNT(*) AS BaseCnt, COUNT(cc.cust) AS Kept
+            FROM PrevCust p LEFT JOIN CurCust cc ON cc.agent=p.agent AND cc.cust=p.cust
+            GROUP BY p.agent
+        """, (prev_from, prev_to) + excluded_params + sc_p + ta_s_p + (date_from, date_to))
+        for r in cur.fetchall():
+            m = ensure(r.agent)
+            m["retBase"] = r.BaseCnt
+            m["retKept"] = r.Kept
+
+        # F3: MSL-покрытие (numeric distribution обязательного ассортимента): доля активных клиентов,
+        #     купивших хотя бы 1 SKU из настроенных MSL-групп. Пусто, пока MSL-группы не заданы.
+        if msl:
+            _msl_ph = ','.join('?' * len(msl))
+            cur.execute(f"""
+                SELECT s.fSALESAGENTID AS agent, COUNT(DISTINCT s.fCUSTOMERID) AS MslCust
+                FROM SALES s WITH (NOLOCK)
+                INNER JOIN SALEDOCDETAILS sdm WITH (NOLOCK) ON sdm.fISN=s.fISN
+                INNER JOIN PRODUCTS pm WITH (NOLOCK) ON pm.fID=sdm.fPRODUCTID
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
+                  AND pm.fGROUP IN ({_msl_ph}) {excluded_filter}{sc_w}{ta_s_w}
+                GROUP BY s.fSALESAGENTID
+            """, (date_from, date_to) + tuple(msl) + excluded_params + sc_p + ta_s_p)
+            for r in cur.fetchall():
+                ensure(r.agent)["mslCust"] = r.MslCust
+
+        # G: сбор платежей (PAY через DOCUMENTS.fSALESAGENTID) + группы клиентов и дивизионы ДОЛГА
+        cur.execute(f"""
+            SELECT doc.fSALESAGENTID AS agent, ISNULL(SUM(ABS(h.fSUM)),0) AS Collected
+            FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON h.fDEBTDOCISN=doc.fISN
+            {cust_join(dc, 'doc.fCUSTOMERID')}
+            WHERE h.fOP='PAY' AND h.fDBCR='C' AND h.fDATE>=? AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {_excl('doc.fCUSTOMERID')}{dc_w}{dd_w}{ta_doc_w}
+            GROUP BY doc.fSALESAGENTID
+        """, (date_from, date_to) + excluded_params + dc_p + dd_p + ta_doc_p)
+        for r in cur.fetchall():
+            ensure(r.agent)["collected"] = float(r.Collected)
+
+        # H: план = продажи ТОГО ЖЕ ПЕРИОДА год назад по ТЕРРИТОРИИ менеджера × (1 + рост).
+        #   База — прошлогодние продажи клиентов, которые СЕЙЧАС закреплены за территориями агента
+        #   (SALESAGENTAREAS→CUSTOMERSALESAREAS, как в «Покрытии»), независимо от того, какой агент их тогда
+        #   обслуживал. Устойчиво к текучке/смене агентов. Сезонность — натурально (тот же период год назад).
+        #   Фильтры: исключённые клиенты + группы клиентов. Дивизионы не применяются (атрибуция территориальная).
+        cur.execute(f"""
+            WITH AgentCustomers AS (
+                SELECT DISTINCT saa.fSALESAGENTID AS agent, csa.fCUSTOMERID AS cust
+                FROM SALESAGENTAREAS saa WITH (NOLOCK)
+                INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA = saa.fSALESAREA{ta_area_w}
+            )
+            SELECT ac.agent, {rev_expr} AS PrevYear
+            FROM AgentCustomers ac
+            INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = ac.cust{rev_join}
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+            WHERE s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE < DATEADD(day, 1, DATEADD(YEAR,-1, CAST(? AS DATE))) AND s.fSTATE=2 {excluded_filter}{sc_w}{rev_pgw}
+            GROUP BY ac.agent
+        """, ta_area_p + (date_from, asof) + excluded_params + sc_p + rev_pgp)
+        for r in cur.fetchall():
+            ensure(r.agent)["prevYear"] = float(r.PrevYear)
+
+        # R: исполнение планового маршрута — план / подъехал / заказал (по клиентам маршрута агента)
+        #   База = уникальные клиенты из документов планового маршрута (DOCUMENTS.fDOCTYPE=10) агента за период.
+        #   «Подъехал» = клиенты маршрута с фактическим визитом (ACTUALROUTES) того же агента.
+        #   «Заказал»  = клиенты маршрута с проведённой продажей (fSTATE=2) того же агента.
+        #   Фильтр «группы клиентов (продажи)» (sc) применяется к базе маршрута; дивизионы (товары) не влияют.
+        cur.execute(f"""
+            WITH RoutePlan AS (
+                SELECT DISTINCT d.fSALESAGENTID AS agent, l.fCUSTOMERID AS cust
+                FROM DOCUMENTS d WITH (NOLOCK)
+                JOIN PLANNEDROUTESLIST l WITH (NOLOCK) ON d.fISN = l.fISN
+                {cust_join(sc, 'l.fCUSTOMERID')}
+                WHERE d.fDOCTYPE=10 AND d.fDATE>=? AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {_excl('l.fCUSTOMERID')}{sc_w}{ta_l_w}
+            ),
+            Visited AS (
+                SELECT DISTINCT ar.fSALESAGENTID AS agent, ar.fCUSTOMERID AS cust
+                FROM ACTUALROUTES ar WITH (NOLOCK) WHERE ar.fDATE>=? AND ar.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            ),
+            Ordered AS (
+                SELECT DISTINCT s.fSALESAGENTID AS agent, s.fCUSTOMERID AS cust
+                FROM SALES s WITH (NOLOCK) WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
+            )
+            SELECT rp.agent,
+                   COUNT(DISTINCT rp.cust) AS Planned,
+                   COUNT(DISTINCT CASE WHEN v.cust IS NOT NULL THEN rp.cust END) AS Visited,
+                   COUNT(DISTINCT CASE WHEN o.cust IS NOT NULL THEN rp.cust END) AS Ordered
+            FROM RoutePlan rp
+            LEFT JOIN Visited v ON v.agent=rp.agent AND v.cust=rp.cust
+            LEFT JOIN Ordered o ON o.agent=rp.agent AND o.cust=rp.cust
+            GROUP BY rp.agent
+        """, (date_from, date_to) + excluded_params + sc_p + ta_l_p + (date_from, date_to) + (date_from, date_to))
+        for r in cur.fetchall():
+            m = ensure(r.agent)
+            m["routePlanned"] = r.Planned
+            m["routeVisited"] = r.Visited
+            m["routeOrdered"] = r.Ordered
+
+        # G2: ЧИСТЫЙ ДОЛГ (полная формула из DEBT_CALCULATION_FORMULA.md):
+        #   ДОЛГ = Дебет(HICUSTOMERSDEBT, D−C) − |Возвраты Type01| − |Переплаты Type02| (HIRESTCUSTOMERSSUM)
+        #
+        # ТЕРРИТОРИАЛЬНАЯ модель (совпадает с боевой программой ERP до копейки):
+        #   • Команда (team_debit/t1/t2): долг ВСЕХ клиентов территории напрямую, каждый клиент 1 раз = ERP.
+        #   • По менеджеру: каждый клиент привязан к ОДНОМУ «текущему» менеджеру = кто ПОСЛЕДНИМ ему продавал
+        #     (без задвоения). ВНИМАНИЕ: Σ(показанных строк) обычно < команды — в лидерборде видны только
+        #     менеджеры с продажами в периоде (salesCount>0), а долг клиентов, чей текущий менеджер сейчас
+        #     неактивен, плюс клиентов без единой продажи (открытые сальдо), попадает в team, но не в строки.
+        #     Эта разница отдаётся отдельно — team["debtUnattributed"] — и показывается строкой «без привязки».
+        #     Инвариант: Σ(строки) + debtUnattributed = team долг = ERP.
+        #   Прежняя привязка «кому продавал в периоде» задваивала долг (клиент у нескольких агентов) — исправлено.
+        # Фильтры: территория (по клиенту) + «долг: группы клиентов» (dc). As-of = date_to (долг на конец периода).
+        # HIRESTCUSTOMERSSUM без истории → возвраты/переплаты — текущий снимок (корректно только для as-of=сегодня).
+        ta_r_w, ta_r_p = terr_where('r.fCUSTOMERID')   # территория для HIRESTCUSTOMERSSUM (alias r)
+
+        # As-of дата долга с поправкой на задержку ввода оплат.
+        # Поправка нужна ТОЛЬКО для «неустоявшегося» окна: as-of = min(date_to, сегодня − N дней).
+        # Если период давний (сегодня − date_to ≥ N) — оплаты уже введены, сдвиг НЕ применяется (берём date_to).
+        # Смещается только дебет (HICUSTOMERSDEBT по дате); Type01/Type02 — текущий снимок (истории нет).
+        debt_asof = date_to
+        if debt_lag_days:
+            settled = (datetime.now() - timedelta(days=debt_lag_days)).strftime('%Y-%m-%d')
+            if settled < date_to:
+                debt_asof = settled
+
+        # --- КОМАНДА: долг территории напрямую (уникальные клиенты) = ERP ---
+        cur.execute(f"""
+            SELECT ISNULL(SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END),0)
+            FROM DOCUMENTS doc WITH (NOLOCK)
+            INNER JOIN HICUSTOMERSDEBT h WITH (NOLOCK) ON h.fDEBTDOCISN = doc.fISN
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = doc.fCUSTOMERID
+            WHERE h.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {excluded_filter}{ta_doc_w}{dc_w}
+        """, (debt_asof,) + excluded_params + ta_doc_p + dc_p)
+        team_debit = float(cur.fetchone()[0] or 0)
+        cur.execute(f"""
+            SELECT ISNULL(SUM(CASE WHEN r.fTYPE='01' THEN r.fSUM ELSE 0 END),0),
+                   ISNULL(SUM(CASE WHEN r.fTYPE='02' THEN r.fSUM ELSE 0 END),0)
+            FROM HIRESTCUSTOMERSSUM r WITH (NOLOCK)
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = r.fCUSTOMERID
+            WHERE 1=1 {excluded_filter}{ta_r_w}{dc_w}
+        """, excluded_params + ta_r_p + dc_p)
+        _tr = cur.fetchone()
+        team_t1 = abs(float(_tr[0] or 0)); team_t2 = abs(float(_tr[1] or 0))
+
+        # --- ПО МЕНЕДЖЕРУ: клиент → текущий менеджер (последний продавец) ---
+        # Window по всем продажам fSTATE=2 территории; внешние INNER JOIN к долгу/остаткам сами отсекают
+        # не-должников. Ограничивать окно должниками не нужно — это медленнее, результат байт-в-байт тот же.
+        custagent_cte = f"""
+            WITH CustAgent AS (
+                SELECT cust, agent FROM (
+                    SELECT s.fCUSTOMERID AS cust, s.fSALESAGENTID AS agent,
+                           ROW_NUMBER() OVER (PARTITION BY s.fCUSTOMERID ORDER BY s.fDATE DESC, s.fISN DESC) rn
+                    FROM SALES s WITH (NOLOCK)
+                    WHERE s.fSTATE=2{_excl('s.fCUSTOMERID')}{ta_s_w}
+                ) x WHERE rn=1
+            )"""
+        cur.execute(f"""{custagent_cte}
+            SELECT ca.agent, ISNULL(SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END),0) AS Debit
+            FROM CustAgent ca
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON doc.fCUSTOMERID = ca.cust
+            INNER JOIN HICUSTOMERSDEBT h WITH (NOLOCK) ON h.fDEBTDOCISN = doc.fISN AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = ca.cust
+            WHERE 1=1 {dc_w}
+            GROUP BY ca.agent
+        """, excluded_params + ta_s_p + (debt_asof,) + dc_p)
+        debit_by = {r.agent: float(r.Debit or 0) for r in cur.fetchall()}
+        cur.execute(f"""{custagent_cte}
+            SELECT ca.agent,
+                   ISNULL(SUM(CASE WHEN r.fTYPE='01' THEN r.fSUM ELSE 0 END),0) AS T1,
+                   ISNULL(SUM(CASE WHEN r.fTYPE='02' THEN r.fSUM ELSE 0 END),0) AS T2
+            FROM CustAgent ca
+            INNER JOIN HIRESTCUSTOMERSSUM r WITH (NOLOCK) ON r.fCUSTOMERID = ca.cust
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = ca.cust
+            WHERE 1=1 {dc_w}
+            GROUP BY ca.agent
+        """, excluded_params + ta_s_p + dc_p)
+        rest_by = {r.agent: (abs(float(r.T1 or 0)), abs(float(r.T2 or 0))) for r in cur.fetchall()}
+        for aid, m in M.items():
+            if m["salesCount"] == 0:
+                continue
+            debit = debit_by.get(aid, 0.0)
+            t1, t2 = rest_by.get(aid, (0.0, 0.0))
+            m["debtDebit"] = debit
+            m["returnsType01"] = t1
+            m["overpayType02"] = t2
+            m["debt"] = debit - t1 - t2
+
+        # имена агентов + территории
+        cur.execute("SELECT fID, fCODE, fNAME, fCLOSED FROM SALESAGENTS WITH (NOLOCK)")
+        names = {r.fID: (r.fCODE, r.fNAME, r.fCLOSED) for r in cur.fetchall()}
+        cur.execute("""
+            SELECT sa.fSALESAGENTID, sa.fSALESAREA, sa.fDEFAULT, t.fCAPTION
+            FROM SALESAGENTAREAS sa WITH (NOLOCK)
+            LEFT JOIN TREES t WITH (NOLOCK) ON t.fCODE = sa.fSALESAREA AND t.fTREEID='SArea'
+            ORDER BY sa.fSALESAGENTID, sa.fDEFAULT DESC, sa.fROWNUM
+        """)
+        areas_map = {}
+        for r in cur.fetchall():
+            areas_map.setdefault(r.fSALESAGENTID, []).append(
+                {"code": r.fSALESAREA, "name": r.fCAPTION or str(r.fSALESAREA), "is_default": bool(r.fDEFAULT)})
+        conn.close()
+
+        period_months = _months_between(date_from, date_to)
+        rows = []
+        for aid, m in M.items():
+            if m["salesCount"] == 0:
+                continue
+            code, name, closed = names.get(aid, (None, f"#{aid}", 0))
+            rev = m["revenue"]
+            coverage = min(100.0, m["activeCustomers"] / m["assigned"] * 100) if m["assigned"] else None
+            rp = m["routePlanned"]
+            route_visit = (m["routeVisited"] / rp * 100) if rp else None   # подъехал ÷ план маршрута
+            route_order = (m["routeOrdered"] / rp * 100) if rp else None   # заказал ÷ план маршрута
+            # Strike rate = продуктивные посещённые ÷ посещённые (клиентский уровень, всегда ≤100%)
+            strike = (min(m["prodCust"], m["visitedCustomers"]) / m["visitedCustomers"] * 100) if m["visitedCustomers"] else None
+            lpi = (m["lines"] / m["salesCount"]) if m["salesCount"] else 0
+            returns_rate = (m["returnsSum"] / rev * 100) if rev else 0
+            collect_rate = (m["collected"] / rev * 100) if rev else 0
+            plan = (m["prevYear"] * (1 + plan_growth / 100.0)) if m["prevYear"] else None
+            plan_fact = (rev / plan * 100) if plan else None
+            retention = (m["retKept"] / m["retBase"] * 100) if m["retBase"] else None
+            lost_cust = (m["retBase"] - m["retKept"]) if m["retBase"] else 0
+            vpo = (rev / m["activeCustomers"]) if m["activeCustomers"] else None
+            msl_cov = (min(m["mslCust"], m["activeCustomers"]) / m["activeCustomers"] * 100) if (msl and m["activeCustomers"]) else None
+            row_debt = m.get("debt", 0)
+            # DSO-прокси: долг ÷ выручка периода × дней периода (справочно)
+            dso = round(max(0.0, row_debt) / rev * _pdays, 1) if rev > 0 else None
+            yoy = ((rev / m["prevYear"]) - 1) * 100 if m["prevYear"] else None
+            rows.append({
+                "fID": aid, "fCODE": code, "fNAME": name, "closed": int(closed or 0),
+                "revenue": rev, "salesCount": m["salesCount"], "activeCustomers": m["activeCustomers"],
+                "avgCheck": m["avgCheck"], "assigned": m["assigned"],
+                "coverage": round(coverage, 1) if coverage is not None else None,
+                "routePlanned": rp, "routeVisited": m["routeVisited"], "routeOrdered": m["routeOrdered"],
+                "routeVisit": round(route_visit, 1) if route_visit is not None else None,
+                "routeOrder": round(route_order, 1) if route_order is not None else None,
+                "visits": m["visits"], "visitedCustomers": m["visitedCustomers"],
+                "productiveCustomers": m["prodCust"],
+                "strikeRate": round(strike, 1) if strike is not None else None,
+                "linesPerInvoice": round(lpi, 2), "returnsSum": m["returnsSum"],
+                "returnsRate": round(returns_rate, 2), "newCustomers": m["newCustomers"],
+                "retention": round(retention, 1) if retention is not None else None,
+                "retentionBase": m["retBase"], "retainedCustomers": m["retKept"], "lostCustomers": lost_cust,
+                "vpo": round(vpo) if vpo is not None else None,
+                "mslCompliance": round(msl_cov, 1) if msl_cov is not None else None,
+                "dso": dso,
+                "collected": m["collected"], "collectRate": round(collect_rate, 1),
+                "plan": round(plan) if plan else None,
+                "prevYear": round(m["prevYear"]),
+                "planFact": round(plan_fact, 1) if plan_fact is not None else None,
+                "yoyPct": round(yoy, 1) if yoy is not None else None,
+                "trendDown": bool(yoy is not None and yoy <= -25),
+                "cmp": {"current": cmp_y0.get(aid), "y1": cmp_y1.get(aid), "y2": cmp_y2.get(aid)},
+                "debt": round(row_debt, 2),
+                "debtDebit": round(m.get("debtDebit", 0), 2),
+                "returnsType01": round(m.get("returnsType01", 0), 2),
+                "overpayType02": round(m.get("overpayType02", 0), 2),
+                "SalesAreas": areas_map.get(aid, []),
+            })
+
+        # Гейт малых выборок: значение показывается, но помечено «мало данных» и не входит в балл
+        for r in rows:
+            r["lowData"] = {k: True for k, (fld, thr) in KPI_MIN_DENOM.items()
+                            if r.get(k) is not None and (r.get(fld) or 0) < thr}
+
+        # ---- СКОРИНГ: 50% перцентиль по команде + 50% достижение абсолютного таргета (где задан) ----
+        def _target_score(higher, target, v):
+            """Достижение отраслевого таргета 0..100 (кап). Для «меньше-лучше»: ≤target=100, 0 при 4×target."""
+            if v is None or not target:
+                return None
+            if higher:
+                return min(100.0, v / target * 100.0)
+            if v <= target:
+                return 100.0
+            return max(0.0, 100.0 - (v - target) * (100.0 / (3.0 * target)))
+
+        for r in rows:
+            r["scores"] = {}
+        for key, label, unit, higher, weight, category, target in MANAGER_KPI_DEFS:
+            # «мало данных» исключается из скоринга — не шумит в рейтинге
+            present = [r for r in rows if r.get(key) is not None and not r["lowData"].get(key)]
+            for r in rows:
+                if r.get(key) is None or r["lowData"].get(key):
+                    r["scores"][key] = None
+            n = len(present)
+            if n == 0:
+                continue
+            if n == 1:
+                # Перцентиль на выборке из 1 не определён — только target-компонента
+                # (прежнее «единственный = 100» дарило балл без сравнения; None = KPI исключается)
+                ts = _target_score(higher, target, present[0].get(key))
+                present[0]["scores"][key] = round(ts, 1) if ts is not None else None
+                continue
+            order = sorted(present, key=lambda r: r[key], reverse=higher)
+            i = 0
+            while i < n:
+                j = i
+                while j < n and order[j][key] == order[i][key]:
+                    j += 1
+                avg_pos = (i + j - 1) / 2.0
+                sc = 100 * (n - 1 - avg_pos) / (n - 1)
+                for k in range(i, j):
+                    order[k]["scores"][key] = sc
+                i = j
+            # бленд с таргетом: балл перестаёт быть zero-sum и несёт абсолютный смысл
+            for r in present:
+                pct = r["scores"][key]
+                ts = _target_score(higher, target, r.get(key))
+                r["scores"][key] = round(0.5 * pct + 0.5 * ts, 1) if ts is not None else round(pct, 1)
+
+        # Композит + подскоры «активность» (leading) / «результат» (lagging) — раздельная управляемость
+        for r in rows:
+            acc = {"total": [0.0, 0.0], "act": [0.0, 0.0], "res": [0.0, 0.0]}
+            for key, label, unit, higher, weight, category, target in MANAGER_KPI_DEFS:
+                s = r["scores"].get(key)
+                if s is None or not weight:
+                    continue
+                acc["total"][0] += s * weight; acc["total"][1] += weight
+                acc[category][0] += s * weight; acc[category][1] += weight
+            r["score"] = round(acc["total"][0] / acc["total"][1], 1) if acc["total"][1] else 0
+            r["scoreAct"] = round(acc["act"][0] / acc["act"][1], 1) if acc["act"][1] else None
+            r["scoreRes"] = round(acc["res"][0] / acc["res"][1], 1) if acc["res"][1] else None
+
+        rows.sort(key=lambda x: -x["score"])
+        for i, r in enumerate(rows, 1):
+            r["rank"] = i
+
+        team = {
+            "managers": len(rows),
+            "revenue": sum(r["revenue"] for r in rows),
+            "collected": sum(r["collected"] for r in rows),
+            "salesCount": sum(r["salesCount"] for r in rows),
+            "newCustomers": sum(r["newCustomers"] for r in rows),
+            "lostCustomers": sum(r["lostCustomers"] for r in rows),
+            "returnsSum": sum(r["returnsSum"] for r in rows),
+            # Долг команды — территориальный (уникальные клиенты) = ERP, а не сумма строк-менеджеров
+            # (у части должников «текущий» менеджер может быть неактивен в периоде → его нет в строках).
+            "debt": round(team_debit - team_t1 - team_t2, 2),
+            "debtDebit": round(team_debit, 2),
+            "returnsType01": round(team_t1, 2),
+            "overpayType02": round(team_t2, 2),
+            # Долг «без привязки»: неактивные в периоде менеджеры + клиенты без продаж (открытые сальдо).
+            # Инвариант: Σ(строки m.debt) + debtUnattributed = team.debt (= ERP). Показывается отдельной строкой.
+            "debtUnattributed": round((team_debit - team_t1 - team_t2) - sum(r["debt"] for r in rows), 2),
+            # As-of долга и флаг приближения: при as-of < сегодня Type01/02 берутся текущим снимком (истории нет)
+            "debtAsOf": debt_asof,
+            "debtAsOfApprox": bool(debt_asof < datetime.now().strftime('%Y-%m-%d')),
+            "avgCoverage": round(sum(r["coverage"] for r in rows if r["coverage"] is not None)
+                                 / max(1, sum(1 for r in rows if r["coverage"] is not None)), 1),
+            "cmp": team_cmp,
+        }
+        kpis = [{"key": k, "label": lbl, "unit": u, "higher": hb, "weight": w, "category": cat, "target": tgt}
+                for (k, lbl, u, hb, w, cat, tgt) in MANAGER_KPI_DEFS]
+
+        return jsonify({"success": True, "period": {"date_from": date_from, "date_to": date_to,
+                        "months": period_months}, "team": team, "kpis": kpis, "managers": rows})
+
+    except Exception as e:
+        logger.error(f"Ошибка получения KPI менеджеров: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _aggregate_product_groups(rows):
+    """Схлопывает строки (fCODE,fNAME,fMEASUREUNIT,grp,grpname,qcur,qy1,qy2) в группы по товарной группе
+    (PRODUCTS.fGROUP -> PrdctGrp). qcur/qy1/qy2 — количество за тот же период текущего года / год назад / 2 года назад.
+    Товары без группы — отдельными строками (grouped=False). Топ-300 по qcur."""
+    groups = {}
+    for r in rows:
+        qcur, qy1, qy2 = float(r.qcur or 0), float(r.qy1 or 0), float(r.qy2 or 0)
+        if qcur == 0 and qy1 == 0 and qy2 == 0:
+            continue
+        grp = (r.grp or '').strip()
+        if grp:
+            key, name, grouped = 'g:' + grp, (r.grpname or grp), True
+        else:
+            key, name, grouped = 'p:' + r.fCODE, r.fNAME, False
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"code": key, "name": name, "grouped": grouped,
+                               "qcur": 0.0, "qy1": 0.0, "qy2": 0.0, "items": []}
+        g["qcur"] += qcur; g["qy1"] += qy1; g["qy2"] += qy2
+        g["items"].append({"code": r.fCODE, "name": r.fNAME, "unit": r.fMEASUREUNIT or "",
+                           "qcur": round(qcur, 2), "qy1": round(qy1, 2), "qy2": round(qy2, 2)})
+    out = []
+    for g in groups.values():
+        g["items"].sort(key=lambda x: -x["qcur"])
+        g["n"] = len(g["items"])
+        g["unit"] = g["items"][0]["unit"] if g["items"] else ""
+        g["qcur"] = round(g["qcur"], 2); g["qy1"] = round(g["qy1"], 2); g["qy2"] = round(g["qy2"], 2)
+        out.append(g)
+    out.sort(key=lambda x: -x["qcur"])
+    return out[:300]
+
+
+@app.route('/api/managers/<int:agent_id>/product-sales')
+def api_manager_product_sales(agent_id):
+    """Продажи по товарам (количество) по ТЕРРИТОРИИ менеджера: этот период / прошлый месяц / прошлый год.
+    Сравнение like-for-like: базовые окна обрезаются по asof (последний день с данными). READ-ONLY."""
+    try:
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        if not date_from or not date_to:
+            today = datetime.now()
+            date_from = today.replace(day=1).strftime('%Y-%m-%d')
+            last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            date_to = last_day.strftime('%Y-%m-%d')
+
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)
+        sc_w = (" AND c.fGROUP IN (%s)" % ','.join('?' * len(sc))) if sc else ""
+        sc_p = tuple(sc)
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)          # территории (ограничиваем зоны агента)
+        sa_w = (" AND csa.fSALESAREA IN (%s)" % ','.join('?' * len(sa))) if sa else ""
+        sa_p = tuple(sa)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)        # товарные группы (PrdctGrp)
+        pg_w = (" AND p.fGROUP IN (%s)" % ','.join('?' * len(pg))) if pg else ""
+        pg_p = tuple(pg)
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+
+        # asof = последний день с продажами в пределах периода (для like-for-like сдвигов)
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE < DATEADD(day, 1, CAST(? AS DATE))", (date_to,))
+        _row = cur.fetchone()
+        _last = _row[0] if _row else None
+        asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
+
+        # Товар × 3 периода одним проходом (по клиентам территории агента). Сдвиги окон через DATEADD.
+        cur.execute(f"""
+            WITH AC AS (
+                SELECT DISTINCT csa.fCUSTOMERID AS cust
+                FROM SALESAGENTAREAS saa WITH (NOLOCK)
+                INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA = saa.fSALESAREA
+                WHERE saa.fSALESAGENTID = ?{sa_w}
+            )
+            SELECT p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP AS grp, gt.fCAPTION AS grpname,
+                   SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) THEN sd.fQUANTITY ELSE 0 END) AS qcur,
+                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE < DATEADD(day, 1, DATEADD(YEAR,-1, CAST(? AS DATE))) THEN sd.fQUANTITY ELSE 0 END) AS qy1,
+                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-2,?) AND s.fDATE < DATEADD(day, 1, DATEADD(YEAR,-2, CAST(? AS DATE))) THEN sd.fQUANTITY ELSE 0 END) AS qy2
+            FROM SALES s WITH (NOLOCK)
+            INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN = s.fISN
+            INNER JOIN PRODUCTS p WITH (NOLOCK) ON p.fID = sd.fPRODUCTID
+            LEFT JOIN TREES gt WITH (NOLOCK) ON gt.fCODE = p.fGROUP AND gt.fTREEID = 'PrdctGrp'
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+            WHERE s.fSTATE=2 AND s.fCUSTOMERID IN (SELECT cust FROM AC)
+              AND s.fDATE >= DATEADD(YEAR,-2,?) AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {excluded_filter}{sc_w}{pg_w}
+            GROUP BY p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP, gt.fCAPTION
+        """, (agent_id,) + sa_p + (date_from, asof, date_from, asof, date_from, asof, date_from, asof) + excluded_params + sc_p + pg_p)
+
+        # Схлопываем товары в группы по PRODUCTS.fGROUP: все вкусы одного продукта в одну строку.
+        rows = cur.fetchall()
+        conn.close()
+        out = _aggregate_product_groups(rows)
+        return jsonify({"success": True, "period": {"date_from": date_from, "date_to": date_to, "asof": asof},
+                        "groups": out})
+    except Exception as e:
+        logger.error(f"Ошибка продаж по товарам менеджера {agent_id}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/managers/product-sales-total')
+def api_managers_product_sales_total():
+    """Итоговые продажи по товарам ПО ВСЕЙ КОМАНДЕ (все продажи с учётом KPI-фильтров):
+    этот период / прошлый месяц / прошлый год, like-for-like (обрезка по asof). READ-ONLY."""
+    try:
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        if not date_from or not date_to:
+            today = datetime.now()
+            date_from = today.replace(day=1).strftime('%Y-%m-%d')
+            last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            date_to = last_day.strftime('%Y-%m-%d')
+
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)
+        sc_w = (" AND c.fGROUP IN (%s)" % ','.join('?' * len(sc))) if sc else ""
+        sc_p = tuple(sc)
+        sd = _kpi_load_list(KPI_SALES_DIVISIONS_FILE)
+        sd_w = (" AND s.fSALESAGENTID IN (SELECT DISTINCT fSALESAGENTID FROM SALESAGENTDIVISIONS WITH (NOLOCK) WHERE fDIVISION IN (%s))"
+                % ','.join('?' * len(sd))) if sd else ""
+        sd_p = tuple(sd)
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)          # территории (клиент в выбранных зонах)
+        sa_w = (" AND s.fCUSTOMERID IN (SELECT fCUSTOMERID FROM CUSTOMERSALESAREAS WITH (NOLOCK) WHERE fSALESAREA IN (%s))"
+                % ','.join('?' * len(sa))) if sa else ""
+        sa_p = tuple(sa)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)        # товарные группы (PrdctGrp)
+        pg_w = (" AND p.fGROUP IN (%s)" % ','.join('?' * len(pg))) if pg else ""
+        pg_p = tuple(pg)
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE < DATEADD(day, 1, CAST(? AS DATE))", (date_to,))
+        _row = cur.fetchone()
+        _last = _row[0] if _row else None
+        asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
+
+        # Все продажи команды (те же фильтры: исключённые + группы клиентов + дивизионы + территория + товарные группы).
+        cur.execute(f"""
+            SELECT p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP AS grp, gt.fCAPTION AS grpname,
+                   SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) THEN sd.fQUANTITY ELSE 0 END) AS qcur,
+                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-1,?) AND s.fDATE < DATEADD(day, 1, DATEADD(YEAR,-1, CAST(? AS DATE))) THEN sd.fQUANTITY ELSE 0 END) AS qy1,
+                   SUM(CASE WHEN s.fDATE>=DATEADD(YEAR,-2,?) AND s.fDATE < DATEADD(day, 1, DATEADD(YEAR,-2, CAST(? AS DATE))) THEN sd.fQUANTITY ELSE 0 END) AS qy2
+            FROM SALES s WITH (NOLOCK)
+            INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN = s.fISN
+            INNER JOIN PRODUCTS p WITH (NOLOCK) ON p.fID = sd.fPRODUCTID
+            LEFT JOIN TREES gt WITH (NOLOCK) ON gt.fCODE = p.fGROUP AND gt.fTREEID = 'PrdctGrp'
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+            WHERE s.fSTATE=2 AND s.fDATE >= DATEADD(YEAR,-2,?) AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {excluded_filter}{sc_w}{sd_w}{sa_w}{pg_w}
+            GROUP BY p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP, gt.fCAPTION
+        """, (date_from, asof, date_from, asof, date_from, asof, date_from, asof) + excluded_params + sc_p + sd_p + sa_p + pg_p)
+        rows = cur.fetchall()
+        conn.close()
+        out = _aggregate_product_groups(rows)
+        return jsonify({"success": True, "period": {"date_from": date_from, "date_to": date_to, "asof": asof},
+                        "groups": out})
+    except Exception as e:
+        logger.error(f"Ошибка итоговых продаж по товарам команды: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/managers/<int:agent_id>/revenue-trend')
+def api_manager_revenue_trend(agent_id):
+    """Динамика выручки за 36 месяцев по ТЕРРИТОРИИ менеджера (его нынешние клиенты, независимо от того,
+    какой агент их вёл — устойчиво к текучке). Учитывает KPI-фильтры (территория/группы клиентов/товарные группы),
+    zero-fill по месяцам. READ-ONLY."""
+    try:
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)
+        sc_w = (" AND c.fGROUP IN (%s)" % ','.join('?' * len(sc))) if sc else ""; sc_p = tuple(sc)
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)
+        sa_w = (" AND csa.fSALESAREA IN (%s)" % ','.join('?' * len(sa))) if sa else ""; sa_p = tuple(sa)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)
+        pg_w = (" AND s.fISN IN (SELECT sd2.fISN FROM SALEDOCDETAILS sd2 WITH (NOLOCK)"
+                " INNER JOIN PRODUCTS p2 WITH (NOLOCK) ON p2.fID=sd2.fPRODUCTID WHERE p2.fGROUP IN (%s))"
+                % ','.join('?' * len(pg))) if pg else ""; pg_p = tuple(pg)
+
+        conn = db.get_connection(); cur = conn.cursor()
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2")
+        last = cur.fetchone()[0]
+        ly, lm = (last.year, last.month) if last else (datetime.now().year, datetime.now().month)
+        # 36 ярлыков месяцев, заканчивая последним месяцем с данными
+        labels = []
+        y, mo = ly, lm
+        for _ in range(36):
+            labels.append(f"{y:04d}-{mo:02d}")
+            mo -= 1
+            if mo == 0:
+                y -= 1; mo = 12
+        labels.reverse()
+        start = labels[0] + "-01"
+
+        cur.execute(f"""
+            WITH AC AS (
+                SELECT DISTINCT csa.fCUSTOMERID AS cust
+                FROM SALESAGENTAREAS saa WITH (NOLOCK)
+                INNER JOIN CUSTOMERSALESAREAS csa WITH (NOLOCK) ON csa.fSALESAREA = saa.fSALESAREA
+                WHERE saa.fSALESAGENTID = ?{sa_w}
+            )
+            SELECT FORMAT(s.fDATE,'yyyy-MM') AS Month, ISNULL(SUM(s.fTOTALSUM),0) AS TotalSum,
+                   COUNT(s.fISN) AS SalesCount
+            FROM SALES s WITH (NOLOCK)
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+            WHERE s.fSTATE=2 AND s.fCUSTOMERID IN (SELECT cust FROM AC)
+              AND s.fDATE >= ? {excluded_filter}{sc_w}{pg_w}
+            GROUP BY FORMAT(s.fDATE,'yyyy-MM')
+        """, (agent_id,) + sa_p + (start,) + excluded_params + sc_p + pg_p)
+        by_month = {r.Month: (float(r.TotalSum), int(r.SalesCount)) for r in cur.fetchall()}
+        conn.close()
+        series = [{"Month": mth, "TotalSum": by_month.get(mth, (0.0, 0))[0],
+                   "SalesCount": by_month.get(mth, (0.0, 0))[1]} for mth in labels]
+        return jsonify({"success": True, "data": {"sales_by_month": series}})
+    except Exception as e:
+        logger.error(f"Ошибка динамики выручки менеджера {agent_id}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route('/groups')
 def groups_page():
     """Страница групп (дистрибьюторы)"""
@@ -2514,11 +3704,16 @@ def ai_analysis():
             c.fNAME as CustomerName,
             ISNULL(csa.fSALESAREA, 'N/A') as AreaCode,
             ISNULL(sa.fCAPTION, 'Не указана') as AreaName,
-            ISNULL(debt.TotalDebt, 0) as Debt,
+            (ISNULL(debt.TotalDebt, 0) - ABS(ISNULL(rest.Type01, 0)) - ABS(ISNULL(rest.Type02, 0))) as Debt,
             ISNULL(sales.MonthlySales, 0) as MonthlySales,
             ISNULL(pay.MonthlyPayments, 0) as MonthlyPayments
         FROM CUSTOMERS c
-        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        OUTER APPLY (
+            SELECT TOP 1 csa0.fSALESAREA
+            FROM CUSTOMERSALESAREAS csa0 WITH (NOLOCK)
+            WHERE csa0.fCUSTOMERID = c.fID
+            ORDER BY csa0.fDEFAULT DESC
+        ) csa
         LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SArea'
         LEFT JOIN (
             SELECT doc.fCUSTOMERID, 
@@ -2528,20 +3723,29 @@ def ai_analysis():
             GROUP BY doc.fCUSTOMERID
         ) debt ON c.fID = debt.fCUSTOMERID
         LEFT JOIN (
+            SELECT fCUSTOMERID,
+                   SUM(CASE WHEN fTYPE = '01' THEN fSUM ELSE 0 END) as Type01,
+                   SUM(CASE WHEN fTYPE = '02' THEN fSUM ELSE 0 END) as Type02
+            FROM HIRESTCUSTOMERSSUM WITH (NOLOCK)
+            GROUP BY fCUSTOMERID
+        ) rest ON c.fID = rest.fCUSTOMERID
+        LEFT JOIN (
             SELECT fCUSTOMERID, SUM(fTOTALSUM) as MonthlySales
-            FROM SALES 
+            FROM SALES
             WHERE fDATE >= DATEADD(MONTH, -1, GETDATE()) AND fSTATE = 2
             GROUP BY fCUSTOMERID
         ) sales ON c.fID = sales.fCUSTOMERID
         LEFT JOIN (
-            SELECT fCUSTOMERID, SUM(fSUM) as MonthlyPayments
-            FROM PAYMENTS 
-            WHERE fDATE >= DATEADD(MONTH, -1, GETDATE())
-            GROUP BY fCUSTOMERID
+            SELECT d.fCUSTOMERID, SUM(h.fSUM) as MonthlyPayments
+            FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+            INNER JOIN DOCUMENTS d WITH (NOLOCK) ON h.fDEBTDOCISN = d.fISN
+            WHERE h.fOP = 'PAY' AND h.fDBCR = 'C'
+              AND h.fDATE >= DATEADD(MONTH, -1, GETDATE())
+            GROUP BY d.fCUSTOMERID
         ) pay ON c.fID = pay.fCUSTOMERID
-        WHERE ISNULL(debt.TotalDebt, 0) > 100000
+        WHERE (ISNULL(debt.TotalDebt, 0) - ABS(ISNULL(rest.Type01, 0)) - ABS(ISNULL(rest.Type02, 0))) > 100000
             {combined_filter}
-        ORDER BY debt.TotalDebt DESC
+        ORDER BY Debt DESC
         """
         
         cursor.execute(query_high_debt, combined_params)
@@ -2606,7 +3810,12 @@ def ai_analysis():
             ISNULL(sales.MonthlySales, 0) as MonthlySales,
             ISNULL(pay.MonthlyPayments, 0) as MonthlyPayments
         FROM CUSTOMERS c
-        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        OUTER APPLY (
+            SELECT TOP 1 csa0.fSALESAREA
+            FROM CUSTOMERSALESAREAS csa0 WITH (NOLOCK)
+            WHERE csa0.fCUSTOMERID = c.fID
+            ORDER BY csa0.fDEFAULT DESC
+        ) csa
         LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SArea'
         LEFT JOIN (
             SELECT fCUSTOMERID, SUM(fTOTALSUM) as MonthlySales
@@ -2615,10 +3824,12 @@ def ai_analysis():
             GROUP BY fCUSTOMERID
         ) sales ON c.fID = sales.fCUSTOMERID
         LEFT JOIN (
-            SELECT fCUSTOMERID, SUM(fSUM) as MonthlyPayments
-            FROM PAYMENTS 
-            WHERE fDATE >= DATEADD(MONTH, -1, GETDATE())
-            GROUP BY fCUSTOMERID
+            SELECT d.fCUSTOMERID, SUM(h.fSUM) as MonthlyPayments
+            FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+            INNER JOIN DOCUMENTS d WITH (NOLOCK) ON h.fDEBTDOCISN = d.fISN
+            WHERE h.fOP = 'PAY' AND h.fDBCR = 'C'
+              AND h.fDATE >= DATEADD(MONTH, -1, GETDATE())
+            GROUP BY d.fCUSTOMERID
         ) pay ON c.fID = pay.fCUSTOMERID
         WHERE ISNULL(sales.MonthlySales, 0) > 100000
             {combined_filter}
@@ -2665,7 +3876,12 @@ def ai_analysis():
             ISNULL(curr.CurrentSales, 0) as CurrentMonthSales,
             ISNULL(prev.AvgPrevSales, 0) as AvgPrevMonthsSales
         FROM CUSTOMERS c
-        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        OUTER APPLY (
+            SELECT TOP 1 csa0.fSALESAREA
+            FROM CUSTOMERSALESAREAS csa0 WITH (NOLOCK)
+            WHERE csa0.fCUSTOMERID = c.fID
+            ORDER BY csa0.fDEFAULT DESC
+        ) csa
         LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SArea'
         LEFT JOIN (
             SELECT fCUSTOMERID, SUM(fTOTALSUM) as CurrentSales
@@ -2726,7 +3942,12 @@ def ai_analysis():
             DATEDIFF(DAY, last_sale.LastSaleDate, GETDATE()) as DaysSinceLastSale,
             ISNULL(avg_sales.AvgMonthlySales, 0) as AvgMonthlySales
         FROM CUSTOMERS c
-        LEFT JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        OUTER APPLY (
+            SELECT TOP 1 csa0.fSALESAREA
+            FROM CUSTOMERSALESAREAS csa0 WITH (NOLOCK)
+            WHERE csa0.fCUSTOMERID = c.fID
+            ORDER BY csa0.fDEFAULT DESC
+        ) csa
         LEFT JOIN TREES sa ON csa.fSALESAREA = sa.fCODE AND sa.fTREEID = 'SArea'
         INNER JOIN (
             SELECT fCUSTOMERID, MAX(fDATE) as LastSaleDate
@@ -3093,28 +4314,196 @@ def get_sales_areas_list():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@app.route('/api/generate-plans')
-def generate_plans():
-    """Генерация планов продаж и кредитов с учетом сезонности"""
+@app.route('/api/sales-areas-hierarchy')
+def get_sales_areas_hierarchy():
+    """Получить иерархический список территорий (группы и подгруппы)"""
     try:
-        target_month = int(request.args.get('month', datetime.now().month))
-        target_year = int(request.args.get('year', datetime.now().year))
-        growth_percent = float(request.args.get('growth', 10))  # Параметр роста из запроса
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT fCODE, fCAPTION, fPARENT, fCLOSED
+            FROM TREES 
+            WHERE fTREEID = 'SArea' 
+            ORDER BY fCODE
+        """)
+        
+        all_areas = []
+        for row in cursor.fetchall():
+            all_areas.append({
+                'code': row[0].strip() if row[0] else '',
+                'name': row[1].strip() if row[1] else '',
+                'parent': row[2].strip() if row[2] else '',
+                'closed': row[3] if row[3] else 0
+            })
+        
+        conn.close()
+        
+        # Build hierarchy - separate parents and children
+        parents = []
+        children_map = {}
+        
+        for area in all_areas:
+            if area['closed'] == 1:
+                continue  # Skip closed areas
+            if area['parent'] == '':
+                # This is a parent group
+                parents.append({
+                    'code': area['code'],
+                    'name': area['name'],
+                    'children': []
+                })
+            else:
+                # This is a child
+                parent_code = area['parent']
+                if parent_code not in children_map:
+                    children_map[parent_code] = []
+                children_map[parent_code].append({
+                    'code': area['code'],
+                    'name': area['name']
+                })
+        
+        # Assign children to parents
+        for parent in parents:
+            parent['children'] = children_map.get(parent['code'], [])
+        
+        # Sort parents by code
+        parents.sort(key=lambda x: x['code'])
+        
+        return jsonify({
+            'success': True,
+            'data': parents
+        })
+    except Exception as e:
+        logger.error(f"Error getting sales areas hierarchy: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/dashboard/areas', methods=['GET'])
+def get_dashboard_areas():
+    """Получить выбранные территории для Dashboard"""
+    try:
+        selected = load_dashboard_selected_areas()
+        return jsonify({
+            'success': True,
+            'data': selected
+        })
+    except Exception as e:
+        logger.error(f"Error getting dashboard areas: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/dashboard/areas', methods=['POST'])
+def save_dashboard_areas():
+    """Сохранить выбранные территории для Dashboard"""
+    try:
+        data = request.get_json()
+        areas = data.get('areas', [])
+        
+        if save_dashboard_selected_areas(areas):
+            return jsonify({
+                'success': True,
+                'message': f'Сохранено {len(areas)} территорий'
+            })
+        else:
+            return jsonify({'success': False, 'error': 'Failed to save'}), 500
+    except Exception as e:
+        logger.error(f"Error saving dashboard areas: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/dashboard/groups', methods=['GET'])
+def get_dashboard_groups():
+    """Получить выбранные группы клиентов для Dashboard"""
+    try:
+        selected = load_dashboard_selected_groups()
+        return jsonify({
+            'success': True,
+            'groups': selected
+        })
+    except Exception as e:
+        logger.error(f"Error getting dashboard groups: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/dashboard/groups', methods=['POST'])
+def save_dashboard_groups():
+    """Сохранить выбранные группы клиентов для Dashboard"""
+    try:
+        data = request.get_json()
+        groups = data.get('groups', [])
+        
+        if save_dashboard_selected_groups(groups):
+            return jsonify({
+                'success': True,
+                'message': f'Сохранено {len(groups)} групп'
+            })
+        else:
+            return jsonify({'success': False, 'error': 'Failed to save'}), 500
+    except Exception as e:
+        logger.error(f"Error saving dashboard groups: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/dashboard/widgets', methods=['GET'])
+def get_dashboard_widgets():
+    """Получить настройки виджетов Dashboard"""
+    try:
+        widgets = load_dashboard_widgets()
+        return jsonify({
+            'success': True,
+            'widgets': widgets
+        })
+    except Exception as e:
+        logger.error(f"Error getting dashboard widgets: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/dashboard/widgets', methods=['POST'])
+def save_dashboard_widgets_api():
+    """Сохранить настройки виджетов Dashboard"""
+    try:
+        data = request.get_json()
+        widgets = data.get('widgets', [])
+        
+        if save_dashboard_widgets(widgets):
+            return jsonify({
+                'success': True,
+                'message': f'Сохранено {len(widgets)} виджетов'
+            })
+        else:
+            return jsonify({'success': False, 'error': 'Failed to save'}), 500
+    except Exception as e:
+        logger.error(f"Error saving dashboard widgets: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/dashboard/widgets/reset', methods=['POST'])
+def reset_dashboard_widgets():
+    """Сбросить настройки виджетов к дефолтным"""
+    try:
+        if save_dashboard_widgets(DEFAULT_DASHBOARD_WIDGETS.copy()):
+            return jsonify({
+                'success': True,
+                'widgets': DEFAULT_DASHBOARD_WIDGETS
+            })
+        else:
+            return jsonify({'success': False, 'error': 'Failed to reset'}), 500
+    except Exception as e:
+        logger.error(f"Error resetting dashboard widgets: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/area-seasonality')
+def get_area_seasonality():
+    """Get calculated seasonality profiles for all areas based on history"""
+    try:
+        conn = db.get_connection()
+        cursor = conn.cursor()
         
         # Получить параметры фильтров
         raw_groups = request.args.get('groups', '').strip()
         selected_groups = [grp.strip() for grp in raw_groups.split(',') if grp.strip()]
-        
-        # Коэффициенты сезонности (на основе анализа данных)
-        # Синхронизировано с frontend (templates/plans.html)
-        seasonality = {
-            1: 0.53, 2: 0.67, 3: 0.80, 4: 0.86,
-            5: 1.14, 6: 1.31, 7: 1.49, 8: 1.43,
-            9: 1.10, 10: 1.02, 11: 0.88, 12: 0.93
-        }
-        
-        conn = db.get_connection()
-        cursor = conn.cursor()
         
         # Фильтры исключенных клиентов
         excluded_filter, excluded_params = get_excluded_filter_sql()
@@ -3127,17 +4516,194 @@ def generate_plans():
             placeholders = ','.join('?' * len(selected_groups))
             group_clause = f" AND c.fGROUP IN ({placeholders})"
             group_params = tuple(selected_groups)
+
+        # Берём данные за последние 24 ПОЛНЫХ месяца (без частичного текущего),
+        # чтобы каждый месяц входил в окно ровно 2 раза и не искажал сезонность.
+        query_seasonality_calc = f"""
+        SELECT
+            csa.fSALESAREA as area_code,
+            MONTH(s.fDATE) as month,
+            SUM(s.fTOTALSUM) as sales
+        FROM SALES s
+        INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+        INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        WHERE s.fDATE >= DATEADD(MONTH, -24, {CURRENT_MONTH_START_SQL})
+            AND s.fDATE < {CURRENT_MONTH_START_SQL}
+            AND s.fSTATE = 2
+            {excluded_filter}
+            {product_groups_filter}
+            {group_clause}
+        GROUP BY csa.fSALESAREA, MONTH(s.fDATE)
+        """
+
+        season_params = excluded_params + product_groups_params + group_params
+        cursor.execute(query_seasonality_calc, season_params)
+        season_rows = cursor.fetchall()
+
+        # Структура: area_code -> { month -> sales }
+        area_monthly_sales = {}
+        for row in season_rows:
+            if row.area_code not in area_monthly_sales:
+                area_monthly_sales[row.area_code] = {}
+            area_monthly_sales[row.area_code][row.month] = float(row.sales)
+
+        # Рассчитываем коэффициенты
+        calculated_seasonality = {} # area_code -> { month -> coeff }
+
+        for area_code, months_data in area_monthly_sales.items():
+            total_sales = sum(months_data.values())
+            if total_sales > 0:
+                calculated_seasonality[area_code] = {}
+                for m in range(1, 13):
+                    m_sales = months_data.get(m, 0)
+                    coeff = (m_sales * 12) / total_sales
+                    calculated_seasonality[area_code][m] = round(coeff, 2)
         
-        # 1. Получить средние продажи (Turnover) за последние 12 месяцев по территориям
+        logger.info(f"Calculated Seasonality for {len(calculated_seasonality)} areas: {json.dumps(calculated_seasonality)}")
+        return jsonify({'success': True, 'data': calculated_seasonality})
+        
+    except Exception as e:
+        logger.error(f"Error calculating seasonality: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/generate-plans', methods=['GET', 'POST'])
+def generate_plans():
+    """Генерация планов продаж и кредитов с учетом сезонности"""
+    try:
+        growth_map = {}
+        
+        if request.method == 'POST':
+            data = request.json
+            target_month = int(data.get('month', datetime.now().month))
+            target_year = int(data.get('year', datetime.now().year))
+            growth_percent = float(data.get('growth', 10))
+            growth_map = data.get('growth_map', {})
+            seasonality_map = data.get('seasonality_map', {})
+            
+            raw_groups = data.get('groups', [])
+            if isinstance(raw_groups, str):
+                 selected_groups = [grp.strip() for grp in raw_groups.split(',') if grp.strip()]
+            else:
+                 selected_groups = raw_groups
+            
+            # Separate groups for debt calculations
+            raw_debt_groups = data.get('debt_groups', [])
+            if isinstance(raw_debt_groups, str):
+                 selected_debt_groups = [grp.strip() for grp in raw_debt_groups.split(',') if grp.strip()]
+            else:
+                 selected_debt_groups = raw_debt_groups
+        else:
+            target_month = int(request.args.get('month', datetime.now().month))
+            target_year = int(request.args.get('year', datetime.now().year))
+            growth_percent = float(request.args.get('growth', 10))  # Параметр роста из запроса
+            seasonality_map = {}
+            
+            # Получить параметры фильтров
+            raw_groups = request.args.get('groups', '').strip()
+            selected_groups = [grp.strip() for grp in raw_groups.split(',') if grp.strip()]
+            
+            # Separate groups for debt calculations
+            raw_debt_groups = request.args.get('debt_groups', '').strip()
+            selected_debt_groups = [grp.strip() for grp in raw_debt_groups.split(',') if grp.strip()]
+        
+        # Коэффициенты сезонности (на основе анализа данных)
+        # Синхронизировано с frontend (templates/plans.html)
+        global_seasonality = {
+            1: 0.53, 2: 0.67, 3: 0.80, 4: 0.86,
+            5: 1.14, 6: 1.31, 7: 1.49, 8: 1.43,
+            9: 1.10, 10: 1.02, 11: 0.88, 12: 0.93
+        }
+        
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Фильтры исключенных клиентов
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        product_groups_filter, product_groups_params = get_product_groups_filter_sql()
+        
+        # Фильтр по группам клиентов для ПРОДАЖ
+        group_clause = ""
+        group_params = tuple()
+        if selected_groups:
+            placeholders = ','.join('?' * len(selected_groups))
+            group_clause = f" AND c.fGROUP IN ({placeholders})"
+            group_params = tuple(selected_groups)
+        
+        # Фильтр по группам клиентов для ДОЛГОВ (отдельный)
+        debt_group_clause = ""
+        debt_group_params = tuple()
+        if selected_debt_groups:
+            placeholders = ','.join('?' * len(selected_debt_groups))
+            debt_group_clause = f" AND c.fGROUP IN ({placeholders})"
+            debt_group_params = tuple(selected_debt_groups)
+        elif selected_groups:
+            # Fallback: если debt_groups не указаны, используем groups
+            debt_group_clause = group_clause
+            debt_group_params = group_params
+
+        # 0. Расчет индивидуальной сезонности для каждой территории
+        # Берём данные за последние 24 ПОЛНЫХ месяца (без частичного текущего):
+        # каждый месяц входит в окно ровно 2 раза, поэтому деление на 12 даёт
+        # среднемесячную долю без перекоса в пользу текущего месяца.
+        query_seasonality_calc = f"""
+        SELECT
+            csa.fSALESAREA as area_code,
+            MONTH(s.fDATE) as month,
+            SUM(s.fTOTALSUM) as sales
+        FROM SALES s
+        INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+        INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+        WHERE s.fDATE >= DATEADD(MONTH, -24, {CURRENT_MONTH_START_SQL})
+            AND s.fDATE < {CURRENT_MONTH_START_SQL}
+            AND s.fSTATE = 2
+            {excluded_filter}
+            {product_groups_filter}
+            {group_clause}
+        GROUP BY csa.fSALESAREA, MONTH(s.fDATE)
+        """
+        
+        season_params = excluded_params + product_groups_params + group_params
+        cursor.execute(query_seasonality_calc, season_params)
+        season_rows = cursor.fetchall()
+        
+        # Структура: area_code -> { month -> sales }
+        area_monthly_sales = {}
+        for row in season_rows:
+            if row.area_code not in area_monthly_sales:
+                area_monthly_sales[row.area_code] = {}
+            area_monthly_sales[row.area_code][row.month] = float(row.sales)
+            
+        # Рассчитываем коэффициенты
+        calculated_seasonality = {} # area_code -> { month -> coeff }
+        
+        for area_code, months_data in area_monthly_sales.items():
+            total_sales = sum(months_data.values())
+            if total_sales > 0:
+                calculated_seasonality[area_code] = {}
+                # Окно = ровно 24 полных месяца => каждый месяц входит 2 раза.
+                # Коэффициент месяца = (продажи месяца / число лет) / среднемесячные
+                #                    = (m_sales * 12) / total_sales.
+                # Округляем до 2 знаков — так же, как /api/area-seasonality и как
+                # значение, которое фронтенд показывает и возвращает при POST, чтобы
+                # авто-расчёт (GET) и кнопка «Сгенерировать» (POST) совпадали.
+                for m in range(1, 13):
+                    m_sales = months_data.get(m, 0)
+                    coeff = (m_sales * 12) / total_sales
+                    calculated_seasonality[area_code][m] = round(coeff, 2)
+        
+        # 1. Средние месячные продажи за последние 12 ПОЛНЫХ месяцев по территориям.
+        # Окно [начало месяца −12 ; начало текущего месяца) содержит ровно 12
+        # завершённых месяцев, поэтому деление на 12.0 даёт корректное среднее
+        # (частичный текущий месяц не занижает/не искажает базу).
         query_sales = f"""
-        SELECT 
+        SELECT
             csa.fSALESAREA as area_code,
             ISNULL(SUM(s.fTOTALSUM), 0) / 12.0 as avg_monthly_sales
         FROM SALES s
         INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
         INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-        WHERE s.fSALESAREA = csa.fSALESAREA
-            AND s.fDATE >= DATEADD(MONTH, -12, GETDATE())
+        WHERE s.fDATE >= DATEADD(MONTH, -12, {CURRENT_MONTH_START_SQL})
+            AND s.fDATE < {CURRENT_MONTH_START_SQL}
             AND s.fSTATE = 2
             {excluded_filter}
             {product_groups_filter}
@@ -3166,11 +4732,11 @@ def generate_plans():
         INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
         WHERE 1=1
             {excluded_filter}
-            {group_clause}
+            {debt_group_clause}
         GROUP BY csa.fSALESAREA
         """
         
-        debt_params = excluded_params + group_params
+        debt_params = excluded_params + debt_group_params
         logger.info(f"[PLAN DEBT] Starting debt calculation (Optimized)")
         cursor.execute(query_current_debt, debt_params)
         current_debt_results = cursor.fetchall()
@@ -3186,9 +4752,9 @@ def generate_plans():
         INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON d.fDEBTDOCISN = doc.fISN
         INNER JOIN CUSTOMERS c WITH (NOLOCK) ON doc.fCUSTOMERID = c.fID
         INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
-        WHERE d.fDATE >= DATEADD(MONTH, -13, GETDATE())
+        WHERE d.fDATE >= DATEADD(MONTH, -13, {CURRENT_MONTH_START_SQL})
             {excluded_filter}
-            {group_clause}
+            {debt_group_clause}
         GROUP BY csa.fSALESAREA, YEAR(d.fDATE), MONTH(d.fDATE)
         """
         
@@ -3207,11 +4773,11 @@ def generate_plans():
         INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
         WHERE 1=1
             {excluded_filter}
-            {group_clause}
+            {debt_group_clause}
         GROUP BY csa.fSALESAREA
         """
         
-        rest_params = excluded_params + group_params
+        rest_params = excluded_params + debt_group_params
         cursor.execute(query_rest, rest_params)
         rest_results = cursor.fetchall()
         
@@ -3233,39 +4799,42 @@ def generate_plans():
             if row.area_code not in changes_map: changes_map[row.area_code] = {}
             changes_map[row.area_code][(row.year, row.month)] = float(row.net_change)
             
-        today = datetime.now()
-        current_year = today.year
-        current_month = today.month
-        
+        # Текущий год/месяц берём из SQL GETDATE(), а НЕ из datetime.now(),
+        # чтобы стартовый месяц цикла реконструкции совпадал с окнами запросов
+        # (все они привязаны к GETDATE() через CURRENT_MONTH_START_SQL). Иначе
+        # при разных таймзонах приложения и SQL Server или в момент смены месяца
+        # они могли бы разойтись на месяц.
+        cursor.execute("SELECT YEAR(GETDATE()) AS y, MONTH(GETDATE()) AS m")
+        _now_row = cursor.fetchone()
+        current_year = int(_now_row.y)
+        current_month = int(_now_row.m)
+
         for area_code, current_balance in current_debts.items():
             if area_code not in area_stats:
                 area_stats[area_code] = {'avg_sales': 0, 'avg_debt': 0, 'type01': 0, 'type02': 0}
-                
+
+            # Восстанавливаем баланс долга на КОНЕЦ каждого из 12 ЗАВЕРШЁННЫХ
+            # месяцев. Идём от текущего баланса назад, вычитая чистое изменение
+            # долга за месяц: баланс(конец пред. месяца) = баланс(этот) − Δ(этот).
+            # Незавершённый текущий месяц как отдельную точку НЕ включаем — иначе
+            # среднее смешивает баланс «на сегодня» с 11 концами месяцев.
             balances = []
             running_balance = current_balance
-            
-            # Точка 0: Текущий баланс (конец текущего месяца - прогноз)
-            balances.append(running_balance)
-            
             curr_y, curr_m = current_year, current_month
-            
-            # Идем назад на 11 месяцев
-            for i in range(11):
-                # Изменение за текущий рассматриваемый месяц
+
+            for _ in range(12):
                 change = changes_map.get(area_code, {}).get((curr_y, curr_m), 0)
-                
-                # Баланс на конец предыдущего месяца = Баланс(конец этого) - Изменение(этот)
-                prev_balance = running_balance - change
-                balances.append(prev_balance)
-                running_balance = prev_balance
-                
-                # Сдвигаем месяц назад
+                # После вычитания изменения текущего (curr_y, curr_m) получаем
+                # баланс на конец предыдущего месяца — это завершённый месяц.
+                running_balance = running_balance - change
+                balances.append(running_balance)
+
                 curr_m -= 1
                 if curr_m == 0:
                     curr_m = 12
                     curr_y -= 1
-            
-            # Среднее за 12 точек
+
+            # Среднее по 12 концам завершённых месяцев
             avg_debt = sum(balances) / len(balances)
             area_stats[area_code]['avg_debt'] = avg_debt
         
@@ -3275,8 +4844,8 @@ def generate_plans():
                 area_stats[row.area_code]['type02'] = float(row.Type02) if row.Type02 else 0
         
         plans = {}
-        season_coeff = seasonality.get(target_month, 1.0)
-        growth_factor = 1 + (growth_percent / 100)  # Преобразуем 10% → 1.10, 20% → 1.20
+        default_season_coeff = global_seasonality.get(target_month, 1.0)
+        # growth_factor = 1 + (growth_percent / 100)  # Moved inside loop
         
         for area_code, stats in area_stats.items():
             avg_sales = stats['avg_sales']
@@ -3287,18 +4856,53 @@ def generate_plans():
             # ФОРМУЛА: Средний ДОЛГ = Средний кумулятивный баланс - ВОЗВРАТЫ - ПРЕДОПЛАТА
             avg_debt_adjusted = avg_debt - abs(type01) - abs(type02)
             
+            # Determine growth for this area
+            try:
+                val = growth_map.get(str(area_code), growth_map.get(area_code, growth_percent))
+                this_area_growth = float(val)
+            except (ValueError, TypeError):
+                this_area_growth = growth_percent
+                
+            growth_factor = 1 + (this_area_growth / 100.0)
+
+            # Determine seasonality for this area
+            # 1. Check if user provided explicit override in request (seasonality_map)
+            # 2. If not, check if we calculated individual seasonality (calculated_seasonality)
+            # 3. Fallback to global default
+            
+            this_area_seasonality = default_season_coeff
+            
+            # Check explicit override first
+            user_val = seasonality_map.get(str(area_code), seasonality_map.get(area_code))
+            if user_val is not None:
+                try:
+                    this_area_seasonality = float(user_val)
+                except (ValueError, TypeError):
+                    pass
+            else:
+                # Use calculated individual seasonality if available.
+                # Проверяем 'is not None' (а не truthiness), чтобы коэффициент,
+                # округлившийся ровно в 0.00, обрабатывался так же, как явный
+                # override в POST (там условие тоже 'is not None') — иначе GET и
+                # POST расходились бы на этой границе.
+                if area_code in calculated_seasonality:
+                    calc_val = calculated_seasonality[area_code].get(target_month)
+                    if calc_val is not None:
+                        this_area_seasonality = calc_val
+
             # Применяем сезонный коэффициент и настраиваемый рост
             # Округляем до 10,000
-            plan_sales = int(round(avg_sales * season_coeff * growth_factor / 10000) * 10000)
+            plan_sales = int(round(avg_sales * this_area_seasonality * growth_factor / 10000) * 10000)
             # План по кредиту = Средний Долг × Сезонность × Рост (округлено до 10,000)
-            plan_credit = int(round(avg_debt_adjusted * season_coeff * growth_factor / 10000) * 10000)
+            plan_credit = int(round(avg_debt_adjusted * this_area_seasonality * growth_factor / 10000) * 10000)
             
             plans[area_code] = {
                 'sales': plan_sales,
                 'credit': plan_credit,
-                'seasonality': season_coeff,
+                'seasonality': this_area_seasonality,
                 'avg_sales': round(avg_sales, 0),
-                'avg_credit': round(avg_debt_adjusted, 0)  # Средний долг за 12 месяцев
+                'avg_credit': round(avg_debt_adjusted, 0),  # Средний долг за 12 месяцев
+                'calculated_seasonality': calculated_seasonality.get(area_code, {}) # Send full year profile for graph
             }
         
         conn.close()
@@ -3308,7 +4912,7 @@ def generate_plans():
             'data': plans,
             'month': target_month,
             'year': target_year,
-            'seasonality_coefficient': season_coeff
+            'seasonality_coefficient': default_season_coeff
         })
         
     except Exception as e:
@@ -3340,14 +4944,18 @@ def calculate_seasonality_api():
             group_clause = f" AND c.fGROUP IN ({placeholders})"
             group_params = tuple(selected_groups)
         
-        # Получить продажи по месяцам за указанный период
+        # Продажи по месяцам за N ПОЛНЫХ лет (без частичного текущего месяца):
+        # окно [начало месяца −N лет ; начало текущего месяца) содержит каждый
+        # календарный месяц ровно N раз, поэтому нормировка коэффициентов не имеет
+        # перекоса в пользу текущего месяца.
         query = f"""
-        SELECT 
+        SELECT
             MONTH(s.fDATE) as month_num,
             ISNULL(SUM(s.fTOTALSUM), 0) as total_sales
         FROM SALES s
         INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
-        WHERE s.fDATE >= DATEADD(YEAR, -{history_years}, GETDATE())
+        WHERE s.fDATE >= DATEADD(YEAR, -{history_years}, {CURRENT_MONTH_START_SQL})
+            AND s.fDATE < {CURRENT_MONTH_START_SQL}
             AND s.fSTATE = 2
             {excluded_filter}
             {product_groups_filter}
@@ -3382,19 +4990,20 @@ def calculate_seasonality_api():
                 'message': 'Нет данных за указанный период, используются дефолтные коэффициенты'
             })
         
-        # Рассчитать средний уровень продаж
-        total_sum = sum(monthly_sales.values())
-        average_monthly = total_sum / len(monthly_sales)
-        
-        # Рассчитать коэффициенты сезонности для каждого месяца
+        # Суммарные продажи за всё окно (N полных лет).
+        total_sum = float(sum(float(v) for v in monthly_sales.values()))
+
+        # Коэффициент месяца = (продажи месяца * 12) / всего.
+        # Так как каждый месяц входит в окно ровно N раз, это эквивалентно
+        # (среднемесячные продажи месяца) / (общие среднемесячные) и надёжно даже
+        # если у какого-то месяца нет продаж (тогда его коэффициент = 0).
         seasonality_coeffs = {}
         for month in range(1, 13):
-            if month in monthly_sales:
-                # Коэффициент = продажи месяца / средние продажи
-                coeff = monthly_sales[month] / average_monthly if average_monthly > 0 else 1.0
+            if total_sum > 0:
+                coeff = (float(monthly_sales.get(month, 0)) * 12) / total_sum
                 seasonality_coeffs[month] = round(coeff, 2)
             else:
-                # Если данных нет, используем 1.0 (средний уровень)
+                # Совсем нет данных — нейтральный средний уровень
                 seasonality_coeffs[month] = 1.0
         
         cursor.close()
@@ -3402,6 +5011,9 @@ def calculate_seasonality_api():
         
         logger.info(f"Рассчитаны коэффициенты сезонности за {history_years} лет: {seasonality_coeffs}")
         
+        # Среднемесячные продажи за окно: всего / (N лет * 12 месяцев)
+        average_monthly = total_sum / (history_years * 12) if history_years > 0 else 0
+
         return jsonify({
             'success': True,
             'seasonality': seasonality_coeffs,
@@ -3494,9 +5106,9 @@ def reports_managers():
             COALESCE(SUM(CASE WHEN CAST(s.fDATE AS DATE) = CAST(? AS DATE) THEN s.fTOTALSUM ELSE 0 END), 0) as TodaySales,
             COUNT(DISTINCT CAST(s.fDATE AS DATE)) as WorkingDays
         FROM SALESAGENTS sa
-        LEFT JOIN SALES s ON sa.fID = s.fSALESAGENTID 
-            AND s.fDATE >= ? 
-            AND s.fDATE <= ? 
+        LEFT JOIN SALES s ON sa.fID = s.fSALESAGENTID
+            AND s.fDATE >= ?
+            AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             AND s.fSTATE = 2
         WHERE sa.fCLOSED = 0
         GROUP BY sa.fCODE, sa.fNAME, sa.fID
@@ -3553,9 +5165,9 @@ def reports_managers():
             credit_plan = credit_plans.get(code, 3_000_000)
             credit_query = """
                 SELECT COALESCE(SUM(fTOTALSUM), 0) 
-                FROM SALES 
-                WHERE fSALESAGENTID = (SELECT fID FROM SALESAGENTS WHERE fCODE = ?) 
-                AND fDATE >= ? AND fDATE <= ?
+                FROM SALES
+                WHERE fSALESAGENTID = (SELECT fID FROM SALESAGENTS WHERE fCODE = ?)
+                AND fDATE >= ? AND fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 AND fSTATE = 2
             """
             cursor.execute(credit_query, (code, date_from, date_to))
@@ -3632,7 +5244,7 @@ def reports_daily_sales():
             COALESCE(SUM(fTOTALSUM), 0) as TotalSales,
             COUNT(*) as SalesCount
         FROM SALES
-        WHERE fDATE >= ? AND fDATE <= ? AND fSTATE = 2
+        WHERE fDATE >= ? AND fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND fSTATE = 2
         GROUP BY CAST(fDATE AS DATE)
         ORDER BY SaleDate
         """
@@ -3715,14 +5327,20 @@ def get_debts():
         # 3. Конечный долг = debtFromDocuments - |type01| - |type02|
         final_debt = debt_from_documents - abs(type01) - abs(type02)
         
-        # 4. Количество клиентов с долгами (исключая неблагонадежных)
+        # 4. Количество клиентов с долгами (исключая неблагонадежных).
+        # Считаем клиентов с ПОЛОЖИТЕЛЬНЫМ нетто-долгом (D−C > 0) — согласовано с top_debtors,
+        # иначе клиент с полностью погашенным долгом всё равно попадал в счётчик
         query_customers_with_debt = f"""
-            SELECT COUNT(DISTINCT doc.fCUSTOMERID) as DebtCustomersCount
-            FROM HICUSTOMERSDEBT d
-            INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
-            INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
-            WHERE d.fDBCR = 'D' AND d.fSUM > 0
-            {excluded_filter}
+            SELECT COUNT(*) as DebtCustomersCount FROM (
+                SELECT doc.fCUSTOMERID
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                WHERE 1=1
+                {excluded_filter}
+                GROUP BY doc.fCUSTOMERID
+                HAVING SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END) > 0
+            ) t
         """
         debt_customers_result = db.execute_query(query_customers_with_debt, excluded_params)
         debt_customers_count = debt_customers_result[0]['DebtCustomersCount'] if debt_customers_result else 0
@@ -4117,6 +5735,49 @@ DISTRIBUTOR_GROUPS_FILE = 'distributor_groups.json'
 AI_SELECTED_GROUPS_FILE = 'ai_selected_groups.json'
 AI_ANALYSIS_SETTINGS_FILE = 'ai_analysis_settings.json'
 AI_SELECTED_AREAS_FILE = 'ai_selected_areas.json'
+DASHBOARD_SELECTED_AREAS_FILE = 'dashboard_selected_areas.json'
+DASHBOARD_SELECTED_GROUPS_FILE = 'dashboard_selected_groups.json'
+DASHBOARD_WIDGETS_FILE = 'dashboard_widgets.json'
+
+# Дефолтные виджеты Dashboard
+DEFAULT_DASHBOARD_WIDGETS = [
+    {'id': 'total_revenue', 'title': 'Общая выручка', 'type': 'stat', 'dataKey': 'total_revenue', 'icon': 'fa-dollar-sign', 'color': '#0d6efd', 'order': 1, 'visible': True, 'size': 'col-xl-3 col-md-6'},
+    {'id': 'sales_count', 'title': 'Количество продаж', 'type': 'stat', 'dataKey': 'sales_count', 'icon': 'fa-shopping-cart', 'color': '#198754', 'order': 2, 'visible': True, 'size': 'col-xl-3 col-md-6'},
+    {'id': 'avg_check', 'title': 'Средний чек', 'type': 'stat', 'dataKey': 'avg_check', 'icon': 'fa-receipt', 'color': '#0dcaf0', 'order': 3, 'visible': True, 'size': 'col-xl-3 col-md-6'},
+    {'id': 'active_customers', 'title': 'Активные клиенты', 'type': 'stat', 'dataKey': 'active_customers', 'icon': 'fa-users', 'color': '#ffc107', 'order': 4, 'visible': True, 'size': 'col-xl-3 col-md-6'},
+    {'id': 'today_revenue', 'title': 'Выручка сегодня', 'type': 'stat', 'dataKey': 'today_revenue', 'icon': 'fa-calendar-check', 'color': '#0d6efd', 'order': 5, 'visible': True, 'size': 'col-xl-3 col-md-6'},
+    {'id': 'today_sales', 'title': 'Продажи сегодня', 'type': 'stat', 'dataKey': 'today_sales', 'icon': 'fa-shopping-bag', 'color': '#198754', 'order': 6, 'visible': True, 'size': 'col-xl-3 col-md-6'},
+    {'id': 'today_avg_check', 'title': 'Средний чек сегодня', 'type': 'stat', 'dataKey': 'today_avg_check', 'icon': 'fa-receipt', 'color': '#0dcaf0', 'order': 7, 'visible': True, 'size': 'col-xl-3 col-md-6'},
+    {'id': 'today_customers', 'title': 'Клиенты сегодня', 'type': 'stat', 'dataKey': 'today_customers', 'icon': 'fa-user-check', 'color': '#ffc107', 'order': 8, 'visible': True, 'size': 'col-xl-3 col-md-6'},
+    {'id': 'monthly_forecast', 'title': 'Прогноз на месяц', 'type': 'stat', 'dataKey': 'monthly_forecast', 'icon': 'fa-chart-line', 'color': '#6f42c1', 'order': 9, 'visible': True, 'size': 'col-xl-3 col-md-6'},
+    {'id': 'total_debt', 'title': 'Общая задолженность', 'type': 'debt', 'dataKey': 'final_debt', 'icon': 'fa-hand-holding-usd', 'color': '#dc3545', 'order': 10, 'visible': True, 'size': 'col-xl-3 col-md-6'},
+    {'id': 'top_manager', 'title': 'Лучший менеджер', 'type': 'stat', 'dataKey': 'top_manager', 'icon': 'fa-trophy', 'color': '#fd7e14', 'order': 11, 'visible': True, 'size': 'col-xl-3 col-md-6'},
+    {'id': 'sales_chart', 'title': 'График продаж', 'type': 'chart', 'chartType': 'sales', 'icon': 'fa-chart-area', 'color': '#0d6efd', 'order': 12, 'visible': True, 'size': 'col-xl-8 col-md-12'},
+    {'id': 'managers_chart', 'title': 'ТОП менеджеры', 'type': 'chart', 'chartType': 'managers', 'icon': 'fa-chart-bar', 'color': '#198754', 'order': 13, 'visible': True, 'size': 'col-xl-4 col-md-12'},
+    {'id': 'debts_chart', 'title': 'График долгов', 'type': 'chart', 'chartType': 'debts', 'icon': 'fa-chart-pie', 'color': '#dc3545', 'order': 14, 'visible': True, 'size': 'col-xl-6 col-md-12'},
+    {'id': 'ten_years_chart', 'title': 'История 10 лет', 'type': 'chart', 'chartType': 'tenYears', 'icon': 'fa-history', 'color': '#6f42c1', 'order': 15, 'visible': True, 'size': 'col-xl-6 col-md-12'},
+]
+
+def load_dashboard_widgets():
+    """Загрузить настройки виджетов Dashboard"""
+    try:
+        if os.path.exists(DASHBOARD_WIDGETS_FILE):
+            with open(DASHBOARD_WIDGETS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return DEFAULT_DASHBOARD_WIDGETS.copy()
+    except Exception as e:
+        app.logger.error(f"[DashboardWidgets] Error loading: {e}")
+        return DEFAULT_DASHBOARD_WIDGETS.copy()
+
+def save_dashboard_widgets(widgets):
+    """Сохранить настройки виджетов Dashboard"""
+    try:
+        with open(DASHBOARD_WIDGETS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(widgets, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        app.logger.error(f"[DashboardWidgets] Error saving: {e}")
+        return False
 
 def load_excluded_customers():
     """Загрузить список исключенных клиентов из файла"""
@@ -4282,6 +5943,66 @@ def get_ai_areas_filter_sql():
     placeholders = ','.join('?' * len(selected_areas))
     filter_clause = f"AND csa.fSALESAREA IN ({placeholders})"
     return filter_clause, tuple(selected_areas)
+
+def load_dashboard_selected_areas():
+    """Загрузить выбранные территории для Dashboard"""
+    try:
+        if os.path.exists(DASHBOARD_SELECTED_AREAS_FILE):
+            with open(DASHBOARD_SELECTED_AREAS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return []  # Пустой список = все территории
+    except Exception as e:
+        app.logger.error(f"[DashboardAreas] Error loading: {e}")
+        return []
+
+def save_dashboard_selected_areas(areas_list):
+    """Сохранить выбранные территории для Dashboard"""
+    try:
+        with open(DASHBOARD_SELECTED_AREAS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(areas_list, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        app.logger.error(f"[DashboardAreas] Error saving: {e}")
+        return False
+
+def get_dashboard_areas_filter_sql():
+    """Получить SQL фильтр для выбранных территорий Dashboard"""
+    selected_areas = load_dashboard_selected_areas()
+    if not selected_areas or len(selected_areas) == 0:
+        return "", ()
+    placeholders = ','.join('?' * len(selected_areas))
+    filter_clause = f"AND csa.fSALESAREA IN ({placeholders})"
+    return filter_clause, tuple(selected_areas)
+
+def load_dashboard_selected_groups():
+    """Загрузить выбранные группы клиентов для Dashboard"""
+    try:
+        if os.path.exists(DASHBOARD_SELECTED_GROUPS_FILE):
+            with open(DASHBOARD_SELECTED_GROUPS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return []  # Пустой список = все группы
+    except Exception as e:
+        app.logger.error(f"[DashboardGroups] Error loading: {e}")
+        return []
+
+def save_dashboard_selected_groups(groups_list):
+    """Сохранить выбранные группы клиентов для Dashboard"""
+    try:
+        with open(DASHBOARD_SELECTED_GROUPS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(groups_list, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        app.logger.error(f"[DashboardGroups] Error saving: {e}")
+        return False
+
+def get_dashboard_groups_filter_sql():
+    """Получить SQL фильтр для выбранных групп клиентов Dashboard"""
+    selected_groups = load_dashboard_selected_groups()
+    if not selected_groups or len(selected_groups) == 0:
+        return "", ()
+    placeholders = ','.join('?' * len(selected_groups))
+    filter_clause = f"AND c.fGROUP IN ({placeholders})"
+    return filter_clause, tuple(selected_groups)
 
 def load_group_manager_assignments():
     """Загрузить назначения менеджеров группам"""
@@ -4922,13 +6643,13 @@ def get_area_route_stats(area_code):
                 FROM DOCUMENTS d
                 JOIN PLANNEDROUTESLIST l ON d.fISN = l.fISN
                 WHERE d.fDOCTYPE = 10
-                  AND d.fDATE >= ? AND d.fDATE <= ?
+                  AND d.fDATE >= ? AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                   AND l.fCUSTOMERID IN (SELECT fCUSTOMERID FROM AreaCustomers)
             ),
             ActualVisits AS (
                 SELECT a.fCUSTOMERID, CAST(a.fDATE as DATE) as VisitDate
                 FROM ACTUALROUTES a
-                WHERE a.fDATE >= ? AND a.fDATE <= ?
+                WHERE a.fDATE >= ? AND a.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                   AND a.fCUSTOMERID IN (SELECT fCUSTOMERID FROM AreaCustomers)
             )
             SELECT
@@ -4956,7 +6677,7 @@ def get_area_route_stats(area_code):
                     SELECT COUNT(DISTINCT s.fCUSTOMERID)
                     FROM SALES s
                     WHERE s.fSALESAREA = ?
-                      AND s.fDATE >= ? AND s.fDATE <= ?
+                      AND s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                       AND s.fSTATE = 2
                 ) as OrderedCount
         """
@@ -5026,7 +6747,7 @@ def get_unpaid_documents(area_code):
         date_filter = ""
         date_params = tuple()
         if date_from and date_to:
-            date_filter = " AND doc.fDATE >= ? AND doc.fDATE <= ?"
+            date_filter = " AND doc.fDATE >= ? AND doc.fDATE < DATEADD(day, 1, CAST(? AS DATE))"
             date_params = (date_from, date_to)
         
         # Построить фильтр по группам клиентов
@@ -5118,6 +6839,1709 @@ def get_unpaid_documents(area_code):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 # =============================================
+# КОНСТРУКТОР DASHBOARD
+# =============================================
+
+DASHBOARD_BUILDER_FILE = 'dashboard_builder_layout.json'
+
+def load_dashboard_builder_layout():
+    """Загрузить макет конструктора Dashboard"""
+    try:
+        if os.path.exists(DASHBOARD_BUILDER_FILE):
+            with open(DASHBOARD_BUILDER_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading dashboard builder layout: {e}")
+    return {'cards': [], 'nextId': 1}
+
+def save_dashboard_builder_layout(layout):
+    """Сохранить макет конструктора Dashboard"""
+    try:
+        with open(DASHBOARD_BUILDER_FILE, 'w', encoding='utf-8') as f:
+            json.dump(layout, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving dashboard builder layout: {e}")
+        return False
+
+@app.route('/dashboard-builder')
+def dashboard_builder_page():
+    """Страница конструктора Dashboard"""
+    return render_template('dashboard_builder.html')
+
+@app.route('/api/dashboard-builder/layout', methods=['GET'])
+def get_dashboard_builder_layout():
+    """Получить макет конструктора Dashboard"""
+    try:
+        layout = load_dashboard_builder_layout()
+        return jsonify({'success': True, 'data': layout})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/dashboard-builder/layout', methods=['POST'])
+def save_dashboard_builder_layout_api():
+    """Сохранить макет конструктора Dashboard"""
+    try:
+        data = request.get_json()
+        if save_dashboard_builder_layout(data):
+            return jsonify({'success': True})
+        return jsonify({'success': False, 'error': 'Failed to save'}), 500
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/dashboard-builder/card-data')
+def get_card_data():
+    """Получить данные для карточки конструктора Dashboard"""
+    try:
+        # Поддержка множественных фильтров
+        areas = request.args.getlist('areas')  # Множественный выбор территорий
+        groups = request.args.getlist('groups')  # Множественный выбор групп
+        divisions = request.args.getlist('divisions')  # Множественный выбор дивизионов
+        period = request.args.get('period', 'current_month')
+        metric = request.args.get('metric', 'total_sales')
+        show_comparison = request.args.get('show_comparison', 'false') == 'true'
+        
+        # Определяем даты периода
+        now = datetime.now()
+        current_day = now.day
+        
+        if period == 'today':
+            date_from = now.strftime('%Y-%m-%d')
+            date_to = now.strftime('%Y-%m-%d')
+        elif period == 'current_month':
+            date_from = now.replace(day=1).strftime('%Y-%m-%d')
+            date_to = now.strftime('%Y-%m-%d')
+        elif period == 'last_month':
+            first_day_this_month = now.replace(day=1)
+            last_day_prev_month = first_day_this_month - timedelta(days=1)
+            date_from = last_day_prev_month.replace(day=1).strftime('%Y-%m-%d')
+            date_to = last_day_prev_month.strftime('%Y-%m-%d')
+        elif period == 'current_year':
+            date_from = now.replace(month=1, day=1).strftime('%Y-%m-%d')
+            date_to = now.strftime('%Y-%m-%d')
+        elif period == 'last_year':
+            date_from = (now.replace(month=1, day=1) - timedelta(days=365)).strftime('%Y-%m-%d')
+            date_to = (now - timedelta(days=365)).strftime('%Y-%m-%d')
+        else:
+            date_from = now.replace(day=1).strftime('%Y-%m-%d')
+            date_to = now.strftime('%Y-%m-%d')
+        
+        # Вычисляем даты для сравнения (те же дни в прошлом месяце и прошлом году)
+        comparison_dates = {}
+        if show_comparison and period == 'current_month':
+            import calendar
+            
+            # Прошлый месяц - с 1 по текущий день
+            if now.month == 1:
+                prev_month_year = now.year - 1
+                prev_month = 12
+            else:
+                prev_month_year = now.year
+                prev_month = now.month - 1
+            
+            # Определяем последний день прошлого месяца для корректировки
+            last_day_prev_month = calendar.monthrange(prev_month_year, prev_month)[1]
+            prev_month_day = min(current_day, last_day_prev_month)
+            
+            comparison_dates['prev_month'] = {
+                'from': f"{prev_month_year}-{prev_month:02d}-01",
+                'to': f"{prev_month_year}-{prev_month:02d}-{prev_month_day:02d}"
+            }
+            
+            # Прошлый год, тот же месяц - с 1 по текущий день
+            prev_year = now.year - 1
+            last_day_prev_year_month = calendar.monthrange(prev_year, now.month)[1]
+            prev_year_day = min(current_day, last_day_prev_year_month)
+            
+            comparison_dates['prev_year'] = {
+                'from': f"{prev_year}-{now.month:02d}-01",
+                'to': f"{prev_year}-{now.month:02d}-{prev_year_day:02d}"
+            }
+        
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Проверяем нужны ли JOIN-ы
+        needs_joins = (areas and len(areas) > 0) or (groups and len(groups) > 0)
+        
+        # Построение фильтров для множественного выбора
+        area_filter = ""
+        group_filter = ""
+        division_filter = ""
+        params = [date_from, date_to]
+        
+        if areas and len(areas) > 0:
+            placeholders = ','.join(['?' for _ in areas])
+            area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                           f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
+            params.extend(areas)
+        
+        if groups and len(groups) > 0:
+            placeholders = ','.join(['?' for _ in groups])
+            group_filter = f"AND c.fGROUP IN ({placeholders})"
+            params.extend(groups)
+        
+        if divisions and len(divisions) > 0:
+            placeholders = ','.join(['?' for _ in divisions])
+            division_filter = f"AND s.fDIVISION IN ({placeholders})"
+            params.extend(divisions)
+        
+        value = 0
+        
+        # Debug logging
+        logger.info(f"Card data request: metric={metric}, areas={areas}, groups={groups}, divisions={divisions}")
+        logger.info(f"Division filter: {division_filter}")
+        logger.info(f"Params: {params}")
+        
+        if metric == 'total_sales':
+            if needs_joins or (divisions and len(divisions) > 0):
+                query = f"""
+                SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
+                FROM SALES s
+                INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                                WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                AND s.fSTATE = 2
+                {area_filter}
+                {group_filter}
+                {division_filter}
+                """
+            else:
+                query = """
+                SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
+                FROM SALES s
+                WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                AND s.fSTATE = 2
+                """
+                params = [date_from, date_to]  # без фильтров - только даты
+            logger.info(f"Query: {query}")
+        elif metric == 'total_payments':
+            # Для payments divisions не применяются (нет связи через агентов)
+            if needs_joins:
+                query = f"""
+                SELECT ISNULL(SUM(ABS(p.fSUM)), 0) as value
+                FROM PAYMENTS p
+                INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
+                                WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                {area_filter}
+                {group_filter}
+                """
+                # Пересоздаём params без divisions для payments
+                params = [date_from, date_to]
+                if areas and len(areas) > 0:
+                    params.extend(areas)
+                if groups and len(groups) > 0:
+                    params.extend(groups)
+            else:
+                query = """
+                SELECT ISNULL(SUM(ABS(p.fSUM)), 0) as value
+                FROM PAYMENTS p
+                WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                """
+                params = [date_from, date_to]
+        elif metric == 'total_debt':
+            # Для долга используем формулу: DebtFromDocs - Type01 - Type02
+            # Divisions не применяются для долга (нет связи через агентов)
+            debt_params = []
+            debt_area_filter = ""
+            debt_group_filter = ""
+            
+            if areas and len(areas) > 0:
+                placeholders = ','.join(['?' for _ in areas])
+                debt_area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                                    f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
+                debt_params.extend(areas)
+            if groups and len(groups) > 0:
+                placeholders = ','.join(['?' for _ in groups])
+                debt_group_filter = f"AND c.fGROUP IN ({placeholders})"
+                debt_params.extend(groups)
+            
+            # Запрос для DebtFromDocs (D - C из HICUSTOMERSDEBT)
+            query = f"""
+            SELECT 
+                ISNULL((
+                    SELECT SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END)
+                    FROM HICUSTOMERSDEBT d
+                    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                    INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                                        WHERE 1=1 {debt_area_filter} {debt_group_filter}
+                ), 0) 
+                - ISNULL((
+                    SELECT SUM(CASE WHEN r.fTYPE = '01' THEN ABS(r.fSUM) ELSE 0 END)
+                    FROM HIRESTCUSTOMERSSUM r
+                    INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
+                                        WHERE 1=1 {debt_area_filter} {debt_group_filter}
+                ), 0)
+                - ISNULL((
+                    SELECT SUM(CASE WHEN r.fTYPE = '02' THEN ABS(r.fSUM) ELSE 0 END)
+                    FROM HIRESTCUSTOMERSSUM r
+                    INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
+                                        WHERE 1=1 {debt_area_filter} {debt_group_filter}
+                ), 0)
+            as value
+            """
+            # Параметры нужно повторить 3 раза (для каждого подзапроса)
+            params = debt_params + debt_params + debt_params
+        elif metric == 'customer_count':
+            query = f"""
+            SELECT COUNT(DISTINCT s.fCUSTOMERID) as value
+            FROM SALES s
+            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND s.fSTATE = 2
+            {area_filter}
+            {group_filter}
+            {division_filter}
+            """
+        elif metric == 'sales_count':
+            query = f"""
+            SELECT COUNT(*) as value
+            FROM SALES s
+            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND s.fSTATE = 2
+            {area_filter}
+            {group_filter}
+            {division_filter}
+            """
+        elif metric == 'avg_check':
+            query = f"""
+            SELECT ISNULL(AVG(s.fTOTALSUM), 0) as value
+            FROM SALES s
+            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND s.fSTATE = 2
+            {area_filter}
+            {group_filter}
+            {division_filter}
+            """
+        elif metric == 'payment_rate':
+            # Для payment_rate: division_filter применяется только к sales, не к payments
+            query = f"""
+            SELECT 
+                CASE 
+                    WHEN ISNULL(SUM(sales.TotalSales), 0) = 0 THEN 0
+                    ELSE ISNULL(SUM(ABS(pay.TotalPayments)), 0) * 100.0 / ISNULL(SUM(sales.TotalSales), 1)
+                END as value
+            FROM (
+                SELECT s.fCUSTOMERID, SUM(s.fTOTALSUM) as TotalSales
+                FROM SALES s
+                INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                                WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                AND s.fSTATE = 2
+                {area_filter}
+                {group_filter}
+                {division_filter}
+                GROUP BY s.fCUSTOMERID
+            ) sales
+            LEFT JOIN (
+                SELECT p.fCUSTOMERID, SUM(p.fSUM) as TotalPayments
+                FROM PAYMENTS p
+                INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
+                                WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                {area_filter}
+                {group_filter}
+                GROUP BY p.fCUSTOMERID
+            ) pay ON sales.fCUSTOMERID = pay.fCUSTOMERID
+            """
+            # Для payment_rate: params для sales + params для payments
+            params = [date_from, date_to]
+            if areas and len(areas) > 0:
+                params.extend(areas)
+            if groups and len(groups) > 0:
+                params.extend(groups)
+            if divisions and len(divisions) > 0:
+                params.extend(divisions)
+            # Для payments части (без divisions)
+            params.extend([date_from, date_to])
+            if areas and len(areas) > 0:
+                params.extend(areas)
+            if groups and len(groups) > 0:
+                params.extend(groups)
+        elif metric == 'debt_customers':
+            # Divisions не применяются для долга
+            debt_params = []
+            debt_area_filter = ""
+            debt_group_filter = ""
+            
+            if areas and len(areas) > 0:
+                placeholders = ','.join(['?' for _ in areas])
+                debt_area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                                    f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
+                debt_params.extend(areas)
+            if groups and len(groups) > 0:
+                placeholders = ','.join(['?' for _ in groups])
+                debt_group_filter = f"AND c.fGROUP IN ({placeholders})"
+                debt_params.extend(groups)
+                
+            # Клиенты с ПОЛОЖИТЕЛЬНЫМ нетто-долгом (D−C > 0), а не «с любым дебетовым документом» —
+            # иначе полностью погасившие долг клиенты завышали счётчик
+            query = f"""
+            SELECT COUNT(*) as value FROM (
+                SELECT doc.fCUSTOMERID
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                WHERE 1=1
+                {debt_area_filter}
+                {debt_group_filter}
+                GROUP BY doc.fCUSTOMERID
+                HAVING SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END) > 0
+            ) t
+            """
+            params = debt_params
+        elif metric in ['forecast_sales', 'forecast_completion', 'days_remaining', 'daily_avg', 'needed_daily', 'plan_gap']:
+            # Метрики прогнозирования
+            import calendar
+            
+            # Текущие продажи за период
+            if needs_joins or (divisions and len(divisions) > 0):
+                sales_query = f"""
+                SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
+                FROM SALES s
+                INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                                WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                AND s.fSTATE = 2
+                {area_filter}
+                {group_filter}
+                {division_filter}
+                """
+                sales_params = [date_from, date_to] + list(areas or []) + list(groups or []) + list(divisions or [])
+            else:
+                sales_query = """
+                SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
+                FROM SALES s
+                WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                AND s.fSTATE = 2
+                """
+                sales_params = [date_from, date_to]
+            
+            cursor.execute(sales_query, sales_params)
+            current_sales = float(cursor.fetchone()[0] or 0)
+            
+            # Определяем параметры периода
+            from datetime import datetime as dt_module
+            from datetime import timedelta
+            period_start = dt_module.strptime(date_from, '%Y-%m-%d') if isinstance(date_from, str) else date_from
+            period_end = dt_module.strptime(date_to, '%Y-%m-%d') if isinstance(date_to, str) else date_to
+            
+            # Функция для подсчёта рабочих дней (без воскресений)
+            def count_working_days(start_date, end_date):
+                """Считает рабочие дни (пн-сб), исключая воскресенья"""
+                count = 0
+                current = start_date
+                while current <= end_date:
+                    if current.weekday() != 6:  # 6 = воскресенье
+                        count += 1
+                    current += timedelta(days=1)
+                return count
+            
+            # Рабочие дни в месяце
+            if period == 'current_month':
+                month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                last_day = calendar.monthrange(now.year, now.month)[1]
+                month_end = now.replace(day=last_day, hour=23, minute=59, second=59)
+                
+                elapsed_days = count_working_days(month_start, now)
+                tomorrow = now + timedelta(days=1)
+                remaining_days = count_working_days(tomorrow, month_end) if tomorrow <= month_end else 0
+                total_days = elapsed_days + remaining_days
+            elif period == 'current_year':
+                year_start = dt_module(now.year, 1, 1)
+                year_end = dt_module(now.year, 12, 31)
+                elapsed_days = count_working_days(year_start, now)
+                tomorrow = now + timedelta(days=1)
+                remaining_days = count_working_days(tomorrow, year_end)
+                total_days = elapsed_days + remaining_days
+            else:
+                elapsed_days = count_working_days(period_start, now) if now >= period_start else 0
+                tomorrow = now + timedelta(days=1)
+                remaining_days = count_working_days(tomorrow, period_end) if now < period_end else 0
+                total_days = count_working_days(period_start, period_end)
+            
+            # Среднее в рабочий день
+            daily_avg = current_sales / max(elapsed_days, 1)
+            
+            # Прогноз на конец периода
+            forecast = current_sales + (daily_avg * remaining_days)
+            
+            # Получаем план (если есть)
+            plan_value = 0
+            try:
+                # Пробуем получить план из таблицы планов
+                plan_query = """
+                SELECT ISNULL(SUM(fPLAN), 0) as plan_value
+                FROM PLANS 
+                WHERE fYEAR = ? AND fMONTH = ?
+                """
+                cursor.execute(plan_query, [now.year, now.month])
+                plan_row = cursor.fetchone()
+                if plan_row and plan_row[0]:
+                    plan_value = float(plan_row[0])
+            except:
+                pass
+            
+            # Нужно в день для выполнения плана
+            needed_daily = (plan_value - current_sales) / max(remaining_days, 1) if plan_value > current_sales and remaining_days > 0 else 0
+            
+            # Выбираем нужную метрику
+            if metric == 'forecast_sales':
+                value = forecast
+            elif metric == 'forecast_completion':
+                # % выполнения = текущие продажи / (план * процент прошедших дней)
+                expected_sales = (plan_value * elapsed_days / total_days) if plan_value > 0 and total_days > 0 else current_sales
+                value = (current_sales / expected_sales * 100) if expected_sales > 0 else 0
+            elif metric == 'days_remaining':
+                value = remaining_days
+            elif metric == 'daily_avg':
+                value = daily_avg
+            elif metric == 'needed_daily':
+                value = needed_daily
+            elif metric == 'plan_gap':
+                value = plan_value - current_sales
+            
+            # Не нужно выполнять основной запрос
+            query = None
+            params = []
+        else:
+            query = "SELECT 0 as value"
+            params = []
+        
+        if query:
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+            value = row[0] if row and row[0] else 0
+        
+        # Получаем данные для сравнения
+        comparison_data = {}
+        if show_comparison and comparison_dates:
+            for comp_key, comp_dates in comparison_dates.items():
+                comp_value = get_metric_value_for_period(
+                    cursor, conn, metric, comp_dates['from'], comp_dates['to'],
+                    areas, groups, divisions
+                )
+                if comp_value is None:
+                    continue  # метрика без поддержки сравнения — не показываем ложный «рост от нуля»
+                comparison_data[comp_key] = {
+                    'value': float(comp_value) if comp_value else 0,
+                    'from': comp_dates['from'],
+                    'to': comp_dates['to']
+                }
+        
+        # Вычисляем прогноз для метрики продаж
+        forecast_data = None
+        if metric == 'total_sales' and period in ['current_month', 'today']:
+            import calendar
+            from datetime import timedelta
+            
+            # Функция для подсчёта рабочих дней (без воскресений)
+            def count_working_days(start_date, end_date):
+                """Считает рабочие дни (пн-сб), исключая воскресенья"""
+                count = 0
+                current = start_date
+                while current <= end_date:
+                    if current.weekday() != 6:  # 6 = воскресенье
+                        count += 1
+                    current += timedelta(days=1)
+                return count
+            
+            # Начало и конец месяца
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            last_day = calendar.monthrange(now.year, now.month)[1]
+            month_end = now.replace(day=last_day, hour=23, minute=59, second=59)
+            
+            # Рабочие дни прошедшие (с 1 по сегодня)
+            elapsed_working_days = count_working_days(month_start, now)
+            
+            # Рабочие дни оставшиеся (с завтра до конца месяца)
+            tomorrow = now + timedelta(days=1)
+            remaining_working_days = count_working_days(tomorrow, month_end) if tomorrow <= month_end else 0
+            
+            # Всего рабочих дней в месяце
+            total_working_days = elapsed_working_days + remaining_working_days
+            
+            current_value = float(value) if value else 0
+            
+            # Средние продажи в рабочий день
+            daily_avg = current_value / max(elapsed_working_days, 1)
+            
+            # Прогноз = текущие + (среднее * оставшиеся рабочие дни)
+            forecast = current_value + (daily_avg * remaining_working_days)
+            
+            forecast_data = {
+                'forecast': forecast,
+                'daily_avg': daily_avg,
+                'remaining_days': remaining_working_days,
+                'total_days': total_working_days,
+                'elapsed_days': elapsed_working_days
+            }
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'value': float(value) if value else 0,
+                'metric': metric,
+                'period': period,
+                'areas': areas,
+                'groups': groups,
+                'comparison': comparison_data if comparison_data else None,
+                'forecast': forecast_data,
+                'current_day': now.day
+            }
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def get_metric_value_for_period(cursor, conn, metric, date_from, date_to, areas=None, groups=None, divisions=None):
+    """Вспомогательная функция для получения значения метрики за период"""
+    # Проверяем, нужны ли JOIN-ы
+    needs_joins = (areas and len(areas) > 0) or (groups and len(groups) > 0) or (divisions and len(divisions) > 0)
+    
+    area_filter = ""
+    group_filter = ""
+    division_filter = ""
+    params = [date_from, date_to]
+    
+    if areas and len(areas) > 0:
+        placeholders = ','.join(['?' for _ in areas])
+        area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                       f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
+        params.extend(areas)
+    
+    if groups and len(groups) > 0:
+        placeholders = ','.join(['?' for _ in groups])
+        group_filter = f"AND c.fGROUP IN ({placeholders})"
+        params.extend(groups)
+    
+    if divisions and len(divisions) > 0:
+        placeholders = ','.join(['?' for _ in divisions])
+        division_filter = f"AND s.fDIVISION IN ({placeholders})"
+        params.extend(divisions)
+    
+    if metric == 'total_sales':
+        if needs_joins:
+            query = f"""
+            SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
+            FROM SALES s
+            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND s.fSTATE = 2
+            {area_filter}
+            {group_filter}
+            {division_filter}
+            """
+        else:
+            query = """
+            SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
+            FROM SALES s
+            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND s.fSTATE = 2
+            """
+    elif metric == 'total_payments':
+        if needs_joins:
+            query = f"""
+            SELECT ISNULL(SUM(ABS(p.fSUM)), 0) as value
+            FROM PAYMENTS p
+            INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
+            WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            {area_filter}
+            {group_filter}
+            """
+            # В запросе оплат нет division-плейсхолдеров — пересобираем params без divisions,
+            # иначе pyodbc падал на несовпадении числа параметров и сравнение тихо было 0
+            params = [date_from, date_to] + list(areas or []) + list(groups or [])
+        else:
+            query = """
+            SELECT ISNULL(SUM(ABS(p.fSUM)), 0) as value
+            FROM PAYMENTS p
+            WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            """
+            params = [date_from, date_to]
+    elif metric == 'customer_count':
+        if needs_joins:
+            query = f"""
+            SELECT COUNT(DISTINCT s.fCUSTOMERID) as value
+            FROM SALES s
+            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND s.fSTATE = 2
+            {area_filter}
+            {group_filter}
+            {division_filter}
+            """
+        else:
+            query = """
+            SELECT COUNT(DISTINCT s.fCUSTOMERID) as value
+            FROM SALES s
+            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND s.fSTATE = 2
+            """
+    elif metric == 'sales_count':
+        if needs_joins:
+            query = f"""
+            SELECT COUNT(*) as value
+            FROM SALES s
+            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND s.fSTATE = 2
+            {area_filter}
+            {group_filter}
+            {division_filter}
+            """
+        else:
+            query = """
+            SELECT COUNT(*) as value
+            FROM SALES s
+            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND s.fSTATE = 2
+            """
+    elif metric == 'avg_check':
+        if needs_joins:
+            query = f"""
+            SELECT ISNULL(AVG(s.fTOTALSUM), 0) as value
+            FROM SALES s
+            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND s.fSTATE = 2
+            {area_filter}
+            {group_filter}
+            {division_filter}
+            """
+        else:
+            query = """
+            SELECT ISNULL(AVG(s.fTOTALSUM), 0) as value
+            FROM SALES s
+            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND s.fSTATE = 2
+            """
+    elif metric == 'total_debt':
+        # Долг — баланс на конец периода сравнения: дебет(D−C) до date_to+1
+        # минус текущие |Type01|+|Type02| (истории по остаткам нет) — та же база, что у карточки
+        debt_area_filter = ""
+        debt_group_filter = ""
+        debt_params = []
+        if areas and len(areas) > 0:
+            placeholders = ','.join(['?' for _ in areas])
+            debt_area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                                f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
+            debt_params.extend(areas)
+        if groups and len(groups) > 0:
+            placeholders = ','.join(['?' for _ in groups])
+            debt_group_filter = f"AND c.fGROUP IN ({placeholders})"
+            debt_params.extend(groups)
+        query = f"""
+        SELECT
+            ISNULL((
+                SELECT SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END)
+                FROM HICUSTOMERSDEBT d
+                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                WHERE d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                {debt_area_filter} {debt_group_filter}
+            ), 0)
+            - ISNULL((
+                SELECT SUM(ABS(r.fSUM))
+                FROM HIRESTCUSTOMERSSUM r
+                INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
+                WHERE r.fTYPE IN ('01','02')
+                {debt_area_filter} {debt_group_filter}
+            ), 0)
+        as value
+        """
+        params = [date_to] + debt_params + debt_params
+    else:
+        return None  # метрика не поддерживается — сравнение не показываем (вместо ложной базы 0)
+
+    try:
+        new_conn = db.get_connection()
+        new_cursor = new_conn.cursor()
+        new_cursor.execute(query, params)
+        row = new_cursor.fetchone()
+        value = row[0] if row and row[0] else 0
+        new_cursor.close()
+        new_conn.close()
+        return value
+    except Exception as e:
+        print(f"Error getting comparison data: {e}")
+        return 0
+
+
+@app.route('/api/dashboard-builder/chart-data')
+def get_chart_data():
+    """Получить данные для графика в конструкторе Dashboard"""
+    try:
+        # Фильтры
+        areas = request.args.getlist('areas')
+        groups = request.args.getlist('groups')
+        divisions = request.args.getlist('divisions')
+        period = request.args.get('period', 'current_month')
+        chart_type = request.args.get('chart_type', 'line')  # line, bar, area, pie
+        metrics = request.args.getlist('metrics')  # Множественные метрики: sales, payments, debt
+        compare_periods = request.args.getlist('compare_periods')  # Периоды для сравнения: current, prev_month, prev_year
+        compare_years = request.args.getlist('compare_years')  # Годы для сравнения: 2025, 2024, 2023...
+        year_compare_mode = request.args.get('year_compare_mode', 'year')  # 'year' или 'month'
+        
+        if not metrics:
+            metrics = ['sales']
+        
+        if not compare_periods:
+            compare_periods = ['current']
+        
+        # Преобразуем годы в числа
+        compare_years = [int(y) for y in compare_years if y.isdigit()]
+        
+        # Определяем даты периода
+        now = datetime.now()
+        
+        if period == 'current_month':
+            # Данные по дням текущего месяца
+            date_from = now.replace(day=1)
+            date_to = now
+            group_by = 'day'
+        elif period == 'last_month':
+            first_day_this_month = now.replace(day=1)
+            last_day_prev_month = first_day_this_month - timedelta(days=1)
+            date_from = last_day_prev_month.replace(day=1)
+            date_to = last_day_prev_month
+            group_by = 'day'
+        elif period == 'current_year':
+            date_from = now.replace(month=1, day=1)
+            date_to = now
+            group_by = 'month'
+        elif period == 'last_year':
+            date_from = now.replace(year=now.year-1, month=1, day=1)
+            date_to = now.replace(year=now.year-1, month=12, day=31)
+            group_by = 'month'
+        else:
+            date_from = now.replace(day=1)
+            date_to = now
+            group_by = 'day'
+        
+        # Функция для получения дат периода сравнения
+        def get_compare_period_dates(compare_period, base_from, base_to):
+            """Возвращает даты для периода сравнения"""
+            if compare_period == 'current':
+                return base_from, base_to, 'Текущий'
+            elif compare_period == 'prev_month':
+                # Прошлый месяц (те же дни, месяц назад)
+                prev_from = base_from.replace(month=base_from.month - 1) if base_from.month > 1 else base_from.replace(year=base_from.year - 1, month=12)
+                prev_to = base_to.replace(month=base_to.month - 1) if base_to.month > 1 else base_to.replace(year=base_to.year - 1, month=12)
+                # Корректировка дней
+                import calendar
+                max_day_from = calendar.monthrange(prev_from.year, prev_from.month)[1]
+                max_day_to = calendar.monthrange(prev_to.year, prev_to.month)[1]
+                prev_from = prev_from.replace(day=min(base_from.day, max_day_from))
+                prev_to = prev_to.replace(day=min(base_to.day, max_day_to))
+                return prev_from, prev_to, 'Пр. месяц'
+            elif compare_period == 'prev_year':
+                # Прошлый год (те же даты, год назад)
+                prev_from = base_from.replace(year=base_from.year - 1)
+                prev_to = base_to.replace(year=base_to.year - 1)
+                # Корректировка для 29 февраля
+                import calendar
+                if base_from.month == 2 and base_from.day == 29:
+                    max_day = calendar.monthrange(prev_from.year, 2)[1]
+                    prev_from = prev_from.replace(day=min(29, max_day))
+                if base_to.month == 2 and base_to.day == 29:
+                    max_day = calendar.monthrange(prev_to.year, 2)[1]
+                    prev_to = prev_to.replace(day=min(29, max_day))
+                return prev_from, prev_to, 'Пр. год'
+            return base_from, base_to, 'Текущий'
+        
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Построение фильтров
+        area_filter = ""
+        group_filter = ""
+        division_filter = ""
+        base_params = []
+        
+        if areas and len(areas) > 0:
+            placeholders = ','.join(['?' for _ in areas])
+            area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                           f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
+            base_params.extend(areas)
+        
+        if groups and len(groups) > 0:
+            placeholders = ','.join(['?' for _ in groups])
+            group_filter = f"AND c.fGROUP IN ({placeholders})"
+            base_params.extend(groups)
+        
+        if divisions and len(divisions) > 0:
+            placeholders = ','.join(['?' for _ in divisions])
+            division_filter = f"AND s.fDIVISION IN ({placeholders})"
+            base_params.extend(divisions)
+        
+        # Цвета для периодов сравнения
+        period_colors = {
+            'current': {'sales': '#3b82f6', 'payments': '#10b981', 'debt': '#ef4444'},
+            'prev_month': {'sales': '#8b5cf6', 'payments': '#06b6d4', 'debt': '#f97316'},
+            'prev_year': {'sales': '#6366f1', 'payments': '#14b8a6', 'debt': '#f59e0b'}
+        }
+        
+        period_line_styles = {
+            'current': False,  # Сплошная линия
+            'prev_month': [5, 5],  # Пунктир
+            'prev_year': [10, 5]  # Длинный пунктир
+        }
+        
+        # Получаем данные для каждой метрики
+        chart_data = {
+            'labels': [],
+            'datasets': []
+        }
+        
+        metric_labels = {
+            'sales': 'Продажи',
+            'payments': 'Оплаты',
+            'debt': 'Долг'
+        }
+        
+        labels_set = False
+        
+        # Цвета для годов
+        year_colors = {
+            2025: '#3b82f6',  # Синий
+            2024: '#8b5cf6',  # Фиолетовый
+            2023: '#f59e0b',  # Оранжевый
+            2022: '#10b981',  # Зелёный
+            2021: '#ec4899',  # Розовый
+            2020: '#06b6d4',  # Голубой
+            2019: '#ef4444',  # Красный
+            2018: '#84cc16',  # Лайм
+            2017: '#f97316',  # Оранжевый темнее
+        }
+        
+        # Если выбраны годы для сравнения - показываем СУММУ за каждый год
+        # Каждый год = одна точка на графике (как на Excel графике)
+        if compare_years and len(compare_years) > 0:
+            logger.info(f"Compare years mode: {year_compare_mode}, years: {compare_years}")
+            
+            # Сортируем годы
+            compare_years = sorted(compare_years)
+            
+            # Labels - это годы
+            chart_data['labels'] = [str(y) for y in compare_years]
+            
+            # Для каждой метрики создаём отдельный dataset
+            for metric in metrics:
+                data_values = []
+                logger.info(f"Processing metric: {metric}")
+                
+                for year in compare_years:
+                    logger.info(f"Processing year: {year}")
+                    # Определяем период в зависимости от режима
+                    if year_compare_mode == 'month':
+                        # Режим "месяц" - данные за текущий месяц в каждом году
+                        import calendar
+                        current_month = now.month
+                        current_day = now.day
+                        
+                        # Проверяем, сколько дней в этом месяце в выбранном году
+                        max_day = calendar.monthrange(year, current_month)[1]
+                        day_to_use = min(current_day, max_day)
+                        
+                        year_from = datetime(year, current_month, 1)
+                        year_to = datetime(year, current_month, day_to_use)
+                    else:
+                        # Режим "год" - данные за весь год
+                        year_from = datetime(year, 1, 1)
+                        # Для текущего года берём данные до текущей даты
+                        if year == now.year:
+                            year_to = now
+                        else:
+                            year_to = datetime(year, 12, 31)
+                    
+                    logger.info(f"Year {year}: {year_from.date()} to {year_to.date()}")
+                    
+                    if metric == 'sales':
+                        # Если нет фильтров - простой запрос без JOIN (чтобы не дублировать)
+                        if not areas and not groups and not divisions:
+                            query = """
+                            SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
+                            FROM SALES s
+                            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                            AND s.fSTATE = 2
+                            """
+                            params = [year_from.strftime('%Y-%m-%d'), year_to.strftime('%Y-%m-%d')]
+                        else:
+                            # С фильтрами - нужны JOIN
+                            query = f"""
+                            SELECT ISNULL(SUM(s.fTOTALSUM), 0) as value
+                            FROM SALES s
+                            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                                                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                            AND s.fSTATE = 2
+                            {area_filter}
+                            {group_filter}
+                            {division_filter}
+                            """
+                            params = [year_from.strftime('%Y-%m-%d'), year_to.strftime('%Y-%m-%d')] + base_params.copy()
+                    elif metric == 'payments':
+                        # Если нет фильтров - простой запрос без JOIN
+                        if not areas and not groups:
+                            query = """
+                            SELECT ISNULL(SUM(p.fSUM), 0) as value
+                            FROM PAYMENTS p
+                            WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                            """
+                            params = [year_from.strftime('%Y-%m-%d'), year_to.strftime('%Y-%m-%d')]
+                        else:
+                            query = f"""
+                            SELECT ISNULL(SUM(p.fSUM), 0) as value
+                            FROM PAYMENTS p
+                            INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
+                                                        WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                            {area_filter}
+                            {group_filter}
+                            """
+                            # Для payments не используем division_filter, только area и group
+                            payment_params = [year_from.strftime('%Y-%m-%d'), year_to.strftime('%Y-%m-%d')]
+                            if areas:
+                                payment_params.extend(areas)
+                            if groups:
+                                payment_params.extend(groups)
+                            params = payment_params
+                    elif metric == 'debt':
+                        # Для долга - берём текущий долг на конец периода
+                        debt_area_filter = ""
+                        debt_group_filter = ""
+                        debt_params = []
+                        
+                        if areas and len(areas) > 0:
+                            placeholders = ','.join(['?' for _ in areas])
+                            debt_area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                                    f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
+                            debt_params.extend(areas)
+                        
+                        if groups and len(groups) > 0:
+                            placeholders = ','.join(['?' for _ in groups])
+                            debt_group_filter = f"AND c.fGROUP IN ({placeholders})"
+                            debt_params.extend(groups)
+                        
+                        # Полная формула долга (как в карточке total_debt): дебет на конец года
+                        # минус текущие |Type01|+|Type02| — иначе точка года не совпадала с карточкой
+                        query = f"""
+                        SELECT
+                            ISNULL((
+                                SELECT SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END)
+                                FROM HICUSTOMERSDEBT d
+                                INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                                INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                                WHERE d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                                {debt_area_filter}
+                                {debt_group_filter}
+                            ), 0)
+                            - ISNULL((
+                                SELECT SUM(ABS(r.fSUM))
+                                FROM HIRESTCUSTOMERSSUM r
+                                INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
+                                WHERE r.fTYPE IN ('01','02')
+                                {debt_area_filter}
+                                {debt_group_filter}
+                            ), 0)
+                        as value
+                        """
+                        params = [year_to.strftime('%Y-%m-%d')] + debt_params + debt_params
+                    else:
+                        continue
+                    
+                    cursor.execute(query, params)
+                    row = cursor.fetchone()
+                    value = float(row[0]) if row and row[0] else 0
+                    data_values.append(value)
+                
+                # Определяем цвет для метрики
+                metric_colors = {
+                    'sales': '#3b82f6',     # Синий
+                    'payments': '#10b981',  # Зелёный
+                    'debt': '#ef4444'       # Красный
+                }
+                base_color = metric_colors.get(metric, '#6b7280')
+                
+                # Добавляем dataset
+                bg_color = f"rgba({int(base_color[1:3], 16)}, {int(base_color[3:5], 16)}, {int(base_color[5:7], 16)}, 0.2)"
+                
+                dataset = {
+                    'label': metric_labels.get(metric, metric),
+                    'data': data_values,
+                    'backgroundColor': base_color,
+                    'borderColor': base_color,
+                    'borderWidth': 2,
+                    'fill': False,
+                    'tension': 0.3,
+                    'pointRadius': 6,
+                    'pointHoverRadius': 8,
+                    'pointBackgroundColor': base_color,
+                    'pointBorderColor': '#fff',
+                    'pointBorderWidth': 2
+                }
+                
+                chart_data['datasets'].append(dataset)
+            
+            # Возвращаем результат
+            cursor.close()
+            conn.close()
+            
+            return jsonify({
+                'success': True,
+                'data': chart_data,
+                'period': period,
+                'chart_type': chart_type,
+                'compare_years': compare_years
+            })
+        
+        # Перебираем все комбинации периодов и метрик
+        for compare_period in compare_periods:
+            # Получаем даты для этого периода сравнения
+            cp_from, cp_to, period_label_suffix = get_compare_period_dates(compare_period, date_from, date_to)
+            
+            for metric in metrics:
+                # Определяем нужны ли JOIN-ы для этого запроса
+                needs_filters = (areas and len(areas) > 0) or (groups and len(groups) > 0) or (divisions and len(divisions) > 0)
+                
+                params = [cp_from.strftime('%Y-%m-%d'), cp_to.strftime('%Y-%m-%d')]
+                if needs_filters:
+                    params = params + base_params.copy()
+                
+                # Определяем цвет и стиль линии
+                base_color = period_colors.get(compare_period, period_colors['current']).get(metric, '#6b7280')
+                line_dash = period_line_styles.get(compare_period, False)
+                
+                if metric == 'sales':
+                    if needs_filters:
+                        if group_by == 'day':
+                            query = f"""
+                            SELECT CONVERT(VARCHAR(10), s.fDATE, 120) as period_label, 
+                                   ISNULL(SUM(s.fTOTALSUM), 0) as value
+                            FROM SALES s
+                            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                                                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                            AND s.fSTATE = 2
+                            {area_filter}
+                            {group_filter}
+                            {division_filter}
+                            GROUP BY CONVERT(VARCHAR(10), s.fDATE, 120)
+                            ORDER BY period_label
+                            """
+                        else:
+                            query = f"""
+                            SELECT FORMAT(s.fDATE, 'yyyy-MM') as period_label,
+                                   ISNULL(SUM(s.fTOTALSUM), 0) as value
+                            FROM SALES s
+                            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+                                                        WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                            AND s.fSTATE = 2
+                            {area_filter}
+                            {group_filter}
+                            {division_filter}
+                            GROUP BY FORMAT(s.fDATE, 'yyyy-MM')
+                            ORDER BY period_label
+                            """
+                    else:
+                        if group_by == 'day':
+                            query = """
+                            SELECT CONVERT(VARCHAR(10), s.fDATE, 120) as period_label, 
+                                   ISNULL(SUM(s.fTOTALSUM), 0) as value
+                            FROM SALES s
+                            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                            AND s.fSTATE = 2
+                            GROUP BY CONVERT(VARCHAR(10), s.fDATE, 120)
+                            ORDER BY period_label
+                            """
+                        else:
+                            query = """
+                            SELECT FORMAT(s.fDATE, 'yyyy-MM') as period_label,
+                                   ISNULL(SUM(s.fTOTALSUM), 0) as value
+                            FROM SALES s
+                            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                            AND s.fSTATE = 2
+                            GROUP BY FORMAT(s.fDATE, 'yyyy-MM')
+                            ORDER BY period_label
+                            """
+                elif metric == 'payments':
+                    # Для оплат division_filter не применяется
+                    needs_payment_filters = (areas and len(areas) > 0) or (groups and len(groups) > 0)
+                    
+                    if needs_payment_filters:
+                        params_payments = [cp_from.strftime('%Y-%m-%d'), cp_to.strftime('%Y-%m-%d')]
+                        if areas:
+                            params_payments.extend(areas)
+                        if groups:
+                            params_payments.extend(groups)
+                        
+                        area_filter_p = area_filter.replace('csa.', 'csa.')
+                        group_filter_p = group_filter.replace('c.', 'c.')
+                        
+                        if group_by == 'day':
+                            query = f"""
+                            SELECT CONVERT(VARCHAR(10), p.fDATE, 120) as period_label,
+                                   ISNULL(SUM(ABS(p.fSUM)), 0) as value
+                            FROM PAYMENTS p
+                            INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
+                                                        WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                            {area_filter_p}
+                            {group_filter_p}
+                            GROUP BY CONVERT(VARCHAR(10), p.fDATE, 120)
+                            ORDER BY period_label
+                            """
+                        else:
+                            query = f"""
+                            SELECT FORMAT(p.fDATE, 'yyyy-MM') as period_label,
+                                   ISNULL(SUM(ABS(p.fSUM)), 0) as value
+                            FROM PAYMENTS p
+                            INNER JOIN CUSTOMERS c ON p.fCUSTOMERID = c.fID
+                                                        WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                            {area_filter_p}
+                            {group_filter_p}
+                            GROUP BY FORMAT(p.fDATE, 'yyyy-MM')
+                            ORDER BY period_label
+                            """
+                        params = params_payments
+                    else:
+                        if group_by == 'day':
+                            query = """
+                            SELECT CONVERT(VARCHAR(10), p.fDATE, 120) as period_label,
+                                   ISNULL(SUM(ABS(p.fSUM)), 0) as value
+                            FROM PAYMENTS p
+                            WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                            GROUP BY CONVERT(VARCHAR(10), p.fDATE, 120)
+                            ORDER BY period_label
+                            """
+                        else:
+                            query = """
+                            SELECT FORMAT(p.fDATE, 'yyyy-MM') as period_label,
+                                   ISNULL(SUM(ABS(p.fSUM)), 0) as value
+                            FROM PAYMENTS p
+                            WHERE p.fDATE >= ? AND p.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                            GROUP BY FORMAT(p.fDATE, 'yyyy-MM')
+                            ORDER BY period_label
+                            """
+                        params = [cp_from.strftime('%Y-%m-%d'), cp_to.strftime('%Y-%m-%d')]
+                elif metric == 'debt':
+                    # Долг - показываем НАКОПЛЕННЫЙ долг с начала периода
+                    # Используем ту же формулу что и на странице /areas:
+                    # FinalDebt = DebtFromDocs - Type01 - Type02
+                    # Но показываем как изменяется долг по дням (кумулятивно)
+                    
+                    # Для долга divisions не применяются
+                    debt_area_filter = ""
+                    debt_group_filter = ""
+                    debt_area_params = []
+                    debt_group_params = []
+                    if areas and len(areas) > 0:
+                        placeholders = ','.join(['?' for _ in areas])
+                        debt_area_filter = (f"AND EXISTS (SELECT 1 FROM CUSTOMERSALESAREAS csa WITH (NOLOCK) "
+                                    f"WHERE csa.fCUSTOMERID = c.fID AND csa.fSALESAREA IN ({placeholders}))")
+                        debt_area_params = list(areas)
+                    if groups and len(groups) > 0:
+                        placeholders = ','.join(['?' for _ in groups])
+                        debt_group_filter = f"AND c.fGROUP IN ({placeholders})"
+                        debt_group_params = list(groups)
+                    
+                    # Сначала получаем базовый долг (до начала периода)
+                    base_debt_params = [cp_from.strftime('%Y-%m-%d')] + debt_area_params + debt_group_params
+                    base_debt_query = f"""
+                    SELECT 
+                        ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as DebtFromDocs
+                    FROM HICUSTOMERSDEBT d
+                    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                    INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                                        WHERE d.fDATE < ?
+                    {debt_area_filter}
+                    {debt_group_filter}
+                    """
+                    
+                    cursor.execute(base_debt_query, base_debt_params)
+                    base_row = cursor.fetchone()
+                    base_debt = float(base_row[0]) if base_row and base_row[0] else 0
+                    
+                    # Получаем Type01 и Type02 (это остатки, не зависят от даты)
+                    rest_params = debt_area_params + debt_group_params
+                    rest_query = f"""
+                    SELECT 
+                        ISNULL(SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END), 0) as Type01,
+                        ISNULL(SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END), 0) as Type02
+                    FROM HIRESTCUSTOMERSSUM r
+                    INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
+                                        WHERE 1=1
+                    {debt_area_filter}
+                    {debt_group_filter}
+                    """
+                    
+                    cursor.execute(rest_query, rest_params)
+                    rest_row = cursor.fetchone()
+                    type01 = float(rest_row[0]) if rest_row and rest_row[0] else 0
+                    type02 = float(rest_row[1]) if rest_row and rest_row[1] else 0
+                    
+                    # Получаем изменения долга по дням в периоде
+                    params_debt = [cp_from.strftime('%Y-%m-%d'), cp_to.strftime('%Y-%m-%d')] + debt_area_params + debt_group_params
+                    
+                    if group_by == 'day':
+                        query = f"""
+                        SELECT CONVERT(VARCHAR(10), d.fDATE, 120) as period_label,
+                               ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as value
+                        FROM HICUSTOMERSDEBT d
+                        INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                        INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                                                WHERE d.fDATE >= ? AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                        {debt_area_filter}
+                        {debt_group_filter}
+                        GROUP BY CONVERT(VARCHAR(10), d.fDATE, 120)
+                        ORDER BY period_label
+                        """
+                    else:
+                        query = f"""
+                        SELECT FORMAT(d.fDATE, 'yyyy-MM') as period_label,
+                               ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as value
+                        FROM HICUSTOMERSDEBT d
+                        INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+                        INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+                                                WHERE d.fDATE >= ? AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                        {debt_area_filter}
+                        {debt_group_filter}
+                        GROUP BY FORMAT(d.fDATE, 'yyyy-MM')
+                        ORDER BY period_label
+                        """
+                    
+                    cursor.execute(query, params_debt)
+                    rows = cursor.fetchall()
+                    
+                    # Вычисляем кумулятивный долг
+                    # Начинаем с базового долга минус Type01 и Type02
+                    cumulative_debt = base_debt - abs(type01) - abs(type02)
+                    debt_data_values = []
+                    debt_labels = []
+                    
+                    for row in rows:
+                        label = row[0]
+                        daily_change = float(row[1]) if row[1] else 0
+                        cumulative_debt += daily_change
+                        
+                        # Форматируем label
+                        if group_by == 'day' and label:
+                            try:
+                                day = label.split('-')[2] if '-' in label else label
+                                debt_labels.append(day)
+                            except:
+                                debt_labels.append(label)
+                        elif group_by == 'month' and label:
+                            month_names = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 
+                                           'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек']
+                            try:
+                                month_num = int(label.split('-')[1])
+                                debt_labels.append(month_names[month_num - 1])
+                            except:
+                                debt_labels.append(label)
+                        else:
+                            debt_labels.append(label or '')
+                        
+                        debt_data_values.append(cumulative_debt)
+                    
+                    # Устанавливаем labels если еще не установлены
+                    if not labels_set and debt_labels:
+                        chart_data['labels'] = debt_labels
+                        labels_set = True
+                    
+                    # Добавляем dataset для долга
+                    # Цвет берем из period_colors
+                    bg_color = f"rgba({int(base_color[1:3], 16)}, {int(base_color[3:5], 16)}, {int(base_color[5:7], 16)}, 0.2)"
+                    border_color = base_color
+                    
+                    # Формируем label с суффиксом периода
+                    label_text = 'Долг (накопленный)'
+                    if period_label_suffix:
+                        label_text = f"{label_text} {period_label_suffix}"
+                    
+                    dataset = {
+                        'label': label_text,
+                        'data': debt_data_values,
+                        'backgroundColor': bg_color,
+                        'borderColor': border_color,
+                        'borderWidth': 2,
+                        'fill': chart_type == 'area',
+                        'tension': 0.4
+                    }
+                    
+                    # Добавляем пунктир для периодов сравнения
+                    if line_dash:
+                        dataset['borderDash'] = line_dash
+                    
+                    chart_data['datasets'].append(dataset)
+                    continue  # Пропускаем общую обработку ниже
+                else:
+                    continue
+
+                # ВАЖНО: блок ниже — внутри цикла по метрикам. Раньше он стоял на уровень выше,
+                # из-за чего выполнялся ОДИН раз после цикла (только последняя метрика попадала на график,
+                # а после ветки debt query/params рассинхронизировались)
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+
+                data_values = []
+                labels = []
+
+                for row in rows:
+                    label = row[0]
+                    value = float(row[1]) if row[1] else 0
+
+                    # Форматируем label
+                    if group_by == 'day' and label:
+                        # Показываем только день месяца
+                        try:
+                            day = label.split('-')[2] if '-' in label else label
+                            labels.append(day)
+                        except:
+                            labels.append(label)
+                    elif group_by == 'month' and label:
+                        # Показываем месяц
+                        month_names = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн',
+                                       'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек']
+                        try:
+                            month_num = int(label.split('-')[1])
+                            labels.append(month_names[month_num - 1])
+                        except:
+                            labels.append(label)
+                    else:
+                        labels.append(label or '')
+
+                    data_values.append(value)
+
+                # Устанавливаем labels только один раз (от первой метрики)
+                if not labels_set and labels:
+                    chart_data['labels'] = labels
+                    labels_set = True
+
+                # Добавляем dataset для метрики
+                # Цвет берем из period_colors
+                bg_color = f"rgba({int(base_color[1:3], 16)}, {int(base_color[3:5], 16)}, {int(base_color[5:7], 16)}, 0.2)"
+                border_color = base_color
+
+                # Формируем label с суффиксом периода
+                label_text = metric_labels.get(metric, metric)
+                if period_label_suffix:
+                    label_text = f"{label_text} {period_label_suffix}"
+
+                dataset = {
+                    'label': label_text,
+                    'data': data_values,
+                    'backgroundColor': bg_color,
+                    'borderColor': border_color,
+                    'borderWidth': 2,
+                    'fill': chart_type == 'area',
+                    'tension': 0.4
+                }
+
+                # Добавляем пунктир для периодов сравнения
+                if line_dash:
+                    dataset['borderDash'] = line_dash
+
+                chart_data['datasets'].append(dataset)
+
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'data': chart_data,
+            'period': period,
+            'chart_type': chart_type
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting chart data: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/dashboard-builder/areas-table-data')
+def get_areas_table_data():
+    """Получить данные для таблицы территорий (Сводка по territories)"""
+    try:
+        # Фильтры
+        areas = request.args.getlist('areas')
+        groups = request.args.getlist('groups')
+        debt_groups = request.args.getlist('debt_groups')  # Отдельный фильтр групп для долга
+        divisions = request.args.getlist('divisions')
+        period = request.args.get('period', 'current_month')
+        
+        if not areas:
+            return jsonify({'success': False, 'error': 'No areas selected'})
+        
+        # Определяем даты периода
+        now = datetime.now()
+        
+        if period == 'current_month':
+            date_from = now.replace(day=1)
+            date_to = now
+        elif period == 'last_month':
+            first_day_this_month = now.replace(day=1)
+            last_day_prev_month = first_day_this_month - timedelta(days=1)
+            date_from = last_day_prev_month.replace(day=1)
+            date_to = last_day_prev_month
+        elif period == 'current_year':
+            date_from = now.replace(month=1, day=1)
+            date_to = now
+        elif period == 'last_year':
+            date_from = now.replace(year=now.year-1, month=1, day=1)
+            date_to = now.replace(year=now.year-1, month=12, day=31)
+        else:
+            date_from = now.replace(day=1)
+            date_to = now
+        
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        
+        # Получить фильтры исключённых клиентов
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        
+        # Дополнительные даты для расчётов
+        today = now.strftime('%Y-%m-%d')
+
+        # «Прошлый год» — тот же диапазон, что выбранный период, минус год
+        # (раньше всегда брался текущий месяц по now, из-за чего при period=current_year
+        # сравнение YTD шло с ОДНИМ месяцем прошлого года)
+        import calendar
+        def _minus_year(d):
+            try:
+                return d.replace(year=d.year - 1)
+            except ValueError:  # 29 февраля
+                return d.replace(year=d.year - 1, day=28)
+        last_year_from = _minus_year(date_from)
+        last_year_to = _minus_year(date_to)
+
+        # Расчёт прогноза: дней прошло и всего дней — от ВЫБРАННОГО периода, а не от текущего месяца
+        if period in ('current_month', 'today') or period not in ('last_month', 'current_year', 'last_year'):
+            days_elapsed = now.day
+            days_in_month = calendar.monthrange(now.year, now.month)[1]
+        elif period == 'current_year':
+            days_elapsed = (now - date_from).days + 1
+            days_in_month = 366 if calendar.isleap(now.year) else 365
+        else:
+            # Завершённые периоды (last_month/last_year): прогноз = факт, экстраполяция не нужна
+            days_elapsed = (date_to - date_from).days + 1
+            days_in_month = days_elapsed
+        
+        # Планы по территориям (продажи и долг)
+        sales_plans = {
+            '101': 6_500_000, '102': 3_500_000, '103': 4_000_000, '104': 3_000_000,
+            '105': 5_500_000, '106': 6_500_000, '107/1': 4_000_000, '110': 3_500_000, 
+            '108': 4_500_000, '108/1': 4_000_000, '109': 3_000_000
+        }
+        debt_plans = {
+            '101': 5_500_000, '102': 5_000_000, '103': 4_500_000, '104': 2_300_000,
+            '105': 3_000_000, '106': 5_000_000, '107/1': 3_500_000, '110': 3_500_000, 
+            '108': 4_000_000, '108/1': 3_500_000, '109': 2_500_000
+        }
+        
+        result_data = []
+        
+        # Для каждой территории получаем данные
+        for area_code in areas:
+            area_data = {
+                'code': area_code,
+                'name': '',
+                'sales': 0,
+                'sales_today': 0,
+                'sales_forecast': 0,
+                'sales_last_year': 0,
+                'sales_plan': sales_plans.get(area_code, 3_000_000),
+                'sales_percent': 0,
+                'payments': 0,
+                'debt': 0,
+                'debt_plan': debt_plans.get(area_code, 3_000_000),
+                'debt_percent': 0
+            }
+            
+            # Получаем название территории из таблицы TREES
+            cursor.execute("SELECT fCAPTION FROM TREES WHERE fTREEID = 'SArea' AND fCODE = ?", [area_code])
+            area_row = cursor.fetchone()
+            if area_row:
+                area_data['name'] = (area_row[0] or '').strip()
+            
+            # Фильтры
+            group_filter = ""
+            group_params = []
+            if groups and len(groups) > 0:
+                placeholders = ','.join(['?' for _ in groups])
+                group_filter = f"AND c.fGROUP IN ({placeholders})"
+                group_params = list(groups)
+            
+            # Отдельный фильтр групп для долга
+            debt_group_filter = ""
+            debt_group_params = []
+            if debt_groups and len(debt_groups) > 0:
+                placeholders = ','.join(['?' for _ in debt_groups])
+                debt_group_filter = f"AND c.fGROUP IN ({placeholders})"
+                debt_group_params = list(debt_groups)
+            
+            division_filter = ""
+            division_params = []
+            if divisions and len(divisions) > 0:
+                placeholders = ','.join(['?' for _ in divisions])
+                division_filter = f"AND s.fDIVISION IN ({placeholders})"
+                division_params = list(divisions)
+            
+            # Продажи
+            sales_query = f"""
+            SELECT ISNULL(SUM(s.fTOTALSUM), 0)
+            FROM SALES s
+            INNER JOIN CUSTOMERS c ON s.fCUSTOMERID = c.fID
+            INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+            WHERE s.fDATE >= ? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND s.fSTATE = 2
+            AND csa.fSALESAREA = ?
+            {excluded_filter}
+            {group_filter}
+            {division_filter}
+            """
+            sales_params = [date_from.strftime('%Y-%m-%d'), date_to.strftime('%Y-%m-%d'), area_code] + list(excluded_params) + group_params + division_params
+            cursor.execute(sales_query, sales_params)
+            sales_row = cursor.fetchone()
+            area_data['sales'] = float(sales_row[0]) if sales_row and sales_row[0] else 0
+            
+            # Продажи за сегодня
+            today_params = [today, today, area_code] + list(excluded_params) + group_params + division_params
+            cursor.execute(sales_query, today_params)
+            today_row = cursor.fetchone()
+            area_data['sales_today'] = float(today_row[0]) if today_row and today_row[0] else 0
+            
+            # Продажи за прошлый год (те же даты месяца)
+            last_year_params = [last_year_from.strftime('%Y-%m-%d'), last_year_to.strftime('%Y-%m-%d'), area_code] + list(excluded_params) + group_params + division_params
+            cursor.execute(sales_query, last_year_params)
+            last_year_row = cursor.fetchone()
+            area_data['sales_last_year'] = float(last_year_row[0]) if last_year_row and last_year_row[0] else 0
+            
+            # Прогноз на месяц = (продажи за период / дней прошло) * дней в месяце
+            if days_elapsed > 0 and area_data['sales'] > 0:
+                daily_avg = area_data['sales'] / days_elapsed
+                area_data['sales_forecast'] = daily_avg * days_in_month
+            else:
+                area_data['sales_forecast'] = 0
+            
+            # Оплаты (из HICUSTOMERSDEBT как на странице /areas)
+            payments_query = f"""
+            SELECT ISNULL(SUM(CASE WHEN h.fDBCR = 'C' THEN h.fSUM ELSE 0 END), 0)
+            FROM HICUSTOMERSDEBT h
+            INNER JOIN DOCUMENTS d ON h.fDEBTDOCISN = d.fISN
+            INNER JOIN CUSTOMERS c ON d.fCUSTOMERID = c.fID
+            INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+            WHERE h.fDATE >= ? AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            AND h.fOP = 'PAY'
+            AND csa.fSALESAREA = ?
+            {excluded_filter}
+            {group_filter}
+            """
+            payments_params = [date_from.strftime('%Y-%m-%d'), date_to.strftime('%Y-%m-%d'), area_code] + list(excluded_params) + group_params
+            cursor.execute(payments_query, payments_params)
+            payments_row = cursor.fetchone()
+            area_data['payments'] = float(payments_row[0]) if payments_row and payments_row[0] else 0
+            
+            # Долг (текущий) минус ABS(Type01) и ABS(Type02)
+            # Долг кумулятивный - без фильтра по дате, как на странице /areas
+            # Применяем debt_group_filter (отдельный фильтр групп для долга)
+            # Формула: Debt = (Debit - Credit) - ABS(Type01) - ABS(Type02)
+            debt_query = f"""
+            SELECT 
+                ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0)
+                - ABS(ISNULL((
+                    SELECT SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END)
+                    FROM HIRESTCUSTOMERSSUM r
+                    INNER JOIN CUSTOMERS c2 ON r.fCUSTOMERID = c2.fID
+                    INNER JOIN CUSTOMERSALESAREAS csa2 ON c2.fID = csa2.fCUSTOMERID
+                    WHERE csa2.fSALESAREA = ?
+                    {excluded_filter.replace('c.', 'c2.')}
+                    {debt_group_filter.replace('c.fGROUP', 'c2.fGROUP')}
+                ), 0))
+                - ABS(ISNULL((
+                    SELECT SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END)
+                    FROM HIRESTCUSTOMERSSUM r
+                    INNER JOIN CUSTOMERS c3 ON r.fCUSTOMERID = c3.fID
+                    INNER JOIN CUSTOMERSALESAREAS csa3 ON c3.fID = csa3.fCUSTOMERID
+                    WHERE csa3.fSALESAREA = ?
+                    {excluded_filter.replace('c.', 'c3.')}
+                    {debt_group_filter.replace('c.fGROUP', 'c3.fGROUP')}
+                ), 0))
+            FROM HICUSTOMERSDEBT d
+            INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
+            INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
+            INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+            WHERE csa.fSALESAREA = ?
+            {excluded_filter}
+            {debt_group_filter}
+            """
+            debt_params = [area_code] + list(excluded_params) + debt_group_params + [area_code] + list(excluded_params) + debt_group_params + [area_code] + list(excluded_params) + debt_group_params
+            cursor.execute(debt_query, debt_params)
+            debt_row = cursor.fetchone()
+            area_data['debt'] = float(debt_row[0]) if debt_row and debt_row[0] else 0
+            
+            # Расчёт процентов выполнения планов
+            if area_data['sales_plan'] > 0:
+                area_data['sales_percent'] = round((area_data['sales'] / area_data['sales_plan']) * 100, 1)
+            if area_data['debt_plan'] > 0:
+                area_data['debt_percent'] = round((area_data['debt'] / area_data['debt_plan']) * 100, 1)
+            
+            # Статистика маршрутов: planned и visited
+            route_query = """
+            WITH AreaCustomers AS (
+                SELECT fCUSTOMERID 
+                FROM CUSTOMERSALESAREAS 
+                WHERE fSALESAREA = ?
+            ),
+            PlannedVisits AS (
+                SELECT l.fCUSTOMERID, CAST(d.fDATE as DATE) as VisitDate
+                FROM DOCUMENTS d
+                JOIN PLANNEDROUTESLIST l ON d.fISN = l.fISN
+                WHERE d.fDOCTYPE = 10
+                  AND d.fDATE >= ? AND d.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                  AND l.fCUSTOMERID IN (SELECT fCUSTOMERID FROM AreaCustomers)
+            ),
+            ActualVisits AS (
+                SELECT a.fCUSTOMERID, CAST(a.fDATE as DATE) as VisitDate
+                FROM ACTUALROUTES a
+                WHERE a.fDATE >= ? AND a.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                  AND a.fCUSTOMERID IN (SELECT fCUSTOMERID FROM AreaCustomers)
+            )
+            SELECT
+                (SELECT COUNT(*) FROM PlannedVisits) as PlannedCount,
+                (SELECT COUNT(*) FROM ActualVisits) as VisitedCount
+            """
+            route_params = [area_code, date_from.strftime('%Y-%m-%d'), date_to.strftime('%Y-%m-%d'), 
+                           date_from.strftime('%Y-%m-%d'), date_to.strftime('%Y-%m-%d')]
+            cursor.execute(route_query, route_params)
+            route_row = cursor.fetchone()
+            area_data['visits_planned'] = route_row[0] or 0 if route_row else 0
+            area_data['visits_actual'] = route_row[1] or 0 if route_row else 0
+            
+            result_data.append(area_data)
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'data': result_data,
+            'period': period,
+            'date_from': date_from.strftime('%Y-%m-%d'),
+            'date_to': date_to.strftime('%Y-%m-%d')
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting areas table data: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# =============================================
 # ЗАПУСК ПРИЛОЖЕНИЯ
 # =============================================
 
@@ -5138,6 +8562,7 @@ if __name__ == '__main__':
     print("  - http://localhost:5000/areas     - Territories")
     print("  - http://localhost:5000/plans     - Plans")
     print("  - http://localhost:5000/ai-assistant - AI Problem Analysis")
+    print("  - http://localhost:5000/dashboard-builder - Dashboard Builder")
     print("  - http://localhost:5000/settings  - Settings")
     print("  - http://localhost:5000/test-db   - Test DB")
     print()

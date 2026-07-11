@@ -1,0 +1,86 @@
+{
+ "schema": "dbo",
+ "name": "HIRESTTRANSFERREDASSETS",
+ "row_count": 31,
+ "columns": [
+  {
+   "name": "fSTORAGE",
+   "ordinal": 1,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fASSETID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTYPE",
+   "ordinal": 4,
+   "type": "varchar(2)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 5,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fASSETNUMBER",
+   "ordinal": 6,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_HIRESTTRANSFERREDASSETS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fTYPE, fCUSTOMERID, fASSETID, fASSETNUMBER, fSTORAGE"
+  }
+ ],
+ "samples": [
+  {
+   "fSTORAGE": "",
+   "fCUSTOMERID": 23413,
+   "fASSETID": 29,
+   "fTYPE": "01",
+   "fQUANTITY": 1.0,
+   "fASSETNUMBER": ""
+  },
+  {
+   "fSTORAGE": "",
+   "fCUSTOMERID": 44042,
+   "fASSETID": 30,
+   "fTYPE": "01",
+   "fQUANTITY": 1.0,
+   "fASSETNUMBER": ""
+  },
+  {
+   "fSTORAGE": "",
+   "fCUSTOMERID": 46544,
+   "fASSETID": 32,
+   "fTYPE": "01",
+   "fQUANTITY": 1.0,
+   "fASSETNUMBER": ""
+  }
+ ]
+}

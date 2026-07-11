@@ -1,0 +1,56 @@
+{
+ "schema": "dbo",
+ "name": "HIRESTAGENTPRODUCTS",
+ "row_count": 8447,
+ "columns": [
+  {
+   "name": "fAGENTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_HIRESTAGENTPRODUCTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fAGENTID, fPRODUCTID"
+  }
+ ],
+ "samples": [
+  {
+   "fAGENTID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 0.0
+  },
+  {
+   "fAGENTID": 1,
+   "fPRODUCTID": 2,
+   "fQUANTITY": 0.0
+  },
+  {
+   "fAGENTID": 1,
+   "fPRODUCTID": 17,
+   "fQUANTITY": 0.0
+  }
+ ]
+}

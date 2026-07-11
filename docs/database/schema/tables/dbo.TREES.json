@@ -1,0 +1,170 @@
+{
+ "schema": "dbo",
+ "name": "TREES",
+ "row_count": 265,
+ "columns": [
+  {
+   "name": "fTREEID",
+   "ordinal": 1,
+   "type": "nvarchar(8)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCODE",
+   "ordinal": 2,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCAPTION",
+   "ordinal": 3,
+   "type": "nvarchar(150)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPATH",
+   "ordinal": 4,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPARENT",
+   "ordinal": 5,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fLEAF",
+   "ordinal": 6,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSED",
+   "ordinal": 7,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISN",
+   "ordinal": 8,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCBASEISN",
+   "ordinal": 9,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fBODY",
+   "ordinal": 10,
+   "type": "nvarchar(3000)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 11,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSPEC",
+   "ordinal": 12,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "iTREES1",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fTREEID, fCODE"
+  },
+  {
+   "name": "iTREES2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fTREEID, fPATH"
+  },
+  {
+   "name": "iTREES3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fTREEID, fPARENT"
+  },
+  {
+   "name": "iTREES4",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fTREEID, fISN"
+  },
+  {
+   "name": "iTREES5",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fTREEID, fDOCBASEISN"
+  }
+ ],
+ "samples": [
+  {
+   "fTREEID": "AssetGrp",
+   "fCODE": "001",
+   "fCAPTION": "Սառնարան",
+   "fPATH": "001!",
+   "fPARENT": "",
+   "fLEAF": true,
+   "fCLOSED": false,
+   "fISN": "54C5336D-04CD-4649-BFEF-99CB555DD184",
+   "fDOCBASEISN": null,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fSPEC": ""
+  },
+  {
+   "fTREEID": "AssetGrp",
+   "fCODE": "002",
+   "fCAPTION": "Դիսպենսեր",
+   "fPATH": "002!",
+   "fPARENT": "",
+   "fLEAF": true,
+   "fCLOSED": false,
+   "fISN": "B71A020B-63D9-4070-A136-F48D184575B3",
+   "fDOCBASEISN": null,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fSPEC": ""
+  },
+  {
+   "fTREEID": "CsDscGrp",
+   "fCODE": "003",
+   "fCAPTION": "ՍԱՍ",
+   "fPATH": "003!",
+   "fPARENT": "",
+   "fLEAF": true,
+   "fCLOSED": false,
+   "fISN": "429EEE06-FA26-4EB9-8120-B199C1D1537E",
+   "fDOCBASEISN": null,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fSPEC": ""
+  }
+ ]
+}

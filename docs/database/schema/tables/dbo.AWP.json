@@ -1,0 +1,69 @@
+{
+ "schema": "dbo",
+ "name": "AWP",
+ "row_count": 2,
+ "columns": [
+  {
+   "name": "fNAME",
+   "ordinal": 1,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCAPTIONID",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSYSTEM",
+   "ordinal": 3,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFINITION",
+   "ordinal": 4,
+   "type": "nvarchar(max)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 5,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_AWP",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fNAME"
+  }
+ ],
+ "samples": [
+  {
+   "fNAME": "AWPBO",
+   "fCAPTIONID": "UD_AWPBO",
+   "fSYSTEM": false,
+   "fDEFINITION": "<Extensions><AWP Name=\"AWPBO\" CaptionId=\"UD_AWPBO\"><AWPLeaf CommandType=\"UserReport\" Command=\"UD_SalesRems\" CaptionId=\"U…",
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fNAME": "StockkeeperAWP",
+   "fCAPTIONID": "Stockkeeper",
+   "fSYSTEM": false,
+   "fDEFINITION": "<Extensions><AWP Name=\"StockkeeperAWP\" CaptionId=\"Stockkeeper\"><AWPLeaf Command=\"SalesOrdersFolder\" CaptionId=\"SalesOrde…",
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

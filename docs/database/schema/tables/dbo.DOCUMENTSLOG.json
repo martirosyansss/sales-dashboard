@@ -1,0 +1,122 @@
+{
+ "schema": "dbo",
+ "name": "DOCUMENTSLOG",
+ "row_count": 1951948,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 2,
+   "type": "datetime",
+   "nullable": false,
+   "default": "(getdate())"
+  },
+  {
+   "name": "fUSERID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSTATE",
+   "ordinal": 4,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOP",
+   "ordinal": 5,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 6,
+   "type": "nvarchar(255)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCOMPNAME",
+   "ordinal": 7,
+   "type": "nvarchar(32)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCHANGEDESCRIPTION",
+   "ordinal": 8,
+   "type": "nvarchar(max)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fSOURCE",
+   "ordinal": 9,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_DOCUMENTSLOG",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fISN, fDATE, fOP"
+  },
+  {
+   "name": "iDOCUMENTSLOG1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fUSERID"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "D21A4873-0334-4E90-B52E-00001B499211",
+   "fDATE": "2024-05-22T16:20:56.257000",
+   "fUSERID": 1,
+   "fSTATE": 2,
+   "fOP": 4,
+   "fCOMMENT": null,
+   "fCOMPNAME": "DESKTOP-EH057E6",
+   "fCHANGEDESCRIPTION": null,
+   "fSOURCE": 0
+  },
+  {
+   "fISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fDATE": "2025-12-22T10:17:37.943000",
+   "fUSERID": 20,
+   "fSTATE": 2,
+   "fOP": 1,
+   "fCOMMENT": null,
+   "fCOMPNAME": "DESKTOP-INRK07G",
+   "fCHANGEDESCRIPTION": null,
+   "fSOURCE": 0
+  },
+  {
+   "fISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fDATE": "2025-12-22T10:18:10.067000",
+   "fUSERID": 20,
+   "fSTATE": 2,
+   "fOP": 2,
+   "fCOMMENT": "Խմբագրել նշվածները",
+   "fCOMPNAME": "DESKTOP-INRK07G",
+   "fCHANGEDESCRIPTION": null,
+   "fSOURCE": 0
+  }
+ ]
+}

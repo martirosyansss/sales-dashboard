@@ -1,0 +1,468 @@
+{
+ "schema": "dbo",
+ "name": "RETURNS",
+ "row_count": 21211,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 2,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDIVISION",
+   "ordinal": 3,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCNUM",
+   "ordinal": 4,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 5,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 6,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVANAGENTID",
+   "ordinal": 7,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALENUM",
+   "ordinal": 8,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRICELISTTYPE",
+   "ordinal": 9,
+   "type": "nvarchar(2)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTOTALSUM",
+   "ordinal": 10,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 11,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAREA",
+   "ordinal": 12,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCGROUP",
+   "ordinal": 13,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fRETURNREASON",
+   "ordinal": 14,
+   "type": "nvarchar(3)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCREATIONTYPEID",
+   "ordinal": 15,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fSTATE",
+   "ordinal": 16,
+   "type": "tinyint",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCONTACT",
+   "ordinal": 17,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCREATEMETHOD",
+   "ordinal": 18,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXPTOTAXPROG",
+   "ordinal": 19,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTAXSERIANUMBER",
+   "ordinal": 20,
+   "type": "nvarchar(11)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fADDITIONALDISCOUNT",
+   "ordinal": 21,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUNDISCOUNTEDSUM",
+   "ordinal": 22,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYCAR",
+   "ordinal": 23,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOTHSYSSENDSTATUS",
+   "ordinal": 24,
+   "type": "nvarchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBASERETURNDOCNUMBER",
+   "ordinal": 25,
+   "type": "nvarchar(12)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fBASERETURNTOTALSUM",
+   "ordinal": 26,
+   "type": "money",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fBASERETURNDOCISN",
+   "ordinal": 27,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fSUBMITDATE",
+   "ordinal": 28,
+   "type": "smalldatetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fORGANIZATIONACCOUNT",
+   "ordinal": 29,
+   "type": "nvarchar(22)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fASSIGNOR",
+   "ordinal": 30,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVATSUM",
+   "ordinal": 31,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXCISESUM",
+   "ordinal": 32,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fENVFEESUM",
+   "ordinal": 33,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fECRCHECKNUM",
+   "ordinal": 34,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fECRCHECKDATE",
+   "ordinal": 35,
+   "type": "datetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fECRCASHSUM",
+   "ordinal": 36,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fECRNONCASHSUM",
+   "ordinal": 37,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOSIGNDATE",
+   "ordinal": 38,
+   "type": "smalldatetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYADDRESSID",
+   "ordinal": 39,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fECRCRN",
+   "ordinal": 40,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_RETURNS1",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fISN"
+  },
+  {
+   "name": "I_RETURNS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCUSTOMERID"
+  },
+  {
+   "name": "I_RETURNS3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCREATIONTYPEID"
+  },
+  {
+   "name": "I_RETURNS4",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDATE, fSTATE, fCUSTOMERID, fSALESAGENTID"
+  },
+  {
+   "name": "I_RETURNS5",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSTATE"
+  },
+  {
+   "name": "I_RETURNS6",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDIVISION"
+  },
+  {
+   "name": "I_RETURNS7",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALESAGENTID"
+  },
+  {
+   "name": "PK_RETURNS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fDOCNUM"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "5E2106F1-E13E-47A1-A100-01FFCAF048C6",
+   "fDATE": "2015-12-15T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000002",
+   "fCUSTOMERID": 1340,
+   "fSALESAGENTID": 12,
+   "fVANAGENTID": 6,
+   "fSALENUM": "",
+   "fPRICELISTTYPE": "01",
+   "fTOTALSUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "106",
+   "fDOCGROUP": "",
+   "fRETURNREASON": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 0.0,
+   "fDELIVERYCAR": "",
+   "fOTHSYSSENDSTATUS": "",
+   "fBASERETURNDOCNUMBER": null,
+   "fBASERETURNTOTALSUM": null,
+   "fBASERETURNDOCISN": null,
+   "fSUBMITDATE": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fASSIGNOR": "",
+   "fVATSUM": 0.0,
+   "fEXCISESUM": 0.0,
+   "fENVFEESUM": 0.0,
+   "fECRCHECKNUM": "",
+   "fECRCHECKDATE": null,
+   "fECRCASHSUM": 0.0,
+   "fECRNONCASHSUM": 0.0,
+   "fCOSIGNDATE": null,
+   "fDELIVERYADDRESSID": 0,
+   "fECRCRN": ""
+  },
+  {
+   "fISN": "DA89B784-298F-47F8-9FE7-CD95E12E2906",
+   "fDATE": "2015-12-15T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000003",
+   "fCUSTOMERID": 1340,
+   "fSALESAGENTID": 12,
+   "fVANAGENTID": 6,
+   "fSALENUM": "",
+   "fPRICELISTTYPE": "01",
+   "fTOTALSUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "106",
+   "fDOCGROUP": "",
+   "fRETURNREASON": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 0.0,
+   "fDELIVERYCAR": "",
+   "fOTHSYSSENDSTATUS": "",
+   "fBASERETURNDOCNUMBER": null,
+   "fBASERETURNTOTALSUM": null,
+   "fBASERETURNDOCISN": null,
+   "fSUBMITDATE": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fASSIGNOR": "",
+   "fVATSUM": 0.0,
+   "fEXCISESUM": 0.0,
+   "fENVFEESUM": 0.0,
+   "fECRCHECKNUM": "",
+   "fECRCHECKDATE": null,
+   "fECRCASHSUM": 0.0,
+   "fECRNONCASHSUM": 0.0,
+   "fCOSIGNDATE": null,
+   "fDELIVERYADDRESSID": 0,
+   "fECRCRN": ""
+  },
+  {
+   "fISN": "05ABEDAC-110D-43DA-8371-8E99979BFD14",
+   "fDATE": "2015-12-15T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000004",
+   "fCUSTOMERID": 1436,
+   "fSALESAGENTID": 12,
+   "fVANAGENTID": 6,
+   "fSALENUM": "",
+   "fPRICELISTTYPE": "01",
+   "fTOTALSUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "106",
+   "fDOCGROUP": "",
+   "fRETURNREASON": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 0.0,
+   "fDELIVERYCAR": "",
+   "fOTHSYSSENDSTATUS": "",
+   "fBASERETURNDOCNUMBER": null,
+   "fBASERETURNTOTALSUM": null,
+   "fBASERETURNDOCISN": null,
+   "fSUBMITDATE": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fASSIGNOR": "",
+   "fVATSUM": 0.0,
+   "fEXCISESUM": 0.0,
+   "fENVFEESUM": 0.0,
+   "fECRCHECKNUM": "",
+   "fECRCHECKDATE": null,
+   "fECRCASHSUM": 0.0,
+   "fECRNONCASHSUM": 0.0,
+   "fCOSIGNDATE": null,
+   "fDELIVERYADDRESSID": 0,
+   "fECRCRN": ""
+  }
+ ]
+}

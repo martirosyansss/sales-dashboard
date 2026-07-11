@@ -31,6 +31,9 @@ instance/
 .env
 .env.local
 
+# DBHub MCP server config (contains DB credentials)
+dbhub.toml
+
 # Database
 *.db
 *.sqlite
@@ -40,6 +43,23 @@ instance/
 excluded_customers.json
 excluded_groups.json
 group_manager_assignments.json
+ai_analysis_settings.json
+ai_selected_groups.json
+dashboard_builder_layout*.json
+dashboard_selected_areas.json
+dashboard_selected_groups.json
+dashboard_widgets.json
+kpi_*.json
+
+# Одноразовые отладочные скрипты (проверки против боевой БД)
+analyze_*.py
+check_*.py
+compare_with_*.py
+debug_*.py
+find_matching_*.py
+list_*.py
+test_*.py
+verify_*.py
 
 # IDE
 .vscode/
@@ -60,3 +80,5 @@ logs/
 # Sensitive data
 config.ini
 secrets.json
+.gstack/
+__pycache__/

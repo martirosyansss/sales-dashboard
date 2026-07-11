@@ -1,0 +1,122 @@
+{
+ "schema": "dbo",
+ "name": "PROVIDINGDELIVERIES",
+ "row_count": 1808931,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fORDERNUM",
+   "ordinal": 2,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOPERATION",
+   "ordinal": 4,
+   "type": "varchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 5,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 6,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fORDEREDPRODUCTID",
+   "ordinal": 7,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDOCTYPE",
+   "ordinal": 8,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDITIONALINFO",
+   "ordinal": 9,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_PROVIDINGDELIVERIES1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDOCTYPE, fORDERNUM, fORDEREDPRODUCTID, fOPERATION"
+  },
+  {
+   "name": "PK_PROVIDINGDELIVERIES",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fISN"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "06CB5E6E-15B4-4782-8F1D-0000B9DD20DF",
+   "fORDERNUM": "000000300422",
+   "fPRODUCTID": 1644,
+   "fOPERATION": "RLZ",
+   "fQUANTITY": 10.0,
+   "fROWNUM": 0,
+   "fORDEREDPRODUCTID": 1644,
+   "fDOCTYPE": 1,
+   "fADDITIONALINFO": ""
+  },
+  {
+   "fISN": "06CB5E6E-15B4-4782-8F1D-0000B9DD20DF",
+   "fORDERNUM": "000000300422",
+   "fPRODUCTID": 587,
+   "fOPERATION": "RLZ",
+   "fQUANTITY": 10.0,
+   "fROWNUM": 1,
+   "fORDEREDPRODUCTID": 587,
+   "fDOCTYPE": 1,
+   "fADDITIONALINFO": ""
+  },
+  {
+   "fISN": "06CB5E6E-15B4-4782-8F1D-0000B9DD20DF",
+   "fORDERNUM": "000000300422",
+   "fPRODUCTID": 561,
+   "fOPERATION": "RLZ",
+   "fQUANTITY": 5.0,
+   "fROWNUM": 2,
+   "fORDEREDPRODUCTID": 561,
+   "fDOCTYPE": 1,
+   "fADDITIONALINFO": ""
+  }
+ ]
+}

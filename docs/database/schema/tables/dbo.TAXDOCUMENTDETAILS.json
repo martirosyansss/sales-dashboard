@@ -1,0 +1,82 @@
+{
+ "schema": "dbo",
+ "name": "TAXDOCUMENTDETAILS",
+ "row_count": 35,
+ "columns": [
+  {
+   "name": "fTAXDOCISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTAXPRODUCTROWISN",
+   "ordinal": 2,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCISN",
+   "ordinal": 3,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 4,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOPERATION",
+   "ordinal": 5,
+   "type": "varchar(3)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_TAXDOCUMENTDETAILS1",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fDOCISN, fPRODUCTID, fOPERATION"
+  },
+  {
+   "name": "PK_TAXDOCUMENTDETAILS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fTAXPRODUCTROWISN"
+  }
+ ],
+ "samples": [
+  {
+   "fTAXDOCISN": "CC814CEB-55A6-4585-A98E-A348976EE4B8",
+   "fTAXPRODUCTROWISN": "6DD8AB19-CA34-4A32-A732-12547E0F1B3A",
+   "fDOCISN": "CC814CEB-55A6-4585-A98E-A348976EE4B8",
+   "fPRODUCTID": 50,
+   "fOPERATION": "RLZ"
+  },
+  {
+   "fTAXDOCISN": "8733C57E-A84C-4D1B-BDCF-0F1B81F46502",
+   "fTAXPRODUCTROWISN": "1AC24343-95A2-47C5-A06D-14497F0C6A5E",
+   "fDOCISN": "8733C57E-A84C-4D1B-BDCF-0F1B81F46502",
+   "fPRODUCTID": 52,
+   "fOPERATION": "RLZ"
+  },
+  {
+   "fTAXDOCISN": "8D87547A-91CA-489E-AA5A-6E8F5A74A5C4",
+   "fTAXPRODUCTROWISN": "D54BB429-8CC1-4ED3-95E5-18E3889B725E",
+   "fDOCISN": "8D87547A-91CA-489E-AA5A-6E8F5A74A5C4",
+   "fPRODUCTID": 25,
+   "fOPERATION": "RLZ"
+  }
+ ]
+}

@@ -1,0 +1,139 @@
+{
+ "schema": "dbo",
+ "name": "CUSTOMERCONTACTS",
+ "row_count": 1816,
+ "columns": [
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPHONE",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEMAIL",
+   "ordinal": 4,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFAULT",
+   "ordinal": 5,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 6,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 7,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fB2BSENDNOTIFICATION",
+   "ordinal": 8,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISDATAAVAILABLEFORB2B",
+   "ordinal": 9,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNOTES",
+   "ordinal": 10,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [
+  {
+   "column": "fCUSTOMERID",
+   "ref_table": "dbo.CUSTOMERS",
+   "ref_column": "fID",
+   "fk": "FK_CUSTOMERCONTACTS_fCUSTOMERID"
+  }
+ ],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_CUSTOMERCONTACTS1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fPHONE"
+  },
+  {
+   "name": "PK_CUSTOMERCONTACTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCUSTOMERID, fNAME"
+  }
+ ],
+ "samples": [
+  {
+   "fCUSTOMERID": 4,
+   "fNAME": ".",
+   "fPHONE": "+37493568006",
+   "fEMAIL": "",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fB2BSENDNOTIFICATION": false,
+   "fISDATAAVAILABLEFORB2B": false,
+   "fNOTES": ""
+  },
+  {
+   "fCUSTOMERID": 8,
+   "fNAME": ".",
+   "fPHONE": "+37491532754",
+   "fEMAIL": "",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fB2BSENDNOTIFICATION": false,
+   "fISDATAAVAILABLEFORB2B": false,
+   "fNOTES": ""
+  },
+  {
+   "fCUSTOMERID": 11,
+   "fNAME": ".",
+   "fPHONE": "+37477370522",
+   "fEMAIL": "",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fB2BSENDNOTIFICATION": false,
+   "fISDATAAVAILABLEFORB2B": false,
+   "fNOTES": ""
+  }
+ ]
+}

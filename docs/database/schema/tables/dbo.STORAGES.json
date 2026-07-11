@@ -1,0 +1,116 @@
+{
+ "schema": "dbo",
+ "name": "STORAGES",
+ "row_count": 16,
+ "columns": [
+  {
+   "name": "fCODE",
+   "ordinal": 1,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSTOCKKEEPER",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDRESS",
+   "ordinal": 4,
+   "type": "nvarchar(250)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSE",
+   "ordinal": 5,
+   "type": "bit",
+   "nullable": false,
+   "default": "((0))"
+  },
+  {
+   "name": "fTS",
+   "ordinal": 6,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXTERNALCODE",
+   "ordinal": 7,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fREMCHECKMODE",
+   "ordinal": 8,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBODY",
+   "ordinal": 9,
+   "type": "nvarchar(3000)",
+   "nullable": true,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_STORAGES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCODE"
+  }
+ ],
+ "samples": [
+  {
+   "fCODE": "000",
+   "fNAME": "Հիմնական պահեստ",
+   "fSTOCKKEEPER": "Մասիս Մարգարյան",
+   "fADDRESS": "",
+   "fCLOSE": false,
+   "fTS": "<binary 8 bytes>",
+   "fEXTERNALCODE": "",
+   "fREMCHECKMODE": "2",
+   "fBODY": null
+  },
+  {
+   "fCODE": "001",
+   "fNAME": "Տեղափոխման պահեստ",
+   "fSTOCKKEEPER": "",
+   "fADDRESS": "",
+   "fCLOSE": true,
+   "fTS": "<binary 8 bytes>",
+   "fEXTERNALCODE": "",
+   "fREMCHECKMODE": "2",
+   "fBODY": null
+  },
+  {
+   "fCODE": "002",
+   "fNAME": "Պահածոների պահեստ",
+   "fSTOCKKEEPER": "Դերենիկ Մկրտչյան",
+   "fADDRESS": "",
+   "fCLOSE": false,
+   "fTS": "<binary 8 bytes>",
+   "fEXTERNALCODE": "",
+   "fREMCHECKMODE": "2",
+   "fBODY": null
+  }
+ ]
+}

@@ -1,0 +1,116 @@
+{
+ "schema": "dbo",
+ "name": "RECONCILATIONDETAILS",
+ "row_count": 1327,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 2,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDIVISION",
+   "ordinal": 3,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBASEDOCISN",
+   "ordinal": 4,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBASEDOCDESCRIPTION",
+   "ordinal": 5,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTRANSACTIONCOMMENT",
+   "ordinal": 6,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUMIN",
+   "ordinal": 7,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUMOUT",
+   "ordinal": 8,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 9,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_RECONCILATIONDETAILS",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fISN"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "AE33D0F2-4E98-4E71-AA7E-0925A68EB55D",
+   "fDATE": "2026-02-07T00:00:00",
+   "fDIVISION": "000000",
+   "fBASEDOCISN": "27EB3D3B-1A1E-4FD2-8871-4547504CC4C4",
+   "fBASEDOCDESCRIPTION": "Վաճառք N - 000000330858",
+   "fTRANSACTIONCOMMENT": "",
+   "fSUMIN": 12150.0,
+   "fSUMOUT": 0.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "AE33D0F2-4E98-4E71-AA7E-0925A68EB55D",
+   "fDATE": "2026-02-26T00:00:00",
+   "fDIVISION": "000000",
+   "fBASEDOCISN": "599C68DA-D4A6-4485-B08B-A9FDADA9E172",
+   "fBASEDOCDESCRIPTION": "Վաճառքի վճարում N - 000000317661",
+   "fTRANSACTIONCOMMENT": "Կրեդիտի մարում",
+   "fSUMIN": 0.0,
+   "fSUMOUT": 12150.0,
+   "fROWNUM": 1
+  },
+  {
+   "fISN": "C51F0765-8534-41C1-958E-0B26DDE6A722",
+   "fDATE": "2026-02-21T00:00:00",
+   "fDIVISION": "000000",
+   "fBASEDOCISN": "AC19A010-008D-438E-AF97-BD1B52ECA88C",
+   "fBASEDOCDESCRIPTION": "Վաճառք N - 000000332589",
+   "fTRANSACTIONCOMMENT": "",
+   "fSUMIN": 2850.0,
+   "fSUMOUT": 0.0,
+   "fROWNUM": 0
+  }
+ ]
+}

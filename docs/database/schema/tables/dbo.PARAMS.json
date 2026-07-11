@@ -1,0 +1,46 @@
+{
+ "schema": "dbo",
+ "name": "PARAMS",
+ "row_count": 367,
+ "columns": [
+  {
+   "name": "fPARID",
+   "ordinal": 1,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVALUE",
+   "ordinal": 2,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_PARAMS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fPARID"
+  }
+ ],
+ "samples": [
+  {
+   "fPARID": 2,
+   "fVALUE": "715040"
+  },
+  {
+   "fPARID": 21,
+   "fVALUE": "True"
+  },
+  {
+   "fPARID": 22,
+   "fVALUE": "1"
+  }
+ ]
+}

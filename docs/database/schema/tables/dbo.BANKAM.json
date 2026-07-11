@@ -1,0 +1,76 @@
+{
+ "schema": "dbo",
+ "name": "BANKAM",
+ "row_count": 776,
+ "columns": [
+  {
+   "name": "fCODE",
+   "ordinal": 1,
+   "type": "nvarchar(5)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCAPTION",
+   "ordinal": 2,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fIBANCODE",
+   "ordinal": 3,
+   "type": "nchar(2)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSWIFTCODE",
+   "ordinal": 4,
+   "type": "nvarchar(11)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 5,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_BANKAM",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCODE"
+  }
+ ],
+ "samples": [
+  {
+   "fCODE": "10300",
+   "fCAPTION": "ՀՀ Կենտրոնական բանկ",
+   "fIBANCODE": "  ",
+   "fSWIFTCODE": "CBRAAM22",
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCODE": "10301",
+   "fCAPTION": "ՏԴԿ Գորիս",
+   "fIBANCODE": "  ",
+   "fSWIFTCODE": "CBRAAM22",
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCODE": "10302",
+   "fCAPTION": "ՏԴԿ Վանաձոր",
+   "fIBANCODE": "  ",
+   "fSWIFTCODE": "CBRAAM22",
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

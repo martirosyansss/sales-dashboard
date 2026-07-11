@@ -1,0 +1,47 @@
+{
+ "schema": "dbo",
+ "name": "USERSCRIPTS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fNAME",
+   "ordinal": 1,
+   "type": "nvarchar(32)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCAPTION",
+   "ordinal": 2,
+   "type": "nvarchar(150)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFINITION",
+   "ordinal": 3,
+   "type": "nvarchar(max)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 4,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_USERSCRIPTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fNAME"
+  }
+ ],
+ "samples": []
+}

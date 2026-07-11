@@ -1,0 +1,76 @@
+{
+ "schema": "dbo",
+ "name": "PRODUCTSRESERVATIONDETAILS",
+ "row_count": 143673,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSTORAGE",
+   "ordinal": 2,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 4,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 5,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_PRODUCTSRESERVATIONDETAILS",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fISN"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "6F22AC63-0A6D-408F-8F29-0006E5397C88",
+   "fSTORAGE": "000",
+   "fPRODUCTID": 38,
+   "fQUANTITY": 12.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "6F22AC63-0A6D-408F-8F29-0006E5397C88",
+   "fSTORAGE": "000",
+   "fPRODUCTID": 42,
+   "fQUANTITY": 12.0,
+   "fROWNUM": 1
+  },
+  {
+   "fISN": "6F22AC63-0A6D-408F-8F29-0006E5397C88",
+   "fSTORAGE": "000",
+   "fPRODUCTID": 48,
+   "fQUANTITY": 24.0,
+   "fROWNUM": 2
+  }
+ ]
+}

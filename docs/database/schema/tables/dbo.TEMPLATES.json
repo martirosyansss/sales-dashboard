@@ -1,0 +1,116 @@
+{
+ "schema": "dbo",
+ "name": "TEMPLATES",
+ "row_count": 66,
+ "columns": [
+  {
+   "name": "fNAME",
+   "ordinal": 1,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCAPTION",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTEMPLATE",
+   "ordinal": 3,
+   "type": "varbinary(max)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fFILE",
+   "ordinal": 4,
+   "type": "nvarchar(512)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCTYPE",
+   "ordinal": 5,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fENABLED",
+   "ordinal": 6,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSYSTEM",
+   "ordinal": 7,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 8,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTYPE",
+   "ordinal": 9,
+   "type": "char(1)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_TEMPLATES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fTYPE, fNAME"
+  }
+ ],
+ "samples": [
+  {
+   "fNAME": "01",
+   "fCAPTION": "Վաճառքի պատվեր",
+   "fTEMPLATE": "<binary 41193 bytes>",
+   "fFILE": "C:\\Program Files (x86)\\Armenian Software\\AS-Sales Management 7\\Templates\\SalesOrder.xml",
+   "fDOCTYPE": 1,
+   "fENABLED": true,
+   "fSYSTEM": true,
+   "fTS": "<binary 8 bytes>",
+   "fTYPE": "D"
+  },
+  {
+   "fNAME": "01.1",
+   "fCAPTION": "Վաճառքի պատվեր",
+   "fTEMPLATE": "<binary 22905 bytes>",
+   "fFILE": "C:\\Program Files (x86)\\Armenian Software\\AS-Sales Management 7\\Templates\\SalesOrder.docx",
+   "fDOCTYPE": 1,
+   "fENABLED": true,
+   "fSYSTEM": true,
+   "fTS": "<binary 8 bytes>",
+   "fTYPE": "D"
+  },
+  {
+   "fNAME": "02",
+   "fCAPTION": "Վաճառք",
+   "fTEMPLATE": "<binary 40839 bytes>",
+   "fFILE": "C:\\Program Files (x86)\\Armenian Software\\AS-Sales Management 7\\Templates\\Sale.xml",
+   "fDOCTYPE": 2,
+   "fENABLED": false,
+   "fSYSTEM": true,
+   "fTS": "<binary 8 bytes>",
+   "fTYPE": "D"
+  }
+ ]
+}

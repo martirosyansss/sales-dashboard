@@ -1,0 +1,72 @@
+{
+ "schema": "dbo",
+ "name": "DISCHARGEDETAILS",
+ "row_count": 426456,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUM",
+   "ordinal": 2,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 3,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEBTDOCISN",
+   "ordinal": 4,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "i1_DISCHARGEDETAILS",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fISN"
+  },
+  {
+   "name": "i2_DISCHARGEDETAILS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDEBTDOCISN"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "52574BC9-044A-4BB3-BAA0-00005301A82E",
+   "fSUM": 2520.0,
+   "fROWNUM": 0,
+   "fDEBTDOCISN": "8D9290E8-571F-4C69-AE6A-C7065DEC9CBC"
+  },
+  {
+   "fISN": "7343F135-9001-4BE9-BAE0-0000809AD1FB",
+   "fSUM": 11460.6,
+   "fROWNUM": 0,
+   "fDEBTDOCISN": "0354649A-6C1A-4AB3-8C50-03B0C336BE50"
+  },
+  {
+   "fISN": "C9BCA2B3-C5D8-4142-BD9E-0000D7DF8404",
+   "fSUM": 135.0,
+   "fROWNUM": 0,
+   "fDEBTDOCISN": "EE65AE6E-5AE2-49C3-9B9A-DEF5CF4922C6"
+  }
+ ]
+}

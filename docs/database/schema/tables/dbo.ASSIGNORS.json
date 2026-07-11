@@ -1,0 +1,61 @@
+{
+ "schema": "dbo",
+ "name": "ASSIGNORS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fCODE",
+   "ordinal": 1,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTAXCODE",
+   "ordinal": 3,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSETTLEMENTACCOUNT",
+   "ordinal": 4,
+   "type": "nvarchar(22)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDESCRINTAXSRV",
+   "ordinal": 5,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 6,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_ASSIGNORS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCODE"
+  }
+ ],
+ "samples": []
+}

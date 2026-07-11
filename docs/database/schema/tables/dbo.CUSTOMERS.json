@@ -1,0 +1,528 @@
+{
+ "schema": "dbo",
+ "name": "CUSTOMERS",
+ "row_count": 9688,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCODE",
+   "ordinal": 2,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fFULLNAME",
+   "ordinal": 4,
+   "type": "nvarchar(100)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fGROUP",
+   "ordinal": 5,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTAXCODE",
+   "ordinal": 6,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRICELIST",
+   "ordinal": 7,
+   "type": "nvarchar(2)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPAYMENTTYPE",
+   "ordinal": 8,
+   "type": "nvarchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fREGION",
+   "ordinal": 9,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDELAYDAYS",
+   "ordinal": 10,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRIORITY",
+   "ordinal": 11,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDRESS",
+   "ordinal": 12,
+   "type": "nvarchar(250)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPHONE",
+   "ordinal": 13,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEMAIL",
+   "ordinal": 14,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fMANAGERPOST",
+   "ordinal": 15,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fMANAGER",
+   "ordinal": 16,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fACCOUNTANTPOST",
+   "ordinal": 17,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCONTRACTNUMBER",
+   "ordinal": 18,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCONTRACTVALIDDATE",
+   "ordinal": 19,
+   "type": "smalldatetime",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fACCOUNTANT",
+   "ordinal": 20,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPASSPORT",
+   "ordinal": 21,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSOCCARDNUM",
+   "ordinal": 22,
+   "type": "nvarchar(10)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCONTDEPOSIT",
+   "ordinal": 23,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCONTDEPSCHEME",
+   "ordinal": 24,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXTERNALCODE",
+   "ordinal": 25,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVATFREE",
+   "ordinal": 26,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSED",
+   "ordinal": 27,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISN",
+   "ordinal": 28,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISFOREIGN",
+   "ordinal": 29,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBODY",
+   "ordinal": 30,
+   "type": "nvarchar(3000)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 31,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYSTARTTIME",
+   "ordinal": 32,
+   "type": "time",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDELIVERYENDTIME",
+   "ordinal": 33,
+   "type": "time",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTSACCESSSCHEME",
+   "ordinal": 34,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUSEAUTORESERVATION",
+   "ordinal": 35,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fORGANIZATIONACCOUNT",
+   "ordinal": 36,
+   "type": "nvarchar(22)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPREFERREDPRODUCTS",
+   "ordinal": 37,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDISCOUNTGROUP",
+   "ordinal": 38,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSCALEDISCOUNTGROUP",
+   "ordinal": 39,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fGIFTPROMOTIONGROUP",
+   "ordinal": 40,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fIBCOMMENT",
+   "ordinal": 41,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXTERNALBODY",
+   "ordinal": 42,
+   "type": "nvarchar(max)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fIDENTITYDOC",
+   "ordinal": 43,
+   "type": "tinyint",
+   "nullable": true,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [
+  {
+   "table": "dbo.CUSTOMERSPHERES",
+   "column": "fCUSTOMERID",
+   "ref_column": "fID"
+  },
+  {
+   "table": "dbo.CUSTOMERB2BDATA",
+   "column": "fCUSTOMERID",
+   "ref_column": "fID"
+  },
+  {
+   "table": "dbo.CUSTOMERCONTACTS",
+   "column": "fCUSTOMERID",
+   "ref_column": "fID"
+  },
+  {
+   "table": "dbo.CUSTOMERSALESAREAS",
+   "column": "fCUSTOMERID",
+   "ref_column": "fID"
+  },
+  {
+   "table": "dbo.CUSTOMERLIMITS",
+   "column": "fCUSTOMERID",
+   "ref_column": "fID"
+  },
+  {
+   "table": "dbo.CUSTOMERACCOUNTSINBANK",
+   "column": "fCUSTOMERID",
+   "ref_column": "fID"
+  },
+  {
+   "table": "dbo.CUSTOMERDELIVERYADDRESSES",
+   "column": "fCUSTOMERID",
+   "ref_column": "fID"
+  }
+ ],
+ "indexes": [
+  {
+   "name": "I_CUSTOMERS1",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fCODE"
+  },
+  {
+   "name": "I_CUSTOMERS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCLOSED"
+  },
+  {
+   "name": "I_CUSTOMERS3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fGROUP"
+  },
+  {
+   "name": "I_CUSTOMERS4",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fPHONE"
+  },
+  {
+   "name": "I_CUSTOMERS5",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fISN"
+  },
+  {
+   "name": "I_CUSTOMERS6",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDISCOUNTGROUP"
+  },
+  {
+   "name": "PK_CUSTOMERS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  }
+ ],
+ "samples": [
+  {
+   "fID": 1,
+   "fCODE": "A005",
+   "fNAME": "Գուրգեն Գրիգորյան",
+   "fFULLNAME": "Գուրգեն Գրիգորյան",
+   "fGROUP": "002",
+   "fTAXCODE": "",
+   "fPRICELIST": "01",
+   "fPAYMENTTYPE": "",
+   "fREGION": "",
+   "fDELAYDAYS": 3,
+   "fPRIORITY": 0,
+   "fADDRESS": "",
+   "fPHONE": "",
+   "fEMAIL": "",
+   "fMANAGERPOST": "",
+   "fMANAGER": "",
+   "fACCOUNTANTPOST": "",
+   "fCONTRACTNUMBER": "",
+   "fCONTRACTVALIDDATE": null,
+   "fACCOUNTANT": "",
+   "fPASSPORT": "",
+   "fSOCCARDNUM": "",
+   "fCONTDEPOSIT": false,
+   "fCONTDEPSCHEME": "",
+   "fEXTERNALCODE": "",
+   "fVATFREE": false,
+   "fCLOSED": true,
+   "fISN": "D7FFA97A-4D1C-4B11-8D62-7EC4A959186A",
+   "fISFOREIGN": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fDELIVERYSTARTTIME": null,
+   "fDELIVERYENDTIME": null,
+   "fPRODUCTSACCESSSCHEME": "",
+   "fUSEAUTORESERVATION": false,
+   "fORGANIZATIONACCOUNT": "",
+   "fPREFERREDPRODUCTS": "",
+   "fDISCOUNTGROUP": "",
+   "fSCALEDISCOUNTGROUP": "",
+   "fGIFTPROMOTIONGROUP": "",
+   "fIBCOMMENT": "",
+   "fEXTERNALBODY": null,
+   "fIDENTITYDOC": null
+  },
+  {
+   "fID": 2,
+   "fCODE": "0003",
+   "fNAME": "Կամեյա ՍՊԸ",
+   "fFULLNAME": "Կամեյա ՍՊԸ Տուրանդոտ",
+   "fGROUP": "999",
+   "fTAXCODE": "00824587",
+   "fPRICELIST": "01",
+   "fPAYMENTTYPE": "1",
+   "fREGION": "",
+   "fDELAYDAYS": 30,
+   "fPRIORITY": 0,
+   "fADDRESS": "Իսահակյան 27",
+   "fPHONE": "",
+   "fEMAIL": "",
+   "fMANAGERPOST": "",
+   "fMANAGER": "",
+   "fACCOUNTANTPOST": "",
+   "fCONTRACTNUMBER": "",
+   "fCONTRACTVALIDDATE": null,
+   "fACCOUNTANT": "",
+   "fPASSPORT": "",
+   "fSOCCARDNUM": "9201",
+   "fCONTDEPOSIT": true,
+   "fCONTDEPSCHEME": "",
+   "fEXTERNALCODE": "",
+   "fVATFREE": false,
+   "fCLOSED": false,
+   "fISN": "8DC320AC-3B7D-4147-ABCE-7081CBF28350",
+   "fISFOREIGN": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fDELIVERYSTARTTIME": null,
+   "fDELIVERYENDTIME": null,
+   "fPRODUCTSACCESSSCHEME": "",
+   "fUSEAUTORESERVATION": true,
+   "fORGANIZATIONACCOUNT": "",
+   "fPREFERREDPRODUCTS": "",
+   "fDISCOUNTGROUP": "",
+   "fSCALEDISCOUNTGROUP": "",
+   "fGIFTPROMOTIONGROUP": "033",
+   "fIBCOMMENT": "",
+   "fEXTERNALBODY": null,
+   "fIDENTITYDOC": null
+  },
+  {
+   "fID": 3,
+   "fCODE": "0004",
+   "fNAME": "Արև ս/մ /Միկոյան",
+   "fFULLNAME": "Կորոնա Սոլարե ՍՊԸ",
+   "fGROUP": "021",
+   "fTAXCODE": "03809643",
+   "fPRICELIST": "01",
+   "fPAYMENTTYPE": "2",
+   "fREGION": "",
+   "fDELAYDAYS": 30,
+   "fPRIORITY": 0,
+   "fADDRESS": "Նորքի 5-րդ զ., Միկոյան 4",
+   "fPHONE": "",
+   "fEMAIL": "",
+   "fMANAGERPOST": "",
+   "fMANAGER": "",
+   "fACCOUNTANTPOST": "",
+   "fCONTRACTNUMBER": "",
+   "fCONTRACTVALIDDATE": null,
+   "fACCOUNTANT": "",
+   "fPASSPORT": "",
+   "fSOCCARDNUM": "2676",
+   "fCONTDEPOSIT": true,
+   "fCONTDEPSCHEME": "",
+   "fEXTERNALCODE": "",
+   "fVATFREE": false,
+   "fCLOSED": false,
+   "fISN": "C8DE4ADE-DCF4-471A-9A17-FD41862772F1",
+   "fISFOREIGN": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fDELIVERYSTARTTIME": null,
+   "fDELIVERYENDTIME": null,
+   "fPRODUCTSACCESSSCHEME": "",
+   "fUSEAUTORESERVATION": true,
+   "fORGANIZATIONACCOUNT": "",
+   "fPREFERREDPRODUCTS": "",
+   "fDISCOUNTGROUP": "021",
+   "fSCALEDISCOUNTGROUP": "",
+   "fGIFTPROMOTIONGROUP": "",
+   "fIBCOMMENT": "",
+   "fEXTERNALBODY": null,
+   "fIDENTITYDOC": null
+  }
+ ]
+}

@@ -1,0 +1,61 @@
+{
+ "schema": "dbo",
+ "name": "CURREXCHG",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fDATE",
+   "ordinal": 1,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUR",
+   "ordinal": 2,
+   "type": "nchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fRATE",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBASE",
+   "ordinal": 4,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 5,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [
+  {
+   "column": "fCUR",
+   "ref_table": "dbo.CURR",
+   "ref_column": "fCUR",
+   "fk": "FK_CURREXCHG_fCUR"
+  }
+ ],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_CURREXCHG",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCUR, fDATE"
+  }
+ ],
+ "samples": []
+}

@@ -1,0 +1,76 @@
+{
+ "schema": "dbo",
+ "name": "SaleDetails",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "SaleDetailID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "SaleID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "ProductID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "Quantity",
+   "ordinal": 4,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "UnitPrice",
+   "ordinal": 5,
+   "type": "decimal(10,2)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "Subtotal",
+   "ordinal": 6,
+   "type": "decimal(10,2)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [
+  "SaleDetailID"
+ ],
+ "foreign_keys": [
+  {
+   "column": "SaleID",
+   "ref_table": "dbo.Sales",
+   "ref_column": "SaleID",
+   "fk": "FK__SaleDetai__SaleI__3E34AA7F"
+  },
+  {
+   "column": "ProductID",
+   "ref_table": "dbo.Products",
+   "ref_column": "ProductID",
+   "fk": "FK__SaleDetai__Produ__3F28CEB8"
+  }
+ ],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK__SaleDeta__70DB141E09D8B983",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "SaleDetailID"
+  }
+ ],
+ "samples": []
+}

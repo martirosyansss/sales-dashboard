@@ -1,0 +1,224 @@
+{
+ "schema": "dbo",
+ "name": "SALESAGENTS",
+ "row_count": 181,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCODE",
+   "ordinal": 2,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXTERNALCODE",
+   "ordinal": 4,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSED",
+   "ordinal": 5,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUSERID",
+   "ordinal": 6,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fDEVICEID",
+   "ordinal": 7,
+   "type": "uniqueidentifier",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPASSPORTID",
+   "ordinal": 8,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISFOREIGN",
+   "ordinal": 9,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fISN",
+   "ordinal": 10,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBODY",
+   "ordinal": 11,
+   "type": "nvarchar(3000)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 12,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fFOLLOWERSCHEME",
+   "ordinal": 13,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUESTIONNAIRESACCESSSCHEME",
+   "ordinal": 14,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVISITRESULTSACCESSSCHEME",
+   "ordinal": 15,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fREMCHECKMODE",
+   "ordinal": 16,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXTERNALBODY",
+   "ordinal": 17,
+   "type": "nvarchar(max)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fRESERVATIONSCHEME",
+   "ordinal": 18,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_SALESAGENTS1",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fCODE"
+  },
+  {
+   "name": "I_SALESAGENTS2",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fUSERID"
+  },
+  {
+   "name": "I_SALESAGENTS3",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fISN"
+  },
+  {
+   "name": "PK_SALESAGENTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  }
+ ],
+ "samples": [
+  {
+   "fID": 1,
+   "fCODE": "B001",
+   "fNAME": "Իսոյան Լևոն",
+   "fEXTERNALCODE": "",
+   "fCLOSED": false,
+   "fUSERID": null,
+   "fDEVICEID": null,
+   "fPASSPORTID": "",
+   "fISFOREIGN": false,
+   "fISN": "25782360-B4CD-4D11-A1F5-A88B918A85B5",
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fFOLLOWERSCHEME": "",
+   "fQUESTIONNAIRESACCESSSCHEME": "",
+   "fVISITRESULTSACCESSSCHEME": "000",
+   "fREMCHECKMODE": "0",
+   "fEXTERNALBODY": null,
+   "fRESERVATIONSCHEME": ""
+  },
+  {
+   "fID": 2,
+   "fCODE": "B002/1",
+   "fNAME": "Առաքելյան Դավիթ",
+   "fEXTERNALCODE": "",
+   "fCLOSED": false,
+   "fUSERID": null,
+   "fDEVICEID": null,
+   "fPASSPORTID": "",
+   "fISFOREIGN": false,
+   "fISN": "3CB404E9-00B6-4ED5-ADC3-43266E5ACCFD",
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fFOLLOWERSCHEME": "",
+   "fQUESTIONNAIRESACCESSSCHEME": "",
+   "fVISITRESULTSACCESSSCHEME": "000",
+   "fREMCHECKMODE": "0",
+   "fEXTERNALBODY": null,
+   "fRESERVATIONSCHEME": ""
+  },
+  {
+   "fID": 3,
+   "fCODE": "B003",
+   "fNAME": "Անտոնյան Անդրանիկ",
+   "fEXTERNALCODE": "",
+   "fCLOSED": false,
+   "fUSERID": null,
+   "fDEVICEID": null,
+   "fPASSPORTID": "",
+   "fISFOREIGN": false,
+   "fISN": "BBA7BDF7-C223-4608-81DF-C5DAFFA4CCA4",
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fFOLLOWERSCHEME": "",
+   "fQUESTIONNAIRESACCESSSCHEME": "",
+   "fVISITRESULTSACCESSSCHEME": "000",
+   "fREMCHECKMODE": "0",
+   "fEXTERNALBODY": null,
+   "fRESERVATIONSCHEME": ""
+  }
+ ]
+}

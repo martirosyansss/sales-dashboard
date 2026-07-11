@@ -1,0 +1,93 @@
+{
+ "schema": "dbo",
+ "name": "CUSTOMERLIMITS",
+ "row_count": 6892,
+ "columns": [
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDIVISION",
+   "ordinal": 2,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUMLIMIT",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOVERDEBTLIMIT",
+   "ordinal": 4,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 5,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 6,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [
+  {
+   "column": "fCUSTOMERID",
+   "ref_table": "dbo.CUSTOMERS",
+   "ref_column": "fID",
+   "fk": "FK_CUSTOMERLIMITS_fCUSTOMERID"
+  }
+ ],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_CUSTOMERLIMITS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCUSTOMERID, fDIVISION"
+  }
+ ],
+ "samples": [
+  {
+   "fCUSTOMERID": 2,
+   "fDIVISION": "000000",
+   "fSUMLIMIT": 25000.0,
+   "fOVERDEBTLIMIT": 1.0,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCUSTOMERID": 5,
+   "fDIVISION": "000000",
+   "fSUMLIMIT": 46500.0,
+   "fOVERDEBTLIMIT": 1.0,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCUSTOMERID": 6,
+   "fDIVISION": "000000",
+   "fSUMLIMIT": 0.0,
+   "fOVERDEBTLIMIT": 100.0,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

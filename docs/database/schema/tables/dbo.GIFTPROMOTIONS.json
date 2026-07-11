@@ -1,0 +1,182 @@
+{
+ "schema": "dbo",
+ "name": "GIFTPROMOTIONS",
+ "row_count": 982,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 2,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVALIDUNTIL",
+   "ordinal": 3,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERTYPE",
+   "ordinal": 4,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 5,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERGIFTPROMOTIONGROUP",
+   "ordinal": 6,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTTYPE",
+   "ordinal": 7,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 8,
+   "type": "int",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fGIFTPROMOTIONCONDITIONALPRODUCT",
+   "ordinal": 9,
+   "type": "nvarchar(6)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCALCULATIONBASE",
+   "ordinal": 10,
+   "type": "varchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCALCULATIONVALUE",
+   "ordinal": 11,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fGIFTID",
+   "ordinal": 12,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fGIFTQUANTITY",
+   "ordinal": 13,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 14,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSE",
+   "ordinal": 15,
+   "type": "bit",
+   "nullable": false,
+   "default": "((0))"
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_GIFTPROMOTIONS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fISN"
+  },
+  {
+   "name": "PK_GIFTPROMOTIONS1",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fCUSTOMERTYPE, fCUSTOMERID, fCUSTOMERGIFTPROMOTIONGROUP, fPRODUCTTYPE, fPRODUCTID, fGIFTPROMOTIONCONDITIONALPRODUCT, fDATE, fCALCULATIONBASE, fCALCULATIONVALUE"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "790BB5A2-C501-490C-8164-627A37DD425C",
+   "fDATE": "2021-09-03T00:00:00",
+   "fVALIDUNTIL": "2022-07-08T00:00:00",
+   "fCUSTOMERTYPE": "0",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGIFTPROMOTIONGROUP": null,
+   "fPRODUCTTYPE": "1",
+   "fPRODUCTID": null,
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": "002",
+   "fCALCULATIONBASE": "Qnt",
+   "fCALCULATIONVALUE": 60.0,
+   "fGIFTID": 18,
+   "fGIFTQUANTITY": 6.0,
+   "fROWNUM": 1,
+   "fCLOSE": false
+  },
+  {
+   "fISN": "2C670758-169C-49AA-ADA5-866867619425",
+   "fDATE": "2019-02-01T00:00:00",
+   "fVALIDUNTIL": "2079-01-01T00:00:00",
+   "fCUSTOMERTYPE": "0",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGIFTPROMOTIONGROUP": null,
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 17,
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": null,
+   "fCALCULATIONBASE": "Qnt",
+   "fCALCULATIONVALUE": 60.0,
+   "fGIFTID": 17,
+   "fGIFTQUANTITY": 6.0,
+   "fROWNUM": 0,
+   "fCLOSE": false
+  },
+  {
+   "fISN": "8AC5D822-B548-4051-B261-A7BF5C1A488C",
+   "fDATE": "2021-05-13T00:00:00",
+   "fVALIDUNTIL": "2079-01-01T00:00:00",
+   "fCUSTOMERTYPE": "0",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGIFTPROMOTIONGROUP": null,
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 17,
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": null,
+   "fCALCULATIONBASE": "Qnt",
+   "fCALCULATIONVALUE": 60.0,
+   "fGIFTID": 17,
+   "fGIFTQUANTITY": 6.0,
+   "fROWNUM": 0,
+   "fCLOSE": false
+  }
+ ]
+}

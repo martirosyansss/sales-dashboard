@@ -1,0 +1,162 @@
+{
+ "schema": "dbo",
+ "name": "QUESTIONS",
+ "row_count": 3,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCODE",
+   "ordinal": 2,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 3,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDESCRIPTION",
+   "ordinal": 4,
+   "type": "nvarchar(1000)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fGROUP",
+   "ordinal": 5,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fANSWERTYPE",
+   "ordinal": 6,
+   "type": "nvarchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTREECODE",
+   "ordinal": 7,
+   "type": "nvarchar(8)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fIMAGESALLOWED",
+   "ordinal": 8,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fIMAGESISREQUIRED",
+   "ordinal": 9,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCLOSED",
+   "ordinal": 10,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBODY",
+   "ordinal": 11,
+   "type": "nvarchar(3000)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 12,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fHASFRACTION",
+   "ordinal": 13,
+   "type": "bit",
+   "nullable": true,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_QUESTIONS1",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fCODE"
+  },
+  {
+   "name": "PK_QUESTIONS1",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  }
+ ],
+ "samples": [
+  {
+   "fID": 1,
+   "fCODE": "001",
+   "fNAME": "Ապրանքներից որ լիմոնադն է լավ վաճառվում",
+   "fDESCRIPTION": "",
+   "fGROUP": "",
+   "fANSWERTYPE": "4",
+   "fTREECODE": null,
+   "fIMAGESALLOWED": false,
+   "fIMAGESISREQUIRED": false,
+   "fCLOSED": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fHASFRACTION": null
+  },
+  {
+   "fID": 2,
+   "fCODE": "002",
+   "fNAME": "Դեմ եք արդյոք 10 տոկոս թանկացմանը",
+   "fDESCRIPTION": "",
+   "fGROUP": "",
+   "fANSWERTYPE": "3",
+   "fTREECODE": null,
+   "fIMAGESALLOWED": false,
+   "fIMAGESISREQUIRED": false,
+   "fCLOSED": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fHASFRACTION": null
+  },
+  {
+   "fID": 3,
+   "fCODE": "003",
+   "fNAME": "Ինչ նոր համ կուզենայիք տեսնել",
+   "fDESCRIPTION": "",
+   "fGROUP": "",
+   "fANSWERTYPE": "4",
+   "fTREECODE": null,
+   "fIMAGESALLOWED": false,
+   "fIMAGESISREQUIRED": false,
+   "fCLOSED": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fHASFRACTION": null
+  }
+ ]
+}

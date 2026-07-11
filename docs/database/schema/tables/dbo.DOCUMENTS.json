@@ -1,0 +1,264 @@
+{
+ "schema": "dbo",
+ "name": "DOCUMENTS",
+ "row_count": 1232337,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCTYPE",
+   "ordinal": 2,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCSTATE",
+   "ordinal": 3,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDATE",
+   "ordinal": 4,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDOCNUM",
+   "ordinal": 5,
+   "type": "nvarchar(12)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUMM",
+   "ordinal": 6,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCOMMENT",
+   "ordinal": 7,
+   "type": "nvarchar(255)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBODY",
+   "ordinal": 8,
+   "type": "nvarchar(max)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEXTBODY",
+   "ordinal": 9,
+   "type": "nvarchar(3000)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 10,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCUSTOMERID",
+   "ordinal": 11,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDIVISION",
+   "ordinal": 12,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAREA",
+   "ordinal": 13,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSPEC",
+   "ordinal": 14,
+   "type": "nvarchar(100)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fLASTMODIFYDATE",
+   "ordinal": 15,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fLASTMODIFIERID",
+   "ordinal": 16,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCREATIONDATE",
+   "ordinal": 17,
+   "type": "datetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCREATORUSERID",
+   "ordinal": 18,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 19,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I1_DOCUMENTS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDOCTYPE, fDATE"
+  },
+  {
+   "name": "I2_DOCUMENTS",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fDOCTYPE, fDOCNUM"
+  },
+  {
+   "name": "I3_DOCUMENTS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDOCTYPE, fDOCNUM"
+  },
+  {
+   "name": "I4_DOCUMENTS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fSALESAGENTID, fDOCTYPE, fDOCSTATE, fDATE"
+  },
+  {
+   "name": "I5_DOCUMENTS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDOCTYPE, fDOCSTATE, fCREATIONDATE"
+  },
+  {
+   "name": "I6_DOCUMENTS",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fISN, fDOCSTATE"
+  },
+  {
+   "name": "I7_DOCUMENTS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDOCNUM, fDOCTYPE"
+  },
+  {
+   "name": "I_CUSTOMERID",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCUSTOMERID, fDOCTYPE, fDOCSTATE"
+  },
+  {
+   "name": "PK_DOCUMENTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fISN"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "D21A4873-0334-4E90-B52E-00001B499211",
+   "fDOCTYPE": 1,
+   "fDOCSTATE": 2,
+   "fDATE": "2024-05-22T00:00:00",
+   "fDOCNUM": "000000233052",
+   "fSUMM": 8300.0,
+   "fCOMMENT": "",
+   "fBODY": "\r\nVANAGENTID:1025\r\nDELIVERYCAR:504 CQ 61\r\nPRICELISTTYPE:01\r\nCREATIONTYPEID:5da6d5cb-4155-4e73-b783-b7577b456574\r\nCREATEM…",
+   "fEXTBODY": "<data />",
+   "fSALESAGENTID": 1029,
+   "fCUSTOMERID": 36643,
+   "fDIVISION": "000000",
+   "fSALESAREA": "101",
+   "fSPEC": "",
+   "fLASTMODIFYDATE": "2024-05-22T16:13:10.320000",
+   "fLASTMODIFIERID": 1,
+   "fCREATIONDATE": "2024-05-22T16:13:10.320000",
+   "fCREATORUSERID": 1,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fDOCTYPE": 2,
+   "fDOCSTATE": 2,
+   "fDATE": "2025-12-22T00:00:00",
+   "fDOCNUM": "000000326572",
+   "fSUMM": 6250.15,
+   "fCOMMENT": "",
+   "fBODY": "\r\nVANAGENTID:2102\r\nOTHSYSSENDSTATUS:1\r\nDELIVERYCAR:333NO33\r\nPRICELISTTYPE:01\r\nCREATIONTYPEID:00000000-0000-0000-0000-000…",
+   "fEXTBODY": null,
+   "fSALESAGENTID": 2099,
+   "fCUSTOMERID": 33089,
+   "fDIVISION": "000000",
+   "fSALESAREA": "108/1",
+   "fSPEC": "",
+   "fLASTMODIFYDATE": "2025-12-22T10:18:25.127000",
+   "fLASTMODIFIERID": 20,
+   "fCREATIONDATE": "2025-12-22T10:17:37.953000",
+   "fCREATORUSERID": 20,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fISN": "4A1965F5-CAA2-4734-9501-00003E5D1AA3",
+   "fDOCTYPE": 2,
+   "fDOCSTATE": 2,
+   "fDATE": "2023-07-17T00:00:00",
+   "fDOCNUM": "000000218376",
+   "fSUMM": 20520.0,
+   "fCOMMENT": "",
+   "fBODY": "\r\nVANAGENTID:2048\r\nOTHSYSSENDSTATUS:2\r\nDELIVERYCAR:123AV61\r\nPRICELISTTYPE:01\r\nCREATIONTYPEID:00000000-0000-0000-0000-000…",
+   "fEXTBODY": null,
+   "fSALESAGENTID": 2088,
+   "fCUSTOMERID": 12917,
+   "fDIVISION": "000000",
+   "fSALESAREA": "104",
+   "fSPEC": "",
+   "fLASTMODIFYDATE": "2023-07-15T15:57:28.160000",
+   "fLASTMODIFIERID": 15,
+   "fCREATIONDATE": "2023-07-15T15:57:28.160000",
+   "fCREATORUSERID": 15,
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

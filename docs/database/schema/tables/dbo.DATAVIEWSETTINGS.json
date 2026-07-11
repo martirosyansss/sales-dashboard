@@ -1,0 +1,86 @@
+{
+ "schema": "dbo",
+ "name": "DATAVIEWSETTINGS",
+ "row_count": 33,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 2,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fGROUP",
+   "ordinal": 3,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCAPTION",
+   "ordinal": 4,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOWNERUSERID",
+   "ordinal": 5,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFINITION",
+   "ordinal": 6,
+   "type": "nvarchar(max)",
+   "nullable": true,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_DATAVIEWSETTINGS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID, fOWNERUSERID, fNAME, fGROUP"
+  }
+ ],
+ "samples": [
+  {
+   "fID": 0,
+   "fNAME": "Customers",
+   "fGROUP": "",
+   "fCAPTION": "",
+   "fOWNERUSERID": 0,
+   "fDEFINITION": "<ViewSetting Name=\"Customers\" Caption=\"\" Group=\"\"><Columns><Column Name=\"Code\" /><Column Name=\"CreationDate\" /><Column N…"
+  },
+  {
+   "fID": 0,
+   "fNAME": "CustomersOps",
+   "fGROUP": "",
+   "fCAPTION": "",
+   "fOWNERUSERID": 0,
+   "fDEFINITION": "<ViewSetting Name=\"CustomersOps\" Caption=\"\" Group=\"\"><Columns><Column Name=\"OperDate\" /><Column Name=\"DocNum\" /><Column …"
+  },
+  {
+   "fID": 0,
+   "fNAME": "CustomersTurn",
+   "fGROUP": "",
+   "fCAPTION": "",
+   "fOWNERUSERID": 0,
+   "fDEFINITION": "<ViewSetting Name=\"CustomersTurn\" Caption=\"\" Group=\"\"><Columns><Column Name=\"Customer\" /><Column Name=\"CustomerName\" /><…"
+  }
+ ]
+}

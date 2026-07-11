@@ -1,0 +1,76 @@
+{
+ "schema": "dbo",
+ "name": "LAYOUTVALUES",
+ "row_count": 5,
+ "columns": [
+  {
+   "name": "fUSERID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCAPTION",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTYPE",
+   "ordinal": 4,
+   "type": "tinyint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBODY",
+   "ordinal": 5,
+   "type": "nvarchar(max)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_LAYOUTVALUES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fUSERID, fNAME, fCAPTION"
+  }
+ ],
+ "samples": [
+  {
+   "fUSERID": 8,
+   "fNAME": "Sales",
+   "fCAPTION": "Ռութերի գրանցում",
+   "fTYPE": 1,
+   "fBODY": "77u/PFh0cmFTZXJpYWxpemVyIHZlcnNpb249IjEuMCIgYXBwbGljYXRpb249IkdyaWRDb250cm9sIj4NCiAgPHByb3BlcnR5IG5hbWU9IiNMYXlvdXRWZXJz…"
+  },
+  {
+   "fUSERID": 8,
+   "fNAME": "SalesAnalyse",
+   "fCAPTION": "Զեղչ կամ նվեր",
+   "fTYPE": 1,
+   "fBODY": "77u/PFh0cmFTZXJpYWxpemVyIHZlcnNpb249IjEuMCIgYXBwbGljYXRpb249IkdyaWRDb250cm9sIj4NCiAgPHByb3BlcnR5IG5hbWU9IiNMYXlvdXRWZXJz…"
+  },
+  {
+   "fUSERID": 15,
+   "fNAME": "CustomersRems",
+   "fCAPTION": "Ցանցերի պարտքեր",
+   "fTYPE": 1,
+   "fBODY": "77u/PFh0cmFTZXJpYWxpemVyIHZlcnNpb249IjEuMCIgYXBwbGljYXRpb249IkdyaWRDb250cm9sIj4NCiAgPHByb3BlcnR5IG5hbWU9IiNMYXlvdXRWZXJz…"
+  }
+ ]
+}

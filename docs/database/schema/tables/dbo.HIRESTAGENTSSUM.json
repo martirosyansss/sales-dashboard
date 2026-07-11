@@ -1,0 +1,56 @@
+{
+ "schema": "dbo",
+ "name": "HIRESTAGENTSSUM",
+ "row_count": 272,
+ "columns": [
+  {
+   "name": "fDIVISION",
+   "ordinal": 1,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fSUM",
+   "ordinal": 3,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_HIRESTAGENTSSUM",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fSALESAGENTID, fDIVISION"
+  }
+ ],
+ "samples": [
+  {
+   "fDIVISION": "000000",
+   "fSALESAGENTID": 7,
+   "fSUM": 0.0
+  },
+  {
+   "fDIVISION": "000000",
+   "fSALESAGENTID": 8,
+   "fSUM": 0.0
+  },
+  {
+   "fDIVISION": "000000",
+   "fSALESAGENTID": 9,
+   "fSUM": 0.0
+  }
+ ]
+}

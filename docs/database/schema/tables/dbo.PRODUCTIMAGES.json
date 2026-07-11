@@ -1,0 +1,72 @@
+{
+ "schema": "dbo",
+ "name": "PRODUCTIMAGES",
+ "row_count": 70,
+ "columns": [
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fIMAGEGUID",
+   "ordinal": 2,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fIMAGE",
+   "ordinal": 3,
+   "type": "varbinary(max)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFAULT",
+   "ordinal": 4,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_PRODUCTSIMAGES2",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fPRODUCTID, fDEFAULT"
+  },
+  {
+   "name": "PK_PRODUCTSIMAGES",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fPRODUCTID"
+  }
+ ],
+ "samples": [
+  {
+   "fPRODUCTID": 3,
+   "fIMAGEGUID": "36FB5D98-9BE4-4498-B21A-C335D24B9A72",
+   "fIMAGE": "<binary 29849 bytes>",
+   "fDEFAULT": true
+  },
+  {
+   "fPRODUCTID": 4,
+   "fIMAGEGUID": "15922AC9-2F51-4FF7-B177-47D7E3D22367",
+   "fIMAGE": "<binary 24037 bytes>",
+   "fDEFAULT": true
+  },
+  {
+   "fPRODUCTID": 7,
+   "fIMAGEGUID": "A7E29835-54F0-4F2B-A8F6-A35C9F287633",
+   "fIMAGE": "<binary 48501 bytes>",
+   "fDEFAULT": true
+  }
+ ]
+}

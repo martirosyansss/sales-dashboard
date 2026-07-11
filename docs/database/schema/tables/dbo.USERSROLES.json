@@ -1,0 +1,52 @@
+{
+ "schema": "dbo",
+ "name": "USERSROLES",
+ "row_count": 65,
+ "columns": [
+  {
+   "name": "fROLE",
+   "ordinal": 1,
+   "type": "nvarchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUSERID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_USERSROLES1",
+   "unique": true,
+   "type": "NONCLUSTERED",
+   "columns": "fUSERID"
+  },
+  {
+   "name": "PK_USERSROLES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fROLE, fUSERID"
+  }
+ ],
+ "samples": [
+  {
+   "fROLE": "000",
+   "fUSERID": 0
+  },
+  {
+   "fROLE": "003",
+   "fUSERID": 1
+  },
+  {
+   "fROLE": "003",
+   "fUSERID": 2
+  }
+ ]
+}

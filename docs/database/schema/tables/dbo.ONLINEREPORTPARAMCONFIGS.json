@@ -1,0 +1,33 @@
+{
+ "schema": "dbo",
+ "name": "ONLINEREPORTPARAMCONFIGS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fTEMPLATENAME",
+   "ordinal": 1,
+   "type": "nvarchar(20)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPARAMCODE",
+   "ordinal": 2,
+   "type": "nvarchar(30)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_ONLINEREPORTPARAMCONFIGS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fTEMPLATENAME, fPARAMCODE"
+  }
+ ],
+ "samples": []
+}

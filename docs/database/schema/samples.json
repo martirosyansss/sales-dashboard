@@ -1,0 +1,4162 @@
+{
+ "dbo.ABCSCHEMEDETAILS": [
+  {
+   "fSCHEMECODE": "000",
+   "fCLASS": "A",
+   "fPERCENT": 80.0,
+   "fROWNUM": 0
+  },
+  {
+   "fSCHEMECODE": "000",
+   "fCLASS": "B",
+   "fPERCENT": 15.0,
+   "fROWNUM": 1
+  },
+  {
+   "fSCHEMECODE": "000",
+   "fCLASS": "C",
+   "fPERCENT": 5.0,
+   "fROWNUM": 2
+  }
+ ],
+ "dbo.ABCSCHEMES": [
+  {
+   "fCODE": "000",
+   "fNAME": "Դասական վերլուծության սխեմա",
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.ACCESSIBLESALESAREAS": [],
+ "dbo.ACTUALROUTES": [
+  {
+   "fROWISN": "3E09357E-BB33-42FC-829A-0B4B83BAD7FF",
+   "fDATE": "2017-02-01T00:00:00",
+   "fSALESAGENTID": 7,
+   "fCUSTOMERID": 718,
+   "fSTARTTIME": "2017-02-01T11:22:39.133000",
+   "fENDTIME": "2017-02-01T11:23:37.027000",
+   "fLATITUDE": null,
+   "fLONGITUDE": null,
+   "fACCURACY": null,
+   "fVISITRESULT": "01",
+   "fCOMMENT": "",
+   "fROWNUM": 0,
+   "fFORMOBILEPLANNED": false
+  },
+  {
+   "fROWISN": "49B05887-B0E9-40EF-AD89-7368C00C6B3F",
+   "fDATE": "2017-02-01T00:00:00",
+   "fSALESAGENTID": 7,
+   "fCUSTOMERID": 2393,
+   "fSTARTTIME": "2017-02-01T11:28:51.377000",
+   "fENDTIME": "2017-02-01T11:29:04.237000",
+   "fLATITUDE": null,
+   "fLONGITUDE": null,
+   "fACCURACY": null,
+   "fVISITRESULT": "01",
+   "fCOMMENT": "",
+   "fROWNUM": 1,
+   "fFORMOBILEPLANNED": false
+  },
+  {
+   "fROWISN": "CADBDB30-CDEC-4497-A079-665DB26F9152",
+   "fDATE": "2017-02-01T00:00:00",
+   "fSALESAGENTID": 7,
+   "fCUSTOMERID": 1564,
+   "fSTARTTIME": "2017-02-01T11:30:01.390000",
+   "fENDTIME": "2017-02-01T11:30:18.003000",
+   "fLATITUDE": 40.179344,
+   "fLONGITUDE": 44.518537,
+   "fACCURACY": 15.0,
+   "fVISITRESULT": "01",
+   "fCOMMENT": "",
+   "fROWNUM": 2,
+   "fFORMOBILEPLANNED": false
+  }
+ ],
+ "dbo.AGENTLOCATIONS": [
+  {
+   "fSALESAGENTID": 7,
+   "fDATETIME": "2017-02-01T11:30:01.390000",
+   "fLATITUDE": 40.179344,
+   "fLONGITUDE": 44.518537,
+   "fACCURACY": 15.0
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fDATETIME": "2017-02-01T11:30:01.390000",
+   "fLATITUDE": 40.179344,
+   "fLONGITUDE": 44.518537,
+   "fACCURACY": 15.0
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fDATETIME": "2017-02-01T11:32:52.837000",
+   "fLATITUDE": 40.177352,
+   "fLONGITUDE": 44.519695,
+   "fACCURACY": 40.0
+  }
+ ],
+ "dbo.ASSETACCOUNTINGDETAILS": [
+  {
+   "fISN": "266465BD-666F-406C-BBB9-03085B9B5956",
+   "fASSETID": 6,
+   "fQUANTITY": 1.0,
+   "fROWNUM": 0,
+   "fADDITIONALINFO": "",
+   "fASSETNUMBER": ""
+  },
+  {
+   "fISN": "266465BD-666F-406C-BBB9-03085B9B5956",
+   "fASSETID": 7,
+   "fQUANTITY": 1.0,
+   "fROWNUM": 1,
+   "fADDITIONALINFO": "",
+   "fASSETNUMBER": ""
+  },
+  {
+   "fISN": "266465BD-666F-406C-BBB9-03085B9B5956",
+   "fASSETID": 8,
+   "fQUANTITY": 1.0,
+   "fROWNUM": 2,
+   "fADDITIONALINFO": "",
+   "fASSETNUMBER": ""
+  }
+ ],
+ "dbo.ASSETNUMBERS": [
+  {
+   "fASSETID": 9,
+   "fASSETNUMBER": "1003",
+   "fADDITIONALINFO": "",
+   "fROWNUM": 0
+  },
+  {
+   "fASSETID": 29,
+   "fASSETNUMBER": "1000",
+   "fADDITIONALINFO": "",
+   "fROWNUM": 0
+  },
+  {
+   "fASSETID": 30,
+   "fASSETNUMBER": "1001",
+   "fADDITIONALINFO": "",
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.ASSETS": [
+  {
+   "fID": 9,
+   "fCODE": "1003",
+   "fNAME": "Սառնարան/նոր",
+   "fFULLNAME": "Սառնարան/նոր",
+   "fMEASUREUNIT": "հատ",
+   "fGROUP": "001",
+   "fBODY": null,
+   "fCLOSED": false,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fID": 29,
+   "fCODE": "1000",
+   "fNAME": "Սառնարան/նոր",
+   "fFULLNAME": "Սառնարան/նոր",
+   "fMEASUREUNIT": "հատ",
+   "fGROUP": "001",
+   "fBODY": null,
+   "fCLOSED": false,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fID": 30,
+   "fCODE": "1001",
+   "fNAME": "Սառնարան/նոր",
+   "fFULLNAME": "Սառնարան/նոր",
+   "fMEASUREUNIT": "հատ",
+   "fGROUP": "001",
+   "fBODY": null,
+   "fCLOSED": false,
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.ASSETSINVENTORYDETAILS": [],
+ "dbo.ASSIGNORS": [],
+ "dbo.ATTACHMENTS": [],
+ "dbo.AWP": [
+  {
+   "fNAME": "AWPBO",
+   "fCAPTIONID": "UD_AWPBO",
+   "fSYSTEM": false,
+   "fDEFINITION": "<Extensions><AWP Name=\"AWPBO\" CaptionId=\"UD_AWPBO\"><AWPLeaf CommandType=\"UserReport\" Command=\"UD_SalesRems\" CaptionId=\"U…",
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fNAME": "StockkeeperAWP",
+   "fCAPTIONID": "Stockkeeper",
+   "fSYSTEM": false,
+   "fDEFINITION": "<Extensions><AWP Name=\"StockkeeperAWP\" CaptionId=\"Stockkeeper\"><AWPLeaf Command=\"SalesOrdersFolder\" CaptionId=\"SalesOrde…",
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.BANKAM": [
+  {
+   "fCODE": "10300",
+   "fCAPTION": "ՀՀ Կենտրոնական բանկ",
+   "fIBANCODE": "  ",
+   "fSWIFTCODE": "CBRAAM22",
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCODE": "10301",
+   "fCAPTION": "ՏԴԿ Գորիս",
+   "fIBANCODE": "  ",
+   "fSWIFTCODE": "CBRAAM22",
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCODE": "10302",
+   "fCAPTION": "ՏԴԿ Վանաձոր",
+   "fIBANCODE": "  ",
+   "fSWIFTCODE": "CBRAAM22",
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.BARCODES": [
+  {
+   "fPRODUCTID": 3,
+   "fMEASUREUNIT": "հատ",
+   "fBARCODE": "4850002370146",
+   "fBASEUNITQUANTITY": 1.0,
+   "fMEASUREUNITQUANTITY": 1.0,
+   "fROWNUM": 0
+  },
+  {
+   "fPRODUCTID": 4,
+   "fMEASUREUNIT": "հատ",
+   "fBARCODE": "4850002370122",
+   "fBASEUNITQUANTITY": 1.0,
+   "fMEASUREUNITQUANTITY": 1.0,
+   "fROWNUM": 0
+  },
+  {
+   "fPRODUCTID": 7,
+   "fMEASUREUNIT": "հատ",
+   "fBARCODE": "4850002370351",
+   "fBASEUNITQUANTITY": 1.0,
+   "fMEASUREUNITQUANTITY": 1.0,
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.CALLS": [
+  {
+   "fID": "F7C278B9-0A7F-447A-BB6F-0002E226D41B",
+   "fLINKEDID": "1688637374.6574",
+   "fSTARTDATE": "2023-07-06T13:56:35.310000",
+   "fCUSTOMERPHONENUMBER": "+37495528586",
+   "fOPERATORPHONENUMBER": "200",
+   "fISINCOMING": true,
+   "fDURATIONINSECONDS": 284,
+   "fNOTES": "",
+   "fOPERATORUSERID": 15,
+   "fISREPEATEDCUSTOMER": false,
+   "fCALLSTATE": 2,
+   "fCALLPURPOSE": ""
+  },
+  {
+   "fID": "97B7FB4E-CB3C-43CD-867A-000511592891",
+   "fLINKEDID": "1753878505.6432",
+   "fSTARTDATE": "2025-07-30T16:28:48.160000",
+   "fCUSTOMERPHONENUMBER": "+37477787177",
+   "fOPERATORPHONENUMBER": "200",
+   "fISINCOMING": true,
+   "fDURATIONINSECONDS": 64,
+   "fNOTES": "",
+   "fOPERATORUSERID": 15,
+   "fISREPEATEDCUSTOMER": false,
+   "fCALLSTATE": 2,
+   "fCALLPURPOSE": ""
+  },
+  {
+   "fID": "B9CC8C81-90BA-4800-BF19-0009A4C75C63",
+   "fLINKEDID": "1719819141.362",
+   "fSTARTDATE": "2024-07-01T11:32:42.740000",
+   "fCUSTOMERPHONENUMBER": "+37460808003",
+   "fOPERATORPHONENUMBER": "200",
+   "fISINCOMING": true,
+   "fDURATIONINSECONDS": 20,
+   "fNOTES": "",
+   "fOPERATORUSERID": 15,
+   "fISREPEATEDCUSTOMER": false,
+   "fCALLSTATE": 2,
+   "fCALLPURPOSE": ""
+  }
+ ],
+ "dbo.CARS": [
+  {
+   "fCODE": "1",
+   "fNAME": "991AT61",
+   "fMAXCAPACITYBYVOLUME": 0.0,
+   "fDESCRINTAXSRV": "",
+   "fTS": "<binary 8 bytes>",
+   "fCOLOR": null,
+   "fMINCAPACITYBYVOLUME": 0.0,
+   "fISCLOSED": false,
+   "fEXTERNALCODE": "",
+   "fBODY": null,
+   "fMINCAPACITYBYWEIGHT": 0.0,
+   "fMAXCAPACITYBYWEIGHT": 0.0
+  },
+  {
+   "fCODE": "123AV61",
+   "fNAME": "HOWO",
+   "fMAXCAPACITYBYVOLUME": 0.0,
+   "fDESCRINTAXSRV": "",
+   "fTS": "<binary 8 bytes>",
+   "fCOLOR": null,
+   "fMINCAPACITYBYVOLUME": 0.0,
+   "fISCLOSED": false,
+   "fEXTERNALCODE": "",
+   "fBODY": null,
+   "fMINCAPACITYBYWEIGHT": 0.0,
+   "fMAXCAPACITYBYWEIGHT": 0.0
+  },
+  {
+   "fCODE": "124AV61",
+   "fNAME": "HOWO",
+   "fMAXCAPACITYBYVOLUME": 0.0,
+   "fDESCRINTAXSRV": "",
+   "fTS": "<binary 8 bytes>",
+   "fCOLOR": null,
+   "fMINCAPACITYBYVOLUME": 0.0,
+   "fISCLOSED": false,
+   "fEXTERNALCODE": "",
+   "fBODY": null,
+   "fMINCAPACITYBYWEIGHT": 0.0,
+   "fMAXCAPACITYBYWEIGHT": 0.0
+  }
+ ],
+ "dbo.COMPILEDSCRIPTS": [
+  {
+   "fASSEMBLYNAME": "CompiledScripts",
+   "fVERSION": "7.15.4.0",
+   "fSCRIPT": "<binary 9728 bytes>"
+  }
+ ],
+ "dbo.COMPLECTATIONDETAILS": [],
+ "dbo.CONTEXTFUNCTIONDEF": [],
+ "dbo.CPACODES": [
+  {
+   "fCODE": "01.61",
+   "fCAPTION": "Մշակաբույսերի աճեցման հետ կապված օժանադակ ծառայություններ բուսաբուծության բնագավառում",
+   "fTYPE": "2",
+   "fTS": "<binary 8 bytes>",
+   "fMARKINITDATE": null
+  },
+  {
+   "fCODE": "01.62",
+   "fCAPTION": "Կենդանիների բուծման հետ կապված օժանդակ ծառայություններ",
+   "fTYPE": "2",
+   "fTS": "<binary 8 bytes>",
+   "fMARKINITDATE": null
+  },
+  {
+   "fCODE": "01.64",
+   "fCAPTION": "Սերմերի մշակման և սերմացվի ֆոնդի ձևավորման հետ կապված ծառայություններ",
+   "fTYPE": "2",
+   "fTS": "<binary 8 bytes>",
+   "fMARKINITDATE": null
+  }
+ ],
+ "dbo.CURR": [],
+ "dbo.CURREXCHG": [],
+ "dbo.CUSTCHANGEREQCONTACTS": [
+  {
+   "fREQUESTID": 7747,
+   "fNAME": "Նն Հոլդինգ ՍՊԸ/ Արաբկիր 39",
+   "fPHONE": "+37444261196",
+   "fEMAIL": "",
+   "fDEFAULT": false,
+   "fROWNUM": 0,
+   "fNOTES": ""
+  },
+  {
+   "fREQUESTID": 14181,
+   "fNAME": "հուսիկ",
+   "fPHONE": "095490622",
+   "fEMAIL": "",
+   "fDEFAULT": false,
+   "fROWNUM": 0,
+   "fNOTES": ""
+  },
+  {
+   "fREQUESTID": 14241,
+   "fNAME": "հ",
+   "fPHONE": "093535812",
+   "fEMAIL": "",
+   "fDEFAULT": false,
+   "fROWNUM": 0,
+   "fNOTES": ""
+  }
+ ],
+ "dbo.CUSTCHANGEREQDELIVERYADDRESSES": [],
+ "dbo.CUSTCHANGEREQUESTS": [
+  {
+   "fID": 1,
+   "fISN": "86AD3E4D-8243-4E79-84C2-78297F76D57B",
+   "fCREATIONDATE": "2019-08-02T09:21:22.603000",
+   "fSALESAGENTID": 10,
+   "fSTATE": 1,
+   "fNAME": null,
+   "fFULLNAME": null,
+   "fTAXCODE": null,
+   "fPRICELIST": null,
+   "fGROUP": null,
+   "fADDRESS": null,
+   "fBUSINESSADDRESS": null,
+   "fREGION": null,
+   "fLATITUDE": 40.286221,
+   "fLONGITUDE": 44.359655,
+   "fACCURACY": 3.0,
+   "fPAYMENTTYPE": null,
+   "fDELAYDAYS": null,
+   "fCONTDEPOSIT": null,
+   "fCONTDEPSCHEME": null,
+   "fVATFREE": null,
+   "fCLOSED": null,
+   "fPASSPORT": null,
+   "fSOCCARDNUM": null,
+   "fPHONE": null,
+   "fEMAIL": null,
+   "fMANAGER": null,
+   "fMANAGERPOST": null,
+   "fCONTACTSCHANGED": false,
+   "fDELIVERYADDRESSESCHANGED": false,
+   "fISNEW": false
+  },
+  {
+   "fID": 2,
+   "fISN": "F5C4D0FD-A350-4040-8907-CFCCD0C95367",
+   "fCREATIONDATE": "2021-07-20T09:56:48.557000",
+   "fSALESAGENTID": 1027,
+   "fSTATE": 1,
+   "fNAME": null,
+   "fFULLNAME": null,
+   "fTAXCODE": null,
+   "fPRICELIST": null,
+   "fGROUP": null,
+   "fADDRESS": null,
+   "fBUSINESSADDRESS": null,
+   "fREGION": null,
+   "fLATITUDE": 40.145263,
+   "fLONGITUDE": 44.539247,
+   "fACCURACY": 0.0,
+   "fPAYMENTTYPE": null,
+   "fDELAYDAYS": null,
+   "fCONTDEPOSIT": null,
+   "fCONTDEPSCHEME": null,
+   "fVATFREE": null,
+   "fCLOSED": null,
+   "fPASSPORT": null,
+   "fSOCCARDNUM": null,
+   "fPHONE": null,
+   "fEMAIL": null,
+   "fMANAGER": null,
+   "fMANAGERPOST": null,
+   "fCONTACTSCHANGED": false,
+   "fDELIVERYADDRESSESCHANGED": false,
+   "fISNEW": false
+  },
+  {
+   "fID": 3,
+   "fISN": "C3B21ECA-C730-4131-9DB6-6D5BB9699519",
+   "fCREATIONDATE": "2021-10-14T17:07:54.760000",
+   "fSALESAGENTID": 2045,
+   "fSTATE": 1,
+   "fNAME": null,
+   "fFULLNAME": null,
+   "fTAXCODE": null,
+   "fPRICELIST": null,
+   "fGROUP": null,
+   "fADDRESS": null,
+   "fBUSINESSADDRESS": null,
+   "fREGION": null,
+   "fLATITUDE": 40.21669,
+   "fLONGITUDE": 44.580861,
+   "fACCURACY": 3.216,
+   "fPAYMENTTYPE": null,
+   "fDELAYDAYS": null,
+   "fCONTDEPOSIT": null,
+   "fCONTDEPSCHEME": null,
+   "fVATFREE": null,
+   "fCLOSED": null,
+   "fPASSPORT": null,
+   "fSOCCARDNUM": null,
+   "fPHONE": null,
+   "fEMAIL": null,
+   "fMANAGER": null,
+   "fMANAGERPOST": null,
+   "fCONTACTSCHANGED": false,
+   "fDELIVERYADDRESSESCHANGED": false,
+   "fISNEW": false
+  }
+ ],
+ "dbo.CUSTCHANGEREQUESTSCONFIRMATIONS": [
+  {
+   "fID": 1,
+   "fNAME": null,
+   "fFULLNAME": null,
+   "fTAXCODE": null,
+   "fGROUP": null,
+   "fADDRESS": null,
+   "fBUSINESSADDRESS": null,
+   "fREGION": null,
+   "fCOORDINATES": 1,
+   "fCONTACTS": 1,
+   "fISCLOSED": null,
+   "fDELIVERYADDRESSES": null
+  },
+  {
+   "fID": 2,
+   "fNAME": null,
+   "fFULLNAME": null,
+   "fTAXCODE": null,
+   "fGROUP": null,
+   "fADDRESS": null,
+   "fBUSINESSADDRESS": null,
+   "fREGION": null,
+   "fCOORDINATES": 1,
+   "fCONTACTS": null,
+   "fISCLOSED": null,
+   "fDELIVERYADDRESSES": null
+  },
+  {
+   "fID": 3,
+   "fNAME": null,
+   "fFULLNAME": null,
+   "fTAXCODE": null,
+   "fGROUP": null,
+   "fADDRESS": null,
+   "fBUSINESSADDRESS": null,
+   "fREGION": null,
+   "fCOORDINATES": 1,
+   "fCONTACTS": null,
+   "fISCLOSED": null,
+   "fDELIVERYADDRESSES": null
+  }
+ ],
+ "dbo.CUSTOMERACCOUNTSINBANK": [
+  {
+   "fCUSTOMERID": 264,
+   "fNAME": "ԱրդՇինԻնվեստԲանկի  ՙԿապան՚ մասճյուղ",
+   "fACCOUNT": "2470801237450010",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCUSTOMERID": 2088,
+   "fNAME": "Արարատ Բանկ",
+   "fACCOUNT": "1510018523760100",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCUSTOMERID": 2562,
+   "fNAME": ".",
+   "fACCOUNT": "23165813",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.CUSTOMERB2BDATA": [
+  {
+   "fCUSTOMERID": 1,
+   "fB2BID": 0,
+   "fACTORID": 0,
+   "fB2BQRACTIVATED": false,
+   "fSYNCDATAWITHB2B": true,
+   "fAVAILABLEFORB2B": false,
+   "fB2BACSBDATAPR": "",
+   "fB2BACSBDATAPRQTY": 0,
+   "fB2BACSBDATASINCEDATE": null,
+   "fREGISTEREDINB2BMOBILE": false,
+   "fLASTLOGINTIMEINB2BMOBILE": null,
+   "fB2BSTATEID": null,
+   "fB2BSYNCALLDATA": false
+  },
+  {
+   "fCUSTOMERID": 2,
+   "fB2BID": 0,
+   "fACTORID": 0,
+   "fB2BQRACTIVATED": false,
+   "fSYNCDATAWITHB2B": true,
+   "fAVAILABLEFORB2B": false,
+   "fB2BACSBDATAPR": "",
+   "fB2BACSBDATAPRQTY": 0,
+   "fB2BACSBDATASINCEDATE": null,
+   "fREGISTEREDINB2BMOBILE": false,
+   "fLASTLOGINTIMEINB2BMOBILE": null,
+   "fB2BSTATEID": 7,
+   "fB2BSYNCALLDATA": false
+  },
+  {
+   "fCUSTOMERID": 3,
+   "fB2BID": 0,
+   "fACTORID": 0,
+   "fB2BQRACTIVATED": false,
+   "fSYNCDATAWITHB2B": true,
+   "fAVAILABLEFORB2B": false,
+   "fB2BACSBDATAPR": "",
+   "fB2BACSBDATAPRQTY": 0,
+   "fB2BACSBDATASINCEDATE": null,
+   "fREGISTEREDINB2BMOBILE": false,
+   "fLASTLOGINTIMEINB2BMOBILE": null,
+   "fB2BSTATEID": 0,
+   "fB2BSYNCALLDATA": false
+  }
+ ],
+ "dbo.CUSTOMERCONTACTS": [
+  {
+   "fCUSTOMERID": 4,
+   "fNAME": ".",
+   "fPHONE": "+37493568006",
+   "fEMAIL": "",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fB2BSENDNOTIFICATION": false,
+   "fISDATAAVAILABLEFORB2B": false,
+   "fNOTES": ""
+  },
+  {
+   "fCUSTOMERID": 8,
+   "fNAME": ".",
+   "fPHONE": "+37491532754",
+   "fEMAIL": "",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fB2BSENDNOTIFICATION": false,
+   "fISDATAAVAILABLEFORB2B": false,
+   "fNOTES": ""
+  },
+  {
+   "fCUSTOMERID": 11,
+   "fNAME": ".",
+   "fPHONE": "+37477370522",
+   "fEMAIL": "",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fB2BSENDNOTIFICATION": false,
+   "fISDATAAVAILABLEFORB2B": false,
+   "fNOTES": ""
+  }
+ ],
+ "dbo.CUSTOMERDELIVERYADDRESSES": [
+  {
+   "fCUSTOMERID": 2,
+   "fADDRESS": "Իսահակյան 27",
+   "fLATITUDE": null,
+   "fLONGITUDE": null,
+   "fACCURACY": null,
+   "fDEFAULT": true,
+   "fADDITIONALINFO": "",
+   "fCLOSED": false,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fID": 1
+  },
+  {
+   "fCUSTOMERID": 3,
+   "fADDRESS": "Նորքի 5-րդ զ., Միկոյան 4",
+   "fLATITUDE": null,
+   "fLONGITUDE": null,
+   "fACCURACY": null,
+   "fDEFAULT": true,
+   "fADDITIONALINFO": "",
+   "fCLOSED": false,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fID": 2
+  },
+  {
+   "fCUSTOMERID": 4,
+   "fADDRESS": "գ. Բյուրական",
+   "fLATITUDE": 40.345745,
+   "fLONGITUDE": 44.269629,
+   "fACCURACY": 60.0,
+   "fDEFAULT": true,
+   "fADDITIONALINFO": "",
+   "fCLOSED": false,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fID": 3
+  }
+ ],
+ "dbo.CUSTOMERLIMITS": [
+  {
+   "fCUSTOMERID": 2,
+   "fDIVISION": "000000",
+   "fSUMLIMIT": 25000.0,
+   "fOVERDEBTLIMIT": 1.0,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCUSTOMERID": 5,
+   "fDIVISION": "000000",
+   "fSUMLIMIT": 46500.0,
+   "fOVERDEBTLIMIT": 1.0,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCUSTOMERID": 6,
+   "fDIVISION": "000000",
+   "fSUMLIMIT": 0.0,
+   "fOVERDEBTLIMIT": 100.0,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.CUSTOMEROVERDEBTANALYSESCHEMEDETAILS": [],
+ "dbo.CUSTOMEROVERDEBTANALYSESCHEMES": [],
+ "dbo.CUSTOMERPREFERREDPRODUCTS": [],
+ "dbo.CUSTOMERPREFERREDPRODUCTSDETAILS": [],
+ "dbo.CUSTOMERPRICELISTDETAILS": [
+  {
+   "fISN": "23DFE799-E242-4A49-AE39-014E6EB365B7",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGROUP": "004",
+   "fPRODUCTID": 52,
+   "fPRICE": 380.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "D13D314E-D8C4-473F-B596-01D3FE172124",
+   "fCUSTOMERTYPE": "2",
+   "fCUSTOMERID": 1704,
+   "fCUSTOMERGROUP": null,
+   "fPRODUCTID": 42,
+   "fPRICE": 120.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "FD01C6D0-2EAD-4616-8309-08883A9D76A5",
+   "fCUSTOMERTYPE": "2",
+   "fCUSTOMERID": 44052,
+   "fCUSTOMERGROUP": null,
+   "fPRODUCTID": 25,
+   "fPRICE": 177.0,
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.CUSTOMERPRICELISTS": [
+  {
+   "fISN": "CEEA134F-A6B9-42E8-89B9-50CE093FC283",
+   "fDATE": "2017-01-01T00:00:00",
+   "fVALIDUNTIL": "2021-09-01T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGROUP": "003",
+   "fPRODUCTID": 38,
+   "fPRICE": 75.0,
+   "fCLOSE": false,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "E724D97F-FD68-45BD-BE9F-AAFBDD79224C",
+   "fDATE": "2019-12-03T00:00:00",
+   "fVALIDUNTIL": "2019-12-31T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGROUP": "003",
+   "fPRODUCTID": 38,
+   "fPRICE": 72.25,
+   "fCLOSE": false,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "31D5E743-0423-49B6-A957-ADEA99BFC5C3",
+   "fDATE": "2021-09-01T00:00:00",
+   "fVALIDUNTIL": "2023-07-30T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGROUP": "003",
+   "fPRODUCTID": 38,
+   "fPRICE": 79.42,
+   "fCLOSE": false,
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.CUSTOMERS": [
+  {
+   "fID": 1,
+   "fCODE": "A005",
+   "fNAME": "Գուրգեն Գրիգորյան",
+   "fFULLNAME": "Գուրգեն Գրիգորյան",
+   "fGROUP": "002",
+   "fTAXCODE": "",
+   "fPRICELIST": "01",
+   "fPAYMENTTYPE": "",
+   "fREGION": "",
+   "fDELAYDAYS": 3,
+   "fPRIORITY": 0,
+   "fADDRESS": "",
+   "fPHONE": "",
+   "fEMAIL": "",
+   "fMANAGERPOST": "",
+   "fMANAGER": "",
+   "fACCOUNTANTPOST": "",
+   "fCONTRACTNUMBER": "",
+   "fCONTRACTVALIDDATE": null,
+   "fACCOUNTANT": "",
+   "fPASSPORT": "",
+   "fSOCCARDNUM": "",
+   "fCONTDEPOSIT": false,
+   "fCONTDEPSCHEME": "",
+   "fEXTERNALCODE": "",
+   "fVATFREE": false,
+   "fCLOSED": true,
+   "fISN": "D7FFA97A-4D1C-4B11-8D62-7EC4A959186A",
+   "fISFOREIGN": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fDELIVERYSTARTTIME": null,
+   "fDELIVERYENDTIME": null,
+   "fPRODUCTSACCESSSCHEME": "",
+   "fUSEAUTORESERVATION": false,
+   "fORGANIZATIONACCOUNT": "",
+   "fPREFERREDPRODUCTS": "",
+   "fDISCOUNTGROUP": "",
+   "fSCALEDISCOUNTGROUP": "",
+   "fGIFTPROMOTIONGROUP": "",
+   "fIBCOMMENT": "",
+   "fEXTERNALBODY": null,
+   "fIDENTITYDOC": null
+  },
+  {
+   "fID": 2,
+   "fCODE": "0003",
+   "fNAME": "Կամեյա ՍՊԸ",
+   "fFULLNAME": "Կամեյա ՍՊԸ Տուրանդոտ",
+   "fGROUP": "999",
+   "fTAXCODE": "00824587",
+   "fPRICELIST": "01",
+   "fPAYMENTTYPE": "1",
+   "fREGION": "",
+   "fDELAYDAYS": 30,
+   "fPRIORITY": 0,
+   "fADDRESS": "Իսահակյան 27",
+   "fPHONE": "",
+   "fEMAIL": "",
+   "fMANAGERPOST": "",
+   "fMANAGER": "",
+   "fACCOUNTANTPOST": "",
+   "fCONTRACTNUMBER": "",
+   "fCONTRACTVALIDDATE": null,
+   "fACCOUNTANT": "",
+   "fPASSPORT": "",
+   "fSOCCARDNUM": "9201",
+   "fCONTDEPOSIT": true,
+   "fCONTDEPSCHEME": "",
+   "fEXTERNALCODE": "",
+   "fVATFREE": false,
+   "fCLOSED": false,
+   "fISN": "8DC320AC-3B7D-4147-ABCE-7081CBF28350",
+   "fISFOREIGN": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fDELIVERYSTARTTIME": null,
+   "fDELIVERYENDTIME": null,
+   "fPRODUCTSACCESSSCHEME": "",
+   "fUSEAUTORESERVATION": true,
+   "fORGANIZATIONACCOUNT": "",
+   "fPREFERREDPRODUCTS": "",
+   "fDISCOUNTGROUP": "",
+   "fSCALEDISCOUNTGROUP": "",
+   "fGIFTPROMOTIONGROUP": "033",
+   "fIBCOMMENT": "",
+   "fEXTERNALBODY": null,
+   "fIDENTITYDOC": null
+  },
+  {
+   "fID": 3,
+   "fCODE": "0004",
+   "fNAME": "Արև ս/մ /Միկոյան",
+   "fFULLNAME": "Կորոնա Սոլարե ՍՊԸ",
+   "fGROUP": "021",
+   "fTAXCODE": "03809643",
+   "fPRICELIST": "01",
+   "fPAYMENTTYPE": "2",
+   "fREGION": "",
+   "fDELAYDAYS": 30,
+   "fPRIORITY": 0,
+   "fADDRESS": "Նորքի 5-րդ զ., Միկոյան 4",
+   "fPHONE": "",
+   "fEMAIL": "",
+   "fMANAGERPOST": "",
+   "fMANAGER": "",
+   "fACCOUNTANTPOST": "",
+   "fCONTRACTNUMBER": "",
+   "fCONTRACTVALIDDATE": null,
+   "fACCOUNTANT": "",
+   "fPASSPORT": "",
+   "fSOCCARDNUM": "2676",
+   "fCONTDEPOSIT": true,
+   "fCONTDEPSCHEME": "",
+   "fEXTERNALCODE": "",
+   "fVATFREE": false,
+   "fCLOSED": false,
+   "fISN": "C8DE4ADE-DCF4-471A-9A17-FD41862772F1",
+   "fISFOREIGN": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fDELIVERYSTARTTIME": null,
+   "fDELIVERYENDTIME": null,
+   "fPRODUCTSACCESSSCHEME": "",
+   "fUSEAUTORESERVATION": true,
+   "fORGANIZATIONACCOUNT": "",
+   "fPREFERREDPRODUCTS": "",
+   "fDISCOUNTGROUP": "021",
+   "fSCALEDISCOUNTGROUP": "",
+   "fGIFTPROMOTIONGROUP": "",
+   "fIBCOMMENT": "",
+   "fEXTERNALBODY": null,
+   "fIDENTITYDOC": null
+  }
+ ],
+ "dbo.CUSTOMERSALESAREAS": [
+  {
+   "fCUSTOMERID": 1,
+   "fSALESAREA": "105",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCUSTOMERID": 2,
+   "fSALESAREA": "120",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCUSTOMERID": 3,
+   "fSALESAREA": "102",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.CUSTOMERSPHERES": [],
+ "dbo.Customers": [],
+ "dbo.DATAVIEWDEF": [
+  {
+   "fNAME": "UD_DepRem",
+   "fCAPTIONID": "UD_DepRem",
+   "fGROUP": "DlvOrderSalesOrders",
+   "fENABLED": true,
+   "fSYSTEM": false,
+   "fDEFAULT": false,
+   "fDEFINITION": "<View Name=\"UD_DepRem\" CaptionId=\"UD_DepRem\" Group=\"DlvOrderSalesOrders\"><CalculatedColumns><CalculatedColumn Name=\"UD_D…",
+   "fTS": "<binary 8 bytes>",
+   "fUPDATEDATE": "2025-09-22T11:59:54.047000",
+   "fLASTEXEC": "2025-09-22T11:59:54.047000",
+   "fEXECCOUNT": 0
+  },
+  {
+   "fNAME": "UD_PrOpsCustDiscSum",
+   "fCAPTIONID": "UD_PrOpsCustDiscSum",
+   "fGROUP": "ProductsOpsByCust",
+   "fENABLED": true,
+   "fSYSTEM": false,
+   "fDEFAULT": false,
+   "fDEFINITION": "<View Name=\"UD_PrOpsCustDiscSum\" CaptionId=\"UD_PrOpsCustDiscSum\" Group=\"ProductsOpsByCust\"><CalculatedColumns><Calculate…",
+   "fTS": "<binary 8 bytes>",
+   "fUPDATEDATE": "2025-09-22T11:59:54.050000",
+   "fLASTEXEC": "2025-09-22T11:59:54.050000",
+   "fEXECCOUNT": 0
+  }
+ ],
+ "dbo.DATAVIEWSETTINGS": [
+  {
+   "fID": 0,
+   "fNAME": "Customers",
+   "fGROUP": "",
+   "fCAPTION": "",
+   "fOWNERUSERID": 0,
+   "fDEFINITION": "<ViewSetting Name=\"Customers\" Caption=\"\" Group=\"\"><Columns><Column Name=\"Code\" /><Column Name=\"CreationDate\" /><Column N…"
+  },
+  {
+   "fID": 0,
+   "fNAME": "CustomersOps",
+   "fGROUP": "",
+   "fCAPTION": "",
+   "fOWNERUSERID": 0,
+   "fDEFINITION": "<ViewSetting Name=\"CustomersOps\" Caption=\"\" Group=\"\"><Columns><Column Name=\"OperDate\" /><Column Name=\"DocNum\" /><Column …"
+  },
+  {
+   "fID": 0,
+   "fNAME": "CustomersTurn",
+   "fGROUP": "",
+   "fCAPTION": "",
+   "fOWNERUSERID": 0,
+   "fDEFINITION": "<ViewSetting Name=\"CustomersTurn\" Caption=\"\" Group=\"\"><Columns><Column Name=\"Customer\" /><Column Name=\"CustomerName\" /><…"
+  }
+ ],
+ "dbo.DEPOSITSCHEMEDETAILS": [],
+ "dbo.DEPOSITSCHEMES": [],
+ "dbo.DEVICES": [],
+ "dbo.DIALOGVALUES": [
+  {
+   "fUSERID": 0,
+   "fNAME": "ABCAnalyse",
+   "fSTORE": 0,
+   "fBODY": " \r\nSTARTDATE:20230901\r\nENDDATE:20230912\r\nDIVISION:000000\r\nANALYSESCHEME:000\r\nOPERATION:\r\nANALYSEPARAMETER:2\r\nPRODUCTGROU…"
+  },
+  {
+   "fUSERID": 0,
+   "fNAME": "ALLDOCUMENT",
+   "fSTORE": 0,
+   "fBODY": " \r\nSTARTDATE:20170301\r\nENDDATE:20170309\r\nSALESAGENTCODE:A006\r\n"
+  },
+  {
+   "fUSERID": 0,
+   "fNAME": "AddGifts",
+   "fSTORE": 1,
+   "fBODY": " \r\nPRODUCTGROUPS:\r\n"
+  }
+ ],
+ "dbo.DICTIONARYTS": [
+  {
+   "fID": 7,
+   "fTS": "<binary 8 bytes>",
+   "fVALUE": 1
+  },
+  {
+   "fID": 77,
+   "fTS": "<binary 8 bytes>",
+   "fVALUE": 1
+  },
+  {
+   "fID": 108,
+   "fTS": "<binary 8 bytes>",
+   "fVALUE": 1
+  }
+ ],
+ "dbo.DIRECTORYACCESS": [
+  {
+   "fROLE": "000",
+   "fDIRECTORYTYPE": 51,
+   "fALLOWADD": true,
+   "fALLOWEDIT": true,
+   "fALLOWVIEW": true,
+   "fALLOWDELETE": true
+  },
+  {
+   "fROLE": "000",
+   "fDIRECTORYTYPE": 52,
+   "fALLOWADD": true,
+   "fALLOWEDIT": true,
+   "fALLOWVIEW": true,
+   "fALLOWDELETE": true
+  },
+  {
+   "fROLE": "000",
+   "fDIRECTORYTYPE": 53,
+   "fALLOWADD": true,
+   "fALLOWEDIT": true,
+   "fALLOWVIEW": true,
+   "fALLOWDELETE": true
+  }
+ ],
+ "dbo.DIRSLOG": [
+  {
+   "fID": 51,
+   "fITEMID": 1,
+   "fDATE": "2017-01-27T17:29:47.347000",
+   "fUSERID": 0,
+   "fOP": 4,
+   "fCOMMENT": null,
+   "fCOMPNAME": "USER-PC",
+   "fCHANGEDESCRIPTION": null,
+   "fSOURCE": 0
+  },
+  {
+   "fID": 51,
+   "fITEMID": 1,
+   "fDATE": "2021-07-06T12:13:40.063000",
+   "fUSERID": 8,
+   "fOP": 16,
+   "fCOMMENT": "Խմբագրել նշվածները",
+   "fCOMPNAME": "ANI-PC",
+   "fCHANGEDESCRIPTION": null,
+   "fSOURCE": 0
+  },
+  {
+   "fID": 51,
+   "fITEMID": 1,
+   "fDATE": "2021-09-08T18:30:28.147000",
+   "fUSERID": 0,
+   "fOP": 2,
+   "fCOMMENT": null,
+   "fCOMPNAME": "ANI-PC",
+   "fCHANGEDESCRIPTION": "(\"Զեղչի խումբ\", \"002\" -> \"\"), (\"Չսպասարկվող\", \"Ոչ\" -> \"Այո\")",
+   "fSOURCE": 0
+  }
+ ],
+ "dbo.DISCHARGEDETAILS": [
+  {
+   "fISN": "52574BC9-044A-4BB3-BAA0-00005301A82E",
+   "fSUM": 2520.0,
+   "fROWNUM": 0,
+   "fDEBTDOCISN": "8D9290E8-571F-4C69-AE6A-C7065DEC9CBC"
+  },
+  {
+   "fISN": "7343F135-9001-4BE9-BAE0-0000809AD1FB",
+   "fSUM": 11460.6,
+   "fROWNUM": 0,
+   "fDEBTDOCISN": "0354649A-6C1A-4AB3-8C50-03B0C336BE50"
+  },
+  {
+   "fISN": "C9BCA2B3-C5D8-4142-BD9E-0000D7DF8404",
+   "fSUM": 135.0,
+   "fROWNUM": 0,
+   "fDEBTDOCISN": "EE65AE6E-5AE2-49C3-9B9A-DEF5CF4922C6"
+  }
+ ],
+ "dbo.DOCPARENTS": [
+  {
+   "fISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fDOCTYPE": 2,
+   "fPARENTISN": "38E42DB4-5C18-40B7-AD5C-46D65BFC4F98",
+   "fPARENTDOCTYPE": 1
+  },
+  {
+   "fISN": "4A1965F5-CAA2-4734-9501-00003E5D1AA3",
+   "fDOCTYPE": 2,
+   "fPARENTISN": "052B121F-5D5E-45C1-BB9A-3D388CC13103",
+   "fPARENTDOCTYPE": 1
+  },
+  {
+   "fISN": "49781365-A30E-40F7-88E1-000075C82D67",
+   "fDOCTYPE": 2,
+   "fPARENTISN": "334048C5-B74B-4C24-B9BB-79450FF8E7A7",
+   "fPARENTDOCTYPE": 1
+  }
+ ],
+ "dbo.DOCUMENTACCESS": [
+  {
+   "fDOCTYPE": 1,
+   "fALLOWADD": true,
+   "fALLOWEDIT": true,
+   "fALLOWVIEW": true,
+   "fALLOWDELETE": true,
+   "fROLE": "000"
+  },
+  {
+   "fDOCTYPE": 2,
+   "fALLOWADD": true,
+   "fALLOWEDIT": true,
+   "fALLOWVIEW": true,
+   "fALLOWDELETE": true,
+   "fROLE": "000"
+  },
+  {
+   "fDOCTYPE": 3,
+   "fALLOWADD": true,
+   "fALLOWEDIT": true,
+   "fALLOWVIEW": true,
+   "fALLOWDELETE": true,
+   "fROLE": "000"
+  }
+ ],
+ "dbo.DOCUMENTEXTENSIONS": [
+  {
+   "fNAME": "SalesOrder",
+   "fEXTENSION": "<DocumentExtension Name=\"SalesOrder\"><Data /><script><![CDATA[\n       \n      public class SalesOrder : DocumentExtention…",
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.DOCUMENTS": [
+  {
+   "fISN": "D21A4873-0334-4E90-B52E-00001B499211",
+   "fDOCTYPE": 1,
+   "fDOCSTATE": 2,
+   "fDATE": "2024-05-22T00:00:00",
+   "fDOCNUM": "000000233052",
+   "fSUMM": 8300.0,
+   "fCOMMENT": "",
+   "fBODY": "\r\nVANAGENTID:1025\r\nDELIVERYCAR:504 CQ 61\r\nPRICELISTTYPE:01\r\nCREATIONTYPEID:5da6d5cb-4155-4e73-b783-b7577b456574\r\nCREATEM…",
+   "fEXTBODY": "<data />",
+   "fSALESAGENTID": 1029,
+   "fCUSTOMERID": 36643,
+   "fDIVISION": "000000",
+   "fSALESAREA": "101",
+   "fSPEC": "",
+   "fLASTMODIFYDATE": "2024-05-22T16:13:10.320000",
+   "fLASTMODIFIERID": 1,
+   "fCREATIONDATE": "2024-05-22T16:13:10.320000",
+   "fCREATORUSERID": 1,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fDOCTYPE": 2,
+   "fDOCSTATE": 2,
+   "fDATE": "2025-12-22T00:00:00",
+   "fDOCNUM": "000000326572",
+   "fSUMM": 6250.15,
+   "fCOMMENT": "",
+   "fBODY": "\r\nVANAGENTID:2102\r\nOTHSYSSENDSTATUS:1\r\nDELIVERYCAR:333NO33\r\nPRICELISTTYPE:01\r\nCREATIONTYPEID:00000000-0000-0000-0000-000…",
+   "fEXTBODY": null,
+   "fSALESAGENTID": 2099,
+   "fCUSTOMERID": 33089,
+   "fDIVISION": "000000",
+   "fSALESAREA": "108/1",
+   "fSPEC": "",
+   "fLASTMODIFYDATE": "2025-12-22T10:18:25.127000",
+   "fLASTMODIFIERID": 20,
+   "fCREATIONDATE": "2025-12-22T10:17:37.953000",
+   "fCREATORUSERID": 20,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fISN": "4A1965F5-CAA2-4734-9501-00003E5D1AA3",
+   "fDOCTYPE": 2,
+   "fDOCSTATE": 2,
+   "fDATE": "2023-07-17T00:00:00",
+   "fDOCNUM": "000000218376",
+   "fSUMM": 20520.0,
+   "fCOMMENT": "",
+   "fBODY": "\r\nVANAGENTID:2048\r\nOTHSYSSENDSTATUS:2\r\nDELIVERYCAR:123AV61\r\nPRICELISTTYPE:01\r\nCREATIONTYPEID:00000000-0000-0000-0000-000…",
+   "fEXTBODY": null,
+   "fSALESAGENTID": 2088,
+   "fCUSTOMERID": 12917,
+   "fDIVISION": "000000",
+   "fSALESAREA": "104",
+   "fSPEC": "",
+   "fLASTMODIFYDATE": "2023-07-15T15:57:28.160000",
+   "fLASTMODIFIERID": 15,
+   "fCREATIONDATE": "2023-07-15T15:57:28.160000",
+   "fCREATORUSERID": 15,
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.DOCUMENTSLOG": [
+  {
+   "fISN": "D21A4873-0334-4E90-B52E-00001B499211",
+   "fDATE": "2024-05-22T16:20:56.257000",
+   "fUSERID": 1,
+   "fSTATE": 2,
+   "fOP": 4,
+   "fCOMMENT": null,
+   "fCOMPNAME": "DESKTOP-EH057E6",
+   "fCHANGEDESCRIPTION": null,
+   "fSOURCE": 0
+  },
+  {
+   "fISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fDATE": "2025-12-22T10:17:37.943000",
+   "fUSERID": 20,
+   "fSTATE": 2,
+   "fOP": 1,
+   "fCOMMENT": null,
+   "fCOMPNAME": "DESKTOP-INRK07G",
+   "fCHANGEDESCRIPTION": null,
+   "fSOURCE": 0
+  },
+  {
+   "fISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fDATE": "2025-12-22T10:18:10.067000",
+   "fUSERID": 20,
+   "fSTATE": 2,
+   "fOP": 2,
+   "fCOMMENT": "Խմբագրել նշվածները",
+   "fCOMPNAME": "DESKTOP-INRK07G",
+   "fCHANGEDESCRIPTION": null,
+   "fSOURCE": 0
+  }
+ ],
+ "dbo.EXCISETAXTARIFF": [],
+ "dbo.FOLDERACCESS": [
+  {
+   "fROLE": "002",
+   "fCOMMANDID": 20155
+  },
+  {
+   "fROLE": "002",
+   "fCOMMANDID": 20156
+  },
+  {
+   "fROLE": "002",
+   "fCOMMANDID": 20157
+  }
+ ],
+ "dbo.GEWAYBILLS": [],
+ "dbo.GIFTPROMOTIONDETAILS": [
+  {
+   "fISN": "A115436E-31F8-4DBB-BFB5-15C17DBE6362",
+   "fCUSTOMERTYPE": "2",
+   "fCUSTOMERID": 1847,
+   "fCUSTOMERGIFTPROMOTIONGROUP": null,
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 48,
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": null,
+   "fCALCULATIONBASE": "Qnt",
+   "fCALCULATIONVALUE": 10.0,
+   "fGIFTID": 42,
+   "fGIFTQUANTITY": 1.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "5330117D-B4C7-4E4D-AEFB-15D17571AA0E",
+   "fCUSTOMERTYPE": "2",
+   "fCUSTOMERID": 32064,
+   "fCUSTOMERGIFTPROMOTIONGROUP": null,
+   "fPRODUCTTYPE": "1",
+   "fPRODUCTID": null,
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": "002",
+   "fCALCULATIONBASE": "Qnt",
+   "fCALCULATIONVALUE": 1000.0,
+   "fGIFTID": 18,
+   "fGIFTQUANTITY": 1.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "1408B1B7-9142-4848-B2FE-59C2EDA93226",
+   "fCUSTOMERTYPE": "0",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGIFTPROMOTIONGROUP": null,
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 18,
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": null,
+   "fCALCULATIONBASE": "Qnt",
+   "fCALCULATIONVALUE": 60.0,
+   "fGIFTID": 18,
+   "fGIFTQUANTITY": 6.0,
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.GIFTPROMOTIONS": [
+  {
+   "fISN": "790BB5A2-C501-490C-8164-627A37DD425C",
+   "fDATE": "2021-09-03T00:00:00",
+   "fVALIDUNTIL": "2022-07-08T00:00:00",
+   "fCUSTOMERTYPE": "0",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGIFTPROMOTIONGROUP": null,
+   "fPRODUCTTYPE": "1",
+   "fPRODUCTID": null,
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": "002",
+   "fCALCULATIONBASE": "Qnt",
+   "fCALCULATIONVALUE": 60.0,
+   "fGIFTID": 18,
+   "fGIFTQUANTITY": 6.0,
+   "fROWNUM": 1,
+   "fCLOSE": false
+  },
+  {
+   "fISN": "2C670758-169C-49AA-ADA5-866867619425",
+   "fDATE": "2019-02-01T00:00:00",
+   "fVALIDUNTIL": "2079-01-01T00:00:00",
+   "fCUSTOMERTYPE": "0",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGIFTPROMOTIONGROUP": null,
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 17,
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": null,
+   "fCALCULATIONBASE": "Qnt",
+   "fCALCULATIONVALUE": 60.0,
+   "fGIFTID": 17,
+   "fGIFTQUANTITY": 6.0,
+   "fROWNUM": 0,
+   "fCLOSE": false
+  },
+  {
+   "fISN": "8AC5D822-B548-4051-B261-A7BF5C1A488C",
+   "fDATE": "2021-05-13T00:00:00",
+   "fVALIDUNTIL": "2079-01-01T00:00:00",
+   "fCUSTOMERTYPE": "0",
+   "fCUSTOMERID": null,
+   "fCUSTOMERGIFTPROMOTIONGROUP": null,
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 17,
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": null,
+   "fCALCULATIONBASE": "Qnt",
+   "fCALCULATIONVALUE": 60.0,
+   "fGIFTID": 17,
+   "fGIFTQUANTITY": 6.0,
+   "fROWNUM": 0,
+   "fCLOSE": false
+  }
+ ],
+ "dbo.HIAGENTPRODUCTS": [
+  {
+   "fDATE": "2015-01-01T00:00:00",
+   "fAGENTID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 586.0,
+   "fOP": "RLZ",
+   "fDBCR": "C",
+   "fBASE": "ABFE7C80-C939-4D11-987D-9C29C9EAF132",
+   "fUSERID": 0
+  },
+  {
+   "fDATE": "2015-01-01T00:00:00",
+   "fAGENTID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 1369.05,
+   "fOP": "RLZ",
+   "fDBCR": "C",
+   "fBASE": "3D5736D7-0E32-417A-AB72-950DE3C22D28",
+   "fUSERID": 0
+  },
+  {
+   "fDATE": "2015-12-31T00:00:00",
+   "fAGENTID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 4355.498,
+   "fOP": "RLZ",
+   "fDBCR": "C",
+   "fBASE": "1EC4370F-C817-48DB-821B-F63B2A7EABD4",
+   "fUSERID": 0
+  }
+ ],
+ "dbo.HIAGENTSSUM": [
+  {
+   "fDATE": "2015-12-02T00:00:00",
+   "fDIVISION": "000000",
+   "fSALESAGENTID": 7,
+   "fSUM": 94060.0,
+   "fOP": "SSR",
+   "fDBCR": "C",
+   "fBASE": "43153925-696B-4D38-92A3-3E4E5150D3B5",
+   "fUSERID": 0
+  },
+  {
+   "fDATE": "2015-12-02T00:00:00",
+   "fDIVISION": "000000",
+   "fSALESAGENTID": 7,
+   "fSUM": 6930.42,
+   "fOP": "PAC",
+   "fDBCR": "D",
+   "fBASE": "FA0684EF-6567-4AA1-82FA-0C479DB3B044",
+   "fUSERID": -1
+  },
+  {
+   "fDATE": "2015-12-02T00:00:00",
+   "fDIVISION": "000000",
+   "fSALESAGENTID": 7,
+   "fSUM": 12240.0,
+   "fOP": "PAC",
+   "fDBCR": "D",
+   "fBASE": "3A71437F-E080-492F-9DED-D5809B70EEA6",
+   "fUSERID": -1
+  }
+ ],
+ "dbo.HICUSTOMERSDEBT": [
+  {
+   "fDATE": "2025-12-22T00:00:00",
+   "fDEBTDOCISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fSUM": 6250.15,
+   "fOP": "RLZ",
+   "fDBCR": "D",
+   "fBASE": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fUSERID": 20
+  },
+  {
+   "fDATE": "2026-01-08T00:00:00",
+   "fDEBTDOCISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fSUM": 6250.15,
+   "fOP": "PAY",
+   "fDBCR": "C",
+   "fBASE": "B40F4646-CDE6-4041-9E7F-B12F5B5BFE58",
+   "fUSERID": 20
+  },
+  {
+   "fDATE": "2023-07-17T00:00:00",
+   "fDEBTDOCISN": "4A1965F5-CAA2-4734-9501-00003E5D1AA3",
+   "fSUM": 20520.0,
+   "fOP": "RLZ",
+   "fDBCR": "D",
+   "fBASE": "4A1965F5-CAA2-4734-9501-00003E5D1AA3",
+   "fUSERID": 15
+  }
+ ],
+ "dbo.HICUSTOMERSSUM": [
+  {
+   "fDATE": "2021-08-10T00:00:00",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 2,
+   "fSUM": 80.0,
+   "fTYPE": "01",
+   "fOP": "RET",
+   "fDBCR": "C",
+   "fBASE": "8129543E-7C31-4965-99CE-042C65FFD070",
+   "fUSERID": 8
+  },
+  {
+   "fDATE": "2021-09-27T00:00:00",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 2,
+   "fSUM": 80.0,
+   "fTYPE": "01",
+   "fOP": "DSR",
+   "fDBCR": "D",
+   "fBASE": "3E571D9E-8CA0-412F-9EE6-DE06408FB1C6",
+   "fUSERID": 8
+  },
+  {
+   "fDATE": "2016-06-20T00:00:00",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 3,
+   "fSUM": 11093.25,
+   "fTYPE": "01",
+   "fOP": "RET",
+   "fDBCR": "C",
+   "fBASE": "61416F98-B8ED-4BB1-8366-DEE44635460A",
+   "fUSERID": 0
+  }
+ ],
+ "dbo.HIDEPOSITPRODUCTS": [
+  {
+   "fDATE": "2015-12-31T00:00:00",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 56,
+   "fQUANTITY": 1.0,
+   "fOP": "DEP",
+   "fDBCR": "D",
+   "fBASE": "BC83470A-917D-4909-9B90-9763A58B98C9",
+   "fUSERID": 0,
+   "fSALEISN": "BC83470A-917D-4909-9B90-9763A58B98C9"
+  },
+  {
+   "fDATE": "2016-05-11T00:00:00",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 56,
+   "fQUANTITY": 1.0,
+   "fOP": "RET",
+   "fDBCR": "C",
+   "fBASE": "828D77E6-6C04-4CDE-B375-3BA84E30DE59",
+   "fUSERID": 0,
+   "fSALEISN": null
+  },
+  {
+   "fDATE": "2015-01-01T00:00:00",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 2,
+   "fPRODUCTID": 54,
+   "fQUANTITY": 244.0,
+   "fOP": "DEP",
+   "fDBCR": "D",
+   "fBASE": "23861BC1-9F7C-4A8D-B058-46F3A38B1FD5",
+   "fUSERID": 0,
+   "fSALEISN": "23861BC1-9F7C-4A8D-B058-46F3A38B1FD5"
+  }
+ ],
+ "dbo.HIRESERVATION": [
+  {
+   "fORDERISN": "6C0FF8FB-D2AD-42A2-8F7A-B5E4FA3BEB90",
+   "fSTORAGE": "000",
+   "fPRODUCTID": 3,
+   "fQUANTITY": 60.0,
+   "fOP": "RSV",
+   "fDBCR": "D",
+   "fDATE": "2025-09-20T00:00:00",
+   "fBASEISN": "04F37D24-DF78-443E-8CAE-DABC064C60CA",
+   "fUSERID": 15,
+   "fRESERVATIONISN": "04F37D24-DF78-443E-8CAE-DABC064C60CA"
+  },
+  {
+   "fORDERISN": "6C0FF8FB-D2AD-42A2-8F7A-B5E4FA3BEB90",
+   "fSTORAGE": "000",
+   "fPRODUCTID": 3,
+   "fQUANTITY": 60.0,
+   "fOP": "PRV",
+   "fDBCR": "C",
+   "fDATE": "2025-09-20T00:00:00",
+   "fBASEISN": "A44289FC-E954-4DFB-A6E4-BB4A89BD6D14",
+   "fUSERID": 15,
+   "fRESERVATIONISN": "04F37D24-DF78-443E-8CAE-DABC064C60CA"
+  },
+  {
+   "fORDERISN": "65EBCF27-B267-45E1-9183-31E000823C74",
+   "fSTORAGE": "000",
+   "fPRODUCTID": 3,
+   "fQUANTITY": 36.0,
+   "fOP": "RSV",
+   "fDBCR": "D",
+   "fDATE": "2025-09-20T00:00:00",
+   "fBASEISN": "E398D96D-C50F-4650-A964-D598AFE08293",
+   "fUSERID": 20,
+   "fRESERVATIONISN": "E398D96D-C50F-4650-A964-D598AFE08293"
+  }
+ ],
+ "dbo.HIRESTAGENTPRODUCTS": [
+  {
+   "fAGENTID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 0.0
+  },
+  {
+   "fAGENTID": 1,
+   "fPRODUCTID": 2,
+   "fQUANTITY": 0.0
+  },
+  {
+   "fAGENTID": 1,
+   "fPRODUCTID": 17,
+   "fQUANTITY": 0.0
+  }
+ ],
+ "dbo.HIRESTAGENTSSUM": [
+  {
+   "fDIVISION": "000000",
+   "fSALESAGENTID": 7,
+   "fSUM": 0.0
+  },
+  {
+   "fDIVISION": "000000",
+   "fSALESAGENTID": 8,
+   "fSUM": 0.0
+  },
+  {
+   "fDIVISION": "000000",
+   "fSALESAGENTID": 9,
+   "fSUM": 0.0
+  }
+ ],
+ "dbo.HIRESTCUSTOMERSDEBT": [
+  {
+   "fDEBTDOCISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fSUM": 0.0
+  },
+  {
+   "fDEBTDOCISN": "4A1965F5-CAA2-4734-9501-00003E5D1AA3",
+   "fSUM": 0.0
+  },
+  {
+   "fDEBTDOCISN": "336D9DC8-39D7-4AC5-BD8D-0000602939E2",
+   "fSUM": 0.0
+  }
+ ],
+ "dbo.HIRESTCUSTOMERSSUM": [
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 2,
+   "fTYPE": "01",
+   "fSUM": 0.0
+  },
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 3,
+   "fTYPE": "01",
+   "fSUM": -142.5
+  },
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 6,
+   "fTYPE": "01",
+   "fSUM": 0.0
+  }
+ ],
+ "dbo.HIRESTDEPOSITPRODUCTS": [
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 56,
+   "fQUANTITY": -1.0,
+   "fSALEISN": null
+  },
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 56,
+   "fQUANTITY": 1.0,
+   "fSALEISN": "BC83470A-917D-4909-9B90-9763A58B98C9"
+  },
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 2,
+   "fPRODUCTID": 54,
+   "fQUANTITY": -3024.0,
+   "fSALEISN": null
+  }
+ ],
+ "dbo.HIRESTRESERVATION": [
+  {
+   "fSTORAGE": "000",
+   "fPRODUCTID": 3,
+   "fQUANTITY": 316.0
+  },
+  {
+   "fSTORAGE": "000",
+   "fPRODUCTID": 4,
+   "fQUANTITY": 534.0
+  },
+  {
+   "fSTORAGE": "000",
+   "fPRODUCTID": 7,
+   "fQUANTITY": 108.0
+  }
+ ],
+ "dbo.HIRESTSOLDPRODUCTS": [
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 5784.899,
+   "fSALEISN": "F99030A5-0BB6-47E2-B525-42F934C9935B"
+  },
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 2942.852,
+   "fSALEISN": "F27AF4CD-BA3C-4489-8EC0-EA295D667444"
+  },
+  {
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 2,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 6480.0,
+   "fSALEISN": "293EC31D-6812-473A-844B-E19E17F26555"
+  }
+ ],
+ "dbo.HIRESTSTORAGES": [
+  {
+   "fPRODUCTID": 1,
+   "fQUANTITY": 0.0,
+   "fSTORAGE": "000"
+  },
+  {
+   "fPRODUCTID": 2,
+   "fQUANTITY": 0.0,
+   "fSTORAGE": "000"
+  },
+  {
+   "fPRODUCTID": 3,
+   "fQUANTITY": 7787.0,
+   "fSTORAGE": "000"
+  }
+ ],
+ "dbo.HIRESTTRANSFERREDASSETS": [
+  {
+   "fSTORAGE": "",
+   "fCUSTOMERID": 23413,
+   "fASSETID": 29,
+   "fTYPE": "01",
+   "fQUANTITY": 1.0,
+   "fASSETNUMBER": ""
+  },
+  {
+   "fSTORAGE": "",
+   "fCUSTOMERID": 44042,
+   "fASSETID": 30,
+   "fTYPE": "01",
+   "fQUANTITY": 1.0,
+   "fASSETNUMBER": ""
+  },
+  {
+   "fSTORAGE": "",
+   "fCUSTOMERID": 46544,
+   "fASSETID": 32,
+   "fTYPE": "01",
+   "fQUANTITY": 1.0,
+   "fASSETNUMBER": ""
+  }
+ ],
+ "dbo.HISOLDPRODUCTS": [
+  {
+   "fDATE": "2015-12-31T00:00:00",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 2942.852,
+   "fDISCOUNTEDPRICE": 10.0,
+   "fOP": "RLZ",
+   "fDBCR": "D",
+   "fBASE": "F27AF4CD-BA3C-4489-8EC0-EA295D667444",
+   "fSALEISN": "F27AF4CD-BA3C-4489-8EC0-EA295D667444",
+   "fUSERID": 0
+  },
+  {
+   "fDATE": "2017-01-31T00:00:00",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 5784.899,
+   "fDISCOUNTEDPRICE": 10.0,
+   "fOP": "RLZ",
+   "fDBCR": "D",
+   "fBASE": "F99030A5-0BB6-47E2-B525-42F934C9935B",
+   "fSALEISN": "F99030A5-0BB6-47E2-B525-42F934C9935B",
+   "fUSERID": 0
+  },
+  {
+   "fDATE": "2015-01-01T00:00:00",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 2,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 6480.0,
+   "fDISCOUNTEDPRICE": 10.0,
+   "fOP": "RLZ",
+   "fDBCR": "D",
+   "fBASE": "293EC31D-6812-473A-844B-E19E17F26555",
+   "fSALEISN": "293EC31D-6812-473A-844B-E19E17F26555",
+   "fUSERID": 0
+  }
+ ],
+ "dbo.HISTORAGES": [
+  {
+   "fDATE": "2017-03-31T00:00:00",
+   "fPRODUCTID": 1,
+   "fQUANTITY": 7682.852,
+   "fOP": "PRV",
+   "fDBCR": "C",
+   "fBASE": "97668B8A-3089-4A19-80EA-14F53B615923",
+   "fUSERID": 0,
+   "fSTORAGE": "000"
+  },
+  {
+   "fDATE": "2017-03-31T00:00:00",
+   "fPRODUCTID": 1,
+   "fQUANTITY": 3876498.34,
+   "fOP": "INP",
+   "fDBCR": "D",
+   "fBASE": "0263C805-CAB3-48B1-9733-BA65D1BF7443",
+   "fUSERID": 0,
+   "fSTORAGE": "000"
+  },
+  {
+   "fDATE": "2017-03-31T00:00:00",
+   "fPRODUCTID": 1,
+   "fQUANTITY": 30859.043,
+   "fOP": "PRV",
+   "fDBCR": "C",
+   "fBASE": "31D17101-3EEC-4A55-92C8-2439932A3320",
+   "fUSERID": 0,
+   "fSTORAGE": "000"
+  }
+ ],
+ "dbo.HITRANSFERREDASSETS": [
+  {
+   "fDATE": "2024-09-01T00:00:00",
+   "fSTORAGE": "",
+   "fCUSTOMERID": 23413,
+   "fASSETID": 29,
+   "fQUANTITY": 1.0,
+   "fTYPE": "01",
+   "fOP": "TSR",
+   "fDBCR": "D",
+   "fBASE": "A1E6D37C-9418-4B9B-B471-6E7C8FC0210D",
+   "fUSERID": 15,
+   "fASSETNUMBER": ""
+  },
+  {
+   "fDATE": "2024-09-03T00:00:00",
+   "fSTORAGE": "",
+   "fCUSTOMERID": 44042,
+   "fASSETID": 30,
+   "fQUANTITY": 1.0,
+   "fTYPE": "01",
+   "fOP": "TSR",
+   "fDBCR": "D",
+   "fBASE": "AAEDD3B7-80FE-4A77-8AE2-1AB2E2FAA27C",
+   "fUSERID": 15,
+   "fASSETNUMBER": ""
+  },
+  {
+   "fDATE": "2024-09-01T00:00:00",
+   "fSTORAGE": "",
+   "fCUSTOMERID": 46544,
+   "fASSETID": 32,
+   "fQUANTITY": 1.0,
+   "fTYPE": "01",
+   "fOP": "TSR",
+   "fDBCR": "D",
+   "fBASE": "14C51F6E-F093-4B1B-BE9F-1D6DD5C39369",
+   "fUSERID": 15,
+   "fASSETNUMBER": ""
+  }
+ ],
+ "dbo.IBPAYMENTS": [],
+ "dbo.KITCOMPONENTS": [],
+ "dbo.LAYOUTVALUES": [
+  {
+   "fUSERID": 8,
+   "fNAME": "Sales",
+   "fCAPTION": "Ռութերի գրանցում",
+   "fTYPE": 1,
+   "fBODY": "77u/PFh0cmFTZXJpYWxpemVyIHZlcnNpb249IjEuMCIgYXBwbGljYXRpb249IkdyaWRDb250cm9sIj4NCiAgPHByb3BlcnR5IG5hbWU9IiNMYXlvdXRWZXJz…"
+  },
+  {
+   "fUSERID": 8,
+   "fNAME": "SalesAnalyse",
+   "fCAPTION": "Զեղչ կամ նվեր",
+   "fTYPE": 1,
+   "fBODY": "77u/PFh0cmFTZXJpYWxpemVyIHZlcnNpb249IjEuMCIgYXBwbGljYXRpb249IkdyaWRDb250cm9sIj4NCiAgPHByb3BlcnR5IG5hbWU9IiNMYXlvdXRWZXJz…"
+  },
+  {
+   "fUSERID": 15,
+   "fNAME": "CustomersRems",
+   "fCAPTION": "Ցանցերի պարտքեր",
+   "fTYPE": 1,
+   "fBODY": "77u/PFh0cmFTZXJpYWxpemVyIHZlcnNpb249IjEuMCIgYXBwbGljYXRpb249IkdyaWRDb250cm9sIj4NCiAgPHByb3BlcnR5IG5hbWU9IiNMYXlvdXRWZXJz…"
+  }
+ ],
+ "dbo.MARKINGS": [],
+ "dbo.NOTIDENTIFIEDB2BCUSTOMERS": [],
+ "dbo.ONETIMEAUTHENTICATIONDATA": [
+  {
+   "fID": "08C22B4A-D6FF-47A0-82ED-FF91B598B2F6",
+   "fUSERID": -1,
+   "fDATE": "2025-07-18T10:53:14.487000"
+  },
+  {
+   "fID": "81C55DB7-240C-4647-AAA9-111202342A92",
+   "fUSERID": 1,
+   "fDATE": "2024-05-31T11:29:15.793000"
+  },
+  {
+   "fID": "2D0BEF93-5D7F-4DE2-9B54-7A47DE27011D",
+   "fUSERID": 4,
+   "fDATE": "2021-08-16T10:21:48.840000"
+  }
+ ],
+ "dbo.ONLINEREPORTACCESS": [
+  {
+   "fROLE": "000",
+   "fTEMPLATECODE": "200"
+  },
+  {
+   "fROLE": "000",
+   "fTEMPLATECODE": "201"
+  },
+  {
+   "fROLE": "000",
+   "fTEMPLATECODE": "202"
+  }
+ ],
+ "dbo.ONLINEREPORTPARAMCONFIGS": [],
+ "dbo.ORDERS": [
+  {
+   "fISN": "55A93D50-0948-4FCC-8237-7364C390F367",
+   "fDATE": "2017-02-01T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000003",
+   "fCUSTOMERID": 1999,
+   "fSALESAGENTID": 10,
+   "fVANAGENTID": 4,
+   "fDELIVERYCAR": "",
+   "fDELIVERYDATE": null,
+   "fPRICELISTTYPE": "01",
+   "fDELAYDAYS": 0,
+   "fPRIORITY": 0,
+   "fPAYTYPE": "",
+   "fTOTALSUM": 4410.0,
+   "fVATSUM": 735.0,
+   "fEXCISESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "104",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fDOCGROUP": "",
+   "fCREATIONTYPEID": "D94530B3-AAA1-44E3-AE49-9296FC81EF5E",
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fB2BID": null,
+   "fCREATEMETHOD": "1",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 4410.0,
+   "fOTHSYSSENDSTATUS": "",
+   "fSUBMITDATE": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fENVFEESUM": 0.0,
+   "fASSIGNOR": "",
+   "fCOSIGNDATE": null,
+   "fDELIVERYADDRESSID": 0
+  },
+  {
+   "fISN": "D09EADB6-86E3-4293-B3BF-0203FC396DE9",
+   "fDATE": "2017-02-01T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000004",
+   "fCUSTOMERID": 842,
+   "fSALESAGENTID": 10,
+   "fVANAGENTID": 4,
+   "fDELIVERYCAR": "",
+   "fDELIVERYDATE": null,
+   "fPRICELISTTYPE": "01",
+   "fDELAYDAYS": 0,
+   "fPRIORITY": 0,
+   "fPAYTYPE": "",
+   "fTOTALSUM": 9072.0,
+   "fVATSUM": 1512.0,
+   "fEXCISESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "104",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fDOCGROUP": "",
+   "fCREATIONTYPEID": "093DB935-BA33-4EF1-B865-ADFD709048AF",
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fB2BID": null,
+   "fCREATEMETHOD": "1",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 9072.0,
+   "fOTHSYSSENDSTATUS": "",
+   "fSUBMITDATE": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fENVFEESUM": 0.0,
+   "fASSIGNOR": "",
+   "fCOSIGNDATE": null,
+   "fDELIVERYADDRESSID": 0
+  },
+  {
+   "fISN": "D6B2F368-9919-4B50-B3C4-AC5905E9E0DD",
+   "fDATE": "2017-02-01T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000005",
+   "fCUSTOMERID": 1409,
+   "fSALESAGENTID": 10,
+   "fVANAGENTID": 4,
+   "fDELIVERYCAR": "",
+   "fDELIVERYDATE": null,
+   "fPRICELISTTYPE": "01",
+   "fDELAYDAYS": 0,
+   "fPRIORITY": 0,
+   "fPAYTYPE": "",
+   "fTOTALSUM": 1400.0,
+   "fVATSUM": 233.33,
+   "fEXCISESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "104",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fDOCGROUP": "",
+   "fCREATIONTYPEID": "1DE9FFA2-01B9-493B-B2F1-D10AC2E643C9",
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fB2BID": null,
+   "fCREATEMETHOD": "1",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 1400.0,
+   "fOTHSYSSENDSTATUS": "",
+   "fSUBMITDATE": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fENVFEESUM": 0.0,
+   "fASSIGNOR": "",
+   "fCOSIGNDATE": null,
+   "fDELIVERYADDRESSID": 0
+  }
+ ],
+ "dbo.ORGANIZATIONACCOUNTS": [],
+ "dbo.PARAMS": [
+  {
+   "fPARID": 2,
+   "fVALUE": "715040"
+  },
+  {
+   "fPARID": 21,
+   "fVALUE": "True"
+  },
+  {
+   "fPARID": 22,
+   "fVALUE": "1"
+  }
+ ],
+ "dbo.PAYMENTS": [
+  {
+   "fISN": "80FE8976-ABE2-46BB-8493-5E36AC8D910E",
+   "fDATE": "2015-12-02T00:00:00",
+   "fDOCNUM": "000000000002",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 595,
+   "fSALESAGENTID": 8,
+   "fPAYMENTTYPE": "1",
+   "fSUM": 4110.0,
+   "fPREPAYMENT": 0.0,
+   "fDOCGROUP": "",
+   "fCOMMENT": "Կանխիկ վճարում",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fSALESAREA": "102",
+   "fOTHSYSSENDSTATUS": "",
+   "fORGANIZATIONACCOUNT": "",
+   "fCUSTOMERACCOUNT": "",
+   "fECRCHECKNUM": "",
+   "fECRCHECKDATE": null,
+   "fECRCRN": ""
+  },
+  {
+   "fISN": "1BD7270E-4F9C-45D0-8FD6-C9A6B8E7C86F",
+   "fDATE": "2015-12-02T00:00:00",
+   "fDOCNUM": "000000000003",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 237,
+   "fSALESAGENTID": 8,
+   "fPAYMENTTYPE": "1",
+   "fSUM": 3150.0,
+   "fPREPAYMENT": 0.0,
+   "fDOCGROUP": "",
+   "fCOMMENT": "Կանխիկ վճարում",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fSALESAREA": "102",
+   "fOTHSYSSENDSTATUS": "",
+   "fORGANIZATIONACCOUNT": "",
+   "fCUSTOMERACCOUNT": "",
+   "fECRCHECKNUM": "",
+   "fECRCHECKDATE": null,
+   "fECRCRN": ""
+  },
+  {
+   "fISN": "E0734AE2-97B8-427E-B034-14919B53EF05",
+   "fDATE": "2015-12-02T00:00:00",
+   "fDOCNUM": "000000000004",
+   "fDIVISION": "000000",
+   "fCUSTOMERID": 1487,
+   "fSALESAGENTID": 8,
+   "fPAYMENTTYPE": "1",
+   "fSUM": 7950.42,
+   "fPREPAYMENT": 0.0,
+   "fDOCGROUP": "",
+   "fCOMMENT": "Կանխիկ վճարում",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fSALESAREA": "102",
+   "fOTHSYSSENDSTATUS": "",
+   "fORGANIZATIONACCOUNT": "",
+   "fCUSTOMERACCOUNT": "",
+   "fECRCHECKNUM": "",
+   "fECRCHECKDATE": null,
+   "fECRCRN": ""
+  }
+ ],
+ "dbo.PLANNEDROUTEDOCS": [
+  {
+   "fISN": "6D1EA155-3D1C-4749-BFE8-5EF3A5867D51",
+   "fDOCISN": "ECBC6755-9A87-4BE1-8E27-D2187B82CCD8",
+   "fCOMMENT": "",
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "21D42A56-6E0E-4A31-B100-6A9941F07B2B",
+   "fDOCISN": "EF244D1C-73D3-4C7C-AAC6-D327C181DBEE",
+   "fCOMMENT": "",
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "AC4384B0-B3AC-448D-9F7A-7F5D075E6AF6",
+   "fDOCISN": "9770564C-2B92-4E39-B53F-028C31DCE959",
+   "fCOMMENT": "",
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.PLANNEDROUTESLIST": [
+  {
+   "fISN": "4A36E41A-AD89-4434-A428-0005446E2D7C",
+   "fCUSTOMERID": 57,
+   "fCOMMENT": "",
+   "fROWNUM": 0,
+   "fDELIVERYADDRESSID": 56
+  },
+  {
+   "fISN": "4A36E41A-AD89-4434-A428-0005446E2D7C",
+   "fCUSTOMERID": 66,
+   "fCOMMENT": "",
+   "fROWNUM": 1,
+   "fDELIVERYADDRESSID": 65
+  },
+  {
+   "fISN": "4A36E41A-AD89-4434-A428-0005446E2D7C",
+   "fCUSTOMERID": 104,
+   "fCOMMENT": "",
+   "fROWNUM": 2,
+   "fDELIVERYADDRESSID": 103
+  }
+ ],
+ "dbo.PLANNEDROUTESLISTMOBILE": [
+  {
+   "fDATE": "2017-02-01T00:00:00",
+   "fSALESAGENTID": 7,
+   "fCUSTOMERID": 1145,
+   "fCOMMENT": "",
+   "fROWNUM": 31,
+   "fISN": "FCCB8DB0-981D-4B9D-8E7C-BD9F92F6BEF6"
+  },
+  {
+   "fDATE": "2017-02-01T00:00:00",
+   "fSALESAGENTID": 7,
+   "fCUSTOMERID": 2408,
+   "fCOMMENT": "",
+   "fROWNUM": 32,
+   "fISN": "6A0EDF51-01C1-420B-AFD2-0546CCD49698"
+  },
+  {
+   "fDATE": "2017-02-02T00:00:00",
+   "fSALESAGENTID": 7,
+   "fCUSTOMERID": 967,
+   "fCOMMENT": "",
+   "fROWNUM": 39,
+   "fISN": "F54F0A93-D36E-4A37-961E-8F8EA624CD97"
+  }
+ ],
+ "dbo.PRICELISTDETAILS": [
+  {
+   "fISN": "3AA88339-52B8-4095-A978-1A7F2B3B3205",
+   "fPRODUCTID": 52,
+   "fPRICE": 415.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "060460E0-8887-4460-A270-2884A06D5B7B",
+   "fPRODUCTID": 601,
+   "fPRICE": 100.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "BD278868-5708-43DD-8197-2930EF9EFCB7",
+   "fPRODUCTID": 219,
+   "fPRICE": 840.0,
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.PRICELISTS": [
+  {
+   "fISN": "7803F9A9-46C4-459F-999B-A98307A0DF91",
+   "fPRICELISTTYPE": "01",
+   "fDATE": "2017-01-01T00:00:00",
+   "fVALIDUNTIL": "2026-05-31T00:00:00",
+   "fPRODUCTID": 1,
+   "fPRICE": 10.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "7803F9A9-46C4-459F-999B-A98307A0DF91",
+   "fPRICELISTTYPE": "01",
+   "fDATE": "2017-01-01T00:00:00",
+   "fVALIDUNTIL": "2026-05-31T00:00:00",
+   "fPRODUCTID": 2,
+   "fPRICE": 80.0,
+   "fROWNUM": 1
+  },
+  {
+   "fISN": "B72DEB56-5087-4155-BC99-796D54D5C751",
+   "fPRICELISTTYPE": "01",
+   "fDATE": "2021-08-12T00:00:00",
+   "fVALIDUNTIL": "2022-02-01T00:00:00",
+   "fPRODUCTID": 3,
+   "fPRICE": 80.0,
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.PRICESORDISCOUNTSLIMITS": [],
+ "dbo.PRODDISCCHANGEREQUESTS": [],
+ "dbo.PRODUCTACCOUNTINGDETAILS": [
+  {
+   "fISN": "06CB5E6E-15B4-4782-8F1D-0000B9DD20DF",
+   "fPRODUCTID": 587,
+   "fQUANTITY": 10.0,
+   "fROWNUM": 0,
+   "fPRICE": 320.0,
+   "fSUM": 3200.0,
+   "fADDITIONALINFO": "",
+   "fSTORAGEIN": "",
+   "fSTORAGEOUT": ""
+  },
+  {
+   "fISN": "06CB5E6E-15B4-4782-8F1D-0000B9DD20DF",
+   "fPRODUCTID": 1644,
+   "fQUANTITY": 10.0,
+   "fROWNUM": 1,
+   "fPRICE": 550.0,
+   "fSUM": 5500.0,
+   "fADDITIONALINFO": "",
+   "fSTORAGEIN": "",
+   "fSTORAGEOUT": ""
+  },
+  {
+   "fISN": "06CB5E6E-15B4-4782-8F1D-0000B9DD20DF",
+   "fPRODUCTID": 561,
+   "fQUANTITY": 5.0,
+   "fROWNUM": 2,
+   "fPRICE": 590.0,
+   "fSUM": 2950.0,
+   "fADDITIONALINFO": "",
+   "fSTORAGEIN": "",
+   "fSTORAGEOUT": ""
+  }
+ ],
+ "dbo.PRODUCTCONTAINERS": [
+  {
+   "fPRODUCTID": 135,
+   "fCONTAINERID": 54,
+   "fPRODUCTQUANTITY": 20.0,
+   "fCONTAINERQUANTITY": 20.0,
+   "fROWNUM": 0
+  },
+  {
+   "fPRODUCTID": 135,
+   "fCONTAINERID": 55,
+   "fPRODUCTQUANTITY": 20.0,
+   "fCONTAINERQUANTITY": 1.0,
+   "fROWNUM": 1
+  },
+  {
+   "fPRODUCTID": 136,
+   "fCONTAINERID": 55,
+   "fPRODUCTQUANTITY": 20.0,
+   "fCONTAINERQUANTITY": 1.0,
+   "fROWNUM": 1
+  }
+ ],
+ "dbo.PRODUCTIMAGES": [
+  {
+   "fPRODUCTID": 3,
+   "fIMAGEGUID": "36FB5D98-9BE4-4498-B21A-C335D24B9A72",
+   "fIMAGE": "<binary 29849 bytes>",
+   "fDEFAULT": true
+  },
+  {
+   "fPRODUCTID": 4,
+   "fIMAGEGUID": "15922AC9-2F51-4FF7-B177-47D7E3D22367",
+   "fIMAGE": "<binary 24037 bytes>",
+   "fDEFAULT": true
+  },
+  {
+   "fPRODUCTID": 7,
+   "fIMAGEGUID": "A7E29835-54F0-4F2B-A8F6-A35C9F287633",
+   "fIMAGE": "<binary 48501 bytes>",
+   "fDEFAULT": true
+  }
+ ],
+ "dbo.PRODUCTMOVEBETWEENVANAGENTSDETAILS": [],
+ "dbo.PRODUCTS": [
+  {
+   "fID": 1,
+   "fCODE": "0000",
+   "fNAME": "Մնացորդ",
+   "fFULLNAME": "Մնացորդ",
+   "fMEASUREUNIT": "հատ",
+   "fGROUP": "",
+   "fDISCOUNTGROUP": "",
+   "fHASFRACTION": true,
+   "fFORSALE": true,
+   "fCONTAINER": false,
+   "fGIFT": false,
+   "fEXTERNALCODE": "",
+   "fINCONTAINER": false,
+   "fKIT": false,
+   "fVATFREE": false,
+   "fTAXABLEBYEXCISE": false,
+   "fEXCISECODE": "",
+   "fEXCISEFACTOR": 0.0,
+   "fPRODUCER": "",
+   "fCPACLASSIFIER": "",
+   "fWEIGHT": 0.0,
+   "fVOLUME": 0.0,
+   "fVOLUMEINCAR": 0.0,
+   "fADDITIONALUNITUSED": false,
+   "fADDITIONALUNIT": "",
+   "fADDITIONALUNITHASFRACTION": false,
+   "fB2BPUBLISHED": false,
+   "fCLOSED": false,
+   "fISN": "A077C886-3FBA-4CBA-978E-48D2DB7AEE86",
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fEXCHANGEABLEPRODUCTGROUP": "",
+   "fBASEUNITQUANTITY": 0.0,
+   "fADDITIONALUNITQUANTITY": 0.0,
+   "fCONTAINERROUNDINGMETHOD": null,
+   "fTAXABLEBYENVFEE": false,
+   "fENVFEEPERCENT": 0.0,
+   "fSCALEDISCOUNTCONDITIONALPRODUCT": "",
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": "",
+   "fRESERVABLE": true,
+   "fRETURNABLE": true,
+   "fDEPOSITABLE": false,
+   "fWEIGHTINCAR": 0.0,
+   "fSPECIFICATION": "",
+   "fEXTERNALBODY": null,
+   "fRETURNSDISTRIBUTIONUSED": false,
+   "fRETURNSDISTRIBUTIONMODE": "",
+   "fDAYSQUANTITY": 0,
+   "fSKIPDAYSQUANTITYUSED": false,
+   "fSKIPDAYSQUANTITY": 0,
+   "fMARKABLE": false
+  },
+  {
+   "fID": 2,
+   "fCODE": "1000",
+   "fNAME": "Գառնի կոլա 0.5լ",
+   "fFULLNAME": "Գառնի կոլա 0.5լ",
+   "fMEASUREUNIT": "հատ",
+   "fGROUP": "",
+   "fDISCOUNTGROUP": "",
+   "fHASFRACTION": true,
+   "fFORSALE": true,
+   "fCONTAINER": false,
+   "fGIFT": true,
+   "fEXTERNALCODE": "11025",
+   "fINCONTAINER": false,
+   "fKIT": false,
+   "fVATFREE": false,
+   "fTAXABLEBYEXCISE": false,
+   "fEXCISECODE": "",
+   "fEXCISEFACTOR": 0.0,
+   "fPRODUCER": "",
+   "fCPACLASSIFIER": "",
+   "fWEIGHT": 0.0,
+   "fVOLUME": 1.0,
+   "fVOLUMEINCAR": 0.0,
+   "fADDITIONALUNITUSED": false,
+   "fADDITIONALUNIT": "",
+   "fADDITIONALUNITHASFRACTION": false,
+   "fB2BPUBLISHED": false,
+   "fCLOSED": false,
+   "fISN": "FF481059-0376-4A21-95E4-83E52FC95AAC",
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fEXCHANGEABLEPRODUCTGROUP": "",
+   "fBASEUNITQUANTITY": 0.0,
+   "fADDITIONALUNITQUANTITY": 0.0,
+   "fCONTAINERROUNDINGMETHOD": null,
+   "fTAXABLEBYENVFEE": false,
+   "fENVFEEPERCENT": 0.0,
+   "fSCALEDISCOUNTCONDITIONALPRODUCT": "",
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": "",
+   "fRESERVABLE": true,
+   "fRETURNABLE": true,
+   "fDEPOSITABLE": false,
+   "fWEIGHTINCAR": 0.0,
+   "fSPECIFICATION": "",
+   "fEXTERNALBODY": "\r\nCOSTACCOUNT:7111\r\nINCOMEACCOUNT:61111\r\n",
+   "fRETURNSDISTRIBUTIONUSED": false,
+   "fRETURNSDISTRIBUTIONMODE": "",
+   "fDAYSQUANTITY": 0,
+   "fSKIPDAYSQUANTITYUSED": false,
+   "fSKIPDAYSQUANTITY": 0,
+   "fMARKABLE": false
+  },
+  {
+   "fID": 3,
+   "fCODE": "1001",
+   "fNAME": "Գառնի կոլա 0.5լ կոլա",
+   "fFULLNAME": "Գառնի կոլա 0.5լ",
+   "fMEASUREUNIT": "հատ",
+   "fGROUP": "100",
+   "fDISCOUNTGROUP": "100",
+   "fHASFRACTION": true,
+   "fFORSALE": true,
+   "fCONTAINER": false,
+   "fGIFT": true,
+   "fEXTERNALCODE": "11025",
+   "fINCONTAINER": false,
+   "fKIT": false,
+   "fVATFREE": false,
+   "fTAXABLEBYEXCISE": false,
+   "fEXCISECODE": "",
+   "fEXCISEFACTOR": 0.0,
+   "fPRODUCER": "",
+   "fCPACLASSIFIER": "2202",
+   "fWEIGHT": 0.543,
+   "fVOLUME": 1.0,
+   "fVOLUMEINCAR": 0.0,
+   "fADDITIONALUNITUSED": true,
+   "fADDITIONALUNIT": "փաթեթ",
+   "fADDITIONALUNITHASFRACTION": true,
+   "fB2BPUBLISHED": false,
+   "fCLOSED": false,
+   "fISN": "C635CB8D-DE9C-45C7-BF9D-BA29CB32ED0D",
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fEXCHANGEABLEPRODUCTGROUP": "",
+   "fBASEUNITQUANTITY": 12.0,
+   "fADDITIONALUNITQUANTITY": 1.0,
+   "fCONTAINERROUNDINGMETHOD": null,
+   "fTAXABLEBYENVFEE": false,
+   "fENVFEEPERCENT": 0.0,
+   "fSCALEDISCOUNTCONDITIONALPRODUCT": "000002",
+   "fGIFTPROMOTIONCONDITIONALPRODUCT": "001",
+   "fRESERVABLE": true,
+   "fRETURNABLE": true,
+   "fDEPOSITABLE": false,
+   "fWEIGHTINCAR": 0.0,
+   "fSPECIFICATION": "",
+   "fEXTERNALBODY": "\r\nEXPENSEACCOUNT:7111\r\nCOSTACCOUNT:7111\r\nINCOMEACCOUNT:61111\r\n",
+   "fRETURNSDISTRIBUTIONUSED": false,
+   "fRETURNSDISTRIBUTIONMODE": "",
+   "fDAYSQUANTITY": 0,
+   "fSKIPDAYSQUANTITYUSED": false,
+   "fSKIPDAYSQUANTITY": 0,
+   "fMARKABLE": false
+  }
+ ],
+ "dbo.PRODUCTSACCESSSCHEMEDETAILS": [],
+ "dbo.PRODUCTSACCESSSCHEMES": [],
+ "dbo.PRODUCTSDISCOUNTS": [
+  {
+   "fISN": "D3FBF776-562D-499E-80F5-B4174F1623DA",
+   "fSALESAGENTID": -1,
+   "fDATE": "2023-07-31T00:00:00",
+   "fVALIDUNTIL": "2079-01-01T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERDISCOUNTGROUP": "003",
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 52,
+   "fPRODUCTDISCOUNTGROUP": null,
+   "fDISCOUNT": 10.0,
+   "fROWNUM": 0,
+   "fCLOSE": false
+  },
+  {
+   "fISN": "7432AB5D-ABD4-46E7-A142-5D0ADB582DD7",
+   "fSALESAGENTID": -1,
+   "fDATE": "2024-09-02T00:00:00",
+   "fVALIDUNTIL": "2024-09-15T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERDISCOUNTGROUP": "003",
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 52,
+   "fPRODUCTDISCOUNTGROUP": null,
+   "fDISCOUNT": 25.0,
+   "fROWNUM": 0,
+   "fCLOSE": false
+  },
+  {
+   "fISN": "6EDE8DD2-E67E-4D31-A594-55D75D89008A",
+   "fSALESAGENTID": -1,
+   "fDATE": "2021-02-16T00:00:00",
+   "fVALIDUNTIL": "2079-01-01T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERDISCOUNTGROUP": "003",
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 138,
+   "fPRODUCTDISCOUNTGROUP": null,
+   "fDISCOUNT": 10.0,
+   "fROWNUM": 0,
+   "fCLOSE": false
+  }
+ ],
+ "dbo.PRODUCTSDISCOUNTSDETAILS": [
+  {
+   "fISN": "7A9DFE3B-6A56-4152-8BBD-01668DDFEFB2",
+   "fCUSTOMERTYPE": "2",
+   "fCUSTOMERID": 2301,
+   "fCUSTOMERDISCOUNTGROUP": null,
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 17,
+   "fPRODUCTDISCOUNTGROUP": null,
+   "fDISCOUNT": 10.0,
+   "fROWNUM": 0,
+   "fCLOSE": false
+  },
+  {
+   "fISN": "7A9DFE3B-6A56-4152-8BBD-01668DDFEFB2",
+   "fCUSTOMERTYPE": "2",
+   "fCUSTOMERID": 2301,
+   "fCUSTOMERDISCOUNTGROUP": null,
+   "fPRODUCTTYPE": "2",
+   "fPRODUCTID": 2,
+   "fPRODUCTDISCOUNTGROUP": null,
+   "fDISCOUNT": 10.0,
+   "fROWNUM": 1,
+   "fCLOSE": false
+  },
+  {
+   "fISN": "7A9DFE3B-6A56-4152-8BBD-01668DDFEFB2",
+   "fCUSTOMERTYPE": "2",
+   "fCUSTOMERID": 2301,
+   "fCUSTOMERDISCOUNTGROUP": null,
+   "fPRODUCTTYPE": "1",
+   "fPRODUCTID": null,
+   "fPRODUCTDISCOUNTGROUP": "200",
+   "fDISCOUNT": 5.0,
+   "fROWNUM": 2,
+   "fCLOSE": false
+  }
+ ],
+ "dbo.PRODUCTSINVENTORIES": [
+  {
+   "fISN": "37BF56A4-60C6-4DF0-BF83-4A56863FD5E6",
+   "fDATE": "2022-05-24T00:00:00",
+   "fDOCNUM": "000000000001",
+   "fCUSTOMERID": 26488,
+   "fSALESAGENTID": 2054,
+   "fCOMMENT": "",
+   "fSALESAREA": "106",
+   "fCREATIONTYPEID": "00009FAE-7867-0000-0806-000000010000",
+   "fSTATE": 2,
+   "fCREATEMETHOD": "1",
+   "fDOCGROUP": "",
+   "fCONTACT": "",
+   "fPLANOGRAMTYPE": "",
+   "fOTHSYSSENDSTATUS": ""
+  },
+  {
+   "fISN": "FA98B6C3-A64F-4176-8974-6C5BBC9A5F68",
+   "fDATE": "2022-08-22T00:00:00",
+   "fDOCNUM": "000000000002",
+   "fCUSTOMERID": 26460,
+   "fSALESAGENTID": 2072,
+   "fCOMMENT": "",
+   "fSALESAREA": "106",
+   "fCREATIONTYPEID": "0000F9AE-5C67-0000-0818-000000010000",
+   "fSTATE": 2,
+   "fCREATEMETHOD": "1",
+   "fDOCGROUP": "",
+   "fCONTACT": "",
+   "fPLANOGRAMTYPE": "",
+   "fOTHSYSSENDSTATUS": ""
+  },
+  {
+   "fISN": "D731C7BD-1697-43FD-B397-3143F2C41E06",
+   "fDATE": "2022-08-25T00:00:00",
+   "fDOCNUM": "000000000003",
+   "fCUSTOMERID": 781,
+   "fSALESAGENTID": 2072,
+   "fCOMMENT": "",
+   "fSALESAREA": "106",
+   "fCREATIONTYPEID": "0000FCAE-0D03-0000-0818-000000010000",
+   "fSTATE": 2,
+   "fCREATEMETHOD": "1",
+   "fDOCGROUP": "",
+   "fCONTACT": "",
+   "fPLANOGRAMTYPE": "",
+   "fOTHSYSSENDSTATUS": ""
+  }
+ ],
+ "dbo.PRODUCTSINVENTORYDETAILS": [],
+ "dbo.PRODUCTSMOVETAXDOCUMENTKEYS": [],
+ "dbo.PRODUCTSRESERVATIONDETAILS": [
+  {
+   "fISN": "6F22AC63-0A6D-408F-8F29-0006E5397C88",
+   "fSTORAGE": "000",
+   "fPRODUCTID": 38,
+   "fQUANTITY": 12.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "6F22AC63-0A6D-408F-8F29-0006E5397C88",
+   "fSTORAGE": "000",
+   "fPRODUCTID": 42,
+   "fQUANTITY": 12.0,
+   "fROWNUM": 1
+  },
+  {
+   "fISN": "6F22AC63-0A6D-408F-8F29-0006E5397C88",
+   "fSTORAGE": "000",
+   "fPRODUCTID": 48,
+   "fQUANTITY": 24.0,
+   "fROWNUM": 2
+  }
+ ],
+ "dbo.PRODUCTSSCALEDISCOUNTS": [
+  {
+   "fISN": "A254F431-9534-45CA-8E63-7B00CF9A5ACC",
+   "fDATE": "2025-03-01T00:00:00",
+   "fVALIDUNTIL": "2025-10-02T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERSCALEDISCOUNTGROUP": "001",
+   "fSCALEDISCOUNTCONDITIONALPRODUCT": "000001",
+   "fCALCULATIONBASE": "Sum",
+   "fCALCULATIONVALUE": 20001.0,
+   "fDISCOUNT": 7.5,
+   "fROWNUM": 0,
+   "fCLOSE": false,
+   "fDISCOUNTTYPE": "1",
+   "fDISCOUNTAMOUNT": 0.0
+  },
+  {
+   "fISN": "A254F431-9534-45CA-8E63-7B00CF9A5ACC",
+   "fDATE": "2025-03-01T00:00:00",
+   "fVALIDUNTIL": "2025-10-02T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERSCALEDISCOUNTGROUP": "001",
+   "fSCALEDISCOUNTCONDITIONALPRODUCT": "000001",
+   "fCALCULATIONBASE": "Sum",
+   "fCALCULATIONVALUE": 10001.0,
+   "fDISCOUNT": 5.0,
+   "fROWNUM": 1,
+   "fCLOSE": false,
+   "fDISCOUNTTYPE": "1",
+   "fDISCOUNTAMOUNT": 0.0
+  },
+  {
+   "fISN": "A254F431-9534-45CA-8E63-7B00CF9A5ACC",
+   "fDATE": "2025-03-01T00:00:00",
+   "fVALIDUNTIL": "2025-10-02T00:00:00",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERSCALEDISCOUNTGROUP": "001",
+   "fSCALEDISCOUNTCONDITIONALPRODUCT": "000001",
+   "fCALCULATIONBASE": "Sum",
+   "fCALCULATIONVALUE": 30001.0,
+   "fDISCOUNT": 10.0,
+   "fROWNUM": 2,
+   "fCLOSE": false,
+   "fDISCOUNTTYPE": "1",
+   "fDISCOUNTAMOUNT": 0.0
+  }
+ ],
+ "dbo.PRODUCTSSCALEDISCOUNTSDETAILS": [
+  {
+   "fISN": "E737780F-9DEF-46C9-A4FD-143D98F20A29",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERSCALEDISCOUNTGROUP": "001",
+   "fSCALEDISCOUNTCONDITIONALPRODUCT": "000007",
+   "fCALCULATIONBASE": "Sum",
+   "fCALCULATIONVALUE": 10001.0,
+   "fDISCOUNT": 10.0,
+   "fROWNUM": 0,
+   "fDISCOUNTTYPE": "1",
+   "fDISCOUNTAMOUNT": 0.0
+  },
+  {
+   "fISN": "9ED2B67C-051B-4052-93FB-209EB9B89E3B",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERSCALEDISCOUNTGROUP": "001",
+   "fSCALEDISCOUNTCONDITIONALPRODUCT": "000004",
+   "fCALCULATIONBASE": "Qnt",
+   "fCALCULATIONVALUE": 31680.0,
+   "fDISCOUNT": 15.62,
+   "fROWNUM": 0,
+   "fDISCOUNTTYPE": "1",
+   "fDISCOUNTAMOUNT": 0.0
+  },
+  {
+   "fISN": "9ED2B67C-051B-4052-93FB-209EB9B89E3B",
+   "fCUSTOMERTYPE": "1",
+   "fCUSTOMERID": null,
+   "fCUSTOMERSCALEDISCOUNTGROUP": "001",
+   "fSCALEDISCOUNTCONDITIONALPRODUCT": "000004",
+   "fCALCULATIONBASE": "Qnt",
+   "fCALCULATIONVALUE": 32000.0,
+   "fDISCOUNT": 18.75,
+   "fROWNUM": 1,
+   "fDISCOUNTTYPE": "1",
+   "fDISCOUNTAMOUNT": 0.0
+  }
+ ],
+ "dbo.PROVIDINGDELIVERIES": [
+  {
+   "fISN": "06CB5E6E-15B4-4782-8F1D-0000B9DD20DF",
+   "fORDERNUM": "000000300422",
+   "fPRODUCTID": 1644,
+   "fOPERATION": "RLZ",
+   "fQUANTITY": 10.0,
+   "fROWNUM": 0,
+   "fORDEREDPRODUCTID": 1644,
+   "fDOCTYPE": 1,
+   "fADDITIONALINFO": ""
+  },
+  {
+   "fISN": "06CB5E6E-15B4-4782-8F1D-0000B9DD20DF",
+   "fORDERNUM": "000000300422",
+   "fPRODUCTID": 587,
+   "fOPERATION": "RLZ",
+   "fQUANTITY": 10.0,
+   "fROWNUM": 1,
+   "fORDEREDPRODUCTID": 587,
+   "fDOCTYPE": 1,
+   "fADDITIONALINFO": ""
+  },
+  {
+   "fISN": "06CB5E6E-15B4-4782-8F1D-0000B9DD20DF",
+   "fORDERNUM": "000000300422",
+   "fPRODUCTID": 561,
+   "fOPERATION": "RLZ",
+   "fQUANTITY": 5.0,
+   "fROWNUM": 2,
+   "fORDEREDPRODUCTID": 561,
+   "fDOCTYPE": 1,
+   "fADDITIONALINFO": ""
+  }
+ ],
+ "dbo.Products": [],
+ "dbo.QUESTIONNAIREDETAILS": [
+  {
+   "fQUESTIONNAIRECODE": "001",
+   "fISREQUIRED": true,
+   "fROWNUM": 0,
+   "fQUESTIONID": 1
+  },
+  {
+   "fQUESTIONNAIRECODE": "001",
+   "fISREQUIRED": true,
+   "fROWNUM": 1,
+   "fQUESTIONID": 2
+  },
+  {
+   "fQUESTIONNAIRECODE": "001",
+   "fISREQUIRED": true,
+   "fROWNUM": 2,
+   "fQUESTIONID": 3
+  }
+ ],
+ "dbo.QUESTIONNAIRES": [
+  {
+   "fCODE": "001",
+   "fNAME": "Հարցաթերթիկ 1",
+   "fCLOSED": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.QUESTIONNAIRESACCESSSCHEMEDETAILS": [
+  {
+   "fSCHEMECODE": "001",
+   "fQUESTIONNAIREMETHOD": "0",
+   "fQUESTIONNAIRE": null,
+   "fACCESS": true,
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.QUESTIONNAIRESACCESSSCHEMES": [
+  {
+   "fCODE": "001",
+   "fNAME": "Բոլոր",
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.QUESTIONS": [
+  {
+   "fID": 1,
+   "fCODE": "001",
+   "fNAME": "Ապրանքներից որ լիմոնադն է լավ վաճառվում",
+   "fDESCRIPTION": "",
+   "fGROUP": "",
+   "fANSWERTYPE": "4",
+   "fTREECODE": null,
+   "fIMAGESALLOWED": false,
+   "fIMAGESISREQUIRED": false,
+   "fCLOSED": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fHASFRACTION": null
+  },
+  {
+   "fID": 2,
+   "fCODE": "002",
+   "fNAME": "Դեմ եք արդյոք 10 տոկոս թանկացմանը",
+   "fDESCRIPTION": "",
+   "fGROUP": "",
+   "fANSWERTYPE": "3",
+   "fTREECODE": null,
+   "fIMAGESALLOWED": false,
+   "fIMAGESISREQUIRED": false,
+   "fCLOSED": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fHASFRACTION": null
+  },
+  {
+   "fID": 3,
+   "fCODE": "003",
+   "fNAME": "Ինչ նոր համ կուզենայիք տեսնել",
+   "fDESCRIPTION": "",
+   "fGROUP": "",
+   "fANSWERTYPE": "4",
+   "fTREECODE": null,
+   "fIMAGESALLOWED": false,
+   "fIMAGESISREQUIRED": false,
+   "fCLOSED": false,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fHASFRACTION": null
+  }
+ ],
+ "dbo.RECONCILATIONDETAILS": [
+  {
+   "fISN": "AE33D0F2-4E98-4E71-AA7E-0925A68EB55D",
+   "fDATE": "2026-02-07T00:00:00",
+   "fDIVISION": "000000",
+   "fBASEDOCISN": "27EB3D3B-1A1E-4FD2-8871-4547504CC4C4",
+   "fBASEDOCDESCRIPTION": "Վաճառք N - 000000330858",
+   "fTRANSACTIONCOMMENT": "",
+   "fSUMIN": 12150.0,
+   "fSUMOUT": 0.0,
+   "fROWNUM": 0
+  },
+  {
+   "fISN": "AE33D0F2-4E98-4E71-AA7E-0925A68EB55D",
+   "fDATE": "2026-02-26T00:00:00",
+   "fDIVISION": "000000",
+   "fBASEDOCISN": "599C68DA-D4A6-4485-B08B-A9FDADA9E172",
+   "fBASEDOCDESCRIPTION": "Վաճառքի վճարում N - 000000317661",
+   "fTRANSACTIONCOMMENT": "Կրեդիտի մարում",
+   "fSUMIN": 0.0,
+   "fSUMOUT": 12150.0,
+   "fROWNUM": 1
+  },
+  {
+   "fISN": "C51F0765-8534-41C1-958E-0B26DDE6A722",
+   "fDATE": "2026-02-21T00:00:00",
+   "fDIVISION": "000000",
+   "fBASEDOCISN": "AC19A010-008D-438E-AF97-BD1B52ECA88C",
+   "fBASEDOCDESCRIPTION": "Վաճառք N - 000000332589",
+   "fTRANSACTIONCOMMENT": "",
+   "fSUMIN": 2850.0,
+   "fSUMOUT": 0.0,
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.RESERVATIONSCHEMEDETAILS": [
+  {
+   "fSCHEMECODE": "001",
+   "fSTORAGECODE": "000",
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.RESERVATIONSCHEMES": [
+  {
+   "fCODE": "001",
+   "fNAME": "պահետի պահուստավորում",
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.RETURNORDERS": [
+  {
+   "fISN": "18531B5E-E504-404C-8099-0478BC48F2AF",
+   "fDATE": "2022-06-04T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000006",
+   "fCUSTOMERID": 35619,
+   "fSALESAGENTID": 2059,
+   "fVANAGENTID": 2060,
+   "fDELIVERYCAR": "",
+   "fDELIVERYDATE": null,
+   "fSALENUM": "",
+   "fPRICELISTTYPE": "01",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 0.0,
+   "fTOTALSUM": 0.0,
+   "fVATSUM": 0.0,
+   "fEXCISESUM": 0.0,
+   "fENVFEESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "108",
+   "fDOCGROUP": "",
+   "fRETURNREASON": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fORGANIZATIONACCOUNT": "",
+   "fCREATEMETHOD": "",
+   "fOTHSYSSENDSTATUS": "",
+   "fDELIVERYADDRESSID": 0
+  },
+  {
+   "fISN": "ACF02D64-7C16-4675-86C1-6522815CED20",
+   "fDATE": "2022-06-03T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000007",
+   "fCUSTOMERID": 35337,
+   "fSALESAGENTID": 1029,
+   "fVANAGENTID": 1025,
+   "fDELIVERYCAR": "",
+   "fDELIVERYDATE": null,
+   "fSALENUM": "",
+   "fPRICELISTTYPE": "01",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 0.0,
+   "fTOTALSUM": 0.0,
+   "fVATSUM": 0.0,
+   "fEXCISESUM": 0.0,
+   "fENVFEESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "101",
+   "fDOCGROUP": "",
+   "fRETURNREASON": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fORGANIZATIONACCOUNT": "",
+   "fCREATEMETHOD": "",
+   "fOTHSYSSENDSTATUS": "",
+   "fDELIVERYADDRESSID": 0
+  },
+  {
+   "fISN": "FCDDD00F-3614-4F87-806B-C6E3C33C081E",
+   "fDATE": "2022-07-18T00:00:00",
+   "fDIVISION": "000001",
+   "fDOCNUM": "000000000008",
+   "fCUSTOMERID": 35385,
+   "fSALESAGENTID": 2061,
+   "fVANAGENTID": 2062,
+   "fDELIVERYCAR": "",
+   "fDELIVERYDATE": null,
+   "fSALENUM": "",
+   "fPRICELISTTYPE": "01",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 760.0,
+   "fTOTALSUM": 760.0,
+   "fVATSUM": 126.67,
+   "fEXCISESUM": 0.0,
+   "fENVFEESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "103",
+   "fDOCGROUP": "",
+   "fRETURNREASON": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fORGANIZATIONACCOUNT": "",
+   "fCREATEMETHOD": "",
+   "fOTHSYSSENDSTATUS": "",
+   "fDELIVERYADDRESSID": 0
+  }
+ ],
+ "dbo.RETURNS": [
+  {
+   "fISN": "5E2106F1-E13E-47A1-A100-01FFCAF048C6",
+   "fDATE": "2015-12-15T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000002",
+   "fCUSTOMERID": 1340,
+   "fSALESAGENTID": 12,
+   "fVANAGENTID": 6,
+   "fSALENUM": "",
+   "fPRICELISTTYPE": "01",
+   "fTOTALSUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "106",
+   "fDOCGROUP": "",
+   "fRETURNREASON": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 0.0,
+   "fDELIVERYCAR": "",
+   "fOTHSYSSENDSTATUS": "",
+   "fBASERETURNDOCNUMBER": null,
+   "fBASERETURNTOTALSUM": null,
+   "fBASERETURNDOCISN": null,
+   "fSUBMITDATE": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fASSIGNOR": "",
+   "fVATSUM": 0.0,
+   "fEXCISESUM": 0.0,
+   "fENVFEESUM": 0.0,
+   "fECRCHECKNUM": "",
+   "fECRCHECKDATE": null,
+   "fECRCASHSUM": 0.0,
+   "fECRNONCASHSUM": 0.0,
+   "fCOSIGNDATE": null,
+   "fDELIVERYADDRESSID": 0,
+   "fECRCRN": ""
+  },
+  {
+   "fISN": "DA89B784-298F-47F8-9FE7-CD95E12E2906",
+   "fDATE": "2015-12-15T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000003",
+   "fCUSTOMERID": 1340,
+   "fSALESAGENTID": 12,
+   "fVANAGENTID": 6,
+   "fSALENUM": "",
+   "fPRICELISTTYPE": "01",
+   "fTOTALSUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "106",
+   "fDOCGROUP": "",
+   "fRETURNREASON": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 0.0,
+   "fDELIVERYCAR": "",
+   "fOTHSYSSENDSTATUS": "",
+   "fBASERETURNDOCNUMBER": null,
+   "fBASERETURNTOTALSUM": null,
+   "fBASERETURNDOCISN": null,
+   "fSUBMITDATE": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fASSIGNOR": "",
+   "fVATSUM": 0.0,
+   "fEXCISESUM": 0.0,
+   "fENVFEESUM": 0.0,
+   "fECRCHECKNUM": "",
+   "fECRCHECKDATE": null,
+   "fECRCASHSUM": 0.0,
+   "fECRNONCASHSUM": 0.0,
+   "fCOSIGNDATE": null,
+   "fDELIVERYADDRESSID": 0,
+   "fECRCRN": ""
+  },
+  {
+   "fISN": "05ABEDAC-110D-43DA-8371-8E99979BFD14",
+   "fDATE": "2015-12-15T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000004",
+   "fCUSTOMERID": 1436,
+   "fSALESAGENTID": 12,
+   "fVANAGENTID": 6,
+   "fSALENUM": "",
+   "fPRICELISTTYPE": "01",
+   "fTOTALSUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "106",
+   "fDOCGROUP": "",
+   "fRETURNREASON": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 0.0,
+   "fDELIVERYCAR": "",
+   "fOTHSYSSENDSTATUS": "",
+   "fBASERETURNDOCNUMBER": null,
+   "fBASERETURNTOTALSUM": null,
+   "fBASERETURNDOCISN": null,
+   "fSUBMITDATE": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fASSIGNOR": "",
+   "fVATSUM": 0.0,
+   "fEXCISESUM": 0.0,
+   "fENVFEESUM": 0.0,
+   "fECRCHECKNUM": "",
+   "fECRCHECKDATE": null,
+   "fECRCASHSUM": 0.0,
+   "fECRNONCASHSUM": 0.0,
+   "fCOSIGNDATE": null,
+   "fDELIVERYADDRESSID": 0,
+   "fECRCRN": ""
+  }
+ ],
+ "dbo.ROLEACCESS": [
+  {
+   "fCODE": "000",
+   "fCOMMENT": "Համակարգի ադմինիստրատոր",
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCODE": "001",
+   "fCOMMENT": "",
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fCODE": "002",
+   "fCOMMENT": "",
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.ROLEPARAMS": [
+  {
+   "fPARAMID": 24001,
+   "fROLE": "000",
+   "fVALUE": "20150101"
+  },
+  {
+   "fPARAMID": 24002,
+   "fROLE": "000",
+   "fVALUE": "20261231"
+  },
+  {
+   "fPARAMID": 24003,
+   "fROLE": "000",
+   "fVALUE": "0"
+  }
+ ],
+ "dbo.ROUTECHANGEREQUESTS": [
+  {
+   "fID": 1,
+   "fCREATIONDATE": "2026-05-13T14:42:33.657000",
+   "fSALESAGENTID": 3169,
+   "fWEEK": 1,
+   "fWEEKDAY": 3,
+   "fPERIODICITY": 1,
+   "fCOMMENT": "",
+   "fDATE": "2026-05-13T00:00:00",
+   "fSTATE": 0
+  }
+ ],
+ "dbo.ROUTECHANGEREQUESTSDETAILS": [
+  {
+   "fREQUESTID": 1,
+   "fCUSTOMERID": 65805,
+   "fDELIVERYADDRESSID": 24517,
+   "fCOMMENT": "",
+   "fROWNUM": 0
+  },
+  {
+   "fREQUESTID": 1,
+   "fCUSTOMERID": 2196,
+   "fDELIVERYADDRESSID": 2149,
+   "fCOMMENT": "",
+   "fROWNUM": 1
+  },
+  {
+   "fREQUESTID": 1,
+   "fCUSTOMERID": 20135,
+   "fDELIVERYADDRESSID": 3081,
+   "fCOMMENT": "",
+   "fROWNUM": 2
+  }
+ ],
+ "dbo.ROUTETEMPLATES": [
+  {
+   "fID": 1299,
+   "fSALESAREA": "",
+   "fSALESAGENTID": 3144,
+   "fWEEK": 1,
+   "fWEEKDAY": 1,
+   "fPERIODICITY": 1,
+   "fCOMMENT": "",
+   "fTS": "<binary 8 bytes>",
+   "fBODY": null
+  },
+  {
+   "fID": 1300,
+   "fSALESAREA": "",
+   "fSALESAGENTID": 3144,
+   "fWEEK": 1,
+   "fWEEKDAY": 2,
+   "fPERIODICITY": 1,
+   "fCOMMENT": "",
+   "fTS": "<binary 8 bytes>",
+   "fBODY": null
+  },
+  {
+   "fID": 1301,
+   "fSALESAREA": "",
+   "fSALESAGENTID": 3144,
+   "fWEEK": 1,
+   "fWEEKDAY": 3,
+   "fPERIODICITY": 1,
+   "fCOMMENT": "",
+   "fTS": "<binary 8 bytes>",
+   "fBODY": null
+  }
+ ],
+ "dbo.ROUTETEMPLATESLIST": [
+  {
+   "fID": 1299,
+   "fCUSTOMERID": 44040,
+   "fCOMMENT": "",
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>",
+   "fDELIVERYADDRESSID": 4837
+  },
+  {
+   "fID": 1299,
+   "fCUSTOMERID": 26503,
+   "fCOMMENT": "",
+   "fROWNUM": 1,
+   "fTS": "<binary 8 bytes>",
+   "fDELIVERYADDRESSID": 3429
+  },
+  {
+   "fID": 1299,
+   "fCUSTOMERID": 46450,
+   "fCOMMENT": "",
+   "fROWNUM": 2,
+   "fTS": "<binary 8 bytes>",
+   "fDELIVERYADDRESSID": 5215
+  }
+ ],
+ "dbo.SALEDOCDETAILS": [
+  {
+   "fISN": "D21A4873-0334-4E90-B52E-00001B499211",
+   "fPRODUCTID": 52,
+   "fQUANTITY": 20.0,
+   "fPRICE": 415.0,
+   "fDISCOUNT": 0.0,
+   "fDISCOUNTEDPRICE": 415.0,
+   "fSUM": 8300.0,
+   "fEXCISESUM": 0.0,
+   "fVATSUM": 1383.33,
+   "fROWNUM": 0,
+   "fISPARTIESSELECTEDMANUAL": false,
+   "fENVFEESUM": 0.0,
+   "fADDITIONALINFO": "",
+   "fPRICELISTPRICE": 415.0
+  },
+  {
+   "fISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fPRODUCTID": 200,
+   "fQUANTITY": 5.0,
+   "fPRICE": 1750.0,
+   "fDISCOUNT": 28.57,
+   "fDISCOUNTEDPRICE": 1250.03,
+   "fSUM": 6250.15,
+   "fEXCISESUM": 0.0,
+   "fVATSUM": 1041.69,
+   "fROWNUM": 0,
+   "fISPARTIESSELECTEDMANUAL": false,
+   "fENVFEESUM": 0.0,
+   "fADDITIONALINFO": "",
+   "fPRICELISTPRICE": 1750.0
+  },
+  {
+   "fISN": "4A1965F5-CAA2-4734-9501-00003E5D1AA3",
+   "fPRODUCTID": 9,
+   "fQUANTITY": 24.0,
+   "fPRICE": 90.0,
+   "fDISCOUNT": 10.0,
+   "fDISCOUNTEDPRICE": 81.0,
+   "fSUM": 1944.0,
+   "fEXCISESUM": 0.0,
+   "fVATSUM": 324.0,
+   "fROWNUM": 0,
+   "fISPARTIESSELECTEDMANUAL": false,
+   "fENVFEESUM": 0.0,
+   "fADDITIONALINFO": "",
+   "fPRICELISTPRICE": 90.0
+  }
+ ],
+ "dbo.SALEDOCEXCHANGES": [],
+ "dbo.SALEDOCGIFTS": [
+  {
+   "fISN": "D21A4873-0334-4E90-B52E-00001B499211",
+   "fPRODUCTID": 52,
+   "fQUANTITY": 2.0,
+   "fROWNUM": 0,
+   "fADDITIONALINFO": ""
+  },
+  {
+   "fISN": "79A97A28-6CCC-40F5-BFAB-00005CCDFD1F",
+   "fPRODUCTID": 52,
+   "fQUANTITY": 1.0,
+   "fROWNUM": 0,
+   "fADDITIONALINFO": ""
+  },
+  {
+   "fISN": "2B9B9A97-3C78-4A56-BF39-0000835FEC2C",
+   "fPRODUCTID": 52,
+   "fQUANTITY": 1.0,
+   "fROWNUM": 0,
+   "fADDITIONALINFO": ""
+  }
+ ],
+ "dbo.SALEDOCPRODUCTSONDEPOSIT": [
+  {
+   "fISN": "9539643A-FD2B-4A50-A4B8-000022075414",
+   "fPRODUCTID": 202,
+   "fQUANTITY": 5.0,
+   "fROWNUM": 0,
+   "fISPARTIESSELECTEDMANUAL": false,
+   "fADDITIONALINFO": ""
+  },
+  {
+   "fISN": "F21DEFA1-08FA-46FF-BC63-0002409C4FFE",
+   "fPRODUCTID": 202,
+   "fQUANTITY": 80.0,
+   "fROWNUM": 0,
+   "fISPARTIESSELECTEDMANUAL": false,
+   "fADDITIONALINFO": ""
+  },
+  {
+   "fISN": "1AF4853A-A9A8-4388-9598-0003FAFEAAFA",
+   "fPRODUCTID": 202,
+   "fQUANTITY": 6.0,
+   "fROWNUM": 0,
+   "fISPARTIESSELECTEDMANUAL": false,
+   "fADDITIONALINFO": ""
+  }
+ ],
+ "dbo.SALES": [
+  {
+   "fISN": "1D5E57AC-7A4E-49F5-AD5D-EB8A9B3734C2",
+   "fDATE": "2017-02-02T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000006",
+   "fCUSTOMERID": 718,
+   "fSALESAGENTID": 7,
+   "fVANAGENTID": 1,
+   "fDELIVERYCAR": "",
+   "fPRICELISTTYPE": "01",
+   "fDELAYDAYS": 0,
+   "fPAYTYPE": "",
+   "fTOTALSUM": 4280.0,
+   "fVATSUM": 713.33,
+   "fEXCISESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "101",
+   "fDOCGROUP": "",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fECRCHECKNUM": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 4280.0,
+   "fOTHSYSSENDSTATUS": "1",
+   "fSUBMITDATE": null,
+   "fB2BID": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fENVFEESUM": 0.0,
+   "fASSIGNOR": "",
+   "fECRCHECKDATE": null,
+   "fTAXCODEWASPRINTEDONECR": false,
+   "fECRCASHSUM": 0.0,
+   "fECRNONCASHSUM": 0.0,
+   "fCOSIGNDATE": null,
+   "fECRPREPAYMENTSUM": 0.0,
+   "fDELIVERYADDRESSID": 0,
+   "fECRCRN": ""
+  },
+  {
+   "fISN": "112FA09B-C5DC-478A-8C3A-586B1D18F33F",
+   "fDATE": "2017-02-02T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000007",
+   "fCUSTOMERID": 2393,
+   "fSALESAGENTID": 7,
+   "fVANAGENTID": 1,
+   "fDELIVERYCAR": "",
+   "fPRICELISTTYPE": "01",
+   "fDELAYDAYS": 0,
+   "fPAYTYPE": "",
+   "fTOTALSUM": 1050.0,
+   "fVATSUM": 175.0,
+   "fEXCISESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "101",
+   "fDOCGROUP": "",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fECRCHECKNUM": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 1050.0,
+   "fOTHSYSSENDSTATUS": "1",
+   "fSUBMITDATE": null,
+   "fB2BID": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fENVFEESUM": 0.0,
+   "fASSIGNOR": "",
+   "fECRCHECKDATE": null,
+   "fTAXCODEWASPRINTEDONECR": false,
+   "fECRCASHSUM": 0.0,
+   "fECRNONCASHSUM": 0.0,
+   "fCOSIGNDATE": null,
+   "fECRPREPAYMENTSUM": 0.0,
+   "fDELIVERYADDRESSID": 0,
+   "fECRCRN": ""
+  },
+  {
+   "fISN": "7822DDD6-31F0-458F-B45F-B282C71DEABB",
+   "fDATE": "2017-02-02T00:00:00",
+   "fDIVISION": "000000",
+   "fDOCNUM": "000000000008",
+   "fCUSTOMERID": 1564,
+   "fSALESAGENTID": 7,
+   "fVANAGENTID": 1,
+   "fDELIVERYCAR": "",
+   "fPRICELISTTYPE": "01",
+   "fDELAYDAYS": 0,
+   "fPAYTYPE": "",
+   "fTOTALSUM": 2010.0,
+   "fVATSUM": 335.0,
+   "fEXCISESUM": 0.0,
+   "fCOMMENT": "",
+   "fSALESAREA": "101",
+   "fDOCGROUP": "",
+   "fEXPTOTAXPROG": false,
+   "fTAXSERIANUMBER": "",
+   "fECRCHECKNUM": "",
+   "fCREATIONTYPEID": null,
+   "fSTATE": 2,
+   "fCONTACT": "",
+   "fCREATEMETHOD": "",
+   "fADDITIONALDISCOUNT": 0.0,
+   "fUNDISCOUNTEDSUM": 2010.0,
+   "fOTHSYSSENDSTATUS": "1",
+   "fSUBMITDATE": null,
+   "fB2BID": null,
+   "fORGANIZATIONACCOUNT": "",
+   "fENVFEESUM": 0.0,
+   "fASSIGNOR": "",
+   "fECRCHECKDATE": null,
+   "fTAXCODEWASPRINTEDONECR": false,
+   "fECRCASHSUM": 0.0,
+   "fECRNONCASHSUM": 0.0,
+   "fCOSIGNDATE": null,
+   "fECRPREPAYMENTSUM": 0.0,
+   "fDELIVERYADDRESSID": 0,
+   "fECRCRN": ""
+  }
+ ],
+ "dbo.SALESAGENTAREAS": [
+  {
+   "fSALESAGENTID": 1,
+   "fSALESAREA": "101",
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  },
+  {
+   "fSALESAGENTID": 2,
+   "fSALESAREA": "102",
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  },
+  {
+   "fSALESAGENTID": 3,
+   "fSALESAREA": "103",
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.SALESAGENTCARS": [
+  {
+   "fSALESAGENTID": 2,
+   "fCARCODE": "2660062",
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  },
+  {
+   "fSALESAGENTID": 1025,
+   "fCARCODE": "504 CQ 61",
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  },
+  {
+   "fSALESAGENTID": 2048,
+   "fCARCODE": "123AV61",
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.SALESAGENTCREATEDDOCUMENTBODIES": [
+  {
+   "fISN": "D21A4873-0334-4E90-B52E-00001B499211",
+   "fBODY": "{\"CreatedSale\":false,\"UId\":\"d21a4873-0334-4e90-b52e-00001b499211\",\"DocNumber\":\"000000233052\",\"Division\":\"000000\",\"DocDat…"
+  },
+  {
+   "fISN": "79A97A28-6CCC-40F5-BFAB-00005CCDFD1F",
+   "fBODY": "{\"CreatedSale\":false,\"UId\":\"79a97a28-6ccc-40f5-bfab-00005ccdfd1f\",\"DocNumber\":\"000000303869\",\"Division\":\"000000\",\"DocDat…"
+  },
+  {
+   "fISN": "46A515C7-CBD6-4F0B-9B4D-0000FBEE9C3F",
+   "fBODY": "{\"CreatedSale\":false,\"UId\":\"46a515c7-cbd6-4f0b-9b4d-0000fbee9c3f\",\"DocNumber\":\"000000228298\",\"Division\":\"000000\",\"DocDat…"
+  }
+ ],
+ "dbo.SALESAGENTCREATEDDOCUMENTS": [
+  {
+   "fSALESAGENTID": 1029,
+   "fCUSTOMERID": 36643,
+   "fDATE": "2024-05-22T00:00:00",
+   "fISN": "D21A4873-0334-4E90-B52E-00001B499211",
+   "fDOCTYPE": 1
+  },
+  {
+   "fSALESAGENTID": 3169,
+   "fCUSTOMERID": 28658,
+   "fDATE": "2025-11-25T00:00:00",
+   "fISN": "79A97A28-6CCC-40F5-BFAB-00005CCDFD1F",
+   "fDOCTYPE": 1
+  },
+  {
+   "fSALESAGENTID": 2101,
+   "fCUSTOMERID": 49151,
+   "fDATE": "2024-04-12T00:00:00",
+   "fISN": "46A515C7-CBD6-4F0B-9B4D-0000FBEE9C3F",
+   "fDOCTYPE": 1
+  }
+ ],
+ "dbo.SALESAGENTDIVISIONS": [
+  {
+   "fSALESAGENTID": 1,
+   "fDIVISION": "000000",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fSALESAGENTID": 2,
+   "fDIVISION": "000000",
+   "fDEFAULT": true,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fSALESAGENTID": 2,
+   "fDIVISION": "000001",
+   "fDEFAULT": false,
+   "fROWNUM": 1,
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.SALESAGENTPREFEREDPRODUCTS": [
+  {
+   "fSALESAGENTID": 7,
+   "fPRODUCTID": 2,
+   "fORDER": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fPRODUCTID": 17,
+   "fORDER": 1,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fPRODUCTID": 38,
+   "fORDER": 2,
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.SALESAGENTPRODUCTSACCESS": [
+  {
+   "fSALESAGENTID": 7,
+   "fPRODUCTTYPE": "0",
+   "fPRODUCTID": null,
+   "fPRODUCTGROUP": null,
+   "fACCESS": true,
+   "fROWNUM": 1,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fPRODUCTTYPE": "1",
+   "fPRODUCTID": null,
+   "fPRODUCTGROUP": "100",
+   "fACCESS": false,
+   "fROWNUM": 2,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fPRODUCTTYPE": "1",
+   "fPRODUCTID": null,
+   "fPRODUCTGROUP": "101",
+   "fACCESS": false,
+   "fROWNUM": 0,
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.SALESAGENTS": [
+  {
+   "fID": 1,
+   "fCODE": "B001",
+   "fNAME": "Իսոյան Լևոն",
+   "fEXTERNALCODE": "",
+   "fCLOSED": false,
+   "fUSERID": null,
+   "fDEVICEID": null,
+   "fPASSPORTID": "",
+   "fISFOREIGN": false,
+   "fISN": "25782360-B4CD-4D11-A1F5-A88B918A85B5",
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fFOLLOWERSCHEME": "",
+   "fQUESTIONNAIRESACCESSSCHEME": "",
+   "fVISITRESULTSACCESSSCHEME": "000",
+   "fREMCHECKMODE": "0",
+   "fEXTERNALBODY": null,
+   "fRESERVATIONSCHEME": ""
+  },
+  {
+   "fID": 2,
+   "fCODE": "B002/1",
+   "fNAME": "Առաքելյան Դավիթ",
+   "fEXTERNALCODE": "",
+   "fCLOSED": false,
+   "fUSERID": null,
+   "fDEVICEID": null,
+   "fPASSPORTID": "",
+   "fISFOREIGN": false,
+   "fISN": "3CB404E9-00B6-4ED5-ADC3-43266E5ACCFD",
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fFOLLOWERSCHEME": "",
+   "fQUESTIONNAIRESACCESSSCHEME": "",
+   "fVISITRESULTSACCESSSCHEME": "000",
+   "fREMCHECKMODE": "0",
+   "fEXTERNALBODY": null,
+   "fRESERVATIONSCHEME": ""
+  },
+  {
+   "fID": 3,
+   "fCODE": "B003",
+   "fNAME": "Անտոնյան Անդրանիկ",
+   "fEXTERNALCODE": "",
+   "fCLOSED": false,
+   "fUSERID": null,
+   "fDEVICEID": null,
+   "fPASSPORTID": "",
+   "fISFOREIGN": false,
+   "fISN": "BBA7BDF7-C223-4608-81DF-C5DAFFA4CCA4",
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fFOLLOWERSCHEME": "",
+   "fQUESTIONNAIRESACCESSSCHEME": "",
+   "fVISITRESULTSACCESSSCHEME": "000",
+   "fREMCHECKMODE": "0",
+   "fEXTERNALBODY": null,
+   "fRESERVATIONSCHEME": ""
+  }
+ ],
+ "dbo.SALESAGENTVANAGENTSACCESS": [
+  {
+   "fSALESAGENTID": 3,
+   "fVANAGENTID": 1026,
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fVANAGENTID": 1025,
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  },
+  {
+   "fSALESAGENTID": 8,
+   "fVANAGENTID": 2,
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.SALETAXDOCUMENTKEYS": [],
+ "dbo.SMS": [],
+ "dbo.STORAGES": [
+  {
+   "fCODE": "000",
+   "fNAME": "Հիմնական պահեստ",
+   "fSTOCKKEEPER": "Մասիս Մարգարյան",
+   "fADDRESS": "",
+   "fCLOSE": false,
+   "fTS": "<binary 8 bytes>",
+   "fEXTERNALCODE": "",
+   "fREMCHECKMODE": "2",
+   "fBODY": null
+  },
+  {
+   "fCODE": "001",
+   "fNAME": "Տեղափոխման պահեստ",
+   "fSTOCKKEEPER": "",
+   "fADDRESS": "",
+   "fCLOSE": true,
+   "fTS": "<binary 8 bytes>",
+   "fEXTERNALCODE": "",
+   "fREMCHECKMODE": "2",
+   "fBODY": null
+  },
+  {
+   "fCODE": "002",
+   "fNAME": "Պահածոների պահեստ",
+   "fSTOCKKEEPER": "Դերենիկ Մկրտչյան",
+   "fADDRESS": "",
+   "fCLOSE": false,
+   "fTS": "<binary 8 bytes>",
+   "fEXTERNALCODE": "",
+   "fREMCHECKMODE": "2",
+   "fBODY": null
+  }
+ ],
+ "dbo.STORAGESACCESSBYUSERS": [
+  {
+   "fSTORAGE": "000",
+   "fUSERID": 0,
+   "fINPUT": true,
+   "fOUTPUT": true,
+   "fREMAINDER": true,
+   "fINPUTFROMMOVE": true
+  },
+  {
+   "fSTORAGE": "000",
+   "fUSERID": 15,
+   "fINPUT": true,
+   "fOUTPUT": true,
+   "fREMAINDER": true,
+   "fINPUTFROMMOVE": true
+  },
+  {
+   "fSTORAGE": "000",
+   "fUSERID": 20,
+   "fINPUT": true,
+   "fOUTPUT": true,
+   "fREMAINDER": true,
+   "fINPUTFROMMOVE": true
+  }
+ ],
+ "dbo.STRINGRESOURCES": [
+  {
+   "fNAME": "AWPBO",
+   "fCULTURE": "EN-US",
+   "fSYSTEM": false,
+   "fVALUE": "AWP BackOffice"
+  },
+  {
+   "fNAME": "AWPBO",
+   "fCULTURE": "HY-AM",
+   "fSYSTEM": false,
+   "fVALUE": "Գրասենյակի ԱՇՏ"
+  },
+  {
+   "fNAME": "Date",
+   "fCULTURE": "HY-AM",
+   "fSYSTEM": false,
+   "fVALUE": "Ամսաթիվ"
+  }
+ ],
+ "dbo.SUBSYSTEMACCESS": [
+  {
+   "fROLE": "000",
+   "fSUBSYSTEMID": 1,
+   "fPARTLY": false
+  },
+  {
+   "fROLE": "000",
+   "fSUBSYSTEMID": 2,
+   "fPARTLY": false
+  },
+  {
+   "fROLE": "000",
+   "fSUBSYSTEMID": 3,
+   "fPARTLY": false
+  }
+ ],
+ "dbo.SURVEYDETAILS": [
+  {
+   "fISN": "A2F2AB20-1A51-4390-9FC3-FBDAACF5A5D5",
+   "fANSWER": "եռտգըեռտ",
+   "fROWNUM": 0,
+   "fNOTES": null,
+   "fQUESTIONID": 1
+  },
+  {
+   "fISN": "A2F2AB20-1A51-4390-9FC3-FBDAACF5A5D5",
+   "fANSWER": "true",
+   "fROWNUM": 1,
+   "fNOTES": null,
+   "fQUESTIONID": 2
+  },
+  {
+   "fISN": "A2F2AB20-1A51-4390-9FC3-FBDAACF5A5D5",
+   "fANSWER": "ղղհֆդըւյհտռ",
+   "fROWNUM": 2,
+   "fNOTES": null,
+   "fQUESTIONID": 3
+  }
+ ],
+ "dbo.SaleDetails": [],
+ "dbo.Sales": [],
+ "dbo.TASKFOLLOWERSSCHEMEDETAILS": [],
+ "dbo.TASKFOLLOWERSSCHEMES": [],
+ "dbo.TAXDOCUMENTDETAILS": [
+  {
+   "fTAXDOCISN": "CC814CEB-55A6-4585-A98E-A348976EE4B8",
+   "fTAXPRODUCTROWISN": "6DD8AB19-CA34-4A32-A732-12547E0F1B3A",
+   "fDOCISN": "CC814CEB-55A6-4585-A98E-A348976EE4B8",
+   "fPRODUCTID": 50,
+   "fOPERATION": "RLZ"
+  },
+  {
+   "fTAXDOCISN": "8733C57E-A84C-4D1B-BDCF-0F1B81F46502",
+   "fTAXPRODUCTROWISN": "1AC24343-95A2-47C5-A06D-14497F0C6A5E",
+   "fDOCISN": "8733C57E-A84C-4D1B-BDCF-0F1B81F46502",
+   "fPRODUCTID": 52,
+   "fOPERATION": "RLZ"
+  },
+  {
+   "fTAXDOCISN": "8D87547A-91CA-489E-AA5A-6E8F5A74A5C4",
+   "fTAXPRODUCTROWISN": "D54BB429-8CC1-4ED3-95E5-18E3889B725E",
+   "fDOCISN": "8D87547A-91CA-489E-AA5A-6E8F5A74A5C4",
+   "fPRODUCTID": 25,
+   "fOPERATION": "RLZ"
+  }
+ ],
+ "dbo.TEMPLATES": [
+  {
+   "fNAME": "01",
+   "fCAPTION": "Վաճառքի պատվեր",
+   "fTEMPLATE": "<binary 41193 bytes>",
+   "fFILE": "C:\\Program Files (x86)\\Armenian Software\\AS-Sales Management 7\\Templates\\SalesOrder.xml",
+   "fDOCTYPE": 1,
+   "fENABLED": true,
+   "fSYSTEM": true,
+   "fTS": "<binary 8 bytes>",
+   "fTYPE": "D"
+  },
+  {
+   "fNAME": "01.1",
+   "fCAPTION": "Վաճառքի պատվեր",
+   "fTEMPLATE": "<binary 22905 bytes>",
+   "fFILE": "C:\\Program Files (x86)\\Armenian Software\\AS-Sales Management 7\\Templates\\SalesOrder.docx",
+   "fDOCTYPE": 1,
+   "fENABLED": true,
+   "fSYSTEM": true,
+   "fTS": "<binary 8 bytes>",
+   "fTYPE": "D"
+  },
+  {
+   "fNAME": "02",
+   "fCAPTION": "Վաճառք",
+   "fTEMPLATE": "<binary 40839 bytes>",
+   "fFILE": "C:\\Program Files (x86)\\Armenian Software\\AS-Sales Management 7\\Templates\\Sale.xml",
+   "fDOCTYPE": 2,
+   "fENABLED": false,
+   "fSYSTEM": true,
+   "fTS": "<binary 8 bytes>",
+   "fTYPE": "D"
+  }
+ ],
+ "dbo.TREEDEF": [
+  {
+   "fNAME": "AddInfo",
+   "fCAPTIONID": "AdditionalInfo",
+   "fNODECAPTIONID": "AdditionalInfo",
+   "fCODECAPTIONID": "",
+   "fCODELEN": 3,
+   "fCAPTIONLEN": 50,
+   "fMULTILEVEL": false,
+   "fPREFIXBASED": false,
+   "fDOCUMENTBASED": false,
+   "fSYSTEM": true,
+   "fISLOGAVAILABLE": false,
+   "fISCLOSEDAVAILABLE": false,
+   "fATTACHMENTSTYPES": 0,
+   "fEXTENSION": "",
+   "fTS": "<binary 8 bytes>",
+   "fSPECCAPTIONID": "",
+   "fSPECLEN": 0,
+   "fNEXTCODEPARAMID": null,
+   "fCACHEID": null
+  },
+  {
+   "fNAME": "AssetGrp",
+   "fCAPTIONID": "AssetGroups",
+   "fNODECAPTIONID": "AssetGroups",
+   "fCODECAPTIONID": "",
+   "fCODELEN": 6,
+   "fCAPTIONLEN": 150,
+   "fMULTILEVEL": true,
+   "fPREFIXBASED": false,
+   "fDOCUMENTBASED": false,
+   "fSYSTEM": true,
+   "fISLOGAVAILABLE": false,
+   "fISCLOSEDAVAILABLE": false,
+   "fATTACHMENTSTYPES": 0,
+   "fEXTENSION": "",
+   "fTS": "<binary 8 bytes>",
+   "fSPECCAPTIONID": "",
+   "fSPECLEN": 0,
+   "fNEXTCODEPARAMID": null,
+   "fCACHEID": null
+  },
+  {
+   "fNAME": "CsDscGrp",
+   "fCAPTIONID": "CustomerDiscountGroups",
+   "fNODECAPTIONID": "CustomerDiscountGroup",
+   "fCODECAPTIONID": "",
+   "fCODELEN": 6,
+   "fCAPTIONLEN": 150,
+   "fMULTILEVEL": true,
+   "fPREFIXBASED": false,
+   "fDOCUMENTBASED": false,
+   "fSYSTEM": true,
+   "fISLOGAVAILABLE": false,
+   "fISCLOSEDAVAILABLE": false,
+   "fATTACHMENTSTYPES": 0,
+   "fEXTENSION": "",
+   "fTS": "<binary 8 bytes>",
+   "fSPECCAPTIONID": "",
+   "fSPECLEN": 0,
+   "fNEXTCODEPARAMID": null,
+   "fCACHEID": null
+  }
+ ],
+ "dbo.TREES": [
+  {
+   "fTREEID": "AssetGrp",
+   "fCODE": "001",
+   "fCAPTION": "Սառնարան",
+   "fPATH": "001!",
+   "fPARENT": "",
+   "fLEAF": true,
+   "fCLOSED": false,
+   "fISN": "54C5336D-04CD-4649-BFEF-99CB555DD184",
+   "fDOCBASEISN": null,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fSPEC": ""
+  },
+  {
+   "fTREEID": "AssetGrp",
+   "fCODE": "002",
+   "fCAPTION": "Դիսպենսեր",
+   "fPATH": "002!",
+   "fPARENT": "",
+   "fLEAF": true,
+   "fCLOSED": false,
+   "fISN": "B71A020B-63D9-4070-A136-F48D184575B3",
+   "fDOCBASEISN": null,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fSPEC": ""
+  },
+  {
+   "fTREEID": "CsDscGrp",
+   "fCODE": "003",
+   "fCAPTION": "ՍԱՍ",
+   "fPATH": "003!",
+   "fPARENT": "",
+   "fLEAF": true,
+   "fCLOSED": false,
+   "fISN": "429EEE06-FA26-4EB9-8120-B199C1D1537E",
+   "fDOCBASEISN": null,
+   "fBODY": null,
+   "fTS": "<binary 8 bytes>",
+   "fSPEC": ""
+  }
+ ],
+ "dbo.TREESLOG": [
+  {
+   "fTREEID": "Division",
+   "fCODE": "000000",
+   "fDATE": "2017-01-25T17:20:44.993000",
+   "fUSERID": 0,
+   "fOP": 4,
+   "fCOMMENT": null,
+   "fCOMPNAME": "SMART_BASE",
+   "fSOURCE": 0
+  },
+  {
+   "fTREEID": "Division",
+   "fCODE": "000000",
+   "fDATE": "2021-01-26T14:32:26.843000",
+   "fUSERID": 8,
+   "fOP": 2,
+   "fCOMMENT": null,
+   "fCOMPNAME": "ANI-PC",
+   "fSOURCE": 0
+  },
+  {
+   "fTREEID": "Division",
+   "fCODE": "000000",
+   "fDATE": "2022-09-20T16:17:02.063000",
+   "fUSERID": 15,
+   "fOP": 2,
+   "fCOMMENT": null,
+   "fCOMPNAME": "TNOREN-PC",
+   "fSOURCE": 0
+  }
+ ],
+ "dbo.USERACCESS": [],
+ "dbo.USERPARAMS": [
+  {
+   "fUSERID": 0,
+   "fPARAMID": 401,
+   "fVALUE": ""
+  },
+  {
+   "fUSERID": 0,
+   "fPARAMID": 402,
+   "fVALUE": ""
+  },
+  {
+   "fUSERID": 0,
+   "fPARAMID": 403,
+   "fVALUE": ""
+  }
+ ],
+ "dbo.USERREPORTS": [
+  {
+   "fNAME": "ProductsRemsPrint",
+   "fCAPTIONID": "ProductsRemsPrint",
+   "fDATAPROVIDER": "Products",
+   "fSYSTEM": false,
+   "fDEFINITION": "<Extensions><UserReport Name=\"ProductsRemsPrint\" CaptionId=\"ProductsRemsPrint\" DataProvider=\"Products\" ShowMode=\"Excel\">…",
+   "fUPDATEDATE": "2025-09-22T11:59:53.980000",
+   "fLASTEXEC": "2025-09-22T11:59:53.980000",
+   "fEXECCOUNT": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fNAME": "UD_InvAcc",
+   "fCAPTIONID": "UD_InvAcc",
+   "fDATAPROVIDER": "SalesAnalyse",
+   "fSYSTEM": false,
+   "fDEFINITION": "<Extensions><UserReport Name=\"UD_InvAcc\" CaptionId=\"UD_InvAcc\" DataProvider=\"SalesAnalyse\" ShowMode=\"Excel\"><UserReportD…",
+   "fUPDATEDATE": "2025-09-22T11:59:54",
+   "fLASTEXEC": "2025-09-22T11:59:54",
+   "fEXECCOUNT": 0,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fNAME": "UD_SalesRems",
+   "fCAPTIONID": "UD_CustomerAgent",
+   "fDATAPROVIDER": "SalesRems",
+   "fSYSTEM": false,
+   "fDEFINITION": "<Extensions><UserReport Name=\"UD_SalesRems\" CaptionId=\"UD_CustomerAgent\" DataProvider=\"SalesRems\" ShowMode=\"Folder\"><Use…",
+   "fUPDATEDATE": "2025-09-22T11:59:54.023000",
+   "fLASTEXEC": "2025-09-22T11:59:54.023000",
+   "fEXECCOUNT": 0,
+   "fTS": "<binary 8 bytes>"
+  }
+ ],
+ "dbo.USERSCRIPTS": [],
+ "dbo.USERSMAPPING": [],
+ "dbo.USERSROLES": [
+  {
+   "fROLE": "000",
+   "fUSERID": 0
+  },
+  {
+   "fROLE": "003",
+   "fUSERID": 1
+  },
+  {
+   "fROLE": "003",
+   "fUSERID": 2
+  }
+ ],
+ "dbo.VISITRESULTSACCESSSCHEMEDETAILS": [
+  {
+   "fSCHEMECODE": "000",
+   "fVISITRESULTMETHOD": "0",
+   "fVISITRESULT": null,
+   "fACCESS": true,
+   "fROWNUM": 0
+  }
+ ],
+ "dbo.VISITRESULTSACCESSSCHEMES": [
+  {
+   "fCODE": "000",
+   "fNAME": "Բոլորը",
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

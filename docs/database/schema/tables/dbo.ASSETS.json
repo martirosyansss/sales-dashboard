@@ -1,0 +1,134 @@
+{
+ "schema": "dbo",
+ "name": "ASSETS",
+ "row_count": 23,
+ "columns": [
+  {
+   "name": "fID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fCODE",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 3,
+   "type": "nvarchar(250)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fFULLNAME",
+   "ordinal": 4,
+   "type": "nvarchar(250)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fMEASUREUNIT",
+   "ordinal": 5,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fGROUP",
+   "ordinal": 6,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBODY",
+   "ordinal": 7,
+   "type": "nvarchar(3000)",
+   "nullable": true,
+   "default": null
+  },
+  {
+   "name": "fCLOSED",
+   "ordinal": 8,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 9,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_ASSETS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCODE"
+  },
+  {
+   "name": "I_ASSETS3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fGROUP"
+  },
+  {
+   "name": "I_ASSETS4",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fCLOSED"
+  },
+  {
+   "name": "PK_ASSETS1",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fID"
+  }
+ ],
+ "samples": [
+  {
+   "fID": 9,
+   "fCODE": "1003",
+   "fNAME": "Սառնարան/նոր",
+   "fFULLNAME": "Սառնարան/նոր",
+   "fMEASUREUNIT": "հատ",
+   "fGROUP": "001",
+   "fBODY": null,
+   "fCLOSED": false,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fID": 29,
+   "fCODE": "1000",
+   "fNAME": "Սառնարան/նոր",
+   "fFULLNAME": "Սառնարան/նոր",
+   "fMEASUREUNIT": "հատ",
+   "fGROUP": "001",
+   "fBODY": null,
+   "fCLOSED": false,
+   "fTS": "<binary 8 bytes>"
+  },
+  {
+   "fID": 30,
+   "fCODE": "1001",
+   "fNAME": "Սառնարան/նոր",
+   "fFULLNAME": "Սառնարան/նոր",
+   "fMEASUREUNIT": "հատ",
+   "fGROUP": "001",
+   "fBODY": null,
+   "fCLOSED": false,
+   "fTS": "<binary 8 bytes>"
+  }
+ ]
+}

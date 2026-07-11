@@ -1,0 +1,96 @@
+{
+ "schema": "dbo",
+ "name": "CUSTCHANGEREQCONTACTS",
+ "row_count": 135,
+ "columns": [
+  {
+   "name": "fREQUESTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNAME",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPHONE",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fEMAIL",
+   "ordinal": 4,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFAULT",
+   "ordinal": 5,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 6,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNOTES",
+   "ordinal": 7,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_CUSTCHANGEREQCONTACTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fREQUESTID, fNAME"
+  }
+ ],
+ "samples": [
+  {
+   "fREQUESTID": 7747,
+   "fNAME": "Նն Հոլդինգ ՍՊԸ/ Արաբկիր 39",
+   "fPHONE": "+37444261196",
+   "fEMAIL": "",
+   "fDEFAULT": false,
+   "fROWNUM": 0,
+   "fNOTES": ""
+  },
+  {
+   "fREQUESTID": 14181,
+   "fNAME": "հուսիկ",
+   "fPHONE": "095490622",
+   "fEMAIL": "",
+   "fDEFAULT": false,
+   "fROWNUM": 0,
+   "fNOTES": ""
+  },
+  {
+   "fREQUESTID": 14241,
+   "fNAME": "հ",
+   "fPHONE": "093535812",
+   "fEMAIL": "",
+   "fDEFAULT": false,
+   "fROWNUM": 0,
+   "fNOTES": ""
+  }
+ ]
+}

@@ -1,0 +1,72 @@
+{
+ "schema": "dbo",
+ "name": "ASSETNUMBERS",
+ "row_count": 23,
+ "columns": [
+  {
+   "name": "fASSETID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fASSETNUMBER",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fADDITIONALINFO",
+   "ordinal": 3,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 4,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_ASSETNUMBERS1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fASSETNUMBER"
+  },
+  {
+   "name": "PK_ASSETNUMBERS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fASSETID, fASSETNUMBER"
+  }
+ ],
+ "samples": [
+  {
+   "fASSETID": 9,
+   "fASSETNUMBER": "1003",
+   "fADDITIONALINFO": "",
+   "fROWNUM": 0
+  },
+  {
+   "fASSETID": 29,
+   "fASSETNUMBER": "1000",
+   "fADDITIONALINFO": "",
+   "fROWNUM": 0
+  },
+  {
+   "fASSETID": 30,
+   "fASSETNUMBER": "1001",
+   "fADDITIONALINFO": "",
+   "fROWNUM": 0
+  }
+ ]
+}

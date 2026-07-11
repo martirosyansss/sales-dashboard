@@ -1,0 +1,130 @@
+{
+ "schema": "dbo",
+ "name": "HIAGENTPRODUCTS",
+ "row_count": 1766029,
+ "columns": [
+  {
+   "name": "fDATE",
+   "ordinal": 1,
+   "type": "smalldatetime",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fAGENTID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 3,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fQUANTITY",
+   "ordinal": 4,
+   "type": "money",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fOP",
+   "ordinal": 5,
+   "type": "varchar(3)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDBCR",
+   "ordinal": 6,
+   "type": "varchar(1)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBASE",
+   "ordinal": 7,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fUSERID",
+   "ordinal": 8,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_HIAGENTPRODUCTS1",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fBASE"
+  },
+  {
+   "name": "I_HIAGENTPRODUCTS2",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fDATE"
+  },
+  {
+   "name": "I_HIAGENTPRODUCTS3",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fAGENTID, fDATE, fPRODUCTID"
+  },
+  {
+   "name": "I_HIAGENTPRODUCTS4",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fPRODUCTID, fDATE"
+  },
+  {
+   "name": "PK_HIAGENTPRODUCTS",
+   "unique": false,
+   "type": "CLUSTERED",
+   "columns": "fAGENTID, fPRODUCTID, fDATE"
+  }
+ ],
+ "samples": [
+  {
+   "fDATE": "2015-01-01T00:00:00",
+   "fAGENTID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 586.0,
+   "fOP": "RLZ",
+   "fDBCR": "C",
+   "fBASE": "ABFE7C80-C939-4D11-987D-9C29C9EAF132",
+   "fUSERID": 0
+  },
+  {
+   "fDATE": "2015-01-01T00:00:00",
+   "fAGENTID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 1369.05,
+   "fOP": "RLZ",
+   "fDBCR": "C",
+   "fBASE": "3D5736D7-0E32-417A-AB72-950DE3C22D28",
+   "fUSERID": 0
+  },
+  {
+   "fDATE": "2015-12-31T00:00:00",
+   "fAGENTID": 1,
+   "fPRODUCTID": 1,
+   "fQUANTITY": 4355.498,
+   "fOP": "RLZ",
+   "fDBCR": "C",
+   "fBASE": "1EC4370F-C817-48DB-821B-F63B2A7EABD4",
+   "fUSERID": 0
+  }
+ ]
+}

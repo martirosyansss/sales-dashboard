@@ -1,0 +1,47 @@
+{
+ "schema": "dbo",
+ "name": "CUSTOMERPREFERREDPRODUCTSDETAILS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fCODE",
+   "ordinal": 1,
+   "type": "nvarchar(6)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fPRODUCTID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fORDER",
+   "ordinal": 3,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fTS",
+   "ordinal": 4,
+   "type": "timestamp",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_CUSTOMERPREFERREDPRODUCTSDETAILS1",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fCODE, fPRODUCTID"
+  }
+ ],
+ "samples": []
+}

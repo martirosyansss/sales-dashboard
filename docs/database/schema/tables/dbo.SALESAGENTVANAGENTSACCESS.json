@@ -1,0 +1,72 @@
+{
+ "schema": "dbo",
+ "name": "SALESAGENTVANAGENTSACCESS",
+ "row_count": 298,
+ "columns": [
+  {
+   "name": "fSALESAGENTID",
+   "ordinal": 1,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fVANAGENTID",
+   "ordinal": 2,
+   "type": "int",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFAULT",
+   "ordinal": 3,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 4,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "I_SALESAGENTVANAGENTSACCESS",
+   "unique": false,
+   "type": "NONCLUSTERED",
+   "columns": "fVANAGENTID"
+  },
+  {
+   "name": "PK_SALESAGENTVANAGENTSACCESS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fSALESAGENTID, fVANAGENTID"
+  }
+ ],
+ "samples": [
+  {
+   "fSALESAGENTID": 3,
+   "fVANAGENTID": 1026,
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  },
+  {
+   "fSALESAGENTID": 7,
+   "fVANAGENTID": 1025,
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  },
+  {
+   "fSALESAGENTID": 8,
+   "fVANAGENTID": 2,
+   "fDEFAULT": true,
+   "fROWNUM": 0
+  }
+ ]
+}

@@ -1,0 +1,54 @@
+{
+ "schema": "dbo",
+ "name": "ORGANIZATIONACCOUNTS",
+ "row_count": 0,
+ "columns": [
+  {
+   "name": "fACCOUNT",
+   "ordinal": 1,
+   "type": "nvarchar(22)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fNOTE",
+   "ordinal": 2,
+   "type": "nvarchar(50)",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fDEFAULT",
+   "ordinal": 3,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fASINTERNETBANK",
+   "ordinal": 4,
+   "type": "bit",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fROWNUM",
+   "ordinal": 5,
+   "type": "smallint",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_ORGANIZATIONACCOUNTS",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fACCOUNT"
+  }
+ ],
+ "samples": []
+}

@@ -1,0 +1,46 @@
+{
+ "schema": "dbo",
+ "name": "SALESAGENTCREATEDDOCUMENTBODIES",
+ "row_count": 248370,
+ "columns": [
+  {
+   "name": "fISN",
+   "ordinal": 1,
+   "type": "uniqueidentifier",
+   "nullable": false,
+   "default": null
+  },
+  {
+   "name": "fBODY",
+   "ordinal": 2,
+   "type": "nvarchar(max)",
+   "nullable": false,
+   "default": null
+  }
+ ],
+ "primary_key": [],
+ "foreign_keys": [],
+ "referenced_by": [],
+ "indexes": [
+  {
+   "name": "PK_SALESAGENTCREATEDDOCUMENTBODIES",
+   "unique": true,
+   "type": "CLUSTERED",
+   "columns": "fISN"
+  }
+ ],
+ "samples": [
+  {
+   "fISN": "D21A4873-0334-4E90-B52E-00001B499211",
+   "fBODY": "{\"CreatedSale\":false,\"UId\":\"d21a4873-0334-4e90-b52e-00001b499211\",\"DocNumber\":\"000000233052\",\"Division\":\"000000\",\"DocDat…"
+  },
+  {
+   "fISN": "79A97A28-6CCC-40F5-BFAB-00005CCDFD1F",
+   "fBODY": "{\"CreatedSale\":false,\"UId\":\"79a97a28-6ccc-40f5-bfab-00005ccdfd1f\",\"DocNumber\":\"000000303869\",\"Division\":\"000000\",\"DocDat…"
+  },
+  {
+   "fISN": "46A515C7-CBD6-4F0B-9B4D-0000FBEE9C3F",
+   "fBODY": "{\"CreatedSale\":false,\"UId\":\"46a515c7-cbd6-4f0b-9b4d-0000fbee9c3f\",\"DocNumber\":\"000000228298\",\"Division\":\"000000\",\"DocDat…"
+  }
+ ]
+}
