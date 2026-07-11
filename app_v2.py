@@ -42,10 +42,10 @@ class DatabaseConnection:
         db_name = os.environ.get('SALES_DB', 'SalesManagement')
         self.connection_string = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
-            "SERVER=192.168.1.4;"
+            f"SERVER={os.environ.get('DB_SERVER', '192.168.1.4')};"
             f"DATABASE={db_name};"
-            "UID=sa;"
-            "PWD=CHANGE_ME;"
+            f"UID={os.environ.get('DB_USER', 'sa')};"
+            f"PWD={os.environ.get('DB_PASSWORD', '')};"
             "TrustServerCertificate=yes;"
         )
     
@@ -2644,19 +2644,37 @@ def managers_page():
 # KPI ПО МЕНЕДЖЕРАМ (страница + API)
 # =============================================
 # Отраслевые KPI van-sales/FMCG. Направление (higher_better) и вес в итоговом балле.
+# (key, label, unit, higher_better, weight, layer, target)
+#   layer:  'act' = leading/активность (управляемо сейчас), 'res' = lagging/результат.
+#   target: абсолютный отраслевой FMCG-бенчмарк (None = только peer-перцентиль).
+#           Балл KPI = 50% перцентиль по команде + 50% достижение таргета (где таргет задан) —
+#           устраняет zero-sum «худший всегда 0 / лучший всегда 100» чистого peer-скоринга.
+#   Сумма весов = 100. Веса с weight=0 — справочные (не входят в композит).
 MANAGER_KPI_DEFS = [
-    ("revenue",         "Հասույթ",             "currency", True,  20),
-    ("activeCustomers", "Հաճախորդներ",         "number",   True,   9),
-    ("routeVisit",      "Երթուղու շրջայց",     "percent",  True,   0),  # справочно (в балл не входит)
-    ("routeOrder",      "Պատվեր ըստ երթուղու", "percent",  True,  10),
-    ("strikeRate",      "Strike rate",         "percent",  True,   8),
-    ("avgCheck",        "Միջին չեկ",           "currency", True,  10),
-    ("linesPerInvoice", "Տողեր/ապր.",          "number",   True,   8),
-    ("newCustomers",    "Նոր հաճախորդներ",     "number",   True,   8),
-    ("collectRate",     "Պարտքի հավաքագրում",  "percent",  True,  10),
-    ("returnsRate",     "Վերադարձեր",          "percent",  False,  7),
-    ("planFact",        "Պլան/փաստ",           "percent",  True,  10),
+    ("revenue",         "Հասույթ",              "currency", True,  18, "res", None),
+    ("activeCustomers", "Հաճախորդներ",          "number",   True,   8, "res", None),
+    ("routeVisit",      "Երթուղու շրջայց",      "percent",  True,   0, "act", 95),    # beat compliance 95%+
+    ("routeOrder",      "Պատվեր ըստ երթուղու",  "percent",  True,   9, "act", None),
+    ("strikeRate",      "Strike rate",          "percent",  True,   8, "act", 70),    # продуктивные визиты 70%+
+    ("avgCheck",        "Միջին չեկ",            "currency", True,   9, "res", None),
+    ("linesPerInvoice", "SKU/ապր.",             "number",   True,   8, "act", None),
+    ("newCustomers",    "Նոր հաճախորդներ",      "number",   True,   7, "act", None),
+    ("retention",       "Պահպանում",            "percent",  True,   8, "res", 80),    # удержание клиентов 80%+
+    ("collectRate",     "Հավաքագրում/վաճառք",   "percent",  True,   9, "res", 85),    # collections 85%+
+    ("returnsRate",     "Վերադարձեր",           "percent",  False,  7, "res", 2),     # возвраты ≤2%
+    ("planFact",        "Պլան/փաստ",            "percent",  True,   9, "res", 100),   # план = 100%
+    ("vpo",             "VPO",                  "currency", True,   0, "res", None),  # справочно: выручка/точку
+    ("mslCompliance",   "MSL ծածկույթ",         "percent",  True,   0, "act", None),  # справочно, пока не задан MSL
 ]
+
+# Гейт малых выборок для метрик-отношений: при знаменателе ниже порога значение показывается,
+# но помечается «мало данных» и НЕ участвует в балле (усадка/anti-noise, см. KPI_EVALUATION.md).
+KPI_MIN_DENOM = {
+    "avgCheck": ("salesCount", 10),
+    "linesPerInvoice": ("salesCount", 10),
+    "strikeRate": ("visitedCustomers", 10),
+    "retention": ("retentionBase", 5),
+}
 
 
 def _months_between(d_from, d_to):
@@ -2672,6 +2690,7 @@ KPI_SALES_DIVISIONS_FILE     = 'kpi_sales_divisions.json'
 KPI_DEBT_DIVISIONS_FILE      = 'kpi_debt_divisions.json'
 KPI_TERRITORIES_FILE         = 'kpi_territories.json'      # территории (fSALESAREA) — весь анализ
 KPI_PRODUCT_GROUPS_FILE      = 'kpi_product_groups.json'   # товарные группы (PrdctGrp) — весь анализ
+KPI_MSL_GROUPS_FILE          = 'kpi_msl_groups.json'       # MSL: обязательные товарные группы (PrdctGrp)
 
 
 def _kpi_load_list(path):
@@ -2702,6 +2721,7 @@ def get_managers_kpi_filters():
         'debt_divisions':      _kpi_load_list(KPI_DEBT_DIVISIONS_FILE),
         'territories':         _kpi_load_list(KPI_TERRITORIES_FILE),
         'product_groups':      _kpi_load_list(KPI_PRODUCT_GROUPS_FILE),
+        'msl_groups':          _kpi_load_list(KPI_MSL_GROUPS_FILE),
     })
 
 
@@ -2716,6 +2736,7 @@ def set_managers_kpi_filters():
         if 'debt_divisions'      in d: _kpi_save_list(KPI_DEBT_DIVISIONS_FILE,      d['debt_divisions'])
         if 'territories'         in d: _kpi_save_list(KPI_TERRITORIES_FILE,         d['territories'])
         if 'product_groups'      in d: _kpi_save_list(KPI_PRODUCT_GROUPS_FILE,      d['product_groups'])
+        if 'msl_groups'          in d: _kpi_save_list(KPI_MSL_GROUPS_FILE,          d['msl_groups'])
         return jsonify({'success': True})
     except Exception as e:
         logger.error(f"Ошибка сохранения KPI-фильтров: {e}")
@@ -2798,6 +2819,7 @@ def api_managers_kpi():
         # Новые фильтры «на весь анализ»: территории (клиентская привязка) и товарные группы (по строкам продаж).
         sa = _kpi_load_list(KPI_TERRITORIES_FILE)           # территории (fSALESAREA)
         pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)        # товарные группы (PrdctGrp)
+        msl = _kpi_load_list(KPI_MSL_GROUPS_FILE)           # MSL: обязательные товарные группы (PrdctGrp)
 
         def grp_where(sel):
             if not sel:
@@ -2889,9 +2911,10 @@ def api_managers_kpi():
         def ensure(a):
             if a not in M:
                 M[a] = {k: 0 for k in ["revenue", "salesCount", "activeCustomers", "avgCheck",
-                        "assigned", "visits", "visitedCustomers", "lines", "returnsSum",
+                        "assigned", "visits", "visitedCustomers", "prodCust", "lines", "returnsSum",
                         "returnCount", "newCustomers", "collected", "prevYear",
-                        "routePlanned", "routeVisited", "routeOrdered"]}
+                        "routePlanned", "routeVisited", "routeOrdered",
+                        "retBase", "retKept", "mslCust"]}
             return M[a]
 
         # A: основные метрики продаж (исключённые клиенты + группы клиентов + дивизионы — продажи)
@@ -2958,27 +2981,37 @@ def api_managers_kpi():
                     "avgCheck": (rev / r.cnt if r.cnt else 0)}
         team_cmp = {"current": _team_totals(0), "y1": _team_totals(1), "y2": _team_totals(2)}
 
-        # B: строк в накладной (SKU depth)
+        # B: глубина корзины = УНИКАЛЬНЫХ SKU на накладную (DISTINCT (накладная, товар)),
+        #    а не COUNT строк — повторные строки одного товара не задваивают метрику (range selling).
         cur.execute(f"""
-            SELECT s.fSALESAGENTID AS agent, COUNT(sd.fISN) AS Lines
-            FROM SALES s WITH (NOLOCK) INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN=s.fISN{b_pg_join}
-            {cust_join(sc, 's.fCUSTOMERID')}
-            WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2 {_excl('s.fCUSTOMERID')}{sc_w}{ta_s_w}{b_pg_w} GROUP BY s.fSALESAGENTID
+            SELECT q.agent, COUNT(*) AS Lines FROM (
+                SELECT DISTINCT s.fSALESAGENTID AS agent, sd.fISN AS isn, sd.fPRODUCTID AS pid
+                FROM SALES s WITH (NOLOCK) INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN=s.fISN{b_pg_join}
+                {cust_join(sc, 's.fCUSTOMERID')}
+                WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2 {_excl('s.fCUSTOMERID')}{sc_w}{ta_s_w}{b_pg_w}
+            ) q GROUP BY q.agent
         """, (date_from, date_to) + excluded_params + sc_p + ta_s_p + b_pg_p)
         for r in cur.fetchall():
             ensure(r.agent)["lines"] = r.Lines
 
-        # C: визиты (GPS, ACTUALROUTES)
+        # C: визиты (GPS, ACTUALROUTES) + ПРОДУКТИВНЫЕ клиенты (визит И продажа в периоде тем же агентом).
+        #    Strike rate = продуктивные ÷ посещённые (клиентский уровень) — отраслевое определение, всегда ≤100%
+        #    (прежнее «накладные ÷ визиты» структурно превышало 100% при нескольких накладных за визит).
         cur.execute(f"""
-            SELECT ar.fSALESAGENTID AS agent, COUNT(*) AS Visits, COUNT(DISTINCT ar.fCUSTOMERID) AS VC
+            SELECT ar.fSALESAGENTID AS agent, COUNT(*) AS Visits, COUNT(DISTINCT ar.fCUSTOMERID) AS VC,
+                   COUNT(DISTINCT pv.cust) AS PC
             FROM ACTUALROUTES ar WITH (NOLOCK)
+            LEFT JOIN (SELECT DISTINCT fSALESAGENTID AS a2, fCUSTOMERID AS cust FROM SALES WITH (NOLOCK)
+                       WHERE fSTATE=2 AND fDATE>=? AND fDATE < DATEADD(day, 1, CAST(? AS DATE))) pv
+                ON pv.a2 = ar.fSALESAGENTID AND pv.cust = ar.fCUSTOMERID
             {cust_join(sc, 'ar.fCUSTOMERID')}
             WHERE ar.fDATE>=? AND ar.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {_excl('ar.fCUSTOMERID')}{sc_w}{ta_ar_w} GROUP BY ar.fSALESAGENTID
-        """, (date_from, date_to) + excluded_params + sc_p + ta_ar_p)
+        """, (date_from, date_to) + (date_from, date_to) + excluded_params + sc_p + ta_ar_p)
         for r in cur.fetchall():
             m = ensure(r.agent)
             m["visits"] = r.Visits
             m["visitedCustomers"] = r.VC
+            m["prodCust"] = r.PC
 
         # D: возвраты
         cur.execute(f"""
@@ -3016,6 +3049,49 @@ def api_managers_kpi():
         """, (date_from, date_to) + excluded_params + sc_p + ta_s_p + pg_s_p)
         for r in cur.fetchall():
             ensure(r.agent)["newCustomers"] = r.NewC
+
+        # F2: УДЕРЖАНИЕ/ОТТОК клиентов (retention): база = клиенты агента в предыдущем окне той же длины
+        #     (сразу перед date_from); удержан = купил у ТОГО ЖЕ агента в текущем периоде.
+        #     Симметрия к newCustomers: приводить новых, теряя старых, больше не «бесплатно».
+        _pdays = (datetime.strptime(date_to, '%Y-%m-%d') - datetime.strptime(date_from, '%Y-%m-%d')).days + 1
+        prev_from = (datetime.strptime(date_from, '%Y-%m-%d') - timedelta(days=_pdays)).strftime('%Y-%m-%d')
+        prev_to = (datetime.strptime(date_from, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
+        cur.execute(f"""
+            WITH PrevCust AS (
+                SELECT DISTINCT s.fSALESAGENTID AS agent, s.fCUSTOMERID AS cust
+                FROM SALES s WITH (NOLOCK)
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fSTATE=2 AND s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {excluded_filter}{sc_w}{ta_s_w}
+            ),
+            CurCust AS (
+                SELECT DISTINCT fSALESAGENTID AS agent, fCUSTOMERID AS cust FROM SALES WITH (NOLOCK)
+                WHERE fSTATE=2 AND fDATE>=? AND fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            )
+            SELECT p.agent, COUNT(*) AS BaseCnt, COUNT(cc.cust) AS Kept
+            FROM PrevCust p LEFT JOIN CurCust cc ON cc.agent=p.agent AND cc.cust=p.cust
+            GROUP BY p.agent
+        """, (prev_from, prev_to) + excluded_params + sc_p + ta_s_p + (date_from, date_to))
+        for r in cur.fetchall():
+            m = ensure(r.agent)
+            m["retBase"] = r.BaseCnt
+            m["retKept"] = r.Kept
+
+        # F3: MSL-покрытие (numeric distribution обязательного ассортимента): доля активных клиентов,
+        #     купивших хотя бы 1 SKU из настроенных MSL-групп. Пусто, пока MSL-группы не заданы.
+        if msl:
+            _msl_ph = ','.join('?' * len(msl))
+            cur.execute(f"""
+                SELECT s.fSALESAGENTID AS agent, COUNT(DISTINCT s.fCUSTOMERID) AS MslCust
+                FROM SALES s WITH (NOLOCK)
+                INNER JOIN SALEDOCDETAILS sdm WITH (NOLOCK) ON sdm.fISN=s.fISN
+                INNER JOIN PRODUCTS pm WITH (NOLOCK) ON pm.fID=sdm.fPRODUCTID
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
+                  AND pm.fGROUP IN ({_msl_ph}) {excluded_filter}{sc_w}{ta_s_w}
+                GROUP BY s.fSALESAGENTID
+            """, (date_from, date_to) + tuple(msl) + excluded_params + sc_p + ta_s_p)
+            for r in cur.fetchall():
+                ensure(r.agent)["mslCust"] = r.MslCust
 
         # G: сбор платежей (PAY через DOCUMENTS.fSALESAGENTID) + группы клиентов и дивизионы ДОЛГА
         cur.execute(f"""
@@ -3200,12 +3276,21 @@ def api_managers_kpi():
             rp = m["routePlanned"]
             route_visit = (m["routeVisited"] / rp * 100) if rp else None   # подъехал ÷ план маршрута
             route_order = (m["routeOrdered"] / rp * 100) if rp else None   # заказал ÷ план маршрута
-            strike = (m["salesCount"] / m["visits"] * 100) if m["visits"] else None
+            # Strike rate = продуктивные посещённые ÷ посещённые (клиентский уровень, всегда ≤100%)
+            strike = (min(m["prodCust"], m["visitedCustomers"]) / m["visitedCustomers"] * 100) if m["visitedCustomers"] else None
             lpi = (m["lines"] / m["salesCount"]) if m["salesCount"] else 0
             returns_rate = (m["returnsSum"] / rev * 100) if rev else 0
             collect_rate = (m["collected"] / rev * 100) if rev else 0
             plan = (m["prevYear"] * (1 + plan_growth / 100.0)) if m["prevYear"] else None
             plan_fact = (rev / plan * 100) if plan else None
+            retention = (m["retKept"] / m["retBase"] * 100) if m["retBase"] else None
+            lost_cust = (m["retBase"] - m["retKept"]) if m["retBase"] else 0
+            vpo = (rev / m["activeCustomers"]) if m["activeCustomers"] else None
+            msl_cov = (min(m["mslCust"], m["activeCustomers"]) / m["activeCustomers"] * 100) if (msl and m["activeCustomers"]) else None
+            row_debt = m.get("debt", 0)
+            # DSO-прокси: долг ÷ выручка периода × дней периода (справочно)
+            dso = round(max(0.0, row_debt) / rev * _pdays, 1) if rev > 0 else None
+            yoy = ((rev / m["prevYear"]) - 1) * 100 if m["prevYear"] else None
             rows.append({
                 "fID": aid, "fCODE": code, "fNAME": name, "closed": int(closed or 0),
                 "revenue": rev, "salesCount": m["salesCount"], "activeCustomers": m["activeCustomers"],
@@ -3215,34 +3300,61 @@ def api_managers_kpi():
                 "routeVisit": round(route_visit, 1) if route_visit is not None else None,
                 "routeOrder": round(route_order, 1) if route_order is not None else None,
                 "visits": m["visits"], "visitedCustomers": m["visitedCustomers"],
+                "productiveCustomers": m["prodCust"],
                 "strikeRate": round(strike, 1) if strike is not None else None,
                 "linesPerInvoice": round(lpi, 2), "returnsSum": m["returnsSum"],
                 "returnsRate": round(returns_rate, 2), "newCustomers": m["newCustomers"],
+                "retention": round(retention, 1) if retention is not None else None,
+                "retentionBase": m["retBase"], "retainedCustomers": m["retKept"], "lostCustomers": lost_cust,
+                "vpo": round(vpo) if vpo is not None else None,
+                "mslCompliance": round(msl_cov, 1) if msl_cov is not None else None,
+                "dso": dso,
                 "collected": m["collected"], "collectRate": round(collect_rate, 1),
                 "plan": round(plan) if plan else None,
                 "prevYear": round(m["prevYear"]),
                 "planFact": round(plan_fact, 1) if plan_fact is not None else None,
+                "yoyPct": round(yoy, 1) if yoy is not None else None,
+                "trendDown": bool(yoy is not None and yoy <= -25),
                 "cmp": {"current": cmp_y0.get(aid), "y1": cmp_y1.get(aid), "y2": cmp_y2.get(aid)},
-                "debt": round(m.get("debt", 0), 2),
+                "debt": round(row_debt, 2),
                 "debtDebit": round(m.get("debtDebit", 0), 2),
                 "returnsType01": round(m.get("returnsType01", 0), 2),
                 "overpayType02": round(m.get("overpayType02", 0), 2),
                 "SalesAreas": areas_map.get(aid, []),
             })
 
-        # перцентильный скоринг 0..100 по каждому KPI (устойчив к выбросам)
+        # Гейт малых выборок: значение показывается, но помечено «мало данных» и не входит в балл
+        for r in rows:
+            r["lowData"] = {k: True for k, (fld, thr) in KPI_MIN_DENOM.items()
+                            if r.get(k) is not None and (r.get(fld) or 0) < thr}
+
+        # ---- СКОРИНГ: 50% перцентиль по команде + 50% достижение абсолютного таргета (где задан) ----
+        def _target_score(higher, target, v):
+            """Достижение отраслевого таргета 0..100 (кап). Для «меньше-лучше»: ≤target=100, 0 при 4×target."""
+            if v is None or not target:
+                return None
+            if higher:
+                return min(100.0, v / target * 100.0)
+            if v <= target:
+                return 100.0
+            return max(0.0, 100.0 - (v - target) * (100.0 / (3.0 * target)))
+
         for r in rows:
             r["scores"] = {}
-        for key, label, unit, higher, weight in MANAGER_KPI_DEFS:
-            present = [r for r in rows if r.get(key) is not None]
+        for key, label, unit, higher, weight, category, target in MANAGER_KPI_DEFS:
+            # «мало данных» исключается из скоринга — не шумит в рейтинге
+            present = [r for r in rows if r.get(key) is not None and not r["lowData"].get(key)]
             for r in rows:
-                if r.get(key) is None:
+                if r.get(key) is None or r["lowData"].get(key):
                     r["scores"][key] = None
             n = len(present)
             if n == 0:
                 continue
             if n == 1:
-                present[0]["scores"][key] = 100.0
+                # Перцентиль на выборке из 1 не определён — только target-компонента
+                # (прежнее «единственный = 100» дарило балл без сравнения; None = KPI исключается)
+                ts = _target_score(higher, target, present[0].get(key))
+                present[0]["scores"][key] = round(ts, 1) if ts is not None else None
                 continue
             order = sorted(present, key=lambda r: r[key], reverse=higher)
             i = 0
@@ -3251,19 +3363,28 @@ def api_managers_kpi():
                 while j < n and order[j][key] == order[i][key]:
                     j += 1
                 avg_pos = (i + j - 1) / 2.0
-                sc = round(100 * (n - 1 - avg_pos) / (n - 1), 1)
+                sc = 100 * (n - 1 - avg_pos) / (n - 1)
                 for k in range(i, j):
                     order[k]["scores"][key] = sc
                 i = j
+            # бленд с таргетом: балл перестаёт быть zero-sum и несёт абсолютный смысл
+            for r in present:
+                pct = r["scores"][key]
+                ts = _target_score(higher, target, r.get(key))
+                r["scores"][key] = round(0.5 * pct + 0.5 * ts, 1) if ts is not None else round(pct, 1)
 
+        # Композит + подскоры «активность» (leading) / «результат» (lagging) — раздельная управляемость
         for r in rows:
-            num = den = 0
-            for key, label, unit, higher, weight in MANAGER_KPI_DEFS:
+            acc = {"total": [0.0, 0.0], "act": [0.0, 0.0], "res": [0.0, 0.0]}
+            for key, label, unit, higher, weight, category, target in MANAGER_KPI_DEFS:
                 s = r["scores"].get(key)
-                if s is not None:
-                    num += s * weight
-                    den += weight
-            r["score"] = round(num / den, 1) if den else 0
+                if s is None or not weight:
+                    continue
+                acc["total"][0] += s * weight; acc["total"][1] += weight
+                acc[category][0] += s * weight; acc[category][1] += weight
+            r["score"] = round(acc["total"][0] / acc["total"][1], 1) if acc["total"][1] else 0
+            r["scoreAct"] = round(acc["act"][0] / acc["act"][1], 1) if acc["act"][1] else None
+            r["scoreRes"] = round(acc["res"][0] / acc["res"][1], 1) if acc["res"][1] else None
 
         rows.sort(key=lambda x: -x["score"])
         for i, r in enumerate(rows, 1):
@@ -3275,6 +3396,7 @@ def api_managers_kpi():
             "collected": sum(r["collected"] for r in rows),
             "salesCount": sum(r["salesCount"] for r in rows),
             "newCustomers": sum(r["newCustomers"] for r in rows),
+            "lostCustomers": sum(r["lostCustomers"] for r in rows),
             "returnsSum": sum(r["returnsSum"] for r in rows),
             # Долг команды — территориальный (уникальные клиенты) = ERP, а не сумма строк-менеджеров
             # (у части должников «текущий» менеджер может быть неактивен в периоде → его нет в строках).
@@ -3285,12 +3407,15 @@ def api_managers_kpi():
             # Долг «без привязки»: неактивные в периоде менеджеры + клиенты без продаж (открытые сальдо).
             # Инвариант: Σ(строки m.debt) + debtUnattributed = team.debt (= ERP). Показывается отдельной строкой.
             "debtUnattributed": round((team_debit - team_t1 - team_t2) - sum(r["debt"] for r in rows), 2),
+            # As-of долга и флаг приближения: при as-of < сегодня Type01/02 берутся текущим снимком (истории нет)
+            "debtAsOf": debt_asof,
+            "debtAsOfApprox": bool(debt_asof < datetime.now().strftime('%Y-%m-%d')),
             "avgCoverage": round(sum(r["coverage"] for r in rows if r["coverage"] is not None)
                                  / max(1, sum(1 for r in rows if r["coverage"] is not None)), 1),
             "cmp": team_cmp,
         }
-        kpis = [{"key": k, "label": lbl, "unit": u, "higher": hb, "weight": w}
-                for (k, lbl, u, hb, w) in MANAGER_KPI_DEFS]
+        kpis = [{"key": k, "label": lbl, "unit": u, "higher": hb, "weight": w, "category": cat, "target": tgt}
+                for (k, lbl, u, hb, w, cat, tgt) in MANAGER_KPI_DEFS]
 
         return jsonify({"success": True, "period": {"date_from": date_from, "date_to": date_to,
                         "months": period_months}, "team": team, "kpis": kpis, "managers": rows})

@@ -998,7 +998,7 @@
                     payment_rate: item.TotalSales > 0 ? (item.TotalPayments / item.TotalSales * 100) : 0
                 }));
                 filterData();
-                updateSummary();
+                updateSummary(allData);
                 updateCharts();
                 hideLoading();
             })
@@ -1011,11 +1011,12 @@
     function filterData() {
         const searchTerm = document.getElementById('searchInput').value.toLowerCase();
         filteredData = allData.filter(item => {
-            return !searchTerm || 
+            return !searchTerm ||
                 (item.code && item.code.toLowerCase().includes(searchTerm)) ||
                 (item.name && item.name.toLowerCase().includes(searchTerm));
         });
         sortData(currentSort.field, false);
+        updateSummary(filteredData);
     }
     
     function sortData(field, toggle = true) {
@@ -1201,9 +1202,9 @@
         }
     }
     
-    function updateSummary() {
-        let total = { customers: allData.length, sales: 0, payments: 0, debt: 0 };
-        allData.forEach(item => {
+    function updateSummary(data = allData) {
+        let total = { customers: data.length, sales: 0, payments: 0, debt: 0 };
+        data.forEach(item => {
             total.sales += item.sales || 0;
             total.payments += item.payments || 0;
             total.debt += item.debt || 0;

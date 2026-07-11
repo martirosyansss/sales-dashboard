@@ -4259,7 +4259,7 @@
                 gradient3.addColorStop(1, 'rgba(253, 167, 4, 0.7)');
 
                 // Линия тренда (среднее значение)
-                const avgValue = seasonalityValues.reduce((a, b) => a + b, 0) / seasonalityValues.length;
+                const avgValue = seasonalityValues.length > 0 ? seasonalityValues.reduce((a, b) => a + b, 0) / seasonalityValues.length : 0;
 
                 seasonalityChart = new Chart(ctx, {
                     type: 'bar',

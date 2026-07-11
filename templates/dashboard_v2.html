@@ -664,7 +664,7 @@
                             </div>
                             <small class="text-muted d-block mb-1">
                                 <i class="fas fa-shopping-bag"></i> 
-                                Ср. покупок на клиента: <strong x-text="(stats.sales_count.value / stats.active_customers.value).toFixed(1)"></strong>
+                                Ср. покупок на клиента: <strong x-text="(stats.active_customers.value > 0 ? stats.sales_count.value / stats.active_customers.value : 0).toFixed(1)"></strong>
                             </small>
                             <small class="text-muted d-block" x-show="stats.active_customers.prev_month > 0">
                                 Прошл. месяц (эти дни): <strong x-text="formatNumber(stats.active_customers.prev_month)"></strong>
