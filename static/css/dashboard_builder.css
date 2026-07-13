@@ -2184,3 +2184,30 @@
 }
 .edit-banner-done:hover, .edit-banner-done:focus { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; }
 @media (max-width: 640px) { .edit-banner-text span { display: none; } }
+
+/* ============================================================
+   UX REWORK — модалка-мастер (шаги вместо табов)
+   ============================================================ */
+.config-modal-footer { justify-content: space-between; }
+.config-footer-nav { display: flex; align-items: center; gap: 10px; }
+
+.config-steps { display: flex; align-items: center; gap: 4px; margin-bottom: 18px; }
+.config-step {
+    display: flex; align-items: center; gap: 8px; background: transparent; border: none;
+    padding: 4px 6px; color: var(--text-faint); cursor: pointer; border-radius: var(--r-ctl);
+    transition: color .15s ease;
+}
+.config-step:hover { color: var(--text-dim); }
+.config-step-num {
+    width: 30px; height: 30px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 50%; background: var(--surface-3); border: 1px solid var(--border-strong);
+    color: var(--text-dim); font-size: .78rem;
+    transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+}
+.config-step-label { font-size: .86rem; font-weight: 600; white-space: nowrap; position: relative; }
+.config-step.active { color: var(--text); }
+.config-step.active .config-step-num { background: var(--accent); border-color: var(--accent); color: #fff; }
+.config-step.done .config-step-num { background: color-mix(in srgb, var(--accent) 22%, transparent); border-color: var(--accent); color: var(--accent); }
+.config-step-line { flex: 1 1 auto; height: 2px; min-width: 12px; background: var(--border); border-radius: 2px; }
+
+@media (max-width: 560px) { .config-step-label { display: none; } .config-step-line { min-width: 8px; } }

@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;800&family=Unbounded:wght@400;500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard_builder.css') }}?v=new1">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard_builder.css') }}?v=new2">
 {% endblock %}
 
 {% block content %}
@@ -618,17 +618,29 @@
             <div class="config-modal-body">
                 <!-- Навигация по разделам -->
                 <div class="config-tabs">
-                    <div class="config-tabs-nav">
-                        <button class="config-tab-btn" :class="{ 'active': configActiveTab === 'basic' }" @click="configActiveTab = 'basic'">
-                            <i class="fas fa-sliders-h me-2"></i>Основное
+                    <div class="config-steps">
+                        <button type="button" class="config-step"
+                                :class="{ 'active': configActiveTab === 'basic', 'done': configActiveTab === 'filters' || configActiveTab === 'appearance' }"
+                                @click="configActiveTab = 'basic'">
+                            <span class="config-step-num"><i class="fas fa-sliders-h"></i></span>
+                            <span class="config-step-label">Основное</span>
                         </button>
-                        <button class="config-tab-btn" :class="{ 'active': configActiveTab === 'filters' }" @click="configActiveTab = 'filters'">
-                            <i class="fas fa-filter me-2"></i>Фильтры
-                            <span class="config-tab-badge" x-show="(editingCard.areas?.length || 0) + (editingCard.groups?.length || 0) > 0"
-                                  x-text="(editingCard.areas?.length || 0) + (editingCard.groups?.length || 0)"></span>
+                        <span class="config-step-line"></span>
+                        <button type="button" class="config-step"
+                                :class="{ 'active': configActiveTab === 'filters', 'done': configActiveTab === 'appearance' }"
+                                @click="configActiveTab = 'filters'">
+                            <span class="config-step-num"><i class="fas fa-filter"></i></span>
+                            <span class="config-step-label">Фильтры
+                                <span class="config-tab-badge" x-show="(editingCard.areas?.length || 0) + (editingCard.groups?.length || 0) > 0"
+                                      x-text="(editingCard.areas?.length || 0) + (editingCard.groups?.length || 0)"></span>
+                            </span>
                         </button>
-                        <button class="config-tab-btn" :class="{ 'active': configActiveTab === 'appearance' }" @click="configActiveTab = 'appearance'">
-                            <i class="fas fa-palette me-2"></i>Внешний вид
+                        <span class="config-step-line"></span>
+                        <button type="button" class="config-step"
+                                :class="{ 'active': configActiveTab === 'appearance' }"
+                                @click="configActiveTab = 'appearance'">
+                            <span class="config-step-num"><i class="fas fa-palette"></i></span>
+                            <span class="config-step-label">Внешний вид</span>
                         </button>
                     </div>
                     
@@ -1380,9 +1392,23 @@
                 <button type="button" class="config-btn config-btn-secondary" @click="showConfigModal = false">
                     <i class="fas fa-times me-2"></i>Отмена
                 </button>
-                <button type="button" class="config-btn config-btn-primary" @click="saveCardConfig()">
-                    <i class="fas fa-check me-2"></i>Применить
-                </button>
+                <div class="config-footer-nav">
+                    <button type="button" class="config-btn config-btn-secondary"
+                            x-show="configActiveTab !== 'basic'"
+                            @click="configActiveTab = (configActiveTab === 'appearance' ? 'filters' : 'basic')">
+                        <i class="fas fa-arrow-left me-2"></i>Назад
+                    </button>
+                    <button type="button" class="config-btn config-btn-primary"
+                            x-show="configActiveTab !== 'appearance'"
+                            @click="configActiveTab = (configActiveTab === 'basic' ? 'filters' : 'appearance')">
+                        Далее<i class="fas fa-arrow-right ms-2"></i>
+                    </button>
+                    <button type="button" class="config-btn config-btn-primary"
+                            x-show="configActiveTab === 'appearance'"
+                            @click="saveCardConfig()">
+                        <i class="fas fa-check me-2"></i>Применить
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -1390,5 +1416,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/dashboard_builder.js') }}?v=new1"></script>
+<script src="{{ url_for('static', filename='js/dashboard_builder.js') }}?v=new2"></script>
 {% endblock %}
