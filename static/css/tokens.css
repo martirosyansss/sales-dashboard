@@ -1,0 +1,6 @@
+/* Design tokens — extracted from base_v2.html :root (site dark theme) */
+:root {
+    --primary-color: #0d6efd;
+    --card-bg: #212529;
+    --border-color: #495057;
+}
