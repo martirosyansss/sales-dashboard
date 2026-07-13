@@ -3,7 +3,7 @@ function dashboardBuilder() {
     return {
         // Тема (true = темная, false = светлая)
         /* Bento-редизайн: страница конструктора — светлая, тема фиксирована */
-        darkTheme: false,
+        darkTheme: true,
 
         /* Bento size-picker: пресеты размеров карточки */
         sizePickerId: null,

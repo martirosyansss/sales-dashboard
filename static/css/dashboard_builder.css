@@ -4432,7 +4432,7 @@ body.light-theme .dashboard-card.is-dragging {
         0 15px 30px rgba(0, 0, 0, 0.08),
         0 0 0 3px rgba(59, 130, 246, 0.5),
         0 0 40px rgba(59, 130, 246, 0.25);
-    background: rgba(255, 255, 255, 0.98) !important;
+    background: var(--bt-tile-soft) !important;
     backdrop-filter: blur(8px);
     /* Критично: отключаем все transition кроме transform для плавности */
     transition: transform 0.15s cubic-bezier(0.25, 0.46, 0.45, 0.94), 
@@ -4514,12 +4514,14 @@ body.light-theme .dashboard-card.just-dropped {
    Слой идёт последним и намеренно перекрывает обе легаси-темы.
    ================================================================ */
 :root {
-    --bt-paper: #F2EFE9;
-    --bt-tile: #FFFFFF;
-    --bt-tile-soft: #FAF8F3;
-    --bt-line: #E3DED2;
-    --bt-ink: #16130D;
-    --bt-ink-soft: #6F6858;
+    /* Тёмная тема — в тон остальному сайту (base_v2). Швейцарская
+       вёрстка bento сохранена, поменяны только цветовые токены. */
+    --bt-paper: #1a1d20;
+    --bt-tile: #262b32;
+    --bt-tile-soft: #2f353d;
+    --bt-line: rgba(255, 255, 255, 0.12);
+    --bt-ink: #e9ecef;
+    --bt-ink-soft: #99a1ab;
     --bt-accent: #E2371F;
     --bt-accent-deep: #B92C18;
     --bt-r-tile: 20px;
@@ -4530,7 +4532,7 @@ body.light-theme .dashboard-card.just-dropped {
 }
 
 body.light-theme, body.dark-theme {
-    background: var(--bt-paper) !important;
+    background: linear-gradient(135deg, #1a1d20 0%, #2c3e50 100%) !important;
     color: var(--bt-ink);
     font-family: var(--bt-font-ui);
 }
@@ -4747,7 +4749,8 @@ body.dark-theme .dashboard-card.card-debt .card-icon {
 }
 
 /* Карточка с пользовательским цветом — значок наследует акцент */
-body.light-theme .dashboard-card.has-custom-color .card-icon {
+body.light-theme .dashboard-card.has-custom-color .card-icon,
+body.dark-theme .dashboard-card.has-custom-color .card-icon {
     color: var(--custom-accent-color) !important;
 }
 
@@ -4755,7 +4758,8 @@ body.light-theme .dashboard-card:hover .card-icon,
 body.dark-theme .dashboard-card:hover .card-icon {
     color: var(--bt-ink) !important;
 }
-body.light-theme .dashboard-card.card-debt:not(.has-custom-color):hover .card-icon {
+body.light-theme .dashboard-card.card-debt:not(.has-custom-color):hover .card-icon,
+body.dark-theme .dashboard-card.card-debt:not(.has-custom-color):hover .card-icon {
     color: var(--bt-accent-deep) !important;
 }
 
@@ -4764,13 +4768,18 @@ body.light-theme .dashboard-card.card-debt:not(.has-custom-color):hover .card-ic
 body.light-theme .dashboard-card.card-chart .card-icon,
 body.light-theme .dashboard-card.card-areas_table .card-icon,
 body.light-theme .dashboard-card.card-header .card-icon,
-body.light-theme .dashboard-card.card-text .card-icon {
+body.light-theme .dashboard-card.card-text .card-icon,
+body.dark-theme .dashboard-card.card-chart .card-icon,
+body.dark-theme .dashboard-card.card-areas_table .card-icon,
+body.dark-theme .dashboard-card.card-header .card-icon,
+body.dark-theme .dashboard-card.card-text .card-icon {
     display: none !important;
 }
 
 /* Пустое состояние сводки — иконку в палитру темы (без ярко-синего
    bootstrap-акцента) и компактнее, чтобы влезала в невысокую плитку */
-body.light-theme .dashboard-card.card-areas_table .fa-3x {
+body.light-theme .dashboard-card.card-areas_table .fa-3x,
+body.dark-theme .dashboard-card.card-areas_table .fa-3x {
     color: var(--bt-ink-soft) !important;
     font-size: 1.9rem !important;
     margin-bottom: 0.5rem !important;
