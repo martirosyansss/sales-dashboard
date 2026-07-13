@@ -1,2997 +1,296 @@
-/* Dashboard Builder — стили (вынесены из inline <style> при рефакторинге).
-   Слои: legacy light/dark-theme (перекрыты) + активный BENTO Swiss (--bt-*). */
+/* ==========================================================================
+   Dashboard Builder — dark design system
+   Bento-grid dashboard builder: drag/resize cards, pages, config modal.
+   Single layer. Tokens -> layout -> card -> card content -> interaction
+   states -> config modal -> bootstrap overrides -> utilities -> responsive.
+
+   NOTE ON THE GRID (do not "fix" this): #cardGrid must stay a fixed
+   4-column / 120px-row / 14px-gap grid at all breakpoints. static/js/
+   dashboard_builder.js reads getComputedStyle(grid).columnGap and a
+   hard-coded 120px row height to compute drag/resize math in pixels.
+   Changing columns, gap or row height per breakpoint desyncs the drag
+   math from the visual grid. Card density on small screens is handled
+   by the cards themselves (clamp()/cq units), not by the grid.
+   ========================================================================== */
+
+/* ---------------------------------------------------------------------- *
+ * 1. Design tokens
+ * ---------------------------------------------------------------------- */
+:root {
+    /* Surfaces */
+    --surface: #212832;
+    --surface-2: #262e39;
+    --surface-3: #2f3846;
+    --surface-recessed: #1c222b;
+
+    /* Borders */
+    --border: rgba(255, 255, 255, .08);
+    --border-strong: rgba(255, 255, 255, .16);
+
+    /* Text */
+    --text: #e6e9ee;
+    --text-dim: #99a3af;
+    --text-faint: #6b7480;
+
+    /* Accent (primary CTA / active state) */
+    --accent: #3b82f6;
+    --accent-strong: #2563eb;
+    --accent-ring: rgba(59, 130, 246, .35);
+
+    /* Semantic */
+    --danger: #ef4444;
+    --success: #22c55e;
+    --warning: #f59e0b;
+
+    /* Per-card-type accent (icon chip + fallback value color) */
+    --type-sales: #3b82f6;
+    --type-payments: #22c55e;
+    --type-debt: #ef4444;
+    --type-customers: #f59e0b;
+    --type-chart: #06b6d4;
+    --type-forecast: #22c55e;
+    --type-completion: #06b6d4;
+    --type-daily: #8b5cf6;
+    --type-days: #f59e0b;
+    --type-needed: #ef4444;
+    --type-gap: #94a3b8;
+    --type-custom: #f43f5e;
+    --type-header: #94a3b8;
+    --type-text: #94a3b8;
+
+    /* Radii */
+    --r-card: 16px;
+    --r-ctl: 10px;
+    --r-pill: 999px;
+
+    /* Spacing scale */
+    --sp-1: 4px;
+    --sp-2: 8px;
+    --sp-3: 12px;
+    --sp-4: 16px;
+    --sp-5: 20px;
+    --sp-6: 24px;
+
+    /* Shadows */
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .22);
+    --shadow-card-hover: 0 2px 4px rgba(0, 0, 0, .4), 0 14px 34px rgba(0, 0, 0, .3);
+    --shadow-modal: 0 24px 60px rgba(0, 0, 0, .5);
+    --shadow-pop: 0 10px 30px rgba(0, 0, 0, .4);
+
+    /* Motion */
+    --ease: cubic-bezier(.2, .8, .2, 1);
+    --dur-fast: 120ms;
+    --dur: 180ms;
+    --dur-slow: 320ms;
+
+    /* Type */
+    --font-ui: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+/* ---------------------------------------------------------------------- *
+ * 2. Page frame
+ * ---------------------------------------------------------------------- */
 .builder-container {
     min-height: calc(100vh - 150px);
+    font-family: var(--font-ui);
+    color: var(--text);
 }
 
-.card-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    grid-auto-rows: 120px;
-    gap: 16px;
-    min-height: 600px;
-    background: rgba(0,0,0,0.2);
-    border-radius: 10px;
-    padding: 15px;
-    position: relative;
+.builder-container ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
 }
 
-.dashboard-card {
-    background: linear-gradient(165deg, rgba(28, 32, 42, 0.98) 0%, rgba(35, 40, 52, 0.97) 40%, rgba(22, 26, 35, 0.99) 100%);
-    border: 1px solid rgba(255,255,255,0.06);
-    border-radius: 24px;
-    padding: 22px;
-    position: relative;
-    cursor: grab;
-    transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
-    overflow: hidden;
-    touch-action: none;
-    user-select: none;
-    box-shadow: 
-        0 8px 30px rgba(0,0,0,0.2),
-        0 2px 6px rgba(0,0,0,0.12),
-        inset 0 1px 0 rgba(255,255,255,0.06);
-    will-change: transform;
-    transform-style: preserve-3d;
-    perspective: 1000px;
-}
-
-/* Тонкая линия сверху */
-.dashboard-card::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
-    pointer-events: none;
-}
-
-.dashboard-card:hover {
-    transform: translateY(-3px);
-    box-shadow: 
-        0 12px 40px rgba(0,0,0,0.3),
-        0 4px 12px rgba(0,0,0,0.15),
-        inset 0 1px 0 rgba(255,255,255,0.08);
-}
-
-.dashboard-card:active {
-    cursor: grabbing;
-}
-
-/* ========================================
-   iOS 26 STYLE DRAG & DROP
-   ======================================== */
-
-/* Jiggle Mode - плавное покачивание карточек как в iOS */
-@keyframes iosJiggle {
-    0%, 100% { transform: rotate(-0.3deg) translateY(0); }
-    50% { transform: rotate(0.3deg) translateY(-1px); }
-}
-
-.card-grid.jiggle-mode .dashboard-card:not(.is-dragging):not(.is-placeholder) {
-    animation: iosJiggle 1.2s ease-in-out infinite;
-}
-
-.card-grid.jiggle-mode .dashboard-card:nth-child(even):not(.is-dragging):not(.is-placeholder) {
-    animation-delay: 0.4s;
-    animation-duration: 1.4s;
-}
-
-.card-grid.jiggle-mode .dashboard-card:nth-child(3n):not(.is-dragging):not(.is-placeholder) {
-    animation-delay: 0.2s;
-    animation-duration: 1.1s;
-}
-
-.card-grid.jiggle-mode .dashboard-card:nth-child(5n):not(.is-dragging):not(.is-placeholder) {
-    animation-delay: 0.6s;
-    animation-duration: 1.3s;
-}
-
-/* Карточка при перетаскивании - iOS floating стиль */
-.dashboard-card.is-dragging {
-    position: fixed !important;
-    z-index: 10000 !important;
-    pointer-events: none;
-    box-shadow: 
-        0 40px 80px rgba(0,0,0,0.35),
-        0 20px 40px rgba(0,0,0,0.25),
-        0 0 0 1px rgba(255,255,255,0.1);
-    transform: scale(1.08);
-    opacity: 1;
-    transition: none !important;
-    border-radius: 28px;
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    background: linear-gradient(165deg, 
-        rgba(35, 40, 52, 0.95) 0%, 
-        rgba(45, 50, 65, 0.95) 40%, 
-        rgba(30, 35, 48, 0.95) 100%) !important;
-}
-
-.dashboard-card.is-dragging::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: 28px;
-    padding: 1px;
-    background: linear-gradient(145deg, 
-        rgba(255,255,255,0.15), 
-        rgba(255,255,255,0.05),
-        rgba(255,255,255,0.1));
-    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
-    pointer-events: none;
-}
-
-/* Размытие фона при drag */
-.card-grid.drag-active-blur {
-    position: relative;
-}
-
-.card-grid.drag-active-blur::before {
-    content: '';
-    position: absolute;
-    inset: -20px;
-    background: rgba(0,0,0,0.1);
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
-    z-index: 999;
-    opacity: 0;
-    animation: blurFadeIn 0.3s ease forwards;
-    pointer-events: none;
-    border-radius: 20px;
-}
-
-@keyframes blurFadeIn {
-    to { opacity: 1; }
-}
-
-/* iOS Placeholder - минималистичный стиль */
-.dashboard-card.is-placeholder {
-    background: rgba(100, 100, 120, 0.15) !important;
-    border: none !important;
-    box-shadow: 
-        inset 0 0 0 2px rgba(255,255,255,0.08),
-        inset 0 2px 20px rgba(0,0,0,0.2) !important;
-    border-radius: 24px;
-    transition: transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.5s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
-    animation: none !important;
-}
-
-.dashboard-card.is-placeholder * {
-    opacity: 0 !important;
-    transition: opacity 0.2s ease;
-}
-
-.dashboard-card.is-placeholder::after {
-    display: none;
-}
-
-/* iOS Spring анимации для карточек */
-.dashboard-card.moving {
-    transition: transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) , opacity 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) , box-shadow 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) , background-color 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) , border-color 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) , color 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
-}
-
-/* iOS Drop эффект - пружинка */
-@keyframes iosSpringDrop {
-    0% { 
-        transform: scale(1.08); 
-        opacity: 1;
-    }
-    40% { 
-        transform: scale(0.95); 
-    }
-    70% { 
-        transform: scale(1.02); 
-    }
-    100% { 
-        transform: scale(1); 
-    }
-}
-
-.dashboard-card.just-dropped {
-    animation: iosSpringDrop 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
-}
-
-/* Hover целевой позиции */
-.dashboard-card.drop-target {
-    transform: scale(0.95);
-    opacity: 0.7;
-    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-/* Анимация новой карточки */
-@keyframes cardAppear {
-    0% {
-        opacity: 0;
-        transform: scale(0.7) translateY(30px) rotate(-3deg);
-    }
-    60% {
-        transform: scale(1.08) translateY(-8px) rotate(1deg);
-    }
-    100% {
-        opacity: 1;
-        transform: scale(1) translateY(0) rotate(0);
-    }
-}
-
-@keyframes cardHighlight {
-    0%, 100% {
-        box-shadow: 0 10px 40px rgba(0,0,0,0.25), 0 2px 8px rgba(0,0,0,0.15);
-    }
-    25%, 75% {
-        box-shadow: 
-            0 0 0 4px rgba(59, 130, 246, 0.4),
-            0 0 40px rgba(59, 130, 246, 0.4),
-            0 0 80px rgba(59, 130, 246, 0.2);
-    }
-    50% {
-        box-shadow: 
-            0 0 0 6px rgba(139, 92, 246, 0.4),
-            0 0 60px rgba(139, 92, 246, 0.5),
-            0 0 100px rgba(139, 92, 246, 0.3);
-    }
-}
-
-.dashboard-card.card-new {
-    animation: 
-        cardAppear 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) forwards,
-        cardHighlight 2.5s ease-in-out;
-}
-
-/* Drop zone стиль */
-.drop-zone-end {
-    grid-column: 1 / -1;
-    min-height: 120px;
-    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.drop-zone-end.drag-active {
-    background: linear-gradient(135deg, 
-        rgba(59, 130, 246, 0.15) 0%, 
-        rgba(139, 92, 246, 0.1) 100%) !important;
-    border-color: rgba(59, 130, 246, 0.5) !important;
-    transform: scale(1.02);
-    box-shadow: 
-        0 0 30px rgba(59, 130, 246, 0.2),
-        inset 0 0 30px rgba(59, 130, 246, 0.1);
-}
-
-.drop-zone-end.drag-active i {
-    animation: dropZoneIcon 0.6s ease-in-out infinite;
-}
-
-@keyframes dropZoneIcon {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-5px); }
-}
-
-/* Кастомный спиннер загрузки */
-.card-loading-spinner {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    position: relative;
-    width: 50px;
-    height: 50px;
-}
-
-.card-loading-spinner::before {
-    content: '';
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    border: 3px solid rgba(255,255,255,0.1);
-    border-top-color: currentColor;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-}
-
-.card-loading-spinner::after {
-    content: '';
-    position: absolute;
-    width: 70%;
-    height: 70%;
-    border: 2px solid rgba(255,255,255,0.05);
-    border-bottom-color: currentColor;
-    border-radius: 50%;
-    animation: spin 1.5s linear infinite reverse;
-}
-
-@keyframes spin {
-    to { transform: rotate(360deg); }
-}
-
-/* Эффект shimmer при загрузке */
-@keyframes shimmer {
-    0% { background-position: -200% 0; }
-    100% { background-position: 200% 0; }
-}
-
-.card-loading {
-    position: relative;
-    overflow: hidden;
-}
-
-.card-loading::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: linear-gradient(
-        90deg,
-        transparent 0%,
-        rgba(255,255,255,0.05) 50%,
-        transparent 100%
-    );
-    background-size: 200% 100%;
-    animation: shimmer 2s infinite;
-    pointer-events: none;
-    z-index: 10;
-}
-
-/* Ресайз */
-.dashboard-card.resizing {
-    transition: none !important;
-    box-shadow: 0 0 30px rgba(13, 110, 253, 0.5);
-    z-index: 100;
-}
-
-/* Стили для таблицы территорий - РЕЗИНОВЫЙ дизайн */
-.areas-table-container {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    padding: 1.5%;
-    box-sizing: border-box;
-    container-type: size;
-    container-name: tablebox;
-}
-
-.areas-table-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 1cqh;
-    padding-bottom: 1cqh;
-    border-bottom: 1px solid rgba(255,255,255,0.08);
-    flex-shrink: 0;
-}
-
-.areas-table-title {
-    font-size: clamp(0.6rem, min(4cqw, 4cqh), 1.3rem);
-    font-weight: 700;
-    color: #e2e8f0;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-}
-
-.areas-table-count {
-    background: rgba(0,0,0,0.3);
-    padding: 0.6cqh 1.5cqw;
-    border-radius: 8px;
-    font-size: clamp(0.4rem, min(2.5cqw, 3cqh), 0.85rem);
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: 0.8cqw;
-    flex-wrap: wrap;
-}
-
-.areas-table-wrapper {
-    overflow-y: auto;
-    overflow-x: auto;
-    flex: 1;
-    scrollbar-width: thin;
-    scrollbar-color: rgba(59, 130, 246, 0.4) transparent;
-    border-radius: 6px;
-    background: rgba(0,0,0,0.1);
-    min-height: 0;
-}
-
-.areas-table-wrapper::-webkit-scrollbar {
-    width: 3px;
-    height: 3px;
-}
-
-.areas-table-wrapper::-webkit-scrollbar-track {
-    background: rgba(0,0,0,0.1);
-    border-radius: 2px;
-}
-
-.areas-table-wrapper::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, #3b82f6, #2563eb);
-    border-radius: 2px;
-}
-
-.areas-table {
-    width: 100%;
-    border-collapse: separate;
-    border-spacing: 0;
-    font-size: clamp(0.45rem, min(3cqw, 4.5cqh), 1.1rem);
-}
-
-.areas-table th {
-    position: sticky;
-    top: 0;
-    background: linear-gradient(180deg, rgba(30,35,50,0.98) 0%, rgba(25,30,45,0.98) 100%);
-    color: #94a3b8;
-    font-weight: 600;
-    font-size: clamp(0.4rem, min(2.5cqw, 3.5cqh), 0.95rem);
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-    padding: 1.2cqh 1.2cqw;
-    border-bottom: 1px solid rgba(59, 130, 246, 0.2);
-    z-index: 2;
-    white-space: nowrap;
-}
-
-.areas-table th:first-child {
-    border-radius: 4px 0 0 0;
-    padding-left: 1.5cqw;
-}
-
-.areas-table th:last-child {
-    border-radius: 0 4px 0 0;
-    padding-right: 1.5cqw;
-}
-
-.areas-table td {
-    padding: 1cqh 1.2cqw;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-    transition: transform 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-    font-size: clamp(0.45rem, min(3cqw, 4.5cqh), 1.1rem);
-    color: #e2e8f0;
-}
-
-.areas-table tbody tr {
-    transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-}
-
-.areas-table tbody tr:hover {
-    background: rgba(59, 130, 246, 0.08);
-}
-
-.areas-table tbody tr:hover td {
-    border-color: rgba(59, 130, 246, 0.15);
-}
-
-/* Код территории */
-.area-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 1cqw;
-}
-
-.area-code {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 3cqw;
-    background: linear-gradient(135deg, rgba(59, 130, 246, 0.25) 0%, rgba(59, 130, 246, 0.12) 100%);
-    color: #60a5fa;
-    padding: 0.8cqh 1.2cqw;
-    border-radius: 4px;
-    font-size: inherit;
-    font-weight: 700;
-    border: 1px solid rgba(59, 130, 246, 0.25);
-}
-
-.area-name {
-    color: #cbd5e1;
-    font-size: inherit;
-    font-weight: 500;
-    max-width: 15cqw;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* Ячейки со значениями */
-.areas-table .value-cell {
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-}
-
-/* Процент бейдж */
-.percent-badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.5cqh 1cqw;
-    border-radius: 8px;
-    font-size: inherit;
-    font-weight: 700;
-}
-
-.percent-badge.success {
-    background: rgba(16, 185, 129, 0.2);
-    color: #34d399;
-    border: 1px solid rgba(16, 185, 129, 0.3);
-}
-
-.percent-badge.warning {
-    background: rgba(245, 158, 11, 0.2);
-    color: #fbbf24;
-    border: 1px solid rgba(245, 158, 11, 0.3);
-}
-
-.percent-badge.danger {
-    background: rgba(239, 68, 68, 0.2);
-    color: #f87171;
-    border: 1px solid rgba(239, 68, 68, 0.3);
-}
-
-/* Мини-тренд в таблице */
-.trend-mini {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5cqw;
-    padding: 0.5cqh 1cqw;
-    border-radius: 10px;
-    font-size: inherit;
-    font-weight: 600;
-    white-space: nowrap;
-}
-.trend-mini.trend-up {
-    background: rgba(40, 167, 69, 0.2);
-    color: #28a745;
-    border: 1px solid rgba(40, 167, 69, 0.3);
-}
-.trend-mini.trend-down {
-    background: rgba(220, 53, 69, 0.2);
-    color: #dc3545;
-    border: 1px solid rgba(220, 53, 69, 0.3);
-}
-.trend-mini i {
-    font-size: 0.85em;
-}
-
-/* Мини-прогресс бар */
-.mini-progress {
-    width: 5cqw;
-    height: 0.5cqh;
-    background: rgba(255,255,255,0.1);
-    border-radius: 2px;
-    overflow: hidden;
-    margin-top: 0.5cqh;
-}
-
-.mini-progress-bar {
-    height: 100%;
-    border-radius: 2px;
-    transition: width 0.5s ease;
-}
-
-/* Итоговая строка */
-.areas-table .total-row {
-    background: linear-gradient(90deg, rgba(59, 130, 246, 0.12) 0%, rgba(59, 130, 246, 0.06) 100%);
-}
-
-.areas-table .total-row td {
-    padding: 14px 8px;
-    border-top: 2px solid rgba(59, 130, 246, 0.3);
-    border-bottom: none;
-    font-weight: 700;
-}
-
-.areas-table .total-row td:first-child {
-    border-radius: 0 0 0 8px;
-    padding-left: 12px;
-}
-
-.areas-table .total-row td:last-child {
-    border-radius: 0 0 8px 0;
-    padding-right: 12px;
-}
-
-.total-label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: #e2e8f0;
-    font-size: 0.82rem;
-}
-
-.total-label i {
-    color: #3b82f6;
-}
-
-/* Цвета значений */
-.value-sales { color: #60a5fa; }
-.value-plan { color: #64748b; }
-.value-forecast { color: #fbbf24; }
-.value-last-year { color: #94a3b8; }
-.value-debt { color: #f87171; }
-.value-today { color: #22d3ee; }
-
-/* iOS Resize Handle - минималистичный */
-.dashboard-card .resize-handle {
-    position: absolute;
-    bottom: 8px;
-    right: 8px;
-    width: 20px;
-    height: 20px;
-    cursor: se-resize;
-    opacity: 0;
-    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-    z-index: 10;
-}
-
-.dashboard-card .resize-handle::before,
-.dashboard-card .resize-handle::after {
-    content: '';
-    position: absolute;
-    background: rgba(255,255,255,0.4);
-    border-radius: 2px;
-}
-
-.dashboard-card .resize-handle::before {
-    width: 12px;
-    height: 3px;
-    bottom: 4px;
-    right: 0;
-}
-
-.dashboard-card .resize-handle::after {
-    width: 3px;
-    height: 12px;
-    bottom: 0;
-    right: 4px;
-}
-
-.dashboard-card:hover .resize-handle {
-    opacity: 1;
-}
-
-.dashboard-card .resize-handle:hover::before,
-.dashboard-card .resize-handle:hover::after {
-    background: rgba(255,255,255,0.8);
-}
-
-/* iOS Resize Mode - карточка при изменении размера */
-.dashboard-card.resizing {
-    z-index: 1000;
-    box-shadow: 
-        0 30px 60px rgba(0,0,0,0.4),
-        0 0 0 2px rgba(255,255,255,0.2);
-    border-radius: 28px;
-    transition: box-shadow 0.2s ease;
-}
-
-.dashboard-card.resizing .resize-handle {
-    opacity: 1;
-}
-
-.dashboard-card.resizing .resize-handle::before,
-.dashboard-card.resizing .resize-handle::after {
-    background: #fff;
-}
-
-/* iOS Resize Preview - живое превью */
-.resize-preview {
-    position: fixed;
-    pointer-events: none;
-    border: 2px solid rgba(255,255,255,0.3);
-    background: rgba(100, 120, 150, 0.15);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border-radius: 24px;
-    z-index: 999;
-    transition: transform 0.1s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.1s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.1s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.1s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.1s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.1s cubic-bezier(0.2, 0.8, 0.2, 1);
-    box-shadow: 0 20px 50px rgba(0,0,0,0.3);
-}
-
-/* iOS Size Indicator - пилюля */
-.resize-indicator {
-    position: fixed;
-    background: rgba(30, 30, 35, 0.9);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
-    color: white;
-    padding: 10px 20px;
-    border-radius: 50px;
-    font-size: 15px;
-    font-weight: 500;
-    letter-spacing: 0.5px;
-    z-index: 10001;
-    pointer-events: none;
-    box-shadow: 
-        0 10px 40px rgba(0,0,0,0.4),
-        inset 0 0 0 1px rgba(255,255,255,0.1);
-    animation: iosPopIn 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-@keyframes iosPopIn {
-    0% {
-        transform: scale(0.5) translateY(10px);
-        opacity: 0;
-    }
-    100% {
-        transform: scale(1) translateY(0);
-        opacity: 1;
-    }
-}
-
-.dashboard-card .card-actions {
-    position: absolute;
-    top: 5px;
-    right: 5px;
-    opacity: 0;
-    transition: opacity 0.2s;
-    z-index: 100;
-}
-
-.dashboard-card:hover .card-actions {
-    opacity: 1;
-}
-
-.card-value {
-    font-size: 2.6rem;
-    font-weight: 800;
-    margin: 15px 0;
-    text-shadow: 0 2px 12px rgba(0,0,0,0.4);
-    letter-spacing: -1px;
-    position: relative;
-    z-index: 2;
-    line-height: 1.1;
-}
-
-.card-label {
-    font-size: 0.95rem;
-    color: rgba(255,255,255,0.7);
-    text-transform: uppercase;
-    letter-spacing: 2px;
-    font-weight: 600;
-    position: relative;
-    z-index: 2;
-}
-
-.card-icon {
-    font-size: 1.1rem;
-    opacity: 0.3;
-    position: absolute;
-    right: 10px;
-    bottom: 10px;
-    z-index: 1;
-    transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-}
-
-.dashboard-card:hover .card-icon {
-    opacity: 0.5;
-}
-
-/* ========================================
-   РЕЗИНОВАЯ АДАПТИВНАЯ СИСТЕМА КАРТОЧЕК
-   Контент заполняет всё пространство как резинка
-   Используем container queries для истинной адаптивности
-   ======================================== */
-
-.dashboard-card {
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    align-items: stretch;
-    text-align: left;
-    padding: 4%;
-    overflow: hidden;
-    /* Карточка ровно по своему грид-треку. height:100% нужен для cqh-шрифтов
-       (container-type:size), а max-height:100% + min-height:0 не дают ей
-       перерасти трек и наехать на соседний ряд (баг разрешения height:100%
-       по контенту в некоторых версиях Chrome). */
-    align-self: stretch;
-    justify-self: stretch;
-    height: 100%;
-    min-height: 0;
-    max-height: 100%;
-    width: 100%;
-    box-sizing: border-box;
-    /* Container query context */
-    container-type: size;
-    container-name: card;
-}
-
-/* Обёртка контента карточки - занимает всё пространство */
-.dashboard-card .card-content {
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    align-items: stretch;
-    width: 100%;
-    height: 100%;
-    gap: 1cqh;
-}
-
-/* Верхняя часть карточки: заголовок */
-.dashboard-card .card-header-section {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 2cqw;
-}
-
-/* Основное значение - центральная часть */
-.dashboard-card .card-main-section {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    text-align: center;
-}
-
-/* Нижняя часть: фильтры, сравнения */
-.dashboard-card .card-footer-section {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1cqh;
-    align-items: center;
-    justify-content: center;
-}
-
-/* РЕЗИНОВЫЕ стили контента - размеры зависят от размера контейнера */
-.dashboard-card .card-value {
-    /* Размер текста зависит от ширины и высоты контейнера */
-    font-size: clamp(1rem, min(12cqw, 22cqh), 8rem);
-    line-height: 1;
-    /* Число не должно рваться посреди разряда: переносы только по обычным пробелам */
-    word-break: normal;
-    overflow-wrap: normal;
-    font-variant-numeric: tabular-nums;
-    text-wrap: balance;
-    color: #fff;
-    font-weight: 800;
-    max-width: 100%;
-    text-shadow: 0 2px 10px rgba(0,0,0,0.3);
-    transition: font-size 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.dashboard-card .card-label {
-    font-size: clamp(0.5rem, min(4cqw, 7cqh), 2.5rem);
-    letter-spacing: 0.8px;
-    text-transform: uppercase;
-    opacity: 0.9;
-    max-width: 100%;
-    font-weight: 600;
-    transition: font-size 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.dashboard-card .card-icon {
-    font-size: clamp(0.8rem, min(8cqw, 12cqh), 5rem);
-    opacity: 0.15;
-    position: absolute;
-    right: 5%;
-    top: 50%;
-    transform: translateY(-50%);
-    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.dashboard-card .filter-tag {
-    font-size: clamp(0.4rem, min(3cqw, 5cqh), 1.2rem);
-    padding: 0.8cqh 1.5cqw;
-    background: rgba(255,255,255,0.1);
-    border-radius: 4px;
-    backdrop-filter: blur(4px);
-    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.dashboard-card .trend-badge {
-    font-size: clamp(0.45rem, min(4cqw, 6cqh), 1.5rem);
-    padding: 0.8cqh 2cqw;
-    gap: 0.8cqw;
-    border-radius: 6px;
-    font-weight: 700;
-    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.dashboard-card .comparison-block {
-    font-size: clamp(0.45rem, min(3.5cqw, 6cqh), 1.4rem);
-    margin-top: 1cqh;
-    padding: 1.5cqh 2.5cqw;
-    width: 100%;
-    background: rgba(0,0,0,0.2);
-    border-radius: 6px;
-    backdrop-filter: blur(4px);
-    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.dashboard-card .comparison-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.5cqh 0;
-    border-bottom: 1px solid rgba(255,255,255,0.05);
-}
-
-.dashboard-card .comparison-item:last-child {
-    border-bottom: none;
-}
-
-.dashboard-card .comparison-label {
-    opacity: 0.7;
-    font-size: 0.9em;
-}
-
-.dashboard-card .comparison-value {
-    font-weight: 700;
-}
-
-.dashboard-card .comparison-change {
-    font-size: 0.85em;
-    padding: 0.3cqh 0.8cqw;
-    border-radius: 4px;
-    margin-left: 0.5cqw;
-}
-
-/* Прогноз адаптивный */
-.dashboard-card .forecast-section {
-    font-size: clamp(0.4rem, min(3cqw, 5cqh), 1.2rem);
-    margin-top: 1cqh;
-    padding: 1.5cqh 2.5cqw;
-    width: 100%;
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(16, 185, 129, 0.05) 100%);
-    border-radius: 6px;
-    border-left: 3px solid #10b981;
-}
-
-/* Фильтры компактно */
-.dashboard-card .filters-container {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.8cqh;
-    justify-content: center;
-    margin-top: auto;
-}
-
-/* Таблица в карточке адаптивная */
-.dashboard-card .areas-table-mini {
-    font-size: clamp(0.3rem, min(2cqw, 3cqh), 0.9rem);
-    width: 95%;
-    height: 85%;
-}
-
-.dashboard-card .areas-table-mini th,
-.dashboard-card .areas-table-mini td {
-    padding: 1cqh 1.5cqw;
-}
-
-/* График в карточке */
-.dashboard-card .chart-container {
-    width: 95%;
-    height: 80%;
-    min-height: 50px;
-}
-
-/* === Grid размеры: 4 колонки, размер 4x4 = полная ширина === */
-
-.size-1x1 { grid-column: span 1; grid-row: span 1; }
-.size-2x1 { grid-column: span 2; grid-row: span 1; }
-.size-3x1 { grid-column: span 3; grid-row: span 1; }
-.size-4x1 { grid-column: span 4; grid-row: span 1; }
-
-.size-1x2 { grid-column: span 1; grid-row: span 2; }
-.size-2x2 { grid-column: span 2; grid-row: span 2; }
-.size-3x2 { grid-column: span 3; grid-row: span 2; }
-.size-4x2 { grid-column: span 4; grid-row: span 2; }
-
-.size-1x3 { grid-column: span 1; grid-row: span 3; }
-.size-2x3 { grid-column: span 2; grid-row: span 3; }
-.size-3x3 { grid-column: span 3; grid-row: span 3; }
-.size-4x3 { grid-column: span 4; grid-row: span 3; }
-
-.size-1x4 { grid-column: span 1; grid-row: span 4; }
-.size-2x4 { grid-column: span 2; grid-row: span 4; }
-.size-3x4 { grid-column: span 3; grid-row: span 4; }
-.size-4x4 { grid-column: span 4; grid-row: span 4; }
-
-/* Обратная совместимость - большие размеры маппятся на 4 */
-.size-5x1, .size-6x1, .size-7x1, .size-8x1, .size-9x1, .size-10x1 { grid-column: span 4; grid-row: span 1; }
-.size-5x2, .size-6x2, .size-7x2, .size-8x2, .size-9x2, .size-10x2 { grid-column: span 4; grid-row: span 2; }
-.size-5x3, .size-6x3, .size-7x3, .size-8x3, .size-9x3, .size-10x3 { grid-column: span 4; grid-row: span 3; }
-.size-5x4, .size-6x4, .size-7x4, .size-8x4, .size-9x4, .size-10x4,
-.size-5x5, .size-6x5, .size-7x5, .size-8x5, .size-9x5, .size-10x5,
-.size-5x6, .size-6x6, .size-7x6, .size-8x6, .size-9x6, .size-10x6,
-.size-5x7, .size-6x7, .size-7x7, .size-8x7, .size-9x7, .size-10x7,
-.size-5x8, .size-6x8, .size-7x8, .size-8x8, .size-9x8, .size-10x8,
-.size-5x9, .size-6x9, .size-7x9, .size-8x9, .size-9x9, .size-10x9,
-.size-5x10, .size-6x10, .size-7x10, .size-8x10, .size-9x10, .size-10x10,
-.size-1x5, .size-2x5, .size-3x5, .size-4x5,
-.size-1x6, .size-2x6, .size-3x6, .size-4x6,
-.size-1x7, .size-2x7, .size-3x7, .size-4x7,
-.size-1x8, .size-2x8, .size-3x8, .size-4x8,
-.size-1x9, .size-2x9, .size-3x9, .size-4x9,
-.size-1x10, .size-2x10, .size-3x10, .size-4x10 { grid-column: span 4; grid-row: span 4; }
-
-/* Тренд с прошлым годом */
-.year-trend {
-    display: none;
-}
-.trend-badge {
-    display: inline-flex;
-    align-items: center;
-    border-radius: 20px;
-    font-weight: 600;
-}
-.trend-badge.trend-up {
-    background: rgba(40, 167, 69, 0.2);
-    color: #28a745;
-    border: 1px solid rgba(40, 167, 69, 0.3);
-}
-.trend-badge.trend-down {
-    background: rgba(220, 53, 69, 0.2);
-    color: #dc3545;
-    border: 1px solid rgba(220, 53, 69, 0.3);
-}
-.trend-badge i {
-    font-size: 0.8em;
-}
-.trend-label {
-    opacity: 0.8;
-    font-size: 0.85em;
-    font-weight: 400;
-}
-
-.toolbar {
-    background: rgba(33, 37, 41, 0.95);
-    border-radius: 10px;
-    padding: 15px;
-    margin-bottom: 20px;
-}
-
-/* Единый нейтральный стиль кнопок добавления виджетов:
-   тип виджета различается цветом иконки, а не цветом всей кнопки */
-.toolbar .btn-add-widget {
-    color: rgba(255, 255, 255, 0.85);
-    border: 1px solid rgba(255, 255, 255, 0.25);
+.builder-container ::-webkit-scrollbar-track {
     background: transparent;
 }
 
-.toolbar .btn-add-widget:hover,
-.toolbar .btn-add-widget:focus {
-    color: #fff;
-    border-color: rgba(255, 255, 255, 0.5);
-    background: rgba(255, 255, 255, 0.08);
-}
-
-body.light-theme .toolbar .btn-add-widget {
-    color: #333;
-    border-color: rgba(0, 0, 0, 0.3);
-}
-
-body.light-theme .toolbar .btn-add-widget:hover,
-body.light-theme .toolbar .btn-add-widget:focus {
-    color: #000;
-    border-color: rgba(0, 0, 0, 0.5);
-    background: rgba(0, 0, 0, 0.06);
-}
-
-
-/* ========================================
-   iOS EDIT MODE BUTTON & STYLES
-   ======================================== */
-.edit-mode-btn {
-    background: rgba(100, 100, 120, 0.2);
-    border: 1px solid rgba(255,255,255,0.15);
-    border-radius: 12px;
-    padding: 8px 16px;
-    color: #fff;
-    font-size: 14px;
-    font-weight: 500;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-    cursor: pointer;
-}
-
-.edit-mode-btn:hover {
-    background: rgba(100, 100, 120, 0.35);
-    border-color: rgba(255,255,255,0.25);
-    transform: scale(1.02);
-}
-
-.edit-mode-btn.active {
-    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-    border-color: transparent;
-    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
-}
-
-.edit-mode-btn.active:hover {
-    box-shadow: 0 6px 20px rgba(59, 130, 246, 0.5);
-    transform: scale(1.02);
-}
-
-.edit-mode-btn i {
-    font-size: 14px;
-    transition: transform 0.3s ease;
-}
-
-.edit-mode-btn.active i {
-    transform: scale(1.1);
-}
-
-/* Режим редактирования - показываем resize handle */
-.card-grid:not(.edit-mode) .dashboard-card .resize-handle {
-    display: none !important;
-}
-
-.card-grid:not(.edit-mode) .dashboard-card {
-    cursor: default !important;
-}
-
-/* В режиме редактирования - показываем контролы */
-.card-grid.edit-mode .dashboard-card {
-    cursor: grab;
-}
-
-.card-grid.edit-mode .dashboard-card .resize-handle {
-    display: block !important;
-}
-
-/* Подсказка при hover в edit mode */
-.card-grid.edit-mode .dashboard-card::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border: 2px dashed rgba(255, 255, 255, 0.22);
-    border-radius: 24px;
-    transition: border-color 0.2s ease;
-    pointer-events: none;
-}
-
-.card-grid.edit-mode .dashboard-card:hover::after {
-    border-color: rgba(59, 130, 246, 0.5);
-    border-style: solid;
-}
-
-/* Контролы карточки видимы постоянно в режиме редактирования:
-   hover-only аффордансы недоступны на тач-устройствах и невидимы до наведения */
-.card-grid.edit-mode .dashboard-card .card-actions {
-    opacity: 1;
-    background: rgba(15, 18, 25, 0.85);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 10px;
-    padding: 2px;
-    backdrop-filter: blur(4px);
-}
-
-.card-grid.edit-mode .dashboard-card .resize-handle {
-    opacity: 0.45;
-}
-
-.empty-placeholder {
-    border: 2px dashed rgba(255,255,255,0.2);
-    border-radius: 10px;
-    padding: 40px;
-    text-align: center;
-    color: #6c757d;
-    grid-column: 1 / -1;
-}
-
-.metric-badge {
-    font-size: 0.7rem;
-    padding: 2px 6px;
-    border-radius: 4px;
-    margin-left: 5px;
-}
-
-/* Цвета карточек по типу - чистый минимализм */
-
-/* Продажи - синий */
-.card-sales { 
-    border-left: 4px solid #3b82f6;
-    background: linear-gradient(145deg, rgba(25, 35, 50, 0.98) 0%, rgba(22, 30, 45, 0.98) 100%);
-}
-.card-sales .card-icon { color: #3b82f6; }
-.card-sales:hover { box-shadow: 0 15px 40px rgba(59, 130, 246, 0.15), 0 5px 15px rgba(0,0,0,0.2); }
-
-/* Оплаты - зелёный */
-.card-payments { 
-    border-left: 4px solid #10b981;
-    background: linear-gradient(145deg, rgba(20, 35, 30, 0.98) 0%, rgba(18, 30, 28, 0.98) 100%);
-}
-.card-payments .card-icon { color: #10b981; }
-.card-payments:hover { box-shadow: 0 15px 40px rgba(16, 185, 129, 0.15), 0 5px 15px rgba(0,0,0,0.2); }
-
-/* Долг - красный */
-.card-debt { 
-    border-left: 4px solid #ef4444;
-    background: linear-gradient(145deg, rgba(40, 25, 25, 0.98) 0%, rgba(35, 22, 22, 0.98) 100%);
-}
-.card-debt .card-icon { color: #ef4444; }
-.card-debt:hover { box-shadow: 0 15px 40px rgba(239, 68, 68, 0.15), 0 5px 15px rgba(0,0,0,0.2); }
-
-/* Клиенты - оранжевый */
-.card-customers { 
-    border-left: 4px solid #f59e0b;
-    background: linear-gradient(145deg, rgba(40, 32, 20, 0.98) 0%, rgba(35, 28, 18, 0.98) 100%);
-}
-.card-customers .card-icon { color: #f59e0b; }
-.card-customers:hover { box-shadow: 0 15px 40px rgba(245, 158, 11, 0.15), 0 5px 15px rgba(0,0,0,0.2); }
-
-/* График - голубой */
-.card-chart { 
-    border-left: 4px solid #06b6d4;
-    background: linear-gradient(145deg, rgba(20, 32, 40, 0.98) 0%, rgba(18, 28, 35, 0.98) 100%);
-    display: flex;
-    flex-direction: column;
-}
-.card-chart .card-icon { color: #06b6d4; }
-.card-chart:hover { box-shadow: 0 15px 40px rgba(6, 182, 212, 0.15), 0 5px 15px rgba(0,0,0,0.2); }
-.card-chart .chart-container {
-    position: relative;
-    z-index: 2;
-    margin-top: 10px;
-}
-
-/* Chart wrapper базовые стили */
-.chart-wrapper {
-    background: rgba(0, 0, 0, 0.2);
-    border-radius: 12px;
-    padding: 10px;
-    position: relative;
-    width: 100%;
-    box-sizing: border-box;
-}
-
-/* Custom - фиолетовый */
-.card-custom { 
-    border-left: 4px solid #8b5cf6;
-    background: linear-gradient(145deg, rgba(32, 25, 45, 0.98) 0%, rgba(28, 22, 40, 0.98) 100%);
-}
-.card-custom .card-icon { color: #8b5cf6; }
-.card-custom:hover { box-shadow: 0 15px 40px rgba(139, 92, 246, 0.15), 0 5px 15px rgba(0,0,0,0.2); }
-
-/* Header Card - Заголовок секции */
-.card-header::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: linear-gradient(135deg, rgba(55, 65, 81, 0.9) 0%, rgba(31, 41, 55, 0.95) 100%);
-    pointer-events: none;
-}
-.card-header .card-icon { 
-    color: #9ca3af; 
-    text-shadow: none;
-    font-size: 1.5rem !important;
-    opacity: 0.5;
-}
-.card-header:hover { box-shadow: 0 12px 35px rgba(55, 65, 81, 0.3), 0 4px 15px rgba(0,0,0,0.2); }
-.card-header .header-card {
-    position: relative;
-    z-index: 2;
-    text-align: center;
-    padding: 10px;
-}
-.card-header .header-card h4 {
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-}
-
-/* Text Card - Текстовая заметка */
-.card-text::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: linear-gradient(135deg, rgba(107, 114, 128, 0.85) 0%, rgba(75, 85, 99, 0.9) 100%);
-    pointer-events: none;
-}
-.card-text .card-icon { 
-    color: #d1d5db; 
-    text-shadow: none;
-    font-size: 1.5rem !important;
-    opacity: 0.4;
-}
-.card-text:hover { box-shadow: 0 12px 35px rgba(107, 114, 128, 0.2), 0 4px 15px rgba(0,0,0,0.2); }
-.card-text .text-note-card {
-    position: relative;
-    z-index: 2;
-}
-.card-text .text-note-title {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: rgba(255,255,255,0.9);
-    border-bottom: 1px solid rgba(255,255,255,0.2);
-    padding-bottom: 5px;
-}
-.card-text .text-note-content {
-    font-size: 0.8rem;
-    color: rgba(255,255,255,0.7);
-    line-height: 1.4;
-    margin-top: 8px;
-}
-
-/* Color Picker для карточек */
-.color-picker-container {
-    margin-top: 15px;
-}
-.color-picker-grid {
-    display: grid;
-    grid-template-columns: repeat(6, 1fr);
-    gap: 8px;
-    padding: 10px;
-    background: rgba(0,0,0,0.2);
-    border-radius: 10px;
-}
-.color-swatch {
-    width: 40px;
-    height: 40px;
-    border-radius: 8px;
-    cursor: pointer;
-    border: 3px solid transparent;
-    transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-    position: relative;
-}
-.color-swatch:hover {
-    transform: scale(1.15);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-}
-.color-swatch.selected {
-    border-color: #fff;
-    box-shadow: 0 0 0 2px rgba(255,255,255,0.5), 0 4px 12px rgba(0,0,0,0.3);
-}
-.color-swatch.selected::after {
-    content: '✓';
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    color: white;
-    font-weight: bold;
-    text-shadow: 0 1px 3px rgba(0,0,0,0.5);
-}
-.color-swatch-default {
-    background: linear-gradient(145deg, #1e232d 0%, #282d37 100%) !important;
-    border: 2px dashed rgba(255,255,255,0.3) !important;
-}
-.color-swatch-default::before {
-    content: '✕';
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    color: rgba(255,255,255,0.5);
-    font-size: 14px;
-}
-.color-swatch-default.selected::after {
-    content: '✓';
-}
-.color-swatch-default.selected::before {
-    display: none;
-}
-
-/* Кастомный цвет карточки */
-.dashboard-card.has-custom-color {
-    transition: transform 0.3s ease, opacity 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
-}
-
-/* Modal стили */
-.config-modal {
-    background: rgba(0,0,0,0.8);
-    backdrop-filter: blur(5px);
-}
-
-.filter-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    background: rgba(255,255,255,0.08);
-    border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 20px;
-    padding: 4px 12px;
-    font-size: 0.72rem;
-    font-weight: 500;
-    margin: 3px;
-    position: relative;
-    z-index: 2;
-}
-
-.filter-tag i {
-    font-size: 0.65rem;
-    opacity: 0.6;
-}
-
-.filter-tag:hover {
-    background: rgba(255,255,255,0.12);
-}
-
-/* Стили для мультиселекта в настройках */
-.multi-select-container {
-    background: rgba(0,0,0,0.2);
-    border-radius: 8px;
-    padding: 10px;
-}
-
-.selected-items {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-}
-
-.selected-tag {
-    display: inline-flex;
-    align-items: center;
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-    color: white;
-    border-radius: 15px;
-    padding: 4px 10px;
-    font-size: 0.8rem;
-    font-weight: 500;
-}
-
-.selected-tag i:hover {
-    color: #fca5a5;
-}
-
-/* Контейнер фильтров в карточке */
-.filters-container {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    align-items: center;
-}
-
-/* Кнопка "ещё" и "свернуть" */
-.filter-tag-more,
-.filter-tag-collapse {
-    background: rgba(255,255,255,0.2) !important;
-    border: 1px dashed rgba(255,255,255,0.3) !important;
-    transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-}
-
-.filter-tag-more:hover,
-.filter-tag-collapse:hover {
-    background: rgba(255,255,255,0.3) !important;
-    transform: scale(1.05);
-}
-
-/* Стили для иерархии групп */
-.group-hierarchy-list {
-    scrollbar-width: thin;
-    scrollbar-color: rgba(255,255,255,0.3) transparent;
-}
-
-.group-hierarchy-list::-webkit-scrollbar {
-    width: 6px;
-}
-
-.group-hierarchy-list::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.group-hierarchy-list::-webkit-scrollbar-thumb {
-    background: rgba(255,255,255,0.3);
-    border-radius: 3px;
-}
-
-.parent-group > div:first-child:hover {
-    background: rgba(59, 130, 246, 0.35) !important;
-}
-
-.child-groups .form-check:hover {
-    background: rgba(255,255,255,0.05);
+.builder-container ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
     border-radius: 4px;
 }
 
-.form-check-input:checked {
-    background-color: #3b82f6;
-    border-color: #3b82f6;
+.builder-container ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-faint);
 }
 
-.form-check-input:indeterminate {
-    background-color: #6366f1;
-    border-color: #6366f1;
-}
-
-[x-collapse] {
-    overflow: hidden;
-}
-
-[x-collapse].x-collapse-entering {
-    transition: height 0.2s ease-out;
-}
-
-[x-collapse].x-collapse-leaving {
-    transition: height 0.2s ease-in;
-}
-
-/* ================================================
-   ПРОФЕССИОНАЛЬНЫЕ СТИЛИ МОДАЛЬНОГО ОКНА
-   ================================================ */
-
-.config-modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    width: 100vw;
-    height: 100vh;
-    background: rgba(0, 0, 0, 0.7);
-    backdrop-filter: blur(8px);
-    z-index: 9999;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.config-modal-content {
-    background: linear-gradient(145deg, #1a1f2e 0%, #252b3b 100%);
-    border-radius: 20px;
-    width: 580px;
-    max-height: 85vh;
-    overflow: hidden;
-    box-shadow: 0 25px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
-    display: flex;
-    flex-direction: column;
-}
-
-.config-modal-header {
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-    padding: 20px 25px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.config-modal-icon {
-    width: 48px;
-    height: 48px;
-    border-radius: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 1.3rem;
-    color: white;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-}
-
-.config-modal-close {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
-    border: none;
-    background: rgba(255,255,255,0.2);
-    color: white;
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.config-modal-close:hover {
-    background: rgba(255,255,255,0.3);
-    transform: scale(1.1);
-}
-
-.config-modal-body {
-    padding: 0;
-    overflow-y: auto;
-    flex: 1;
-    /* Видимая индикация, что контент продолжается под фолдом */
-    scrollbar-width: thin;
-    scrollbar-gutter: stable;
-    background:
-        linear-gradient(rgba(15, 18, 25, 0) 0%, rgba(0, 0, 0, 0.35) 100%) bottom / 100% 18px no-repeat local,
-        linear-gradient(rgba(0, 0, 0, 0.35) 0%, rgba(15, 18, 25, 0) 100%) top / 100% 18px no-repeat local;
-}
-
-.config-modal-footer {
-    padding: 20px 25px;
-    background: rgba(0,0,0,0.2);
-    display: flex;
-    justify-content: flex-end;
-    gap: 12px;
-    border-top: 1px solid rgba(255,255,255,0.1);
-}
-
-/* Табы */
-.config-tabs-nav {
-    display: flex;
-    background: rgba(0,0,0,0.2);
-    padding: 10px 15px;
-    gap: 8px;
-    border-bottom: 1px solid rgba(255,255,255,0.1);
-}
-
-.config-tab-btn {
-    flex: 1;
-    padding: 12px 16px;
-    border: none;
-    border-radius: 10px;
-    background: transparent;
-    color: rgba(255,255,255,0.6);
-    font-size: 0.9rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-    position: relative;
-}
-
-.config-tab-btn:hover {
-    background: rgba(255,255,255,0.05);
-    color: rgba(255,255,255,0.8);
-}
-
-.config-tab-btn.active {
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-    color: white;
-    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
-}
-
-.config-tab-badge {
-    position: absolute;
-    top: 6px;
-    right: 8px;
-    background: #ef4444;
-    color: white;
-    font-size: 0.7rem;
-    padding: 2px 6px;
-    border-radius: 10px;
-    font-weight: 600;
-}
-
-.config-tab-content {
-    padding: 20px 25px;
-}
-
-/* Поля формы */
-.config-field {
-    margin-bottom: 24px;
-}
-
-.config-label {
-    display: block;
-    color: rgba(255,255,255,0.9);
-    font-size: 0.9rem;
-    font-weight: 600;
-    margin-bottom: 12px;
-}
-
-.config-input {
-    width: 100%;
-    padding: 14px 18px;
-    border: 2px solid rgba(255,255,255,0.1);
-    border-radius: 12px;
-    background: rgba(0,0,0,0.3);
-    color: white;
-    font-size: 1rem;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-}
-
-.config-input:focus {
-    outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
-}
-
-.config-input::placeholder {
-    color: rgba(255,255,255,0.4);
-}
-
-.config-select {
-    width: 100%;
-    padding: 14px 18px;
-    border: 2px solid rgba(255,255,255,0.1);
-    border-radius: 12px;
-    background: rgba(0,0,0,0.3);
-    color: white;
-    font-size: 0.95rem;
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-}
-
-.config-select:focus {
-    outline: none;
-    border-color: #3b82f6;
-}
-
-/* Сетка метрик */
-.config-metric-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-}
-
-.config-metric-btn {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    padding: 16px 12px;
-    border: 2px solid rgba(255,255,255,0.1);
-    border-radius: 12px;
-    background: rgba(0,0,0,0.2);
-    color: rgba(255,255,255,0.7);
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-}
-
-.config-metric-btn i {
-    font-size: 1.4rem;
-}
-
-.config-metric-btn span {
-    font-size: 0.8rem;
-    font-weight: 500;
-}
-
-.config-metric-btn:hover {
-    border-color: rgba(59, 130, 246, 0.5);
-    background: rgba(59, 130, 246, 0.1);
-}
-
-.config-metric-btn.active {
-    border-color: #3b82f6;
-    background: linear-gradient(135deg, rgba(59, 130, 246, 0.3) 0%, rgba(37, 99, 235, 0.2) 100%);
-    color: white;
-    box-shadow: 0 4px 20px rgba(59, 130, 246, 0.3);
-}
-
-/* Кнопки прогнозирования */
-.config-metric-btn.config-metric-forecast {
-    border-color: rgba(16, 185, 129, 0.3);
-}
-
-.config-metric-btn.config-metric-forecast:hover {
-    border-color: rgba(16, 185, 129, 0.5);
-    background: rgba(16, 185, 129, 0.1);
-}
-
-.config-metric-btn.config-metric-forecast.active {
-    border-color: #10b981;
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.3) 0%, rgba(5, 150, 105, 0.2) 100%);
-    color: white;
-    box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3);
-}
-
-/* Сетка периодов */
-.config-period-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
-}
-
-.config-period-btn {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 14px 16px;
-    border: 2px solid rgba(255,255,255,0.1);
-    border-radius: 12px;
-    background: rgba(0,0,0,0.2);
-    color: rgba(255,255,255,0.7);
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-    font-size: 0.9rem;
-}
-
-.config-period-btn:hover {
-    border-color: rgba(59, 130, 246, 0.5);
-}
-
-.config-period-btn.active {
-    border-color: #3b82f6;
-    background: rgba(59, 130, 246, 0.2);
-    color: white;
-}
-
-/* Настройки графика */
-.config-chart-type-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-}
-
-.config-chart-btn {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    padding: 16px 12px;
-    border: 2px solid rgba(255,255,255,0.1);
-    border-radius: 12px;
-    background: rgba(0,0,0,0.2);
-    color: rgba(255,255,255,0.7);
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-    font-size: 0.85rem;
-}
-
-.config-chart-btn i {
-    font-size: 1.5rem;
-}
-
-.config-chart-btn:hover {
-    border-color: rgba(6, 182, 212, 0.5);
-    background: rgba(6, 182, 212, 0.1);
-}
-
-.config-chart-btn.active {
-    border-color: #06b6d4;
-    background: rgba(6, 182, 212, 0.2);
-    color: white;
-}
-
-.config-chart-btn.active i {
-    color: #06b6d4;
-}
-
-/* Метрики для графика */
-.config-chart-metrics-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-}
-
-.config-metric-checkbox {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 12px 16px;
-    border: 2px solid rgba(255,255,255,0.1);
-    border-radius: 10px;
-    background: rgba(0,0,0,0.2);
-    color: rgba(255,255,255,0.7);
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-    font-size: 0.9rem;
-}
-
-.config-metric-checkbox input {
-    display: none;
-}
-
-.config-metric-checkbox i {
-    font-size: 1.1rem;
-}
-
-.config-metric-checkbox:hover {
-    border-color: rgba(255,255,255,0.3);
-    background: rgba(255,255,255,0.05);
-}
-
-.config-metric-checkbox.active {
-    border-color: rgba(255,255,255,0.4);
-    background: rgba(255,255,255,0.1);
-    color: white;
-}
-
-/* Toggle карточка */
-.config-toggle-card {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-    padding: 16px;
-    border: 2px solid rgba(255,255,255,0.1);
-    border-radius: 12px;
-    background: rgba(0,0,0,0.2);
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-}
-
-.config-toggle-card:hover {
-    border-color: rgba(59, 130, 246, 0.5);
-}
-
-.config-toggle-card.active {
-    border-color: #10b981;
-    background: rgba(16, 185, 129, 0.15);
-}
-
-.config-toggle-icon {
-    width: 44px;
-    height: 44px;
-    border-radius: 10px;
-    background: rgba(59, 130, 246, 0.2);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #3b82f6;
-    font-size: 1.2rem;
-}
-
-.config-toggle-card.active .config-toggle-icon {
-    background: rgba(16, 185, 129, 0.2);
-    color: #10b981;
-}
-
-.config-toggle-info {
-    flex: 1;
-}
-
-.config-toggle-title {
-    display: block;
-    color: white;
-    font-weight: 600;
-    margin-bottom: 2px;
-}
-
-.config-toggle-desc {
-    display: block;
-    color: rgba(255,255,255,0.5);
-    font-size: 0.85rem;
-}
-
-/* Выбранные теги */
-.config-selected-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-bottom: 12px;
-    padding: 12px;
-    background: rgba(0,0,0,0.2);
-    border-radius: 10px;
-}
-
-.config-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    border-radius: 20px;
-    font-size: 0.85rem;
-    font-weight: 500;
-}
-
-.config-tag-area {
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-    color: white;
-}
-
-.config-tag-group {
-    background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
-    color: white;
-}
-
-.config-tag-division {
-    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-    color: white;
-}
-
-.config-tag-remove {
-    cursor: pointer;
-    opacity: 0.7;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-}
-
-.config-tag-remove:hover {
-    opacity: 1;
-    color: #fca5a5;
-}
-
-.config-tag-clear {
-    background: rgba(239, 68, 68, 0.2);
-    border: 1px solid rgba(239, 68, 68, 0.5);
-    color: #ef4444;
-    padding: 4px 10px;
-    border-radius: 15px;
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-}
-
-.config-tag-clear:hover {
-    background: rgba(239, 68, 68, 0.3);
-}
-
-/* Иерархический список */
-.config-hierarchy-list {
-    max-height: 300px;
-    overflow-y: auto;
-    background: rgba(0,0,0,0.2);
-    border-radius: 12px;
-    padding: 12px;
-}
-
-.config-empty-list {
-    padding: 20px;
-    text-align: center;
-    color: rgba(255,255,255,0.5);
-    font-style: italic;
-}
-
-.config-list-count {
-    font-size: 0.8rem;
-    color: rgba(255,255,255,0.5);
-    margin-left: 8px;
-}
-
-.config-hierarchy-item {
-    margin-bottom: 8px;
-}
-
-.config-hierarchy-parent {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 12px;
-    background: rgba(139, 92, 246, 0.15);
-    border-radius: 10px;
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-}
-
-.config-hierarchy-parent:hover {
-    background: rgba(139, 92, 246, 0.25);
-}
-
-.config-hierarchy-arrow {
-    color: rgba(255,255,255,0.5);
-    font-size: 0.8rem;
-    width: 16px;
-    transition: transform 0.2s;
-}
-
-.config-hierarchy-parent .form-check-label {
-    color: white;
-    font-weight: 600;
-}
-
-.config-hierarchy-count {
-    background: rgba(255,255,255,0.2);
-    padding: 2px 8px;
-    border-radius: 10px;
-    font-size: 0.75rem;
-    margin-left: 8px;
-}
-
-.config-hierarchy-children {
-    margin-left: 26px;
-    padding: 8px 0;
-}
-
-.config-hierarchy-child {
-    padding: 8px 12px;
-    border-radius: 8px;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-}
-
-.config-hierarchy-child:hover {
-    background: rgba(255,255,255,0.05);
-}
-
-.config-hierarchy-child .form-check-label {
-    color: rgba(255,255,255,0.7);
-}
-
-/* Размер карточки */
-.config-size-grid {
-    display: flex;
-    flex-direction: column;
-    gap: 15px;
-}
-
-.config-size-row {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-}
-
-.config-size-label {
-    color: rgba(255,255,255,0.6);
-    font-size: 0.9rem;
-    width: 80px;
-}
-
-.config-size-buttons {
-    display: flex;
-    gap: 8px;
-}
-
-.config-size-btn {
-    width: 44px;
-    height: 44px;
-    border: 2px solid rgba(255,255,255,0.15);
-    border-radius: 10px;
-    background: rgba(0,0,0,0.2);
-    color: rgba(255,255,255,0.6);
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-}
-
-.config-size-btn:hover {
-    border-color: rgba(59, 130, 246, 0.5);
-}
-
-.config-size-btn.active {
-    border-color: #3b82f6;
-    background: #3b82f6;
-    color: white;
-}
-
-.config-size-preview {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-    margin-top: 15px;
-    padding: 15px;
-    background: rgba(0,0,0,0.2);
-    border-radius: 12px;
-}
-
-.config-size-preview-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 4px;
-}
-
-.config-size-preview-cell {
-    width: 24px;
-    height: 20px;
-    border-radius: 4px;
-    background: rgba(255,255,255,0.1);
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-}
-
-.config-size-preview-cell.active {
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-}
-
-.config-size-preview-label {
-    color: rgba(255,255,255,0.5);
-    font-size: 0.9rem;
-}
-
-/* Формат */
-.config-format-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-}
-
-.config-format-btn {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    padding: 16px;
-    border: 2px solid rgba(255,255,255,0.1);
-    border-radius: 12px;
-    background: rgba(0,0,0,0.2);
-    color: rgba(255,255,255,0.6);
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-}
-
-.config-format-btn:hover {
-    border-color: rgba(59, 130, 246, 0.5);
-}
-
-.config-format-btn.active {
-    border-color: #3b82f6;
-    background: rgba(59, 130, 246, 0.2);
-    color: white;
-}
-
-.config-format-btn i {
-    font-size: 1.3rem;
-}
-
-.config-format-btn span {
-    font-size: 0.85rem;
-}
-
-/* Настройки колонок таблицы */
-.config-columns-list {
-    background: rgba(0,0,0,0.2);
-    border-radius: 12px;
-    padding: 8px;
-    max-height: 350px;
-    overflow-y: auto;
-}
-
-.config-column-item {
-    display: flex;
-    align-items: center;
-    padding: 10px 12px;
-    background: rgba(255,255,255,0.05);
-    border-radius: 8px;
-    margin-bottom: 4px;
-    cursor: grab;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-}
-
-.config-column-item:last-child {
-    margin-bottom: 0;
-}
-
-.config-column-item:hover {
-    background: rgba(255,255,255,0.1);
-}
-
-.config-column-item.disabled {
-    opacity: 0.5;
-}
-
-.config-column-item.dragging {
-    opacity: 0.5;
-    background: rgba(59, 130, 246, 0.2);
-    border: 2px dashed #3b82f6;
-}
-
-.config-column-drag {
-    color: rgba(255,255,255,0.3);
-    margin-right: 12px;
-    cursor: grab;
-}
-
-.config-column-drag:active {
-    cursor: grabbing;
-}
-
-.config-column-checkbox {
-    margin-right: 10px;
-}
-
-.config-column-checkbox input[type="checkbox"] {
-    width: 18px;
-    height: 18px;
-    cursor: pointer;
-    accent-color: #3b82f6;
-}
-
-.config-column-label {
-    flex: 1;
-    color: rgba(255,255,255,0.9);
-    font-size: 0.9rem;
-    cursor: pointer;
-    user-select: none;
-}
-
-.config-columns-actions {
-    display: flex;
-    gap: 8px;
-}
-
-/* Кнопки футера */
-.config-btn {
-    padding: 12px 24px;
-    border: none;
-    border-radius: 10px;
-    font-size: 0.95rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
-    display: flex;
-    align-items: center;
-}
-
-.config-btn-secondary {
-    background: rgba(255,255,255,0.1);
-    color: rgba(255,255,255,0.8);
-}
-
-.config-btn-secondary:hover {
-    background: rgba(255,255,255,0.15);
-}
-
-.config-btn-primary {
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-    color: white;
-    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
-}
-
-.config-btn-primary:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(59, 130, 246, 0.5);
-}
-
-/* Стили для блока сравнения */
-.comparison-block {
-    margin-top: 14px;
-    padding: 12px 14px;
-    border-top: 1px solid rgba(255,255,255,0.08);
-    font-size: 0.85rem;
-    position: relative;
-    z-index: 2;
-    border-radius: 12px;
-    background: rgba(0, 0, 0, 0.15);
-}
-
-.comparison-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 6px 0;
-    flex-wrap: wrap;
-    gap: 6px;
-}
-
-.comparison-item.forecast-item {
-    background: rgba(16, 185, 129, 0.12);
-    border-radius: 10px;
-    padding: 10px 12px;
-    margin-bottom: 8px;
-}
-
-.comparison-label {
-    color: rgba(255,255,255,0.7);
-    font-weight: 600;
-}
-
-.comparison-value {
-    font-weight: 700;
-}
-
-.comparison-change {
-    font-size: 0.72rem;
-    padding: 2px 8px;
-    border-radius: 12px;
-    margin-left: 6px;
-    font-weight: 600;
-}
-
-.comparison-change.positive {
-    background: rgba(16, 185, 129, 0.2);
-    color: #34d399;
-}
-
-.comparison-change.negative {
-    background: rgba(239, 68, 68, 0.2);
-    color: #f87171;
-}
-
-.comparison-change.neutral {
-    background: rgba(108, 117, 125, 0.2);
-    color: #9ca3af;
-}
-
-/* Адаптивные размеры блока сравнения по размеру карточки */
-/* Маленькие карточки (1x1) */
-.size-1x1 .comparison-block { font-size: 0.7rem; margin-top: 8px; padding: 8px 10px; }
-.size-1x1 .comparison-item { padding: 3px 0; }
-.size-1x1 .comparison-change { font-size: 0.65rem; padding: 2px 5px; margin-left: 4px; }
-
-/* Средние карточки (2x1, 1x2) */
-.size-2x1 .comparison-block { font-size: 0.85rem; padding: 10px 12px; }
-.size-2x1 .comparison-change { font-size: 0.75rem; }
-
-.size-1x2 .comparison-block { font-size: 0.9rem; margin-top: 14px; padding: 12px 14px; }
-.size-1x2 .comparison-item { padding: 6px 0; }
-.size-1x2 .comparison-change { font-size: 0.8rem; padding: 4px 10px; }
-
-/* Большие карточки (2x2, 3x1) */
-.size-2x2 .comparison-block { font-size: 1rem; margin-top: 16px; padding: 14px 16px; }
-.size-2x2 .comparison-item { padding: 7px 0; }
-.size-2x2 .comparison-change { font-size: 0.9rem; padding: 5px 12px; }
-
-.size-3x1 .comparison-block { font-size: 1rem; padding: 12px 14px; }
-.size-3x1 .comparison-change { font-size: 0.9rem; padding: 4px 12px; }
-
-.size-3x2 .comparison-block { font-size: 1.1rem; margin-top: 20px; padding: 16px 18px; }
-.size-3x2 .comparison-item { padding: 9px 0; }
-.size-3x2 .comparison-change { font-size: 1rem; padding: 5px 14px; }
-
-/* Очень большие карточки (4x1, 4x2) */
-.size-4x1 .comparison-block { font-size: 1.05rem; padding: 14px 16px; }
-.size-4x1 .comparison-change { font-size: 0.95rem; padding: 5px 14px; }
-
-.size-4x2 .comparison-block { font-size: 1.2rem; margin-top: 22px; padding: 18px 20px; }
-.size-4x2 .comparison-item { padding: 11px 0; }
-.size-4x2 .comparison-change { font-size: 1.05rem; padding: 6px 16px; }
-
-/* Зона для перетаскивания в конец */
-.drop-zone-end {
-    grid-column: 1 / -1;
-    min-height: 100px;
-    border: 3px dashed rgba(255,255,255,0.15);
-    border-radius: 16px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: rgba(255,255,255,0.25);
-    font-size: 1rem;
-    font-weight: 500;
-    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-    cursor: pointer;
-    margin-top: 15px;
-    background: rgba(255,255,255,0.02);
-}
-
-.drop-zone-end:hover {
-    border-color: rgba(59, 130, 246, 0.4);
-    background: rgba(59, 130, 246, 0.05);
-    color: rgba(59, 130, 246, 0.6);
-}
-
-.drop-zone-end.drag-active {
-    border-color: rgba(59, 130, 246, 0.7);
-    background: linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(139, 92, 246, 0.1) 100%);
-    color: #60a5fa;
-    transform: scale(1.01);
-    box-shadow: 0 0 40px rgba(59, 130, 246, 0.2), inset 0 0 30px rgba(59, 130, 246, 0.05);
-    min-height: 120px;
-}
-
-.drop-zone-end.drag-active i {
-    animation: pulseIcon 1s ease-in-out infinite;
-}
-
-@keyframes pulseIcon {
-    0%, 100% { transform: scale(1); opacity: 1; }
-    50% { transform: scale(1.2); opacity: 0.8; }
-}
-
-/* Индикатор размера при ресайзе */
-.resize-indicator {
-    position: fixed;
-    background: rgba(13, 110, 253, 0.95);
-    color: white;
-    padding: 8px 15px;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: bold;
-    z-index: 10001;
-    pointer-events: none;
-    box-shadow: 0 5px 20px rgba(0,0,0,0.3);
-}
-
-/* ========== АДАПТИВНОСТЬ ДЛЯ ВСЕХ УСТРОЙСТВ ========== */
-
-/* Большие экраны (десктоп) */
-@media (min-width: 1400px) {
-    .card-grid {
-        grid-template-columns: repeat(4, 1fr);
-        gap: 15px;
-    }
-}
-
-/* Средние экраны (ноутбуки) */
-@media (max-width: 1399px) and (min-width: 1200px) {
-    .card-grid {
-        grid-template-columns: repeat(4, 1fr);
-        gap: 12px;
-    }
-}
-
-/* Планшеты (альбомная ориентация) */
-@media (max-width: 1199px) and (min-width: 992px) {
-    .card-grid {
-        grid-template-columns: repeat(4, 1fr);
-        gap: 10px;
-    }
-    
-    .dashboard-card {
-        padding: 18px;
-    }
-    
-    .card-value {
-        font-size: 1.8rem;
-    }
-}
-
-/* Планшеты (портретная ориентация) */
-@media (max-width: 991px) and (min-width: 768px) {
-    .builder-container {
-        padding: 10px;
-    }
-    
-    .card-grid {
-        grid-template-columns: repeat(4, 1fr);
-        gap: 10px;
-        padding: 10px;
-    }
-    
-    .dashboard-card {
-        padding: 16px;
-        border-radius: 16px;
-    }
-    
-    .card-value {
-        font-size: 1.6rem;
-    }
-    
-    .card-title {
-        font-size: 0.85rem;
-    }
-    
-    .toolbar {
-        padding: 15px;
-    }
-    
-    .toolbar .d-flex.gap-2 {
-        flex-wrap: wrap;
-    }
-    
-    .toolbar .btn-sm {
-        padding: 6px 10px;
-        font-size: 0.8rem;
-    }
-    
-    /* Заголовок страницы */
-    .display-6 {
-        font-size: 1.5rem;
-    }
-}
-
-/* Мобильные устройства (большие) */
-@media (max-width: 767px) and (min-width: 576px) {
-    .builder-container {
-        padding: 8px;
-    }
-    
-    .card-grid {
-        grid-template-columns: repeat(2, 1fr);
-        gap: 8px;
-        padding: 8px;
-    }
-
-    .size-1x1, .size-1x2, .size-1x3, .size-1x4 { grid-column: span 1; }
-    .size-2x1, .size-3x1, .size-4x1,
-    .size-2x2, .size-3x2, .size-4x2,
-    .size-2x3, .size-3x3, .size-4x3,
-    .size-2x4, .size-3x4, .size-4x4,
-    [class*="size-5x"], [class*="size-6x"], [class*="size-7x"],
-    [class*="size-8x"], [class*="size-9x"], [class*="size-10x"] { grid-column: span 2; }
-    
-    .dashboard-card {
-        padding: 14px;
-        border-radius: 14px;
-    }
-    
-    .card-value {
-        font-size: 1.5rem;
-    }
-    
-    .card-title {
-        font-size: 0.8rem;
-    }
-    
-    .card-subtitle {
-        font-size: 0.7rem;
-    }
-    
-    /* Заголовок и кнопки */
-    .d-flex.justify-content-between {
-        flex-direction: column;
-        gap: 15px;
-    }
-    
-    .display-6 {
-        font-size: 1.3rem;
-    }
-    
-    /* Тулбар */
-    .toolbar {
-        padding: 12px;
-    }
-    
-    .toolbar .row {
-        flex-direction: column;
-    }
-    
-    .toolbar .col-auto {
-        margin-bottom: 10px;
-    }
-    
-    .toolbar .btn-sm {
-        padding: 8px 12px;
-        font-size: 0.75rem;
-    }
-    
-    /* Таблица территорий */
-    .areas-table {
-        font-size: 0.75rem;
-    }
-    
-    .areas-table th, .areas-table td {
-        padding: 6px 4px;
-    }
-    
-    /* Модальное окно настроек */
-    .config-modal-content {
-        width: 95%;
-        max-height: 90vh;
-        margin: 5vh auto;
-    }
-}
-
-/* Мобильные устройства (маленькие) */
-@media (max-width: 575px) {
-    .builder-container {
-        padding: 5px;
-    }
-    
-    .card-grid {
-        grid-template-columns: 1fr;
-        gap: 8px;
-        padding: 8px;
-        min-height: auto;
-    }
-    
-    .size-1x1, .size-2x1, .size-3x1, .size-4x1,
-    .size-1x2, .size-2x2, .size-3x2, .size-4x2,
-    .size-1x3, .size-2x3, .size-3x3, .size-4x3,
-    .size-1x4, .size-2x4, .size-3x4, .size-4x4,
-    [class*="size-5x"], [class*="size-6x"], [class*="size-7x"],
-    [class*="size-8x"], [class*="size-9x"], [class*="size-10x"] {
-        grid-column: span 1;
-    }
-    
-    .dashboard-card {
-        padding: 12px;
-        border-radius: 12px;
-    }
-    
-    .card-value {
-        font-size: 1.4rem;
-    }
-    
-    .card-title {
-        font-size: 0.75rem;
-    }
-    
-    .card-subtitle {
-        font-size: 0.65rem;
-    }
-    
-    .card-icon {
-        font-size: 1.8rem;
-    }
-    
-    /* Заголовок страницы */
-    .d-flex.justify-content-between {
-        flex-direction: column;
-        gap: 12px;
-        align-items: flex-start !important;
-    }
-    
-    .d-flex.justify-content-between .d-flex.gap-2 {
-        width: 100%;
-        justify-content: space-between;
-    }
-    
-    .display-6 {
-        font-size: 1.2rem;
-    }
-    
-    .text-muted.mb-0 {
-        font-size: 0.8rem;
-    }
-    
-    /* Тулбар добавления карточек */
-    .toolbar {
-        padding: 10px;
-        margin-bottom: 15px;
-    }
-    
-    .toolbar .row {
-        flex-direction: column;
-    }
-    
-    .toolbar .col-auto {
-        margin-bottom: 8px;
-    }
-    
-    .toolbar .d-flex.flex-wrap {
-        gap: 6px !important;
-    }
-    
-    .toolbar .btn-sm {
-        padding: 6px 8px;
-        font-size: 0.7rem;
-    }
-    
-    .toolbar .dropdown-menu {
-        font-size: 0.8rem;
-    }
-    
-    /* Кнопки управления карточкой */
-    .card-actions {
-        top: 5px;
-        right: 5px;
-    }
-    
-    .card-actions button {
-        width: 28px;
-        height: 28px;
-        font-size: 0.7rem;
-    }
-    
-    /* Таблица территорий */
-    .areas-table-container {
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-    }
-    
-    .areas-table {
-        font-size: 0.65rem;
-        min-width: 600px;
-    }
-    
-    .areas-table th, .areas-table td {
-        padding: 5px 3px;
-        white-space: nowrap;
-    }
-    
-    .areas-table .area-badge {
-        flex-direction: column;
-        gap: 2px;
-    }
-    
-    .areas-table .area-code {
-        font-size: 0.6rem;
-    }
-    
-    .areas-table .area-name {
-        font-size: 0.55rem;
-        max-width: 60px;
-    }
-    
-    .areas-table .percent-badge {
-        font-size: 0.55rem;
-        padding: 2px 4px;
-    }
-    
-    /* Модальное окно настроек */
-    .config-modal-content {
-        width: 100%;
-        max-width: 100%;
-        max-height: 100vh;
-        margin: 0;
-        border-radius: 0;
-    }
-    
-    .config-modal-header {
-        padding: 15px;
-    }
-    
-    .config-modal-body {
-        padding: 15px;
-    }
-    
-    .config-modal-footer {
-        padding: 15px;
-    }
-    
-    .config-tabs {
-        flex-wrap: wrap;
-        gap: 5px;
-    }
-    
-    .config-tab-btn {
-        flex: 1 1 auto;
-        padding: 8px 12px;
-        font-size: 0.75rem;
-    }
-    
-    .config-label {
-        font-size: 0.8rem;
-    }
-    
-    .config-input, .config-select {
-        padding: 10px 12px;
-        font-size: 0.9rem;
-    }
-    
-    .config-metric-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-    
-    .config-size-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-    
-    /* Графики */
-    .chart-container canvas {
-        max-height: 200px !important;
-    }
-    
-    /* Скрыть некоторые элементы на мобильных */
-    .resize-handle {
-        display: none;
-    }
-    
-    /* Сравнение в карточках */
-    .comparison-block {
-        flex-direction: column;
-        gap: 8px;
-    }
-    
-    .comparison-item {
-        padding: 6px 8px;
-        font-size: 0.7rem;
-    }
-    
-    /* Прогноз */
-    .forecast-badge {
-        font-size: 0.7rem;
-        padding: 4px 8px;
-    }
-}
-
-/* Очень маленькие экраны */
-@media (max-width: 375px) {
-    .card-value {
-        font-size: 1.2rem;
-    }
-    
-    .card-title {
-        font-size: 0.7rem;
-    }
-    
-    .toolbar .btn-sm {
-        padding: 5px 6px;
-        font-size: 0.65rem;
-    }
-    
-    .display-6 {
-        font-size: 1rem;
-    }
-}
-
-/* Ландшафтная ориентация на мобильных */
-@media (max-width: 767px) and (orientation: landscape) {
-    .card-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-    
-    .size-1x1, .size-2x1 { grid-column: span 1; }
-    .size-3x1, .size-4x1 { grid-column: span 2; }
-    .size-1x2, .size-2x2 { grid-column: span 1; }
-    .size-3x2, .size-4x2 { grid-column: span 2; }
-    .size-1x3, .size-2x3, .size-1x4, .size-2x4 { grid-column: span 1; }
-    .size-3x3, .size-4x3, .size-3x4, .size-4x4,
-    [class*="size-5x"], [class*="size-6x"], [class*="size-7x"],
-    [class*="size-8x"], [class*="size-9x"], [class*="size-10x"] { grid-column: span 2; }
-    
-    .config-modal-content {
-        max-height: 100vh;
-        overflow-y: auto;
-    }
-}
-
-/* Высокие мобильные экраны (длинные телефоны) */
-@media (max-width: 575px) and (min-height: 800px) {
-    .dashboard-card {
-        min-height: 120px;
-    }
-}
-
-/* Темный режим улучшения для мобильных */
-@media (max-width: 767px) {
-    .dashboard-card {
-        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-    }
-    
-    .dashboard-card:hover {
-        transform: none;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-    }
-    
-    /* Отключаем hover-эффекты на тач-устройствах */
-    @media (hover: none) {
-        .dashboard-card:hover {
-            transform: none;
-        }
-    }
-}
-
-/* Клавиатурная навигация: видимое фокус-кольцо (только для focus-visible,
-   мышиные клики колец не показывают) */
-button:focus-visible,
-.btn:focus-visible,
-a:focus-visible,
-.page-tab:focus-visible,
-.dropdown-item:focus-visible,
-.edit-mode-btn:focus-visible {
-    outline: 2px solid #3b82f6;
+.builder-container button:focus-visible,
+.builder-container [tabindex]:focus-visible,
+.builder-container input:focus-visible {
+    outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
 
-/* Тач-устройства: интерактивные элементы не меньше 44px */
-@media (pointer: coarse) {
-    .toolbar .btn-sm,
-    .toolbar .btn,
-    .card-actions .btn,
-    .page-tab-close,
-    .page-tab-add,
-    .edit-mode-btn {
-        min-width: 44px;
-        min-height: 44px;
-    }
-
-    .page-tab {
-        min-height: 44px;
-    }
+.builder-container h1.display-6 {
+    color: var(--text);
+    font-weight: 700;
 }
 
-/* Print стили */
-@media print {
-    .toolbar, .card-actions, .resize-handle, .d-flex.gap-2 {
-        display: none !important;
-    }
-    
-    .card-grid {
-        display: block;
-    }
-    
-    .dashboard-card {
-        break-inside: avoid;
-        page-break-inside: avoid;
-        margin-bottom: 15px;
-        box-shadow: none;
-        border: 1px solid #ccc;
-    }
+.builder-container h1.display-6 i {
+    color: var(--accent);
 }
 
-/* ========== НАВИГАЦИЯ ПО СТРАНИЦАМ ========== */
-.pages-nav {
-    background: rgba(0,0,0,0.2);
-    border-radius: 12px;
+.builder-container p.text-muted {
+    color: var(--text-dim) !important;
+}
+
+/* Header action buttons: tasteful dark reskin of Bootstrap variants */
+.builder-container .btn {
+    border-radius: var(--r-ctl);
+    font-weight: 500;
+    transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease),
+        color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.builder-container .btn:active {
+    transform: translateY(1px);
+}
+
+.builder-container .btn-primary {
+    background: var(--accent) !important;
+    border-color: var(--accent) !important;
+    color: #fff !important;
+}
+
+.builder-container .btn-primary:hover,
+.builder-container .btn-primary:focus {
+    background: var(--accent-strong) !important;
+    border-color: var(--accent-strong) !important;
+}
+
+.builder-container .btn-outline-danger {
+    color: var(--danger) !important;
+    border-color: rgba(239, 68, 68, .45) !important;
+    background: var(--surface) !important;
+}
+
+.builder-container .btn-outline-danger:hover {
+    background: var(--danger) !important;
+    border-color: var(--danger) !important;
+    color: #fff !important;
+}
+
+.builder-container .btn-outline-info {
+    color: #22d3ee !important;
+    border-color: rgba(34, 211, 238, .45) !important;
+    background: var(--surface) !important;
+}
+
+.builder-container .btn-outline-info:hover {
+    background: #22d3ee !important;
+    border-color: #22d3ee !important;
+    color: #05242b !important;
+}
+
+.builder-container .btn-outline-warning {
+    color: var(--warning) !important;
+    border-color: rgba(245, 158, 11, .45) !important;
+    background: var(--surface) !important;
+}
+
+.builder-container .btn-outline-warning:hover {
+    background: var(--warning) !important;
+    border-color: var(--warning) !important;
+    color: #1a1300 !important;
+}
+
+.builder-container .btn:focus {
+    box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* Dropdown menus (Прогноз, etc.) */
+.dropdown-menu {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-ctl);
+    box-shadow: var(--shadow-modal);
+    padding: 6px;
+}
+
+.dropdown-menu.dropdown-menu-dark {
+    --bs-dropdown-bg: var(--surface-2);
+    --bs-dropdown-border-color: var(--border);
+    --bs-dropdown-link-color: var(--text-dim);
+    --bs-dropdown-link-hover-bg: var(--surface-3);
+    --bs-dropdown-link-hover-color: var(--text);
+}
+
+.dropdown-item {
+    color: var(--text-dim);
+    border-radius: 8px;
     padding: 8px 12px;
+    transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.dropdown-item:hover,
+.dropdown-item:focus {
+    background: var(--surface-3);
+    color: var(--text);
+}
+
+/* ---------------------------------------------------------------------- *
+ * 3. Pages navigation
+ * ---------------------------------------------------------------------- */
+.pages-nav {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-card);
+    padding: var(--sp-2) var(--sp-3);
 }
 
 .pages-tabs {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--sp-2);
     flex-wrap: wrap;
 }
 
 .page-tab {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 10px 16px;
-    background: rgba(255,255,255,0.05);
-    border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 8px;
-    color: rgba(255,255,255,0.7);
+    gap: var(--sp-2);
+    padding: 8px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-ctl);
+    color: var(--text-dim);
     cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
     user-select: none;
+    transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .page-tab:hover {
-    background: rgba(255,255,255,0.1);
-    color: white;
+    background: var(--surface-3);
+    border-color: var(--border-strong);
+    color: var(--text);
 }
 
 .page-tab.active {
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-    border-color: #3b82f6;
-    color: white;
-    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+    background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+    border-color: var(--accent);
+    color: var(--text);
 }
 
 .page-tab-title {
-    font-size: 0.9rem;
+    font-size: .9rem;
     font-weight: 500;
     white-space: nowrap;
 }
 
 .page-tab-input {
-    background: rgba(0,0,0,0.3);
-    border: 1px solid rgba(255,255,255,0.3);
-    border-radius: 4px;
-    color: white;
-    font-size: 0.9rem;
+    background: var(--surface-recessed);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: .9rem;
     padding: 2px 8px;
     width: 120px;
     outline: none;
 }
 
 .page-tab-input:focus {
-    border-color: #3b82f6;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 .page-tab-close {
@@ -3000,2006 +299,424 @@ a:focus-visible,
     justify-content: center;
     width: 20px;
     height: 20px;
-    background: rgba(255,255,255,0.1);
+    background: transparent;
     border: none;
-    border-radius: 4px;
-    color: rgba(255,255,255,0.5);
+    border-radius: 6px;
+    color: var(--text-faint);
     cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
+    font-size: .68rem;
     padding: 0;
-    font-size: 0.7rem;
+    transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .page-tab-close:hover {
-    background: #ef4444;
-    color: white;
+    background: var(--danger);
+    color: #fff;
 }
 
 .page-tab-add {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
-    background: rgba(255,255,255,0.05);
-    border: 2px dashed rgba(255,255,255,0.2);
-    border-radius: 8px;
-    color: rgba(255,255,255,0.5);
+    width: 34px;
+    height: 34px;
+    background: transparent;
+    border: 1.5px dashed var(--border-strong);
+    border-radius: var(--r-ctl);
+    color: var(--text-faint);
     cursor: pointer;
-    transition: transform 0.2s, opacity 0.2s, box-shadow 0.2s, background-color 0.2s, border-color 0.2s, color 0.2s;
+    transition: all var(--dur) var(--ease);
 }
 
 .page-tab-add:hover {
-    background: rgba(59, 130, 246, 0.2);
-    border-color: #3b82f6;
-    color: #3b82f6;
+    border-color: var(--accent);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
-@media (max-width: 575px) {
-    .pages-nav {
-        padding: 6px 8px;
-    }
-    
-    .page-tab {
-        padding: 8px 12px;
-    }
-    
-    .page-tab-title {
-        font-size: 0.8rem;
-    }
+/* ---------------------------------------------------------------------- *
+ * 4. Toolbar
+ * ---------------------------------------------------------------------- */
+.toolbar {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-card);
+    padding: var(--sp-3) var(--sp-4);
+    margin-bottom: var(--sp-4);
 }
 
-/* ========================================
-   🌞 ПРЕМИУМ СВЕТЛАЯ ТЕМА
-   Современный, чистый, выразительный дизайн
-   ======================================== */
-
-body.light-theme {
-    background: 
-        radial-gradient(ellipse 80% 50% at 20% 0%, rgba(59, 130, 246, 0.12) 0%, transparent 50%),
-        radial-gradient(ellipse 60% 40% at 80% 100%, rgba(16, 185, 129, 0.1) 0%, transparent 50%),
-        radial-gradient(ellipse 50% 30% at 50% 50%, rgba(139, 92, 246, 0.05) 0%, transparent 50%),
-        linear-gradient(180deg, #f8fafc 0%, #f1f5f9 35%, #e2e8f0 65%, #f8fafc 100%) !important;
-    min-height: 100vh;
+.toolbar .text-muted {
+    color: var(--text-faint) !important;
+    font-size: .85rem;
 }
 
-body.light-theme .builder-container {
-    color: #1e293b;
+.toolbar .border-start.border-secondary {
+    border-color: var(--border) !important;
 }
 
-/* Навбар - стеклянный эффект */
-body.light-theme .navbar {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(248, 250, 252, 0.9) 100%) !important;
-    backdrop-filter: blur(25px);
-    -webkit-backdrop-filter: blur(25px);
-    border-bottom: 1px solid rgba(148, 163, 184, 0.15);
-    box-shadow: 
-        0 4px 30px rgba(0, 0, 0, 0.04),
-        0 1px 3px rgba(0, 0, 0, 0.02),
-        inset 0 -1px 0 rgba(0, 0, 0, 0.02);
-}
-
-body.light-theme .navbar .nav-link {
-    color: #475569 !important;
+.toolbar .badge.bg-secondary {
+    background: transparent !important;
+    border: 1px solid var(--border-strong);
+    color: var(--text-dim) !important;
     font-weight: 500;
-    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    border-radius: 10px;
-    padding: 8px 16px !important;
+    border-radius: var(--r-pill);
+    padding: 6px 12px;
 }
 
-body.light-theme .navbar .nav-link:hover {
-    color: #3b82f6 !important;
-    background: rgba(59, 130, 246, 0.08);
+.edit-mode-btn {
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-pill);
+    padding: 8px 16px;
+    color: var(--text);
+    font-size: .85rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all var(--dur) var(--ease);
 }
 
-body.light-theme .navbar .navbar-brand {
-    color: #1e293b !important;
-    font-weight: 800;
-    letter-spacing: -0.5px;
+.edit-mode-btn:hover {
+    background: var(--surface-3);
+    border-color: var(--border-strong);
 }
 
-/* Сетка карточек */
-body.light-theme .card-grid {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.5) 0%, rgba(248, 250, 252, 0.4) 100%);
-    backdrop-filter: blur(15px);
-    border: 1px solid rgba(255, 255, 255, 0.7);
-    border-radius: 28px;
-    box-shadow: 
-        0 8px 32px rgba(0, 0, 0, 0.04),
-        0 2px 8px rgba(0, 0, 0, 0.02),
-        inset 0 1px 0 rgba(255, 255, 255, 0.9);
+.edit-mode-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(59, 130, 246, .35);
 }
 
-/* ========================================
-   ПРЕМИУМ КАРТОЧКИ - СВЕТЛАЯ ТЕМА
-   ======================================== */
-body.light-theme .dashboard-card {
-    background: linear-gradient(165deg, #ffffff 0%, #f8fafc 50%, #f1f5f9 100%);
-    border: 1px solid rgba(226, 232, 240, 0.6);
-    border-radius: 24px;
-    box-shadow: 
-        0 4px 6px rgba(0, 0, 0, 0.02),
-        0 10px 25px rgba(0, 0, 0, 0.04),
-        0 1px 0 rgba(255, 255, 255, 1) inset,
-        inset 0 -1px 0 rgba(0, 0, 0, 0.02);
-    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.4s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.4s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.4s cubic-bezier(0.4, 0, 0.2, 1), color 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-    overflow: visible;
+.btn-add-widget {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    color: var(--text-dim);
+    font-weight: 500;
+    font-size: .82rem;
+    padding: 7px 14px;
+    transition: all var(--dur) var(--ease);
+}
+
+.btn-add-widget:hover,
+.btn-add-widget:focus {
+    background: var(--surface-3);
+    border-color: var(--border-strong);
+    color: var(--text);
+}
+
+/* ---------------------------------------------------------------------- *
+ * 5. Card grid — hard contract: 4 cols / 120px rows / 14px gap, always.
+ * ---------------------------------------------------------------------- */
+.card-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-auto-rows: 120px;
+    gap: 14px;
     position: relative;
 }
 
-body.light-theme .dashboard-card:hover {
-    transform: translateY(-8px) scale(1.02);
-    box-shadow:
-        0 25px 50px rgba(0, 0, 0, 0.12),
-        0 12px 24px rgba(0, 0, 0, 0.06),
-        0 1px 0 rgba(255, 255, 255, 1) inset;
-    border-color: transparent;
+/* Size matrix: W = 1..10 columns, H = 1..10 rows. Split into a
+   grid-column group (by width) and a grid-row group (by height) so the
+   100-combination matrix from .size-1x1 to .size-10x10 stays compact —
+   functionally identical to 100 individual `.size-WxH{grid-column:span W;
+   grid-row:span H;}` rules, since the two properties compose freely. */
+.size-1x1, .size-1x2, .size-1x3, .size-1x4, .size-1x5, .size-1x6, .size-1x7, .size-1x8, .size-1x9, .size-1x10 { grid-column: span 1; }
+.size-2x1, .size-2x2, .size-2x3, .size-2x4, .size-2x5, .size-2x6, .size-2x7, .size-2x8, .size-2x9, .size-2x10 { grid-column: span 2; }
+.size-3x1, .size-3x2, .size-3x3, .size-3x4, .size-3x5, .size-3x6, .size-3x7, .size-3x8, .size-3x9, .size-3x10 { grid-column: span 3; }
+.size-4x1, .size-4x2, .size-4x3, .size-4x4, .size-4x5, .size-4x6, .size-4x7, .size-4x8, .size-4x9, .size-4x10 { grid-column: span 4; }
+.size-5x1, .size-5x2, .size-5x3, .size-5x4, .size-5x5, .size-5x6, .size-5x7, .size-5x8, .size-5x9, .size-5x10 { grid-column: span 5; }
+.size-6x1, .size-6x2, .size-6x3, .size-6x4, .size-6x5, .size-6x6, .size-6x7, .size-6x8, .size-6x9, .size-6x10 { grid-column: span 6; }
+.size-7x1, .size-7x2, .size-7x3, .size-7x4, .size-7x5, .size-7x6, .size-7x7, .size-7x8, .size-7x9, .size-7x10 { grid-column: span 7; }
+.size-8x1, .size-8x2, .size-8x3, .size-8x4, .size-8x5, .size-8x6, .size-8x7, .size-8x8, .size-8x9, .size-8x10 { grid-column: span 8; }
+.size-9x1, .size-9x2, .size-9x3, .size-9x4, .size-9x5, .size-9x6, .size-9x7, .size-9x8, .size-9x9, .size-9x10 { grid-column: span 9; }
+.size-10x1, .size-10x2, .size-10x3, .size-10x4, .size-10x5, .size-10x6, .size-10x7, .size-10x8, .size-10x9, .size-10x10 { grid-column: span 10; }
+
+.size-1x1, .size-2x1, .size-3x1, .size-4x1, .size-5x1, .size-6x1, .size-7x1, .size-8x1, .size-9x1, .size-10x1 { grid-row: span 1; }
+.size-1x2, .size-2x2, .size-3x2, .size-4x2, .size-5x2, .size-6x2, .size-7x2, .size-8x2, .size-9x2, .size-10x2 { grid-row: span 2; }
+.size-1x3, .size-2x3, .size-3x3, .size-4x3, .size-5x3, .size-6x3, .size-7x3, .size-8x3, .size-9x3, .size-10x3 { grid-row: span 3; }
+.size-1x4, .size-2x4, .size-3x4, .size-4x4, .size-5x4, .size-6x4, .size-7x4, .size-8x4, .size-9x4, .size-10x4 { grid-row: span 4; }
+.size-1x5, .size-2x5, .size-3x5, .size-4x5, .size-5x5, .size-6x5, .size-7x5, .size-8x5, .size-9x5, .size-10x5 { grid-row: span 5; }
+.size-1x6, .size-2x6, .size-3x6, .size-4x6, .size-5x6, .size-6x6, .size-7x6, .size-8x6, .size-9x6, .size-10x6 { grid-row: span 6; }
+.size-1x7, .size-2x7, .size-3x7, .size-4x7, .size-5x7, .size-6x7, .size-7x7, .size-8x7, .size-9x7, .size-10x7 { grid-row: span 7; }
+.size-1x8, .size-2x8, .size-3x8, .size-4x8, .size-5x8, .size-6x8, .size-7x8, .size-8x8, .size-9x8, .size-10x8 { grid-row: span 8; }
+.size-1x9, .size-2x9, .size-3x9, .size-4x9, .size-5x9, .size-6x9, .size-7x9, .size-8x9, .size-9x9, .size-10x9 { grid-row: span 9; }
+.size-1x10, .size-2x10, .size-3x10, .size-4x10, .size-5x10, .size-6x10, .size-7x10, .size-8x10, .size-9x10, .size-10x10 { grid-row: span 10; }
+
+/* Empty grid state */
+.empty-placeholder {
+    grid-column: 1 / -1;
+    border: 1.5px dashed var(--border-strong);
+    border-radius: var(--r-card);
+    padding: 56px 24px;
+    text-align: center;
+    color: var(--text-faint);
 }
 
-/* Убираем дефолтный ::before */
-body.light-theme .dashboard-card::before {
-    display: none !important;
-}
-
-/* Яркий акцентный бар слева с градиентом */
-body.light-theme .dashboard-card::after {
-    content: '' !important;
-    display: block !important;
-    position: absolute !important;
-    left: 0 !important;
-    top: 20px !important;
-    bottom: 20px !important;
-    width: 5px !important;
-    border-radius: 0 8px 8px 0 !important;
-    opacity: 1 !important;
-    z-index: 10 !important;
-    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) , opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1) , box-shadow 0.4s cubic-bezier(0.4, 0, 0.2, 1) , background-color 0.4s cubic-bezier(0.4, 0, 0.2, 1) , border-color 0.4s cubic-bezier(0.4, 0, 0.2, 1) , color 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
-}
-
-body.light-theme .dashboard-card:hover::after {
-    width: 7px !important;
-    top: 16px !important;
-    bottom: 16px !important;
-}
-
-/* ========================================
-   ЦВЕТА ПО ТИПУ КАРТОЧКИ
-   ======================================== */
-
-/* ПРОДАЖИ - Синий */
-body.light-theme .dashboard-card.card-sales::after { 
-    background: linear-gradient(180deg, #93c5fd 0%, #3b82f6 50%, #1d4ed8 100%) !important; 
-    box-shadow: 0 0 25px rgba(59, 130, 246, 0.5), 0 0 50px rgba(59, 130, 246, 0.2) !important;
-}
-body.light-theme .dashboard-card.card-sales {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #eff6ff 40%, #dbeafe 100%) !important;
-}
-body.light-theme .dashboard-card.card-sales:hover {
-    box-shadow: 
-        0 25px 50px rgba(59, 130, 246, 0.2),
-        0 12px 24px rgba(59, 130, 246, 0.1),
-        0 0 0 1px rgba(59, 130, 246, 0.1) !important;
-}
-
-/* ПЛАТЕЖИ - Изумрудный */
-body.light-theme .dashboard-card.card-payments::after { 
-    background: linear-gradient(180deg, #6ee7b7 0%, #10b981 50%, #047857 100%) !important; 
-    box-shadow: 0 0 25px rgba(16, 185, 129, 0.5), 0 0 50px rgba(16, 185, 129, 0.2) !important;
-}
-body.light-theme .dashboard-card.card-payments {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #ecfdf5 40%, #d1fae5 100%) !important;
-}
-body.light-theme .dashboard-card.card-payments:hover {
-    box-shadow: 
-        0 25px 50px rgba(16, 185, 129, 0.2),
-        0 12px 24px rgba(16, 185, 129, 0.1),
-        0 0 0 1px rgba(16, 185, 129, 0.1) !important;
-}
-
-/* ДОЛГ - Красный */
-body.light-theme .dashboard-card.card-debt::after { 
-    background: linear-gradient(180deg, #fca5a5 0%, #ef4444 50%, #b91c1c 100%) !important; 
-    box-shadow: 0 0 25px rgba(239, 68, 68, 0.5), 0 0 50px rgba(239, 68, 68, 0.2) !important;
-}
-body.light-theme .dashboard-card.card-debt {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #fef2f2 40%, #fee2e2 100%) !important;
-}
-body.light-theme .dashboard-card.card-debt:hover {
-    box-shadow: 
-        0 25px 50px rgba(239, 68, 68, 0.2),
-        0 12px 24px rgba(239, 68, 68, 0.1),
-        0 0 0 1px rgba(239, 68, 68, 0.1) !important;
-}
-
-/* КЛИЕНТЫ - Янтарный */
-body.light-theme .dashboard-card.card-customers::after { 
-    background: linear-gradient(180deg, #fcd34d 0%, #f59e0b 50%, #b45309 100%) !important; 
-    box-shadow: 0 0 25px rgba(245, 158, 11, 0.5), 0 0 50px rgba(245, 158, 11, 0.2) !important;
-}
-body.light-theme .dashboard-card.card-customers {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #fffbeb 40%, #fef3c7 100%) !important;
-}
-body.light-theme .dashboard-card.card-customers:hover {
-    box-shadow: 
-        0 25px 50px rgba(245, 158, 11, 0.2),
-        0 12px 24px rgba(245, 158, 11, 0.1),
-        0 0 0 1px rgba(245, 158, 11, 0.1) !important;
-}
-
-/* ГРАФИКИ - Бирюзовый */
-body.light-theme .dashboard-card.card-chart::after { 
-    background: linear-gradient(180deg, #67e8f9 0%, #06b6d4 50%, #0e7490 100%) !important; 
-    box-shadow: 0 0 25px rgba(6, 182, 212, 0.5), 0 0 50px rgba(6, 182, 212, 0.2) !important;
-}
-body.light-theme .dashboard-card.card-chart {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #ecfeff 40%, #cffafe 100%) !important;
-}
-body.light-theme .dashboard-card.card-chart:hover {
-    box-shadow: 
-        0 25px 50px rgba(6, 182, 212, 0.2),
-        0 12px 24px rgba(6, 182, 212, 0.1),
-        0 0 0 1px rgba(6, 182, 212, 0.1) !important;
-}
-
-/* ПРОГНОЗ - Изумрудный */
-body.light-theme .dashboard-card.card-forecast::after { 
-    background: linear-gradient(180deg, #6ee7b7 0%, #10b981 50%, #047857 100%) !important; 
-    box-shadow: 0 0 25px rgba(16, 185, 129, 0.5), 0 0 50px rgba(16, 185, 129, 0.2) !important;
-}
-body.light-theme .dashboard-card.card-forecast {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #ecfdf5 40%, #d1fae5 100%) !important;
-}
-body.light-theme .dashboard-card.card-forecast:hover {
-    box-shadow: 
-        0 25px 50px rgba(16, 185, 129, 0.2),
-        0 12px 24px rgba(16, 185, 129, 0.1),
-        0 0 0 1px rgba(16, 185, 129, 0.1) !important;
-}
-
-/* ВЫПОЛНЕНИЕ - Бирюзовый */
-body.light-theme .dashboard-card.card-completion::after { 
-    background: linear-gradient(180deg, #67e8f9 0%, #06b6d4 50%, #0e7490 100%) !important; 
-    box-shadow: 0 0 25px rgba(6, 182, 212, 0.5), 0 0 50px rgba(6, 182, 212, 0.2) !important;
-}
-body.light-theme .dashboard-card.card-completion {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #ecfeff 40%, #cffafe 100%) !important;
-}
-body.light-theme .dashboard-card.card-completion:hover {
-    box-shadow: 
-        0 25px 50px rgba(6, 182, 212, 0.2),
-        0 12px 24px rgba(6, 182, 212, 0.1),
-        0 0 0 1px rgba(6, 182, 212, 0.1) !important;
-}
-
-/* ЕЖЕДНЕВНО - Фиолетовый */
-body.light-theme .dashboard-card.card-daily::after { 
-    background: linear-gradient(180deg, #c4b5fd 0%, #8b5cf6 50%, #6d28d9 100%) !important; 
-    box-shadow: 0 0 25px rgba(139, 92, 246, 0.5), 0 0 50px rgba(139, 92, 246, 0.2) !important;
-}
-body.light-theme .dashboard-card.card-daily {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #f5f3ff 40%, #ede9fe 100%) !important;
-}
-body.light-theme .dashboard-card.card-daily:hover {
-    box-shadow: 
-        0 25px 50px rgba(139, 92, 246, 0.2),
-        0 12px 24px rgba(139, 92, 246, 0.1),
-        0 0 0 1px rgba(139, 92, 246, 0.1) !important;
-}
-
-/* ДНИ - Янтарный */
-body.light-theme .dashboard-card.card-days::after { 
-    background: linear-gradient(180deg, #fcd34d 0%, #f59e0b 50%, #b45309 100%) !important; 
-    box-shadow: 0 0 25px rgba(245, 158, 11, 0.5), 0 0 50px rgba(245, 158, 11, 0.2) !important;
-}
-body.light-theme .dashboard-card.card-days {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #fffbeb 40%, #fef3c7 100%) !important;
-}
-body.light-theme .dashboard-card.card-days:hover {
-    box-shadow: 
-        0 25px 50px rgba(245, 158, 11, 0.2),
-        0 12px 24px rgba(245, 158, 11, 0.1),
-        0 0 0 1px rgba(245, 158, 11, 0.1) !important;
-}
-
-/* ТАБЛИЦА ОБЛАСТЕЙ - Фиолетовый */
-body.light-theme .dashboard-card.card-areas_table::after { 
-    background: linear-gradient(180deg, #c4b5fd 0%, #8b5cf6 50%, #6d28d9 100%) !important; 
-    box-shadow: 0 0 25px rgba(139, 92, 246, 0.5), 0 0 50px rgba(139, 92, 246, 0.2) !important;
-}
-body.light-theme .dashboard-card.card-areas_table {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #f5f3ff 40%, #ede9fe 100%) !important;
-}
-body.light-theme .dashboard-card.card-areas_table:hover {
-    box-shadow: 
-        0 25px 50px rgba(139, 92, 246, 0.2),
-        0 12px 24px rgba(139, 92, 246, 0.1),
-        0 0 0 1px rgba(139, 92, 246, 0.1) !important;
-}
-
-/* ЗАГОЛОВОК - Серый */
-body.light-theme .dashboard-card.card-header::after { 
-    background: linear-gradient(180deg, #cbd5e1 0%, #64748b 50%, #334155 100%) !important; 
-    box-shadow: 0 0 20px rgba(100, 116, 139, 0.4), 0 0 40px rgba(100, 116, 139, 0.15) !important;
-}
-body.light-theme .dashboard-card.card-header {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #f8fafc 40%, #f1f5f9 100%) !important;
-}
-
-/* ТЕКСТ - Серый */
-body.light-theme .dashboard-card.card-text::after { 
-    background: linear-gradient(180deg, #cbd5e1 0%, #64748b 50%, #334155 100%) !important; 
-    box-shadow: 0 0 20px rgba(100, 116, 139, 0.4), 0 0 40px rgba(100, 116, 139, 0.15) !important;
-}
-body.light-theme .dashboard-card.card-text {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #f8fafc 40%, #f1f5f9 100%) !important;
-}
-
-/* КАСТОМ - Розовый */
-body.light-theme .dashboard-card.card-custom::after { 
-    background: linear-gradient(180deg, #fda4af 0%, #f43f5e 50%, #be123c 100%) !important; 
-    box-shadow: 0 0 25px rgba(244, 63, 94, 0.5), 0 0 50px rgba(244, 63, 94, 0.2) !important;
-}
-body.light-theme .dashboard-card.card-custom {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #fff1f2 40%, #ffe4e6 100%) !important;
-}
-body.light-theme .dashboard-card.card-custom:hover {
-    box-shadow: 
-        0 25px 50px rgba(244, 63, 94, 0.2),
-        0 12px 24px rgba(244, 63, 94, 0.1),
-        0 0 0 1px rgba(244, 63, 94, 0.1) !important;
-}
-
-/* НУЖНО - Красный */
-body.light-theme .dashboard-card.card-needed::after { 
-    background: linear-gradient(180deg, #fca5a5 0%, #ef4444 50%, #b91c1c 100%) !important; 
-    box-shadow: 0 0 25px rgba(239, 68, 68, 0.5), 0 0 50px rgba(239, 68, 68, 0.2) !important;
-}
-body.light-theme .dashboard-card.card-needed {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #fef2f2 40%, #fee2e2 100%) !important;
-}
-body.light-theme .dashboard-card.card-needed:hover {
-    box-shadow: 
-        0 25px 50px rgba(239, 68, 68, 0.2),
-        0 12px 24px rgba(239, 68, 68, 0.1),
-        0 0 0 1px rgba(239, 68, 68, 0.1) !important;
-}
-
-/* GAP - Серый */
-body.light-theme .dashboard-card.card-gap::after { 
-    background: linear-gradient(180deg, #cbd5e1 0%, #64748b 50%, #334155 100%) !important; 
-    box-shadow: 0 0 20px rgba(100, 116, 139, 0.4), 0 0 40px rgba(100, 116, 139, 0.15) !important;
-}
-body.light-theme .dashboard-card.card-gap {
-    border-left: none !important;
-    background: linear-gradient(165deg, #ffffff 0%, #f8fafc 40%, #f1f5f9 100%) !important;
-}
-
-/* ========================================
-   КАСТОМНЫЙ ЦВЕТ
-   ======================================== */
-body.light-theme .dashboard-card.has-custom-color::after {
-    background: linear-gradient(180deg, 
-        color-mix(in srgb, var(--custom-accent-color) 70%, white),
-        var(--custom-accent-color),
-        color-mix(in srgb, var(--custom-accent-color) 70%, black)
-    ) !important;
-    box-shadow: 0 0 25px color-mix(in srgb, var(--custom-accent-color) 50%, transparent),
-                0 0 50px color-mix(in srgb, var(--custom-accent-color) 20%, transparent) !important;
-}
-body.light-theme .dashboard-card.has-custom-color .card-value {
-    color: var(--custom-accent-color) !important;
-    text-shadow: 0 2px 10px color-mix(in srgb, var(--custom-accent-color) 20%, transparent);
-}
-body.light-theme .dashboard-card.has-custom-color .card-icon {
-    color: color-mix(in srgb, var(--custom-accent-color) 20%, transparent) !important;
-}
-body.light-theme .dashboard-card.has-custom-color:hover .card-icon {
-    color: color-mix(in srgb, var(--custom-accent-color) 35%, transparent) !important;
-    transform: scale(1.15) !important;
-}
-
-/* ========================================
-   ИКОНКИ И ЗНАЧЕНИЯ
-   ======================================== */
-body.light-theme .dashboard-card .card-icon {
-    color: rgba(148, 163, 184, 0.12);
-    font-size: 4.5rem;
-    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.4s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.4s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.4s cubic-bezier(0.4, 0, 0.2, 1), color 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-    filter: blur(0.5px);
-}
-
-body.light-theme .dashboard-card:hover .card-icon {
-    color: rgba(148, 163, 184, 0.2);
-    transform: scale(1.15) rotate(-3deg);
-    filter: blur(0);
-}
-
-/* Цветные иконки и значения по типу карточки */
-body.light-theme .dashboard-card.card-sales .card-icon { color: rgba(59, 130, 246, 0.15); }
-body.light-theme .dashboard-card.card-sales:hover .card-icon { color: rgba(59, 130, 246, 0.3); }
-body.light-theme .dashboard-card.card-sales .card-value { 
-    color: #1d4ed8; 
-    text-shadow: 0 2px 15px rgba(59, 130, 246, 0.2);
-}
-
-body.light-theme .dashboard-card.card-payments .card-icon { color: rgba(16, 185, 129, 0.15); }
-body.light-theme .dashboard-card.card-payments:hover .card-icon { color: rgba(16, 185, 129, 0.3); }
-body.light-theme .dashboard-card.card-payments .card-value { 
-    color: #047857; 
-    text-shadow: 0 2px 15px rgba(16, 185, 129, 0.2);
-}
-
-body.light-theme .dashboard-card.card-debt .card-icon { color: rgba(239, 68, 68, 0.15); }
-body.light-theme .dashboard-card.card-debt:hover .card-icon { color: rgba(239, 68, 68, 0.3); }
-body.light-theme .dashboard-card.card-debt .card-value { 
-    color: #b91c1c; 
-    text-shadow: 0 2px 15px rgba(239, 68, 68, 0.2);
-}
-
-body.light-theme .dashboard-card.card-customers .card-icon { color: rgba(245, 158, 11, 0.15); }
-body.light-theme .dashboard-card.card-customers:hover .card-icon { color: rgba(245, 158, 11, 0.3); }
-body.light-theme .dashboard-card.card-customers .card-value { 
-    color: #b45309; 
-    text-shadow: 0 2px 15px rgba(245, 158, 11, 0.2);
-}
-
-body.light-theme .dashboard-card.card-chart .card-icon { color: rgba(6, 182, 212, 0.15); }
-body.light-theme .dashboard-card.card-chart:hover .card-icon { color: rgba(6, 182, 212, 0.3); }
-body.light-theme .dashboard-card.card-chart .card-value { 
-    color: #0e7490; 
-    text-shadow: 0 2px 15px rgba(6, 182, 212, 0.2);
-}
-
-body.light-theme .dashboard-card.card-forecast .card-icon { color: rgba(16, 185, 129, 0.15); }
-body.light-theme .dashboard-card.card-forecast:hover .card-icon { color: rgba(16, 185, 129, 0.3); }
-body.light-theme .dashboard-card.card-forecast .card-value { 
-    color: #047857; 
-    text-shadow: 0 2px 15px rgba(16, 185, 129, 0.2);
-}
-
-body.light-theme .dashboard-card.card-completion .card-icon { color: rgba(6, 182, 212, 0.15); }
-body.light-theme .dashboard-card.card-completion:hover .card-icon { color: rgba(6, 182, 212, 0.3); }
-body.light-theme .dashboard-card.card-completion .card-value { 
-    color: #0e7490; 
-    text-shadow: 0 2px 15px rgba(6, 182, 212, 0.2);
-}
-
-body.light-theme .dashboard-card.card-daily .card-icon { color: rgba(139, 92, 246, 0.15); }
-body.light-theme .dashboard-card.card-daily:hover .card-icon { color: rgba(139, 92, 246, 0.3); }
-body.light-theme .dashboard-card.card-daily .card-value { 
-    color: #6d28d9; 
-    text-shadow: 0 2px 15px rgba(139, 92, 246, 0.2);
-}
-
-body.light-theme .dashboard-card.card-days .card-icon { color: rgba(245, 158, 11, 0.15); }
-body.light-theme .dashboard-card.card-days:hover .card-icon { color: rgba(245, 158, 11, 0.3); }
-body.light-theme .dashboard-card.card-days .card-value { 
-    color: #b45309; 
-    text-shadow: 0 2px 15px rgba(245, 158, 11, 0.2);
-}
-
-body.light-theme .dashboard-card.card-needed .card-icon { color: rgba(239, 68, 68, 0.15); }
-body.light-theme .dashboard-card.card-needed:hover .card-icon { color: rgba(239, 68, 68, 0.3); }
-body.light-theme .dashboard-card.card-needed .card-value { 
-    color: #b91c1c; 
-    text-shadow: 0 2px 15px rgba(239, 68, 68, 0.2);
-}
-
-body.light-theme .dashboard-card.card-gap .card-icon { color: rgba(100, 116, 139, 0.12); }
-body.light-theme .dashboard-card.card-gap:hover .card-icon { color: rgba(100, 116, 139, 0.25); }
-body.light-theme .dashboard-card.card-gap .card-value { 
-    color: #334155; 
-    text-shadow: 0 2px 15px rgba(100, 116, 139, 0.15);
-}
-
-body.light-theme .dashboard-card.card-custom .card-icon { color: rgba(244, 63, 94, 0.15); }
-body.light-theme .dashboard-card.card-custom:hover .card-icon { color: rgba(244, 63, 94, 0.3); }
-body.light-theme .dashboard-card.card-custom .card-value { 
-    color: #be123c; 
-    text-shadow: 0 2px 15px rgba(244, 63, 94, 0.2);
-}
-
-body.light-theme .dashboard-card.card-areas_table .card-icon { color: rgba(139, 92, 246, 0.15); }
-body.light-theme .dashboard-card.card-areas_table:hover .card-icon { color: rgba(139, 92, 246, 0.3); }
-
-body.light-theme .dashboard-card.card-header .card-icon { color: rgba(100, 116, 139, 0.1); }
-body.light-theme .dashboard-card.card-text .card-icon { color: rgba(100, 116, 139, 0.1); }
-
-/* ========================================
-   ЛЕЙБЛЫ И ТЕКСТ
-   ======================================== */
-body.light-theme .dashboard-card .card-label {
-    color: #475569;
-    font-weight: 700;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 1.5px;
-}
-
-/* Значение - базовый цвет (переопределяется для каждого типа выше) */
-body.light-theme .dashboard-card .card-value {
-    font-weight: 800;
-    letter-spacing: -1px;
-}
-
-body.light-theme .dashboard-card .card-title {
-    color: #1e293b;
-    font-weight: 700;
-}
-
-body.light-theme .dashboard-card .text-muted {
-    color: #64748b !important;
-}
-
-/* Сравнение - улучшенные стили */
-body.light-theme .dashboard-card .card-comparison {
-    background: rgba(241, 245, 249, 0.8);
-    border-radius: 12px;
-    padding: 8px 12px;
-    backdrop-filter: blur(5px);
-}
-
-body.light-theme .dashboard-card .card-comparison .text-success {
-    color: #047857 !important;
+.empty-placeholder h5 {
+    color: var(--text-dim);
     font-weight: 600;
+    margin-bottom: 4px;
 }
 
-body.light-theme .dashboard-card .card-comparison .text-danger {
-    color: #b91c1c !important;
-    font-weight: 600;
+/* Drop zone at the end of the grid */
+.drop-zone-end {
+    grid-column: 1 / -1;
+    min-height: 88px;
+    margin-top: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1.5px dashed var(--border-strong);
+    border-radius: var(--r-card);
+    color: var(--text-faint);
+    font-size: .88rem;
+    font-weight: 500;
+    transition: all var(--dur) var(--ease);
 }
 
-/* Прогноз-бар */
-body.light-theme .dashboard-card .forecast-bar {
-    background: rgba(241, 245, 249, 0.9);
-    border-radius: 10px;
+.drop-zone-end.drag-active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.drop-zone-end.drag-active i {
+    animation: dbBounce .6s ease-in-out infinite;
+}
+
+@keyframes dbBounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+}
+
+/* ---------------------------------------------------------------------- *
+ * 6. Dashboard card — base, hover, drag & resize interaction states
+ * ---------------------------------------------------------------------- */
+.dashboard-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-card);
+    box-shadow: var(--shadow-card);
+    padding: 14px;
+    cursor: grab;
     overflow: hidden;
-}
-
-body.light-theme .dashboard-card .forecast-progress {
-    border-radius: 10px;
-    box-shadow: inset 0 -2px 4px rgba(0,0,0,0.1);
-}
-
-/* ========================================
-   ТУЛБАР
-   ======================================== */
-body.light-theme .toolbar {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 250, 252, 0.95) 100%);
-    backdrop-filter: blur(20px);
-    border: 1px solid rgba(226, 232, 240, 0.6);
-    border-radius: 20px;
-    box-shadow: 
-        0 4px 20px rgba(0, 0, 0, 0.05),
-        0 1px 0 rgba(255, 255, 255, 1) inset;
-    box-shadow: 
-        0 4px 20px rgba(0, 0, 0, 0.04),
-        0 1px 0 rgba(255, 255, 255, 0.9) inset;
-}
-
-/* Light theme edit mode button */
-body.light-theme .edit-mode-btn {
-    background: rgba(100, 116, 139, 0.1);
-    border: 1px solid rgba(100, 116, 139, 0.2);
-    color: #475569;
-}
-
-body.light-theme .edit-mode-btn:hover {
-    background: rgba(100, 116, 139, 0.15);
-    border-color: rgba(100, 116, 139, 0.3);
-}
-
-body.light-theme .edit-mode-btn.active {
-    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-    border-color: transparent;
-    color: #fff;
-}
-
-/* Табы страниц */
-body.light-theme .pages-nav .page-tab {
-    background: rgba(255, 255, 255, 0.8);
-    border: 1px solid rgba(226, 232, 240, 0.8);
-    color: #64748b;
-    border-radius: 12px;
-    font-weight: 600;
-    transition: transform 0.25s ease, opacity 0.25s ease, box-shadow 0.25s ease, background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
-}
-
-body.light-theme .pages-nav .page-tab:hover {
-    background: #fff;
-    border-color: #cbd5e1;
-    color: #334155;
-}
-
-body.light-theme .pages-nav .page-tab.active {
-    background: linear-gradient(135deg, #3b82f6, #2563eb);
-    color: white;
-    border-color: transparent;
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
-}
-
-body.light-theme .pages-nav .page-tab-add {
-    background: rgba(248, 250, 252, 0.8);
-    border: 2px dashed #cbd5e1;
-    color: #94a3b8;
-    border-radius: 12px;
-    transition: transform 0.25s ease, opacity 0.25s ease, box-shadow 0.25s ease, background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
-}
-
-body.light-theme .pages-nav .page-tab-add:hover {
-    background: #eff6ff;
-    border-color: #3b82f6;
-    color: #3b82f6;
-}
-
-/* Кнопки действий карточки */
-body.light-theme .dashboard-card .card-actions {
-    background: rgba(255, 255, 255, 0.95);
-    backdrop-filter: blur(10px);
-    border-radius: 12px;
-    padding: 6px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-}
-
-body.light-theme .dashboard-card .card-actions .btn-outline-light {
-    color: #64748b;
-    border-color: #e2e8f0;
-    background: #fff;
-    border-radius: 8px;
-}
-
-body.light-theme .dashboard-card .card-actions .btn-outline-light:hover {
-    background: #f1f5f9;
-    color: #1e293b;
-    border-color: #cbd5e1;
-    transform: scale(1.05);
-}
-
-body.light-theme .dashboard-card .card-actions .btn-outline-danger {
-    color: #ef4444;
-    border-color: #fecaca;
-    background: #fff;
-    border-radius: 8px;
-}
-
-body.light-theme .dashboard-card .card-actions .btn-outline-danger:hover {
-    background: #fef2f2;
-    color: #dc2626;
-    border-color: #f87171;
-    transform: scale(1.05);
-}
-
-body.light-theme .dashboard-card .card-actions .btn-outline-success {
-    color: #10b981;
-    border-color: #a7f3d0;
-    background: #fff;
-    border-radius: 8px;
-}
-
-body.light-theme .dashboard-card .card-actions .btn-outline-success:hover {
-    background: #ecfdf5;
-    color: #059669;
-    border-color: #34d399;
-    transform: scale(1.05);
-}
-
-/* Модальное окно */
-body.light-theme .config-modal-content {
-    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-    border: 1px solid rgba(226, 232, 240, 0.8);
-    border-radius: 24px;
-    color: #1e293b;
-    box-shadow: 
-        0 25px 50px rgba(0, 0, 0, 0.15),
-        0 0 0 1px rgba(255, 255, 255, 0.5) inset;
-}
-
-body.light-theme .config-modal-header {
-    background: linear-gradient(180deg, #ffffff, #f8fafc);
-    border-bottom: 1px solid #e2e8f0;
-    border-radius: 24px 24px 0 0;
-}
-
-body.light-theme .config-modal-header h3 {
-    color: #0f172a;
-    font-weight: 700;
-}
-
-body.light-theme .config-tabs .config-tab {
-    color: #64748b;
-    border-bottom: 3px solid transparent;
-    font-weight: 600;
-    transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-}
-
-body.light-theme .config-tabs .config-tab:hover {
-    color: #3b82f6;
-}
-
-body.light-theme .config-tabs .config-tab.active {
-    color: #3b82f6;
-    border-bottom-color: #3b82f6;
-}
-
-body.light-theme .config-section {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    border-radius: 16px;
-}
-
-body.light-theme .config-section-title {
-    color: #334155;
-    font-weight: 700;
-}
-
-body.light-theme .form-control,
-body.light-theme .form-select {
-    background: #fff;
-    border: 2px solid #e2e8f0;
-    color: #1e293b;
-    border-radius: 10px;
-    transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-}
-
-body.light-theme .form-control:focus,
-body.light-theme .form-select:focus {
-    background: #fff;
-    border-color: #3b82f6;
-    color: #1e293b;
-    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
-}
-
-body.light-theme .form-label {
-    color: #475569;
-    font-weight: 600;
-}
-
-body.light-theme .config-modal-footer {
-    background: #f8fafc;
-    border-top: 1px solid #e2e8f0;
-    border-radius: 0 0 24px 24px;
-}
-
-/* Таблица территорий */
-body.light-theme .areas-table-card {
-    background: transparent;
-}
-
-body.light-theme .areas-table-card th {
-    background: linear-gradient(180deg, #f1f5f9, #e2e8f0);
-    color: #475569;
-    border-color: #e2e8f0;
-    font-weight: 700;
-}
-
-body.light-theme .areas-table-card td {
-    border-color: #f1f5f9;
-    color: #334155;
-}
-
-body.light-theme .areas-table-card tr:hover td {
-    background: linear-gradient(90deg, rgba(59, 130, 246, 0.05), rgba(59, 130, 246, 0.02));
-}
-
-body.light-theme .areas-table-card tfoot td {
-    background: linear-gradient(180deg, #eff6ff, #dbeafe);
-    color: #1e40af;
-    font-weight: 700;
-}
-
-/* Иерархические списки */
-body.light-theme .hierarchy-group {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-}
-
-body.light-theme .hierarchy-group-header {
-    background: linear-gradient(180deg, #f1f5f9, #e2e8f0);
-    border-radius: 12px 12px 0 0;
-}
-
-body.light-theme .hierarchy-child-item:hover {
-    background: rgba(59, 130, 246, 0.08);
-}
-
-/* Сравнение */
-body.light-theme .comparison-value.positive {
-    color: #059669;
-}
-
-body.light-theme .comparison-value.negative {
-    color: #dc2626;
-}
-
-/* Прогресс-бары */
-body.light-theme .progress {
-    background: #e2e8f0;
-    border-radius: 999px;
-    overflow: hidden;
-}
-
-/* Заголовки */
-body.light-theme h1, 
-body.light-theme h2, 
-body.light-theme h3, 
-body.light-theme h4, 
-body.light-theme h5, 
-body.light-theme h6 {
-    color: #0f172a;
-}
-
-body.light-theme .display-6 {
-    color: #0f172a;
-    font-weight: 700;
-}
-
-/* ========================================
-   ТРЕНДЫ И БЕЙДЖИ
-   ======================================== */
-
-body.light-theme .trend-badge {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    padding: 6px 14px;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-}
-
-body.light-theme .trend-badge.trend-up {
-    color: #059669;
-    background: linear-gradient(135deg, #ecfdf5, #d1fae5);
-    border-color: #a7f3d0;
-    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.15);
-}
-
-body.light-theme .trend-badge.trend-down {
-    color: #dc2626;
-    background: linear-gradient(135deg, #fef2f2, #fee2e2);
-    border-color: #fecaca;
-}
-
-body.light-theme .trend-label {
-    color: #94a3b8;
-}
-
-/* Фильтр теги */
-body.light-theme .filter-tag {
-    background: #f1f5f9;
-    color: #475569;
-    border: 1px solid #e2e8f0;
-}
-
-body.light-theme .filter-tag:hover {
-    background: #e2e8f0;
-}
-
-/* Сетка карточек */
-body.light-theme .card-grid {
-    background: transparent;
-    border: none;
-}
-
-/* Плейсхолдер при перетаскивании */
-body.light-theme .dashboard-card.is-placeholder {
-    background: #f8fafc !important;
-    border: 2px dashed #cbd5e1 !important;
-    box-shadow: inset 0 0 20px rgba(59, 130, 246, 0.05);
-}
-
-body.light-theme .dashboard-card.is-placeholder::after {
-    display: none;
-}
-
-/* Таблица территорий */
-body.light-theme .areas-table-container {
-    background: transparent;
-}
-
-body.light-theme .areas-table-header {
-    border-bottom-color: #e2e8f0;
-}
-
-body.light-theme .areas-table-title {
-    color: #334155;
-}
-
-body.light-theme .areas-table-count {
-    background: #eff6ff;
-    color: #3b82f6;
-}
-
-body.light-theme .areas-table-wrapper {
-    background: #fafbfc;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-}
-
-body.light-theme .areas-table th {
-    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
-    color: #64748b;
-    border-bottom: 2px solid #e2e8f0;
-}
-
-body.light-theme .areas-table td {
-    color: #334155;
-    border-bottom: 1px solid #f1f5f9;
-}
-
-body.light-theme .areas-table tbody tr:hover td {
-    background: rgba(59, 130, 246, 0.04);
-}
-
-body.light-theme .areas-table tfoot td {
-    background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
-    color: #1e40af;
-    font-weight: 700;
-    border-top: 2px solid #93c5fd;
-}
-
-body.light-theme .areas-table .area-name {
-    color: #1e293b;
-    font-weight: 600;
-}
-
-body.light-theme .areas-table .today-cell {
-    background: rgba(59, 130, 246, 0.05);
-}
-
-body.light-theme .areas-table .trend-up {
-    color: #059669;
-    font-weight: 600;
-}
-
-body.light-theme .areas-table .trend-down {
-    color: #dc2626;
-    font-weight: 600;
-}
-
-/* Графики в светлой теме */
-body.light-theme .chart-card {
-    background: transparent;
-}
-
-body.light-theme .chart-wrapper {
-    background: rgba(255, 255, 255, 0.7);
-    border-radius: 12px;
-    padding: 8px;
-}
-
-/* Заголовок графика в светлой теме */
-body.light-theme .dashboard-card.card-chart .card-label {
-    color: #1e293b !important;
-    font-weight: 700;
-}
-
-/* Пустое состояние */
-body.light-theme .empty-placeholder {
-    color: #64748b;
-    background: rgba(255, 255, 255, 0.6);
-    backdrop-filter: blur(10px);
-    border-radius: 24px;
-    border: 2px dashed #cbd5e1;
-    padding: 60px 40px;
-}
-
-body.light-theme .empty-placeholder h5 {
-    color: #334155;
-    font-weight: 700;
-}
-
-body.light-theme .empty-placeholder i {
-    color: #94a3b8;
-}
-
-/* Скроллбар премиум */
-body.light-theme ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-}
-
-body.light-theme ::-webkit-scrollbar-track {
-    background: #f1f5f9;
-    border-radius: 10px;
-}
-
-body.light-theme ::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, #cbd5e1, #94a3b8);
-    border-radius: 10px;
-    border: 2px solid #f1f5f9;
-}
-
-body.light-theme ::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(180deg, #94a3b8, #64748b);
-}
-
-/* Бейджи метрик */
-body.light-theme .metric-badge {
-    background: linear-gradient(135deg, #eff6ff, #dbeafe) !important;
-    color: #2563eb !important;
-    border: 1px solid #93c5fd;
-    font-weight: 600;
-    border-radius: 999px;
-    padding: 4px 12px;
-}
-
-/* Заголовки карточек header type */
-body.light-theme .header-card h4 {
-    color: #0f172a !important;
-    font-weight: 700;
-}
-
-body.light-theme .header-card p {
-    color: #64748b !important;
-}
-
-/* Текстовые заметки */
-body.light-theme .text-note-card .text-note-title {
-    color: #1e293b;
-    font-weight: 700;
-}
-
-body.light-theme .text-note-card .text-note-content {
-    color: #475569;
-}
-
-/* Спиннер загрузки */
-body.light-theme .spinner-border {
-    color: #3b82f6;
-}
-
-/* ========================================
-   ЦВЕТА ТЕКСТА В СВЕТЛОЙ ТЕМЕ
-   ======================================== */
-
-/* Основное значение карточки */
-body.light-theme .card-value {
-    color: #0f172a !important;
-    text-shadow: none !important;
-}
-
-/* Лейбл/заголовок карточки */
-body.light-theme .card-label {
-    color: #64748b !important;
-}
-
-/* Иконка в карточке */
-body.light-theme .card-icon {
-    color: rgba(148, 163, 184, 0.12) !important;
-}
-
-/* Символ валюты */
-body.light-theme .currency-symbol {
-    color: #94a3b8 !important;
-}
-
-/* Блок сравнения */
-body.light-theme .comparison-block {
-    background: linear-gradient(135deg, rgba(248, 250, 252, 0.95), rgba(241, 245, 249, 0.95));
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(226, 232, 240, 0.8);
-    border-radius: 14px;
-    padding: 14px 16px;
-    margin-top: 16px;
-    font-size: 0.9rem;
-}
-
-body.light-theme .comparison-item {
-    color: #334155;
-    padding: 6px 0;
-    font-size: 0.88rem;
-}
-
-body.light-theme .comparison-label {
-    color: #475569;
-    font-weight: 600;
-    font-size: 0.85rem;
-}
-
-body.light-theme .comparison-value {
-    color: #1e293b;
-    font-weight: 700;
-    font-size: 0.95rem;
-}
-
-body.light-theme .comparison-change {
-    font-weight: 700;
-    font-size: 0.85rem;
-    padding: 3px 8px;
-    border-radius: 6px;
-    margin-left: 6px;
-}
-
-body.light-theme .comparison-change.positive {
-    background: rgba(16, 185, 129, 0.15);
-    color: #047857;
-}
-
-body.light-theme .comparison-change.negative {
-    background: rgba(239, 68, 68, 0.15);
-    color: #b91c1c;
-}
-
-body.light-theme .comparison-block .text-muted {
-    color: #64748b !important;
-    font-size: 0.8rem;
-    margin-top: 8px;
-}
-
-body.light-theme .comparison-block i {
-    color: #64748b;
-    font-size: 0.85rem;
-}
-
-body.light-theme .comparison-block .forecast-item {
-    background: rgba(16, 185, 129, 0.08);
-    border-radius: 10px;
-    padding: 8px 12px;
-    margin-bottom: 8px;
-}
-
-body.light-theme .forecast-item .text-success {
-    color: #047857 !important;
-    font-weight: 700;
-}
-
-/* Year trend badge */
-body.light-theme .year-trend .trend-badge {
-    background: linear-gradient(135deg, #f8fafc, #f1f5f9);
-    border: 1px solid #e2e8f0;
-}
-
-/* Все text-white классы */
-body.light-theme .text-white {
-    color: #0f172a !important;
-}
-
-body.light-theme .text-white-50 {
-    color: #64748b !important;
-}
-
-/* Все muted тексты */
-body.light-theme .text-muted {
-    color: #64748b !important;
-}
-
-/* Прогресс в сравнении */
-body.light-theme .comparison-progress {
-    background: #e2e8f0;
-    border-radius: 999px;
-}
-
-/* Тренды */
-body.light-theme .comparison-change.text-success,
-body.light-theme .text-success {
-    color: #059669 !important;
-}
-
-body.light-theme .comparison-change.text-danger,
-body.light-theme .text-danger {
-    color: #dc2626 !important;
-}
-
-/* Текстовые карточки */
-body.light-theme .text-card-content {
-    color: #1e293b;
-}
-
-body.light-theme .header-card h4,
-body.light-theme .header-card .text-white {
-    color: #0f172a !important;
-}
-
-body.light-theme .header-card p,
-body.light-theme .header-card .text-white-50 {
-    color: #64748b !important;
-}
-
-body.light-theme .text-note-card {
-    color: #334155;
-}
-
-/* Placeholder текст */
-body.light-theme .empty-placeholder p {
-    color: #64748b;
-}
-
-/* Количество карточек */
-body.light-theme .badge.bg-secondary {
-    background: linear-gradient(135deg, #e2e8f0, #cbd5e1) !important;
-    color: #334155 !important;
-    font-weight: 600;
-    border: none;
-}
-
-/* Инфо текст в карточках */
-body.light-theme .dashboard-card .small,
-body.light-theme .dashboard-card small {
-    color: #94a3b8;
-}
-
-/* Tеги фильтров - улучшенные */
-body.light-theme .filter-tag {
-    background: linear-gradient(135deg, #f8fafc, #f1f5f9);
-    color: #475569;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 4px 10px;
-    font-weight: 500;
-    transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-}
-
-body.light-theme .filter-tag:hover {
-    background: linear-gradient(135deg, #eff6ff, #dbeafe);
-    border-color: #93c5fd;
-    color: #2563eb;
-}
-
-body.light-theme .filter-tag i {
-    color: #94a3b8;
-}
-
-/* Tooltip и подсказки */
-body.light-theme .tooltip-inner {
-    background: linear-gradient(135deg, #1e293b, #0f172a);
-    color: #fff;
-    border-radius: 8px;
-    padding: 8px 14px;
-    font-weight: 500;
-}
-
-/* Chart label */
-body.light-theme .chart-wrapper .card-label {
-    color: #334155 !important;
-    font-weight: 700;
-}
-
-/* Таблица в светлой теме - все текстовые элементы */
-body.light-theme .areas-table-card .card-label {
-    color: #334155 !important;
-}
-
-/* Dropdown меню - премиум */
-body.light-theme .dropdown-menu-dark {
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.12);
-    padding: 8px;
-}
-
-body.light-theme .dropdown-menu-dark .dropdown-item {
-    color: #334155;
-    border-radius: 8px;
-    padding: 10px 14px;
-    font-weight: 500;
-    transition: transform 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-}
-
-body.light-theme .dropdown-menu-dark .dropdown-item:hover {
-    background: linear-gradient(135deg, #eff6ff, #dbeafe);
-    color: #2563eb;
-}
-
-body.light-theme .dropdown-menu-dark .dropdown-item i {
-    opacity: 0.7;
-}
-
-/* Display заголовок страницы */
-body.light-theme .display-6 {
-    color: #0f172a !important;
-    font-weight: 800;
-}
-
-body.light-theme .display-6 + p.text-muted {
-    color: #64748b !important;
-}
-
-/* Кнопки тулбара - премиум */
-body.light-theme .toolbar .btn-outline-primary {
-    background: linear-gradient(135deg, #eff6ff, #dbeafe);
-    border: 1px solid #93c5fd;
-    color: #2563eb;
-    font-weight: 600;
-}
-
-body.light-theme .toolbar .btn-outline-primary:hover {
-    background: linear-gradient(135deg, #3b82f6, #2563eb);
-    border-color: transparent;
-    color: #fff;
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
-    transform: translateY(-1px);
-}
-
-body.light-theme .toolbar .btn-outline-success {
-    background: linear-gradient(135deg, #ecfdf5, #d1fae5);
-    border: 1px solid #86efac;
-    color: #059669;
-    font-weight: 600;
-}
-
-body.light-theme .toolbar .btn-outline-success:hover {
-    background: linear-gradient(135deg, #10b981, #059669);
-    border-color: transparent;
-    color: #fff;
-    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
-}
-
-body.light-theme .toolbar .btn-outline-danger {
-    background: linear-gradient(135deg, #fef2f2, #fee2e2);
-    border: 1px solid #fca5a5;
-    color: #dc2626;
-    font-weight: 600;
-}
-
-body.light-theme .toolbar .btn-outline-danger:hover {
-    background: linear-gradient(135deg, #ef4444, #dc2626);
-    border-color: transparent;
-    color: #fff;
-    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.35);
-}
-
-body.light-theme .toolbar .btn-outline-warning {
-    background: linear-gradient(135deg, #fffbeb, #fef3c7);
-    border: 1px solid #fcd34d;
-    color: #d97706;
-    font-weight: 600;
-}
-
-body.light-theme .toolbar .btn-outline-warning:hover {
-    background: linear-gradient(135deg, #f59e0b, #d97706);
-    border-color: transparent;
-    color: #fff;
-    box-shadow: 0 4px 12px rgba(245, 158, 11, 0.35);
-}
-
-body.light-theme .toolbar .btn-outline-info {
-    background: linear-gradient(135deg, #ecfeff, #cffafe);
-    border: 1px solid #67e8f9;
-    color: #0891b2;
-    font-weight: 600;
-}
-
-body.light-theme .toolbar .btn-outline-info:hover {
-    background: linear-gradient(135deg, #06b6d4, #0891b2);
-    border-color: transparent;
-    color: #fff;
-    box-shadow: 0 4px 12px rgba(6, 182, 212, 0.35);
-}
-
-body.light-theme .toolbar .btn-outline-secondary {
-    background: linear-gradient(135deg, #f8fafc, #f1f5f9);
-    border: 1px solid #cbd5e1;
-    color: #475569;
-    font-weight: 600;
-}
-
-body.light-theme .toolbar .btn-outline-secondary:hover {
-    background: linear-gradient(135deg, #64748b, #475569);
-    border-color: transparent;
-    color: #fff;
-    box-shadow: 0 4px 12px rgba(100, 116, 139, 0.35);
-}
-
-body.light-theme .toolbar .btn-outline-dark {
-    background: linear-gradient(135deg, #f1f5f9, #e2e8f0);
-    border: 1px solid #94a3b8;
-    color: #334155;
-    font-weight: 600;
-}
-
-body.light-theme .toolbar .btn-outline-dark:hover {
-    background: linear-gradient(135deg, #334155, #1e293b);
-    border-color: transparent;
-    color: #fff;
-    box-shadow: 0 4px 12px rgba(51, 65, 85, 0.35);
-}
-
-/* Кнопки в хедере */
-body.light-theme .d-flex.gap-2 > .btn {
-    border-radius: 10px;
-    transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
-}
-
-/* Разделитель в тулбаре */
-body.light-theme .toolbar .border-start {
-    border-color: #e2e8f0 !important;
-}
-
-/* Иконка темы */
-body.light-theme .btn-outline-secondary i.fa-sun,
-body.light-theme .btn-outline-secondary i.fa-moon {
-    transition: transform 0.3s ease, opacity 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
-}
-
-body.light-theme .btn-outline-secondary:hover i.fa-sun,
-body.light-theme .btn-outline-secondary:hover i.fa-moon {
-    transform: rotate(20deg);
-}
-
-/* ===== DRAG & DROP для светлой темы ===== */
-body.light-theme .dashboard-card.is-dragging {
-    box-shadow: 
-        0 30px 60px rgba(0, 0, 0, 0.15),
-        0 15px 30px rgba(0, 0, 0, 0.08),
-        0 0 0 3px rgba(59, 130, 246, 0.5),
-        0 0 40px rgba(59, 130, 246, 0.25);
-    background: var(--bt-tile-soft) !important;
-    backdrop-filter: blur(8px);
-    /* Критично: отключаем все transition кроме transform для плавности */
-    transition: transform 0.15s cubic-bezier(0.25, 0.46, 0.45, 0.94), 
-                box-shadow 0.15s ease !important;
-    /* Убираем hover-эффекты */
-    transform: scale(1.03) rotate(1.5deg) !important;
-}
-
-/* Отключаем hover при перетаскивании */
-body.light-theme .dashboard-card.is-dragging:hover {
-    transform: scale(1.03) rotate(1.5deg) !important;
-}
-
-body.light-theme .dashboard-card.is-dragging::before {
-    background: linear-gradient(135deg, 
-        rgba(59, 130, 246, 0.3), 
-        rgba(139, 92, 246, 0.3), 
-        rgba(59, 130, 246, 0.3));
-    display: block !important;
-}
-
-/* Убираем акцентную полосу при перетаскивании */
-body.light-theme .dashboard-card.is-dragging::after {
-    display: none !important;
-}
-
-body.light-theme .dashboard-card.is-placeholder {
-    background: linear-gradient(135deg, 
-        rgba(59, 130, 246, 0.06) 0%, 
-        rgba(139, 92, 246, 0.03) 50%,
-        rgba(59, 130, 246, 0.06) 100%) !important;
-    border: 2px dashed rgba(59, 130, 246, 0.5) !important;
-    box-shadow: 
-        inset 0 0 40px rgba(59, 130, 246, 0.08),
-        0 0 0 4px rgba(59, 130, 246, 0.05);
-    /* Без hover-эффектов */
-    transform: none !important;
-}
-
-body.light-theme .dashboard-card.is-placeholder:hover {
-    transform: none !important;
-}
-
-body.light-theme .dashboard-card.is-placeholder::after {
-    content: '';
-    display: block !important;
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 60px;
-    height: 60px;
-    border-color: rgba(59, 130, 246, 0.4);
-    background: radial-gradient(circle, rgba(59, 130, 246, 0.15) 0%, transparent 70%);
-    border: 3px dashed rgba(59, 130, 246, 0.4);
-    border-radius: 50%;
-    transform: translate(-50%, -50%);
-    animation: placeholderRotate 8s linear infinite;
-}
-
-body.light-theme .drop-zone-end.drag-active {
-    background: linear-gradient(135deg, 
-        rgba(59, 130, 246, 0.1) 0%, 
-        rgba(139, 92, 246, 0.08) 100%) !important;
-    border-color: rgba(59, 130, 246, 0.5) !important;
-    box-shadow: 
-        0 0 30px rgba(59, 130, 246, 0.15),
-        inset 0 0 30px rgba(59, 130, 246, 0.08);
-}
-
-body.light-theme .dashboard-card.just-dropped {
-    box-shadow: 
-        0 10px 40px rgba(0, 0, 0, 0.1),
-        0 0 0 2px rgba(59, 130, 246, 0.3);
-}
-/* ================================================================
-   BENTO GRID — светлая швейцарская вёрстка
-   Плитки на бумаге: равномерные зазоры, скругление 20px, один
-   красный акцент, Golos Text + Unbounded (кириллица).
-   Слой идёт последним и намеренно перекрывает обе легаси-темы.
-   ================================================================ */
-:root {
-    /* Тёмная тема — в тон остальному сайту (base_v2). Швейцарская
-       вёрстка bento сохранена, поменяны только цветовые токены. */
-    --bt-paper: #1a1d20;
-    --bt-tile: #262b32;
-    --bt-tile-soft: #2f353d;
-    --bt-line: rgba(255, 255, 255, 0.12);
-    --bt-ink: #e9ecef;
-    --bt-ink-soft: #99a1ab;
-    --bt-accent: #E2371F;
-    --bt-accent-deep: #B92C18;
-    --bt-r-tile: 20px;
-    --bt-r-ctl: 12px;
-    --bt-gap: 14px;
-    --bt-font-ui: 'Golos Text', 'Segoe UI', sans-serif;
-    --bt-font-display: 'Unbounded', 'Golos Text', sans-serif;
-}
-
-body.light-theme, body.dark-theme {
-    background: linear-gradient(135deg, #1a1d20 0%, #2c3e50 100%) !important;
-    color: var(--bt-ink);
-    font-family: var(--bt-font-ui);
-}
-
-/* --- Заголовок страницы --- */
-.display-6 {
-    font-family: var(--bt-font-display);
-    font-weight: 700 !important;
-    font-size: 1.9rem;
-    letter-spacing: -0.01em;
-    color: var(--bt-ink) !important;
-}
-
-.display-6 i { color: var(--bt-accent) !important; }
-.display-6 + p, p.text-muted { color: var(--bt-ink-soft) !important; }
-
-/* --- Кнопки страницы: нейтральные, один красный акцент --- */
-.btn-outline-info, .btn-outline-warning, .btn-outline-secondary,
-label.btn-outline-warning {
-    color: var(--bt-ink) !important;
-    border: 1px solid var(--bt-line) !important;
-    background: var(--bt-tile) !important;
-    border-radius: var(--bt-r-ctl) !important;
-    font-weight: 500;
-}
-
-.btn-outline-info:hover, .btn-outline-warning:hover, .btn-outline-secondary:hover,
-label.btn-outline-warning:hover {
-    border-color: var(--bt-ink) !important;
-    background: var(--bt-tile) !important;
-    color: var(--bt-ink) !important;
-}
-
-.btn-primary {
-    background: var(--bt-accent) !important;
-    border: 1px solid var(--bt-accent) !important;
-    border-radius: var(--bt-r-ctl) !important;
-    font-weight: 600;
-}
-
-.btn-primary:hover { background: var(--bt-accent-deep) !important; border-color: var(--bt-accent-deep) !important; }
-
-.btn-outline-danger {
-    color: var(--bt-accent) !important;
-    border: 1px solid var(--bt-accent) !important;
-    background: var(--bt-tile) !important;
-    border-radius: var(--bt-r-ctl) !important;
-}
-
-.btn-outline-danger:hover { background: var(--bt-accent) !important; color: #fff !important; }
-
-/* --- Вкладки страниц: плитка-полоса --- */
-body.light-theme .pages-nav, body.dark-theme .pages-nav,
-.pages-nav {
-    background: var(--bt-tile) !important;
-    border: 1px solid var(--bt-line) !important;
-    border-radius: var(--bt-r-tile) !important;
-}
-
-.page-tab {
-    background: var(--bt-tile-soft) !important;
-    border: 1px solid var(--bt-line) !important;
-    border-radius: var(--bt-r-ctl) !important;
-    color: var(--bt-ink) !important;
-}
-
-.page-tab:hover { border-color: var(--bt-ink) !important; }
-
-.page-tab.active {
-    background: var(--bt-ink) !important;
-    border-color: var(--bt-ink) !important;
-    color: var(--bt-paper) !important;
-}
-
-.page-tab.active .page-tab-title { color: var(--bt-paper) !important; }
-.page-tab-close { background: transparent; color: inherit; }
-.page-tab-close:hover { background: var(--bt-accent); color: #fff; }
-
-.page-tab-add {
-    background: var(--bt-tile-soft) !important;
-    border: 1.5px dashed var(--bt-ink-soft) !important;
-    color: var(--bt-ink-soft) !important;
-    border-radius: var(--bt-r-ctl) !important;
-}
-
-.page-tab-add:hover { border-color: var(--bt-ink) !important; color: var(--bt-ink) !important; }
-
-/* --- Тулбар: отдельная плитка --- */
-.toolbar {
-    background: var(--bt-tile) !important;
-    border: 1px solid var(--bt-line);
-    border-radius: var(--bt-r-tile);
-}
-
-.toolbar .text-muted { color: var(--bt-ink-soft) !important; }
-
-.toolbar .btn-add-widget {
-    color: var(--bt-ink);
-    border: 1px solid var(--bt-line);
-    background: var(--bt-tile);
-    border-radius: 10px;
-    font-weight: 500;
-}
-
-.toolbar .btn-add-widget:hover, .toolbar .btn-add-widget:focus {
-    color: var(--bt-ink);
-    border-color: var(--bt-ink);
-    background: var(--bt-tile-soft);
-}
-
-.toolbar .badge {
-    background: transparent !important;
-    border: 1px solid var(--bt-line);
-    color: var(--bt-ink-soft) !important;
-    border-radius: 8px;
-    font-weight: 500;
-}
-
-.toolbar .border-start { border-color: var(--bt-line) !important; }
-
-.edit-mode-btn {
-    background: var(--bt-tile);
-    border: 1px solid var(--bt-ink);
-    border-radius: var(--bt-r-ctl);
-    color: var(--bt-ink);
-    font-weight: 600;
-}
-
-.edit-mode-btn:hover { background: var(--bt-tile-soft); border-color: var(--bt-ink); }
-
-/* Активный режим правки — красный, вместо фиолетового градиента */
-.edit-mode-btn.active, .edit-mode-btn.active:hover {
-    background: var(--bt-accent) !important;
-    border-color: var(--bt-accent) !important;
-    color: #fff !important;
-    box-shadow: none !important;
-}
-
-/* --- Сетка: плитки прямо на бумаге --- */
-.card-grid {
-    background: transparent !important;
-    border-radius: 0;
-    padding: 0 !important;
-    gap: var(--bt-gap) !important;
-}
-
-/* --- Плитка bento ---
-   Специфичность с запасом: легаси-темы красят card-<type> с !important */
-body.light-theme .dashboard-card,
-body.dark-theme .dashboard-card,
-body.light-theme .dashboard-card[class*="card-"],
-body.dark-theme .dashboard-card[class*="card-"] {
-    background: var(--bt-tile) !important;
-    border: 1px solid var(--bt-line) !important;
-    border-left: 1px solid var(--bt-line) !important;
-    border-radius: var(--bt-r-tile) !important;
-    box-shadow: none !important;
-}
-
-.dashboard-card::before { display: none; }
-
-body.light-theme .dashboard-card:hover,
-body.light-theme .dashboard-card[class*="card-"]:hover,
-body.dark-theme .dashboard-card:hover,
-body.dark-theme .dashboard-card[class*="card-"]:hover {
+    touch-action: none;
+    user-select: none;
+    /* Fill the grid track exactly; container query context for card-value etc. */
+    align-self: stretch;
+    justify-self: stretch;
+    height: 100%;
+    min-height: 0;
+    max-height: 100%;
+    width: 100%;
+    container-type: size;
+    container-name: card;
+    transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease),
+        border-color var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+
+.dashboard-card:hover {
+    border-color: var(--border-strong);
     transform: translateY(-2px);
-    border-color: var(--bt-ink) !important;
+    box-shadow: var(--shadow-card-hover);
+}
+
+.dashboard-card:active {
+    cursor: grabbing;
+}
+
+/* Custom per-card color: JS sets inline border-left-color / background /
+   --custom-accent-color on .has-custom-color cards (getCardFullStyle()).
+   We only add a wider left edge so that inline color reads as an accent
+   bar — we never touch background/border-color/!important ourselves. */
+.has-custom-color {
+    border-left-width: 3px;
+}
+
+.has-custom-color:hover {
+    box-shadow: var(--shadow-card-hover), 0 0 0 1px var(--custom-accent-color, transparent);
+}
+
+/* Jiggle mode (edit mode, iOS-style wobble) */
+@keyframes dbJiggle {
+    0%, 100% { transform: rotate(-.35deg); }
+    50% { transform: rotate(.35deg); }
+}
+
+.card-grid.jiggle-mode .dashboard-card:not(.is-dragging):not(.is-placeholder) {
+    animation: dbJiggle 1.2s ease-in-out infinite;
+}
+
+.card-grid.jiggle-mode .dashboard-card:nth-child(even):not(.is-dragging):not(.is-placeholder) {
+    animation-delay: .3s;
+    animation-duration: 1.35s;
+}
+
+.card-grid.jiggle-mode .dashboard-card:nth-child(3n):not(.is-dragging):not(.is-placeholder) {
+    animation-delay: .15s;
+    animation-duration: 1.1s;
+}
+
+/* Floating drag ghost (JS clones the card, appends it to <body> and drives
+   position/left/top/width/height/transform/opacity inline — we only add
+   what it doesn't set: surface, border, cursor). */
+.dashboard-card.is-dragging {
+    cursor: grabbing;
+    background: var(--surface-3);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-card);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, .45), 0 0 0 1px var(--border-strong);
+}
+
+/* Background dim/blur while dragging (defensive — only engages if JS
+   toggles this class on #cardGrid) */
+.card-grid.drag-active-blur .dashboard-card:not(.is-dragging) {
+    filter: blur(1.5px) brightness(.85);
+    transition: filter var(--dur) var(--ease);
+}
+
+/* Ghost slot left behind at the original card while its clone floats */
+.dashboard-card.is-placeholder,
+.dashboard-card.card-placeholder {
+    background: var(--surface-recessed) !important;
+    border: 1.5px dashed var(--border-strong) !important;
     box-shadow: none !important;
+    animation: none !important;
 }
 
-/* Значения: чернила; долг — красный. Пользовательские цвета уважаем */
-body.light-theme .dashboard-card:not(.has-custom-color) .card-value,
-body.dark-theme .dashboard-card:not(.has-custom-color) .card-value {
-    color: var(--bt-ink) !important;
-    text-shadow: none;
+.dashboard-card.is-placeholder > *,
+.dashboard-card.card-placeholder > * {
+    opacity: 0 !important;
 }
 
-body.light-theme .dashboard-card.card-debt:not(.has-custom-color) .card-value,
-body.dark-theme .dashboard-card.card-debt:not(.has-custom-color) .card-value {
-    color: var(--bt-accent) !important;
+/* Resize */
+.dashboard-card.resizing {
+    transition: none !important;
+    z-index: 50;
+    box-shadow: 0 0 0 2px var(--accent), var(--shadow-card-hover);
 }
 
-body.light-theme .dashboard-card .card-label,
-body.dark-theme .dashboard-card .card-label {
-    font-family: var(--bt-font-display);
-    font-weight: 500;
-    letter-spacing: 0.05em;
-    color: var(--bt-ink-soft) !important;
+/* Drop spring + new-card entrance */
+@keyframes dbSizePop {
+    0% { transform: scale(.97); }
+    55% { transform: scale(1.015); }
+    100% { transform: scale(1); }
+}
+
+.dashboard-card.size-pop {
+    animation: dbSizePop var(--dur-slow) var(--ease);
+}
+
+@keyframes dbSpringDrop {
+    0% { transform: scale(1.05); }
+    45% { transform: scale(.97); }
+    75% { transform: scale(1.015); }
+    100% { transform: scale(1); }
+}
+
+.dashboard-card.just-dropped {
+    animation: dbSpringDrop 380ms var(--ease);
+}
+
+@keyframes dbCardEnter {
+    0% { opacity: 0; transform: scale(.85) translateY(16px); }
+    100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.dashboard-card.card-new {
+    animation: dbCardEnter var(--dur-slow) var(--ease);
+}
+
+/* Card actions (top-right cluster) */
+.card-actions {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 15;
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease);
+}
+
+.dashboard-card:hover .card-actions,
+.card-grid.edit-mode .dashboard-card .card-actions {
     opacity: 1;
 }
 
-/* Иконка карточки — тихий монохромный значок в правом верхнем углу.
-   Была крупной (4.5rem) и почти невидимой (цвет = линия), из-за чего
-   читалась как «пустой серый квадрат». Делаем компактной и различимой. */
-body.light-theme .dashboard-card .card-icon,
-body.light-theme .dashboard-card[class*="card-"] .card-icon,
-body.dark-theme .dashboard-card .card-icon {
-    font-size: 1.4rem !important;
-    width: auto !important;
-    height: auto !important;
-    top: 1.25rem !important;
-    right: 1.25rem !important;
-    bottom: auto !important;
-    transform: none !important;
-    opacity: 1 !important;
-    filter: none !important;
-    color: var(--bt-ink-soft) !important;
-}
-
-/* Долг — красный акцент, как и его значение */
-body.light-theme .dashboard-card.card-debt .card-icon,
-body.dark-theme .dashboard-card.card-debt .card-icon {
-    color: var(--bt-accent) !important;
-}
-
-/* Карточка с пользовательским цветом — значок наследует акцент */
-body.light-theme .dashboard-card.has-custom-color .card-icon,
-body.dark-theme .dashboard-card.has-custom-color .card-icon {
-    color: var(--custom-accent-color) !important;
-}
-
-body.light-theme .dashboard-card:hover .card-icon,
-body.dark-theme .dashboard-card:hover .card-icon {
-    color: var(--bt-ink) !important;
-}
-body.light-theme .dashboard-card.card-debt:not(.has-custom-color):hover .card-icon,
-body.dark-theme .dashboard-card.card-debt:not(.has-custom-color):hover .card-icon {
-    color: var(--bt-accent-deep) !important;
-}
-
-/* Карточки с собственным заголовком (график, сводка, заголовок, текст) —
-   угловой значок избыточен */
-body.light-theme .dashboard-card.card-chart .card-icon,
-body.light-theme .dashboard-card.card-areas_table .card-icon,
-body.light-theme .dashboard-card.card-header .card-icon,
-body.light-theme .dashboard-card.card-text .card-icon,
-body.dark-theme .dashboard-card.card-chart .card-icon,
-body.dark-theme .dashboard-card.card-areas_table .card-icon,
-body.dark-theme .dashboard-card.card-header .card-icon,
-body.dark-theme .dashboard-card.card-text .card-icon {
-    display: none !important;
-}
-
-/* Пустое состояние сводки — иконку в палитру темы (без ярко-синего
-   bootstrap-акцента) и компактнее, чтобы влезала в невысокую плитку */
-body.light-theme .dashboard-card.card-areas_table .fa-3x,
-body.dark-theme .dashboard-card.card-areas_table .fa-3x {
-    color: var(--bt-ink-soft) !important;
-    font-size: 1.9rem !important;
-    margin-bottom: 0.5rem !important;
-}
-
-/* --- Drop-зоны --- */
-.drop-zone-end, .empty-placeholder {
-    border: 1.5px dashed var(--bt-ink-soft) !important;
-    border-radius: var(--bt-r-tile) !important;
-    background: transparent !important;
-    color: var(--bt-ink-soft) !important;
-}
-
-/* Цветные полоски-::after легаси-темы отключаем полностью */
-body.light-theme .dashboard-card::after,
-body.light-theme .dashboard-card:hover::after,
-body.light-theme .dashboard-card[class*="card-"]::after {
-    display: none !important;
-    background: transparent !important;
-    box-shadow: none !important;
-}
-
-/* --- Режим правки: ::after возвращается как пунктирная рамка --- */
-body.light-theme .card-grid.edit-mode .dashboard-card::after,
-body.dark-theme .card-grid.edit-mode .dashboard-card::after,
-.card-grid.edit-mode .dashboard-card::after {
-    content: '' !important;
-    display: block !important;
-    position: absolute !important;
-    inset: 0 !important;
-    top: 0 !important;
-    bottom: 0 !important;
-    left: 0 !important;
-    width: auto !important;
-    background: transparent !important;
-    border: 2px dashed var(--bt-line) !important;
-    border-radius: var(--bt-r-tile) !important;
-    box-shadow: none !important;
-    z-index: 5 !important;
-    pointer-events: none;
-}
-
-body.light-theme .card-grid.edit-mode .dashboard-card:hover::after,
-body.dark-theme .card-grid.edit-mode .dashboard-card:hover::after,
-.card-grid.edit-mode .dashboard-card:hover::after {
-    border-color: var(--bt-accent) !important;
-    border-style: solid !important;
-    top: 0 !important;
-    bottom: 0 !important;
-    width: auto !important;
-}
-
-.card-grid.edit-mode .dashboard-card .card-actions {
-    background: var(--bt-tile);
-    border: 1px solid var(--bt-line);
-    border-radius: 10px;
-}
-
-.dashboard-card .card-actions .btn { border-radius: 8px !important; }
-
-/* --- Модалка настройки --- */
-.config-modal-content {
-    background: var(--bt-tile) !important;
-    border: 1px solid var(--bt-line) !important;
-    border-radius: var(--bt-r-tile) !important;
-    box-shadow: 0 24px 60px rgba(22, 19, 13, 0.18) !important;
-    color: var(--bt-ink);
-}
-
-.config-modal-header {
-    background: var(--bt-tile) !important;
-    border-bottom: 1px solid var(--bt-line) !important;
-    color: var(--bt-ink) !important;
-}
-
-.config-modal-header h5 { color: var(--bt-ink) !important; font-family: var(--bt-font-display); font-weight: 500; }
-.config-modal-icon { background: var(--bt-ink) !important; color: var(--bt-paper) !important; border-radius: var(--bt-r-ctl) !important; }
-.config-modal-header small, .config-modal-header .text-muted { color: var(--bt-ink-soft) !important; }
-
-.config-tabs-nav {
-    background: var(--bt-tile-soft) !important;
-    border-bottom: 1px solid var(--bt-line);
-}
-
-.config-tab-btn { color: var(--bt-ink-soft) !important; border-radius: 10px !important; }
-.config-tab-btn:hover { color: var(--bt-ink) !important; background: var(--bt-tile) !important; }
-
-.config-tab-btn.active {
-    background: var(--bt-ink) !important;
-    color: var(--bt-paper) !important;
-    box-shadow: none !important;
-}
-
-.config-modal-body {
-    background:
-        linear-gradient(rgba(22, 19, 13, 0) 0%, rgba(22, 19, 13, 0.12) 100%) bottom / 100% 18px no-repeat local,
-        linear-gradient(rgba(22, 19, 13, 0.12) 0%, rgba(22, 19, 13, 0) 100%) top / 100% 18px no-repeat local;
-}
-
-.config-modal-footer {
-    background: var(--bt-tile-soft) !important;
-    border-top: 1px solid var(--bt-line) !important;
-}
-
-/* --- Контролы модалки: светлые, читаемые --- */
-.config-input, .config-select, textarea.config-input {
-    background: var(--bt-tile) !important;
-    border: 1px solid var(--bt-line) !important;
-    border-radius: var(--bt-r-ctl) !important;
-    color: var(--bt-ink) !important;
-}
-
-.config-input::placeholder { color: var(--bt-ink-soft) !important; }
-
-.config-input:focus, .config-select:focus {
-    border-color: var(--bt-ink) !important;
-    box-shadow: 0 0 0 3px rgba(226, 55, 31, 0.15) !important;
-}
-
-.config-metric-btn {
-    background: var(--bt-tile) !important;
-    border: 1px solid var(--bt-line) !important;
-    border-radius: var(--bt-r-ctl) !important;
-    color: var(--bt-ink-soft) !important;
-}
-
-.config-metric-btn i, .config-metric-btn span { color: inherit !important; }
-
-.config-metric-btn:hover {
-    border-color: var(--bt-ink) !important;
-    color: var(--bt-ink) !important;
-    background: var(--bt-tile-soft) !important;
-    box-shadow: none !important;
-}
-
-.config-metric-btn.active {
-    background: var(--bt-tile-soft) !important;
-    border: 2px solid var(--bt-ink) !important;
-    color: var(--bt-ink) !important;
-    box-shadow: none !important;
-}
-
-.config-section-title, .config-label, .config-modal-body label {
-    color: var(--bt-ink) !important;
-}
-
-.config-modal-body .text-muted, .config-modal-body small {
-    color: var(--bt-ink-soft) !important;
-}
-
-.config-btn { border-radius: var(--bt-r-ctl) !important; font-weight: 600; }
-
-.config-btn-secondary {
-    background: var(--bt-tile) !important;
-    border: 1px solid var(--bt-line) !important;
-    color: var(--bt-ink) !important;
-}
-
-.config-btn-secondary:hover { border-color: var(--bt-ink) !important; background: var(--bt-tile-soft) !important; }
-
-.config-btn-primary {
-    background: var(--bt-accent) !important;
-    border: 1px solid var(--bt-accent) !important;
-    color: #fff !important;
-    box-shadow: none !important;
-}
-
-.config-btn-primary:hover { background: var(--bt-accent-deep) !important; border-color: var(--bt-accent-deep) !important; }
-
-/* --- Дропдауны на светлой странице --- */
-.dropdown-menu-dark, .dropdown-menu {
-    background: var(--bt-tile) !important;
-    border: 1px solid var(--bt-line) !important;
-    border-radius: var(--bt-r-ctl) !important;
-    box-shadow: 0 12px 32px rgba(22, 19, 13, 0.12) !important;
-}
-
-.dropdown-menu-dark .dropdown-item, .dropdown-menu .dropdown-item {
-    color: var(--bt-ink) !important;
+.card-actions .btn {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     border-radius: 8px;
+    font-size: .68rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    transition: all var(--dur-fast) var(--ease);
 }
 
-.dropdown-menu-dark .dropdown-item:hover, .dropdown-menu .dropdown-item:hover {
-    background: var(--bt-tile-soft) !important;
-    color: var(--bt-ink) !important;
+.card-actions .btn-outline-light {
+    color: var(--text-dim) !important;
+    border-color: var(--border-strong) !important;
 }
 
-.dropdown-menu .dropdown-item i { color: var(--bt-ink-soft) !important; }
+.card-actions .btn-outline-light:hover {
+    background: var(--surface-3) !important;
+    color: var(--text) !important;
+}
 
-/* --- Bento size-picker: пресеты размеров карточки --- */
-[x-cloak] { display: none !important; }
+.card-actions .btn-outline-success {
+    color: var(--success) !important;
+    border-color: rgba(34, 197, 94, .4) !important;
+}
 
+.card-actions .btn-outline-success:hover {
+    background: var(--success) !important;
+    color: #06210f !important;
+}
+
+.card-actions .btn-outline-danger {
+    color: var(--danger) !important;
+    border-color: rgba(239, 68, 68, .4) !important;
+}
+
+.card-actions .btn-outline-danger:hover {
+    background: var(--danger) !important;
+    color: #fff !important;
+}
+
+/* Size picker (bento preset flyout) */
 .size-picker {
     position: absolute;
-    top: 46px;
-    right: 5px;
-    z-index: 120;
+    top: 40px;
+    right: 8px;
+    z-index: 20;
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
+    max-width: 214px;
     padding: 6px;
-    max-width: calc(100% - 10px);
-    background: var(--bt-tile);
-    border: 1px solid var(--bt-line);
-    border-radius: var(--bt-r-ctl);
-    box-shadow: 0 12px 32px rgba(22, 19, 13, 0.16);
-    animation: sizePickerIn 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-ctl);
+    box-shadow: var(--shadow-modal);
+    animation: dbPickerIn 160ms var(--ease);
 }
 
-@keyframes sizePickerIn {
-    from { opacity: 0; transform: translateY(-4px) scale(0.96); }
-    to   { opacity: 1; transform: none; }
+@keyframes dbPickerIn {
+    from { opacity: 0; transform: translateY(-4px) scale(.96); }
+    to { opacity: 1; transform: none; }
 }
 
 .size-preset {
@@ -5013,117 +730,1413 @@ body.dark-theme .card-grid.edit-mode .dashboard-card:hover::after,
     border: 1px solid transparent;
     border-radius: 8px;
     cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 
 .size-preset:hover {
-    background: var(--bt-tile-soft);
-    border-color: var(--bt-line);
+    background: var(--surface-3);
+    border-color: var(--border);
 }
 
 .size-preset.active {
-    background: var(--bt-tile-soft);
-    border-color: var(--bt-ink);
+    background: var(--surface-3);
+    border-color: var(--accent);
 }
 
 .size-preset-shape {
     display: block;
-    background: var(--bt-line);
-    border: 1px solid var(--bt-ink-soft);
+    background: var(--border-strong);
+    border: 1px solid var(--border);
     border-radius: 3px;
-    transition: background-color 0.15s ease, border-color 0.15s ease;
+    transition: background-color var(--dur-fast) ease, border-color var(--dur-fast) ease;
 }
 
 .size-preset:hover .size-preset-shape,
 .size-preset.active .size-preset-shape {
-    background: var(--bt-accent);
-    border-color: var(--bt-accent-deep);
+    background: var(--accent);
+    border-color: var(--accent-strong);
 }
 
-.dashboard-card.size-pop {
-    animation: sizePop 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+/* Resize handle: an obvious grabbable chip, visible only in edit mode */
+.card-grid:not(.edit-mode) .dashboard-card .resize-handle {
+    display: none;
 }
 
-@keyframes sizePop {
-    0%   { transform: scale(0.97); }
-    60%  { transform: scale(1.012); }
-    100% { transform: scale(1); }
+.card-grid.edit-mode .dashboard-card .resize-handle {
+    display: block;
 }
 
-/* --- Drag-ресайз: ручка — заметный чип-уголок, работает мышью и пальцем --- */
-.dashboard-card .resize-handle {
-    width: 34px;
-    height: 34px;
+.resize-handle {
+    position: absolute;
     bottom: 6px;
     right: 6px;
-    background: var(--bt-tile);
-    border: 1px solid var(--bt-line);
+    width: 30px;
+    height: 30px;
     border-radius: 10px;
-    box-shadow: 0 2px 8px rgba(22, 19, 13, 0.10);
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
+    cursor: se-resize;
     touch-action: none;
+    z-index: 10;
+    transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 
-/* Две диагональные линии-грип */
-.dashboard-card .resize-handle::before,
-.dashboard-card .resize-handle::after {
-    background: var(--bt-ink-soft);
-    border-radius: 2px;
+.resize-handle::before,
+.resize-handle::after {
+    content: '';
+    position: absolute;
     left: 50%;
     top: 50%;
-    right: auto;
-    bottom: auto;
+    background: var(--text-faint);
+    border-radius: 2px;
+    transition: background-color var(--dur) var(--ease);
 }
 
-.dashboard-card .resize-handle::before {
-    width: 16px;
+.resize-handle::before {
+    width: 14px;
     height: 2px;
     transform: translate(-50%, -50%) rotate(-45deg);
 }
 
-.dashboard-card .resize-handle::after {
-    width: 8px;
+.resize-handle::after {
+    width: 7px;
     height: 2px;
-    transform: translate(calc(-50% + 5px), calc(-50% + 5px)) rotate(-45deg);
+    transform: translate(calc(-50% + 4px), calc(-50% + 4px)) rotate(-45deg);
 }
 
-.dashboard-card .resize-handle:hover,
+.resize-handle:hover,
 .dashboard-card.resizing .resize-handle {
-    background: var(--bt-accent);
-    border-color: var(--bt-accent-deep);
+    background: var(--accent);
+    border-color: var(--accent-strong);
 }
 
-.dashboard-card .resize-handle:hover::before,
-.dashboard-card .resize-handle:hover::after,
+.resize-handle:hover::before,
+.resize-handle:hover::after,
 .dashboard-card.resizing .resize-handle::before,
 .dashboard-card.resizing .resize-handle::after {
     background: #fff;
 }
 
-.card-grid.edit-mode .dashboard-card .resize-handle {
-    opacity: 1;
-}
-
-.dashboard-card.resizing,
-body.light-theme .dashboard-card.resizing {
-    box-shadow: 0 20px 44px rgba(22, 19, 13, 0.18), 0 0 0 2px var(--bt-accent) !important;
-    border-radius: var(--bt-r-tile);
-}
-
-/* Живое превью растягивания */
+/* Live resize preview + W×H pill (appended to <body> by JS; JS drives
+   left/top/width/height/opacity/transform inline, not `position`) */
 .resize-preview {
-    border: 2px dashed var(--bt-accent);
-    background: rgba(226, 55, 31, 0.05);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-    border-radius: var(--bt-r-tile);
-    box-shadow: none;
+    position: fixed;
+    pointer-events: none;
+    border: 2px dashed var(--accent);
+    background: rgba(59, 130, 246, .08);
+    border-radius: var(--r-card);
+    z-index: 9998;
+    box-shadow: var(--shadow-pop);
 }
 
-/* Пилюля-индикатор W × H */
 .resize-indicator {
-    background: var(--bt-ink);
-    color: var(--bt-paper);
-    font-family: var(--bt-font-ui);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-    box-shadow: 0 10px 30px rgba(22, 19, 13, 0.25);
+    position: fixed;
+    z-index: 9999;
+    pointer-events: none;
+    background: var(--surface-3);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-weight: 600;
+    font-size: .85rem;
+    letter-spacing: .02em;
+    font-variant-numeric: tabular-nums;
+    padding: 8px 16px;
+    border-radius: var(--r-pill);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-modal);
+    animation: dbPopIn 160ms var(--ease);
+}
+
+@keyframes dbPopIn {
+    from { opacity: 0; transform: scale(.85) translateY(6px); }
+    to { opacity: 1; transform: none; }
+}
+
+/* ---------------------------------------------------------------------- *
+ * 7. Card content — icon, label, value, per-type accents
+ * ---------------------------------------------------------------------- */
+.card-icon {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 2;
+    width: 2.2rem;
+    height: 2.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 14px;
+    font-size: 1.15rem;
+    color: var(--text-dim);
+    background: color-mix(in srgb, currentColor 12%, transparent);
+    transition: transform var(--dur) var(--ease), background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.dashboard-card:hover .card-icon {
+    transform: scale(1.05);
+}
+
+/* Titled card types render their own header — hide the corner icon */
+.card-chart .card-icon,
+.card-areas_table .card-icon,
+.card-header .card-icon,
+.card-text .card-icon {
+    display: none;
+}
+
+.card-sales .card-icon { color: var(--type-sales); }
+.card-payments .card-icon { color: var(--type-payments); }
+.card-debt .card-icon { color: var(--type-debt); }
+.card-customers .card-icon { color: var(--type-customers); }
+.card-forecast .card-icon { color: var(--type-forecast); }
+.card-completion .card-icon { color: var(--type-completion); }
+.card-daily .card-icon { color: var(--type-daily); }
+.card-days .card-icon { color: var(--type-days); }
+.card-needed .card-icon { color: var(--type-needed); }
+.card-gap .card-icon { color: var(--type-gap); }
+.card-custom .card-icon { color: var(--type-custom); }
+
+.card-label {
+    font-size: .72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--text-faint);
+    max-width: 100%;
+}
+
+.metric-badge {
+    font-size: .6rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: var(--r-pill);
+    margin-left: 8px;
+}
+
+.metric-badge.bg-primary {
+    background: var(--accent) !important;
+    color: #fff !important;
+}
+
+.card-value {
+    /* Auto-fit number: shrinks on tiny 1x1 cards, caps out on big ones. */
+    font-size: clamp(1rem, min(11cqw, 26cqh), 3rem);
+    line-height: 1.05;
+    font-weight: 800;
+    letter-spacing: -.01em;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    word-break: normal;
+    overflow-wrap: normal;
+    max-width: 100%;
+    margin: 6px 0 2px;
+}
+
+.card-sales .card-value { color: var(--type-sales); }
+.card-payments .card-value { color: var(--type-payments); }
+.card-debt .card-value { color: var(--type-debt); }
+.card-customers .card-value { color: var(--type-customers); }
+.card-forecast .card-value { color: var(--type-forecast); }
+.card-completion .card-value { color: var(--type-completion); }
+.card-daily .card-value { color: var(--type-daily); }
+.card-days .card-value { color: var(--type-days); }
+.card-needed .card-value { color: var(--type-needed); }
+.card-gap .card-value { color: var(--type-gap); }
+.card-custom .card-value { color: var(--type-custom); }
+
+.card-value .spinner-border {
+    color: var(--text-faint);
+}
+
+/* Text-only cards: header / note */
+.text-card-content {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.header-card h4 {
+    font-weight: 700;
+    color: var(--text);
+    font-size: clamp(1rem, 8cqw, 1.6rem);
+}
+
+.header-card p {
+    color: var(--text-dim);
+}
+
+.text-note-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    height: 100%;
+}
+
+.text-note-title {
+    font-weight: 700;
+    color: var(--text);
+    font-size: clamp(.85rem, 6cqw, 1.1rem);
+}
+
+.text-note-content {
+    color: var(--text-dim);
+    font-size: clamp(.75rem, 4cqw, .95rem);
+    line-height: 1.5;
+    overflow: auto;
+}
+
+.card-header .card-icon,
+.card-text .card-icon {
+    color: var(--type-header);
+}
+
+/* ---------------------------------------------------------------------- *
+ * 8. Trend / comparison / filters / forecast
+ * ---------------------------------------------------------------------- */
+.year-trend {
+    display: flex;
+}
+
+.trend-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border-radius: var(--r-pill);
+    font-weight: 700;
+    font-size: .78rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.trend-badge.trend-up {
+    background: rgba(34, 197, 94, .14);
+    color: var(--success);
+}
+
+.trend-badge.trend-down {
+    background: rgba(239, 68, 68, .14);
+    color: var(--danger);
+}
+
+.trend-label {
+    color: var(--text-faint);
+    font-weight: 500;
+    font-size: .72em;
+    margin-left: 2px;
+}
+
+.filters-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.filter-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: .68rem;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+}
+
+/* These two variants carry an inline background from the template
+   (cursor/background set as an inline style); !important is required
+   here purely to let the hover state read on top of that inline style. */
+.filter-tag-more:hover,
+.filter-tag-collapse:hover {
+    background: var(--surface-3) !important;
+    color: var(--text) !important;
+}
+
+.comparison-block {
+    width: 100%;
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: var(--surface-recessed);
+    border-radius: var(--r-ctl);
+    font-size: .8rem;
+}
+
+.comparison-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.comparison-item:last-child {
+    border-bottom: none;
+}
+
+.comparison-label {
+    color: var(--text-faint);
+}
+
+.comparison-value {
+    font-weight: 700;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+
+.comparison-change {
+    font-size: .72rem;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 6px;
+    margin-left: 6px;
+    font-variant-numeric: tabular-nums;
+}
+
+.comparison-change.positive { background: rgba(34, 197, 94, .14); color: var(--success); }
+.comparison-change.negative { background: rgba(239, 68, 68, .14); color: var(--danger); }
+.comparison-change.neutral { background: rgba(245, 158, 11, .14); color: var(--warning); }
+
+/* ---------------------------------------------------------------------- *
+ * 9. Chart card
+ * ---------------------------------------------------------------------- */
+.card-chart .card-label {
+    margin-bottom: 6px;
+}
+
+.chart-wrapper,
+.chart-container {
+    position: relative;
+    width: 100%;
+    background: transparent;
+}
+
+/* ---------------------------------------------------------------------- *
+ * 10. Areas summary table card
+ * ---------------------------------------------------------------------- */
+.areas-table-container {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    container-type: size;
+    container-name: tablebox;
+}
+
+.areas-table-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-shrink: 0;
+    padding-bottom: 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+.areas-table-title {
+    font-size: clamp(.68rem, 3.4cqw, .92rem);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--text-dim);
+}
+
+.areas-table-count {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: clamp(.62rem, 2.6cqw, .8rem);
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: var(--r-pill);
+    background: var(--surface-recessed);
+    font-variant-numeric: tabular-nums;
+}
+
+.areas-table-wrapper {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    border-radius: 10px;
+    background: var(--surface-recessed);
+}
+
+.areas-table-wrapper::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.areas-table-wrapper::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 4px;
+}
+
+.areas-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .8rem;
+}
+
+.areas-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface-2);
+    color: var(--text-faint);
+    text-transform: uppercase;
+    font-size: .64rem;
+    font-weight: 700;
+    letter-spacing: .05em;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-strong);
+    white-space: nowrap;
+}
+
+.areas-table tbody td {
+    padding: 7px 10px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+}
+
+.areas-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.areas-table tbody tr:hover td {
+    background: var(--surface-2);
+}
+
+.areas-table .text-end {
+    text-align: right;
+}
+
+.areas-table .text-center {
+    text-align: center;
+}
+
+.areas-table .value-cell {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+.area-badge {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.area-code {
+    color: var(--accent);
+    font-weight: 700;
+    font-size: .72rem;
+}
+
+.area-name {
+    color: var(--text);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 180px;
+}
+
+.percent-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: var(--r-pill);
+    font-size: .7rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.percent-badge.success { background: rgba(34, 197, 94, .14); color: var(--success); }
+.percent-badge.warning { background: rgba(245, 158, 11, .14); color: var(--warning); }
+.percent-badge.danger { background: rgba(239, 68, 68, .14); color: var(--danger); }
+
+.value-today { color: #22d3ee; }
+.value-sales { color: var(--type-sales); }
+.value-plan { color: var(--text-faint); }
+.value-forecast { color: var(--warning); }
+.value-last-year { color: var(--text-dim); }
+.value-debt { color: var(--danger); }
+
+.trend-mini {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: .7rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.trend-mini.trend-up { color: var(--success); }
+.trend-mini.trend-down { color: var(--danger); }
+
+.total-row td {
+    background: var(--surface-2);
+    font-weight: 700;
+    border-top: 2px solid var(--border-strong) !important;
+}
+
+.total-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text);
+    font-weight: 700;
+}
+
+.total-label i {
+    color: var(--accent);
+}
+
+/* Reserved for inline progress rows in table cells (defensive — not
+   currently emitted by the template, kept for forward compatibility) */
+.mini-progress {
+    position: relative;
+    width: 100%;
+    height: 4px;
+    border-radius: var(--r-pill);
+    background: var(--surface-3);
+    overflow: hidden;
+}
+
+.mini-progress .bar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    height: 100%;
+    background: var(--accent);
+    border-radius: var(--r-pill);
+}
+
+/* ---------------------------------------------------------------------- *
+ * 11. Config modal
+ * ---------------------------------------------------------------------- */
+.config-modal-overlay {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 20000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, .6);
+}
+
+.config-modal-content {
+    width: 100%;
+    max-width: 640px;
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r-card);
+    box-shadow: var(--shadow-modal);
+    overflow: hidden;
+}
+
+.config-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border);
+}
+
+.config-modal-icon {
+    width: 42px;
+    height: 42px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    color: #fff;
+    font-size: 1.1rem;
+}
+
+.config-modal-header h5 {
+    color: var(--text);
+}
+
+.config-modal-header small {
+    color: var(--text-faint) !important;
+}
+
+.config-modal-close {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-dim);
+    transition: all var(--dur) var(--ease);
+}
+
+.config-modal-close:hover {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: #fff;
+}
+
+.config-modal-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 18px 20px;
+}
+
+.config-modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    flex-shrink: 0;
+    padding: 14px 20px;
+    border-top: 1px solid var(--border);
+}
+
+.config-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 9px 18px;
+    border-radius: var(--r-ctl);
+    border: 1px solid transparent;
+    font-size: .86rem;
+    font-weight: 600;
+    transition: all var(--dur) var(--ease);
+}
+
+.config-btn-secondary {
+    background: var(--surface);
+    border-color: var(--border-strong);
+    color: var(--text-dim);
+}
+
+.config-btn-secondary:hover {
+    background: var(--surface-3);
+    color: var(--text);
+}
+
+.config-btn-primary {
+    background: var(--accent);
+    color: #fff;
+}
+
+.config-btn-primary:hover {
+    background: var(--accent-strong);
+}
+
+/* Tabs nav */
+.config-tabs-nav {
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    margin-bottom: 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-ctl);
+}
+
+.config-tab-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: .85rem;
+    font-weight: 600;
+    transition: all var(--dur-fast) var(--ease);
+}
+
+.config-tab-btn:hover {
+    background: var(--surface-2);
+    color: var(--text);
+}
+
+.config-tab-btn.active {
+    background: var(--accent);
+    color: #fff;
+}
+
+.config-tab-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    margin-left: 4px;
+    border-radius: var(--r-pill);
+    background: var(--danger);
+    color: #fff;
+    font-size: .62rem;
+    font-weight: 700;
+}
+
+/* Fields */
+.config-field {
+    margin-bottom: 18px;
+}
+
+.config-field:last-child {
+    margin-bottom: 0;
+}
+
+.config-label {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+    font-size: .78rem;
+    font-weight: 600;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.config-label i {
+    color: var(--text-faint);
+}
+
+.config-hint {
+    color: var(--text-faint) !important;
+}
+
+.config-input,
+.config-select {
+    width: 100%;
+    padding: 9px 12px;
+    background: var(--surface-recessed);
+    border: 1px solid var(--border);
+    border-radius: var(--r-ctl);
+    color: var(--text);
+    font-size: .88rem;
+    transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.config-input::placeholder {
+    color: var(--text-faint);
+}
+
+.config-input:focus,
+.config-select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* Choice grids: metric / period / format / chart type */
+.config-metric-grid,
+.config-period-grid,
+.config-format-grid,
+.config-chart-type-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 8px;
+}
+
+.config-metric-btn,
+.config-period-btn,
+.config-format-btn,
+.config-chart-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 12px 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-ctl);
+    color: var(--text-dim);
+    font-size: .76rem;
+    font-weight: 600;
+    text-align: center;
+    transition: all var(--dur-fast) var(--ease);
+}
+
+.config-metric-btn i,
+.config-period-btn i,
+.config-format-btn i,
+.config-chart-btn i {
+    font-size: 1.1rem;
+    color: var(--text-faint);
+    transition: color var(--dur-fast) var(--ease);
+}
+
+.config-metric-btn:hover,
+.config-period-btn:hover,
+.config-format-btn:hover,
+.config-chart-btn:hover {
+    background: var(--surface-3);
+    border-color: var(--border-strong);
+    color: var(--text);
+}
+
+.config-metric-btn.active,
+.config-period-btn.active,
+.config-format-btn.active,
+.config-chart-btn.active {
+    background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.config-metric-btn:hover i,
+.config-period-btn:hover i,
+.config-format-btn:hover i,
+.config-chart-btn:hover i,
+.config-metric-btn.active i,
+.config-period-btn.active i,
+.config-format-btn.active i,
+.config-chart-btn.active i {
+    color: var(--accent);
+}
+
+.config-metric-forecast {
+    border-style: dashed;
+}
+
+/* Chart metrics / year-compare checkbox grid */
+.config-chart-metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 8px;
+}
+
+.config-metric-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-ctl);
+    color: var(--text-dim);
+    font-size: .82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--dur-fast) var(--ease);
+}
+
+.config-metric-checkbox input {
+    accent-color: var(--accent);
+}
+
+.config-metric-checkbox:hover {
+    border-color: var(--border-strong);
+}
+
+.config-metric-checkbox.active {
+    background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+/* Toggle card (e.g. "Показать сравнение") */
+.config-toggle-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-ctl);
+    cursor: pointer;
+    transition: all var(--dur) var(--ease);
+}
+
+.config-toggle-card:hover {
+    border-color: var(--border-strong);
+}
+
+.config-toggle-card.active {
+    background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+    border-color: var(--accent);
+}
+
+.config-toggle-icon {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: var(--surface-3);
+    color: var(--text-dim);
+    transition: all var(--dur) var(--ease);
+}
+
+.config-toggle-card.active .config-toggle-icon {
+    background: var(--accent);
+    color: #fff;
+}
+
+.config-toggle-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.config-toggle-title {
+    color: var(--text);
+    font-weight: 600;
+    font-size: .86rem;
+}
+
+.config-toggle-desc {
+    color: var(--text-faint);
+    font-size: .74rem;
+}
+
+.config-toggle-switch {
+    flex-shrink: 0;
+}
+
+/* Selected filter tags */
+.config-selected-tags {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.config-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px 4px 10px;
+    border-radius: var(--r-pill);
+    background: var(--surface-3);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    font-size: .76rem;
+    font-weight: 600;
+}
+
+.config-tag-area { border-color: rgba(59, 130, 246, .4); }
+.config-tag-group { border-color: rgba(139, 92, 246, .4); }
+.config-tag-division { border-color: rgba(245, 158, 11, .4); }
+
+.config-tag-remove {
+    cursor: pointer;
+    color: var(--text-faint);
+    font-size: .68rem;
+    transition: color var(--dur-fast) var(--ease);
+}
+
+.config-tag-remove:hover {
+    color: var(--danger);
+}
+
+.config-tag-clear {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    font-size: .76rem;
+    transition: color var(--dur-fast) var(--ease);
+}
+
+.config-tag-clear:hover {
+    color: var(--danger);
+}
+
+.config-list-count {
+    margin-left: 4px;
+    color: var(--text-faint);
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
+    font-size: .72rem;
+}
+
+.config-empty-list {
+    padding: 14px;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: .82rem;
+}
+
+/* Hierarchy trees (areas / groups / divisions) */
+.config-hierarchy-list {
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 6px;
+    background: var(--surface-recessed);
+    border: 1px solid var(--border);
+    border-radius: var(--r-ctl);
+}
+
+.config-hierarchy-item {
+    border-radius: 8px;
+}
+
+.config-hierarchy-parent {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease);
+}
+
+.config-hierarchy-parent:hover {
+    background: var(--surface-3);
+}
+
+.config-hierarchy-arrow {
+    width: 14px;
+    text-align: center;
+    font-size: .7rem;
+    color: var(--text-faint);
+}
+
+.config-hierarchy-children {
+    padding-left: 22px;
+}
+
+.config-hierarchy-child {
+    display: flex;
+    align-items: center;
+    padding: 6px 8px;
+    border-radius: 8px;
+    transition: background-color var(--dur-fast) var(--ease);
+}
+
+.config-hierarchy-child:hover {
+    background: var(--surface-3);
+}
+
+.config-hierarchy-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    margin-left: 6px;
+    border-radius: var(--r-pill);
+    background: var(--surface-3);
+    color: var(--text-faint);
+    font-size: .65rem;
+    font-weight: 700;
+}
+
+.config-hierarchy-list .form-check-label {
+    color: var(--text-dim);
+    font-size: .84rem;
+    cursor: pointer;
+}
+
+.config-hierarchy-parent .form-check-label {
+    font-weight: 700;
+    color: var(--text);
+}
+
+/* Column manager (areas_table) */
+.config-columns-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 260px;
+    overflow-y: auto;
+}
+
+.config-column-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-ctl);
+    cursor: grab;
+    transition: border-color var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+}
+
+.config-column-item.dragging {
+    opacity: .5;
+}
+
+.config-column-item.disabled {
+    opacity: .45;
+}
+
+.config-column-drag {
+    color: var(--text-faint);
+    cursor: grab;
+}
+
+.config-column-checkbox input {
+    accent-color: var(--accent);
+}
+
+.config-column-label {
+    flex: 1;
+    color: var(--text);
+    font-size: .84rem;
+    cursor: pointer;
+}
+
+.config-columns-actions .btn {
+    font-size: .78rem;
+}
+
+/* Size grid + preview */
+.config-size-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.config-size-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.config-size-label {
+    width: 64px;
+    flex-shrink: 0;
+    color: var(--text-faint);
+    font-size: .8rem;
+}
+
+.config-size-buttons {
+    display: flex;
+    gap: 6px;
+}
+
+.config-size-btn {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-dim);
+    font-weight: 700;
+    transition: all var(--dur-fast) var(--ease);
+}
+
+.config-size-btn:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
+}
+
+.config-size-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.config-size-preview {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 16px;
+    background: var(--surface-recessed);
+    border-radius: var(--r-ctl);
+}
+
+.config-size-preview-grid {
+    display: grid;
+    gap: 3px;
+    width: 96px;
+    height: 96px;
+}
+
+.config-size-preview-cell {
+    background: var(--surface-3);
+    border-radius: 2px;
+    transition: background-color var(--dur-fast) var(--ease);
+}
+
+.config-size-preview-cell.active {
+    background: var(--accent);
+}
+
+.config-size-preview-label {
+    color: var(--text-faint);
+    font-size: .76rem;
+    font-weight: 600;
+    letter-spacing: .03em;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Color swatches */
+.color-picker-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.color-swatch {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+
+.color-swatch:hover {
+    transform: scale(1.08);
+}
+
+.color-swatch.selected {
+    border-color: var(--text);
+    box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 4px var(--text);
+}
+
+.color-swatch-default {
+    background: repeating-linear-gradient(45deg, var(--surface-3), var(--surface-3) 4px, var(--surface-recessed) 4px, var(--surface-recessed) 8px);
+    border: 1px solid var(--border-strong);
+}
+
+/* ---------------------------------------------------------------------- *
+ * 12. Bootstrap form controls (checkboxes, switches) on dark surfaces
+ * ---------------------------------------------------------------------- */
+.builder-container .form-check-input {
+    background-color: var(--surface-recessed);
+    border-color: var(--border-strong);
+}
+
+.builder-container .form-check-input:checked {
+    background-color: var(--accent) !important;
+    border-color: var(--accent) !important;
+}
+
+.builder-container .form-check-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.builder-container .form-switch .form-check-input {
+    background-color: var(--surface-recessed);
+}
+
+/* ---------------------------------------------------------------------- *
+ * 13. State utilities
+ * ---------------------------------------------------------------------- */
+.positive,
+.success {
+    color: var(--success);
+}
+
+.negative,
+.danger {
+    color: var(--danger);
+}
+
+.neutral,
+.warning {
+    color: var(--warning);
+}
+
+.disabled {
+    opacity: .5;
+    pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------- *
+ * 14. Responsive — component sizing only. The grid itself (columns, gap,
+ *     row height) never changes; see the note at the top of this file.
+ * ---------------------------------------------------------------------- */
+@media (max-width: 767.98px) {
+    .toolbar {
+        padding: var(--sp-3);
+    }
+
+    .config-modal-content {
+        max-width: 92vw;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .pages-nav {
+        padding: 6px 8px;
+    }
+
+    .page-tab {
+        padding: 7px 12px;
+    }
+
+    .page-tab-title {
+        font-size: .8rem;
+    }
+
+    .edit-mode-btn,
+    .btn-add-widget {
+        min-height: 40px;
+    }
+
+    .config-modal-overlay {
+        padding: 0;
+        align-items: flex-end;
+    }
+
+    .config-modal-content {
+        max-width: 100%;
+        width: 100%;
+        max-height: 92vh;
+        border-radius: var(--r-card) var(--r-card) 0 0;
+    }
+
+    .config-metric-grid,
+    .config-period-grid,
+    .config-format-grid,
+    .config-chart-type-grid,
+    .config-chart-metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+/* ---------------------------------------------------------------------- *
+ * 15. Reduced motion
+ * ---------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+    .dashboard-card,
+    .dashboard-card * {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+    }
+
+    .card-grid.jiggle-mode .dashboard-card {
+        animation: none !important;
+    }
+
+    .dashboard-card:hover {
+        transform: none;
+    }
 }
