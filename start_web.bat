@@ -23,6 +23,6 @@ echo.
 echo Press Ctrl+C to stop the server
 echo.
 
-python app.py
+python app_v2.py
 
 pause

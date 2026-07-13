@@ -1,6 +1,11 @@
 import pyodbc
 from typing import Optional, List, Tuple
 import logging
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -10,21 +15,21 @@ logger = logging.getLogger(__name__)
 class DatabaseConnection:
     """Manages SQL Server database connections for Sales Management System"""
     
-    def __init__(self, server: str = "localhost", database: str = "SalesManagement", 
-                 username: str = "sa", password: str = "Aa123456"):
+    def __init__(self, server: str = None, database: str = None, 
+                 username: str = None, password: str = None):
         """
         Initialize database connection parameters
         
         Args:
-            server: SQL Server instance (default: localhost)
-            database: Database name (default: SalesManagement)
-            username: SQL Server username (default: sa)
-            password: SQL Server password (default: Aa123456)
+            server: SQL Server instance (default: from env or localhost)
+            database: Database name (default: from env or SalesManagement)
+            username: SQL Server username (default: from env or sa)
+            password: SQL Server password (default: from env or Aa123456)
         """
-        self.server = server
-        self.database = database
-        self.username = username
-        self.password = password
+        self.server = server or os.getenv('DB_SERVER', 'localhost')
+        self.database = database or os.getenv('DB_NAME', 'SalesManagement')
+        self.username = username or os.getenv('DB_USER', 'sa')
+        self.password = password or os.getenv('DB_PASSWORD', 'Aa123456')
         self.connection = None
         
     def connect(self) -> bool:

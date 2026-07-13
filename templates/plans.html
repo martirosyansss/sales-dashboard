@@ -2,2145 +2,6 @@
 
 {% block title %}Планы территорий - Sales Dashboard v2.0{% endblock %}
 
-{% block head %}
-<style>
-    [x-cloak] {
-        display: none !important;
-    }
-
-    :root {
-        /* Modern Gradient Palette 2025 */
-        --primary-gradient: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #d946ef 100%);
-        --success-gradient: linear-gradient(135deg, #10b981 0%, #34d399 50%, #6ee7b7 100%);
-        --warning-gradient: linear-gradient(135deg, #f59e0b 0%, #fbbf24 50%, #fcd34d 100%);
-        --info-gradient: linear-gradient(135deg, #3b82f6 0%, #60a5fa 50%, #93c5fd 100%);
-        --danger-gradient: linear-gradient(135deg, #ef4444 0%, #f87171 50%, #fca5a5 100%);
-        --gold-gradient: linear-gradient(135deg, #f59e0b 0%, #fbbf24 50%, #f59e0b 100%);
-        --purple-gradient: linear-gradient(135deg, #8b5cf6 0%, #a78bfa 50%, #c4b5fd 100%);
-        
-        /* Advanced Shadows */
-        --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.1);
-        --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.15);
-        --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.2);
-        --shadow-xl: 0 24px 64px rgba(0, 0, 0, 0.3);
-        --card-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 1px rgba(99, 102, 241, 0.2);
-        --hover-shadow: 0 16px 56px rgba(0, 0, 0, 0.4), 0 0 48px rgba(99, 102, 241, 0.3);
-        
-        /* Glow Effects */
-        --glow-primary: 0 0 24px rgba(99, 102, 241, 0.5), 0 0 48px rgba(99, 102, 241, 0.3);
-        --glow-success: 0 0 24px rgba(16, 185, 129, 0.5), 0 0 48px rgba(16, 185, 129, 0.3);
-        --glow-warning: 0 0 24px rgba(245, 158, 11, 0.5), 0 0 48px rgba(245, 158, 11, 0.3);
-        --glow-info: 0 0 24px rgba(59, 130, 246, 0.5), 0 0 48px rgba(59, 130, 246, 0.3);
-        
-        /* Spacing System */
-        --spacing-xs: 0.5rem;
-        --spacing-sm: 1rem;
-        --spacing-md: 1.5rem;
-        --spacing-lg: 2rem;
-        --spacing-xl: 3rem;
-        
-        /* Border Radius */
-        --radius-sm: 8px;
-        --radius-md: 12px;
-        --radius-lg: 16px;
-        --radius-xl: 24px;
-        --radius-2xl: 32px;
-    }
-
-    .plans-container {
-        max-width: 1400px;
-        margin: 0 auto;
-        animation: containerFadeIn 1s ease-out;
-    }
-
-    @keyframes containerFadeIn {
-        from {
-            opacity: 0;
-        }
-        to {
-            opacity: 1;
-        }
-    }
-
-    /* Заголовок страницы - Modern Design */
-    .page-header {
-        background: var(--primary-gradient);
-        padding: var(--spacing-xl) var(--spacing-lg);
-        border-radius: var(--radius-2xl);
-        margin-bottom: var(--spacing-xl);
-        box-shadow: var(--shadow-xl), var(--glow-primary), 0 0 100px rgba(99, 102, 241, 0.2);
-        position: relative;
-        overflow: hidden;
-        border: 2px solid rgba(255, 255, 255, 0.2);
-        backdrop-filter: blur(20px) saturate(180%);
-        animation: headerEntrance 0.8s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    @keyframes headerEntrance {
-        from {
-            opacity: 0;
-            transform: translateY(-30px);
-        }
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
-    }
-
-    .page-header::before {
-        content: '';
-        position: absolute;
-        top: -50%;
-        right: -10%;
-        width: 600px;
-        height: 600px;
-        background: radial-gradient(circle, rgba(255, 255, 255, 0.12) 0%, transparent 70%);
-        border-radius: 50%;
-        animation: float 8s ease-in-out infinite;
-        filter: blur(40px);
-    }
-
-    .page-header::after {
-        content: '';
-        position: absolute;
-        bottom: -30%;
-        left: -5%;
-        width: 450px;
-        height: 450px;
-        background: radial-gradient(circle, rgba(255, 255, 255, 0.08) 0%, transparent 70%);
-        border-radius: 50%;
-        animation: float 10s ease-in-out infinite reverse;
-        filter: blur(40px);
-    }
-
-    @keyframes float {
-        0%, 100% { transform: translateY(0px) rotate(0deg); }
-        50% { transform: translateY(-30px) rotate(5deg); }
-    }
-
-    @keyframes pulse-glow {
-        0%, 100% { 
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), 0 0 20px rgba(102, 126, 234, 0.4);
-        }
-        50% { 
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), 0 0 40px rgba(102, 126, 234, 0.6), 0 0 80px rgba(102, 126, 234, 0.3);
-        }
-    }
-
-    @keyframes shimmer {
-        0% { background-position: -1000px 0; }
-        100% { background-position: 1000px 0; }
-    }
-
-    .page-header h1 {
-        font-size: clamp(2rem, 5vw, 3.5rem);
-        font-weight: 800;
-        margin-bottom: var(--spacing-sm);
-        position: relative;
-        z-index: 1;
-        text-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-        letter-spacing: -1px;
-        line-height: 1.1;
-        animation: titleFade 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.2s both;
-    }
-
-    @keyframes titleFade {
-        from {
-            opacity: 0;
-            transform: translateY(20px);
-        }
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
-    }
-
-    .page-header h1 i {
-        background: linear-gradient(135deg, #ffd700 0%, #fbbf24 50%, #ff8c00 100%);
-        background-clip: text;
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        filter: drop-shadow(0 0 20px rgba(251, 191, 36, 0.8)) drop-shadow(0 0 40px rgba(255, 215, 0, 0.4));
-        animation: iconPulse 2s ease-in-out infinite;
-    }
-
-    @keyframes iconPulse {
-        0%, 100% { transform: scale(1); }
-        50% { transform: scale(1.05); }
-    }
-
-    .page-header p {
-        font-size: clamp(1rem, 2vw, 1.25rem);
-        opacity: 0.92;
-        position: relative;
-        z-index: 1;
-        text-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
-        font-weight: 400;
-        line-height: 1.6;
-        animation: subtitleFade 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.4s both;
-    }
-
-    @keyframes subtitleFade {
-        from {
-            opacity: 0;
-            transform: translateY(15px);
-        }
-        to {
-            opacity: 0.92;
-            transform: translateY(0);
-        }
-    }
-
-    /* Контрольная панель - Neomorphism Style */
-    .control-panel {
-        background: linear-gradient(145deg, rgba(26, 29, 41, 0.95), rgba(22, 25, 35, 0.95));
-        backdrop-filter: blur(20px) saturate(180%);
-        padding: var(--spacing-lg);
-        border-radius: var(--radius-xl);
-        margin-bottom: var(--spacing-lg);
-        box-shadow: 
-            0 10px 40px rgba(0, 0, 0, 0.4),
-            inset 0 1px 0 rgba(255, 255, 255, 0.1),
-            0 0 0 1px rgba(255, 255, 255, 0.05);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        animation: panelSlideIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-        transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    @keyframes panelSlideIn {
-        from {
-            opacity: 0;
-            transform: translateY(-20px);
-        }
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
-    }
-
-    .control-panel:hover {
-        box-shadow: 
-            0 16px 56px rgba(0, 0, 0, 0.5),
-            inset 0 1px 0 rgba(255, 255, 255, 0.15),
-            0 0 0 1px rgba(99, 102, 241, 0.2);
-        border-color: rgba(99, 102, 241, 0.15);
-        transform: translateY(-2px);
-    }
-
-    .control-section {
-        margin-bottom: var(--spacing-md);
-        animation: sectionFadeIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) backwards;
-    }
-
-    .control-section:nth-child(1) { animation-delay: 0.1s; }
-    .control-section:nth-child(2) { animation-delay: 0.2s; }
-    .control-section:nth-child(3) { animation-delay: 0.3s; }
-    .control-section:nth-child(4) { animation-delay: 0.4s; }
-
-    @keyframes sectionFadeIn {
-        from {
-            opacity: 0;
-            transform: translateX(-20px);
-        }
-        to {
-            opacity: 1;
-            transform: translateX(0);
-        }
-    }
-
-    .control-section:last-child {
-        margin-bottom: 0;
-    }
-
-    .control-label {
-        font-size: 0.875rem;
-        font-weight: 600;
-        color: rgba(255, 255, 255, 0.85);
-        margin-bottom: var(--spacing-xs);
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-xs);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        font-size: 0.75rem;
-    }
-
-    .control-label i {
-        color: #6366f1;
-        font-size: 0.9rem;
-    }
-
-    .form-select, .form-control {
-        background: linear-gradient(145deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03));
-        border: 2px solid rgba(255, 255, 255, 0.1);
-        color: white;
-        padding: 0.875rem 1.125rem;
-        border-radius: var(--radius-md);
-        transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-        font-size: 0.95rem;
-        font-weight: 500;
-        box-shadow: 
-            inset 0 1px 3px rgba(0, 0, 0, 0.2),
-            0 1px 0 rgba(255, 255, 255, 0.05);
-        cursor: pointer;
-    }
-
-    .form-select:focus, .form-control:focus {
-        background: linear-gradient(145deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.05));
-        border-color: #6366f1;
-        box-shadow: 
-            0 0 0 4px rgba(99, 102, 241, 0.15),
-            0 4px 16px rgba(99, 102, 241, 0.25),
-            inset 0 1px 3px rgba(0, 0, 0, 0.2);
-        outline: none;
-        transform: translateY(-1px);
-    }
-
-    .form-control:hover:not(:focus),
-    .form-select:hover:not(:focus) {
-        border-color: rgba(99, 102, 241, 0.3);
-        background: linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.04));
-        box-shadow: 
-            0 2px 8px rgba(99, 102, 241, 0.15),
-            inset 0 1px 3px rgba(0, 0, 0, 0.2);
-    }
-
-    .form-select option {
-        background: #1a1d29;
-        color: white;
-    }
-
-    /* Кнопки - Modern Microinteractions */
-    .btn-modern {
-        padding: 0.875rem 1.75rem;
-        border-radius: var(--radius-md);
-        font-weight: 600;
-        font-size: 0.95rem;
-        border: none;
-        cursor: pointer;
-        transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: var(--spacing-xs);
-        position: relative;
-        overflow: hidden;
-        box-shadow: var(--shadow-md);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        font-size: 0.85rem;
-    }
-
-    .btn-modern::before {
-        content: '';
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        width: 0;
-        height: 0;
-        border-radius: 50%;
-        background: rgba(255, 255, 255, 0.25);
-        transform: translate(-50%, -50%);
-        transition: width 0.5s ease-out, height 0.5s ease-out;
-    }
-
-    .btn-modern:active::before {
-        width: 300px;
-        height: 300px;
-        transition: width 0s, height 0s;
-    }
-
-    .btn-modern span,
-    .btn-modern i {
-        position: relative;
-        z-index: 1;
-    }
-
-    .btn-modern i {
-        transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    .btn-modern:hover i {
-        transform: translateX(3px) scale(1.1);
-    }
-
-    .btn-primary-modern {
-        background: var(--primary-gradient);
-        color: white;
-        box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5), 0 0 30px rgba(99, 102, 241, 0.2);
-    }
-
-    .btn-primary-modern:hover {
-        transform: translateY(-3px) scale(1.03);
-        box-shadow: 0 12px 32px rgba(99, 102, 241, 0.6), var(--glow-primary), 0 0 60px rgba(99, 102, 241, 0.3);
-    }
-
-    .btn-primary-modern:active {
-        transform: translateY(0) scale(0.98);
-    }
-
-    .btn-success-modern {
-        background: var(--success-gradient);
-        color: white;
-        box-shadow: 0 6px 20px rgba(16, 185, 129, 0.5), 0 0 30px rgba(16, 185, 129, 0.2);
-    }
-
-    .btn-success-modern:hover {
-        transform: translateY(-3px) scale(1.03);
-        box-shadow: 0 12px 32px rgba(16, 185, 129, 0.6), var(--glow-success), 0 0 60px rgba(16, 185, 129, 0.3);
-    }
-
-    .btn-success-modern:active {
-        transform: translateY(0) scale(0.98);
-    }
-
-    .btn-info-modern {
-        background: var(--info-gradient);
-        color: white;
-        box-shadow: 0 4px 16px rgba(59, 130, 246, 0.4);
-    }
-
-    .btn-info-modern:hover {
-        transform: translateY(-2px) scale(1.02);
-        box-shadow: 0 8px 24px rgba(59, 130, 246, 0.5), var(--glow-info);
-    }
-
-    .btn-warning-modern {
-        background: var(--warning-gradient);
-        color: #1a1d29;
-        box-shadow: 0 4px 16px rgba(245, 158, 11, 0.4);
-        font-weight: 700;
-    }
-
-    .btn-warning-modern:hover {
-        transform: translateY(-2px) scale(1.02);
-        box-shadow: 0 8px 24px rgba(245, 158, 11, 0.5), var(--glow-warning);
-    }
-
-    .btn-outline-modern {
-        background: rgba(255, 255, 255, 0.03);
-        border: 2px solid rgba(255, 255, 255, 0.2);
-        color: white;
-        backdrop-filter: blur(10px);
-    }
-
-    .btn-outline-modern:hover {
-        background: rgba(255, 255, 255, 0.08);
-        border-color: rgba(255, 255, 255, 0.4);
-        transform: translateY(-2px);
-        box-shadow: 0 8px 20px rgba(255, 255, 255, 0.1);
-    }
-
-    /* Карточки территорий - Modern Cards */
-    .plan-card {
-        background: linear-gradient(145deg, rgba(26, 29, 41, 0.95), rgba(22, 25, 35, 0.95));
-        backdrop-filter: blur(20px) saturate(180%);
-        border: 2px solid rgba(255, 255, 255, 0.1);
-        border-radius: var(--radius-xl);
-        transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-        box-shadow: 
-            var(--shadow-lg),
-            inset 0 1px 0 rgba(255, 255, 255, 0.05);
-        overflow: hidden;
-        height: 100%;
-        animation: cardFadeIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) backwards;
-    }
-
-    @keyframes cardFadeIn {
-        from {
-            opacity: 0;
-            transform: translateY(30px) scale(0.95);
-        }
-        to {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-        }
-    }
-    
-    .plan-card:hover {
-        transform: translateY(-10px) scale(1.03);
-        box-shadow: 
-            var(--hover-shadow),
-            0 0 0 2px rgba(99, 102, 241, 0.4),
-            0 0 60px rgba(99, 102, 241, 0.3),
-            inset 0 1px 0 rgba(255, 255, 255, 0.15);
-        border-color: rgba(99, 102, 241, 0.6);
-    }
-
-    .area-header {
-        background: var(--primary-gradient);
-        padding: var(--spacing-md);
-        color: white;
-        position: relative;
-        overflow: hidden;
-    }
-
-    .area-header::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: linear-gradient(135deg, transparent 0%, rgba(255,255,255,0.1) 100%);
-        opacity: 0;
-        transition: opacity 0.4s ease;
-    }
-
-    .plan-card:hover .area-header::before {
-        opacity: 1;
-    }
-
-    .area-header::after {
-        content: '';
-        position: absolute;
-        top: -50%;
-        right: -50%;
-        width: 200%;
-        height: 200%;
-        background: radial-gradient(circle, rgba(255,255,255,0.15) 0%, transparent 60%);
-        animation: headerShimmer 4s ease-in-out infinite;
-    }
-
-    @keyframes headerShimmer {
-        0%, 100% { 
-            transform: rotate(0deg) scale(1);
-            opacity: 0.3;
-        }
-        50% { 
-            transform: rotate(180deg) scale(1.1);
-            opacity: 0.6;
-        }
-    }
-
-    .area-header h5 {
-        margin-bottom: var(--spacing-sm);
-        font-weight: 700;
-        font-size: 1.4rem;
-        position: relative;
-        z-index: 1;
-        text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-        letter-spacing: -0.3px;
-    }
-
-    .stats-row {
-        display: flex;
-        gap: var(--spacing-sm);
-        position: relative;
-        z-index: 1;
-        flex-wrap: wrap;
-    }
-
-    .stats-badge {
-        background: rgba(255, 255, 255, 0.15);
-        backdrop-filter: blur(10px);
-        padding: 0.625rem 1rem;
-        border-radius: var(--radius-md);
-        font-size: 0.875rem;
-        font-weight: 600;
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-xs);
-        flex: 1;
-        min-width: fit-content;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-        transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    .stats-badge:hover {
-        background: rgba(255, 255, 255, 0.25);
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    }
-
-    .stats-badge i {
-        font-size: 1rem;
-        opacity: 0.9;
-    }
-
-    .card-body {
-        padding: var(--spacing-md);
-        background: linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%);
-    }
-
-    .input-group-modern {
-        position: relative;
-        margin-bottom: var(--spacing-md);
-        animation: inputFadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) backwards;
-    }
-
-    .input-label {
-        font-size: 0.85rem;
-        font-weight: 600;
-        color: rgba(255, 255, 255, 0.7);
-        margin-bottom: 0.5rem;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-
-    .input-group .form-control {
-        background: rgba(255, 255, 255, 0.08);
-        border: 2px solid rgba(255, 255, 255, 0.15);
-        color: white;
-        padding: 0.75rem 1rem;
-        border-radius: 12px 0 0 12px;
-        font-size: 1rem;
-        font-weight: 500;
-    }
-
-    .input-group .form-control:focus {
-        background: rgba(255, 255, 255, 0.12);
-        border-color: #667eea;
-        box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.2);
-    }
-
-    .input-group .input-group-text {
-        background: rgba(102, 126, 234, 0.3);
-        border: 2px solid rgba(255, 255, 255, 0.15);
-        border-left: none;
-        color: white;
-        font-weight: 600;
-        border-radius: 0 12px 12px 0;
-        padding: 0.75rem 1rem;
-    }
-
-    /* История */
-    .history-section {
-        border-top: 1px solid rgba(255, 255, 255, 0.1);
-        padding-top: 1.5rem;
-        margin-top: 1.5rem;
-    }
-
-    .history-title {
-        font-size: 0.9rem;
-        font-weight: 600;
-        color: rgba(255, 255, 255, 0.6);
-        margin-bottom: 1rem;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-
-    .history-badges {
-        display: flex;
-        flex-direction: column;
-        gap: 0.75rem;
-    }
-
-    .history-badge {
-        background: rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(5px);
-        padding: 0.75rem 1rem;
-        border-radius: 12px;
-        font-size: 0.9rem;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-    }
-
-    .history-badge:hover {
-        background: rgba(255, 255, 255, 0.12);
-        transform: translateX(8px) scale(1.02);
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3), 0 0 20px rgba(102, 126, 234, 0.2);
-        border-color: rgba(102, 126, 234, 0.4);
-    }
-
-    .history-badge-label {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        color: rgba(255, 255, 255, 0.7);
-        font-weight: 500;
-    }
-
-    .history-badge-value {
-        color: white;
-        font-weight: 700;
-        font-size: 1rem;
-    }
-
-    /* График сезонности */
-    .seasonality-chart-container {
-        background: var(--card-bg);
-        padding: 2rem;
-        border-radius: 20px;
-        margin-bottom: 2rem;
-        box-shadow: var(--card-shadow);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        transition: all 0.4s ease;
-        animation: pulse-glow 3s ease-in-out infinite;
-    }
-
-    .seasonality-chart-container:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(102, 126, 234, 0.4);
-        border-color: rgba(102, 126, 234, 0.5);
-    }
-
-    .chart-title {
-        font-size: 1.3rem;
-        font-weight: 700;
-        color: white;
-        margin-bottom: 1.5rem;
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-    }
-
-    .chart-title i {
-        color: #667eea;
-        filter: drop-shadow(0 0 15px rgba(102, 126, 234, 0.6));
-        animation: float 3s ease-in-out infinite;
-    }
-
-    /* Сезонность badge */
-    .seasonality-indicator {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.5rem 1rem;
-        border-radius: 12px;
-        font-weight: 600;
-        font-size: 0.9rem;
-        margin-top: 0.5rem;
-        animation: pulse 2s infinite;
-    }
-
-    @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.8; }
-    }
-
-    .seasonality-high {
-        background: rgba(17, 153, 142, 0.2);
-        color: #38ef7d;
-        border: 1px solid rgba(56, 239, 125, 0.3);
-    }
-
-    .seasonality-low {
-        background: rgba(245, 87, 108, 0.2);
-        color: #f5576c;
-        border: 1px solid rgba(245, 87, 108, 0.3);
-    }
-
-    /* Модальное окно настроек */
-    .settings-modal {
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(0, 0, 0, 0.8);
-        backdrop-filter: blur(10px);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 2000;
-        padding: 1rem;
-    }
-
-    .settings-content {
-        background: linear-gradient(135deg, #1a1d29 0%, #2d3142 100%);
-        border-radius: 20px;
-        padding: 2.5rem;
-        max-width: 700px;
-        width: 100%;
-        max-height: 90vh;
-        overflow-y: auto;
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    .settings-content::-webkit-scrollbar {
-        width: 8px;
-    }
-
-    .settings-content::-webkit-scrollbar-track {
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 10px;
-    }
-
-    .settings-content::-webkit-scrollbar-thumb {
-        background: rgba(102, 126, 234, 0.5);
-        border-radius: 10px;
-    }
-
-    .settings-content h4 {
-        font-size: 1.8rem;
-        font-weight: 700;
-        margin-bottom: 2rem;
-        color: white;
-    }
-
-    .settings-group {
-        background: rgba(255, 255, 255, 0.05);
-        padding: 1.5rem;
-        border-radius: 15px;
-        margin-bottom: 1.5rem;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    .settings-group h6 {
-        font-size: 1.1rem;
-        font-weight: 600;
-        margin-bottom: 1rem;
-        color: white;
-    }
-
-    .settings-input {
-        background: rgba(255, 255, 255, 0.08);
-        border: 2px solid rgba(255, 255, 255, 0.15);
-        color: white;
-        padding: 0.75rem 1rem;
-        border-radius: 12px;
-        width: 100%;
-        transition: all 0.3s ease;
-    }
-
-    .settings-input:focus {
-        background: rgba(255, 255, 255, 0.12);
-        border-color: #667eea;
-        outline: none;
-        box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.2);
-    }
-
-    .seasonality-grid {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 1.25rem;
-        margin-top: 1.5rem;
-    }
-
-    .seasonality-item {
-        display: flex;
-        flex-direction: column;
-        background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.05) 100%);
-        border: 2px solid rgba(102, 126, 234, 0.2);
-        border-radius: 16px;
-        padding: 1rem;
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        position: relative;
-        overflow: hidden;
-    }
-
-    .seasonality-item::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 4px;
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
-        opacity: 0;
-        transition: opacity 0.3s ease;
-    }
-
-    .seasonality-item:hover {
-        transform: translateY(-4px);
-        border-color: rgba(102, 126, 234, 0.5);
-        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3), 0 0 20px rgba(102, 126, 234, 0.2);
-        background: linear-gradient(135deg, rgba(102, 126, 234, 0.15) 0%, rgba(118, 75, 162, 0.1) 100%);
-    }
-
-    .seasonality-item:hover::before {
-        opacity: 1;
-    }
-
-    .seasonality-item label {
-        font-size: 0.95rem;
-        font-weight: 700;
-        margin-bottom: 0.75rem;
-        color: rgba(255, 255, 255, 0.95);
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-
-    .seasonality-item label .season-emoji {
-        font-size: 1.3rem;
-        filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
-    }
-
-    .seasonality-item input {
-        background: rgba(255, 255, 255, 0.08);
-        border: 2px solid rgba(255, 255, 255, 0.15);
-        color: white;
-        font-weight: 700;
-        font-size: 1.1rem;
-        text-align: center;
-        padding: 0.65rem;
-        border-radius: 10px;
-        transition: all 0.3s ease;
-    }
-
-    .seasonality-item input:focus {
-        background: rgba(255, 255, 255, 0.12);
-        border-color: #667eea;
-        outline: none;
-        box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.25), 0 4px 12px rgba(102, 126, 234, 0.3);
-    }
-
-    .seasonality-item input:hover {
-        background: rgba(255, 255, 255, 0.1);
-        border-color: rgba(255, 255, 255, 0.25);
-    }
-
-    /* Season indicators */
-    .seasonality-item[data-season="winter"] {
-        background: linear-gradient(135deg, rgba(79, 172, 254, 0.12) 0%, rgba(13, 202, 240, 0.08) 100%);
-        border-color: rgba(79, 172, 254, 0.3);
-    }
-
-    .seasonality-item[data-season="winter"]::before {
-        background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
-    }
-
-    .seasonality-item[data-season="spring"] {
-        background: linear-gradient(135deg, rgba(56, 239, 125, 0.12) 0%, rgba(17, 153, 142, 0.08) 100%);
-        border-color: rgba(56, 239, 125, 0.3);
-    }
-
-    .seasonality-item[data-season="spring"]::before {
-        background: linear-gradient(90deg, #11998e 0%, #38ef7d 100%);
-    }
-
-    .seasonality-item[data-season="summer"] {
-        background: linear-gradient(135deg, rgba(255, 193, 7, 0.15) 0%, rgba(255, 152, 0, 0.1) 100%);
-        border-color: rgba(255, 193, 7, 0.4);
-    }
-
-    .seasonality-item[data-season="summer"]::before {
-        background: linear-gradient(90deg, #ffc107 0%, #ff9800 100%);
-    }
-
-    .seasonality-item[data-season="fall"] {
-        background: linear-gradient(135deg, rgba(245, 87, 108, 0.12) 0%, rgba(240, 147, 251, 0.08) 100%);
-        border-color: rgba(245, 87, 108, 0.3);
-    }
-
-    .seasonality-item[data-season="fall"]::before {
-        background: linear-gradient(90deg, #f5576c 0%, #f093fb 100%);
-    }
-
-    /* Индикатор сохранения */
-    .save-indicator {
-        position: fixed;
-        top: 2rem;
-        right: 2rem;
-        z-index: 3000;
-        padding: 1rem 1.5rem;
-        border-radius: 15px;
-        background: linear-gradient(135deg, #11998e 0%, #38ef7d 50%, #0ba360 100%);
-        color: white;
-        font-weight: 700;
-        box-shadow: 0 10px 40px rgba(56, 239, 125, 0.6), 0 0 50px rgba(56, 239, 125, 0.4);
-        transform: translateX(400px);
-        transition: transform 0.5s cubic-bezier(0.68, -0.55, 0.265, 1.55);
-        border: 2px solid rgba(255, 255, 255, 0.3);
-        backdrop-filter: blur(10px);
-        animation: pulse-success 2s ease-in-out infinite;
-    }
-
-    @keyframes pulse-success {
-        0%, 100% { 
-            box-shadow: 0 10px 40px rgba(56, 239, 125, 0.6), 0 0 50px rgba(56, 239, 125, 0.4);
-        }
-        50% { 
-            box-shadow: 0 10px 40px rgba(56, 239, 125, 0.8), 0 0 70px rgba(56, 239, 125, 0.6), 0 0 100px rgba(56, 239, 125, 0.3);
-        }
-    }
-
-    .save-indicator.show {
-        transform: translateX(0);
-    }
-
-    .save-indicator i {
-        filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.8));
-        animation: checkmark 0.5s ease-out;
-    }
-
-    @keyframes checkmark {
-        0% { transform: scale(0) rotate(-45deg); }
-        50% { transform: scale(1.2) rotate(0deg); }
-        100% { transform: scale(1) rotate(0deg); }
-    }
-
-    /* Дополнительные стили для итоговой карточки */
-    .summary-stat-badge {
-        padding: 0.4rem 0.9rem;
-        border-radius: 10px;
-        font-size: 0.75rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        backdrop-filter: blur(10px);
-    }
-
-    .summary-stat-badge.sales {
-        background: rgba(17, 153, 142, 0.3);
-        color: #38ef7d;
-        border: 1px solid rgba(56, 239, 125, 0.4);
-    }
-
-    .summary-stat-badge.warning {
-        background: rgba(255, 193, 7, 0.3);
-        color: #ffd200;
-        border: 1px solid rgba(255, 210, 0, 0.4);
-    }
-
-    .summary-stat-badge.info {
-        background: rgba(79, 172, 254, 0.3);
-        color: #4facfe;
-        border: 1px solid rgba(79, 172, 254, 0.4);
-    }
-
-    .summary-stat-details {
-        margin-top: 1rem;
-        font-size: 0.9rem;
-    }
-
-    .summary-additional-stats {
-        background: linear-gradient(145deg, 
-            rgba(99, 102, 241, 0.1) 0%, 
-            rgba(139, 92, 246, 0.05) 100%);
-        backdrop-filter: blur(20px) saturate(180%);
-        border-radius: var(--radius-xl);
-        padding: var(--spacing-lg);
-        border: 1px solid rgba(99, 102, 241, 0.2);
-        box-shadow: 
-            var(--shadow-lg),
-            inset 0 1px 0 rgba(255, 255, 255, 0.08);
-        position: relative;
-        overflow: hidden;
-        animation: statsEntrance 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.3s both;
-    }
-
-    @keyframes statsEntrance {
-        from {
-            opacity: 0;
-            transform: translateY(20px) scale(0.98);
-        }
-        to {
-            opacity: 1;
-            transform: translateY(0) scale(1);
-        }
-    }
-
-    .summary-additional-stats::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: -100%;
-        width: 100%;
-        height: 100%;
-        background: linear-gradient(90deg, 
-            transparent, 
-            rgba(255, 255, 255, 0.06), 
-            transparent);
-        animation: shimmerSlow 4s infinite;
-    }
-
-    @keyframes shimmerSlow {
-        0% { left: -100%; }
-        100% { left: 100%; }
-    }
-
-    .summary-mini-stat {
-        display: flex;
-        align-items: center;
-        gap: var(--spacing-md);
-        background: linear-gradient(145deg, 
-            rgba(255, 255, 255, 0.08) 0%, 
-            rgba(255, 255, 255, 0.03) 100%);
-        padding: var(--spacing-md);
-        border-radius: var(--radius-lg);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
-        height: 100%;
-        box-shadow: 
-            var(--shadow-md),
-            inset 0 1px 0 rgba(255, 255, 255, 0.05);
-        position: relative;
-        overflow: hidden;
-    }
-
-    .summary-mini-stat::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 4px;
-        height: 100%;
-        background: linear-gradient(180deg, 
-            #6366f1 0%, 
-            #8b5cf6 50%,
-            #d946ef 100%);
-        transform: scaleY(0);
-        transform-origin: bottom;
-        transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    .summary-mini-stat::after {
-        content: '';
-        position: absolute;
-        inset: 0;
-        background: radial-gradient(circle at 50% 50%, rgba(99, 102, 241, 0.1) 0%, transparent 70%);
-        opacity: 0;
-        transition: opacity 0.4s ease;
-    }
-
-    .summary-mini-stat:hover {
-        transform: translateY(-6px) scale(1.03);
-        box-shadow: 
-            0 16px 48px rgba(99, 102, 241, 0.25),
-            0 0 32px rgba(99, 102, 241, 0.15),
-            inset 0 1px 0 rgba(255, 255, 255, 0.15);
-        border-color: rgba(99, 102, 241, 0.4);
-        background: linear-gradient(145deg, 
-            rgba(255, 255, 255, 0.12) 0%, 
-            rgba(255, 255, 255, 0.06) 100%);
-    }
-
-    .summary-mini-stat:hover::before {
-        transform: scaleY(1);
-    }
-
-    .summary-mini-stat:hover::after {
-        opacity: 1;
-    }
-
-    .summary-mini-icon {
-        width: 64px;
-        height: 64px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: var(--radius-md);
-        font-size: 1.75rem;
-        color: white;
-        box-shadow: 
-            var(--shadow-md),
-            inset 0 1px 0 rgba(255, 255, 255, 0.2);
-        flex-shrink: 0;
-        transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
-        position: relative;
-        z-index: 1;
-    }
-
-    .summary-mini-stat:hover .summary-mini-icon {
-        transform: scale(1.15) rotate(-8deg);
-        box-shadow: 
-            0 12px 32px rgba(0, 0, 0, 0.4),
-            inset 0 1px 0 rgba(255, 255, 255, 0.3);
-    }
-
-    .summary-mini-content {
-        flex: 1;
-        position: relative;
-        z-index: 1;
-    }
-
-    .summary-mini-label {
-        font-size: 0.7rem;
-        color: rgba(255, 255, 255, 0.65);
-        margin-bottom: var(--spacing-xs);
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 1.2px;
-    }
-
-    .summary-mini-value {
-        font-size: clamp(1.25rem, 3vw, 1.75rem);
-        font-weight: 900;
-        background: linear-gradient(135deg, #ffffff 0%, #a5b4fc 100%);
-        background-clip: text;
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        letter-spacing: -0.5px;
-        line-height: 1.2;
-    }
-
-    /* Адаптивность */
-    @media (max-width: 1200px) {
-        .page-header h1 {
-            font-size: 2rem;
-        }
-    }
-
-    @media (max-width: 768px) {
-        .page-header {
-            padding: 2rem 1.5rem;
-        }
-
-        .page-header h1 {
-            font-size: 1.75rem;
-        }
-
-        .page-header p {
-            font-size: 1rem;
-        }
-
-        .control-panel {
-            padding: 1.5rem;
-        }
-
-        .btn-modern {
-            padding: 0.75rem 1.25rem;
-            font-size: 0.9rem;
-            width: 100%;
-            justify-content: center;
-        }
-
-        .stats-row {
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-
-        .settings-content {
-            padding: 2rem 1.5rem;
-        }
-
-        .seasonality-grid {
-            grid-template-columns: repeat(3, 1fr);
-            gap: 0.75rem;
-        }
-
-        .save-indicator {
-            top: 1rem;
-            right: 1rem;
-            left: 1rem;
-            text-align: center;
-        }
-    }
-
-    @media (max-width: 576px) {
-        .page-header h1 {
-            font-size: 1.5rem;
-        }
-
-        .control-panel {
-            padding: 1rem;
-        }
-
-        .area-header h5 {
-            font-size: 1.1rem;
-        }
-
-        .seasonality-grid {
-            grid-template-columns: repeat(2, 1fr);
-        }
-    }
-
-    /* Загрузка */
-    .loading-spinner {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        padding: 4rem 2rem;
-    }
-
-    .spinner {
-        width: 50px;
-        height: 50px;
-        border: 4px solid rgba(102, 126, 234, 0.2);
-        border-top: 4px solid #667eea;
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-    }
-
-    @keyframes spin {
-        0% { transform: rotate(0deg); }
-        100% { transform: rotate(360deg); }
-    }
-
-    /* Пустое состояние */
-    .empty-state {
-        text-align: center;
-        padding: 4rem 2rem;
-    }
-
-    .empty-state i {
-        font-size: 4rem;
-        color: rgba(255, 255, 255, 0.3);
-        margin-bottom: 1.5rem;
-    }
-
-    .empty-state p {
-        font-size: 1.1rem;
-        color: rgba(255, 255, 255, 0.5);
-    }
-
-    .plan-card {
-        background: linear-gradient(145deg, rgba(35, 35, 55, 0.98) 0%, rgba(25, 25, 40, 0.98) 100%);
-        border: 2px solid rgba(102, 126, 234, 0.4);
-        border-radius: 24px;
-        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), 0 0 1px rgba(102, 126, 234, 0.3);
-        overflow: hidden;
-        position: relative;
-        margin-bottom: 2rem;
-    }
-
-    .plan-card::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 4px;
-        background: var(--primary-gradient);
-        opacity: 0;
-        transition: opacity 0.3s ease;
-    }
-    
-    .plan-card:hover {
-        transform: translateY(-10px) scale(1.01);
-        box-shadow: 0 20px 60px rgba(102, 126, 234, 0.5), 0 0 40px rgba(102, 126, 234, 0.3), var(--glow-primary);
-        border-color: rgba(102, 126, 234, 0.8);
-    }
-
-    .plan-card:hover::before {
-        opacity: 1;
-    }
-
-    .area-header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
-        padding: 1.8rem 1.5rem;
-        border-radius: 18px;
-        color: white;
-        margin-bottom: 0;
-        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-        position: relative;
-        overflow: hidden;
-    }
-
-    .area-header::before {
-        content: '';
-        position: absolute;
-        top: -50%;
-        right: -20%;
-        width: 200px;
-        height: 200px;
-        background: radial-gradient(circle, rgba(255, 255, 255, 0.1) 0%, transparent 70%);
-        border-radius: 50%;
-    }
-
-    .area-header h5 {
-        font-size: 1.3rem;
-        font-weight: 700;
-        margin-bottom: 0.75rem;
-        position: relative;
-        z-index: 1;
-    }
-
-    .stats-badge {
-        background: rgba(255, 255, 255, 0.2);
-        backdrop-filter: blur(10px);
-        padding: 0.5rem 1rem;
-        border-radius: 20px;
-        font-size: 0.9rem;
-        font-weight: 600;
-        border: 1px solid rgba(255, 255, 255, 0.3);
-        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
-    }
-
-    .stats-badge:hover {
-        background: rgba(255, 255, 255, 0.35);
-        transform: scale(1.08) translateY(-2px);
-        box-shadow: 0 4px 20px rgba(255, 255, 255, 0.3), 0 0 20px rgba(255, 255, 255, 0.2);
-    }
-
-    .input-group .form-control {
-        background: rgba(255,255,255,0.08);
-        border: 2px solid rgba(255,255,255,0.2);
-        color: white;
-        font-weight: 600;
-        font-size: 1.1rem;
-        padding: 0.75rem 1rem;
-        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.2);
-    }
-
-    .input-group .form-control:hover:not(:focus) {
-        border-color: rgba(102, 126, 234, 0.4);
-        box-shadow: 0 0 15px rgba(102, 126, 234, 0.2), inset 0 2px 6px rgba(0, 0, 0, 0.2);
-    }
-
-    .input-group .form-control:focus {
-        background: rgba(255,255,255,0.15);
-        border-color: #667eea;
-        color: white;
-        box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.25), 0 0 25px rgba(102, 126, 234, 0.4), inset 0 2px 6px rgba(0, 0, 0, 0.3);
-        transform: scale(1.02);
-    }
-
-    .input-group .input-group-text {
-        background: rgba(102, 126, 234, 0.3);
-        border: 2px solid rgba(102, 126, 234, 0.4);
-        color: white;
-        font-weight: 700;
-        backdrop-filter: blur(10px);
-        box-shadow: 0 2px 10px rgba(102, 126, 234, 0.3);
-        transition: all 0.3s ease;
-    }
-
-    .input-group:has(.form-control:focus) .input-group-text {
-        background: rgba(102, 126, 234, 0.5);
-        border-color: #667eea;
-        box-shadow: 0 2px 15px rgba(102, 126, 234, 0.5), 0 0 20px rgba(102, 126, 234, 0.3);
-    }
-
-    .btn-save-all {
-        background: linear-gradient(135deg, #11998e 0%, #38ef7d 50%, #11998e 100%);
-        background-size: 200% 200%;
-        border: none;
-        color: white;
-        font-weight: 700;
-        padding: 14px 35px;
-        border-radius: 15px;
-        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        box-shadow: 0 6px 20px rgba(56, 239, 125, 0.4), 0 0 20px rgba(56, 239, 125, 0.2);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        font-size: 0.95rem;
-        position: relative;
-        overflow: hidden;
-    }
-
-    .btn-save-all::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: -100%;
-        width: 100%;
-        height: 100%;
-        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
-        transition: left 0.5s;
-    }
-
-    .btn-save-all:hover::before {
-        left: 100%;
-    }
-
-    .btn-save-all:hover {
-        transform: translateY(-4px) scale(1.02);
-        box-shadow: 0 12px 35px rgba(56, 239, 125, 0.6), 0 0 40px rgba(56, 239, 125, 0.4), var(--glow-success);
-        background-position: 100% 0;
-    }
-
-    .btn-save-all:active {
-        transform: translateY(-2px) scale(0.98);
-    }
-
-    .btn-reset-all {
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-        border: none;
-        color: white;
-        font-weight: 700;
-        padding: 14px 35px;
-        border-radius: 15px;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(245, 87, 108, 0.3);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        font-size: 0.95rem;
-    }
-
-    .btn-reset-all:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 8px 25px rgba(245, 87, 108, 0.5), 0 0 30px rgba(245, 87, 108, 0.5);
-        background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%);
-    }
-
-    .save-indicator {
-        position: fixed;
-        top: 30px;
-        right: 30px;
-        z-index: 2000;
-        padding: 20px 35px;
-        border-radius: 20px;
-        background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-        color: white;
-        font-weight: 700;
-        box-shadow: 0 8px 30px rgba(56, 239, 125, 0.5), var(--glow-success);
-        opacity: 0;
-        transition: all 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
-        transform: translateY(-20px) scale(0.8);
-        border: 2px solid rgba(255, 255, 255, 0.3);
-    }
-
-    .save-indicator.show {
-        opacity: 1;
-        transform: translateY(0) scale(1);
-    }
-
-    .save-indicator i {
-        font-size: 1.3rem;
-        animation: checkmark 0.5s ease;
-    }
-
-    @keyframes checkmark {
-        0% { transform: scale(0) rotate(-45deg); }
-        50% { transform: scale(1.3) rotate(5deg); }
-        100% { transform: scale(1) rotate(0deg); }
-    }
-
-    .month-selector {
-        background: var(--card-bg);
-        padding: 1.5rem;
-        border-radius: 15px;
-        margin-bottom: 2rem;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-    }
-
-    .settings-modal {
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(0, 0, 0, 0.85);
-        backdrop-filter: blur(10px);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 2000;
-        animation: fadeIn 0.3s ease;
-    }
-
-    @keyframes fadeIn {
-        from { opacity: 0; }
-        to { opacity: 1; }
-    }
-
-    .settings-content {
-        background: linear-gradient(145deg, rgba(25, 25, 45, 0.98) 0%, rgba(15, 15, 30, 0.98) 100%);
-        border-radius: 30px;
-        padding: 3rem;
-        max-width: 900px;
-        width: 95%;
-        box-shadow: 0 25px 100px rgba(0, 0, 0, 0.9), 0 0 60px rgba(102, 126, 234, 0.4);
-        border: 2px solid rgba(102, 126, 234, 0.4);
-        animation: slideUp 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
-        position: relative;
-        overflow: hidden;
-    }
-
-    .settings-content::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 6px;
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
-        box-shadow: 0 0 20px rgba(102, 126, 234, 0.5);
-    }
-
-    @keyframes slideUp {
-        from { 
-            opacity: 0;
-            transform: translateY(50px) scale(0.9);
-        }
-        to { 
-            opacity: 1;
-            transform: translateY(0) scale(1);
-        }
-    }
-
-    .settings-content h4 {
-        font-size: 2.2rem;
-        font-weight: 900;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
-        -webkit-background-clip: text;
-        background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 2.5rem;
-        text-align: center;
-        letter-spacing: -1px;
-        text-shadow: 0 0 30px rgba(102, 126, 234, 0.3);
-        position: relative;
-        padding-bottom: 1rem;
-    }
-
-    .settings-content h4::after {
-        content: '';
-        position: absolute;
-        bottom: 0;
-        left: 50%;
-        transform: translateX(-50%);
-        width: 100px;
-        height: 3px;
-        background: linear-gradient(90deg, transparent, #667eea, transparent);
-        border-radius: 2px;
-    }
-
-    .settings-group {
-        background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);
-        padding: 2rem;
-        border-radius: 20px;
-        margin-bottom: 2rem;
-        border: 2px solid rgba(102, 126, 234, 0.2);
-        transition: all 0.3s ease;
-        position: relative;
-    }
-
-    .settings-group:hover {
-        border-color: rgba(102, 126, 234, 0.4);
-        box-shadow: 0 8px 30px rgba(102, 126, 234, 0.2);
-        transform: translateY(-2px);
-    }
-
-    .settings-group h6 {
-        font-size: 1.3rem;
-        font-weight: 700;
-        margin-bottom: 1rem;
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-    }
-
-    .settings-group h6 i {
-        width: 40px;
-        height: 40px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: var(--primary-gradient);
-        border-radius: 12px;
-        font-size: 1.1rem;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
-    }
-
-    .settings-input {
-        background: rgba(255, 255, 255, 0.08);
-        border: 2px solid rgba(255, 255, 255, 0.2);
-        color: white;
-        padding: 1rem 1.25rem;
-        border-radius: 15px;
-        width: 100%;
-        font-size: 1.1rem;
-        font-weight: 600;
-        transition: all 0.3s ease;
-    }
-
-    .settings-input:focus {
-        background: rgba(255, 255, 255, 0.15);
-        border-color: #667eea;
-        outline: none;
-        box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.2), 0 0 25px rgba(102, 126, 234, 0.4);
-        transform: scale(1.02);
-    }
-
-    .input-group .input-group-text {
-        background: rgba(102, 126, 234, 0.3);
-        border: 2px solid rgba(102, 126, 234, 0.4);
-        color: white;
-        font-weight: 700;
-        font-size: 1.1rem;
-        padding: 1rem 1.5rem;
-        border-radius: 0 15px 15px 0;
-        backdrop-filter: blur(10px);
-    }
-
-    .seasonality-grid {
-        display: grid;
-        grid-template-columns: repeat(6, 1fr);
-        gap: 0.65rem;
-        margin-top: 1.2rem;
-    }
-
-    .seasonality-item {
-        display: flex;
-        flex-direction: column;
-        background: linear-gradient(145deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.04) 100%);
-        padding: 0.75rem 0.6rem;
-        border-radius: 10px;
-        border: 2px solid rgba(255, 255, 255, 0.1);
-        transition: all 0.3s ease;
-        position: relative;
-        overflow: hidden;
-    }
-
-    .seasonality-item::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 3px;
-        background: linear-gradient(90deg, transparent, rgba(102, 126, 234, 0.5), transparent);
-        opacity: 0;
-        transition: opacity 0.3s ease;
-    }
-
-    .seasonality-item:hover {
-        background: linear-gradient(145deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.08) 100%);
-        border-color: rgba(102, 126, 234, 0.5);
-        transform: translateY(-3px) scale(1.02);
-        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
-    }
-
-    .seasonality-item:hover::before {
-        opacity: 1;
-    }
-
-    .seasonality-item label {
-        font-size: 0.8rem;
-        font-weight: 700;
-        margin-bottom: 0.5rem;
-        color: rgba(255, 255, 255, 0.95);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 0.3rem;
-        white-space: nowrap;
-    }
-
-    .seasonality-item input {
-        background: rgba(0, 0, 0, 0.3);
-        border: 2px solid rgba(102, 126, 234, 0.3);
-        color: white;
-        padding: 0.6rem 0.4rem;
-        border-radius: 8px;
-        font-size: 1rem;
-        font-weight: 700;
-        text-align: center;
-        transition: all 0.3s ease;
-        box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.2);
-    }
-
-    .seasonality-item input:focus {
-        background: rgba(0, 0, 0, 0.4);
-        border-color: #667eea;
-        outline: none;
-        box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.25), inset 0 2px 8px rgba(0, 0, 0, 0.3);
-        transform: scale(1.05);
-    }
-
-    .seasonality-item input:hover {
-        border-color: rgba(102, 126, 234, 0.5);
-    }
-
-    @media (max-width: 1200px) {
-        .seasonality-grid {
-            grid-template-columns: repeat(3, 1fr);
-        }
-    }
-
-    @media (max-width: 768px) {
-        .seasonality-grid {
-            grid-template-columns: repeat(2, 1fr);
-        }
-        
-        .seasonality-item {
-            padding: 0.85rem;
-        }
-        
-        .seasonality-item label {
-            font-size: 0.9rem;
-        }
-        
-        .seasonality-item input {
-            font-size: 1rem;
-            padding: 0.55rem;
-        }
-    }
-
-    @media (max-width: 576px) {
-        .seasonality-grid {
-            grid-template-columns: repeat(2, 1fr);
-            gap: 1rem;
-        }
-        
-        .seasonality-item {
-            padding: 0.75rem;
-        }
-        
-        .seasonality-item label .season-emoji {
-            font-size: 1.1rem;
-        }
-    }
-
-    .seasonality-chart-container {
-        background: var(--card-bg);
-        padding: 1.5rem;
-        border-radius: 15px;
-        margin-bottom: 2rem;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-    }
-
-    .history-badge {
-        background: rgba(255,255,255,0.1);
-        padding: 6px 12px;
-        border-radius: 8px;
-        font-size: 0.85rem;
-        margin-top: 0.5rem;
-        display: inline-block;
-    }
-
-    .history-section {
-        border-top: 1px solid rgba(255,255,255,0.1);
-        padding-top: 1rem;
-        margin-top: 1rem;
-    }
-
-    /* Кнопки в модальном окне */
-    .settings-content .btn {
-        padding: 0.9rem 2rem;
-        border-radius: 15px;
-        font-weight: 700;
-        font-size: 1rem;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        transition: all 0.3s ease;
-        border: 2px solid transparent;
-    }
-
-    .settings-content .btn-outline-light {
-        background: rgba(255, 255, 255, 0.05);
-        border-color: rgba(255, 255, 255, 0.3);
-        color: white;
-    }
-
-    .settings-content .btn-outline-light:hover {
-        background: rgba(255, 255, 255, 0.15);
-        border-color: rgba(255, 255, 255, 0.5);
-        transform: translateY(-2px);
-        box-shadow: 0 5px 20px rgba(255, 255, 255, 0.2);
-    }
-
-    .settings-content .btn-outline-secondary {
-        background: rgba(108, 117, 125, 0.2);
-        border-color: rgba(108, 117, 125, 0.4);
-        color: rgba(255, 255, 255, 0.8);
-    }
-
-    .settings-content .btn-outline-secondary:hover {
-        background: rgba(108, 117, 125, 0.4);
-        border-color: rgba(108, 117, 125, 0.6);
-        color: white;
-        transform: translateY(-2px);
-    }
-
-    .settings-content .btn-primary {
-        background: var(--primary-gradient);
-        border: none;
-        color: white;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-    }
-
-    .settings-content .btn-primary:hover {
-        box-shadow: 0 8px 30px rgba(102, 126, 234, 0.6), var(--glow-primary);
-        transform: translateY(-3px);
-    }
-
-    /* Сетка статистики - Modern Layout */
-    .summary-stats-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-        gap: var(--spacing-lg);
-        margin-bottom: var(--spacing-lg);
-    }
-
-    .summary-stat-item {
-        background: linear-gradient(145deg, 
-            rgba(255, 255, 255, 0.08) 0%, 
-            rgba(255, 255, 255, 0.03) 100%);
-        backdrop-filter: blur(20px) saturate(180%);
-        padding: var(--spacing-lg);
-        border-radius: var(--radius-xl);
-        border: 2px solid rgba(255, 255, 255, 0.12);
-        box-shadow: 
-            var(--shadow-lg),
-            0 0 40px rgba(99, 102, 241, 0.15),
-            inset 0 1px 0 rgba(255, 255, 255, 0.08);
-        transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-        position: relative;
-        overflow: hidden;
-    }
-
-    .summary-stat-item::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        background: radial-gradient(circle at 50% 0%, rgba(99, 102, 241, 0.15) 0%, transparent 60%);
-        opacity: 0;
-        transition: opacity 0.4s ease;
-    }
-
-    .summary-stat-item:hover {
-        transform: translateY(-10px) scale(1.03);
-        box-shadow: 
-            0 24px 72px rgba(0, 0, 0, 0.5),
-            0 0 60px rgba(99, 102, 241, 0.3),
-            0 0 100px rgba(99, 102, 241, 0.15),
-            inset 0 1px 0 rgba(255, 255, 255, 0.15);
-        border-color: rgba(99, 102, 241, 0.5);
-    }
-
-    .summary-stat-item:hover::before {
-        opacity: 1;
-    }
-
-    .summary-stat-icon {
-        width: 80px;
-        height: 80px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: var(--radius-lg);
-        font-size: 2.2rem;
-        color: white;
-        box-shadow: 
-            var(--shadow-lg),
-            0 0 30px rgba(255, 255, 255, 0.1),
-            inset 0 2px 0 rgba(255, 255, 255, 0.25);
-        transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    .summary-stat-icon.sales {
-        background: var(--success-gradient);
-        box-shadow: 
-            var(--shadow-lg),
-            0 0 40px rgba(16, 185, 129, 0.3),
-            inset 0 2px 0 rgba(255, 255, 255, 0.25);
-    }
-
-    .summary-stat-icon.credit {
-        background: var(--warning-gradient);
-        box-shadow: 
-            var(--shadow-lg),
-            0 0 40px rgba(245, 158, 11, 0.3),
-            inset 0 2px 0 rgba(255, 255, 255, 0.25);
-    }
-
-    .summary-stat-icon.areas {
-        background: var(--info-gradient);
-        box-shadow: 
-            var(--shadow-lg),
-            0 0 40px rgba(59, 130, 246, 0.3),
-            inset 0 2px 0 rgba(255, 255, 255, 0.25);
-    }
-
-    .summary-stat-item:hover .summary-stat-icon {
-        transform: scale(1.15) rotate(-8deg);
-        box-shadow: 
-            0 16px 48px rgba(0, 0, 0, 0.5),
-            0 0 60px currentColor,
-            inset 0 2px 0 rgba(255, 255, 255, 0.35);
-    }
-
-    .summary-stat-label {
-        font-size: 0.85rem;
-        font-weight: 600;
-        color: rgba(255, 255, 255, 0.7);
-        margin-bottom: var(--spacing-sm);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-
-    .summary-stat-value {
-        font-size: clamp(2rem, 5vw, 3rem);
-        font-weight: 900;
-        background: linear-gradient(135deg, #ffffff 0%, #e0e7ff 100%);
-        background-clip: text;
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        line-height: 1.1;
-        letter-spacing: -1px;
-        margin-bottom: 0.25rem;
-    }
-
-    .summary-stat-currency {
-        font-size: 0.9rem;
-        color: rgba(255, 255, 255, 0.5);
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-
-    .summary-stat-details {
-        margin-top: var(--spacing-md);
-        padding-top: var(--spacing-md);
-        border-top: 1px solid rgba(255, 255, 255, 0.08);
-    }
-
-    /* Карточка и заголовок сводки */
-    .summary-card-header {
-        background: linear-gradient(135deg, 
-            rgba(99, 102, 241, 0.2) 0%, 
-            rgba(139, 92, 246, 0.1) 100%);
-        backdrop-filter: blur(20px) saturate(180%);
-        padding: var(--spacing-lg);
-        border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-        border-bottom: 1px solid rgba(99, 102, 241, 0.2);
-        position: relative;
-        overflow: hidden;
-    }
-
-    .summary-card-header::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 100%;
-        background: linear-gradient(90deg, 
-            transparent 0%, 
-            rgba(255, 255, 255, 0.05) 50%, 
-            transparent 100%);
-        animation: headerSweep 3s infinite;
-    }
-
-    @keyframes headerSweep {
-        0% { transform: translateX(-100%); }
-        100% { transform: translateX(100%); }
-    }
-
-    .summary-card-header h3 {
-        font-size: 1.75rem;
-        font-weight: 800;
-        margin-bottom: 0.5rem;
-        background: linear-gradient(135deg, #ffffff 0%, #c7d2fe 100%);
-        background-clip: text;
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        letter-spacing: -0.5px;
-    }
-
-    .summary-card-header p {
-        font-size: 0.95rem;
-        color: rgba(255, 255, 255, 0.7);
-        margin: 0;
-        font-weight: 500;
-    }
-
-    .summary-card-body {
-        padding: var(--spacing-xl) var(--spacing-lg);
-        background: linear-gradient(180deg, 
-            rgba(255, 255, 255, 0.02) 0%, 
-            transparent 100%);
-    }
-
-    /* Адаптация для мобильных */
-    @media (max-width: 768px) {
-        .summary-stats-grid {
-            grid-template-columns: 1fr;
-            gap: var(--spacing-md);
-        }
-
-        .summary-stat-value {
-            font-size: 2rem;
-        }
-
-        .summary-stat-icon {
-            width: 56px;
-            height: 56px;
-            font-size: 1.5rem;
-        }
-    }
-
-    /* ============================================ */
-    /* RESPONSIVE DESIGN FOR PLANS PAGE */
-    /* ============================================ */
-    
-    @media (max-width: 767px) {
-        /* Compact month selector */
-        .plans-header {
-            padding: 1rem;
-        }
-        
-        .plans-header h1 {
-            font-size: 1.5rem;
-        }
-        
-        /* Stack controls vertically */
-        .plans-controls {
-            flex-direction: column;
-            gap: 0.75rem;
-        }
-        
-        .plans-controls .btn {
-            width: 100%;
-        }
-        
-        /* Compact cards */
-        .plan-card {
-            padding: 1rem;
-        }
-        
-        .plan-card h5 {
-            font-size: 1rem;
-        }
-        
-        .plan-value {
-            font-size: 1.5rem;
-        }
-        
-        /* Smaller charts */
-        canvas {
-            max-height: 200px !important;
-        }
-        
-        /* Settings modal full screen */
-        .settings-modal .settings-content {
-            width: 95%;
-            margin: 1rem;
-            padding: 1.5rem;
-        }
-        
-        .settings-group {
-            margin-bottom: 1.5rem;
-        }
-        
-        /* Compact input groups */
-        .input-group {
-            flex-wrap: wrap;
-        }
-    }
-    
-    @media (min-width: 768px) and (max-width: 991px) {
-        .plan-card {
-            padding: 1.25rem;
-        }
-        
-        .plan-value {
-            font-size: 1.75rem;
-        }
-    }
-    
-    /* Touch device optimizations */
-    @media (hover: none) and (pointer: coarse) {
-        .plan-card {
-            cursor: default;
-        }
-        
-        .btn {
-            min-height: 44px;
-            padding: 0.75rem 1.5rem;
-        }
-        
-        .settings-input, select, input[type="number"] {
-            font-size: 16px;
-            min-height: 44px;
-        }
-    }
-
-</style>
-{% endblock %}
-
 {% block content %}
 <div class="container-fluid py-4 plans-container" x-data="plansData()">
     <!-- Индикатор сохранения -->
@@ -2161,12 +22,8 @@
                 </h6>
                 <p class="text-white-50 small mb-2">Планы будут рассчитаны с учётом целевого роста продаж</p>
                 <div class="input-group">
-                    <input type="number" 
-                           class="settings-input" 
-                           x-model="settings.growthFactor"
-                           step="1"
-                           min="-50"
-                           max="200">
+                    <input type="number" class="settings-input" x-model="settings.growthFactor" step="1" min="-50"
+                        max="200">
                     <span class="input-group-text bg-dark text-white border-secondary">%</span>
                 </div>
                 <small class="text-white-50 d-block mt-2">
@@ -2178,10 +35,10 @@
                 <h6 class="text-white mb-3">
                     <i class="fas fa-history me-2"></i>Период истории для расчёта
                 </h6>
-                <p class="text-white-50 small mb-2">На сколько лет назад анализировать продажи для расчёта коэффициента сезонности</p>
-                <select class="form-select settings-input" 
-                        x-model="settings.historyYears"
-                        @change="updateSeasonalityFromHistory()">
+                <p class="text-white-50 small mb-2">На сколько лет назад анализировать продажи для расчёта коэффициента
+                    сезонности</p>
+                <select class="form-select settings-input" x-model="settings.historyYears"
+                    @change="updateSeasonalityFromHistory()">
                     <option value="1">1 год</option>
                     <option value="2">2 года</option>
                     <option value="3">3 года</option>
@@ -2198,19 +55,22 @@
                 </div>
             </div>
 
-            <div class="settings-group" style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(118, 75, 162, 0.05) 100%); border: 2px solid rgba(102, 126, 234, 0.2); border-radius: 20px; padding: 2rem;">
+            <div class="settings-group"
+                style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(118, 75, 162, 0.05) 100%); border: 2px solid rgba(102, 126, 234, 0.2); border-radius: 20px; padding: 2rem;">
                 <div class="d-flex align-items-center mb-4">
-                    <div style="width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; margin-right: 1rem; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);">
+                    <div
+                        style="width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; margin-right: 1rem; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);">
                         <i class="fas fa-chart-line" style="font-size: 1.5rem; color: white;"></i>
                     </div>
                     <div>
                         <h6 class="text-white mb-1" style="font-size: 1.3rem; font-weight: 700; letter-spacing: 0.5px;">
                             Коэффициенты сезонности
                         </h6>
-                        <p class="text-white-50 small mb-0" style="font-size: 0.95rem;">Корректировка планов в зависимости от месяца</p>
+                        <p class="text-white-50 small mb-0" style="font-size: 0.95rem;">Корректировка планов в
+                            зависимости от месяца</p>
                     </div>
                 </div>
-                
+
                 <div class="seasonality-grid">
                     <div class="seasonality-item" data-season="winter">
                         <label><span class="season-emoji">❄️</span> Янв</label>
@@ -2263,25 +123,30 @@
                 </div>
                 <small class="text-white-50 d-block mt-4 text-center" style="font-size: 0.9rem; line-height: 1.6;">
                     <i class="fas fa-info-circle me-2"></i>
-                    <strong>1.0</strong> = средний уровень&nbsp;&nbsp;|&nbsp;&nbsp;<strong>&gt;1.0</strong> = высокий сезон&nbsp;&nbsp;|&nbsp;&nbsp;<strong>&lt;1.0</strong> = низкий сезон
+                    <strong>1.0</strong> = средний уровень&nbsp;&nbsp;|&nbsp;&nbsp;<strong>&gt;1.0</strong> = высокий
+                    сезон&nbsp;&nbsp;|&nbsp;&nbsp;<strong>&lt;1.0</strong> = низкий сезон
                 </small>
             </div>
 
-            <div class="alert mt-4 p-3" style="background: linear-gradient(135deg, rgba(13, 202, 240, 0.15) 0%, rgba(79, 172, 254, 0.15) 100%); border: 2px solid rgba(13, 202, 240, 0.4); border-radius: 15px; box-shadow: 0 4px 15px rgba(13, 202, 240, 0.2);">
+            <div class="alert mt-4 p-3"
+                style="background: linear-gradient(135deg, rgba(13, 202, 240, 0.15) 0%, rgba(79, 172, 254, 0.15) 100%); border: 2px solid rgba(13, 202, 240, 0.4); border-radius: 15px; box-shadow: 0 4px 15px rgba(13, 202, 240, 0.2);">
                 <div class="d-flex align-items-start">
-                    <div style="width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; background: rgba(13, 202, 240, 0.3); border-radius: 12px; flex-shrink: 0;">
+                    <div
+                        style="width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; background: rgba(13, 202, 240, 0.3); border-radius: 12px; flex-shrink: 0;">
                         <i class="fas fa-info-circle text-info" style="font-size: 1.2rem;"></i>
                     </div>
                     <div class="ms-3">
                         <strong class="text-white d-block mb-1" style="font-size: 1.1rem;">Расчёт кредитов</strong>
                         <p class="text-white-50 mb-0" style="font-size: 0.95rem; line-height: 1.6;">
-                            Планы кредитов рассчитываются на основе реальной истории кредитов каждой территории за последние 12 месяцев с применением тех же коэффициентов сезонности и роста.
+                            Планы кредитов рассчитываются на основе реальной истории кредитов каждой территории за
+                            последние 12 месяцев с применением тех же коэффициентов сезонности и роста.
                         </p>
                     </div>
                 </div>
             </div>
 
-            <div class="d-flex justify-content-between align-items-center mt-4 pt-3" style="border-top: 1px solid rgba(255,255,255,0.1);">
+            <div class="d-flex justify-content-between align-items-center mt-4 pt-3"
+                style="border-top: 1px solid rgba(255,255,255,0.1);">
                 <button class="btn btn-outline-light px-4" @click="resetSettings()">
                     <i class="fas fa-undo me-2"></i>По умолчанию
                 </button>
@@ -2316,7 +181,7 @@
                         <label class="form-label text-white">
                             <i class="fas fa-calendar-alt me-2"></i>Месяц
                         </label>
-                        <select class="form-select" x-model="selectedMonth" @change="loadPlans(); updateSeasonalityInfo()">
+                        <select class="form-select" x-model="selectedMonth" @change="onPeriodChange()">
                             <option value="1">Январь</option>
                             <option value="2">Февраль</option>
                             <option value="3">Март</option>
@@ -2331,9 +196,8 @@
                             <option value="12">Декабрь</option>
                         </select>
                         <div class="mt-2" x-show="seasonalityCoeff">
-                            <span class="badge" 
-                                  :class="seasonalityCoeff >= 1.0 ? 'bg-success' : 'bg-warning'"
-                                  style="font-size: 0.9rem;">
+                            <span class="badge" :class="seasonalityCoeff >= 1.0 ? 'bg-success' : 'bg-warning'"
+                                style="font-size: 0.9rem;">
                                 <i class="fas fa-chart-line me-1"></i>
                                 Сезонность: <span x-text="seasonalityCoeff ? seasonalityCoeff.toFixed(2) : ''"></span>
                             </span>
@@ -2343,7 +207,7 @@
                         <label class="form-label text-white">
                             <i class="fas fa-calendar me-2"></i>Год
                         </label>
-                        <select class="form-select" x-model="selectedYear" @change="loadPlans(); updateSeasonalityInfo()">
+                        <select class="form-select" x-model="selectedYear" @change="onPeriodChange()">
                             <option value="2024">2024</option>
                             <option value="2025">2025</option>
                             <option value="2026">2026</option>
@@ -2357,7 +221,8 @@
                     </div>
                     <div class="col-md-2">
                         <label class="form-label text-white d-block">&nbsp;</label>
-                        <button class="btn btn-info" @click="generatePlans()" style="background: linear-gradient(135deg, #17a2b8 0%, #138496 100%); border: none; color: white; font-weight: 600; padding: 12px 20px; border-radius: 10px;">
+                        <button class="btn btn-info" @click="generatePlans()"
+                            style="background: linear-gradient(135deg, #17a2b8 0%, #138496 100%); border: none; color: white; font-weight: 600; padding: 12px 20px; border-radius: 10px;">
                             <i class="fas fa-magic me-2"></i>Генерировать
                         </button>
                     </div>
@@ -2369,7 +234,8 @@
                     </div>
                     <div class="col-md-2">
                         <label class="form-label text-white d-block">&nbsp;</label>
-                        <button class="btn btn-success" @click="exportToExcel()" style="font-weight: 600; padding: 12px 20px; border-radius: 10px;">
+                        <button class="btn btn-success" @click="exportToExcel()"
+                            style="font-weight: 600; padding: 12px 20px; border-radius: 10px;">
                             <i class="fas fa-file-excel me-2"></i>Excel
                         </button>
                     </div>
@@ -2400,46 +266,118 @@
     <!-- Панель фильтров (Collapsible) -->
     <div class="row mb-4" x-show="showFiltersPanel" x-transition x-cloak>
         <div class="col-12">
-            <div class="card" style="background: linear-gradient(145deg, rgba(35, 35, 55, 0.98) 0%, rgba(25, 25, 40, 0.98) 100%); border: 2px solid rgba(102, 126, 234, 0.4); border-radius: 20px;">
-                <div class="card-header" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%); border-radius: 18px 18px 0 0;">
+            <div class="card"
+                style="background: linear-gradient(145deg, rgba(35, 35, 55, 0.98) 0%, rgba(25, 25, 40, 0.98) 100%); border: 2px solid rgba(102, 126, 234, 0.4); border-radius: 20px;">
+                <div class="card-header"
+                    style="background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%); border-radius: 18px 18px 0 0;">
                     <div class="d-flex justify-content-between align-items-center">
                         <h6 class="mb-0 text-white">
-                            <i class="fas fa-filter"></i> Группы клиентов
+                            <i class="fas fa-filter"></i> Фильтры по группам
                         </h6>
                         <button class="btn btn-sm btn-outline-light" @click="clearFilters()">
-                            <i class="fas fa-times"></i> Очистить
+                            <i class="fas fa-times"></i> Очистить все
                         </button>
                     </div>
                 </div>
                 <div class="card-body">
-                    <p class="text-white-50 small mb-2"><i class="fas fa-info-circle"></i> Фильтр применяется к продажам и кредитам</p>
-                    <span class="badge bg-primary mb-2">Выбрано: <span x-text="selectedGroups.length"></span></span>
-                    <button class="btn btn-sm btn-outline-primary w-100 mb-2" @click="selectAllGroups()">
-                        <i class="fas fa-check-double"></i> Выбрать все
-                    </button>
-                    <div class="input-group input-group-sm mb-2">
-                        <span class="input-group-text" style="background: rgba(102, 126, 234, 0.3); border-color: rgba(102, 126, 234, 0.4); color: white;">
-                            <i class="fas fa-search"></i>
-                        </span>
-                        <input type="text" class="form-control" placeholder="Поиск" x-model="groupSearch" style="background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.2); color: white;">
-                    </div>
-                    <div style="max-height: 300px; overflow-y: auto;" class="border rounded p-2" style="border-color: rgba(255,255,255,0.2) !important; background: rgba(0,0,0,0.2);">
-                        <template x-for="parentGroup in groupListByParent(filteredGroups())" :key="parentGroup.parent">
-                            <div class="mb-2">
-                                <div class="fw-bold text-white-50 small p-1 mb-1" style="background: rgba(255,255,255,0.05);" x-text="parentGroup.parent"></div>
-                                <div class="ms-2">
-                                    <template x-for="group in parentGroup.items" :key="group.code">
-                                        <div class="form-check">
-                                            <input class="form-check-input" type="checkbox" :id="'grp_' + group.code" 
-                                                   :value="group.code" x-model="selectedGroups" @change="saveGroupsToStorage(); loadPrevMonthHistory()">
-                                            <label class="form-check-label text-white" :for="'grp_' + group.code">
-                                                <strong x-text="group.code"></strong> · <span x-text="group.name"></span>
-                                            </label>
-                                        </div>
-                                    </template>
-                                </div>
+                    <div class="row">
+                        <!-- Фильтр для ПРОДАЖ -->
+                        <div class="col-md-6">
+                            <h6 class="text-success mb-2">
+                                <i class="fas fa-shopping-cart"></i> Группы для ПРОДАЖ
+                            </h6>
+                            <p class="text-white-50 small mb-2">
+                                <i class="fas fa-info-circle"></i> Фильтр для расчёта продаж
+                            </p>
+                            <span class="badge bg-success mb-2">Выбрано: <span
+                                    x-text="selectedGroups.length"></span></span>
+                            <button class="btn btn-sm btn-outline-success w-100 mb-2" @click="selectAllGroups()">
+                                <i class="fas fa-check-double"></i> Выбрать все
+                            </button>
+                            <div class="input-group input-group-sm mb-2">
+                                <span class="input-group-text"
+                                    style="background: rgba(40, 167, 69, 0.3); border-color: rgba(40, 167, 69, 0.4); color: white;">
+                                    <i class="fas fa-search"></i>
+                                </span>
+                                <input type="text" class="form-control" placeholder="Поиск" x-model="groupSearch"
+                                    style="background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.2); color: white;">
                             </div>
-                        </template>
+                            <div style="max-height: 300px; overflow-y: auto;" class="border rounded p-2"
+                                style="border-color: rgba(40, 167, 69, 0.3) !important; background: rgba(0,0,0,0.2);">
+                                <template x-for="parentGroup in groupListByParent(filteredGroups())"
+                                    :key="parentGroup.parent">
+                                    <div class="mb-2">
+                                        <div class="fw-bold text-white-50 small p-1 mb-1"
+                                            style="background: rgba(255,255,255,0.05);" x-text="parentGroup.parent">
+                                        </div>
+                                        <div class="ms-2">
+                                            <template x-for="group in parentGroup.items" :key="group.code">
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="checkbox"
+                                                        :id="'grp_sales_' + group.code"
+                                                        :checked="selectedGroups.includes(group.code)"
+                                                        @click="toggleGroupWithChildren(group.code)">
+                                                    <label class="form-check-label text-white"
+                                                        :for="'grp_sales_' + group.code">
+                                                        <strong x-text="group.code"></strong> · <span
+                                                            x-text="group.name"></span>
+                                                    </label>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <!-- Фильтр для ДОЛГОВ -->
+                        <div class="col-md-6">
+                            <h6 class="text-warning mb-2">
+                                <i class="fas fa-credit-card"></i> Группы для ДОЛГОВ
+                            </h6>
+                            <p class="text-white-50 small mb-2">
+                                <i class="fas fa-info-circle"></i> Фильтр для расчёта кредитов
+                            </p>
+                            <span class="badge bg-warning text-dark mb-2">Выбрано: <span
+                                    x-text="selectedDebtGroups.length"></span></span>
+                            <button class="btn btn-sm btn-outline-warning w-100 mb-2" @click="selectAllDebtGroups()">
+                                <i class="fas fa-check-double"></i> Выбрать все
+                            </button>
+                            <div class="input-group input-group-sm mb-2">
+                                <span class="input-group-text"
+                                    style="background: rgba(255, 193, 7, 0.3); border-color: rgba(255, 193, 7, 0.4); color: white;">
+                                    <i class="fas fa-search"></i>
+                                </span>
+                                <input type="text" class="form-control" placeholder="Поиск" x-model="debtGroupSearch"
+                                    style="background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.2); color: white;">
+                            </div>
+                            <div style="max-height: 300px; overflow-y: auto;" class="border rounded p-2"
+                                style="border-color: rgba(255, 193, 7, 0.3) !important; background: rgba(0,0,0,0.2);">
+                                <template x-for="parentGroup in groupListByParent(filteredDebtGroups())"
+                                    :key="'debt_' + parentGroup.parent">
+                                    <div class="mb-2">
+                                        <div class="fw-bold text-white-50 small p-1 mb-1"
+                                            style="background: rgba(255,255,255,0.05);" x-text="parentGroup.parent">
+                                        </div>
+                                        <div class="ms-2">
+                                            <template x-for="group in parentGroup.items" :key="'debt_' + group.code">
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="checkbox"
+                                                        :id="'grp_debt_' + group.code"
+                                                        :checked="selectedDebtGroups.includes(group.code)"
+                                                        @click="toggleDebtGroupWithChildren(group.code)">
+                                                    <label class="form-check-label text-white"
+                                                        :for="'grp_debt_' + group.code">
+                                                        <strong x-text="group.code"></strong> · <span
+                                                            x-text="group.name"></span>
+                                                    </label>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2461,11 +399,12 @@
     <!-- Пример расчёта -->
     <div class="row mb-4" x-show="seasonalityCoeff">
         <div class="col-12">
-            <div class="p-4" style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%); border-radius: 15px; border: 1px solid rgba(102, 126, 234, 0.3);">
+            <div class="p-4"
+                style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%); border-radius: 15px; border: 1px solid rgba(102, 126, 234, 0.3);">
                 <h5 class="text-white mb-3">
                     <i class="fas fa-info-circle me-2"></i>Как рассчитываются планы
                 </h5>
-                
+
                 <div class="row">
                     <!-- Продажи -->
                     <div class="col-md-6 mb-3">
@@ -2476,20 +415,27 @@
                             <div class="text-white-50" style="line-height: 2;">
                                 <div class="mb-2">
                                     <strong class="text-white">Шаг 1:</strong> Берём среднее за 12 месяцев<br>
-                                    <span class="ms-3">Например: <strong class="text-white">8,500,000</strong> AMD</span>
+                                    <span class="ms-3">Например: <strong class="text-white">8,500,000</strong>
+                                        AMD</span>
                                 </div>
                                 <div class="mb-2">
                                     <strong class="text-white">Шаг 2:</strong> Умножаем на сезонность<br>
-                                    <span class="ms-3">8,500,000 × <strong class="text-warning" x-text="seasonalityCoeff"></strong> = <strong class="text-white" x-text="formatCurrency(Math.round(8500000 * seasonalityCoeff))"></strong> AMD</span>
+                                    <span class="ms-3">8,500,000 × <strong class="text-warning"
+                                            x-text="seasonalityCoeff"></strong> = <strong class="text-white"
+                                            x-text="formatCurrency(Math.round(8500000 * seasonalityCoeff))"></strong>
+                                        AMD</span>
                                 </div>
                                 <div class="mb-2">
                                     <strong class="text-white">Шаг 3:</strong> Добавляем рост<br>
-                                    <span class="ms-3" x-text="formatCurrency(Math.round(8500000 * seasonalityCoeff)) + ' × (1 + ' + settings.growthFactor + '%) = ' + formatCurrency(Math.round(8500000 * seasonalityCoeff * (1 + settings.growthFactor/100))) + ' AMD'"></span>
+                                    <span class="ms-3"
+                                        x-text="formatCurrency(Math.round(8500000 * seasonalityCoeff)) + ' × (1 + ' + settings.growthFactor + '%) = ' + formatCurrency(Math.round(8500000 * seasonalityCoeff * (1 + settings.growthFactor/100))) + ' AMD'"></span>
                                 </div>
                                 <div class="pt-2 mt-2" style="border-top: 1px solid rgba(255,255,255,0.2);">
                                     <strong class="text-info">
-                                        <i class="fas fa-equals me-1"></i>Итого план: 
-                                        <span x-text="formatCurrency(Math.round(8500000 * seasonalityCoeff * (1 + settings.growthFactor/100)))"></span> AMD
+                                        <i class="fas fa-equals me-1"></i>Итого план:
+                                        <span
+                                            x-text="formatCurrency(Math.round(8500000 * seasonalityCoeff * (1 + settings.growthFactor/100)))"></span>
+                                        AMD
                                     </strong>
                                 </div>
                             </div>
@@ -2505,20 +451,27 @@
                             <div class="text-white-50" style="line-height: 2;">
                                 <div class="mb-2">
                                     <strong class="text-white">Шаг 1:</strong> Берём среднее за 12 месяцев<br>
-                                    <span class="ms-3">Например: <strong class="text-white">6,100,000</strong> AMD</span>
+                                    <span class="ms-3">Например: <strong class="text-white">6,100,000</strong>
+                                        AMD</span>
                                 </div>
                                 <div class="mb-2">
                                     <strong class="text-white">Шаг 2:</strong> Умножаем на сезонность<br>
-                                    <span class="ms-3">6,100,000 × <strong class="text-warning" x-text="seasonalityCoeff"></strong> = <strong class="text-white" x-text="formatCurrency(Math.round(6100000 * seasonalityCoeff))"></strong> AMD</span>
+                                    <span class="ms-3">6,100,000 × <strong class="text-warning"
+                                            x-text="seasonalityCoeff"></strong> = <strong class="text-white"
+                                            x-text="formatCurrency(Math.round(6100000 * seasonalityCoeff))"></strong>
+                                        AMD</span>
                                 </div>
                                 <div class="mb-2">
                                     <strong class="text-white">Шаг 3:</strong> Добавляем рост<br>
-                                    <span class="ms-3" x-text="formatCurrency(Math.round(6100000 * seasonalityCoeff)) + ' × (1 + ' + settings.growthFactor + '%) = ' + formatCurrency(Math.round(6100000 * seasonalityCoeff * (1 + settings.growthFactor/100))) + ' AMD'"></span>
+                                    <span class="ms-3"
+                                        x-text="formatCurrency(Math.round(6100000 * seasonalityCoeff)) + ' × (1 + ' + settings.growthFactor + '%) = ' + formatCurrency(Math.round(6100000 * seasonalityCoeff * (1 + settings.growthFactor/100))) + ' AMD'"></span>
                                 </div>
                                 <div class="pt-2 mt-2" style="border-top: 1px solid rgba(255,255,255,0.2);">
                                     <strong class="text-warning">
-                                        <i class="fas fa-equals me-1"></i>Итого план: 
-                                        <span x-text="formatCurrency(Math.round(6100000 * seasonalityCoeff * (1 + settings.growthFactor/100)))"></span> AMD
+                                        <i class="fas fa-equals me-1"></i>Итого план:
+                                        <span
+                                            x-text="formatCurrency(Math.round(6100000 * seasonalityCoeff * (1 + settings.growthFactor/100)))"></span>
+                                        AMD
                                     </strong>
                                 </div>
                             </div>
@@ -2526,7 +479,8 @@
                     </div>
                 </div>
 
-                <div class="mt-3 p-3" style="background: rgba(255, 193, 7, 0.1); border-radius: 8px; border: 1px solid rgba(255, 193, 7, 0.3);">
+                <div class="mt-3 p-3"
+                    style="background: rgba(255, 193, 7, 0.1); border-radius: 8px; border: 1px solid rgba(255, 193, 7, 0.3);">
                     <p class="text-white-50 mb-0">
                         <i class="fas fa-lightbulb text-warning me-2"></i>
                         <strong class="text-white">Формула:</strong> План = Среднее за 12 мес × Сезонность × (1 + Рост%)
@@ -2577,9 +531,11 @@
                     <div class="summary-stat-value" x-text="formatCurrency(getTotalSales())"></div>
                     <div class="summary-stat-currency">AMD</div>
                     <div class="summary-stat-details">
-                        <div class="d-flex justify-content-between mt-3 pt-3" style="border-top: 1px solid rgba(255,255,255,0.1);">
+                        <div class="d-flex justify-content-between mt-3 pt-3"
+                            style="border-top: 1px solid rgba(255,255,255,0.1);">
                             <span class="text-white-50">Средний план:</span>
-                            <span class="text-white fw-bold" x-text="formatCurrency(Math.round(getTotalSales() / areas.length)) + ' AMD'"></span>
+                            <span class="text-white fw-bold"
+                                x-text="formatCurrency(Math.round(getTotalSales() / areas.length)) + ' AMD'"></span>
                         </div>
                     </div>
                 </div>
@@ -2600,9 +556,11 @@
                     <div class="summary-stat-value" x-text="formatCurrency(getTotalCredit())"></div>
                     <div class="summary-stat-currency">AMD</div>
                     <div class="summary-stat-details">
-                        <div class="d-flex justify-content-between mt-3 pt-3" style="border-top: 1px solid rgba(255,255,255,0.1);">
+                        <div class="d-flex justify-content-between mt-3 pt-3"
+                            style="border-top: 1px solid rgba(255,255,255,0.1);">
                             <span class="text-white-50">Доля кредитов:</span>
-                            <span class="text-warning fw-bold" x-text="(getTotalSales() > 0 ? ((getTotalCredit() / getTotalSales()) * 100).toFixed(1) : '0') + '%'"></span>
+                            <span class="text-warning fw-bold"
+                                x-text="(getTotalSales() > 0 ? ((getTotalCredit() / getTotalSales()) * 100).toFixed(1) : '0') + '%'"></span>
                         </div>
                     </div>
                 </div>
@@ -2623,20 +581,22 @@
                     <div class="summary-stat-value" x-text="areas.length"></div>
                     <div class="summary-stat-currency">территорий</div>
                     <div class="summary-stat-details">
-                        <div class="d-flex justify-content-between mt-3 pt-3" style="border-top: 1px solid rgba(255,255,255,0.1);">
+                        <div class="d-flex justify-content-between mt-3 pt-3"
+                            style="border-top: 1px solid rgba(255,255,255,0.1);">
                             <span class="text-white-50">Всего данных:</span>
                             <span class="text-info fw-bold" x-text="getTotalCustomers() + ' клиентов'"></span>
                         </div>
                     </div>
                 </div>
             </div>
-            
+
             <!-- Дополнительная статистика -->
             <div class="summary-additional-stats">
                 <div class="row g-3">
                     <div class="col-md-3">
                         <div class="summary-mini-stat">
-                            <div class="summary-mini-icon" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                            <div class="summary-mini-icon"
+                                style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
                                 <i class="fas fa-users"></i>
                             </div>
                             <div class="summary-mini-content">
@@ -2647,7 +607,8 @@
                     </div>
                     <div class="col-md-3">
                         <div class="summary-mini-stat">
-                            <div class="summary-mini-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                            <div class="summary-mini-icon"
+                                style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
                                 <i class="fas fa-user-tie"></i>
                             </div>
                             <div class="summary-mini-content">
@@ -2658,23 +619,29 @@
                     </div>
                     <div class="col-md-3">
                         <div class="summary-mini-stat">
-                            <div class="summary-mini-icon" style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
+                            <div class="summary-mini-icon"
+                                style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
                                 <i class="fas fa-calculator"></i>
                             </div>
                             <div class="summary-mini-content">
                                 <div class="summary-mini-label">На клиента (план)</div>
-                                <div class="summary-mini-value" x-text="getTotalCustomers() > 0 ? formatCurrency(Math.round(getTotalSales() / getTotalCustomers())) + ' ֏' : '-'"></div>
+                                <div class="summary-mini-value"
+                                    x-text="getTotalCustomers() > 0 ? formatCurrency(Math.round(getTotalSales() / getTotalCustomers())) + ' ֏' : '-'">
+                                </div>
                             </div>
                         </div>
                     </div>
                     <div class="col-md-3">
                         <div class="summary-mini-stat">
-                            <div class="summary-mini-icon" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">
+                            <div class="summary-mini-icon"
+                                style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);">
                                 <i class="fas fa-chart-bar"></i>
                             </div>
                             <div class="summary-mini-content">
                                 <div class="summary-mini-label">На менеджера</div>
-                                <div class="summary-mini-value" x-text="getTotalManagers() > 0 ? formatCurrency(Math.round(getTotalSales() / getTotalManagers())) + ' ֏' : 'Нет данных'"></div>
+                                <div class="summary-mini-value"
+                                    x-text="getTotalManagers() > 0 ? formatCurrency(Math.round(getTotalSales() / getTotalManagers())) + ' ֏' : 'Нет данных'">
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -2684,7 +651,7 @@
     </div>
 
     <!-- Карточки территорий -->
-    <div class="row" style="row-gap: 1.5rem;">
+    <div class="row" style="row-gap: 1.5rem;" x-show="!loading">
         <template x-for="area in areas" :key="area.code">
             <div class="col-lg-4 col-md-6 mb-4">
                 <div class="plan-card p-0">
@@ -2706,20 +673,49 @@
                     </div>
 
                     <div class="p-4" style="background: rgba(255, 255, 255, 0.02);">
+                        <div class="row mb-3">
+                            <!-- Коэффициент роста -->
+                            <div class="col-6">
+                                <label class="form-label text-white" style="font-weight: 600; font-size: 0.9rem;">
+                                    <i class="fas fa-percentage text-info me-1"></i>Рост %
+                                </label>
+                                <div class="input-group input-group-sm">
+                                    <input type="number" class="form-control" x-model="areaGrowth[area.code]"
+                                        placeholder="10" step="0.1" style="font-weight: 700;">
+                                </div>
+                            </div>
+                            <!-- Коэффициент сезонности -->
+                            <div class="col-6">
+                                <label class="form-label text-white" style="font-weight: 600; font-size: 0.9rem;">
+                                    <i class="fas fa-cloud-sun text-warning me-1"></i>Сезон
+                                </label>
+                                <div class="input-group input-group-sm">
+                                    <input type="number" class="form-control" x-model="areaSeasonality[area.code]"
+                                        @input="updateAreaChart(area.code)" placeholder="1.0" step="0.01"
+                                        style="font-weight: 700;">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- График сезонности -->
+                        <div class="mb-3" style="height: 60px; width: 100%;">
+                            <canvas :id="'seasonChart_' + area.code"
+                                x-init="$nextTick(() => initAreaChart(area.code, $el))"></canvas>
+                        </div>
+
                         <!-- План продаж -->
                         <div class="mb-3">
                             <label class="form-label text-white" style="font-weight: 600;">
                                 <i class="fas fa-chart-line text-success me-2"></i>План продаж
                             </label>
                             <div class="input-group">
-                                <input type="text" 
-                                       class="form-control" 
-                                       :value="formatPlanInput(getAreaPlan(area.code, 'sales'))"
-                                       @input="updateAreaPlanFormatted(area.code, 'sales', $event.target.value)"
-                                       @blur="$event.target.value = formatPlanInput(getAreaPlan(area.code, 'sales'))"
-                                       placeholder="0"
-                                       style="font-size: 1.1rem; font-weight: 700; padding: 0.75rem;">
-                                <span class="input-group-text" style="font-weight: 600; background: rgba(40, 167, 69, 0.2); border-color: rgba(40, 167, 69, 0.3); color: #28a745;">AMD</span>
+                                <input type="text" class="form-control"
+                                    :value="formatPlanInput(getAreaPlan(area.code, 'sales'))"
+                                    @input="updateAreaPlanFormatted(area.code, 'sales', $event.target.value)"
+                                    @blur="$event.target.value = formatPlanInput(getAreaPlan(area.code, 'sales'))"
+                                    placeholder="0" style="font-size: 1.1rem; font-weight: 700; padding: 0.75rem;">
+                                <span class="input-group-text"
+                                    style="font-weight: 600; background: rgba(40, 167, 69, 0.2); border-color: rgba(40, 167, 69, 0.3); color: #28a745;">AMD</span>
                             </div>
                         </div>
 
@@ -2729,14 +725,13 @@
                                 <i class="fas fa-credit-card text-warning me-2"></i>План кредитов
                             </label>
                             <div class="input-group">
-                                <input type="text" 
-                                       class="form-control" 
-                                       :value="formatPlanInput(getAreaPlan(area.code, 'credit'))"
-                                       @input="updateAreaPlanFormatted(area.code, 'credit', $event.target.value)"
-                                       @blur="$event.target.value = formatPlanInput(getAreaPlan(area.code, 'credit'))"
-                                       placeholder="0"
-                                       style="font-size: 1.1rem; font-weight: 700; padding: 0.75rem;">
-                                <span class="input-group-text" style="font-weight: 600; background: rgba(255, 193, 7, 0.2); border-color: rgba(255, 193, 7, 0.3); color: #ffc107;">AMD</span>
+                                <input type="text" class="form-control"
+                                    :value="formatPlanInput(getAreaPlan(area.code, 'credit'))"
+                                    @input="updateAreaPlanFormatted(area.code, 'credit', $event.target.value)"
+                                    @blur="$event.target.value = formatPlanInput(getAreaPlan(area.code, 'credit'))"
+                                    placeholder="0" style="font-size: 1.1rem; font-weight: 700; padding: 0.75rem;">
+                                <span class="input-group-text"
+                                    style="font-weight: 600; background: rgba(255, 193, 7, 0.2); border-color: rgba(255, 193, 7, 0.3); color: #ffc107;">AMD</span>
                             </div>
                         </div>
 
@@ -2780,7 +775,9 @@
                                         <span>Продажи</span>
                                     </div>
                                     <div class="history-badge-value">
-                                        <span x-text="formatCurrency(areaHistory[area.code]?.lastYearSales || 0)"></span> AMD
+                                        <span
+                                            x-text="formatCurrency(areaHistory[area.code]?.lastYearSales || 0)"></span>
+                                        AMD
                                     </div>
                                 </div>
                                 <div class="history-badge">
@@ -2789,49 +786,64 @@
                                         <span>Долг</span>
                                     </div>
                                     <div class="history-badge-value">
-                                        <span x-text="formatCurrency(areaHistory[area.code]?.lastYearCredit || 0)"></span> AMD
+                                        <span
+                                            x-text="formatCurrency(areaHistory[area.code]?.lastYearCredit || 0)"></span>
+                                        AMD
                                     </div>
                                 </div>
                             </div>
 
                             <!-- Кнопка показа расчётов -->
-                            <div class="mt-3" x-show="getAreaPlan(area.code, 'sales') && areaHistory[area.code]?.avgSales && !area.isEditing" x-data="{showCalc: false}">
+                            <div class="mt-3"
+                                x-show="getAreaPlan(area.code, 'sales') && areaHistory[area.code]?.avgSales && !area.isEditing"
+                                x-data="{showCalc: false}">
                                 <button class="btn btn-sm btn-outline-info w-100" @click="showCalc = !showCalc">
                                     <i class="fas fa-info-circle me-2"></i>
                                     <span x-text="showCalc ? 'Скрыть расчёты' : 'Показать как рассчитан план'"></span>
                                 </button>
-                                
+
                                 <!-- Расчёт плана продаж -->
-                                <div class="mt-3 p-2" style="background: rgba(102, 126, 234, 0.1); border-radius: 10px; border: 1px solid rgba(102, 126, 234, 0.3);" 
-                                     x-show="showCalc" x-transition>
+                                <div class="mt-3 p-2"
+                                    style="background: rgba(102, 126, 234, 0.1); border-radius: 10px; border: 1px solid rgba(102, 126, 234, 0.3);"
+                                    x-show="showCalc" x-transition>
                                     <div class="d-flex align-items-center gap-2 mb-2">
                                         <i class="fas fa-calculator text-primary"></i>
                                         <small class="text-white-50 fw-bold">Расчёт плана продаж:</small>
                                     </div>
                                     <small class="text-white-50 d-block" style="line-height: 1.6;">
-                                        Средн. за 12 мес: <strong class="text-white" x-text="formatCurrency(areaHistory[area.code]?.avgSales || 0)"></strong> AMD<br>
-                                        × Сезонность: <strong class="text-warning" x-text="seasonalityCoeff"></strong><br>
-                                        × Рост: <strong class="text-success" x-text="(settings.growthFactor >= 0 ? '+' : '') + settings.growthFactor + '%'"></strong><br>
-                                        = <strong class="text-info" x-text="formatCurrency(getAreaPlan(area.code, 'sales'))"></strong> AMD
+                                        Средн. за 12 мес: <strong class="text-white"
+                                            x-text="formatCurrency(areaHistory[area.code]?.avgSales || 0)"></strong>
+                                        AMD<br>
+                                        × Сезонность: <strong class="text-warning"
+                                            x-text="areaSeasonality[area.code]"></strong><br>
+                                        × Рост: <strong class="text-success"
+                                            x-text="(settings.growthFactor >= 0 ? '+' : '') + settings.growthFactor + '%'"></strong><br>
+                                        = <strong class="text-info"
+                                            x-text="formatCurrency(getAreaPlan(area.code, 'sales'))"></strong> AMD
                                     </small>
                                 </div>
 
                                 <!-- Расчёт плана кредитов -->
-                                <div class="mt-3 p-2" style="background: rgba(255, 193, 7, 0.1); border-radius: 10px; border: 1px solid rgba(255, 193, 7, 0.3);" 
-                                     x-show="showCalc" x-transition>
+                                <div class="mt-3 p-2"
+                                    style="background: rgba(255, 193, 7, 0.1); border-radius: 10px; border: 1px solid rgba(255, 193, 7, 0.3);"
+                                    x-show="showCalc" x-transition>
                                     <div class="d-flex align-items-center gap-2 mb-2">
                                         <i class="fas fa-credit-card text-warning"></i>
                                         <small class="text-white-50 fw-bold">Расчёт плана кредитов:</small>
                                     </div>
                                     <small class="text-white-50 d-block" style="line-height: 1.6;">
-                                        Средн. за 12 мес: <strong class="text-white" x-text="formatCurrency(areaHistory[area.code]?.avgCredit || 0)"></strong> AMD<br>
-                                        × Сезонность: <strong class="text-warning" x-text="seasonalityCoeff"></strong><br>
-                                        × Рост: <strong class="text-success" x-text="(settings.growthFactor >= 0 ? '+' : '') + settings.growthFactor + '%'"></strong><br>
-                                        = <strong class="text-warning" x-text="formatCurrency(getAreaPlan(area.code, 'credit'))"></strong> AMD
-                                        
+                                        Средн. за 12 мес: <strong class="text-white"
+                                            x-text="formatCurrency(areaHistory[area.code]?.avgCredit || 0)"></strong>
+                                        AMD<br>
+                                        × Сезонность: <strong class="text-warning"
+                                            x-text="areaSeasonality[area.code]"></strong><br>
+                                        × Рост: <strong class="text-success"
+                                            x-text="(settings.growthFactor >= 0 ? '+' : '') + settings.growthFactor + '%'"></strong><br>
+                                        = <strong class="text-warning"
+                                            x-text="formatCurrency(getAreaPlan(area.code, 'credit'))"></strong> AMD
+
                                         <!-- Процент от плана - МАКСИМАЛЬНО ВЫРАЗИТЕЛЬНЫЙ БЛОК -->
-                                        <div class="mt-4 pt-4 pb-4 px-4 rounded-4" 
-                                             style="border: 3px solid rgba(251, 191, 36, 0.6); 
+                                        <div class="mt-4 pt-4 pb-4 px-4 rounded-4" style="border: 3px solid rgba(251, 191, 36, 0.6); 
                                                     background: linear-gradient(135deg, rgba(251, 191, 36, 0.25) 0%, rgba(245, 158, 11, 0.2) 100%);
                                                     box-shadow: 0 8px 32px rgba(251, 191, 36, 0.4), 0 0 50px rgba(251, 191, 36, 0.2);
                                                     animation: pulse-glow 2s ease-in-out infinite;
@@ -2841,21 +853,24 @@
                                             <div style="position: absolute; top: 0; left: -100%; width: 100%; height: 100%; 
                                                         background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
                                                         animation: shimmer 3s infinite;"></div>
-                                            
+
                                             <div class="text-center position-relative">
                                                 <div class="mb-2">
-                                                    <i class="fas fa-chart-line me-2" style="color: #fbbf24; font-size: 1.5rem;"></i>
-                                                    <span class="text-white fw-bold" style="font-size: 1.1rem; letter-spacing: 2px;">ПРОГНОЗ ОТ ПЛАНА</span>
+                                                    <i class="fas fa-chart-line me-2"
+                                                        style="color: #fbbf24; font-size: 1.5rem;"></i>
+                                                    <span class="text-white fw-bold"
+                                                        style="font-size: 1.1rem; letter-spacing: 2px;">ПРОГНОЗ ОТ
+                                                        ПЛАНА</span>
                                                 </div>
-                                                <div class="display-1 fw-bold mb-2" 
-                                                     style="color: #fbbf24; 
+                                                <div class="display-1 fw-bold mb-2" style="color: #fbbf24; 
                                                             text-shadow: 0 4px 20px rgba(251, 191, 36, 0.8), 0 0 40px rgba(251, 191, 36, 0.5);
                                                             font-size: 4.5rem;
                                                             line-height: 1;
                                                             letter-spacing: -2px;"
-                                                     x-text="((getAreaPlan(area.code, 'credit') || 0) / (getAreaPlan(area.code, 'sales') || 1) * 100).toFixed(1) + '%'">
+                                                    x-text="((getAreaPlan(area.code, 'credit') || 0) / (getAreaPlan(area.code, 'sales') || 1) * 100).toFixed(1) + '%'">
                                                 </div>
-                                                <div class="text-white fw-semibold mt-2" style="font-size: 1rem; opacity: 0.9;">от плана продаж</div>
+                                                <div class="text-white fw-semibold mt-2"
+                                                    style="font-size: 1rem; opacity: 0.9;">от плана продаж</div>
                                             </div>
                                         </div>
                                     </small>
@@ -2864,8 +879,7 @@
                         </div>
 
                         <!-- Кнопка индивидуального сохранения -->
-                        <button class="btn btn-sm btn-outline-success w-100 mt-3" 
-                                @click="saveAreaPlan(area.code)">
+                        <button class="btn btn-sm btn-outline-success w-100 mt-3" @click="saveAreaPlan(area.code)">
                             <i class="fas fa-check me-2"></i>Сохранить
                         </button>
                     </div>
@@ -2895,956 +909,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script>
-    // Отключаем плагин DataLabels глобально (если он загружен)
-    if (Chart.defaults.plugins && Chart.defaults.plugins.datalabels) {
-        Chart.defaults.plugins.datalabels.display = false;
-    }
-    
-    function plansData() {
-        return {
-            areas: [],
-            loading: true,
-            selectedMonth: new Date().getMonth() + 1,
-            selectedYear: new Date().getFullYear(),
-            plans: {},
-            showSaveIndicator: false,
-            showSettings: false,
-            seasonalityCoeff: null,
-            areaHistory: {},
-            showFiltersPanel: false,
-            groups: [],
-            selectedGroups: [],
-            groupSearch: '',
-            seasonalityChart: null,
-            seasonalityMap: {
-                1: 0.53, 2: 0.67, 3: 0.80, 4: 0.86,
-                5: 1.14, 6: 1.31, 7: 1.49, 8: 1.43,
-                9: 1.10, 10: 1.02, 11: 0.88, 12: 0.93
-            },
-            settings: {
-                growthFactor: 10,
-                historyYears: 2,
-                seasonality: {
-                    1: 0.53, 2: 0.67, 3: 0.80, 4: 0.86,
-                    5: 1.14, 6: 1.31, 7: 1.49, 8: 1.43,
-                    9: 1.10, 10: 1.02, 11: 0.88, 12: 0.93
-                }
-            },
-            defaultSettings: {
-                growthFactor: 10,
-                historyYears: 2,
-                seasonality: {
-                    1: 0.53, 2: 0.67, 3: 0.80, 4: 0.86,
-                    5: 1.14, 6: 1.31, 7: 1.49, 8: 1.43,
-                    9: 1.10, 10: 1.02, 11: 0.88, 12: 0.93
-                }
-            },
-
-            async init() {
-                await this.loadGroups();
-                this.loadGroupsFromStorage();
-                await this.loadAreas();
-                this.loadPlans();
-                this.loadSettings();
-                this.updateSeasonalityInfo();
-                this.loadPrevMonthHistory();
-                this.createSeasonalityChart();
-            },
-
-            async loadGroups() {
-                try {
-                    const response = await fetch('/api/settings/groups');
-                    const data = await response.json();
-                    if (data.success) {
-                        this.groups = data.data;
-                    }
-                } catch (error) {
-                    console.error('Error loading groups:', error);
-                }
-            },
-
-            loadGroupsFromStorage() {
-                const saved = localStorage.getItem('plans_selected_groups');
-                if (saved) {
-                    try {
-                        this.selectedGroups = JSON.parse(saved);
-                    } catch (e) {
-                        console.error('Error loading groups from storage:', e);
-                    }
-                }
-            },
-
-            saveGroupsToStorage() {
-                localStorage.setItem('plans_selected_groups', JSON.stringify(this.selectedGroups));
-            },
-
-            selectAllGroups() {
-                this.selectedGroups = this.groups.map(g => g.code);
-                this.saveGroupsToStorage();
-                this.loadPrevMonthHistory();
-            },
-
-            clearFilters() {
-                this.selectedGroups = [];
-                this.saveGroupsToStorage();
-                this.loadPrevMonthHistory();
-            },
-
-            filteredGroups() {
-                if (!this.groupSearch) return this.groups;
-                const search = this.groupSearch.toLowerCase();
-                return this.groups.filter(g => 
-                    g.code.toLowerCase().includes(search) || 
-                    g.name.toLowerCase().includes(search)
-                );
-            },
-
-            groupListByParent(groups) {
-                const byParent = {};
-                groups.forEach(g => {
-                    const parent = g.parent || 'Без категории';
-                    if (!byParent[parent]) {
-                        byParent[parent] = [];
-                    }
-                    byParent[parent].push(g);
-                });
-                return Object.keys(byParent).map(parent => ({
-                    parent,
-                    items: byParent[parent]
-                }));
-            },
-
-            async loadAreas() {
-                try {
-                    this.loading = true;
-                    const response = await fetch('/api/sales-areas');
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        this.areas = data.data;
-                    }
-                } catch (error) {
-                    console.error('Error loading areas:', error);
-                } finally {
-                    this.loading = false;
-                }
-            },
-
-            loadPlans() {
-                const key = `plans_${this.selectedYear}_${this.selectedMonth}`;
-                const saved = localStorage.getItem(key);
-                
-                if (saved) {
-                    this.plans = JSON.parse(saved);
-                } else {
-                    this.plans = {};
-                }
-                
-                this.loadPrevMonthHistory();
-            },
-
-            getAreaPlan(areaCode, type) {
-                const key = `${areaCode}_${type}`;
-                return this.plans[key] || '';
-            },
-
-            updateAreaPlan(areaCode, type, value) {
-                const key = `${areaCode}_${type}`;
-                this.plans[key] = value;
-            },
-
-            formatPlanInput(value) {
-                if (!value) return '';
-                const num = typeof value === 'string' ? parseInt(value.replace(/\s/g, '')) : value;
-                if (isNaN(num)) return '';
-                return num.toLocaleString('ru-RU');
-            },
-
-            parsePlanInput(value) {
-                if (!value) return '';
-                const cleaned = value.replace(/\s/g, '');
-                const num = parseInt(cleaned);
-                return isNaN(num) ? '' : num;
-            },
-
-            updateAreaPlanFormatted(areaCode, type, value) {
-                const key = `${areaCode}_${type}`;
-                const parsed = this.parsePlanInput(value);
-                this.plans[key] = parsed;
-            },
-
-            saveAreaPlan(areaCode) {
-                this.savePlans();
-                this.showSaveNotification();
-            },
-
-            saveAllPlans() {
-                this.savePlans();
-                this.showSaveNotification();
-            },
-
-            async generatePlans() {
-                const growthPercent = this.settings.growthFactor;
-                const seasonCoeff = parseFloat(this.settings.seasonality[this.selectedMonth]) || 1.0;
-                const yearsText = this.settings.historyYears == 1 ? '1 год' : (this.settings.historyYears < 5 ? `${this.settings.historyYears} года` : `${this.settings.historyYears} лет`);
-                
-                if (!confirm(`Сгенерировать автоматические планы для ${this.getMonthName(this.selectedMonth)} ${this.selectedYear}?\n\nБудут учтены:\n- Средние продажи за последние 12 месяцев\n- Средние кредиты за последние 12 месяцев\n- История для сезонности: ${yearsText}\n- Сезонность: ${seasonCoeff.toFixed(2)}\n- Рост: ${growthPercent > 0 ? '+' : ''}${growthPercent}%${this.selectedGroups.length > 0 ? '\n- Группы клиентов: ' + this.selectedGroups.length + ' выбрано' : ''}`)) {
-                    return;
-                }
-
-                try {
-                    this.loading = true;
-                    
-                    const params = new URLSearchParams({
-                        month: this.selectedMonth,
-                        year: this.selectedYear,
-                        history_years: this.settings.historyYears,
-                        growth: this.settings.growthFactor  // Передаем параметр роста в API
-                    });
-                    
-                    if (this.selectedGroups.length > 0) {
-                        params.append('groups', this.selectedGroups.join(','));
-                    }
-                    
-                    const response = await fetch(`/api/generate-plans?${params}`);
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        // Применяем сгенерированные планы с расчетами из API
-                        for (const [areaCode, planData] of Object.entries(data.data)) {
-                            // Обновляем историю, чтобы отображаемые средние значения совпадали с расчетом
-                            if (!this.areaHistory[areaCode]) {
-                                this.areaHistory[areaCode] = {};
-                            }
-                            this.areaHistory[areaCode].avgSales = planData.avg_sales || 0;
-                            this.areaHistory[areaCode].avgCredit = planData.avg_credit || 0;
-
-                            // Используем уже округленные значения из API (округлено до 10,000)
-                            this.plans[`${areaCode}_sales`] = planData.sales;
-                            this.plans[`${areaCode}_credit`] = planData.credit;
-                        }
-                        
-                        this.savePlans();
-                        this.showSaveNotification();
-                        
-                        const yearsText = this.settings.historyYears == 1 ? '1 год' : (this.settings.historyYears < 5 ? `${this.settings.historyYears} года` : `${this.settings.historyYears} лет`);
-                        alert(`Планы успешно сгенерированы!\n\nПараметры:\n- История: ${yearsText}\n- Сезонность: ${seasonCoeff.toFixed(2)}\n- Рост: ${growthPercent > 0 ? '+' : ''}${growthPercent}%\n- Кредиты рассчитаны по реальной истории`);
-                    } else {
-                        alert('Ошибка генерации планов: ' + data.error);
-                    }
-                } catch (error) {
-                    console.error('Error generating plans:', error);
-                    alert('Ошибка генерации планов');
-                } finally {
-                    this.loading = false;
-                }
-            },
-
-            savePlans() {
-                const key = `plans_${this.selectedYear}_${this.selectedMonth}`;
-                localStorage.setItem(key, JSON.stringify(this.plans));
-            },
-
-            resetAllPlans() {
-                if (confirm('Вы уверены, что хотите сбросить все планы для этого месяца?')) {
-                    this.plans = {};
-                    this.savePlans();
-                    this.showSaveNotification();
-                }
-            },
-
-            showSaveNotification() {
-                this.showSaveIndicator = true;
-                setTimeout(() => {
-                    this.showSaveIndicator = false;
-                }, 2000);
-            },
-
-            formatCurrency(value) {
-                if (!value) return '0';
-                return parseFloat(value).toLocaleString('ru-RU');
-            },
-
-            getTotalSales() {
-                let total = 0;
-                this.areas.forEach(area => {
-                    const plan = this.getAreaPlan(area.code, 'sales');
-                    total += parseFloat(plan) || 0;
-                });
-                return Math.round(total);
-            },
-
-            getTotalCredit() {
-                let total = 0;
-                this.areas.forEach(area => {
-                    const plan = this.getAreaPlan(area.code, 'credit');
-                    total += parseFloat(plan) || 0;
-                });
-                return Math.round(total);
-            },
-
-            getTotalCustomers() {
-                let total = 0;
-                this.areas.forEach(area => {
-                    total += parseInt(area.CustomerCount) || 0;
-                });
-                return total;
-            },
-
-            getTotalManagers() {
-                let total = 0;
-                this.areas.forEach(area => {
-                    total += parseInt(area.ManagerCount) || 0;
-                });
-                return total;
-            },
-
-            getMonthName(month) {
-                const names = {
-                    1: 'Январь', 2: 'Февраль', 3: 'Март', 4: 'Апрель',
-                    5: 'Май', 6: 'Июнь', 7: 'Июль', 8: 'Август',
-                    9: 'Сентябрь', 10: 'Октябрь', 11: 'Ноябрь', 12: 'Декабрь'
-                };
-                return names[month] || '';
-            },
-
-            updateSeasonalityInfo() {
-                const value = this.settings.seasonality[this.selectedMonth];
-                this.seasonalityCoeff = value ? parseFloat(value) : null;
-            },
-
-            exportToExcel() {
-                // Собираем данные для экспорта
-                const exportData = [];
-                
-                this.areas.forEach(area => {
-                    const salesPlan = this.getAreaPlan(area.code, 'sales') || 0;
-                    const creditPlan = this.getAreaPlan(area.code, 'credit') || 0;
-                    
-                    // Добавляем только те территории, у которых есть планы
-                    if (salesPlan > 0 || creditPlan > 0) {
-                        const history = this.areaHistory[area.code] || {};
-                        const avgSales = Math.round(history.avgSales || 0);
-                        const avgCredit = Math.round(history.avgCredit || 0);
-                        
-                        // Рассчитываем отклонения
-                        const salesDiff = salesPlan - avgSales;
-                        const creditDiff = creditPlan - avgCredit;
-                        const salesGrowth = avgSales > 0 ? ((salesDiff / avgSales) * 100).toFixed(1) : 0;
-                        const creditGrowth = avgCredit > 0 ? ((creditDiff / avgCredit) * 100).toFixed(1) : 0;
-                        
-                        exportData.push({
-                            'Код': area.code,
-                            'Территория': area.name,
-                            'План продаж (AMD)': salesPlan,
-                            'План кредитов (AMD)': creditPlan,
-                            'Средние продажи (AMD)': avgSales,
-                            'Средний долг (AMD)': avgCredit,
-                            'Рост продаж (%)': salesGrowth,
-                            'Рост кредитов (%)': creditGrowth,
-                            'Разница продаж (AMD)': salesDiff,
-                            'Разница кредитов (AMD)': creditDiff
-                        });
-                    }
-                });
-                
-                if (exportData.length === 0) {
-                    alert('Нет данных для экспорта. Сгенерируйте или введите планы.');
-                    return;
-                }
-                
-                // Создаем HTML таблицу для Excel
-                const monthName = this.getMonthName(this.selectedMonth);
-                const title = `Планы продаж и кредитов - ${monthName} ${this.selectedYear}`;
-                const date = new Date().toLocaleDateString('ru-RU');
-                
-                let html = `
-                    <html xmlns:x="urn:schemas-microsoft-com:office:excel">
-                    <head>
-                        <meta charset="UTF-8">
-                        <xml>
-                            <x:ExcelWorkbook>
-                                <x:ExcelWorksheets>
-                                    <x:ExcelWorksheet>
-                                        <x:Name>Планы</x:Name>
-                                        <x:WorksheetOptions>
-                                            <x:Print>
-                                                <x:ValidPrinterInfo/>
-                                            </x:Print>
-                                        </x:WorksheetOptions>
-                                    </x:ExcelWorksheet>
-                                </x:ExcelWorksheets>
-                            </x:ExcelWorkbook>
-                        </xml>
-                        <style>
-                            table { 
-                                border-collapse: collapse; 
-                                font-family: Calibri, sans-serif; 
-                                font-size: 11pt;
-                                width: 100%;
-                            }
-                            .title { 
-                                font-size: 16pt; 
-                                font-weight: bold; 
-                                color: #2c3e50;
-                                padding: 15px 0 10px 0;
-                                text-align: left;
-                            }
-                            .subtitle { 
-                                font-size: 10pt; 
-                                color: #7f8c8d;
-                                padding-bottom: 20px;
-                            }
-                            th { 
-                                background-color: #3498db; 
-                                color: white; 
-                                font-weight: bold; 
-                                padding: 12px 8px;
-                                border: 1px solid #2980b9;
-                                text-align: center;
-                                white-space: nowrap;
-                            }
-                            td { 
-                                padding: 8px; 
-                                border: 1px solid #bdc3c7;
-                                text-align: right;
-                            }
-                            td:nth-child(1), td:nth-child(2) { 
-                                text-align: left;
-                            }
-                            tr:nth-child(even) { 
-                                background-color: #ecf0f1; 
-                            }
-                            tr:hover { 
-                                background-color: #d5dbdb; 
-                            }
-                            .positive { 
-                                color: #27ae60; 
-                                font-weight: bold; 
-                            }
-                            .negative { 
-                                color: #e74c3c; 
-                                font-weight: bold; 
-                            }
-                            .summary { 
-                                background-color: #34495e !important; 
-                                color: white !important;
-                                font-weight: bold;
-                            }
-                            .number { 
-                                mso-number-format: "#,##0"; 
-                            }
-                            .percent { 
-                                mso-number-format: "0.0%"; 
-                            }
-                        </style>
-                    </head>
-                    <body>
-                        <div class="title">${title}</div>
-                        <div class="subtitle">Создано: ${date} | Территорий: ${exportData.length}</div>
-                        <table border="1">
-                            <thead>
-                                <tr>`;
-                
-                // Заголовки
-                const headers = Object.keys(exportData[0]);
-                headers.forEach(header => {
-                    html += `<th>${header}</th>`;
-                });
-                html += `</tr></thead><tbody>`;
-                
-                // Данные
-                let totalSalesPlan = 0, totalCreditPlan = 0, totalAvgSales = 0, totalAvgCredit = 0;
-                
-                exportData.forEach(row => {
-                    html += '<tr>';
-                    headers.forEach(header => {
-                        let value = row[header];
-                        let cssClass = 'number';
-                        
-                        // Форматирование по типу данных
-                        if (header.includes('Код')) {
-                            html += `<td style="text-align:left">${value}</td>`;
-                        } else if (header.includes('Территория')) {
-                            html += `<td style="text-align:left">${value}</td>`;
-                        } else if (header.includes('Рост')) {
-                            const numValue = parseFloat(value);
-                            const className = numValue >= 0 ? 'positive' : 'negative';
-                            html += `<td class="${className} number">${value}%</td>`;
-                        } else if (header.includes('Разница')) {
-                            const numValue = parseFloat(value);
-                            const className = numValue >= 0 ? 'positive' : 'negative';
-                            html += `<td class="${className} number">${value.toLocaleString('ru-RU')}</td>`;
-                        } else {
-                            html += `<td class="number">${value.toLocaleString('ru-RU')}</td>`;
-                        }
-                    });
-                    html += '</tr>';
-                    
-                    // Суммируем итоги
-                    totalSalesPlan += row['План продаж (AMD)'];
-                    totalCreditPlan += row['План кредитов (AMD)'];
-                    totalAvgSales += row['Средние продажи (AMD)'];
-                    totalAvgCredit += row['Средний долг (AMD)'];
-                });
-                
-                // Итоговая строка
-                const totalSalesGrowth = totalAvgSales > 0 ? (((totalSalesPlan - totalAvgSales) / totalAvgSales) * 100).toFixed(1) : 0;
-                const totalCreditGrowth = totalAvgCredit > 0 ? (((totalCreditPlan - totalAvgCredit) / totalAvgCredit) * 100).toFixed(1) : 0;
-                
-                html += `
-                    <tr class="summary">
-                        <td colspan="2" style="text-align:center">ИТОГО</td>
-                        <td class="number">${totalSalesPlan.toLocaleString('ru-RU')}</td>
-                        <td class="number">${totalCreditPlan.toLocaleString('ru-RU')}</td>
-                        <td class="number">${totalAvgSales.toLocaleString('ru-RU')}</td>
-                        <td class="number">${totalAvgCredit.toLocaleString('ru-RU')}</td>
-                        <td class="number">${totalSalesGrowth}%</td>
-                        <td class="number">${totalCreditGrowth}%</td>
-                        <td class="number">${(totalSalesPlan - totalAvgSales).toLocaleString('ru-RU')}</td>
-                        <td class="number">${(totalCreditPlan - totalAvgCredit).toLocaleString('ru-RU')}</td>
-                    </tr>
-                </tbody></table>
-                    </body>
-                    </html>`;
-                
-                // Скачиваем файл
-                const blob = new Blob(['\ufeff', html], { type: 'application/vnd.ms-excel;charset=utf-8' });
-                const link = document.createElement('a');
-                link.href = URL.createObjectURL(blob);
-                link.download = `Планы_${monthName}_${this.selectedYear}.xls`;
-                link.click();
-                
-                // Показываем уведомление
-                const notification = `
-                    ✅ Экспортировано успешно!
-                    
-                    📊 Территорий: ${exportData.length}
-                    💰 План продаж: ${(totalSalesPlan / 1000000).toFixed(1)} млн AMD
-                    💳 План кредитов: ${(totalCreditPlan / 1000000).toFixed(1)} млн AMD
-                `;
-                alert(notification);
-            },
-
-            loadSettings() {
-                const saved = localStorage.getItem('plan_generation_settings');
-                if (saved) {
-                    try {
-                        this.settings = JSON.parse(saved);
-                    } catch (e) {
-                        console.error('Error loading settings:', e);
-                    }
-                }
-            },
-
-            saveSettings() {
-                localStorage.setItem('plan_generation_settings', JSON.stringify(this.settings));
-                this.updateSeasonalityInfo();
-                this.createSeasonalityChart();
-                this.showSettings = false;
-                this.showSaveNotification();
-            },
-
-            resetSettings() {
-                if (confirm('Сбросить все параметры к значениям по умолчанию?')) {
-                    this.settings = JSON.parse(JSON.stringify(this.defaultSettings));
-                    this.saveSettings();
-                }
-            },
-
-            async updateSeasonalityFromHistory() {
-                try {
-                    this.loading = true;
-                    
-                    const params = new URLSearchParams({
-                        years: this.settings.historyYears
-                    });
-                    
-                    if (this.selectedGroups.length > 0) {
-                        params.append('groups', this.selectedGroups.join(','));
-                    }
-                    
-                    const response = await fetch(`/api/calculate-seasonality?${params}`);
-                    const data = await response.json();
-                    
-                    if (data.success && data.seasonality) {
-                        // Обновляем коэффициенты сезонности
-                        this.settings.seasonality = data.seasonality;
-                        
-                        // Обновляем график и информацию
-                        this.updateSeasonalityInfo();
-                        this.createSeasonalityChart();
-                        
-                        const yearsText = this.settings.historyYears == 1 ? '1 год' : (this.settings.historyYears < 5 ? `${this.settings.historyYears} года` : `${this.settings.historyYears} лет`);
-                        console.log(`Коэффициенты сезонности обновлены на основе ${yearsText} истории`);
-                    }
-                } catch (error) {
-                    console.error('Ошибка загрузки коэффициентов сезонности:', error);
-                    alert('Ошибка загрузки коэффициентов сезонности. Используются текущие значения.');
-                } finally {
-                    this.loading = false;
-                }
-            },
-
-            getMonthNameShort(month) {
-                const names = {
-                    1: '❄️ Янв', 2: '❄️ Фев', 3: '🌱 Мар', 4: '🌱 Апр',
-                    5: '🌸 Май', 6: '☀️ Июн', 7: '☀️ Июл', 8: '☀️ Авг',
-                    9: '🍂 Сен', 10: '🍂 Окт', 11: '🍂 Ноя', 12: '❄️ Дек'
-                };
-                return names[month] || '';
-            },
-
-            async loadPrevMonthHistory() {
-                try {
-                    this.areaHistory = {};
-                    
-                    // 1. Загружаем данные за предыдущий месяц
-                    let prevMonth = this.selectedMonth - 1;
-                    let prevYear = this.selectedYear;
-                    
-                    if (prevMonth < 1) {
-                        prevMonth = 12;
-                        prevYear -= 1;
-                    }
-                    
-                    const prevStartDate = new Date(prevYear, prevMonth - 1, 1);
-                    const prevEndDate = new Date(prevYear, prevMonth, 0);
-                    
-                    const prevDateFrom = prevStartDate.toISOString().split('T')[0];
-                    const prevDateTo = prevEndDate.toISOString().split('T')[0];
-                    
-                    // 2. Загружаем данные за тот же месяц прошлого года
-                    const lastYearStartDate = new Date(this.selectedYear - 1, this.selectedMonth - 1, 1);
-                    const lastYearEndDate = new Date(this.selectedYear - 1, this.selectedMonth, 0);
-                    
-                    const lastYearDateFrom = lastYearStartDate.toISOString().split('T')[0];
-                    const lastYearDateTo = lastYearEndDate.toISOString().split('T')[0];
-                    
-                    // 3. Параллельно загружаем оба периода с фильтрами
-                    const params1 = new URLSearchParams({
-                        date_from: prevDateFrom,
-                        date_to: prevDateTo
-                    });
-                    if (this.selectedGroups.length > 0) {
-                        params1.append('groups', this.selectedGroups.join(','));
-                        params1.append('sales_groups', this.selectedGroups.join(','));
-                    }
-                    
-                    const params2 = new URLSearchParams({
-                        date_from: lastYearDateFrom,
-                        date_to: lastYearDateTo
-                    });
-                    if (this.selectedGroups.length > 0) {
-                        params2.append('groups', this.selectedGroups.join(','));
-                        params2.append('sales_groups', this.selectedGroups.join(','));
-                    }
-                    
-                    const [prevMonthResponse, lastYearResponse] = await Promise.all([
-                        fetch(`/api/sales-areas?${params1}`),
-                        fetch(`/api/sales-areas?${params2}`)
-                    ]);
-                    
-                    const prevMonthData = await prevMonthResponse.json();
-                    const lastYearData = await lastYearResponse.json();
-                    
-                    // 4. Объединяем данные
-                    if (prevMonthData.success) {
-                        prevMonthData.data.forEach(area => {
-                            this.areaHistory[area.code] = {
-                                sales: area.TotalSales || 0,
-                                credit: area.PrevMonthDebt || 0  // ДОЛГ за прошлый месяц
-                            };
-                        });
-                    }
-                    
-                    if (lastYearData.success) {
-                        lastYearData.data.forEach(area => {
-                            if (!this.areaHistory[area.code]) {
-                                this.areaHistory[area.code] = {};
-                            }
-                            this.areaHistory[area.code].lastYearSales = area.TotalSales || 0;
-                            this.areaHistory[area.code].lastYearCredit = area.LastYearDebt || 0;  // ДОЛГ за прошлый год
-                        });
-                    }
-                    
-                    // 5. Загружаем средние за 12 месяцев для расчёта с учётом фильтров
-                    const avgParams = new URLSearchParams({
-                        month: this.selectedMonth,
-                        year: this.selectedYear
-                    });
-                    if (this.selectedGroups.length > 0) {
-                        avgParams.append('groups', this.selectedGroups.join(','));
-                    }
-                    
-                    const avgResponse = await fetch(`/api/generate-plans?${avgParams}`);
-                    const avgData = await avgResponse.json();
-                    
-                    if (avgData.success) {
-                        Object.entries(avgData.data).forEach(([areaCode, planData]) => {
-                            if (!this.areaHistory[areaCode]) {
-                                this.areaHistory[areaCode] = {};
-                            }
-                            this.areaHistory[areaCode].avgSales = planData.avg_sales || 0;
-                            this.areaHistory[areaCode].avgCredit = planData.avg_credit || 0;
-                        });
-                    }
-                    
-                } catch (error) {
-                    console.error('Error loading history:', error);
-                }
-            },
-
-            getPrevMonthName() {
-                let prevMonth = this.selectedMonth - 1;
-                if (prevMonth < 1) prevMonth = 12;
-                return this.getMonthName(prevMonth);
-            },
-
-            getPrevMonthYear() {
-                let prevYear = this.selectedYear;
-                if (this.selectedMonth === 1) prevYear -= 1;
-                return prevYear;
-            },
-
-            getLastYear() {
-                return this.selectedYear - 1;
-            },
-
-            createSeasonalityChart() {
-                const ctx = document.getElementById('seasonalityChart');
-                if (!ctx) return;
-                
-                const monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
-                const seasonalityValues = Object.values(this.settings.seasonality);
-                
-                if (this.seasonalityChart) {
-                    this.seasonalityChart.destroy();
-                }
-                
-                // Создаем градиенты для столбцов
-                const gradient1 = ctx.getContext('2d').createLinearGradient(0, 0, 0, 400);
-                gradient1.addColorStop(0, 'rgba(46, 213, 115, 0.9)');
-                gradient1.addColorStop(1, 'rgba(0, 184, 148, 0.7)');
-                
-                const gradient2 = ctx.getContext('2d').createLinearGradient(0, 0, 0, 400);
-                gradient2.addColorStop(0, 'rgba(255, 107, 107, 0.9)');
-                gradient2.addColorStop(1, 'rgba(245, 59, 87, 0.7)');
-                
-                const gradient3 = ctx.getContext('2d').createLinearGradient(0, 0, 0, 400);
-                gradient3.addColorStop(0, 'rgba(255, 195, 18, 0.9)');
-                gradient3.addColorStop(1, 'rgba(253, 167, 4, 0.7)');
-                
-                // Линия тренда (среднее значение)
-                const avgValue = seasonalityValues.reduce((a, b) => a + b, 0) / seasonalityValues.length;
-                
-                this.seasonalityChart = new Chart(ctx, {
-                    type: 'bar',
-                    plugins: [ChartDataLabels],  // Включаем плагин для этого графика
-                    data: {
-                        labels: monthNames,
-                        datasets: [{
-                            label: 'Сезонность',
-                            data: seasonalityValues,
-                            backgroundColor: seasonalityValues.map(val => {
-                                if (val >= 1.2) return gradient1;
-                                if (val >= 0.9) return gradient3;
-                                return gradient2;
-                            }),
-                            borderColor: seasonalityValues.map(val => {
-                                if (val >= 1.2) return 'rgba(46, 213, 115, 1)';
-                                if (val >= 0.9) return 'rgba(255, 195, 18, 1)';
-                                return 'rgba(255, 107, 107, 1)';
-                            }),
-                            borderWidth: 2,
-                            borderRadius: 8,
-                            borderSkipped: false,
-                        },
-                        {
-                            label: 'Средняя',
-                            data: Array(12).fill(avgValue),
-                            type: 'line',
-                            borderColor: 'rgba(108, 117, 125, 0.8)',
-                            backgroundColor: 'rgba(108, 117, 125, 0.1)',
-                            borderWidth: 2,
-                            borderDash: [5, 5],
-                            pointRadius: 0,
-                            pointHoverRadius: 0,
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: true,
-                        interaction: {
-                            intersect: false,
-                            mode: 'index'
-                        },
-                        plugins: {
-                            datalabels: {
-                                display: function(context) {
-                                    return true;  // Показываем для всех датасетов
-                                },
-                                color: function(context) {
-                                    // Для линии тренда - серый цвет, для столбцов - белый
-                                    return context.datasetIndex === 1 ? 'rgba(200, 200, 200, 0.9)' : 'rgba(255, 255, 255, 0.95)';
-                                },
-                                anchor: function(context) {
-                                    // Для линии - center, для столбцов - end
-                                    return context.datasetIndex === 1 ? 'center' : 'end';
-                                },
-                                align: function(context) {
-                                    // Для линии - top, для столбцов - top
-                                    return 'top';
-                                },
-                                offset: function(context) {
-                                    // Для линии меньший отступ
-                                    return context.datasetIndex === 1 ? -20 : 4;
-                                },
-                                font: function(context) {
-                                    return {
-                                        size: context.datasetIndex === 1 ? 11 : 12,
-                                        weight: context.datasetIndex === 1 ? 'normal' : 'bold'
-                                    };
-                                },
-                                formatter: function(value, context) {
-                                    if (typeof value === 'number') {
-                                        // Для линии тренда показываем только на первом и последнем месяце
-                                        if (context.datasetIndex === 1) {
-                                            if (context.dataIndex === 0 || context.dataIndex === 11) {
-                                                return 'Ср: ' + value.toFixed(2);
-                                            }
-                                            return null;  // Скрываем для остальных точек
-                                        }
-                                        // Для столбцов показываем всегда
-                                        return value.toFixed(2);
-                                    }
-                                    return null;
-                                }
-                            },
-                            legend: {
-                                display: true,
-                                position: 'top',
-                                labels: {
-                                    color: 'rgba(255, 255, 255, 0.9)',
-                                    font: {
-                                        size: 13,
-                                        weight: '600'
-                                    },
-                                    padding: 15,
-                                    usePointStyle: true,
-                                    pointStyle: 'circle'
-                                }
-                            },
-                            tooltip: {
-                                enabled: true,
-                                backgroundColor: 'rgba(0, 0, 0, 0.9)',
-                                titleColor: 'rgba(255, 255, 255, 1)',
-                                bodyColor: 'rgba(255, 255, 255, 0.9)',
-                                borderColor: 'rgba(255, 255, 255, 0.2)',
-                                borderWidth: 1,
-                                padding: 12,
-                                displayColors: true,
-                                titleFont: {
-                                    size: 14,
-                                    weight: 'bold'
-                                },
-                                bodyFont: {
-                                    size: 13
-                                },
-                                callbacks: {
-                                    label: function(context) {
-                                        if (context.datasetIndex === 0) {
-                                            const value = context.parsed.y;
-                                            let status = '';
-                                            if (value >= 1.2) status = '🔥 Высокий сезон';
-                                            else if (value >= 0.9) status = '📊 Средний сезон';
-                                            else status = '❄️ Низкий сезон';
-                                            return [
-                                                `Коэффициент: ${value.toFixed(2)}`,
-                                                status,
-                                                `Отклонение от среднего: ${((value - avgValue) * 100).toFixed(1)}%`
-                                            ];
-                                        }
-                                        return `Среднее: ${context.parsed.y.toFixed(2)}`;
-                                    }
-                                }
-                            },
-                            title: {
-                                display: true,
-                                text: 'Коэффициенты сезонности по месяцам',
-                                color: 'rgba(255, 255, 255, 0.95)',
-                                font: {
-                                    size: 16,
-                                    weight: 'bold'
-                                },
-                                padding: {
-                                    top: 10,
-                                    bottom: 20
-                                }
-                            },
-                            subtitle: {
-                                display: true,
-                                text: `Среднее значение: ${avgValue.toFixed(2)} | 🔥 > 1.2  📊 0.9-1.2  ❄️ < 0.9`,
-                                color: 'rgba(255, 255, 255, 0.7)',
-                                font: {
-                                    size: 11,
-                                    style: 'italic'
-                                },
-                                padding: {
-                                    bottom: 15
-                                }
-                            }
-                        },
-                        scales: {
-                            y: {
-                                beginAtZero: true,
-                                max: Math.max(...seasonalityValues) * 1.1,
-                                grid: {
-                                    color: 'rgba(255, 255, 255, 0.08)',
-                                    lineWidth: 1,
-                                    drawBorder: false
-                                },
-                                ticks: {
-                                    color: 'rgba(255, 255, 255, 0.8)',
-                                    font: {
-                                        size: 12,
-                                        weight: '500'
-                                    },
-                                    padding: 10,
-                                    callback: function(value) {
-                                        return value.toFixed(2);
-                                    }
-                                },
-                                border: {
-                                    display: false
-                                }
-                            },
-                            x: {
-                                grid: {
-                                    display: false
-                                },
-                                ticks: {
-                                    color: 'rgba(255, 255, 255, 0.8)',
-                                    font: {
-                                        size: 11,
-                                        weight: '600'
-                                    },
-                                    padding: 8
-                                },
-                                border: {
-                                    display: false
-                                }
-                            }
-                        },
-                        animation: {
-                            duration: 1500,
-                            easing: 'easeInOutQuart'
-                        }
-                    }
-                });
-            }
-        }
-    }
-</script>
+<script src="{{ url_for('static', filename='js/plans.js') }}"></script>
 {% endblock %}

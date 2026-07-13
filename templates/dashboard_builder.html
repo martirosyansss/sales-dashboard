@@ -1,0 +1,1420 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Конструктор Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;800&family=Unbounded:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard_builder.css') }}?v=dark2">
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid builder-container" x-data="dashboardBuilder()" x-init="init()" @render-chart.window="renderChartById($event.detail.cardId)">
+    <!-- Заголовок и тулбар -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h1 class="display-6 mb-1">
+                <i class="fas fa-puzzle-piece text-primary me-2"></i>
+                Конструктор Dashboard
+            </h1>
+            <p class="text-muted mb-0">Создавайте и настраивайте карточки для вашего Dashboard</p>
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-outline-danger" @click="resetLayout()">
+                <i class="fas fa-undo me-1"></i><span class="d-none d-md-inline">Сбросить</span>
+            </button>
+            <button class="btn btn-outline-info" @click="exportLayout()" title="Экспорт в файл">
+                <i class="fas fa-download me-1"></i><span class="d-none d-md-inline">Экспорт</span>
+            </button>
+            <label class="btn btn-outline-warning mb-0" title="Импорт из файла">
+                <i class="fas fa-upload me-1"></i><span class="d-none d-md-inline">Импорт</span>
+                <input type="file" accept=".json" @change="importLayout($event)" style="display: none;">
+            </label>
+            <button class="btn btn-primary" @click="saveLayout()">
+                <i class="fas fa-save me-1"></i><span class="d-none d-md-inline">Сохранить</span>
+            </button>
+        </div>
+    </div>
+    
+    <!-- Навигация по страницам -->
+    <div class="pages-nav mb-3">
+        <div class="pages-tabs">
+            <template x-for="(page, index) in pages" :key="page.id">
+                <div class="page-tab" 
+                     :class="{ 'active': currentPageId === page.id }"
+                     @click="switchPage(page.id)"
+                     draggable="true"
+                     @dragstart="dragPageStart($event, index)"
+                     @dragover.prevent
+                     @drop="dropPage($event, index)">
+                    <template x-if="editingPageId !== page.id">
+                        <span class="page-tab-title" @dblclick="startEditPageName(page.id)" x-text="page.name"></span>
+                    </template>
+                    <template x-if="editingPageId === page.id">
+                        <input type="text" 
+                               class="page-tab-input" 
+                               x-model="editingPageName"
+                               @blur="savePageName(page.id)"
+                               @keydown.enter="savePageName(page.id)"
+                               @keydown.escape="cancelEditPageName()"
+                               x-ref="pageNameInput"
+                               @click.stop>
+                    </template>
+                    <button class="page-tab-close" 
+                            @click.stop="deletePage(page.id)" 
+                            x-show="pages.length > 1"
+                            title="Удалить страницу">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </template>
+            <button class="page-tab-add" @click="addPage()" title="Добавить страницу">
+                <i class="fas fa-plus"></i>
+            </button>
+        </div>
+    </div>
+    
+    <!-- Тулбар добавления карточек -->
+    <div class="toolbar">
+        <div class="row align-items-center">
+            <div class="col-auto">
+                <!-- iOS Edit Mode Button -->
+                <button class="btn edit-mode-btn" 
+                        :class="editMode ? 'active' : ''" 
+                        @click="editMode = !editMode"
+                        title="Режим редактирования">
+                    <i class="fas" :class="editMode ? 'fa-check' : 'fa-arrows-alt'"></i>
+                    <span x-text="editMode ? 'Готово' : 'Изменить'"></span>
+                </button>
+            </div>
+            <div class="col-auto">
+                <span class="text-muted me-3"><i class="fas fa-plus-circle me-1"></i>Добавить:</span>
+            </div>
+            <div class="col">
+                <div class="d-flex flex-wrap gap-2">
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('sales')">
+                        <i class="fas fa-dollar-sign me-1 text-primary"></i><span class="d-none d-sm-inline">Продажи</span>
+                    </button>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('payments')">
+                        <i class="fas fa-credit-card me-1 text-success"></i><span class="d-none d-sm-inline">Оплаты</span>
+                    </button>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('debt')">
+                        <i class="fas fa-hand-holding-usd me-1 text-danger"></i><span class="d-none d-sm-inline">Долг</span>
+                    </button>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('customers')">
+                        <i class="fas fa-users me-1 text-warning"></i><span class="d-none d-sm-inline">Клиенты</span>
+                    </button>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('chart')">
+                        <i class="fas fa-chart-line me-1 text-info"></i><span class="d-none d-sm-inline">График</span>
+                    </button>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('custom')">
+                        <i class="fas fa-cog me-1"></i><span class="d-none d-sm-inline">Произвольная</span>
+                    </button>
+                    <span class="border-start border-secondary mx-2 d-none d-md-inline"></span>
+                    <!-- Прогнозирование -->
+                    <div class="dropdown">
+                        <button class="btn btn-sm btn-add-widget dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                            <i class="fas fa-chart-line me-1 text-success"></i><span class="d-none d-md-inline">Прогноз</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark">
+                            <li><a class="dropdown-item" href="#" @click.prevent="addCard('forecast')">
+                                <i class="fas fa-chart-line me-2 text-success"></i>Прогноз продаж
+                            </a></li>
+                            <li><a class="dropdown-item" href="#" @click.prevent="addCard('completion')">
+                                <i class="fas fa-bullseye me-2 text-info"></i>% выполнения
+                            </a></li>
+                            <li><a class="dropdown-item" href="#" @click.prevent="addCard('days')">
+                                <i class="fas fa-hourglass-half me-2 text-warning"></i>Осталось дней
+                            </a></li>
+                            <li><a class="dropdown-item" href="#" @click.prevent="addCard('daily')">
+                                <i class="fas fa-calculator me-2 text-primary"></i>Ср. в день
+                            </a></li>
+                            <li><a class="dropdown-item" href="#" @click.prevent="addCard('needed')">
+                                <i class="fas fa-tasks me-2 text-danger"></i>Нужно в день
+                            </a></li>
+                            <li><a class="dropdown-item" href="#" @click.prevent="addCard('gap')">
+                                <i class="fas fa-balance-scale me-2 text-secondary"></i>До плана
+                            </a></li>
+                        </ul>
+                    </div>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('areas_table')" title="Сводная таблица по территориям">
+                        <i class="fas fa-table me-1 text-info"></i>Сводка
+                    </button>
+                    <span class="border-start border-secondary mx-2"></span>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('header')">
+                        <i class="fas fa-heading me-1"></i>Заголовок
+                    </button>
+                    <button class="btn btn-sm btn-add-widget" @click="addCard('text')">
+                        <i class="fas fa-font me-1"></i>Текст
+                    </button>
+                </div>
+            </div>
+            <div class="col-auto">
+                <span class="badge bg-secondary">
+                    <span x-text="cards.length"></span> карточек
+                </span>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Сетка карточек -->
+    <div class="card-grid" :class="{'edit-mode': editMode}" id="cardGrid">
+        <template x-if="cards.length === 0">
+            <div class="empty-placeholder">
+                <i class="fas fa-plus-circle fa-3x mb-3 text-muted"></i>
+                <h5>Добавьте первую карточку</h5>
+                <p class="mb-0">Используйте кнопки выше для добавления карточек на Dashboard</p>
+            </div>
+        </template>
+        
+        <template x-for="(card, index) in cards" :key="card.id">
+            <div class="dashboard-card" 
+                 :class="['size-' + card.width + 'x' + card.height, 'card-' + card.type, card.isPlaceholder ? 'card-placeholder' : '', card.customColor ? 'has-custom-color' : ''].join(' ')"
+                 :style="getCardFullStyle(card)"
+                 :data-id="card.id"
+                 :data-index="index"
+                 @mousedown="startDrag($event, card, index)"
+                 @touchstart.passive="startDrag($event, card, index)">
+                
+                <!-- Действия с карточкой -->
+                <div class="card-actions" @mousedown.stop @touchstart.stop>
+                    <button class="btn btn-sm btn-outline-light me-1" @click="editCard(card)" title="Настроить">
+                        <i class="fas fa-cog"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-success me-1" @click="cloneCard(card)" title="Клонировать">
+                        <i class="fas fa-copy"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-light me-1" @click="toggleSizePicker(card.id)" title="Размер">
+                        <i class="fas fa-expand-arrows-alt"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger" @click="removeCard(card.id)" title="Удалить">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+
+                <!-- Bento-переключатель размера: пресеты-пиктограммы -->
+                <div class="size-picker" x-show="sizePickerId === card.id" x-cloak
+                     @mousedown.stop @touchstart.stop @click.stop
+                     @click.outside="sizePickerId === card.id ? sizePickerId = null : null">
+                    <template x-for="p in sizePresets" :key="p.w + 'x' + p.h">
+                        <button type="button" class="size-preset"
+                                :class="(card.width === p.w && card.height === p.h) ? 'active' : ''"
+                                :title="p.w + '×' + p.h"
+                                @click="applySizePreset(card, p)">
+                            <span class="size-preset-shape"
+                                  :style="'width:' + (p.w * 6 + 2) + 'px; height:' + (p.h * 6 + 2) + 'px'"></span>
+                        </button>
+                    </template>
+                </div>
+                
+                <!-- Иконка -->
+                <i class="fas card-icon" 
+                   :class="getCardIcon(card.type)" 
+                   :style="card.customColor ? 'color: ' + card.customColor : ''"></i>
+                
+                <!-- Контент для текстовых карточек (header, text) -->
+                <template x-if="card.isTextOnly || card.type === 'header' || card.type === 'text'">
+                    <div class="text-card-content">
+                        <!-- Заголовок секции -->
+                        <template x-if="card.type === 'header'">
+                            <div class="header-card">
+                                <h4 class="mb-0 text-white" x-text="card.title"></h4>
+                                <p class="mb-0 mt-1 small text-white-50" x-show="card.textContent && card.textContent !== 'Введите текст...'" x-text="card.textContent"></p>
+                            </div>
+                        </template>
+                        <!-- Текстовая заметка -->
+                        <template x-if="card.type === 'text'">
+                            <div class="text-note-card">
+                                <div class="text-note-title mb-1" x-text="card.title"></div>
+                                <div class="text-note-content" x-text="card.textContent || 'Нет текста'"></div>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+                
+                <!-- Контент для метрических карточек (не графики и не таблицы) -->
+                <template x-if="!card.isTextOnly && card.type !== 'header' && card.type !== 'text' && card.type !== 'chart' && card.type !== 'areas_table'">
+                    <div>
+                        <!-- Заголовок -->
+                        <div class="d-flex align-items-center mb-2">
+                            <span class="card-label" x-text="card.title"></span>
+                            <template x-if="card.filters && card.filters.length > 0">
+                                <span class="metric-badge bg-primary" x-text="card.filters.length + ' фильтров'"></span>
+                            </template>
+                        </div>
+                        
+                        <!-- Значение -->
+                        <div class="card-value" :style="'color: ' + (card.customColor || getCardColor(card.type))">
+                            <template x-if="card.loading">
+                                <span class="spinner-border spinner-border-sm"></span>
+                            </template>
+                            <template x-if="!card.loading">
+                                <span x-text="formatValue(card.value, card.format)"></span>
+                            </template>
+                        </div>
+                        <!-- Тренд с прошлым годом -->
+                        <div class="year-trend mt-2" x-show="!card.loading && card.comparison && card.comparison.prev_year">
+                            <span class="trend-badge" 
+                                  :class="card.comparison?.prev_year ? (card.value >= card.comparison.prev_year.value ? 'trend-up' : 'trend-down') : ''">
+                                <i class="fas" :class="card.comparison?.prev_year ? (card.value >= card.comparison.prev_year.value ? 'fa-arrow-up' : 'fa-arrow-down') : ''"></i>
+                                <span x-text="card.comparison?.prev_year ? getChangePercent(card.value, card.comparison.prev_year.value) : ''"></span>
+                                <span class="trend-label">vs пр.год</span>
+                            </span>
+                        </div>
+                    </div>
+                </template>
+                
+                <!-- Фильтры с ограничением показа (только для метрических карточек, не графики и не таблицы) -->
+                <div class="mt-2 filters-container" 
+                     x-data="{ expanded: false }"
+                     x-show="!card.isTextOnly && card.type !== 'header' && card.type !== 'text' && card.type !== 'chart' && card.type !== 'areas_table' && ((card.areas && card.areas.length > 0) || (card.groups && card.groups.length > 0))">
+                    
+                    <!-- Показываем первые 2 территории -->
+                    <template x-for="(areaCode, idx) in (card.areas || [])" :key="'area-' + areaCode">
+                        <span class="filter-tag" x-show="expanded || idx < 2">
+                            <i class="fas fa-map-marker-alt me-1"></i>
+                            <span x-text="availableAreas.find(a => a.code === areaCode)?.name || areaCode"></span>
+                        </span>
+                    </template>
+                    
+                    <!-- Показываем первые 2 группы (или меньше если есть территории) -->
+                    <template x-for="(groupCode, idx) in (card.groups || [])" :key="'group-' + groupCode">
+                        <span class="filter-tag" x-show="expanded || (idx < (2 - Math.min((card.areas || []).length, 2)))">
+                            <i class="fas fa-layer-group me-1"></i>
+                            <span x-text="availableGroups.find(g => g.code === groupCode)?.name || groupCode"></span>
+                        </span>
+                    </template>
+                    
+                    <!-- Кнопка "ещё" если есть скрытые -->
+                    <span class="filter-tag filter-tag-more" 
+                          x-show="!expanded && ((card.areas || []).length + (card.groups || []).length) > 2"
+                          @click.stop="expanded = true"
+                          style="cursor: pointer; background: rgba(255,255,255,0.15);">
+                        <i class="fas fa-ellipsis-h me-1"></i>
+                        <span x-text="'+' + (((card.areas || []).length + (card.groups || []).length) - 2)"></span>
+                    </span>
+                    
+                    <!-- Кнопка "свернуть" -->
+                    <span class="filter-tag filter-tag-collapse" 
+                          x-show="expanded && ((card.areas || []).length + (card.groups || []).length) > 2"
+                          @click.stop="expanded = false"
+                          style="cursor: pointer; background: rgba(255,255,255,0.15);">
+                        <i class="fas fa-chevron-up"></i>
+                    </span>
+                </div>
+                
+                <!-- Блок сравнения -->
+                <template x-if="card.showComparison && card.comparison">
+                    <div class="comparison-block">
+                        <!-- Прогноз на конец месяца -->
+                        <template x-if="card.forecast">
+                            <div class="comparison-item forecast-item">
+                                <span class="comparison-label">
+                                    <i class="fas fa-chart-line me-1 text-success"></i>Прогноз:
+                                </span>
+                                <span>
+                                    <span class="comparison-value text-success" x-text="formatValue(card.forecast.forecast, card.format)"></span>
+                                    <span class="text-muted" style="font-size: 0.65rem;">
+                                        (<span x-text="card.forecast.remaining_days"></span> дн.)
+                                    </span>
+                                </span>
+                            </div>
+                        </template>
+                        <template x-if="card.comparison.prev_month">
+                            <div class="comparison-item">
+                                <span class="comparison-label">
+                                    <i class="fas fa-calendar-alt me-1"></i>Пр. месяц:
+                                </span>
+                                <span>
+                                    <span class="comparison-value" x-text="formatValue(card.comparison.prev_month.value, card.format)"></span>
+                                    <span class="comparison-change" 
+                                          :class="getChangeClass(card.value, card.comparison.prev_month.value)"
+                                          x-text="getChangePercent(card.value, card.comparison.prev_month.value)"></span>
+                                </span>
+                            </div>
+                        </template>
+                        <template x-if="card.comparison && card.comparison.prev_year">
+                            <div class="comparison-item">
+                                <span class="comparison-label">
+                                    <i class="fas fa-history me-1"></i>Пр. год:
+                                </span>
+                                <span>
+                                    <span class="comparison-value" x-text="formatValue(card.comparison.prev_year.value, card.format)"></span>
+                                    <span class="comparison-change" 
+                                          :class="getChangeClass(card.value, card.comparison.prev_year.value)"
+                                          x-text="getChangePercent(card.value, card.comparison.prev_year.value)"></span>
+                                </span>
+                            </div>
+                        </template>
+                        <div class="text-muted" style="font-size: 0.65rem; margin-top: 4px;">
+                            <i class="fas fa-info-circle me-1"></i>Сравнение за 1-<span x-text="card.currentDay || new Date().getDate()"></span> число
+                        </div>
+                    </div>
+                </template>
+                
+                <!-- График (если тип chart) -->
+                <div x-show="card.type === 'chart'" x-cloak style="position: relative; z-index: 1;">
+                    <!-- Заголовок графика -->
+                    <div class="d-flex align-items-center mb-2">
+                        <span class="card-label" x-text="card.title"></span>
+                    </div>
+                    <!-- Контейнер графика с фиксированной высотой -->
+                    <div class="chart-wrapper" :id="'chart-wrapper-' + card.id" :style="'height: ' + (card.height === 1 ? '60px' : (card.height === 2 ? '120px' : (card.height === 3 ? '220px' : '320px')))"">
+                        <!-- График рендерится сюда через JavaScript -->
+                    </div>
+                </div>
+                
+                <!-- Таблица территорий (если тип areas_table) -->
+                <div x-show="card.type === 'areas_table'" x-cloak class="areas-table-container">
+                    <!-- Заголовок таблицы -->
+                    <div class="areas-table-header">
+                        <span class="areas-table-title" x-text="card.title || 'Сводка по территориям'"></span>
+                        <span class="areas-table-count" x-show="card.areasTableData && card.areasTableData.length > 0">
+                            <i class="fas fa-chart-line me-1 text-success"></i>
+                            <span class="text-success fw-bold" x-text="formatValue((card.areasTableData || []).reduce((s,r) => s + (r.sales || 0), 0), 'currency')"></span>
+                            <span class="mx-1 opacity-50">|</span>
+                            <i class="fas fa-rocket me-1 text-info"></i>
+                            <span class="text-info fw-bold" x-text="formatValue((card.areasTableData || []).reduce((s,r) => s + (r.sales_forecast || 0), 0), 'currency')"></span>
+                            <span class="mx-1 opacity-50">|</span>
+                            <i class="fas fa-exclamation-circle me-1 text-danger"></i>
+                            <span class="text-danger fw-bold" x-text="formatValue((card.areasTableData || []).reduce((s,r) => s + (r.debt || 0), 0), 'currency')"></span>
+                        </span>
+                    </div>
+                    
+                    <!-- Загрузка -->
+                    <div x-show="card.loading" class="text-center py-4">
+                        <div class="spinner-border text-primary" role="status"></div>
+                        <div class="text-muted small mt-2">Загрузка данных...</div>
+                    </div>
+                    
+                    <!-- Выберите территории -->
+                    <div x-show="!card.loading && (!card.areas || card.areas.length === 0)" class="text-center text-muted py-4">
+                        <i class="fas fa-map-marked-alt fa-3x mb-3 text-primary opacity-50"></i>
+                        <div class="fw-bold mb-1">Нет данных</div>
+                        <div class="small opacity-75">Выберите территории в настройках карточки</div>
+                    </div>
+                    
+                    <!-- Таблица данных -->
+                    <div x-show="!card.loading && card.areasTableData && card.areasTableData.length > 0" 
+                         class="areas-table-wrapper">
+                        <table class="areas-table">
+                            <thead>
+                                <tr>
+                                    <template x-for="col in getVisibleColumns(card)" :key="col.id">
+                                        <th :class="{
+                                            'text-center': ['today_status', 'plan_pct', 'trend', 'debt_pct'].includes(col.id),
+                                            'text-end': ['today', 'sales', 'plan', 'forecast', 'prev_year', 'debt', 'debt_plan'].includes(col.id)
+                                        }" x-text="col.name"></th>
+                                    </template>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="row in card.areasTableData" :key="row.code">
+                                    <tr>
+                                        <template x-for="col in getVisibleColumns(card)" :key="col.id">
+                                            <td :class="{
+                                                'text-center': ['today_status', 'plan_pct', 'trend', 'debt_pct'].includes(col.id),
+                                                'text-end': ['today', 'sales', 'plan', 'forecast', 'prev_year', 'debt', 'debt_plan'].includes(col.id),
+                                                'value-cell': col.id !== 'territory' && col.id !== 'today_status',
+                                                'value-today': col.id === 'today',
+                                                'value-sales': col.id === 'sales',
+                                                'value-plan': col.id === 'plan' || col.id === 'debt_plan',
+                                                'value-forecast': col.id === 'forecast',
+                                                'value-last-year': col.id === 'prev_year',
+                                                'value-debt': col.id === 'debt'
+                                            }">
+                                                <!-- Территория -->
+                                                <template x-if="col.id === 'territory'">
+                                                    <div class="area-badge">
+                                                        <span class="area-code" x-text="row.code"></span>
+                                                        <span class="area-name" x-text="row.name" :title="row.name"></span>
+                                                    </div>
+                                                </template>
+                                                <!-- ✓/✗ -->
+                                                <template x-if="col.id === 'today_status'">
+                                                    <span>
+                                                        <span class="text-success" x-text="row.visits_actual || 0"></span>
+                                                        <span class="text-muted">/</span>
+                                                        <span class="text-danger" x-text="Math.max(0, (row.visits_planned || 0) - (row.visits_actual || 0))"></span>
+                                                    </span>
+                                                </template>
+                                                <!-- Сегодня -->
+                                                <template x-if="col.id === 'today'">
+                                                    <span x-text="formatValue(row.sales_today, 'currency')"></span>
+                                                </template>
+                                                <!-- Продажи -->
+                                                <template x-if="col.id === 'sales'">
+                                                    <span x-text="formatValue(row.sales, 'currency')"></span>
+                                                </template>
+                                                <!-- План -->
+                                                <template x-if="col.id === 'plan'">
+                                                    <span x-text="formatValue(row.sales_plan, 'currency')"></span>
+                                                </template>
+                                                <!-- % плана -->
+                                                <template x-if="col.id === 'plan_pct'">
+                                                    <span class="percent-badge" 
+                                                          :class="row.sales_percent >= 100 ? 'success' : (row.sales_percent >= 80 ? 'warning' : 'danger')"
+                                                          x-text="row.sales_percent + '%'"></span>
+                                                </template>
+                                                <!-- Прогноз -->
+                                                <template x-if="col.id === 'forecast'">
+                                                    <span>
+                                                        <span x-text="formatValue(row.sales_forecast, 'currency')"></span>
+                                                        <span class="percent-badge ms-1" 
+                                                              :class="row.sales_plan > 0 && (row.sales_forecast / row.sales_plan * 100) >= 100 ? 'success' : (row.sales_plan > 0 && (row.sales_forecast / row.sales_plan * 100) >= 90 ? 'warning' : 'danger')"
+                                                              x-show="row.sales_plan > 0"
+                                                              x-text="Math.round(row.sales_forecast / row.sales_plan * 100) + '%'"></span>
+                                                    </span>
+                                                </template>
+                                                <!-- Пр.год -->
+                                                <template x-if="col.id === 'prev_year'">
+                                                    <span x-text="formatValue(row.sales_last_year, 'currency')"></span>
+                                                </template>
+                                                <!-- Тренд -->
+                                                <template x-if="col.id === 'trend'">
+                                                    <span>
+                                                        <span class="trend-mini" 
+                                                              :class="row.sales >= row.sales_last_year ? 'trend-up' : 'trend-down'"
+                                                              x-show="row.sales_last_year > 0">
+                                                            <i class="fas" :class="row.sales >= row.sales_last_year ? 'fa-arrow-up' : 'fa-arrow-down'"></i>
+                                                            <span x-text="getChangePercent(row.sales, row.sales_last_year)"></span>
+                                                        </span>
+                                                        <span class="text-muted" x-show="!row.sales_last_year || row.sales_last_year === 0">—</span>
+                                                    </span>
+                                                </template>
+                                                <!-- Долг -->
+                                                <template x-if="col.id === 'debt'">
+                                                    <span x-text="formatValue(row.debt, 'currency')"></span>
+                                                </template>
+                                                <!-- План долга -->
+                                                <template x-if="col.id === 'debt_plan'">
+                                                    <span x-text="formatValue(row.debt_plan, 'currency')"></span>
+                                                </template>
+                                                <!-- % долга -->
+                                                <template x-if="col.id === 'debt_pct'">
+                                                    <span class="percent-badge" 
+                                                          :class="row.debt_percent <= 100 ? 'success' : 'danger'"
+                                                          x-text="row.debt_percent + '%'"></span>
+                                                </template>
+                                            </td>
+                                        </template>
+                                    </tr>
+                                </template>
+                            </tbody>
+                            <tfoot x-show="card.areasTableData && card.areasTableData.length > 1">
+                                <tr class="total-row">
+                                    <template x-for="col in getVisibleColumns(card)" :key="col.id">
+                                        <td :class="{
+                                            'text-center': ['today_status', 'plan_pct', 'trend', 'debt_pct'].includes(col.id),
+                                            'text-end': ['today', 'sales', 'plan', 'forecast', 'prev_year', 'debt', 'debt_plan'].includes(col.id),
+                                            'value-cell': col.id !== 'territory' && col.id !== 'today_status',
+                                            'value-today': col.id === 'today',
+                                            'value-sales': col.id === 'sales',
+                                            'value-plan': col.id === 'plan' || col.id === 'debt_plan',
+                                            'value-forecast': col.id === 'forecast',
+                                            'value-last-year': col.id === 'prev_year',
+                                            'value-debt': col.id === 'debt'
+                                        }">
+                                            <!-- Итого -->
+                                            <template x-if="col.id === 'territory'">
+                                                <div class="total-label">
+                                                    <i class="fas fa-calculator"></i>
+                                                    <span>Итого</span>
+                                                </div>
+                                            </template>
+                                            <!-- ✓/✗ -->
+                                            <template x-if="col.id === 'today_status'">
+                                                <span>
+                                                    <span class="text-success" x-text="(card.areasTableData || []).reduce((s,r) => s + (r.visits_actual || 0), 0)"></span>
+                                                    <span class="text-muted">/</span>
+                                                    <span class="text-danger" x-text="Math.max(0, (card.areasTableData || []).reduce((s,r) => s + (r.visits_planned || 0), 0) - (card.areasTableData || []).reduce((s,r) => s + (r.visits_actual || 0), 0))"></span>
+                                                </span>
+                                            </template>
+                                            <!-- Сегодня -->
+                                            <template x-if="col.id === 'today'">
+                                                <span x-text="formatValue((card.areasTableData || []).reduce((s,r) => s + (r.sales_today || 0), 0), 'currency')"></span>
+                                            </template>
+                                            <!-- Продажи -->
+                                            <template x-if="col.id === 'sales'">
+                                                <span x-text="formatValue((card.areasTableData || []).reduce((s,r) => s + (r.sales || 0), 0), 'currency')"></span>
+                                            </template>
+                                            <!-- План -->
+                                            <template x-if="col.id === 'plan'">
+                                                <span x-text="formatValue((card.areasTableData || []).reduce((s,r) => s + (r.sales_plan || 0), 0), 'currency')"></span>
+                                            </template>
+                                            <!-- % плана -->
+                                            <template x-if="col.id === 'plan_pct'">
+                                                <span class="percent-badge" 
+                                                      :class="((card.areasTableData || []).reduce((s,r) => s + (r.sales || 0), 0) / Math.max((card.areasTableData || []).reduce((s,r) => s + (r.sales_plan || 0), 0), 1) * 100) >= 100 ? 'success' : 'warning'"
+                                                      x-text="Math.round((card.areasTableData || []).reduce((s,r) => s + (r.sales || 0), 0) / Math.max((card.areasTableData || []).reduce((s,r) => s + (r.sales_plan || 0), 0), 1) * 100) + '%'"></span>
+                                            </template>
+                                            <!-- Прогноз -->
+                                            <template x-if="col.id === 'forecast'">
+                                                <span>
+                                                    <span x-text="formatValue((card.areasTableData || []).reduce((s,r) => s + (r.sales_forecast || 0), 0), 'currency')"></span>
+                                                    <span class="percent-badge ms-1" 
+                                                          :class="((card.areasTableData || []).reduce((s,r) => s + (r.sales_forecast || 0), 0) / Math.max((card.areasTableData || []).reduce((s,r) => s + (r.sales_plan || 0), 0), 1) * 100) >= 100 ? 'success' : 'warning'"
+                                                          x-show="(card.areasTableData || []).reduce((s,r) => s + (r.sales_plan || 0), 0) > 0"
+                                                          x-text="Math.round((card.areasTableData || []).reduce((s,r) => s + (r.sales_forecast || 0), 0) / Math.max((card.areasTableData || []).reduce((s,r) => s + (r.sales_plan || 0), 0), 1) * 100) + '%'"></span>
+                                                </span>
+                                            </template>
+                                            <!-- Пр.год -->
+                                            <template x-if="col.id === 'prev_year'">
+                                                <span x-text="formatValue((card.areasTableData || []).reduce((s,r) => s + (r.sales_last_year || 0), 0), 'currency')"></span>
+                                            </template>
+                                            <!-- Тренд -->
+                                            <template x-if="col.id === 'trend'">
+                                                <span>
+                                                    <span class="trend-mini" 
+                                                          :class="(card.areasTableData || []).reduce((s,r) => s + (r.sales || 0), 0) >= (card.areasTableData || []).reduce((s,r) => s + (r.sales_last_year || 0), 0) ? 'trend-up' : 'trend-down'"
+                                                          x-show="(card.areasTableData || []).reduce((s,r) => s + (r.sales_last_year || 0), 0) > 0">
+                                                        <i class="fas" :class="(card.areasTableData || []).reduce((s,r) => s + (r.sales || 0), 0) >= (card.areasTableData || []).reduce((s,r) => s + (r.sales_last_year || 0), 0) ? 'fa-arrow-up' : 'fa-arrow-down'"></i>
+                                                        <span x-text="getChangePercent((card.areasTableData || []).reduce((s,r) => s + (r.sales || 0), 0), (card.areasTableData || []).reduce((s,r) => s + (r.sales_last_year || 0), 0))"></span>
+                                                    </span>
+                                                </span>
+                                            </template>
+                                            <!-- Долг -->
+                                            <template x-if="col.id === 'debt'">
+                                                <span x-text="formatValue((card.areasTableData || []).reduce((s,r) => s + (r.debt || 0), 0), 'currency')"></span>
+                                            </template>
+                                            <!-- План долга -->
+                                            <template x-if="col.id === 'debt_plan'">
+                                                <span x-text="formatValue((card.areasTableData || []).reduce((s,r) => s + (r.debt_plan || 0), 0), 'currency')"></span>
+                                            </template>
+                                            <!-- % долга -->
+                                            <template x-if="col.id === 'debt_pct'">
+                                                <span class="percent-badge" 
+                                                      :class="((card.areasTableData || []).reduce((s,r) => s + (r.debt || 0), 0) / Math.max((card.areasTableData || []).reduce((s,r) => s + (r.debt_plan || 0), 0), 1) * 100) <= 100 ? 'success' : 'danger'"
+                                                      x-text="Math.round((card.areasTableData || []).reduce((s,r) => s + (r.debt || 0), 0) / Math.max((card.areasTableData || []).reduce((s,r) => s + (r.debt_plan || 0), 0), 1) * 100) + '%'"></span>
+                                            </template>
+                                        </td>
+                                    </template>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
+                
+                <!-- Resize handle -->
+                <div class="resize-handle" @mousedown="startResize($event, card)" @touchstart.stop.prevent="startResize($event, card)"></div>
+            </div>
+        </template>
+        
+        <!-- Зона для перетаскивания в конец -->
+        <template x-if="cards.length > 0">
+            <div class="drop-zone-end" 
+                 :class="{'drag-active': isDragging}"
+                 @mouseup="dropToEnd()"
+                 @touchend="dropToEnd()">
+                <i class="fas fa-plus-circle me-2"></i>
+                <span x-text="isDragging ? 'Отпустите здесь' : 'Перетащите сюда'"></span>
+            </div>
+        </template>
+    </div>
+    
+    <!-- Модальное окно настройки карточки -->
+    <div x-show="showConfigModal"
+         x-cloak
+         class="config-modal-overlay"
+         :style="showConfigModal ? 'display: flex;' : 'display: none;'"
+         @click.self="showConfigModal = false"
+         @keydown.escape.window="showConfigModal = false">
+        
+        <div class="config-modal-content" 
+             @click.stop>
+            
+            <!-- Заголовок модального окна -->
+            <div class="config-modal-header">
+                <div class="d-flex align-items-center">
+                    <div class="config-modal-icon" :style="'background: ' + getCardColor(editingCard.type)">
+                        <i class="fas" :class="getCardIcon(editingCard.type)"></i>
+                    </div>
+                    <div class="ms-3">
+                        <h5 class="mb-0 text-white fw-bold">Настройка карточки</h5>
+                        <small class="text-white-50" x-text="editingCard.title || 'Новая карточка'"></small>
+                    </div>
+                </div>
+                <button type="button" class="config-modal-close" @click="showConfigModal = false">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            
+            <!-- Тело модального окна с табами -->
+            <div class="config-modal-body">
+                <!-- Навигация по разделам -->
+                <div class="config-tabs">
+                    <div class="config-tabs-nav">
+                        <button class="config-tab-btn" :class="{ 'active': configActiveTab === 'basic' }" @click="configActiveTab = 'basic'">
+                            <i class="fas fa-sliders-h me-2"></i>Основное
+                        </button>
+                        <button class="config-tab-btn" :class="{ 'active': configActiveTab === 'filters' }" @click="configActiveTab = 'filters'">
+                            <i class="fas fa-filter me-2"></i>Фильтры
+                            <span class="config-tab-badge" x-show="(editingCard.areas?.length || 0) + (editingCard.groups?.length || 0) > 0"
+                                  x-text="(editingCard.areas?.length || 0) + (editingCard.groups?.length || 0)"></span>
+                        </button>
+                        <button class="config-tab-btn" :class="{ 'active': configActiveTab === 'appearance' }" @click="configActiveTab = 'appearance'">
+                            <i class="fas fa-palette me-2"></i>Внешний вид
+                        </button>
+                    </div>
+                    
+                    <!-- Таб: Основное -->
+                    <div class="config-tab-content" x-show="configActiveTab === 'basic'">
+                        <!-- Заголовок -->
+                        <div class="config-field">
+                            <label class="config-label">
+                                <i class="fas fa-heading me-2"></i>Заголовок карточки
+                            </label>
+                            <input type="text" class="config-input" x-model="editingCard.title" placeholder="Введите название...">
+                        </div>
+                        
+                        <!-- Текстовое содержимое для header и text карточек -->
+                        <div class="config-field" x-show="editingCard.type === 'header' || editingCard.type === 'text'">
+                            <label class="config-label">
+                                <i class="fas fa-align-left me-2"></i>Текст / Описание
+                            </label>
+                            <textarea class="config-input" x-model="editingCard.textContent" 
+                                      placeholder="Введите текст..." 
+                                      rows="3"
+                                      style="resize: vertical; min-height: 60px;"></textarea>
+                        </div>
+                        
+                        <!-- Тип метрики (скрыт для текстовых карточек и сводки территорий) -->
+                        <div class="config-field" x-show="editingCard.type !== 'header' && editingCard.type !== 'text' && editingCard.type !== 'areas_table' && editingCard.type !== 'chart'">
+                            <label class="config-label">
+                                <i class="fas fa-chart-pie me-2"></i>Тип данных
+                            </label>
+                            <div class="config-metric-grid">
+                                <button type="button" class="config-metric-btn" 
+                                        :class="{ 'active': editingCard.metric === 'total_sales' }"
+                                        @click="editingCard.metric = 'total_sales'">
+                                    <i class="fas fa-dollar-sign"></i>
+                                    <span>Продажи</span>
+                                </button>
+                                <button type="button" class="config-metric-btn"
+                                        :class="{ 'active': editingCard.metric === 'total_payments' }"
+                                        @click="editingCard.metric = 'total_payments'">
+                                    <i class="fas fa-credit-card"></i>
+                                    <span>Оплаты</span>
+                                </button>
+                                <button type="button" class="config-metric-btn"
+                                        :class="{ 'active': editingCard.metric === 'total_debt' }"
+                                        @click="editingCard.metric = 'total_debt'">
+                                    <i class="fas fa-hand-holding-usd"></i>
+                                    <span>Долг</span>
+                                </button>
+                                <button type="button" class="config-metric-btn"
+                                        :class="{ 'active': editingCard.metric === 'customer_count' }"
+                                        @click="editingCard.metric = 'customer_count'">
+                                    <i class="fas fa-users"></i>
+                                    <span>Клиенты</span>
+                                </button>
+                                <button type="button" class="config-metric-btn"
+                                        :class="{ 'active': editingCard.metric === 'avg_check' }"
+                                        @click="editingCard.metric = 'avg_check'">
+                                    <i class="fas fa-receipt"></i>
+                                    <span>Ср. чек</span>
+                                </button>
+                                <button type="button" class="config-metric-btn"
+                                        :class="{ 'active': editingCard.metric === 'payment_rate' }"
+                                        @click="editingCard.metric = 'payment_rate'">
+                                    <i class="fas fa-percent"></i>
+                                    <span>% оплаты</span>
+                                </button>
+                            </div>
+                            
+                            <!-- Метрики прогнозирования -->
+                            <label class="config-label mt-3">
+                                <i class="fas fa-chart-line me-2"></i>Прогнозирование
+                            </label>
+                            <div class="config-metric-grid">
+                                <button type="button" class="config-metric-btn config-metric-forecast" 
+                                        :class="{ 'active': editingCard.metric === 'forecast_sales' }"
+                                        @click="editingCard.metric = 'forecast_sales'">
+                                    <i class="fas fa-chart-line"></i>
+                                    <span>Прогноз продаж</span>
+                                </button>
+                                <button type="button" class="config-metric-btn config-metric-forecast"
+                                        :class="{ 'active': editingCard.metric === 'forecast_completion' }"
+                                        @click="editingCard.metric = 'forecast_completion'">
+                                    <i class="fas fa-bullseye"></i>
+                                    <span>% выполнения</span>
+                                </button>
+                                <button type="button" class="config-metric-btn config-metric-forecast"
+                                        :class="{ 'active': editingCard.metric === 'days_remaining' }"
+                                        @click="editingCard.metric = 'days_remaining'">
+                                    <i class="fas fa-hourglass-half"></i>
+                                    <span>Осталось дней</span>
+                                </button>
+                                <button type="button" class="config-metric-btn config-metric-forecast"
+                                        :class="{ 'active': editingCard.metric === 'daily_avg' }"
+                                        @click="editingCard.metric = 'daily_avg'">
+                                    <i class="fas fa-calculator"></i>
+                                    <span>Ср. в день</span>
+                                </button>
+                                <button type="button" class="config-metric-btn config-metric-forecast"
+                                        :class="{ 'active': editingCard.metric === 'needed_daily' }"
+                                        @click="editingCard.metric = 'needed_daily'">
+                                    <i class="fas fa-tasks"></i>
+                                    <span>Нужно в день</span>
+                                </button>
+                                <button type="button" class="config-metric-btn config-metric-forecast"
+                                        :class="{ 'active': editingCard.metric === 'plan_gap' }"
+                                        @click="editingCard.metric = 'plan_gap'">
+                                    <i class="fas fa-balance-scale"></i>
+                                    <span>До плана</span>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Период -->
+                        <div class="config-field">
+                            <label class="config-label">
+                                <i class="fas fa-calendar-alt me-2"></i>Период
+                            </label>
+                            <div class="config-period-grid">
+                                <button type="button" class="config-period-btn"
+                                        :class="{ 'active': editingCard.period === 'today' }"
+                                        @click="editingCard.period = 'today'">
+                                    <i class="fas fa-clock"></i>
+                                    <span>Сегодня</span>
+                                </button>
+                                <button type="button" class="config-period-btn"
+                                        :class="{ 'active': editingCard.period === 'current_month' }"
+                                        @click="editingCard.period = 'current_month'">
+                                    <i class="fas fa-calendar-day"></i>
+                                    <span>Текущий месяц</span>
+                                </button>
+                                <button type="button" class="config-period-btn"
+                                        :class="{ 'active': editingCard.period === 'last_month' }"
+                                        @click="editingCard.period = 'last_month'">
+                                    <i class="fas fa-calendar-minus"></i>
+                                    <span>Прошлый месяц</span>
+                                </button>
+                                <button type="button" class="config-period-btn"
+                                        :class="{ 'active': editingCard.period === 'current_year' }"
+                                        @click="editingCard.period = 'current_year'">
+                                    <i class="fas fa-calendar"></i>
+                                    <span>Текущий год</span>
+                                </button>
+                                <button type="button" class="config-period-btn"
+                                        :class="{ 'active': editingCard.period === 'last_year' }"
+                                        @click="editingCard.period = 'last_year'">
+                                    <i class="fas fa-history"></i>
+                                    <span>Прошлый год</span>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Сравнение (скрыть для графиков) -->
+                        <div class="config-field" x-show="editingCard.period === 'current_month' && editingCard.type !== 'chart'">
+                            <div class="config-toggle-card" :class="{ 'active': editingCard.showComparison }" @click="editingCard.showComparison = !editingCard.showComparison">
+                                <div class="config-toggle-icon">
+                                    <i class="fas fa-chart-bar"></i>
+                                </div>
+                                <div class="config-toggle-info">
+                                    <span class="config-toggle-title">Показать сравнение</span>
+                                    <span class="config-toggle-desc">Сравнить с прошлым месяцем и годом</span>
+                                </div>
+                                <div class="config-toggle-switch">
+                                    <div class="form-check form-switch mb-0">
+                                        <input class="form-check-input" type="checkbox" x-model="editingCard.showComparison" @click.stop>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Таб: Фильтры -->
+                    <div class="config-tab-content" x-show="configActiveTab === 'filters'">
+                        <!-- Divisions (Товарные группы) - на самом верху -->
+                        <div class="config-field">
+                            <label class="config-label">
+                                <i class="fas fa-boxes me-2"></i>Дивизионы (товарные группы)
+                                <span class="config-list-count" x-text="'(' + availableDivisions.length + ' доступно)'"></span>
+                            </label>
+                            
+                            <!-- Выбранные дивизионы -->
+                            <div class="config-selected-tags" x-show="editingCard.divisions && editingCard.divisions.length > 0">
+                                <template x-for="divCode in (editingCard.divisions || [])" :key="divCode">
+                                    <span class="config-tag config-tag-division">
+                                        <i class="fas fa-boxes me-1"></i>
+                                        <span x-text="getDivisionName(divCode)"></span>
+                                        <i class="fas fa-times config-tag-remove" @click="removeDivision(divCode)"></i>
+                                    </span>
+                                </template>
+                                <button type="button" class="config-tag-clear" @click="editingCard.divisions = []">
+                                    <i class="fas fa-times"></i> Очистить
+                                </button>
+                            </div>
+                            
+                            <!-- Список дивизионов с чекбоксами -->
+                            <div class="config-hierarchy-list">
+                                <div x-show="availableDivisions.length === 0" class="config-empty-list">
+                                    <i class="fas fa-spinner fa-spin me-2"></i>Загрузка дивизионов...
+                                </div>
+                                <template x-for="division in availableDivisions" :key="division.code">
+                                    <div class="config-hierarchy-child">
+                                        <div class="form-check mb-0">
+                                            <input class="form-check-input" type="checkbox" 
+                                                   :id="'div-' + division.code"
+                                                   :checked="(editingCard.divisions || []).includes(division.code)"
+                                                   @change="toggleDivision(division.code, $event.target.checked)">
+                                            <label class="form-check-label" :for="'div-' + division.code">
+                                                <span class="text-warning me-2" x-text="division.code"></span>
+                                                <span x-text="division.name"></span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                        
+                        <!-- Территории -->
+                        <div class="config-field">
+                            <label class="config-label">
+                                <i class="fas fa-map-marker-alt me-2"></i>Территории (Sales Area)
+                                <span class="config-list-count" x-text="'(' + availableAreas.length + ' доступно)'"></span>
+                            </label>
+                            
+                            <!-- Выбранные территории -->
+                            <div class="config-selected-tags" x-show="editingCard.areas && editingCard.areas.length > 0">
+                                <template x-for="areaCode in (editingCard.areas || [])" :key="areaCode">
+                                    <span class="config-tag config-tag-area">
+                                        <i class="fas fa-map-marker-alt me-1"></i>
+                                        <span x-text="getAreaName(areaCode)"></span>
+                                        <i class="fas fa-times config-tag-remove" @click="removeArea(areaCode)"></i>
+                                    </span>
+                                </template>
+                                <button type="button" class="config-tag-clear" @click="editingCard.areas = []">
+                                    <i class="fas fa-times"></i> Очистить
+                                </button>
+                            </div>
+                            
+                            <!-- Иерархический список территорий -->
+                            <div class="config-hierarchy-list">
+                                <div x-show="areaHierarchy.length === 0" class="config-empty-list">
+                                    <i class="fas fa-spinner fa-spin me-2"></i>Загрузка территорий...
+                                </div>
+                                <template x-for="parentArea in areaHierarchy" :key="parentArea.code">
+                                    <div class="config-hierarchy-item">
+                                        <div class="config-hierarchy-parent" @click="toggleAreaExpand(parentArea.code)">
+                                            <i class="fas config-hierarchy-arrow" 
+                                               :class="expandedAreas.includes(parentArea.code) ? 'fa-chevron-down' : 'fa-chevron-right'"
+                                               x-show="parentArea.children && parentArea.children.length > 0"></i>
+                                            <i class="fas fa-minus config-hierarchy-arrow text-muted" 
+                                               x-show="!parentArea.children || parentArea.children.length === 0"></i>
+                                            <div class="form-check mb-0" @click.stop>
+                                                <input class="form-check-input" type="checkbox" 
+                                                       :id="'area-' + parentArea.code"
+                                                       :checked="isAreaSelected(parentArea.code) || isAllAreaChildrenSelected(parentArea)"
+                                                       :indeterminate="isSomeAreaChildrenSelected(parentArea)"
+                                                       @change="toggleParentArea(parentArea, $event.target.checked)">
+                                                <label class="form-check-label fw-bold" :for="'area-' + parentArea.code">
+                                                    <span class="text-primary me-2" x-text="parentArea.code"></span>
+                                                    <span x-text="parentArea.name"></span>
+                                                    <span class="text-muted ms-1" x-show="parentArea.children && parentArea.children.length > 0" 
+                                                          x-text="'(' + parentArea.children.length + ')'"></span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="config-hierarchy-children" x-show="expandedAreas.includes(parentArea.code) && parentArea.children && parentArea.children.length > 0">
+                                            <template x-for="childArea in parentArea.children" :key="childArea.code">
+                                                <div class="config-hierarchy-child">
+                                                    <div class="form-check mb-0">
+                                                        <input class="form-check-input" type="checkbox" 
+                                                               :id="'area-' + childArea.code"
+                                                               :checked="(editingCard.areas || []).includes(childArea.code)"
+                                                               @change="toggleArea(childArea.code, $event.target.checked)">
+                                                        <label class="form-check-label" :for="'area-' + childArea.code">
+                                                            <span class="text-primary me-2" x-text="childArea.code"></span>
+                                                            <span x-text="childArea.name"></span>
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                        
+                        <!-- Группы клиентов -->
+                        <div class="config-field">
+                            <label class="config-label">
+                                <i class="fas fa-layer-group me-2"></i>Группы клиентов
+                                <span class="config-list-count" x-text="'(' + availableGroups.length + ' доступно)'"></span>
+                            </label>
+                            
+                            <!-- Выбранные группы -->
+                            <div class="config-selected-tags" x-show="editingCard.groups && editingCard.groups.length > 0">
+                                <template x-for="groupCode in (editingCard.groups || [])" :key="groupCode">
+                                    <span class="config-tag config-tag-group">
+                                        <i class="fas fa-layer-group me-1"></i>
+                                        <span x-text="getGroupName(groupCode)"></span>
+                                        <i class="fas fa-times config-tag-remove" @click="removeGroup(groupCode)"></i>
+                                    </span>
+                                </template>
+                                <button type="button" class="config-tag-clear" @click="editingCard.groups = []">
+                                    <i class="fas fa-times"></i> Очистить
+                                </button>
+                            </div>
+                            
+                            <!-- Иерархический список -->
+                            <div class="config-hierarchy-list">
+                                <div x-show="groupHierarchy.length === 0" class="config-empty-list">
+                                    <i class="fas fa-spinner fa-spin me-2"></i>Загрузка групп...
+                                </div>
+                                <template x-for="parentGroup in groupHierarchy" :key="parentGroup.code">
+                                    <div class="config-hierarchy-item">
+                                        <div class="config-hierarchy-parent" @click="toggleGroupExpand(parentGroup.code)">
+                                            <i class="fas config-hierarchy-arrow" 
+                                               :class="expandedGroups.includes(parentGroup.code) ? 'fa-chevron-down' : 'fa-chevron-right'"></i>
+                                            <div class="form-check mb-0" @click.stop>
+                                                <input class="form-check-input" type="checkbox" 
+                                                       :id="'grp-' + parentGroup.code"
+                                                       :checked="isGroupSelected(parentGroup.code) || isAllChildrenSelected(parentGroup)"
+                                                       :indeterminate="isSomeChildrenSelected(parentGroup)"
+                                                       @change="toggleParentGroup(parentGroup, $event.target.checked)">
+                                                <label class="form-check-label" :for="'grp-' + parentGroup.code">
+                                                    <span x-text="parentGroup.name"></span>
+                                                    <span class="config-hierarchy-count" x-show="parentGroup.children.length > 0" x-text="parentGroup.children.length"></span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="config-hierarchy-children" x-show="expandedGroups.includes(parentGroup.code)" x-collapse>
+                                            <template x-for="child in parentGroup.children" :key="child.code">
+                                                <div class="config-hierarchy-child">
+                                                    <div class="form-check mb-0">
+                                                        <input class="form-check-input" type="checkbox" 
+                                                               :id="'grp-' + child.code"
+                                                               :checked="isGroupSelected(child.code)"
+                                                               @change="toggleGroup(child.code, $event.target.checked)">
+                                                        <label class="form-check-label" :for="'grp-' + child.code" x-text="child.name"></label>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                        
+                        <!-- Группы для долга (только для areas_table) -->
+                        <div class="config-field" x-show="editingCard.type === 'areas_table'">
+                            <label class="config-label">
+                                <i class="fas fa-hand-holding-usd me-2"></i>Группы для долга
+                                <span class="config-list-count text-warning" x-text="'(отдельный фильтр)'"></span>
+                            </label>
+                            
+                            <!-- Выбранные группы для долга -->
+                            <div class="config-selected-tags" x-show="editingCard.debt_groups && editingCard.debt_groups.length > 0">
+                                <template x-for="groupCode in (editingCard.debt_groups || [])" :key="'debt-' + groupCode">
+                                    <span class="config-tag config-tag-group" style="background: linear-gradient(135deg, #dc3545, #fd7e14);">
+                                        <i class="fas fa-hand-holding-usd me-1"></i>
+                                        <span x-text="getGroupName(groupCode)"></span>
+                                        <i class="fas fa-times config-tag-remove" @click="removeDebtGroup(groupCode)"></i>
+                                    </span>
+                                </template>
+                                <button type="button" class="config-tag-clear" @click="editingCard.debt_groups = []">
+                                    <i class="fas fa-times"></i> Очистить
+                                </button>
+                            </div>
+                            
+                            <!-- Иерархический список для долга -->
+                            <div class="config-hierarchy-list" style="max-height: 200px;">
+                                <div x-show="groupHierarchy.length === 0" class="config-empty-list">
+                                    <i class="fas fa-spinner fa-spin me-2"></i>Загрузка групп...
+                                </div>
+                                <template x-for="parentGroup in groupHierarchy" :key="'debt-parent-' + parentGroup.code">
+                                    <div class="config-hierarchy-item">
+                                        <div class="config-hierarchy-parent" @click="toggleDebtGroupExpand(parentGroup.code)">
+                                            <i class="fas config-hierarchy-arrow" 
+                                               :class="expandedDebtGroups.includes(parentGroup.code) ? 'fa-chevron-down' : 'fa-chevron-right'"></i>
+                                            <div class="form-check mb-0" @click.stop>
+                                                <input class="form-check-input" type="checkbox" 
+                                                       :id="'debt-grp-' + parentGroup.code"
+                                                       :checked="isDebtGroupSelected(parentGroup.code) || isAllDebtChildrenSelected(parentGroup)"
+                                                       :indeterminate="isSomeDebtChildrenSelected(parentGroup)"
+                                                       @change="toggleDebtParentGroup(parentGroup, $event.target.checked)">
+                                                <label class="form-check-label" :for="'debt-grp-' + parentGroup.code">
+                                                    <span x-text="parentGroup.name"></span>
+                                                    <span class="config-hierarchy-count" x-show="parentGroup.children.length > 0" x-text="parentGroup.children.length"></span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <div class="config-hierarchy-children" x-show="expandedDebtGroups.includes(parentGroup.code)" x-collapse>
+                                            <template x-for="child in parentGroup.children" :key="'debt-child-' + child.code">
+                                                <div class="config-hierarchy-child">
+                                                    <div class="form-check mb-0">
+                                                        <input class="form-check-input" type="checkbox" 
+                                                               :id="'debt-grp-' + child.code"
+                                                               :checked="isDebtGroupSelected(child.code)"
+                                                               @change="toggleDebtGroup(child.code, $event.target.checked)">
+                                                        <label class="form-check-label" :for="'debt-grp-' + child.code" x-text="child.name"></label>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Таб: Внешний вид -->
+                    <div class="config-tab-content" x-show="configActiveTab === 'appearance'">
+                        <!-- Размер -->
+                        <div class="config-field">
+                            <label class="config-label">
+                                <i class="fas fa-expand-arrows-alt me-2"></i>Размер карточки
+                            </label>
+                            <div class="config-size-grid">
+                                <div class="config-size-row">
+                                    <span class="config-size-label">Ширина:</span>
+                                    <div class="config-size-buttons">
+                                        <button type="button" class="config-size-btn" :class="{ 'active': editingCard.width === 1 }" @click="editingCard.width = 1">1</button>
+                                        <button type="button" class="config-size-btn" :class="{ 'active': editingCard.width === 2 }" @click="editingCard.width = 2">2</button>
+                                        <button type="button" class="config-size-btn" :class="{ 'active': editingCard.width === 3 }" @click="editingCard.width = 3">3</button>
+                                        <button type="button" class="config-size-btn" :class="{ 'active': editingCard.width === 4 }" @click="editingCard.width = 4">4</button>
+                                    </div>
+                                </div>
+                                <div class="config-size-row">
+                                    <span class="config-size-label">Высота:</span>
+                                    <div class="config-size-buttons">
+                                        <button type="button" class="config-size-btn" :class="{ 'active': editingCard.height === 1 }" @click="editingCard.height = 1">1</button>
+                                        <button type="button" class="config-size-btn" :class="{ 'active': editingCard.height === 2 }" @click="editingCard.height = 2">2</button>
+                                        <button type="button" class="config-size-btn" :class="{ 'active': editingCard.height === 3 }" @click="editingCard.height = 3">3</button>
+                                        <button type="button" class="config-size-btn" :class="{ 'active': editingCard.height === 4 }" @click="editingCard.height = 4">4</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Превью размера -->
+                            <div class="config-size-preview">
+                                <div class="config-size-preview-grid" style="grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr);">
+                                    <template x-for="row in 4">
+                                        <template x-for="col in 4">
+                                            <div class="config-size-preview-cell" 
+                                                 :class="{ 'active': col <= editingCard.width && row <= editingCard.height }"></div>
+                                        </template>
+                                    </template>
+                                </div>
+                                <span class="config-size-preview-label" x-text="editingCard.width + 'x' + editingCard.height"></span>
+                            </div>
+                        </div>
+                        
+                        <!-- Настройки колонок таблицы (только для areas_table) -->
+                        <div class="config-field" x-show="editingCard.type === 'areas_table'">
+                            <label class="config-label">
+                                <i class="fas fa-columns me-2"></i>Настройки колонок
+                                <span class="text-muted small ms-2">(перетащите для изменения порядка)</span>
+                            </label>
+                            <div class="config-columns-list" x-data="{ draggedCol: null }">
+                                <template x-for="(col, idx) in (editingCard.tableColumns || getDefaultTableColumns())" :key="col.id">
+                                    <div class="config-column-item"
+                                         :class="{ 'disabled': !col.visible, 'dragging': draggedCol === col.id }"
+                                         draggable="true"
+                                         @dragstart="draggedCol = col.id; $event.dataTransfer.effectAllowed = 'move'"
+                                         @dragend="draggedCol = null"
+                                         @dragover.prevent="$event.dataTransfer.dropEffect = 'move'"
+                                         @drop.prevent="moveColumn(col.id, draggedCol); draggedCol = null">
+                                        <div class="config-column-drag">
+                                            <i class="fas fa-grip-vertical"></i>
+                                        </div>
+                                        <div class="config-column-checkbox">
+                                            <input type="checkbox" 
+                                                   :id="'col-' + col.id" 
+                                                   :checked="col.visible"
+                                                   @change="toggleColumnVisibility(col.id, $event.target.checked)">
+                                        </div>
+                                        <label class="config-column-label" :for="'col-' + col.id" x-text="col.name"></label>
+                                    </div>
+                                </template>
+                            </div>
+                            <div class="config-columns-actions mt-2">
+                                <button type="button" class="btn btn-sm btn-outline-secondary me-2" @click="showAllColumns()">
+                                    <i class="fas fa-eye me-1"></i>Показать все
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" @click="resetColumnsOrder()">
+                                    <i class="fas fa-undo me-1"></i>Сбросить
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Настройки графика (только для типа chart) -->
+                        <template x-if="editingCard.type === 'chart'">
+                            <div>
+                                <!-- Тип графика -->
+                                <div class="config-field">
+                                    <label class="config-label">
+                                        <i class="fas fa-chart-area me-2"></i>Тип графика
+                                    </label>
+                                    <div class="config-chart-type-grid">
+                                        <button type="button" class="config-chart-btn" 
+                                                :class="{ 'active': editingCard.chartType === 'line' }"
+                                                @click="editingCard.chartType = 'line'">
+                                            <i class="fas fa-chart-line"></i>
+                                            <span>Линейный</span>
+                                        </button>
+                                        <button type="button" class="config-chart-btn"
+                                                :class="{ 'active': editingCard.chartType === 'bar' }"
+                                                @click="editingCard.chartType = 'bar'">
+                                            <i class="fas fa-chart-bar"></i>
+                                            <span>Столбчатый</span>
+                                        </button>
+                                        <button type="button" class="config-chart-btn"
+                                                :class="{ 'active': editingCard.chartType === 'area' }"
+                                                @click="editingCard.chartType = 'area'">
+                                            <i class="fas fa-chart-area"></i>
+                                            <span>Область</span>
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                                <!-- Метрики для графика (множественный выбор) -->
+                                <div class="config-field">
+                                    <label class="config-label">
+                                        <i class="fas fa-layer-group me-2"></i>Показать на графике
+                                        <span class="config-list-count">(выберите несколько)</span>
+                                    </label>
+                                    <div class="config-chart-metrics-grid">
+                                        <label class="config-metric-checkbox" :class="{ 'active': editingCard.chartMetrics.includes('sales') }">
+                                            <input type="checkbox" 
+                                                   :checked="editingCard.chartMetrics.includes('sales')"
+                                                   @change="toggleChartMetric('sales')">
+                                            <i class="fas fa-dollar-sign" style="color: #3b82f6;"></i>
+                                            <span>Продажи</span>
+                                        </label>
+                                        <label class="config-metric-checkbox" :class="{ 'active': editingCard.chartMetrics.includes('payments') }">
+                                            <input type="checkbox"
+                                                   :checked="editingCard.chartMetrics.includes('payments')"
+                                                   @change="toggleChartMetric('payments')">
+                                            <i class="fas fa-credit-card" style="color: #10b981;"></i>
+                                            <span>Оплаты</span>
+                                        </label>
+                                        <label class="config-metric-checkbox" :class="{ 'active': editingCard.chartMetrics.includes('debt') }">
+                                            <input type="checkbox"
+                                                   :checked="editingCard.chartMetrics.includes('debt')"
+                                                   @change="toggleChartMetric('debt')">
+                                            <i class="fas fa-hand-holding-usd" style="color: #ef4444;"></i>
+                                            <span>Долг</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                
+                                <!-- Сравнение по годам -->
+                                <div class="config-field">
+                                    <label class="config-label">
+                                        <i class="fas fa-calendar-alt me-2"></i>Сравнение по годам
+                                    </label>
+                                    
+                                    <!-- Режим сравнения -->
+                                    <div class="config-format-grid mb-3">
+                                        <button type="button" class="config-format-btn" 
+                                                :class="{ 'active': (editingCard.yearCompareMode || 'year') === 'year' }" 
+                                                @click="editingCard.yearCompareMode = 'year'">
+                                            <i class="fas fa-calendar-check"></i>
+                                            <span>Итог за год</span>
+                                        </button>
+                                        <button type="button" class="config-format-btn" 
+                                                :class="{ 'active': editingCard.yearCompareMode === 'month' }" 
+                                                @click="editingCard.yearCompareMode = 'month'">
+                                            <i class="fas fa-calendar-day"></i>
+                                            <span>Этот месяц</span>
+                                        </button>
+                                    </div>
+                                    
+                                    <div class="config-chart-metrics-grid">
+                                        <label class="config-metric-checkbox" :class="{ 'active': (editingCard.compareYears || []).includes(2025) }">
+                                            <input type="checkbox" 
+                                                   :checked="(editingCard.compareYears || []).includes(2025)"
+                                                   @change="toggleCompareYear(2025)">
+                                            <i class="fas fa-calendar" style="color: #3b82f6;"></i>
+                                            <span>2025</span>
+                                        </label>
+                                        <label class="config-metric-checkbox" :class="{ 'active': (editingCard.compareYears || []).includes(2024) }">
+                                            <input type="checkbox"
+                                                   :checked="(editingCard.compareYears || []).includes(2024)"
+                                                   @change="toggleCompareYear(2024)">
+                                            <i class="fas fa-calendar" style="color: #8b5cf6;"></i>
+                                            <span>2024</span>
+                                        </label>
+                                        <label class="config-metric-checkbox" :class="{ 'active': (editingCard.compareYears || []).includes(2023) }">
+                                            <input type="checkbox"
+                                                   :checked="(editingCard.compareYears || []).includes(2023)"
+                                                   @change="toggleCompareYear(2023)">
+                                            <i class="fas fa-calendar" style="color: #f59e0b;"></i>
+                                            <span>2023</span>
+                                        </label>
+                                        <label class="config-metric-checkbox" :class="{ 'active': (editingCard.compareYears || []).includes(2022) }">
+                                            <input type="checkbox"
+                                                   :checked="(editingCard.compareYears || []).includes(2022)"
+                                                   @change="toggleCompareYear(2022)">
+                                            <i class="fas fa-calendar" style="color: #10b981;"></i>
+                                            <span>2022</span>
+                                        </label>
+                                        <label class="config-metric-checkbox" :class="{ 'active': (editingCard.compareYears || []).includes(2021) }">
+                                            <input type="checkbox"
+                                                   :checked="(editingCard.compareYears || []).includes(2021)"
+                                                   @change="toggleCompareYear(2021)">
+                                            <i class="fas fa-calendar" style="color: #ec4899;"></i>
+                                            <span>2021</span>
+                                        </label>
+                                        <label class="config-metric-checkbox" :class="{ 'active': (editingCard.compareYears || []).includes(2020) }">
+                                            <input type="checkbox"
+                                                   :checked="(editingCard.compareYears || []).includes(2020)"
+                                                   @change="toggleCompareYear(2020)">
+                                            <i class="fas fa-calendar" style="color: #06b6d4;"></i>
+                                            <span>2020</span>
+                                        </label>
+                                        <label class="config-metric-checkbox" :class="{ 'active': (editingCard.compareYears || []).includes(2019) }">
+                                            <input type="checkbox"
+                                                   :checked="(editingCard.compareYears || []).includes(2019)"
+                                                   @change="toggleCompareYear(2019)">
+                                            <i class="fas fa-calendar" style="color: #ef4444;"></i>
+                                            <span>2019</span>
+                                        </label>
+                                        <label class="config-metric-checkbox" :class="{ 'active': (editingCard.compareYears || []).includes(2018) }">
+                                            <input type="checkbox"
+                                                   :checked="(editingCard.compareYears || []).includes(2018)"
+                                                   @change="toggleCompareYear(2018)">
+                                            <i class="fas fa-calendar" style="color: #84cc16;"></i>
+                                            <span>2018</span>
+                                        </label>
+                                        <label class="config-metric-checkbox" :class="{ 'active': (editingCard.compareYears || []).includes(2017) }">
+                                            <input type="checkbox"
+                                                   :checked="(editingCard.compareYears || []).includes(2017)"
+                                                   @change="toggleCompareYear(2017)">
+                                            <i class="fas fa-calendar" style="color: #f97316;"></i>
+                                            <span>2017</span>
+                                        </label>
+                                    </div>
+                                    <p class="config-hint mt-2" style="font-size: 11px; color: #94a3b8;">
+                                        <i class="fas fa-info-circle me-1"></i>
+                                        <span x-text="(editingCard.yearCompareMode || 'year') === 'year' ? 'Сумма за весь год' : 'Сумма за текущий месяц (ноябрь) в каждом году'"></span>
+                                    </p>
+                                </div>
+                            </div>
+                        </template>
+                        
+                        <!-- Формат (не для графиков) -->
+                        <div class="config-field" x-show="editingCard.type !== 'chart'">
+                            <label class="config-label">
+                                <i class="fas fa-text-width me-2"></i>Формат отображения
+                            </label>
+                            <div class="config-format-grid">
+                                <button type="button" class="config-format-btn" :class="{ 'active': editingCard.format === 'currency' }" @click="editingCard.format = 'currency'">
+                                    <i class="fas fa-money-bill-wave"></i>
+                                    <span>Валюта (֏)</span>
+                                </button>
+                                <button type="button" class="config-format-btn" :class="{ 'active': editingCard.format === 'number' }" @click="editingCard.format = 'number'">
+                                    <i class="fas fa-hashtag"></i>
+                                    <span>Число</span>
+                                </button>
+                                <button type="button" class="config-format-btn" :class="{ 'active': editingCard.format === 'percent' }" @click="editingCard.format = 'percent'">
+                                    <i class="fas fa-percent"></i>
+                                    <span>Процент</span>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Выбор цвета карточки (не для графиков) -->
+                        <div class="config-field" x-show="editingCard.type !== 'chart'">
+                            <label class="config-label">
+                                <i class="fas fa-palette me-2"></i>Цвет карточки
+                            </label>
+                            <div class="color-picker-grid">
+                                <!-- Без цвета (по умолчанию) -->
+                                <div class="color-swatch color-swatch-default" 
+                                     :class="{ 'selected': !editingCard.customColor }"
+                                     @click="editingCard.customColor = null"
+                                     title="По умолчанию"></div>
+                                <!-- Синий -->
+                                <div class="color-swatch" 
+                                     style="background: linear-gradient(145deg, #1e3a5f 0%, #2563eb 100%);"
+                                     :class="{ 'selected': editingCard.customColor === '#3b82f6' }"
+                                     @click="editingCard.customColor = '#3b82f6'"
+                                     title="Синий"></div>
+                                <!-- Зеленый -->
+                                <div class="color-swatch" 
+                                     style="background: linear-gradient(145deg, #064e3b 0%, #10b981 100%);"
+                                     :class="{ 'selected': editingCard.customColor === '#10b981' }"
+                                     @click="editingCard.customColor = '#10b981'"
+                                     title="Зеленый"></div>
+                                <!-- Красный -->
+                                <div class="color-swatch" 
+                                     style="background: linear-gradient(145deg, #7f1d1d 0%, #ef4444 100%);"
+                                     :class="{ 'selected': editingCard.customColor === '#ef4444' }"
+                                     @click="editingCard.customColor = '#ef4444'"
+                                     title="Красный"></div>
+                                <!-- Оранжевый -->
+                                <div class="color-swatch" 
+                                     style="background: linear-gradient(145deg, #78350f 0%, #f59e0b 100%);"
+                                     :class="{ 'selected': editingCard.customColor === '#f59e0b' }"
+                                     @click="editingCard.customColor = '#f59e0b'"
+                                     title="Оранжевый"></div>
+                                <!-- Голубой -->
+                                <div class="color-swatch" 
+                                     style="background: linear-gradient(145deg, #164e63 0%, #06b6d4 100%);"
+                                     :class="{ 'selected': editingCard.customColor === '#06b6d4' }"
+                                     @click="editingCard.customColor = '#06b6d4'"
+                                     title="Голубой"></div>
+                                <!-- Фиолетовый -->
+                                <div class="color-swatch" 
+                                     style="background: linear-gradient(145deg, #4c1d95 0%, #8b5cf6 100%);"
+                                     :class="{ 'selected': editingCard.customColor === '#8b5cf6' }"
+                                     @click="editingCard.customColor = '#8b5cf6'"
+                                     title="Фиолетовый"></div>
+                                <!-- Розовый -->
+                                <div class="color-swatch" 
+                                     style="background: linear-gradient(145deg, #831843 0%, #ec4899 100%);"
+                                     :class="{ 'selected': editingCard.customColor === '#ec4899' }"
+                                     @click="editingCard.customColor = '#ec4899'"
+                                     title="Розовый"></div>
+                                <!-- Индиго -->
+                                <div class="color-swatch" 
+                                     style="background: linear-gradient(145deg, #312e81 0%, #6366f1 100%);"
+                                     :class="{ 'selected': editingCard.customColor === '#6366f1' }"
+                                     @click="editingCard.customColor = '#6366f1'"
+                                     title="Индиго"></div>
+                                <!-- Тёмно-синий -->
+                                <div class="color-swatch" 
+                                     style="background: linear-gradient(145deg, #1e3a5f 0%, #1d4ed8 100%);"
+                                     :class="{ 'selected': editingCard.customColor === '#1d4ed8' }"
+                                     @click="editingCard.customColor = '#1d4ed8'"
+                                     title="Тёмно-синий"></div>
+                                <!-- Изумрудный -->
+                                <div class="color-swatch" 
+                                     style="background: linear-gradient(145deg, #064e3b 0%, #059669 100%);"
+                                     :class="{ 'selected': editingCard.customColor === '#059669' }"
+                                     @click="editingCard.customColor = '#059669'"
+                                     title="Изумрудный"></div>
+                                <!-- Серый -->
+                                <div class="color-swatch" 
+                                     style="background: linear-gradient(145deg, #374151 0%, #6b7280 100%);"
+                                     :class="{ 'selected': editingCard.customColor === '#6b7280' }"
+                                     @click="editingCard.customColor = '#6b7280'"
+                                     title="Серый"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Футер модального окна -->
+            <div class="config-modal-footer">
+                <button type="button" class="config-btn config-btn-secondary" @click="showConfigModal = false">
+                    <i class="fas fa-times me-2"></i>Отмена
+                </button>
+                <button type="button" class="config-btn config-btn-primary" @click="saveCardConfig()">
+                    <i class="fas fa-check me-2"></i>Применить
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/dashboard_builder.js') }}?v=dark2"></script>
+{% endblock %}

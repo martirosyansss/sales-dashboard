@@ -1,832 +1,234 @@
 {% extends "base_v2.html" %}
 
-{% block title %}Дистрибьюторы - Sales Dashboard v2.0{% endblock %}
+{% block title %}Дистрибьюторы - Sales Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/distributors.css') }}">
+{% endblock %}
 
 {% block content %}
-<div class="container-fluid">
-    <!-- Header -->
-    <div class="row mb-4">
-        <div class="col-12">
-            <h1 class="display-4">
-                <i class="fas fa-building text-primary"></i>
-                Анализ дистрибьюторов
-            </h1>
-            <p class="lead text-muted">
-                <i class="fas fa-info-circle"></i> 
-                Анализ работы групп клиентов-дистрибьюторов
-            </p>
-        </div>
-    </div>
+<!-- Загрузка -->
+<div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-spinner"></div>
+    <div class="text-muted">Загрузка данных...</div>
+</div>
 
-    <!-- Period Selection & Filters -->
-    <div class="row mb-4">
+<!-- Заголовок -->
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
+        <div>
+            <h1 class="mb-1"><i class="fas fa-store me-2"></i>Дистрибьюторы</h1>
+            <p class="text-muted mb-0">Детальный анализ продаж, оплат и задолженностей</p>
+        </div>
+        <a href="/" class="btn btn-outline-primary">
+            <i class="fas fa-arrow-left me-2"></i>На главную
+        </a>
+    </div>
+</div>
+
+<!-- Фильтры -->
+<div class="filters-card">
+    <div class="row g-3">
+        <div class="col-md-3">
+            <label class="filter-label">Период</label>
+            <div class="d-flex gap-2">
+                <input type="date" id="dateFrom" class="form-control form-control-sm">
+                <input type="date" id="dateTo" class="form-control form-control-sm">
+            </div>
+        </div>
+        <div class="col-md-2">
+            <label class="filter-label">Подразделение</label>
+            <select id="divisionFilter" class="form-select form-select-sm">
+                <option value="">Все</option>
+            </select>
+        </div>
         <div class="col-md-4">
-            <div class="card bg-dark">
-                <div class="card-body">
-                    <h5 class="card-title">
-                        <i class="fas fa-calendar-alt text-primary"></i>
-                        Период анализа
-                    </h5>
-                    <div class="row g-3">
-                        <div class="col-md-6">
-                            <label class="form-label">Дата начала</label>
-                            <input type="date" id="dateFrom" class="form-control" value="2025-10-31">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Дата окончания</label>
-                            <input type="date" id="dateTo" class="form-control" value="2025-11-25">
-                        </div>
-                    </div>
-                    <button id="loadBtn" class="btn btn-primary mt-3 w-100">
-                        <i class="fas fa-sync-alt"></i> Загрузить данные
-                    </button>
-                </div>
+            <label class="filter-label">Группы клиентов</label>
+            <div class="filter-checkbox-container" id="groupsFilter">
+                <!-- Динамически -->
+            </div>
+            <div class="filter-actions">
+                <button type="button" class="filter-action-btn" onclick="selectAllGroups()">Все</button>
+                <button type="button" class="filter-action-btn" onclick="deselectAllGroups()">Сбросить</button>
             </div>
         </div>
-        
-        <div class="col-md-4">
-            <div class="card bg-dark">
-                <div class="card-body">
-                    <h5 class="card-title">
-                        <i class="fas fa-filter text-primary"></i>
-                        Фильтры по дивизионам и группам
-                    </h5>
-                    <div class="mb-2">
-                        <button class="btn btn-sm btn-outline-primary w-100" type="button" data-bs-toggle="collapse" data-bs-target="#divisionsFilter">
-                            <i class="fas fa-layer-group"></i> Дивизионы: <span id="divisionsCount" class="badge bg-primary">0</span>
-                        </button>
-                        <div id="selectedDivisionsSummary" class="selected-summary"></div>
-                        <div class="collapse mt-2" id="divisionsFilter">
-                            <div class="d-flex gap-1 mb-2">
-                                <button id="selectAllDivisions" class="btn btn-xs btn-outline-success flex-fill" style="font-size: 0.75rem; padding: 0.25rem;">
-                                    <i class="fas fa-check-double"></i> Все
-                                </button>
-                                <button id="clearAllDivisions" class="btn btn-xs btn-outline-danger flex-fill" style="font-size: 0.75rem; padding: 0.25rem;">
-                                    <i class="fas fa-times"></i> Снять
-                                </button>
-                            </div>
-                            <input type="text" id="divisionSearch" class="form-control form-control-sm mb-2" placeholder="Поиск">
-                            <div id="divisionsList" class="filter-list" style="max-height: 200px; overflow-y: auto;">
-                                <!-- Divisions will be loaded here -->
-                            </div>
-                        </div>
-                    </div>
-                    <div class="mb-2">
-                        <button class="btn btn-sm btn-outline-primary w-100" type="button" data-bs-toggle="collapse" data-bs-target="#groupsFilter">
-                            <i class="fas fa-users"></i> Группы: <span id="groupsCount" class="badge bg-primary">0</span>
-                        </button>
-                        <div id="selectedGroupsSummary" class="selected-summary"></div>
-                        <div class="collapse mt-2" id="groupsFilter">
-                            <div class="d-flex gap-1 mb-2">
-                                <button id="selectAllGroups" class="btn btn-xs btn-outline-success flex-fill" style="font-size: 0.75rem; padding: 0.25rem;">
-                                    <i class="fas fa-check-double"></i> Все
-                                </button>
-                                <button id="clearAllGroups" class="btn btn-xs btn-outline-danger flex-fill" style="font-size: 0.75rem; padding: 0.25rem;">
-                                    <i class="fas fa-times"></i> Снять
-                                </button>
-                            </div>
-                            <input type="text" id="groupSearch" class="form-control form-control-sm mb-2" placeholder="Поиск">
-                            <div id="groupsList" class="filter-list" style="max-height: 200px; overflow-y: auto;">
-                                <!-- Groups will be loaded here -->
-                            </div>
-                        </div>
-                    </div>
-                    <button id="clearFiltersBtn" class="btn btn-sm btn-outline-danger w-100">
-                        <i class="fas fa-times"></i> Очистить фильтры
-                    </button>
-                </div>
-            </div>
-        </div>
-        
-        <div class="col-md-4">
-            <div class="card bg-dark">
-                <div class="card-body">
-                    <h5 class="card-title">
-                        <i class="fas fa-search text-primary"></i>
-                        Поиск и сортировка
-                    </h5>
-                    <div class="mb-3">
-                        <label class="form-label">Поиск по названию/коду</label>
-                        <input type="text" id="searchInput" class="form-control" placeholder="Введите название или код...">
-                    </div>
-                    <div>
-                        <label class="form-label">Сортировка</label>
-                        <select id="sortSelect" class="form-select">
-                            <option value="sales-desc">Продажи (по убыванию)</option>
-                            <option value="sales-asc">Продажи (по возрастанию)</option>
-                            <option value="debt-desc">Долг (по убыванию)</option>
-                            <option value="debt-asc">Долг (по возрастанию)</option>
-                            <option value="name-asc">Название (А-Я)</option>
-                        </select>
-                    </div>
-                </div>
-            </div>
+        <div class="col-md-3 d-flex align-items-end">
+            <button type="button" class="btn btn-primary w-100" onclick="loadData()">
+                <i class="fas fa-sync-alt me-2"></i>Применить
+            </button>
         </div>
     </div>
+</div>
 
-    <!-- Loading Spinner -->
-    <div id="loadingSpinner" class="row" style="display: none;">
-        <div class="col-12">
-            <div class="card bg-dark text-white">
-                <div class="card-body text-center py-5">
-                    <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;"></div>
-                    <h3>Загрузка данных...</h3>
-                    <p class="text-muted">Пожалуйста, подождите</p>
-                </div>
-            </div>
+<!-- Сводные карточки -->
+<div class="summary-cards">
+    <div class="summary-card customers">
+        <div class="summary-icon"><i class="fas fa-users"></i></div>
+        <div class="summary-value" id="totalCustomers">0</div>
+        <div class="summary-label">Дистрибьюторов</div>
+    </div>
+    <div class="summary-card sales">
+        <div class="summary-icon"><i class="fas fa-shopping-cart"></i></div>
+        <div class="summary-value" id="totalSales">0 ֏</div>
+        <div class="summary-label">Общие продажи</div>
+    </div>
+    <div class="summary-card payments">
+        <div class="summary-icon"><i class="fas fa-credit-card"></i></div>
+        <div class="summary-value" id="totalPayments">0 ֏</div>
+        <div class="summary-label">Общие оплаты</div>
+    </div>
+    <div class="summary-card debt">
+        <div class="summary-icon"><i class="fas fa-exclamation-triangle"></i></div>
+        <div class="summary-value" id="totalDebt">0 ֏</div>
+        <div class="summary-label">Общая задолженность</div>
+    </div>
+</div>
+
+<!-- Поиск и переключение -->
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-3">
+    <div class="search-container" style="flex: 1; max-width: 350px;">
+        <i class="fas fa-search search-icon"></i>
+        <input type="text" class="search-input" id="searchInput" placeholder="Поиск по коду или названию...">
+    </div>
+    <div class="view-toggle btn-group">
+        <button class="btn btn-outline-secondary active" onclick="switchView('cards')" id="cardsViewBtn">
+            <i class="fas fa-th-large me-1"></i>Карточки
+        </button>
+        <button class="btn btn-outline-secondary" onclick="switchView('table')" id="tableViewBtn">
+            <i class="fas fa-table me-1"></i>Таблица
+        </button>
+    </div>
+</div>
+
+<!-- Графики -->
+<div class="charts-section">
+    <div class="chart-card">
+        <div class="chart-title"><i class="fas fa-chart-pie me-2 text-info"></i>ТОП-10 по продажам</div>
+        <div class="chart-container">
+            <canvas id="topSalesChart"></canvas>
         </div>
     </div>
-
-    <!-- Summary Cards -->
-    <div id="summaryCards" class="row mb-4" style="display: none;">
-        <div class="col-md-3">
-            <div class="card bg-dark">
-                <div class="card-body">
-                    <h6 class="card-subtitle mb-2 text-muted">
-                        <i class="fas fa-building"></i> Всего клиентов
-                    </h6>
-                    <h3 id="totalCustomers" class="card-title text-primary">0</h3>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card bg-dark">
-                <div class="card-body">
-                    <h6 class="card-subtitle mb-2 text-muted">
-                        <i class="fas fa-money-bill-wave"></i> Общие продажи
-                    </h6>
-                    <h3 id="totalSales" class="card-title text-success">0 AMD</h3>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card bg-dark">
-                <div class="card-body">
-                    <h6 class="card-subtitle mb-2 text-muted">
-                        <i class="fas fa-hand-holding-usd"></i> Общие платежи
-                    </h6>
-                    <h3 id="totalPayments" class="card-title text-info">0 AMD</h3>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card bg-dark">
-                <div class="card-body">
-                    <h6 class="card-subtitle mb-2 text-muted">
-                        <i class="fas fa-exclamation-triangle"></i> Общая задолженность
-                    </h6>
-                    <h3 id="totalDebt" class="card-title text-danger">0 AMD</h3>
-                </div>
-            </div>
+    <div class="chart-card">
+        <div class="chart-title"><i class="fas fa-chart-bar me-2 text-success"></i>Продажи vs Оплаты</div>
+        <div class="chart-container">
+            <canvas id="salesVsPaymentsChart"></canvas>
         </div>
     </div>
+</div>
 
-    <!-- Distributors Table -->
-    <div id="dataTable" class="row" style="display: none;">
-        <div class="col-12 mb-4">
-            <div class="card bg-dark">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <h5 class="mb-0">
-                        <i class="fas fa-table"></i> Список дистрибьюторов
-                    </h5>
-                    <span id="tableCount" class="badge bg-primary">0</span>
-                </div>
-                <div class="card-body">
-                    <div class="table-responsive">
-                        <table class="table table-dark table-striped table-hover">
-                            <thead>
-                                <tr>
-                                    <th>Код</th>
-                                    <th>Название</th>
-                                    <th>Группа</th>
-                                    <th class="text-end">Продажи</th>
-                                    <th class="text-end">Платежи</th>
-                                    <th class="text-end">Задолженность</th>
-                                    <th class="text-end">% оплаты</th>
-                                </tr>
-                            </thead>
-                            <tbody id="tableBody">
-                                <!-- Rows will be inserted here -->
-                            </tbody>
-                        </table>
+<!-- Карточки -->
+<div class="cards-view" id="cardsView">
+    <div class="distributors-grid" id="distributorsGrid"></div>
+</div>
+
+<!-- Таблица -->
+<div class="table-view" id="tableView">
+    <div class="table-responsive">
+        <table class="data-table" id="dataTable">
+            <thead>
+                <tr>
+                    <th onclick="sortData('code')">Код <i class="fas fa-sort"></i></th>
+                    <th onclick="sortData('name')">Название <i class="fas fa-sort"></i></th>
+                    <th onclick="sortData('group')">Группа <i class="fas fa-sort"></i></th>
+                    <th onclick="sortData('sales')">Продажи <i class="fas fa-sort"></i></th>
+                    <th onclick="sortData('payments')">Оплаты <i class="fas fa-sort"></i></th>
+                    <th onclick="sortData('debt')">Долг <i class="fas fa-sort"></i></th>
+                    <th onclick="sortData('rate')">Оплата % <i class="fas fa-sort"></i></th>
+                </tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Пагинация -->
+<div class="pagination-container" id="paginationContainer"></div>
+
+<!-- Модальное окно -->
+<div class="detail-modal" id="detailModal">
+    <div class="detail-content">
+        <div class="detail-header">
+            <button class="detail-close" onclick="closeDetailModal()">
+                <i class="fas fa-times"></i>
+            </button>
+            <div class="detail-title" id="detailTitle">Название</div>
+            <div class="detail-subtitle" id="detailSubtitle">Код: - | Группа: -</div>
+        </div>
+        <div class="detail-body">
+            <div class="detail-section">
+                <div class="detail-section-title"><i class="fas fa-chart-line me-2"></i>Основные показатели</div>
+                <div class="detail-metrics">
+                    <div class="detail-metric sales">
+                        <div class="detail-metric-value" id="detailSales">0 ֏</div>
+                        <div class="detail-metric-label">Продажи</div>
+                    </div>
+                    <div class="detail-metric payments">
+                        <div class="detail-metric-value" id="detailPayments">0 ֏</div>
+                        <div class="detail-metric-label">Оплаты</div>
+                    </div>
+                    <div class="detail-metric debt">
+                        <div class="detail-metric-value" id="detailDebt">0 ֏</div>
+                        <div class="detail-metric-label">Долг</div>
+                    </div>
+                    <div class="detail-metric rate">
+                        <div class="detail-metric-value" id="detailRate">0%</div>
+                        <div class="detail-metric-label">% Оплаты</div>
                     </div>
                 </div>
             </div>
-        </div>
-        
-        <!-- Charts Row -->
-        <div class="col-md-6 mb-4">
-            <div class="card bg-dark">
-                <div class="card-header">
-                    <h5 class="mb-0">
-                        <i class="fas fa-chart-pie"></i> ТОП-10 по продажам
-                    </h5>
-                </div>
-                <div class="card-body">
-                    <canvas id="topSalesChart"></canvas>
+            
+            <div class="detail-section">
+                <div class="detail-section-title"><i class="fas fa-calculator me-2"></i>Структура долга</div>
+                <table class="debt-breakdown">
+                    <tr>
+                        <td>Долг по документам</td>
+                        <td id="detailDebtFromDocs">0 ֏</td>
+                    </tr>
+                    <tr>
+                        <td>Корректировка Type01</td>
+                        <td id="detailType01" class="negative">0 ֏</td>
+                    </tr>
+                    <tr>
+                        <td>Корректировка Type02</td>
+                        <td id="detailType02" class="negative">0 ֏</td>
+                    </tr>
+                    <tr style="background: rgba(255,255,255,0.05); font-weight: 600;">
+                        <td>ИТОГО Долг</td>
+                        <td id="detailTotalDebt">0 ֏</td>
+                    </tr>
+                </table>
+                <div class="mt-3 p-2 rounded" style="background: rgba(13, 202, 240, 0.1); border: 1px solid rgba(13, 202, 240, 0.2);">
+                    <small class="text-muted">
+                        <strong>Формула:</strong> Долг = ДолгПоДок - |Type01| - |Type02|
+                    </small>
                 </div>
             </div>
-        </div>
-        
-        <div class="col-md-6 mb-4">
-            <div class="card bg-dark">
-                <div class="card-header">
-                    <h5 class="mb-0">
-                        <i class="fas fa-chart-bar"></i> Продажи vs Платежи (ТОП-10)
-                    </h5>
+            
+            <div class="detail-section">
+                <div class="detail-section-title"><i class="fas fa-info-circle me-2"></i>Дополнительно</div>
+                <div class="detail-metrics">
+                    <div class="detail-metric">
+                        <div class="detail-metric-value text-white" id="detailSalesCount">0</div>
+                        <div class="detail-metric-label">Кол-во продаж</div>
+                    </div>
+                    <div class="detail-metric">
+                        <div class="detail-metric-value text-white" id="detailAvgSale">0 ֏</div>
+                        <div class="detail-metric-label">Средний чек</div>
+                    </div>
                 </div>
-                <div class="card-body">
-                    <canvas id="salesPaymentsChart"></canvas>
+            </div>
+            
+            <div class="detail-section">
+                <div class="detail-section-title"><i class="fas fa-chart-bar me-2"></i>Визуализация</div>
+                <div class="detail-chart-container">
+                    <canvas id="detailChart" class="detail-chart"></canvas>
                 </div>
             </div>
         </div>
     </div>
 </div>
+{% endblock %}
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<style>
-.filter-list .form-check {
-    padding: 0.5rem 0.75rem;
-    margin: 0;
-    border-bottom: 1px solid #495057;
-    border-left: 4px solid transparent;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-.filter-list .form-check:hover {
-    background-color: #2c3136;
-}
-/* SELECTED STATE - очень заметный */
-.filter-list .form-check.selected {
-    background-color: rgba(25, 135, 84, 0.35) !important;
-    border-left: 4px solid #198754 !important;
-}
-.filter-list .form-check.selected .form-check-label {
-    color: #fff !important;
-    font-weight: 600;
-}
-.filter-list .form-check-label {
-    cursor: pointer;
-    width: 100%;
-    font-size: 0.875rem;
-    margin-bottom: 0;
-    user-select: none;
-}
-/* Checkbox styling - более заметный */
-.filter-list .form-check-input {
-    width: 1.3em;
-    height: 1.3em;
-    margin-top: 0;
-    margin-right: 0.5rem;
-    flex-shrink: 0;
-    cursor: pointer;
-    border: 2px solid #6c757d;
-    background-color: transparent;
-}
-.filter-list .form-check-input:checked {
-    background-color: #198754 !important;
-    border-color: #198754 !important;
-}
-.filter-list .form-check-input:checked::before {
-    content: "✓";
-    color: white;
-    font-weight: bold;
-}
-.filter-list .form-check-input:focus {
-    box-shadow: 0 0 0 0.25rem rgba(25, 135, 84, 0.25);
-}
-/* Badge styling for selected count */
-.badge.bg-primary {
-    min-width: 24px;
-    font-size: 0.85rem;
-}
-.badge.has-selection {
-    background-color: #198754 !important;
-    font-weight: bold;
-    animation: pulse 0.5s ease-in-out;
-}
-@keyframes pulse {
-    0% { transform: scale(1); }
-    50% { transform: scale(1.3); }
-    100% { transform: scale(1); }
-}
-/* Selected items summary */
-.selected-summary {
-    font-size: 0.8rem;
-    color: #adb5bd;
-    margin-top: 0.35rem;
-    max-height: 60px;
-    overflow-y: auto;
-    padding: 0.25rem;
-}
-.selected-tag {
-    display: inline-block;
-    background: rgba(25, 135, 84, 0.3);
-    border: 1px solid #198754;
-    border-radius: 4px;
-    padding: 2px 6px;
-    margin: 2px;
-    font-size: 0.75rem;
-    color: #fff;
-    font-weight: 500;
-}
-</style>
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('Distributors page initialized');
-    
-    // Elements
-    const dateFrom = document.getElementById('dateFrom');
-    const dateTo = document.getElementById('dateTo');
-    const loadBtn = document.getElementById('loadBtn');
-    const searchInput = document.getElementById('searchInput');
-    const sortSelect = document.getElementById('sortSelect');
-    const loadingSpinner = document.getElementById('loadingSpinner');
-    const summaryCards = document.getElementById('summaryCards');
-    const dataTable = document.getElementById('dataTable');
-    const tableBody = document.getElementById('tableBody');
-    const tableCount = document.getElementById('tableCount');
-    
-    // Filter elements
-    const divisionSearch = document.getElementById('divisionSearch');
-    const divisionsList = document.getElementById('divisionsList');
-    const divisionsCount = document.getElementById('divisionsCount');
-    const groupSearch = document.getElementById('groupSearch');
-    const groupsList = document.getElementById('groupsList');
-    const groupsCount = document.getElementById('groupsCount');
-    const selectedDivisionsSummary = document.getElementById('selectedDivisionsSummary');
-    const selectedGroupsSummary = document.getElementById('selectedGroupsSummary');
-    
-    let allData = [];
-    let filteredData = [];
-    let topSalesChart = null;
-    let salesPaymentsChart = null;
-    
-    // Filter state
-    let selectedDivisions = new Set();
-    let selectedGroups = new Set();
-    let allDivisions = [];
-    let allGroups = [];
-    
-    // Update selected summary display
-    function updateSelectedSummary() {
-        // Divisions summary
-        if (selectedDivisions.size > 0) {
-            const selectedNames = allDivisions
-                .filter(d => selectedDivisions.has(d.code))
-                .map(d => `<span class="selected-tag">${d.code}</span>`)
-                .join('');
-            selectedDivisionsSummary.innerHTML = selectedNames;
-        } else {
-            selectedDivisionsSummary.innerHTML = '<span class="text-muted">Все дивизионы</span>';
-        }
-        
-        // Groups summary
-        if (selectedGroups.size > 0) {
-            const selectedNames = allGroups
-                .filter(g => selectedGroups.has(g.code))
-                .map(g => `<span class="selected-tag">${g.code}</span>`)
-                .join('');
-            selectedGroupsSummary.innerHTML = selectedNames;
-        } else {
-            selectedGroupsSummary.innerHTML = '<span class="text-muted">Все группы</span>';
-        }
-    }
-    
-    // Load filter state from localStorage
-    function loadFilterState() {
-        const saved = localStorage.getItem('distributorsFilters');
-        if (saved) {
-            const state = JSON.parse(saved);
-            selectedDivisions = new Set(state.divisions || []);
-            selectedGroups = new Set(state.groups || []);
-        }
-    }
-    
-    // Save filter state to localStorage
-    function saveFilterState() {
-        localStorage.setItem('distributorsFilters', JSON.stringify({
-            divisions: Array.from(selectedDivisions),
-            groups: Array.from(selectedGroups)
-        }));
-    }
-    
-    // Load divisions and groups
-    async function loadFilters() {
-        try {
-            // Load divisions (product groups)
-            const divisionsRes = await fetch('/api/product-groups');
-            const divisionsData = await divisionsRes.json();
-            if (divisionsData.success) {
-                allDivisions = divisionsData.data || [];
-                renderDivisionsList();
-            }
-            
-            // Load customer groups
-            const groupsRes = await fetch('/api/customer-groups');
-            const groupsData = await groupsRes.json();
-            if (groupsData.success) {
-                allGroups = groupsData.data || [];
-                renderGroupsList();
-            }
-        } catch (error) {
-            console.error('Error loading filters:', error);
-        }
-    }
-    
-    // Render divisions list
-    function renderDivisionsList() {
-        const searchTerm = divisionSearch.value.toLowerCase();
-        const filtered = allDivisions.filter(d => 
-            d.code.toLowerCase().includes(searchTerm) || 
-            d.name.toLowerCase().includes(searchTerm)
-        );
-        
-        divisionsList.innerHTML = filtered.map(d => {
-            const isSelected = selectedDivisions.has(d.code);
-            return `
-            <div class="form-check ${isSelected ? 'selected' : ''}">
-                <input class="form-check-input" type="checkbox" 
-                    value="${d.code}" 
-                    id="div_${d.code}"
-                    ${isSelected ? 'checked' : ''}
-                    onchange="toggleDivision('${d.code}')">
-                <label class="form-check-label" for="div_${d.code}">
-                    <strong>${d.code}</strong> · ${d.name}
-                </label>
-            </div>
-        `}).join('');
-        
-        divisionsCount.textContent = selectedDivisions.size;
-        // Update badge color
-        if (selectedDivisions.size > 0) {
-            divisionsCount.classList.add('has-selection');
-        } else {
-            divisionsCount.classList.remove('has-selection');
-        }
-        updateSelectedSummary();
-    }
-    
-    // Render groups list
-    function renderGroupsList() {
-        const searchTerm = groupSearch.value.toLowerCase();
-        const filtered = allGroups.filter(g => 
-            g.code.toLowerCase().includes(searchTerm) || 
-            g.name.toLowerCase().includes(searchTerm)
-        );
-        
-        groupsList.innerHTML = filtered.map(g => {
-            const isSelected = selectedGroups.has(g.code);
-            return `
-            <div class="form-check ${isSelected ? 'selected' : ''}">
-                <input class="form-check-input" type="checkbox" 
-                    value="${g.code}" 
-                    id="grp_${g.code}"
-                    ${isSelected ? 'checked' : ''}
-                    onchange="toggleGroup('${g.code}')">
-                <label class="form-check-label" for="grp_${g.code}">
-                    <strong>${g.code}</strong> · ${g.name}
-                </label>
-            </div>
-        `}).join('');
-        
-        groupsCount.textContent = selectedGroups.size;
-        // Update badge color
-        if (selectedGroups.size > 0) {
-            groupsCount.classList.add('has-selection');
-        } else {
-            groupsCount.classList.remove('has-selection');
-        }
-        updateSelectedSummary();
-    }
-    
-    // Toggle division
-    window.toggleDivision = function(code) {
-        if (selectedDivisions.has(code)) {
-            selectedDivisions.delete(code);
-        } else {
-            selectedDivisions.add(code);
-        }
-        saveFilterState();
-        renderDivisionsList(); // Re-render to update visual state
-        loadData(); // Reload data with new filters
-    };
-    
-    // Toggle group
-    window.toggleGroup = function(code) {
-        if (selectedGroups.has(code)) {
-            selectedGroups.delete(code);
-        } else {
-            selectedGroups.add(code);
-        }
-        saveFilterState();
-        renderGroupsList(); // Re-render to update visual state
-        loadData(); // Reload data with new filters
-    };
-    
-    // Clear all filters
-    function clearFilters() {
-        selectedDivisions.clear();
-        selectedGroups.clear();
-        saveFilterState();
-        divisionsCount.textContent = 0;
-        groupsCount.textContent = 0;
-        renderDivisionsList();
-        renderGroupsList();
-        loadData();
-    }
-    
-    // Select all divisions
-    function selectAllDivisions() {
-        allDivisions.forEach(d => selectedDivisions.add(d.code));
-        saveFilterState();
-        divisionsCount.textContent = selectedDivisions.size;
-        renderDivisionsList();
-        loadData();
-    }
-    
-    // Clear all divisions
-    function clearAllDivisions() {
-        selectedDivisions.clear();
-        saveFilterState();
-        divisionsCount.textContent = 0;
-        renderDivisionsList();
-        loadData();
-    }
-    
-    // Select all groups
-    function selectAllGroups() {
-        allGroups.forEach(g => selectedGroups.add(g.code));
-        saveFilterState();
-        groupsCount.textContent = selectedGroups.size;
-        renderGroupsList();
-        loadData();
-    }
-    
-    // Clear all groups
-    function clearAllGroups() {
-        selectedGroups.clear();
-        saveFilterState();
-        groupsCount.textContent = 0;
-        renderGroupsList();
-        loadData();
-    }
-    
-    // Format number with thousands separator
-    function formatNumber(num) {
-        return Math.round(num).toLocaleString('ru-RU');
-    }
-    
-    // Format currency
-    function formatCurrency(num) {
-        return formatNumber(num) + ' AMD';
-    }
-    
-    // Filter and sort data
-    function filterAndSort() {
-        const searchTerm = searchInput.value.toLowerCase();
-        
-        // Filter by search term only (division and group filters are applied at API level)
-        filteredData = allData.filter(d => {
-            const name = d.CustomerName.toLowerCase();
-            const code = d.CustomerCode.toLowerCase();
-            return name.includes(searchTerm) || code.includes(searchTerm);
-        });
-        
-        // Sort
-        const sortValue = sortSelect.value;
-        filteredData.sort((a, b) => {
-            switch(sortValue) {
-                case 'sales-desc': return b.TotalSales - a.TotalSales;
-                case 'sales-asc': return a.TotalSales - b.TotalSales;
-                case 'debt-desc': return b.TotalDebt - a.TotalDebt;
-                case 'debt-asc': return a.TotalDebt - b.TotalDebt;
-                case 'name-asc': return a.CustomerName.localeCompare(b.CustomerName);
-                default: return 0;
-            }
-        });
-        
-        renderTable();
-    }
-    
-    // Render table
-    function renderTable() {
-        tableBody.innerHTML = '';
-        tableCount.textContent = filteredData.length;
-        
-        filteredData.forEach(d => {
-            const paymentRate = d.TotalSales > 0 
-                ? ((d.TotalPayments / d.TotalSales) * 100).toFixed(1)
-                : '0.0';
-            
-            const row = document.createElement('tr');
-            row.innerHTML = `
-                <td>${d.CustomerCode}</td>
-                <td>${d.CustomerName}</td>
-                <td><span class="badge bg-secondary">${d.GroupCode}</span></td>
-                <td class="text-end">${formatNumber(d.TotalSales)}</td>
-                <td class="text-end">${formatNumber(d.TotalPayments)}</td>
-                <td class="text-end text-danger">${formatNumber(d.TotalDebt)}</td>
-                <td class="text-end">
-                    <span class="badge ${paymentRate >= 80 ? 'bg-success' : paymentRate >= 50 ? 'bg-warning' : 'bg-danger'}">
-                        ${paymentRate}%
-                    </span>
-                </td>
-            `;
-            tableBody.appendChild(row);
-        });
-    }
-    
-    // Render charts
-    function renderCharts() {
-        const top10 = [...allData]
-            .sort((a, b) => b.TotalSales - a.TotalSales)
-            .slice(0, 10);
-        
-        // Destroy old charts
-        if (topSalesChart) topSalesChart.destroy();
-        if (salesPaymentsChart) salesPaymentsChart.destroy();
-        
-        // Top Sales Pie Chart
-        const ctxPie = document.getElementById('topSalesChart').getContext('2d');
-        topSalesChart = new Chart(ctxPie, {
-            type: 'pie',
-            data: {
-                labels: top10.map(d => d.CustomerName.substring(0, 20)),
-                datasets: [{
-                    data: top10.map(d => d.TotalSales),
-                    backgroundColor: [
-                        '#0d6efd', '#6610f2', '#6f42c1', '#d63384', '#dc3545',
-                        '#fd7e14', '#ffc107', '#198754', '#20c997', '#0dcaf0'
-                    ]
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                plugins: {
-                    legend: {
-                        position: 'right',
-                        labels: { color: '#fff', font: { size: 10 } }
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: (context) => {
-                                return context.label + ': ' + formatCurrency(context.parsed);
-                            }
-                        }
-                    }
-                }
-            }
-        });
-        
-        // Sales vs Payments Bar Chart
-        const ctxBar = document.getElementById('salesPaymentsChart').getContext('2d');
-        salesPaymentsChart = new Chart(ctxBar, {
-            type: 'bar',
-            data: {
-                labels: top10.map(d => d.CustomerName.substring(0, 15)),
-                datasets: [
-                    {
-                        label: 'Продажи',
-                        data: top10.map(d => d.TotalSales),
-                        backgroundColor: '#198754'
-                    },
-                    {
-                        label: 'Платежи',
-                        data: top10.map(d => d.TotalPayments),
-                        backgroundColor: '#0dcaf0'
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                scales: {
-                    x: {
-                        ticks: { color: '#fff', font: { size: 10 } }
-                    },
-                    y: {
-                        ticks: { 
-                            color: '#fff',
-                            callback: (value) => formatNumber(value)
-                        }
-                    }
-                },
-                plugins: {
-                    legend: {
-                        labels: { color: '#fff' }
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: (context) => {
-                                return context.dataset.label + ': ' + formatCurrency(context.parsed.y);
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
-    
-    // Load data
-    async function loadData() {
-        const from = dateFrom.value;
-        const to = dateTo.value;
-        
-        if (!from || !to) {
-            alert('Пожалуйста, выберите даты');
-            return;
-        }
-        
-        // Show loading
-        loadingSpinner.style.display = 'block';
-        summaryCards.style.display = 'none';
-        dataTable.style.display = 'none';
-        
-        try {
-            // Build URL with filters
-            let url = `/api/distributors?date_from=${from}&date_to=${to}`;
-            
-            // Add divisions filter
-            if (selectedDivisions.size > 0) {
-                const divisionsParam = Array.from(selectedDivisions).join(',');
-                url += `&divisions=${divisionsParam}`;
-            }
-            
-            // Add groups filter
-            if (selectedGroups.size > 0) {
-                const groupsParam = Array.from(selectedGroups).join(',');
-                url += `&groups=${groupsParam}`;
-            }
-            
-            console.log('Fetching:', url);
-            
-            const response = await fetch(url);
-            const result = await response.json();
-            
-            console.log('Response:', result);
-            
-            if (!result.success) {
-                throw new Error('Failed to load data');
-            }
-            
-            allData = result.data;
-            filteredData = [...allData];
-            
-            // Calculate totals
-            let totalSales = 0;
-            let totalPayments = 0;
-            let totalDebt = 0;
-            
-            allData.forEach(d => {
-                totalSales += d.TotalSales || 0;
-                totalPayments += d.TotalPayments || 0;
-                totalDebt += d.TotalDebt || 0;
-            });
-            
-            // Update summary cards
-            document.getElementById('totalCustomers').textContent = allData.length;
-            document.getElementById('totalSales').textContent = formatCurrency(totalSales);
-            document.getElementById('totalPayments').textContent = formatCurrency(totalPayments);
-            document.getElementById('totalDebt').textContent = formatCurrency(totalDebt);
-            
-            // Render table and charts
-            filterAndSort();
-            renderCharts();
-            
-            // Show results
-            summaryCards.style.display = 'flex';
-            dataTable.style.display = 'block';
-            
-        } catch (error) {
-            console.error('Error loading data:', error);
-            alert('Ошибка загрузки данных: ' + error.message);
-        } finally {
-            loadingSpinner.style.display = 'none';
-        }
-    }
-    
-    // Event listeners
-    loadBtn.addEventListener('click', loadData);
-    searchInput.addEventListener('input', filterAndSort);
-    sortSelect.addEventListener('change', filterAndSort);
-    divisionSearch.addEventListener('input', renderDivisionsList);
-    groupSearch.addEventListener('input', renderGroupsList);
-    document.getElementById('clearFiltersBtn').addEventListener('click', clearFilters);
-    document.getElementById('selectAllDivisions').addEventListener('click', selectAllDivisions);
-    document.getElementById('clearAllDivisions').addEventListener('click', clearAllDivisions);
-    document.getElementById('selectAllGroups').addEventListener('click', selectAllGroups);
-    document.getElementById('clearAllGroups').addEventListener('click', clearAllGroups);
-    
-    // Load filter state and initialize
-    loadFilterState();
-    loadFilters();
-    
-    // Auto-load on page load
-    loadData();
-});
-</script>
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/distributors.js') }}"></script>
 {% endblock %}

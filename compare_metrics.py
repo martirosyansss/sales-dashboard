@@ -26,15 +26,33 @@ cursor.execute("""
 credit_sales = float(cursor.fetchone().CreditSales or 0)
 
 # 2. Customer DEBT (current, all time)
+# 2. Customer DEBT (current, all time) - CORRECT FORMULA
+# Part A: Debit from HICUSTOMERSDEBT
 cursor.execute("""
     SELECT ISNULL(SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END), 0) as TotalDebt
     FROM HICUSTOMERSDEBT d
-    INNER JOIN DOCUMENTS doc on d.fDEBTDOCISN = doc.fISN
+    INNER JOIN DOCUMENTS doc ON d.fDEBTDOCISN = doc.fISN
     INNER JOIN CUSTOMERS c ON doc.fCUSTOMERID = c.fID
     INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
     WHERE csa.fSALESAREA = ?
 """, (area_code,))
-debt = float(cursor.fetchone().TotalDebt or 0)
+debt_initial = float(cursor.fetchone().TotalDebt or 0)
+
+# Part B: Type01 and Type02 from HIRESTCUSTOMERSSUM
+cursor.execute("""
+    SELECT 
+        ISNULL(SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END), 0) as Type01,
+        ISNULL(SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END), 0) as Type02
+    FROM HIRESTCUSTOMERSSUM r
+    INNER JOIN CUSTOMERS c ON r.fCUSTOMERID = c.fID
+    INNER JOIN CUSTOMERSALESAREAS csa ON c.fID = csa.fCUSTOMERID
+    WHERE csa.fSALESAREA = ?
+""", (area_code,))
+row = cursor.fetchone()
+type01 = float(row.Type01 or 0)
+type02 = float(row.Type02 or 0)
+
+debt = debt_initial - abs(type01) - abs(type02)
 
 print(f"1. Credit SALES (Oct 2025):     {credit_sales:>20,.2f} AMD")
 print(f"2. Customer DEBT (current):      {debt:>20,.2f} AMD")
