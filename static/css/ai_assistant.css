@@ -1,0 +1,23 @@
+/* ai_assistant — page styles (extracted from inline <style>). */
+.stat-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+}
+
+.bg-purple {
+    background-color: #9b59b6 !important;
+}
+
+.table-active {
+    background-color: rgba(13, 110, 253, 0.15) !important;
+}
+
+.sticky-top th {
+    background: var(--card-bg);
+    z-index: 10;
+}
