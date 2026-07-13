@@ -415,9 +415,18 @@ function aiAssistantData() {
                         role: 'assistant',
                         content: data.analysis
                     });
+                } else {
+                    this.chatMessages.push({
+                        role: 'assistant',
+                        content: `❌ Ошибка: ${data.error}`
+                    });
                 }
             } catch (error) {
                 console.error('Analysis error:', error);
+                this.chatMessages.push({
+                    role: 'assistant',
+                    content: `❌ Ошибка подключения к Claude AI: ${error.message}`
+                });
             }
             
             this.chatLoading = false;

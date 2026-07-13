@@ -12,7 +12,10 @@ import hashlib
 from typing import Dict, List, Any
 import logging
 from dotenv import load_dotenv
-import anthropic
+try:
+    import anthropic  # AI-разбор — опциональная фича; отсутствие пакета НЕ должно ронять весь дашборд
+except ImportError:
+    anthropic = None
 # import io
 # from openpyxl import Workbook
 # from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -5197,8 +5200,10 @@ AI_HEALTH_SYSTEM = (
 def api_managers_kpi_health_ai():
     """AI-разбор здоровья бизнеса (стриминг, SSE): превращает уже посчитанные KPI-числа в короткий разбор
     для владельца. Модель Claude Opus 4.8, потоковый вывод — текст появляется сразу. READ-ONLY."""
+    if anthropic is None:
+        return jsonify({"success": False, "error": "AI недоступен: пакет anthropic не установлен на сервере"}), 400
     if not ANTHROPIC_API_KEY:
-        return jsonify({"success": False, "error": "ANTHROPIC_API_KEY не настроен (.env)"}), 400
+        return jsonify({"success": False, "error": "AI недоступен: ANTHROPIC_API_KEY не задан в .env сервера"}), 400
     try:
         payload = request.get_json() or {}
         scope = payload.get('scope', 'team')
@@ -5863,10 +5868,10 @@ def ai_analysis():
 def ai_chat():
     """Chat with Claude AI about sales data and problems"""
     try:
-        if not ANTHROPIC_API_KEY:
+        if anthropic is None or not ANTHROPIC_API_KEY:
             return jsonify({
-                'success': False, 
-                'error': 'ANTHROPIC_API_KEY not configured. Please add it to .env file.'
+                'success': False,
+                'error': 'AI недоступен: нет пакета anthropic или не задан ANTHROPIC_API_KEY в .env'
             }), 400
         
         data = request.get_json()
@@ -5935,10 +5940,10 @@ def ai_chat():
 def ai_analyze_customer():
     """Get AI analysis and recommendations for a specific customer"""
     try:
-        if not ANTHROPIC_API_KEY:
+        if anthropic is None or not ANTHROPIC_API_KEY:
             return jsonify({
-                'success': False, 
-                'error': 'ANTHROPIC_API_KEY not configured'
+                'success': False,
+                'error': 'AI недоступен: нет пакета anthropic или не задан ANTHROPIC_API_KEY в .env'
             }), 400
         
         data = request.get_json()
