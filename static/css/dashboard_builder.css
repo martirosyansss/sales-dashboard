@@ -782,10 +782,10 @@
     text-align: left;
     padding: 4%;
     overflow: hidden;
-    /* Высоту задаёт грид-трек через align-self: stretch, а не height:100%.
-       height:100% + container-type:size в фикс-треке в некоторых версиях Chrome
-       разрешается по контенту, из-за чего карточка перерастала трек и
-       наезжала на соседний ряд. */
+    /* Карточка ровно по своему грид-треку. height:100% нужен для cqh-шрифтов
+       (container-type:size), а max-height:100% + min-height:0 не дают ей
+       перерасти трек и наехать на соседний ряд (баг разрешения height:100%
+       по контенту в некоторых версиях Chrome). */
     align-self: stretch;
     justify-self: stretch;
     height: 100%;
