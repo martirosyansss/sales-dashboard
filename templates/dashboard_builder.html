@@ -75,89 +75,63 @@
         </div>
     </div>
     
-    <!-- Тулбар добавления карточек -->
+    <!-- Тулбар -->
     <div class="toolbar">
-        <div class="row align-items-center">
-            <div class="col-auto">
-                <!-- iOS Edit Mode Button -->
-                <button class="btn edit-mode-btn" 
-                        :class="editMode ? 'active' : ''" 
-                        @click="editMode = !editMode"
-                        title="Режим редактирования">
-                    <i class="fas" :class="editMode ? 'fa-check' : 'fa-arrows-alt'"></i>
-                    <span x-text="editMode ? 'Готово' : 'Изменить'"></span>
+        <div class="d-flex align-items-center flex-wrap gap-2">
+            <!-- Единое меню добавления карточки -->
+            <div class="dropdown">
+                <button class="btn add-card-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="fas fa-plus me-2"></i>Добавить карточку
                 </button>
+                <ul class="dropdown-menu add-card-menu">
+                    <li><h6 class="dropdown-header">Метрики</h6></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('sales')"><i class="fas fa-dollar-sign text-primary"></i>Продажи</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('payments')"><i class="fas fa-credit-card text-success"></i>Оплаты</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('debt')"><i class="fas fa-hand-holding-usd text-danger"></i>Долг</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('customers')"><i class="fas fa-users text-warning"></i>Клиенты</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('custom')"><i class="fas fa-sliders-h text-secondary"></i>Произвольная</a></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><h6 class="dropdown-header">Прогноз</h6></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('forecast')"><i class="fas fa-chart-line text-success"></i>Прогноз продаж</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('completion')"><i class="fas fa-bullseye text-info"></i>% выполнения</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('days')"><i class="fas fa-hourglass-half text-warning"></i>Осталось дней</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('daily')"><i class="fas fa-calculator text-primary"></i>Ср. в день</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('needed')"><i class="fas fa-tasks text-danger"></i>Нужно в день</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('gap')"><i class="fas fa-balance-scale text-secondary"></i>До плана</a></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><h6 class="dropdown-header">Визуализация</h6></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('chart')"><i class="fas fa-chart-line text-info"></i>График</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('areas_table')"><i class="fas fa-table text-info"></i>Сводка по территориям</a></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><h6 class="dropdown-header">Оформление</h6></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('header')"><i class="fas fa-heading text-secondary"></i>Заголовок</a></li>
+                    <li><a class="dropdown-item" href="#" @click.prevent="addCard('text')"><i class="fas fa-font text-secondary"></i>Текст</a></li>
+                </ul>
             </div>
-            <div class="col-auto">
-                <span class="text-muted me-3"><i class="fas fa-plus-circle me-1"></i>Добавить:</span>
-            </div>
-            <div class="col">
-                <div class="d-flex flex-wrap gap-2">
-                    <button class="btn btn-sm btn-add-widget" @click="addCard('sales')">
-                        <i class="fas fa-dollar-sign me-1 text-primary"></i><span class="d-none d-sm-inline">Продажи</span>
-                    </button>
-                    <button class="btn btn-sm btn-add-widget" @click="addCard('payments')">
-                        <i class="fas fa-credit-card me-1 text-success"></i><span class="d-none d-sm-inline">Оплаты</span>
-                    </button>
-                    <button class="btn btn-sm btn-add-widget" @click="addCard('debt')">
-                        <i class="fas fa-hand-holding-usd me-1 text-danger"></i><span class="d-none d-sm-inline">Долг</span>
-                    </button>
-                    <button class="btn btn-sm btn-add-widget" @click="addCard('customers')">
-                        <i class="fas fa-users me-1 text-warning"></i><span class="d-none d-sm-inline">Клиенты</span>
-                    </button>
-                    <button class="btn btn-sm btn-add-widget" @click="addCard('chart')">
-                        <i class="fas fa-chart-line me-1 text-info"></i><span class="d-none d-sm-inline">График</span>
-                    </button>
-                    <button class="btn btn-sm btn-add-widget" @click="addCard('custom')">
-                        <i class="fas fa-cog me-1"></i><span class="d-none d-sm-inline">Произвольная</span>
-                    </button>
-                    <span class="border-start border-secondary mx-2 d-none d-md-inline"></span>
-                    <!-- Прогнозирование -->
-                    <div class="dropdown">
-                        <button class="btn btn-sm btn-add-widget dropdown-toggle" type="button" data-bs-toggle="dropdown">
-                            <i class="fas fa-chart-line me-1 text-success"></i><span class="d-none d-md-inline">Прогноз</span>
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-dark">
-                            <li><a class="dropdown-item" href="#" @click.prevent="addCard('forecast')">
-                                <i class="fas fa-chart-line me-2 text-success"></i>Прогноз продаж
-                            </a></li>
-                            <li><a class="dropdown-item" href="#" @click.prevent="addCard('completion')">
-                                <i class="fas fa-bullseye me-2 text-info"></i>% выполнения
-                            </a></li>
-                            <li><a class="dropdown-item" href="#" @click.prevent="addCard('days')">
-                                <i class="fas fa-hourglass-half me-2 text-warning"></i>Осталось дней
-                            </a></li>
-                            <li><a class="dropdown-item" href="#" @click.prevent="addCard('daily')">
-                                <i class="fas fa-calculator me-2 text-primary"></i>Ср. в день
-                            </a></li>
-                            <li><a class="dropdown-item" href="#" @click.prevent="addCard('needed')">
-                                <i class="fas fa-tasks me-2 text-danger"></i>Нужно в день
-                            </a></li>
-                            <li><a class="dropdown-item" href="#" @click.prevent="addCard('gap')">
-                                <i class="fas fa-balance-scale me-2 text-secondary"></i>До плана
-                            </a></li>
-                        </ul>
-                    </div>
-                    <button class="btn btn-sm btn-add-widget" @click="addCard('areas_table')" title="Сводная таблица по территориям">
-                        <i class="fas fa-table me-1 text-info"></i>Сводка
-                    </button>
-                    <span class="border-start border-secondary mx-2"></span>
-                    <button class="btn btn-sm btn-add-widget" @click="addCard('header')">
-                        <i class="fas fa-heading me-1"></i>Заголовок
-                    </button>
-                    <button class="btn btn-sm btn-add-widget" @click="addCard('text')">
-                        <i class="fas fa-font me-1"></i>Текст
-                    </button>
-                </div>
-            </div>
-            <div class="col-auto">
-                <span class="badge bg-secondary">
-                    <span x-text="cards.length"></span> карточек
-                </span>
-            </div>
+
+            <!-- Режим редактирования -->
+            <button class="btn edit-mode-btn" :class="editMode ? 'active' : ''" @click="editMode = !editMode">
+                <i class="fas" :class="editMode ? 'fa-check' : 'fa-arrows-alt'"></i>
+                <span x-text="editMode ? 'Готово' : 'Изменить раскладку'"></span>
+            </button>
+
+            <!-- Счётчик -->
+            <span class="ms-auto badge"><i class="fas fa-th-large me-1"></i><span x-text="cards.length"></span> карточек</span>
         </div>
     </div>
     
+    <!-- Панель режима редактирования -->
+    <div class="edit-banner" x-show="editMode" x-cloak>
+        <div class="edit-banner-icon"><i class="fas fa-arrows-alt"></i></div>
+        <div class="edit-banner-text">
+            <strong>Режим редактирования</strong>
+            <span>Перетаскивайте карточки, тяните за уголок для размера, ⚙ — настройки</span>
+        </div>
+        <button class="btn edit-banner-done" @click="editMode = false">
+            <i class="fas fa-check me-1"></i>Готово
+        </button>
+    </div>
+
     <!-- Сетка карточек -->
     <div class="card-grid" :class="{'edit-mode': editMode}" id="cardGrid">
         <template x-if="cards.length === 0">
