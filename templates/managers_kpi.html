@@ -369,6 +369,211 @@
     }
     .kpi-page .input-group-text { background: var(--kpi-surface-3); border-color: var(--kpi-line); color: var(--kpi-muted); }
 
+    /* ---------- ПУЛЬС БИЗНЕСА (панель здоровья для владельца) ---------- */
+    .kpi-page .pulse-box {
+        background: var(--kpi-surface-2); border: 1px solid var(--kpi-line);
+        border-radius: 14px; padding: .9rem 1rem;
+    }
+    .kpi-page .pulse-h {
+        font-size: .78rem; text-transform: uppercase; letter-spacing: .5px;
+        color: var(--kpi-muted); font-weight: 700; margin-bottom: .7rem;
+    }
+    .kpi-page .pulse-ring { width: 96px; height: 96px; flex: 0 0 auto; }
+    .kpi-page .pulse-ring .score-ring-inner { width: 74px; height: 74px; font-size: 1.6rem; background: var(--kpi-surface-2); }
+    .kpi-page .pulse-verdict { font-weight: 800; font-size: 1.05rem; line-height: 1.2; }
+    .kpi-page .pulse-comp { margin-bottom: .55rem; }
+    .kpi-page .pulse-comp-label { display: flex; justify-content: space-between; gap: .5rem; font-size: .78rem; color: var(--kpi-muted); margin-bottom: 3px; }
+    .kpi-page .pulse-comp-label .text-light { font-variant-numeric: tabular-nums; }
+    .kpi-page .pulse-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 2px; }
+    .kpi-page .dot-ok { background: #22c55e; } .kpi-page .dot-warn { background: #f2c14e; }
+    .kpi-page .dot-bad { background: #ef4444; } .kpi-page .dot-na { background: rgba(255,255,255,.25); }
+    .kpi-page .pulse-ok {
+        display: flex; align-items: center; padding: .85rem; border-radius: 10px;
+        background: rgba(34,197,94,.1); border: 1px solid rgba(34,197,94,.3); color: #a7e3bc; font-size: .9rem;
+    }
+    .kpi-page .pulse-find {
+        display: flex; align-items: center; gap: .7rem; padding: .55rem .7rem;
+        border-radius: 10px; margin-bottom: .45rem; border: 1px solid transparent;
+    }
+    .kpi-page .find-bad  { background: rgba(239,68,68,.09);  border-color: rgba(239,68,68,.35); }
+    .kpi-page .find-warn { background: rgba(242,193,78,.08); border-color: rgba(242,193,78,.3); }
+    .kpi-page .pulse-find-ico {
+        flex: 0 0 auto; width: 34px; height: 34px; border-radius: 9px;
+        display: grid; place-items: center; font-size: .95rem;
+    }
+    .kpi-page .find-bad  .pulse-find-ico { color: #ff8b95; background: rgba(239,68,68,.15); }
+    .kpi-page .find-warn .pulse-find-ico { color: #ffd873; background: rgba(242,193,78,.15); }
+    .kpi-page .pulse-find-body { flex: 1 1 auto; min-width: 0; }
+    .kpi-page .pulse-find-title { font-weight: 700; font-size: .86rem; }
+    .kpi-page .pulse-find-detail { font-size: .75rem; color: var(--kpi-muted); }
+    .kpi-page .pulse-find-impact { flex: 0 0 auto; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .kpi-page .find-bad  .pulse-find-impact { color: #ff8b95; }
+    .kpi-page .find-warn .pulse-find-impact { color: #ffd873; }
+    .kpi-page .pulse-row {
+        display: flex; justify-content: space-between; align-items: baseline; gap: .6rem;
+        padding: .34rem 0; border-bottom: 1px dashed var(--kpi-line); font-size: .85rem;
+    }
+    .kpi-page .pulse-row:last-child { border-bottom: 0; }
+    .kpi-page .pulse-row .lbl { color: var(--kpi-muted); }
+    .kpi-page .pulse-row .val { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .kpi-page .aging-bar { display: flex; align-items: center; gap: .5rem; margin-bottom: .4rem; font-size: .76rem; }
+    .kpi-page .aging-bar .ab-lbl { flex: 0 0 44px; color: var(--kpi-muted); text-align: right; font-variant-numeric: tabular-nums; }
+    .kpi-page .aging-bar .ab-track { flex: 1 1 auto; height: 10px; border-radius: 999px; background: rgba(255,255,255,.06); overflow: hidden; }
+    .kpi-page .aging-bar .ab-fill { height: 100%; border-radius: 999px; }
+    .kpi-page .aging-bar .ab-amt { flex: 0 0 auto; min-width: 92px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+    .kpi-page .pulse-list { font-size: .8rem; }
+    .kpi-page .pulse-list .pl-item { display: flex; justify-content: space-between; gap: .6rem; padding: .3rem 0; border-bottom: 1px dashed var(--kpi-line); }
+    .kpi-page .pulse-list .pl-item:last-child { border-bottom: 0; }
+    .kpi-page .pulse-list .pl-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c7d0dd; min-width: 0; }
+    .kpi-page .pulse-list .pl-amt { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+    .kpi-page .pulse-list .pl-phone {
+        display: inline-flex; align-items: center; gap: 3px; margin-left: .45rem;
+        font-size: .72rem; color: #6ec1ff; text-decoration: none; white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+    }
+    .kpi-page .pulse-list .pl-phone:hover { color: #a9d8ff; text-decoration: underline; }
+    .kpi-page .pulse-list .pl-phone.no-phone { color: var(--kpi-muted); opacity: .6; }
+    .kpi-page .pulse-list .pl-age { font-size: .68rem; color: var(--kpi-muted); margin-left: .35rem; font-variant-numeric: tabular-nums; }
+
+    /* ---------- ДИНАМИКА (спарклайны) ---------- */
+    .kpi-page .trend-grid {
+        display: grid; gap: .6rem;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    @media (min-width: 768px)  { .kpi-page .trend-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @media (min-width: 1200px) { .kpi-page .trend-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+    .kpi-page .trend-tile {
+        background: var(--kpi-surface); border: 1px solid var(--kpi-line);
+        border-radius: 11px; padding: .6rem .7rem;
+    }
+    .kpi-page .trend-tile-head { display: flex; justify-content: space-between; align-items: center; gap: .4rem; }
+    .kpi-page .trend-tile-label { font-size: .72rem; color: var(--kpi-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .3px; }
+    .kpi-page .trend-tile-delta { font-size: .74rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .kpi-page .trend-tile-val { font-size: 1.02rem; font-weight: 700; font-variant-numeric: tabular-nums; color: #f2f5fa; margin: .15rem 0 .35rem; letter-spacing: -.2px; }
+    .kpi-page .trend-spark { height: 42px; position: relative; }
+
+    /* ---------- Единая иконка-кнопка (тихая, для второстепенных действий) ---------- */
+    .kpi-page .kpi-icon-btn {
+        border: 1px solid var(--kpi-line-strong); color: var(--kpi-muted);
+        background: var(--kpi-surface-2); border-radius: 9px; padding: .3rem .6rem;
+        transition: color .15s, border-color .15s, background .15s;
+    }
+    .kpi-page .kpi-icon-btn:hover { color: #cfe0ff; border-color: var(--kpi-accent); background: var(--kpi-surface-3); }
+
+    /* ---------- Доступность: видимый фокус для клавиатуры ---------- */
+    .kpi-page a:focus-visible, .kpi-page button:focus-visible, .kpi-page [tabindex]:focus-visible,
+    .kpi-page input:focus-visible, .kpi-page .form-check-input:focus-visible {
+        outline: 2px solid var(--kpi-accent); outline-offset: 2px; border-radius: 8px;
+    }
+    .kpi-page tr[role="button"]:focus-visible { outline-offset: -2px; }
+
+    /* ---------- Печать: чистый светлый отчёт здоровья (только пульс + AI) ---------- */
+    @media print {
+        @page { margin: 12mm; }
+        body { background: #fff !important; }
+        /* Скрываем display:none (а не visibility), чтобы скрытые блоки НЕ занимали высоту
+           страницы и не давали пустых листов после отчёта. Структура: body>nav + body>main>.kpi-page. */
+        body > nav, body > .navbar { display: none !important; }
+        .kpi-page > *:not(#healthReport) { display: none !important; }
+        main { padding: 0 !important; }
+        #healthReport { margin: 0 !important; box-shadow: none !important; }
+        .d-print-none { display: none !important; }
+        .d-print-inline { display: inline !important; }
+        /* светлая палитра для печати */
+        .kpi-page #healthReport {
+            --card-bg: #fff; --kpi-surface: #fff; --kpi-surface-2: #f7f8fa; --kpi-surface-3: #eef1f4;
+            --kpi-text: #111827; --kpi-muted: #4b5563;
+            --kpi-line: rgba(0,0,0,.12); --kpi-line-strong: rgba(0,0,0,.22);
+            color: #111827; border: 1px solid rgba(0,0,0,.15);
+        }
+        #healthReport .card-header, #healthReport .pulse-box, #healthReport .ai-box,
+        #healthReport .trend-tile, #healthReport .pulse-find, #healthReport .kpi-mini-track,
+        #healthReport .lb-score-track { background: #fff !important; }
+        #healthReport .pulse-verdict, #healthReport .pulse-find-title, #healthReport .ai-md,
+        #healthReport .ai-md h6, #healthReport .ai-md strong, #healthReport .pulse-row .val,
+        #healthReport .pulse-h, #healthReport .score-ring-inner { color: #111827 !important; }
+        /* Вторичный (серый/светлый) текст — тёмно-серый, чтобы читался на белом; статус-цвета не трогаем */
+        #healthReport .text-muted, #healthReport .text-light, #healthReport .pl-name,
+        #healthReport .trend-tile-val, #healthReport .trend-tile-label, #healthReport .pulse-comp-label,
+        #healthReport .pulse-row .lbl, #healthReport .ah-code, #healthReport small,
+        #healthReport .pulse-find-detail, #healthReport .kpi-stat-label { color: #374151 !important; }
+        #healthReport .ai-box { border-color: rgba(124,58,237,.35) !important; }
+        #healthReport .pulse-box, #healthReport .row, #healthReport .ai-box,
+        #healthReport .pulse-find, #healthReport .aging-bar { break-inside: avoid; }
+        #healthReport .ai-md.ai-streaming > *:last-child::after { content: ""; }  /* без курсора в печати */
+    }
+
+    /* ---------- AI-РАЗБОР ---------- */
+    .kpi-page .ai-btn {
+        border: 1px solid rgba(167,139,250,.45); color: #c4b5fd;
+        background: linear-gradient(135deg, rgba(167,139,250,.16), rgba(79,140,255,.12));
+        border-radius: 9px; font-weight: 600; font-size: .8rem; white-space: nowrap;
+        display: inline-flex; align-items: center; gap: .4rem; padding: .3rem .7rem;
+        transition: background .18s, border-color .18s, color .18s;
+    }
+    .kpi-page .ai-btn:hover:not(:disabled) { background: linear-gradient(135deg, rgba(167,139,250,.28), rgba(79,140,255,.2)); color: #e9e2ff; border-color: rgba(167,139,250,.7); }
+    .kpi-page .ai-btn:disabled { opacity: .7; cursor: default; }
+    .kpi-page .ai-box {
+        border: 1px solid rgba(167,139,250,.3); border-radius: 12px; overflow: hidden;
+        background: linear-gradient(180deg, rgba(167,139,250,.08), rgba(167,139,250,.02));
+    }
+    .kpi-page .ai-box-head {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: .5rem .8rem; font-size: .74rem; font-weight: 700; letter-spacing: .3px;
+        text-transform: uppercase; color: #c4b5fd; border-bottom: 1px solid rgba(167,139,250,.2);
+    }
+    .kpi-page .ai-md { padding: .5rem .9rem .8rem; font-size: .88rem; line-height: 1.5; color: var(--kpi-text); }
+    .kpi-page .ai-md h6 { color: #c9d3e6; font-size: .82rem; text-transform: uppercase; letter-spacing: .4px; font-weight: 700; margin: .85rem 0 .35rem; }
+    .kpi-page .ai-md h6:first-child { margin-top: 0; }
+    .kpi-page .ai-md ul, .kpi-page .ai-md ol { margin: .2rem 0 .5rem; padding-left: 1.3rem; }
+    .kpi-page .ai-md li { margin-bottom: .28rem; }
+    .kpi-page .ai-md p { margin: .35rem 0; }
+    .kpi-page .ai-md strong { color: #f2f5fa; }
+    .kpi-page .ai-md em { color: var(--kpi-muted); font-style: italic; }
+    .kpi-page .ai-md.ai-streaming > *:last-child::after {
+        content: "▍"; color: #c4b5fd; margin-left: 2px;
+        animation: aiCaret 1s steps(2) infinite;
+    }
+    @keyframes aiCaret { 50% { opacity: 0; } }
+
+    /* ---------- ПУЛЬС ТЕРРИТОРИЙ (таблица) ---------- */
+    .kpi-page .ah-table { font-size: .8rem; }
+    .kpi-page .ah-table thead th {
+        position: sticky; top: 0; z-index: 3; background: #141821;
+        color: var(--kpi-muted); font-weight: 600; font-size: .66rem;
+        text-transform: uppercase; letter-spacing: .5px; white-space: nowrap;
+        cursor: pointer; user-select: none; padding: .6rem .5rem; text-align: right;
+        border-bottom: 1px solid var(--kpi-line-strong);
+    }
+    .kpi-page .ah-table thead th:hover { color: #cfe0ff; }
+    .kpi-page .ah-table thead th.th-sorted { color: var(--kpi-accent); }
+    .kpi-page .ah-table thead th:first-child, .kpi-page .ah-table thead th.ah-left { text-align: left; }
+    .kpi-page .ah-table tbody td {
+        padding: .5rem .5rem; text-align: right; vertical-align: middle;
+        border-bottom: 1px solid var(--kpi-line);
+        font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    .kpi-page .ah-table tbody td:first-child, .kpi-page .ah-table tbody td.ah-left { text-align: left; }
+    .kpi-page .ah-table tbody tr:hover td { background: rgba(79,140,255,.06); }
+    .kpi-page .ah-table tbody tr.ah-bad td:first-child { box-shadow: inset 3px 0 0 #ef4444; }
+    .kpi-page .ah-table tbody tr.ah-warn td:first-child { box-shadow: inset 3px 0 0 #f2c14e; }
+    .kpi-page .ah-score {
+        display: inline-flex; align-items: center; justify-content: center;
+        min-width: 42px; padding: .12rem .45rem; border-radius: 8px;
+        font-weight: 800; color: #fff; font-size: .8rem;
+        text-shadow: 0 1px 2px rgba(0,0,0,.45);
+    }
+    .kpi-page .ah-chips { display: flex; flex-wrap: wrap; gap: 3px; justify-content: flex-start; }
+    .kpi-page .ah-chip {
+        border-radius: 6px; padding: 1px 6px; font-size: .68rem; white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+    }
+    .kpi-page .ah-chip.chip-bad  { background: rgba(239,68,68,.16);  color: #ffb3ba; border: 1px solid rgba(239,68,68,.35); }
+    .kpi-page .ah-chip.chip-warn { background: rgba(242,193,78,.14); color: #ffe3a0; border: 1px solid rgba(242,193,78,.3); }
+    .kpi-page .ah-name { font-weight: 600; color: var(--kpi-text); }
+    .kpi-page .ah-code { font-size: .68rem; color: var(--kpi-muted); }
+    .kpi-page .ah-score.ah-lowdata { opacity: .5; outline: 1px dashed rgba(255,193,7,.6); }
+
     /* ---------- Модалка деталей ---------- */
     .kpi-page .modal-content {
         background: var(--kpi-surface); border: 1px solid var(--kpi-line-strong);
@@ -380,6 +585,14 @@
 
 {% block content %}
 <div class="container-fluid kpi-page" x-data="managersKpiData()" x-init="init()">
+
+    <!-- Грациозная ошибка загрузки: не молчим, даём повторить -->
+    <div class="alert d-flex align-items-center gap-2 mb-3" role="alert" x-show="loadError" x-cloak
+         style="background:rgba(220,53,69,.12);border:1px solid rgba(220,53,69,.4);color:#f1aeb5">
+        <i class="fas fa-triangle-exclamation"></i>
+        <span class="flex-grow-1" x-text="loadError"></span>
+        <button class="btn btn-sm btn-outline-light" @click="loadKpi()"><i class="fas fa-rotate me-1"></i>Կրկնել</button>
+    </div>
 
     <!-- Заголовок -->
     <div class="kpi-hero mb-4">
@@ -782,6 +995,566 @@
         <span class="small text-muted" x-show="debtLagDays > 0">
             → պարտք <span class="text-warning fw-semibold" x-text="debtAsofLabel()"></span> դրությամբ
         </span>
+    </div>
+
+    <!-- ПУЛЬС БИЗНЕСА: панель здоровья для владельца (индекс, «где дыра», дневной пульс, деньги, клиенты) -->
+    <template x-if="health">
+        <div class="card mb-4" x-show="!loading" id="healthReport">
+            <div class="card-header d-flex align-items-center flex-wrap gap-2">
+                <span><i class="fas fa-heart-pulse text-danger me-2"></i><span class="fw-semibold">Բիզնեսի զարկերակ</span></span>
+                <span class="small text-muted d-print-none">ընկերության առողջությունը ընտրված ժամանակահատվածում</span>
+                <span class="small d-none d-print-inline text-muted ms-2" x-text="fmtDate(period.date_from) + ' — ' + fmtDate(period.date_to)"></span>
+                <span class="small text-muted ms-2" x-show="health.period.incomplete">
+                    <i class="fas fa-hourglass-half me-1"></i>Շրջանն ընթացքի մեջ է՝ տվյալները մինչև <span x-text="fmtDate(health.period.asof)"></span>
+                </span>
+                <div class="ms-auto d-flex gap-2 d-print-none">
+                    <button class="btn btn-sm kpi-icon-btn" @click.stop="window.print()" title="Տպել / PDF (առողջության հաշվետվություն)">
+                        <i class="fas fa-print"></i>
+                    </button>
+                    <button class="btn btn-sm ai-btn" @click.stop="runTeamAi()" :disabled="aiTeam.loading">
+                        <i class="fas" :class="aiTeam.loading ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'"></i>
+                        <span x-text="aiTeam.loading ? 'AI վերլուծում…' : 'AI վերլուծություն'"></span>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <!-- AI-разбор владельцу: превращает цифры в разбор «где дыра / что делать» -->
+                <div class="ai-box mb-3" x-show="aiTeam.html || aiTeam.loading || aiTeam.error" x-cloak>
+                    <div class="ai-box-head">
+                        <span><i class="fas fa-wand-magic-sparkles me-1"></i>AI-խորհրդատու (Claude Opus 4.8)</span>
+                        <button class="btn btn-sm btn-link text-muted p-0" @click.stop="aiTeam.html=''; aiTeam.error=''" x-show="aiTeam.html || aiTeam.error"><i class="fas fa-xmark"></i></button>
+                    </div>
+                    <div x-show="aiTeam.loading && !aiTeam.html" class="text-muted small py-2"><i class="fas fa-spinner fa-spin me-1"></i>Վերլուծում եմ ցուցանիշները…</div>
+                    <div x-show="aiTeam.error" class="text-danger small py-2" x-text="aiTeam.error"></div>
+                    <div class="ai-md" x-show="aiTeam.html" x-html="aiTeam.html" :class="{'ai-streaming': aiTeam.loading}"></div>
+                </div>
+                <div class="row g-3">
+                    <!-- Индекс здоровья: гейдж + 6 компонентов -->
+                    <div class="col-lg-4">
+                        <div class="pulse-box h-100">
+                            <div class="d-flex align-items-center gap-3 mb-3">
+                                <div class="score-ring pulse-ring" :style="`--ring:${health.health.score || 0}; --ring-color:${scoreColor(health.health.score)}`">
+                                    <div class="score-ring-inner" x-text="health.health.score ?? '—'"></div>
+                                </div>
+                                <div>
+                                    <div class="pulse-verdict" x-text="health.health.verdict"></div>
+                                    <div class="small text-muted">Առողջության ինդեքս (0–100)</div>
+                                </div>
+                            </div>
+                            <template x-for="c in health.health.components" :key="c.key">
+                                <div class="pulse-comp" :title="'Թիրախ՝ ' + c.target">
+                                    <div class="pulse-comp-label">
+                                        <span><span class="pulse-dot" :class="'dot-' + (c.status || 'na')"></span> <span x-text="c.label"></span></span>
+                                        <span class="text-light" x-text="compValue(c)"></span>
+                                    </div>
+                                    <div class="kpi-mini-track">
+                                        <div class="kpi-mini-fill" :style="`width:${c.score || 0}%; background:${scoreColor(c.score)}`"></div>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                    <!-- Автодиагностика: где теряем деньги -->
+                    <div class="col-lg-8">
+                        <div class="pulse-box h-100">
+                            <h6 class="pulse-h"><i class="fas fa-magnifying-glass-dollar me-1 text-warning"></i>Որտե՞ղ ենք կորցնում գումար</h6>
+                            <div x-show="!health.findings.length" class="pulse-ok">
+                                <i class="fas fa-circle-check me-2"></i>Կրիտիկական խնդիրներ չեն հայտնաբերվել այս ժամանակահատվածում
+                            </div>
+                            <template x-for="(f, i) in health.findings" :key="'f' + i">
+                                <div class="pulse-find" :class="f.sev === 'bad' ? 'find-bad' : 'find-warn'">
+                                    <div class="pulse-find-ico"><i class="fas" :class="f.icon"></i></div>
+                                    <div class="pulse-find-body">
+                                        <div class="pulse-find-title" x-text="f.title"></div>
+                                        <div class="pulse-find-detail" x-text="f.detail"></div>
+                                    </div>
+                                    <div class="pulse-find-impact" x-show="f.impact" x-text="'−' + formatCurrency(f.impact)"></div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row g-3 mt-1">
+                    <!-- Дневной пульс продаж -->
+                    <div class="col-lg-8">
+                        <div class="pulse-box h-100">
+                            <h6 class="pulse-h"><i class="fas fa-wave-square me-1 text-info"></i>Վաճառքի օրական զարկերակ
+                                <span class="text-muted fw-normal" style="text-transform:none">· գիծը՝ նույն շրջանն անցյալ տարի</span></h6>
+                            <div style="position:relative; height:240px">
+                                <canvas id="pulseChart"></canvas>
+                            </div>
+                            <div class="d-flex flex-wrap gap-3 mt-2 small" x-show="health.pulse.forecast">
+                                <span><i class="fas fa-forward me-1 text-info"></i>Կանխատեսում մինչև շրջանի վերջ՝
+                                    <b x-text="formatCurrency(health.pulse.forecast)"></b></span>
+                                <span x-show="health.pulse.planFull">Պլան՝ <b x-text="formatCurrency(health.pulse.planFull)"></b></span>
+                                <span x-html="forecastGapHtml()"></span>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Деньги и долг -->
+                    <div class="col-lg-4">
+                        <div class="pulse-box h-100">
+                            <h6 class="pulse-h"><i class="fas fa-coins me-1 text-warning"></i>Փող և պարտք</h6>
+                            <div class="pulse-row"><span class="lbl">Հասույթ</span>
+                                <span class="val text-success"><span x-text="formatCurrency(health.revenue.cur)"></span>
+                                    <span class="fw-normal small ms-1" x-html="deltaHtml(health.revenue.yoy)"></span></span></div>
+                            <div class="pulse-row" title="Բոլոր հավաքագրումները ընտրված զտիչներով, ներառյալ շրջանում վաճառք չունեցող գործակալների գանձումները (կարող է գերազանցել վարկանիշի աղյուսակի գումարը)"><span class="lbl">Հավաքագրված</span>
+                                <span class="val"><span x-text="formatCurrency(health.cash.collected)"></span>
+                                    <span class="fw-normal small text-muted ms-1" x-show="health.cash.collectRate !== null"
+                                          x-text="'(' + health.cash.collectRate + '%)'"></span></span></div>
+                            <div class="pulse-row"><span class="lbl">Զուտ պարտք <span x-show="health.cash.debtAsOfApprox" x-text="'(' + fmtDate(health.cash.debtAsOf) + ')'"></span></span>
+                                <span class="val text-warning" x-text="formatCurrency(health.cash.debt)"></span></div>
+                            <div class="pulse-row"><span class="lbl">Պարտքի Δ շրջանում</span>
+                                <span class="val" :class="(health.cash.debtDelta || 0) > 0 ? 'text-danger' : 'text-success'"
+                                      x-text="health.cash.debtDelta === null ? '—' : ((health.cash.debtDelta > 0 ? '+' : '') + formatCurrency(health.cash.debtDelta))"></span></div>
+                            <div class="pulse-row"><span class="lbl">DSO (պարտքի օրեր)</span>
+                                <span class="val" x-text="health.cash.dso !== null ? health.cash.dso + ' օր' : '—'"></span></div>
+                            <div class="mt-3">
+                                <div class="small text-muted mb-2" title="Չմարված դեբետային փաստաթղթերի կառուցվածքը ըստ տարիքի (Type01/02 մնացորդները փաստաթղթերին կապված չեն)">
+                                    Պարտքի ծերացում (դեբետ) <i class="fas fa-circle-info ms-1 opacity-50"></i></div>
+                                <template x-for="(a, i) in health.cash.aging" :key="'ag' + i">
+                                    <div class="aging-bar">
+                                        <span class="ab-lbl" x-text="a.bucket"></span>
+                                        <div class="ab-track"><div class="ab-fill" :style="`width:${agingShare(a)}%; background:${agingColor(i)}`"></div></div>
+                                        <span class="ab-amt" x-text="formatCurrency(a.amt)"></span>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Динамика жизненных показателей по месяцам (тренд «лучше/хуже») -->
+                <div class="pulse-box mt-3" x-show="trend && trend.series.length">
+                    <h6 class="pulse-h"><i class="fas fa-chart-line me-1 text-info"></i>Դինամիկա ըստ ամիսների
+                        <span class="text-muted fw-normal" style="text-transform:none">· վերջին <span x-text="trend ? trend.series.length : ''"></span> ամիս (ավարտված)՝ լավացե՞լ է, թե՞ վատացել</span></h6>
+                    <div class="trend-grid">
+                        <template x-for="tile in trendTiles" :key="'tt-'+tile.key">
+                            <div class="trend-tile">
+                                <div class="trend-tile-head">
+                                    <span class="trend-tile-label" x-text="tile.label"></span>
+                                    <span class="trend-tile-delta" :style="`color:${tile.color}`" x-show="tile.delta !== null">
+                                        <i class="fas" :class="tile.up ? 'fa-arrow-up' : 'fa-arrow-down'"></i>
+                                        <span x-text="Math.abs(tile.delta) + '%'"></span>
+                                    </span>
+                                </div>
+                                <div class="trend-tile-val" x-text="tile.lastLabel"></div>
+                                <div class="trend-spark"><canvas :id="'spark-'+tile.key"></canvas></div>
+                            </div>
+                        </template>
+                    </div>
+                    <div class="small text-muted mt-2">Ամսական ցուցանիշներ ընտրված զտիչներով։ Δ՝ առաջին ամսից մինչև վերջին։
+                        Պարտք և վերադարձեր՝ <span class="text-success">նվազումը լավ է</span>։</div>
+                </div>
+
+                <div class="row g-3 mt-1">
+                    <!-- Клиентская база -->
+                    <div class="col-lg-4">
+                        <div class="pulse-box h-100">
+                            <h6 class="pulse-h"><i class="fas fa-users me-1 text-primary"></i>Հաճախորդային բազա</h6>
+                            <div class="pulse-row"><span class="lbl">Ակտիվ հաճախորդներ</span>
+                                <span class="val"><span x-text="formatNumber(health.customers.active)"></span>
+                                    <span class="fw-normal small ms-1" x-html="deltaHtml(cmpDelta(health.customers.active, health.customers.activeLy))"></span></span></div>
+                            <div class="pulse-row"><span class="lbl">Նոր հաճախորդներ</span>
+                                <span class="val text-success">+<span x-text="health.customers.new"></span>
+                                    <span class="fw-normal small text-muted ms-1" x-text="'(' + formatCurrency(health.customers.newRev) + ')'"></span></span></div>
+                            <div class="pulse-row" title="Թիմային մակարդակ՝ չեն գնել ՈՉ ՄԻ գործակալից ընթացիկ շրջանում։ Մենեջերների «կորածների» գումարը կարող է ավելի մեծ լինել (հաճախորդը հաշվվում է յուրաքանչյուր գործակալի մոտ)"><span class="lbl">Կորած հաճախորդներ</span>
+                                <span class="val text-danger">−<span x-text="health.customers.lost"></span>
+                                    <span class="fw-normal small text-muted ms-1" x-text="'(' + formatCurrency(health.customers.lostRev) + ')'"></span></span></div>
+                            <div class="pulse-row"><span class="lbl">Պահպանում (թիրախ ≥80%)</span>
+                                <span class="val" x-text="health.customers.retention !== null ? health.customers.retention + '%' : '—'"></span></div>
+                            <div class="mt-3" x-show="health.customers.topLost.length">
+                                <div class="small text-muted mb-1">Խոշոր կորուստներ (նախորդ շրջանի գնումներով)</div>
+                                <div class="pulse-list">
+                                    <template x-for="(c, i) in health.customers.topLost" :key="'tl' + i">
+                                        <div class="pl-item">
+                                            <span class="pl-name"><span x-text="c.name"></span>
+                                                <template x-if="c.phone"><a class="pl-phone" :href="'tel:'+c.phone"><i class="fas fa-phone"></i><span x-text="c.phone"></span></a></template>
+                                            </span>
+                                            <span class="pl-amt text-danger" x-text="formatCurrency(c.rev)"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Концентрация выручки -->
+                    <div class="col-lg-4">
+                        <div class="pulse-box h-100">
+                            <h6 class="pulse-h"><i class="fas fa-scale-unbalanced me-1 text-info"></i>Հասույթի կենտրոնացում</h6>
+                            <div class="pulse-comp-label mb-1">
+                                <span>Թոփ-5 հաճախորդի բաժինը</span>
+                                <span class="text-light" x-text="health.customers.top5Share !== null ? health.customers.top5Share + '%' : '—'"></span>
+                            </div>
+                            <div class="kpi-mini-track mb-3">
+                                <div class="kpi-mini-fill" :style="`width:${Math.min(100, health.customers.top5Share || 0)}%; background:${(health.customers.top5Share || 0) > 30 ? '#f2c14e' : '#4f8cff'}`"></div>
+                            </div>
+                            <div class="pulse-list">
+                                <template x-for="(c, i) in health.customers.top5" :key="'tc' + i">
+                                    <div class="pl-item"><span class="pl-name"><span class="text-muted me-1" x-text="(i + 1) + '.'"></span><span x-text="c.name"></span></span>
+                                        <span class="pl-amt text-success" x-text="formatCurrency(c.rev)"></span></div>
+                                </template>
+                            </div>
+                            <div class="small text-muted mt-2">&gt;30% բաժինը՝ կախվածության ռիսկ մի քանի հաճախորդից</div>
+                        </div>
+                    </div>
+                    <!-- Старые должники -->
+                    <div class="col-lg-4">
+                        <div class="pulse-box h-100">
+                            <h6 class="pulse-h"><i class="fas fa-hourglass-end me-1 text-danger"></i>Հին պարտք (60+ օր)՝ թոփ 5</h6>
+                            <div class="pulse-list" x-show="health.cash.topOverdue.length">
+                                <template x-for="(c, i) in health.cash.topOverdue" :key="'to' + i">
+                                    <div class="pl-item">
+                                        <span class="pl-name"><span class="text-muted me-1" x-text="(i + 1) + '.'"></span><span x-text="c.name"></span>
+                                            <span class="pl-age" x-show="c.age" x-text="c.age + ' օր'"></span>
+                                            <template x-if="c.phone"><a class="pl-phone" :href="'tel:'+c.phone"><i class="fas fa-phone"></i><span x-text="c.phone"></span></a></template>
+                                        </span>
+                                        <span class="pl-amt text-warning" x-text="formatCurrency(c.amt)"></span>
+                                    </div>
+                                </template>
+                            </div>
+                            <div class="text-end mt-2" x-show="health.cash.topOverdue.length">
+                                <button class="btn btn-sm btn-outline-warning py-0 px-2" style="font-size:.72rem" @click.stop="exportTeamCallList()">
+                                    <i class="fas fa-phone me-1"></i>Զանգերի ցուցակ (Excel)
+                                </button>
+                            </div>
+                            <div class="pulse-ok" x-show="!health.cash.topOverdue.length">
+                                <i class="fas fa-circle-check me-2"></i>60 օրից հին չմարված պարտք չկա
+                            </div>
+                            <div class="small text-muted mt-2">Չմարված մնացորդ ըստ փաստաթղթի տարիքի՝ առաջինը զանգահարեք այս հաճախորդներին</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <!-- ПУЛЬС ТЕРРИТОРИЙ: тот же анализ здоровья по каждой территории, дыры сверху -->
+    <template x-if="areaHealth">
+        <div class="card mb-4" x-show="!loading">
+            <div class="card-header d-flex align-items-center flex-wrap gap-2">
+                <span><i class="fas fa-map-location-dot text-info me-2"></i><span class="fw-semibold">Տարածքների զարկերակ</span></span>
+                <span class="small text-muted">առողջությունը ըստ տարածքի · խնդրահարույցները վերևում</span>
+                <button class="btn btn-sm btn-outline-success ms-auto" @click.stop="exportAreasExcel()" aria-label="Արտահանել Excel">
+                    <i class="fas fa-file-excel me-1"></i>Excel
+                </button>
+            </div>
+            <div class="card-body p-0" style="max-height:70vh; overflow:auto">
+                <table class="table ah-table mb-0">
+                    <thead>
+                        <tr>
+                            <th @click="ahSort('name')" :class="{'th-sorted': ahSortKey==='name'}">Տարածք <span x-html="ahInd('name')"></span></th>
+                            <th @click="ahSort('score')" :class="{'th-sorted': ahSortKey==='score'}" title="Առողջության ինդեքս 0–100 (նույն բանաձևը, ինչ վերևի վահանակում)">Միավոր <span x-html="ahInd('score')"></span></th>
+                            <th @click="ahSort('revenue')" :class="{'th-sorted': ahSortKey==='revenue'}">Հասույթ <span x-html="ahInd('revenue')"></span></th>
+                            <th @click="ahSort('yoy')" :class="{'th-sorted': ahSortKey==='yoy'}" title="Նույն ժամանակահատվածը անցյալ տարի (like-for-like)">YoY <span x-html="ahInd('yoy')"></span></th>
+                            <th @click="ahSort('planFact')" :class="{'th-sorted': ahSortKey==='planFact'}" title="Պլան = անցյալ տարվա նույն շրջան × (1 + աճ%)">Պլան/փաստ <span x-html="ahInd('planFact')"></span></th>
+                            <th @click="ahSort('collectRate')" :class="{'th-sorted': ahSortKey==='collectRate'}" title="Հավաքագրված ÷ հասույթ (թիրախ ≥85%)">Հավաք. <span x-html="ahInd('collectRate')"></span></th>
+                            <th @click="ahSort('debt')" :class="{'th-sorted': ahSortKey==='debt'}" title="Դեբետ − վերադարձեր − գերավճարներ">Զուտ պարտք <span x-html="ahInd('debt')"></span></th>
+                            <th @click="ahSort('debtDelta')" :class="{'th-sorted': ahSortKey==='debtDelta'}" title="Պարտքի փոփոխությունը ժամանակահատվածում (դեբետի շարժ)">Պարտքի Δ <span x-html="ahInd('debtDelta')"></span></th>
+                            <th @click="ahSort('dso')" :class="{'th-sorted': ahSortKey==='dso'}" title="Պարտքի օրեր (թիրախ ≤30)">DSO <span x-html="ahInd('dso')"></span></th>
+                            <th @click="ahSort('aging90')" :class="{'th-sorted': ahSortKey==='aging90'}" title="90 օրից հին չմարված դեբետ">90+ <span x-html="ahInd('aging90')"></span></th>
+                            <th @click="ahSort('activeCustomers')" :class="{'th-sorted': ahSortKey==='activeCustomers'}">Հաճախ. <span x-html="ahInd('activeCustomers')"></span></th>
+                            <th @click="ahSort('lostCustomers')" :class="{'th-sorted': ahSortKey==='lostCustomers'}" title="Նախորդ նույն երկարությամբ շրջանի հաճախորդներ, որ չեն գնել ընթացիկում">Կորած <span x-html="ahInd('lostCustomers')"></span></th>
+                            <th @click="ahSort('retention')" :class="{'th-sorted': ahSortKey==='retention'}" title="Պահպանում (թիրախ ≥80%)">Պահպ. <span x-html="ahInd('retention')"></span></th>
+                            <th class="ah-left">Խնդիրներ</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="a in ahRows" :key="'ah-' + a.code">
+                            <tr :class="a.status === 'bad' ? 'ah-bad' : (a.status === 'warn' ? 'ah-warn' : '')"
+                                style="cursor:pointer" @click="openAreaDetail(a)"
+                                tabindex="0" role="button" :aria-label="'Մանրամասն ախտորոշում. ' + a.name"
+                                @keydown.enter.prevent="openAreaDetail(a)" @keydown.space.prevent="openAreaDetail(a)">
+                                <td class="ah-left">
+                                    <div class="ah-name" x-text="a.name"></div>
+                                    <div class="ah-code" x-text="a.code"></div>
+                                </td>
+                                <td><span class="ah-score" :class="{'ah-lowdata': a.lowData}" :style="`background:${scoreColor(a.score)}`"
+                                    :title="a.lowData ? 'Քիչ տվյալ (< ' + 10 + ' վաճառք)՝ բալը վստահելի չէ' : ''"
+                                    x-text="a.score ?? '—'"></span><i x-show="a.lowData" class="fas fa-circle-exclamation ms-1 text-warning" style="font-size:.7rem" title="Քիչ տվյալ"></i></td>
+                                <td class="fw-semibold" x-text="formatCurrency(a.revenue)"></td>
+                                <td :class="ahYoyClass(a.yoy)" x-text="a.yoy === null ? '—' : (a.yoy > 0 ? '+' : '') + a.yoy + '%'"></td>
+                                <td :class="ahPfClass(a.planFact)" x-text="a.planFact === null ? '—' : a.planFact + '%'"></td>
+                                <td :class="ahCrClass(a.collectRate)" x-text="a.collectRate === null ? '—' : a.collectRate + '%'"></td>
+                                <td class="text-warning" x-text="formatCurrency(a.debt)"></td>
+                                <td :class="a.debtDelta === null ? '' : (a.debtDelta > 0 ? 'text-danger' : 'text-success')"
+                                    x-text="a.debtDelta === null ? '—' : ((a.debtDelta > 0 ? '+' : '') + formatCurrency(a.debtDelta))"></td>
+                                <td :class="ahDsoClass(a.dso)" x-text="a.dso === null ? '—' : a.dso"></td>
+                                <td :title="a.aging90Share !== null ? a.aging90Share + '% դեբետի' : ''"
+                                    x-text="a.aging90 ? formatCurrency(a.aging90) : '—'"></td>
+                                <td x-text="formatNumber(a.activeCustomers)"></td>
+                                <td :class="a.lostCustomers ? 'text-danger' : ''"
+                                    :title="a.lostRev ? 'Նախորդ շրջանում գնել են ' + formatCurrency(a.lostRev) : ''"
+                                    x-text="a.lostCustomers ? '−' + a.lostCustomers : '0'"></td>
+                                <td x-text="a.retention === null ? '—' : a.retention + '%'"></td>
+                                <td class="ah-left">
+                                    <div class="ah-chips">
+                                        <template x-for="(iss, j) in a.issues" :key="'iss-' + a.code + '-' + j">
+                                            <span class="ah-chip" :class="iss.sev === 'bad' ? 'chip-bad' : 'chip-warn'" x-text="iss.label"></span>
+                                        </template>
+                                        <span class="text-muted small" x-show="!a.issues.length">—</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                    <tfoot style="position:sticky;bottom:0;background:var(--card-bg,#212529)">
+                        <tr class="fw-bold" style="border-top:2px solid rgba(255,255,255,0.18)">
+                            <td class="ah-left">ԸՆԴԱՄԵՆԸ (<span x-text="areaHealth.totals.areas"></span>)</td>
+                            <td></td>
+                            <td class="text-success" x-text="formatCurrency(areaHealth.totals.revenue)"></td>
+                            <td></td><td></td><td></td>
+                            <td class="text-warning" x-text="formatCurrency(areaHealth.totals.debt)"></td>
+                            <td></td><td></td>
+                            <td x-text="formatCurrency(areaHealth.totals.aging90)"></td>
+                            <td></td>
+                            <td :class="areaHealth.totals.lost ? 'text-danger' : ''" x-text="areaHealth.totals.lost ? '−' + areaHealth.totals.lost : '0'"></td>
+                            <td></td><td></td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+            <div class="card-footer small text-muted py-2">
+                Հաճախորդը հաշվվում է ՄԵԿ տարածքում (հիմնական՝ fDEFAULT)։ Բալը՝ նույն 6 բաղադրիչով, ինչ վերևի ինդեքսը։
+                Կանխադրված դասավորումը՝ վատագույնները վերևում։ Սեղմեք սյունակի վերնագրին՝ դասավորելու համար,
+                իսկ <strong>տողին</strong>՝ ամբողջական ախտորոշման համար։
+            </div>
+        </div>
+    </template>
+
+    <!-- МОДАЛ: обширный диагноз одной территории -->
+    <div class="modal fade" id="areaDetailModal" tabindex="-1">
+        <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title d-flex align-items-center gap-2">
+                        <i class="fas fa-map-location-dot text-info"></i>
+                        <span x-text="areaDetail.d ? areaDetail.d.name : ''"></span>
+                        <span class="ah-code" x-text="areaDetail.d ? areaDetail.d.code : ''"></span>
+                        <span class="ah-score ms-1" x-show="areaDetail.d" :style="`background:${scoreColor(areaDetail.d ? areaDetail.d.health.score : 0)}`"
+                              x-text="areaDetail.d ? areaDetail.d.health.score : ''"></span>
+                        <span class="small text-muted" x-text="areaDetail.d ? areaDetail.d.health.verdict : ''"></span>
+                        <span class="badge bg-warning text-dark" x-show="areaDetail.d && areaDetail.d.health.lowData"
+                              title="Քիչ վաճառք այս ժամանակահատվածում՝ ցուցանիշները վստահելի չեն">
+                            <i class="fas fa-circle-exclamation me-1"></i>Քիչ տվյալ
+                        </span>
+                    </h5>
+                    <div class="d-flex align-items-center gap-2">
+                        <button class="btn btn-sm ai-btn" x-show="areaDetail.d && !areaDetail.loading" @click.stop="runAreaAi()" :disabled="aiArea.loading">
+                            <i class="fas" :class="aiArea.loading ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'"></i>
+                            <span x-text="aiArea.loading ? 'AI…' : 'AI վերլուծություն'"></span>
+                        </button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                </div>
+                <div class="modal-body">
+                    <div x-show="areaDetail.loading" class="text-center py-5">
+                        <div class="spinner-border text-primary"></div>
+                        <p class="text-muted mt-2">Ախտորոշման բեռնում…</p>
+                    </div>
+                    <template x-if="areaDetail.d && !areaDetail.loading">
+                        <div>
+                            <!-- Индекс здоровья + диагноз -->
+                            <div class="row g-3">
+                                <div class="col-lg-4">
+                                    <div class="pulse-box h-100">
+                                        <div class="d-flex align-items-center gap-3 mb-3">
+                                            <div class="score-ring pulse-ring" :style="`--ring:${areaDetail.d.health.score || 0}; --ring-color:${scoreColor(areaDetail.d.health.score)}`">
+                                                <div class="score-ring-inner" x-text="areaDetail.d.health.score ?? '—'"></div>
+                                            </div>
+                                            <div>
+                                                <div class="pulse-verdict" x-text="areaDetail.d.health.verdict"></div>
+                                                <div class="small text-muted">Առողջության ինդեքս (0–100)</div>
+                                            </div>
+                                        </div>
+                                        <template x-for="c in areaDetail.d.health.components" :key="'ac-'+c.key">
+                                            <div class="pulse-comp" :title="'Թիրախ՝ ' + c.target">
+                                                <div class="pulse-comp-label">
+                                                    <span><span class="pulse-dot" :class="'dot-' + (c.status || 'na')"></span> <span x-text="c.label"></span></span>
+                                                    <span class="text-light" x-text="compValue(c)"></span>
+                                                </div>
+                                                <div class="kpi-mini-track">
+                                                    <div class="kpi-mini-fill" :style="`width:${c.score || 0}%; background:${scoreColor(c.score)}`"></div>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                                <div class="col-lg-8">
+                                    <div class="pulse-box h-100">
+                                        <h6 class="pulse-h"><i class="fas fa-magnifying-glass-dollar me-1 text-warning"></i>Որտե՞ղ ենք կորցնում գումար այս տարածքում</h6>
+                                        <div x-show="!areaDetail.d.findings.length" class="pulse-ok">
+                                            <i class="fas fa-circle-check me-2"></i>Կրիտիկական խնդիրներ չեն հայտնաբերվել
+                                        </div>
+                                        <template x-for="(f, i) in areaDetail.d.findings" :key="'af'+i">
+                                            <div class="pulse-find" :class="f.sev === 'bad' ? 'find-bad' : 'find-warn'">
+                                                <div class="pulse-find-ico"><i class="fas" :class="f.icon"></i></div>
+                                                <div class="pulse-find-body">
+                                                    <div class="pulse-find-title" x-text="f.title"></div>
+                                                    <div class="pulse-find-detail" x-text="f.detail"></div>
+                                                </div>
+                                                <div class="pulse-find-impact" x-show="f.impact" x-text="'−' + formatCurrency(f.impact)"></div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- AI-разбор территории -->
+                            <div class="ai-box mt-3" x-show="aiArea.html || aiArea.loading || aiArea.error" x-cloak>
+                                <div class="ai-box-head">
+                                    <span><i class="fas fa-wand-magic-sparkles me-1"></i>AI-խորհրդատու (Claude Opus 4.8)</span>
+                                    <button class="btn btn-sm btn-link text-muted p-0" @click.stop="aiArea.html=''; aiArea.error=''" x-show="aiArea.html || aiArea.error"><i class="fas fa-xmark"></i></button>
+                                </div>
+                                <div x-show="aiArea.loading && !aiArea.html" class="text-muted small py-2"><i class="fas fa-spinner fa-spin me-1"></i>Վերլուծում եմ տարածքը…</div>
+                                <div x-show="aiArea.error" class="text-danger small py-2" x-text="aiArea.error"></div>
+                                <div class="ai-md" x-show="aiArea.html" x-html="aiArea.html" :class="{'ai-streaming': aiArea.loading}"></div>
+                            </div>
+
+                            <!-- Дневной пульс -->
+                            <div class="pulse-box mt-3">
+                                <h6 class="pulse-h"><i class="fas fa-wave-square me-1 text-info"></i>Վաճառքի օրական զարկերակ
+                                    <span class="text-muted fw-normal" style="text-transform:none">· գիծը՝ նույն շրջանն անցյալ տարի</span></h6>
+                                <div style="position:relative; height:210px"><canvas id="areaPulseChart"></canvas></div>
+                                <div class="d-flex flex-wrap gap-3 mt-2 small" x-show="areaDetail.d.pulse.forecast">
+                                    <span><i class="fas fa-forward me-1 text-info"></i>Կանխատեսում մինչև շրջանի վերջ՝ <b x-text="formatCurrency(areaDetail.d.pulse.forecast)"></b></span>
+                                    <span x-show="areaDetail.d.pulse.planFull">Պլան՝ <b x-text="formatCurrency(areaDetail.d.pulse.planFull)"></b></span>
+                                </div>
+                            </div>
+
+                            <!-- Деньги/долг + Клиенты -->
+                            <div class="row g-3 mt-1">
+                                <div class="col-lg-6">
+                                    <div class="pulse-box h-100">
+                                        <h6 class="pulse-h"><i class="fas fa-coins me-1 text-warning"></i>Փող և պարտք</h6>
+                                        <div class="pulse-row"><span class="lbl">Հասույթ</span>
+                                            <span class="val text-success"><span x-text="formatCurrency(areaDetail.d.revenue.cur)"></span>
+                                                <span class="fw-normal small ms-1" x-html="deltaHtml(areaDetail.d.revenue.yoy)"></span></span></div>
+                                        <div class="pulse-row"><span class="lbl">Վաճառքներ · միջին չեկ</span>
+                                            <span class="val"><span x-text="formatNumber(areaDetail.d.revenue.salesCount)"></span> · <span x-text="formatCurrency(areaDetail.d.revenue.avgCheck)"></span></span></div>
+                                        <div class="pulse-row"><span class="lbl">Պլան/փաստ</span>
+                                            <span class="val" x-text="areaDetail.d.revenue.planFact !== null ? areaDetail.d.revenue.planFact + '%' : '—'"></span></div>
+                                        <div class="pulse-row"><span class="lbl">Հավաքագրված</span>
+                                            <span class="val"><span x-text="formatCurrency(areaDetail.d.cash.collected)"></span>
+                                                <span class="fw-normal small text-muted ms-1" x-show="areaDetail.d.cash.collectRate !== null" x-text="'(' + areaDetail.d.cash.collectRate + '%)'"></span></span></div>
+                                        <div class="pulse-row" title="Դեբետ − վերադարձեր (01) − գերավճարներ (02)"><span class="lbl">Զուտ պարտք</span>
+                                            <span class="val text-warning" x-text="formatCurrency(areaDetail.d.cash.debt)"></span></div>
+                                        <div class="pulse-row"><span class="lbl">Դեբետ − Վեր. − Գերավճ.</span>
+                                            <span class="val small">
+                                                <span x-text="formatCurrency(areaDetail.d.cash.debtDebit)"></span>
+                                                <span class="text-info">− <span x-text="formatCurrency(areaDetail.d.cash.returnsType01)"></span></span>
+                                                <span class="text-info">− <span x-text="formatCurrency(areaDetail.d.cash.overpayType02)"></span></span>
+                                            </span></div>
+                                        <div class="pulse-row"><span class="lbl">Պարտքի Δ շրջանում</span>
+                                            <span class="val" :class="(areaDetail.d.cash.debtDelta || 0) > 0 ? 'text-danger' : (areaDetail.d.cash.debtDelta === null ? '' : 'text-success')"
+                                                  x-text="areaDetail.d.cash.debtDelta === null ? '—' : ((areaDetail.d.cash.debtDelta > 0 ? '+' : '') + formatCurrency(areaDetail.d.cash.debtDelta))"></span></div>
+                                        <div class="pulse-row"><span class="lbl">DSO (պարտքի օրեր)</span>
+                                            <span class="val" x-text="areaDetail.d.cash.dso !== null ? areaDetail.d.cash.dso + ' օր' : '—'"></span></div>
+                                        <div class="mt-3">
+                                            <div class="small text-muted mb-2">Պարտքի ծերացում (դեբետ)</div>
+                                            <template x-for="(a, i) in areaDetail.d.cash.aging" :key="'aag'+i">
+                                                <div class="aging-bar">
+                                                    <span class="ab-lbl" x-text="a.bucket"></span>
+                                                    <div class="ab-track"><div class="ab-fill" :style="`width:${areaAgingShare(a)}%; background:${agingColor(i)}`"></div></div>
+                                                    <span class="ab-amt" x-text="formatCurrency(a.amt)"></span>
+                                                </div>
+                                            </template>
+                                        </div>
+                                        <div class="mt-3" x-show="areaDetail.d.cash.topOverdue.length">
+                                            <div class="small text-muted mb-1 d-flex justify-content-between align-items-center">
+                                                <span><i class="fas fa-hourglass-end text-danger me-1"></i>Հին պարտք (60+ օր)՝ ում զանգահарել</span>
+                                                <button class="btn btn-sm btn-outline-warning py-0 px-2" style="font-size:.72rem" @click.stop="exportCallList()">
+                                                    <i class="fas fa-phone me-1"></i>Զանգերի ցուցակ
+                                                </button>
+                                            </div>
+                                            <div class="pulse-list">
+                                                <template x-for="(c, i) in areaDetail.d.cash.topOverdue" :key="'ao'+i">
+                                                    <div class="pl-item">
+                                                        <span class="pl-name">
+                                                            <span x-text="c.name"></span>
+                                                            <span class="pl-age" x-show="c.age" x-text="c.age + ' օր'"></span>
+                                                            <template x-if="c.phone"><a class="pl-phone" :href="'tel:'+c.phone" @click.stop><i class="fas fa-phone"></i><span x-text="c.phone"></span></a></template>
+                                                            <template x-if="!c.phone"><span class="pl-phone no-phone"><i class="fas fa-phone-slash"></i></span></template>
+                                                        </span>
+                                                        <span class="pl-amt text-warning" x-text="formatCurrency(c.amt)"></span>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-lg-6">
+                                    <div class="pulse-box h-100">
+                                        <h6 class="pulse-h"><i class="fas fa-users me-1 text-primary"></i>Հաճախորդային բազա</h6>
+                                        <div class="pulse-row"><span class="lbl">Ակտիվ հաճախորդներ</span>
+                                            <span class="val"><span x-text="formatNumber(areaDetail.d.customers.active)"></span>
+                                                <span class="fw-normal small ms-1" x-html="deltaHtml(cmpDelta(areaDetail.d.customers.active, areaDetail.d.customers.activeLy))"></span></span></div>
+                                        <div class="pulse-row"><span class="lbl">Նոր հաճախորդներ</span>
+                                            <span class="val text-success">+<span x-text="areaDetail.d.customers.new"></span>
+                                                <span class="fw-normal small text-muted ms-1" x-text="'(' + formatCurrency(areaDetail.d.customers.newRev) + ')'"></span></span></div>
+                                        <div class="pulse-row"><span class="lbl">Կորած հաճախորդներ</span>
+                                            <span class="val text-danger">−<span x-text="areaDetail.d.customers.lost"></span>
+                                                <span class="fw-normal small text-muted ms-1" x-text="'(' + formatCurrency(areaDetail.d.customers.lostRev) + ')'"></span></span></div>
+                                        <div class="pulse-row"><span class="lbl">Պահպանում (թիրախ ≥80%)</span>
+                                            <span class="val" x-text="areaDetail.d.customers.retention !== null ? areaDetail.d.customers.retention + '%' : '—'"></span></div>
+                                        <div class="pulse-row"><span class="lbl">Թոփ-5 կենտրոնացում</span>
+                                            <span class="val" x-text="areaDetail.d.customers.top5Share !== null ? areaDetail.d.customers.top5Share + '%' : '—'"></span></div>
+                                        <div class="mt-3" x-show="areaDetail.d.customers.topLost.length">
+                                            <div class="small text-muted mb-1"><i class="fas fa-user-slash text-danger me-1"></i>Խոշոր կորուստներ՝ վերադարձնել</div>
+                                            <div class="pulse-list">
+                                                <template x-for="(c, i) in areaDetail.d.customers.topLost" :key="'al'+i">
+                                                    <div class="pl-item">
+                                                        <span class="pl-name">
+                                                            <span x-text="c.name"></span>
+                                                            <template x-if="c.phone"><a class="pl-phone" :href="'tel:'+c.phone" @click.stop><i class="fas fa-phone"></i><span x-text="c.phone"></span></a></template>
+                                                        </span>
+                                                        <span class="pl-amt text-danger" x-text="formatCurrency(c.rev)"></span>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                        <div class="mt-3" x-show="areaDetail.d.customers.top.length">
+                                            <div class="small text-muted mb-1"><i class="fas fa-trophy text-warning me-1"></i>Խոշոր հաճախորդներ (շրջանում)</div>
+                                            <div class="pulse-list">
+                                                <template x-for="(c, i) in areaDetail.d.customers.top" :key="'act'+i">
+                                                    <div class="pl-item"><span class="pl-name"><span class="text-muted me-1" x-text="(i+1)+'.'"></span><span x-text="c.name"></span></span>
+                                                        <span class="pl-amt text-success" x-text="formatCurrency(c.rev)"></span></div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Менеджеры зоны -->
+                            <div class="pulse-box mt-3" x-show="areaDetail.d.managers.length">
+                                <h6 class="pulse-h"><i class="fas fa-user-tie me-1 text-info"></i>Տարածքի մենեջերները (շրջանում)</h6>
+                                <div class="table-responsive">
+                                    <table class="table table-sm table-dark align-middle mb-0" style="font-size:.82rem">
+                                        <thead><tr>
+                                            <th>Մենեջեր</th><th class="text-end">Հասույթ</th><th class="text-end">Բաժին</th>
+                                            <th class="text-end">Վաճառքներ</th><th class="text-end">Հաճախորդներ</th>
+                                        </tr></thead>
+                                        <tbody>
+                                            <template x-for="mg in areaDetail.d.managers" :key="'amg-'+mg.code">
+                                                <tr>
+                                                    <td><span class="fw-semibold" x-text="mg.name"></span> <span class="text-muted small" x-text="mg.code"></span></td>
+                                                    <td class="text-end text-success" x-text="formatCurrency(mg.revenue)"></td>
+                                                    <td class="text-end text-muted" x-text="mg.share !== null ? mg.share + '%' : '—'"></td>
+                                                    <td class="text-end" x-text="formatNumber(mg.salesCount)"></td>
+                                                    <td class="text-end" x-text="formatNumber(mg.customers)"></td>
+                                                </tr>
+                                            </template>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Сводка команды -->
@@ -1345,6 +2118,13 @@ function managersKpiData() {
         prodSearch: '', expandedGroups: [],
         teamProductGroups: [], teamProdSearch: '', teamExpandedGroups: [], showTeamProducts: false, teamProductsLoaded: false,
         monthlyChart: null, radarChart: null,
+        health: null, pulseChart: null,
+        loadError: '',
+        areaHealth: null, ahSortKey: 'score', ahSortDir: 'asc',
+        areaDetail: { d: null, loading: false }, areaPulseChart: null,
+        trend: null, sparkCharts: {},
+        aiTeam: { loading: false, html: '', error: '' },
+        aiArea: { loading: false, html: '', error: '' },
         salesClientGroups: [], debtClientGroups: [], salesDivisions: [], debtDivisions: [],
         clientGroupOptions: [], divisionOptions: [],
         cgSearch: '', divSearch: '',
@@ -1513,7 +2293,13 @@ function managersKpiData() {
                     })
                 });
             } catch (e) { console.error(e); }
-            this.loadKpi();
+            // Дебаунс: при быстром переключении нескольких галочек не гоняем 4 тяжёлых
+            // эндпоинта на каждый клик — перезагружаем один раз через 500 мс тишины.
+            this.scheduleReload();
+        },
+        scheduleReload() {
+            clearTimeout(this._reloadTimer);
+            this._reloadTimer = setTimeout(() => this.loadKpi(), 500);
         },
         clearAllFilters() {
             this.salesClientGroups = []; this.debtClientGroups = [];
@@ -1561,6 +2347,8 @@ function managersKpiData() {
 
         async loadKpi() {
             this.loading = true;
+            this.cancelAi('aiTeam');                                 // остановить идущий AI-стрим прошлого периода
+            this.aiTeam = { loading: false, html: '', error: '' };   // AI-разбор устарел при смене периода/фильтров
             // Запоминаем выбранный период: переживает перезагрузку страницы (localStorage + URL)
             if (/^\d{4}-\d{2}-\d{2}$/.test(this.dateFrom) && /^\d{4}-\d{2}-\d{2}$/.test(this.dateTo)) {
                 localStorage.setItem('kpi_date_from', this.dateFrom);
@@ -1570,6 +2358,10 @@ function managersKpiData() {
                 u.searchParams.set('date_to', this.dateTo);
                 history.replaceState(null, '', u);
             }
+            // «Пульс бизнеса» и «Пульс территорий» грузим параллельно с основным KPI (те же параметры)
+            const healthReq = this.loadHealthData();
+            const areaReq = this.loadAreaHealth();
+            const trendReq = this.loadTrend();
             try {
                 const r = await fetch(`/api/managers/kpi?date_from=${this.dateFrom}&date_to=${this.dateTo}&plan_growth=${this.planGrowth || 0}&debt_lag_days=${this.debtLagDays || 0}`);
                 const d = await r.json();
@@ -1578,12 +2370,426 @@ function managersKpiData() {
                     this.kpis = d.kpis;
                     this.team = d.team;
                     this.period = d.period;
+                    this.loadError = '';
+                } else {
+                    this.loadError = d.error || 'Չհաջողվեց բեռնել տվյալները';
                 }
-            } catch (e) { console.error(e); }
+            } catch (e) { console.error(e); this.loadError = 'Ցանցի կամ սերվերի սխալ. տվյալները չբեռնվեցին'; }
+            await healthReq;
+            await areaReq;
+            await trendReq;
             this.loading = false;
+            this.$nextTick(() => { this.renderPulse(); this.renderSparklines(); });
             // Командный итог по товарам зависит от периода — помечаем устаревшим и перезагружаем, если открыт
             this.teamProductsLoaded = false;
             if (this.showTeamProducts) this.loadTeamProducts();
+        },
+
+        async loadHealthData() {
+            if (this.pulseChart) { this.pulseChart.destroy(); this.pulseChart = null; }
+            this.health = null;
+            // Защита от гонки: при перещёлкивании фильтров побеждает ПОСЛЕДНИЙ запрос,
+            // а не последний пришедший ответ (иначе панель показывала бы устаревшие фильтры)
+            const gen = (this._healthGen = (this._healthGen || 0) + 1);
+            try {
+                const r = await fetch(`/api/managers/kpi/health?date_from=${this.dateFrom}&date_to=${this.dateTo}&plan_growth=${this.planGrowth || 0}&debt_lag_days=${this.debtLagDays || 0}`);
+                const d = await r.json();
+                if (d.success && gen === this._healthGen) this.health = d;
+            } catch (e) { console.error(e); }
+        },
+
+        async loadAreaHealth() {
+            this.areaHealth = null;
+            // Та же защита от гонки, что и у loadHealthData: побеждает последний ЗАПРОС
+            const gen = (this._ahGen = (this._ahGen || 0) + 1);
+            try {
+                const r = await fetch(`/api/managers/kpi/health/areas?date_from=${this.dateFrom}&date_to=${this.dateTo}&plan_growth=${this.planGrowth || 0}&debt_lag_days=${this.debtLagDays || 0}`);
+                const d = await r.json();
+                if (d.success && gen === this._ahGen) this.areaHealth = d;
+            } catch (e) { console.error(e); }
+        },
+        get ahRows() {
+            if (!this.areaHealth) return [];
+            const dir = this.ahSortDir === 'asc' ? 1 : -1;
+            const key = this.ahSortKey;
+            return [...this.areaHealth.areas].sort((a, b) => {
+                let va = key === 'name' ? (a.name || '') : a[key];
+                let vb = key === 'name' ? (b.name || '') : b[key];
+                if (va === null || va === undefined) va = dir === 1 ? Infinity : -Infinity;
+                if (vb === null || vb === undefined) vb = dir === 1 ? Infinity : -Infinity;
+                if (va < vb) return -1 * dir;
+                if (va > vb) return 1 * dir;
+                return 0;
+            });
+        },
+        ahSort(key) {
+            if (this.ahSortKey === key) { this.ahSortDir = this.ahSortDir === 'asc' ? 'desc' : 'asc'; }
+            else { this.ahSortKey = key; this.ahSortDir = (key === 'name' || key === 'score' || key === 'dso') ? 'asc' : 'desc'; }
+        },
+        ahInd(key) {
+            if (this.ahSortKey !== key) return '';
+            return this.ahSortDir === 'asc' ? '<i class="fas fa-caret-up"></i>' : '<i class="fas fa-caret-down"></i>';
+        },
+        async openAreaDetail(a) {
+            this.areaDetail = { d: null, loading: true };
+            this.cancelAi('aiArea');                                 // остановить AI-стрим прошлой территории
+            this.aiArea = { loading: false, html: '', error: '' };   // сброс AI-разбора от прошлой территории
+            if (this.areaPulseChart) { this.areaPulseChart.destroy(); this.areaPulseChart = null; }
+            const modal = new bootstrap.Modal(document.getElementById('areaDetailModal'));
+            modal.show();
+            const gen = (this._adGen = (this._adGen || 0) + 1);
+            try {
+                const r = await fetch(`/api/managers/kpi/health/areas/detail?code=${encodeURIComponent(a.code)}&date_from=${this.dateFrom}&date_to=${this.dateTo}&plan_growth=${this.planGrowth || 0}&debt_lag_days=${this.debtLagDays || 0}`);
+                const d = await r.json();
+                if (gen !== this._adGen) return;              // защита от гонки при быстрых кликах
+                if (d.success) {
+                    this.areaDetail = { d, loading: false };
+                    this.$nextTick(() => this.renderAreaPulse());
+                } else {
+                    this.areaDetail = { d: null, loading: false };
+                }
+            } catch (e) { console.error(e); if (gen === this._adGen) this.areaDetail = { d: null, loading: false }; }
+        },
+        areaAgingShare(a) {
+            const t = (this.areaDetail.d ? this.areaDetail.d.cash.aging : []).reduce((s, x) => s + (x.amt || 0), 0);
+            return t ? Math.max(1.5, a.amt / t * 100) : 0;
+        },
+        renderAreaPulse() {
+            const h = this.areaDetail.d;
+            if (!h) return;
+            const ctx = document.getElementById('areaPulseChart');
+            if (!ctx) return;
+            if (this.areaPulseChart) this.areaPulseChart.destroy();
+            const p = h.period, n = p.days, dayMs = 86400000;
+            const base = new Date(p.date_from + 'T00:00:00');
+            const baseLy = new Date(h.pulse.lyFrom + 'T00:00:00');
+            const cur = Array(n).fill(0), ly = Array(n).fill(0);
+            (h.pulse.daily || []).forEach(x => { const i = Math.round((new Date(x.d + 'T00:00:00') - base) / dayMs); if (i >= 0 && i < n) cur[i] = x.rev; });
+            (h.pulse.dailyLy || []).forEach(x => { const i = Math.round((new Date(x.d + 'T00:00:00') - baseLy) / dayMs); if (i >= 0 && i < n) ly[i] = x.rev; });
+            const lyDays = h.pulse.lyDays || n;
+            for (let i = lyDays; i < n; i++) ly[i] = null;
+            const curData = cur.map((v, i) => (i < p.elapsed ? v : null));
+            const labels = Array.from({ length: n }, (_, i) => { const d = new Date(base); d.setDate(d.getDate() + i); return String(d.getDate()).padStart(2, '0'); });
+            this.areaPulseChart = new Chart(ctx, {
+                data: {
+                    labels,
+                    datasets: [
+                        { type: 'bar', label: 'Այս տարի', data: curData, backgroundColor: 'rgba(79,140,255,.6)', borderRadius: 3, order: 2 },
+                        { type: 'line', label: 'Անցյալ տարի', data: ly, borderColor: 'rgba(255,255,255,.4)', borderWidth: 1.5, pointRadius: 0, tension: .3, order: 1 }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: { legend: { display: false }, datalabels: { display: false },
+                        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + formatCurrency(Math.round(c.parsed.y || 0)) } } },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { color: '#93a0b4', maxTicksLimit: 16, font: { size: 10 } } },
+                        y: { grid: { color: 'rgba(255,255,255,.05)' }, ticks: { color: '#93a0b4', callback: v => formatNumber(v), font: { size: 10 } } }
+                    }
+                }
+            });
+        },
+        ahYoyClass(v) { return v === null ? '' : (v >= 0 ? 'text-success' : (v <= -15 ? 'text-danger' : 'text-warning')); },
+        ahPfClass(v) { return v === null ? '' : (v >= 95 ? 'text-success' : (v >= 85 ? 'text-warning' : 'text-danger')); },
+        ahCrClass(v) { return v === null ? '' : (v >= 85 ? 'text-success' : (v >= 70 ? 'text-warning' : 'text-danger')); },
+        ahDsoClass(v) { return v === null ? '' : (v <= 30 ? 'text-success' : (v <= 60 ? 'text-warning' : 'text-danger')); },
+        exportTeamCallList() {
+            try {
+                const h = this.health;
+                if (!h) return;
+                const overdue = (h.cash.topOverdue || []).map(c => ({
+                    'Հաճախорդ': c.name, 'Կоդ': c.code, 'Հеռախос': c.phone || '',
+                    'Հասցե': c.address || '', 'Պարտք ֏': c.amt, 'Ամ. օր': c.age
+                }));
+                const lost = (h.customers.topLost || []).map(c => ({
+                    'Հաճախорդ': c.name, 'Կоդ': c.code, 'Հеռախос': c.phone || '',
+                    'Հասցե': c.address || '', 'Նախорդ գնում ֏': c.rev
+                }));
+                const wb = XLSX.utils.book_new();
+                if (overdue.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(overdue), 'Պարտք 60+');
+                if (lost.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lost), 'Կорած');
+                if (!overdue.length && !lost.length) { alert('Ցուցակը դատարկ է'); return; }
+                XLSX.writeFile(wb, `Զանգеր_թիմ_${this.dateFrom}.xlsx`);
+            } catch (e) { console.error(e); alert('Export error: ' + e.message); }
+        },
+        exportAreasExcel() {
+            try {
+                const data = this.ahRows.map(a => ({
+                    'Տարածք': a.name, 'Կոդ': a.code, 'Միավոր': a.score,
+                    'Հասույթ': a.revenue, 'Անցյալ տարի': a.revenueLy, 'YoY %': a.yoy,
+                    'Պլան': a.plan, 'Պլան/փաստ %': a.planFact,
+                    'Հավաքագրված': a.collected, 'Հավաք. %': a.collectRate,
+                    'Զուտ պարտք': a.debt, 'Պարտքի Δ': a.debtDelta, 'DSO': a.dso,
+                    '90+ պարտք': a.aging90, '90+ %': a.aging90Share,
+                    'Հաճախորդներ': a.activeCustomers, 'Նոր': a.newCustomers,
+                    'Կորած': a.lostCustomers, 'Կորուստ ֏': a.lostRev,
+                    'Պահպանում %': a.retention, 'Վերադարձ %': a.returnsRate,
+                    'Խնդիրներ': (a.issues || []).map(i => i.label).join('; ')
+                }));
+                const ws = XLSX.utils.json_to_sheet(data);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, 'Areas');
+                XLSX.writeFile(wb, `KPI_areas_${this.dateFrom}_${this.dateTo}.xlsx`);
+            } catch (e) { console.error(e); alert('Export error: ' + e.message); }
+        },
+
+        // Экспорт «списка обзвона» из детали территории: должники 60+ и потерянные клиенты
+        exportCallList() {
+            try {
+                const d = this.areaDetail.d;
+                if (!d) return;
+                const overdue = (d.cash.topOverdue || []).map(c => ({
+                    'Հաճախորդ': c.name, 'Կոդ': c.code, 'Հեռախոս': c.phone || '',
+                    'Հասցե': c.address || '', 'Պարտք ֏': c.amt, 'Ամ. օր': c.age
+                }));
+                const lost = (d.customers.topLost || []).map(c => ({
+                    'Հաճախորդ': c.name, 'Կոդ': c.code, 'Հեռախոս': c.phone || '',
+                    'Հասցե': c.address || '', 'Նախորդ գնում ֏': c.rev
+                }));
+                const wb = XLSX.utils.book_new();
+                if (overdue.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(overdue), 'Պարտք 60+');
+                if (lost.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lost), 'Կորած');
+                if (!overdue.length && !lost.length) { alert('Ցուցակը դատարկ է'); return; }
+                const safe = (d.name || d.code).replace(/[^\wԱ-Ֆա-ֆ]+/g, '_').slice(0, 40);
+                XLSX.writeFile(wb, `Զանգեր_${safe}_${this.dateFrom}.xlsx`);
+            } catch (e) { console.error(e); alert('Export error: ' + e.message); }
+        },
+
+        // Мини-рендер Markdown (подмножество, которое возвращает AI: ## / **жирный** / *курсив* / списки)
+        renderMd(text) {
+            const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const inline = s => esc(s)
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/(^|[^*])\*(?!\s)([^*]+?)\*(?!\*)/g, '$1<em>$2</em>');
+            const lines = (text || '').split('\n');
+            let html = '', list = null;
+            const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+            for (let raw of lines) {
+                const line = raw.trim();
+                if (!line) { closeList(); continue; }
+                let mmh = line.match(/^#{1,6}\s+(.*)$/);
+                if (mmh) { closeList(); html += `<h6>${inline(mmh[1].replace(/^\d+\.\s*/, ''))}</h6>`; continue; }
+                let ul = line.match(/^[-•]\s+(.*)$/);
+                let ol = line.match(/^\d+[.)]\s+(.*)$/);
+                if (ul) { if (list !== 'ul') { closeList(); html += '<ul>'; list = 'ul'; } html += `<li>${inline(ul[1])}</li>`; continue; }
+                if (ol) { if (list !== 'ol') { closeList(); html += '<ol>'; list = 'ol'; } html += `<li>${inline(ol[1])}</li>`; continue; }
+                closeList(); html += `<p>${inline(line)}</p>`;
+            }
+            closeList();
+            return html;
+        },
+        // Потоковое чтение SSE: текст появляется сразу и течёт, markdown рендерится инкрементально.
+        // Отменить идущий AI-стрим (при смене периода/фильтров/территории): бумпаем поколение + abort.
+        cancelAi(target) {
+            this._aiGen = this._aiGen || {};
+            this._aiGen[target] = (this._aiGen[target] || 0) + 1;
+            if (this._aiCtrl && this._aiCtrl[target]) { try { this._aiCtrl[target].abort(); } catch (e) {} }
+        },
+        async streamAi(target, body) {
+            if (this[target].loading) return;
+            this._aiGen = this._aiGen || {};
+            this._aiCtrl = this._aiCtrl || {};
+            const myGen = (this._aiGen[target] = (this._aiGen[target] || 0) + 1);
+            const stale = () => this._aiGen[target] !== myGen;   // запрос устарел (пришёл новый/отмена)
+            const ctrl = new AbortController();
+            this._aiCtrl[target] = ctrl;
+            this[target] = { loading: true, html: '', error: '', raw: '' };
+            try {
+                const r = await fetch('/api/managers/kpi/health/ai', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body), signal: ctrl.signal
+                });
+                if (stale()) return;
+                // Ошибка до стрима отдаётся JSON-ом (например, нет ключа)
+                if (!r.ok || !r.body || (r.headers.get('content-type') || '').includes('application/json')) {
+                    let msg = 'AI սխալ';
+                    try { const j = await r.json(); msg = j.error || msg; } catch (e) {}
+                    if (!stale()) this[target] = { loading: false, html: '', error: msg, raw: '' };
+                    return;
+                }
+                const reader = r.body.getReader();
+                const dec = new TextDecoder();
+                let buf = '', acc = '', errored = false;
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (stale()) { try { await reader.cancel(); } catch (e) {} return; }
+                    if (done) break;
+                    buf += dec.decode(value, { stream: true });
+                    let idx;
+                    while ((idx = buf.indexOf('\n\n')) >= 0) {
+                        const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+                        const line = chunk.startsWith('data: ') ? chunk.slice(6) : chunk;
+                        if (!line) continue;
+                        let o; try { o = JSON.parse(line); } catch (e) { continue; }
+                        if (o.t) { acc += o.t; this[target].raw = acc; this[target].html = this.renderMd(acc); }
+                        else if (o.error) { errored = true; this[target] = { loading: false, html: '', error: o.error, raw: '' }; }
+                    }
+                }
+                if (stale()) return;
+                if (!errored && !acc) {
+                    this[target] = { loading: false, html: '', error: 'AI-ն դատարկ պատասխան վերադարձրեց, փորձեք կրկին', raw: '' };
+                } else {
+                    this[target].loading = false;
+                }
+            } catch (e) {
+                if (e.name === 'AbortError' || stale()) return;
+                console.error(e);
+                this[target] = { loading: false, html: '', error: 'Ցանցի սխալ', raw: '' };
+            }
+        },
+        runTeamAi() {
+            return this.streamAi('aiTeam', { scope: 'team', health: this.health, areas: this.areaHealth, trend: this.trend });
+        },
+        runAreaAi() {
+            if (!this.areaDetail.d) return;
+            return this.streamAi('aiArea', { scope: 'area', detail: this.areaDetail.d });
+        },
+
+        async loadTrend() {
+            Object.values(this.sparkCharts).forEach(ch => { try { ch.destroy(); } catch (e) {} });
+            this.sparkCharts = {};
+            this.trend = null;
+            const gen = (this._trGen = (this._trGen || 0) + 1);
+            try {
+                const r = await fetch(`/api/managers/kpi/health/trend?date_to=${this.dateTo}&months=12`);
+                const d = await r.json();
+                if (d.success && gen === this._trGen) this.trend = d;
+            } catch (e) { console.error(e); }
+        },
+        // Конфиг плиток: направление (higher/lower лучше) задаёт цвет дельты
+        get trendTiles() {
+            if (!this.trend) return [];
+            const s = this.trend.series, sum = this.trend.summary;
+            const mk = (key, label, higher, fmt) => {
+                const t = sum[key] || {};
+                const delta = (t.delta === undefined ? null : t.delta);
+                const good = delta === null ? true : (higher ? delta >= 0 : delta <= 0);
+                const last = s.length ? s[s.length - 1][key] : null;
+                return {
+                    key, label, higher, delta,
+                    up: delta !== null && delta >= 0,
+                    color: delta === null ? '#93a0b4' : (good ? '#22c55e' : '#ef4444'),
+                    lastLabel: fmt(last),
+                    values: s.map(x => x[key])
+                };
+            };
+            return [
+                mk('revenue', 'Հասույթ', true, formatCurrency),
+                mk('collected', 'Հավաքագրում', true, formatCurrency),
+                mk('debt', 'Պարտք', false, formatCurrency),
+                mk('returns', 'Վերադարձեր', false, formatCurrency),
+                mk('activeCustomers', 'Հաճախորդներ', true, formatNumber),
+            ];
+        },
+        renderSparklines() {
+            if (!this.trend) return;
+            const labels = this.trend.series.map(x => x.ym.slice(2));   // YY-MM
+            for (const tile of this.trendTiles) {
+                const ctx = document.getElementById('spark-' + tile.key);
+                if (!ctx) continue;
+                if (this.sparkCharts[tile.key]) this.sparkCharts[tile.key].destroy();
+                this.sparkCharts[tile.key] = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [{
+                            data: tile.values, borderColor: tile.color,
+                            backgroundColor: 'transparent', borderWidth: 2,
+                            pointRadius: 0, pointHoverRadius: 3, tension: .35, fill: false
+                        }]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: false,
+                        plugins: {
+                            legend: { display: false }, datalabels: { display: false },
+                            tooltip: {
+                                displayColors: false,
+                                callbacks: {
+                                    title: items => this.trend.series[items[0].dataIndex].ym,
+                                    label: c => (tile.key === 'activeCustomers' ? formatNumber(c.parsed.y) : formatCurrency(Math.round(c.parsed.y)))
+                                }
+                            }
+                        },
+                        scales: { x: { display: false }, y: { display: false } }
+                    }
+                });
+            }
+        },
+
+        // Значение компонента индекса здоровья с единицей измерения
+        compValue(c) {
+            if (c.value === null || c.value === undefined) return '—';
+            if (c.unit === 'percent') return (Math.round(c.value * 10) / 10) + '%';
+            if (c.unit === 'days') return c.value + ' օր';
+            return formatNumber(c.value);
+        },
+        // Разрыв «прогноз − план» для незавершённого периода
+        forecastGapHtml() {
+            const h = this.health;
+            if (!h || !h.pulse.forecast || !h.pulse.planFull) return '';
+            const gap = h.pulse.forecast - h.pulse.planFull;
+            const cls = gap >= 0 ? 'text-success' : 'text-danger';
+            const word = gap >= 0 ? 'պահուստ' : 'պակասուրդ';
+            return `<span class="${cls}">${gap >= 0 ? '▲' : '▼'} ${word}՝ ${formatCurrency(Math.abs(gap))}</span>`;
+        },
+        agingColor(i) { return ['#22c55e', '#f2c14e', '#fb923c', '#ef4444'][i] || '#6c757d'; },
+        agingShare(a) {
+            const t = (this.health ? this.health.cash.aging : []).reduce((s, x) => s + (x.amt || 0), 0);
+            return t ? Math.max(1.5, a.amt / t * 100) : 0;
+        },
+
+        // Дневной пульс: бары текущего периода + линия того же периода год назад (выравнивание по дню периода)
+        renderPulse() {
+            const h = this.health;
+            if (!h) return;
+            const ctx = document.getElementById('pulseChart');
+            if (!ctx) return;
+            if (this.pulseChart) this.pulseChart.destroy();
+            const p = h.period;
+            const n = p.days;
+            const dayMs = 86400000;
+            const base = new Date(p.date_from + 'T00:00:00');
+            const baseLy = new Date(h.pulse.lyFrom + 'T00:00:00');
+            const cur = Array(n).fill(0), ly = Array(n).fill(0);
+            (h.pulse.daily || []).forEach(x => {
+                const i = Math.round((new Date(x.d + 'T00:00:00') - base) / dayMs);
+                if (i >= 0 && i < n) cur[i] = x.rev;
+            });
+            (h.pulse.dailyLy || []).forEach(x => {
+                const i = Math.round((new Date(x.d + 'T00:00:00') - baseLy) / dayMs);
+                if (i >= 0 && i < n) ly[i] = x.rev;
+            });
+            // Дни за пределами прошлогоднего периода (напр. 29 февраля) — null, а не фальшивый 0
+            const lyDays = h.pulse.lyDays || n;
+            for (let i = lyDays; i < n; i++) ly[i] = null;
+            // не рисуем нулевые «будущие» дни незавершённого периода
+            const curData = cur.map((v, i) => (i < p.elapsed ? v : null));
+            const labels = Array.from({ length: n }, (_, i) => {
+                const d = new Date(base); d.setDate(d.getDate() + i);
+                return String(d.getDate()).padStart(2, '0');
+            });
+            this.pulseChart = new Chart(ctx, {
+                data: {
+                    labels,
+                    datasets: [
+                        { type: 'bar', label: 'Այս տարի', data: curData, backgroundColor: 'rgba(79,140,255,.6)', borderRadius: 3, order: 2 },
+                        { type: 'line', label: 'Անցյալ տարի', data: ly, borderColor: 'rgba(255,255,255,.4)', borderWidth: 1.5, pointRadius: 0, tension: .3, order: 1 }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: false }, datalabels: { display: false },
+                        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + formatCurrency(Math.round(c.parsed.y || 0)) } }
+                    },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { color: '#93a0b4', maxTicksLimit: 16, font: { size: 10 } } },
+                        y: { grid: { color: 'rgba(255,255,255,.05)' }, ticks: { color: '#93a0b4', callback: v => formatNumber(v), font: { size: 10 } } }
+                    }
+                }
+            });
         },
 
         get filteredRows() {

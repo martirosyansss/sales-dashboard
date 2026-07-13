@@ -3,11 +3,12 @@ Sales Dashboard v2.0 - READ-ONLY Analytics Platform
 Работает с реальной БД AS-Sales Management
 """
 
-from flask import Flask, render_template, jsonify, request, send_file
+from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response, stream_with_context
 import pyodbc
 from datetime import datetime, timedelta
 import os
 import json
+import hashlib
 from typing import Dict, List, Any
 import logging
 from dotenv import load_dotenv
@@ -2676,6 +2677,10 @@ KPI_MIN_DENOM = {
     "retention": ("retentionBase", 5),
 }
 
+# Порог «малой выборки» для здоровья территории: ниже этого числа накладных балл — шум
+# (единичные продажи дают экстремальный план/факт, DSO, retention). Помечаем «мало данных».
+KPI_AREA_MIN_SALES = 10
+
 
 def _months_between(d_from, d_to):
     a = datetime.strptime(d_from, "%Y-%m-%d")
@@ -2702,6 +2707,38 @@ def _kpi_load_list(path):
     except Exception as e:
         logger.error(f"Ошибка чтения {path}: {e}")
     return []
+
+
+# --- Кэш тяжёлых KPI-эндпоинтов (короткий TTL; инвалидируется при смене фильтров) ---
+_KPI_CACHE = {}
+_KPI_CACHE_TTL = 90  # сек — короткий, чтобы данные боевого ERP не устаревали
+
+def _kpi_files_fingerprint():
+    """Отпечаток сохранённых фильтров/исключений: при их изменении mtime меняется → кэш инвалидируется."""
+    files = [KPI_SALES_CLIENT_GROUPS_FILE, KPI_DEBT_CLIENT_GROUPS_FILE, KPI_SALES_DIVISIONS_FILE,
+             KPI_DEBT_DIVISIONS_FILE, KPI_TERRITORIES_FILE, KPI_PRODUCT_GROUPS_FILE, KPI_MSL_GROUPS_FILE,
+             'excluded_customers.json', 'excluded_groups.json', 'group_manager_assignments.json']
+    # Текущая дата — часть отпечатка: asof/debt_asof/incomplete/forecast зависят от datetime.now();
+    # смена суток должна инвалидировать кэш (иначе на границе полуночи в TTL-окно вернём вчерашний долг).
+    parts = [datetime.now().strftime('%Y%m%d')]
+    for f in files:
+        try:
+            parts.append(str(os.path.getmtime(f)))
+        except OSError:
+            parts.append("0")
+    return hashlib.md5("|".join(parts).encode()).hexdigest()[:10]
+
+def _kpi_cache_get(key):
+    v = _KPI_CACHE.get(key)
+    if v and (datetime.now().timestamp() - v[0]) < _KPI_CACHE_TTL:
+        return v[1]
+    return None
+
+def _kpi_cache_set(key, data):
+    if len(_KPI_CACHE) > 300:          # backstop от разрастания
+        _KPI_CACHE.clear()
+    _KPI_CACHE[key] = (datetime.now().timestamp(), data)
+    return data
 
 
 def _kpi_save_list(path, items):
@@ -3423,6 +3460,1775 @@ def api_managers_kpi():
     except Exception as e:
         logger.error(f"Ошибка получения KPI менеджеров: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _famd(v):
+    """Форматирование суммы для армянских текстов диагностики: 1 234 567 (без дробной части)."""
+    try:
+        return f"{float(v):,.0f}".replace(",", " ")
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _kpi_health_score(metrics):
+    """Единая формула индекса здоровья (0–100) для команды/территории/детали.
+    metrics: dict(yoy, plan_fact, collect_rate, dso, retention, returns_rate) — уже посчитанные %.
+    Возвращает (components, score, verdict). Один источник истины для весов/таргетов/порогов —
+    чтобы пороги команды и территорий не расходились (см. историю: YoY-порог дрейфовал)."""
+    def _clamp(v, lo=0.0, hi=100.0):
+        return max(lo, min(hi, v))
+
+    def _lower_better(v, target, zero_at):
+        if v is None:
+            return None
+        if v <= target:
+            return 100.0
+        return _clamp(100.0 - (v - target) * (100.0 / (zero_at - target)))
+
+    comp = []
+    def _c(key, label, score, value, unit, target, weight):
+        comp.append({"key": key, "label": label, "weight": weight,
+                     "score": round(score, 1) if score is not None else None,
+                     "value": value, "unit": unit, "target": target,
+                     "status": None if score is None else ("ok" if score >= 80 else ("warn" if score >= 50 else "bad"))})
+
+    yoy = metrics.get("yoy"); pf = metrics.get("plan_fact"); cr = metrics.get("collect_rate")
+    dso = metrics.get("dso"); ret = metrics.get("retention"); rr = metrics.get("returns_rate")
+    _c("growth",      "Աճ (YoY)",     _clamp(50 + yoy * 2.5) if yoy is not None else None, yoy, "percent", "≥ 0%",   25)
+    _c("plan",        "Պլան/փաստ",    _clamp(pf) if pf is not None else None,               pf,  "percent", "100%",   20)
+    _c("collections", "Հավաքագրում",  _clamp(cr / 85.0 * 100.0) if cr is not None else None, cr, "percent", "≥ 85%",  20)
+    _c("debt",        "Պարտք (DSO)",  _lower_better(dso, 30.0, 90.0),                        dso, "days",    "≤ 30 օր", 15)
+    _c("retention",   "Պահպանում",    _clamp(ret / 80.0 * 100.0) if ret is not None else None, ret, "percent", "≥ 80%", 12)
+    _c("returns",     "Վերադարձեր",   _lower_better(rr, 2.0, 8.0),                           rr,  "percent", "≤ 2%",   8)
+    wsum = sum(c["weight"] for c in comp if c["score"] is not None)
+    score = round(sum(c["score"] * c["weight"] for c in comp if c["score"] is not None) / wsum, 1) if wsum else None
+    if score is None:
+        verdict = "Տվյալներ չկան"
+    elif score >= 80:
+        verdict = "Առողջ վիճակ"
+    elif score >= 60:
+        verdict = "Կայուն, կան թույլ կետեր"
+    elif score >= 40:
+        verdict = "Ուշադրություն է պահանջվում"
+    else:
+        verdict = "Կրիտիկական վիճակ"
+    return comp, score, verdict
+
+
+def _fill_contact_phones(cur, items):
+    """Дозаполнить телефон из CUSTOMERCONTACTS тем клиентам списка, у кого пусто в CUSTOMERS.fPHONE.
+    Один запрос на весь список (id → телефон). Для списка обзвона: даёт максимальное покрытие. READ-ONLY."""
+    ids = [it['id'] for it in items if not it.get('phone') and it.get('id') is not None]
+    if not ids:
+        return
+    ph = ','.join('?' * len(ids))
+    cur.execute(f"""
+        SELECT fCUSTOMERID AS id, MIN(fPHONE) AS ph
+        FROM CUSTOMERCONTACTS WITH (NOLOCK)
+        WHERE fCUSTOMERID IN ({ph}) AND fPHONE IS NOT NULL AND fPHONE <> ''
+        GROUP BY fCUSTOMERID
+    """, tuple(ids))
+    m = {r.id: (r.ph or '').strip() for r in cur.fetchall()}
+    for it in items:
+        if not it.get('phone'):
+            it['phone'] = m.get(it['id'], '')
+
+
+@app.route('/api/managers/kpi/health')
+def api_managers_kpi_health():
+    """API: «Пульс бизнеса» — командное здоровье для владельца: рост/план/деньги/долг/клиенты,
+    дневной пульс продаж, старение дебиторки и автодиагностика «где дыра».
+    Использует ТЕ ЖЕ сохранённые фильтры и формулы, что /api/managers/kpi (цифры совпадают). READ-ONLY."""
+    try:
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        if not date_from or not date_to:
+            today = datetime.now()
+            date_from = today.replace(day=1).strftime('%Y-%m-%d')
+            last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            date_to = last_day.strftime('%Y-%m-%d')
+
+        try:
+            plan_growth = float(request.args.get('plan_growth', 0) or 0)
+        except (TypeError, ValueError):
+            plan_growth = 0.0
+        plan_growth = max(-100.0, min(1000.0, plan_growth))
+
+        try:
+            debt_lag_days = int(request.args.get('debt_lag_days', 0) or 0)
+        except (TypeError, ValueError):
+            debt_lag_days = 0
+        debt_lag_days = max(0, min(60, debt_lag_days))
+
+        _ck = "health|%s|%s|%s|%s|%s" % (date_from, date_to, plan_growth, debt_lag_days, _kpi_files_fingerprint())
+        _hit = _kpi_cache_get(_ck)
+        if _hit is not None:
+            return jsonify(_hit)
+
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        def _excl(custid_expr):
+            return excluded_filter.replace('c.fID', custid_expr)
+
+        # Те же сохранённые фильтры, что и в /api/managers/kpi
+        sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)
+        dc = _kpi_load_list(KPI_DEBT_CLIENT_GROUPS_FILE)
+        sd = _kpi_load_list(KPI_SALES_DIVISIONS_FILE)
+        dd = _kpi_load_list(KPI_DEBT_DIVISIONS_FILE)
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)
+
+        def grp_where(sel):
+            if not sel:
+                return "", ()
+            return " AND c.fGROUP IN (%s)" % ','.join('?' * len(sel)), tuple(sel)
+
+        def cust_join(sel, custid_expr):
+            if not sel:
+                return ""
+            return " INNER JOIN CUSTOMERS c WITH (NOLOCK) ON %s = c.fID" % custid_expr
+
+        def div_where(alias, sel):
+            if not sel:
+                return "", ()
+            return (" AND %s.fSALESAGENTID IN (SELECT DISTINCT fSALESAGENTID FROM SALESAGENTDIVISIONS WITH (NOLOCK) WHERE fDIVISION IN (%s))"
+                    % (alias, ','.join('?' * len(sel))), tuple(sel))
+
+        def terr_where(custid_expr):
+            if not sa:
+                return "", ()
+            return (" AND %s IN (SELECT fCUSTOMERID FROM CUSTOMERSALESAREAS WITH (NOLOCK) WHERE fSALESAREA IN (%s))"
+                    % (custid_expr, ','.join('?' * len(sa))), tuple(sa))
+
+        def area_where(area_expr):
+            if not sa:
+                return "", ()
+            return (" AND %s IN (%s)" % (area_expr, ','.join('?' * len(sa))), tuple(sa))
+
+        sc_w, sc_p = grp_where(sc)
+        dc_w, dc_p = grp_where(dc)
+        sd_w, sd_p = div_where('s', sd)
+        dd_w, dd_p = div_where('doc', dd)
+        ta_s_w,   ta_s_p   = terr_where('s.fCUSTOMERID')
+        ta_rt_w,  ta_rt_p  = terr_where('rt.fCUSTOMERID')
+        ta_doc_w, ta_doc_p = terr_where('doc.fCUSTOMERID')
+        ta_r_w,   ta_r_p   = terr_where('r.fCUSTOMERID')
+        ta_csa_w, ta_csa_p = area_where('csa.fSALESAREA')
+
+        # Выручка: построчная при товарном фильтре, документная без него (= /api/managers/kpi)
+        if pg:
+            _pg_ph = ','.join('?' * len(pg))
+            rev_join = (" INNER JOIN SALEDOCDETAILS sdp WITH (NOLOCK) ON sdp.fISN=s.fISN"
+                        " INNER JOIN PRODUCTS pp WITH (NOLOCK) ON pp.fID=sdp.fPRODUCTID")
+            rev_pgw = " AND pp.fGROUP IN (%s)" % _pg_ph
+            rev_pgp = tuple(pg)
+            rev_expr = "ISNULL(SUM(sdp.fSUM),0)"
+            rev_val = "sdp.fSUM"
+            doc_cnt = "COUNT(DISTINCT s.fISN)"
+        else:
+            rev_join, rev_pgw, rev_pgp = "", "", ()
+            rev_expr = "ISNULL(SUM(s.fTOTALSUM),0)"
+            rev_val = "s.fTOTALSUM"
+            doc_cnt = "COUNT(s.fISN)"
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+
+        # As-of = последний день с продажами в пределах периода (like-for-like для незавершённого)
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE < DATEADD(day, 1, CAST(? AS DATE))", (date_to,))
+        _row = cur.fetchone()
+        _last = _row[0] if _row else None
+        asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
+        if asof < date_from:
+            asof = date_from
+        if asof > date_to:
+            asof = date_to
+
+        d_from = datetime.strptime(date_from, '%Y-%m-%d')
+        d_to = datetime.strptime(date_to, '%Y-%m-%d')
+        d_asof = datetime.strptime(asof, '%Y-%m-%d')
+        period_days = (d_to - d_from).days + 1
+        elapsed_days = max(1, min(period_days, (d_asof - d_from).days + 1))
+
+        # Незавершённый период (текущий месяц): все сравнения «с предыдущим окном», DSO и
+        # retention считаем like-for-like — по фактически прошедшим дням, а не полному календарю.
+        today_s = datetime.now().strftime('%Y-%m-%d')
+        incomplete = elapsed_days < period_days and date_to >= today_s
+        window_days = elapsed_days if incomplete else period_days
+
+        prev_from = (d_from - timedelta(days=window_days)).strftime('%Y-%m-%d')
+        prev_to = (d_from - timedelta(days=1)).strftime('%Y-%m-%d')
+        ly_from = _years_ago(d_from, 1).strftime('%Y-%m-%d')
+        ly_to_full = _years_ago(d_to, 1).strftime('%Y-%m-%d')
+        ly_to_asof = _years_ago(d_asof, 1).strftime('%Y-%m-%d')
+        ly_days = (datetime.strptime(ly_to_full, '%Y-%m-%d') - datetime.strptime(ly_from, '%Y-%m-%d')).days + 1
+
+        # --- Итоги продаж за произвольное окно (формула = запрос A основного эндпоинта) ---
+        def _sales_totals(dfrom, dto):
+            cur.execute(f"""
+                SELECT {doc_cnt} AS cnt, COUNT(DISTINCT s.fCUSTOMERID) AS clients, {rev_expr} AS rev
+                FROM SALES s WITH (NOLOCK){rev_join}
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
+                  {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
+            """, (dfrom, dto) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp)
+            r = cur.fetchone()
+            rev = float(r.rev or 0)
+            cnt = int(r.cnt or 0)
+            return {"revenue": rev, "salesCount": cnt, "activeCustomers": int(r.clients or 0),
+                    "avgCheck": (rev / cnt) if cnt else 0.0}
+
+        tot_cur = _sales_totals(date_from, date_to)
+        tot_prev = _sales_totals(prev_from, prev_to)
+        tot_ly = _sales_totals(ly_from, ly_to_asof)          # like-for-like (до того же дня)
+        tot_ly_full = _sales_totals(ly_from, ly_to_full) if ly_to_full != ly_to_asof else dict(tot_ly)
+
+        # --- Дневной пульс: выручка по дням, текущий период и тот же период год назад ---
+        def _daily(dfrom, dto):
+            cur.execute(f"""
+                SELECT CAST(s.fDATE AS DATE) AS d, {rev_expr} AS rev, {doc_cnt} AS cnt
+                FROM SALES s WITH (NOLOCK){rev_join}
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
+                  {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
+                GROUP BY CAST(s.fDATE AS DATE)
+                ORDER BY d
+            """, (dfrom, dto) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp)
+            return [{"d": (r.d.strftime('%Y-%m-%d') if hasattr(r.d, 'strftime') else str(r.d)[:10]),
+                     "rev": float(r.rev or 0), "cnt": int(r.cnt or 0)} for r in cur.fetchall()]
+
+        daily_cur = _daily(date_from, date_to)
+        daily_ly = _daily(ly_from, ly_to_full)
+
+        # --- Сбор денег (PAY, фильтры ДОЛГА — как запрос G основного эндпоинта) ---
+        cur.execute(f"""
+            SELECT ISNULL(SUM(ABS(h.fSUM)),0) AS collected
+            FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON h.fDEBTDOCISN=doc.fISN
+            {cust_join(dc, 'doc.fCUSTOMERID')}
+            WHERE h.fOP='PAY' AND h.fDBCR='C' AND h.fDATE>=? AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+              {_excl('doc.fCUSTOMERID')}{dc_w}{dd_w}{ta_doc_w}
+        """, (date_from, date_to) + excluded_params + dc_p + dd_p + ta_doc_p)
+        collected = float(cur.fetchone()[0] or 0)
+
+        # --- Возвраты (фильтры продаж — как запрос D) ---
+        cur.execute(f"""
+            SELECT COUNT(*) AS rc, ISNULL(SUM(rt.fTOTALSUM),0) AS rs
+            FROM RETURNS rt WITH (NOLOCK)
+            {cust_join(sc, 'rt.fCUSTOMERID')}
+            WHERE rt.fDATE>=? AND rt.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND rt.fSTATE=2
+              {_excl('rt.fCUSTOMERID')}{sc_w}{ta_rt_w}
+        """, (date_from, date_to) + excluded_params + sc_p + ta_rt_p)
+        _r = cur.fetchone()
+        returns_cnt, returns_sum = int(_r.rc or 0), float(_r.rs or 0)
+
+        # --- Долг команды: полная формула (= team в /api/managers/kpi) + дельта за период ---
+        debt_asof = date_to
+        if debt_lag_days:
+            settled = (datetime.now() - timedelta(days=debt_lag_days)).strftime('%Y-%m-%d')
+            if settled < date_to:
+                debt_asof = settled
+
+        # ВАЖНО: дивизионы долга (dd) здесь НЕ применяются — как и в team-запросе основного
+        # эндпоинта (= ERP): иначе дебет фильтруется, а Type01/02-снимок нет, и формула ломается.
+        def _team_debit_until(boundary_sql, boundary_date):
+            cur.execute(f"""
+                SELECT ISNULL(SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END),0)
+                FROM DOCUMENTS doc WITH (NOLOCK)
+                INNER JOIN HICUSTOMERSDEBT h WITH (NOLOCK) ON h.fDEBTDOCISN = doc.fISN
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = doc.fCUSTOMERID
+                WHERE h.fDATE < {boundary_sql} {excluded_filter}{ta_doc_w}{dc_w}
+            """, (boundary_date,) + excluded_params + ta_doc_p + dc_p)
+            return float(cur.fetchone()[0] or 0)
+
+        debit_now = _team_debit_until("DATEADD(day, 1, CAST(? AS DATE))", debt_asof)   # на конец периода
+        debit_start = _team_debit_until("CAST(? AS DATE)", date_from)                  # на начало (строго до)
+
+        cur.execute(f"""
+            SELECT ISNULL(SUM(CASE WHEN r.fTYPE='01' THEN r.fSUM ELSE 0 END),0),
+                   ISNULL(SUM(CASE WHEN r.fTYPE='02' THEN r.fSUM ELSE 0 END),0)
+            FROM HIRESTCUSTOMERSSUM r WITH (NOLOCK)
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = r.fCUSTOMERID
+            WHERE 1=1 {excluded_filter}{ta_r_w}{dc_w}
+        """, excluded_params + ta_r_p + dc_p)
+        _tr = cur.fetchone()
+        t1, t2 = abs(float(_tr[0] or 0)), abs(float(_tr[1] or 0))
+        debt_net = debit_now - t1 - t2
+        # Δ за период — по движению дебета (снимок Type01/02 в разности сокращается)
+        debt_delta = (debit_now - debit_start) if debt_asof >= date_from else None
+        # DSO по фактически прошедшим дням (window_days): полный календарь незавершённого месяца
+        # завышал бы DSO в разы (выручка есть только за прошедшие дни)
+        dso = round(max(0.0, debt_net) / tot_cur["revenue"] * window_days, 1) if tot_cur["revenue"] > 0 else None
+
+        # --- Старение дебиторки: непогашенный остаток по каждому дебетовому документу,
+        #     корзины по возрасту документа. Структура ДЕБЕТА (Type01/02 к документам не привязаны). ---
+        _docbal_cte = """
+            WITH DocBal AS (
+                SELECT h.fDEBTDOCISN AS isn,
+                       SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END) AS bal
+                FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+                WHERE h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                GROUP BY h.fDEBTDOCISN
+                HAVING SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END) > 0.005
+            )"""
+        # Корзину считаем в CROSS APPLY: CASE с ?-параметрами в SELECT и GROUP BY
+        # SQL Server считает разными выражениями (ошибка 8120)
+        cur.execute(f"""{_docbal_cte}
+            SELECT b.bucket, ISNULL(SUM(db.bal),0) AS amt, COUNT(DISTINCT doc.fCUSTOMERID) AS cust
+            FROM DocBal db
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON doc.fISN = db.isn
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = doc.fCUSTOMERID
+            CROSS APPLY (SELECT CASE WHEN DATEDIFF(day, doc.fDATE, CAST(? AS DATE)) <= 30 THEN 'b1'
+                                     WHEN DATEDIFF(day, doc.fDATE, CAST(? AS DATE)) <= 60 THEN 'b2'
+                                     WHEN DATEDIFF(day, doc.fDATE, CAST(? AS DATE)) <= 90 THEN 'b3'
+                                     ELSE 'b4' END AS bucket) b
+            WHERE 1=1 {excluded_filter}{ta_doc_w}{dc_w}
+            GROUP BY b.bucket
+        """, (debt_asof,) + (debt_asof, debt_asof, debt_asof) + excluded_params + ta_doc_p + dc_p)
+        _bmap = {r.bucket: {"amt": float(r.amt or 0), "cust": int(r.cust or 0)} for r in cur.fetchall()}
+        aging = [
+            {"bucket": "0–30",  "amt": _bmap.get('b1', {}).get('amt', 0.0), "cust": _bmap.get('b1', {}).get('cust', 0)},
+            {"bucket": "31–60", "amt": _bmap.get('b2', {}).get('amt', 0.0), "cust": _bmap.get('b2', {}).get('cust', 0)},
+            {"bucket": "61–90", "amt": _bmap.get('b3', {}).get('amt', 0.0), "cust": _bmap.get('b3', {}).get('cust', 0)},
+            {"bucket": "90+",   "amt": _bmap.get('b4', {}).get('amt', 0.0), "cust": _bmap.get('b4', {}).get('cust', 0)},
+        ]
+        aging90 = aging[3]["amt"]
+
+        # Топ должников со «старым» долгом (>60 дней)
+        cur.execute(f"""{_docbal_cte}
+            SELECT TOP 12 c.fID AS id, c.fCODE AS code, c.fNAME AS name,
+                   c.fPHONE AS phone, c.fADDRESS AS address, ISNULL(SUM(db.bal),0) AS amt,
+                   MAX(DATEDIFF(day, doc.fDATE, CAST(? AS DATE))) AS maxAge
+            FROM DocBal db
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON doc.fISN = db.isn
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = doc.fCUSTOMERID
+            WHERE DATEDIFF(day, doc.fDATE, CAST(? AS DATE)) > 60 {excluded_filter}{ta_doc_w}{dc_w}
+            GROUP BY c.fID, c.fCODE, c.fNAME, c.fPHONE, c.fADDRESS
+            ORDER BY amt DESC
+        """, (debt_asof,) + (debt_asof, debt_asof) + excluded_params + ta_doc_p + dc_p)
+        top_overdue = [{"id": r.id, "code": r.code, "name": r.name,
+                        "phone": (r.phone or "").strip(), "address": (r.address or "").strip(),
+                        "amt": float(r.amt or 0), "age": int(r.maxAge or 0)} for r in cur.fetchall()]
+
+        # --- Клиентская база: удержание/потери (командный аналог F2) ---
+        _prevc_cte = f"""
+            WITH PrevC AS (
+                SELECT s.fCUSTOMERID AS cust, {rev_expr} AS rev
+                FROM SALES s WITH (NOLOCK){rev_join}
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
+                  {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
+                GROUP BY s.fCUSTOMERID
+            ),
+            CurC AS (
+                SELECT DISTINCT s.fCUSTOMERID AS cust FROM SALES s WITH (NOLOCK)
+                WHERE s.fSTATE=2 AND s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            )"""
+        _prevc_params = (prev_from, prev_to) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp + (date_from, date_to)
+        cur.execute(f"""{_prevc_cte}
+            SELECT COUNT(*) AS base,
+                   SUM(CASE WHEN cc.cust IS NULL THEN 1 ELSE 0 END) AS lost,
+                   ISNULL(SUM(CASE WHEN cc.cust IS NULL THEN p.rev ELSE 0 END),0) AS lostRev
+            FROM PrevC p LEFT JOIN CurC cc ON cc.cust = p.cust
+        """, _prevc_params)
+        _r = cur.fetchone()
+        ret_base, lost_cnt, lost_rev = int(_r.base or 0), int(_r.lost or 0), float(_r.lostRev or 0)
+        retention = round((ret_base - lost_cnt) / ret_base * 100, 1) if ret_base else None
+
+        cur.execute(f"""{_prevc_cte}
+            SELECT TOP 12 cst.fID AS id, cst.fCODE AS code, cst.fNAME AS name,
+                   cst.fPHONE AS phone, cst.fADDRESS AS address, p.rev AS rev
+            FROM PrevC p
+            LEFT JOIN CurC cc ON cc.cust = p.cust
+            INNER JOIN CUSTOMERS cst WITH (NOLOCK) ON cst.fID = p.cust
+            WHERE cc.cust IS NULL
+            ORDER BY p.rev DESC
+        """, _prevc_params)
+        top_lost = [{"id": r.id, "code": r.code, "name": r.name,
+                     "phone": (r.phone or "").strip(), "address": (r.address or "").strip(),
+                     "rev": float(r.rev or 0)} for r in cur.fetchall()]
+
+        # --- Новые клиенты (первая продажа в истории — в периоде) и их выручка ---
+        cur.execute(f"""
+            WITH firsts AS (SELECT fCUSTOMERID, MIN(fDATE) AS firstsale FROM SALES WITH (NOLOCK)
+                            WHERE fSTATE=2 GROUP BY fCUSTOMERID)
+            SELECT COUNT(DISTINCT s.fCUSTOMERID) AS n, {rev_expr} AS rev
+            FROM firsts f
+            INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID=f.fCUSTOMERID{rev_join}
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+            WHERE f.firstsale>=? AND f.firstsale < DATEADD(day, 1, CAST(? AS DATE))
+              AND s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
+              {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
+        """, (date_from, date_to, date_from, date_to) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp)
+        _r = cur.fetchone()
+        new_cnt, new_rev = int(_r.n or 0), float(_r.rev or 0)
+
+        # --- Концентрация: топ-5 клиентов по выручке периода ---
+        cur.execute(f"""
+            SELECT TOP 5 c.fID AS id, c.fCODE AS code, c.fNAME AS name, c.fPHONE AS phone, {rev_expr} AS rev
+            FROM SALES s WITH (NOLOCK){rev_join}
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+            WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
+              {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
+            GROUP BY c.fID, c.fCODE, c.fNAME, c.fPHONE
+            ORDER BY rev DESC
+        """, (date_from, date_to) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp)
+        top_cust = [{"id": r.id, "code": r.code, "name": r.name, "phone": (r.phone or "").strip(),
+                     "rev": float(r.rev or 0)} for r in cur.fetchall()]
+        top5_sum = sum(x["rev"] for x in top_cust)
+        top5_share = round(top5_sum / tot_cur["revenue"] * 100, 1) if tot_cur["revenue"] else None
+
+        # --- Территории: текущий период vs год назад (like-for-like), для поиска «дыр» ---
+        cur.execute(f"""
+            WITH CustArea AS (
+                SELECT fCUSTOMERID AS cust, fSALESAREA AS area FROM (
+                    SELECT csa.fCUSTOMERID, csa.fSALESAREA,
+                           ROW_NUMBER() OVER (PARTITION BY csa.fCUSTOMERID ORDER BY csa.fDEFAULT DESC, csa.fSALESAREA) AS rn
+                    FROM CUSTOMERSALESAREAS csa WITH (NOLOCK)
+                    WHERE 1=1 {ta_csa_w}
+                ) x WHERE rn=1
+            )
+            SELECT ca.area AS area, t.fCAPTION AS cap,
+                   ISNULL(SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) THEN {rev_val} ELSE 0 END),0) AS revCur,
+                   ISNULL(SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) THEN {rev_val} ELSE 0 END),0) AS revLy
+            FROM CustArea ca
+            INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = ca.cust{rev_join}
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+            LEFT JOIN TREES t WITH (NOLOCK) ON t.fCODE = ca.area AND t.fTREEID='SArea'
+            WHERE s.fSTATE=2
+              AND ((s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)))
+                OR (s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))))
+              {excluded_filter}{sc_w}{sd_w}{rev_pgw}
+            GROUP BY ca.area, t.fCAPTION
+        """, ta_csa_p + (date_from, date_to, ly_from, ly_to_asof)
+           + (date_from, date_to, ly_from, ly_to_asof) + excluded_params + sc_p + sd_p + rev_pgp)
+        area_rows = [{"area": str(r.area), "name": (r.cap or str(r.area)),
+                      "cur": float(r.revCur or 0), "ly": float(r.revLy or 0)} for r in cur.fetchall()]
+        _fill_contact_phones(cur, top_overdue)
+        _fill_contact_phones(cur, top_lost)
+        _fill_contact_phones(cur, top_cust)
+        conn.close()
+
+        # ================= Производные показатели =================
+        rev = tot_cur["revenue"]
+        yoy = round((rev / tot_ly["revenue"] - 1) * 100, 1) if tot_ly["revenue"] else None
+        prev_delta = round((rev / tot_prev["revenue"] - 1) * 100, 1) if tot_prev["revenue"] else None
+        plan_asof = tot_ly["revenue"] * (1 + plan_growth / 100.0) if tot_ly["revenue"] else None
+        plan_full = tot_ly_full["revenue"] * (1 + plan_growth / 100.0) if tot_ly_full["revenue"] else None
+        plan_fact = round(rev / plan_asof * 100, 1) if plan_asof else None
+
+        forecast = round(rev / elapsed_days * period_days) if (incomplete and rev) else None
+
+        collect_rate = round(collected / rev * 100, 1) if rev else None
+        returns_rate = round(returns_sum / rev * 100, 2) if rev else None
+
+        # ================= Индекс здоровья (0–100) — общий хелпер =================
+        components, health_score, verdict = _kpi_health_score({
+            "yoy": yoy, "plan_fact": plan_fact, "collect_rate": collect_rate,
+            "dso": dso, "retention": retention, "returns_rate": returns_rate})
+
+        # ================= Автодиагностика: «где дыра» (в деньгах) =================
+        findings = []
+        def _find(sev, icon, title, impact, detail):
+            findings.append({"sev": sev, "icon": icon, "title": title,
+                             "impact": round(impact) if impact else None, "detail": detail})
+
+        if plan_asof and plan_fact is not None and plan_fact < 95:
+            _find("bad" if plan_fact < 85 else "warn", "fa-bullseye",
+                  "Պլանի թերակատարում", plan_asof - rev,
+                  f"Փաստ {_famd(rev)} ֏ · պլան {_famd(plan_asof)} ֏ ({plan_fact}%)")
+        if incomplete and plan_full and forecast is not None and forecast < plan_full * 0.97:
+            _find("warn", "fa-chart-line",
+                  "Կանխատեսվող պակասուրդ մինչև շրջանի վերջ", plan_full - forecast,
+                  f"Ընթացիկ տեմպով՝ {_famd(forecast)} ֏, պլան՝ {_famd(plan_full)} ֏")
+        if yoy is not None and yoy < -3:
+            _find("bad" if yoy <= -15 else "warn", "fa-arrow-trend-down",
+                  "Հասույթի անկում նախորդ տարվա նկատմամբ", tot_ly["revenue"] - rev,
+                  f"YoY {yoy}% · անցյալ տարի՝ {_famd(tot_ly['revenue'])} ֏")
+        if debt_delta is not None and rev > 0 and debt_delta > 0.05 * rev:
+            _find("bad" if debt_delta > 0.15 * rev else "warn", "fa-hand-holding-dollar",
+                  "Պարտքը աճել է ժամանակահատվածում", debt_delta,
+                  f"+{_famd(debt_delta)} ֏ ({round(debt_delta / rev * 100)}% հասույթի)")
+        if aging90 > 0 and debt_net > 0 and aging90 > 0.10 * debt_net:
+            _sh = round(aging90 / debit_now * 100) if debit_now else 0
+            _top = f" · խոշորագույնը՝ {top_overdue[0]['name']} ({_famd(top_overdue[0]['amt'])} ֏)" if top_overdue else ""
+            _find("bad" if aging90 > 0.25 * debt_net else "warn", "fa-hourglass-end",
+                  "Հին պարտք (90+ օր)", aging90,
+                  f"Դեբետի {_sh}%-ը 90 օրից հին է{_top}")
+        if collect_rate is not None and collect_rate < 85:
+            _find("bad" if collect_rate < 70 else "warn", "fa-sack-xmark",
+                  "Թույլ հավաքագրում", 0.85 * rev - collected,
+                  f"Հավաքագրվել է հասույթի {collect_rate}%-ը (թիրախ ≥85%)")
+        if lost_cnt > 0 and rev > 0 and lost_rev > 0.03 * rev:
+            _top = f" · խոշորագույնը՝ {top_lost[0]['name']}" if top_lost else ""
+            _find("bad" if lost_rev > 0.10 * rev else "warn", "fa-user-slash",
+                  f"Կորած հաճախորդներ՝ {lost_cnt}", lost_rev,
+                  f"Նախորդ շրջանում գնել են {_famd(lost_rev)} ֏, հիմա՝ ոչինչ{_top}")
+        if returns_rate is not None and returns_rate > 2:
+            _find("bad" if returns_rate > 5 else "warn", "fa-rotate-left",
+                  "Բարձր վերադարձեր", returns_sum,
+                  f"{returns_rate}% հասույթի (թիրախ ≤2%)")
+        if top5_share is not None and top5_share > 30:
+            _find("bad" if top5_share > 50 else "warn", "fa-scale-unbalanced",
+                  "Կախվածություն խոշոր հաճախորդներից", top5_sum,
+                  f"Թոփ-5 հաճախորդը տալիս է հասույթի {top5_share}%-ը")
+        _drops = sorted((a for a in area_rows if a["ly"] > 0 and a["cur"] < a["ly"]), key=lambda a: a["cur"] - a["ly"])
+        for a in _drops[:2]:
+            drop = a["ly"] - a["cur"]
+            if rev > 0 and drop > 0.02 * rev:
+                pct = round((a["cur"] / a["ly"] - 1) * 100, 1)
+                _find("bad" if pct <= -30 else "warn", "fa-map-location-dot",
+                      f"Անկում տարածքում՝ {a['name']}", drop,
+                      f"{_famd(a['ly'])} ֏ → {_famd(a['cur'])} ֏ ({pct}%)")
+        findings.sort(key=lambda f: (0 if f["sev"] == "bad" else 1, -(f["impact"] or 0)))
+        findings = findings[:8]
+
+        return jsonify(_kpi_cache_set(_ck, {
+            "success": True,
+            "period": {"date_from": date_from, "date_to": date_to, "asof": asof,
+                       "days": period_days, "elapsed": elapsed_days, "incomplete": incomplete},
+            "health": {"score": health_score, "verdict": verdict, "components": components},
+            "pulse": {"daily": daily_cur, "dailyLy": daily_ly, "lyFrom": ly_from, "lyDays": ly_days,
+                      "forecast": forecast, "planFull": round(plan_full) if plan_full else None},
+            "revenue": {"cur": round(rev), "prev": round(tot_prev["revenue"]), "ly": round(tot_ly["revenue"]),
+                        "lyFull": round(tot_ly_full["revenue"]), "yoy": yoy, "prevDelta": prev_delta,
+                        "plan": round(plan_asof) if plan_asof else None, "planFact": plan_fact,
+                        "salesCount": tot_cur["salesCount"], "avgCheck": round(tot_cur["avgCheck"])},
+            "cash": {"collected": round(collected), "collectRate": collect_rate,
+                     "debt": round(debt_net), "debtDebit": round(debit_now), "debtDelta": round(debt_delta) if debt_delta is not None else None,
+                     "dso": dso, "aging": aging, "topOverdue": top_overdue,
+                     "debtAsOf": debt_asof,
+                     "debtAsOfApprox": bool(debt_asof < datetime.now().strftime('%Y-%m-%d'))},
+            "customers": {"active": tot_cur["activeCustomers"], "activeLy": tot_ly["activeCustomers"],
+                          "new": new_cnt, "newRev": round(new_rev),
+                          "lost": lost_cnt, "lostRev": round(lost_rev), "retention": retention,
+                          "retentionBase": ret_base, "topLost": top_lost,
+                          "top5": top_cust, "top5Share": top5_share},
+            "returns": {"sum": round(returns_sum), "count": returns_cnt, "rate": returns_rate},
+            "findings": findings,
+        }))
+
+    except Exception as e:
+        logger.error(f"Ошибка получения пульса бизнеса: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/managers/kpi/health/areas')
+def api_managers_kpi_health_areas():
+    """API: «Пульс бизнеса» в разрезе ТЕРРИТОРИЙ: по каждой территории — здоровье (0–100),
+    выручка/YoY/план, сбор, долг + Δ + DSO + старый долг 90+, клиенты/потери/удержание и
+    чипы проблем. Клиент атрибутируется ОДНОЙ территории (fDEFAULT приоритетно) — без задвоения.
+    Фильтры/формулы = /api/managers/kpi/health (та же настройка, окна like-for-like). READ-ONLY."""
+    try:
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        if not date_from or not date_to:
+            today = datetime.now()
+            date_from = today.replace(day=1).strftime('%Y-%m-%d')
+            last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            date_to = last_day.strftime('%Y-%m-%d')
+
+        try:
+            plan_growth = float(request.args.get('plan_growth', 0) or 0)
+        except (TypeError, ValueError):
+            plan_growth = 0.0
+        plan_growth = max(-100.0, min(1000.0, plan_growth))
+
+        try:
+            debt_lag_days = int(request.args.get('debt_lag_days', 0) or 0)
+        except (TypeError, ValueError):
+            debt_lag_days = 0
+        debt_lag_days = max(0, min(60, debt_lag_days))
+
+        _ck = "areas|%s|%s|%s|%s|%s" % (date_from, date_to, plan_growth, debt_lag_days, _kpi_files_fingerprint())
+        _hit = _kpi_cache_get(_ck)
+        if _hit is not None:
+            return jsonify(_hit)
+
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        def _excl(custid_expr):
+            return excluded_filter.replace('c.fID', custid_expr)
+
+        sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)
+        dc = _kpi_load_list(KPI_DEBT_CLIENT_GROUPS_FILE)
+        sd = _kpi_load_list(KPI_SALES_DIVISIONS_FILE)
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)
+
+        def grp_where(sel):
+            if not sel:
+                return "", ()
+            return " AND c.fGROUP IN (%s)" % ','.join('?' * len(sel)), tuple(sel)
+
+        def cust_join(sel, custid_expr):
+            if not sel:
+                return ""
+            return " INNER JOIN CUSTOMERS c WITH (NOLOCK) ON %s = c.fID" % custid_expr
+
+        def div_where(alias, sel):
+            if not sel:
+                return "", ()
+            return (" AND %s.fSALESAGENTID IN (SELECT DISTINCT fSALESAGENTID FROM SALESAGENTDIVISIONS WITH (NOLOCK) WHERE fDIVISION IN (%s))"
+                    % (alias, ','.join('?' * len(sel))), tuple(sel))
+
+        sc_w, sc_p = grp_where(sc)
+        dc_w, dc_p = grp_where(dc)
+        sd_w, sd_p = div_where('s', sd)
+
+        if sa:
+            ta_csa_w = " AND csa.fSALESAREA IN (%s)" % ','.join('?' * len(sa))
+            ta_csa_p = tuple(sa)
+        else:
+            ta_csa_w, ta_csa_p = "", ()
+
+        if pg:
+            _pg_ph = ','.join('?' * len(pg))
+            rev_join = (" INNER JOIN SALEDOCDETAILS sdp WITH (NOLOCK) ON sdp.fISN=s.fISN"
+                        " INNER JOIN PRODUCTS pp WITH (NOLOCK) ON pp.fID=sdp.fPRODUCTID")
+            rev_pgw = " AND pp.fGROUP IN (%s)" % _pg_ph
+            rev_pgp = tuple(pg)
+            rev_expr = "ISNULL(SUM(sdp.fSUM),0)"
+            rev_val = "sdp.fSUM"
+        else:
+            rev_join, rev_pgw, rev_pgp = "", "", ()
+            rev_expr = "ISNULL(SUM(s.fTOTALSUM),0)"
+            rev_val = "s.fTOTALSUM"
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+
+        # As-of и окна — идентично /api/managers/kpi/health (like-for-like)
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE < DATEADD(day, 1, CAST(? AS DATE))", (date_to,))
+        _row = cur.fetchone()
+        _last = _row[0] if _row else None
+        asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
+        asof = max(date_from, min(asof, date_to))
+
+        d_from = datetime.strptime(date_from, '%Y-%m-%d')
+        d_to = datetime.strptime(date_to, '%Y-%m-%d')
+        d_asof = datetime.strptime(asof, '%Y-%m-%d')
+        period_days = (d_to - d_from).days + 1
+        elapsed_days = max(1, min(period_days, (d_asof - d_from).days + 1))
+        today_s = datetime.now().strftime('%Y-%m-%d')
+        incomplete = elapsed_days < period_days and date_to >= today_s
+        window_days = elapsed_days if incomplete else period_days
+
+        prev_from = (d_from - timedelta(days=window_days)).strftime('%Y-%m-%d')
+        prev_to = (d_from - timedelta(days=1)).strftime('%Y-%m-%d')
+        ly_from = _years_ago(d_from, 1).strftime('%Y-%m-%d')
+        ly_to_asof = _years_ago(d_asof, 1).strftime('%Y-%m-%d')
+
+        debt_asof = date_to
+        if debt_lag_days:
+            settled = (datetime.now() - timedelta(days=debt_lag_days)).strftime('%Y-%m-%d')
+            if settled < date_to:
+                debt_asof = settled
+
+        # Клиент → ОДНА территория (fDEFAULT приоритетно): продажи/долг/клиенты не задваиваются
+        custarea_cte = f"""
+            WITH CustArea AS (
+                SELECT fCUSTOMERID AS cust, fSALESAREA AS area FROM (
+                    SELECT csa.fCUSTOMERID, csa.fSALESAREA,
+                           ROW_NUMBER() OVER (PARTITION BY csa.fCUSTOMERID ORDER BY csa.fDEFAULT DESC, csa.fSALESAREA) AS rn
+                    FROM CUSTOMERSALESAREAS csa WITH (NOLOCK)
+                    WHERE 1=1 {ta_csa_w}
+                ) x WHERE rn=1
+            )"""
+
+        A = {}
+        def ensure(code):
+            if code not in A:
+                A[code] = {"revCur": 0.0, "revLy": 0.0, "cntCur": 0, "custCur": 0,
+                           "collected": 0.0, "returnsSum": 0.0,
+                           "debitNow": 0.0, "debitStart": 0.0, "t1": 0.0, "t2": 0.0, "aging90": 0.0,
+                           "retBase": 0, "lost": 0, "lostRev": 0.0, "newC": 0}
+            return A[code]
+
+        # 1. Продажи: текущий период и год назад (like-for-like), счётчики текущего
+        cur.execute(f"""{custarea_cte}
+            SELECT ca.area AS area,
+                   ISNULL(SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) THEN {rev_val} ELSE 0 END),0) AS revCur,
+                   ISNULL(SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) THEN {rev_val} ELSE 0 END),0) AS revLy,
+                   COUNT(DISTINCT CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) THEN s.fISN END) AS cntCur,
+                   COUNT(DISTINCT CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) THEN s.fCUSTOMERID END) AS custCur
+            FROM CustArea ca
+            INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = ca.cust{rev_join}
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+            WHERE s.fSTATE=2
+              AND ((s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)))
+                OR (s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))))
+              {excluded_filter}{sc_w}{sd_w}{rev_pgw}
+            GROUP BY ca.area
+        """, ta_csa_p + (date_from, date_to, ly_from, ly_to_asof,
+                         date_from, date_to, date_from, date_to)
+           + (date_from, date_to, ly_from, ly_to_asof) + excluded_params + sc_p + sd_p + rev_pgp)
+        for r in cur.fetchall():
+            m = ensure(str(r.area))
+            m["revCur"] = float(r.revCur or 0); m["revLy"] = float(r.revLy or 0)
+            m["cntCur"] = int(r.cntCur or 0); m["custCur"] = int(r.custCur or 0)
+
+        # 2. Сбор денег (PAY): атрибуция по клиенту → территория (единая с командным итогом)
+        dd = _kpi_load_list(KPI_DEBT_DIVISIONS_FILE)
+        dd_w, dd_p = div_where('doc', dd)
+        cur.execute(f"""{custarea_cte}
+            SELECT ca.area AS area, ISNULL(SUM(ABS(h.fSUM)),0) AS collected
+            FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON h.fDEBTDOCISN = doc.fISN
+            INNER JOIN CustArea ca ON ca.cust = doc.fCUSTOMERID
+            {cust_join(dc, 'doc.fCUSTOMERID')}
+            WHERE h.fOP='PAY' AND h.fDBCR='C' AND h.fDATE>=? AND h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+              {_excl('doc.fCUSTOMERID')}{dc_w}{dd_w}
+            GROUP BY ca.area
+        """, ta_csa_p + (date_from, date_to) + excluded_params + dc_p + dd_p)
+        for r in cur.fetchall():
+            ensure(str(r.area))["collected"] = float(r.collected or 0)
+
+        # 3. Возвраты
+        cur.execute(f"""{custarea_cte}
+            SELECT ca.area AS area, ISNULL(SUM(rt.fTOTALSUM),0) AS rs
+            FROM RETURNS rt WITH (NOLOCK)
+            INNER JOIN CustArea ca ON ca.cust = rt.fCUSTOMERID
+            {cust_join(sc, 'rt.fCUSTOMERID')}
+            WHERE rt.fDATE>=? AND rt.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND rt.fSTATE=2
+              {_excl('rt.fCUSTOMERID')}{sc_w}
+            GROUP BY ca.area
+        """, ta_csa_p + (date_from, date_to) + excluded_params + sc_p)
+        for r in cur.fetchall():
+            ensure(str(r.area))["returnsSum"] = float(r.rs or 0)
+
+        # 4. Долг: дебет на конец и на начало периода (дивизионы НЕ применяются — как в team)
+        cur.execute(f"""{custarea_cte}
+            SELECT ca.area AS area,
+                   ISNULL(SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END),0) AS debitNow,
+                   ISNULL(SUM(CASE WHEN h.fDATE < CAST(? AS DATE)
+                                   THEN (CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END) ELSE 0 END),0) AS debitStart
+            FROM DOCUMENTS doc WITH (NOLOCK)
+            INNER JOIN HICUSTOMERSDEBT h WITH (NOLOCK) ON h.fDEBTDOCISN = doc.fISN
+            INNER JOIN CustArea ca ON ca.cust = doc.fCUSTOMERID
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = doc.fCUSTOMERID
+            WHERE h.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {excluded_filter}{dc_w}
+            GROUP BY ca.area
+        """, ta_csa_p + (date_from, debt_asof) + excluded_params + dc_p)
+        for r in cur.fetchall():
+            m = ensure(str(r.area))
+            m["debitNow"] = float(r.debitNow or 0); m["debitStart"] = float(r.debitStart or 0)
+
+        # 5. Остатки Type01/Type02 (текущий снимок)
+        cur.execute(f"""{custarea_cte}
+            SELECT ca.area AS area,
+                   ISNULL(SUM(CASE WHEN r.fTYPE='01' THEN r.fSUM ELSE 0 END),0) AS t1,
+                   ISNULL(SUM(CASE WHEN r.fTYPE='02' THEN r.fSUM ELSE 0 END),0) AS t2
+            FROM HIRESTCUSTOMERSSUM r WITH (NOLOCK)
+            INNER JOIN CustArea ca ON ca.cust = r.fCUSTOMERID
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = r.fCUSTOMERID
+            WHERE 1=1 {excluded_filter}{dc_w}
+            GROUP BY ca.area
+        """, ta_csa_p + excluded_params + dc_p)
+        for r in cur.fetchall():
+            m = ensure(str(r.area))
+            m["t1"] = abs(float(r.t1 or 0)); m["t2"] = abs(float(r.t2 or 0))
+
+        # 6. Старый долг 90+ (непогашенный остаток дебетовых документов старше 90 дней)
+        cur.execute(f"""{custarea_cte},
+            DocBal AS (
+                SELECT h.fDEBTDOCISN AS isn,
+                       SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END) AS bal
+                FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+                WHERE h.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                GROUP BY h.fDEBTDOCISN
+                HAVING SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END) > 0.005
+            )
+            SELECT ca.area AS area, ISNULL(SUM(db.bal),0) AS amt90
+            FROM DocBal db
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON doc.fISN = db.isn
+            INNER JOIN CustArea ca ON ca.cust = doc.fCUSTOMERID
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = doc.fCUSTOMERID
+            WHERE DATEDIFF(day, doc.fDATE, CAST(? AS DATE)) > 90 {excluded_filter}{dc_w}
+            GROUP BY ca.area
+        """, ta_csa_p + (debt_asof, debt_asof) + excluded_params + dc_p)
+        for r in cur.fetchall():
+            ensure(str(r.area))["aging90"] = float(r.amt90 or 0)
+
+        # 7. Удержание/потери: клиенты предыдущего окна (like-for-like) по территориям
+        cur.execute(f"""{custarea_cte},
+            PrevC AS (
+                SELECT s.fCUSTOMERID AS cust, {rev_expr} AS rev
+                FROM SALES s WITH (NOLOCK){rev_join}
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
+                  {excluded_filter}{sc_w}{sd_w}{rev_pgw}
+                GROUP BY s.fCUSTOMERID
+            ),
+            CurC AS (
+                SELECT DISTINCT fCUSTOMERID AS cust FROM SALES WITH (NOLOCK)
+                WHERE fSTATE=2 AND fDATE>=? AND fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            )
+            SELECT ca.area AS area, COUNT(*) AS base,
+                   SUM(CASE WHEN cc.cust IS NULL THEN 1 ELSE 0 END) AS lost,
+                   ISNULL(SUM(CASE WHEN cc.cust IS NULL THEN p.rev ELSE 0 END),0) AS lostRev
+            FROM PrevC p
+            INNER JOIN CustArea ca ON ca.cust = p.cust
+            LEFT JOIN CurC cc ON cc.cust = p.cust
+            GROUP BY ca.area
+        """, ta_csa_p + (prev_from, prev_to) + excluded_params + sc_p + sd_p + rev_pgp + (date_from, date_to))
+        for r in cur.fetchall():
+            m = ensure(str(r.area))
+            m["retBase"] = int(r.base or 0); m["lost"] = int(r.lost or 0); m["lostRev"] = float(r.lostRev or 0)
+
+        # 8. Новые клиенты (первая продажа в истории — в периоде)
+        cur.execute(f"""{custarea_cte},
+            firsts AS (SELECT fCUSTOMERID, MIN(fDATE) AS firstsale FROM SALES WITH (NOLOCK)
+                       WHERE fSTATE=2 GROUP BY fCUSTOMERID)
+            SELECT ca.area AS area, COUNT(DISTINCT s.fCUSTOMERID) AS n
+            FROM firsts f
+            INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = f.fCUSTOMERID{rev_join}
+            INNER JOIN CustArea ca ON ca.cust = s.fCUSTOMERID
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+            WHERE f.firstsale>=? AND f.firstsale < DATEADD(day, 1, CAST(? AS DATE))
+              AND s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
+              {excluded_filter}{sc_w}{sd_w}{rev_pgw}
+            GROUP BY ca.area
+        """, ta_csa_p + (date_from, date_to, date_from, date_to) + excluded_params + sc_p + sd_p + rev_pgp)
+        for r in cur.fetchall():
+            ensure(str(r.area))["newC"] = int(r.n or 0)
+
+        # Названия территорий
+        cur.execute("SELECT fCODE, fCAPTION FROM TREES WITH (NOLOCK) WHERE fTREEID='SArea'")
+        area_names = {str(r.fCODE): (r.fCAPTION or str(r.fCODE)) for r in cur.fetchall()}
+        conn.close()
+
+        # ================= Метрики, индекс здоровья и чипы проблем по территориям =================
+        rows = []
+        for code, m in A.items():
+            rev = m["revCur"]
+            debt_net = m["debitNow"] - m["t1"] - m["t2"]
+            # «Мёртвая» территория — ни одной операции за период и ни остатка долга. Проверяем ВСЕ
+            # денежные оси (продажи/сбор/возвраты/долг/старый долг/база удержания), иначе территория
+            # только со сбором или возвратами выпала бы из строк и из totals (сумма ≠ команде).
+            if (rev == 0 and m["revLy"] == 0 and abs(debt_net) < 1 and m["retBase"] == 0
+                    and m["collected"] == 0 and m["returnsSum"] == 0 and m["aging90"] == 0):
+                continue
+            yoy = round((rev / m["revLy"] - 1) * 100, 1) if m["revLy"] else None
+            plan = m["revLy"] * (1 + plan_growth / 100.0) if m["revLy"] else None
+            plan_fact = round(rev / plan * 100, 1) if plan else None
+            collect_rate = round(m["collected"] / rev * 100, 1) if rev else None
+            returns_rate = round(m["returnsSum"] / rev * 100, 2) if rev else None
+            debt_delta = (m["debitNow"] - m["debitStart"]) if debt_asof >= date_from else None
+            dso = round(max(0.0, debt_net) / rev * window_days, 1) if rev > 0 else None
+            retention = round((m["retBase"] - m["lost"]) / m["retBase"] * 100, 1) if m["retBase"] else None
+            aging90_share = round(m["aging90"] / debt_net * 100, 1) if debt_net > 0 else None
+
+            # Индекс здоровья территории — тот же хелпер, что команда/деталь (без дрейфа порогов)
+            _, score, _ = _kpi_health_score({
+                "yoy": yoy, "plan_fact": plan_fact, "collect_rate": collect_rate,
+                "dso": dso, "retention": retention, "returns_rate": returns_rate})
+
+            # Чипы проблем (bad важнее warn), в деньгах/процентах
+            issues = []
+            def _iss(sev, label):
+                issues.append({"sev": sev, "label": label})
+            if plan_fact is not None:
+                if plan_fact < 85: _iss("bad", f"Պլան {plan_fact}%")
+                elif plan_fact < 95: _iss("warn", f"Պլան {plan_fact}%")
+            if yoy is not None:
+                if yoy <= -15: _iss("bad", f"YoY {yoy}%")
+                elif yoy < -3: _iss("warn", f"YoY {yoy}%")   # порог = командной диагностике
+            if collect_rate is not None:
+                if collect_rate < 70: _iss("bad", f"Հավաք. {collect_rate}%")
+                elif collect_rate < 85: _iss("warn", f"Հավաք. {collect_rate}%")
+            if dso is not None:
+                if dso > 60: _iss("bad", f"DSO {dso}")
+                elif dso > 45: _iss("warn", f"DSO {dso}")
+            # Доля старого долга — от ЧИСТОГО долга (debt_net = aging90_share), как в командной
+            # диагностике, а не от дебета: иначе при больших переплатах территория недо-предупреждала бы.
+            if aging90_share is not None and m["aging90"] > 0:
+                if aging90_share > 25: _iss("bad", f"90+․ {aging90_share}%")
+                elif aging90_share > 10: _iss("warn", f"90+․ {aging90_share}%")
+            if debt_delta is not None and rev > 0 and debt_delta > 0.05 * rev:
+                _iss("bad" if debt_delta > 0.15 * rev else "warn", f"Պարտք +{_famd(debt_delta)}")
+            if rev > 0 and m["lostRev"] > 0.03 * rev:
+                _iss("bad" if m["lostRev"] > 0.10 * rev else "warn", f"Կորուստ {_famd(m['lostRev'])} ֏")
+            if returns_rate is not None and returns_rate > 2:
+                _iss("bad" if returns_rate > 5 else "warn", f"Վերադարձ {returns_rate}%")
+            issues.sort(key=lambda i: 0 if i["sev"] == "bad" else 1)
+            issues = issues[:4]
+
+            rows.append({
+                "code": code, "name": area_names.get(code, code),
+                "score": score,
+                "status": None if score is None else ("ok" if score >= 80 else ("warn" if score >= 50 else "bad")),
+                # Малая выборка: балл территории с единичными продажами — шум (не сравнивать всерьёз)
+                "lowData": m["cntCur"] < KPI_AREA_MIN_SALES,
+                "revenue": round(rev), "revenueLy": round(m["revLy"]), "yoy": yoy,
+                "salesCount": m["cntCur"], "activeCustomers": m["custCur"],
+                "plan": round(plan) if plan else None, "planFact": plan_fact,
+                "collected": round(m["collected"]), "collectRate": collect_rate,
+                "debt": round(debt_net), "debtDebit": round(m["debitNow"]),
+                "debtDelta": round(debt_delta) if debt_delta is not None else None,
+                "dso": dso, "aging90": round(m["aging90"]), "aging90Share": aging90_share,
+                "newCustomers": m["newC"], "lostCustomers": m["lost"], "lostRev": round(m["lostRev"]),
+                "retention": retention, "returnsRate": returns_rate,
+                "issues": issues,
+            })
+
+        # Дыры сверху: худший балл первым, территории без балла — в конец
+        rows.sort(key=lambda r: (r["score"] is None, r["score"] if r["score"] is not None else 0))
+
+        totals = {
+            "areas": len(rows),
+            "revenue": round(sum(r["revenue"] for r in rows)),
+            "debt": round(sum(r["debt"] for r in rows)),
+            "collected": round(sum(r["collected"] for r in rows)),
+            "lost": sum(r["lostCustomers"] for r in rows),
+            "aging90": round(sum(r["aging90"] for r in rows)),
+        }
+        return jsonify(_kpi_cache_set(_ck, {"success": True,
+                        "period": {"date_from": date_from, "date_to": date_to, "asof": asof,
+                                   "days": period_days, "elapsed": elapsed_days, "incomplete": incomplete},
+                        "areas": rows, "totals": totals}))
+
+    except Exception as e:
+        logger.error(f"Ошибка получения пульса территорий: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/managers/kpi/health/areas/detail')
+def api_managers_kpi_health_area_detail():
+    """API: обширный диагноз ОДНОЙ территории — все метрики, компоненты здоровья, «где дыра»
+    (в деньгах), разбивка долга/старения, топ должников/потерь/клиентов, менеджеры зоны и
+    дневной пульс. Клиент атрибутируется одной зоне (fDEFAULT). Фильтры/формулы = /health/areas."""
+    try:
+        code = request.args.get('code')
+        if not code:
+            return jsonify({"success": False, "error": "code required"}), 400
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        if not date_from or not date_to:
+            today = datetime.now()
+            date_from = today.replace(day=1).strftime('%Y-%m-%d')
+            last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            date_to = last_day.strftime('%Y-%m-%d')
+        try:
+            plan_growth = float(request.args.get('plan_growth', 0) or 0)
+        except (TypeError, ValueError):
+            plan_growth = 0.0
+        plan_growth = max(-100.0, min(1000.0, plan_growth))
+        try:
+            debt_lag_days = int(request.args.get('debt_lag_days', 0) or 0)
+        except (TypeError, ValueError):
+            debt_lag_days = 0
+        debt_lag_days = max(0, min(60, debt_lag_days))
+
+        _ck = "detail|%s|%s|%s|%s|%s|%s" % (code, date_from, date_to, plan_growth, debt_lag_days, _kpi_files_fingerprint())
+        _hit = _kpi_cache_get(_ck)
+        if _hit is not None:
+            return jsonify(_hit)
+
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        def _excl(custid_expr):
+            return excluded_filter.replace('c.fID', custid_expr)
+
+        sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)
+        dc = _kpi_load_list(KPI_DEBT_CLIENT_GROUPS_FILE)
+        sd = _kpi_load_list(KPI_SALES_DIVISIONS_FILE)
+        dd = _kpi_load_list(KPI_DEBT_DIVISIONS_FILE)
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)
+
+        def grp_where(sel):
+            if not sel:
+                return "", ()
+            return " AND c.fGROUP IN (%s)" % ','.join('?' * len(sel)), tuple(sel)
+
+        def cust_join(sel, custid_expr):
+            if not sel:
+                return ""
+            return " INNER JOIN CUSTOMERS c WITH (NOLOCK) ON %s = c.fID" % custid_expr
+
+        def div_where(alias, sel):
+            if not sel:
+                return "", ()
+            return (" AND %s.fSALESAGENTID IN (SELECT DISTINCT fSALESAGENTID FROM SALESAGENTDIVISIONS WITH (NOLOCK) WHERE fDIVISION IN (%s))"
+                    % (alias, ','.join('?' * len(sel))), tuple(sel))
+
+        sc_w, sc_p = grp_where(sc)
+        dc_w, dc_p = grp_where(dc)
+        sd_w, sd_p = div_where('s', sd)
+        dd_w, dd_p = div_where('doc', dd)
+        if sa:
+            ta_csa_w = " AND csa.fSALESAREA IN (%s)" % ','.join('?' * len(sa))
+            ta_csa_p = tuple(sa)
+        else:
+            ta_csa_w, ta_csa_p = "", ()
+
+        if pg:
+            _pg_ph = ','.join('?' * len(pg))
+            rev_join = (" INNER JOIN SALEDOCDETAILS sdp WITH (NOLOCK) ON sdp.fISN=s.fISN"
+                        " INNER JOIN PRODUCTS pp WITH (NOLOCK) ON pp.fID=sdp.fPRODUCTID")
+            rev_pgw = " AND pp.fGROUP IN (%s)" % _pg_ph
+            rev_pgp = tuple(pg)
+            rev_expr = "ISNULL(SUM(sdp.fSUM),0)"
+            rev_val = "sdp.fSUM"
+        else:
+            rev_join, rev_pgw, rev_pgp = "", "", ()
+            rev_expr = "ISNULL(SUM(s.fTOTALSUM),0)"
+            rev_val = "s.fTOTALSUM"
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE < DATEADD(day, 1, CAST(? AS DATE))", (date_to,))
+        _row = cur.fetchone()
+        _last = _row[0] if _row else None
+        asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
+        asof = max(date_from, min(asof, date_to))
+
+        d_from = datetime.strptime(date_from, '%Y-%m-%d')
+        d_to = datetime.strptime(date_to, '%Y-%m-%d')
+        d_asof = datetime.strptime(asof, '%Y-%m-%d')
+        period_days = (d_to - d_from).days + 1
+        elapsed_days = max(1, min(period_days, (d_asof - d_from).days + 1))
+        today_s = datetime.now().strftime('%Y-%m-%d')
+        incomplete = elapsed_days < period_days and date_to >= today_s
+        window_days = elapsed_days if incomplete else period_days
+
+        prev_from = (d_from - timedelta(days=window_days)).strftime('%Y-%m-%d')
+        prev_to = (d_from - timedelta(days=1)).strftime('%Y-%m-%d')
+        ly_from = _years_ago(d_from, 1).strftime('%Y-%m-%d')
+        ly_to_asof = _years_ago(d_asof, 1).strftime('%Y-%m-%d')
+        ly_to_full = _years_ago(d_to, 1).strftime('%Y-%m-%d')
+        ly_days = (datetime.strptime(ly_to_full, '%Y-%m-%d') - datetime.strptime(ly_from, '%Y-%m-%d')).days + 1
+
+        debt_asof = date_to
+        if debt_lag_days:
+            settled = (datetime.now() - timedelta(days=debt_lag_days)).strftime('%Y-%m-%d')
+            if settled < date_to:
+                debt_asof = settled
+
+        # CTE: клиенты, чья ОСНОВНАЯ территория (fDEFAULT) = запрошенная (совпадает с атрибуцией списка)
+        ca_cte = f"""
+            WITH CustArea AS (
+                SELECT cust, area FROM (
+                    SELECT csa.fCUSTOMERID AS cust, csa.fSALESAREA AS area,
+                           ROW_NUMBER() OVER (PARTITION BY csa.fCUSTOMERID ORDER BY csa.fDEFAULT DESC, csa.fSALESAREA) AS rn
+                    FROM CUSTOMERSALESAREAS csa WITH (NOLOCK)
+                    WHERE 1=1 {ta_csa_w}
+                ) x WHERE rn=1 AND area = ?
+            )"""
+        ca_p = ta_csa_p + (code,)
+
+        # ID клиентов зоны материализуем один раз: подстановка IN (...) вместо джойна CTE в каждый
+        # запрос даёт индексные seek'и (иначе оптимизатор при GROUP BY по продажам с join
+        # SALEDOCDETAILS брал план со сканом на десятки секунд).
+        cur.execute(f"""{ca_cte} SELECT cust FROM CustArea""", ca_p)
+        area_custs = [r.cust for r in cur.fetchall()]
+        if not area_custs:
+            conn.close()
+            return jsonify({"success": True, "code": code,
+                            "name": request.args.get('name') or code, "empty": True,
+                            "period": {"date_from": date_from, "date_to": date_to, "asof": asof,
+                                       "days": period_days, "elapsed": elapsed_days, "incomplete": incomplete}})
+        _cin = ','.join('?' * len(area_custs))
+        _cinp = tuple(area_custs)
+
+        # 1. Продажи: cur / LY(asof) / LY(full) / prev + счётчики
+        cur.execute(f"""{ca_cte}
+            SELECT
+              ISNULL(SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE)) THEN {rev_val} ELSE 0 END),0) AS revCur,
+              ISNULL(SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE)) THEN {rev_val} ELSE 0 END),0) AS revLy,
+              ISNULL(SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE)) THEN {rev_val} ELSE 0 END),0) AS revLyFull,
+              ISNULL(SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE)) THEN {rev_val} ELSE 0 END),0) AS revPrev,
+              COUNT(DISTINCT CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE)) THEN s.fISN END) AS cntCur,
+              COUNT(DISTINCT CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE)) THEN s.fCUSTOMERID END) AS custCur,
+              COUNT(DISTINCT CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE)) THEN s.fCUSTOMERID END) AS custLy
+            FROM CustArea ca
+            INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID=ca.cust{rev_join}
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+            WHERE s.fSTATE=2 AND ((s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE)))
+               OR (s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE)))
+               OR (s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE))))
+              {excluded_filter}{sc_w}{sd_w}{rev_pgw}
+        """, ca_p + (date_from, date_to, ly_from, ly_to_asof, ly_from, ly_to_full, prev_from, prev_to,
+                     date_from, date_to, date_from, date_to, ly_from, ly_to_asof)
+           + (date_from, date_to, ly_from, ly_to_full, prev_from, prev_to)
+           + excluded_params + sc_p + sd_p + rev_pgp)
+        r = cur.fetchone()
+        revCur = float(r.revCur or 0); revLy = float(r.revLy or 0)
+        revLyFull = float(r.revLyFull or 0); revPrev = float(r.revPrev or 0)
+        cntCur = int(r.cntCur or 0); custCur = int(r.custCur or 0); custLy = int(r.custLy or 0)
+
+        # Дневной пульс: cur и тот же период год назад
+        def _daily(dfrom, dto):
+            cur.execute(f"""
+                SELECT CAST(s.fDATE AS DATE) AS d, {rev_expr} AS rev
+                FROM SALES s WITH (NOLOCK){rev_join}
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fSTATE=2 AND s.fCUSTOMERID IN ({_cin})
+                  AND s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE))
+                  {excluded_filter}{sc_w}{sd_w}{rev_pgw}
+                GROUP BY CAST(s.fDATE AS DATE) ORDER BY d
+            """, _cinp + (dfrom, dto) + excluded_params + sc_p + sd_p + rev_pgp)
+            return [{"d": (x.d.strftime('%Y-%m-%d') if hasattr(x.d, 'strftime') else str(x.d)[:10]),
+                     "rev": float(x.rev or 0)} for x in cur.fetchall()]
+        daily_cur = _daily(date_from, date_to)
+        daily_ly = _daily(ly_from, ly_to_full)
+
+        # 2. Сбор денег (PAY)
+        cur.execute(f"""{ca_cte}
+            SELECT ISNULL(SUM(ABS(h.fSUM)),0)
+            FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON h.fDEBTDOCISN=doc.fISN
+            INNER JOIN CustArea ca ON ca.cust=doc.fCUSTOMERID
+            {cust_join(dc, 'doc.fCUSTOMERID')}
+            WHERE h.fOP='PAY' AND h.fDBCR='C' AND h.fDATE>=? AND h.fDATE < DATEADD(day,1,CAST(? AS DATE))
+              {_excl('doc.fCUSTOMERID')}{dc_w}{dd_w}
+        """, ca_p + (date_from, date_to) + excluded_params + dc_p + dd_p)
+        collected = float(cur.fetchone()[0] or 0)
+
+        # 3. Возвраты
+        cur.execute(f"""{ca_cte}
+            SELECT COUNT(*) AS rc, ISNULL(SUM(rt.fTOTALSUM),0) AS rs
+            FROM RETURNS rt WITH (NOLOCK)
+            INNER JOIN CustArea ca ON ca.cust=rt.fCUSTOMERID
+            {cust_join(sc, 'rt.fCUSTOMERID')}
+            WHERE rt.fDATE>=? AND rt.fDATE < DATEADD(day,1,CAST(? AS DATE)) AND rt.fSTATE=2
+              {_excl('rt.fCUSTOMERID')}{sc_w}
+        """, ca_p + (date_from, date_to) + excluded_params + sc_p)
+        _r = cur.fetchone()
+        returns_cnt, returns_sum = int(_r.rc or 0), float(_r.rs or 0)
+
+        # 4. Долг: дебет на конец и на начало периода
+        cur.execute(f"""{ca_cte}
+            SELECT ISNULL(SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END),0) AS debitNow,
+                   ISNULL(SUM(CASE WHEN h.fDATE < CAST(? AS DATE)
+                                   THEN (CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END) ELSE 0 END),0) AS debitStart
+            FROM DOCUMENTS doc WITH (NOLOCK)
+            INNER JOIN HICUSTOMERSDEBT h WITH (NOLOCK) ON h.fDEBTDOCISN=doc.fISN
+            INNER JOIN CustArea ca ON ca.cust=doc.fCUSTOMERID
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID=doc.fCUSTOMERID
+            WHERE h.fDATE < DATEADD(day,1,CAST(? AS DATE)) {excluded_filter}{dc_w}
+        """, ca_p + (date_from, debt_asof) + excluded_params + dc_p)
+        _r = cur.fetchone()
+        debitNow = float(_r.debitNow or 0); debitStart = float(_r.debitStart or 0)
+
+        # 5. Остатки Type01/Type02
+        cur.execute(f"""{ca_cte}
+            SELECT ISNULL(SUM(CASE WHEN r.fTYPE='01' THEN r.fSUM ELSE 0 END),0),
+                   ISNULL(SUM(CASE WHEN r.fTYPE='02' THEN r.fSUM ELSE 0 END),0)
+            FROM HIRESTCUSTOMERSSUM r WITH (NOLOCK)
+            INNER JOIN CustArea ca ON ca.cust=r.fCUSTOMERID
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID=r.fCUSTOMERID
+            WHERE 1=1 {excluded_filter}{dc_w}
+        """, ca_p + excluded_params + dc_p)
+        _r = cur.fetchone()
+        t1, t2 = abs(float(_r[0] or 0)), abs(float(_r[1] or 0))
+
+        # 6. Старение дебиторки (4 корзины)
+        cur.execute(f"""{ca_cte},
+            DocBal AS (
+                SELECT h.fDEBTDOCISN AS isn, SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END) AS bal
+                FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+                WHERE h.fDATE < DATEADD(day,1,CAST(? AS DATE))
+                GROUP BY h.fDEBTDOCISN
+                HAVING SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END) > 0.005
+            )
+            SELECT b.bucket, ISNULL(SUM(db.bal),0) AS amt, COUNT(DISTINCT doc.fCUSTOMERID) AS cust
+            FROM DocBal db
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON doc.fISN=db.isn
+            INNER JOIN CustArea ca ON ca.cust=doc.fCUSTOMERID
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID=doc.fCUSTOMERID
+            CROSS APPLY (SELECT CASE WHEN DATEDIFF(day, doc.fDATE, CAST(? AS DATE)) <= 30 THEN 'b1'
+                                     WHEN DATEDIFF(day, doc.fDATE, CAST(? AS DATE)) <= 60 THEN 'b2'
+                                     WHEN DATEDIFF(day, doc.fDATE, CAST(? AS DATE)) <= 90 THEN 'b3'
+                                     ELSE 'b4' END AS bucket) b
+            WHERE 1=1 {excluded_filter}{dc_w}
+            GROUP BY b.bucket
+        """, ca_p + (debt_asof,) + (debt_asof, debt_asof, debt_asof) + excluded_params + dc_p)
+        _bmap = {x.bucket: {"amt": float(x.amt or 0), "cust": int(x.cust or 0)} for x in cur.fetchall()}
+        aging = [
+            {"bucket": "0–30",  "amt": _bmap.get('b1', {}).get('amt', 0.0), "cust": _bmap.get('b1', {}).get('cust', 0)},
+            {"bucket": "31–60", "amt": _bmap.get('b2', {}).get('amt', 0.0), "cust": _bmap.get('b2', {}).get('cust', 0)},
+            {"bucket": "61–90", "amt": _bmap.get('b3', {}).get('amt', 0.0), "cust": _bmap.get('b3', {}).get('cust', 0)},
+            {"bucket": "90+",   "amt": _bmap.get('b4', {}).get('amt', 0.0), "cust": _bmap.get('b4', {}).get('cust', 0)},
+        ]
+        aging90 = aging[3]["amt"]
+
+        # 7. Топ должников (60+)
+        cur.execute(f"""{ca_cte},
+            DocBal AS (
+                SELECT h.fDEBTDOCISN AS isn, SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END) AS bal
+                FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+                WHERE h.fDATE < DATEADD(day,1,CAST(? AS DATE))
+                GROUP BY h.fDEBTDOCISN
+                HAVING SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END) > 0.005
+            )
+            SELECT TOP 12 c.fID AS id, c.fCODE AS code, c.fNAME AS name,
+                   c.fPHONE AS phone, c.fADDRESS AS address,
+                   ISNULL(SUM(db.bal),0) AS amt,
+                   MAX(DATEDIFF(day, doc.fDATE, CAST(? AS DATE))) AS maxAge
+            FROM DocBal db
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON doc.fISN=db.isn
+            INNER JOIN CustArea ca ON ca.cust=doc.fCUSTOMERID
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID=doc.fCUSTOMERID
+            WHERE DATEDIFF(day, doc.fDATE, CAST(? AS DATE)) > 60 {excluded_filter}{dc_w}
+            GROUP BY c.fID, c.fCODE, c.fNAME, c.fPHONE, c.fADDRESS
+            ORDER BY amt DESC
+        """, ca_p + (debt_asof, debt_asof, debt_asof) + excluded_params + dc_p)
+        top_overdue = [{"id": x.id, "code": x.code, "name": x.name,
+                        "phone": (x.phone or "").strip(), "address": (x.address or "").strip(),
+                        "amt": float(x.amt or 0), "age": int(x.maxAge or 0)} for x in cur.fetchall()]
+
+        # 8. Удержание/потери
+        prevc_cte = f"""{ca_cte},
+            PrevC AS (
+                SELECT s.fCUSTOMERID AS cust, {rev_expr} AS rev
+                FROM SALES s WITH (NOLOCK){rev_join}
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE)) AND s.fSTATE=2
+                  {excluded_filter}{sc_w}{sd_w}{rev_pgw}
+                GROUP BY s.fCUSTOMERID
+            ),
+            CurC AS (
+                SELECT DISTINCT fCUSTOMERID AS cust FROM SALES WITH (NOLOCK)
+                WHERE fSTATE=2 AND fDATE>=? AND fDATE < DATEADD(day,1,CAST(? AS DATE))
+            )"""
+        prevc_p = ca_p + (prev_from, prev_to) + excluded_params + sc_p + sd_p + rev_pgp + (date_from, date_to)
+        cur.execute(f"""{prevc_cte}
+            SELECT COUNT(*) AS base,
+                   SUM(CASE WHEN cc.cust IS NULL THEN 1 ELSE 0 END) AS lost,
+                   ISNULL(SUM(CASE WHEN cc.cust IS NULL THEN p.rev ELSE 0 END),0) AS lostRev
+            FROM PrevC p
+            INNER JOIN CustArea ca ON ca.cust=p.cust
+            LEFT JOIN CurC cc ON cc.cust=p.cust
+        """, prevc_p)
+        _r = cur.fetchone()
+        ret_base, lost_cnt, lost_rev = int(_r.base or 0), int(_r.lost or 0), float(_r.lostRev or 0)
+        cur.execute(f"""{prevc_cte}
+            SELECT TOP 12 cst.fID AS id, cst.fCODE AS code, cst.fNAME AS name,
+                   cst.fPHONE AS phone, cst.fADDRESS AS address, p.rev AS rev
+            FROM PrevC p
+            INNER JOIN CustArea ca ON ca.cust=p.cust
+            LEFT JOIN CurC cc ON cc.cust=p.cust
+            INNER JOIN CUSTOMERS cst WITH (NOLOCK) ON cst.fID=p.cust
+            WHERE cc.cust IS NULL
+            ORDER BY p.rev DESC
+        """, prevc_p)
+        top_lost = [{"id": x.id, "code": x.code, "name": x.name,
+                     "phone": (x.phone or "").strip(), "address": (x.address or "").strip(),
+                     "rev": float(x.rev or 0)} for x in cur.fetchall()]
+
+        # 9. Новые клиенты: есть продажа в периоде И нет ни одной продажи ДО начала периода
+        # (эквивалент «первая продажа в истории — в периоде», но через NOT EXISTS с seek — быстро)
+        cur.execute(f"""
+            SELECT COUNT(DISTINCT s.fCUSTOMERID) AS n, {rev_expr} AS rev
+            FROM SALES s WITH (NOLOCK){rev_join}
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+            WHERE s.fSTATE=2 AND s.fCUSTOMERID IN ({_cin})
+              AND s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE))
+              AND NOT EXISTS (SELECT 1 FROM SALES p WITH (NOLOCK)
+                              WHERE p.fCUSTOMERID=s.fCUSTOMERID AND p.fSTATE=2 AND p.fDATE < CAST(? AS DATE))
+              {excluded_filter}{sc_w}{sd_w}{rev_pgw}
+        """, _cinp + (date_from, date_to, date_from) + excluded_params + sc_p + sd_p + rev_pgp)
+        _r = cur.fetchone()
+        new_cnt, new_rev = int(_r.n or 0), float(_r.rev or 0)
+
+        # 10. Топ клиентов зоны по выручке
+        cur.execute(f"""
+            SELECT TOP 8 c.fID AS id, c.fCODE AS code, c.fNAME AS name,
+                   c.fPHONE AS phone, {rev_expr} AS rev, COUNT(DISTINCT s.fISN) AS cnt
+            FROM SALES s WITH (NOLOCK){rev_join}
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+            WHERE s.fSTATE=2 AND s.fCUSTOMERID IN ({_cin})
+              AND s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE))
+              {excluded_filter}{sc_w}{sd_w}{rev_pgw}
+            GROUP BY c.fID, c.fCODE, c.fNAME, c.fPHONE
+            ORDER BY rev DESC
+        """, _cinp + (date_from, date_to) + excluded_params + sc_p + sd_p + rev_pgp)
+        top_cust = [{"id": x.id, "code": x.code, "name": x.name, "phone": (x.phone or "").strip(),
+                     "rev": float(x.rev or 0), "cnt": int(x.cnt or 0)} for x in cur.fetchall()]
+        top5_sum = sum(x["rev"] for x in top_cust[:5])
+        top5_share = round(top5_sum / revCur * 100, 1) if revCur else None
+
+        # 11. Менеджеры, продававшие в зоне за период
+        cur.execute(f"""
+            SELECT s.fSALESAGENTID AS agent, {rev_expr} AS rev,
+                   COUNT(DISTINCT s.fISN) AS cnt, COUNT(DISTINCT s.fCUSTOMERID) AS clients
+            FROM SALES s WITH (NOLOCK){rev_join}
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+            WHERE s.fSTATE=2 AND s.fCUSTOMERID IN ({_cin})
+              AND s.fDATE>=? AND s.fDATE < DATEADD(day,1,CAST(? AS DATE))
+              {excluded_filter}{sc_w}{sd_w}{rev_pgw}
+            GROUP BY s.fSALESAGENTID
+            ORDER BY rev DESC
+        """, _cinp + (date_from, date_to) + excluded_params + sc_p + sd_p + rev_pgp)
+        mgr_rows = [(x.agent, float(x.rev or 0), int(x.cnt or 0), int(x.clients or 0)) for x in cur.fetchall()]
+
+        cur.execute("SELECT fID, fCODE, fNAME FROM SALESAGENTS WITH (NOLOCK)")
+        agent_names = {a.fID: (a.fCODE, a.fNAME) for a in cur.fetchall()}
+        cur.execute("SELECT fCODE, fCAPTION FROM TREES WITH (NOLOCK) WHERE fTREEID='SArea' AND fCODE=?", (code,))
+        _tn = cur.fetchone()
+        area_name = (_tn.fCAPTION if _tn and _tn.fCAPTION else code)
+        _fill_contact_phones(cur, top_overdue)
+        _fill_contact_phones(cur, top_lost)
+        _fill_contact_phones(cur, top_cust)
+        conn.close()
+
+        managers = []
+        for aid, mrev, mcnt, mcl in mgr_rows:
+            acode, aname = agent_names.get(aid, (None, f"#{aid}"))
+            managers.append({"code": acode, "name": aname, "revenue": round(mrev),
+                             "share": round(mrev / revCur * 100, 1) if revCur else None,
+                             "salesCount": mcnt, "customers": mcl})
+
+        # ================= Производные + компоненты + диагноз =================
+        debt_net = debitNow - t1 - t2
+        yoy = round((revCur / revLy - 1) * 100, 1) if revLy else None
+        prev_delta = round((revCur / revPrev - 1) * 100, 1) if revPrev else None
+        plan = revLy * (1 + plan_growth / 100.0) if revLy else None
+        plan_full = revLyFull * (1 + plan_growth / 100.0) if revLyFull else None
+        plan_fact = round(revCur / plan * 100, 1) if plan else None
+        collect_rate = round(collected / revCur * 100, 1) if revCur else None
+        returns_rate = round(returns_sum / revCur * 100, 2) if revCur else None
+        debt_delta = (debitNow - debitStart) if debt_asof >= date_from else None
+        dso = round(max(0.0, debt_net) / revCur * window_days, 1) if revCur > 0 else None
+        retention = round((ret_base - lost_cnt) / ret_base * 100, 1) if ret_base else None
+        aging90_share = round(aging90 / debt_net * 100, 1) if debt_net > 0 else None
+        avg_check = round(revCur / cntCur) if cntCur else 0
+        forecast = round(revCur / elapsed_days * period_days) if (incomplete and revCur) else None
+
+        components, score, verdict = _kpi_health_score({
+            "yoy": yoy, "plan_fact": plan_fact, "collect_rate": collect_rate,
+            "dso": dso, "retention": retention, "returns_rate": returns_rate})
+
+        findings = []
+        def _find(sev, icon, title, impact, detail):
+            findings.append({"sev": sev, "icon": icon, "title": title,
+                             "impact": round(impact) if impact else None, "detail": detail})
+        if plan and plan_fact is not None and plan_fact < 95:
+            _find("bad" if plan_fact < 85 else "warn", "fa-bullseye", "Պլանի թերակատարում", plan - revCur,
+                  f"Փաստ {_famd(revCur)} ֏ · պլան {_famd(plan)} ֏ ({plan_fact}%)")
+        if incomplete and plan_full and forecast is not None and forecast < plan_full * 0.97:
+            _find("warn", "fa-chart-line", "Կանխատեսվող պակասուրդ մինչև շրջանի վերջ", plan_full - forecast,
+                  f"Ընթացիկ տեմպով՝ {_famd(forecast)} ֏, պլան՝ {_famd(plan_full)} ֏")
+        if yoy is not None and yoy < -3:
+            _find("bad" if yoy <= -15 else "warn", "fa-arrow-trend-down", "Հասույթի անկում նախորդ տարվա նկատմամբ",
+                  revLy - revCur, f"YoY {yoy}% · անցյալ տարի՝ {_famd(revLy)} ֏")
+        if debt_delta is not None and revCur > 0 and debt_delta > 0.05 * revCur:
+            _find("bad" if debt_delta > 0.15 * revCur else "warn", "fa-hand-holding-dollar", "Պարտքը աճել է ժամանակահատվածում",
+                  debt_delta, f"+{_famd(debt_delta)} ֏ ({round(debt_delta / revCur * 100)}% հասույթի)")
+        if aging90 > 0 and debt_net > 0 and aging90 > 0.10 * debt_net:
+            _top = f" · խոշորագույնը՝ {top_overdue[0]['name']} ({_famd(top_overdue[0]['amt'])} ֏)" if top_overdue else ""
+            _find("bad" if aging90 > 0.25 * debt_net else "warn", "fa-hourglass-end", "Հին պարտք (90+ օր)", aging90,
+                  f"Զուտ պարտքի {aging90_share}%-ը 90 օրից հին է{_top}")
+        if collect_rate is not None and collect_rate < 85:
+            _find("bad" if collect_rate < 70 else "warn", "fa-sack-xmark", "Թույլ հավաքագրում", 0.85 * revCur - collected,
+                  f"Հավաքագրվել է հասույթի {collect_rate}%-ը (թիրախ ≥85%)")
+        if lost_cnt > 0 and revCur > 0 and lost_rev > 0.03 * revCur:
+            _top = f" · խոշորագույնը՝ {top_lost[0]['name']}" if top_lost else ""
+            _find("bad" if lost_rev > 0.10 * revCur else "warn", "fa-user-slash", f"Կորած հաճախորդներ՝ {lost_cnt}", lost_rev,
+                  f"Նախորդ շրջանում գնել են {_famd(lost_rev)} ֏, հիմա՝ ոչինչ{_top}")
+        if returns_rate is not None and returns_rate > 2:
+            _find("bad" if returns_rate > 5 else "warn", "fa-rotate-left", "Բարձր վերադարձեր", returns_sum,
+                  f"{returns_rate}% հասույթի (թիրախ ≤2%)")
+        if top5_share is not None and top5_share > 30:
+            _find("bad" if top5_share > 50 else "warn", "fa-scale-unbalanced", "Կախվածություն խոշոր հաճախորդներից", top5_sum,
+                  f"Թոփ-5 հաճախորդը տալիս է հասույթի {top5_share}%-ը")
+        findings.sort(key=lambda f: (0 if f["sev"] == "bad" else 1, -(f["impact"] or 0)))
+
+        return jsonify(_kpi_cache_set(_ck, {
+            "success": True, "code": code, "name": area_name,
+            "period": {"date_from": date_from, "date_to": date_to, "asof": asof,
+                       "days": period_days, "elapsed": elapsed_days, "incomplete": incomplete},
+            "health": {"score": score, "verdict": verdict, "components": components,
+                       "lowData": cntCur < KPI_AREA_MIN_SALES},
+            "revenue": {"cur": round(revCur), "ly": round(revLy), "lyFull": round(revLyFull), "prev": round(revPrev),
+                        "yoy": yoy, "prevDelta": prev_delta, "plan": round(plan) if plan else None,
+                        "planFull": round(plan_full) if plan_full else None, "planFact": plan_fact,
+                        "salesCount": cntCur, "avgCheck": avg_check, "forecast": forecast},
+            "cash": {"collected": round(collected), "collectRate": collect_rate,
+                     "debt": round(debt_net), "debtDebit": round(debitNow),
+                     "returnsType01": round(t1), "overpayType02": round(t2),
+                     "debtDelta": round(debt_delta) if debt_delta is not None else None,
+                     "dso": dso, "aging": aging, "aging90": round(aging90), "aging90Share": aging90_share,
+                     "topOverdue": top_overdue, "debtAsOf": debt_asof,
+                     "debtAsOfApprox": bool(debt_asof < datetime.now().strftime('%Y-%m-%d'))},
+            "customers": {"active": custCur, "activeLy": custLy, "new": new_cnt, "newRev": round(new_rev),
+                          "lost": lost_cnt, "lostRev": round(lost_rev), "retention": retention, "retentionBase": ret_base,
+                          "topLost": top_lost, "top": top_cust, "top5Share": top5_share},
+            "returns": {"sum": round(returns_sum), "count": returns_cnt, "rate": returns_rate},
+            "managers": managers,
+            "pulse": {"daily": daily_cur, "dailyLy": daily_ly, "lyFrom": ly_from, "lyDays": ly_days,
+                      "forecast": forecast, "planFull": round(plan_full) if plan_full else None},
+            "findings": findings,
+        }))
+
+    except Exception as e:
+        logger.error(f"Ошибка получения диагноза территории: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _add_months(dt, delta):
+    m = dt.month - 1 + delta
+    y = dt.year + m // 12
+    return datetime(y, m % 12 + 1, 1)
+
+
+@app.route('/api/managers/kpi/health/trend')
+def api_managers_kpi_health_trend():
+    """API: динамика «жизненных показателей» по месяцам (последние N мес) — выручка (+год назад),
+    сбор денег, чистый долг на конец месяца, возвраты, активные клиенты. Те же фильтры, что и
+    пульс. Отвечает на вопрос «стало лучше или хуже», а не только «уровень». READ-ONLY."""
+    try:
+        date_to = request.args.get('date_to')
+        if not date_to:
+            date_to = datetime.now().strftime('%Y-%m-%d')
+        try:
+            months = int(request.args.get('months', 12) or 12)
+        except (TypeError, ValueError):
+            months = 12
+        months = max(3, min(24, months))
+
+        _ck = "trend|%s|%s|%s" % (date_to, months, _kpi_files_fingerprint())
+        _hit = _kpi_cache_get(_ck)
+        if _hit is not None:
+            return jsonify(_hit)
+
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        def _excl(custid_expr):
+            return excluded_filter.replace('c.fID', custid_expr)
+
+        sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)
+        dc = _kpi_load_list(KPI_DEBT_CLIENT_GROUPS_FILE)
+        sd = _kpi_load_list(KPI_SALES_DIVISIONS_FILE)
+        dd = _kpi_load_list(KPI_DEBT_DIVISIONS_FILE)
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)
+
+        def grp_where(sel):
+            if not sel:
+                return "", ()
+            return " AND c.fGROUP IN (%s)" % ','.join('?' * len(sel)), tuple(sel)
+
+        def cust_join(sel, custid_expr):
+            if not sel:
+                return ""
+            return " INNER JOIN CUSTOMERS c WITH (NOLOCK) ON %s = c.fID" % custid_expr
+
+        def div_where(alias, sel):
+            if not sel:
+                return "", ()
+            return (" AND %s.fSALESAGENTID IN (SELECT DISTINCT fSALESAGENTID FROM SALESAGENTDIVISIONS WITH (NOLOCK) WHERE fDIVISION IN (%s))"
+                    % (alias, ','.join('?' * len(sel))), tuple(sel))
+
+        def terr_where(custid_expr):
+            if not sa:
+                return "", ()
+            return (" AND %s IN (SELECT fCUSTOMERID FROM CUSTOMERSALESAREAS WITH (NOLOCK) WHERE fSALESAREA IN (%s))"
+                    % (custid_expr, ','.join('?' * len(sa))), tuple(sa))
+
+        sc_w, sc_p = grp_where(sc)
+        dc_w, dc_p = grp_where(dc)
+        sd_w, sd_p = div_where('s', sd)
+        dd_w, dd_p = div_where('doc', dd)
+        ta_s_w,   ta_s_p   = terr_where('s.fCUSTOMERID')
+        ta_rt_w,  ta_rt_p  = terr_where('rt.fCUSTOMERID')
+        ta_doc_w, ta_doc_p = terr_where('doc.fCUSTOMERID')
+
+        if pg:
+            _pg_ph = ','.join('?' * len(pg))
+            rev_join = (" INNER JOIN SALEDOCDETAILS sdp WITH (NOLOCK) ON sdp.fISN=s.fISN"
+                        " INNER JOIN PRODUCTS pp WITH (NOLOCK) ON pp.fID=sdp.fPRODUCTID")
+            rev_pgw = " AND pp.fGROUP IN (%s)" % _pg_ph
+            rev_pgp = tuple(pg)
+            rev_expr = "ISNULL(SUM(sdp.fSUM),0)"
+        else:
+            rev_join, rev_pgw, rev_pgp = "", "", ()
+            rev_expr = "ISNULL(SUM(s.fTOTALSUM),0)"
+
+        d_to = datetime.strptime(date_to, '%Y-%m-%d')
+        end_month = datetime(d_to.year, d_to.month, 1)          # первый день месяца date_to
+        # Неполный текущий месяц искажает тренд — заканчиваем на последнем ЗАВЕРШЁННОМ месяце
+        _today = datetime.now()
+        _last_day = _add_months(end_month, 1) - timedelta(days=1)
+        if end_month.year == _today.year and end_month.month == _today.month and _today.date() < _last_day.date():
+            end_month = _add_months(end_month, -1)
+        win_start = _add_months(end_month, -(months - 1))       # первый показываемый месяц
+        win_end = _add_months(end_month, 1)                     # первый день после последнего месяца
+        ext_start = _add_months(win_start, -12)                 # на 12 мес раньше — для «год назад»
+        ws_s = win_start.strftime('%Y-%m-%d')
+        we_s = win_end.strftime('%Y-%m-%d')
+        ext_s = ext_start.strftime('%Y-%m-%d')
+
+        # список показываемых месяцев (ярлыки yyyy-MM)
+        month_keys = []
+        for i in range(months):
+            mm = _add_months(win_start, i)
+            month_keys.append(mm.strftime('%Y-%m'))
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+
+        # 1. Выручка/клиенты/накладные по месяцам (за N+12 мес, чтобы получить «год назад»)
+        cur.execute(f"""
+            SELECT FORMAT(s.fDATE,'yyyy-MM') AS ym, {rev_expr} AS rev,
+                   COUNT(DISTINCT s.fCUSTOMERID) AS custs, COUNT(DISTINCT s.fISN) AS cnt
+            FROM SALES s WITH (NOLOCK){rev_join}
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+            WHERE s.fSTATE=2 AND s.fDATE>=? AND s.fDATE<? {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
+            GROUP BY FORMAT(s.fDATE,'yyyy-MM')
+        """, (ext_s, we_s) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp)
+        rev_by = {}
+        for r in cur.fetchall():
+            rev_by[r.ym] = {"rev": float(r.rev or 0), "custs": int(r.custs or 0), "cnt": int(r.cnt or 0)}
+
+        # 2. Сбор денег по месяцам
+        cur.execute(f"""
+            SELECT FORMAT(h.fDATE,'yyyy-MM') AS ym, ISNULL(SUM(ABS(h.fSUM)),0) AS collected
+            FROM HICUSTOMERSDEBT h WITH (NOLOCK)
+            INNER JOIN DOCUMENTS doc WITH (NOLOCK) ON h.fDEBTDOCISN=doc.fISN
+            {cust_join(dc, 'doc.fCUSTOMERID')}
+            WHERE h.fOP='PAY' AND h.fDBCR='C' AND h.fDATE>=? AND h.fDATE<? {_excl('doc.fCUSTOMERID')}{dc_w}{dd_w}{ta_doc_w}
+            GROUP BY FORMAT(h.fDATE,'yyyy-MM')
+        """, (ws_s, we_s) + excluded_params + dc_p + dd_p + ta_doc_p)
+        collected_by = {r.ym: float(r.collected or 0) for r in cur.fetchall()}
+
+        # 3. Возвраты по месяцам
+        cur.execute(f"""
+            SELECT FORMAT(rt.fDATE,'yyyy-MM') AS ym, ISNULL(SUM(rt.fTOTALSUM),0) AS rs
+            FROM RETURNS rt WITH (NOLOCK)
+            {cust_join(sc, 'rt.fCUSTOMERID')}
+            WHERE rt.fDATE>=? AND rt.fDATE<? AND rt.fSTATE=2 {_excl('rt.fCUSTOMERID')}{sc_w}{ta_rt_w}
+            GROUP BY FORMAT(rt.fDATE,'yyyy-MM')
+        """, (ws_s, we_s) + excluded_params + sc_p + ta_rt_p)
+        returns_by = {r.ym: float(r.rs or 0) for r in cur.fetchall()}
+
+        # 4. Долг на конец месяца: стартовый баланс (до окна) + накопленные месячные изменения дебета
+        cur.execute(f"""
+            SELECT ISNULL(SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END),0)
+            FROM DOCUMENTS doc WITH (NOLOCK)
+            INNER JOIN HICUSTOMERSDEBT h WITH (NOLOCK) ON h.fDEBTDOCISN=doc.fISN
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID=doc.fCUSTOMERID
+            WHERE h.fDATE < ? {excluded_filter}{ta_doc_w}{dc_w}
+        """, (ws_s,) + excluded_params + ta_doc_p + dc_p)
+        debt_start = float(cur.fetchone()[0] or 0)
+        cur.execute(f"""
+            SELECT FORMAT(h.fDATE,'yyyy-MM') AS ym,
+                   SUM(CASE WHEN h.fDBCR='D' THEN h.fSUM ELSE -h.fSUM END) AS delta
+            FROM DOCUMENTS doc WITH (NOLOCK)
+            INNER JOIN HICUSTOMERSDEBT h WITH (NOLOCK) ON h.fDEBTDOCISN=doc.fISN
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID=doc.fCUSTOMERID
+            WHERE h.fDATE>=? AND h.fDATE<? {excluded_filter}{ta_doc_w}{dc_w}
+            GROUP BY FORMAT(h.fDATE,'yyyy-MM')
+        """, (ws_s, we_s) + excluded_params + ta_doc_p + dc_p)
+        debt_delta_by = {r.ym: float(r.delta or 0) for r in cur.fetchall()}
+        conn.close()
+
+        # Сборка серий
+        series = []
+        run = debt_start
+        for ym in month_keys:
+            rv = rev_by.get(ym, {})
+            rev = rv.get("rev", 0.0)
+            ly_ym = _add_months(datetime.strptime(ym + '-01', '%Y-%m-%d'), -12).strftime('%Y-%m')
+            rev_ly = rev_by.get(ly_ym, {}).get("rev", 0.0)
+            run += debt_delta_by.get(ym, 0.0)   # баланс дебета на конец месяца
+            rets = returns_by.get(ym, 0.0)
+            coll = collected_by.get(ym, 0.0)
+            series.append({
+                "ym": ym,
+                "revenue": round(rev), "revenueLy": round(rev_ly),
+                "yoy": round((rev / rev_ly - 1) * 100, 1) if rev_ly else None,
+                "collected": round(coll),
+                "collectRate": round(coll / rev * 100, 1) if rev else None,
+                "debt": round(run),
+                "returns": round(rets),
+                "returnsRate": round(rets / rev * 100, 2) if rev else None,
+                "activeCustomers": rv.get("custs", 0),
+                "salesCount": rv.get("cnt", 0),
+            })
+
+        def _trend(key):
+            vals = [s[key] for s in series if s.get(key) is not None]
+            if len(vals) < 2:
+                return None
+            first, last = vals[0], vals[-1]
+            return {"first": first, "last": last,
+                    "delta": round((last / first - 1) * 100, 1) if first else None}
+
+        summary = {k: _trend(k) for k in ["revenue", "collected", "debt", "returns", "activeCustomers"]}
+
+        return jsonify(_kpi_cache_set(_ck, {"success": True,
+                        "months": months, "from": ws_s, "to": we_s,
+                        "series": series, "summary": summary}))
+
+    except Exception as e:
+        logger.error(f"Ошибка получения динамики здоровья: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _ai_health_summary(scope, payload):
+    """Собирает компактную сводку уже посчитанных KPI-чисел (текст на русском) для передачи в Claude.
+    Никаких обращений к БД — только переданные фронтендом значения (те же, что видит владелец)."""
+    def m(v):
+        # Короткий формат млн/тыс: длинные строки с пробелами-разделителями модель путает в разрядах.
+        if v is None:
+            return "—"
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return "—"
+        a = abs(v)
+        if a >= 1_000_000:
+            return f"{v/1_000_000:.2f} млн"
+        if a >= 10_000:
+            return f"{v/1000:.0f} тыс"
+        return f"{v:.0f}"
+
+    lines = []
+    if scope == 'area':
+        d = payload.get('detail') or {}
+        h = d.get('health') or {}
+        rev = d.get('revenue') or {}
+        cash = d.get('cash') or {}
+        cust = d.get('customers') or {}
+        ret = d.get('returns') or {}
+        per = d.get('period') or {}
+        lines.append(f"РАЗРЕЗ: территория «{d.get('name','')}» (код {d.get('code','')})")
+        lines.append(f"Период: {per.get('date_from','')} — {per.get('date_to','')}"
+                     + (" (не завершён)" if per.get('incomplete') else ""))
+        lines.append(f"Индекс здоровья: {h.get('score')}/100 — {h.get('verdict','')}")
+        comps = h.get('components') or []
+        if comps:
+            lines.append("Компоненты: " + "; ".join(
+                f"{c.get('label')} {c.get('value')}{'%' if c.get('unit')=='percent' else ('д' if c.get('unit')=='days' else '')}"
+                for c in comps))
+        lines.append(f"Выручка: {m(rev.get('cur'))} ֏, YoY {rev.get('yoy')}%, план/факт {rev.get('planFact')}%"
+                     + (f", прогноз к концу периода {m(rev.get('forecast'))} ֏, план {m(rev.get('planFull'))} ֏" if rev.get('forecast') else ""))
+        lines.append(f"Сбор денег: {m(cash.get('collected'))} ֏ ({cash.get('collectRate')}%)")
+        lines.append(f"Долг: чистый {m(cash.get('debt'))} ֏, Δ за период {m(cash.get('debtDelta'))} ֏, DSO {cash.get('dso')} дн., "
+                     f"старый 90+ {m(cash.get('aging90'))} ֏ ({cash.get('aging90Share')}% чистого долга)")
+        lines.append(f"Клиенты: активных {cust.get('active')}, новых {cust.get('new')}, потеряно {cust.get('lost')} "
+                     f"(на {m(cust.get('lostRev'))} ֏), удержание {cust.get('retention')}%, концентрация топ-5 {cust.get('top5Share')}%")
+        lines.append(f"Возвраты: {m(ret.get('sum'))} ֏ ({ret.get('rate')}%)")
+        mgrs = d.get('managers') or []
+        if mgrs:
+            lines.append("Менеджеры зоны: " + "; ".join(
+                f"{x.get('name')} {m(x.get('revenue'))} ֏ ({x.get('share')}%)" for x in mgrs[:5]))
+        ov = d.get('cash', {}).get('topOverdue') or []
+        if ov:
+            lines.append("Старые должники (60+): " + "; ".join(
+                f"{x.get('name')} {m(x.get('amt'))} ֏ ({x.get('age')}д)" for x in ov[:5]))
+        tl = cust.get('topLost') or []
+        if tl:
+            lines.append("Крупные потери: " + "; ".join(f"{x.get('name')} {m(x.get('rev'))} ֏" for x in tl[:5]))
+        fnd = d.get('findings') or []
+        if fnd:
+            lines.append("Автодиагностика (в деньгах): " + "; ".join(
+                f"{x.get('title')}"
+                + (f" −{m(x.get('impact'))} ֏" if x.get('impact') else "") for x in fnd[:6]))
+    else:
+        h = payload.get('health') or {}
+        areas = (payload.get('areas') or {}).get('areas') or []
+        trend = (payload.get('trend') or {}).get('summary') or {}
+        hh = h.get('health') or {}
+        rev = h.get('revenue') or {}
+        cash = h.get('cash') or {}
+        cust = h.get('customers') or {}
+        ret = h.get('returns') or {}
+        per = h.get('period') or {}
+        lines.append("РАЗРЕЗ: вся компания (van-sales/дистрибуция)")
+        lines.append(f"Период: {per.get('date_from','')} — {per.get('date_to','')}"
+                     + (" (не завершён)" if per.get('incomplete') else ""))
+        lines.append(f"Индекс здоровья: {hh.get('score')}/100 — {hh.get('verdict','')}")
+        comps = hh.get('components') or []
+        if comps:
+            lines.append("Компоненты: " + "; ".join(
+                f"{c.get('label')} {c.get('value')}{'%' if c.get('unit')=='percent' else ('д' if c.get('unit')=='days' else '')}"
+                for c in comps))
+        lines.append(f"Выручка: {m(rev.get('cur'))} ֏, YoY {rev.get('yoy')}%, план/факт {rev.get('planFact')}%"
+                     + (f", прогноз {m(h.get('pulse',{}).get('forecast'))} ֏, план {m(h.get('pulse',{}).get('planFull'))} ֏"
+                        if h.get('pulse', {}).get('forecast') else ""))
+        lines.append(f"Сбор денег: {m(cash.get('collected'))} ֏ ({cash.get('collectRate')}%)")
+        lines.append(f"Долг: чистый {m(cash.get('debt'))} ֏, Δ за период {m(cash.get('debtDelta'))} ֏, DSO {cash.get('dso')} дн.")
+        ag = cash.get('aging') or []
+        if ag:
+            lines.append("Старение долга: " + "; ".join(f"{a.get('bucket')}: {m(a.get('amt'))} ֏" for a in ag))
+        lines.append(f"Клиенты: активных {cust.get('active')}, новых {cust.get('new')}, потеряно {cust.get('lost')} "
+                     f"(на {m(cust.get('lostRev'))} ֏), удержание {cust.get('retention')}%, концентрация топ-5 {cust.get('top5Share')}%")
+        lines.append(f"Возвраты: {m(ret.get('sum'))} ֏ ({ret.get('rate')}%)")
+        fnd = h.get('findings') or []
+        if fnd:
+            lines.append("Автодиагностика (в деньгах): " + "; ".join(
+                f"{x.get('title')}" + (f" −{m(x.get('impact'))} ֏" if x.get('impact') else "") for x in fnd[:8]))
+        if trend:
+            def _t(k):
+                t = trend.get(k) or {}
+                return t.get('delta')
+            lines.append(f"Динамика 12 мес (первый→последний): выручка {_t('revenue')}%, "
+                         f"сбор {_t('collected')}%, долг {_t('debt')}%, клиенты {_t('activeCustomers')}%")
+        if areas:
+            worst = sorted([a for a in areas if a.get('score') is not None], key=lambda a: a.get('score'))[:5]
+            lines.append("Худшие территории: " + "; ".join(
+                f"{a.get('name')} {a.get('score')} (" + ", ".join(i.get('label') for i in (a.get('issues') or [])[:2]) + ")"
+                for a in worst))
+        ov = cash.get('topOverdue') or []
+        if ov:
+            lines.append("Старые должники (60+): " + "; ".join(
+                f"{x.get('name')} {m(x.get('amt'))} ֏" for x in ov[:5]))
+    return "\n".join(lines)
+
+
+AI_HEALTH_SYSTEM = (
+    "Ты — опытный бизнес-советник владельца дистрибуционной компании (van-sales, продажи через "
+    "торговых агентов по территориям). Тебе дают УЖЕ ПОСЧИТАННЫЕ показатели здоровья бизнеса за период. "
+    "Твоя задача — короткий, предметный разбор для собственника, чтобы он сразу увидел, где дыра, и что делать.\n\n"
+    "Формат ответа (Markdown, по-русски):\n"
+    "1. **Итог** — 1–2 предложения: общее состояние и главный риск.\n"
+    "2. **Где дыра** — 2–4 пункта, каждый с суммой в драмах (֏) и почему это важно; сортируй по деньгам.\n"
+    "3. **Что сделать на этой неделе** — 3–5 конкретных действий (кому звонить, что проверить, где нажать).\n"
+    "4. **Следить в динамике** — 1–2 показателя, за которыми смотреть.\n\n"
+    "Правила: используй ТОЛЬКО предоставленные числа, ничего не выдумывай и НЕ ИСКАЖАЙ разряды — "
+    "переноси суммы точно как в данных (если дано «236 тыс» — не пиши «2.2 млн»). Валюта — драм (֏). "
+    "Пиши по делу, без воды и общих фраз, уверенным тоном советника. Если период не завершён — учитывай это. "
+    "Всего не длиннее ~280 слов. Не повторяй заголовок-разрез из входных данных."
+)
+
+
+@app.route('/api/managers/kpi/health/ai', methods=['POST'])
+def api_managers_kpi_health_ai():
+    """AI-разбор здоровья бизнеса (стриминг, SSE): превращает уже посчитанные KPI-числа в короткий разбор
+    для владельца. Модель Claude Opus 4.8, потоковый вывод — текст появляется сразу. READ-ONLY."""
+    if not ANTHROPIC_API_KEY:
+        return jsonify({"success": False, "error": "ANTHROPIC_API_KEY не настроен (.env)"}), 400
+    try:
+        payload = request.get_json() or {}
+        scope = payload.get('scope', 'team')
+        user_prompt = "Показатели бизнеса:\n\n" + _ai_health_summary(scope, payload)
+    except Exception as e:
+        logger.error(f"AI-разбор: подготовка данных: {e}")
+        return jsonify({"success": False, "error": str(e)}), 400
+
+    def generate():
+        try:
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            with client.messages.stream(
+                model="claude-opus-4-8",
+                max_tokens=1500,
+                system=AI_HEALTH_SYSTEM,
+                messages=[{"role": "user", "content": user_prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    if text:
+                        yield "data: " + json.dumps({"t": text}, ensure_ascii=False) + "\n\n"
+            yield "data: " + json.dumps({"done": True}) + "\n\n"
+        except anthropic.APIError as e:
+            logger.error(f"AI-разбор: Claude API: {e}")
+            yield "data: " + json.dumps({"error": f"Claude API: {str(e)}"}, ensure_ascii=False) + "\n\n"
+        except Exception as e:
+            logger.error(f"AI-разбор stream: {e}")
+            yield "data: " + json.dumps({"error": str(e)}, ensure_ascii=False) + "\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'})
 
 
 def _aggregate_product_groups(rows):
