@@ -63,9 +63,15 @@
             </button>
         </li>
         <li class="nav-item" role="presentation">
-            <button class="nav-link" id="product-groups-tab" data-bs-toggle="tab" 
+            <button class="nav-link" id="product-groups-tab" data-bs-toggle="tab"
                     data-bs-target="#product-groups-pane" type="button" role="tab">
                 <i class="fas fa-boxes text-primary"></i> Дивизионы
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="users-tab" data-bs-toggle="tab"
+                    data-bs-target="#users-pane" type="button" role="tab">
+                <i class="fas fa-users-gear text-warning"></i> Пользователи
             </button>
         </li>
     </ul>
@@ -749,6 +755,161 @@
                             </tbody>
                         </table>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Пользователи -->
+        <div class="tab-pane fade" id="users-pane" role="tabpanel">
+            <div class="card">
+                <div class="card-header bg-warning bg-opacity-10 border-warning d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-0">
+                            <i class="fas fa-users-gear text-warning"></i> Пользователи и доступ по территориям
+                        </h5>
+                        <p class="text-muted small mb-0 mt-2">
+                            <i class="fas fa-info-circle"></i>
+                            Администратор видит все данные. Пользователь видит только назначенные территории
+                            (страницы «Территории» и «Клиенты Grid»). Ограничение действует на стороне сервера.
+                        </p>
+                    </div>
+                    <button class="btn btn-warning" @click="newUser()">
+                        <i class="fas fa-user-plus"></i> Добавить пользователя
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Логин</th>
+                                    <th>Имя</th>
+                                    <th>Роль</th>
+                                    <th>Территории</th>
+                                    <th style="width: 140px;">Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="u in users" :key="u.username">
+                                    <tr>
+                                        <td><span class="fw-semibold" x-text="u.username"></span></td>
+                                        <td x-text="u.display_name || '—'"></td>
+                                        <td>
+                                            <span class="badge"
+                                                  :class="u.role === 'admin' ? 'bg-primary' : 'bg-secondary'"
+                                                  x-text="u.role === 'admin' ? 'Администратор' : 'Пользователь'"></span>
+                                        </td>
+                                        <td>
+                                            <template x-if="u.role === 'admin'">
+                                                <span class="text-muted">все</span>
+                                            </template>
+                                            <template x-if="u.role !== 'admin'">
+                                                <span>
+                                                    <template x-for="code in u.areas" :key="code">
+                                                        <span class="badge bg-info bg-opacity-75 me-1" x-text="code"></span>
+                                                    </template>
+                                                    <span x-show="!u.areas || u.areas.length === 0" class="text-danger">нет</span>
+                                                </span>
+                                            </template>
+                                        </td>
+                                        <td>
+                                            <button class="btn btn-sm btn-outline-primary" @click="editUser(u)" title="Изменить">
+                                                <i class="fas fa-pen"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-danger" @click="deleteUser(u.username)" title="Удалить">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </template>
+                                <tr x-show="users.length === 0">
+                                    <td colspan="5" class="text-center text-muted py-5">
+                                        <i class="fas fa-users-slash fa-2x mb-2 d-block"></i>
+                                        Нет пользователей
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно пользователя (создание/редактирование) -->
+    <div class="modal fade" id="userModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header bg-warning bg-opacity-10">
+                    <h5 class="modal-title">
+                        <i class="fas fa-user-gear text-warning"></i>
+                        <span x-text="userForm.editing ? 'Изменение пользователя' : 'Новый пользователь'"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Логин <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" x-model="userForm.username"
+                                   :readonly="userForm.editing" placeholder="Например: ivanov">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Отображаемое имя</label>
+                            <input type="text" class="form-control" x-model="userForm.display_name"
+                                   placeholder="Например: Иван Иванов">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Роль</label>
+                            <select class="form-select" x-model="userForm.role">
+                                <option value="user">Пользователь (по территориям)</option>
+                                <option value="admin">Администратор (полный доступ)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">
+                                Пароль
+                                <span class="text-danger" x-show="!userForm.editing">*</span>
+                                <span class="text-muted small" x-show="userForm.editing">(оставьте пустым, чтобы не менять)</span>
+                            </label>
+                            <input type="password" class="form-control" x-model="userForm.password"
+                                   autocomplete="new-password" placeholder="Пароль">
+                        </div>
+                        <div class="col-12" x-show="userForm.role !== 'admin'">
+                            <label class="form-label d-flex justify-content-between align-items-center">
+                                <span>Территории <span class="text-danger">*</span></span>
+                                <span>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" @click="userSelectAllAreas()">Все</button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" @click="userForm.areas = []">Очистить</button>
+                                </span>
+                            </label>
+                            <div class="border rounded p-2" style="max-height: 260px; overflow-y: auto;">
+                                <div class="row">
+                                    <template x-for="area in salesAreas" :key="area.code">
+                                        <div class="col-md-4 col-sm-6">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox"
+                                                       :id="'uarea-' + area.code"
+                                                       :value="area.code"
+                                                       :checked="userForm.areas.includes(area.code)"
+                                                       @change="toggleUserArea(area.code)">
+                                                <label class="form-check-label" :for="'uarea-' + area.code">
+                                                    <span class="badge bg-info bg-opacity-75" x-text="area.code"></span>
+                                                    <span x-text="area.name"></span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                    <button type="button" class="btn btn-warning" @click="saveUser()">
+                        <i class="fas fa-save"></i> Сохранить
+                    </button>
                 </div>
             </div>
         </div>

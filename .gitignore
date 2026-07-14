@@ -40,6 +40,8 @@ dbhub.toml
 *.sqlite3
 
 # JSON configuration files (содержат данные пользователя)
+users.json
+.flask_secret_key
 excluded_customers.json
 excluded_groups.json
 group_manager_assignments.json

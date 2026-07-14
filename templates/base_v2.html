@@ -57,6 +57,7 @@
             
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto">
+                    {% if is_admin %}
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/' %}active{% endif %}" href="/">
                             <i class="fas fa-dashboard me-1"></i> Dashboard
@@ -92,6 +93,7 @@
                             <i class="fas fa-store me-1"></i> Клиенты
                         </a>
                     </li>
+                    {% endif %}
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/customers-grid' %}active{% endif %}" href="/customers-grid">
                             <i class="fas fa-table me-1"></i> Клиенты Grid
@@ -102,6 +104,7 @@
                             <i class="fas fa-map-marked-alt me-1"></i> Территории
                         </a>
                     </li>
+                    {% if is_admin %}
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/plans' %}active{% endif %}" href="/plans">
                             <i class="fas fa-chart-line me-1"></i> Планы
@@ -126,6 +129,32 @@
                         <a class="nav-link {% if request.path == '/settings' %}active{% endif %}" href="/settings">
                             <i class="fas fa-cog me-1"></i> Настройки
                         </a>
+                    </li>
+                    {% endif %}
+
+                    <!-- Пользователь / выход -->
+                    <li class="nav-item dropdown ms-xxl-3">
+                        <a class="nav-link dropdown-toggle" href="#" role="button"
+                           data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="fas fa-circle-user me-1"></i>
+                            {{ (current_user.display_name if current_user and current_user.display_name else current_username) or 'Гость' }}
+                            {% if not is_admin %}<span class="badge bg-secondary ms-1">территория</span>{% endif %}
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li>
+                                <span class="dropdown-item-text small text-muted">
+                                    {% if is_admin %}<i class="fas fa-user-shield me-1"></i> Администратор
+                                    {% else %}<i class="fas fa-map-marker-alt me-1"></i> Территории: {{ (current_user.areas | join(', ')) if current_user and current_user.areas else '—' }}
+                                    {% endif %}
+                                </span>
+                            </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <a class="dropdown-item text-danger" href="{{ url_for('logout') }}">
+                                    <i class="fas fa-right-from-bracket me-1"></i> Выйти
+                                </a>
+                            </li>
+                        </ul>
                     </li>
                 </ul>
             </div>

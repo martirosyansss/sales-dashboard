@@ -3,15 +3,19 @@ Sales Dashboard v2.0 - READ-ONLY Analytics Platform
 Работает с реальной БД AS-Sales Management
 """
 
-from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response, stream_with_context
+from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response, stream_with_context, session, redirect, url_for
 import pyodbc
 from datetime import datetime, timedelta
 import os
+import re
 import json
 import hashlib
+from functools import wraps
 from typing import Dict, List, Any
 import logging
 from dotenv import load_dotenv
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.datastructures import ImmutableMultiDict
 try:
     import anthropic  # AI-разбор — опциональная фича; отсутствие пакета НЕ должно ронять весь дашборд
 except ImportError:
@@ -29,7 +33,57 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'sales-dashboard-secret-key-2025')
+
+
+def _resolve_secret_key():
+    """Секрет для подписи сессий.
+
+    Приоритет: FLASK_SECRET_KEY из окружения. Иначе — случайный ключ, сохранённый
+    в gitignored-файле .flask_secret_key (переживает рестарты, не разлогинивает при
+    перезапуске). НИКОГДА не используем захардкоженную константу: иначе, зная её,
+    можно подделать сессию администратора (аутентификация держится на подписи cookie).
+    """
+    env_key = os.environ.get('FLASK_SECRET_KEY')
+    if env_key:
+        return env_key
+    secret_file = '.flask_secret_key'
+    try:
+        if os.path.exists(secret_file):
+            with open(secret_file, 'r', encoding='utf-8') as f:
+                saved = f.read().strip()
+                if saved:
+                    return saved
+        import secrets as _secrets
+        generated = _secrets.token_hex(32)
+        with open(secret_file, 'w', encoding='utf-8') as f:
+            f.write(generated)
+        logger.warning("[Auth] FLASK_SECRET_KEY не задан — сгенерирован случайный ключ (.flask_secret_key). "
+                       "Для прод-окружения задайте FLASK_SECRET_KEY в .env.")
+        return generated
+    except Exception as e:
+        # Файловая система недоступна — генерируем эфемерный ключ (разлогинит при рестарте),
+        # но НЕ откатываемся на известную константу.
+        import secrets as _secrets
+        logger.error(f"[Auth] Не удалось сохранить секрет ({e}); используется эфемерный ключ сессии.")
+        return _secrets.token_hex(32)
+
+
+app.config['SECRET_KEY'] = _resolve_secret_key()
+# Cookie сессии: HttpOnly (недоступна из JS) + SameSite=Lax (гасит CSRF на мутациях).
+# SECURE включаем только за HTTPS (по умолчанию LAN/HTTP) — через env FLASK_SESSION_SECURE.
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=12)  # автологаут по сроку
+if os.environ.get('FLASK_SESSION_SECURE', '').lower() in ('1', 'true', 'yes'):
+    app.config['SESSION_COOKIE_SECURE'] = True
+
+# X-Forwarded-For доверяем ТОЛЬКО при явном opt-in оператора (за известным прокси):
+# FLASK_TRUSTED_PROXY_HOPS=N. Иначе request.remote_addr = прямой пир, и заголовок
+# XFF игнорируется — иначе клиент подделал бы IP и обошёл rate-limit по логину.
+_proxy_hops = os.environ.get('FLASK_TRUSTED_PROXY_HOPS', '')
+if _proxy_hops.isdigit() and int(_proxy_hops) > 0:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=int(_proxy_hops), x_proto=int(_proxy_hops))
 
 # API Keys
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
@@ -91,6 +145,359 @@ class DatabaseConnection:
 
 # Глобальный экземпляр БД
 db = DatabaseConnection()
+
+# =============================================
+# АУТЕНТИФИКАЦИЯ И ДОСТУП ПО ТЕРРИТОРИЯМ
+# =============================================
+# Боевой ERP (SalesManagement) — ТОЛЬКО ЧТЕНИЕ, поэтому учётные записи панели
+# храним отдельно, в JSON-файле рядом с прочими настройками (users.json).
+# Пароли хранятся ТОЛЬКО в виде хэша (werkzeug PBKDF2 + соль), никогда в открытом виде.
+# Роли:
+#   - 'admin' — полный доступ ко всем страницам/данным + управление пользователями;
+#   - 'user'  — доступ ограничен назначенными территориями (sales_area). Ограничение
+#               ПРИНУДИТЕЛЬНОЕ на стороне сервера (см. _enforce_restricted): чужие
+#               территории недоступны даже прямым запросом к API.
+USERS_FILE = 'users.json'
+
+
+def save_users(users: dict) -> bool:
+    """Сохранить словарь пользователей в users.json."""
+    try:
+        with open(USERS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(users, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"[Auth] Не удалось сохранить {USERS_FILE}: {e}")
+        return False
+
+
+def load_users() -> dict:
+    """Загрузить пользователей. При отсутствии файла создать администратора по умолчанию.
+
+    Пароль администратора по умолчанию берётся из переменной окружения
+    DASHBOARD_ADMIN_PASSWORD (иначе 'admin' — обязательно сменить в Настройках).
+    """
+    try:
+        if os.path.exists(USERS_FILE):
+            with open(USERS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict) and data:
+                    return data
+    except Exception as e:
+        logger.error(f"[Auth] Ошибка чтения {USERS_FILE}: {e}")
+
+    env_password = os.environ.get('DASHBOARD_ADMIN_PASSWORD')
+    if env_password:
+        default_password = env_password
+        password_note = "пароль из переменной окружения DASHBOARD_ADMIN_PASSWORD"
+    else:
+        # Не используем предсказуемый дефолт: генерируем случайный пароль и печатаем его
+        # ОДИН раз в лог. Администратор входит с ним и меняет в Настройках → Пользователи.
+        import secrets as _secrets
+        default_password = _secrets.token_urlsafe(12)
+        password_note = f"СГЕНЕРИРОВАН случайный пароль: {default_password}  (смените его после входа!)"
+    default = {
+        'admin': {
+            'password_hash': generate_password_hash(default_password, method='pbkdf2:sha256'),
+            'role': 'admin',
+            'areas': [],
+            'display_name': 'Администратор',
+        }
+    }
+    if save_users(default):
+        logger.warning("[Auth] Создан администратор по умолчанию (логин 'admin'). %s", password_note)
+    return default
+
+
+def current_username():
+    """Логин текущего вошедшего пользователя (или None)."""
+    return session.get('username')
+
+
+def current_user():
+    """Запись текущего пользователя из users.json (или None, если не вошёл/удалён)."""
+    uname = current_username()
+    if not uname:
+        return None
+    return load_users().get(uname)
+
+
+def is_admin() -> bool:
+    u = current_user()
+    return bool(u) and u.get('role') == 'admin'
+
+
+def current_area_scope():
+    """Ограничение по территориям для текущего пользователя.
+
+    Возвращает:
+      - None  — без ограничений (администратор или контекст без пользователя);
+      - list  — список разрешённых кодов территорий (для роли 'user').
+                Пустой список означает «нет доступа ни к одной территории».
+    """
+    u = current_user()
+    if not u or u.get('role') == 'admin':
+        return None
+    return [str(a).strip() for a in (u.get('areas') or []) if str(a).strip()]
+
+
+@app.context_processor
+def _inject_auth_context():
+    """Прокинуть данные о пользователе в шаблоны (навигация, бейдж, роль)."""
+    u = current_user()
+    return {
+        'current_user': u,
+        'current_username': current_username(),
+        'is_admin': bool(u) and u.get('role') == 'admin',
+    }
+
+
+# ---- Территориальная блокировка для роли 'user' -------------------------------
+# Ограниченному пользователю разрешён ТОЛЬКО перечисленный ниже набор GET-роутов
+# (default-deny). Всё остальное (настройки, AI, планы, конструктор, любые POST/
+# мутации, другие страницы) — 403 / редирект. Каждый разрешённый эндпоинт,
+# возвращающий территориальные данные, дополнительно урезается до scope.
+# Точный список — ровно те эндпоинты, которые дёргают две разрешённые страницы
+# («Территории» /areas и «Клиенты Grid» /customers-grid). Каждый, что отдаёт
+# территориальные данные, дополнительно урезается до scope в самом обработчике
+# или через переписывание query-параметров.
+_RESTRICTED_ALLOW_EXACT = {
+    '/api/sales-areas',                 # -> результат урезается до scope
+    '/api/customers',                   # -> sales_area переписывается в scope
+    '/api/settings/product-groups',     # список дивизионов (не территориальный)
+    '/api/settings/groups',             # список групп клиентов (не территориальный)
+    '/api/settings/sales-areas/list',   # -> результат урезается до scope
+    '/api/generate-plans',              # -> результат урезается до scope
+}
+# Страницы (префиксы).
+_RESTRICTED_ALLOW_PAGE_PREFIX = ('/areas', '/customers-grid')
+_AREA_SUBPATH_RE = re.compile(r'^/api/sales-areas/(.+)/(?:route-stats|unpaid-documents)$')
+_CUSTOMER_PURCHASES_RE = re.compile(r'^/api/customers/(\d+)/purchases$')
+
+
+def _wants_json() -> bool:
+    return request.path.startswith('/api/') or \
+        'application/json' in (request.headers.get('Accept') or '')
+
+
+def _reject_unauthenticated():
+    if _wants_json():
+        return jsonify({'success': False, 'error': 'Требуется вход в систему'}), 401
+    return redirect(url_for('login', next=request.path))
+
+
+def _forbid():
+    if _wants_json():
+        return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
+    return redirect('/areas')
+
+
+def _safe_next_url(url):
+    """Безопасный локальный редирект: только относительный путь того же сайта.
+
+    Отсекаем открытый редирект (`//host`, `/\\host`, обратные слэши, NUL, схемы) —
+    браузеры нормализуют '\\' в '/', поэтому одной проверки на '//' недостаточно.
+    """
+    if not url:
+        return None
+    if url.startswith('/') and not url.startswith('//') \
+            and '\\' not in url and '\x00' not in url and '\r' not in url and '\n' not in url:
+        return url
+    return None
+
+
+def _restricted_path_allowed(path: str, method: str) -> bool:
+    """Разрешён ли путь ограниченному пользователю (только чтение из allowlist)."""
+    if method != 'GET':
+        return False
+    if path in _RESTRICTED_ALLOW_EXACT:
+        return True
+    for p in _RESTRICTED_ALLOW_PAGE_PREFIX:
+        # Граница сегмента: '/areas' не должен матчить '/areas-export' и т.п.
+        if path == p or path.startswith(p + '/'):
+            return True
+    if _AREA_SUBPATH_RE.match(path):
+        return True
+    if _CUSTOMER_PURCHASES_RE.match(path):
+        return True
+    return False
+
+
+def _customer_in_scope(customer_id, scope) -> bool:
+    """Принадлежит ли клиент хотя бы одной из разрешённых территорий."""
+    if not scope:
+        return False
+    placeholders = ','.join('?' * len(scope))
+    rows = db.execute_query(
+        "SELECT TOP 1 1 AS ok FROM CUSTOMERSALESAREAS WITH (NOLOCK) "
+        f"WHERE fCUSTOMERID = ? AND fSALESAREA IN ({placeholders})",
+        tuple([customer_id] + list(scope)),
+    )
+    return len(rows) > 0
+
+
+def _rewrite_area_args(scope):
+    """Переписать территориальные query-параметры так, чтобы они не выходили за scope.
+
+    Ключевой момент серверной блокировки: single-параметр `sales_area` и
+    множественный `areas` принудительно урезаются до разрешённых территорий,
+    даже если клиент прислал чужой код или не прислал ничего.
+    """
+    args = request.args.to_dict(flat=False)
+    fallback = scope[0] if scope else '__no_area__'
+
+    cur = (request.args.get('sales_area') or '').strip()
+    args['sales_area'] = [cur if (scope and cur in scope) else fallback]
+
+    if 'areas' in args:
+        picked = [v for v in request.args.getlist('areas') if v.strip() in (scope or [])]
+        args['areas'] = picked if picked else [fallback]
+
+    request.args = ImmutableMultiDict(
+        [(k, v) for k, vs in args.items() for v in vs]
+    )
+
+
+def _enforce_restricted(user):
+    """Применить территориальные ограничения к запросу роли 'user'."""
+    path = request.path
+    method = request.method
+    scope = current_area_scope() or []
+
+    # Главную заменяем территориальной страницей — общий дашборд не территориальный.
+    if path == '/' or path == '':
+        return redirect('/areas')
+
+    if not _restricted_path_allowed(path, method):
+        return _forbid()
+
+    # Валидация территории, зашитой в путь (/api/sales-areas/<area>/...).
+    m = _AREA_SUBPATH_RE.match(path)
+    if m and m.group(1).strip() not in scope:
+        return _forbid()
+
+    # Валидация клиента (/api/customers/<id>/purchases) по принадлежности территории.
+    m = _CUSTOMER_PURCHASES_RE.match(path)
+    if m and not _customer_in_scope(int(m.group(1)), scope):
+        return _forbid()
+
+    # Урезаем территориальные query-параметры до scope.
+    _rewrite_area_args(scope)
+    return None
+
+
+@app.before_request
+def _auth_and_scope_gate():
+    """Единая точка контроля доступа: вход в систему + территориальная блокировка."""
+    endpoint = request.endpoint or ''
+    path = request.path
+
+    # Статика и публичные страницы — без авторизации.
+    if endpoint == 'static' or path == '/favicon.ico' or path in ('/login', '/logout'):
+        return None
+
+    user = current_user()
+    if not user:
+        return _reject_unauthenticated()
+
+    if user.get('role') == 'admin':
+        return None  # полный доступ
+
+    return _enforce_restricted(user)
+
+
+# Защита от перебора: счётчик неудачных попыток по (логин, IP) в памяти процесса
+# (приложение запускается одним воркером, use_reloader=False — этого достаточно).
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_LOCK_SECONDS = 300  # 5 минут блокировки после серии неудач
+_LOGIN_ATTEMPTS_MAX_KEYS = 10000  # предел размера словаря (защита от memory-DoS)
+_login_attempts = {}  # key=(username, ip) -> [timestamps неудач в пределах окна]
+# Фиктивный хэш для выравнивания времени ответа, когда логина нет (anti-enumeration).
+_DUMMY_PWD_HASH = generate_password_hash('dummy-nonexistent-password', method='pbkdf2:sha256')
+
+
+def _login_key(username):
+    # Только доверенный источник IP: request.remote_addr (за прокси — ProxyFix по opt-in).
+    # XFF напрямую НЕ используем, иначе клиент подделает IP и обойдёт лимит.
+    return (username.lower(), request.remote_addr or '?')
+
+
+def _login_sweep():
+    """Убрать протухшие ключи; при флуде (много IP) — сбросить словарь целиком."""
+    now = datetime.now().timestamp()
+    for k in [k for k, ts in _login_attempts.items()
+              if not ts or now - ts[-1] >= _LOGIN_LOCK_SECONDS]:
+        _login_attempts.pop(k, None)
+    if len(_login_attempts) > _LOGIN_ATTEMPTS_MAX_KEYS:
+        _login_attempts.clear()
+
+
+def _login_locked(username):
+    now = datetime.now().timestamp()
+    key = _login_key(username)
+    attempts = [t for t in _login_attempts.get(key, []) if now - t < _LOGIN_LOCK_SECONDS]
+    if attempts:
+        _login_attempts[key] = attempts
+    else:
+        _login_attempts.pop(key, None)
+    return len(attempts) >= _LOGIN_MAX_ATTEMPTS
+
+
+def _login_register_failure(username):
+    _login_sweep()
+    _login_attempts.setdefault(_login_key(username), []).append(datetime.now().timestamp())
+
+
+def _login_reset(username):
+    _login_attempts.pop(_login_key(username), None)
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Страница входа."""
+    next_url = request.args.get('next', '') or request.form.get('next', '')
+    if request.method == 'POST':
+        username = (request.form.get('username') or '').strip()
+        password = request.form.get('password') or ''
+
+        if _login_locked(username):
+            return render_template(
+                'login.html',
+                error='Слишком много неудачных попыток. Повторите через несколько минут.',
+                next=next_url), 429
+
+        user = load_users().get(username)
+        # Всегда прогоняем проверку хэша (у несуществующего — фиктивный),
+        # чтобы время ответа не выдавало существование логина.
+        stored_hash = user.get('password_hash', '') if user else _DUMMY_PWD_HASH
+        password_ok = check_password_hash(stored_hash, password)
+
+        if user and password_ok:
+            _login_reset(username)
+            session.clear()          # регенерация сессии — против фиксации
+            session['username'] = username
+            session.permanent = True
+            if user.get('role') != 'admin':
+                # Ограниченного пользователя всегда ведём на его территориальную страницу.
+                target = '/areas'
+            else:
+                target = _safe_next_url(next_url) or '/'
+            return redirect(target)
+
+        _login_register_failure(username)
+        return render_template('login.html', error='Неверный логин или пароль', next=next_url), 401
+
+    if current_user():
+        return redirect('/')
+    return render_template('login.html', next=next_url)
+
+
+@app.route('/logout')
+def logout():
+    """Выход из системы."""
+    session.pop('username', None)
+    return redirect(url_for('login'))
+
 
 # SQL-выражение: первый день ТЕКУЩЕГО календарного месяца.
 # Используется как ПРАВАЯ (верхняя) граница окон истории в планах и сезонности,
@@ -1365,9 +1772,14 @@ def get_sales_areas():
         
         # Сортировать по продажам
         areas_list.sort(key=lambda x: x['TotalSales'], reverse=True)
-        
+
+        # Территориальная блокировка: ограниченный пользователь видит только свои территории.
+        _scope = current_area_scope()
+        if _scope is not None:
+            areas_list = [a for a in areas_list if str(a.get('code', '')).strip() in _scope]
+
         return jsonify({'success': True, 'data': areas_list})
-        
+
     except Exception as e:
         logger.error(f"Ошибка получения Sales Areas: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -1379,6 +1791,12 @@ def customers_api():
         date_from = request.args.get('date_from')
         date_to = request.args.get('date_to')
         sales_area = request.args.get('sales_area', '101').strip() or '101'
+        # Территориальная блокировка (второй, независимый слой поверх _rewrite_area_args):
+        # для роли 'user' жёстко зажимаем территорию в разрешённый scope прямо здесь,
+        # чтобы изоляция не зависела только от переписывания request.args.
+        _scope = current_area_scope()
+        if _scope is not None and sales_area not in _scope:
+            sales_area = _scope[0] if _scope else '__no_area__'
         raw_divisions = request.args.get('divisions', '').strip()
         selected_divisions = [div.strip() for div in raw_divisions.split(',') if div.strip()]
         raw_groups = request.args.get('groups', '').strip()
@@ -1827,8 +2245,22 @@ def customer_purchases(customer_id: int):
             payment_clause = f" AND ISNULL(s.fPAYTYPE, '') IN ({placeholders})"
             payment_params = tuple(selected_payments)
 
+        # Территориальная блокировка: для роли 'user' покупки только по его территориям.
+        # Клиент может числиться на нескольких зонах — продажи ЧУЖИХ зон скрываем,
+        # иначе видны суммы и менеджеры чужих территорий.
+        area_scope_clause = ""
+        area_scope_params = ()
+        _scope = current_area_scope()
+        if _scope is not None:
+            if _scope:
+                area_ph = ','.join('?' * len(_scope))
+                area_scope_clause = f" AND s.fSALESAREA IN ({area_ph})"
+                area_scope_params = tuple(_scope)
+            else:
+                area_scope_clause = " AND 1 = 0"  # нет разрешённых территорий → пусто
+
         query = f"""
-            SELECT 
+            SELECT
                 s.fISN AS SaleId,
                 s.fISN AS DocNumber,
                 s.fDATE AS SaleDate,
@@ -1845,6 +2277,7 @@ def customer_purchases(customer_id: int):
                 AND s.fDATE >= ?
                 AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
                 {payment_clause}
+                {area_scope_clause}
             ORDER BY s.fDATE DESC, s.fISN DESC
         """
 
@@ -1852,7 +2285,7 @@ def customer_purchases(customer_id: int):
             customer_id,
             date_from,
             date_to
-        ) + payment_params
+        ) + payment_params + area_scope_params
 
         logger.info(f"Выполнение запроса с параметрами: customer_id={customer_id}, date_from={date_from}, date_to={date_to}")
         cursor.execute(query, params)
@@ -6113,9 +6546,14 @@ def get_sales_areas_list():
                 'code': row[0].strip() if row[0] else '',
                 'name': row[1].strip() if row[1] else ''
             })
-        
+
         conn.close()
-        
+
+        # Территориальная блокировка: список территорий для фильтров — только свои.
+        _scope = current_area_scope()
+        if _scope is not None:
+            areas = [a for a in areas if a['code'] in _scope]
+
         return jsonify({
             'success': True,
             'data': areas
@@ -6717,7 +7155,13 @@ def generate_plans():
             }
         
         conn.close()
-        
+
+        # Территориальная блокировка: планы только по своим территориям.
+        _scope = current_area_scope()
+        if _scope is not None:
+            plans = {code: val for code, val in plans.items()
+                     if str(code).strip() in _scope}
+
         return jsonify({
             'success': True,
             'data': plans,
@@ -6725,7 +7169,7 @@ def generate_plans():
             'year': target_year,
             'seasonality_coefficient': default_season_coeff
         })
-        
+
     except Exception as e:
         logger.error(f"Ошибка генерации планов: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -7207,6 +7651,112 @@ def settings_page():
     """Страница настроек"""
     return render_template('settings.html')
 
+# ===== Пользователи (учётные записи панели) =====
+# Доступ только у администратора: путь /api/users не входит в allowlist роли 'user',
+# а before_request-гейт пропускает сюда только admin.
+@app.route('/api/users', methods=['GET'])
+def api_users_list():
+    """Список пользователей (без хэшей паролей)."""
+    if not is_admin():
+        return _forbid()
+    users = load_users()
+    out = []
+    for uname, u in users.items():
+        out.append({
+            'username': uname,
+            'role': u.get('role', 'user'),
+            'areas': u.get('areas', []) or [],
+            'display_name': u.get('display_name', '') or '',
+        })
+    out.sort(key=lambda x: (x['role'] != 'admin', x['username'].lower()))
+    return jsonify({'success': True, 'data': out})
+
+
+@app.route('/api/users', methods=['POST'])
+def api_users_save():
+    """Создать или обновить пользователя.
+
+    Тело: {username, password?, role, areas[], display_name}.
+    Для нового пользователя пароль обязателен; при обновлении — только если задан.
+    """
+    if not is_admin():
+        return _forbid()
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    if not username:
+        return jsonify({'success': False, 'error': 'Не указан логин'}), 400
+
+    role = data.get('role') if data.get('role') in ('admin', 'user') else 'user'
+    raw_areas = data.get('areas') or []
+    if not isinstance(raw_areas, list):
+        raw_areas = []
+    areas = []
+    for a in raw_areas:
+        code = str(a).strip()
+        if code and code not in areas:
+            areas.append(code)
+    display_name = (data.get('display_name') or '').strip()
+    password = data.get('password') or ''
+
+    if role == 'user' and not areas:
+        return jsonify({'success': False,
+                        'error': 'Для пользователя нужно выбрать хотя бы одну территорию'}), 400
+
+    users = load_users()
+    existing = users.get(username)
+
+    if existing is None:
+        if not password:
+            return jsonify({'success': False,
+                            'error': 'Для нового пользователя нужен пароль'}), 400
+        entry = {
+            'password_hash': generate_password_hash(password, method='pbkdf2:sha256'),
+            'role': role,
+            'areas': areas,
+            'display_name': display_name,
+        }
+    else:
+        entry = dict(existing)
+        # Не даём снять роль admin с последнего администратора.
+        if existing.get('role') == 'admin' and role != 'admin':
+            admins = [n for n, v in users.items() if v.get('role') == 'admin']
+            if len(admins) <= 1:
+                return jsonify({'success': False,
+                                'error': 'Нельзя снять роль с последнего администратора'}), 400
+        entry['role'] = role
+        entry['areas'] = areas
+        entry['display_name'] = display_name
+        if password:
+            entry['password_hash'] = generate_password_hash(password, method='pbkdf2:sha256')
+
+    users[username] = entry
+    if not save_users(users):
+        return jsonify({'success': False, 'error': 'Не удалось сохранить пользователя'}), 500
+    return jsonify({'success': True})
+
+
+@app.route('/api/users/delete', methods=['POST'])
+def api_users_delete():
+    """Удалить пользователя."""
+    if not is_admin():
+        return _forbid()
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    users = load_users()
+    if username not in users:
+        return jsonify({'success': False, 'error': 'Пользователь не найден'}), 404
+    if username == current_username():
+        return jsonify({'success': False, 'error': 'Нельзя удалить текущего пользователя'}), 400
+    if users[username].get('role') == 'admin':
+        admins = [n for n, v in users.items() if v.get('role') == 'admin']
+        if len(admins) <= 1:
+            return jsonify({'success': False,
+                            'error': 'Нельзя удалить последнего администратора'}), 400
+    del users[username]
+    if not save_users(users):
+        return jsonify({'success': False, 'error': 'Не удалось сохранить изменения'}), 500
+    return jsonify({'success': True})
+
 # ===== Менеджеры =====
 @app.route('/api/settings/managers')
 def get_settings_managers():
@@ -7498,6 +8048,12 @@ def get_settings_sales_areas_list():
                 'customerCount': row.CustomerCount if row.CustomerCount else 0
             })
         conn.close()
+
+        # Территориальная блокировка: список территорий для фильтров — только свои.
+        _scope = current_area_scope()
+        if _scope is not None:
+            areas = [a for a in areas if str(a['code']).strip() in _scope]
+
         return jsonify({'success': True, 'data': areas})
     except Exception as e:
         app.logger.error(f"[SalesAreaGroups] Error loading areas: {e}")

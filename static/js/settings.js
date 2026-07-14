@@ -33,6 +33,10 @@
             selectedSalesArea: null,
             selectedSalesAreaGroups: [],
 
+            // ----- Пользователи (учётные записи панели) -----
+            users: [],
+            userForm: { editing: false, username: '', display_name: '', role: 'user', areas: [], password: '' },
+
             async init() {
                 // Загружаем только критически важные данные параллельно
                 await Promise.all([
@@ -44,7 +48,8 @@
                     this.loadProductGroups(),
                     this.loadSelectedProductGroups(),
                     this.loadSalesAreas(),
-                    this.loadSalesAreaGroupAssignments()
+                    this.loadSalesAreaGroupAssignments(),
+                    this.loadUsers()
                 ]);
                 // loadGroups() убран - он нужен только если есть dropdown для групп
             },
@@ -977,6 +982,104 @@
                     currency: 'AMD',
                     minimumFractionDigits: 0
                 }).format(num);
+            },
+
+            // ==================== ПОЛЬЗОВАТЕЛИ ====================
+            async loadUsers() {
+                try {
+                    const response = await fetch('/api/users');
+                    const result = await response.json();
+                    if (result.success) {
+                        this.users = result.data;
+                    }
+                } catch (error) {
+                    console.error('Ошибка загрузки пользователей:', error);
+                }
+            },
+
+            newUser() {
+                this.userForm = { editing: false, username: '', display_name: '', role: 'user', areas: [], password: '' };
+                new bootstrap.Modal(document.getElementById('userModal')).show();
+            },
+
+            editUser(u) {
+                this.userForm = {
+                    editing: true,
+                    username: u.username,
+                    display_name: u.display_name || '',
+                    role: u.role || 'user',
+                    areas: Array.isArray(u.areas) ? [...u.areas] : [],
+                    password: ''
+                };
+                new bootstrap.Modal(document.getElementById('userModal')).show();
+            },
+
+            toggleUserArea(code) {
+                const i = this.userForm.areas.indexOf(code);
+                if (i === -1) {
+                    this.userForm.areas.push(code);
+                } else {
+                    this.userForm.areas.splice(i, 1);
+                }
+            },
+
+            userSelectAllAreas() {
+                this.userForm.areas = this.salesAreas.map(a => a.code);
+            },
+
+            async saveUser() {
+                const f = this.userForm;
+                if (!f.username.trim()) { alert('Укажите логин'); return; }
+                if (!f.editing && !f.password) { alert('Для нового пользователя нужен пароль'); return; }
+                if (f.role !== 'admin' && f.areas.length === 0) {
+                    alert('Выберите хотя бы одну территорию для пользователя');
+                    return;
+                }
+                try {
+                    const response = await fetch('/api/users', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            username: f.username.trim(),
+                            display_name: f.display_name.trim(),
+                            role: f.role,
+                            areas: f.role === 'admin' ? [] : f.areas,
+                            password: f.password || undefined
+                        })
+                    });
+                    const result = await response.json();
+                    if (result.success) {
+                        bootstrap.Modal.getInstance(document.getElementById('userModal')).hide();
+                        this.showSuccess('Пользователь сохранён');
+                        await this.loadUsers();
+                    } else {
+                        alert('Ошибка: ' + (result.error || 'не удалось сохранить'));
+                    }
+                } catch (error) {
+                    console.error('Ошибка сохранения пользователя:', error);
+                    alert('Ошибка при сохранении пользователя');
+                }
+            },
+
+            async deleteUser(username) {
+                if (!confirm(`Удалить пользователя «${username}»?`)) return;
+                try {
+                    const response = await fetch('/api/users/delete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username })
+                    });
+                    const result = await response.json();
+                    if (result.success) {
+                        this.showSuccess('Пользователь удалён');
+                        await this.loadUsers();
+                    } else {
+                        alert('Ошибка: ' + (result.error || 'не удалось удалить'));
+                    }
+                } catch (error) {
+                    console.error('Ошибка удаления пользователя:', error);
+                    alert('Ошибка при удалении пользователя');
+                }
             }
         }
     }
