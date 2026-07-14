@@ -580,6 +580,99 @@
         border-radius: 18px; box-shadow: 0 40px 90px -35px rgba(0,0,0,.9);
     }
     .kpi-page .modal-header, .kpi-page .modal-footer { border-color: var(--kpi-line); }
+
+    /* ============================================================
+       МОБИЛЬНАЯ АДАПТАЦИЯ (телефоны и узкие планшеты, ≤ 767.98px).
+       Цель: 100% удобство на телефоне — таблица-лидерборд с компактными
+       липкими колонками и горизонтальным скроллом, крупные тач-таргеты
+       (≥44px), выпадашки не выходят за экран, никакого горизонтального
+       переполнения страницы. Десктоп не затрагиваем (только max-width).
+       ============================================================ */
+
+    /* Выпадающие фильтры: их inline width:320-340px кап-аем под ширину экрана. */
+    .kpi-page .dropdown-menu { max-width: min(340px, calc(100vw - 1.25rem)); overflow-x: hidden; }
+
+    @media (max-width: 767.98px) {
+        /* Ни один элемент не должен выпирать за вьюпорт (страховка от гор.скролла).
+           clip не создаёт scroll-контейнер → не ломает sticky в .lb-scroll. */
+        .kpi-page { overflow-x: clip; }
+        /* Контейнер: меньше боковых полей, больше места контенту */
+        .kpi-page.container-fluid { padding-left: .6rem; padding-right: .6rem; }
+
+        /* HERO: компактнее, заголовок — флюидный */
+        .kpi-hero { padding: .9rem 1rem; gap: .75rem; }
+        .kpi-hero-icon { width: 44px; height: 44px; font-size: 1.2rem; border-radius: 12px; }
+        .kpi-hero-title { font-size: clamp(1.15rem, 5.4vw, 1.5rem); }
+        .kpi-hero-sub { font-size: .82rem; }
+
+        /* Тач-таргеты: поля и кнопки ≥ 44px по высоте (комфортный тап) */
+        .kpi-page .form-control, .kpi-page .form-select,
+        .kpi-page .input-group > .form-control, .kpi-page .input-group > .form-select {
+            min-height: 44px; font-size: 16px;   /* 16px — iOS не зумит при фокусе */
+        }
+        .kpi-page .form-control-sm { min-height: 44px; }
+        .kpi-page .btn { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+        .kpi-page .btn-group-sm > .btn, .kpi-page .btn-sm { min-height: 44px; }
+        .kpi-page .input-group-text { min-height: 44px; }
+        /* Крупнее чекбоксы в выпадашках фильтров + большая зона нажатия */
+        .kpi-page .dropdown-menu .form-check { padding: .15rem 0 .15rem 1.9rem; min-height: 40px; display: flex; align-items: center; }
+        .kpi-page .dropdown-menu .form-check-input { width: 1.25em; height: 1.25em; margin-left: -1.9rem; }
+        .kpi-page .dropdown-menu .form-check-label { line-height: 1.3; }
+
+        /* Фильтр-панель (территории/группы): чтобы бейджи и дропдауны не жались */
+        .kpi-page .dropdown-menu { width: min(340px, calc(100vw - 1.25rem)) !important; }
+
+        /* ЛИДЕРБОРД: компактные липкие колонки → рядом видно 2-3 KPI-колонки.
+           Горизонтальный скролл сохраняем (data-table pattern). */
+        .kpi-page table.kpi-table { font-size: .8rem; }
+        .kpi-page .kpi-table thead th { padding: .6rem .4rem; font-size: .64rem; letter-spacing: .4px; }
+        .kpi-page .kpi-table tbody td { padding: .55rem .4rem; }
+        .kpi-page .kpi-table .col-rank { width: 34px; min-width: 34px; padding-left: .3rem; padding-right: .3rem; }
+        .kpi-page .kpi-table .col-mgr { left: 34px; min-width: 124px; max-width: 150px; }
+        .kpi-page .lb-mgr-name {
+            font-size: .8rem; white-space: normal;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+        }
+        .kpi-page .rank-badge { width: 26px; height: 26px; font-size: .76rem; border-radius: 8px; }
+        .kpi-page .col-score { min-width: 74px; }
+        .kpi-page .col-kpi { min-width: 60px; }
+        .kpi-page .col-debt { min-width: 82px; }
+        /* Нижняя половина полей у выпадашек — тач-скролл инерция */
+        .kpi-page .lb-scroll { -webkit-overflow-scrolling: touch; max-height: 68vh; }
+        /* Подсказка «свайпните таблицу» — только на телефоне */
+        .kpi-page .lb-swipe-hint { display: flex !important; }
+
+        /* СКОРКАРТЫ: чуть плотнее, кольцо меньше */
+        .kpi-page .score-ring { width: 68px; height: 68px; }
+        .kpi-page .score-ring-inner { width: 52px; height: 52px; font-size: 1.2rem; }
+
+        /* ПУЛЬС: кольцо и находки компактнее */
+        .kpi-page .pulse-ring { width: 84px; height: 84px; }
+        .kpi-page .pulse-ring .score-ring-inner { width: 64px; height: 64px; font-size: 1.35rem; }
+        .kpi-page .pulse-box { padding: .8rem .8rem; }
+        /* aging-bar: даём переносить сумму под трек на самых узких */
+        .kpi-page .aging-bar { flex-wrap: wrap; }
+        .kpi-page .aging-bar .ab-track { flex-basis: 100%; order: 3; }
+
+        /* Модалки: контент читаемее — меньше внутренние поля */
+        .kpi-page .modal-body { padding: .9rem; }
+        .kpi-page .modal-content { border-radius: 0; }  /* fullscreen на телефоне */
+    }
+
+    /* Совсем узкие телефоны (≤ 400px): убираем бейджи территорий в строке
+       менеджера, чтобы сохранить ширину под KPI-колонки (код остаётся). */
+    @media (max-width: 400px) {
+        .kpi-page .kpi-table .lb-area { display: none; }
+        .kpi-page .kpi-table .col-mgr { min-width: 112px; }
+        .kpi-page .kpi-hero-title { font-size: 1.12rem; }
+    }
+
+    /* Подсказка горизонтального скролла таблицы (по умолчанию скрыта, включается на телефоне) */
+    .kpi-page .lb-swipe-hint {
+        display: none; align-items: center; gap: .4rem;
+        font-size: .72rem; color: var(--kpi-muted);
+        padding: .35rem .1rem 0;
+    }
 </style>
 {% endblock %}
 
@@ -1325,7 +1418,7 @@
 
     <!-- МОДАЛ: обширный диагноз одной территории -->
     <div class="modal fade" id="areaDetailModal" tabindex="-1">
-        <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-dialog modal-xl modal-fullscreen-sm-down modal-dialog-centered modal-dialog-scrollable">
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title d-flex align-items-center gap-2">
@@ -1746,6 +1839,11 @@
                 <i class="fas fa-file-excel me-1"></i>Excel
             </button>
         </div>
+        <!-- Подсказка горизонтального скролла таблицы (видна только на телефоне) -->
+        <div class="lb-swipe-hint px-2">
+            <i class="fas fa-arrows-left-right"></i>
+            <span>Ոլորեք աղյուսակը հորիզոնական՝ բոլոր ցուցանիշները տեսնելու համար</span>
+        </div>
         <div class="card-body p-0 lb-scroll">
             <table class="table kpi-table mb-0">
                 <thead>
@@ -1908,7 +2006,7 @@
 
     <!-- МОДАЛКА ДЕТАЛЕЙ -->
     <div class="modal fade" id="detailModal" tabindex="-1">
-        <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-dialog modal-xl modal-fullscreen-sm-down modal-dialog-centered modal-dialog-scrollable">
             <div class="modal-content" x-show="detail.m">
                 <div class="modal-header">
                     <h5 class="modal-title">
