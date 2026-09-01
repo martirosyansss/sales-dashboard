@@ -52,6 +52,8 @@ dashboard_selected_areas.json
 dashboard_selected_groups.json
 dashboard_widgets.json
 kpi_*.json
+production_settings.json
+production_recommendations.jsonl
 
 # Одноразовые отладочные скрипты (проверки против боевой БД)
 analyze_*.py

@@ -1,0 +1,213 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Пульт производства — Sales Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/production.css') }}?v=14">
+{% endblock %}
+
+{% block content %}
+<div class="prod-page">
+
+    <div id="prodSettingsError" class="pc-alert d-none">
+        <i class="fas fa-triangle-exclamation"></i><span></span>
+    </div>
+
+    <!-- ШАПКА / панель управления -->
+    <div class="pc-topbar">
+        <div class="pc-brand">
+            <h1><span class="pc-accent">//</span> Пульт производства</h1>
+            <span id="prodTargetMonth" class="pc-month"></span>
+        </div>
+        <div class="pc-toolbar">
+            <select id="prodStorageFilter" class="pc-select" aria-label="Склад">
+                <option value="">Все склады</option>
+            </select>
+            <select id="prodGroupFilter" class="pc-select" aria-label="Товарная группа">
+                <option value="">Все группы</option>
+            </select>
+            <input id="prodSearch" type="search" class="pc-search" placeholder="Поиск товара…" aria-label="Поиск товара">
+            <button id="prodRefreshBtn" class="pc-iconbtn" title="Обновить данные" aria-label="Обновить данные"><i class="fas fa-rotate" aria-hidden="true"></i></button>
+            <a href="/production/settings" class="pc-iconbtn" title="Настройки производства" aria-label="Настройки производства"><i class="fas fa-sliders" aria-hidden="true"></i></a>
+        </div>
+    </div>
+
+    <!-- KPI-ЛЕНТА (простыми словами) -->
+    <div id="prodRibbon" class="pc-ribbon d-none" role="group" aria-label="Главные показатели">
+        <button class="pc-tile t-danger" data-filter="critical" aria-label="Скоро закончатся: показать эти товары" aria-pressed="false">
+            <span class="pc-tile-label">Скоро закончатся</span>
+            <span class="pc-tile-val pc-num" id="cntDeficit">–</span>
+            <span class="pc-tile-sub">товаров надо сделать срочно</span>
+        </button>
+        <button class="pc-tile t-warn" data-filter="overstock" aria-label="Много на складе: показать эти товары" aria-pressed="false">
+            <span class="pc-tile-label">Много на складе</span>
+            <span class="pc-tile-val pc-num" id="cntOverstock">–</span>
+            <span class="pc-tile-sub">товаров лежат с избытком</span>
+        </button>
+        <div class="pc-tile t-acc" id="cntWapeBox" title="">
+            <span class="pc-tile-label">Точность прогноза</span>
+            <span class="pc-tile-val pc-num" id="cntWape">–</span>
+            <span class="pc-tile-sub" id="cntWapeSub">насколько прогноз сбывается</span>
+        </div>
+        <div class="pc-tile">
+            <span class="pc-tile-label">Товаров в работе</span>
+            <span class="pc-tile-val pc-num" id="cntActive">–</span>
+            <span class="pc-tile-sub">продаются сейчас</span>
+        </div>
+    </div>
+
+    <!-- Загрузка / ошибка -->
+    <div id="prodLoading" class="pc-loading" role="status" aria-live="polite">
+        <div class="pc-spinner" aria-hidden="true"></div>Считываю склад и производство…
+    </div>
+    <div id="prodError" class="pc-alert d-none" role="alert" aria-live="assertive">
+        <i class="fas fa-plug-circle-xmark" aria-hidden="true"></i><span id="prodErrorText"></span>
+        <button id="prodRetryBtn" class="pc-btn pc-btn-ghost ms-auto">Повторить</button>
+    </div>
+
+    <div id="prodBody" class="d-none">
+
+        <!-- Сводка дня простыми словами -->
+        <div id="prodSummary" class="pc-summary pc-reveal" role="status"></div>
+
+        <!-- 01 · ОЧЕРЕДЬ ВНИМАНИЯ -->
+        <section class="pc-section pc-reveal" style="animation-delay:.04s">
+            <div class="pc-shead">
+                <span class="pc-kicker">01</span>
+                <h2>Что сделать в первую очередь</h2>
+                <span class="pc-shead-note">товары, которые скоро закончатся</span>
+            </div>
+            <div class="pc-panel">
+                <div id="riskBoard" class="pc-queue"></div>
+                <div id="riskEmpty" class="pc-empty d-none">
+                    <i class="fas fa-circle-check ok me-2"></i>Дефицитов нет — склад покрывает прогноз.
+                </div>
+            </div>
+        </section>
+
+        <!-- 02 · ПЛАН ПРОИЗВОДСТВА -->
+        <section class="pc-section pc-reveal" style="animation-delay:.1s">
+            <div class="pc-shead">
+                <span class="pc-kicker">02</span>
+                <h2>План производства</h2>
+                <span class="pc-shead-note" id="planTargetNote"></span>
+            </div>
+            <div class="pc-panel">
+                <div class="pc-plan-head">
+                    <div class="pc-whatif">
+                        <label for="whatIfSlider">Спрос</label>
+                        <input type="range" id="whatIfSlider" min="-20" max="20" step="5" value="0" aria-label="Что-если, % спроса">
+                        <span class="val" id="whatIfValue">0%</span>
+                    </div>
+                    <div class="ms-auto d-flex gap-2">
+                        <button id="recalcBtn" class="pc-btn pc-btn-primary"><i class="fas fa-arrows-rotate" aria-hidden="true"></i>Пересчитать</button>
+                        <button id="exportBtn" class="pc-btn pc-btn-ghost" title="Экспорт в Excel" aria-label="Экспортировать план в Excel"><i class="fas fa-file-arrow-down" aria-hidden="true"></i>Excel</button>
+                    </div>
+                </div>
+                <div id="planAssumptions" class="pc-assume"></div>
+                <div id="planOnboarding" class="pc-onboard d-none"></div>
+                <div id="planTimelineWrap" class="pc-timeline-wrap d-none">
+                    <canvas id="planTimeline" height="96" role="img" aria-label="Таймлайн партий"></canvas>
+                    <div id="planCapacity" class="pc-capacity"></div>
+                </div>
+                <div id="planEmpty" class="pc-empty d-none"></div>
+                <div class="pc-scroll">
+                    <table class="pc-table simple" id="planTable">
+                        <thead><tr>
+                            <th class="l">#</th><th class="l">Товар</th><th class="l">Линия</th>
+                            <th>Хватит на</th><th>Сделать</th><th class="l pc-col-exp">Группа</th><th class="pc-col-exp">Часы</th><th class="pc-col-exp">Переналадка</th><th class="l">Когда</th>
+                        </tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div class="pc-ai">
+                    <button id="aiBtn" class="pc-btn pc-btn-ghost"><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i>Пояснить расчёт</button>
+                    <span class="pc-ai-note">AI-разбор — пояснение к цифрам, не команда производству</span>
+                    <div id="aiOutput" class="pc-ai-out d-none" role="region" aria-live="polite" aria-label="AI-пояснение к расчёту"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 03 · ДИНАМИКА -->
+        <section class="pc-section pc-reveal" style="animation-delay:.16s">
+            <div class="pc-shead">
+                <span class="pc-kicker">03</span>
+                <h2>Приход и продажи</h2>
+                <span class="pc-shead-note">12 полных месяцев, по текущему фильтру</span>
+            </div>
+            <div class="pc-panel pc-panel-pad">
+                <div class="pc-chart-wrap"><canvas id="flowChart" role="img" aria-label="Приход и продажи"></canvas></div>
+            </div>
+        </section>
+
+        <!-- 04 · ВСЕ ТОВАРЫ -->
+        <section class="pc-section pc-reveal" style="animation-delay:.22s">
+            <div class="pc-shead">
+                <span class="pc-kicker">04</span>
+                <h2>Все товары</h2>
+            </div>
+            <div class="pc-panel">
+                <div class="pc-grid-toolbar">
+                    <span class="info" id="tableInfo"></span>
+                    <div class="pc-seg ms-auto" role="group" aria-label="Уровень детализации">
+                        <button id="segSimple" class="pc-seg-btn active" type="button">Просто</button>
+                        <button id="segDetail" class="pc-seg-btn" type="button">Подробно</button>
+                    </div>
+                    <label class="pc-switch">
+                        <input type="checkbox" id="showAllToggle"> показать редкие товары
+                    </label>
+                </div>
+                <div id="tableEmpty" class="pc-empty d-none">
+                    Нет товаров по фильтру.
+                    <button id="tableResetBtn" class="pc-btn pc-btn-ghost ms-2">Сбросить</button>
+                </div>
+                <div class="pc-scroll">
+                    <table class="pc-table simple" id="mainTable">
+                        <thead><tr>
+                            <th class="l sortable pc-sticky-col" data-sort="name">Товар</th>
+                            <th class="sortable" data-sort="stock_wh">На складе</th>
+                            <th class="sortable" data-sort="sales_month">Расход/мес</th>
+                            <th class="sortable pc-key" data-sort="production_qty">Надо сделать</th>
+                            <th class="sortable" data-sort="cover_days">Хватит на <span class="arr">▲</span></th>
+                            <th class="l">Что делать</th>
+                            <th class="pc-col-exp">Поступило/мес</th>
+                            <th class="pc-col-exp">У агентов</th>
+                            <th class="pc-col-exp">В среднем/мес</th>
+                            <th class="sortable pc-col-exp" data-sort="forecast">Ожидаем</th>
+                            <th class="l pc-col-exp">Тренд 12м</th>
+                            <th class="pc-col-exp">Класс</th>
+                        </tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Модалка товара -->
+    <div class="modal fade" id="productModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content pc-modal">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="pmTitle"></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="pmStats" class="pc-modal-stats"></div>
+                    <div id="pmNarrative" class="pc-narrative"></div>
+                    <div id="pmLoading" class="pc-loading"><div class="pc-spinner"></div></div>
+                    <div id="pmError" class="text-danger d-none"></div>
+                    <div class="pc-chart-wrap"><canvas id="pmChart"></canvas></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/production.js') }}?v=14"></script>
+{% endblock %}

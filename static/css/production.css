@@ -1,0 +1,508 @@
+/* ============================================================================
+   /production — «Пульт производства» (industrial operations console)
+   Промышленная плотная тёмная панель. Ясность и иерархия важнее украшений.
+   Типографика: Archivo (интерфейс) + IBM Plex Mono (цифры, табличные).
+   Локальная палитра (tokens.css — только 3 базовые переменные, не дизайн-система).
+   ========================================================================== */
+
+.prod-page {
+    /* Поверхности */
+    --pc-bg:        #0c0f14;
+    --pc-panel:     #12161d;
+    --pc-panel-2:   #171c25;
+    --pc-inset:     #0e1218;
+    --pc-line:      #232b37;
+    --pc-line-soft: #1b212b;
+    /* Текст (контраст выверен под тёмный фон: dim ≥4.5:1, mute ≥3:1 для WCAG) */
+    --pc-fg:        #eef1f6;
+    --pc-fg-dim:    #a7b0c0;
+    --pc-fg-mute:   #7c8698;
+    /* Акцент — холодный бирюзовый (не пересекается с семантикой red/amber/green) */
+    --pc-acc:       #34d3c4;
+    --pc-acc-dim:   #1d8f86;
+    --pc-acc-glow:  rgba(52, 211, 196, .14);
+    /* Семантика статусов */
+    --pc-danger:    #ff5a6a;
+    --pc-danger-bg: rgba(255, 90, 106, .12);
+    --pc-warn:      #ffb03a;
+    --pc-warn-bg:   rgba(255, 176, 58, .12);
+    --pc-ok:        #3fd08a;
+    --pc-ok-bg:     rgba(63, 208, 138, .10);
+    /* Тень / скругление / ритм */
+    --pc-radius:    12px;
+    --pc-radius-sm: 8px;
+    --pc-shadow:    0 1px 0 rgba(255,255,255,.02), 0 8px 24px rgba(0,0,0,.35);
+
+    color: var(--pc-fg);
+    font-family: 'Archivo', system-ui, sans-serif;
+    letter-spacing: .1px;
+    overflow-x: hidden;   /* тело страницы не скроллится вбок — только внутренние pc-scroll */
+}
+
+/* --------------------------------------------------------------------------
+   ДОСТУПНОСТЬ: видимый фокус, reduced-motion, press-feedback
+   ------------------------------------------------------------------------ */
+.prod-page :focus-visible {
+    outline: 2px solid var(--pc-acc);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+/* мышью фокус-кольцо не показываем (только клавиатура) — :focus-visible это уже даёт */
+.prod-page button, .prod-page a, .prod-page [role="button"],
+.prod-page [tabindex] { -webkit-tap-highlight-color: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+    .prod-page *, .prod-page *::before, .prod-page *::after {
+        animation-duration: .001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .001ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* Атмосфера: тонкая «чертёжная» сетка на фоне контента */
+.prod-page {
+    position: relative;
+}
+.prod-page::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+        radial-gradient(1200px 600px at 85% -10%, var(--pc-acc-glow), transparent 60%),
+        linear-gradient(var(--pc-line-soft) 1px, transparent 1px) 0 0 / 100% 44px,
+        linear-gradient(90deg, var(--pc-line-soft) 1px, transparent 1px) 0 0 / 44px 100%,
+        var(--pc-bg);
+    opacity: .5;
+    pointer-events: none;
+    -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 40%, transparent 90%);
+            mask-image: linear-gradient(180deg, #000 0%, #000 40%, transparent 90%);
+}
+
+/* Числа — везде табличный моно */
+.pc-num { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-feature-settings: "tnum" 1; }
+
+/* --------------------------------------------------------------------------
+   ШАПКА / панель управления
+   ------------------------------------------------------------------------ */
+.pc-topbar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+    padding-bottom: 16px; margin-bottom: 18px;
+    border-bottom: 1px solid var(--pc-line);
+}
+.pc-brand { display: flex; align-items: baseline; gap: 12px; }
+.pc-brand h1 {
+    font-size: 1.32rem; font-weight: 700; margin: 0; letter-spacing: -.2px;
+    text-transform: uppercase;
+}
+.pc-brand h1 .pc-accent { color: var(--pc-acc); }
+.pc-month {
+    font-family: 'IBM Plex Mono', monospace; font-size: .74rem; font-weight: 500;
+    color: var(--pc-acc); border: 1px solid var(--pc-acc-dim);
+    border-radius: 999px; padding: 3px 11px; letter-spacing: .3px;
+    background: var(--pc-acc-glow);
+}
+.pc-toolbar { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+.pc-select, .pc-search {
+    background: var(--pc-inset); border: 1px solid var(--pc-line);
+    color: var(--pc-fg); border-radius: var(--pc-radius-sm);
+    font-size: .84rem; padding: 7px 11px; height: 36px; max-width: 210px;
+    font-family: inherit; transition: border-color .15s;
+}
+.pc-select:focus, .pc-search:focus { outline: none; border-color: var(--pc-acc); box-shadow: 0 0 0 3px var(--pc-acc-glow); }
+.pc-iconbtn {
+    background: var(--pc-inset); border: 1px solid var(--pc-line); color: var(--pc-fg-dim);
+    width: 36px; height: 36px; border-radius: var(--pc-radius-sm); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; transition: all .15s;
+}
+.pc-iconbtn:hover { color: var(--pc-acc); border-color: var(--pc-acc-dim); }
+
+/* --------------------------------------------------------------------------
+   KPI-ЛЕНТА (status ribbon)
+   ------------------------------------------------------------------------ */
+.pc-ribbon { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+.pc-tile {
+    position: relative; background: var(--pc-panel); border: 1px solid var(--pc-line);
+    border-radius: var(--pc-radius); padding: 15px 16px 14px; overflow: hidden;
+    text-align: left; color: var(--pc-fg); min-height: 92px;
+    display: flex; flex-direction: column; justify-content: space-between;
+    transition: border-color .15s, transform .15s;
+}
+button.pc-tile { cursor: pointer; }
+button.pc-tile:hover { border-color: var(--pc-acc-dim); transform: translateY(-1px); }
+button.pc-tile.pc-active { border-color: var(--pc-acc); box-shadow: 0 0 0 1px var(--pc-acc) inset; }
+.pc-tile::after {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--pc-line);
+}
+.pc-tile.t-danger::after { background: var(--pc-danger); }
+.pc-tile.t-warn::after   { background: var(--pc-warn); }
+.pc-tile.t-acc::after    { background: var(--pc-acc); }
+.pc-tile-label { font-size: .68rem; text-transform: uppercase; letter-spacing: .9px; color: var(--pc-fg-mute); font-weight: 600; }
+.pc-tile-val { font-family: 'IBM Plex Mono', monospace; font-size: 2.05rem; font-weight: 600; line-height: 1; letter-spacing: -.5px; }
+.pc-tile.t-danger .pc-tile-val { color: var(--pc-danger); }
+.pc-tile.t-warn   .pc-tile-val { color: var(--pc-warn); }
+.pc-tile.t-acc    .pc-tile-val { color: var(--pc-acc); }
+.pc-tile-sub { font-size: .72rem; color: var(--pc-fg-dim); }
+
+/* --------------------------------------------------------------------------
+   СЕКЦИИ
+   ------------------------------------------------------------------------ */
+.pc-section { margin-bottom: 22px; }
+.pc-shead { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.pc-kicker {
+    font-family: 'IBM Plex Mono', monospace; font-size: .72rem; font-weight: 600;
+    color: var(--pc-acc); letter-spacing: 1px;
+}
+.pc-shead h2 { font-size: .98rem; font-weight: 700; margin: 0; text-transform: uppercase; letter-spacing: .3px; }
+.pc-shead .pc-shead-note { margin-left: auto; font-size: .76rem; color: var(--pc-fg-dim); }
+.pc-shead-rule { flex: 0 0 auto; }
+
+.pc-panel {
+    background: var(--pc-panel); border: 1px solid var(--pc-line);
+    border-radius: var(--pc-radius); box-shadow: var(--pc-shadow);
+}
+.pc-panel-pad { padding: 16px; }
+
+/* --------------------------------------------------------------------------
+   ОЧЕРЕДЬ ВНИМАНИЯ (attention queue) — герой страницы
+   ------------------------------------------------------------------------ */
+.pc-queue { display: flex; flex-direction: column; }
+.pc-qrow {
+    display: grid;
+    grid-template-columns: 3px minmax(150px, 1.3fr) 92px 108px 108px 110px;
+    align-items: center; gap: 14px;
+    padding: 7px 14px 7px 0; cursor: pointer;
+    border-bottom: 1px solid var(--pc-line-soft);
+    transition: background .12s;
+}
+.pc-qrow:last-child { border-bottom: none; }
+.pc-qrow:hover { background: var(--pc-panel-2); }
+.pc-qbar { width: 3px; align-self: stretch; border-radius: 0 2px 2px 0; }
+.pc-qbar.s-critical { background: var(--pc-danger); }
+.pc-qbar.s-warn { background: var(--pc-warn); }
+.pc-qname { min-width: 0; }
+.pc-qname .n { font-weight: 600; font-size: .86rem; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-qname .g { font-size: .66rem; color: var(--pc-fg-mute); }
+.pc-when { font-weight: 700; }
+.pc-when.critical { color: var(--pc-danger); }
+.pc-when.overstock { color: var(--pc-warn); }
+.pc-when.ok { color: var(--pc-ok); }
+.pc-when.mute { color: var(--pc-fg-mute); }
+/* Мини-числа в строке: на складе / расход / осталось / сделать */
+.pc-qm { text-align: right; display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.pc-qm .v { font-family: 'IBM Plex Mono', monospace; font-size: .9rem; font-weight: 600; white-space: nowrap; line-height: 1.15; }
+.pc-qm .k { font-size: .55rem; text-transform: uppercase; letter-spacing: .4px; color: var(--pc-fg-mute); }
+.pc-qm.m-danger .v { color: var(--pc-danger); font-family: 'Archivo', sans-serif; }
+.pc-qm.acc { background: var(--pc-acc-glow); border-radius: var(--pc-radius-sm); padding: 3px 8px; }
+.pc-qm.acc .v { color: var(--pc-acc); font-weight: 700; }
+.pc-queue-more {
+    width: 100%; background: none; border: none; border-top: 1px solid var(--pc-line-soft);
+    color: var(--pc-acc); font-family: inherit; font-size: .76rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .5px; padding: 9px; cursor: pointer; transition: background .12s;
+}
+.pc-queue-more:hover { background: var(--pc-panel-2); }
+
+/* Шкала покрытия (coverage gauge) */
+.pc-gauge { display: flex; align-items: center; gap: 9px; }
+.pc-gauge-track {
+    position: relative; flex: 1; height: 7px; border-radius: 4px;
+    background: linear-gradient(90deg, var(--pc-danger) 0%, var(--pc-warn) 22%, var(--pc-ok) 55%);
+    opacity: .28;
+}
+.pc-gauge-track .fill {
+    position: absolute; top: 0; bottom: 0; left: 0; border-radius: 4px;
+    background: currentColor; opacity: 1;
+}
+.pc-gauge-track .mark { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--pc-fg-mute); opacity: .5; }
+.pc-gauge-val { font-family: 'IBM Plex Mono', monospace; font-size: .82rem; min-width: 44px; text-align: right; }
+
+/* Спарклайн (inline SVG) */
+.pc-spark { display: block; width: 100%; height: 30px; }
+.pc-spark path.line { fill: none; stroke: var(--pc-fg-dim); stroke-width: 1.4; }
+.pc-spark path.area { fill: currentColor; opacity: .10; stroke: none; }
+.pc-spark circle { fill: currentColor; }
+
+/* --------------------------------------------------------------------------
+   ПЛАН ПРОИЗВОДСТВА
+   ------------------------------------------------------------------------ */
+.pc-plan-head { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 14px 16px; border-bottom: 1px solid var(--pc-line); }
+.pc-assume { font-size: .76rem; color: var(--pc-fg-dim); padding: 10px 16px; border-bottom: 1px solid var(--pc-line-soft); background: var(--pc-inset); }
+.pc-onboard {
+    margin: 14px 16px; padding: 13px 15px; border: 1px dashed var(--pc-acc-dim);
+    border-radius: var(--pc-radius-sm); background: var(--pc-acc-glow); font-size: .86rem; color: var(--pc-fg);
+}
+.pc-onboard a { color: var(--pc-acc); }
+.pc-timeline-wrap { padding: 14px 16px 8px; }
+.pc-timeline-wrap canvas { max-height: 260px; }
+.pc-capacity { padding: 2px 16px 14px; font-family: 'IBM Plex Mono', monospace; font-size: .8rem; color: var(--pc-fg-dim); }
+.pc-capacity b { color: var(--pc-fg); }
+.pc-capacity .over { color: var(--pc-danger); }
+.pc-linerow { padding: 2px 0; }
+
+/* What-if */
+.pc-whatif { display: flex; align-items: center; gap: 9px; }
+.pc-whatif label { font-size: .74rem; color: var(--pc-fg-dim); margin: 0; text-transform: uppercase; letter-spacing: .5px; }
+.pc-whatif input[type=range] { width: 128px; accent-color: var(--pc-acc); }
+.pc-whatif .val { font-family: 'IBM Plex Mono', monospace; color: var(--pc-acc); font-weight: 600; min-width: 42px; text-align: right; }
+
+/* Кнопки */
+.pc-btn {
+    display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 15px;
+    border-radius: var(--pc-radius-sm); font-family: inherit; font-size: .82rem; font-weight: 600;
+    cursor: pointer; border: 1px solid transparent; transition: all .15s; white-space: nowrap;
+    text-transform: uppercase; letter-spacing: .4px;
+}
+.pc-btn-primary { background: var(--pc-acc); color: #06201d; border-color: var(--pc-acc); }
+.pc-btn-primary:hover { background: #46e2d2; box-shadow: 0 4px 16px var(--pc-acc-glow); }
+.pc-btn-primary:disabled { opacity: .55; cursor: default; }
+.pc-btn-ghost { background: var(--pc-inset); color: var(--pc-fg-dim); border-color: var(--pc-line); }
+.pc-btn-ghost:hover { color: var(--pc-acc); border-color: var(--pc-acc-dim); }
+
+/* AI-блок — намеренно вторичный (пояснение, не команда) */
+.pc-ai { border-top: 1px solid var(--pc-line-soft); padding: 13px 16px; }
+.pc-ai-note { font-size: .74rem; color: var(--pc-fg-mute); margin-left: 10px; }
+.pc-ai-out {
+    margin-top: 12px; background: var(--pc-inset); border: 1px solid var(--pc-line);
+    border-left: 3px solid var(--pc-acc-dim); border-radius: var(--pc-radius-sm);
+    padding: 13px 15px; font-size: .88rem; line-height: 1.5;
+}
+.pc-ai-out h3 { font-size: .82rem; text-transform: uppercase; letter-spacing: .5px; color: var(--pc-acc); margin: .8em 0 .35em; }
+.pc-ai-out h3:first-child { margin-top: 0; }
+
+/* --------------------------------------------------------------------------
+   ГРАФИК
+   ------------------------------------------------------------------------ */
+.pc-chart-wrap { position: relative; height: 260px; padding: 8px 4px 0; }
+
+/* --------------------------------------------------------------------------
+   ДАННЫЕ / профессиональная таблица
+   ------------------------------------------------------------------------ */
+.pc-grid-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--pc-line); }
+.pc-grid-toolbar .info { font-family: 'IBM Plex Mono', monospace; font-size: .74rem; color: var(--pc-fg-dim); }
+.pc-switch { display: inline-flex; align-items: center; gap: 7px; font-size: .78rem; color: var(--pc-fg-dim); cursor: pointer; }
+.pc-switch input { accent-color: var(--pc-acc); width: 15px; height: 15px; }
+
+.pc-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.pc-table { width: 100%; border-collapse: separate; border-spacing: 0; min-width: 880px; }
+.pc-table thead th {
+    position: sticky; top: 0; z-index: 3; background: var(--pc-panel-2);
+    font-size: .66rem; text-transform: uppercase; letter-spacing: .7px; font-weight: 700;
+    color: var(--pc-fg-mute); text-align: right; padding: 11px 14px; white-space: nowrap;
+    border-bottom: 1px solid var(--pc-line);
+}
+.pc-table thead th.l { text-align: left; }
+.pc-table thead th.sortable { cursor: pointer; user-select: none; }
+.pc-table thead th.sortable:hover { color: var(--pc-acc); }
+.pc-table thead th .arr { color: var(--pc-acc); }
+.pc-table tbody td {
+    padding: 9px 14px; text-align: right; font-size: .84rem; border-bottom: 1px solid var(--pc-line-soft);
+    white-space: nowrap; font-family: 'IBM Plex Mono', monospace;
+}
+.pc-table tbody td.l { text-align: left; font-family: 'Archivo', sans-serif; }
+.pc-table tbody tr { cursor: pointer; transition: background .1s; }
+.pc-table tbody tr:hover td { background: var(--pc-panel-2); }
+.pc-sticky-col { position: sticky; left: 0; z-index: 2; background: var(--pc-panel); }
+.pc-table tbody tr:hover .pc-sticky-col { background: var(--pc-panel-2); }
+.pc-cell-name { display: flex; flex-direction: column; }
+.pc-cell-name .n { font-weight: 600; }
+.pc-cell-name .c { font-family: 'IBM Plex Mono', monospace; font-size: .68rem; color: var(--pc-fg-mute); }
+.pc-cell-dim { color: var(--pc-fg-mute); }
+
+/* micro coverage bar в ячейке */
+.pc-covcell { display: inline-flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.pc-covbar { width: 46px; height: 5px; border-radius: 3px; background: var(--pc-line); overflow: hidden; }
+.pc-covbar > span { display: block; height: 100%; border-radius: 3px; }
+
+/* Статус-пилюли */
+.pc-pill { display: inline-block; border-radius: 5px; padding: 2px 9px; font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; font-family: 'Archivo', sans-serif; }
+.pc-pill.critical { background: var(--pc-danger-bg); color: var(--pc-danger); }
+.pc-pill.overstock { background: var(--pc-warn-bg); color: var(--pc-warn); }
+.pc-pill.ok { background: var(--pc-ok-bg); color: var(--pc-ok); }
+.pc-pill.mute { background: var(--pc-inset); color: var(--pc-fg-mute); }
+.pc-cls { display: inline-block; width: 22px; text-align: center; border-radius: 5px; padding: 2px 0; font-size: .68rem; font-weight: 700; font-family: 'IBM Plex Mono', monospace; }
+.pc-cls.A { background: var(--pc-acc-glow); color: var(--pc-acc); }
+.pc-cls.B { background: rgba(52,211,196,.07); color: #7fd9d1; }
+.pc-cls.C { background: var(--pc-inset); color: var(--pc-fg-mute); }
+.pc-cls.oc { background: var(--pc-inset); color: var(--pc-fg-mute); width: auto; padding: 2px 7px; }
+.pc-spark-cell { width: 84px; }
+.pc-spark-cell .pc-spark { height: 22px; }
+
+/* --------------------------------------------------------------------------
+   СОСТОЯНИЯ
+   ------------------------------------------------------------------------ */
+.pc-loading { text-align: center; padding: 56px 0; color: var(--pc-fg-dim); }
+.pc-spinner {
+    width: 30px; height: 30px; margin: 0 auto 12px; border-radius: 50%;
+    border: 2.5px solid var(--pc-line); border-top-color: var(--pc-acc);
+    animation: pc-spin .7s linear infinite;
+}
+@keyframes pc-spin { to { transform: rotate(360deg); } }
+.pc-empty { color: var(--pc-fg-dim); padding: 18px 16px; font-size: .9rem; }
+.pc-empty .ok { color: var(--pc-ok); }
+.pc-alert {
+    background: var(--pc-danger-bg); border: 1px solid var(--pc-danger);
+    border-radius: var(--pc-radius-sm); padding: 12px 15px; color: var(--pc-fg); margin-bottom: 16px;
+    display: flex; align-items: center; gap: 12px;
+}
+
+/* Reveal при загрузке */
+.pc-reveal { opacity: 0; transform: translateY(8px); animation: pc-in .5s cubic-bezier(.2,.7,.3,1) forwards; }
+@keyframes pc-in { to { opacity: 1; transform: none; } }
+
+/* --------------------------------------------------------------------------
+   МОДАЛКА
+   ------------------------------------------------------------------------ */
+.pc-modal { background: var(--pc-panel); color: var(--pc-fg); border: 1px solid var(--pc-line); border-radius: var(--pc-radius); }
+.pc-modal .modal-header { border-color: var(--pc-line); }
+.pc-modal .modal-title { font-weight: 700; letter-spacing: .2px; }
+.pc-narrative { font-size: .92rem; color: var(--pc-fg-dim); padding: 4px 0 14px; }
+.pc-narrative b { color: var(--pc-fg); font-family: 'IBM Plex Mono', monospace; }
+
+/* Три главных числа в карточке: склад / расход / надо сделать */
+.pc-modal-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 6px 0 14px; }
+.pc-mstat {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+    background: var(--pc-inset); border: 1px solid var(--pc-line); border-radius: var(--pc-radius-sm);
+    padding: 12px 14px;
+}
+.pc-mstat.acc { border-color: var(--pc-acc-dim); background: var(--pc-acc-glow); }
+.pc-mstat .v { font-family: 'IBM Plex Mono', monospace; font-size: 1.6rem; font-weight: 600; line-height: 1; }
+.pc-mstat.acc .v { color: var(--pc-acc); }
+.pc-mstat .u { font-family: 'IBM Plex Mono', monospace; font-size: .72rem; color: var(--pc-fg-mute); }
+.pc-mstat .k { font-size: .74rem; text-transform: uppercase; letter-spacing: .5px; color: var(--pc-fg-dim); margin-top: 4px; font-weight: 600; }
+
+/* Ключевая колонка «Надо сделать» — лёгкая подсветка */
+.pc-table thead th.pc-key { color: var(--pc-acc); }
+.pc-table td.pc-key { background: var(--pc-acc-glow); }
+.pc-table tbody tr:hover td.pc-key { background: rgba(52,211,196,.16); }
+
+/* --------------------------------------------------------------------------
+   НАСТРОЙКИ
+   ------------------------------------------------------------------------ */
+.pc-tabs { border-bottom: 1px solid var(--pc-line); display: flex; gap: 2px; }
+.pc-tabs .nav-link {
+    color: var(--pc-fg-mute); border: none; border-bottom: 2px solid transparent;
+    font-size: .82rem; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; padding: 10px 16px;
+}
+.pc-tabs .nav-link.active { color: var(--pc-fg); background: transparent; border-bottom-color: var(--pc-acc); }
+.pc-tab-body { padding: 18px 2px; }
+.pc-checkgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 3px 14px; max-height: 300px; overflow-y: auto; padding: 4px; }
+.pc-checkgrid.tall { max-height: 420px; }
+.pc-checkgrid .form-check-label { font-size: .84rem; }
+.pc-frow { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 10px; }
+.pc-frow label { font-size: .86rem; margin: 0; }
+.pc-frow input { max-width: 120px; text-align: right; background: var(--pc-inset); border: 1px solid var(--pc-line); color: var(--pc-fg); border-radius: var(--pc-radius-sm); height: 34px; font-family: 'IBM Plex Mono', monospace; }
+.pc-frow input.is-invalid { border-color: var(--pc-danger); }
+.pc-ovs { display: flex; flex-direction: column; gap: 7px; }
+.pc-ovrow { display: flex; gap: 8px; align-items: center; }
+.pc-ovrow select, .pc-ovrow input { background: var(--pc-inset); border: 1px solid var(--pc-line); color: var(--pc-fg); border-radius: var(--pc-radius-sm); height: 34px; font-size: .82rem; }
+.pc-ovrow .del { color: var(--pc-danger); background: none; border: 1px solid var(--pc-line); border-radius: var(--pc-radius-sm); width: 34px; height: 34px; cursor: pointer; }
+
+/* Карточка линии */
+.pc-line-card { background: var(--pc-inset); border: 1px solid var(--pc-line); border-radius: var(--pc-radius); padding: 14px; margin-bottom: 12px; }
+.pc-line-head { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+.pc-line-head .lname { flex: 1; background: var(--pc-panel); border: 1px solid var(--pc-line); color: var(--pc-fg); border-radius: var(--pc-radius-sm); height: 38px; padding: 0 12px; font-family: inherit; font-size: .95rem; font-weight: 600; }
+.pc-line-head .del { color: var(--pc-danger); background: none; border: 1px solid var(--pc-line); border-radius: var(--pc-radius-sm); width: 38px; height: 38px; cursor: pointer; }
+.pc-line-nums { display: flex; flex-wrap: wrap; gap: 12px; }
+.pc-line-nums label { display: flex; flex-direction: column; gap: 3px; font-size: .72rem; color: var(--pc-fg-dim); text-transform: uppercase; letter-spacing: .3px; }
+.pc-line-nums input { width: 120px; background: var(--pc-panel); border: 1px solid var(--pc-line); color: var(--pc-fg); border-radius: var(--pc-radius-sm); height: 34px; padding: 0 10px; font-family: 'IBM Plex Mono', monospace; }
+.pc-line-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 2px 12px; max-height: 150px; overflow-y: auto; padding: 6px; background: var(--pc-panel); border: 1px solid var(--pc-line); border-radius: var(--pc-radius-sm); }
+.pc-line-grp { display: flex; align-items: center; gap: 6px; font-size: .82rem; color: var(--pc-fg); cursor: pointer; padding: 2px 0; }
+.pc-line-grp input { accent-color: var(--pc-acc); }
+
+/* --------------------------------------------------------------------------
+   ПОНЯТНО ОБЫЧНЫМ ЛЮДЯМ: сводка дня, режим «Просто/Подробно»
+   ------------------------------------------------------------------------ */
+.pc-summary {
+    display: flex; align-items: flex-start; gap: 12px;
+    background: linear-gradient(90deg, var(--pc-panel-2), var(--pc-panel));
+    border: 1px solid var(--pc-line); border-left: 3px solid var(--pc-acc);
+    border-radius: var(--pc-radius); padding: 15px 18px; margin-bottom: 20px;
+    font-size: 1.02rem; line-height: 1.5; color: var(--pc-fg);
+}
+.pc-summary i { color: var(--pc-acc); margin-top: 3px; flex: 0 0 auto; }
+.pc-summary b { font-family: 'IBM Plex Mono', monospace; color: #fff; }
+.pc-summary b.warn { color: var(--pc-warn); }
+.pc-summary b.danger { color: var(--pc-danger); }
+
+/* Сегмент-переключатель Просто/Подробно */
+.pc-seg { display: inline-flex; background: var(--pc-inset); border: 1px solid var(--pc-line); border-radius: var(--pc-radius-sm); padding: 2px; }
+.pc-seg-btn {
+    background: none; border: none; color: var(--pc-fg-dim); cursor: pointer;
+    font-family: inherit; font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .4px;
+    padding: 5px 13px; border-radius: 6px; transition: all .15s;
+}
+.pc-seg-btn.active { background: var(--pc-acc); color: #06201d; }
+.pc-seg-btn:not(.active):hover { color: var(--pc-fg); }
+
+/* В простом режиме экспертные колонки скрыты */
+.pc-table.simple .pc-col-exp { display: none; }
+
+/* Метка «что делать» — крупнее и с точкой-индикатором */
+.pc-verdict { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; font-size: .82rem; }
+.pc-verdict::before { content: ""; width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.pc-verdict.critical { color: var(--pc-danger); } .pc-verdict.critical::before { background: var(--pc-danger); }
+.pc-verdict.overstock { color: var(--pc-warn); }  .pc-verdict.overstock::before { background: var(--pc-warn); }
+.pc-verdict.ok { color: var(--pc-ok); }           .pc-verdict.ok::before { background: var(--pc-ok); }
+.pc-verdict.mute { color: var(--pc-fg-mute); }    .pc-verdict.mute::before { background: var(--pc-fg-mute); }
+
+/* --------------------------------------------------------------------------
+   PRO-MAX ПОЛИШИНГ: press-feedback, скелетон, bullet-маркер, sr-only
+   ------------------------------------------------------------------------ */
+.pc-btn:active:not(:disabled), .pc-iconbtn:active { transform: translateY(1px); }
+.pc-tile, .pc-qrow, .pc-table tbody tr { will-change: auto; }
+
+/* Маркер цели покрытия на шкале (bullet-chart: target tick) */
+.pc-gauge-track .target {
+    position: absolute; top: -3px; bottom: -3px; width: 2px;
+    background: var(--pc-fg); opacity: .85; border-radius: 1px;
+}
+
+/* Скелетон загрузки таблицы (skeleton вместо длинного спиннера, >1с) */
+.pc-skel-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr; gap: 12px; padding: 10px 14px; }
+.pc-skel {
+    height: 12px; border-radius: 4px;
+    background: linear-gradient(90deg, var(--pc-line-soft) 25%, var(--pc-line) 37%, var(--pc-line-soft) 63%);
+    background-size: 400% 100%; animation: pc-shimmer 1.4s ease infinite;
+}
+@keyframes pc-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+
+/* aria-sort индикатор в заголовке */
+.pc-table thead th[aria-sort="ascending"], .pc-table thead th[aria-sort="descending"] { color: var(--pc-acc); }
+
+/* Только для скринридеров */
+.pc-sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+/* Тултип-подсказка (нативный title дополняем визуальным hover-курсором) */
+.pc-table thead th.sortable, .pc-tile[role="button"], .pc-qrow, .pc-table tbody tr { cursor: pointer; }
+
+/* --------------------------------------------------------------------------
+   АДАПТИВ
+   ------------------------------------------------------------------------ */
+@media (max-width: 991px) {
+    .pc-ribbon { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 767px) {
+    .pc-brand h1 { font-size: 1.1rem; }
+    .pc-select, .pc-search { max-width: 130px; }
+    .pc-qrow { grid-template-columns: 3px 1fr; row-gap: 5px; padding: 9px 12px 9px 0; }
+    .pc-qname, .pc-qm { grid-column: 2; }
+    .pc-qm { text-align: left; flex-direction: row; align-items: baseline; gap: 7px; }
+    .pc-qm .k { order: 2; }
+    .pc-qm.acc { align-self: start; }
+    .pc-table { min-width: 760px; }
+    /* Touch targets ≥44px на телефоне (Apple HIG / Material) */
+    .pc-iconbtn { width: 44px; height: 44px; }
+    .pc-btn { height: 44px; }
+    .pc-select, .pc-search { height: 42px; }
+}
+
+/* Ландшафт-планшет: увеличенные боковые поля */
+@media (min-width: 1440px) {
+    .pc-ribbon { gap: 14px; }
+}

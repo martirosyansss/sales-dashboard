@@ -1,0 +1,136 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Настройки производства — Sales Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/production.css') }}?v=14">
+{% endblock %}
+
+{% block content %}
+<div class="prod-page">
+
+    <div class="pc-topbar">
+        <div class="pc-brand">
+            <a href="/production" class="pc-iconbtn me-1"><i class="fas fa-arrow-left"></i></a>
+            <h1><span class="pc-accent">//</span> Настройки производства</h1>
+        </div>
+        <span id="psLastModified" class="pc-month d-none"></span>
+        <button id="psSaveBtn" class="pc-btn pc-btn-primary ms-auto"><i class="fas fa-floppy-disk"></i>Сохранить</button>
+    </div>
+
+    <div id="psError" class="pc-alert d-none"><i class="fas fa-triangle-exclamation"></i><span></span></div>
+    <div id="psLoading" class="pc-loading"><div class="pc-spinner"></div>Загрузка настроек…</div>
+
+    <div id="psBody" class="d-none pc-panel pc-panel-pad">
+        <ul class="nav pc-tabs" role="tablist">
+            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabScope" type="button">Охват</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabLines" type="button">Линии</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabCapacity" type="button">Переналадка (общее)</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabRates" type="button">Нормы (легаси)</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabTargets" type="button">Целевые уровни</button></li>
+        </ul>
+
+        <div class="tab-content pc-tab-body">
+            <!-- Линии -->
+            <div class="tab-pane fade" id="tabLines" role="tabpanel">
+                <div class="pc-shead"><span class="pc-kicker">A</span><h2>Производственные линии</h2></div>
+                <p class="pc-tile-sub mb-3">Каждая линия делает свои товарные группы, со своей скоростью и мощностью.
+                    Планировщик раскидывает товары по подходящим линиям и строит расписание по дням для каждой отдельно.
+                    Если линий нет — работает одна общая линия (легаси).</p>
+                <div id="psLinesList"></div>
+                <button id="psLineAddBtn" class="pc-btn pc-btn-primary mt-2"><i class="fas fa-plus"></i>Добавить линию</button>
+            </div>
+
+            <!-- Охват -->
+            <div class="tab-pane fade show active" id="tabScope" role="tabpanel">
+                <div class="row g-4">
+                    <div class="col-lg-6">
+                        <div class="pc-shead"><span class="pc-kicker">A</span><h2>Исключённые склады</h2></div>
+                        <p class="pc-tile-sub mb-2">Фиктивный «006 ֆիկտիվ» и брак «011 խотан» вне доступного остатка/прихода по умолчанию.</p>
+                        <div id="psStorages" class="pc-checkgrid"></div>
+                    </div>
+                    <div class="col-lg-6">
+                        <div class="pc-shead"><span class="pc-kicker">B</span><h2>Производственные группы</h2></div>
+                        <p class="pc-tile-sub mb-2">Рекомендации считаются только для отмеченных групп. Ничего не отмечено = все.</p>
+                        <input id="psGroupSearch" type="search" class="pc-search mb-2" style="max-width:none;width:100%" placeholder="Поиск группы…">
+                        <div id="psGroups" class="pc-checkgrid tall"></div>
+                    </div>
+                    <div class="col-12">
+                        <label class="pc-switch"><input type="checkbox" id="psIncludeAgent">
+                            Учитывать остаток у ван-агентов в покрытии
+                            <span class="pc-tile-sub d-block">По умолчанию выкл.: товар «на бортах» уже отгружен в маршруты.</span></label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Мощность и переналадка -->
+            <div class="tab-pane fade" id="tabCapacity" role="tabpanel">
+                <div class="row g-4">
+                    <div class="col-lg-5">
+                        <div class="pc-shead"><span class="pc-kicker">A</span><h2>Мощность</h2></div>
+                        <div class="pc-frow"><label for="psLines">Параллельных линий</label><input id="psLines" data-field="lines_count" type="number" min="1" max="20" class="form-control"></div>
+                        <div class="pc-frow"><label for="psWorkDays">Рабочих дней в месяце</label><input id="psWorkDays" data-field="work_days_per_month" type="number" min="1" max="31" class="form-control"></div>
+                        <div class="pc-frow"><label for="psShiftHours">Часов смены в день</label><input id="psShiftHours" data-field="shift_hours_per_day" type="number" min="1" max="24" step="0.5" class="form-control"></div>
+                    </div>
+                    <div class="col-lg-7">
+                        <div class="pc-shead"><span class="pc-kicker">B</span><h2>Переналадка</h2></div>
+                        <div class="pc-frow"><label for="psChDefault">Часы при смене семейства</label><input id="psChDefault" data-field="changeover_hours_default" type="number" min="0" max="24" step="0.25" class="form-control"></div>
+                        <div class="pc-frow"><label for="psChIntra">Часы внутри семейства (смена вкуса)</label><input id="psChIntra" data-field="intra_family_changeover_hours" type="number" min="0" max="24" step="0.25" class="form-control"></div>
+                        <hr style="border-color:var(--pc-line)">
+                        <p class="pc-tile-sub">Оверрайды часов по семействам (по умолчанию семейство = товарная группа):</p>
+                        <div id="psChFamilies" class="pc-ovs"></div>
+                        <button id="psChAddBtn" class="pc-btn pc-btn-ghost mt-2"><i class="fas fa-plus"></i>Оверрайд</button>
+                        <hr style="border-color:var(--pc-line)">
+                        <p class="pc-tile-sub">Семейства (группа → семейство): объединяйте группы без переналадки между ними.</p>
+                        <div id="psFamilyMap" class="pc-ovs"></div>
+                        <button id="psFamAddBtn" class="pc-btn pc-btn-ghost mt-2"><i class="fas fa-plus"></i>Привязка</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Нормы выработки -->
+            <div class="tab-pane fade" id="tabRates" role="tabpanel">
+                <div class="pc-shead"><span class="pc-kicker">A</span><h2>Нормы выработки, шт/час</h2></div>
+                <p class="pc-tile-sub mb-3">Без норм план строится только в объёмах. Задайте по группе; для товаров — точечный оверрайд.</p>
+                <div class="row g-4">
+                    <div class="col-lg-6">
+                        <p class="pc-kicker">ПО ГРУППАМ</p>
+                        <div id="psRatesGroup" class="pc-ovs"></div>
+                        <button id="psRateGroupAddBtn" class="pc-btn pc-btn-ghost mt-2"><i class="fas fa-plus"></i>Группа</button>
+                    </div>
+                    <div class="col-lg-6">
+                        <p class="pc-kicker">ПО ТОВАРАМ (ID)</p>
+                        <div id="psRatesProduct" class="pc-ovs"></div>
+                        <button id="psRateProductAddBtn" class="pc-btn pc-btn-ghost mt-2"><i class="fas fa-plus"></i>Товар</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Целевые уровни -->
+            <div class="tab-pane fade" id="tabTargets" role="tabpanel">
+                <div class="pc-shead"><span class="pc-kicker">A</span><h2>Целевые уровни запаса</h2></div>
+                <div style="max-width:520px">
+                    <div class="pc-frow"><label for="psCover">Целевой остаток на конец месяца, дней спроса</label><input id="psCover" data-field="target_cover_days" type="number" min="0" max="90" class="form-control"></div>
+                    <div class="pc-frow"><label for="psSafety">Коэффициент страхового запаса (k × σ)</label><input id="psSafety" data-field="safety_k" type="number" min="0" max="5" step="0.1" class="form-control"></div>
+                    <div class="pc-frow"><label for="psCritical">Порог «критично», дней покрытия</label><input id="psCritical" data-field="critical_cover_days" type="number" min="0" max="60" class="form-control"></div>
+                    <div class="pc-frow"><label for="psOverstock">Порог «затоварено», дней покрытия</label><input id="psOverstock" data-field="overstock_cover_days" type="number" min="1" max="365" class="form-control"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="position-fixed bottom-0 end-0 p-3" style="z-index:1080">
+        <div id="psToast" class="toast align-items-center text-bg-success border-0" role="status">
+            <div class="d-flex"><div class="toast-body"><i class="fas fa-circle-check me-2"></i>Настройки сохранены</div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/production_settings.js') }}?v=14"></script>
+{% endblock %}
