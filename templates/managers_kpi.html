@@ -1252,7 +1252,10 @@
                             <div class="pulse-row"><span class="lbl">Նոր հաճախորդներ</span>
                                 <span class="val text-success">+<span x-text="health.customers.new"></span>
                                     <span class="fw-normal small text-muted ms-1" x-text="'(' + formatCurrency(health.customers.newRev) + ')'"></span></span></div>
-                            <div class="pulse-row" title="Թիմային մակարդակ՝ չեն գնել ՈՉ ՄԻ գործակալից ընթացիկ շրջանում։ Մենեջերների «կորածների» գումարը կարող է ավելի մեծ լինել (հաճախորդը հաշվվում է յուրաքանչյուր գործակալի մոտ)"><span class="lbl">Կորած հաճախորդներ</span>
+                            <div class="pulse-row" style="cursor:pointer" role="button" tabindex="0"
+                                 title="Թիմային մակարդակ՝ չեն գնել ՈՉ ՄԻ գործակալից ընթացիկ շրջանում։ Սեղմեք՝ ամբողջական ցուցակը տեսնելու համար"
+                                 @click="openLostList()" @keydown.enter.prevent="openLostList()">
+                                <span class="lbl">Կորած հաճախորդներ <i class="fas fa-list small text-muted ms-1"></i></span>
                                 <span class="val text-danger">−<span x-text="health.customers.lost"></span>
                                     <span class="fw-normal small text-muted ms-1" x-text="'(' + formatCurrency(health.customers.lostRev) + ')'"></span></span></div>
                             <div class="pulse-row"><span class="lbl">Պահպանում (թիրախ ≥80%)</span>
@@ -1348,6 +1351,7 @@
                             <th @click="ahSort('dso')" :class="{'th-sorted': ahSortKey==='dso'}" title="Պարտքի օրեր (թիրախ ≤30)">DSO <span x-html="ahInd('dso')"></span></th>
                             <th @click="ahSort('aging90')" :class="{'th-sorted': ahSortKey==='aging90'}" title="90 օրից հին չմարված դեբետ">90+ <span x-html="ahInd('aging90')"></span></th>
                             <th @click="ahSort('activeCustomers')" :class="{'th-sorted': ahSortKey==='activeCustomers'}">Հաճախ. <span x-html="ahInd('activeCustomers')"></span></th>
+                            <th @click="ahSort('newCustomers')" :class="{'th-sorted': ahSortKey==='newCustomers'}" title="Պատմության մեջ առաջին վաճառքը՝ այս ժամանակահատվածում։ ⟳ նշանը՝ կասկած, որ «նորը» նույն խանութն է՝ նոր ֆիրմայով (վերագրանցում)">Նոր <span x-html="ahInd('newCustomers')"></span></th>
                             <th @click="ahSort('lostCustomers')" :class="{'th-sorted': ahSortKey==='lostCustomers'}" title="Նախորդ նույն երկարությամբ շրջանի հաճախորդներ, որ չեն գնել ընթացիկում">Կորած <span x-html="ahInd('lostCustomers')"></span></th>
                             <th @click="ahSort('retention')" :class="{'th-sorted': ahSortKey==='retention'}" title="Պահպանում (թիրախ ≥80%)">Պահպ. <span x-html="ahInd('retention')"></span></th>
                             <th class="ah-left">Խնդիրներ</th>
@@ -1377,6 +1381,15 @@
                                 <td :title="a.aging90Share !== null ? a.aging90Share + '% դեբետի' : ''"
                                     x-text="a.aging90 ? formatCurrency(a.aging90) : '—'"></td>
                                 <td x-text="formatNumber(a.activeCustomers)"></td>
+                                <td>
+                                    <span :class="a.newCustomers ? 'text-success' : ''"
+                                          x-text="a.newCustomers ? '+' + a.newCustomers : '0'"></span>
+                                    <span x-show="a.rereg" class="text-warning small ms-1" style="cursor:help" @click.stop
+                                          :title="'Կասկած՝ ' + a.rereg + '-ը վերագրանցում է (նույն խանութը՝ նոր ֆիրմայով).\n'
+                                                  + (a.reregList || []).map(p => p.n + ' ← ' + p.o + ' (' + p.why + ')').join('\n')">
+                                        <i class="fas fa-arrows-rotate"></i><span x-text="a.rereg"></span>
+                                    </span>
+                                </td>
                                 <td :class="a.lostCustomers ? 'text-danger' : ''"
                                     :title="a.lostRev ? 'Նախորդ շրջանում գնել են ' + formatCurrency(a.lostRev) : ''"
                                     x-text="a.lostCustomers ? '−' + a.lostCustomers : '0'"></td>
@@ -1402,6 +1415,13 @@
                             <td></td><td></td>
                             <td x-text="formatCurrency(areaHealth.totals.aging90)"></td>
                             <td></td>
+                            <td>
+                                <span :class="areaHealth.totals.newCustomers ? 'text-success' : ''" x-text="areaHealth.totals.newCustomers ? '+' + areaHealth.totals.newCustomers : '0'"></span>
+                                <span x-show="areaHealth.totals.rereg" class="text-warning small ms-1" style="cursor:help"
+                                      :title="'Ընդամենը ' + areaHealth.totals.rereg + ' կասկածելի վերագրանցում'">
+                                    <i class="fas fa-arrows-rotate"></i><span x-text="areaHealth.totals.rereg"></span>
+                                </span>
+                            </td>
                             <td :class="areaHealth.totals.lost ? 'text-danger' : ''" x-text="areaHealth.totals.lost ? '−' + areaHealth.totals.lost : '0'"></td>
                             <td></td><td></td>
                         </tr>
@@ -1415,6 +1435,67 @@
             </div>
         </div>
     </template>
+
+    <!-- МОДАЛ: полный список потерянных клиентов (не только топ-12) -->
+    <div class="modal fade" id="lostListModal" tabindex="-1">
+        <div class="modal-dialog modal-lg modal-fullscreen-sm-down modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="fas fa-user-slash text-danger me-2"></i>Կորած հաճախորդներ
+                        <span class="badge bg-danger ms-2" x-show="lostList.d" x-text="lostList.d ? lostList.d.total : ''"></span>
+                        <span class="small text-muted ms-2 fw-normal" x-show="lostList.d"
+                              x-text="lostList.d ? '(' + formatCurrency(lostList.d.totalRev) + ' նախորդ շրջանում)' : ''"></span>
+                    </h5>
+                    <button class="btn btn-sm btn-outline-success ms-auto me-2" @click="exportLostExcel()"
+                            x-show="lostList.d && lostList.d.lost.length">
+                        <i class="fas fa-file-excel me-1"></i>Excel
+                    </button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Փակել"></button>
+                </div>
+                <div class="modal-body p-0">
+                    <div class="text-center py-4 text-muted" x-show="lostList.loading">
+                        <i class="fas fa-spinner fa-spin me-2"></i>Բեռնվում է…
+                    </div>
+                    <div class="text-center py-4 text-muted" x-show="!lostList.loading && lostList.d && !lostList.d.lost.length">
+                        Կորած հաճախորդներ չկան
+                    </div>
+                    <table class="table table-sm table-hover mb-0 align-middle" x-show="!lostList.loading && lostList.d && lostList.d.lost.length">
+                        <thead style="position:sticky;top:0;background:var(--card-bg,#212529);z-index:1">
+                            <tr>
+                                <th>Հաճախորդ</th>
+                                <th>Տարածք</th>
+                                <th>Հեռախոս</th>
+                                <th class="text-end">Նախորդ գնում ֏</th>
+                                <th title="Վերջին վաճառքի ամսաթիվը">Վերջին վաճառք</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="c in (lostList.d ? lostList.d.lost : [])" :key="'ll' + c.id">
+                                <tr>
+                                    <td>
+                                        <div x-text="c.name"></div>
+                                        <div class="small text-muted" x-text="c.address"></div>
+                                    </td>
+                                    <td class="small" x-text="c.areaName || '—'"></td>
+                                    <td>
+                                        <template x-if="c.phone"><a :href="'tel:' + c.phone" x-text="c.phone"></a></template>
+                                        <span x-show="!c.phone" class="text-muted">—</span>
+                                    </td>
+                                    <td class="text-end" x-text="formatCurrency(c.rev)"></td>
+                                    <td class="small" x-text="c.lastSale || '—'"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="card-footer small text-muted py-2 px-3">
+                    Գնել են նախորդ նույն երկարությամբ շրջանում, ընթացիկում՝ ոչ։ «Վերագրանցումները»
+                    (նույն խանութը՝ նոր ֆիրմայով) այս ցուցակում ՉԿԱՆ։
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- МОДАЛ: обширный диагноз одной территории -->
     <div class="modal fade" id="areaDetailModal" tabindex="-1">
@@ -2220,6 +2301,7 @@ function managersKpiData() {
         loadError: '',
         areaHealth: null, ahSortKey: 'score', ahSortDir: 'asc',
         areaDetail: { d: null, loading: false }, areaPulseChart: null,
+        lostList: { d: null, loading: false },
         trend: null, sparkCharts: {},
         aiTeam: { loading: false, html: '', error: '' },
         aiArea: { loading: false, html: '', error: '' },
@@ -2506,6 +2588,30 @@ function managersKpiData() {
                 if (d.success && gen === this._ahGen) this.areaHealth = d;
             } catch (e) { console.error(e); }
         },
+        async openLostList(areaCode) {
+            this.lostList = { d: null, loading: true };
+            new bootstrap.Modal(document.getElementById('lostListModal')).show();
+            try {
+                const areaQ = areaCode ? `&area=${encodeURIComponent(areaCode)}` : '';
+                const r = await fetch(`/api/managers/kpi/health/lost?date_from=${this.dateFrom}&date_to=${this.dateTo}${areaQ}`);
+                const d = await r.json();
+                this.lostList = { d: d.success ? d : null, loading: false };
+            } catch (e) { console.error(e); this.lostList = { d: null, loading: false }; }
+        },
+        exportLostExcel() {
+            try {
+                const rows = ((this.lostList.d && this.lostList.d.lost) || []).map(c => ({
+                    'Հաճախորդ': c.name, 'Կոդ': c.code, 'Տարածք': c.areaName || '',
+                    'Հեռախոս': c.phone || '', 'Հասցե': c.address || '',
+                    'Նախորդ գնում ֏': c.rev, 'Վերջին վաճառք': c.lastSale || ''
+                }));
+                if (!rows.length) { alert('Ցուցակը դատարկ է'); return; }
+                const ws = XLSX.utils.json_to_sheet(rows);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, 'Կորած');
+                XLSX.writeFile(wb, `Կորած_${this.dateFrom}_${this.dateTo}.xlsx`);
+            } catch (e) { console.error(e); alert('Export error: ' + e.message); }
+        },
         get ahRows() {
             if (!this.areaHealth) return [];
             const dir = this.ahSortDir === 'asc' ? 1 : -1;
@@ -2621,6 +2727,8 @@ function managersKpiData() {
                     'Զուտ պարտք': a.debt, 'Պարտքի Δ': a.debtDelta, 'DSO': a.dso,
                     '90+ պարտք': a.aging90, '90+ %': a.aging90Share,
                     'Հաճախորդներ': a.activeCustomers, 'Նոր': a.newCustomers,
+                    'Որից վերագրանցում': a.rereg || 0,
+                    'Վերագրանցումներ': (a.reregList || []).map(p => `${p.n} ← ${p.o} (${p.why})`).join('; '),
                     'Կորած': a.lostCustomers, 'Կորուստ ֏': a.lostRev,
                     'Պահպանում %': a.retention, 'Վերադարձ %': a.returnsRate,
                     'Խնդիրներ': (a.issues || []).map(i => i.label).join('; ')
