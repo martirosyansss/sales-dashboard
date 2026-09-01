@@ -621,7 +621,7 @@ function qtyPageData() {
             const rows = this.hist.groupsAgg.map(g => {
                 const cur = this.val(g.cur), prev = this.val(g.prev);
                 return { key: g.code, name: g.name, cur, prev, delta: cur - prev, deltaPct: this._deltaPct(cur, prev) };
-            }).filter(r => r.cur || r.prev).sort((a, b) => b.cur - a.cur).slice(0, 14);
+            }).filter(r => r.cur || r.prev).sort((a, b) => b.cur - a.cur);   // ВСЕ группы, без обрезки
             const maxAbs = Math.max(1, ...rows.map(r => Math.abs(r.delta)));
             rows.forEach(r => r.barW = Math.max(3, Math.abs(r.delta) / maxAbs * 100));
             return rows;
@@ -648,7 +648,7 @@ function qtyPageData() {
             return this.hist.channels.map(c => {
                 const cur = this.val(c.cur), prev = this.val(c.prev);
                 return { code: c.code, name: c.name, cur, prev, delta: cur - prev, deltaPct: this._deltaPct(cur, prev) };
-            }).filter(c => c.cur || c.prev).sort((a, b) => b.cur - a.cur).slice(0, 12);
+            }).filter(c => c.cur || c.prev).sort((a, b) => b.cur - a.cur);   // ВСЕ каналы, без обрезки
         },
         // Клиенты-«двигатели»: ранжирование по дельте в выбранной единице
         get custMovers() {
