@@ -1,0 +1,1050 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Վաճառքի քանակ - Sales Dashboard v2.0{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Armenian:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+    /* ============================================================
+       ПРОДАЖИ ПО КОЛИЧЕСТВУ — полная аналитика объёмов.
+       Тёмный BI-стиль как у .kpi-page; всё скоупится под .qty-page.
+       ============================================================ */
+    [x-cloak] { display: none !important; }
+    .qty-page {
+        --card-bg: #171b23;
+        --qty-surface:   #171b23;
+        --qty-surface-2: #1d2230;
+        --qty-surface-3: #232a3a;
+        --qty-line:        rgba(255,255,255,0.07);
+        --qty-text:  #e8ebf1;
+        --qty-muted: #93a0b4;
+        --qty-accent: #4f8cff;
+        --qty-accent-soft: rgba(79,140,255,0.14);
+        font-family: 'Inter', 'Noto Sans Armenian', 'Segoe UI', system-ui, sans-serif;
+        color: var(--qty-text);
+        letter-spacing: .1px;
+    }
+    .qty-page .text-muted { color: var(--qty-muted) !important; }
+
+    .qty-hero {
+        display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+        padding: 1.1rem 1.3rem; border-radius: 18px;
+        background:
+            radial-gradient(120% 160% at 0% 0%, rgba(79,140,255,.18) 0%, rgba(79,140,255,0) 55%),
+            linear-gradient(180deg, #1b2230 0%, #161a22 100%);
+        border: 1px solid var(--qty-line);
+        box-shadow: 0 14px 36px -20px rgba(0,0,0,.8);
+    }
+    .qty-hero-icon {
+        flex: 0 0 auto; width: 54px; height: 54px; border-radius: 14px;
+        display: grid; place-items: center; font-size: 1.5rem; color: #7dd3fc;
+        background: linear-gradient(145deg, rgba(125,211,252,.22), rgba(125,211,252,.05));
+        border: 1px solid rgba(125,211,252,.35);
+    }
+    .qty-hero-title { margin: 0; font-size: 1.45rem; font-weight: 800; letter-spacing: -.4px; }
+    .qty-hero-sub { margin: .3rem 0 0; color: var(--qty-muted); font-size: .88rem; }
+
+    /* Сегментные тумблеры (режим и единицы) */
+    .qty-seg {
+        display: inline-flex; padding: 3px; gap: 2px;
+        background: var(--qty-surface-3); border: 1px solid var(--qty-line);
+        border-radius: 999px;
+    }
+    .qty-seg button {
+        border: 0; background: transparent; color: var(--qty-muted);
+        font-size: .8rem; font-weight: 600; letter-spacing: .2px;
+        padding: .32rem .8rem; border-radius: 999px; white-space: nowrap;
+        transition: background .15s, color .15s;
+    }
+    .qty-seg button:hover { color: var(--qty-text); }
+    .qty-seg button.active {
+        background: var(--qty-accent-soft); color: #bcd2ff;
+        box-shadow: inset 0 0 0 1px rgba(79,140,255,.35);
+    }
+    .qty-date {
+        background: var(--qty-surface-3); border: 1px solid var(--qty-line);
+        color: var(--qty-text); border-radius: 10px; padding: .3rem .55rem; font-size: .82rem;
+        color-scheme: dark;
+    }
+
+    /* Стат-плитки */
+    .qty-stats { display: grid; gap: .7rem; grid-template-columns: 1fr; }
+    @media (min-width: 576px)  { .qty-stats { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+    @media (min-width: 1200px) { .qty-stats { grid-template-columns: repeat(4, minmax(0,1fr)); } }
+    .qty-stat {
+        padding: .85rem 1rem; border-radius: 14px;
+        background: linear-gradient(180deg, var(--qty-surface-2) 0%, var(--qty-surface) 100%);
+        border: 1px solid var(--qty-line); border-left: 3px solid var(--accent, var(--qty-accent));
+    }
+    .qty-stat-label { font-size: .72rem; text-transform: uppercase; letter-spacing: .5px; color: var(--qty-muted); font-weight: 700; }
+    .qty-stat-val { font-size: 1.3rem; font-weight: 800; font-variant-numeric: tabular-nums; margin-top: .15rem; }
+    .qty-stat-sub { font-size: .78rem; color: var(--qty-muted); margin-top: .1rem; }
+
+    /* Карточки-боксы */
+    .qty-box {
+        background: var(--qty-surface-2); border: 1px solid var(--qty-line);
+        border-radius: 14px; padding: 1rem 1.1rem;
+    }
+    .qty-h {
+        font-size: .78rem; text-transform: uppercase; letter-spacing: .5px;
+        color: var(--qty-muted); font-weight: 700; margin-bottom: .7rem;
+    }
+    .qty-page .dropdown-menu { max-width: min(340px, calc(100vw - 1.25rem)); overflow-x: hidden; }
+
+    /* Таблицы (группы/территории) */
+    .qty-table { width: 100%; border-collapse: collapse; font-size: .85rem; font-variant-numeric: tabular-nums; }
+    .qty-table th {
+        text-align: right; color: var(--qty-muted); font-weight: 600; font-size: .74rem;
+        text-transform: uppercase; letter-spacing: .4px; padding: .35rem .5rem;
+        border-bottom: 1px solid var(--qty-line); white-space: nowrap;
+    }
+    .qty-table th:first-child, .qty-table td:first-child { text-align: left; }
+    .qty-table td { padding: .42rem .5rem; text-align: right; border-bottom: 1px solid rgba(255,255,255,.04); white-space: nowrap; }
+    .qty-table tr:last-child td { border-bottom: 0; }
+    .qty-table .nm { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+    .qty-bar-track { display: inline-block; width: 70px; height: 5px; background: rgba(255,255,255,.07); border-radius: 999px; vertical-align: middle; margin-left: .4rem; overflow: hidden; }
+    .qty-bar-fill { display: block; height: 100%; border-radius: 999px; }
+
+    /* Двигатели роста/падения */
+    .qty-mover { display: flex; align-items: center; gap: .55rem; padding: .32rem 0; border-bottom: 1px solid rgba(255,255,255,.04); font-size: .85rem; }
+    .qty-mover:last-child { border-bottom: 0; }
+    .qty-mover .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .qty-mover .dv { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }
+
+    /* AI-box */
+    .qty-ai-btn {
+        border: 1px solid rgba(167,139,250,.45); color: #d6ccff;
+        background: rgba(124,58,237,.14); border-radius: 10px;
+        font-size: .82rem; font-weight: 600; padding: .35rem .8rem; white-space: nowrap;
+    }
+    .qty-ai-btn:hover { background: rgba(124,58,237,.28); color: #eee9ff; }
+    .qty-ai-box {
+        background: linear-gradient(180deg, rgba(124,58,237,.10), rgba(124,58,237,.03));
+        border: 1px solid rgba(124,58,237,.35); border-radius: 14px; padding: .9rem 1.1rem;
+    }
+    .qty-ai-head { display: flex; justify-content: space-between; align-items: center; font-size: .8rem; color: #c4b5fd; font-weight: 700; margin-bottom: .4rem; }
+    .qty-md { font-size: .88rem; line-height: 1.55; }
+    .qty-md h6 { color: #d6ccff; margin: .7rem 0 .3rem; font-size: .9rem; }
+    .qty-md ul, .qty-md ol { padding-left: 1.2rem; margin-bottom: .4rem; }
+    .qty-md p { margin-bottom: .45rem; }
+
+    .qty-xls-btn {
+        border: 1px solid rgba(34,197,94,.4); color: #bbf7d0;
+        background: rgba(34,197,94,.1); border-radius: 10px;
+        font-size: .82rem; font-weight: 600; padding: .35rem .8rem; white-space: nowrap;
+    }
+    .qty-xls-btn:hover { background: rgba(34,197,94,.22); color: #dcfce7; }
+
+    /* Drill-down: подстроки SKU внутри таблиц групп/территорий */
+    .qty-page .qty-subrow td {
+        background: rgba(255,255,255,.02); font-size: .8rem;
+        padding-top: .28rem; padding-bottom: .28rem;
+    }
+    .qty-page .qty-table .fa-caret-right { transition: transform .15s; display: inline-block; }
+
+    @media (max-width: 575.98px) {
+        .qty-hero { padding: 1rem; }
+        .qty-seg button { padding: .32rem .5rem; font-size: .72rem; }
+        .qty-table .nm { max-width: 140px; }
+        .qty-page .qty-chart-lg { height: 230px !important; }
+        .qty-page .qty-chart-md { height: 190px !important; }
+        .qty-stat-val { font-size: 1.1rem; }
+    }
+
+    /* Печать/PDF: белый фон, тёмный текст, без органов управления */
+    @media print {
+        body { background: #fff !important; }
+        .qty-page { color: #111827; }
+        .qty-page .qty-hero, .qty-page .qty-box, .qty-page .qty-stat, .qty-page .qty-ai-box {
+            background: #fff !important; border-color: #d1d5db !important; box-shadow: none !important;
+        }
+        .qty-page .qty-hero-title, .qty-page .qty-stat-val, .qty-page .qty-table td,
+        .qty-page .qty-mover { color: #111827 !important; }
+        .qty-page .qty-h, .qty-page .qty-table th, .qty-page .qty-stat-label { color: #374151 !important; }
+        .qty-page .text-muted { color: #4b5563 !important; }
+        .qty-page .qty-subrow td { background: #f9fafb !important; }
+        .qty-page .row, .qty-page .qty-box { break-inside: avoid; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="qty-page" x-data="qtyPageData()">
+
+    <!-- Хедер + управление -->
+    <div class="qty-hero mb-3">
+        <div class="qty-hero-icon"><i class="fas fa-boxes-stacked"></i></div>
+        <div class="flex-grow-1" style="min-width:200px">
+            <h1 class="qty-hero-title">Վաճառքի քանակ</h1>
+            <p class="qty-hero-sub">10 տարվա համեմատություն · <span x-text="hist ? fmtDate(hist.asof) : '…'"></span> դրությամբ,
+                բոլոր տարիները կտրված են նույն օրով</p>
+        </div>
+        <div class="d-flex align-items-center gap-2 flex-wrap d-print-none">
+            <!-- Дата «на дату» (пусто = сегодня) -->
+            <input type="date" class="qty-date" x-model="asofInput" :max="todayStr" @change="load()"
+                   title="Վերլուծել այս ամսաթվի դրությամբ (դատարկ = այսօր)">
+            <!-- Товарные группы -->
+            <div class="dropdown">
+                <button class="btn btn-sm btn-outline-primary dropdown-toggle" data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                        title="Ապրանքային խմբեր (դատարկ = բոլորը)։ Ընտրվածների դեպքում KPI էջի ապրանքախմբերի զտիչը անտեսվում է">
+                    <i class="fas fa-boxes-stacked"></i> Խմբեր
+                    <span class="badge bg-primary ms-1" x-show="groups.length" x-text="groups.length"></span>
+                </button>
+                <div class="dropdown-menu dropdown-menu-end p-2" style="width:340px;max-height:360px;overflow:auto">
+                    <div class="small text-muted mb-2">Խմբեր միայն այս վերլուծության համար (դատարկ = բոլորը)</div>
+                    <input class="form-control form-control-sm mb-2" placeholder="խմբի որոնում…" x-model="pgSearch">
+                    <button class="btn btn-sm btn-outline-secondary mb-2 w-100" @click="groups=[]; groupsChanged()">Մաքրել (բոլորը)</button>
+                    <template x-for="g in optFilter(productGroupOptions, pgSearch)" :key="'qpg-'+g.code">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" :id="'qpg-'+g.code" :value="g.code" x-model="groups" @change="groupsChanged()">
+                            <label class="form-check-label" :for="'qpg-'+g.code"><strong x-text="g.code"></strong> — <span x-text="g.name"></span></label>
+                        </div>
+                    </template>
+                </div>
+            </div>
+            <!-- Режим: вся компания / с фильтрами KPI -->
+            <div class="qty-seg" role="group">
+                <button type="button" :class="!filtered && 'active'" @click="setFiltered(false)"
+                        title="Ամբողջ ընկերության բոլոր վաճառքները (ինչպես ERP-ի ընդհանուր հաշվетվությունում)">
+                    <i class="fas fa-globe me-1"></i>Ամբողջը</button>
+                <button type="button" :class="filtered && 'active'" @click="setFiltered(true)"
+                        title="KPI էջի զտիչներով (հաճախորդների խմբեր, տարածքներ, դիվիզիոններ, ապրանքային խմբեր)">
+                    <i class="fas fa-filter me-1"></i>KPI զտիչ</button>
+            </div>
+            <!-- Единицы: штуки / литры / упаковки -->
+            <div class="qty-seg" role="group">
+                <button type="button" :class="unit==='qty' && 'active'" @click="setUnit('qty')" title="Հատ">Հատ</button>
+                <button type="button" :class="unit==='liters' && 'active'" @click="setUnit('liters')"
+                        :title="'Լիտրեր (անվան լիտրաժով, ծածկույթ ' + (hist ? hist.coverage.liters : '…') + '% քանակի)'">Լիտր</button>
+                <button type="button" :class="unit==='packs' && 'active'" @click="setUnit('packs')"
+                        :title="'Արկղեր (fBASEUNITQUANTITY, ծածկույթ ' + (hist ? hist.coverage.packs : '…') + '% քանակի)։ Առանց արկղաչափի ապրանքները չեն հաշվվում'">Արկղ</button>
+            </div>
+            <button class="btn btn-sm qty-ai-btn" @click="runAi()" :disabled="aiQty.loading">
+                <i class="fas" :class="aiQty.loading ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'"></i> AI</button>
+            <button class="btn btn-sm qty-xls-btn" @click="exportExcel()" title="Excel արտահանում"><i class="fas fa-file-excel"></i></button>
+            <button class="btn btn-sm btn-outline-secondary" @click="window.print()" title="Տպել / PDF"><i class="fas fa-print"></i></button>
+            <span class="text-muted" x-show="loading"><i class="fas fa-spinner fa-spin"></i></span>
+        </div>
+    </div>
+
+    <div class="alert alert-danger" x-show="error" x-text="error" x-cloak></div>
+
+    <!-- AI-разбор -->
+    <div class="qty-ai-box mb-3" x-show="aiQty.html || aiQty.loading || aiQty.error" x-cloak>
+        <div class="qty-ai-head">
+            <span><i class="fas fa-wand-magic-sparkles me-1"></i>AI-խորհրդատու (Claude Opus 4.8)</span>
+            <button class="btn btn-sm btn-link text-muted p-0" @click="aiQty.html=''; aiQty.error=''" x-show="aiQty.html || aiQty.error"><i class="fas fa-xmark"></i></button>
+        </div>
+        <div x-show="aiQty.loading && !aiQty.html" class="text-muted small py-2"><i class="fas fa-spinner fa-spin me-1"></i>Վերլուծում եմ ծավալները…</div>
+        <div x-show="aiQty.error" class="text-danger small py-2" x-text="aiQty.error"></div>
+        <div class="qty-md" x-show="aiQty.html" x-html="aiQty.html"></div>
+    </div>
+
+    <template x-if="hist">
+        <div>
+            <!-- Сводные плитки -->
+            <div class="qty-stats mb-3">
+                <template x-for="(t, i) in stats" :key="'st-'+i">
+                    <div class="qty-stat" :style="`--accent:${t.color}`">
+                        <div class="qty-stat-label" x-text="t.label"></div>
+                        <div class="qty-stat-val" x-text="t.value"></div>
+                        <div class="qty-stat-sub">
+                            <span x-show="t.delta !== null && t.delta !== undefined" :class="t.delta >= 0 ? 'text-success' : 'text-danger'">
+                                <i class="fas" :class="t.delta >= 0 ? 'fa-arrow-up' : 'fa-arrow-down'"></i>
+                                <span x-text="Math.abs(t.delta) + '%'"></span>
+                            </span>
+                            <span x-text="t.sub"></span>
+                        </div>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Годовые сравнения: месяц и год -->
+            <div class="row g-3">
+                <div class="col-xl-6">
+                    <div class="qty-box h-100">
+                        <h6 class="qty-h"><i class="fas fa-calendar-day me-1 text-info"></i>Ամսվա սկզբից
+                            (<span x-text="rangeLabel('mtd')"></span>) · <span x-text="unitLabel()"></span></h6>
+                        <div class="qty-chart-lg" style="position:relative; height:300px"><canvas id="chYearMtd"></canvas></div>
+                    </div>
+                </div>
+                <div class="col-xl-6">
+                    <div class="qty-box h-100">
+                        <h6 class="qty-h"><i class="fas fa-calendar me-1 text-info"></i>Տարվա սկզբից
+                            (<span x-text="rangeLabel('ytd')"></span>) · <span x-text="unitLabel()"></span></h6>
+                        <div class="qty-chart-lg" style="position:relative; height:300px"><canvas id="chYearYtd"></canvas></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Помесячная динамика 36 мес -->
+            <div class="qty-box mt-3">
+                <h6 class="qty-h"><i class="fas fa-chart-column me-1 text-info"></i>Ամսական դինամիկա · վերջին 36 ամիս
+                    <span class="text-muted fw-normal" style="text-transform:none">· գիծը՝ նույն ամիսը մեկ տարի առաջ<span
+                        x-show="hist.daily.elapsed < hist.daily.daysInMonth"> · գունատ սյունը՝ ընթացիկ ամիսն է, դեռ ոչ ամբողջական</span></span></h6>
+                <div class="qty-chart-lg" style="position:relative; height:280px"><canvas id="chMonthly"></canvas></div>
+            </div>
+
+            <!-- Дневной пульс текущего месяца -->
+            <div class="qty-box mt-3">
+                <h6 class="qty-h"><i class="fas fa-wave-square me-1 text-info"></i>Օրական զարկերակ · <span x-text="hist.daily.month"></span>
+                    <span class="text-muted fw-normal" style="text-transform:none">· գիծը՝ նույն ամիսն անցյալ տարի</span></h6>
+                <div class="qty-chart-md" style="position:relative; height:240px"><canvas id="chDaily"></canvas></div>
+                <div class="d-flex flex-wrap gap-3 mt-2 small" x-show="forecast() || prevMonthFull()">
+                    <span x-show="forecast()"><i class="fas fa-forward me-1 text-info"></i>Կանխատեսում մինչև ամսվա վերջ՝
+                        <b x-text="fmtU(forecast())"></b></span>
+                    <span class="text-muted" x-show="!forecast() && hist.daily.elapsed < hist.daily.daysInMonth">
+                        <i class="fas fa-hourglass-start me-1"></i>Ամիսը նոր է սկսվել — կանխատեսումը կհայտնվի առաջին ամբողջական օրվանից</span>
+                    <span x-show="prevMonthFull()">Անցյալ տարվա ամբողջ ամիսը՝ <b x-text="fmtU(prevMonthFull())"></b></span>
+                    <span x-html="forecastGapHtml()"></span>
+                </div>
+            </div>
+
+            <!-- Группы: кто дал прирост/падение + двигатели SKU -->
+            <div class="row g-3 mt-0">
+                <div class="col-xl-6">
+                    <div class="qty-box h-100">
+                        <h6 class="qty-h"><i class="fas fa-layer-group me-1 text-warning"></i>Ապրանքային խմբեր · տարեսկզբից, ընթացիկ vs անցյալ տարի
+                            <span class="text-muted fw-normal" style="text-transform:none">· սեղմեք խմբի վրա՝ SKU-ները բացելու</span></h6>
+                        <div style="overflow-x:auto">
+                            <table class="qty-table">
+                                <thead><tr><th>Խումբ</th><th x-text="'Այս տարի, ' + unitLabel()"></th><th>Անցյալ</th><th>Δ</th><th>Δ%</th></tr></thead>
+                                <tbody>
+                                    <template x-for="g in groupsTableRows" :key="'gb-'+g.key">
+                                        <tr :class="g.t === 'sku' && 'qty-subrow'"
+                                            :style="g.t === 'g' ? 'cursor:pointer' : ''"
+                                            @click="g.t === 'g' && toggleGroup(g.key)">
+                                            <td class="nm" :title="g.name">
+                                                <i class="fas fa-caret-right small me-1 text-muted" x-show="g.t === 'g'"
+                                                   :style="g.open ? 'transform:rotate(90deg)' : ''"></i>
+                                                <span :class="g.t === 'sku' && 'ps-3 text-muted'" x-text="g.name"></span>
+                                            </td>
+                                            <td x-text="fmtU(g.cur)"></td>
+                                            <td class="text-muted" x-text="fmtU(g.prev)"></td>
+                                            <td :class="g.delta >= 0 ? 'text-success' : 'text-danger'"
+                                                x-text="(g.delta >= 0 ? '+' : '−') + fmtU(Math.abs(g.delta))"></td>
+                                            <td :class="g.delta >= 0 ? 'text-success' : 'text-danger'">
+                                                <span x-text="g.deltaPct === null ? '—' : ((g.delta >= 0 ? '+' : '−') + Math.abs(g.deltaPct) + '%')"></span>
+                                                <span class="qty-bar-track" x-show="g.barW !== undefined"><span class="qty-bar-fill"
+                                                    :style="`width:${g.barW}%; background:${g.delta >= 0 ? '#22c55e' : '#ef4444'}`"></span></span>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-xl-6">
+                    <div class="qty-box h-100">
+                        <h6 class="qty-h"><i class="fas fa-arrow-trend-up me-1 text-success"></i>Աճի շարժիչներ
+                            <span class="text-muted fw-normal" style="text-transform:none">· SKU, տարեսկզբից Δ <span x-text="unitLabel()"></span></span></h6>
+                        <template x-for="p in movers.up" :key="'mu-'+p.code">
+                            <div class="qty-mover">
+                                <i class="fas fa-arrow-up text-success"></i>
+                                <span class="nm" :title="p.name" x-text="p.name"></span>
+                                <span class="dv text-success" x-text="'+' + fmtU(p.delta)"></span>
+                            </div>
+                        </template>
+                        <div class="text-muted small py-1" x-show="!movers.up.length">Աճող SKU չկա</div>
+                        <h6 class="qty-h mt-3"><i class="fas fa-arrow-trend-down me-1 text-danger"></i>Անկման շարժիչներ</h6>
+                        <template x-for="p in movers.down" :key="'md-'+p.code">
+                            <div class="qty-mover">
+                                <i class="fas fa-arrow-down text-danger"></i>
+                                <span class="nm" :title="p.name" x-text="p.name"></span>
+                                <span class="dv text-danger" x-text="'−' + fmtU(Math.abs(p.delta))"></span>
+                            </div>
+                        </template>
+                        <div class="text-muted small py-1" x-show="!movers.down.length">Անկում ունեցող SKU չկա</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Цена и объём на точку -->
+            <div class="row g-3 mt-0">
+                <div class="col-xl-6">
+                    <div class="qty-box h-100">
+                        <h6 class="qty-h"><i class="fas fa-tag me-1 text-warning"></i>Միջին գին (֏/<span x-text="unitLabel()"></span>) · տարեսկզբից, ըստ տարիների</h6>
+                        <div class="qty-chart-md" style="position:relative; height:220px"><canvas id="chPrice"></canvas></div>
+                    </div>
+                </div>
+                <div class="col-xl-6">
+                    <div class="qty-box h-100">
+                        <h6 class="qty-h"><i class="fas fa-store me-1 text-primary"></i>Ծավալ մեկ կետի հաշվով (<span x-text="unitLabel()"></span>/կետ) · տարեսկզբից</h6>
+                        <div class="qty-chart-md" style="position:relative; height:220px"><canvas id="chOutlet"></canvas></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Каналы (группы клиентов) + Клиенты-двигатели -->
+            <div class="row g-3 mt-0">
+                <div class="col-xl-6">
+                    <div class="qty-box h-100">
+                        <h6 class="qty-h"><i class="fas fa-sitemap me-1 text-primary"></i>Ուղիներ (հաճախորդների խմբեր) · տարեսկզբից · <span x-text="unitLabel()"></span></h6>
+                        <div style="overflow-x:auto">
+                            <table class="qty-table">
+                                <thead><tr><th>Ուղի</th><th x-text="'Այս տարի, ' + unitLabel()"></th><th>Անցյալ</th><th>Δ</th><th>Δ%</th></tr></thead>
+                                <tbody>
+                                    <template x-for="c in channelRows" :key="'ch-'+c.code">
+                                        <tr>
+                                            <td class="nm"><strong x-text="c.code"></strong> — <span x-text="c.name"></span></td>
+                                            <td x-text="fmtU(c.cur)"></td>
+                                            <td class="text-muted" x-text="fmtU(c.prev)"></td>
+                                            <td :class="c.delta >= 0 ? 'text-success' : 'text-danger'"
+                                                x-text="(c.delta >= 0 ? '+' : '−') + fmtU(Math.abs(c.delta))"></td>
+                                            <td :class="c.delta >= 0 ? 'text-success' : 'text-danger'"
+                                                x-text="c.deltaPct === null ? '—' : ((c.delta >= 0 ? '+' : '−') + Math.abs(c.deltaPct) + '%')"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-xl-6">
+                    <div class="qty-box h-100">
+                        <h6 class="qty-h"><i class="fas fa-user-minus me-1 text-danger"></i>Հաճախորդներ-անկման շարժիչներ
+                            <span class="text-muted fw-normal" style="text-transform:none">· տարեսկզբից Δ <span x-text="unitLabel()"></span> · «ում զանգել»</span></h6>
+                        <template x-for="c in custMovers.down" :key="'cd-'+c.code">
+                            <div class="qty-mover">
+                                <i class="fas fa-arrow-down text-danger"></i>
+                                <span class="nm" :title="c.name + (c.phone ? ' · ' + c.phone : '')">
+                                    <span x-text="c.name"></span>
+                                    <a x-show="c.phone" :href="'tel:' + c.phone" class="text-info small ms-1 text-decoration-none" @click.stop>
+                                        <i class="fas fa-phone"></i></a>
+                                </span>
+                                <span class="dv text-muted small" x-text="fmtU(c.prev) + ' → ' + fmtU(c.cur)"></span>
+                                <span class="dv text-danger" x-text="'−' + fmtU(Math.abs(c.delta))"></span>
+                            </div>
+                        </template>
+                        <div class="text-muted small py-1" x-show="!custMovers.down.length">Անկում ունեցող հաճախորդ չկա</div>
+                        <h6 class="qty-h mt-3"><i class="fas fa-user-plus me-1 text-success"></i>Հաճախորդներ-աճի շարժիչներ</h6>
+                        <template x-for="c in custMovers.up" :key="'cu-'+c.code">
+                            <div class="qty-mover">
+                                <i class="fas fa-arrow-up text-success"></i>
+                                <span class="nm" :title="c.name" x-text="c.name"></span>
+                                <span class="dv text-muted small" x-text="fmtU(c.prev) + ' → ' + fmtU(c.cur)"></span>
+                                <span class="dv text-success" x-text="'+' + fmtU(c.delta)"></span>
+                            </div>
+                        </template>
+                        <div class="text-muted small py-1" x-show="!custMovers.up.length">Աճող հաճախորդ չկա</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Территории (клик — топ товаров зоны) -->
+            <div class="qty-box mt-3">
+                <h6 class="qty-h"><i class="fas fa-map-marked-alt me-1 text-info"></i>Տարածքներ · տարեսկզբից, ընթացիկ vs անցյալ տարի · <span x-text="unitLabel()"></span>
+                    <span class="text-muted fw-normal" style="text-transform:none">· սեղմեք տարածքի վրա՝ թոփ ապրանքները բացելու</span></h6>
+                <div style="overflow-x:auto">
+                    <table class="qty-table">
+                        <thead><tr><th>Տարածք</th><th x-text="'Այս տարի, ' + unitLabel()"></th><th>Անցյալ</th><th>Δ</th><th>Δ%</th></tr></thead>
+                        <tbody>
+                            <template x-for="a in areasTableRows" :key="'ar-'+a.key">
+                                <tr :class="a.t === 'sku' && 'qty-subrow'"
+                                    :style="a.t === 'a' ? 'cursor:pointer' : ''"
+                                    @click="a.t === 'a' && toggleArea(a.code)">
+                                    <td class="nm">
+                                        <template x-if="a.t === 'a'">
+                                            <span><i class="fas fa-caret-right small me-1 text-muted" :style="a.open ? 'transform:rotate(90deg)' : ''"></i>
+                                                <strong x-text="a.code"></strong> — <span x-text="a.name"></span></span>
+                                        </template>
+                                        <template x-if="a.t === 'sku'">
+                                            <span class="ps-3 text-muted" x-text="a.name"></span>
+                                        </template>
+                                    </td>
+                                    <td x-text="fmtU(a.cur)"></td>
+                                    <td class="text-muted" x-text="fmtU(a.prev)"></td>
+                                    <td :class="a.delta >= 0 ? 'text-success' : 'text-danger'"
+                                        x-text="(a.delta >= 0 ? '+' : '−') + fmtU(Math.abs(a.delta))"></td>
+                                    <td :class="a.delta >= 0 ? 'text-success' : 'text-danger'"
+                                        x-text="a.deltaPct === null ? '—' : ((a.delta >= 0 ? '+' : '−') + Math.abs(a.deltaPct) + '%')"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="small text-muted mt-3">Քանակը՝ վաճառքի տողերի գումարն է
+                (<b x-text="filtered ? 'KPI էջի զտիչներով' : 'ամբողջ ընկերությունը, առանց զտիչների'"></b>,
+                առանց ծառայությունների ու տեխնիկական քարտերի՝ 0000/0001)։
+                <span x-show="groups.length">Ապրանքախմբեր՝ <b x-text="groupsLabel()"></b>։</span>
+                Լիտրերը՝ ապրանքի անվան լիտրաժից (ծածկույթ՝ <span x-text="hist.coverage.liters"></span>%),
+                արկղերը՝ արկղաչափից (ծածկույթ՝ <span x-text="hist.coverage.packs"></span>%)։
+                Առանց լիտրաժի/արկղաչափի ապրանքներն այդ միավորներում ՉԵՆ հաշվվում — «Հատ» ռեժիմն է ամբողջականը։
+                <span style="color:#4f8cff">Կապույտ սյունը</span>՝ ընթացիկ տարին։</div>
+        </div>
+    </template>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function qtyPageData() {
+    return {
+        hist: null, loading: true, error: '',
+        filtered: false, groups: [], pgSearch: '',
+        productGroupOptions: [],
+        unit: 'qty',
+        expandedGroups: [], expandedAreas: [],
+        // ЛОКАЛЬНАЯ дата (sv-SE = YYYY-MM-DD): toISOString даёт UTC и ночью (00:00–04:00 Еревана)
+        // возвращал вчера — прогноз включал незавершённый день, а календарь запрещал «сегодня»
+        asofInput: '', todayStr: new Date().toLocaleDateString('sv-SE'),
+        aiQty: { loading: false, html: '', error: '' },
+        _charts: {},
+
+        async init() {
+            this.filtered = localStorage.getItem('kpi_qty_filtered') === '1';
+            const u = localStorage.getItem('kpi_qty_unit');
+            if (['qty', 'liters', 'packs'].includes(u)) this.unit = u;
+            try {
+                const qg = JSON.parse(localStorage.getItem('kpi_qty_groups') || '[]');
+                if (Array.isArray(qg)) this.groups = qg.filter(x => typeof x === 'string');
+            } catch (e) {}
+            fetch('/api/managers/kpi/filter-options').then(r => r.json())
+                .then(fo => { if (fo.success) this.productGroupOptions = fo.product_groups || []; })
+                .catch(e => console.error(e));
+            await this.load();
+        },
+
+        async load() {
+            this.loading = true;
+            this.cancelAi();
+            this.aiQty = { loading: false, html: '', error: '' };   // разбор устарел при смене параметров
+            // Отменяем предыдущий запрос: каждый клик по фильтру — 8 тяжёлых сканов боевой ERP,
+            // старые запросы не должны доживать до конца
+            if (this._loadCtrl) { try { this._loadCtrl.abort(); } catch (e) {} }
+            const ctrl = (this._loadCtrl = new AbortController());
+            const gen = (this._gen = (this._gen || 0) + 1);
+            try {
+                let url = '/api/managers/kpi/qty-history?filtered=' + (this.filtered ? 1 : 0)
+                    + '&groups=' + encodeURIComponent(this.groups.join(','));
+                if (/^\d{4}-\d{2}-\d{2}$/.test(this.asofInput)) url += '&date=' + this.asofInput;
+                const r = await fetch(url, { signal: ctrl.signal });
+                const d = await r.json();
+                if (gen !== this._gen) return;
+                if (d.success) { this.hist = d; this.error = ''; }
+                else { this.error = d.error || 'Չհաջողվեց բեռնել տվյալները'; }
+            } catch (e) {
+                if (e.name === 'AbortError' || gen !== this._gen) return;
+                console.error(e); this.error = 'Ցանցի կամ սերվերի սխալ';
+            }
+            if (gen === this._gen) {
+                this.loading = false;
+                this.$nextTick(() => this.render());
+            }
+        },
+
+        async setFiltered(v) {
+            if (this.filtered === v) return;
+            this.filtered = v;
+            try { localStorage.setItem('kpi_qty_filtered', v ? '1' : '0'); } catch (e) {}
+            await this.load();
+        },
+        groupsChanged() {
+            try { localStorage.setItem('kpi_qty_groups', JSON.stringify(this.groups)); } catch (e) {}
+            // Debounce: серия кликов по чекбоксам = ОДИН запрос, а не запрос на каждый клик
+            clearTimeout(this._grpT);
+            this._grpT = setTimeout(() => this.load(), 500);
+        },
+        setUnit(u) {
+            if (this.unit === u) return;
+            this.unit = u;
+            try { localStorage.setItem('kpi_qty_unit', u); } catch (e) {}
+            this.$nextTick(() => this.render());   // все единицы уже в ответе — без refetch
+        },
+
+        // ---------- Хелперы ----------
+        val(row) { return row ? (row[this.unit] || 0) : 0; },
+        unitLabel() { return { qty: 'հատ', liters: 'լ', packs: 'արկղ' }[this.unit]; },
+        fmtU(v) { return formatNumber(Math.round(v)); },
+        compact(v) {
+            return Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1) + 'M'
+                 : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : Math.round(v);
+        },
+        optFilter(list, q) {
+            q = (q || '').trim().toLowerCase();
+            if (!q) return list;
+            return list.filter(o => (o.code || '').toLowerCase().includes(q) || (o.name || '').toLowerCase().includes(q));
+        },
+        fmtDate(s) {
+            const [y, m, d] = String(s || '').split('-');
+            return (d && m && y) ? `${d}.${m}.${y}` : s;
+        },
+        rangeLabel(mode) {
+            const rows = this.hist && this.hist[mode];
+            if (!rows || !rows.length) return '';
+            const last = rows[rows.length - 1];
+            return this.fmtDate(last.from).slice(0, 5) + ' – ' + this.fmtDate(last.to).slice(0, 5);
+        },
+        groupsLabel() {
+            return this.groups.map(code => {
+                const o = this.productGroupOptions.find(g => g.code === code);
+                return o ? (o.code + ' — ' + o.name) : code;
+            }).join(', ');
+        },
+        _deltaPct(cur, prev) { return prev ? Math.round((cur / prev - 1) * 1000) / 10 : null; },
+
+        // ---------- Сводка ----------
+        get stats() {
+            if (!this.hist) return [];
+            const mtd = this.hist.mtd, ytd = this.hist.ytd;
+            const mc = mtd[mtd.length - 1], mp = mtd[mtd.length - 2];
+            const yc = ytd[ytd.length - 1], yp = ytd[ytd.length - 2];
+            const u = this.unitLabel();
+            const priceCur = this.val(yc) ? yc.amount / this.val(yc) : null;
+            const pricePrev = this.val(yp) ? yp.amount / this.val(yp) : null;
+            const outCur = yc.customers ? this.val(yc) / yc.customers : null;
+            const outPrev = yp.customers ? this.val(yp) / yp.customers : null;
+            return [
+                { label: 'Այս ամիսը · ' + this.rangeLabel('mtd'), value: this.fmtU(this.val(mc)) + ' ' + u,
+                  delta: this._deltaPct(this.val(mc), this.val(mp)), sub: 'նախորդ տարվա նույն օրերի նկատմամբ', color: '#4f8cff' },
+                { label: 'Տարեսկզբից · ' + this.rangeLabel('ytd'), value: this.fmtU(this.val(yc)) + ' ' + u,
+                  delta: this._deltaPct(this.val(yc), this.val(yp)), sub: 'նախորդ տարվա նույն օրերի նկատմամբ', color: '#4f8cff' },
+                { label: 'Միջին գին (տարեսկզբից)', value: priceCur === null ? '—' : (formatNumber(Math.round(priceCur)) + ' ֏/' + u),
+                  delta: (priceCur !== null && pricePrev) ? this._deltaPct(priceCur, pricePrev) : null,
+                  sub: 'նախորդ տարվա նկատմամբ', color: '#f2c14e' },
+                { label: 'Ծավալ մեկ կետին (տարեսկզբից)', value: outCur === null ? '—' : (this.fmtU(outCur) + ' ' + u),
+                  delta: (outCur !== null && outPrev) ? this._deltaPct(outCur, outPrev) : null,
+                  sub: yc.customers ? (formatNumber(yc.customers) + ' ակտիվ կետ') : '', color: '#2dd4bf' },
+            ];
+        },
+
+        // ---------- Группы и двигатели (YTD) ----------
+        // Группы приходят С СЕРВЕРА по полному набору товаров (hist.groupsAgg) — сумма таблицы
+        // сходится с плиткой YTD; из усечённого топ-400 считаются только «двигатели» SKU
+        get groupsBreakdown() {
+            if (!this.hist) return [];
+            const rows = this.hist.groupsAgg.map(g => {
+                const cur = this.val(g.cur), prev = this.val(g.prev);
+                return { key: g.code, name: g.name, cur, prev, delta: cur - prev, deltaPct: this._deltaPct(cur, prev) };
+            }).filter(r => r.cur || r.prev).sort((a, b) => b.cur - a.cur).slice(0, 14);
+            const maxAbs = Math.max(1, ...rows.map(r => Math.abs(r.delta)));
+            rows.forEach(r => r.barW = Math.max(3, Math.abs(r.delta) / maxAbs * 100));
+            return rows;
+        },
+        get movers() {
+            if (!this.hist) return { up: [], down: [] };
+            const list = this.hist.products.map(p => ({
+                code: p.code, name: p.name, delta: this.val(p.cur) - this.val(p.prev)
+            }));
+            const up = list.filter(x => x.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 7);
+            const down = list.filter(x => x.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 7);
+            return { up, down };
+        },
+        get areaRows() {
+            if (!this.hist) return [];
+            return this.hist.areas.map(a => {
+                const cur = this.val(a.cur), prev = this.val(a.prev);
+                return { code: a.code, name: a.name, cur, prev, delta: cur - prev, deltaPct: this._deltaPct(cur, prev) };
+            }).filter(a => a.cur || a.prev).sort((a, b) => b.cur - a.cur);
+        },
+        // Каналы = группы клиентов (розница/опт/сети) в выбранной единице
+        get channelRows() {
+            if (!this.hist) return [];
+            return this.hist.channels.map(c => {
+                const cur = this.val(c.cur), prev = this.val(c.prev);
+                return { code: c.code, name: c.name, cur, prev, delta: cur - prev, deltaPct: this._deltaPct(cur, prev) };
+            }).filter(c => c.cur || c.prev).sort((a, b) => b.cur - a.cur).slice(0, 12);
+        },
+        // Клиенты-«двигатели»: ранжирование по дельте в выбранной единице
+        get custMovers() {
+            if (!this.hist) return { up: [], down: [] };
+            const list = this.hist.customers.map(c => ({
+                code: c.code, name: c.name, phone: c.phone,
+                cur: this.val(c.cur), prev: this.val(c.prev),
+                delta: this.val(c.cur) - this.val(c.prev)
+            }));
+            return {
+                up: list.filter(x => x.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 8),
+                down: list.filter(x => x.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 8)
+            };
+        },
+        // Drill-down: плоский список строк таблицы групп (группа + её SKU при раскрытии)
+        toggleGroup(key) {
+            const i = this.expandedGroups.indexOf(key);
+            if (i >= 0) this.expandedGroups.splice(i, 1); else this.expandedGroups.push(key);
+        },
+        get groupsTableRows() {
+            const out = [];
+            for (const g of this.groupsBreakdown) {
+                const open = this.expandedGroups.includes(g.key);
+                out.push({ t: 'g', ...g, open });
+                if (open) {
+                    this.hist.products
+                        .filter(p => (p.grp || '—') === g.key)
+                        .map(p => { const cur = this.val(p.cur), prev = this.val(p.prev);
+                                    return { t: 'sku', key: g.key + '|' + p.code, name: p.name,
+                                             cur, prev, delta: cur - prev, deltaPct: this._deltaPct(cur, prev) }; })
+                        .filter(s => s.cur || s.prev)
+                        .sort((a, b) => b.cur - a.cur).slice(0, 12)
+                        .forEach(s => out.push(s));
+                }
+            }
+            return out;
+        },
+        toggleArea(code) {
+            const i = this.expandedAreas.indexOf(code);
+            if (i >= 0) this.expandedAreas.splice(i, 1); else this.expandedAreas.push(code);
+        },
+        get areasTableRows() {
+            const out = [];
+            for (const a of this.areaRows) {
+                const open = this.expandedAreas.includes(a.code);
+                out.push({ t: 'a', key: a.code, ...a, open });
+                if (open) {
+                    ((this.hist.areaProducts || {})[a.code] || [])
+                        .map(p => { const cur = this.val(p.cur), prev = this.val(p.prev);
+                                    return { t: 'sku', key: a.code + '|' + p.code, name: p.name,
+                                             cur, prev, delta: cur - prev, deltaPct: this._deltaPct(cur, prev) }; })
+                        .filter(s => s.cur || s.prev)
+                        .forEach(s => out.push(s));
+                }
+            }
+            return out;
+        },
+
+        // ---------- Прогноз месяца ----------
+        forecast() {
+            const h = this.hist;
+            if (!h) return null;
+            const el = h.daily.elapsed, dim = h.daily.daysInMonth;
+            if (!el || el >= dim) return null;   // месяц завершён — прогноз не нужен
+            // Текущий день ещё идёт (срез = сегодня, флаг с СЕРВЕРА — клиентская дата ловила UTC-сдвиг) —
+            // опираемся только на ЗАВЕРШЁННЫЕ дни, иначе утро 1-го числа даёт «прогноз 0»
+            const done = h.isToday ? el - 1 : el;
+            if (done < 1) return null;           // месяц только начался — прогнозировать не по чему
+            const sofar = h.daily.days.slice(0, done).reduce((s, x) => s + this.val(x), 0);
+            if (!sofar) return null;
+            // Like-for-like: масштабируем по форме того же месяца прошлого года (сезон внутри месяца);
+            // поправка dim/prevLen — для разной длины месяцев (29 февраля); без прошлогодних данных — линейный темп
+            const prevLen = h.daily.prevDays.length;
+            const prevAll = this.prevMonthFull();
+            const prevSofar = h.daily.prevDays.slice(0, Math.min(done, prevLen)).reduce((s, x) => s + this.val(x), 0);
+            if (prevAll && prevSofar && prevLen) return sofar / prevSofar * prevAll * (dim / prevLen);
+            return sofar / done * dim;
+        },
+        prevMonthFull() {
+            const h = this.hist;
+            if (!h) return 0;
+            return h.daily.prevDays.reduce((s, x) => s + this.val(x), 0);
+        },
+        forecastGapHtml() {
+            const f = this.forecast(), p = this.prevMonthFull();
+            if (!f || !p) return '';
+            const dd = Math.round((f / p - 1) * 1000) / 10;
+            const cls = dd >= 0 ? 'text-success' : 'text-danger';
+            return `<span class="${cls}">${dd >= 0 ? '▲' : '▼'} ${Math.abs(dd)}% անցյալ տարվա ամսվա նկատմամբ</span>`;
+        },
+
+        // ---------- Charts ----------
+        _destroy(id) { if (this._charts[id]) { this._charts[id].destroy(); delete this._charts[id]; } },
+        _mk(id, cfg) {
+            const ctx = document.getElementById(id);
+            if (!ctx) return;
+            this._destroy(id);
+            this._charts[id] = new Chart(ctx, cfg);
+        },
+        _axes(compactY = true) {
+            return {
+                x: { grid: { display: false }, ticks: { color: '#93a0b4', font: { size: 10 } } },
+                y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,.05)' },
+                     ticks: { color: '#93a0b4', callback: v => compactY ? this.compact(v) : formatNumber(v), font: { size: 10 } } }
+            };
+        },
+
+        render() {
+            const h = this.hist;
+            if (!h) return;
+            this.renderYear('chYearMtd', h.mtd);
+            this.renderYear('chYearYtd', h.ytd);
+            this.renderMonthly();
+            this.renderDaily();
+            this.renderLine('chPrice', h.ytd.map(r => this.val(r) ? Math.round(r.amount / this.val(r)) : null), '#f2c14e', v => formatNumber(v) + ' ֏');
+            this.renderLine('chOutlet', h.ytd.map(r => r.customers ? Math.round(this.val(r) / r.customers) : null), '#2dd4bf', v => formatNumber(v) + ' ' + this.unitLabel());
+        },
+
+        renderYear(id, rows) {
+            const self = this;
+            this._mk(id, {
+                type: 'bar',
+                plugins: (typeof ChartDataLabels !== 'undefined') ? [ChartDataLabels] : [],
+                data: {
+                    labels: rows.map(r => String(r.year)),
+                    datasets: [{
+                        data: rows.map(r => self.val(r)),
+                        backgroundColor: rows.map((r, i) => i === rows.length - 1 ? 'rgba(79,140,255,.85)' : 'rgba(255,255,255,.28)'),
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: false,
+                    plugins: {
+                        legend: { display: false },
+                        datalabels: { anchor: 'end', align: 'top', offset: 0, clip: false,
+                                      color: '#93a0b4', font: { size: 10 }, formatter: v => v ? self.compact(v) : '' },
+                        tooltip: {
+                            displayColors: false,
+                            callbacks: {
+                                title: items => { const r = rows[items[0].dataIndex]; return r.year + ' · ' + self.fmtDate(r.from) + ' – ' + self.fmtDate(r.to); },
+                                label: c => {
+                                    const i = c.dataIndex, r = rows[i];
+                                    const out = ['Ծավալ՝ ' + self.fmtU(self.val(r)) + ' ' + self.unitLabel()];
+                                    const prev = i > 0 ? self.val(rows[i - 1]) : null;
+                                    if (prev) {
+                                        const dd = Math.round((self.val(r) / prev - 1) * 1000) / 10;
+                                        out.push('Նախորդ տարվա նկատմամբ՝ ' + (dd >= 0 ? '+' : '') + dd + '%');
+                                    }
+                                    if (self.val(r)) out.push('Միջին գին՝ ' + formatNumber(Math.round(r.amount / self.val(r))) + ' ֏/' + self.unitLabel());
+                                    if (r.customers) out.push('Ակտիվ կետեր՝ ' + formatNumber(r.customers));
+                                    return out;
+                                }
+                            }
+                        }
+                    },
+                    layout: { padding: { top: 16 } },
+                    scales: this._axes()
+                }
+            });
+        },
+
+        renderMonthly() {
+            const self = this, mo = this.hist.monthly;
+            const view = mo.slice(-36);                       // показываем 36
+            const byYm = Object.fromEntries(mo.map(x => [x.ym, x]));
+            const prevOf = ym => {                            // тот же месяц год назад
+                const [y, m] = ym.split('-').map(Number);
+                return byYm[`${String(y - 1).padStart(4, '0')}-${String(m).padStart(2, '0')}`];
+            };
+            // Незавершённый текущий месяц против полных месяцев — читался бы как обвал:
+            // рисуем его гунатным (полупрозрачным) и помечаем в тултипе
+            const partialYm = (this.hist.daily.elapsed < this.hist.daily.daysInMonth) ? this.hist.daily.month : null;
+            this._mk('chMonthly', {
+                data: {
+                    labels: view.map(x => x.ym.slice(2)),
+                    datasets: [
+                        { type: 'bar', label: 'Ամիս', data: view.map(x => self.val(x)),
+                          backgroundColor: view.map(x => x.ym === partialYm ? 'rgba(79,140,255,.25)'
+                                                       : x.ym === this.hist.daily.month ? 'rgba(79,140,255,.85)' : 'rgba(79,140,255,.45)'),
+                          borderColor: view.map(x => x.ym === partialYm ? 'rgba(79,140,255,.8)' : 'transparent'),
+                          borderWidth: view.map(x => x.ym === partialYm ? 1.5 : 0),
+                          borderRadius: 2, order: 2 },
+                        { type: 'line', label: 'Մեկ տարի առաջ', data: view.map(x => { const p = prevOf(x.ym); return p ? self.val(p) : null; }),
+                          borderColor: 'rgba(255,255,255,.4)', borderWidth: 1.5, pointRadius: 0, tension: .3, order: 1 }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: false }, datalabels: { display: false },
+                        tooltip: { callbacks: {
+                            title: items => { const ym = view[items[0].dataIndex].ym; return ym + (ym === partialYm ? ' · ընթացիկ, ոչ ամբողջական' : ''); },
+                            label: c => c.dataset.label + ': ' + self.fmtU(c.parsed.y || 0) + ' ' + self.unitLabel()
+                        } }
+                    },
+                    scales: { ...this._axes(), x: { grid: { display: false }, ticks: { color: '#93a0b4', maxTicksLimit: 18, font: { size: 9 } } } }
+                }
+            });
+        },
+
+        renderDaily() {
+            const self = this, dl = this.hist.daily;
+            const n = Math.max(dl.daysInMonth, dl.prevDays.length);
+            const cur = Array.from({ length: n }, (_, i) => {
+                if (i >= dl.daysInMonth || i >= dl.elapsed) return null;   // будущие дни не рисуем
+                const x = dl.days[i]; return x ? self.val(x) : 0;
+            });
+            const prev = Array.from({ length: n }, (_, i) => {
+                const x = dl.prevDays[i]; return x ? self.val(x) : null;
+            });
+            this._mk('chDaily', {
+                data: {
+                    labels: Array.from({ length: n }, (_, i) => String(i + 1).padStart(2, '0')),
+                    datasets: [
+                        { type: 'bar', label: 'Այս տարի', data: cur, backgroundColor: 'rgba(79,140,255,.6)', borderRadius: 3, order: 2 },
+                        { type: 'line', label: 'Անցյալ տարի', data: prev, borderColor: 'rgba(255,255,255,.4)', borderWidth: 1.5, pointRadius: 0, tension: .3, order: 1 }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: false }, datalabels: { display: false },
+                        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + self.fmtU(c.parsed.y || 0) + ' ' + self.unitLabel() } }
+                    },
+                    scales: { ...this._axes(), x: { grid: { display: false }, ticks: { color: '#93a0b4', maxTicksLimit: 16, font: { size: 10 } } } }
+                }
+            });
+        },
+
+        renderLine(id, data, color, fmt) {
+            const self = this, years = this.hist.ytd.map(r => String(r.year));
+            this._mk(id, {
+                type: 'line',
+                data: { labels: years, datasets: [{ data, borderColor: color, backgroundColor: 'transparent',
+                        borderWidth: 2, pointRadius: 3, pointBackgroundColor: color, tension: .25, spanGaps: true }] },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: false,
+                    plugins: {
+                        legend: { display: false }, datalabels: { display: false },
+                        tooltip: { displayColors: false, callbacks: { label: c => fmt(Math.round(c.parsed.y || 0)) } }
+                    },
+                    scales: { x: { grid: { display: false }, ticks: { color: '#93a0b4', font: { size: 10 } } },
+                              y: { grid: { color: 'rgba(255,255,255,.05)' }, ticks: { color: '#93a0b4', callback: v => self.compact(v), font: { size: 10 } } } }
+                }
+            });
+        },
+
+        // ---------- Excel ----------
+        exportExcel() {
+            try {
+                const h = this.hist;
+                if (!h) return;
+                const wb = XLSX.utils.book_new();
+                const yrRows = [];
+                for (const [win, rows] of [['Месяц (MTD)', h.mtd], ['Год (YTD)', h.ytd]])
+                    for (const r of rows)
+                        yrRows.push({ 'Окно': win, 'Год': r.year, 'С': r.from, 'По': r.to, 'Штук': r.qty,
+                                      'Литров': r.liters, 'Упаковок': r.packs, 'Выручка ֏': r.amount, 'Клиентов': r.customers });
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(yrRows), 'Годы');
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+                    h.monthly.map(x => ({ 'Месяц': x.ym, 'Штук': x.qty, 'Литров': x.liters, 'Упаковок': x.packs }))), 'Месяцы');
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+                    this.groupsBreakdown.map(g => ({ 'Группа': g.name, 'Этот год': Math.round(g.cur), 'Прошлый': Math.round(g.prev),
+                                                     'Δ': Math.round(g.delta), 'Δ%': g.deltaPct }))), 'Группы');
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+                    h.products.map(p => ({ 'Код': p.code, 'Товар': p.name, 'Группа': p.grpName,
+                                           'Штук (год)': p.cur.qty, 'Штук (прошлый)': p.prev.qty,
+                                           'Литров (год)': p.cur.liters, 'Литров (прошлый)': p.prev.liters,
+                                           'Упак (год)': p.cur.packs, 'Упак (прошлый)': p.prev.packs }))), 'Товары');
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+                    this.areaRows.map(a => ({ 'Код': a.code, 'Территория': a.name, 'Этот год': Math.round(a.cur),
+                                              'Прошлый': Math.round(a.prev), 'Δ': Math.round(a.delta), 'Δ%': a.deltaPct }))), 'Территории');
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+                    this.channelRows.map(c => ({ 'Код': c.code, 'Канал': c.name, 'Этот год': Math.round(c.cur),
+                                                 'Прошлый': Math.round(c.prev), 'Δ': Math.round(c.delta), 'Δ%': c.deltaPct }))), 'Каналы');
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+                    [...this.custMovers.down, ...this.custMovers.up].map(c => ({
+                        'Код': c.code, 'Клиент': c.name, 'Телефон': c.phone || '',
+                        'Этот год': Math.round(c.cur), 'Прошлый': Math.round(c.prev), 'Δ': Math.round(c.delta) }))), 'Клиенты');
+                XLSX.writeFile(wb, `Qty_${h.asof}.xlsx`);
+            } catch (e) { console.error(e); alert('Export error: ' + e.message); }
+        },
+
+        // ---------- AI ----------
+        runAi() {
+            const h = this.hist;
+            if (!h) return;
+            const mc = h.mtd[h.mtd.length - 1], mp = h.mtd[h.mtd.length - 2];
+            const yc = h.ytd[h.ytd.length - 1], yp = h.ytd[h.ytd.length - 2];
+            const bestOf = rows => rows.reduce((a, b) => (this.val(b) > this.val(a) ? b : a));
+            const bm = bestOf(h.mtd), by = bestOf(h.ytd);
+            const detail = {
+                asof: h.asof, unitLabel: this.unitLabel(), filtered: this.filtered,
+                groupsLabel: this.groups.length ? this.groupsLabel() : '',
+                mtdCur: this.val(mc), mtdPrev: this.val(mp), mtdDelta: this._deltaPct(this.val(mc), this.val(mp)),
+                mtdBest: this.val(bm), mtdBestYear: bm.year,
+                ytdCur: this.val(yc), ytdPrev: this.val(yp), ytdDelta: this._deltaPct(this.val(yc), this.val(yp)),
+                ytdBest: this.val(by), ytdBestYear: by.year,
+                priceCur: this.val(yc) ? Math.round(yc.amount / this.val(yc)) : null,
+                pricePrev: this.val(yp) ? Math.round(yp.amount / this.val(yp)) : null,
+                perOutletCur: yc.customers ? Math.round(this.val(yc) / yc.customers) : null,
+                perOutletPrev: yp.customers ? Math.round(this.val(yp) / yp.customers) : null,
+                custCur: yc.customers, custPrev: yp.customers,
+                forecast: this.forecast() ? Math.round(this.forecast()) : null,
+                prevMonthFull: Math.round(this.prevMonthFull()),
+                groupsUp: this.groupsBreakdown.filter(g => g.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 4)
+                    .map(g => ({ name: g.name, delta: Math.round(g.delta) })),
+                groupsDown: this.groupsBreakdown.filter(g => g.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 4)
+                    .map(g => ({ name: g.name, delta: Math.round(g.delta) })),
+                moversUp: this.movers.up.slice(0, 5).map(p => ({ name: p.name, delta: Math.round(p.delta) })),
+                moversDown: this.movers.down.slice(0, 5).map(p => ({ name: p.name, delta: Math.round(p.delta) })),
+                areasDown: this.areaRows.filter(a => a.delta < 0).slice(0, 5)
+                    .map(a => ({ name: a.code + ' ' + a.name, cur: Math.round(a.cur), prev: Math.round(a.prev) })),
+                customersDown: this.custMovers.down.slice(0, 5).map(c => ({ name: c.name, delta: Math.round(c.delta) })),
+                customersUp: this.custMovers.up.slice(0, 3).map(c => ({ name: c.name, delta: Math.round(c.delta) })),
+                channels: this.channelRows.slice(0, 5).map(c => ({ name: c.name, cur: Math.round(c.cur), prev: Math.round(c.prev) })),
+            };
+            return this.streamAi({ scope: 'quantity', detail });
+        },
+        cancelAi() {
+            this._aiGen = (this._aiGen || 0) + 1;
+            if (this._aiCtrl) { try { this._aiCtrl.abort(); } catch (e) {} }
+        },
+        async streamAi(body) {
+            if (this.aiQty.loading) return;
+            const myGen = (this._aiGen = (this._aiGen || 0) + 1);
+            const stale = () => this._aiGen !== myGen;
+            const ctrl = new AbortController();
+            this._aiCtrl = ctrl;
+            this.aiQty = { loading: true, html: '', error: '' };
+            try {
+                const r = await fetch('/api/managers/kpi/health/ai', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body), signal: ctrl.signal
+                });
+                if (stale()) return;
+                if (!r.ok || !r.body || (r.headers.get('content-type') || '').includes('application/json')) {
+                    let msg = 'AI սխալ';
+                    try { const j = await r.json(); msg = j.error || msg; } catch (e) {}
+                    if (!stale()) this.aiQty = { loading: false, html: '', error: msg };
+                    return;
+                }
+                const reader = r.body.getReader();
+                const dec = new TextDecoder();
+                let buf = '', acc = '', errored = false;
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (stale()) { try { await reader.cancel(); } catch (e) {} return; }
+                    if (done) break;
+                    buf += dec.decode(value, { stream: true });
+                    let idx;
+                    while ((idx = buf.indexOf('\n\n')) >= 0) {
+                        const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+                        const line = chunk.startsWith('data: ') ? chunk.slice(6) : chunk;
+                        if (!line) continue;
+                        let o; try { o = JSON.parse(line); } catch (e) { continue; }
+                        if (o.t) { acc += o.t; this.aiQty.html = this.renderMd(acc); }
+                        else if (o.error) { errored = true; this.aiQty = { loading: false, html: '', error: o.error }; }
+                    }
+                }
+                if (stale()) return;
+                if (!errored && !acc) this.aiQty = { loading: false, html: '', error: 'AI-ն դատարկ պատասխան վերադարձրեց' };
+                else this.aiQty.loading = false;
+            } catch (e) {
+                if (e.name === 'AbortError' || stale()) return;
+                console.error(e);
+                this.aiQty = { loading: false, html: '', error: 'Ցանցի սխալ' };
+            }
+        },
+        // Компактный markdown-рендер (как на KPI-странице)
+        renderMd(text) {
+            const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const inline = s => esc(s)
+                .replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/(^|[^*])\*(?!\s)([^*]+?)\*(?!\*)/g, '$1<em>$2</em>');
+            const lines = (text || '').split('\n');
+            let html = '', list = null;
+            const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+            for (let raw of lines) {
+                const line = raw.trim();
+                if (!line) { closeList(); continue; }
+                let mh = line.match(/^#{1,6}\s+(.*)$/);
+                if (mh) { closeList(); html += `<h6>${inline(mh[1].replace(/^\d+\.\s*/, ''))}</h6>`; continue; }
+                let ul = line.match(/^[-•]\s+(.*)$/);
+                let ol = line.match(/^\d+[.)]\s+(.*)$/);
+                if (ul) { if (list !== 'ul') { closeList(); html += '<ul>'; list = 'ul'; } html += `<li>${inline(ul[1])}</li>`; continue; }
+                if (ol) { if (list !== 'ol') { closeList(); html += '<ol>'; list = 'ol'; } html += `<li>${inline(ol[1])}</li>`; continue; }
+                closeList(); html += `<p>${inline(line)}</p>`;
+            }
+            closeList();
+            return html;
+        },
+    };
+}
+</script>
+{% endblock %}

@@ -74,6 +74,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link {% if request.path == '/quantity' %}active{% endif %}" href="/quantity">
+                            <i class="fas fa-boxes-stacked me-1"></i> Количество
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link {% if request.path == '/groups' %}active{% endif %}" href="/groups">
                             <i class="fas fa-layer-group me-1"></i> Группы
                         </a>
@@ -108,6 +113,11 @@
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/plans' %}active{% endif %}" href="/plans">
                             <i class="fas fa-chart-line me-1"></i> Планы
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path.startswith('/production') %}active{% endif %}" href="/production">
+                            <i class="fas fa-industry me-1"></i> Склад
                         </a>
                     </li>
                     <li class="nav-item">

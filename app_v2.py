@@ -3164,9 +3164,11 @@ def _kpi_files_fingerprint():
             parts.append("0")
     return hashlib.md5("|".join(parts).encode()).hexdigest()[:10]
 
-def _kpi_cache_get(key):
+def _kpi_cache_get(key, ttl=None):
+    """ttl — необязательный индивидуальный срок жизни (сек): тяжёлые многолетние отчёты
+    (qty-history) живут дольше дефолтных 90с — их данные меняются медленно."""
     v = _KPI_CACHE.get(key)
-    if v and (datetime.now().timestamp() - v[0]) < _KPI_CACHE_TTL:
+    if v and (datetime.now().timestamp() - v[0]) < (ttl or _KPI_CACHE_TTL):
         return v[1]
     return None
 
@@ -3249,6 +3251,107 @@ def get_managers_kpi_filter_options():
 def managers_kpi_page():
     """Страница KPI по менеджерам (рейтинг + скоркарты)"""
     return render_template('managers_kpi.html')
+
+
+@app.route('/quantity')
+def quantity_page():
+    """Страница «Продажи по количеству»: MTD/YTD за 10 лет, тумблер фильтров, выбор
+    товарных групп. Вынесена из KPI-страницы. Admin-only (гейт не пускает роль user)."""
+    return render_template('quantity.html')
+
+
+# =============================================
+# ДЕТЕКТОР «ПЕРЕОФОРМЛЕНИЙ»: тот же магазин продолжил работу под НОВОЙ карточкой клиента
+# =============================================
+
+# Орг-формы + слова-роли/типы («менеджер», «курьер»…): сегмент из них — не имя,
+# иначе служебные карточки «Фамилия/Менеджер» ложно матчатся между собой
+_REREG_STOPWORDS = {'սպը', 'աձ', 'փբը', 'բբը', 'հձ', 'օե', 'ընկ', 'llc', 'ltd', 'ооо', 'ип',
+                    'մենեջեր', 'առաքիչ', 'աշխատակից', 'վարորդ', 'մթերք', 'խանութ', 'կրպակ'}
+
+def _rereg_norm(s):
+    return re.sub(r'\s+', ' ', (s or '').strip().lower())
+
+def _rereg_digits(s):
+    return re.sub(r'\D', '', s or '')
+
+def _rereg_cores(name):
+    """Сегменты названия («Юрлицо/старое имя» → оба) без орг-форм и слов-ролей"""
+    out = []
+    for seg in _rereg_norm(name).replace('«', ' ').replace('»', ' ').split('/'):
+        core = ' '.join(t for t in re.split(r'[\s,.]+', seg) if t and t not in _REREG_STOPWORDS)
+        if len(core) >= 5:
+            out.append(core)
+    return out
+
+def _kpi_rereg_pairs(cur, first_from_dt, first_to_dt):
+    """Пары «переоформлений»: новая карточка (первая продажа в [first_from; first_to]) ↔ старая,
+    затихшая в окне [-120; +45] дней от старта новой, при сильном совпадении: телефон /
+    то же название точки / упоминание старого имени в новом («Юрлицо/старое имя») /
+    точный адрес с номером дома. Тот же ИНН: пара только при идентичном названии
+    (дубль карточки); иначе другая точка той же фирмы = настоящий новый филиал.
+    Возвращает [{'new','old','new_name','old_name','why','first'}] — по одной лучшей
+    паре на новую карточку. READ-ONLY.
+    Кэшируется (тот же TTL, что у KPI-ответов): одну и ту же пару окон запрашивают
+    4 эндпоинта подряд, без кэша каждый гонял бы полноскановую агрегацию SALES."""
+    _ck = "rereg|%s|%s" % (first_from_dt.strftime('%Y-%m-%d'), first_to_dt.strftime('%Y-%m-%d'))
+    _hit = _kpi_cache_get(_ck)
+    if _hit is not None:
+        return _hit
+    cur.execute("""
+        SELECT fs.fCUSTOMERID AS cid, fs.fs AS fs, fs.ls AS ls,
+               c.fNAME AS nm, c.fTAXCODE AS tax, c.fADDRESS AS addr, c.fPHONE AS ph
+        FROM (SELECT fCUSTOMERID, MIN(fDATE) AS fs, MAX(fDATE) AS ls
+              FROM SALES WITH (NOLOCK) WHERE fSTATE=2 GROUP BY fCUSTOMERID) fs
+        INNER JOIN CUSTOMERS c WITH (NOLOCK) ON c.fID = fs.fCUSTOMERID
+    """)
+    cards = cur.fetchall()
+
+    olds_lo = first_from_dt - timedelta(days=120)
+    olds_hi = first_to_dt + timedelta(days=45)
+    news = [r for r in cards if first_from_dt <= r.fs <= first_to_dt]
+    olds = [{"cid": int(r.cid), "fs": r.fs, "ls": r.ls, "name": r.nm or '',
+             "name_n": _rereg_norm(r.nm), "cores": _rereg_cores(r.nm), "tax_n": _rereg_norm(r.tax),
+             "addr_n": _rereg_norm(r.addr), "phone_n": _rereg_digits(r.ph)}
+            for r in cards if olds_lo <= r.ls <= olds_hi]
+
+    pairs = []
+    for n in news:
+        cid = int(n.cid)
+        n_name = n.nm or ''
+        n_tax_n = _rereg_norm(n.tax); n_phone_n = _rereg_digits(n.ph)
+        n_addr_n = _rereg_norm(n.addr); n_name_n = _rereg_norm(n_name); n_cores = _rereg_cores(n_name)
+        addr_specific = n_addr_n and any(ch.isdigit() for ch in n_addr_n)
+        w_lo = n.fs - timedelta(days=120); w_hi = n.fs + timedelta(days=45)
+        best_prio, best_old, best_why = 0, None, None
+        for o in olds:
+            if o["cid"] == cid or o["fs"] >= n.fs or not (w_lo <= o["ls"] <= w_hi):
+                continue
+            same_tax = bool(n_tax_n and o["tax_n"] and n_tax_n == o["tax_n"])
+            name_eq = bool(n_name_n and n_name_n == o["name_n"])
+            if same_tax:
+                # та же фирма: дубль лишь при том же названии точки, иначе — филиал
+                if name_eq and best_prio < 4:
+                    best_prio, best_old, best_why = 4, o, 'նույն ՀՎՀՀ, նույն անուն'
+                continue
+            if n_phone_n and len(n_phone_n) >= 6 and n_phone_n == o["phone_n"]:
+                prio, why = 4, 'հեռախոս'
+            elif name_eq:
+                prio, why = 3, 'անվանում'
+            elif any(nc == oc for nc in n_cores for oc in o["cores"]):
+                prio, why = 2, 'հին անվան հիշատակում'
+            elif addr_specific and n_addr_n == o["addr_n"]:
+                prio, why = 1, 'հասցե'
+            else:
+                continue
+            if prio > best_prio:
+                best_prio, best_old, best_why = prio, o, why
+                if prio >= 4:
+                    break
+        if best_prio:
+            pairs.append({"new": cid, "old": best_old["cid"], "new_name": n_name,
+                          "old_name": best_old["name"], "why": best_why, "first": n.fs})
+    return _kpi_cache_set(_ck, pairs)
 
 
 @app.route('/api/managers/kpi')
@@ -3548,6 +3651,33 @@ def api_managers_kpi():
             m = ensure(r.agent)
             m["retBase"] = r.BaseCnt
             m["retKept"] = r.Kept
+
+        # F2b: «переоформления» — не отток: старая карточка продолжила жить новой
+        # (тот же магазин, новое юрлицо), для агента это удержанный клиент, не потерянный.
+        _rr_pairs = _kpi_rereg_pairs(cur,
+                                     datetime.strptime(prev_from, '%Y-%m-%d') - timedelta(days=45),
+                                     datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=120))
+        _rr_olds = sorted({p["old"] for p in _rr_pairs})
+        if _rr_olds:
+            _rr_ph = ','.join('?' * len(_rr_olds))
+            cur.execute(f"""
+                WITH PrevCust AS (
+                    SELECT DISTINCT s.fSALESAGENTID AS agent, s.fCUSTOMERID AS cust
+                    FROM SALES s WITH (NOLOCK)
+                    INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                    WHERE s.fSTATE=2 AND s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {excluded_filter}{sc_w}{ta_s_w}
+                ),
+                CurCust AS (
+                    SELECT DISTINCT fSALESAGENTID AS agent, fCUSTOMERID AS cust FROM SALES WITH (NOLOCK)
+                    WHERE fSTATE=2 AND fDATE>=? AND fDATE < DATEADD(day, 1, CAST(? AS DATE))
+                )
+                SELECT p.agent, COUNT(*) AS rr
+                FROM PrevCust p LEFT JOIN CurCust cc ON cc.agent=p.agent AND cc.cust=p.cust
+                WHERE cc.cust IS NULL AND p.cust IN ({_rr_ph})
+                GROUP BY p.agent
+            """, (prev_from, prev_to) + excluded_params + sc_p + ta_s_p + (date_from, date_to) + tuple(_rr_olds))
+            for r in cur.fetchall():
+                ensure(r.agent)["retKept"] += int(r.rr or 0)
 
         # F3: MSL-покрытие (numeric distribution обязательного ассортимента): доля активных клиентов,
         #     купивших хотя бы 1 SKU из настроенных MSL-групп. Пусто, пока MSL-группы не заданы.
@@ -4260,12 +4390,23 @@ def api_managers_kpi_health():
                 WHERE s.fSTATE=2 AND s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
             )"""
         _prevc_params = (prev_from, prev_to) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp + (date_from, date_to)
+
+        # Переоформления: старая карточка «ожила» под новым юрлицом → не потерянный клиент.
+        # Окно преемников шире периода: от (prev_from − 45д) до (date_to + 120д) — преемник
+        # мог появиться и до начала периода, и сразу после его конца.
+        _rr_pairs = _kpi_rereg_pairs(cur,
+                                     datetime.strptime(prev_from, '%Y-%m-%d') - timedelta(days=45),
+                                     datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=120))
+        _rr_olds = sorted({p["old"] for p in _rr_pairs})
+        _rr_w = (" AND p.cust NOT IN (%s)" % ','.join('?' * len(_rr_olds))) if _rr_olds else ""
+        _rr_p = tuple(_rr_olds)
+
         cur.execute(f"""{_prevc_cte}
             SELECT COUNT(*) AS base,
-                   SUM(CASE WHEN cc.cust IS NULL THEN 1 ELSE 0 END) AS lost,
-                   ISNULL(SUM(CASE WHEN cc.cust IS NULL THEN p.rev ELSE 0 END),0) AS lostRev
+                   SUM(CASE WHEN cc.cust IS NULL{_rr_w} THEN 1 ELSE 0 END) AS lost,
+                   ISNULL(SUM(CASE WHEN cc.cust IS NULL{_rr_w} THEN p.rev ELSE 0 END),0) AS lostRev
             FROM PrevC p LEFT JOIN CurC cc ON cc.cust = p.cust
-        """, _prevc_params)
+        """, _prevc_params + _rr_p + _rr_p)
         _r = cur.fetchone()
         ret_base, lost_cnt, lost_rev = int(_r.base or 0), int(_r.lost or 0), float(_r.lostRev or 0)
         retention = round((ret_base - lost_cnt) / ret_base * 100, 1) if ret_base else None
@@ -4276,9 +4417,9 @@ def api_managers_kpi_health():
             FROM PrevC p
             LEFT JOIN CurC cc ON cc.cust = p.cust
             INNER JOIN CUSTOMERS cst WITH (NOLOCK) ON cst.fID = p.cust
-            WHERE cc.cust IS NULL
+            WHERE cc.cust IS NULL{_rr_w}
             ORDER BY p.rev DESC
-        """, _prevc_params)
+        """, _prevc_params + _rr_p)
         top_lost = [{"id": r.id, "code": r.code, "name": r.name,
                      "phone": (r.phone or "").strip(), "address": (r.address or "").strip(),
                      "rev": float(r.rev or 0)} for r in cur.fetchall()]
@@ -4445,6 +4586,141 @@ def api_managers_kpi_health():
 
     except Exception as e:
         logger.error(f"Ошибка получения пульса бизнеса: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/managers/kpi/health/lost')
+def api_managers_kpi_health_lost():
+    """API: ПОЛНЫЙ список потерянных клиентов периода (не только топ-12): покупали в
+    предыдущем окне той же длины, в текущем — нет; «переоформленные» (найден преемник —
+    тот же магазин под новым юрлицом) исключены. Опционально ?area=<код> — одна
+    территория (привязка клиента по fDEFAULT, как в пульсе территорий).
+    Окна/фильтры = /api/managers/kpi/health (цифры совпадают). READ-ONLY."""
+    try:
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        if not date_from or not date_to:
+            today = datetime.now()
+            date_from = today.replace(day=1).strftime('%Y-%m-%d')
+            last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            date_to = last_day.strftime('%Y-%m-%d')
+        area = (request.args.get('area') or '').strip()
+
+        _ck = "healthlost|%s|%s|%s|%s" % (date_from, date_to, area, _kpi_files_fingerprint())
+        _hit = _kpi_cache_get(_ck)
+        if _hit is not None:
+            return jsonify(_hit)
+
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+        sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)
+        sd = _kpi_load_list(KPI_SALES_DIVISIONS_FILE)
+        sa = _kpi_load_list(KPI_TERRITORIES_FILE)
+        pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)
+
+        sc_w = (" AND c.fGROUP IN (%s)" % ','.join('?' * len(sc))) if sc else ""
+        sc_p = tuple(sc)
+        sd_w = ((" AND s.fSALESAGENTID IN (SELECT DISTINCT fSALESAGENTID FROM SALESAGENTDIVISIONS"
+                 " WITH (NOLOCK) WHERE fDIVISION IN (%s))") % ','.join('?' * len(sd))) if sd else ""
+        sd_p = tuple(sd)
+        ta_s_w = ((" AND s.fCUSTOMERID IN (SELECT fCUSTOMERID FROM CUSTOMERSALESAREAS"
+                   " WITH (NOLOCK) WHERE fSALESAREA IN (%s))") % ','.join('?' * len(sa))) if sa else ""
+        ta_s_p = tuple(sa)
+        if pg:
+            rev_join = (" INNER JOIN SALEDOCDETAILS sdp WITH (NOLOCK) ON sdp.fISN=s.fISN"
+                        " INNER JOIN PRODUCTS pp WITH (NOLOCK) ON pp.fID=sdp.fPRODUCTID")
+            rev_pgw = " AND pp.fGROUP IN (%s)" % ','.join('?' * len(pg))
+            rev_pgp = tuple(pg)
+            rev_expr = "ISNULL(SUM(sdp.fSUM),0)"
+        else:
+            rev_join, rev_pgw, rev_pgp = "", "", ()
+            rev_expr = "ISNULL(SUM(s.fTOTALSUM),0)"
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+
+        # Окно as-of — как в /health (like-for-like для незавершённого периода)
+        cur.execute("SELECT MAX(fDATE) FROM SALES WITH (NOLOCK) WHERE fSTATE=2 AND fDATE < DATEADD(day, 1, CAST(? AS DATE))", (date_to,))
+        _row = cur.fetchone()
+        _last = _row[0] if _row else None
+        asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
+        asof = max(date_from, min(asof, date_to))
+        d_from = datetime.strptime(date_from, '%Y-%m-%d')
+        d_to = datetime.strptime(date_to, '%Y-%m-%d')
+        period_days = (d_to - d_from).days + 1
+        elapsed_days = max(1, min(period_days, (datetime.strptime(asof, '%Y-%m-%d') - d_from).days + 1))
+        today_s = datetime.now().strftime('%Y-%m-%d')
+        window_days = elapsed_days if (elapsed_days < period_days and date_to >= today_s) else period_days
+        prev_from = (d_from - timedelta(days=window_days)).strftime('%Y-%m-%d')
+        prev_to = (d_from - timedelta(days=1)).strftime('%Y-%m-%d')
+
+        # Переоформленные — не потерянные (окно преемников как в остальных эндпоинтах)
+        _rr_pairs = _kpi_rereg_pairs(cur,
+                                     datetime.strptime(prev_from, '%Y-%m-%d') - timedelta(days=45),
+                                     d_to + timedelta(days=120))
+        _rr_olds = sorted({p["old"] for p in _rr_pairs})
+        _rr_w = (" AND p.cust NOT IN (%s)" % ','.join('?' * len(_rr_olds))) if _rr_olds else ""
+        _rr_p = tuple(_rr_olds)
+
+        area_w, area_p = ("", ())
+        if area:
+            area_w, area_p = " AND ca.area = ?", (area,)
+
+        # lastSale внутри PrevC корректен глобально: клиент не покупал в текущем окне,
+        # значит его последняя продажа — последняя продажа предыдущего окна
+        cur.execute(f"""
+            WITH CustArea AS (
+                SELECT fCUSTOMERID AS cust, fSALESAREA AS area FROM (
+                    SELECT csa.fCUSTOMERID, csa.fSALESAREA,
+                           ROW_NUMBER() OVER (PARTITION BY csa.fCUSTOMERID ORDER BY csa.fDEFAULT DESC, csa.fSALESAREA) AS rn
+                    FROM CUSTOMERSALESAREAS csa WITH (NOLOCK)
+                ) x WHERE rn=1
+            ),
+            PrevC AS (
+                SELECT s.fCUSTOMERID AS cust, {rev_expr} AS rev, MAX(s.fDATE) AS lastSale
+                FROM SALES s WITH (NOLOCK){rev_join}
+                INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+                WHERE s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
+                  {excluded_filter}{sc_w}{sd_w}{ta_s_w}{rev_pgw}
+                GROUP BY s.fCUSTOMERID
+            ),
+            CurC AS (
+                SELECT DISTINCT s.fCUSTOMERID AS cust FROM SALES s WITH (NOLOCK)
+                WHERE s.fSTATE=2 AND s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))
+            )
+            SELECT cst.fID AS id, cst.fCODE AS code, cst.fNAME AS name,
+                   cst.fPHONE AS phone, cst.fADDRESS AS address,
+                   p.rev AS rev, p.lastSale AS lastSale, ca.area AS area
+            FROM PrevC p
+            LEFT JOIN CurC cc ON cc.cust = p.cust
+            LEFT JOIN CustArea ca ON ca.cust = p.cust
+            INNER JOIN CUSTOMERS cst WITH (NOLOCK) ON cst.fID = p.cust
+            WHERE cc.cust IS NULL{_rr_w}{area_w}
+            ORDER BY p.rev DESC
+        """, (prev_from, prev_to) + excluded_params + sc_p + sd_p + ta_s_p + rev_pgp
+           + (date_from, date_to) + _rr_p + area_p)
+        rows = cur.fetchall()
+
+        cur.execute("SELECT fCODE, fCAPTION FROM TREES WITH (NOLOCK) WHERE fTREEID='SArea'")
+        area_names = {str(r.fCODE): (r.fCAPTION or str(r.fCODE)) for r in cur.fetchall()}
+
+        lost = [{"id": r.id, "code": r.code, "name": r.name,
+                 "phone": (r.phone or '').strip(), "address": (r.address or '').strip(),
+                 "rev": float(r.rev or 0),
+                 "lastSale": (r.lastSale.strftime('%Y-%m-%d') if hasattr(r.lastSale, 'strftime') else str(r.lastSale)[:10]) if r.lastSale else None,
+                 "area": str(r.area) if r.area else None,
+                 "areaName": area_names.get(str(r.area)) if r.area else None}
+                for r in rows]
+        _fill_contact_phones(cur, lost)
+        conn.close()
+
+        return jsonify(_kpi_cache_set(_ck, {"success": True,
+                        "period": {"date_from": date_from, "date_to": date_to,
+                                   "prev_from": prev_from, "prev_to": prev_to},
+                        "lost": lost, "total": len(lost),
+                        "totalRev": round(sum(x["rev"] for x in lost))}))
+
+    except Exception as e:
+        logger.error(f"Ошибка списка потерянных клиентов: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -4684,7 +4960,18 @@ def api_managers_kpi_health_areas():
         for r in cur.fetchall():
             ensure(str(r.area))["aging90"] = float(r.amt90 or 0)
 
-        # 7. Удержание/потери: клиенты предыдущего окна (like-for-like) по территориям
+        # Переоформления (тот же магазин → новая карточка): один детектор на блоки 7 и 8b.
+        # Окно преемников шире периода: от (prev_from − 45д) — преемник мог появиться ещё
+        # до начала периода — до (date_to + 120д) — или сразу после его конца.
+        _rr_pairs = _kpi_rereg_pairs(cur,
+                                     datetime.strptime(prev_from, '%Y-%m-%d') - timedelta(days=45),
+                                     d_to + timedelta(days=120))
+        _rr_olds = sorted({p["old"] for p in _rr_pairs})
+        _rr_w = (" AND p.cust NOT IN (%s)" % ','.join('?' * len(_rr_olds))) if _rr_olds else ""
+        _rr_p = tuple(_rr_olds)
+
+        # 7. Удержание/потери: клиенты предыдущего окна (like-for-like) по территориям;
+        # переоформленные (есть преемник) потерянными не считаются
         cur.execute(f"""{custarea_cte},
             PrevC AS (
                 SELECT s.fCUSTOMERID AS cust, {rev_expr} AS rev
@@ -4699,13 +4986,13 @@ def api_managers_kpi_health_areas():
                 WHERE fSTATE=2 AND fDATE>=? AND fDATE < DATEADD(day, 1, CAST(? AS DATE))
             )
             SELECT ca.area AS area, COUNT(*) AS base,
-                   SUM(CASE WHEN cc.cust IS NULL THEN 1 ELSE 0 END) AS lost,
-                   ISNULL(SUM(CASE WHEN cc.cust IS NULL THEN p.rev ELSE 0 END),0) AS lostRev
+                   SUM(CASE WHEN cc.cust IS NULL{_rr_w} THEN 1 ELSE 0 END) AS lost,
+                   ISNULL(SUM(CASE WHEN cc.cust IS NULL{_rr_w} THEN p.rev ELSE 0 END),0) AS lostRev
             FROM PrevC p
             INNER JOIN CustArea ca ON ca.cust = p.cust
             LEFT JOIN CurC cc ON cc.cust = p.cust
             GROUP BY ca.area
-        """, ta_csa_p + (prev_from, prev_to) + excluded_params + sc_p + sd_p + rev_pgp + (date_from, date_to))
+        """, ta_csa_p + (prev_from, prev_to) + excluded_params + sc_p + sd_p + rev_pgp + (date_from, date_to) + _rr_p + _rr_p)
         for r in cur.fetchall():
             m = ensure(str(r.area))
             m["retBase"] = int(r.base or 0); m["lost"] = int(r.lost or 0); m["lostRev"] = float(r.lostRev or 0)
@@ -4726,6 +5013,32 @@ def api_managers_kpi_health_areas():
         """, ta_csa_p + (date_from, date_to, date_from, date_to) + excluded_params + sc_p + sd_p + rev_pgp)
         for r in cur.fetchall():
             ensure(str(r.area))["newC"] = int(r.n or 0)
+
+        # 8b. Флаги переоформлений среди новых (пары — из _kpi_rereg_pairs перед блоком 7):
+        # берём только новые карточки периода с учётом фильтров и привязкой к территории
+        cur.execute(f"""{custarea_cte},
+            firsts AS (SELECT fCUSTOMERID, MIN(fDATE) AS firstsale FROM SALES WITH (NOLOCK)
+                       WHERE fSTATE=2 GROUP BY fCUSTOMERID)
+            SELECT DISTINCT s.fCUSTOMERID AS cid, ca.area AS area
+            FROM firsts f
+            INNER JOIN SALES s WITH (NOLOCK) ON s.fCUSTOMERID = f.fCUSTOMERID{rev_join}
+            INNER JOIN CustArea ca ON ca.cust = s.fCUSTOMERID
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
+            WHERE f.firstsale>=? AND f.firstsale < DATEADD(day, 1, CAST(? AS DATE))
+              AND s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) AND s.fSTATE=2
+              {excluded_filter}{sc_w}{sd_w}{rev_pgw}
+        """, ta_csa_p + (date_from, date_to, date_from, date_to) + excluded_params + sc_p + sd_p + rev_pgp)
+        _new_area = {int(r.cid): str(r.area) for r in cur.fetchall()}
+
+        rereg_by_area = {}
+        for p in _rr_pairs:
+            _ar = _new_area.get(p["new"])
+            if not _ar:
+                continue
+            slot = rereg_by_area.setdefault(_ar, {"n": 0, "list": []})
+            slot["n"] += 1
+            if len(slot["list"]) < 12:
+                slot["list"].append({"n": p["new_name"], "o": p["old_name"], "why": p["why"]})
 
         # Названия территорий
         cur.execute("SELECT fCODE, fCAPTION FROM TREES WITH (NOLOCK) WHERE fTREEID='SArea'")
@@ -4802,6 +5115,8 @@ def api_managers_kpi_health_areas():
                 "debtDelta": round(debt_delta) if debt_delta is not None else None,
                 "dso": dso, "aging90": round(m["aging90"]), "aging90Share": aging90_share,
                 "newCustomers": m["newC"], "lostCustomers": m["lost"], "lostRev": round(m["lostRev"]),
+                "rereg": rereg_by_area.get(code, {}).get("n", 0),
+                "reregList": rereg_by_area.get(code, {}).get("list", []),
                 "retention": retention, "returnsRate": returns_rate,
                 "issues": issues,
             })
@@ -4814,6 +5129,8 @@ def api_managers_kpi_health_areas():
             "revenue": round(sum(r["revenue"] for r in rows)),
             "debt": round(sum(r["debt"] for r in rows)),
             "collected": round(sum(r["collected"] for r in rows)),
+            "newCustomers": sum(r["newCustomers"] for r in rows),
+            "rereg": sum(r["rereg"] for r in rows),
             "lost": sum(r["lostCustomers"] for r in rows),
             "aging90": round(sum(r["aging90"] for r in rows)),
         }
@@ -5128,14 +5445,23 @@ def api_managers_kpi_health_area_detail():
                 WHERE fSTATE=2 AND fDATE>=? AND fDATE < DATEADD(day,1,CAST(? AS DATE))
             )"""
         prevc_p = ca_p + (prev_from, prev_to) + excluded_params + sc_p + sd_p + rev_pgp + (date_from, date_to)
+
+        # Переоформления: старая карточка с найденным «преемником» — не потерянный клиент
+        _rr_pairs = _kpi_rereg_pairs(cur,
+                                     datetime.strptime(prev_from, '%Y-%m-%d') - timedelta(days=45),
+                                     datetime.strptime(date_to, '%Y-%m-%d') + timedelta(days=120))
+        _rr_olds = sorted({p["old"] for p in _rr_pairs})
+        _rr_w = (" AND p.cust NOT IN (%s)" % ','.join('?' * len(_rr_olds))) if _rr_olds else ""
+        _rr_p = tuple(_rr_olds)
+
         cur.execute(f"""{prevc_cte}
             SELECT COUNT(*) AS base,
-                   SUM(CASE WHEN cc.cust IS NULL THEN 1 ELSE 0 END) AS lost,
-                   ISNULL(SUM(CASE WHEN cc.cust IS NULL THEN p.rev ELSE 0 END),0) AS lostRev
+                   SUM(CASE WHEN cc.cust IS NULL{_rr_w} THEN 1 ELSE 0 END) AS lost,
+                   ISNULL(SUM(CASE WHEN cc.cust IS NULL{_rr_w} THEN p.rev ELSE 0 END),0) AS lostRev
             FROM PrevC p
             INNER JOIN CustArea ca ON ca.cust=p.cust
             LEFT JOIN CurC cc ON cc.cust=p.cust
-        """, prevc_p)
+        """, prevc_p + _rr_p + _rr_p)
         _r = cur.fetchone()
         ret_base, lost_cnt, lost_rev = int(_r.base or 0), int(_r.lost or 0), float(_r.lostRev or 0)
         cur.execute(f"""{prevc_cte}
@@ -5145,9 +5471,9 @@ def api_managers_kpi_health_area_detail():
             INNER JOIN CustArea ca ON ca.cust=p.cust
             LEFT JOIN CurC cc ON cc.cust=p.cust
             INNER JOIN CUSTOMERS cst WITH (NOLOCK) ON cst.fID=p.cust
-            WHERE cc.cust IS NULL
+            WHERE cc.cust IS NULL{_rr_w}
             ORDER BY p.rev DESC
-        """, prevc_p)
+        """, prevc_p + _rr_p)
         top_lost = [{"id": x.id, "code": x.code, "name": x.name,
                      "phone": (x.phone or "").strip(), "address": (x.address or "").strip(),
                      "rev": float(x.rev or 0)} for x in cur.fetchall()]
@@ -5501,6 +5827,445 @@ def api_managers_kpi_health_trend():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# Литраж из НАЗВАНИЯ товара («0.5լ», «1,5 լ», «330մլ»): поле PRODUCTS.fVOLUME в базе
+# кривое (у «0.5л» стоит 1, у «6л» — 0), а названия дают охват 98.5% количества.
+_QTY_ML_RE = re.compile(r'(\d+(?:[.,]\d+)?)\s*մլ', re.IGNORECASE)
+_QTY_L_RE  = re.compile(r'(\d+(?:[.,]\d+)?)\s*լ', re.IGNORECASE)
+
+def _liters_from_name(name):
+    s = name or ''
+    mm = _QTY_ML_RE.search(s)
+    if mm:
+        v = float(mm.group(1).replace(',', '.')) / 1000.0
+    else:
+        ml = _QTY_L_RE.search(s)
+        if not ml:
+            return None
+        v = float(ml.group(1).replace(',', '.'))
+    return v if 0 < v <= 20 else None
+
+
+def _qty_tech_filter(alias):
+    """Исключение ТЕХНИЧЕСКИХ карточек из подсчёта количества (NULL-safe: NULL NOT IN/NOT LIKE
+    дают UNKNOWN и молча теряют строку): 0001 «услуги» (qty = сумма в драмах), 0000 «остаток»,
+    прочие «…ծառայ…» (доставка/аренда). Alias — псевдоним PRODUCTS в запросе."""
+    return (f" AND ISNULL({alias}.fCODE,'') NOT IN ('0000','0001')"
+            f" AND ISNULL({alias}.fNAME,'') NOT LIKE N'%ծառայ%'"
+            f" AND ISNULL({alias}.fNAME,'') NOT LIKE N'%Ծառայ%'")
+
+
+@app.route('/api/managers/kpi/qty-history')
+def api_managers_kpi_qty_history():
+    """API: полный анализ продаж по КОЛИЧЕСТВУ на дату (?date=, по умолчанию сегодня):
+    - mtd/ytd: 11 лет, окна обрезаны тем же днём; штуки + литры (парсинг названия) +
+      упаковки (fBASEUNITQUANTITY) + выручка + активные клиенты;
+    - monthly: 48 месяцев (36 показываются, +12 для линии «год назад»);
+    - daily: дневной пульс текущего месяца + тот же месяц год назад (целиком);
+    - products: товары YTD текущий/прошлый год (для «двигателей» роста и групп);
+    - areas: территории YTD текущий/прошлый год (привязка клиента к основной зоне).
+    Режимы: ?filtered=0|1 (KPI-фильтры страницы) и ?groups=… (свои товарные группы —
+    заменяют товарный фильтр страницы). Во всех режимах: fSTATE=2, исключённые клиенты
+    и исключение ТЕХНИЧЕСКИХ карточек, где fQUANTITY — не штуки (0001 «услуги» с
+    количеством в драмах, 0000 «остаток», прочие «…ծառայ…»). READ-ONLY."""
+    conn = None
+    try:
+        date_arg = (request.args.get('date') or '').strip()
+        try:
+            asof_dt = datetime.strptime(date_arg, '%Y-%m-%d') if date_arg else datetime.now()
+        except ValueError:
+            asof_dt = datetime.now()
+        if asof_dt > datetime.now():
+            asof_dt = datetime.now()
+        if asof_dt < datetime(2010, 1, 1):     # раньше данных нет — не гонять 8 пустых сканов
+            asof_dt = datetime(2010, 1, 1)
+        m, d = asof_dt.month, asof_dt.day
+        cur_y = asof_dt.year
+        years = list(range(cur_y - 10, cur_y + 1))
+        asof_s = asof_dt.strftime('%Y-%m-%d')
+        use_filters = request.args.get('filtered') == '1'
+        # Явно выбранные товарные группы графика (значения уходят только параметрами — безопасно)
+        qty_groups = [g.strip() for g in (request.args.get('groups') or '').split(',') if g.strip()][:50]
+
+        _ck = "qty10y|%s|%d|%s|%s" % (asof_s, use_filters,
+                                      ','.join(sorted(qty_groups)), _kpi_files_fingerprint())
+        # TTL 5 мин (не 90с): 10 тяжёлых сканов, а данные страницы меняются медленно;
+        # смена суток и фильтров всё равно инвалидируют через fingerprint в ключе
+        _hit = _kpi_cache_get(_ck, ttl=300)
+        if _hit is not None:
+            return jsonify(_hit)
+
+        excluded_filter, excluded_params = get_excluded_filter_sql()
+
+        # KPI-фильтры страницы — только в режиме filtered=1 (та же логика, что в api_managers_kpi)
+        flt_w, flt_p = "", ()
+        if use_filters:
+            sc = _kpi_load_list(KPI_SALES_CLIENT_GROUPS_FILE)
+            sd = _kpi_load_list(KPI_SALES_DIVISIONS_FILE)
+            sa = _kpi_load_list(KPI_TERRITORIES_FILE)
+            pg = _kpi_load_list(KPI_PRODUCT_GROUPS_FILE)
+            if sc:
+                flt_w += " AND c.fGROUP IN (%s)" % ','.join('?' * len(sc)); flt_p += tuple(sc)
+            if sd:
+                flt_w += (" AND s.fSALESAGENTID IN (SELECT DISTINCT fSALESAGENTID FROM SALESAGENTDIVISIONS WITH (NOLOCK) WHERE fDIVISION IN (%s))"
+                          % ','.join('?' * len(sd))); flt_p += tuple(sd)
+            if sa:
+                flt_w += (" AND s.fCUSTOMERID IN (SELECT fCUSTOMERID FROM CUSTOMERSALESAREAS WITH (NOLOCK) WHERE fSALESAREA IN (%s))"
+                          % ','.join('?' * len(sa))); flt_p += tuple(sa)
+            if pg and not qty_groups:
+                # товарный фильтр страницы построчно — если явные группы графика не заданы
+                flt_w += " AND pq.fGROUP IN (%s)" % ','.join('?' * len(pg)); flt_p += tuple(pg)
+        if qty_groups:
+            # явный выбор групп графика: считаются только строки этих групп (в любом режиме)
+            flt_w += " AND pq.fGROUP IN (%s)" % ','.join('?' * len(qty_groups)); flt_p += tuple(qty_groups)
+
+        def _ldom(y, mm):
+            # последний день месяца (для «to» в годах, где такого числа нет — 29 февраля)
+            nxt = datetime(y + 1, 1, 1) if mm == 12 else datetime(y, mm + 1, 1)
+            return (nxt - timedelta(days=1)).day
+
+        conn = db.get_connection()
+        cur = conn.cursor()
+
+        TECH = _qty_tech_filter('pq')
+        BASE = """
+            FROM SALES s WITH (NOLOCK)
+            INNER JOIN SALEDOCDETAILS sdq WITH (NOLOCK) ON sdq.fISN=s.fISN
+            INNER JOIN PRODUCTS pq WITH (NOLOCK) ON pq.fID=sdq.fPRODUCTID
+            INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID=c.fID
+        """
+
+        def _tail(extra_cond):
+            return (" WHERE s.fSTATE=2 AND s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE))"
+                    + ((" AND " + extra_cond) if extra_cond else "") + TECH + excluded_filter + flt_w)
+
+        mtd_cond, mtd_p = "MONTH(s.fDATE)=? AND DAY(s.fDATE)<=?", (m, d)
+        ytd_cond, ytd_p = "(MONTH(s.fDATE)<? OR (MONTH(s.fDATE)=? AND DAY(s.fDATE)<=?))", (m, m, d)
+        mtd_start = "%04d-%02d-01" % (years[0], m)
+        ytd_start = "%04d-01-01" % years[0]
+
+        # По годам × товарам (для единиц и «двигателей»); диапазон дат сужает скан (sargable)
+        def _per_year_products(range_start, cond, cond_p):
+            cur.execute(f"""
+                SELECT YEAR(s.fDATE) AS yr, sdq.fPRODUCTID AS pid,
+                       ISNULL(SUM(sdq.fQUANTITY),0) AS qty, ISNULL(SUM(sdq.fSUM),0) AS amt
+                {BASE}{_tail(cond)}
+                GROUP BY YEAR(s.fDATE), sdq.fPRODUCTID
+            """, (range_start, asof_s) + cond_p + excluded_params + flt_p)
+            return cur.fetchall()
+
+        rows_mtd = _per_year_products(mtd_start, mtd_cond, mtd_p)
+        rows_ytd = _per_year_products(ytd_start, ytd_cond, ytd_p)
+
+        # Активные клиенты по годам (для «штук на точку»)
+        def _cust_by_year(range_start, cond, cond_p):
+            cur.execute(f"""
+                SELECT YEAR(s.fDATE) AS yr, COUNT(DISTINCT s.fCUSTOMERID) AS cust
+                {BASE}{_tail(cond)}
+                GROUP BY YEAR(s.fDATE)
+            """, (range_start, asof_s) + cond_p + excluded_params + flt_p)
+            return {int(r.yr): int(r.cust or 0) for r in cur.fetchall()}
+
+        cust_mtd = _cust_by_year(mtd_start, mtd_cond, mtd_p)
+        cust_ytd = _cust_by_year(ytd_start, ytd_cond, ytd_p)
+
+        # Помесячно, 48 месяцев (показываем 36, ещё 12 нужны для линии «год назад»).
+        # CONVERT(char(7),...,126) вместо FORMAT(): FORMAT — построчный CLR, в разы медленнее на 4-летнем скане
+        mm_first = _add_months(datetime(cur_y, m, 1), -47)
+        cur.execute(f"""
+            SELECT CONVERT(char(7), s.fDATE, 126) AS ym, sdq.fPRODUCTID AS pid, ISNULL(SUM(sdq.fQUANTITY),0) AS qty
+            {BASE}{_tail("")}
+            GROUP BY CONVERT(char(7), s.fDATE, 126), sdq.fPRODUCTID
+        """, (mm_first.strftime('%Y-%m-%d'), asof_s) + excluded_params + flt_p)
+        rows_month = cur.fetchall()
+
+        # Дневной пульс: текущий месяц до as-of + тот же месяц год назад (целиком)
+        def _daily_rows(range_start, range_end):
+            cur.execute(f"""
+                SELECT DAY(s.fDATE) AS dd, sdq.fPRODUCTID AS pid, ISNULL(SUM(sdq.fQUANTITY),0) AS qty
+                {BASE}{_tail("")}
+                GROUP BY DAY(s.fDATE), sdq.fPRODUCTID
+            """, (range_start, range_end) + excluded_params + flt_p)
+            return cur.fetchall()
+
+        rows_day = _daily_rows("%04d-%02d-01" % (cur_y, m), asof_s)
+        prev_y = cur_y - 1
+        rows_day_prev = _daily_rows("%04d-%02d-01" % (prev_y, m),
+                                    "%04d-%02d-%02d" % (prev_y, m, _ldom(prev_y, m)))
+
+        # Территории YTD (текущий + прошлый год): клиент привязан к своей ОСНОВНОЙ зоне,
+        # чтобы клиенты с несколькими зонами не дублировали количество.
+        # ROW_NUMBER-предагрегат вместо коррелированного OUTER APPLY: зона вычисляется один раз
+        # на клиента, а не на каждую из миллионов строк деталей
+        cur.execute(f"""
+            SELECT YEAR(s.fDATE) AS yr, ISNULL(a.fSALESAREA,'—') AS area, sdq.fPRODUCTID AS pid,
+                   ISNULL(SUM(sdq.fQUANTITY),0) AS qty
+            {BASE}
+            LEFT JOIN (SELECT fCUSTOMERID, fSALESAREA,
+                              ROW_NUMBER() OVER (PARTITION BY fCUSTOMERID ORDER BY fDEFAULT DESC, fSALESAREA) AS rn
+                       FROM CUSTOMERSALESAREAS WITH (NOLOCK)) a
+                ON a.fCUSTOMERID = s.fCUSTOMERID AND a.rn = 1
+            {_tail(ytd_cond)}
+            GROUP BY YEAR(s.fDATE), ISNULL(a.fSALESAREA,'—'), sdq.fPRODUCTID
+        """, ("%04d-01-01" % prev_y, asof_s) + ytd_p + excluded_params + flt_p)
+        rows_area = cur.fetchall()
+
+        # Клиенты YTD (текущий + прошлый год) — для «клиентов-двигателей»: падение объёма
+        # в дистрибуции почти всегда = несколько просевших точек
+        cur.execute(f"""
+            SELECT YEAR(s.fDATE) AS yr, s.fCUSTOMERID AS cid, sdq.fPRODUCTID AS pid,
+                   ISNULL(SUM(sdq.fQUANTITY),0) AS qty
+            {BASE}{_tail(ytd_cond)}
+            GROUP BY YEAR(s.fDATE), s.fCUSTOMERID, sdq.fPRODUCTID
+        """, ("%04d-01-01" % prev_y, asof_s) + ytd_p + excluded_params + flt_p)
+        rows_cust = cur.fetchall()
+
+        # Каналы = группы клиентов (CUSTOMERS.fGROUP) YTD — розница/опт/сети в объёмах
+        cur.execute(f"""
+            SELECT YEAR(s.fDATE) AS yr, ISNULL(c.fGROUP,'') AS cg, sdq.fPRODUCTID AS pid,
+                   ISNULL(SUM(sdq.fQUANTITY),0) AS qty
+            {BASE}{_tail(ytd_cond)}
+            GROUP BY YEAR(s.fDATE), ISNULL(c.fGROUP,''), sdq.fPRODUCTID
+        """, ("%04d-01-01" % prev_y, asof_s) + ytd_p + excluded_params + flt_p)
+        rows_chan = cur.fetchall()
+
+        # Справочники: товары (упаковка, литраж из названия), названия групп и территорий
+        cur.execute("SELECT fID, fCODE, fNAME, ISNULL(fGROUP,'') AS grp, ISNULL(fBASEUNITQUANTITY,0) AS pack FROM PRODUCTS WITH (NOLOCK)")
+        prod = {int(r.fID): {"code": r.fCODE or '', "name": r.fNAME or '', "grp": r.grp or '',
+                             "pack": float(r.pack or 0), "liters": _liters_from_name(r.fNAME)}
+                for r in cur.fetchall()}
+        cur.execute("SELECT fCODE, ISNULL(fCAPTION,fCODE) AS nm FROM TREES WITH (NOLOCK) WHERE fTREEID='PrdctGrp'")
+        grp_names = {r.fCODE: r.nm for r in cur.fetchall()}
+        cur.execute("SELECT fCODE, ISNULL(fCAPTION,fCODE) AS nm FROM TREES WITH (NOLOCK) WHERE fTREEID='SArea'")
+        area_names = {r.fCODE: r.nm for r in cur.fetchall()}
+        cur.execute("SELECT fCODE, ISNULL(fCAPTION,fCODE) AS nm FROM TREES WITH (NOLOCK) WHERE fTREEID='CustGrp'")
+        cgrp_names = {r.fCODE: r.nm for r in cur.fetchall()}
+        # conn пока не закрываем: ниже ещё точечный запрос карточек клиентов-«двигателей»
+
+        def _units(pid, qty):
+            # (литры, упаковки): обе единицы считаются ТОЛЬКО по покрытым товарам — товар без
+            # литража/аркղաչափի даёт 0, а не «1 шт = 1 упак» (иначе итог смешивал бы коробки со
+            # штуками и скакал при изменении доли покрытия). Охват показан в coverage.
+            p = prod.get(pid)
+            liters = qty * p["liters"] if (p and p["liters"]) else 0.0
+            packs = qty / p["pack"] if (p and p["pack"] > 0) else 0.0
+            return liters, packs
+
+        def _year_series(rows, cust_by, mtd):
+            acc = {y: {"qty": 0.0, "liters": 0.0, "packs": 0.0, "amount": 0.0} for y in years}
+            for r in rows:
+                y = int(r.yr)
+                if y not in acc:
+                    continue
+                q = float(r.qty or 0)
+                l, pcs = _units(int(r.pid), q)
+                acc[y]["qty"] += q; acc[y]["liters"] += l; acc[y]["packs"] += pcs
+                acc[y]["amount"] += float(r.amt or 0)
+            out = []
+            for y in years:
+                a = acc[y]
+                out.append({"year": y,
+                            "from": ("%04d-%02d-01" % (y, m)) if mtd else ("%04d-01-01" % y),
+                            "to": "%04d-%02d-%02d" % (y, m, min(d, _ldom(y, m))),
+                            "qty": round(a["qty"], 1), "liters": round(a["liters"], 1),
+                            "packs": round(a["packs"], 1), "amount": round(a["amount"]),
+                            "customers": cust_by.get(y, 0)})
+            return out
+
+        years_mtd = _year_series(rows_mtd, cust_mtd, True)
+        years_ytd = _year_series(rows_ytd, cust_ytd, False)
+
+        # Помесячные итоги (zero-fill всех 48 месяцев)
+        month_keys = []
+        mk_dt = mm_first
+        for _ in range(48):
+            month_keys.append(mk_dt.strftime('%Y-%m'))
+            mk_dt = _add_months(mk_dt, 1)
+        macc = {k: {"qty": 0.0, "liters": 0.0, "packs": 0.0} for k in month_keys}
+        for r in rows_month:
+            a = macc.get(r.ym)
+            if a is None:
+                continue
+            q = float(r.qty or 0); l, pcs = _units(int(r.pid), q)
+            a["qty"] += q; a["liters"] += l; a["packs"] += pcs
+        monthly = [{"ym": k, "qty": round(macc[k]["qty"], 1), "liters": round(macc[k]["liters"], 1),
+                    "packs": round(macc[k]["packs"], 1)} for k in month_keys]
+
+        def _day_series(rows, ndays):
+            acc = {i: {"qty": 0.0, "liters": 0.0, "packs": 0.0} for i in range(1, ndays + 1)}
+            for r in rows:
+                a = acc.get(int(r.dd))
+                if a is None:
+                    continue
+                q = float(r.qty or 0); l, pcs = _units(int(r.pid), q)
+                a["qty"] += q; a["liters"] += l; a["packs"] += pcs
+            return [{"d": i, "qty": round(acc[i]["qty"], 1), "liters": round(acc[i]["liters"], 1),
+                     "packs": round(acc[i]["packs"], 1)} for i in range(1, ndays + 1)]
+
+        daily = {"month": "%04d-%02d" % (cur_y, m), "elapsed": d, "daysInMonth": _ldom(cur_y, m),
+                 "days": _day_series(rows_day, _ldom(cur_y, m)),
+                 "prevMonth": "%04d-%02d" % (prev_y, m),
+                 "prevDays": _day_series(rows_day_prev, _ldom(prev_y, m))}
+
+        # Товары YTD: текущий vs прошлый год — для групп и «двигателей» роста/падения
+        pacc = {}
+        for r in rows_ytd:
+            y = int(r.yr)
+            if y not in (cur_y, prev_y):
+                continue
+            pid = int(r.pid)
+            e = pacc.setdefault(pid, {"cur": [0.0, 0.0, 0.0], "prev": [0.0, 0.0, 0.0]})
+            q = float(r.qty or 0); l, pcs = _units(pid, q)
+            k = "cur" if y == cur_y else "prev"
+            e[k][0] += q; e[k][1] += l; e[k][2] += pcs
+        products = []
+        for pid, e in pacc.items():
+            p = prod.get(pid) or {}
+            grp = p.get("grp", "")
+            products.append({"code": p.get("code", ''), "name": p.get("name", ''),
+                             "grp": grp, "grpName": grp_names.get(grp, grp or '—'),
+                             "cur": {"qty": round(e["cur"][0], 1), "liters": round(e["cur"][1], 1), "packs": round(e["cur"][2], 1)},
+                             "prev": {"qty": round(e["prev"][0], 1), "liters": round(e["prev"][1], 1), "packs": round(e["prev"][2], 1)}})
+        products.sort(key=lambda x: -(x["cur"]["qty"] + x["prev"]["qty"]))
+        # Группы агрегируются по ПОЛНОМУ набору товаров ДО усечения — иначе таблица групп
+        # не сходилась бы с плиткой YTD на том же экране; топ-400 остаётся только для списка SKU
+        gacc = {}
+        for pid, e in pacc.items():
+            p = prod.get(pid) or {}
+            grp = p.get("grp", "")
+            g = gacc.setdefault(grp, {"cur": [0.0, 0.0, 0.0], "prev": [0.0, 0.0, 0.0]})
+            for i in range(3):
+                g["cur"][i] += e["cur"][i]
+                g["prev"][i] += e["prev"][i]
+        groups_agg = [{"code": grp or '—', "name": grp_names.get(grp, grp or '—'),
+                       "cur": {"qty": round(g["cur"][0], 1), "liters": round(g["cur"][1], 1), "packs": round(g["cur"][2], 1)},
+                       "prev": {"qty": round(g["prev"][0], 1), "liters": round(g["prev"][1], 1), "packs": round(g["prev"][2], 1)}}
+                      for grp, g in gacc.items()]
+        groups_agg.sort(key=lambda x: -(x["cur"]["qty"] + x["prev"]["qty"]))
+        products = products[:400]
+
+        # Территории YTD: текущий vs прошлый год
+        aacc = {}
+        for r in rows_area:
+            y = int(r.yr)
+            if y not in (cur_y, prev_y):
+                continue
+            e = aacc.setdefault(r.area, {"cur": [0.0, 0.0, 0.0], "prev": [0.0, 0.0, 0.0]})
+            q = float(r.qty or 0); l, pcs = _units(int(r.pid), q)
+            k = "cur" if y == cur_y else "prev"
+            e[k][0] += q; e[k][1] += l; e[k][2] += pcs
+        areas = [{"code": code, "name": area_names.get(code, code),
+                  "cur": {"qty": round(e["cur"][0], 1), "liters": round(e["cur"][1], 1), "packs": round(e["cur"][2], 1)},
+                  "prev": {"qty": round(e["prev"][0], 1), "liters": round(e["prev"][1], 1), "packs": round(e["prev"][2], 1)}}
+                 for code, e in aacc.items()]
+        areas.sort(key=lambda x: -(x["cur"]["qty"] + x["prev"]["qty"]))
+
+        # Охват пересчёта (по текущему YTD): какая доля штук имеет литраж/упаковку
+        cov_q = cov_l = cov_p = 0.0
+        for r in rows_ytd:
+            if int(r.yr) != cur_y:
+                continue
+            q = float(r.qty or 0); p = prod.get(int(r.pid))
+            cov_q += q
+            if p and p["liters"]:
+                cov_l += q
+            if p and p["pack"] > 0:
+                cov_p += q
+        coverage = {"liters": round(cov_l / cov_q * 100, 1) if cov_q else 0,
+                    "packs": round(cov_p / cov_q * 100, 1) if cov_q else 0}
+
+        def _pair():
+            return {"cur": [0.0, 0.0, 0.0], "prev": [0.0, 0.0, 0.0]}
+
+        def _pack_pair(e):
+            return {"cur": {"qty": round(e["cur"][0], 1), "liters": round(e["cur"][1], 1), "packs": round(e["cur"][2], 1)},
+                    "prev": {"qty": round(e["prev"][0], 1), "liters": round(e["prev"][1], 1), "packs": round(e["prev"][2], 1)}}
+
+        # Drill-down территорий: топ-12 товаров каждой зоны (из уже полученных rows_area, без нового запроса)
+        ap = {}
+        for r in rows_area:
+            y = int(r.yr)
+            if y not in (cur_y, prev_y):
+                continue
+            e = ap.setdefault(r.area, {}).setdefault(int(r.pid), _pair())
+            q = float(r.qty or 0); l, pcs = _units(int(r.pid), q)
+            k = "cur" if y == cur_y else "prev"
+            e[k][0] += q; e[k][1] += l; e[k][2] += pcs
+        area_products = {}
+        for code, pids in ap.items():
+            top = sorted(pids.items(), key=lambda kv: -(kv[1]["cur"][0] + kv[1]["prev"][0]))[:12]
+            area_products[code] = [dict(_pack_pair(e), code=(prod.get(pid) or {}).get("code", ''),
+                                        name=(prod.get(pid) or {}).get("name", '')) for pid, e in top]
+
+        # Каналы (группы клиентов) YTD: розница/опт/сети в объёмах
+        chacc = {}
+        for r in rows_chan:
+            y = int(r.yr)
+            if y not in (cur_y, prev_y):
+                continue
+            e = chacc.setdefault(r.cg or '', _pair())
+            q = float(r.qty or 0); l, pcs = _units(int(r.pid), q)
+            k = "cur" if y == cur_y else "prev"
+            e[k][0] += q; e[k][1] += l; e[k][2] += pcs
+        channels = [dict(_pack_pair(e), code=(cg or '—'), name=cgrp_names.get(cg, cg or '—'))
+                    for cg, e in chacc.items()]
+        channels.sort(key=lambda x: -(x["cur"]["qty"] + x["prev"]["qty"]))
+
+        # Клиенты-«двигатели» YTD: топ-15 по росту и падению в КАЖДОЙ единице (объединение —
+        # клиент ранжируется на клиенте по выбранной единице); карточки — точечным запросом по id
+        cacc = {}
+        for r in rows_cust:
+            y = int(r.yr)
+            if y not in (cur_y, prev_y):
+                continue
+            e = cacc.setdefault(int(r.cid), _pair())
+            q = float(r.qty or 0); l, pcs = _units(int(r.pid), q)
+            k = "cur" if y == cur_y else "prev"
+            e[k][0] += q; e[k][1] += l; e[k][2] += pcs
+        top_ids = set()
+        for ui in range(3):   # qty / liters / packs
+            deltas = [(cid, e["cur"][ui] - e["prev"][ui]) for cid, e in cacc.items()]
+            top_ids.update(cid for cid, dv in sorted(deltas, key=lambda x: -x[1])[:15] if dv > 0)
+            top_ids.update(cid for cid, dv in sorted(deltas, key=lambda x: x[1])[:15] if dv < 0)
+        cust_info = {}
+        if top_ids:
+            ids = sorted(top_ids)[:120]
+            cur.execute("SELECT fID, fCODE, fNAME, fPHONE FROM CUSTOMERS WITH (NOLOCK) WHERE fID IN (%s)"
+                        % ','.join('?' * len(ids)), tuple(ids))
+            cust_info = {int(r.fID): {"code": r.fCODE or '', "name": r.fNAME or '', "phone": (r.fPHONE or '').strip()}
+                         for r in cur.fetchall()}
+        customers = [dict(_pack_pair(cacc[cid]), **cust_info.get(cid, {"code": '', "name": '#%d' % cid, "phone": ''}))
+                     for cid in top_ids if cid in cacc]
+        conn.close()
+
+        return jsonify(_kpi_cache_set(_ck, {
+            "success": True,
+            "asof": asof_s,
+            "isToday": asof_s == datetime.now().strftime('%Y-%m-%d'),
+            "filtered": use_filters,
+            "groups": qty_groups,
+            "mtd": years_mtd,
+            "ytd": years_ytd,
+            "monthly": monthly,
+            "daily": daily,
+            "products": products,
+            "groupsAgg": groups_agg,
+            "areas": areas,
+            "areaProducts": area_products,
+            "channels": channels,
+            "customers": customers,
+            "coverage": coverage,
+        }))
+
+    except Exception as e:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        logger.error(f"Ошибка получения истории количества продаж: {e}", exc_info=True)
+        return jsonify({"success": False, "error": "Ошибка расчёта количества — детали в логе сервера"}), 500
+
+
 def _ai_health_summary(scope, payload):
     """Собирает компактную сводку уже посчитанных KPI-чисел (текст на русском) для передачи в Claude.
     Никаких обращений к БД — только переданные фронтендом значения (те же, что видит владелец)."""
@@ -5561,6 +6326,57 @@ def _ai_health_summary(scope, payload):
             lines.append("Автодиагностика (в деньгах): " + "; ".join(
                 f"{x.get('title')}"
                 + (f" −{m(x.get('impact'))} ֏" if x.get('impact') else "") for x in fnd[:6]))
+    elif scope == 'quantity':
+        # Разбор ОБЪЁМОВ (штуки/литры/упаковки) для страницы /quantity — числа уже посчитаны фронтендом
+        q = payload.get('detail') or {}
+        unit = q.get('unitLabel') or 'шт'
+        def dp(key):
+            v = q.get(key)
+            return '—' if v is None else f"{v}%"
+        lines.append("РАЗРЕЗ: продажи по КОЛИЧЕСТВУ (объёмы), единица — " + unit
+                     + ("; с KPI-фильтрами страницы" if q.get('filtered') else "; вся компания, без фильтров")
+                     + (f"; товарные группы: {q.get('groupsLabel')}" if q.get('groupsLabel') else ""))
+        lines.append(f"Дата среза: {q.get('asof','')} (окна всех лет обрезаны этим же днём)")
+        lines.append(f"Месяц к дате: {m(q.get('mtdCur'))} {unit}, год назад {m(q.get('mtdPrev'))} {unit} (Δ {dp('mtdDelta')})"
+                     + (f"; рекорд {q.get('mtdBestYear')} г. — {m(q.get('mtdBest'))} {unit}" if q.get('mtdBestYear') else ""))
+        lines.append(f"Год к дате: {m(q.get('ytdCur'))} {unit}, год назад {m(q.get('ytdPrev'))} {unit} (Δ {dp('ytdDelta')})"
+                     + (f"; рекорд {q.get('ytdBestYear')} г. — {m(q.get('ytdBest'))} {unit}" if q.get('ytdBestYear') else ""))
+        if q.get('priceCur') is not None:
+            lines.append(f"Средняя цена за {unit}: {m(q.get('priceCur'))} ֏ (год назад {m(q.get('pricePrev'))} ֏)")
+        if q.get('perOutletCur') is not None:
+            lines.append(f"Объём на точку (YTD): {m(q.get('perOutletCur'))} {unit} при {q.get('custCur')} активных точках "
+                         f"(год назад {m(q.get('perOutletPrev'))} {unit}, {q.get('custPrev')} точек)")
+        if q.get('forecast') is not None:
+            lines.append(f"Прогноз месяца по текущему темпу: {m(q.get('forecast'))} {unit} "
+                         f"(весь прошлый год этот месяц: {m(q.get('prevMonthFull'))} {unit})")
+        gu = q.get('groupsUp') or []
+        gd = q.get('groupsDown') or []
+        if gu or gd:
+            lines.append("Группы-драйверы (YTD, Δ к прошлому году): "
+                         + "; ".join(f"{x.get('name')} {'+' if (x.get('delta') or 0) >= 0 else ''}{m(x.get('delta'))} {unit}"
+                                     for x in (gu[:4] + gd[:4])))
+        mu = q.get('moversUp') or []
+        md = q.get('moversDown') or []
+        if mu:
+            lines.append("Товары-двигатели роста: " + "; ".join(f"{x.get('name')} +{m(x.get('delta'))} {unit}" for x in mu[:5]))
+        if md:
+            lines.append("Товары-двигатели падения: " + "; ".join(f"{x.get('name')} −{m(abs(x.get('delta') or 0))} {unit}" for x in md[:5]))
+        ad = q.get('areasDown') or []
+        if ad:
+            lines.append("Территории с падением (YTD): " + "; ".join(
+                f"{x.get('name')} {m(x.get('cur'))} против {m(x.get('prev'))} {unit}" for x in ad[:5]))
+        cd = q.get('customersDown') or []
+        if cd:
+            lines.append("Клиенты с наибольшим падением объёма (YTD): " + "; ".join(
+                f"{x.get('name')} −{m(abs(x.get('delta') or 0))} {unit}" for x in cd[:5]))
+        cu = q.get('customersUp') or []
+        if cu:
+            lines.append("Клиенты с наибольшим ростом: " + "; ".join(
+                f"{x.get('name')} +{m(x.get('delta'))} {unit}" for x in cu[:3]))
+        ch = q.get('channels') or []
+        if ch:
+            lines.append("Каналы (группы клиентов, YTD текущий/прошлый): " + "; ".join(
+                f"{x.get('name')} {m(x.get('cur'))}/{m(x.get('prev'))} {unit}" for x in ch[:5]))
     else:
         h = payload.get('health') or {}
         areas = (payload.get('areas') or {}).get('areas') or []
@@ -5628,6 +6444,24 @@ AI_HEALTH_SYSTEM = (
     "Всего не длиннее ~280 слов. Не повторяй заголовок-разрез из входных данных."
 )
 
+# Отдельный промпт для разбора ОБЪЁМОВ (/quantity): базовый требует «суммы в драмах»,
+# а здесь данные в штуках/литрах/упаковках — модель приписывала бы ֏ к штукам.
+AI_QTY_SYSTEM = (
+    "Ты — опытный бизнес-советник владельца дистрибуционной компании (van-sales, вода и напитки). "
+    "Тебе дают УЖЕ ПОСЧИТАННЫЕ показатели ОБЪЁМОВ продаж за сравнимые окна нескольких лет; единица "
+    "измерения (штуки, литры или упаковки) указана в данных. Твоя задача — короткий предметный разбор "
+    "объёмов: где теряем и набираем объём, и что делать.\n\n"
+    "Формат ответа (Markdown, по-русски):\n"
+    "1. **Итог** — 1–2 предложения: динамика объёмов и главный риск.\n"
+    "2. **Что тянет вниз / вверх** — 2–4 пункта с объёмами в указанной единице (товары, группы, "
+    "территории); сортируй по величине эффекта.\n"
+    "3. **Что сделать** — 3–5 конкретных действий.\n"
+    "4. **Следить в динамике** — 1–2 показателя.\n\n"
+    "Правила: используй ТОЛЬКО предоставленные числа, ничего не выдумывай и НЕ ИСКАЖАЙ разряды. Объёмы "
+    "НЕ переводи в деньги — единственная денежная величина в данных это средняя цена (֏). Если период "
+    "не завершён — учитывай это. Пиши по делу, без воды. Всего не длиннее ~280 слов."
+)
+
 
 @app.route('/api/managers/kpi/health/ai', methods=['POST'])
 def api_managers_kpi_health_ai():
@@ -5651,7 +6485,7 @@ def api_managers_kpi_health_ai():
             with client.messages.stream(
                 model="claude-opus-4-8",
                 max_tokens=1500,
-                system=AI_HEALTH_SYSTEM,
+                system=AI_QTY_SYSTEM if scope == 'quantity' else AI_HEALTH_SYSTEM,
                 messages=[{"role": "user", "content": user_prompt}],
             ) as stream:
                 for text in stream.text_stream:
@@ -5804,6 +6638,7 @@ def api_managers_product_sales_total():
         asof = (_last.strftime('%Y-%m-%d') if hasattr(_last, 'strftime') else str(_last)[:10]) if _last else date_to
 
         # Все продажи команды (те же фильтры: исключённые + группы клиентов + дивизионы + территория + товарные группы).
+        # Техкарточки (0000/0001/услуги) исключены — как на странице /quantity, иначе штуки двух страниц расходились.
         cur.execute(f"""
             SELECT p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP AS grp, gt.fCAPTION AS grpname,
                    SUM(CASE WHEN s.fDATE>=? AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) THEN sd.fQUANTITY ELSE 0 END) AS qcur,
@@ -5814,7 +6649,7 @@ def api_managers_product_sales_total():
             INNER JOIN PRODUCTS p WITH (NOLOCK) ON p.fID = sd.fPRODUCTID
             LEFT JOIN TREES gt WITH (NOLOCK) ON gt.fCODE = p.fGROUP AND gt.fTREEID = 'PrdctGrp'
             INNER JOIN CUSTOMERS c WITH (NOLOCK) ON s.fCUSTOMERID = c.fID
-            WHERE s.fSTATE=2 AND s.fDATE >= DATEADD(YEAR,-2,?) AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {excluded_filter}{sc_w}{sd_w}{sa_w}{pg_w}
+            WHERE s.fSTATE=2 AND s.fDATE >= DATEADD(YEAR,-2,?) AND s.fDATE < DATEADD(day, 1, CAST(? AS DATE)) {_qty_tech_filter('p')}{excluded_filter}{sc_w}{sd_w}{sa_w}{pg_w}
             GROUP BY p.fCODE, p.fNAME, p.fMEASUREUNIT, p.fGROUP, gt.fCAPTION
         """, (date_from, asof, date_from, asof, date_from, asof, date_from, asof) + excluded_params + sc_p + sd_p + sa_p + pg_p)
         rows = cur.fetchall()
@@ -10906,6 +11741,1210 @@ def get_areas_table_data():
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# =============================================
+# СКЛАД И ПРОИЗВОДСТВО (/production)
+# =============================================
+# READ-ONLY аналитика складского домена (HISTORAGES/HIRESTSTORAGES) + прогноз спроса
+# и план производства. План: docs/plans/warehouse-production-plan.md (APPROVED).
+# Ключевые факты, проверенные боевыми данными (см. план, раздел «Верификация»):
+#  - склад '006' «ֆիկտիվ» — учётный артефакт (87% объёма INP), исключён по умолчанию;
+#  - возвраты НЕ кодируются в SALEDOCDETAILS отрицательными строками — только HISTORAGES RET;
+#  - PRODUCTS.fPRODUCER пуст: «свой/закупной» отличим только фильтром товарных групп.
+
+import threading as _prod_threading
+import tempfile as _prod_tempfile
+import calendar as _prod_calendar
+import math as _prod_math
+from datetime import date as _prod_date
+
+PRODUCTION_SETTINGS_FILE = 'production_settings.json'
+PRODUCTION_RECLOG_FILE = 'production_recommendations.jsonl'
+_production_settings_lock = _prod_threading.Lock()
+_production_reclog_lock = _prod_threading.Lock()
+_production_ai_lock = _prod_threading.Lock()
+_production_ai_last_call = [0.0]   # cooldown платного AI-эндпоинта
+_PRODUCTION_AI_COOLDOWN = 10       # сек между запросами
+
+PRODUCTION_DEFAULT_SETTINGS = {
+    # '006' ֆիկտիվ — фиктивный (учётный артефакт); '011' խотан — БРАК/дефект (не продаётся).
+    # Оба вне доступного остатка/прихода по умолчанию; владелец может вернуть в Настройках.
+    "excluded_storages": ["006", "011"],
+    "production_groups": [],               # пусто = все товарные группы
+    "include_agent_stock": False,          # остатки «на бортах» агентов в покрытие не входят
+    "changeover_hours_default": 2.0,
+    "changeover_hours_by_family": {},      # {семейство: часы}
+    "intra_family_changeover_hours": 0.0,  # смена вкуса внутри семейства
+    "family_map": {},                      # {код группы: семейство}; пусто = группа и есть семейство
+    # Производственные линии. Каждая делает СВОИ товарные группы, со своей скоростью и
+    # мощностью. Планировщик раскидывает товары по подходящим линиям и строит расписание
+    # для каждой линии отдельно (линии работают параллельно).
+    # Формат линии: {"id","name","groups":[коды групп; пусто=все],"rate":шт/час,
+    #                "work_days":int,"shift_hours":float,"changeover_hours":float}
+    # Пусто [] = легаси-режим: одна общая линия из lines_count / *_rate_* / work/shift ниже.
+    "lines": [],
+    "lines_count": 1,                      # ЛЕГАСИ (если lines пуст): параллельные одинаковые линии
+    "work_days_per_month": 22,
+    "shift_hours_per_day": 8.0,
+    "production_rate_by_group": {},        # ЛЕГАСИ: {код группы: шт/час}
+    "production_rate_by_product": {},      # ЛЕГАСИ: {fID товара: шт/час}
+    "target_cover_days": 10,               # целевой остаток НА КОНЕЦ месяца, в днях спроса
+    "safety_k": 0.5,                       # страховой запас = k × σ(мес. продаж)
+    "critical_cover_days": 7,
+    "overstock_cover_days": 45,
+}
+
+# Диапазоны валидации скалярных настроек: имя -> (тип, мин, макс)
+_PRODUCTION_SCALAR_RANGES = {
+    "changeover_hours_default": (float, 0.0, 24.0),
+    "intra_family_changeover_hours": (float, 0.0, 24.0),
+    "lines_count": (int, 1, 20),
+    "work_days_per_month": (int, 1, 31),
+    "shift_hours_per_day": (float, 1.0, 24.0),
+    "target_cover_days": (int, 0, 90),
+    "safety_k": (float, 0.0, 5.0),
+    "critical_cover_days": (int, 0, 60),
+    "overstock_cover_days": (int, 1, 365),
+}
+
+
+def load_production_settings():
+    """Настройки производства. Возвращает (settings, error).
+
+    Отсутствие файла — нормальный первый запуск (дефолты, error=None).
+    БИТЫЙ файл — НЕ тихий откат на дефолты: production_groups=[] означал бы
+    «все группы», т.е. повреждение конфига молча включило бы рекомендации на
+    категориях, которые владелец явно исключил. Возвращаем явную ошибку в UI.
+    """
+    if not os.path.exists(PRODUCTION_SETTINGS_FILE):
+        return dict(PRODUCTION_DEFAULT_SETTINGS), None
+    try:
+        with open(PRODUCTION_SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("ожидался JSON-объект")
+        merged = dict(PRODUCTION_DEFAULT_SETTINGS)
+        merged.update({k: v for k, v in data.items() if k in PRODUCTION_DEFAULT_SETTINGS})
+        return merged, None
+    except Exception as e:
+        logger.error(f"[Production] Битый {PRODUCTION_SETTINGS_FILE}: {e}")
+        return None, (f"Файл настроек производства повреждён ({e}). "
+                      f"Исправьте или удалите {PRODUCTION_SETTINGS_FILE} — дефолты НЕ применяются молча.")
+
+
+def save_production_settings(settings: dict) -> None:
+    """Атомарная запись: tempfile в той же папке -> os.replace, под процессным Lock.
+
+    Существующий save_*-паттерн (open('w')+json.dump) НЕ атомарен: параллельный POST
+    при threaded-сервере может усечь файл. Здесь это недопустимо (см. load_*)."""
+    with _production_settings_lock:
+        # tempfile строго В ТОЙ ЖЕ папке, что целевой файл: os.replace атомарен
+        # только в пределах одной файловой системы (и падает через диски).
+        target_dir = os.path.dirname(os.path.abspath(PRODUCTION_SETTINGS_FILE)) or '.'
+        fd, tmp_path = _prod_tempfile.mkstemp(
+            dir=target_dir, prefix='.production_settings_', suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, PRODUCTION_SETTINGS_FILE)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+
+def _production_validate_settings(payload: dict, known_groups: set, known_storages: set,
+                                  known_product_ids: set):
+    """Валидация присланных настроек. Возвращает (settings, errors: {поле: текст}).
+
+    dict-поля проверяются по ТИПАМ ЗНАЧЕНИЙ и КЛЮЧАМ (сверка с реальными кодами БД,
+    лимит записей, неизвестные ключи отклоняются): JSON-валидное, но семантически
+    битое значение иначе уронит планировщик 500-й на каждой загрузке."""
+    errors = {}
+    if not isinstance(payload, dict):
+        return None, {"_": "ожидался JSON-объект"}
+    unknown = set(payload.keys()) - set(PRODUCTION_DEFAULT_SETTINGS.keys())
+    if unknown:
+        errors["_"] = f"неизвестные поля: {', '.join(sorted(unknown))}"
+
+    out = dict(PRODUCTION_DEFAULT_SETTINGS)
+
+    for name, (typ, lo, hi) in _PRODUCTION_SCALAR_RANGES.items():
+        if name not in payload:
+            continue
+        try:
+            val = typ(payload[name])
+        except (TypeError, ValueError):
+            errors[name] = "не число"
+            continue
+        if not (lo <= val <= hi):
+            errors[name] = f"вне диапазона {lo}–{hi}"
+            continue
+        out[name] = val
+
+    if "include_agent_stock" in payload:
+        if isinstance(payload["include_agent_stock"], bool):
+            out["include_agent_stock"] = payload["include_agent_stock"]
+        else:
+            errors["include_agent_stock"] = "ожидался true/false"
+
+    def _check_code_list(name, known, max_len):
+        raw = payload.get(name)
+        if raw is None:
+            return
+        if not isinstance(raw, list) or len(raw) > max_len:
+            errors[name] = f"ожидался список (до {max_len})"
+            return
+        vals = []
+        for x in raw:
+            code = str(x).strip()
+            if not code:
+                continue
+            if known and code not in known:
+                errors[name] = f"неизвестный код: {code}"
+                return
+            vals.append(code)
+        out[name] = vals
+
+    _check_code_list("excluded_storages", known_storages, 50)
+    _check_code_list("production_groups", known_groups, 200)
+
+    def _check_dict(name, key_known, val_kind, max_len, lo=0.0, hi=1e6):
+        raw = payload.get(name)
+        if raw is None:
+            return
+        if not isinstance(raw, dict) or len(raw) > max_len:
+            errors[name] = f"ожидался объект (до {max_len} записей)"
+            return
+        res = {}
+        for k, v in raw.items():
+            key = str(k).strip()
+            if key_known is not None and key not in key_known:
+                errors[name] = f"неизвестный ключ: {key}"
+                return
+            if val_kind == 'float':
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    errors[name] = f"не число: {key}"
+                    return
+                if not (lo <= fv <= hi):
+                    errors[name] = f"{key}: вне диапазона {lo}–{hi}"
+                    return
+                res[key] = fv
+            else:  # семейство — короткая строка
+                sv = str(v).strip()
+                if not sv or len(sv) > 40:
+                    errors[name] = f"{key}: семейство 1–40 символов"
+                    return
+                res[key] = sv
+        out[name] = res
+
+    _check_dict("changeover_hours_by_family", None, 'float', 200, 0.0, 24.0)
+    _check_dict("family_map", known_groups or None, 'str', 200)
+    _check_dict("production_rate_by_group", known_groups or None, 'float', 200, 0.001, 1e6)
+    _check_dict("production_rate_by_product",
+                {str(p) for p in known_product_ids} if known_product_ids else None,
+                'float', 500, 0.001, 1e6)
+
+    # Линии производства
+    raw_lines = payload.get('lines')
+    if raw_lines is not None:
+        if not isinstance(raw_lines, list) or len(raw_lines) > 30:
+            errors['lines'] = 'ожидался список линий (до 30)'
+        else:
+            lines = []
+            for i, L in enumerate(raw_lines):
+                if not isinstance(L, dict):
+                    errors['lines'] = f'линия {i + 1}: ожидался объект'
+                    break
+                name = str(L.get('name') or '').strip()
+                if not name or len(name) > 40:
+                    errors['lines'] = f'линия {i + 1}: название 1–40 символов'
+                    break
+                # группы: коды из справочника (пусто [] = все); '' допускается как
+                # «без группы» — для товаров без товарной группы (напр. стаканы).
+                groups = []
+                bad = False
+                for g in (L.get('groups') or []):
+                    gc = str(g).strip()
+                    if gc and known_groups and gc not in known_groups:
+                        errors['lines'] = f'линия «{name}»: неизвестная группа {gc}'
+                        bad = True
+                        break
+                    groups.append(gc)
+                if bad:
+                    break
+                try:
+                    rate = float(L.get('rate') or 0)
+                    work_days = int(L.get('work_days') or 22)
+                    shift = float(L.get('shift_hours') or 8)
+                    chh = float(L.get('changeover_hours') or 0)
+                except (TypeError, ValueError):
+                    errors['lines'] = f'линия «{name}»: числовое поле задано неверно'
+                    break
+                if rate < 0 or rate > 1e6 or not (1 <= work_days <= 31) \
+                        or not (1 <= shift <= 24) or not (0 <= chh <= 24):
+                    errors['lines'] = f'линия «{name}»: значение вне допустимого диапазона'
+                    break
+                lines.append({
+                    'id': str(L.get('id') or f'L{i + 1}'), 'name': name,
+                    'groups': groups, 'rate': rate, 'work_days': work_days,
+                    'shift_hours': shift, 'changeover_hours': chh,
+                })
+            else:
+                out['lines'] = lines
+
+    return (None, errors) if errors else (out, {})
+
+
+def _production_lines(settings):
+    """Нормализованный список линий. Если lines пуст — одна общая линия из легаси-настроек
+    (делает все группы, скорость из production_rate_by_group / _by_product)."""
+    lines = settings.get('lines') or []
+    if lines:
+        return [dict(L, rate_by_group={}, rate_by_product={}) for L in lines]
+    # Легаси: одна линия-универсал; скорость подставит планировщик из старых полей
+    return [{
+        'id': 'L1', 'name': 'Линия 1', 'groups': [], 'rate': 0.0,
+        'work_days': settings['work_days_per_month'],
+        'shift_hours': settings['shift_hours_per_day'],
+        'changeover_hours': settings['changeover_hours_default'],
+        'rate_by_group': settings.get('production_rate_by_group', {}),
+        'rate_by_product': settings.get('production_rate_by_product', {}),
+        '_legacy': True, '_lines_count': settings.get('lines_count', 1),
+    }]
+
+
+# --- Кэш overview: свой TTL 10 мин (тяжёлые запросы к боевому ERP), ключ включает
+# mtime настроек (fingerprint-паттерн _KPI_CACHE) — сохранение настроек сбрасывает кэш.
+_PRODUCTION_CACHE = {}
+_PRODUCTION_CACHE_TTL = 600
+
+
+def _production_fingerprint():
+    parts = [datetime.now().strftime('%Y%m%d')]
+    try:
+        parts.append(str(os.path.getmtime(PRODUCTION_SETTINGS_FILE)))
+    except OSError:
+        parts.append('0')
+    return hashlib.md5('|'.join(parts).encode()).hexdigest()[:10]
+
+
+def _production_cache_get(key):
+    v = _PRODUCTION_CACHE.get(key)
+    if v and (datetime.now().timestamp() - v[0]) < _PRODUCTION_CACHE_TTL:
+        return v[1]
+    return None
+
+
+def _production_cache_set(key, data):
+    if len(_PRODUCTION_CACHE) > 100:
+        _PRODUCTION_CACHE.clear()
+    _PRODUCTION_CACHE[key] = (datetime.now().timestamp(), data)
+    return data
+
+
+def _production_cache_clear():
+    _PRODUCTION_CACHE.clear()
+
+
+# --- Календарные помощники (полуинтервалы, полные месяцы) ---
+
+def _prod_month_add(d: _prod_date, n: int) -> _prod_date:
+    y = d.year + (d.month - 1 + n) // 12
+    m = (d.month - 1 + n) % 12 + 1
+    return _prod_date(y, m, 1)
+
+
+def _prod_month_seq(start: _prod_date, count: int):
+    """[start, start+1мес, ...) — count кортежей (год, месяц)."""
+    return [((_prod_month_add(start, i)).year, (_prod_month_add(start, i)).month)
+            for i in range(count)]
+
+
+# --- Загрузка данных (все запросы READ-ONLY, WITH (NOLOCK), полуинтервалы дат) ---
+
+def _production_fetch_catalog():
+    """Каталог товаров: активные, не тара; группа с названием (PrdctGrp).
+
+    ВАЖНО: fGIFT НЕ исключаем — в этой ERP флаг означает «может выдаваться подарком
+    в акциях» (ссылка для GIFTPROMOTIONS) и стоит у ядра собственного производства
+    (кола/вода «Гарни»). Исключение fGIFT=1 выкидывало бестселлеры (проверено данными
+    2026-07-18: 16 из 17 товаров A-класса имеют fGIFT=1). Тара (fCONTAINER=1) —
+    исключается: это бутылки/ёмкости, а не продукция."""
+    rows = db.execute_query("""
+        SELECT p.fID AS pid, p.fCODE AS code, p.fNAME AS name,
+               p.fMEASUREUNIT AS unit, RTRIM(p.fGROUP) AS grp,
+               t.fCAPTION AS grpname
+        FROM PRODUCTS p WITH (NOLOCK)
+        LEFT JOIN TREES t WITH (NOLOCK) ON t.fCODE = p.fGROUP AND t.fTREEID = 'PrdctGrp'
+        WHERE p.fCLOSED = 0 AND p.fCONTAINER = 0
+    """)
+    return {int(r['pid']): {
+        'code': (r['code'] or '').strip(), 'name': r['name'] or '',
+        'unit': (r['unit'] or '').strip(), 'group': (r['grp'] or '').strip(),
+        'group_name': r['grpname'] or (r['grp'] or '').strip() or 'Без группы',
+    } for r in rows}
+
+
+def _production_storage_placeholders(excluded):
+    """(SQL-фрагмент 'NOT IN (?,..)', params) для исключённых складов; пусто — без фильтра."""
+    if not excluded:
+        return "", tuple()
+    ph = ','.join('?' * len(excluded))
+    return f" AND h.fSTORAGE NOT IN ({ph})", tuple(excluded)
+
+
+def _production_fetch_stock(excluded, storage=None):
+    """Остатки по складам (без исключённых; опционально один склад) и у агентов."""
+    not_in, params = _production_storage_placeholders(excluded)
+    storage_clause = ""
+    if storage:
+        storage_clause = " AND h.fSTORAGE = ?"
+        params = params + (storage,)
+    rows = db.execute_query(f"""
+        SELECT h.fPRODUCTID AS pid, SUM(h.fQUANTITY) AS qty
+        FROM HIRESTSTORAGES h WITH (NOLOCK)
+        WHERE 1=1 {not_in} {storage_clause}
+        GROUP BY h.fPRODUCTID
+    """, params or None)
+    stock = {int(r['pid']): float(r['qty'] or 0) for r in rows}
+    rows = db.execute_query("""
+        SELECT a.fPRODUCTID AS pid, SUM(a.fQUANTITY) AS qty
+        FROM HIRESTAGENTPRODUCTS a WITH (NOLOCK)
+        GROUP BY a.fPRODUCTID
+    """)
+    agent = {int(r['pid']): float(r['qty'] or 0) for r in rows}
+    return stock, agent
+
+
+def _production_fetch_monthly(window_start: _prod_date, window_end: _prod_date,
+                              excluded, storage=None):
+    """Месячные ряды за [window_start, window_end): продажи+выручка, возвраты RET, приход INP.
+
+    Возвращает (sales, ret, inp, inp_excluded_only_pids):
+      sales[pid][(y,m)] = {'qty':, 'amount':};  ret/inp[pid][(y,m)] = qty
+      inp_excluded_only_pids — товары, чей INP за окно существует ТОЛЬКО на исключённых
+      складах («учёт вне склада», 78 шт по проверке 2026-07-18) — прескриптив для них выключен.
+    """
+    ws, we = window_start.isoformat(), window_end.isoformat()
+
+    sales = {}
+    for r in db.execute_query("""
+        SELECT sd.fPRODUCTID AS pid, YEAR(s.fDATE) AS y, MONTH(s.fDATE) AS m,
+               SUM(sd.fQUANTITY) AS qty, SUM(sd.fSUM) AS amount
+        FROM SALES s WITH (NOLOCK)
+        INNER JOIN SALEDOCDETAILS sd WITH (NOLOCK) ON sd.fISN = s.fISN
+        WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
+        GROUP BY sd.fPRODUCTID, YEAR(s.fDATE), MONTH(s.fDATE)
+    """, (ws, we)):
+        sales.setdefault(int(r['pid']), {})[(int(r['y']), int(r['m']))] = {
+            'qty': float(r['qty'] or 0), 'amount': float(r['amount'] or 0)}
+
+    not_in, ex_params = _production_storage_placeholders(excluded)
+    storage_clause = ""
+    st_params = tuple()
+    if storage:
+        storage_clause = " AND h.fSTORAGE = ?"
+        st_params = (storage,)
+
+    ret = {}
+    for r in db.execute_query(f"""
+        SELECT h.fPRODUCTID AS pid, YEAR(h.fDATE) AS y, MONTH(h.fDATE) AS m,
+               SUM(h.fQUANTITY) AS qty
+        FROM HISTORAGES h WITH (NOLOCK)
+        WHERE h.fOP = 'RET' AND h.fDBCR = 'D' AND h.fDATE >= ? AND h.fDATE < ?
+              {not_in} {storage_clause}
+        GROUP BY h.fPRODUCTID, YEAR(h.fDATE), MONTH(h.fDATE)
+    """, (ws, we) + ex_params + st_params):
+        ret.setdefault(int(r['pid']), {})[(int(r['y']), int(r['m']))] = float(r['qty'] or 0)
+
+    inp = {}
+    for r in db.execute_query(f"""
+        SELECT h.fPRODUCTID AS pid, YEAR(h.fDATE) AS y, MONTH(h.fDATE) AS m,
+               SUM(h.fQUANTITY) AS qty
+        FROM HISTORAGES h WITH (NOLOCK)
+        WHERE h.fOP = 'INP' AND h.fDBCR = 'D' AND h.fDATE >= ? AND h.fDATE < ?
+              {not_in} {storage_clause}
+        GROUP BY h.fPRODUCTID, YEAR(h.fDATE), MONTH(h.fDATE)
+    """, (ws, we) + ex_params + st_params):
+        inp.setdefault(int(r['pid']), {})[(int(r['y']), int(r['m']))] = float(r['qty'] or 0)
+
+    # «Вне складского контура»: INP только на исключённых складах (реального прихода нет)
+    excluded_only = set()
+    if excluded:
+        ph = ','.join('?' * len(excluded))
+        for r in db.execute_query(f"""
+            SELECT h.fPRODUCTID AS pid,
+                   SUM(CASE WHEN h.fSTORAGE IN ({ph}) THEN h.fQUANTITY ELSE 0 END) AS exq,
+                   SUM(CASE WHEN h.fSTORAGE NOT IN ({ph}) THEN h.fQUANTITY ELSE 0 END) AS realq
+            FROM HISTORAGES h WITH (NOLOCK)
+            WHERE h.fOP = 'INP' AND h.fDBCR = 'D' AND h.fDATE >= ? AND h.fDATE < ?
+            GROUP BY h.fPRODUCTID
+        """, tuple(excluded) + tuple(excluded) + (ws, we)):
+            if float(r['exq'] or 0) > 0 and float(r['realq'] or 0) == 0:
+                excluded_only.add(int(r['pid']))
+
+    return sales, ret, inp, excluded_only
+
+
+# --- Прогноз ---
+
+def _production_net_series(sales_m, ret_m, months):
+    """Нетто-ряд по месяцам: max(0, продажи − возвраты). Формула SALES−RET верифицирована:
+    в SALEDOCDETAILS нет отрицательных строк, возвраты живут только в RET (≤3,6% объёма)."""
+    out = []
+    for ym in months:
+        s = (sales_m or {}).get(ym, {}).get('qty', 0.0)
+        r = (ret_m or {}).get(ym, 0.0)
+        out.append(max(0.0, s - r))
+    return out
+
+
+def _production_deficit_flags(series):
+    """Флаги «возможен дефицит»: месяц с нулём при ненулевых в ≥60% остальных (≥7 из 11).
+    Такие месяцы исключаются из базы — защита от самоусиливающегося недопроизводства."""
+    n = len(series)
+    flags = [False] * n
+    for i, v in enumerate(series):
+        if v > 0:
+            continue
+        others_nonzero = sum(1 for j, x in enumerate(series) if j != i and x > 0)
+        if others_nonzero >= _prod_math.ceil(0.6 * (n - 1)):
+            flags[i] = True
+    return flags
+
+
+def _production_seasonality(group_series_by_month, months24):
+    """Штучные коэффициенты сезонности по календарным месяцам: m_qty×12/total.
+    Требование полноты: продажи в ≥20 из 24 месяцев окна, иначе None (fallback на глобальную)."""
+    total = sum(group_series_by_month.values())
+    nonzero_months = sum(1 for ym in months24 if group_series_by_month.get(ym, 0) > 0)
+    if total <= 0 or nonzero_months < 20:
+        return None
+    coeff = {}
+    for m in range(1, 13):
+        m_qty = sum(v for ym, v in group_series_by_month.items() if ym[1] == m)
+        coeff[m] = round(m_qty * 12.0 / total, 2)
+    return coeff
+
+
+def _production_trend_factor(series6):
+    """МНК по последним 6 месяцам; фактор = прогноз след. точки / среднее, кламп [0.7, 1.3]."""
+    pts = [(i, v) for i, v in enumerate(series6) if v is not None]
+    if len(pts) < 4:
+        return 1.0
+    n = len(pts)
+    sx = sum(p[0] for p in pts); sy = sum(p[1] for p in pts)
+    sxx = sum(p[0] * p[0] for p in pts); sxy = sum(p[0] * p[1] for p in pts)
+    denom = n * sxx - sx * sx
+    mean = sy / n
+    if denom == 0 or mean <= 0:
+        return 1.0
+    slope = (n * sxy - sx * sy) / denom
+    intercept = (sy - slope * sx) / n
+    y_hat = intercept + slope * len(series6)
+    return max(0.7, min(1.3, y_hat / mean))
+
+
+def _production_forecast_one(net24, deficit12, seasonality, global_seasonality,
+                             target_month, months12):
+    """Прогноз одного товара. net24 — 24 месяца (старые -> новые), deficit12 — флаги
+    последних 12, months12 — [(год,месяц)] для последних 12 (для десезонализации тренда).
+    Возвращает dict или None («нет прогноза»)."""
+    last12 = net24[-12:]
+    active = [v for v, d in zip(last12, deficit12) if not d]
+    months_with_sales = sum(1 for v in last12 if v > 0)
+    if months_with_sales < 2:
+        return None
+    if months_with_sales >= 6:
+        base_vals = active
+    else:
+        # Мало истории: среднее от первого месяца с продажами (не-дефицитные)
+        first = next(i for i, v in enumerate(last12) if v > 0)
+        base_vals = [v for i, (v, d) in enumerate(zip(last12, deficit12))
+                     if i >= first and not d]
+    if not base_vals:
+        return None
+    base = sum(base_vals) / len(base_vals)
+    coeff_map = seasonality or global_seasonality or {}
+    coeff = coeff_map.get(target_month, 1.0)
+    # Тренд по ДЕСЕЗОНАЛИЗИРОВАННОМУ ряду последних 6 месяцев: каждый месяц делим на
+    # его сезонный коэффициент. Без этого сезонность (коэффициент целевого месяца) и
+    # тренд дважды считают один и тот же сезонный подъём — в разгар сезона прогноз
+    # завышается на десятки процентов и превышает любой реальный месяц (проверено
+    # боевыми данными 2026-07-18: вода 6л/19л завышались на +78/+83%).
+    trend_input = []
+    for v, d, ym in zip(last12[-6:], deficit12[-6:], months12[-6:]):
+        if d:
+            trend_input.append(None)
+        else:
+            c = coeff_map.get(ym[1], 1.0) or 1.0
+            trend_input.append(v / c if c > 0 else v)
+    trend = _production_trend_factor(trend_input)
+    forecast = max(0.0, base * coeff * trend)
+    # Потолок правдоподобия: прогноз не превышает 1.5× лучшего месяца за последние 12.
+    # Страхует от остаточного завышения на товарах с КОРОТКОЙ историей (2-3 мес), где
+    # база≈максимум и коэффициент×тренд ещё могут наслоиться (найдено состязательной
+    # проверкой 2026-07-18: кофе Гарни холодный завышался в 1.75× при 2 мес. истории).
+    max_hist = max(last12) if any(v > 0 for v in last12) else 0.0
+    capped = False
+    if max_hist > 0 and forecast > max_hist * 1.5:
+        forecast = max_hist * 1.5
+        capped = True
+    mean = sum(active) / len(active) if active else 0.0
+    var = sum((v - mean) ** 2 for v in active) / len(active) if active else 0.0
+    return {
+        'base': round(base, 1), 'coeff': coeff, 'trend': round(trend, 2),
+        'forecast': round(forecast), 'sigma': round(_prod_math.sqrt(var), 1),
+        'deficit_months': sum(1 for d in deficit12 if d), 'capped': capped,
+    }
+
+
+def _production_abc(revenue_by_pid):
+    """ABC по выручке за 12 мес (не по штукам — литры со штуками не суммируются).
+    Классифицируем по доле ДО добавления товара (каноническая семантика): товар,
+    пересекающий границу 80%, остаётся в A — иначе доминирующий SKU (например,
+    вода с 60%+ выручки) вытолкнул бы из A всех, и класс A выродился бы в 1 товар."""
+    items = sorted(revenue_by_pid.items(), key=lambda kv: -kv[1])
+    total = sum(v for _, v in items)
+    cls = {}
+    cum = 0.0
+    for pid, v in items:
+        if v <= 0 or total <= 0:
+            cls[pid] = 'C'
+            continue
+        share_before = cum / total
+        cum += v
+        cls[pid] = 'A' if share_before < 0.80 else ('B' if share_before < 0.95 else 'C')
+    return cls
+
+
+def _production_compute(settings, storage=None, group=None, as_of=None):
+    """Полный расчёт: каталог, остатки, ряды, прогноз, рекомендации, WAPE-бэктест.
+
+    as_of — начало ЦЕЛЕВОГО месяца (по умолчанию следующий месяц). Все окна режутся
+    строго < начала текущего месяца (только полные месяцы); бэктест переанкоривает
+    окна назад — утечки будущего нет (см. check_production_calc.py)."""
+    today = datetime.now().date()
+    cur_month = _prod_date(today.year, today.month, 1)
+    target_month_start = as_of or _prod_month_add(cur_month, 1)
+
+    excluded = settings['excluded_storages']
+    catalog = _production_fetch_catalog()
+    stock_wh, stock_agent = _production_fetch_stock(excluded, storage)
+    # 26 месяцев истории: 24 для сезонности + 1 для WAPE-бэктеста + запас на границу
+    window_start = _prod_month_add(cur_month, -26)
+    sales, ret, inp, out_of_contour = _production_fetch_monthly(
+        window_start, cur_month, excluded, storage)
+
+    months24 = _prod_month_seq(_prod_month_add(cur_month, -24), 24)
+    months12 = months24[-12:]
+    last_full = months24[-1]
+
+    # Выручка 12 мес -> ABC
+    revenue = {}
+    for pid, mrow in sales.items():
+        revenue[pid] = sum(v['amount'] for ym, v in mrow.items() if ym in set(months12))
+    abc = _production_abc(revenue)
+
+    prod_groups = set(settings['production_groups'])
+
+    # Сезонность по группам (штучная) + глобальная — по нетто-рядам товаров в скоупе
+    group_month = {}
+    global_month = {}
+    for pid, info in catalog.items():
+        net_map = {}
+        srow, rrow = sales.get(pid, {}), ret.get(pid, {})
+        for ym in months24:
+            net_map[ym] = max(0.0, srow.get(ym, {}).get('qty', 0.0) - rrow.get(ym, 0.0))
+        g = info['group']
+        gm = group_month.setdefault(g, {})
+        for ym, v in net_map.items():
+            gm[ym] = gm.get(ym, 0.0) + v
+            global_month[ym] = global_month.get(ym, 0.0) + v
+    seasonality_by_group = {g: _production_seasonality(gm, months24)
+                            for g, gm in group_month.items()}
+    global_seasonality = _production_seasonality(global_month, months24) or {}
+
+    days_target = _prod_calendar.monthrange(target_month_start.year, target_month_start.month)[1]
+    days_cur = _prod_calendar.monthrange(cur_month.year, cur_month.month)[1]
+    remaining_frac = max(0.0, (days_cur - today.day + 1) / days_cur)
+
+    def forecast_for(pid, months, target_m):
+        """Прогноз товара на месяц target_m по окну months (24 шт, старые -> новые)."""
+        srow, rrow = sales.get(pid, {}), ret.get(pid, {})
+        net = _production_net_series(srow, rrow, months)
+        deficit = _production_deficit_flags(net[-12:])
+        info = catalog.get(pid) or {}
+        seas = seasonality_by_group.get(info.get('group'))
+        return _production_forecast_one(net, deficit, seas, global_seasonality,
+                                        target_m, months[-12:]), net
+
+    rows = []
+    for pid, info in sorted(catalog.items()):
+        if group and info['group'] != group:
+            continue
+        fc, net24 = forecast_for(pid, months24, target_month_start.month)
+        cls = abc.get(pid, 'C')
+        in_scope = (not prod_groups) or (info['group'] in prod_groups)
+        prescriptive = (cls in ('A', 'B')) and in_scope and (pid not in out_of_contour)
+
+        s_wh = stock_wh.get(pid, 0.0)                # LEFT-семантика: нет строки = 0
+        s_ag = stock_agent.get(pid, 0.0)
+        stock_basis = s_wh + (s_ag if settings['include_agent_stock'] else 0.0)
+
+        last_net = net24[-1] if net24 else 0.0
+        last_inp = inp.get(pid, {}).get(last_full, 0.0)
+        avg12 = round(sum(net24[-12:]) / 12.0, 1) if net24 else 0.0
+
+        row = {
+            'pid': pid, 'code': info['code'], 'name': info['name'], 'unit': info['unit'],
+            'group': info['group'], 'group_name': info['group_name'], 'cls': cls,
+            'stock_wh': round(s_wh, 1), 'stock_agent': round(s_ag, 1),
+            'inp_month': round(last_inp, 1), 'sales_month': round(last_net, 1),
+            'avg12': avg12, 'out_of_contour': pid in out_of_contour,
+            'in_scope': in_scope, 'forecast': None, 'cover_days': None,
+            'production_qty': None, 'status': 'no_data',
+            'stock_start': None, 'target_end': None, 'deficit_months': 0,
+            'spark': [round(v) for v in net24[-12:]],   # инлайн-спарклайн тренда
+        }
+        if fc is None:
+            if last_net > 0 or s_wh > 0 or avg12 > 0:
+                row['status'] = 'no_forecast'
+            rows.append(row)
+            continue
+
+        forecast = fc['forecast']
+        fdaily = forecast / days_target if days_target else 0.0
+        cover = (stock_basis / fdaily) if fdaily > 0 else None
+        # Проекция остатка на начало целевого месяца: без неё рекомендация зависела бы
+        # от дня запуска расчёта (5-е vs 28-е число).
+        fc_cur, _ = forecast_for(pid, months24, cur_month.month)
+        burn = (fc_cur['forecast'] if fc_cur else forecast) * remaining_frac
+        stock_start = max(0.0, stock_basis - burn)
+        target_end = fdaily * settings['target_cover_days'] + settings['safety_k'] * fc['sigma']
+
+        qty = max(0.0, forecast + target_end - stock_start)
+        status = 'ok'
+        if cover is not None and cover > settings['overstock_cover_days']:
+            status, qty = 'overstock', 0.0
+        elif cover is not None and cover < settings['critical_cover_days']:
+            status = 'critical'
+        elif fdaily > 0 and stock_basis <= 0:
+            status = 'critical'
+
+        row.update({
+            'forecast': int(forecast), 'forecast_parts': fc,
+            'cover_days': round(cover, 1) if cover is not None else None,
+            'stock_start': round(stock_start), 'target_end': round(target_end),
+            'production_qty': int(round(qty)) if prescriptive else None,
+            'prescriptive': prescriptive, 'status': status,
+            'deficit_months': fc['deficit_months'],
+        })
+        rows.append(row)
+
+    # WAPE-бэктест: прогноз последнего ПОЛНОГО месяца по данным ДО него, против факта.
+    months24_prev = _prod_month_seq(_prod_month_add(cur_month, -25), 24)
+    wape_acc = {'A': [0.0, 0.0], 'B': [0.0, 0.0]}   # класс -> [num, den]
+    for pid, info in catalog.items():
+        klass = abc.get(pid)
+        if klass not in wape_acc:
+            continue
+        srow, rrow = sales.get(pid, {}), ret.get(pid, {})
+        net_prev = _production_net_series(srow, rrow, months24_prev)
+        deficit_prev = _production_deficit_flags(net_prev[-12:])
+        seas = seasonality_by_group.get(info['group'])
+        fc_prev = _production_forecast_one(net_prev, deficit_prev, seas,
+                                           global_seasonality, last_full[1],
+                                           months24_prev[-12:])
+        if fc_prev is None:
+            continue
+        actual = max(0.0, srow.get(last_full, {}).get('qty', 0.0)
+                     - rrow.get(last_full, 0.0))
+        wape_acc[klass][0] += abs(fc_prev['forecast'] - actual)
+        wape_acc[klass][1] += actual
+    wape = {k: (round(n / d * 100, 1) if d > 0 else None) for k, (n, d) in wape_acc.items()}
+    # Головная метрика — объединение A∪B: устойчива к вырождению класса в 1-2 SKU
+    num_ab = wape_acc['A'][0] + wape_acc['B'][0]
+    den_ab = wape_acc['A'][1] + wape_acc['B'][1]
+    wape['AB'] = round(num_ab / den_ab * 100, 1) if den_ab > 0 else None
+
+    # Агрегатный график «приход vs продажи (нетто)» по товарам текущего фильтра
+    row_pids = {r['pid'] for r in rows}
+    chart_receipts, chart_sales = [], []
+    for ym in months12:
+        chart_receipts.append(round(sum(inp.get(p, {}).get(ym, 0.0) for p in row_pids), 1))
+        chart_sales.append(round(sum(
+            max(0.0, sales.get(p, {}).get(ym, {}).get('qty', 0.0) - ret.get(p, {}).get(ym, 0.0))
+            for p in row_pids), 1))
+
+    return {
+        'rows': rows, 'wape': wape,
+        'target_month': target_month_start.isoformat(),
+        'last_full_month': f"{last_full[0]}-{last_full[1]:02d}",
+        'months': [f"{y}-{m:02d}" for (y, m) in months12],
+        'chart': {'months': [f"{y}-{m:02d}" for (y, m) in months12],
+                  'receipts': chart_receipts, 'sales': chart_sales},
+        'out_of_contour_count': len(out_of_contour),
+    }
+
+
+# --- Планировщик партий ---
+
+def _production_build_plan(rows, settings):
+    """Многолинейный план: каждая линия делает СВОИ товарные группы, со своей скоростью
+    и мощностью. Товары раскидываются по подходящим линиям (при выборе — наименее
+    загруженная), внутри линии — по срочности (самое горящее первым). Расписание по дням
+    считается для КАЖДОЙ линии отдельно (линии работают параллельно).
+
+    Товар без подходящей линии помечается 'no_line'. Если у линии нет скорости для товара —
+    режим «только объёмы» для этой линии (без часов/дней). Легаси: если линии не заданы,
+    работает одна линия-универсал из старых настроек."""
+    fam_map = settings['family_map']
+    lines = _production_lines(settings)
+
+    candidates = [r for r in rows
+                  if r.get('prescriptive') and (r.get('production_qty') or 0) > 0]
+    for r in candidates:
+        r['family'] = fam_map.get(r['group']) or r['group_name']
+
+    def cover_key(r):
+        c = r.get('cover_days')
+        return c if c is not None else -1
+
+    def line_can(L, r):
+        # Пусто groups = линия-универсал (делает всё); иначе — только свои группы
+        return (not L['groups']) or (r['group'] in L['groups'])
+
+    def line_rate(L, r):
+        rate = L.get('rate_by_product', {}).get(str(r['pid'])) \
+            or L.get('rate_by_group', {}).get(r['group']) \
+            or (L.get('rate') or 0)
+        return float(rate) if rate else None
+
+    # Состояние каждой линии
+    daily_cap_legacy = None
+    lstate = {}
+    for L in lines:
+        # Легаси-линия с lines_count>1 = множитель мощности (одна «виртуальная» широкая линия)
+        mult = L.get('_lines_count', 1) if L.get('_legacy') else 1
+        budget = mult * L['work_days'] * L['shift_hours']
+        daily = max(1e-6, mult * L['shift_hours'])
+        lstate[L['id']] = {'L': L, 'used': 0.0, 'prev_family': None, 'budget': budget,
+                           'daily': daily, 'changeovers': 0, 'changeover_hours': 0.0, 'count': 0}
+
+    # Порядок: самое срочное первым, семейство вторичным ключом.
+    # str(family) — защита от смешанных типов кодов групп (сортировка не должна падать).
+    ordered_rows = sorted(candidates, key=lambda r: (round(cover_key(r), 1), str(r['family'])))
+
+    batches = []
+    order = 0
+    no_line = []
+    missing_rate = set()
+    for r in ordered_rows:
+        order += 1
+        elig = [L for L in lines if line_can(L, r)]
+        b = {'order': order, 'pid': r['pid'], 'code': r['code'], 'name': r['name'],
+             'unit': r['unit'], 'family': r['family'], 'qty': r['production_qty'],
+             'cover_days': r.get('cover_days'), 'status': r['status'],
+             'line_id': None, 'line_name': None, 'rate': None,
+             'hours': None, 'changeover_h': 0.0, 'cum_hours': None, 'fits': True, 'day': None}
+        if not elig:
+            b['line_name'] = '— нет линии —'
+            no_line.append(r['name'])
+            batches.append(b)
+            continue
+        # Из подходящих — с заданной скоростью; выбираем наименее загруженную
+        elig_rate = [L for L in elig if line_rate(L, r)]
+        pool = elig_rate or elig
+        L = min(pool, key=lambda L: lstate[L['id']]['used'])
+        st = lstate[L['id']]
+        b['line_id'] = L['id']
+        b['line_name'] = L['name']
+        rate = line_rate(L, r)
+        if rate:
+            b['rate'] = rate
+            # Переналадка при смене семейства НА ЭТОЙ линии
+            if st['prev_family'] is not None and r['family'] != st['prev_family']:
+                ch = float(L['changeover_hours'])
+                st['changeovers'] += 1
+            else:
+                ch = 0.0
+            hours = r['production_qty'] / rate
+            st['used'] += ch + hours
+            st['changeover_hours'] += ch
+            st['count'] += 1
+            st['prev_family'] = r['family']
+            # −1e-9: гасит float-погрешность на точном заполнении смены (иначе
+            # used/daily = 3.0000000000000004 давало бы «день 4» в 3-дневном месяце).
+            day = max(1, int(_prod_math.ceil(st['used'] / st['daily'] - 1e-9)))
+            fits = st['used'] <= st['budget']
+            b.update({'hours': round(hours, 1), 'changeover_h': round(ch, 1),
+                      'cum_hours': round(st['used'], 1), 'fits': fits,
+                      'day': day if fits else None})
+        else:
+            missing_rate.add(L['name'])
+            st['count'] += 1
+        batches.append(b)
+
+    # Сводка по линиям
+    lines_summary = []
+    any_scheduled = False
+    for L in lines:
+        st = lstate[L['id']]
+        if not st['count']:
+            continue
+        scheduled = st['used'] > 0
+        any_scheduled = any_scheduled or scheduled
+        line_batches = [x for x in batches if x['line_id'] == L['id']]
+        lines_summary.append({
+            'id': L['id'], 'name': L['name'], 'groups': L['groups'],
+            'batches': st['count'], 'changeovers': st['changeovers'] if scheduled else None,
+            'changeover_hours': round(st['changeover_hours'], 1) if scheduled else None,
+            'used_hours': round(st['used'], 1) if scheduled else None,
+            'budget_hours': round(st['budget'], 1),
+            'utilization': round(st['used'] / st['budget'] * 100, 1) if scheduled and st['budget'] > 0 else None,
+            'not_fits': sum(1 for x in line_batches if not x['fits']),
+            'max_day': max((x['day'] or 0 for x in line_batches), default=0),
+        })
+
+    has_schedule = any_scheduled and not missing_rate and not no_line
+    total_used = sum(s['used_hours'] or 0 for s in lines_summary)
+    total_budget = sum(s['budget_hours'] for s in lines_summary)
+    total_not_fits = sum(s['not_fits'] for s in lines_summary)
+
+    if len(lines) == 1 and lines[0].get('_legacy'):
+        assumptions = (
+            f"Модель: 1 линия-универсал × {lines[0]['work_days']} дн. × {lines[0]['shift_hours']} ч. "
+            f"Задайте отдельные линии и их товары в Настройки → Линии. "
+            f"Посменное расписание цеха — вне модели.")
+    else:
+        assumptions = (
+            f"Линий: {len(lines_summary)}. Каждая делает свои товары, работает параллельно; "
+            f"«День N» — день внутри месяца на своей линии. Посменное расписание цеха — вне модели.")
+
+    return {
+        'batches': batches, 'has_schedule': has_schedule,
+        'missing_rate_groups': sorted(missing_rate),
+        'no_line': no_line,
+        'lines': lines_summary,
+        'summary': {
+            'batches': len(batches),
+            'changeovers': sum(s['changeovers'] or 0 for s in lines_summary) if has_schedule else None,
+            'changeover_hours': round(sum(s['changeover_hours'] or 0 for s in lines_summary), 1) if has_schedule else None,
+            'used_hours': round(total_used, 1) if any_scheduled else None,
+            'budget_hours': round(total_budget, 1),
+            'utilization': round(total_used / total_budget * 100, 1) if any_scheduled and total_budget > 0 else None,
+            'not_fits': total_not_fits,
+        },
+        'assumptions': assumptions,
+    }
+
+
+def _production_reclog_append(entry: dict):
+    """Append-only лог рекомендаций (петля доверия). Только по явной кнопке «Пересчитать»;
+    дедуп по хэшу, ротация ~500 строк, под Lock (threaded-сервер). Best-effort."""
+    try:
+        line = json.dumps(entry, ensure_ascii=False, sort_keys=True)
+        digest = hashlib.md5(line.encode()).hexdigest()
+        with _production_reclog_lock:
+            lines = []
+            if os.path.exists(PRODUCTION_RECLOG_FILE):
+                with open(PRODUCTION_RECLOG_FILE, 'r', encoding='utf-8') as f:
+                    lines = [l for l in f.read().splitlines() if l.strip()]
+            if any(digest in l for l in lines[-20:]):
+                return  # дубль недавнего расчёта
+            entry_full = dict(entry, ts=datetime.now().isoformat(timespec='seconds'), h=digest)
+            lines.append(json.dumps(entry_full, ensure_ascii=False))
+            lines = lines[-500:]
+            with open(PRODUCTION_RECLOG_FILE, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines) + '\n')
+    except OSError as e:
+        logger.warning(f"[Production] rec-log недоступен: {e}")
+
+
+# --- Маршруты ---
+
+_NO_CACHE_HEADERS = {
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache', 'Expires': '0',
+}
+
+
+@app.route('/production')
+def production_page():
+    # Не кэшируем HTML: браузер всегда берёт свежую страницу со ссылками на актуальные
+    # версии CSS/JS (иначе после правок пользователь видит старую закэшированную версию).
+    return render_template('production.html'), 200, _NO_CACHE_HEADERS
+
+
+@app.route('/production/settings')
+def production_settings_page():
+    return render_template('production_settings.html'), 200, _NO_CACHE_HEADERS
+
+
+@app.route('/api/production/overview')
+def api_production_overview():
+    """KPI + доска риска + таблица + план. Кэш 10 мин; ключ включает mtime настроек
+    (сохранение настроек мгновенно инвалидирует), ?refresh=1 сбрасывает явно."""
+    settings, err = load_production_settings()
+    if err:
+        return jsonify({'success': False, 'error': err, 'settings_error': True}), 500
+    storage = (request.args.get('storage') or '').strip() or None
+    group = (request.args.get('group') or '').strip() or None
+    refresh = request.args.get('refresh') == '1'
+    ck = f"prod|{storage}|{group}|{_production_fingerprint()}"
+    if not refresh:
+        hit = _production_cache_get(ck)
+        if hit:
+            return jsonify(dict(hit, from_cache=True))
+    try:
+        data = _production_compute(settings, storage=storage, group=group)
+        plan = _production_build_plan(data['rows'], settings)
+        rows = data['rows']
+        prescriptive = [r for r in rows if r.get('prescriptive')]
+        deficit = [r for r in prescriptive if r['status'] == 'critical']
+        overstock = [r for r in rows if r['status'] == 'overstock']
+        risk_board = sorted(
+            deficit, key=lambda r: r['cover_days'] if r['cover_days'] is not None else -1)[:15]
+        storages = db.execute_query(
+            "SELECT s.fCODE AS code, s.fNAME AS name FROM STORAGES s WITH (NOLOCK) "
+            "WHERE s.fCLOSE = 0 ORDER BY s.fCODE")
+        payload = {
+            'success': True,
+            'kpis': {
+                'deficit_count': len(deficit),
+                'overstock_count': len(overstock),
+                'active_skus': sum(1 for r in rows if r['avg12'] > 0 or r['stock_wh'] > 0),
+                'wape': data['wape'],
+            },
+            'risk_board': risk_board,
+            'rows': rows,
+            'plan': plan,
+            'settings': settings,
+            'storages': [{'code': (s['code'] or '').strip(), 'name': s['name']}
+                         for s in storages
+                         if (s['code'] or '').strip() not in set(settings['excluded_storages'])],
+            'target_month': data['target_month'],
+            'last_full_month': data['last_full_month'],
+            'chart': data['chart'],
+            'out_of_contour_count': data['out_of_contour_count'],
+            'generated_at': datetime.now().isoformat(timespec='seconds'),
+            'from_cache': False,
+        }
+        return jsonify(_production_cache_set(ck, payload))
+    except pyodbc.Error as e:
+        logger.error(f"[Production] БД: {e}")
+        return jsonify({'success': False, 'error': 'База данных недоступна'}), 500
+    except Exception as e:
+        logger.error(f"[Production] overview: {e}")
+        import traceback; traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/production/product/<int:pid>/history')
+def api_production_history(pid):
+    """Месячные ряды товара (12 полных мес): приход, возвраты, продажи, нетто."""
+    settings, err = load_production_settings()
+    if err:
+        return jsonify({'success': False, 'error': err}), 500
+    try:
+        today = datetime.now().date()
+        cur_month = _prod_date(today.year, today.month, 1)
+        start = _prod_month_add(cur_month, -12)
+        sales, ret, inp, _ = _production_fetch_monthly(
+            start, cur_month, settings['excluded_storages'])
+        months = _prod_month_seq(start, 12)
+        srow, rrow, irow = sales.get(pid, {}), ret.get(pid, {}), inp.get(pid, {})
+        return jsonify({'success': True, 'months': [f"{y}-{m:02d}" for y, m in months],
+                        'sales': [round(srow.get(ym, {}).get('qty', 0.0), 1) for ym in months],
+                        'returns': [round(rrow.get(ym, 0.0), 1) for ym in months],
+                        'receipts': [round(irow.get(ym, 0.0), 1) for ym in months]})
+    except pyodbc.Error:
+        return jsonify({'success': False, 'error': 'База данных недоступна'}), 500
+    except Exception as e:
+        logger.error(f"[Production] history {pid}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/production/settings', methods=['GET', 'POST'])
+def api_production_settings():
+    """Настройки производства. GET отдаёт также справочники для страницы настроек."""
+    if request.method == 'GET':
+        settings, err = load_production_settings()
+        groups = db.execute_query(
+            "SELECT RTRIM(t.fCODE) AS code, t.fCAPTION AS name FROM TREES t WITH (NOLOCK) "
+            "WHERE t.fTREEID = 'PrdctGrp' ORDER BY t.fCAPTION")
+        storages = db.execute_query(
+            "SELECT s.fCODE AS code, s.fNAME AS name, s.fCLOSE AS closed "
+            "FROM STORAGES s WITH (NOLOCK) ORDER BY s.fCODE")
+        mtime = None
+        try:
+            mtime = datetime.fromtimestamp(
+                os.path.getmtime(PRODUCTION_SETTINGS_FILE)).isoformat(timespec='seconds')
+        except OSError:
+            pass
+        return jsonify({'success': err is None, 'error': err,
+                        'settings': settings or PRODUCTION_DEFAULT_SETTINGS,
+                        'available_groups': [{'code': g['code'], 'name': g['name']} for g in groups],
+                        'available_storages': [{'code': (s['code'] or '').strip(),
+                                                'name': s['name'],
+                                                'closed': bool(s['closed'])} for s in storages],
+                        'last_modified': mtime})
+    # POST
+    try:
+        payload = request.get_json(force=True, silent=True)
+        groups = {(g['code'] or '').strip() for g in db.execute_query(
+            "SELECT RTRIM(t.fCODE) AS code FROM TREES t WITH (NOLOCK) WHERE t.fTREEID = 'PrdctGrp'")}
+        storages = {(s['code'] or '').strip() for s in db.execute_query(
+            "SELECT s.fCODE AS code FROM STORAGES s WITH (NOLOCK)")}
+        pids = {str(int(p['pid'])) for p in db.execute_query(
+            "SELECT p.fID AS pid FROM PRODUCTS p WITH (NOLOCK) WHERE p.fCLOSED = 0")}
+        settings, errors = _production_validate_settings(payload, groups, storages, pids)
+        if errors:
+            return jsonify({'success': False, 'errors': errors}), 400
+        save_production_settings(settings)
+        _production_cache_clear()
+        logger.info(f"[Production] Настройки сохранены пользователем {current_username()}")
+        return jsonify({'success': True})
+    except OSError as e:
+        logger.error(f"[Production] Не удалось сохранить настройки: {e}")
+        return jsonify({'success': False, 'error': 'Не удалось сохранить файл настроек'}), 500
+    except Exception as e:
+        logger.error(f"[Production] settings POST: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/production/plan', methods=['POST'])
+def api_production_plan():
+    """Явный пересчёт плана (кнопка «Пересчитать») + запись в rec-log."""
+    settings, err = load_production_settings()
+    if err:
+        return jsonify({'success': False, 'error': err}), 500
+    try:
+        payload = request.get_json(silent=True) or {}
+        storage = (payload.get('storage') or '').strip() or None
+        group = (payload.get('group') or '').strip() or None
+        data = _production_compute(settings, storage=storage, group=group)
+        plan = _production_build_plan(data['rows'], settings)
+        top = [{'pid': b['pid'], 'code': b['code'], 'qty': b['qty']}
+               for b in plan['batches'][:20]]
+        _production_reclog_append({
+            'target_month': data['target_month'], 'storage': storage, 'group': group,
+            'batches': len(plan['batches']), 'top': top,
+        })
+        _production_cache_clear()   # план пересчитан свежими данными — overview тоже обновить
+        return jsonify({'success': True, 'plan': plan, 'rows': data['rows'],
+                        'target_month': data['target_month'], 'wape': data['wape']})
+    except pyodbc.Error:
+        return jsonify({'success': False, 'error': 'База данных недоступна'}), 500
+    except Exception as e:
+        logger.error(f"[Production] plan: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+PRODUCTION_AI_SYSTEM = (
+    "Ты — советник владельца производственно-дистрибуционной компании. Тебе дают УЖЕ ПОСЧИТАННЫЙ "
+    "план производства на следующий месяц: дефицитные позиции, рекомендованные объёмы, партии, "
+    "переналадки, точность прогноза. Твоя роль — ПОЯСНИТЬ эти цифры, а не планировать заново.\n\n"
+    "Формат (Markdown, по-русски):\n"
+    "1. **Итог** — 1–2 предложения: главный приоритет месяца.\n"
+    "2. **Приоритеты** — 2–4 позиции/семейства с цифрами из данных и почему они первые.\n"
+    "3. **Риски** — дефицит/затоваривание/переналадки, только из данных.\n"
+    "4. **Проверить вручную** — 1–3 пункта, где модель может ошибаться (мало истории, дефицитные месяцы).\n\n"
+    "ЖЁСТКИЕ ПРАВИЛА: используй ТОЛЬКО числа и товары из входных данных; НИЧЕГО не придумывай и не "
+    "досчитывай; не изобретай новые количества; если данных мало — так и скажи. Это пояснение к расчёту, "
+    "не команда производству. Не длиннее ~250 слов."
+)
+
+
+def _production_ai_summary(settings, data, plan):
+    """Агрегаты для AI: только цифры с экрана, без PII. Промпт собирает СЕРВЕР —
+    клиент не может внедрить произвольный текст."""
+    lines = [f"Целевой месяц: {data['target_month']}"]
+    wape = data.get('wape') or {}
+    if wape.get('A') is not None:
+        lines.append(f"Точность прогноза за прошлый месяц (WAPE): A: {wape['A']}%"
+                     + (f", B: {wape['B']}%" if wape.get('B') is not None else ""))
+    risk = [r for r in data['rows']
+            if r.get('prescriptive') and r['status'] == 'critical'][:10]
+    if risk:
+        lines.append("Дефицитные позиции (дни покрытия, рекомендовано произвести):")
+        for r in sorted(risk, key=lambda x: x['cover_days'] if x['cover_days'] is not None else -1):
+            lines.append(f"- {r['name']}: покрытие {r['cover_days']} дн., произвести "
+                         f"{r['production_qty']} {r['unit']} (прогноз {r['forecast']})")
+    s = plan['summary']
+    if plan['has_schedule']:
+        lines.append(f"План: {s['batches']} партий, {s['changeovers']} переналадок "
+                     f"({s['changeover_hours']} ч), загрузка {s['utilization']}% "
+                     f"от {s['budget_hours']} ч; не помещается: {s['not_fits']}.")
+    else:
+        lines.append(f"План: {s['batches']} партий (только объёмы — нормы выработки не заданы"
+                     + (f" для групп: {', '.join(plan['missing_rate_groups'])}" if plan['missing_rate_groups'] else "")
+                     + ").")
+        lines.append(plan['assumptions'])
+    over = [r for r in data['rows'] if r['status'] == 'overstock'][:5]
+    if over:
+        lines.append("Затоварено: " + "; ".join(
+            f"{r['name']} ({r['cover_days']} дн.)" for r in over))
+    return "\n".join(lines)
+
+
+@app.route('/api/production/ai-plan', methods=['POST'])
+def api_production_ai_plan():
+    """AI-пояснение плана (SSE). Роль ограничена «объясни цифры»; мягкая деградация."""
+    if anthropic is None:
+        return jsonify({"success": False, "error": "AI недоступен: пакет anthropic не установлен на сервере"}), 400
+    if not ANTHROPIC_API_KEY:
+        return jsonify({"success": False, "error": "AI недоступен: ANTHROPIC_API_KEY не задан в .env сервера"}), 400
+    with _production_ai_lock:
+        now = datetime.now().timestamp()
+        if now - _production_ai_last_call[0] < _PRODUCTION_AI_COOLDOWN:
+            return jsonify({"success": False,
+                            "error": f"Слишком часто: подождите {_PRODUCTION_AI_COOLDOWN} сек между запросами"}), 429
+        _production_ai_last_call[0] = now
+    settings, err = load_production_settings()
+    if err:
+        return jsonify({"success": False, "error": err}), 500
+    try:
+        payload = request.get_json(silent=True) or {}
+        storage = (payload.get('storage') or '').strip() or None
+        group = (payload.get('group') or '').strip() or None
+        data = _production_compute(settings, storage=storage, group=group)
+        plan = _production_build_plan(data['rows'], settings)
+        user_prompt = "План производства:\n\n" + _production_ai_summary(settings, data, plan)
+    except Exception as e:
+        logger.error(f"[Production] AI подготовка: {e}")
+        return jsonify({"success": False, "error": str(e)}), 400
+
+    def generate():
+        try:
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            with client.messages.stream(
+                model="claude-opus-4-8",
+                max_tokens=1200,
+                system=PRODUCTION_AI_SYSTEM,
+                messages=[{"role": "user", "content": user_prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    if text:
+                        yield "data: " + json.dumps({"t": text}, ensure_ascii=False) + "\n\n"
+            yield "data: " + json.dumps({"done": True}) + "\n\n"
+        except anthropic.APIError as e:
+            logger.error(f"[Production] Claude API: {e}")
+            yield "data: " + json.dumps({"error": f"Claude API: {str(e)}"}, ensure_ascii=False) + "\n\n"
+        except Exception as e:
+            logger.error(f"[Production] AI stream: {e}")
+            yield "data: " + json.dumps({"error": str(e)}, ensure_ascii=False) + "\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
+                             'Connection': 'keep-alive'})
 
 
 # =============================================
