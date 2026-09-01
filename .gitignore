@@ -64,6 +64,8 @@ find_matching_*.py
 list_*.py
 test_*.py
 verify_*.py
+# …но постоянные тесты в tests/ — версионируются
+!tests/test_*.py
 
 # IDE
 .vscode/
