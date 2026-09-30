@@ -1,0 +1,173 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Маршруты — Sales Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=5">
+{% endblock %}
+
+{% block content %}
+<div class="rt-page" id="rtOverview">
+
+    <!-- ШАПКА -->
+    <div class="rt-topbar">
+        <div class="rt-brand">
+            <h1><span class="rt-accent">//</span> Маршруты · как сейчас</h1>
+            <span id="rtFresh" class="rt-pill d-none"></span>
+        </div>
+        <nav class="rt-tabs" aria-label="Разделы маршрутов">
+            <a href="/routes" aria-current="page">Обзор</a>
+            <a href="/routes/optimize">Оптимизация</a>
+            <a href="/routes/settings">Настройки</a>
+        </nav>
+        <div class="rt-toolbar">
+            <button id="rtRefreshBtn" type="button" class="rt-btn rt-btn-ghost" title="Заново прочитать данные из ERP и пересчитать">
+                <i class="fas fa-rotate" aria-hidden="true"></i><span>Обновить</span>
+            </button>
+            <a href="/routes/settings" class="rt-btn rt-btn-ghost"><i class="fas fa-sliders" aria-hidden="true"></i><span>Настройки</span></a>
+        </div>
+    </div>
+
+    <!-- Объявления для скринридеров -->
+    <div id="rtStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+
+    <div id="rtLoading" class="rt-loading" role="status" aria-live="polite">
+        <div class="rt-spinner" aria-hidden="true"></div>Считаю маршруты по текущему плану из ERP…
+        <small>Первый расчёт после запуска может занять до минуты</small>
+    </div>
+    <div id="rtError" class="rt-alert d-none" role="alert">
+        <i class="fas fa-plug-circle-xmark" aria-hidden="true"></i>
+        <span id="rtErrorText" class="rt-alert-text"></span>
+        <button id="rtRetryBtn" type="button" class="rt-btn rt-btn-ghost">Повторить</button>
+        <a id="rtLoginLink" href="/login?next=/routes" class="rt-btn rt-btn-ghost d-none">Войти</a>
+    </div>
+
+    <div id="rtBody" class="d-none">
+
+        <!-- ЧЕК-ЛИСТ: что осталось настроить -->
+        <section id="rtChecklist" class="rt-check d-none" aria-labelledby="rtCheckTitle">
+            <div class="rt-check-head">
+                <i class="fas fa-list-check" aria-hidden="true"></i>
+                <h2 id="rtCheckTitle">Что осталось настроить</h2>
+                <span class="rt-check-note">без этого часть цифр не посчитана</span>
+            </div>
+            <ul id="rtCheckList" class="rt-check-list"></ul>
+        </section>
+
+        <!-- KPI-ЛЕНТА простыми словами -->
+        <div class="rt-ribbon" role="group" aria-label="Главные показатели текущего плана">
+            <div class="rt-tile" id="kpiWeak">
+                <span class="rt-tile-label">Слабые дни зимой</span>
+                <span class="rt-tile-val" data-v>–</span>
+                <span class="rt-tile-sub" data-s></span>
+            </div>
+            <div class="rt-tile" id="kpiPoor">
+                <span class="rt-tile-label">Бедные рейсы</span>
+                <span class="rt-tile-val" data-v>–</span>
+                <span class="rt-tile-sub" data-s></span>
+            </div>
+            <div class="rt-tile t-acc" id="kpiDiesel">
+                <span class="rt-tile-label">Дизель грузовиков</span>
+                <span class="rt-tile-val" data-v>–</span>
+                <span class="rt-tile-sub" data-s></span>
+            </div>
+            <div class="rt-tile" id="kpiMgrKm">
+                <span class="rt-tile-label">Пробег менеджеров</span>
+                <span class="rt-tile-val" data-v>–</span>
+                <span class="rt-tile-sub" data-s></span>
+            </div>
+            <div class="rt-tile" id="kpiLoad">
+                <span class="rt-tile-label">Загрузка машин летом</span>
+                <span class="rt-tile-val" data-v>–</span>
+                <span class="rt-tile-sub" data-s></span>
+            </div>
+            <div class="rt-tile" id="kpiDay">
+                <span class="rt-tile-label">Рабочий день</span>
+                <span class="rt-tile-val" data-v>–</span>
+                <span class="rt-tile-sub" data-s></span>
+            </div>
+        </div>
+
+        <!-- 01 · КАРТА + ПАНЕЛЬ ДНЯ -->
+        <section class="rt-section" id="rtMapSection" aria-labelledby="rtMapTitle">
+            <div class="rt-shead">
+                <span class="rt-kicker">01</span>
+                <h2 id="rtMapTitle">Карта клиентов</h2>
+                <span class="rt-shead-note" id="rtCoordsNote"></span>
+            </div>
+            <div class="rt-panel">
+                <div class="rt-maptools">
+                    <label for="rtMgrFilter">Менеджер
+                        <select id="rtMgrFilter" class="rt-select">
+                            <option value="">Все менеджеры</option>
+                        </select>
+                    </label>
+                    <div class="rt-chips" id="rtDayChips" role="group" aria-label="Дни недели на карте"></div>
+                    <span class="rt-maptools-note" id="rtNoCoords" aria-live="polite"></span>
+                    <div class="rt-routebar" id="rtRouteBar" hidden>
+                        <i class="fas fa-route" aria-hidden="true"></i>
+                        <span id="rtRouteBarText"></span>
+                        <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rtRouteClear">
+                            <i class="fas fa-xmark" aria-hidden="true"></i>Показать всех клиентов
+                        </button>
+                    </div>
+                </div>
+                <div class="rt-mapgrid">
+                    <div class="rt-mapcol">
+                        <div id="rtMap" class="rt-map" role="region" aria-label="Карта клиентов, домов менеджеров и склада"></div>
+                        <div id="rtMapLegend" class="rt-maplegend" aria-label="Легенда карты"></div>
+                    </div>
+                    <aside class="rt-side" aria-label="День менеджера">
+                        <div class="rt-side-inner" id="rtSide"></div>
+                    </aside>
+                </div>
+            </div>
+        </section>
+
+        <!-- 02 · ТЕПЛОВАЯ ТАБЛИЦА -->
+        <section class="rt-section" aria-labelledby="rtHeatTitle">
+            <div class="rt-shead">
+                <span class="rt-kicker">02</span>
+                <h2 id="rtHeatTitle">Неделя по дням</h2>
+                <span class="rt-shead-note">в клетке — ожидаемая выручка зимой, визиты и шанс набрать норму</span>
+            </div>
+            <div class="rt-panel">
+                <div class="rt-scroll">
+                    <table class="rt-heat" id="rtHeat">
+                        <caption class="rt-sr-only">Менеджеры по дням недели. Нажмите на день, чтобы увидеть клиентов и маршрут. Стрелки переходят между днями.</caption>
+                        <thead></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div id="rtHeatEmpty" class="rt-empty d-none">В ERP нет маршрутов менеджеров — считать нечего.</div>
+                <div class="rt-heat-legend" id="rtHeatLegend"></div>
+            </div>
+        </section>
+
+        <!-- 03 · ОТКУДА ЦИФРЫ -->
+        <section class="rt-section" aria-labelledby="rtSeasonTitle">
+            <div class="rt-shead">
+                <span class="rt-kicker">03</span>
+                <h2 id="rtSeasonTitle">Какой сезон в какой цифре</h2>
+                <span class="rt-shead-note">прогноз по продажам за последний год</span>
+            </div>
+            <div class="rt-panel rt-panel-pad">
+                <div class="rt-season" id="rtSeason"></div>
+                <div class="rt-months" id="rtMonths" aria-hidden="true"></div>
+                <p class="rt-season-src" id="rtSeasonSrc"></p>
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+<script src="{{ url_for('static', filename='js/routes_overview.js') }}?v=4"></script>
+{% endblock %}

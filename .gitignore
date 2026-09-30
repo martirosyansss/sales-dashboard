@@ -36,6 +36,8 @@ dbhub.toml
 
 # Database
 *.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 

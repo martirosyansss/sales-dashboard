@@ -12951,6 +12951,9 @@ def api_production_ai_plan():
 # ЗАПУСК ПРИЛОЖЕНИЯ
 # =============================================
 
+import route_optimizer
+route_optimizer.init_app(app, db)
+
 if __name__ == '__main__':
     print("=" * 80)
     print("Sales Dashboard v2.0 starting...")

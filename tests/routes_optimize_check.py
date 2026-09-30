@@ -1,0 +1,281 @@
+# -*- coding: utf-8 -*-
+"""Живая приёмка этапа 3 «Маршрутов» (режим А) на боевой БД — ТОЛЬКО ЧТЕНИЕ (план этапа 3, §12).
+
+Запуск из корня проекта:  python tests/routes_optimize_check.py
+Имя без префикса test_: pytest его не собирает (нужна боевая ERP).
+
+ERP читается одним снимком этапа 1 (erp._select, только SELECT). Настройки и решения владельца —
+из КОПИИ route_optimizer.db (или ROUTES_DB_PATH) во временной папке: сама база не меняется (даже
+миграцией схемы); базы нет — настройки по умолчанию. Расчёт — как кнопка «Рассчитать» по умолчанию:
+все менеджеры в расчёте, старт «текущий план», частота «по продажам».
+
+Критерии (цифры не подгоняются: если критерий не выполнен, отчёт так и говорит):
+  - частоты: у каждого клиента визитов за цикл = целевая частота × 2;
+  - шаблоны: все допустимые, закреплённые не тронуты, запрещённые не выбраны;
+  - время: нет дней «стало» с планом длиннее окна, если у менеджера в «было» таких не было;
+    если были — в неделю их не больше;
+  - стоимость: C_стало ≤ C_было у каждого менеджера (быстрая оценка); итог «стало» не хуже по
+    слабым дням и км менеджеров (полная оценка этапа 1) — если хуже, отчёт показывает, где и почему;
+  - выручка: снижение частоты не уменьшает выручку модели ни в один сезон (зима, лето, год) — ни
+    по компании, ни у менеджера (частота по продажам — по самому высокому спросу из сезонов);
+  - скорость: весь расчёт ≤ 2 мин при optimizer_seconds_per_manager = 8;
+  - повторяемость: второй запуск с теми же параметрами даёт те же шаблоны.
+Код выхода: 0 — все критерии выполнены, 1 — нет.
+"""
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+import tempfile
+import time
+from collections import Counter
+from datetime import timedelta
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+os.chdir(ROOT)
+
+import app_v2  # noqa: E402  — только строка подключения к ERP; сервер не запускается
+from route_optimizer import evaluate as ev  # noqa: E402
+from route_optimizer import optimize as opt  # noqa: E402
+from route_optimizer import patterns as pt  # noqa: E402
+from route_optimizer.snapshot import load_snapshot  # noqa: E402
+from route_optimizer.store import DEFAULT_SETTINGS, Bundle, Store  # noqa: E402
+
+TIME_LIMIT_S = 120.0
+SECONDS_PER_MANAGER = 8
+PARAMS = {'agent_ids': None, 'start': 'current', 'frequencies': 'sales'}
+
+
+def load_settings() -> tuple[Bundle, list, str]:
+    """(настройки, решения, откуда) — из копии базы маршрутов; сама база не открывается на запись."""
+    path = os.environ.get('ROUTES_DB_PATH') or os.path.join(ROOT, 'route_optimizer.db')
+    if not os.path.exists(path):
+        return Bundle(dict(DEFAULT_SETTINGS), None, {}, {}), [], 'по умолчанию (базы маршрутов нет)'
+    folder = tempfile.mkdtemp(prefix='routes_check_')
+    copy = os.path.join(folder, 'routes.db')
+    for suffix in ('', '-wal', '-shm'):
+        if os.path.exists(path + suffix):
+            shutil.copy2(path + suffix, copy + suffix)
+    try:
+        store = Store(copy)
+        return store.load(), store.load_decisions(), f'копия {path}'
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def num(x: float | None, digits: int = 1) -> str:
+    if x is None:
+        return '—'
+    return f'{x:,.{digits}f}'.replace(',', ' ')
+
+
+def arrow(a: float | None, b: float | None, digits: int = 1) -> str:
+    return f'{num(a, digits)} → {num(b, digits)}'
+
+
+def status(ok: bool) -> str:
+    return 'ПРОЙДЕНО' if ok else 'НЕ ПРОЙДЕНО'
+
+
+def overtime_days(days: list[dict], window: float) -> int:
+    return sum(1 for d in days if d['plan_minutes'] is not None and d['plan_minutes'] > window)
+
+
+def main() -> int:
+    bundle, decisions, source = load_settings()
+    settings = dict(bundle.settings, optimizer_seconds_per_manager=SECONDS_PER_MANAGER)
+    bundle = Bundle(settings, bundle.depot, bundle.trucks, bundle.managers)
+    started = time.perf_counter()
+    snap = load_snapshot(app_v2.db.connection_string)
+    snap_seconds = time.perf_counter() - started
+    center = (float(settings['city_center_lat']), float(settings['city_center_lon']))
+    calib = ev.calibrate(snap.recent_visits, snap.fixes_by_agent,
+                         snap.today - timedelta(days=ev.CALIB_WINDOW_DAYS), snap.today, center,
+                         float(settings['city_radius_km']))
+
+    runs = []
+    for _ in range(2):
+        t0 = time.perf_counter()
+        out = opt.run_optimization(snap, bundle, calib, decisions, PARAMS)
+        runs.append((out, time.perf_counter() - t0))
+    out, run_seconds = runs[0]
+    res = out.result
+    window = out.before.norms.work_minutes
+
+    print('Приёмка этапа 3 «Маршруты» — режим А (ERP только чтение)')
+    print(f'  снимок ERP на {snap.data_as_of:%d.%m.%Y %H:%M} ({snap_seconds:.1f} с); настройки: {source}; '
+          f'решений владельца: {len(decisions)}')
+    print(f'  параметры: все менеджеры в расчёте, старт «текущий план», частота «по продажам», '
+          f'{SECONDS_PER_MANAGER} с на менеджера; цена топлива {res["fuel_price_used"]} драм/л '
+          f'({"настройки" if res["fuel_price_source"] == "settings" else "по умолчанию"}); '
+          f'грузовики в стоимости: {"да" if res["truck_costs"] else "нет"}')
+    print()
+
+    # --- таблица «было → стало» ---
+    header = (f'{"Менеджер":<9} {"визитов/нед":>15} {"слабых дн./нед":>15} {"км/нед":>17} '
+              f'{"ч у клиентов":>13} {"C, драм/нед":>19} {"перен.":>6} {"частота":>7} {"оба":>4} {"поиск, с":>8}')
+    print(header)
+    print('-' * len(header))
+    by_agent = {o.agent_id: o for o in out.managers}
+    for m in res['managers']:
+        b, a = m['before'], m['after']
+        kinds = Counter(ch['type'] for ch in m['changes'])
+        o = by_agent[m['agent_id']]
+        print(f'{m["code"]:<9} {arrow(b["visits"], a["visits"]):>15} '
+              f'{arrow(b["days_below_min"], a["days_below_min"]):>15} '
+              f'{arrow(b["manager_km"], a["manager_km"]):>17} '
+              f'{arrow(b["avg_work_hours"], a["avg_work_hours"]):>13} '
+              f'{arrow(b["cost"], a["cost"], 0):>19} {kinds["move"]:>6} {kinds["frequency"]:>7} '
+              f'{kinds["both"]:>4} {o.stats.seconds:>8.2f}' + ('  СТОП ПО ВРЕМЕНИ' if m['time_capped'] else ''))
+    tb, ta = res['before'], res['after']
+    print('-' * len(header))
+    print(f'{"Компания":<9} {arrow(tb["visits_week"], ta["visits_week"]):>15} '
+          f'{arrow(tb["days_below_min"], ta["days_below_min"]):>15} '
+          f'{arrow(tb["manager_km_week"], ta["manager_km_week"]):>17} '
+          f'{arrow(tb["avg_plan_work_hours"], ta["avg_plan_work_hours"]):>13}')
+    print(f'  выручка в неделю (модель): зима {arrow(tb["revenue_week_low"], ta["revenue_week_low"], 0)}, '
+          f'лето {arrow(tb["revenue_week_peak"], ta["revenue_week_peak"], 0)}, '
+          f'год {arrow(tb["revenue_week_year"], ta["revenue_week_year"], 0)}')
+    print(f'  рабочих дней в неделю {arrow(tb["days_total"], ta["days_total"])}; '
+          f'км грузовиков {arrow(tb["truck_km_week"], ta["truck_km_week"])}; '
+          f'устаревших решений (не применены): {len(res["stale_decisions"])}')
+    for m in res['managers']:
+        f = m['feasibility']
+        if not f['reachable']:
+            print(f'  {m["code"]}: зимой {num(f["revenue_week_low"], 0)} драм/нед → 100 000 возможно '
+                  f'максимум в {f["max_days_ge_min"]} из {f["workdays"]} дней')
+    print()
+
+    # --- критерии ---
+    results = []
+
+    freq_bad, pattern_bad = [], []
+    for o in out.managers:
+        for cid, spec, final in zip(o.customers, o.specs, o.final):
+            if len(final) != round(2 * spec.target):
+                freq_bad.append(f'{o.code}/{cid}: {len(final)} визитов за цикл при частоте {spec.target:g}')
+            if final not in spec.allowed or final in spec.forbidden \
+                    or (spec.locked and final != spec.allowed[0]):
+                pattern_bad.append(f'{o.code}/{cid}: {pt.pattern_text(final)}')
+    total_pairs = sum(len(o.customers) for o in out.managers)
+    results.append(('Частоты: визитов за цикл = целевая частота × 2', not freq_bad,
+                    f'клиентов {total_pairs}, нарушений {len(freq_bad)}', freq_bad[:5]))
+    locked = sum(1 for o in out.managers for s in o.specs if s.locked)
+    forbidden = sum(len(s.forbidden) for o in out.managers for s in o.specs)
+    results.append(('Шаблоны: допустимые, закреплённые не тронуты, запрещённые не выбраны', not pattern_bad,
+                    f'закреплённых {locked}, запрещённых шаблонов {forbidden}, нарушений {len(pattern_bad)}',
+                    pattern_bad[:5]))
+
+    time_bad = []
+    for m in res['managers']:
+        before_ot = overtime_days(m['days_before'], window)                   # в неделю (W = 1)
+        after_ot = overtime_days(m['days_after'], window) / pt.CYCLE_WEEKS    # в неделю
+        if (before_ot == 0 and after_ot > 0) or after_ot > before_ot:
+            time_bad.append(f'{m["code"]}: дней длиннее окна в неделю {before_ot} → {after_ot:g}')
+    results.append((f'Время: дней «стало» длиннее {window / 60:g} ч не больше, чем «было»', not time_bad,
+                    f'менеджеров с нарушением {len(time_bad)}', time_bad))
+
+    # Объяснение роста C: частота снижена у клиента с визитами в нерабочий день (вс) — новый шаблон только
+    # в рабочие дни, а рабочий день без выручки — «слабый» (штраф), тогда как нерабочий день «было» в
+    # стоимость слабых дней не входит
+    workdays = set(settings['workdays'])
+    cost_bad = []
+    for m in res['managers']:
+        if m['after']['cost'] <= m['before']['cost']:
+            continue
+        o = by_agent[m['agent_id']]
+        forced = sum(1 for spec, final in zip(o.specs, o.final)
+                     if len(final) < len(spec.current) and any(d not in workdays for _, d in spec.current))
+        why = (f' — у {forced} клиентов с визитами в нерабочий день снижена частота: новый шаблон только в '
+               f'рабочие дни, и эти дни попадают под штраф слабого дня, а нерабочий день в «было» его не '
+               f'несёт' if forced else '')
+        cost_bad.append(f'{m["code"]}: {m["before"]["cost"]} → {m["after"]["cost"]}{why}')
+    results.append(('Стоимость: C_стало ≤ C_было у каждого менеджера (быстрая оценка)', not cost_bad,
+                    f'C компании {num(sum(o.cost_before for o in out.managers), 0)} → '
+                    f'{num(sum(o.cost_after for o in out.managers), 0)} драм/нед', cost_bad))
+
+    weak_ok = ta['days_below_min'] <= tb['days_below_min']
+    km_ok = ta['manager_km_week'] <= tb['manager_km_week']
+    notes = []
+    for m in res['managers']:
+        b, a = m['before'], m['after']
+        if a['manager_km'] > b['manager_km']:
+            notes.append(f'{m["code"]}: км +{a["manager_km"] - b["manager_km"]:.1f}/нед, слабых дней '
+                         f'{b["days_below_min"]} → {a["days_below_min"]} — поиск меняет пробег на более '
+                         f'сильные дни (штраф слабого дня {settings["penalty_weak_day"]:,} драм)'.replace(',', ' '))
+        if a['days_below_min'] > b['days_below_min']:
+            notes.append(f'{m["code"]}: слабых дней {b["days_below_min"]} → {a["days_below_min"]} в неделю '
+                         f'(полная оценка Монте-Карло; поиск видит P(день ≥ минимума) приближённо)')
+    results.append(('Итог «стало» не хуже по слабым дням и км менеджеров (полная оценка)', weak_ok and km_ok,
+                    f'слабых дней/нед {arrow(tb["days_below_min"], ta["days_below_min"])}, '
+                    f'км/нед {arrow(tb["manager_km_week"], ta["manager_km_week"])}', notes))
+
+    # Выручка модели клиента в сезоне s — min(f, λ_s) × средний заказ (p = min(1, λ/f) на визит):
+    # частота по продажам — по max λ сезонов, и снижение её не уменьшает ни в один сезон. Потери
+    # считаются по клиентам, которым частоту снизило правило «по продажам» (решения владельца — его
+    # выбор); итог компании и менеджеров «было → стало» — рядом, допуск — 1 драм (округление).
+    seasons = (('зима', 'low', 'revenue_week_low', 'revenue_low'),
+               ('лето', 'peak', 'revenue_week_peak', 'revenue_peak'),
+               ('год', 'year', 'revenue_week_year', 'revenue_year'))
+    models = out.before.models
+    cut = sorted({cid for o in out.managers for cid, spec, final in zip(o.customers, o.specs, o.final)
+                  if spec.source == 'sales' and len(final) < len(spec.current)})
+
+    def weekly(dem, f: float) -> float:
+        return min(f, dem.lam) * dem.mean_revenue if dem.values and f > 0 else 0.0
+
+    loss = {name: sum(weekly(getattr(models[c], attr), res['customers'][str(c)]['freq_current'])
+                      - weekly(getattr(models[c], attr), res['customers'][str(c)]['freq_target']) for c in cut)
+            for name, attr, _, _ in seasons}
+    rev_bad = [f'компания, {name}: {num(tb[key], 0)} → {num(ta[key], 0)}'
+               for name, _, key, _ in seasons if ta[key] < tb[key] - 1]
+    rev_bad += [f'{m["code"]}, {name}: {num(m["before"][mk], 0)} → {num(m["after"][mk], 0)}'
+                for m in res['managers'] for name, _, _, mk in seasons if m['after'][mk] < m['before'][mk] - 1]
+    manual = sum(1 for o in out.managers for spec in o.specs if spec.source in ('manual', 'locked'))
+    results.append(('Выручка: снижение частоты не теряет выручку ни в один сезон (зима, лето, год)',
+                    max(loss.values(), default=0.0) <= 1.0 and (not rev_bad or manual > 0),
+                    f'снижений частоты по продажам {len(cut)}, потеря от них в неделю: '
+                    + ', '.join(f'{name} {num(v, 0)}' for name, v in loss.items()) + ' драм; итог: '
+                    + ', '.join(f'{name} {arrow(tb[key], ta[key], 0)}' for name, _, key, _ in seasons)
+                    + (f'; решений владельца по частоте и дням: {manual}' if manual else ''),
+                    rev_bad))
+
+    capped = [m['code'] for m in res['managers'] if m['time_capped']]
+    results.append((f'Скорость: расчёт по {len(res["managers"])} менеджерам ≤ {TIME_LIMIT_S / 60:g} мин',
+                    run_seconds <= TIME_LIMIT_S,
+                    f'{run_seconds:.1f} с (поиск {sum(o.stats.seconds for o in out.managers):.1f} с, '
+                    f'повтор {runs[1][1]:.1f} с); стоп по времени: {", ".join(capped) or "нет"}', []))
+
+    second = runs[1][0]
+    same = [(o.agent_id, o.final) for o in out.managers] == [(o.agent_id, o.final) for o in second.managers]
+    results.append(('Повторяемость: второй запуск — те же шаблоны', same,
+                    'шаблоны совпадают' if same else 'шаблоны различаются'
+                    + (' (был стоп по времени — повторяемость не гарантируется)' if capped else ''), []))
+
+    for title, ok, detail, lines in results:
+        print(f'{status(ok):<12} {title}: {detail}')
+        for line in lines:
+            print(f'             {line}')
+    print()
+
+    samples = [(m['code'], ch) for m in res['managers'] for ch in m['changes']][:3]
+    if samples:
+        print('Примеры предложений (эффект — этого изменения к текущему плану, в неделю):')
+        for code, ch in samples:
+            e = ch['effect']
+            name = res['customers'][str(ch['customer_id'])]['name']
+            print(f'  {code} · {name}: «{ch["from"]["text"]}» → «{ch["to"]["text"]}»'
+                  + (f' ({ch["reason"]})' if ch['reason'] else '')
+                  + f'; км {e["manager_km_week"]:+.1f}, грузовик '
+                  + (f'{e["truck_km_week"]:+.1f}' if e['truck_km_week'] is not None else '—')
+                  + f' км, слабых дней {e["weak_days_week"]:+.2f}, минут {e["minutes_week"]:+d}')
+    passed = sum(1 for _, ok, _, _ in results if ok)
+    verdict = 'ПРОЙДЕНО' if passed == len(results) else 'НЕ ПРОЙДЕНО'
+    print(f'ИТОГ: {verdict} по {passed} из {len(results)} критериев')
+    return 0 if verdict == 'ПРОЙДЕНО' else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

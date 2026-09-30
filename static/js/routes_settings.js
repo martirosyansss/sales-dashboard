@@ -1,0 +1,1071 @@
+/* Настройки маршрутов /routes/settings: склад, машины, менеджеры, нормы, сезон, калибровка.
+   Контракт: GET/POST /api/routes/settings (docs/plans/stage-1-plan.md §10.2–10.3).
+   Сохранение — одним запросом (сервер пишет всё или ничего), ошибки сервера — у полей.
+   Строки из ERP (машины, менеджеры, группы клиентов) выводятся только через textContent. */
+(function () {
+    'use strict';
+
+    const $ = (id) => document.getElementById(id);
+    const ARM = { latMin: 38.8, latMax: 41.4, lonMin: 43.4, lonMax: 46.7 };
+    const YEREVAN = [40.1792, 44.4991];
+    const WD = [[1, 'Пн', 'понедельник'], [2, 'Вт', 'вторник'], [3, 'Ср', 'среда'], [4, 'Чт', 'четверг'],
+                [5, 'Пт', 'пятница'], [6, 'Сб', 'суббота'], [7, 'Вс', 'воскресенье']];
+    const MONTHS = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+    const MONTHS_FULL = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+    const FUEL = [['petrol', 'бензин'], ['diesel', 'дизель'], ['lpg', 'газ']];
+    const HOME_METHOD = { night: 'по ночёвкам', morning: 'по первым точкам дня', first_point: 'по первым точкам дня' };
+    const SECTIONS = ['depot', 'trucks', 'managers', 'norms', 'season', 'calibration'];
+    const RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    // Нормы: ключ настроек → подпись простыми словами. min/max — подсказка браузеру,
+    // окончательную проверку диапазонов делает сервер (§9), его ошибки показываются у поля.
+    const NORMS = [
+        { title: 'Рабочий день', items: [
+            { key: 'work_start', label: 'Начало', type: 'time' },
+            { key: 'work_end', label: 'Конец', type: 'time' },
+            { key: 'workdays', kind: 'workdays', label: 'Рабочие дни' },
+        ] },
+        { title: 'Сколько длится визит, мин', items: [
+            { key: 'visit_min_small', label: 'Мелкий магазин', min: 1, max: 120, step: 0.5, nullable: true, auto: true, hint: 'пусто — по стоянкам у клиентов в GPS-треках' },
+            { key: 'visit_min_medium', label: 'Средний магазин', min: 1, max: 120, step: 0.5, nullable: true, auto: true },
+            { key: 'visit_min_large', label: 'Крупный магазин и сеть', min: 1, max: 120, step: 0.5, nullable: true, auto: true },
+        ] },
+        { title: 'Размер магазина — по среднему заказу', items: [
+            { key: 'size_small_max_kg', label: 'Мелкий — до, кг', min: 1, max: 100000, step: 1 },
+            { key: 'size_medium_max_kg', label: 'Средний — до, кг', min: 1, max: 100000, step: 1, hint: 'тяжелее — крупный' },
+        ] },
+        { title: 'Пороги выручки', items: [
+            { key: 'min_day_revenue', label: 'День менеджера — не меньше, драм', min: 0, max: 100000000, step: 1000, hint: 'проверяем по зимним заказам' },
+            { key: 'min_trip_revenue', label: 'Рейс машины — не меньше, драм', min: 0, max: 100000000, step: 1000 },
+        ] },
+        // auto: пустое поле — «авто» (калибровка по GPS, без неё — по умолчанию), см. autoText()
+        { title: 'Дороги и скорость', items: [
+            { key: 'detour_factor', label: 'Извилистость дорог', min: 1, max: 3, step: 0.01, nullable: true, auto: true, hint: 'во сколько раз путь по дорогам длиннее прямой; пусто — берём по GPS-трекам' },
+            { key: 'speed_city_kmh', label: 'Скорость в городе, км/ч', min: 5, max: 120, step: 1, nullable: true, auto: true, hint: 'пусто — берём по GPS-трекам' },
+            { key: 'speed_region_kmh', label: 'Скорость по области, км/ч', min: 5, max: 120, step: 1, nullable: true, auto: true, hint: 'пусто — берём по GPS-трекам' },
+            { key: 'city_center', kind: 'coord', label: 'Центр города — широта, долгота', lat: 'city_center_lat', lon: 'city_center_lon' },
+            { key: 'city_radius_km', label: 'Радиус города, км', min: 1, max: 50, step: 0.5, hint: 'внутри — городская скорость' },
+        ] },
+        { title: 'Топливо', items: [
+            { key: 'fuel_price_diesel', label: 'Дизель, драм за литр', min: 1, max: 10000, step: 1, nullable: true, hint: 'пусто — стоимость в драмах не считаем' },
+            { key: 'fuel_price_petrol', label: 'Бензин, драм за литр', min: 1, max: 10000, step: 1, nullable: true },
+            { key: 'fuel_price_lpg', label: 'Газ, драм за литр', min: 1, max: 10000, step: 1, nullable: true },
+            { key: 'manager_car_default_l_per_100km', label: 'Машина менеджера, если расход не указан, л/100 км', min: 1, max: 40, step: 0.1 },
+            { key: 'truck_priority', label: 'Дизель грузовиков важнее в … раз', min: 1, max: 10, step: 0.1, hint: 'для будущих предложений по маршрутам' },
+        ] },
+        // Этап 3 — оптимизация дней визитов: штрафы в драмах в неделю, классы ABC, частота по продажам
+        { title: 'Оптимизация', items: [
+            { key: 'penalty_weak_day', label: 'Слабый день зимой — штраф, драм', min: 0, max: 10000000, step: 1000, hint: 'день, в который выручка скорее всего не дотянет до порога; больше — сильнее выравниваем дни' },
+            { key: 'penalty_poor_trip', label: 'Бедный рейс — штраф, драм', min: 0, max: 10000000, step: 500, hint: 'заказы дня меньше порога рейса' },
+            { key: 'penalty_overtime_per_min', label: 'Минута сверх рабочего дня — штраф, драм', min: 0, max: 1000000, step: 50 },
+            { key: 'penalty_change', label: 'Перенос магазина на другой день — штраф, драм', min: 0, max: 1000000, step: 50, hint: 'больше — меньше переносов ради мелкой экономии' },
+            { key: 'fuel_price_fallback', label: 'Цена топлива для расчёта, если не задана, драм/л', min: 1, max: 10000, step: 1, hint: 'пока цены в «Топливе» пустые' },
+            { key: 'optimizer_seconds_per_manager', label: 'Время расчёта на менеджера — не больше, с', min: 1, max: 120, step: 1 },
+            { key: 'abc_a_share', label: 'Класс A — доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'самые крупные клиенты вместе дают эту долю; A и B — не реже раза в неделю' },
+            { key: 'abc_b_share', label: 'Класс B — следующая доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'A и B вместе — меньше 1; остальные — класс C, можно раз в 2 недели' },
+            { key: 'freq_safety', label: 'Запас частоты', min: 0.5, max: 3, step: 0.1, hint: 'визитов в неделю — не меньше, чем заказов в неделю × запас' },
+        ] },
+    ];
+    // def — «авто» без калибровки по GPS (как ROAD_NORMS и VISIT_NORMS в route_optimizer/evaluate.py)
+    const CALIB = [
+        { key: 'detour_factor', label: 'Извилистость дорог', d: 2, unit: '', def: 1.3 },
+        { key: 'speed_city_kmh', label: 'Скорость в городе', d: 1, unit: ' км/ч', def: 25 },
+        { key: 'speed_region_kmh', label: 'Скорость по области', d: 1, unit: ' км/ч', def: 45 },
+        { key: 'visit_min_small', label: 'Визит — мелкий магазин', d: 1, unit: ' мин', def: 7 },
+        { key: 'visit_min_medium', label: 'Визит — средний магазин', d: 1, unit: ' мин', def: 10 },
+        { key: 'visit_min_large', label: 'Визит — крупный магазин', d: 1, unit: ' мин', def: 20 },
+    ];
+
+    const state = {
+        data: null, initial: '', dirty: false, saving: false,
+        map: null, marker: null,
+        fields: new Map(),              // ключ ошибки сервера → {el, errEl, label}
+        season: { mode: 'auto', low: new Set(), peak: new Set() },
+    };
+
+    // ---------- Утилиты ----------
+    const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v))) ? null : Number(v);
+    const fmt = (v, d = 0) => { const n = num(v); return n === null ? '—' : n.toLocaleString('ru-RU', { maximumFractionDigits: d }); };
+    const round = (v, d) => { const k = 10 ** d; return Math.round(v * k) / k; };
+    const inArmenia = (lat, lon) => lat >= ARM.latMin && lat <= ARM.latMax && lon >= ARM.lonMin && lon <= ARM.lonMax;
+    const fmtCoord = (lat, lon) => (num(lat) === null || num(lon) === null) ? '' : Number(lat).toFixed(5) + ', ' + Number(lon).toFixed(5);
+
+    // Узел DOM: строки-дети становятся текстом (никакого innerHTML с данными)
+    function h(tag, props, ...kids) {
+        const el = document.createElement(tag);
+        Object.entries(props || {}).forEach(([k, v]) => {
+            if (v === null || v === undefined || v === false) return;
+            if (k === 'class') el.className = v;
+            else if (k === 'text') el.textContent = v;
+            else if (k === 'on') Object.entries(v).forEach(([ev, fn]) => el.addEventListener(ev, fn));
+            else if (k === 'dataset') Object.assign(el.dataset, v);
+            else if (typeof v === 'boolean') el[k] = v;
+            else el.setAttribute(k, String(v));
+        });
+        kids.flat().forEach(c => {
+            if (c === null || c === undefined || c === false) return;
+            el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+        });
+        return el;
+    }
+    const icon = (cls) => h('i', { class: 'fas ' + cls, 'aria-hidden': 'true' });
+
+    // Липкое меню дашборда переносится на 2–3 строки — якоря разделов учитывают его высоту
+    function syncNavOffset() {
+        const nav = document.querySelector('.navbar.sticky-top');
+        $('rtSettings').style.setProperty('--rt-nav-h', (nav ? Math.ceil(nav.getBoundingClientRect().height) : 0) + 'px');
+    }
+
+    function announce(msg) {
+        const el = $('rsStatus');
+        el.textContent = '';
+        setTimeout(() => { el.textContent = msg; }, 40);
+    }
+
+    // «40.1792, 44.4991» из Google Maps, «40,1792 44,4991», «40.1792;44.4991». Пусто → {empty}.
+    function parseCoord(text) {
+        const s = String(text || '').trim();
+        if (!s) return { empty: true };
+        const parts = s.match(/-?\d+(?:[.,]\d+)?/g) || [];
+        if (parts.length !== 2) return { error: 'Нужно два числа: широта, долгота — например 40.1792, 44.4991' };
+        let [a, b] = parts.map(x => parseFloat(x.replace(',', '.')));
+        let swapped = false;
+        if (!inArmenia(a, b) && inArmenia(b, a)) { [a, b] = [b, a]; swapped = true; }
+        if (!inArmenia(a, b)) return { error: 'Точка вне Армении: широта должна быть от 38.8 до 41.4, долгота — от 43.4 до 46.7' };
+        return { lat: round(a, 6), lon: round(b, 6), swapped };
+    }
+
+    function normTime(v) {
+        const m = /^\s*(\d{1,2})\s*[:.,]?\s*(\d{2})\s*$/.exec(String(v || ''));
+        return (m && +m[1] <= 23 && +m[2] <= 59) ? m[1].padStart(2, '0') + ':' + m[2] : String(v || '').trim();
+    }
+
+    // Число из поля: {value} или {error}. Пустое — null, если поле необязательное.
+    function readNum(input, nullable) {
+        if (input.validity && input.validity.badInput) return { error: 'Введите число' };
+        const raw = String(input.value).trim().replace(',', '.');
+        if (raw === '') return nullable ? { value: null } : { error: 'Заполните поле' };
+        const v = Number(raw);
+        return Number.isFinite(v) ? { value: v } : { error: 'Введите число' };
+    }
+
+    // ---------- Регистр полей для ошибок сервера ----------
+    // Путь ошибки может прийти как «trucks.0.capacity_kg», «trucks[0].capacity_kg»,
+    // по коду/ID («managers.3144.home_lat») или с/без префикса «settings.».
+    const normKey = (k) => String(k).replace(/\[([^\]]*)\]/g, '.$1').replace(/^\.+/, '');
+    function reg(keys, el, errEl, label) {
+        const entry = { el, errEl, label };
+        keys.forEach(k => state.fields.set(normKey(k), entry));
+        const ids = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+        if (errEl.id && !ids.includes(errEl.id)) el.setAttribute('aria-describedby', ids.concat(errEl.id).join(' '));
+    }
+    function findField(key) {
+        const k = normKey(key);
+        return state.fields.get(k) || state.fields.get(k.replace(/^settings\./, '')) || state.fields.get('settings.' + k) || null;
+    }
+    let errSeq = 0;
+    const errNode = () => h('div', { class: 'rt-ferr', id: 'rsErr' + (++errSeq) });
+
+    function clearErrors() {
+        state.fields.forEach(f => {
+            f.errEl.textContent = '';
+            f.el.classList.remove('is-invalid');
+            f.el.removeAttribute('aria-invalid');
+        });
+        $('rsSaveError').classList.add('d-none');
+    }
+
+    function showErrors(errors, fromClient) {
+        clearErrors();
+        const box = $('rsSaveErrorText');
+        box.textContent = '';
+        const list = h('ul');
+        let count = 0;
+        const seen = new Set();
+        Object.entries(errors).forEach(([key, msg]) => {
+            const text = String(msg);
+            const f = findField(key);
+            if (f) {
+                f.errEl.textContent = f.errEl.textContent ? f.errEl.textContent + ' ' + text : text;
+                f.el.classList.add('is-invalid');
+                f.el.setAttribute('aria-invalid', 'true');
+                if (seen.has(f)) return;   // два сообщения про одно поле — одна строка в сводке
+                seen.add(f);
+                list.append(h('li', {}, h('button', { type: 'button', class: 'rt-alert-link', on: { click: () => focusField(f.el) } },
+                    (f.label ? f.label + ': ' : '') + text)));
+            } else {
+                list.append(h('li', { text: text }));
+            }
+            count++;
+        });
+        box.append(h('b', { text: (fromClient ? 'Проверьте поля — ' : 'Не сохранено — ') + 'нужно исправить: ' + count }), list);
+        const alert = $('rsSaveError');
+        alert.classList.remove('d-none');
+        alert.scrollIntoView({ behavior: RM ? 'auto' : 'smooth', block: 'start' });
+        alert.focus({ preventScroll: true });
+        announce('Настройки не сохранены: нужно исправить ' + count);
+    }
+
+    function showSaveError(text) {
+        const box = $('rsSaveErrorText');
+        box.textContent = text;
+        const alert = $('rsSaveError');
+        alert.classList.remove('d-none');
+        alert.focus({ preventScroll: true });
+        alert.scrollIntoView({ behavior: RM ? 'auto' : 'smooth', block: 'start' });
+    }
+
+    function focusField(el) {
+        // группа (рабочие дни, сети, месяцы) сама фокус не принимает — фокусируем первый элемент внутри
+        const target = el.matches('input, select, textarea, button') ? el : (el.querySelector('input, select, button') || el);
+        el.scrollIntoView({ behavior: RM ? 'auto' : 'smooth', block: 'center' });
+        target.focus({ preventScroll: true });
+    }
+
+    function flash(el) {
+        el.classList.remove('rt-flash');
+        void el.offsetWidth;   // перезапуск анимации
+        el.classList.add('rt-flash');
+    }
+
+    // ---------- Загрузка ----------
+    async function load(afterSave) {
+        if (!afterSave) {
+            $('rsLoading').classList.remove('d-none');
+            $('rsLoadError').classList.add('d-none');
+        }
+        try {
+            let resp;
+            try {
+                resp = await fetch('/api/routes/settings', { headers: { Accept: 'application/json' }, credentials: 'same-origin', cache: 'no-store' });
+            } catch (e) {
+                throw new Error('Нет связи с сервером. Проверьте сеть и нажмите «Повторить».');
+            }
+            let data = null;
+            try { data = await resp.json(); } catch (e) { data = null; }
+            if (!data || typeof data !== 'object') throw new Error('Сервер ответил непонятно (код ' + resp.status + ').');
+            if (!resp.ok || data.success !== true) throw new Error(data.error || ('Ошибка сервера (код ' + resp.status + ').'));
+            state.data = normalize(data);
+            renderAll();
+            $('rsForm').classList.remove('d-none');
+            state.initial = snapshot();
+            updateDirty();
+            if (state.map) state.map.invalidateSize();
+            if (!afterSave) jumpToHash();
+        } catch (e) {
+            if (afterSave) {
+                showSaveError('Настройки сохранены, но перечитать их не удалось: ' + e.message + ' Обновите страницу.');
+            } else {
+                $('rsLoadErrorText').textContent = 'Не удалось загрузить настройки. ' + e.message;
+                $('rsLoadError').classList.remove('d-none');
+                $('rsForm').classList.add('d-none');
+            }
+        } finally {
+            $('rsLoading').classList.add('d-none');
+        }
+    }
+
+    function normalize(d) {
+        d.settings = (d.settings && typeof d.settings === 'object') ? d.settings : {};
+        d.trucks = Array.isArray(d.trucks) ? d.trucks : [];
+        d.managers = Array.isArray(d.managers) ? d.managers : [];
+        d.customer_groups = Array.isArray(d.customer_groups) ? d.customer_groups : [];
+        d.season = (d.season && typeof d.season === 'object') ? d.season : {};
+        return d;
+    }
+
+    function jumpToHash() {
+        const id = (location.hash || '').slice(1);
+        if (!SECTIONS.includes(id)) return;
+        const sec = $(id);
+        requestAnimationFrame(() => {
+            sec.scrollIntoView({ behavior: 'auto', block: 'start' });
+            const panel = sec.querySelector('.rt-panel');
+            if (panel) flash(panel);
+        });
+    }
+
+    function renderAll() {
+        state.fields = new Map();
+        renderDepot();
+        renderTrucks();
+        renderManagers();
+        renderNorms();
+        renderSeason();
+        renderCalib();
+    }
+
+    // ---------- 01 · Склад ----------
+    function renderDepot() {
+        const dp = state.data.depot;
+        const inp = $('rsDepot');
+        inp.value = dp ? fmtCoord(dp.lat, dp.lon) : '';
+        reg(['depot', 'depot.lat', 'depot.lon'], inp, $('rsDepotErr'), 'Склад');
+        initDepotMap();
+        syncDepot({ pan: true, strict: false });
+    }
+
+    function initDepotMap() {
+        if (state.map) return;
+        const el = $('rsDepotMap');
+        if (typeof window.L === 'undefined') {
+            el.classList.add('rt-map-fallback');
+            el.textContent = 'Карта не загрузилась (нет доступа к cdn.jsdelivr.net). Введите координаты в поле справа.';
+            return;
+        }
+        const map = L.map(el, { zoomSnap: 0.5, scrollWheelZoom: false });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            subdomains: 'abc', maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+        }).addTo(map);
+        map.setView(YEREVAN, 11);
+        map.on('click', (e) => placeDepot(e.latlng.lat, e.latlng.lng));
+        map.on('click focus', () => map.scrollWheelZoom.enable());
+        map.on('mouseout blur', () => map.scrollWheelZoom.disable());
+        state.map = map;
+    }
+
+    function depotMarker(lat, lon) {
+        if (!state.map) return;
+        if (!state.marker) {
+            const icon = L.divIcon({
+                className: 'rt-pin rt-pin-depot',
+                html: '<span><i class="fas fa-warehouse" aria-hidden="true"></i></span>',
+                iconSize: [30, 30], iconAnchor: [15, 15],
+            });
+            state.marker = L.marker([lat, lon], { icon, draggable: true, title: 'Склад', keyboard: false }).addTo(state.map);
+            state.marker.on('dragend', () => {
+                const p = state.marker.getLatLng();
+                placeDepot(p.lat, p.lng);
+            });
+        } else {
+            state.marker.setLatLng([lat, lon]);
+            if (!state.map.hasLayer(state.marker)) state.marker.addTo(state.map);
+        }
+    }
+
+    function placeDepot(lat, lon) {
+        const err = $('rsDepotErr'), inp = $('rsDepot');
+        if (!inArmenia(lat, lon)) {
+            err.textContent = 'Эта точка вне Армении — склад должен быть в Армении.';
+            if (state.marker) {
+                const cur = parseCoord(inp.value);
+                if (!cur.error && !cur.empty) state.marker.setLatLng([cur.lat, cur.lon]);
+            }
+            return;
+        }
+        inp.value = fmtCoord(lat, lon);
+        syncDepot({ pan: false, strict: true });
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+        announce('Склад поставлен: ' + inp.value);
+    }
+
+    // strict — показывать ошибку формата (по «change»), иначе молча ждём, пока человек допечатает
+    function syncDepot({ pan, strict }) {
+        const inp = $('rsDepot'), note = $('rsDepotNote'), err = $('rsDepotErr');
+        const p = parseCoord(inp.value);
+        note.classList.remove('is-ok');
+        if (p.empty) {
+            err.textContent = '';
+            inp.classList.remove('is-invalid');
+            inp.removeAttribute('aria-invalid');
+            note.textContent = 'Склад не указан — рейсы машин и дизель не считаются.';
+            if (state.marker && state.map) state.map.removeLayer(state.marker);
+            return;
+        }
+        if (p.error) {
+            if (strict) {
+                err.textContent = p.error;
+                inp.classList.add('is-invalid');
+                inp.setAttribute('aria-invalid', 'true');
+            }
+            note.textContent = '';
+            return;
+        }
+        err.textContent = '';
+        inp.classList.remove('is-invalid');
+        inp.removeAttribute('aria-invalid');
+        note.textContent = p.swapped ? 'Широта и долгота были перепутаны — поменяли местами.' : 'Точка на карте.';
+        note.classList.add('is-ok');
+        depotMarker(p.lat, p.lon);
+        if (pan && state.map) state.map.setView([p.lat, p.lon], Math.max(state.map.getZoom(), 14), { animate: !RM });
+    }
+
+    // ---------- 02 · Машины ----------
+    function agentOptions(selected) {
+        const opts = [h('option', { value: '', text: '— не назначена —' })];
+        let found = selected === null || selected === undefined || selected === '';
+        state.data.managers.forEach(m => {
+            const on = String(m.agent_id) === String(selected);
+            if (on) found = true;
+            opts.push(h('option', { value: String(m.agent_id), text: (m.name || 'Менеджер ' + m.agent_id) + (m.code ? ' · ' + m.code : ''), selected: on }));
+        });
+        if (!found) opts.push(h('option', { value: String(selected), text: 'Агент ' + selected + ' (без маршрутов)', selected: true }));
+        return opts;
+    }
+    const agentName = (id) => {
+        const m = state.data.managers.find(x => String(x.agent_id) === String(id));
+        return m ? (m.name || 'Менеджер ' + m.agent_id) : 'агент ' + id;
+    };
+
+    function renderTrucks() {
+        const box = $('rsTrucks');
+        box.textContent = '';
+        const trucks = state.data.trucks;
+        if (!trucks.length) {
+            box.append(h('p', { class: 'rt-empty px-0', text: 'В ERP нет машин — назначать нечего.' }));
+            return;
+        }
+        const tbody = h('tbody');
+        trucks.forEach((t, i) => {
+            const code = String(t.car_code ?? '');
+            const who = 'машина ' + code;
+            const capE = errNode(), fuelE = errNode(), agE = errNode(), actE = errNode();
+            const cap = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 0.1, max: 30, step: 0.1,
+                value: num(t.capacity_kg) === null ? '' : String(round(num(t.capacity_kg) / 1000, 3)),
+                placeholder: '—', 'aria-label': 'Тоннаж в тоннах — ' + who, dataset: { f: 'cap' } });
+            const fuel = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 1, max: 80, step: 0.1,
+                value: num(t.fuel_l_per_100km) === null ? '' : String(t.fuel_l_per_100km),
+                placeholder: '—', 'aria-label': 'Расход, литров на 100 км — ' + who, dataset: { f: 'fuel' } });
+            const agent = h('select', { class: 'rt-select', 'aria-label': 'Менеджер — ' + who, dataset: { f: 'agent' } },
+                agentOptions(t.agent_id));
+            const active = h('input', { type: 'checkbox', checked: t.active !== false, 'aria-label': 'Машина работает — ' + who, dataset: { f: 'active' } });
+            const agentCell = h('td', { class: 'w-sel', dataset: { label: 'Менеджер' } }, agent, agE);
+            const sug = t.suggested_agent_id;
+            if (sug !== null && sug !== undefined && sug !== '' && String(sug) !== String(t.agent_id ?? '')) {
+                const hint = h('button', { type: 'button', class: 'rt-hintbtn' }, icon('fa-wand-magic-sparkles'),
+                    'по накладным: ' + agentName(sug) + ' — подставить');
+                hint.addEventListener('click', () => {
+                    if (![...agent.options].some(o => o.value === String(sug))) agent.append(h('option', { value: String(sug), text: 'Агент ' + sug }));
+                    agent.value = String(sug);
+                    agent.dispatchEvent(new Event('change', { bubbles: true }));
+                    hint.remove();
+                    flash(agent);
+                    announce('Машина ' + code + ': назначен ' + agentName(sug));
+                });
+                agentCell.append(hint);
+            }
+            const nameCell = h('td', { class: 'rt-cell-name' },
+                h('span', { class: 'n', text: code || '—' }),
+                h('span', { class: 'c', text: t.name || '' }),
+                t.erp_closed ? h('span', { class: 'rt-badge b-warn mt-1', text: 'закрыта в ERP' }) : null);
+            const tr = h('tr', { class: t.erp_closed ? 'is-closed' : null, dataset: { i: String(i) } },
+                nameCell,
+                h('td', { class: 'w-num w-half', dataset: { label: 'Тоннаж, т' } }, cap, capE),
+                h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л/100 км' } }, fuel, fuelE),
+                agentCell,
+                h('td', { class: 'w-chk', dataset: { label: 'Работает' } }, active, actE));
+            tbody.append(tr);
+            const keys = (f) => ['trucks.' + i + '.' + f, 'trucks.' + code + '.' + f];
+            reg(keys('capacity_kg').concat(['trucks.' + i, 'trucks.' + code]), cap, capE, 'Машина ' + code + ', тоннаж');
+            reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Машина ' + code + ', расход');
+            reg(keys('agent_id'), agent, agE, 'Машина ' + code + ', менеджер');
+            reg(keys('active').concat(keys('car_code')), active, actE, 'Машина ' + code);
+        });
+        const table = h('table', { class: 'rt-table' },
+            h('caption', { class: 'rt-sr-only', text: 'Машины доставки: тоннаж, расход и менеджер' }),
+            h('thead', {}, h('tr', {},
+                h('th', { scope: 'col', text: 'Машина' }),
+                h('th', { scope: 'col', text: 'Тоннаж, т' }),
+                h('th', { scope: 'col', text: 'Расход, л/100 км' }),
+                h('th', { scope: 'col', text: 'Менеджер' }),
+                h('th', { scope: 'col', class: 'w-chk', text: 'Работает' }))),
+            tbody);
+        box.append(h('div', { class: 'rt-table-scroll' }, table));
+    }
+
+    // ---------- 03 · Менеджеры ----------
+    function renderManagers() {
+        const box = $('rsManagers');
+        box.textContent = '';
+        const list = state.data.managers;
+        if (!list.length) {
+            box.append(h('p', { class: 'rt-empty px-0', text: 'В ERP нет менеджеров с маршрутами.' }));
+            return;
+        }
+        const defL = num(state.data.settings.manager_car_default_l_per_100km);
+        const tbody = h('tbody');
+        list.forEach((m, i) => {
+            const name = m.name || ('Менеджер ' + m.agent_id);
+            const incE = errNode(), homeE = errNode(), fuelE = errNode(), typeE = errNode();
+            // «В расчёте»: авто — решает работа за 8 недель (сервер: inactive), ручной выбор держится
+            // до «вернуть авто». data-mode: auto | manual — что уйдёт на сервер (см. collect()).
+            const autoInc = m.inactive !== true, wasManual = m.included_source === 'manual';
+            const inc = h('input', { type: 'checkbox', checked: m.included !== false, 'aria-label': 'В расчёте — ' + name,
+                dataset: { f: 'inc', mode: wasManual ? 'manual' : 'auto' } });
+            const incSrc = h('span', { class: 'rt-inc-src' });
+            const setIncMode = (mode) => {
+                inc.dataset.mode = mode;
+                incSrc.textContent = '';
+                if (mode === 'auto') {
+                    incSrc.append(h('span', { class: 'rt-badge', text: 'авто',
+                        title: autoInc ? 'Авто: за 8 недель есть заказы или визиты — в расчёте'
+                            : 'Авто: за 8 недель нет заказов и визитов — не в расчёте' }));
+                    return;
+                }
+                const back = h('button', { type: 'button', class: 'rt-hintbtn', 'aria-label': 'Вернуть авто — ' + name,
+                    title: 'Снять ручной выбор: в расчёте, если за 8 недель есть заказы или визиты' }, 'вернуть авто');
+                back.addEventListener('click', () => {
+                    inc.checked = autoInc;
+                    setIncMode('auto');
+                    updateDirty();
+                    inc.focus();
+                    announce(name + ': «В расчёте» — снова авто');
+                });
+                incSrc.append(back);
+            };
+            setIncMode(inc.dataset.mode);
+            // галочку вернули к авто-значению у менеджера, который был «авто», — он и остаётся «авто»
+            inc.addEventListener('change', () => setIncMode(wasManual || inc.checked !== autoInc ? 'manual' : 'auto'));
+            const home = m.home || {};
+            const homeInp = h('input', { class: 'rt-input rt-num', type: 'text', inputmode: 'decimal', autocomplete: 'off', spellcheck: 'false',
+                value: fmtCoord(home.lat, home.lon), placeholder: 'пусто — дом по GPS',
+                'aria-label': 'Дом, широта и долгота — ' + name, dataset: { f: 'home' } });
+            const sug = m.home_suggestion;
+            const hasSug = !!sug && num(sug.lat) !== null && num(sug.lon) !== null;
+            const gpsBtn = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', disabled: !hasSug,
+                title: hasSug ? 'Подставить дом, найденный по GPS' : 'По GPS дом не найден',
+                'aria-label': 'Из GPS — ' + name }, icon('fa-satellite-dish'), 'Из GPS');
+            gpsBtn.addEventListener('click', () => {
+                homeInp.value = fmtCoord(sug.lat, sug.lon);
+                homeE.textContent = '';
+                homeInp.classList.remove('is-invalid');
+                homeInp.removeAttribute('aria-invalid');
+                homeInp.dispatchEvent(new Event('input', { bubbles: true }));
+                flash(homeInp);
+                announce(name + ': дом подставлен из GPS');
+            });
+            const sugText = hasSug
+                ? 'по GPS: ' + fmtCoord(sug.lat, sug.lon) + ' · ' + (HOME_METHOD[sug.method] || 'по треку')
+                  + (num(sug.days) !== null ? ', ' + fmt(sug.days) + ' дн.' : '')
+                : 'по GPS дом не найден';
+            homeInp.addEventListener('change', () => checkCoordField(homeInp, homeE));
+            const fuelL = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 1, max: 40, step: 0.1,
+                value: num(m.car_fuel_l_per_100km) === null ? '' : String(m.car_fuel_l_per_100km),
+                placeholder: defL !== null ? 'обычно ' + fmt(defL, 1) : 'обычный',
+                'aria-label': 'Расход машины, литров на 100 км — ' + name, dataset: { f: 'fuel' } });
+            const typeOpts = FUEL.map(([v, t]) => h('option', { value: v, text: t, selected: m.car_fuel_type === v }));
+            if (!FUEL.some(([v]) => v === m.car_fuel_type)) typeOpts.unshift(h('option', { value: '', text: '— не указано —', selected: true }));
+            const type = h('select', { class: 'rt-select', 'aria-label': 'Топливо — ' + name, dataset: { f: 'type' } }, typeOpts);
+            tbody.append(h('tr', { dataset: { i: String(i) } },
+                h('td', { class: 'w-chk w-inc', dataset: { label: 'В расчёте' } }, inc, incSrc, incE),
+                h('td', { class: 'rt-cell-name' }, h('span', { class: 'n', text: name }), h('span', { class: 'c', text: m.code || '' }),
+                    m.inactive ? h('span', { class: 'rt-badge b-warn mt-1', text: 'без работы 8 нед.',
+                        title: 'Нет заказов и визитов за 8 недель — по умолчанию не в расчёте' }) : null),
+                h('td', { class: 'w-coord', dataset: { label: 'Дом — широта, долгота' } },
+                    h('div', { class: 'rt-coord' }, homeInp, gpsBtn),
+                    h('div', { class: 'rt-field-hint mt-1', text: sugText }),
+                    homeE),
+                h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л/100 км' } }, fuelL, fuelE),
+                h('td', { class: 'w-sel w-half', style: 'min-width:130px', dataset: { label: 'Топливо' } }, type, typeE)));
+            const keys = (f) => ['managers.' + i + '.' + f, 'managers.' + m.agent_id + '.' + f];
+            reg(keys('included').concat(keys('agent_id'), ['managers.' + i, 'managers.' + m.agent_id]), inc, incE, name);
+            reg(keys('home_lat').concat(keys('home_lon'), keys('home')), homeInp, homeE, name + ', дом');
+            reg(keys('car_fuel_l_per_100km'), fuelL, fuelE, name + ', расход');
+            reg(keys('car_fuel_type'), type, typeE, name + ', топливо');
+        });
+        const table = h('table', { class: 'rt-table' },
+            h('caption', { class: 'rt-sr-only', text: 'Менеджеры: участие в расчёте, дом, машина' }),
+            h('thead', {}, h('tr', {},
+                h('th', { scope: 'col', class: 'w-chk w-inc', text: 'В расчёте' }),
+                h('th', { scope: 'col', text: 'Менеджер' }),
+                h('th', { scope: 'col', text: 'Дом — широта, долгота' }),
+                h('th', { scope: 'col', text: 'Расход, л/100 км' }),
+                h('th', { scope: 'col', text: 'Топливо' }))),
+            tbody);
+        box.append(h('div', { class: 'rt-table-scroll' }, table));
+    }
+
+    function checkCoordField(inp, errEl) {
+        const p = parseCoord(inp.value);
+        const bad = !!p.error;
+        errEl.textContent = bad ? p.error : '';
+        inp.classList.toggle('is-invalid', bad);
+        if (bad) inp.setAttribute('aria-invalid', 'true'); else inp.removeAttribute('aria-invalid');
+        if (!bad && !p.empty) inp.value = fmtCoord(p.lat, p.lon);
+    }
+
+    // ---------- 04 · Нормы ----------
+    function renderNorms() {
+        const box = $('rsNorms');
+        box.textContent = '';
+        const s = state.data.settings;
+        NORMS.forEach(g => {
+            const group = h('div', { class: 'rt-group' }, h('h3', { text: g.title }));
+            g.items.forEach(it => group.append(normField(it, s)));
+            box.append(group);
+        });
+        box.append(chainsGroup(s));
+    }
+
+    function normField(it, s) {
+        const id = 'rsN_' + it.key;
+        const err = errNode();
+        if (it.kind === 'workdays') {
+            const sel = new Set((Array.isArray(s.workdays) ? s.workdays : []).map(Number));
+            const wrap = h('div', { class: 'rt-wd', role: 'group', 'aria-labelledby': id + '_l', id: id });
+            WD.forEach(([n, short, full]) => wrap.append(h('label', { title: full },
+                h('input', { type: 'checkbox', value: String(n), checked: sel.has(n), 'aria-label': full, dataset: { wd: '1' } }), short)));
+            reg(['settings.workdays'], wrap, err, 'Рабочие дни');
+            return h('div', { class: 'rt-field' }, h('span', { class: 'rt-field-label', id: id + '_l', text: it.label }), wrap, err);
+        }
+        if (it.kind === 'coord') {
+            const inp = h('input', { class: 'rt-input rt-num', type: 'text', id, inputmode: 'decimal', autocomplete: 'off', spellcheck: 'false',
+                value: fmtCoord(s[it.lat], s[it.lon]), placeholder: '40.17920, 44.49910' });
+            inp.addEventListener('change', () => checkCoordField(inp, err));
+            reg(['settings.' + it.lat, 'settings.' + it.lon, 'settings.' + it.key], inp, err, it.label);
+            return h('div', { class: 'rt-field' }, h('label', { for: id, text: it.label }), inp, err);
+        }
+        const isTime = it.type === 'time';
+        const inp = h('input', {
+            class: 'rt-input' + (isTime ? ' rt-num' : ''), id, type: isTime ? 'text' : 'number',
+            inputmode: isTime ? 'numeric' : 'decimal', autocomplete: 'off', maxlength: isTime ? 5 : null,
+            min: it.min, max: it.max, step: it.step,
+            value: s[it.key] === null || s[it.key] === undefined ? '' : String(s[it.key]),
+            placeholder: isTime ? '09:00' : (it.auto ? autoText(it.key) : (it.nullable ? 'не указана' : null)),
+            dataset: isTime ? { norm: it.key, time: '1' } : { norm: it.key },
+        });
+        // «9:00», «9.00», «900» → «09:00» (24-часовой формат независимо от языка Windows)
+        if (isTime) inp.addEventListener('change', () => { inp.value = normTime(inp.value); });
+        const hint = it.hint ? h('div', { class: 'rt-field-hint', id: id + '_h', text: it.hint }) : null;
+        if (hint) inp.setAttribute('aria-describedby', hint.id);
+        reg(['settings.' + it.key], inp, err, it.label);
+        const label = h('label', { for: id, text: it.label });
+        // «авто · по GPS 1,40» не влезает в узкое поле справа от подписи — поле на всю ширину под ней
+        return h('div', { class: 'rt-field' }, it.auto ? [label, inp] : h('div', { class: 'rt-field-row' }, label, inp), hint, err);
+    }
+
+    // Подсказка в пустом поле нормы дорог: что возьмёт расчёт — калибровку по GPS или значение по умолчанию
+    function autoText(key) {
+        const r = CALIB.find(x => x.key === key);
+        const gps = num((state.data.calibration || {})[key]);
+        return gps !== null
+            ? 'авто · по GPS ' + gps.toLocaleString('ru-RU', { minimumFractionDigits: r.d, maximumFractionDigits: r.d })
+            : 'авто · ' + fmt(r.def, r.d) + ' по умолчанию';
+    }
+
+    function chainsGroup(s) {
+        const chosen = new Set((Array.isArray(s.chain_groups) ? s.chain_groups : []).map(String));
+        const groups = state.data.customer_groups;
+        const err = errNode();
+        const list = h('div', { class: 'rt-groups', id: 'rsChains', role: 'group', 'aria-label': 'Группы клиентов — сети' });
+        groups.forEach((g, i) => {
+            const cid = 'rsCg' + i;
+            list.append(h('label', { class: 'rt-group-item', for: cid, dataset: { q: ((g.name || '') + ' ' + (g.code || '')).toLowerCase() } },
+                h('input', { type: 'checkbox', id: cid, value: String(g.code), checked: chosen.has(String(g.code)), dataset: { chain: '1' } }),
+                h('span', { class: 'n', text: g.name || g.code || '—', title: g.name || '' }),
+                num(g.customers) !== null ? h('span', { class: 'cnt', text: fmt(g.customers) }) : null));
+        });
+        const search = h('input', { class: 'rt-input w-100 mb-2', type: 'search', placeholder: 'Найти группу…',
+            'aria-label': 'Поиск группы клиентов', dataset: { noTrack: '1' } });
+        search.addEventListener('input', () => {
+            const q = search.value.trim().toLowerCase();
+            list.querySelectorAll('.rt-group-item').forEach(el => { el.hidden = !!q && !el.dataset.q.includes(q); });
+        });
+        reg(['settings.chain_groups'], list, err, 'Сети');
+        const group = h('div', { class: 'rt-group', style: 'grid-column: 1 / -1' },
+            h('h3', { text: 'Сети — всегда «крупный» магазин' }),
+            h('p', { class: 'rt-field-hint mb-2', text: 'Отметьте группы клиентов из ERP, которые считаются сетями: визит к ним длится как к крупному магазину.' }),
+            groups.length ? search : null,
+            groups.length ? list : h('p', { class: 'rt-field-hint', text: 'В ERP нет групп клиентов.' }),
+            err);
+        return group;
+    }
+
+    // ---------- 05 · Сезон ----------
+    function renderSeason() {
+        const box = $('rsSeason');
+        box.textContent = '';
+        const s = state.data.settings, se = state.data.season;
+        // Если вручную задан только один сезон (другой — авто), второй начинаем с действующего в расчёте
+        // (найденного автоматом или 3 крайних), иначе при сохранении он молча превратился бы в пустой список.
+        const manual = Array.isArray(s.low_months) || Array.isArray(s.peak_months);
+        state.season.mode = manual ? 'manual' : 'auto';
+        const pick = (own, eff, detected) => (Array.isArray(own) ? own
+            : (Array.isArray(eff) ? eff : (Array.isArray(detected) ? detected : []))).map(Number);
+        state.season.low = new Set(pick(manual ? s.low_months : null, se.low_months, se.detected_low));
+        state.season.peak = new Set(pick(manual ? s.peak_months : null, se.peak_months, se.detected_peak));
+
+        const radio = (val, text) => h('label', {}, h('input', { type: 'radio', name: 'rsSeasonMode', value: val, checked: state.season.mode === val }), text);
+        const seg = h('div', { class: 'rt-seg', role: 'radiogroup', 'aria-label': 'Как выбирать месяцы сезонов' },
+            radio('auto', 'Авто — по продажам'), radio('manual', 'Выбрать вручную'));
+        seg.addEventListener('change', (e) => {
+            if (e.target.name !== 'rsSeasonMode') return;
+            if (e.target.value === 'manual') {
+                const eff = effectiveSeason();   // вручную — начинаем с того, что нашёл автомат
+                state.season.low = new Set(eff.low);
+                state.season.peak = new Set(eff.peak);
+            }
+            state.season.mode = e.target.value;
+            updateSeasonUI();
+        });
+
+        const thr = h('div', { class: 'rt-form-grid mt-3', id: 'rsSeasonThr' });
+        [
+            { key: 'low_season_index_max', label: 'Зима — месяцы с продажами не выше, доля от среднего', min: 0.1, max: 1, step: 0.05 },
+            { key: 'peak_season_index_min', label: 'Лето — месяцы с продажами не ниже, доля от среднего', min: 1, max: 3, step: 0.05 },
+        ].forEach(it => thr.append(normField(it, s)));
+
+        const bars = h('div', { class: 'rt-months', id: 'rsMonths', 'aria-hidden': 'true' });
+        const row = (kind, title, ico) => {
+            const wrap = h('div', { class: 'rt-monthrow', role: 'group', 'aria-label': title, id: 'rsRow_' + kind },
+                h('span', { class: 'lbl' }, icon(ico), title));
+            MONTHS.forEach((m, i) => {
+                const b = h('button', { type: 'button', class: 'rt-mchip m-' + kind, title: MONTHS_FULL[i], dataset: { m: String(i + 1), kind } }, m,
+                    h('span', { class: 'rt-sr-only', text: ' (' + MONTHS_FULL[i] + ')' }));
+                b.addEventListener('click', () => toggleMonth(kind, i + 1));
+                wrap.append(b);
+            });
+            return wrap;
+        };
+        const err = errNode();
+        const rows = h('div', {}, row('low', 'Низкий сезон (зима)', 'fa-snowflake'), row('peak', 'Пик (лето)', 'fa-sun'));
+        reg(['settings.low_months', 'settings.peak_months'], rows, err, 'Месяцы сезонов');
+        box.append(
+            h('p', { class: 'rt-lead', text: 'Выручку дня (100 000) проверяем по низкому сезону, загрузку машин — по пику. '
+                + 'Автомат сравнивает каждый месяц со средним по трём годам продаж.' }),
+            seg, thr, bars, rows, err,
+            h('p', { class: 'rt-field-hint mt-2', id: 'rsSeasonSummary', 'aria-live': 'polite' }),
+            h('p', { class: 'rt-season-fallback', id: 'rsSeasonFallback', hidden: true }));
+        updateSeasonUI();
+    }
+
+    function seasonIndex() {
+        const idx = state.data.season.index;
+        const out = [];
+        for (let m = 1; m <= 12; m++) out.push(idx && typeof idx === 'object' ? num(idx[m] ?? idx[String(m)]) : null);
+        return out;
+    }
+
+    // Месяцы сезонов, которые возьмёт расчёт: {low, peak, fallback: ['low'|'peak']} — fallback, если
+    // порогам не подошёл ни один месяц и взяты 3 крайних по индексу (как resolve_season на сервере)
+    function effectiveSeason() {
+        if (state.season.mode === 'manual') return { low: [...state.season.low], peak: [...state.season.peak], fallback: [] };
+        const s = state.data.settings, se = state.data.season;
+        const lowInp = document.querySelector('[data-norm="low_season_index_max"]');
+        const peakInp = document.querySelector('[data-norm="peak_season_index_min"]');
+        const lowMax = lowInp ? num(lowInp.value) : null, peakMin = peakInp ? num(peakInp.value) : null;
+        const idx = seasonIndex();
+        // сохранено «авто» с теми же порогами — берём действующие месяцы из ответа сервера
+        const savedAuto = !Array.isArray(s.low_months) && !Array.isArray(s.peak_months);
+        const same = lowMax === num(s.low_season_index_max) && peakMin === num(s.peak_season_index_min);
+        if (savedAuto && same && Array.isArray(se.low_months) && Array.isArray(se.peak_months)) {
+            return { low: se.low_months.map(Number), peak: se.peak_months.map(Number),
+                     fallback: [se.fallback_low ? 'low' : null, se.fallback_peak ? 'peak' : null].filter(Boolean) };
+        }
+        if (!idx.some(v => v !== null)) {   // индекса нет — пересчитывать нечего
+            return { low: (se.detected_low || []).map(Number), peak: (se.detected_peak || []).map(Number), fallback: [] };
+        }
+        const low = [], peak = [], fallback = [];
+        idx.forEach((v, i) => {
+            if (v === null) return;
+            if (lowMax !== null && v <= lowMax) low.push(i + 1);
+            else if (peakMin !== null && v >= peakMin) peak.push(i + 1);
+        });
+        if (!low.length) { low.push(...extremeMonths(idx, peak, false)); fallback.push('low'); }
+        if (!peak.length) { peak.push(...extremeMonths(idx, low, true)); fallback.push('peak'); }
+        return { low, peak, fallback };
+    }
+
+    // 3 месяца с самым низким (highest — высоким) индексом, кроме exclude; ничья — по номеру месяца
+    function extremeMonths(idx, exclude, highest) {
+        return idx.map((v, i) => [v, i + 1])
+            .filter(([v, m]) => v !== null && !exclude.includes(m))
+            .sort((a, b) => (highest ? b[0] - a[0] : a[0] - b[0]) || a[1] - b[1])
+            .slice(0, 3).map(x => x[1]).sort((a, b) => a - b);
+    }
+
+    function toggleMonth(kind, m) {
+        if (state.season.mode !== 'manual') return;
+        const own = state.season[kind], other = state.season[kind === 'low' ? 'peak' : 'low'];
+        if (own.has(m)) own.delete(m);
+        else { own.add(m); other.delete(m); }   // месяц не может быть и зимой, и летом
+        updateSeasonUI();
+        updateDirty();
+    }
+
+    function updateSeasonUI() {
+        const eff = effectiveSeason(), manual = state.season.mode === 'manual';
+        const low = new Set(eff.low), peak = new Set(eff.peak);
+        document.querySelectorAll('#rsSeason .rt-mchip').forEach(b => {
+            const m = +b.dataset.m, on = b.dataset.kind === 'low' ? low.has(m) : peak.has(m);
+            b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            b.disabled = !manual;
+        });
+        $('rsSeasonThr').querySelectorAll('input').forEach(i => { i.disabled = manual; });
+        const idx = seasonIndex(), bars = $('rsMonths');
+        if (!idx.some(v => v !== null)) {
+            bars.innerHTML = '';
+            bars.hidden = true;
+        } else {
+            bars.hidden = false;
+            const top = Math.max(1.5, ...idx.filter(v => v !== null)) * 1.05;
+            bars.innerHTML = idx.map((v, i) => {
+                const m = i + 1, cls = low.has(m) ? ' is-low' : (peak.has(m) ? ' is-peak' : '');
+                return '<div class="rt-month' + cls + '"><div class="rt-month-track" style="--one:' + (100 / top).toFixed(1) + '%">'
+                    + '<div class="rt-month-bar" style="height:' + (v === null ? 0 : Math.max(2, v / top * 100)).toFixed(1) + '%"></div></div>'
+                    + '<span class="m">' + MONTHS[i] + '</span><span class="i">' + (v === null ? '—' : fmt(v, 2)) + '</span></div>';
+            }).join('');
+        }
+        const list = (set) => set.size ? [...set].sort((a, b) => a - b).map(m => MONTHS[m - 1]).join(', ') : 'нет';
+        $('rsSeasonSummary').textContent = (manual ? 'Выбрано вручную. ' : (idx.some(v => v !== null)
+            ? 'Найдено по продажам. ' : 'Продаж для автомата мало — выберите месяцы вручную. '))
+            + 'Зима: ' + list(low) + '. Лето: ' + list(peak) + '.';
+        const fbLow = eff.fallback.includes('low'), fbPeak = eff.fallback.includes('peak');
+        const note = $('rsSeasonFallback');
+        note.textContent = (fbLow && fbPeak)
+            ? 'Под пороги не подошёл ни один месяц — взяты по 3 месяца с самыми низкими и самыми высокими продажами. Пороги можно поправить выше.'
+            : (fbLow ? 'Под порог зимы не подошёл ни один месяц — взяты 3 месяца с самыми низкими продажами. Порог можно поправить выше.'
+                : (fbPeak ? 'Под порог лета не подошёл ни один месяц — взяты 3 месяца с самыми высокими продажами. Порог можно поправить выше.' : ''));
+        note.hidden = !(fbLow || fbPeak);
+    }
+
+    // ---------- 06 · Калибровка ----------
+    function renderCalib() {
+        const box = $('rsCalib');
+        box.textContent = '';
+        const c = state.data.calibration;
+        const avail = !!c && CALIB.some(r => num(c[r.key]) !== null);
+        if (!avail) {
+            box.append(h('p', { class: 'rt-empty px-0 mb-0', text: 'Пока мало GPS-данных для подсказок: нужны дни, где у менеджера не меньше 8 визитов и подробный трек. '
+                + 'Пустые поля в «Нормах» считаются по умолчанию: извилистость 1,3, скорость 25 км/ч в городе и 45 км/ч по области, '
+                + 'визит 7 / 10 / 20 мин (мелкий / средний / крупный магазин).' }));
+            return;
+        }
+        const rows = h('div', { class: 'rt-calib' });
+        const appliers = [];
+        CALIB.forEach(r => {
+            const sug = num(c[r.key]);
+            if (sug === null) return;
+            const val = round(sug, r.d);
+            const inp = document.querySelector('[data-norm="' + r.key + '"]');
+            const cur = h('span', { class: 'cur', dataset: { calibCur: r.key } });
+            const btn = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Применить: ' + r.label + ' ' + fmt(val, r.d) },
+                icon('fa-check'), 'Применить');
+            const apply = () => {
+                if (!inp) return;
+                inp.value = String(val);
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                flash(inp);
+            };
+            btn.addEventListener('click', () => { apply(); announce(r.label + ': подставлено ' + fmt(val, r.d)); });
+            appliers.push(apply);
+            rows.append(h('div', { class: 'rt-calib-row', dataset: { calibRow: r.key } },
+                h('span', { class: 'k', text: r.label }),
+                cur,
+                h('span', { class: 'sug' }, h('small', { text: 'по GPS' }), fmt(val, r.d) + r.unit),
+                btn));
+        });
+        const all = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost mt-2' }, icon('fa-check-double'), 'Применить всё');
+        all.addEventListener('click', () => { appliers.forEach(f => f()); announce('Подсказки GPS подставлены в «Нормы»'); });
+        const avgVisit = num(c.visit_min_avg);
+        box.append(
+            h('p', { class: 'rt-lead', text: 'Посчитано по GPS-трекам менеджеров за последние 6 недель'
+                + (num(c.days_used) !== null ? ' (' + fmt(c.days_used) + ' ' + dayWord(c.days_used) + ')' : '')
+                + '. Скорость — только пока машина едет: ходьба между магазинами её не занижает. '
+                + (avgVisit !== null ? 'У клиента менеджер стоит в среднем ' + fmt(avgVisit, 1) + ' мин на визит. Визит к мелкому магазину — '
+                    + '0,7 от визита к среднему, к крупному — вдвое дольше; средний подобран так, чтобы в среднем по плану визит длился столько же. ' : '')
+                + 'Пустое поле в «Нормах» — это авто: расчёт сам берёт эти цифры по GPS и обновляет их вместе с треками. '
+                + '«Применить» закрепляет число в поле — сохраните, чтобы оно заработало.' }),
+            rows, all);
+        updateCalib();
+    }
+    function dayWord(n) {
+        const a = Math.abs(Math.trunc(n)) % 100, b = a % 10;
+        if (a > 10 && a < 20) return 'дней';
+        if (b === 1) return 'день';
+        if (b > 1 && b < 5) return 'дня';
+        return 'дней';
+    }
+
+    // «Сейчас» в калибровке всегда показывает то, что стоит в поле норм; пустое поле — авто, т.е. та же цифра GPS
+    function updateCalib() {
+        const c = state.data && state.data.calibration;
+        if (!c) return;
+        document.querySelectorAll('[data-calib-cur]').forEach(el => {
+            const r = CALIB.find(x => x.key === el.dataset.calibCur);
+            const inp = document.querySelector('[data-norm="' + r.key + '"]');
+            const v = inp ? num(inp.value) : null;
+            const auto = !!inp && String(inp.value).trim() === '' && !(inp.validity && inp.validity.badInput);
+            el.textContent = '';
+            el.append(h('small', { text: 'сейчас' }), auto ? 'авто (по GPS)' : (v === null ? '—' : fmt(v, r.d) + r.unit));
+            const same = auto || (v !== null && round(v, r.d) === round(num(c[r.key]), r.d));
+            el.closest('.rt-calib-row').classList.toggle('is-same', same);
+        });
+    }
+
+    // ---------- Сбор и сохранение ----------
+    function collect() {
+        const errors = {};
+        const s = Object.assign({}, state.data.settings);   // неизвестные ключи отдаём как были
+        document.querySelectorAll('#rsForm [data-norm]').forEach(inp => {
+            const key = inp.dataset.norm;
+            if (inp.dataset.time) {
+                const v = normTime(inp.value);
+                if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) errors['settings.' + key] = 'Время — часы и минуты, например 09:00';
+                else s[key] = v;
+                return;
+            }
+            const it = NORMS.flatMap(g => g.items).find(x => x.key === key);
+            const r = readNum(inp, !!(it && it.nullable));
+            if (r.error) errors['settings.' + key] = r.error;
+            else s[key] = r.value;
+        });
+        s.workdays = [...document.querySelectorAll('#rsForm [data-wd]:checked')].map(i => Number(i.value));
+        if (!s.workdays.length) errors['settings.workdays'] = 'Отметьте хотя бы один рабочий день';
+        const cc = parseCoord($('rsN_city_center').value);
+        if (cc.empty) errors['settings.city_center_lat'] = 'Укажите центр города';
+        else if (cc.error) errors['settings.city_center_lat'] = cc.error;
+        else { s.city_center_lat = cc.lat; s.city_center_lon = cc.lon; }
+        s.chain_groups = [...document.querySelectorAll('#rsForm [data-chain]:checked')].map(i => i.value);
+        const manual = state.season.mode === 'manual';
+        s.low_months = manual ? [...state.season.low].sort((a, b) => a - b) : null;
+        s.peak_months = manual ? [...state.season.peak].sort((a, b) => a - b) : null;
+
+        let depot = null;
+        const dp = parseCoord($('rsDepot').value);
+        if (dp.error) errors.depot = dp.error;
+        else if (!dp.empty) depot = { lat: dp.lat, lon: dp.lon };
+
+        const idVal = (v) => v === '' ? null : (/^\d+$/.test(v) ? Number(v) : v);
+        const trucks = [];
+        $('rsTrucks').querySelectorAll('tbody tr').forEach(tr => {
+            const i = +tr.dataset.i, t = state.data.trucks[i];
+            const q = (f) => tr.querySelector('[data-f="' + f + '"]');
+            const cap = readNum(q('cap'), true), fuel = readNum(q('fuel'), true);
+            if (cap.error) errors['trucks.' + i + '.capacity_kg'] = cap.error;
+            else if (cap.value !== null && (cap.value < 0.1 || cap.value > 30)) errors['trucks.' + i + '.capacity_kg'] = 'Тоннаж — от 0,1 до 30 т';
+            if (fuel.error) errors['trucks.' + i + '.fuel_l_per_100km'] = fuel.error;
+            trucks.push({
+                car_code: t.car_code,
+                capacity_kg: cap.value === null || cap.value === undefined ? null : Math.round(cap.value * 1000),
+                fuel_l_per_100km: fuel.value === undefined ? null : fuel.value,
+                agent_id: idVal(q('agent').value),
+                active: q('active').checked,
+            });
+        });
+
+        const managers = [];
+        $('rsManagers').querySelectorAll('tbody tr').forEach(tr => {
+            const i = +tr.dataset.i, m = state.data.managers[i];
+            const q = (f) => tr.querySelector('[data-f="' + f + '"]');
+            const home = parseCoord(q('home').value);
+            if (home.error) errors['managers.' + i + '.home_lat'] = home.error;
+            const fuel = readNum(q('fuel'), true);
+            if (fuel.error) errors['managers.' + i + '.car_fuel_l_per_100km'] = fuel.error;
+            const item = {
+                agent_id: m.agent_id,
+                home_lat: home.empty || home.error ? null : home.lat,
+                home_lon: home.empty || home.error ? null : home.lon,
+                car_fuel_l_per_100km: fuel.value === undefined ? null : fuel.value,
+                car_fuel_type: q('type').value || null,
+            };
+            // «В расчёте»: ручной выбор — true/false; нажали «вернуть авто» — null; «авто» без
+            // изменений не шлём — иначе сохранение заморозило бы решение по работе за 8 недель
+            const inc = q('inc');
+            if (inc.dataset.mode === 'manual') item.included = inc.checked;
+            else if (m.included_source === 'manual') item.included = null;
+            managers.push(item);
+        });
+        return { payload: { settings: s, depot, trucks, managers }, errors };
+    }
+
+    function snapshot() {
+        const vals = [...document.querySelectorAll('#rsForm input, #rsForm select')]
+            .filter(el => !el.dataset.noTrack)
+            .map(el => (el.type === 'checkbox' || el.type === 'radio') ? (el.checked ? '1' : '0') : el.value);
+        // «вернуть авто» может не менять галочку — режим «В расчёте» тоже изменение
+        const incModes = [...document.querySelectorAll('#rsManagers [data-f="inc"]')].map(el => el.dataset.mode || '');
+        return JSON.stringify([vals, incModes, state.season.mode, [...state.season.low].sort(), [...state.season.peak].sort()]);
+    }
+
+    function updateDirty() {
+        if (!state.data) return;
+        state.dirty = snapshot() !== state.initial;
+        const el = $('rsDirty');
+        el.textContent = state.dirty ? 'Есть несохранённые изменения' : 'Изменений нет';
+        el.classList.toggle('is-dirty', state.dirty);
+    }
+
+    function setSaving(on) {
+        state.saving = on;
+        const btn = $('rsSaveBtn');
+        btn.disabled = on;
+        btn.setAttribute('aria-busy', on ? 'true' : 'false');
+        btn.querySelector('i').className = on ? 'rt-spin-inline' : 'fas fa-floppy-disk';
+        btn.querySelector('span').textContent = on ? 'Сохраняю…' : 'Сохранить';
+    }
+
+    async function save() {
+        if (state.saving || !state.data) return;
+        clearErrors();
+        const { payload, errors } = collect();
+        if (Object.keys(errors).length) { showErrors(errors, true); return; }
+        setSaving(true);
+        try {
+            let resp;
+            try {
+                resp = await fetch('/api/routes/settings', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+            } catch (e) {
+                showSaveError('Нет связи с сервером — настройки не сохранены. Проверьте сеть и нажмите «Сохранить» ещё раз.');
+                return;
+            }
+            let data = null;
+            try { data = await resp.json(); } catch (e) { data = null; }
+            if (resp.ok && data && data.success === true) {
+                state.initial = snapshot();
+                updateDirty();
+                const toast = $('rsToast');
+                if (window.bootstrap && bootstrap.Toast) bootstrap.Toast.getOrCreateInstance(toast).show();
+                announce('Настройки сохранены');
+                await load(true);   // сервер мог привести значения к своему виду
+                return;
+            }
+            if (data && data.errors && typeof data.errors === 'object' && Object.keys(data.errors).length) {
+                showErrors(data.errors, false);
+                return;
+            }
+            showSaveError((data && data.error) || ('Не удалось сохранить (код ' + resp.status + '). Попробуйте ещё раз.'));
+        } finally {
+            setSaving(false);
+        }
+    }
+
+    // ---------- События ----------
+    document.addEventListener('DOMContentLoaded', () => {
+        syncNavOffset();
+        window.addEventListener('resize', syncNavOffset);
+        const form = $('rsForm');
+        form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
+        form.addEventListener('input', (e) => {
+            const t = e.target;
+            if (t.id === 'rsDepot') syncDepot({ pan: false, strict: false });
+            if (t.dataset && (t.dataset.norm === 'low_season_index_max' || t.dataset.norm === 'peak_season_index_min')) updateSeasonUI();
+            if (t.dataset && t.dataset.norm) updateCalib();
+            updateDirty();
+        });
+        form.addEventListener('change', () => updateDirty());
+        // колесо мыши не должно менять число в поле, над которым случайно прокручивают страницу
+        form.addEventListener('wheel', (e) => {
+            if (e.target.type === 'number' && e.target === document.activeElement) e.target.blur();
+        }, { passive: true });
+        const depot = $('rsDepot');
+        depot.addEventListener('change', () => syncDepot({ pan: true, strict: true }));
+        depot.addEventListener('paste', () => setTimeout(() => syncDepot({ pan: true, strict: true }), 0));
+        $('rsDepotClear').addEventListener('click', () => {
+            depot.value = '';
+            syncDepot({ pan: false, strict: true });
+            updateDirty();
+            depot.focus();
+        });
+        $('rsRetryBtn').addEventListener('click', () => load(false));
+        window.addEventListener('beforeunload', (e) => {
+            if (state.dirty) { e.preventDefault(); e.returnValue = ''; }
+        });
+        load(false);
+    });
+})();
