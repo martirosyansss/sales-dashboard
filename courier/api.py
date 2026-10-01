@@ -25,7 +25,7 @@ from .day import DEMO_DAY
 from .photos import MAX_PHOTO_BYTES, PHOTO_KINDS, image_ext, save_photo
 from .security import token_hash, token_shape_ok, valid_pin
 from .state import state
-from .store import PHOTO_BYTES_PER_DAY, PHOTOS_PER_DAY, PhotoLimit, StoreError
+from .store import PHOTO_BYTES_PER_DAY, PHOTOS_PER_DAY, PhotoLimit, PinReset, StoreError
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ MSG = {
     'unauthorized': 'Տերմինալը գրանցված չէ կամ անջատված է',
     'session': 'Մուտք գործեք PIN-ով',
     'pin': 'Սխալ PIN',
+    'pin_reset': 'PIN-ը պետք է նորից սահմանել գրասենյակում',
     'not_found': 'Չի գտնվել',
     'too_large': 'Չափազանց մեծ հարցում',
     'server': 'Սերվերի սխալ',
@@ -171,7 +172,9 @@ def login() -> Any:
     """PIN водителя → сессия до 04:00 следующего дня (не дольше 20 ч). Блокировка — по терминалу: 5 неверных PIN
     в окне 15 минут → 429 на 15 минут (за туннелем у всех терминалов один IP). PIN неверного формата не считается
     попыткой. Против гонки: вход терминала — по одному (параллельный → 429 с коротким retry_after), а попытка
-    резервируется в базе атомарно ДО проверки PIN — проверок PIN не больше 5 на окно, сколько бы запросов ни пришло."""
+    резервируется в базе атомарно ДО проверки PIN — проверок PIN не больше 5 на окно, сколько бы запросов ни пришло.
+    PIN не узнан, а у кого-то из водителей хеш с перцем, которого нет в среде (security), — 403 `pin` с текстом
+    «PIN задать заново в офисе»; попытка в счёт, как любая неверная."""
     st, t = state(), g.courier_terminal
     body = _json_body()
     pin = body.get('pin') if body else None
@@ -187,9 +190,12 @@ def login() -> Any:
         attempt = st.store.pin_attempt(t.id)
         if isinstance(attempt, str):
             return _locked(attempt)
-        drivers = st.store.match_pin(pin)
+        try:
+            drivers, failure = st.store.match_pin(pin), MSG['pin']
+        except PinReset:
+            drivers, failure = [], MSG['pin_reset']
         if not drivers:
-            return _locked(attempt.locked_until) if attempt.locked_until else error(403, 'pin')
+            return _locked(attempt.locked_until) if attempt.locked_until else error(403, 'pin', failure)
         st.store.pin_release(t.id, attempt)   # PIN верный — попытка не в счёт
     finally:
         lock.release()

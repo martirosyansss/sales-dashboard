@@ -63,6 +63,7 @@
 .cr-num-cell { text-align: right; font-family: var(--rt-mono); white-space: nowrap; }
 .cr-bad { color: var(--rt-danger); }
 .cr-row-bad td { background: var(--rt-danger-bg); }
+.cr-row-warn td { background: var(--rt-warn-bg); }   /* merge_conflict: ստուգել գրասենյակում */
 
 /* Фото и подписи терминала — миниатюры, полный размер в новой вкладке */
 .cr-thumb { display: inline-block; margin: 2px 4px 2px 0; border-radius: 6px; overflow: hidden; border: 1px solid var(--rt-line); line-height: 0; }

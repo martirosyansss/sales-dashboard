@@ -10,18 +10,21 @@
   сверх накладной, amount ≤ 0, неизвестная строка накладной…); отказ хранится в rejected_events (не больше
   store.REJECTED_PER_DAY на терминал в день — дальше только в ответе) — его видят /status и офис;
 - версии точки (контракт §5 п. 4): терминал работает офлайн по версии /day, которую успел получить, а офис мог
-  изменить накладную. Поэтому строка ищется во ВСЕХ сохранённых версиях точки, и qty отклоняется, только если
-  больше максимума строки по всем версиям; больше действующей версии, но не больше прежней — принимается с
-  флагом `qty_over_invoice` (строка, убранная из новой версии, — тоже: в действующей её qty = 0);
+  изменить накладную. Поэтому строка ищется среди строк ВСЕХ версий точки — по line_max (наибольшее qty строки,
+  не удаляется вместе со старыми снимками, §5 п. 13), и qty отклоняется, только если больше этого максимума;
+  больше действующей версии, но не больше прежней — принимается с флагом `qty_over_invoice` (строка, убранная из
+  новой версии, — тоже: в действующей её qty = 0);
 - мягкие правила v1.1: нет причины при «частично»/«отказ» — флаг `no_reason` (§5 п. 5); `date` дальше чем на
   2 дня от даты `at` (Ереван) — флаг `date_suspicious` (§5 п. 6);
 - правила §3 (обязательный скан маркировки, номер чека ՀԴՄ, фото) сервер НЕ блокирует — событие
   принимается с флагом (данные терминала важнее), флаги видны в офисе;
 - `foreign` — точка в выдаче /day другой машины или даты; `unknown_stop` — точку /day не выдавал никому
   (проверить qty нечем — принимается как есть); snapshot_id события — снимок действующей версии точки, по
-  которой оно проверено (цены для «Գումար»);
-- повторная delivery/tare по точке не удаляет прежние — «действующая» считается при чтении: последняя
-  по моменту терминала (at_utc), затем по received_at и id (effective()).
+  которой оно проверено (такой снимок хранится всегда, store._purge_snapshots);
+- `supersedes` (§5 п. 14, delivery и tare): строка id прежнего события, до SUPERSEDES_MAX символов; может ссылаться
+  на ещё не полученное событие; хранится в нижнем регистре, как id событий;
+- повторная delivery/tare по точке не удаляет прежние — «действующая» считается при чтении по правилу §5 п. 12
+  (merge: последняя по at, затем по id, без вытесненных `supersedes`).
 """
 from __future__ import annotations
 
@@ -35,6 +38,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from route_optimizer.geo import is_valid_point
 
 from . import clock
+from .merge import statement_status
 from .store import REJECTED_PER_DAY, EventTx, Store
 
 logger = logging.getLogger(__name__)
@@ -49,6 +53,7 @@ QTY_MAX = 1e6
 DATE_SUSPICIOUS_DAYS = 2
 SUGGEST_MAX_ACCURACY_M = 100.0   # geo_suggest: точность обязательна и не хуже 100 м
 SUGGEST_NOTE_MAX = 200
+SUPERSEDES_MAX = 64
 EPS = 1e-9
 
 UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
@@ -131,40 +136,55 @@ class StopCtx:
     data: Mapping[str, Any] | None   # действующая версия точки из выдачи /day (своя или чужая); None — неизвестна
     foreign: bool
     snapshot_id: int | None = None
-    versions: tuple[Mapping[str, Any], ...] = ()   # все сохранённые версии точки, от старой к новой
+    versions: tuple[Mapping[str, Any], ...] = ()   # сохранённые версии точки, от старой к новой
+    line_max: Mapping[str, tuple[float, int | None]] = field(default_factory=dict)   # строки всех версий (§5 п. 13)
+
+    @property
+    def known(self) -> bool:
+        """Точку выдавал /day: строки проверяются (по line_max — и строки удалённых версий)."""
+        return self.data is not None or bool(self.line_max)
 
     def lines(self) -> dict[str, Mapping[str, Any]]:
         """Строки действующей версии."""
         return stop_lines(self.data)
 
     def any_lines(self) -> dict[str, Mapping[str, Any]]:
-        """Строки всех версий (строка — из самой новой версии, где она есть)."""
+        """Строки сохранённых версий (строка — из самой новой версии, где она есть)."""
         out: dict[str, Mapping[str, Any]] = {}
         for v in (*self.versions, *([self.data] if self.data else [])):
             out.update(stop_lines(v))
         return out
 
-    def max_qty(self, line_id: str) -> float | None:
-        """Наибольшее qty строки по всем версиям; строки нет ни в одной — None."""
-        qtys = [float(ln.get('qty') or 0) for v in (*self.versions, *([self.data] if self.data else []))
-                for lid, ln in stop_lines(v).items() if lid == line_id]
-        return max(qtys) if qtys else None
-
 
 def _stop_ctx(tx: EventTx, stop_id: str | None, day: str, car_code: str) -> tuple[StopCtx, list[str]]:
     """Действующая версия — последняя версия точки в снимках своей машины и даты (точка убрана из нового
-    снимка — её последняя версия); своих нет — последняя чужая (`foreign`)."""
+    снимка — её последняя версия); своих нет — последняя чужая (`foreign`). Версий не осталось (удалены вместе со
+    старыми снимками), а строки известны (line_max) — точка известна, проверка qty та же."""
     if stop_id is None:
         return StopCtx(None, False), []
-    rows = tx.stop_rows(stop_id)
+    rows, lmax = tx.stop_rows(stop_id), tx.line_max(stop_id)
     if not rows:
-        return StopCtx(None, False), ['unknown_stop']
+        return StopCtx(None, False, line_max=lmax), ([] if lmax else ['unknown_stop'])
     own = [r for r in rows if r['date'] == day and r['car_code'] == car_code]
     cur = (own or rows)[-1]
-    return StopCtx(cur['data'], not own, cur['snapshot_id'], tuple(r['data'] for r in rows)), ([] if own else ['foreign'])
+    return (StopCtx(cur['data'], not own, cur['snapshot_id'], tuple(r['data'] for r in rows), lmax),
+            [] if own else ['foreign'])
 
 
 # --- правила по типам: нарушение формы или таблицы контракта — Reject, нарушение §3 — флаг ---
+
+def _supersedes(p: Mapping[str, Any], event_id: str) -> str | None:
+    """§5 п. 14: id прежнего события того же типа той же точки (может быть ещё не получено) — строка до
+    SUPERSEDES_MAX символов, не само событие; хранится в нижнем регистре (id событий хранятся так же)."""
+    v = p.get('supersedes')
+    if v is None:
+        return None
+    if not isinstance(v, str) or not v.strip() or len(v) > SUPERSEDES_MAX:
+        raise Reject('supersedes՝ սխալ արժեք')
+    if v.lower() == event_id:
+        raise Reject('supersedes՝ չի կարող հղվել նույն իրադարձությանը')
+    return v.lower()
+
 
 def _delivery(p: Mapping[str, Any], stop: StopCtx) -> list[str]:
     raw = p.get('lines')
@@ -181,49 +201,46 @@ def _delivery(p: Mapping[str, Any], stop: StopCtx) -> list[str]:
         if lid in seen:
             raise Reject(f'Տողը կրկնվում է՝ {lid}')
         q = _qty(item.get('qty'), 'qty')
-        if stop.data is not None:
-            top = stop.max_qty(lid)
+        if stop.known:
+            top = stop.line_max.get(lid)
             if top is None:
                 raise Reject(f'Անհայտ տող՝ {lid}')
-            if q > top + EPS:
+            if q > top[0] + EPS:
                 raise Reject('Քանակը չի կարող գերազանցել ապրանքագրի քանակը')
-            if q > float((invoice.get(lid) or {}).get('qty') or 0) + EPS and 'qty_over_invoice' not in flags:
+            if stop.data is not None and q > float((invoice.get(lid) or {}).get('qty') or 0) + EPS \
+                    and 'qty_over_invoice' not in flags:
                 flags.append('qty_over_invoice')   # больше действующей версии, но не больше прежней (§5 п. 4)
         seen[lid] = q
-    status = delivery_status(seen, invoice) if stop.data is not None else ('refuse' if not any(seen.values()) else None)
+    if stop.data is not None:
+        status = statement_status(seen, {lid: _num(ln.get('qty')) or 0.0 for lid, ln in invoice.items()})
+    else:
+        status = 'refused' if not any(seen.values()) else None
     if stop.data is not None and set(invoice) - set(seen):
         flags.append('lines_incomplete')
-    if status in ('partial', 'refuse') and not _text(p.get('reason_id'), 40, 'reason_id'):
+    if status in ('partial', 'refused') and not _text(p.get('reason_id'), 40, 'reason_id'):
         flags.append('no_reason')   # v1.1 §5 п. 5: принимается, офис видит
     _text(p.get('comment'), 500, 'comment')
     return flags
 
 
-def delivery_status(delivered: Mapping[str, float], invoice: Mapping[str, Mapping[str, Any]]) -> str:
-    """full — все строки = накладной; refuse — все 0; иначе partial. Строка, не указанная в delivery, — 0."""
-    qtys = [(delivered.get(lid, 0.0), float(ln.get('qty') or 0)) for lid, ln in invoice.items()]
-    if not qtys:
-        return 'refuse' if not any(delivered.values()) else 'partial'
-    if all(d <= 1e-9 for d, _ in qtys):
-        return 'refuse'
-    if all(abs(d - q) <= 1e-9 for d, q in qtys):
-        return 'full'
-    return 'partial'
-
-
 def _scan_shortfall(tx: EventTx, day: str, stop_id: str, p: Mapping[str, Any], stop: StopCtx) -> list[str]:
-    """§3: маркируемая строка с qty > 0 — сканов (sale) + «не читается» должно хватать (флаг, не отказ).
-    Накладная S:, сделанная из заказов (replaces), засчитывает и сканы этого товара, сделанные по заказам O:."""
+    """§3: маркируемый товар с qty > 0 — сканов (sale) + «не читается» должно хватать (флаг, не отказ). Сравнение —
+    по товару на всю доставку: нужно Σ qty строк этого товара, закрыто — сканы и «не читается» этого товара по точке
+    (на какую строку ни отсканировано). Накладная S:, сделанная из заказов (replaces), засчитывает и сканы этого
+    товара, сделанные по заказам O:."""
     invoice = stop.lines()
     replaced = [o for o in (stop.data or {}).get('replaces') or [] if isinstance(o, str)]
+    need: dict[int, float] = {}
     for item in p.get('lines') or []:
         ln = invoice.get(str(item.get('line_id')))
         q = _num(item.get('qty')) or 0.0
-        if not ln or not ln.get('marked') or q <= 0:
-            continue
-        covered = tx.covered_units(day, stop_id, str(item['line_id']))
+        pid = ln.get('product_id') if ln else None
+        if ln and ln.get('marked') and q > 0 and isinstance(pid, int) and not isinstance(pid, bool):
+            need[pid] = need.get(pid, 0.0) + q
+    for pid, q in sorted(need.items()):
+        covered = tx.covered_by_product(day, [stop_id], pid)
         if covered + EPS < q and replaced:
-            covered += tx.covered_by_orders(day, replaced, ln.get('product_id'))
+            covered += tx.covered_by_product(day, replaced, pid)
         if covered + EPS < q:
             return ['scan_short']
     return []
@@ -263,6 +280,7 @@ def _payment(tx: EventTx, ev: Mapping[str, Any], p: Mapping[str, Any], stop: Sto
 
 
 def _tare(p: Mapping[str, Any]) -> None:
+    """Тара точки (заменяет прежнюю; исправление — `supersedes`, проверяет _check)."""
     items = p.get('items')
     if not isinstance(items, list) or len(items) > 100:
         raise Reject('items՝ պետք է լինի ցուցակ')
@@ -323,7 +341,7 @@ def _scan(tx: EventTx, ev: Mapping[str, Any], p: Mapping[str, Any], stop: StopCt
         flags.append('duplicate_elsewhere')
     invoice = stop.any_lines()   # строка — во всех версиях точки (накладную могли изменить, пока терминал офлайн)
     line = invoice.get(line_id) if line_id else None
-    if stop.data is not None and line_id and line is None:
+    if stop.known and line_id and line is None and line_id not in stop.line_max:
         flags.append('unknown_line')
     # /day отдаёт штучные GTIN; упаковка (индикатор 1–8) сверяется по GTIN своей штуки — как в терминале
     gtin_keys = {gtin, unit_gtin(gtin)} - {None} if gtin else set()
@@ -331,7 +349,7 @@ def _scan(tx: EventTx, ev: Mapping[str, Any], p: Mapping[str, Any], stop: StopCt
         line = next((ln for ln in stop.lines().values() if gtin_keys & set(ln.get('gtins') or [])), None) \
             or next((ln for ln in invoice.values() if gtin_keys & set(ln.get('gtins') or [])), None)
         if line is not None and not line_id:
-            line_id = str(line.get('line_id'))   # найдена по GTIN — скан засчитывается строке (covered_units)
+            line_id = str(line.get('line_id'))   # найдена по GTIN — скан засчитывается строке и её товару
     if stop.data is not None and gtin_keys and not any(gtin_keys & set(ln.get('gtins') or [])
                                                        for ln in invoice.values()):
         flags.append('gtin_not_in_invoice')
@@ -343,13 +361,15 @@ def _scan(tx: EventTx, ev: Mapping[str, Any], p: Mapping[str, Any], stop: StopCt
             flags.append('units_mismatch')
     customer = (stop.data or {}).get('customer') or {}
     cancel = tx.pending_cancel(ev['id'], who.driver_id)
+    # товар скана — для «сканов хватает» по товару (_scan_shortfall); строка удалённой версии — по line_max
+    product_id = line.get('product_id') if line is not None else stop.line_max.get(line_id or '', (0.0, None))[1]
     row = {
         'event_id': ev['id'], 'raw': raw, 'gtin': gtin, 'serial': serial, 'is_group': int(p['is_group']),
         'units': units, 'kind': kind, 'stop_id': stop_id, 'line_id': line_id,
         'customer_id': customer.get('id'), 'customer_code': customer.get('code'),
         'customer_name': customer.get('name'), 'tax_id': customer.get('tax_id'),
         'doc_number': (stop.data or {}).get('doc_number'),
-        'product_id': line.get('product_id') if line else None, 'product_code': line.get('code') if line else None,
+        'product_id': product_id, 'product_code': line.get('code') if line else None,
         'product_name': line.get('name') if line else None, 'date': ev['date'], 'at_device': ev['at'],
         'driver_id': who.driver_id, 'driver_name': who.driver_name, 'car_code': who.car_code,
         'counted': 0 if repeat else 1, 'duplicate_elsewhere': int('duplicate_elsewhere' in flags),
@@ -409,6 +429,8 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who) -> tupl
         flags.append('date_suspicious')
     stored = dict(payload)
     scan_row = None
+    if etype in ('delivery', 'tare') and (supersedes := _supersedes(payload, event_id)) is not None:
+        stored['supersedes'] = supersedes
     if etype == 'delivery':
         flags += _delivery(payload, stop)
         if stop_id and stop.data is not None:
@@ -434,7 +456,7 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who) -> tupl
         _text(payload.get('line_id'), 80, 'line_id', required=True)
         _qty(payload.get('qty'), 'qty', positive=True)
         _text(payload.get('reason'), 500, 'reason', required=True)
-        if stop.data is not None and payload['line_id'] not in stop.any_lines():
+        if stop.known and payload['line_id'] not in stop.any_lines() and payload['line_id'] not in stop.line_max:
             flags.append('unknown_line')
     elif etype == 'arrived':
         _arrived(payload)
@@ -494,41 +516,7 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
     return result
 
 
-# --- чтение: действующие события ---
-
-def _order(e: Mapping[str, Any]) -> tuple[str, str, str]:
-    return e['at_utc'], e['received_at'], e['id']
-
-
-def effective(events: Iterable[Mapping[str, Any]], etype: str, key: str = 'stop_id') -> dict[str, Mapping[str, Any]]:
-    """Последнее событие типа по точке (delivery, tare заменяют прежние): по at_utc, received_at, id.
-    key — поле точки: 'stop_id' или 'orig_stop_id' (точка, как её прислал терминал, — до сведения O: → S:)."""
-    out: dict[str, Mapping[str, Any]] = {}
-    for e in sorted((e for e in events if e['type'] == etype and e.get(key)), key=_order):
-        out[e[key]] = e
-    return out
-
-
-def combined(events: Iterable[Mapping[str, Any]], etype: str) -> dict[str, list[Mapping[str, Any]]]:
-    """Действующие события типа по точке офиса с учётом заказов O:, сведённых к накладной S: (views._attribute:
-    e['stop_id'] — точка офиса, e['orig_stop_id'] — как прислал терминал). Возвращает точку → части, от ранней
-    к поздней. Правило (контракт §5 п. 2): действующее событие ищется по ИСХОДНОЙ точке (последнее по каждому
-    заказу и по самой накладной), затем
-    - собственное событие накладной позже всех событий её заказов — только оно (терминал уже видел накладную
-      и записал её целиком);
-    - иначе — сумма: последнее по каждому заказу + собственное накладной, если есть (заказы, объединённые в одну
-      накладную, доставлены по отдельности — ни одна доставка не теряется).
-    Без заказов — одна часть, как effective()."""
-    groups: dict[str, list[Mapping[str, Any]]] = {}
-    for e in effective(events, etype, 'orig_stop_id').values():
-        groups.setdefault(e['stop_id'], []).append(e)
-    out: dict[str, list[Mapping[str, Any]]] = {}
-    for sid, parts in groups.items():
-        parts.sort(key=_order)
-        own = next((e for e in parts if e['orig_stop_id'] == sid), None)
-        out[sid] = [own] if own is not None and parts[-1] is own else parts
-    return out
-
+# --- чтение ---
 
 def payments_total(events: Iterable[Mapping[str, Any]]) -> dict[str, float]:
     """Деньги по событиям payment: {'invoice': …, 'debt': …}. Отмена (cancel_of) вычитает свою сумму.
@@ -545,22 +533,3 @@ def payments_total(events: Iterable[Mapping[str, Any]]) -> dict[str, float]:
             continue
         total[kind] += -amount if p.get('cancel_of') else amount
     return {k: round(v, 2) for k, v in total.items()}
-
-
-def delivery_amount(delivery: Mapping[str, Any], versions: Sequence[Mapping[str, Any]]) -> float:
-    """Сколько стоит доставленное (для «Գումար»): Σ qty × цена по строкам delivery. Цена — из версии точки, по
-    которой доставка проверена (snapshot_id события); строки там нет — из самой новой версии, где она есть;
-    неизвестная строка — 0. Отказ (все qty 0) — 0. versions — store.stop_versions() этой точки."""
-    by_snapshot = {v['snapshot_id']: v['data'] for v in versions}
-    base = stop_lines(by_snapshot.get(delivery.get('snapshot_id')))
-    known: dict[str, Mapping[str, Any]] = {}
-    for v in versions:
-        known.update(stop_lines(v['data']))
-    total = 0.0
-    for item in delivery['payload'].get('lines') or []:
-        if not isinstance(item, dict):
-            continue
-        lid = str(item.get('line_id'))
-        line = base.get(lid) or known.get(lid)
-        total += (_num(item.get('qty')) or 0.0) * ((_num(line.get('price')) or 0.0) if line else 0.0)
-    return round(total, 2)

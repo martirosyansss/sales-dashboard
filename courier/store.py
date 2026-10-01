@@ -12,7 +12,9 @@ ERP только читаем, поэтому всё состояние терм
   по старой версии накладной, проверяются по всем версиям (контракт §5 п. 3–4). Содержимое точки хранится
   один раз (stop_data, ключ — sha256 JSON): новая версия /day обычно меняет одну накладную из многих, и снимок
   ссылается на прежние строки. Хранение: снимки, на которые ссылаются события, и последний снимок каждой
-  (дата, машина) — всегда; прочие промежуточные — SNAPSHOT_KEEP_DAYS дней (_purge_snapshots);
+  (дата, машина) — всегда; прочие промежуточные — SNAPSHOT_KEEP_DAYS дней (_purge_snapshots). Наибольшее qty
+  каждой строки точки по всем версиям и её товар (line_max) пишутся вместе со снимком и НЕ удаляются (контракт
+  §5 п. 13): проверка количества опоздавшего события не зависит от хранения снимков;
 - запись — одна транзакция: всё или ничего;
 - битая БД — явная StoreError, а НЕ тихий откат на дефолты.
 Все моменты сервера пишутся clock.iso() — всегда со смещением +04:00, поэтому строки сравнимы
@@ -23,7 +25,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -32,12 +36,12 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Sequence
 
 from . import clock
-from .security import (check_pin, hash_pin, new_token, pepper_id, pepper_tag, pin_pepper, pin_tag, same_hash,
-                       token_hash, valid_pin)
+from .security import (PEPPER_ENV, PEPPER_OLD_ENV, SCHEME_PLAIN, Pepper, check_pin, hash_outdated, hash_pin, new_token,
+                       pepper_from_env, same_hash, scheme_of, tag_base, tag_for, tag_pepper_id, token_hash, valid_pin)
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 PIN_MAX_FAILS = 5
 PIN_LOCK = timedelta(minutes=15)
@@ -73,10 +77,11 @@ REASON_KINDS = tuple(DEFAULT_REASONS)
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    # pin_tag — детерминированный хеш PIN (security.pin_tag): уникальность PIN без самого PIN
+    # pin_hash — хеш секрета PIN схемы pin_scheme ('plain' | 'pepper:<id>'); pin_tag — детерминированный хеш PIN
+    # (уникальность PIN без самого PIN, вход за один pbkdf2) — security
     "CREATE TABLE IF NOT EXISTS drivers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, "
     "pin_hash TEXT, active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)), "
-    "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT, pin_tag TEXT)",
+    "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT, pin_tag TEXT, pin_scheme TEXT)",
     "CREATE INDEX IF NOT EXISTS drivers_pin_tag ON drivers(pin_tag)",
     # failed_pin_count / locked_until — блокировка входа по терминалу (за туннелем у всех один IP)
     "CREATE TABLE IF NOT EXISTS terminals(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, "
@@ -132,10 +137,10 @@ _SCHEMA = (
     "PRIMARY KEY (snapshot_id, stop_id))",
     "CREATE INDEX IF NOT EXISTS snapshot_stops_stop ON snapshot_stops(stop_id, snapshot_id)",
     "CREATE INDEX IF NOT EXISTS snapshot_stops_day ON snapshot_stops(date, snapshot_id)",
-    # заказ (O:) → накладная (S:), сделанная из него (DOCPARENTS): события O: офис сводит к накладной.
-    # snapshot_id — самый новый снимок, в котором связь была (устаревшая связь не перекрывает новую)
-    "CREATE TABLE IF NOT EXISTS stop_replaces(order_stop_id TEXT NOT NULL, invoice_stop_id TEXT NOT NULL, "
-    "date TEXT NOT NULL, snapshot_id INTEGER, PRIMARY KEY (order_stop_id, invoice_stop_id))",
+    # наибольшее qty строки точки по всем версиям /day и её товар — НЕ удаляется со снимками (контракт §5 п. 13):
+    # проверка количества и «код не читается» по товару работают и для опоздавших событий
+    "CREATE TABLE IF NOT EXISTS line_max(stop_id TEXT NOT NULL, line_id TEXT NOT NULL, max_qty REAL NOT NULL, "
+    "product_id INTEGER, PRIMARY KEY (stop_id, line_id))",
     "CREATE TABLE IF NOT EXISTS cash_handover(date TEXT NOT NULL, driver_id INTEGER NOT NULL, handed REAL NOT NULL, "
     "comment TEXT, updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (date, driver_id))",
     # маркировка: нет строки — стартовое состояние из ERP (PRODUCTS.fMARKABLE, доп. единица)
@@ -208,6 +213,19 @@ _MIGRATIONS: dict[int, tuple[str | Callable[[sqlite3.Connection], None], ...]] =
         "CREATE TABLE IF NOT EXISTS geo_suggest_decision(event_id TEXT PRIMARY KEY, decision TEXT NOT NULL "
         "CHECK (decision IN ('accepted','rejected')), decided_at TEXT NOT NULL, decided_by TEXT)",
     ),
+    # v4 → v5: схема хеша PIN (pin_scheme; хеши до v5 — без перца, 60 000 итераций: пересчитываются при входе; tag
+    # с перцем несёт id перца — meta.pin_pepper_id больше не нужен); наибольшее qty строк (line_max, не удаляется) —
+    # из всех сохранённых снимков; связи заказ → накладная офис берёт из снимков той же даты (stop_replaces больше
+    # нет). Шаги повторяемы: таблицы и столбцы, которые уже есть, не мешают.
+    4: (
+        lambda conn: _add_column(conn, 'drivers', 'pin_scheme', 'TEXT'),
+        f"UPDATE drivers SET pin_scheme = '{SCHEME_PLAIN}' WHERE pin_hash IS NOT NULL AND pin_scheme IS NULL",
+        lambda conn: _tags_v5(conn),
+        "CREATE TABLE IF NOT EXISTS line_max(stop_id TEXT NOT NULL, line_id TEXT NOT NULL, max_qty REAL NOT NULL, "
+        "product_id INTEGER, PRIMARY KEY (stop_id, line_id))",
+        lambda conn: _fill_line_max(conn),
+        "DROP TABLE IF EXISTS stop_replaces",
+    ),
 }
 
 
@@ -225,6 +243,56 @@ def _dedup_stop_data(conn: sqlite3.Connection) -> None:
         conn.execute('INSERT INTO snapshot_stops_v3(snapshot_id, stop_id, date, car_code, seq, data_hash) '
                      'VALUES(?, ?, ?, ?, ?, ?)', (snapshot_id, stop_id, day, car, seq, h))
 
+
+def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    if column not in {r[1] for r in conn.execute(f'PRAGMA table_info({table})')}:
+        conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {decl}')
+
+
+def _tags_v5(conn: sqlite3.Connection) -> None:
+    """Миграция v4 → v5: tag с перцем 'p1:<hmac>' (перец — meta.pin_pepper_id, 16 hex) → 'p2:<id>:<hmac>' (id —
+    первые 8 hex того же отпечатка, security.Pepper.id). Отпечатка в meta нет — tag сбрасывается: вход узнает водителя
+    по хешу PIN (хеши до v5 — без перца)."""
+    row = conn.execute("SELECT value FROM meta WHERE key = 'pin_pepper_id'").fetchone()
+    pid = row[0][:8] if row and re.fullmatch(r'[0-9a-f]{16}', str(row[0])) else None
+    for did, tag in conn.execute("SELECT id, pin_tag FROM drivers WHERE pin_tag LIKE 'p1:%'").fetchall():
+        conn.execute('UPDATE drivers SET pin_tag = ? WHERE id = ?', (f'p2:{pid}:{tag[3:]}' if pid else None, did))
+    conn.execute("DELETE FROM meta WHERE key = 'pin_pepper_id'")
+
+
+def _line_max_rows(stop: Mapping[str, Any]) -> list[tuple[str, str, float, int | None]]:
+    """Строки точки для line_max: (stop_id, line_id, qty, товар); строки без line_id или с нечисловым qty — нет."""
+    out = []
+    for ln in stop.get('lines') or ():
+        if not isinstance(ln, dict) or ln.get('line_id') is None:
+            continue
+        qty, pid = ln.get('qty'), ln.get('product_id')
+        if isinstance(qty, bool) or not isinstance(qty, (int, float)) or not math.isfinite(qty):
+            continue
+        out.append((str(stop.get('stop_id')), str(ln['line_id']), float(qty),
+                    pid if isinstance(pid, int) and not isinstance(pid, bool) else None))
+    return out
+
+
+_LINE_MAX_UPSERT = ('INSERT INTO line_max(stop_id, line_id, max_qty, product_id) VALUES(?, ?, ?, ?) '
+                    'ON CONFLICT(stop_id, line_id) DO UPDATE SET max_qty = MAX(max_qty, excluded.max_qty), '
+                    'product_id = COALESCE(excluded.product_id, product_id)')
+
+
+def _fill_line_max(conn: sqlite3.Connection) -> None:
+    """Миграция v4 → v5: line_max из всех сохранённых снимков (по возрастанию снимка: товар — из самой новой версии;
+    битая точка пропускается)."""
+    parsed: dict[bytes, Any] = {}
+    for h, raw in conn.execute('SELECT s.data_hash, d.data FROM snapshot_stops s JOIN stop_data d '
+                               'ON d.hash = s.data_hash ORDER BY s.snapshot_id, s.stop_id').fetchall():
+        if h not in parsed:
+            try:
+                parsed[h] = json.loads(raw)
+            except (TypeError, ValueError):
+                parsed[h] = None
+        if isinstance(parsed[h], dict):
+            conn.executemany(_LINE_MAX_UPSERT, _line_max_rows(parsed[h]))
+
 _FIX_HINT = ' — исправьте или удалите файл; значения по умолчанию молча не подставляются'
 
 
@@ -239,6 +307,11 @@ class PinConflict(ValueError):
 class PinUnverifiable(ValueError):
     """Включить водителя без нового PIN нельзя: у него или у другого активного водителя PIN сохранён до
     схемы 2 (нет pin_tag) — сравнить PIN, не зная его, невозможно; нужен новый PIN."""
+
+
+class PinReset(Exception):
+    """PIN не узнан, а у активного водителя хеш PIN с перцем, которого нет в среде (COURIER_PIN_PEPPER и
+    COURIER_PIN_PEPPER_OLD): его PIN не проверить — офис задаёт новый PIN."""
 
 
 class PhotoLimit(Exception):
@@ -264,6 +337,35 @@ class Driver:
     active: bool
     has_pin: bool
     updated_at: str | None = None
+    pin_reset: bool = False       # хеш PIN с перцем, которого нет в среде: PIN задать заново
+
+
+@dataclass(frozen=True)
+class PinKeys:
+    """Соль pin_tag базы и перцы среды: текущий (новые хеши и tag) и прежний (COURIER_PIN_PEPPER_OLD — только
+    чтобы узнать водителя и перевести его хеш и tag на текущий)."""
+    salt: str
+    current: Pepper | None
+    old: Pepper | None
+
+    @property
+    def scheme(self) -> str:
+        return scheme_of(self.current)
+
+    def pepper(self, scheme: str | None) -> tuple[bool, Pepper | None]:
+        """Перец схемы хеша: (можно проверить, перец). Без перца — (True, None); перца нет в среде — (False, None)."""
+        if scheme in (None, SCHEME_PLAIN):
+            return True, None
+        for p in (self.current, self.old):
+            if p is not None and scheme == p.scheme:
+                return True, p
+        return False, None
+
+    def tags(self, pin: str) -> tuple[str, set[str]]:
+        """(tag текущей схемы, все tag, по которым узнаётся PIN: без перца, текущего и прежнего перца) — один pbkdf2."""
+        base = tag_base(pin, self.salt)
+        current = tag_for(base, self.current)
+        return current, {base, current} | ({tag_for(base, self.old)} if self.old is not None else set())
 
 
 @dataclass(frozen=True)
@@ -307,6 +409,13 @@ class MarkSetting:
     pack_qty: float | None
 
 
+@dataclass(frozen=True)
+class DaySnapshots:
+    """Снимки /day одной даты: последний снимок каждой машины (и пустой) и версии точек всех снимков даты."""
+    latest: dict[str, int]                                   # машина → id последнего снимка
+    stops: tuple[tuple[int, str, dict[str, Any]], ...]       # (снимок, машина, точка с car_code) — снимки по возрастанию
+
+
 def _now() -> str:
     return clock.iso(clock.now())
 
@@ -325,6 +434,11 @@ def _terminal(row: Sequence[Any]) -> Terminal:
 
 
 _TERMINAL_COLS = 'id, name, car_code, created_at, revoked_at, failed_pin_count, locked_until, last_seen_at'
+
+
+def _driver(r: Sequence[Any], keys: PinKeys) -> Driver:
+    """Строка (id, name, active, has_pin, updated_at, pin_scheme) → Driver."""
+    return Driver(int(r[0]), r[1], bool(r[2]), bool(r[3]), r[4], pin_reset=bool(r[3]) and not keys.pepper(r[5])[0])
 
 
 class Store:
@@ -466,95 +580,98 @@ class Store:
     # --- водители ---
 
     def list_drivers(self) -> list[Driver]:
+        keys = self._pin_keys()
         rows = self._read(lambda c: c.execute(
-            'SELECT id, name, active, pin_hash IS NOT NULL, updated_at FROM drivers ORDER BY active DESC, name, id'
-        ).fetchall())
-        return [Driver(int(r[0]), r[1], bool(r[2]), bool(r[3]), r[4]) for r in rows]
+            'SELECT id, name, active, pin_hash IS NOT NULL, updated_at, pin_scheme FROM drivers '
+            'ORDER BY active DESC, name, id').fetchall())
+        return [_driver(r, keys) for r in rows]
 
     def driver(self, driver_id: int) -> Driver | None:
+        keys = self._pin_keys()
         r = self._read(lambda c: c.execute(
-            'SELECT id, name, active, pin_hash IS NOT NULL, updated_at FROM drivers WHERE id = ?',
+            'SELECT id, name, active, pin_hash IS NOT NULL, updated_at, pin_scheme FROM drivers WHERE id = ?',
             (driver_id,)).fetchone())
-        return Driver(int(r[0]), r[1], bool(r[2]), bool(r[3]), r[4]) if r else None
+        return _driver(r, keys) if r else None
 
-    def _pin_keys(self) -> tuple[str, bytes | None]:
-        """Соль pin_tag базы и перец среды (security.pin_pepper). Первый вызов сверяет отпечаток перца с meta:
-        перец включили — сохранённые tag переводятся сразу (HMAC от прежнего tag); сменили или сняли — tag
-        сбрасываются (NULL), и водитель получает новый при следующем входе (match_pin, как PIN до схемы 2)."""
+    def _pin_keys(self) -> PinKeys:
+        """Соль pin_tag базы и перцы среды (COURIER_PIN_PEPPER, COURIER_PIN_PEPPER_OLD). Первый вызов приводит tag
+        в соответствие со средой: tag без перца при заданном перце переводятся сразу (HMAC от tag, PIN не нужен);
+        tag перца, которого нет в среде, сбрасываются (NULL) — такой водитель узнаётся по хешу, если перец его хеша
+        есть, иначе вход отвечает «PIN задать заново» (match_pin)."""
         keys = getattr(self, '_keys', None)
         if keys is not None:
             return keys
         row = self._read(lambda c: c.execute("SELECT value FROM meta WHERE key = 'pin_salt'").fetchone())
         if row is None or not row[0]:
             raise StoreError(f'{self._name()}: нет соли PIN{_FIX_HINT}')
-        pepper = pin_pepper()
-        want = pepper_id(pepper)
+        keys = PinKeys(str(row[0]), pepper_from_env(PEPPER_ENV), pepper_from_env(PEPPER_OLD_ENV))
+        known = {p.id for p in (keys.current, keys.old) if p is not None}
 
         def sync(conn: sqlite3.Connection) -> None:
-            have = conn.execute("SELECT value FROM meta WHERE key = 'pin_pepper_id'").fetchone()
-            have_id = have[0] if have else 'none'
-            if have_id == want:
-                return
-            if have_id == 'none' and pepper is not None:
-                for did, tag in conn.execute('SELECT id, pin_tag FROM drivers WHERE pin_tag IS NOT NULL').fetchall():
-                    conn.execute('UPDATE drivers SET pin_tag = ? WHERE id = ?', (pepper_tag(tag, pepper), did))
-            else:
-                conn.execute('UPDATE drivers SET pin_tag = NULL')
-            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('pin_pepper_id', ?)", (want,))
+            for did, tag in conn.execute('SELECT id, pin_tag FROM drivers WHERE pin_tag IS NOT NULL').fetchall():
+                pid = tag_pepper_id(tag)
+                if pid is None and keys.current is not None:
+                    conn.execute('UPDATE drivers SET pin_tag = ? WHERE id = ?', (tag_for(tag, keys.current), did))
+                elif pid is not None and pid not in known:
+                    conn.execute('UPDATE drivers SET pin_tag = NULL WHERE id = ?', (did,))
 
         self._transaction(sync, 'не удалось обновить pin_tag')
-        self._keys = keys = (str(row[0]), pepper)
+        self._keys = keys
         return keys
-
-    def _pin_tag(self, pin: str) -> str:
-        salt, pepper = self._pin_keys()
-        return pin_tag(pin, salt, pepper)
 
     def save_driver(self, driver_id: int | None, name: Any, active: bool, pin: str | None,
                     user: str | None) -> int:
         """Создать (driver_id None) или изменить водителя. pin None — не менять PIN.
         PIN определяет водителя при входе, поэтому у активных водителей он уникален (PinConflict) — проверка
         и при новом PIN, и при повторном включении водителя со старым PIN (по pin_tag; PinUnverifiable, если
-        сравнить нечем). Новый PIN или выключение отменяют сессии водителя."""
+        сравнить нечем). Водитель, чей хеш — с перцем, которого нет в среде, старым PIN войти не может: его PIN не
+        мешает. Новый PIN — хеш и tag текущей схемы. Новый PIN или выключение отменяют сессии водителя."""
         name = _clean_name(name, 'Имя водителя')
         if pin is not None and not valid_pin(pin):
             raise ValueError('PIN — 4–6 цифр')
-        pin_hash = hash_pin(pin) if pin is not None else None
-        tag = self._pin_tag(pin) if pin is not None else None
+        keys = self._pin_keys()
+        pin_hash = hash_pin(pin, keys.current) if pin is not None else None
+        tag, tags = keys.tags(pin) if pin is not None else (None, None)
         now = _now()
 
         def conflict(conn: sqlite3.Connection, own_tag: str | None) -> None:
-            for oid, h, other_tag in conn.execute(
-                    'SELECT id, pin_hash, pin_tag FROM drivers WHERE active = 1 AND pin_hash IS NOT NULL'):
+            """own_tag — сохранённый tag включаемого водителя (без нового PIN)."""
+            for oid, h, other_tag, other_scheme in conn.execute(
+                    'SELECT id, pin_hash, pin_tag, pin_scheme FROM drivers WHERE active = 1 AND pin_hash IS NOT NULL'):
                 if oid == driver_id:
                     continue
-                if other_tag is not None and own_tag is not None:
+                verifiable, pepper = keys.pepper(other_scheme)
+                if other_tag is None and not verifiable:
+                    continue                     # старый PIN этого водителя не работает (нет перца его хеша)
+                if tags is not None:             # новый PIN: tag всех схем известен
+                    same = other_tag in tags if other_tag is not None else check_pin(h, pin, pepper)
+                elif other_tag is not None and own_tag is not None \
+                        and tag_pepper_id(other_tag) == tag_pepper_id(own_tag):
                     same = other_tag == own_tag
-                elif pin is not None:            # PIN до схемы 2 (нет tag) — сверка по солёному хешу
-                    same = check_pin(h, pin)
-                else:
+                else:                            # PIN до схемы 2 или tag разных перцев — сравнить нечем
                     raise PinUnverifiable('PIN не проверить — задайте новый')
                 if same:
                     raise PinConflict('Такой PIN уже у другого водителя')
 
         def write(conn: sqlite3.Connection) -> int:
             if active and pin is not None:
-                conflict(conn, tag)
+                conflict(conn, None)
             elif active and driver_id is not None:
                 cur = conn.execute('SELECT active, pin_hash, pin_tag FROM drivers WHERE id = ?', (driver_id,)).fetchone()
                 if cur is not None and not cur[0] and cur[1] is not None:   # повторное включение со старым PIN
                     if cur[2] is None:
                         raise PinUnverifiable('PIN не проверить — задайте новый')
                     conflict(conn, cur[2])
+            scheme = keys.scheme if pin is not None else None
             if driver_id is None:
-                cur = conn.execute('INSERT INTO drivers(name, pin_hash, pin_tag, active, created_at, updated_at, '
-                                   'updated_by) VALUES(?, ?, ?, ?, ?, ?, ?)',
-                                   (name, pin_hash, tag, int(active), now, now, user))
+                cur = conn.execute('INSERT INTO drivers(name, pin_hash, pin_tag, pin_scheme, active, created_at, '
+                                   'updated_at, updated_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?)',
+                                   (name, pin_hash, tag, scheme, int(active), now, now, user))
                 return int(cur.lastrowid)
             sets, args = 'name = ?, active = ?, updated_at = ?, updated_by = ?', [name, int(active), now, user]
             if pin_hash is not None:
-                sets += ', pin_hash = ?, pin_tag = ?'
-                args += [pin_hash, tag]
+                sets += ', pin_hash = ?, pin_tag = ?, pin_scheme = ?'
+                args += [pin_hash, tag, scheme]
             if conn.execute(f'UPDATE drivers SET {sets} WHERE id = ?', (*args, driver_id)).rowcount != 1:
                 raise LookupError('Водитель не найден')
             if not active or pin_hash is not None:   # выключен или сменён PIN — прежние сессии недействительны
@@ -565,27 +682,50 @@ class Store:
 
     def match_pin(self, pin: str) -> list[Driver]:
         """Активные водители с этим PIN (ожидается один; несколько — конфликт старых данных).
-        Один pbkdf2 (pin_tag) на вход; водители без tag (PIN до схемы 2 или сменён перец) сверяются солёным
-        хешем и получают tag."""
+        Один pbkdf2 на вход: водитель узнаётся по pin_tag (без перца, текущего или прежнего перца); водитель без tag
+        (PIN до схемы 2, tag сброшен сменой перца) — по хешу своей схемы. Узнанный водитель с хешем или tag не текущей
+        схемы (другой перец, хеш с прежним числом итераций) сразу получает новые — один раз. Никто не узнан, а у
+        активного водителя хеш перца, которого нет в среде, — PinReset (его PIN задаёт офис)."""
         if not valid_pin(pin):
             return []
-        tag = self._pin_tag(pin)
+        keys = self._pin_keys()
+        tag, tags = keys.tags(pin)
+        marks = ','.join('?' * len(tags))
         rows = self._read(lambda c: c.execute(
-            'SELECT id, name, pin_hash, updated_at, pin_tag FROM drivers WHERE active = 1 AND pin_hash IS NOT NULL '
-            'AND (pin_tag = ? OR pin_tag IS NULL) ORDER BY id', (tag,)).fetchall())
-        out, legacy = [], []
-        for r in rows:
-            if r[4] == tag or (r[4] is None and check_pin(r[2], pin)):
-                out.append(Driver(int(r[0]), r[1], True, True, r[3]))
-                if r[4] is None:
-                    legacy.append(int(r[0]))
-        if legacy:
-            try:
-                self._transaction(lambda c: [c.execute('UPDATE drivers SET pin_tag = ? WHERE id = ? AND pin_tag IS NULL',
-                                                       (tag, i)) for i in legacy], 'не удалось сохранить pin_tag')
-            except StoreError:
-                logger.warning('[Courier] pin_tag водителей %s не сохранён', legacy, exc_info=True)
+            'SELECT id, name, pin_hash, updated_at, pin_tag, pin_scheme FROM drivers WHERE active = 1 '
+            f'AND pin_hash IS NOT NULL AND (pin_tag IN ({marks}) OR pin_tag IS NULL) ORDER BY id',
+            tuple(sorted(tags))).fetchall())
+        out, stale, lost = [], [], False
+        for did, name, h, updated, row_tag, scheme in rows:
+            if row_tag is None:
+                verifiable, pepper = keys.pepper(scheme)
+                if not verifiable:
+                    lost = True
+                    continue
+                if not check_pin(h, pin, pepper):
+                    continue
+            out.append(Driver(int(did), name, True, True, updated))
+            if row_tag != tag or scheme != keys.scheme or hash_outdated(h):
+                stale.append((int(did), h))
+        if stale:
+            self._rehash(pin, keys, tag, stale)
+        if not out and lost:
+            raise PinReset('PIN водителя не проверить: нет перца его хеша')
         return out
+
+    def _rehash(self, pin: str, keys: PinKeys, tag: str, stale: Sequence[tuple[int, str]]) -> None:
+        """Хеш и tag текущей схемы водителям, узнанным при входе (PIN известен). Хеш сменили в офисе за это время —
+        не трогаем (AND pin_hash = прежний). Сбой записи — только в лог: вход не падает, перевод — при следующем."""
+        new = [(hash_pin(pin, keys.current), did, old) for did, old in stale]
+
+        def write(conn: sqlite3.Connection) -> None:
+            for h, did, old in new:
+                conn.execute('UPDATE drivers SET pin_hash = ?, pin_tag = ?, pin_scheme = ? WHERE id = ? AND pin_hash = ?',
+                             (h, tag, keys.scheme, did, old))
+        try:
+            self._transaction(write, 'не удалось обновить хеш PIN')
+        except StoreError:
+            logger.warning('[Courier] Хеш PIN водителей %s не обновлён', [d for d, _ in stale], exc_info=True)
 
     # --- терминалы ---
 
@@ -730,9 +870,8 @@ class Store:
                  loaded_at: str) -> int:
         """Точки машины на дату — новый снимок, если версия изменилась (прежние снимки не трогаются: события
         по исчезнувшим точкам и прошлые версии накладных остаются проверяемыми). Возвращает id действующего
-        снимка. Содержимое точки пишется в stop_data один раз (тот же JSON — та же строка). Связи `replaces`
-        (заказ → накладная) копятся в stop_replaces с номером самого нового снимка, где они есть. Новый снимок
-        заодно убирает старые промежуточные (_purge_snapshots)."""
+        снимка. Содержимое точки пишется в stop_data один раз (тот же JSON — та же строка); наибольшее qty строк и
+        их товар — в line_max (не удаляется). Новый снимок заодно убирает старые промежуточные (_purge_snapshots)."""
         saved_at = _now()
 
         def write(conn: sqlite3.Connection) -> int:
@@ -748,11 +887,7 @@ class Store:
                 conn.execute('INSERT OR IGNORE INTO stop_data(hash, data) VALUES(?, ?)', (h, text))
                 conn.execute('INSERT INTO snapshot_stops(snapshot_id, stop_id, date, car_code, seq, data_hash) '
                              'VALUES(?, ?, ?, ?, ?, ?)', (sid, s['stop_id'], day, car_code, int(s['seq']), h))
-                for order_stop in s.get('replaces') or ():
-                    conn.execute('INSERT INTO stop_replaces(order_stop_id, invoice_stop_id, date, snapshot_id) '
-                                 'VALUES(?, ?, ?, ?) ON CONFLICT(order_stop_id, invoice_stop_id) DO UPDATE SET '
-                                 'date = excluded.date, snapshot_id = excluded.snapshot_id',
-                                 (str(order_stop), s['stop_id'], day, sid))
+                conn.executemany(_LINE_MAX_UPSERT, _line_max_rows(s))
             _purge_snapshots(conn)
             return sid
 
@@ -784,37 +919,25 @@ class Store:
                                                  'data': _stop_json(r[3], r[4], self._name())})
         return out
 
-    def replacement_links(self, stop_ids: Sequence[str]) -> dict[str, list[str]]:
-        """Заказ O: → накладные S:, сделанные из него (`replaces` из /day); главная — первая.
-        Правило выбора (устаревшая связь не перекрывает новую):
-        - действующие связи — те, что есть в ПОСЛЕДНЕМ снимке своей (дата, машина), т. е. накладная с этим
-          replaces сейчас в выдаче /day; их несколько — заказ разделён на несколько накладных: все, по stop_id;
-        - действующих нет (накладную убрали или переделали) — связи из самого нового снимка, где они были.
-        Доставка и деньги заказа считаются только у главной накладной (views._attribute), остальные помечаются."""
-        out: dict[str, list[str]] = {}
-        ids = sorted({s for s in stop_ids if s and s.startswith('O:')})
-        for i in range(0, len(ids), 500):
-            chunk = ids[i:i + 500]
-            rows = self._read(lambda c: c.execute(
-                'SELECT r.order_stop_id, r.invoice_stop_id, COALESCE(r.snapshot_id, -1), '
-                'x.id IS NOT NULL AND x.id = (SELECT MAX(y.id) FROM day_snapshots y '
-                'WHERE y.date = x.date AND y.car_code = x.car_code) '
-                'FROM stop_replaces r LEFT JOIN day_snapshots x ON x.id = r.snapshot_id '
-                f"WHERE r.order_stop_id IN ({','.join('?' * len(chunk))})", chunk).fetchall())
-            links: dict[str, list[tuple[str, int, bool]]] = {}
-            for order, invoice, snap, current in rows:
-                links.setdefault(order, []).append((invoice, int(snap), bool(current)))
-            for order, ls in links.items():
-                cur = [inv for inv, _, is_cur in ls if is_cur]
-                if not cur:
-                    newest = max(snap for _, snap, _ in ls)
-                    cur = [inv for inv, snap, _ in ls if snap == newest]
-                out[order] = sorted(cur)
-        return out
+    def day_snapshots(self, day: str) -> DaySnapshots:
+        """Все снимки /day на дату: последний снимок каждой машины и версии точек всех снимков (по возрастанию снимка,
+        по seq). Офис строит из них точки (машина, дата) для правила §5 п. 12: снимки других дат день не меняют."""
+        def query(c: sqlite3.Connection) -> tuple[list[Any], list[Any]]:
+            latest = c.execute('SELECT car_code, MAX(id) FROM day_snapshots WHERE date = ? GROUP BY car_code',
+                               (day,)).fetchall()
+            rows = c.execute('SELECT s.snapshot_id, s.car_code, s.data_hash, d.data FROM snapshot_stops s '
+                             'JOIN stop_data d ON d.hash = s.data_hash WHERE s.date = ? ORDER BY s.snapshot_id, s.seq',
+                             (day,)).fetchall()
+            return latest, rows
 
-    def replacements(self, stop_ids: Sequence[str]) -> dict[str, str]:
-        """Заказ O: → главная накладная S: (replacement_links)."""
-        return {order: targets[0] for order, targets in self.replacement_links(stop_ids).items()}
+        latest, rows = self._read(query)
+        parsed: dict[bytes, dict[str, Any]] = {}
+        stops = []
+        for sid, car, h, raw in rows:
+            if h not in parsed:
+                parsed[h] = _stop_json(car, raw, self._name())
+            stops.append((int(sid), car, {**parsed[h], 'car_code': car}))
+        return DaySnapshots({car: int(i) for car, i in latest}, tuple(stops))
 
     # --- события (чтение для офиса и /status) ---
 
@@ -1095,8 +1218,8 @@ def _day_start(now_iso: str) -> str:
 def _purge_snapshots(conn: sqlite3.Connection) -> int:
     """Хранение снимков /day: удаляются промежуточные снимки старше SNAPSHOT_KEEP_DAYS (по saved_at), на которые
     не ссылается ни одно событие и которые не последние для своей (дата, машина); затем — их точки и содержимое,
-    на которое больше никто не ссылается. Связи stop_replaces остаются (снимка связи нет — связь не действующая,
-    см. replacement_links). Возвращает число удалённых снимков."""
+    на которое больше никто не ссылается. line_max не трогается (контракт §5 п. 13). Возвращает число удалённых
+    снимков."""
     cutoff = clock.iso(clock.now() - timedelta(days=SNAPSHOT_KEEP_DAYS))
     n = conn.execute('DELETE FROM day_snapshots WHERE saved_at < ? '
                      'AND id NOT IN (SELECT MAX(id) FROM day_snapshots GROUP BY date, car_code) '
@@ -1258,39 +1381,27 @@ class EventTx:
                               (driver_id, scan_event_id)).fetchone()
         return r[0] if r else None
 
-    def covered_units(self, day: str, stop_id: str, line_id: str) -> float:
-        """Сколько штук строки закрыто: засчитанные сканы продажи + «код не читается»."""
-        scanned = self.conn.execute(
-            "SELECT COALESCE(SUM(units), 0) FROM scans WHERE date = ? AND stop_id = ? AND line_id = ? "
-            "AND kind = 'sale' AND counted = 1 AND cancelled = 0", (day, stop_id, line_id)).fetchone()[0]
-        unreadable = self.conn.execute(
-            "SELECT COALESCE(SUM(json_extract(payload, '$.qty')), 0) FROM events WHERE date = ? AND stop_id = ? "
-            "AND type = 'unreadable' AND json_extract(payload, '$.line_id') = ?", (day, stop_id, line_id)).fetchone()[0]
-        return float(scanned or 0) + float(unreadable or 0)
+    def line_max(self, stop_id: str) -> dict[str, tuple[float, int | None]]:
+        """Строки точки по всем версиям, и удалённым (контракт §5 п. 13): line_id → (наибольшее qty, товар)."""
+        return {str(r[0]): (float(r[1]), r[2]) for r in self.conn.execute(
+            'SELECT line_id, max_qty, product_id FROM line_max WHERE stop_id = ?', (stop_id,)).fetchall()}
 
-    def covered_by_orders(self, day: str, order_stop_ids: Sequence[str], product_id: Any) -> float:
-        """Сколько штук товара закрыто на заказах O:, из которых сделана накладная (replaces): засчитанные
-        сканы продажи этого товара + «код не читается» по строкам заказа с этим товаром (строка → товар — по всем
-        версиям заказа). Водитель сканировал по заказу, потом пришла накладная — сканы не теряются."""
-        ids = [o for o in order_stop_ids if isinstance(o, str)]
-        if not ids or product_id is None:
+    def covered_by_product(self, day: str, stop_ids: Sequence[str], product_id: int) -> float:
+        """Сколько штук товара закрыто на точках за день: засчитанные сканы продажи (не отменённые) этого товара +
+        «код не читается» по строкам этого товара (строка → товар — line_max: и строки удалённых версий)."""
+        ids = [s for s in stop_ids if isinstance(s, str)]
+        if not ids:
             return 0.0
         marks = ','.join('?' * len(ids))
         scanned = self.conn.execute(
             f"SELECT COALESCE(SUM(units), 0) FROM scans WHERE date = ? AND stop_id IN ({marks}) AND product_id = ? "
             "AND kind = 'sale' AND counted = 1 AND cancelled = 0", (day, *ids, product_id)).fetchone()[0]
-        unreadable = 0.0
-        rows = self.conn.execute("SELECT stop_id, json_extract(payload, '$.line_id'), json_extract(payload, '$.qty') "
-                                 f"FROM events WHERE date = ? AND type = 'unreadable' AND stop_id IN ({marks})",
-                                 (day, *ids)).fetchall()
-        products: dict[str, dict[str, Any]] = {}
-        for stop_id, line_id, qty in rows:
-            if stop_id not in products:
-                products[stop_id] = {str(ln.get('line_id')): ln.get('product_id') for v in self.stop_rows(stop_id)
-                                     for ln in v['data'].get('lines') or [] if isinstance(ln, dict)}
-            if products[stop_id].get(str(line_id)) == product_id and isinstance(qty, (int, float)):
-                unreadable += float(qty)
-        return float(scanned or 0) + unreadable
+        unreadable = self.conn.execute(
+            "SELECT COALESCE(SUM(json_extract(e.payload, '$.qty')), 0) FROM events e JOIN line_max m "
+            "ON m.stop_id = e.stop_id AND m.line_id = json_extract(e.payload, '$.line_id') "
+            f"WHERE e.date = ? AND e.type = 'unreadable' AND e.stop_id IN ({marks}) AND m.product_id = ?",
+            (day, *ids, product_id)).fetchone()[0]
+        return float(scanned or 0) + float(unreadable or 0)
 
     def driver_name(self, driver_id: int) -> str | None:
         r = self.conn.execute('SELECT name FROM drivers WHERE id = ?', (driver_id,)).fetchone()

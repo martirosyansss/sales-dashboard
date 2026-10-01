@@ -307,7 +307,7 @@ def test_courier_migration_v3_to_v4(cstore):
         conn.commit()
     assert [s['event_id'] for s in Store(cstore.path).open_suggestions()] == [e['id']]   # событие на месте
     with closing(sqlite3.connect(cstore.path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION) == '4'
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION)
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
         assert {'geo_suggest_decision', 'events_type'} <= names
         with pytest.raises(sqlite3.IntegrityError):

@@ -1,0 +1,2191 @@
+{
+ "version": "1.2.2",
+ "about": "Контрольные примеры правила §5.12 (v1.2) контракта «Առաքիչ»: объединение, разделение, пропавшие и пересозданные накладные, отмена оплат, supersedes. Сервер (tests/fixtures/courier_merge_vectors.json) и приложение (app/src/test/resources/courier_merge_vectors.json) обязаны давать РОВНО эти ответы. Файл менять только синхронно в обоих репозиториях.",
+ "input_format": {
+  "stops": "известные точки дня: stop_id, source (invoice|order), collect (cash|cash_ecr|none|ask; любое другое значение = ask), current, replaces (только у invoice; ссылки на неизвестные точки игнорируются), lines [{line_id, product_id, qty, price}] — строки той версии, по которой записаны события; price отсутствует = 0",
+  "events": "все принятые события точек дня. В расчёте денег и статуса участвуют только delivery и payment. Точку «со своими событиями» (активной) делает любое событие, КРОМЕ arrived и geo_suggest (события GPS из §6). delivery.payload = {lines:[{line_id, qty}], supersedes?}; payment.payload = {amount, kind: invoice|debt, cancel_of?}"
+ },
+ "output_format": {
+  "expected": "ключи = ровно те точки, которые показываются (поглощённые точки не показываются). Для каждой: removed (bool), status (pending|in_progress|full|partial|refused|covered), due (число), paid (число, только kind=invoice, без отменённых), flags (отсортированный список из merge_conflict, split_order), instruction {kind: take|refund|paid|none|ask|check|covered, amount (число или null)}"
+ },
+ "cases": [
+  {
+   "name": "01_plain_invoice_full",
+   "stops": [
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "a1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "e01",
+     "type": "delivery",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "a1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p01",
+     "type": "payment",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "full",
+     "due": 1000,
+     "paid": 1000,
+     "flags": [],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "02_plain_invoice_partial_take_debt_ignored",
+   "stops": [
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "a1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      },
+      {
+       "line_id": "a2",
+       "product_id": 200,
+       "qty": 5,
+       "price": 200
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "e01",
+     "type": "delivery",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "a1",
+        "qty": 10
+       },
+       {
+        "line_id": "a2",
+        "qty": 2
+       }
+      ]
+     }
+    },
+    {
+     "id": "p01",
+     "type": "payment",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    },
+    {
+     "id": "p02",
+     "type": "payment",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:02:00.000+04:00",
+     "payload": {
+      "amount": 300,
+      "kind": "debt"
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "partial",
+     "due": 1400,
+     "paid": 1000,
+     "flags": [],
+     "instruction": {
+      "kind": "take",
+      "amount": 400
+     }
+    }
+   }
+  },
+  {
+   "name": "03_refused_after_payment_refund",
+   "stops": [
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "a1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "p01",
+     "type": "payment",
+     "stop_id": "S:A",
+     "at": "2026-10-02T09:50:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    },
+    {
+     "id": "e01",
+     "type": "delivery",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "a1",
+        "qty": 0
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "refused",
+     "due": 0,
+     "paid": 1000,
+     "flags": [],
+     "instruction": {
+      "kind": "refund",
+      "amount": 1000
+     }
+    }
+   }
+  },
+  {
+   "name": "04_pending_cancelled_payment",
+   "stops": [
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "a1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "p01",
+     "type": "payment",
+     "stop_id": "S:A",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "amount": 500,
+      "kind": "invoice"
+     }
+    },
+    {
+     "id": "c01",
+     "type": "payment",
+     "stop_id": "S:A",
+     "at": "2026-10-02T09:05:00.000+04:00",
+     "payload": {
+      "amount": 500,
+      "kind": "invoice",
+      "cancel_of": "p01"
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "pending",
+     "due": 1000,
+     "paid": 0,
+     "flags": [],
+     "instruction": {
+      "kind": "take",
+      "amount": 1000
+     }
+    }
+   }
+  },
+  {
+   "name": "05_merge_all_orders_delivered",
+   "stops": [
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "O:2",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    },
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1",
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      },
+      {
+       "line_id": "s2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p1",
+     "type": "payment",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    },
+    {
+     "id": "d2",
+     "type": "delivery",
+     "stop_id": "O:2",
+     "at": "2026-10-02T09:30:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o2",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p2",
+     "type": "payment",
+     "stop_id": "O:2",
+     "at": "2026-10-02T09:31:00.000+04:00",
+     "payload": {
+      "amount": 2000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "full",
+     "due": 3000,
+     "paid": 3000,
+     "flags": [],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "06_merge_one_order_delivered_in_progress",
+   "stops": [
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "O:2",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    },
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1",
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      },
+      {
+       "line_id": "s2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p1",
+     "type": "payment",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "in_progress",
+     "due": 3000,
+     "paid": 1000,
+     "flags": [],
+     "instruction": {
+      "kind": "take",
+      "amount": 2000
+     }
+    }
+   }
+  },
+  {
+   "name": "07_merge_completed_on_invoice",
+   "stops": [
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "O:2",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    },
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1",
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      },
+      {
+       "line_id": "s2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p1",
+     "type": "payment",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    },
+    {
+     "id": "dS",
+     "type": "delivery",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "s1",
+        "qty": 10
+       },
+       {
+        "line_id": "s2",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "pS",
+     "type": "payment",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:01:00.000+04:00",
+     "payload": {
+      "amount": 2000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "full",
+     "due": 3000,
+     "paid": 3000,
+     "flags": [],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "08_merge_order_price_differs_from_invoice",
+   "stops": [
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 120
+      }
+     ]
+    },
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p1",
+     "type": "payment",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:01:00.000+04:00",
+     "payload": {
+      "amount": 1200,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "full",
+     "due": 1200,
+     "paid": 1200,
+     "flags": [],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "09_order_delivery_after_invoice_delivery_conflict",
+   "stops": [
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "O:2",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    },
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1",
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      },
+      {
+       "line_id": "s2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "dS",
+     "type": "delivery",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "s1",
+        "qty": 10
+       },
+       {
+        "line_id": "s2",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "pS",
+     "type": "payment",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:01:00.000+04:00",
+     "payload": {
+      "amount": 3000,
+      "kind": "invoice"
+     }
+    },
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "O:1",
+     "at": "2026-10-02T10:30:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o1",
+        "qty": 10
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "full",
+     "due": 3000,
+     "paid": 3000,
+     "flags": [
+      "merge_conflict"
+     ],
+     "instruction": {
+      "kind": "check",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "10_invoice_delivery_misses_merged_order_product_conflict",
+   "stops": [
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "O:2",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    },
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1",
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      },
+      {
+       "line_id": "s2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d2",
+     "type": "delivery",
+     "stop_id": "O:2",
+     "at": "2026-10-02T09:30:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o2",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p2",
+     "type": "payment",
+     "stop_id": "O:2",
+     "at": "2026-10-02T09:31:00.000+04:00",
+     "payload": {
+      "amount": 2000,
+      "kind": "invoice"
+     }
+    },
+    {
+     "id": "dS",
+     "type": "delivery",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "s1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "pS",
+     "type": "payment",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "partial",
+     "due": 1000,
+     "paid": 3000,
+     "flags": [
+      "merge_conflict"
+     ],
+     "instruction": {
+      "kind": "check",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "11_split_order_delivered_before_split",
+   "stops": [
+    {
+     "stop_id": "O:2",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o2",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "S:10",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "t1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "S:20",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "u1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d2",
+     "type": "delivery",
+     "stop_id": "O:2",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o2",
+        "qty": 20
+       }
+      ]
+     }
+    },
+    {
+     "id": "p2",
+     "type": "payment",
+     "stop_id": "O:2",
+     "at": "2026-10-02T09:01:00.000+04:00",
+     "payload": {
+      "amount": 2000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:10": {
+     "removed": false,
+     "status": "full",
+     "due": 2000,
+     "paid": 2000,
+     "flags": [
+      "split_order"
+     ],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    },
+    "S:20": {
+     "removed": false,
+     "status": "covered",
+     "due": 0,
+     "paid": 0,
+     "flags": [
+      "split_order"
+     ],
+     "instruction": {
+      "kind": "covered",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "12_split_order_before_any_delivery",
+   "stops": [
+    {
+     "stop_id": "O:2",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o2",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "S:10",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "t1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "S:20",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "u1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [],
+   "expected": {
+    "S:10": {
+     "removed": false,
+     "status": "pending",
+     "due": 1000,
+     "paid": 0,
+     "flags": [
+      "split_order"
+     ],
+     "instruction": {
+      "kind": "take",
+      "amount": 1000
+     }
+    },
+    "S:20": {
+     "removed": false,
+     "status": "pending",
+     "due": 1000,
+     "paid": 0,
+     "flags": [
+      "split_order"
+     ],
+     "instruction": {
+      "kind": "take",
+      "amount": 1000
+     }
+    }
+   }
+  },
+  {
+   "name": "13_split_order_double_recorded_conflict",
+   "stops": [
+    {
+     "stop_id": "O:2",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o2",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "S:10",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "t1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "S:20",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "u1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d2",
+     "type": "delivery",
+     "stop_id": "O:2",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o2",
+        "qty": 20
+       }
+      ]
+     }
+    },
+    {
+     "id": "p2",
+     "type": "payment",
+     "stop_id": "O:2",
+     "at": "2026-10-02T09:01:00.000+04:00",
+     "payload": {
+      "amount": 2000,
+      "kind": "invoice"
+     }
+    },
+    {
+     "id": "d20",
+     "type": "delivery",
+     "stop_id": "S:20",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "u1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p20",
+     "type": "payment",
+     "stop_id": "S:20",
+     "at": "2026-10-02T10:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:10": {
+     "removed": false,
+     "status": "full",
+     "due": 2000,
+     "paid": 2000,
+     "flags": [
+      "merge_conflict",
+      "split_order"
+     ],
+     "instruction": {
+      "kind": "check",
+      "amount": null
+     }
+    },
+    "S:20": {
+     "removed": false,
+     "status": "full",
+     "due": 1000,
+     "paid": 1000,
+     "flags": [
+      "merge_conflict",
+      "split_order"
+     ],
+     "instruction": {
+      "kind": "check",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "14_invoice_recreated_after_delivery",
+   "stops": [
+    {
+     "stop_id": "S:1",
+     "source": "invoice",
+     "collect": "cash",
+     "current": false,
+     "replaces": [
+      "O:1"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "S:2",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1"
+     ],
+     "lines": [
+      {
+       "line_id": "v1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "dS1",
+     "type": "delivery",
+     "stop_id": "S:1",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "s1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "pS1",
+     "type": "payment",
+     "stop_id": "S:1",
+     "at": "2026-10-02T10:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:2": {
+     "removed": false,
+     "status": "full",
+     "due": 1000,
+     "paid": 1000,
+     "flags": [],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "15_invoice_unposted_order_back",
+   "stops": [
+    {
+     "stop_id": "S:1",
+     "source": "invoice",
+     "collect": "cash",
+     "current": false,
+     "replaces": [
+      "O:1"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": true,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "dS1",
+     "type": "delivery",
+     "stop_id": "S:1",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "s1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "pS1",
+     "type": "payment",
+     "stop_id": "S:1",
+     "at": "2026-10-02T10:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "O:1": {
+     "removed": false,
+     "status": "full",
+     "due": 1000,
+     "paid": 1000,
+     "flags": [],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "16_clock_reset_supersedes",
+   "stops": [
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "a1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "e1",
+     "type": "delivery",
+     "stop_id": "S:A",
+     "at": "2030-01-01T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "a1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "e2",
+     "type": "delivery",
+     "stop_id": "S:A",
+     "at": "2026-10-02T11:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "a1",
+        "qty": 6
+       }
+      ],
+      "supersedes": "e1"
+     }
+    },
+    {
+     "id": "p1",
+     "type": "payment",
+     "stop_id": "S:A",
+     "at": "2026-10-02T11:01:00.000+04:00",
+     "payload": {
+      "amount": 600,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "partial",
+     "due": 600,
+     "paid": 600,
+     "flags": [],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "17_collect_none",
+   "stops": [
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "none",
+     "current": true,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "a1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "e1",
+     "type": "delivery",
+     "stop_id": "S:A",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "a1",
+        "qty": 10
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "full",
+     "due": 1000,
+     "paid": 0,
+     "flags": [],
+     "instruction": {
+      "kind": "none",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "18_vanished_stop_without_successor_removed",
+   "stops": [
+    {
+     "stop_id": "S:9",
+     "source": "invoice",
+     "collect": "cash",
+     "current": false,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "z1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "e1",
+     "type": "delivery",
+     "stop_id": "S:9",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "z1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p1",
+     "type": "payment",
+     "stop_id": "S:9",
+     "at": "2026-10-02T10:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:9": {
+     "removed": true,
+     "status": "full",
+     "due": 1000,
+     "paid": 1000,
+     "flags": [],
+     "instruction": {
+      "kind": "none",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "19_collect_ask_pending",
+   "stops": [
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "ask",
+     "current": true,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "a1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "pending",
+     "due": 1000,
+     "paid": 0,
+     "flags": [],
+     "instruction": {
+      "kind": "ask",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "20_merge_one_full_one_refused",
+   "stops": [
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "O:2",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    },
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1",
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      },
+      {
+       "line_id": "s2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p1",
+     "type": "payment",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    },
+    {
+     "id": "d2",
+     "type": "delivery",
+     "stop_id": "O:2",
+     "at": "2026-10-02T09:30:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o2",
+        "qty": 0
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "partial",
+     "due": 1000,
+     "paid": 1000,
+     "flags": [],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "21_recreated_invoice_adds_product_conflict",
+   "stops": [
+    {
+     "stop_id": "S:1",
+     "source": "invoice",
+     "collect": "cash",
+     "current": false,
+     "replaces": [
+      "O:1"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "O:3",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o3",
+       "product_id": 300,
+       "qty": 4,
+       "price": 50
+      }
+     ]
+    },
+    {
+     "stop_id": "S:2",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1",
+      "O:3"
+     ],
+     "lines": [
+      {
+       "line_id": "v1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      },
+      {
+       "line_id": "v3",
+       "product_id": 300,
+       "qty": 4,
+       "price": 50
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "dS1",
+     "type": "delivery",
+     "stop_id": "S:1",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "s1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "pS1",
+     "type": "payment",
+     "stop_id": "S:1",
+     "at": "2026-10-02T10:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:2": {
+     "removed": false,
+     "status": "full",
+     "due": 1000,
+     "paid": 1000,
+     "flags": [
+      "merge_conflict"
+     ],
+     "instruction": {
+      "kind": "check",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "22_split_each_invoice_delivered_separately",
+   "stops": [
+    {
+     "stop_id": "O:2",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o2",
+       "product_id": 100,
+       "qty": 20,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "S:10",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "t1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "S:20",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "u1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d10",
+     "type": "delivery",
+     "stop_id": "S:10",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "t1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p10",
+     "type": "payment",
+     "stop_id": "S:10",
+     "at": "2026-10-02T10:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    },
+    {
+     "id": "d20",
+     "type": "delivery",
+     "stop_id": "S:20",
+     "at": "2026-10-02T11:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "u1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p20",
+     "type": "payment",
+     "stop_id": "S:20",
+     "at": "2026-10-02T11:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:10": {
+     "removed": false,
+     "status": "full",
+     "due": 1000,
+     "paid": 1000,
+     "flags": [
+      "split_order"
+     ],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    },
+    "S:20": {
+     "removed": false,
+     "status": "full",
+     "due": 1000,
+     "paid": 1000,
+     "flags": [
+      "split_order"
+     ],
+     "instruction": {
+      "kind": "paid",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "23_merged_order_unknown_to_terminal_in_progress",
+   "stops": [
+    {
+     "stop_id": "O:1",
+     "source": "order",
+     "collect": "cash",
+     "current": false,
+     "lines": [
+      {
+       "line_id": "o1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    },
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "cash",
+     "current": true,
+     "replaces": [
+      "O:1",
+      "O:2"
+     ],
+     "lines": [
+      {
+       "line_id": "s1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      },
+      {
+       "line_id": "s2",
+       "product_id": 200,
+       "qty": 10,
+       "price": 200
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "d1",
+     "type": "delivery",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:00:00.000+04:00",
+     "payload": {
+      "lines": [
+       {
+        "line_id": "o1",
+        "qty": 10
+       }
+      ]
+     }
+    },
+    {
+     "id": "p1",
+     "type": "payment",
+     "stop_id": "O:1",
+     "at": "2026-10-02T09:01:00.000+04:00",
+     "payload": {
+      "amount": 1000,
+      "kind": "invoice"
+     }
+    }
+   ],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "in_progress",
+     "due": 3000,
+     "paid": 1000,
+     "flags": [],
+     "instruction": {
+      "kind": "take",
+      "amount": 2000
+     }
+    }
+   }
+  },
+  {
+   "name": "24_unknown_collect_treated_as_ask",
+   "stops": [
+    {
+     "stop_id": "S:A",
+     "source": "invoice",
+     "collect": "weird",
+     "current": true,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "a1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [],
+   "expected": {
+    "S:A": {
+     "removed": false,
+     "status": "pending",
+     "due": 1000,
+     "paid": 0,
+     "flags": [],
+     "instruction": {
+      "kind": "ask",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "25_vanished_stop_with_only_tare_event_shown_removed",
+   "stops": [
+    {
+     "stop_id": "S:9",
+     "source": "invoice",
+     "collect": "cash",
+     "current": false,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "z1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "t1",
+     "type": "tare",
+     "stop_id": "S:9",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "items": [
+       {
+        "tare_id": "erp:202",
+        "qty": 3
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "S:9": {
+     "removed": true,
+     "status": "pending",
+     "due": 1000,
+     "paid": 0,
+     "flags": [],
+     "instruction": {
+      "kind": "none",
+      "amount": null
+     }
+    }
+   }
+  },
+  {
+   "name": "26_vanished_stop_with_only_geo_events_hidden",
+   "stops": [
+    {
+     "stop_id": "S:9",
+     "source": "invoice",
+     "collect": "cash",
+     "current": false,
+     "replaces": [],
+     "lines": [
+      {
+       "line_id": "z1",
+       "product_id": 100,
+       "qty": 10,
+       "price": 100
+      }
+     ]
+    }
+   ],
+   "events": [
+    {
+     "id": "g1",
+     "type": "arrived",
+     "stop_id": "S:9",
+     "at": "2026-10-02T10:00:00.000+04:00",
+     "payload": {
+      "lat": 40.1,
+      "lon": 44.5,
+      "accuracy": 12.0
+     }
+    },
+    {
+     "id": "g2",
+     "type": "geo_suggest",
+     "stop_id": "S:9",
+     "at": "2026-10-02T10:01:00.000+04:00",
+     "payload": {
+      "lat": 40.1,
+      "lon": 44.5,
+      "accuracy": 8.0,
+      "note": null
+     }
+    }
+   ],
+   "expected": {}
+  }
+ ]
+}

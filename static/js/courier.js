@@ -17,7 +17,9 @@
     const timeOf = (s) => (typeof s === 'string' && s.length >= 16 ? s.slice(11, 16) : '—');
     const dateTime = (s) => (typeof s === 'string' && s.length >= 16 ? s.slice(8, 10) + '.' + s.slice(5, 7) + ' ' + s.slice(11, 16) : '—');
 
-    const STATUS = { full: ['Ստացված է', 'b-ok'], partial: ['Մասնակի', 'b-warn'], refuse: ['Հրաժարում', 'b-danger'], pending: ['Սպասում է', 'b-none'] };
+    // Վիճակը՝ նույն կանոնով, ինչ տերմինալում (պայմանագիր §5 կետ 12)
+    const STATUS = { full: ['Ստացված է', 'b-ok'], partial: ['Մասնակի', 'b-warn'], refused: ['Հրաժարում', 'b-danger'], pending: ['Սպասում է', 'b-none'],
+        in_progress: ['Ընթացքում', 'b-warn'], covered: ['Պատվերով արված է', 'b-ok'] };
     const COLLECT = { cash: 'Կանխիկ', cash_ecr: 'Կանխիկ ՀԴՄ', none: 'Չվերցնել', ask: 'Ճշտել' };
     const TYPE = { delivery: 'Առաքում', payment: 'Գումար', tare: 'Տարա', return: 'Վերադարձ', scan: 'Սկան', scan_cancel: 'Սկանի չեղարկում',
         unreadable: 'Կոդը չի կարդացվում', arrived: 'Ժամանում', day_closed: 'Օրվա ավարտ', geo_suggest: 'Կետի առաջարկ' };
@@ -30,7 +32,10 @@
         qty_over_invoice: 'Քանակը ավելի է, քան ապրանքագրի վերջին տարբերակում', no_reason: 'Պատճառը նշված չէ',
         date_suspicious: 'Ամսաթիվը չի համընկնում ժամանակի հետ', no_payment: 'Վճարում չկա',
         collected_by_other: 'Վերցրել է այլ վարորդ', split_order: 'Մասնակի է՝ բաժանված պատվեր',
+        merge_conflict: 'Ստուգել՝ պատվերով և ապրանքագրով նշումները չեն համընկնում',
     };
+    const statusBadge = (s) => (s.status ? badge(...(STATUS[s.status] || [s.status, 'b-none'])) : '—') + (s.removed ? ' ' + badge('Հանված է', 'b-none') : '');
+    const tareText = (t) => (t && t.length ? ' <span class="cr-muted">Տարա՝ ' + fmt(t.reduce((a, x) => a + (num(x.qty) || 0), 0), 2) + '</span>' : '');
     const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const thumbs = (photos) => (photos || []).filter(p => UUID.test(p.id)).map(p => {
         const url = '/api/courier/admin/photos/' + p.id;
@@ -95,7 +100,8 @@
     function renderDrivers() {
         const d = drv.data;
         $('crDriverRows').innerHTML = d.drivers.length ? d.drivers.map(x => '<tr class="' + (x.active ? '' : 'is-closed') + '">'
-            + '<td>' + esc(x.name) + '</td><td>' + (x.has_pin ? badge('կա', 'b-ok') : badge('չկա', 'b-warn')) + '</td>'
+            + '<td>' + esc(x.name) + '</td><td>' + (x.pin_reset ? badge('սահմանել նորից', 'b-danger') + ' <span class="cr-muted">հին PIN-ը այլևս չի ստուգվում</span>'
+                : x.has_pin ? badge('կա', 'b-ok') : badge('չկա', 'b-warn')) + '</td>'
             + '<td>' + (x.active ? 'Աշխատում է' : 'Չի աշխատում') + '</td>'
             + '<td><button type="button" class="rt-linkbtn" data-edit="' + x.id + '">Փոփոխել</button></td></tr>').join('')
             : '<tr><td colspan="4" class="cr-muted">Վարորդներ դեռ չկան</td></tr>';
@@ -203,19 +209,21 @@
     }
     function carCard(c) {
         const stat = (v, label, cls) => '<div class="cr-stat ' + (v ? cls : '') + '"><b>' + fmt(v) + '</b><span>' + esc(label) + '</span></div>';
-        const done = c.full + c.partial + c.refuse;
+        const done = c.full + c.partial + c.refused + c.covered;
+        const rows = [...c.stops, ...c.removed];
         return '<section class="rt-card"><div class="rt-card-head"><h2 class="rt-card-title"><i class="fas fa-truck" aria-hidden="true"></i>' + esc(c.car_code) + '</h2>'
             + '<span class="rt-card-state ' + (c.total && done === c.total ? 'is-ok' : 'is-todo') + '">' + fmt(done) + ' / ' + fmt(c.total) + ' կետ</span></div>'
             + (c.error ? '<p class="rt-ferr">' + esc(c.error) + '</p>' : '')
-            + '<div class="cr-stats">' + stat(c.full, 'Ստացված է', 'is-ok') + stat(c.partial, 'Մասնակի', 'is-warn') + stat(c.refuse, 'Հրաժարում', 'is-bad')
+            + '<div class="cr-stats">' + stat(c.full, 'Ստացված է', 'is-ok') + stat(c.partial, 'Մասնակի', 'is-warn') + stat(c.refused, 'Հրաժարում', 'is-bad')
+            + stat(c.in_progress, 'Ընթացքում', 'is-warn') + stat(c.covered, 'Պատվերով արված է', 'is-ok')
             + stat(c.pending, 'Սպասում է', '') + stat(c.unreadable, 'Կոդը չի կարդացվում', 'is-warn') + stat(c.foreign, 'Այլ մեքենայի կետ', 'is-warn')
             + stat(c.flagged, 'Ուշադրություն', 'is-bad') + '</div>'
             + '<div class="cr-meta"><span>Վարորդ՝ ' + esc(c.drivers.join(', ') || '—') + '</span><span>Վերջին կապը՝ ' + esc(dateTime(c.last_contact)) + '</span>'
             + (c.removed.length ? '<span>Հանված կետեր՝ ' + fmt(c.removed.length) + '</span>' : '') + '</div>'
-            + (c.stops.length ? '<details class="rt-fold" style="margin-top:10px"><summary><span class="rt-fold-t">Կետերը</span></summary><div class="rt-fold-body"><div class="rt-table-scroll"><table class="rt-table cr-small">'
-              + '<thead><tr><th scope="col">№</th><th scope="col">Հաճախորդ</th><th scope="col">Ապրանքագիր</th><th scope="col">Վճարում</th><th scope="col">Գումար</th><th scope="col">Վիճակ</th></tr></thead><tbody>'
-              + c.stops.map(s => '<tr><td>' + fmt(s.seq) + '</td><td>' + esc(s.customer) + '</td><td>' + esc(s.doc_number) + '</td><td>' + esc(COLLECT[s.collect] || '')
-                + '</td><td class="cr-num-cell">' + money(s.amount_due) + '</td><td>' + badge(...(STATUS[s.status] || [s.status, 'b-none']))
+            + (rows.length ? '<details class="rt-fold" style="margin-top:10px"><summary><span class="rt-fold-t">Կետերը</span></summary><div class="rt-fold-body"><div class="rt-table-scroll"><table class="rt-table cr-small">'
+              + '<thead><tr><th scope="col">№</th><th scope="col">Հաճախորդ</th><th scope="col">Ապրանքագիր</th><th scope="col">Վճարում</th><th scope="col">Վճարելու է</th><th scope="col">Վճարված է</th><th scope="col">Վիճակ</th></tr></thead><tbody>'
+              + rows.map(s => '<tr class="' + ((s.flags || []).includes('merge_conflict') ? 'cr-row-warn' : s.removed ? 'is-closed' : '') + '"><td>' + (s.removed ? '—' : fmt(s.seq)) + '</td><td>' + esc(s.customer) + '</td><td>' + esc(s.doc_number) + '</td><td>' + esc(COLLECT[s.collect] || '')
+                + '</td><td class="cr-num-cell" title="Ապրանքագիր՝ ' + esc(money(s.amount_due)) + '">' + money(s.due) + '</td><td class="cr-num-cell">' + money(s.paid) + '</td><td>' + statusBadge(s) + tareText(s.tare)
                 + ((s.flags || []).length ? ' <span class="cr-muted">' + esc(flagText(s.flags)) + '</span>' : '') + '</td></tr>').join('')
               + '</tbody></table></div></div></details>' : '')
             + '</section>';
@@ -235,16 +243,19 @@
             const diff = x.diff === null ? '' : '<span class="cr-diff ' + (Math.abs(x.diff) < 0.005 ? 'is-ok">Համընկնում է' : 'is-bad">Տարբերություն՝ ' + money(x.diff)) + '</span>';
             return '<section class="rt-card" data-driver="' + x.driver_id + '"><div class="rt-card-head"><h2 class="rt-card-title"><i class="fas fa-user" aria-hidden="true"></i>' + esc(x.name) + '</h2></div>'
                 + '<div class="rt-table-scroll"><table class="rt-table cr-small"><thead><tr><th scope="col">Ապրանքագիր</th><th scope="col">Հաճախորդ</th><th scope="col">Վճարում</th>'
-                + '<th scope="col">Վիճակ</th><th scope="col">Առաքված է</th><th scope="col">Պետք է վերցներ</th><th scope="col">Ապրանքագրով</th><th scope="col">Պակաս</th>'
+                + '<th scope="col">Վիճակ</th><th scope="col">Վճարելու է</th><th scope="col">Պետք է վերցներ</th><th scope="col">Ապրանքագրով</th><th scope="col">Պակաս</th>'
                 + '<th scope="col">Պարտքի դիմաց</th><th scope="col">ՀԴՄ կտրոն</th><th scope="col">Նշում</th></tr></thead><tbody>'
                 + x.rows.map(r => {
-                    const st = STATUS[r.status];
                     const short = r.short === null || r.short === undefined ? '—'
                         : (Math.abs(r.short) < 0.005 ? '0' : '<b class="' + (r.short > 0 ? 'cr-bad' : 'cr-muted') + '">' + money(r.short) + '</b>');
-                    return '<tr class="' + (r.flags.includes('no_payment') ? 'cr-row-bad' : '') + '"><td>' + esc(r.doc_number || r.stop_id) + '</td><td>' + esc(r.customer || '') + '</td><td>' + esc(COLLECT[r.collect] || '') + '</td>'
-                        + '<td>' + (st ? badge(st[0], st[1]) : '—') + '</td>'
-                        + '<td class="cr-num-cell" title="Ապրանքագիր՝ ' + esc(r.invoice_amount === null || r.invoice_amount === undefined ? '—' : money(r.invoice_amount)) + '">' + (r.amount_due === null || r.amount_due === undefined ? '—' : money(r.amount_due)) + '</td>'
-                        + '<td class="cr-num-cell">' + (r.expected === null || r.expected === undefined ? '—' : money(r.expected)) + '</td>'
+                    // «Ընթացքում»՝ կետը դեռ ավարտված չէ, գումարը՝ առայժմ առաքվածի դիմաց
+                    const expected = r.expected === null || r.expected === undefined ? '—'
+                        : money(r.expected) + (r.status === 'in_progress' ? ' <span class="cr-muted">(դեռ վերջնական չէ)</span>' : '');
+                    const cls = r.flags.includes('no_payment') ? 'cr-row-bad' : r.flags.includes('merge_conflict') ? 'cr-row-warn' : '';
+                    return '<tr class="' + cls + '"><td>' + esc(r.doc_number || r.stop_id) + '</td><td>' + esc(r.customer || '') + '</td><td>' + esc(COLLECT[r.collect] || '') + '</td>'
+                        + '<td>' + statusBadge(r) + '</td>'
+                        + '<td class="cr-num-cell" title="Ապրանքագիր՝ ' + esc(r.invoice_amount === null || r.invoice_amount === undefined ? '—' : money(r.invoice_amount)) + '">' + (r.due === null || r.due === undefined ? '—' : money(r.due)) + '</td>'
+                        + '<td class="cr-num-cell">' + expected + '</td>'
                         + '<td class="cr-num-cell"' + (Math.abs((r.invoice_all || 0) - r.invoice) >= 0.005 ? ' title="Բոլոր վարորդները՝ ' + esc(money(r.invoice_all)) + '"' : '') + '>' + money(r.invoice) + '</td><td class="cr-num-cell">' + short + '</td><td class="cr-num-cell">' + money(r.debt) + '</td>'
                         + '<td>' + esc(r.receipts.join(', ')) + '</td><td>' + (r.flags.includes('no_payment') ? badge('Վճարում չկա', 'b-danger') + ' ' : '')
                         + esc(flagText(r.flags.filter(f => f !== 'no_payment'))) + '</td></tr>';
@@ -292,17 +303,18 @@
                 + '<td class="cr-mono">' + esc((r.raw || '').replace(/\u001d/g, '<GS>')) + (r.duplicate_elsewhere ? ' ' + badge('կրկնված', 'b-danger') : '') + (r.cancelled ? ' ' + badge('չեղարկված', 'b-none') : '') + '</td>'
                 + '<td class="cr-mono">' + esc(r.gtin || '') + '<br>' + esc(r.serial || '') + '</td><td>' + esc(r.product_name || '') + '</td>'
                 + '<td>' + esc(r.customer_name || '') + (r.tax_id ? '<br><span class="cr-muted">ՀՎՀՀ ' + esc(r.tax_id) + '</span>' : '') + '</td>'
-                + '<td>' + esc(r.doc_number || '') + (r.order_number ? '<br><span class="cr-muted">պատվեր ' + esc(r.order_number) + '</span>' : '') + '</td><td>' + esc(r.driver_name || '') + '<br><span class="cr-muted">' + esc(r.car_code) + '</span></td>'
+                + '<td>' + esc(r.doc_number || '') + (r.split ? ' ' + badge('բաժանված', 'b-warn') : '') + (r.order_number ? '<br><span class="cr-muted">պատվեր ' + esc(r.order_number) + '</span>' : '') + '</td><td>' + esc(r.driver_name || '') + '<br><span class="cr-muted">' + esc(r.car_code) + '</span></td>'
                 + '<td>' + (r.kind === 'return' ? 'վերադարձ' : 'վաճառք') + (r.is_group ? ', տուփ (' + fmt(r.units) + ')' : '') + '</td></tr>').join('');
         } catch (e) { showError(e.message); }
     }
     function exportMarksExcel() {
         if (typeof window.XLSX === 'undefined') { showError('Excel-ի գրադարանը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ) — օգտագործեք CSV'); return; }
-        const head = ['Կոդ', 'GTIN', 'Սերիական համար', 'Ապրանքի կոդ', 'Ապրանք', 'Հաճախորդի կոդ', 'Հաճախորդ', 'ՀՎՀՀ', 'Ապրանքագիր', 'Պատվեր', 'Ամսաթիվ', 'Ժամանակ',
-            'Վարորդ', 'Մեքենա', 'Տեսակ', 'Խմբային', 'Հատ', 'Կրկնված այլ տեղ', 'Չեղարկված'];
+        // սյուները՝ ինչպես CSV-ում (views.MARK_COLUMNS); «Ապրանքագիր»՝ պատվերի բոլոր ապրանքագրերը
+        const head = ['Կոդ', 'GTIN', 'Սերիական համար', 'Ապրանքի կոդ', 'Ապրանք', 'Հաճախորդի կոդ', 'Հաճախորդ', 'ՀՎՀՀ', 'Ապրանքագիր', 'Պատվեր', 'Բաժանված պատվեր',
+            'Ամսաթիվ', 'Ժամանակ', 'Վարորդ', 'Մեքենա', 'Տեսակ', 'Խմբային', 'Հատ', 'Կրկնված այլ տեղ', 'Չեղարկված'];
         const rows = marks.rows.map(r => [(r.raw || '').replace(/\u001d/g, '<GS>'), r.gtin, r.serial, r.product_code, r.product_name, r.customer_code, r.customer_name,
-            r.tax_id, r.doc_number, r.order_number, r.date, r.at, r.driver_name, r.car_code, r.kind === 'return' ? 'վերադարձ' : 'վաճառք', r.is_group ? 'այո' : '', r.units,
-            r.duplicate_elsewhere ? 'այո' : '', r.cancelled ? 'այո' : '']);
+            r.tax_id, r.doc_number, r.order_number, r.split ? 'այո' : '', r.date, r.at, r.driver_name, r.car_code, r.kind === 'return' ? 'վերադարձ' : 'վաճառք',
+            r.is_group ? 'այո' : '', r.units, r.duplicate_elsewhere ? 'այո' : '', r.cancelled ? 'այո' : '']);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([head, ...rows]), 'Մակնշում');
         XLSX.writeFile(wb, 'makanshum_' + ($('crMarksFrom').value || 'all') + '_' + ($('crMarksTo').value || 'all') + '.xlsx');
