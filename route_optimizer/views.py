@@ -442,9 +442,9 @@ def api_optimize_start() -> Any:
     except BaseException:
         _finish(state, job, error='Не удалось запустить расчёт')
         raise
-    logger.info('[Routes] Оптимизация %s запущена (%s): менеджеров %d, старт %s, частоты %s%s',
+    logger.info('[Routes] Оптимизация %s запущена (%s): менеджеров %d, старт %s, частоты %s, режим %s%s',
                 job.id, job.created_by, len(run_ids), params['start'], params['frequencies'],
-                ', снимок ERP устарел' if stale else '')
+                params.get('mode', optimize.MODE_DAYS), ', снимок ERP устарел' if stale else '')
     return jsonify({'success': True, 'job_id': job.id})
 
 

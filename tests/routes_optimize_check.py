@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Живая приёмка этапа 3 «Маршрутов» (режим А) на боевой БД — ТОЛЬКО ЧТЕНИЕ (план этапа 3, §12).
+"""Живая приёмка этапов 3 и 4 «Маршрутов» (режимы А и Б) на боевой БД — ТОЛЬКО ЧТЕНИЕ
+(план этапа 3, §12; план этапа 4, §7).
 
 Запуск из корня проекта:  python tests/routes_optimize_check.py
 Имя без префикса test_: pytest его не собирает (нужна боевая ERP).
@@ -24,6 +25,14 @@ ERP читается одним снимком этапа 1 (erp._select, тол
   - статус клиента (§15): у потерянных и без заказов за год — предложение «убрать из маршрута», у
     затихших частота «стало» ≤ 0.5 (кроме решений владельца); выручка «было/стало» — без них (у
     затихших, потерянных и без заказов λ = 0). Сводка по статусам — отдельной строкой.
+Режим Б (передача магазинов между менеджерами, этап 4) — тот же снимок и настройки:
+  - ограничения режима А (частоты, шаблоны, время) соблюдены и у переданных клиентов;
+  - стоимость компании ≤ режима А (старт поиска — итог режима А);
+  - закреплённые и клиенты нескольких менеджеров не передаются;
+  - балансы сходятся: отдано = получено (магазины, выручка в месяц, долг), у менеджера «отдаёт» = сумма
+    его передач;
+  - повторяемость; весь расчёт ≤ 2 мин;
+  - ключевой показатель — слабые зимние дни A002/10 и A004/11 в режиме Б против режима А.
 Код выхода: 0 — все критерии выполнены, 1 — нет.
 """
 from __future__ import annotations
@@ -332,8 +341,150 @@ def main() -> int:
                   + f' км, слабых дней {e["weak_days_week"]:+.2f}, минут {e["minutes_week"]:+d}')
     passed = sum(1 for _, ok, _, _ in results if ok)
     verdict = 'ПРОЙДЕНО' if passed == len(results) else 'НЕ ПРОЙДЕНО'
-    print(f'ИТОГ: {verdict} по {passed} из {len(results)} критериев')
-    return 0 if verdict == 'ПРОЙДЕНО' else 1
+    print(f'ИТОГ режима А: {verdict} по {passed} из {len(results)} критериев')
+    print()
+    results_b = check_transfer(snap, bundle, calib, decisions, out, window)
+    passed_b = sum(1 for _, ok, _, _ in results_b if ok)
+    verdict_b = 'ПРОЙДЕНО' if passed_b == len(results_b) else 'НЕ ПРОЙДЕНО'
+    print(f'ИТОГ режима Б: {verdict_b} по {passed_b} из {len(results_b)} критериев')
+    return 0 if verdict == verdict_b == 'ПРОЙДЕНО' else 1
+
+
+KEY_MANAGERS = ('A002/10', 'A004/11')   # мало клиентов: зимой не дотягивают до 100 000 в 1–2 днях
+
+
+def check_transfer(snap, bundle, calib, decisions, out_a, window: float) -> list:
+    """Режим Б на том же снимке и настройках: таблица «было → стало», передачи, балансы, критерии §7."""
+    runs = []
+    for _ in range(2):
+        t0 = time.perf_counter()
+        out = opt.run_optimization(snap, bundle, calib, decisions, {**PARAMS, 'mode': 'transfer'})
+        runs.append((out, time.perf_counter() - t0))
+    out, run_seconds = runs[0]
+    res, res_a = out.result, out_a.result
+    tr = res['transfers']
+    print('Режим Б — передача магазинов между менеджерами (тот же снимок и настройки)')
+    print(f'  плата за передачу {num(tr["penalty_week"], 0)} драм/нед, радиус «клиент рядом» {tr["radius_km"]} км; '
+          f'кандидатов на передачу {tr["candidates"]}; принятых владельцем передач {tr["accepted_fixed"]}')
+    print()
+    header = (f'{"Менеджер":<9} {"визитов/нед":>15} {"слабых дн./нед":>15} {"слаб. реж. А":>12} {"км/нед":>17} '
+              f'{"км реж. А":>10} {"отдаёт":>7} {"получает":>8} {"выручка ушла / пришла, драм/мес":>34} '
+              f'{"долг ушёл / пришёл":>22}')
+    print(header)
+    print('-' * len(header))
+    by_a = {m['agent_id']: m for m in res_a['managers']}
+    for m in res['managers']:
+        b, a, ma, bal = m['before'], m['after'], by_a[m['agent_id']], m['balance']
+        g, r = bal['given'], bal['received']
+        print(f'{m["code"]:<9} {arrow(b["visits"], a["visits"]):>15} '
+              f'{arrow(b["days_below_min"], a["days_below_min"]):>15} '
+              f'{num(ma["after"]["days_below_min"]):>12} {arrow(b["manager_km"], a["manager_km"]):>17} '
+              f'{num(ma["after"]["manager_km"]):>10} {g["stores"]:>7} {r["stores"]:>8} '
+              f'{num(g["revenue_month"], 0) + " / " + num(r["revenue_month"], 0):>34} '
+              f'{num(g["debt"], 0) + " / " + num(r["debt"], 0):>22}')
+    tb, ta, taa = res['before'], res['after'], res_a['after']
+    print('-' * len(header))
+    print(f'{"Компания":<9} {arrow(tb["visits_week"], ta["visits_week"]):>15} '
+          f'{arrow(tb["days_below_min"], ta["days_below_min"]):>15} {num(taa["days_below_min"]):>12} '
+          f'{arrow(tb["manager_km_week"], ta["manager_km_week"]):>17} {num(taa["manager_km_week"]):>10} '
+          f'{tr["count"]:>7} {tr["count"]:>8} {num(tr["revenue_month"], 0):>34} {num(tr["debt"], 0):>22}')
+    print(f'  выручка в неделю (модель): зима {arrow(tb["revenue_week_low"], ta["revenue_week_low"], 0)}, '
+          f'лето {arrow(tb["revenue_week_peak"], ta["revenue_week_peak"], 0)}, '
+          f'год {arrow(tb["revenue_week_year"], ta["revenue_week_year"], 0)}; '
+          f'визитов в неделю — режим А {num(taa["visits_week"])}')
+    cost_a = sum(o.cost_after for o in out_a.managers)
+    print(f'  C компании (быстрая оценка, драм/нед): итог режима А {num(cost_a, 0)}, '
+          f'старт режима Б (то же + принятые передачи) {num(out.transfer.cost_start, 0)}, итог режима Б '
+          f'{num(out.transfer.cost_end, 0)}; поиск передач {out.transfer.seconds:.1f} с '
+          f'(ходов {out.transfer.accepted}, '
+          f'внутри менеджеров {out.transfer.intra_accepted}, возмущений {out.transfer.perturbations})')
+    key = {m['code']: m for m in res['managers']}
+    for code in KEY_MANAGERS:
+        if code in key:
+            mb, ma = key[code], by_a.get(key[code]['agent_id'])
+            print(f'  {code}: слабых зимних дней в неделю — сейчас {num(mb["before"]["days_below_min"])}, режим А '
+                  f'{num(ma["after"]["days_below_min"])}, режим Б {num(mb["after"]["days_below_min"])} '
+                  f'(получает {mb["balance"]["received"]["stores"]}, '
+                  f'отдаёт {mb["balance"]["given"]["stores"]} магазинов)')
+    moves = [(m['code'], ch) for m in res['managers'] for ch in m['changes'] if ch['type'] == 'transfer']
+    codes = {m['agent_id']: m['code'] for m in res['managers']}
+    if moves:
+        print('  Передачи (эффект — этой передачи к текущему плану, по обоим менеджерам, в неделю):')
+        for code, ch in moves:
+            e, ef, et = ch['effect'], ch['effect_from'], ch['effect_to']
+            name = res['customers'][str(ch['customer_id'])]['name']
+            print(f'    {code} → {codes[ch["to_agent"]]} · {name}: «{ch["from"]["text"]}» → «{ch["to"]["text"]}» '
+                  f'({ch["reason"]}); км {ef["manager_km_week"]:+.1f} / {et["manager_km_week"]:+.1f}, слабых дней '
+                  f'{e["weak_days_week"]:+.2f}, минут {e["minutes_week"]:+d}; выручка {num(ch["revenue_month"], 0)} '
+                  f'драм/мес, долг {num(ch["debt"], 0)}')
+    print()
+
+    results = []
+    freq_bad, pattern_bad, locked_moved, shared_moved = [], [], [], []
+    owners = Counter(c for a in out.before.included_ids for c in opt.plan_pairs(snap.plan).get(a, {}))
+    book = opt.DecisionBook.from_rows(decisions, opt.plan_pairs(snap.plan))
+    for o in out.managers:
+        for cid, spec, final in zip(o.customers, o.specs, o.final):
+            fixed = book.accepted_transfer.get((o.agent_id, cid))
+            if cid in o.moved_to:
+                if spec.locked:
+                    locked_moved.append(f'{o.code}/{cid}')
+                if owners[cid] > 1:
+                    shared_moved.append(f'{o.code}/{cid}')
+                if fixed is not None and fixed == (o.moved_to[cid], final):
+                    continue                    # принятая владельцем передача — в принятых днях
+            if len(final) != round(2 * spec.target):
+                freq_bad.append(f'{o.code}/{cid}: {len(final)} визитов за цикл при частоте {spec.target:g}')
+            if final not in spec.allowed or final in spec.forbidden or (spec.locked and final != spec.allowed[0]):
+                pattern_bad.append(f'{o.code}/{cid}: {pt.pattern_text(final)}')
+    moved = sum(len(o.moved_to) for o in out.managers)
+    results.append(('Б: частоты и шаблоны — как в режиме А, и у переданных', not freq_bad and not pattern_bad,
+                    f'передано {moved}, нарушений частоты {len(freq_bad)}, шаблонов {len(pattern_bad)}',
+                    (freq_bad + pattern_bad)[:6]))
+    time_bad = []
+    for m in res['managers']:
+        before_ot = overtime_days(m['days_before'], window)
+        after_ot = overtime_days(m['days_after'], window) / pt.CYCLE_WEEKS
+        if (before_ot == 0 and after_ot > 0) or after_ot > before_ot:
+            time_bad.append(f'{m["code"]}: дней длиннее окна в неделю {before_ot} → {after_ot:g}')
+    results.append((f'Б: время — дней «стало» длиннее {window / 60:g} ч не больше, чем «было»', not time_bad,
+                    f'менеджеров с нарушением {len(time_bad)}', time_bad))
+    cost_ok = out.transfer.cost_end <= out.transfer.cost_start + 1e-6 and \
+        (tr['accepted_fixed'] or out.transfer.cost_end <= cost_a + 1e-6)
+    results.append(('Б: стоимость компании ≤ режима А (быстрая оценка, вместе с платой за передачи)', cost_ok,
+                    f'C режима А {num(cost_a, 0)} → режима Б {num(out.transfer.cost_end, 0)} драм/нед', []))
+    results.append(('Б: закреплённые и клиенты нескольких менеджеров не передаются',
+                    not locked_moved and not shared_moved,
+                    f'закреплённых передано {len(locked_moved)}, общих {len(shared_moved)}',
+                    (locked_moved + shared_moved)[:6]))
+    bal_bad = []
+    for k in ('stores', 'revenue_month', 'debt'):
+        given = sum(m['balance']['given'][k] for m in res['managers'])
+        got = sum(m['balance']['received'][k] for m in res['managers'])
+        if given != got:
+            bal_bad.append(f'{k}: отдано {given}, получено {got}')
+    for m in res['managers']:
+        mine = [c for c in m['changes'] if c['type'] == 'transfer']
+        if m['balance']['given']['stores'] != len(mine) or \
+                abs(m['balance']['given']['revenue_month'] - sum(c['revenue_month'] for c in mine)) > len(mine):
+            bal_bad.append(f'{m["code"]}: «отдаёт» не равно сумме его передач')
+    results.append(('Б: балансы сходятся (отдано = получено; «отдаёт» = сумма передач менеджера)', not bal_bad,
+                    f'передач {tr["count"]}, выручка {num(tr["revenue_month"], 0)} драм/мес, долг '
+                    f'{num(tr["debt"], 0)} драм', bal_bad))
+    second = runs[1][0]
+    same = ([(o.agent_id, o.final, o.moved_to) for o in out.managers]
+            == [(o.agent_id, o.final, o.moved_to) for o in second.managers])
+    capped = res['transfers']['time_capped'] or any(m['time_capped'] for m in res['managers'])
+    results.append(('Б: повторяемость — второй запуск даёт те же дни и передачи', same,
+                    'совпадают' if same else 'различаются' + (' (был стоп по времени)' if capped else ''), []))
+    results.append((f'Б: скорость — расчёт ≤ {TIME_LIMIT_S / 60:g} мин', run_seconds <= TIME_LIMIT_S,
+                    f'{run_seconds:.1f} с (повтор {runs[1][1]:.1f} с); '
+                    f'стоп по времени: {"да" if capped else "нет"}', []))
+    for title, ok, detail, lines in results:
+        print(f'{status(ok):<12} {title}: {detail}')
+        for line in lines:
+            print(f'             {line}')
+    return results
 
 
 if __name__ == '__main__':

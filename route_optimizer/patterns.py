@@ -201,6 +201,34 @@ def parse_plan_freq(value: Any) -> float | None:
     return float(value) if 1 <= n <= CYCLE_WEEKS * 7 else None
 
 
+MAX_AGENT_ID = 2 ** 31 - 1
+
+
+def transfer_key(agent_id: int, p: Pattern) -> str:
+    """Канонический текст решения «передать» (этап 4): кому и в какие дни —
+    «{"agent_id":3144,"pattern":[[1,2],[2,2]]}»."""
+    return json.dumps({'agent_id': agent_id, 'pattern': pattern_json(p)}, separators=(',', ':'),
+                      sort_keys=True)
+
+
+def parse_transfer(value: Any) -> tuple[int, Pattern] | None:
+    """{"agent_id": id менеджера, "pattern": [[неделя, день], …]} → (id, шаблон). Иначе None."""
+    if not isinstance(value, dict) or set(value) != {'agent_id', 'pattern'}:
+        return None
+    agent_id = value['agent_id']
+    if isinstance(agent_id, bool) or not isinstance(agent_id, int) or not 0 < agent_id <= MAX_AGENT_ID:
+        return None
+    p = parse_pattern(value['pattern'])
+    return None if p is None else (agent_id, p)
+
+
+def parse_transfer_key(text: Any) -> tuple[int, Pattern] | None:
+    try:
+        return parse_transfer(json.loads(text))
+    except (TypeError, ValueError, RecursionError):
+        return None
+
+
 def parse_pattern_key(text: Any) -> Pattern | None:
     try:
         return parse_pattern(json.loads(text))

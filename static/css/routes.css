@@ -557,6 +557,13 @@
 }
 .rt-pin-depot > span { background: var(--rt-fg); color: #0c0f14; border: 2px solid #0c0f14; }
 .rt-pin-home > span { background: #0c0f14; border: 2px solid currentColor; border-radius: 50%; font-size: 11px; }
+/* Передача магазина (этап 4): магазин и стрелка к дому того, кому передают */
+.rt-pin-transfer > span { background: #0c0f14; border: 2px solid currentColor; border-radius: 50%; font-size: 10px; }
+.rt-arrow { background: none; border: none; }
+.rt-arrow > span {
+    display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
+    font-size: 15px; filter: drop-shadow(0 1px 2px rgba(0,0,0,.8));
+}
 .rt-stop > span {
     display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
     border-radius: 50%; background: #0c0f14; border: 2px solid currentColor; color: var(--rt-fg);
@@ -988,6 +995,11 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
 .ro-card-sum .sep { color: var(--rt-fg-mute); }
 .ro-card-warn { margin: 0; display: flex; gap: 8px; align-items: baseline; font-size: .9rem; line-height: 1.45; color: var(--rt-warn); }
 .ro-card-note { margin: 0; font-size: .85rem; color: var(--rt-fg-mute); line-height: 1.4; }
+/* Баланс передач менеджера: отдаёт / получает (этап 4) */
+.ro-card-bal { margin: 0; font-size: .9rem; line-height: 1.45; color: var(--rt-fg); }
+.ro-card-bal > i { color: #4fc3d9; margin-right: 7px; }
+.ro-card-bal .rt-tip { margin-left: 6px; }
+.ro-card-bal.is-none { color: var(--rt-fg-mute); }
 .ro-card-prog { display: flex; align-items: center; gap: 10px; margin-top: auto; font-size: .85rem; color: var(--rt-fg-mute); }
 .ro-card-prog .bar { flex: 1 1 auto; display: flex; height: 6px; border-radius: 999px; background: var(--rt-line); overflow: hidden; }
 .ro-card-prog .ok { background: var(--rt-ok); }
@@ -1040,6 +1052,7 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
 .ro-grp.g-offday  { --g: #b7a8ff; --gbg: rgba(183, 168, 255, .13); }
 .ro-grp.g-winback { --g: #ffb547; --gbg: rgba(255, 181, 71, .13); }
 .ro-grp.g-remove  { --g: #ff6b79; --gbg: rgba(255, 107, 121, .13); }
+.ro-grp.g-transfer, .ro-grp.g-incoming { --g: #4fc3d9; --gbg: rgba(79, 195, 217, .13); }
 .ro-grp.g-other   { --g: #8b93a7; --gbg: rgba(139, 147, 167, .14); }
 .ro-grp.g-hints   { --g: #6b7588; --gbg: rgba(139, 147, 167, .12); border-left-style: dashed; }
 .ro-grp-head { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; }
@@ -1078,6 +1091,7 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
 .ro-item.is-remove.is-accepted { border-left-color: var(--rt-danger); background: linear-gradient(90deg, rgba(255, 90, 106, .08), transparent 45%); }
 .ro-item.is-remove.is-rejected { border-left-color: var(--rt-ok); }
 .ro-item.is-remove.is-rejected .ro-item-main { opacity: 1; }
+.ro-item.is-transfer.is-accepted { border-left-color: #4fc3d9; background: linear-gradient(90deg, rgba(79, 195, 217, .08), transparent 45%); }
 .ro-item.is-stale { border-left-color: var(--rt-warn); border-left-style: dashed; }
 .ro-item.is-hint { grid-template-columns: minmax(0, 1fr); }
 .ro-item-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }

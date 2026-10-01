@@ -21,14 +21,17 @@
 from __future__ import annotations
 
 import logging
+import math
 import random
 import time
 import zlib
+from array import array
 from collections import Counter, defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
+from operator import itemgetter
 from statistics import fmean
-from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Collection, Iterable, Mapping, Sequence
 
 from . import demand as dm
 from . import evaluate as ev
@@ -36,8 +39,9 @@ from . import frequency as fq
 from . import patterns as pt
 from . import search as sr
 from . import status as cst
+from . import transfer as tr
 from .evaluate import _day_json, _i, _num, _r
-from .geo import Coord, Point, in_city
+from .geo import Coord, Point, haversine_km, in_city
 from .plan import CurrentPlan, PlanDay, PlanVisit, WEEKDAY_LABELS
 from .store import REMOVE_VALUE, DecisionInput
 from .tsp import Distance, route_order
@@ -52,6 +56,10 @@ logger = logging.getLogger(__name__)
 START_MODES = ('current', 'fresh')
 FREQUENCY_MODES = ('sales', 'current')
 DEFAULT_PARAMS: dict[str, Any] = {'agent_ids': None, 'start': 'current', 'frequencies': 'sales'}
+# Режим расчёта (этап 4): days — только дни внутри менеджера (режим А, по умолчанию; в params не
+# пишется — расчёт и результат как на этапе 3), transfer — разрешить передавать магазины (режим Б)
+MODE_DAYS, MODE_TRANSFER = 'days', 'transfer'
+MODES = (MODE_DAYS, MODE_TRANSFER)
 DECISION_FIELDS = ('customer_id', 'agent_id', 'kind', 'value', 'action', 'from')
 MAX_DECISION_ITEMS = 2000                 # решений в одном запросе («Принять все у менеджера»)
 MAX_AGENTS = 500
@@ -59,7 +67,8 @@ MAX_ID = 2 ** 31 - 1
 # Поля дня в результате (§10.1) — подмножество дня обзора этапа 1
 DAY_KEYS = ('week', 'weekday', 'label', 'visits', 'revenue_low_exp', 'p_day_ge_min', 'work_minutes',
             'commute_minutes', 'plan_minutes', 'manager_km', 'truck', 'stops')
-MARKS = {'move': 'перенос', 'both': 'перенос, частота', 'frequency': 'частота', 'remove': 'убрать'}
+MARKS = {'move': 'перенос', 'both': 'перенос, частота', 'frequency': 'частота', 'remove': 'убрать',
+         'transfer': 'передать'}
 SOURCE_STATUS = 'status'   # убрать из маршрута по статусу клиента (§15): потерян или без заказов
 # Решение относительно плана снимка (decision_state)
 DECISION_ACTIVE, DECISION_STALE, DECISION_RETIRED = 'active', 'stale', 'retired'
@@ -75,12 +84,13 @@ class OptimizeError(RuntimeError):
 # --- Параметры и решения из API ---
 
 def parse_params(payload: Any) -> tuple[dict[str, Any] | None, dict[str, str]]:
-    """Тело POST /api/routes/optimize: {"agent_ids": [..] | null, "start", "frequencies"}.
-    Отсутствующие поля — по умолчанию. Ошибки — {поле: текст}."""
+    """Тело POST /api/routes/optimize: {"agent_ids": [..] | null, "start", "frequencies", "mode"}.
+    Отсутствующие поля — по умолчанию; mode = transfer попадает в params (days — режим по умолчанию,
+    его в params нет). Ошибки — {поле: текст}."""
     if not isinstance(payload, dict):
         return None, {'_': 'ожидался JSON-объект'}
     errors: dict[str, str] = {}
-    unknown = sorted(str(k) for k in set(payload) - set(DEFAULT_PARAMS))
+    unknown = sorted(str(k) for k in set(payload) - set(DEFAULT_PARAMS) - {'mode'})
     if unknown:
         errors['_'] = 'неизвестные параметры: ' + ', '.join(unknown)
     params = dict(DEFAULT_PARAMS)
@@ -103,15 +113,22 @@ def parse_params(payload: Any) -> tuple[dict[str, Any] | None, dict[str, str]]:
         errors['frequencies'] = 'частота: sales (по продажам) или current (как сейчас)'
     else:
         params['frequencies'] = freq
+    mode = payload.get('mode', MODE_DAYS)
+    if mode not in MODES:
+        errors['mode'] = 'режим: days (только дни внутри менеджера) или transfer (передавать магазины)'
+    elif mode == MODE_TRANSFER:
+        params['mode'] = MODE_TRANSFER
     return (None, errors) if errors else (params, {})
 
 
 def parse_decision(payload: Any) -> tuple[DecisionInput | None, dict[str, str]]:
-    """Одно решение: {"customer_id", "agent_id", "kind": "pattern"|"freq"|"remove", "value": [[неделя,
-    день], …] | 0.5 | [] (remove: значение можно не присылать), "action": "accept"|"reject"|"reset",
-    "from": шаблон | частота клиента в предложении}. remove: accept — убрать из маршрута, reject —
-    оставить; from — шаблон. from — от чего принимается решение (строка «было» предложения); нет —
-    возьмётся план снимка (bind_decisions); для reset не нужен."""
+    """Одно решение: {"customer_id", "agent_id", "kind": "pattern"|"freq"|"remove"|"transfer", "value":
+    [[неделя, день], …] | 0.5 | [] (remove: значение можно не присылать) | {"agent_id": кому, "pattern":
+    [[неделя, день], …]} (transfer), "action": "accept"|"reject"|"reset", "from": шаблон | частота
+    клиента в предложении}. remove: accept — убрать из маршрута, reject — оставить; transfer: accept —
+    передать менеджеру value.agent_id в дни value.pattern, reject — этому менеджеру не передавать;
+    у remove и transfer from — шаблон. from — от чего принимается решение (строка «было» предложения);
+    нет — возьмётся план снимка (bind_decisions); для reset не нужен."""
     if not isinstance(payload, dict):
         return None, {'_': 'ожидался JSON-объект'}
     errors: dict[str, str] = {}
@@ -126,13 +143,22 @@ def parse_decision(payload: Any) -> tuple[DecisionInput | None, dict[str, str]]:
     action = payload.get('action')
     raw_from = payload.get('from')
     value = from_value = None
-    if kind in ('pattern', 'remove'):
+    if kind in ('pattern', 'remove', 'transfer'):
         if kind == 'remove':
             raw = payload.get('value')
             if raw is None or (isinstance(raw, list) and not raw):
                 value = REMOVE_VALUE
             else:
                 errors['value'] = 'убрать из маршрута — значение не нужно (или пустой список [])'
+        elif kind == 'transfer':
+            hit = pt.parse_transfer(payload.get('value'))
+            if hit is None:
+                errors['value'] = ('передать — {"agent_id": id менеджера, "pattern": [[неделя 1–2, '
+                                   'день недели 1–7], …]}')
+            elif hit[0] == payload.get('agent_id'):
+                errors['value'] = 'передать можно только другому менеджеру'
+            else:
+                value = pt.transfer_key(*hit)
         else:
             p = pt.parse_pattern(payload.get('value'))
             if p is None:
@@ -158,7 +184,8 @@ def parse_decision(payload: Any) -> tuple[DecisionInput | None, dict[str, str]]:
             else:
                 from_value = pt.freq_key(f)
     else:
-        errors['kind'] = 'вид решения: pattern (шаблон), freq (частота) или remove (убрать из маршрута)'
+        errors['kind'] = ('вид решения: pattern (шаблон), freq (частота), remove (убрать из маршрута) '
+                          'или transfer (передать другому менеджеру)')
     if action not in ('accept', 'reject', 'reset'):
         errors['action'] = 'действие: accept, reject или reset'
     if errors or value is None:
@@ -207,8 +234,8 @@ def parse_decisions(payload: Any) -> tuple[DecisionRequest | None, dict[str, str
 
 def current_value(pairs: Mapping[int, Mapping[int, PairInfo]], agent_id: int, customer_id: int,
                   kind: str) -> str | None:
-    """Шаблон (pattern_key; и для remove — решение принимается от шаблона) или частота (freq_key)
-    клиента у менеджера в плане снимка; None — клиента нет в плане менеджера."""
+    """Шаблон (pattern_key; и для remove и transfer — решение принимается от шаблона) или частота
+    (freq_key) клиента у менеджера в плане снимка; None — клиента нет в плане менеджера."""
     info = pairs.get(agent_id, {}).get(customer_id)
     if info is None:
         return None
@@ -217,8 +244,8 @@ def current_value(pairs: Mapping[int, Mapping[int, PairInfo]], agent_id: int, cu
 
 def decision_state(d: Decision, pairs: Mapping[int, Mapping[int, PairInfo]]) -> str:
     """Решение относительно плана снимка (текущий шаблон или частота клиента у менеджера):
-    - принятое, и в ERP уже так (value = текущему; remove — клиента у менеджера больше нет) —
-      retired: план применён, замка больше нет;
+    - принятое, и в ERP уже так (value = текущему; remove — клиента у менеджера больше нет; transfer —
+      клиента у менеджера больше нет, а у того, кому передать, есть) — retired: план применён;
     - принятое на другом плане (from_value ≠ текущему) или клиента у менеджера больше нет —
       stale: не применяется, владелец видит его в списке устаревших;
     - отклонённое на другом плане (или клиента нет) — retired: запрет относился к прежнему плану;
@@ -226,7 +253,13 @@ def decision_state(d: Decision, pairs: Mapping[int, Mapping[int, PairInfo]]) -> 
     cur = current_value(pairs, d.agent_id, d.customer_id, d.kind)
     moved_on = cur is None or (d.from_value is not None and d.from_value != cur)
     if d.status == 'accepted':
-        done = cur is None if d.kind == 'remove' else (cur is not None and d.value == cur)
+        if d.kind == 'remove':
+            done = cur is None
+        elif d.kind == 'transfer':
+            hit = pt.parse_transfer_key(d.value)
+            done = cur is None and hit is not None and d.customer_id in pairs.get(hit[0], {})
+        else:
+            done = cur is not None and d.value == cur
         if done:
             return DECISION_RETIRED
         return DECISION_STALE if moved_on else DECISION_ACTIVE
@@ -244,10 +277,15 @@ def bind_decisions(request: DecisionRequest, pairs: Mapping[int, Mapping[int, Pa
             out.append(d)
             continue
         cur = current_value(pairs, d.agent_id, d.customer_id, d.kind)
+        prefix = f'items.{i}.' if request.mode == 'batch' else ''
         if cur is None:
-            prefix = f'items.{i}.' if request.mode == 'batch' else ''
             errors[prefix + 'customer_id'] = 'У этого менеджера нет такого клиента в плане ERP'
             continue
+        if d.kind == 'transfer':
+            hit = pt.parse_transfer_key(d.value)
+            if hit is None or hit[0] not in pairs:
+                errors[prefix + 'value'] = 'У менеджера, которому передать, нет маршрутов в ERP'
+                continue
         out.append(d if d.from_value is not None else replace(d, from_value=cur))
     return out, errors
 
@@ -256,7 +294,8 @@ def bind_decisions(request: DecisionRequest, pairs: Mapping[int, Mapping[int, Pa
 class DecisionBook:
     """Решения владельца для расчёта. Ключи — (менеджер, клиент). stale — принятые, но устаревшие
     (приняты на другом плане): не закрепляют ничего. accepted_remove — убрать из маршрута,
-    rejected_remove — оставить (удаление больше не предлагается)."""
+    rejected_remove — оставить (удаление больше не предлагается). accepted_transfer — передать
+    (кому, в какие дни); rejected_transfer — каким менеджерам этого клиента не передавать (этап 4)."""
     accepted_pattern: dict[tuple[int, int], pt.Pattern]
     accepted_freq: dict[tuple[int, int], float]
     rejected_pattern: dict[tuple[int, int], frozenset[pt.Pattern]]
@@ -266,6 +305,8 @@ class DecisionBook:
     stale: tuple[Decision, ...] = ()
     accepted_remove: frozenset[tuple[int, int]] = frozenset()
     rejected_remove: frozenset[tuple[int, int]] = frozenset()
+    accepted_transfer: Mapping[tuple[int, int], tuple[int, pt.Pattern]] = field(default_factory=dict)
+    rejected_transfer: Mapping[tuple[int, int], frozenset[int]] = field(default_factory=dict)
 
     @classmethod
     def from_rows(cls, rows: Sequence[Decision],
@@ -278,6 +319,8 @@ class DecisionBook:
         rej_f: dict[tuple[int, int], set[float]] = defaultdict(set)
         acc_r: set[tuple[int, int]] = set()
         rej_r: set[tuple[int, int]] = set()
+        acc_t: dict[tuple[int, int], tuple[int, pt.Pattern]] = {}
+        rej_t: dict[tuple[int, int], set[int]] = defaultdict(set)
         status = {}
         stale = []
         for d in rows:
@@ -290,6 +333,14 @@ class DecisionBook:
             status[(d.customer_id, d.agent_id, d.kind, d.value)] = (d.status, d.from_value)
             if d.kind == 'remove':
                 (acc_r if d.status == 'accepted' else rej_r).add(key)
+            elif d.kind == 'transfer':
+                hit = pt.parse_transfer_key(d.value)
+                if hit is None:
+                    continue
+                if d.status == 'accepted':
+                    acc_t[key] = hit
+                else:
+                    rej_t[key].add(hit[0])
             elif d.kind == 'pattern':
                 p = pt.parse_pattern_key(d.value)
                 if p is None:
@@ -308,7 +359,9 @@ class DecisionBook:
                     rej_f[key].add(f)
         return cls(acc_p, acc_f, {k: frozenset(v) for k, v in rej_p.items()},
                    {k: frozenset(v) for k, v in rej_f.items()}, status, tuple(stale),
-                   accepted_remove=frozenset(acc_r), rejected_remove=frozenset(rej_r))
+                   accepted_remove=frozenset(acc_r), rejected_remove=frozenset(rej_r),
+                   accepted_transfer=acc_t,
+                   rejected_transfer={k: frozenset(v) for k, v in rej_t.items()})
 
     def _status(self, customer_id: int, agent_id: int, kind: str, value: str,
                 from_key: str) -> str | None:
@@ -324,6 +377,10 @@ class DecisionBook:
         только если принималось от того же «было»: решение по прежнему плану клиента к новому
         предложению не приклеивается."""
         cid, frm, to = change['customer_id'], change['from'], change['to']
+        if change['type'] == 'transfer':
+            return {'transfer': self._status(cid, agent_id, 'transfer',
+                                             pt.transfer_key(change['to_agent'], to['pattern']),
+                                             pt.pattern_key(frm['pattern']))}
         if change['type'] == 'remove':
             return {'remove': self._status(cid, agent_id, 'remove', REMOVE_VALUE,
                                            pt.pattern_key(frm['pattern']))}
@@ -364,8 +421,18 @@ def decision_json(snap: Snapshot, d: Decision, pairs: Mapping[int, Mapping[int, 
     """Решение для владельца: клиент, менеджер, что решено («было → стало»), что в плане сейчас."""
     agent, cust = snap.agents.get(d.agent_id), snap.customers.get(d.customer_id)
     cur = current_value(pairs, d.agent_id, d.customer_id, d.kind)
-    plan_kind = 'pattern' if d.kind == 'remove' else d.kind   # «было» и «сейчас» у remove — шаблон
-    value, to_text = _side_text(d.kind, d.value)
+    # «было» и «сейчас» у remove и transfer — шаблон
+    plan_kind = 'pattern' if d.kind in ('remove', 'transfer') else d.kind
+    if d.kind == 'transfer':   # кому и в какие дни: {"agent_id", "agent_code", "agent_name", "pattern"}
+        hit = pt.parse_transfer_key(d.value)
+        value, to_text = None, None
+        if hit is not None:
+            to_agent = snap.agents.get(hit[0])
+            value = {'agent_id': hit[0], 'agent_code': _code(snap, hit[0]),
+                     'agent_name': to_agent.name if to_agent else '', 'pattern': pt.pattern_json(hit[1])}
+            to_text = f'передать {_code(snap, hit[0])}: {pt.pattern_text(hit[1])}'
+    else:
+        value, to_text = _side_text(d.kind, d.value)
     frm, from_text = _side_text(plan_kind, d.from_value)
     _, current_text = _side_text(plan_kind, cur)
     return {'customer_id': d.customer_id, 'customer_code': cust.code if cust else '',
@@ -548,6 +615,7 @@ class ManagerOutcome:
     cost_before: float
     cost_after: float
     stats: sr.SearchStats
+    moved_to: dict[int, int] = field(default_factory=dict)   # режим Б: клиент → кому передан
 
 
 @dataclass
@@ -556,6 +624,7 @@ class RunOutcome:
     managers: list[ManagerOutcome]
     before: ev.PlanEvaluation
     after: ev.PlanEvaluation
+    transfer: tr.TransferStats | None = None                 # режим Б: поиск передач
 
 
 @dataclass
@@ -589,8 +658,10 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
                      progress: ProgressFn | None = None,
                      clock: Callable[[], float] = time.perf_counter,
                      roads: RoadDistances | None = None) -> RunOutcome:
-    """Режим А по выбранным менеджерам → результат §10.1 (статусы решений — на момент расчёта).
-    roads — расстояния по дорогам (None — по прямой × извилистость)."""
+    """Режим А по выбранным менеджерам → результат §10.1 (статусы решений — на момент расчёта);
+    params['mode'] = 'transfer' — затем режим Б (передача магазинов, _run_transfer). roads — расстояния
+    по дорогам (None — по прямой × извилистость). Принятые передачи режим А не учитывает: магазин
+    считается у прежнего менеджера (в план для ERP передача входит)."""
     started = clock()
     s = bundle.settings
     params = {**DEFAULT_PARAMS, **params}
@@ -636,6 +707,8 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
         parts[a] = part
     if progress:
         progress(len(run_ids), len(run_ids), None)
+    if params.get('mode') == MODE_TRANSFER:   # режим Б: старт — результат режима А
+        return _run_transfer(ctx, calib, run_ids, evals, outcomes, parts, started)
 
     # «Стало»: предложенный план (W = 2) тем же полным оценщиком; остальные менеджеры — как есть
     after_plan = _after_plan(snap.plan, {o.agent_id: o for o in outcomes}, pairs, s['workdays'])
@@ -669,21 +742,7 @@ def _optimize_manager(ctx: _Ctx, agent_id: int,
     truck = me.truck
     depot = bundle.depot if truck is not None else None
     km, mins, tkm = _matrices(me.home, [points[i] for i in located], depot, norms)
-
-    # Веса стоимости (§4): топливо менеджера и дизель — по настройкам или запасной цене
-    profile = bundle.profile(agent_id)
-    l100 = (profile.car_fuel_l_per_100km if profile.car_fuel_l_per_100km is not None
-            else float(s['manager_car_default_l_per_100km']))
-    price = _fuel_price(ctx, me.fuel_type)
-    truck_cost = tkm is not None and truck is not None and truck.fuel_l_per_100km is not None
-    truck_per_km = (float(s['truck_priority']) * _fuel_price(ctx, 'diesel')
-                    * truck.fuel_l_per_100km / 100.0) if truck_cost else 0.0
-    weights = sr.Weights(
-        manager_per_km=price * l100 / 100.0, truck_per_km=truck_per_km,
-        weak_day=float(s['penalty_weak_day']), poor_trip=float(s['penalty_poor_trip']),
-        overtime_per_min=float(s['penalty_overtime_per_min']), window_min=norms.work_minutes,
-        min_day_revenue=norms.min_day_revenue, min_trip_revenue=norms.min_trip_revenue,
-        truck_capacity_kg=truck.capacity_kg if truck is not None else None)
+    weights, truck_cost = _weights(ctx, agent_id, me, tkm is not None)
 
     workdays = set(s['workdays'])
     base_slots = {sr.slot_of_day(w, d) for spec in specs for w, d in spec.current if d in workdays}
@@ -718,6 +777,60 @@ def _optimize_manager(ctx: _Ctx, agent_id: int,
     stats = sr.search(state, seconds=float(s['optimizer_seconds_per_manager']), clock=ctx.clock)
     final = [_pairs_of(p) for p in state.pattern]
 
+    changes, hints = _day_changes(ctx, agent_id, cids, specs, final, state.pattern, before_state,
+                                  tkm is not None)
+    _sort_changes(changes)
+
+    code = _code(snap, agent_id)
+    logger.info('[Routes] Оптимизация %s: клиентов %d, C %.0f → %.0f драм/нед (старт %.0f), '
+                'ходов %d, возмущений %d, %.1f с%s', code, len(lines), before_state.total,
+                state.total, stats.cost_start, stats.accepted, stats.perturbations, stats.seconds,
+                ' — СТОП ПО ВРЕМЕНИ' if stats.time_capped else '')
+    outcome = ManagerOutcome(agent_id, code, cids, specs, final, before_state.total, state.total, stats)
+    part = {'changes': changes, 'hints': hints, 'time_capped': stats.time_capped,
+            'cost_before': before_state.total, 'cost_after': state.total, 'truck_cost': truck_cost,
+            'final': dict(zip(cids, final)), 'addresses': {c: info[c].address_id for c in cids},
+            'state': state}   # режим Б начинает с туров этого состояния (в результат не попадает)
+    return outcome, part
+
+
+def _weights(ctx: _Ctx, agent_id: int, me: ev.ManagerEval, has_tkm: bool) -> tuple[sr.Weights, bool]:
+    """Веса стоимости менеджера (§4): топливо менеджера и дизель — по настройкам или запасной цене;
+    второе — считается ли грузовик в стоимости (есть склад, машина и её расход)."""
+    s = ctx.bundle.settings
+    norms = ctx.before.norms
+    truck = me.truck
+    profile = ctx.bundle.profile(agent_id)
+    l100 = (profile.car_fuel_l_per_100km if profile.car_fuel_l_per_100km is not None
+            else float(s['manager_car_default_l_per_100km']))
+    price = _fuel_price(ctx, me.fuel_type)
+    truck_cost = has_tkm and truck is not None and truck.fuel_l_per_100km is not None
+    truck_per_km = (float(s['truck_priority']) * _fuel_price(ctx, 'diesel')
+                    * truck.fuel_l_per_100km / 100.0) if truck_cost else 0.0
+    weights = sr.Weights(
+        manager_per_km=price * l100 / 100.0, truck_per_km=truck_per_km,
+        weak_day=float(s['penalty_weak_day']), poor_trip=float(s['penalty_poor_trip']),
+        overtime_per_min=float(s['penalty_overtime_per_min']), window_min=norms.work_minutes,
+        min_day_revenue=norms.min_day_revenue, min_trip_revenue=norms.min_trip_revenue,
+        truck_capacity_kg=truck.capacity_kg if truck is not None else None)
+    return weights, truck_cost
+
+
+def _sort_changes(changes: list[dict[str, Any]]) -> None:
+    """По первому дню «стало»; «убрать из маршрута» (дней нет) — в конце."""
+    changes.sort(key=lambda ch: (ch['to']['pattern'][0] if ch['to']['pattern'] else [pt.CYCLE_WEEKS + 1, 0],
+                                 ch['customer_id']))
+
+
+def _day_changes(ctx: _Ctx, agent_id: int, cids: Sequence[int], specs: Sequence[PairSpec],
+                 final: Sequence[pt.Pattern], final_slots: Sequence[sr.SlotPattern],
+                 before_state: sr.State, truck_known: bool,
+                 skip: Collection[int] = ()) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Предложения менеджера по дням и частоте (§8) и подсказки: i-я строка before_state — клиент
+    cids[i], final — его шаблон «стало». skip — клиенты, у которых предложение другое (передача)."""
+    s = ctx.bundle.settings
+    before = ctx.before
+    workdays = set(s['workdays'])
     changes = []
     hints = []
     for i, c in enumerate(cids):
@@ -728,13 +841,15 @@ def _optimize_manager(ctx: _Ctx, agent_id: int,
         if status is None or not status.silent or (status.status == cst.NEVER and not spec.removed):
             for kind, text in fq.frequency_hints(ctx.lam[c], ctx.freq_before[c], s['freq_safety']):
                 hints.append({'customer_id': c, 'kind': kind, 'text': text})
+        if c in skip:
+            continue
         ctype = 'remove' if spec.removed else pt.change_type(spec.current, final[i])
         if ctype is None:
             continue
         f_cur, f_new = pt.pattern_freq(spec.current), pt.pattern_freq(final[i])
         # эффект — этого изменения, применённого к текущему плану: частота клиента меняется только у него
         f_total = max(0.0, ctx.freq_before[c] - f_cur + f_new)
-        effect = sr.change_effect(before_state, i, state.pattern[i], ctx.visit(c, f_total))
+        effect = sr.change_effect(before_state, i, final_slots[i], ctx.visit(c, f_total))
         change = {
             'customer_id': c, 'type': ctype,
             'from': {'freq': _num(f_cur), 'pattern': pt.pattern_json(spec.current),
@@ -744,27 +859,409 @@ def _optimize_manager(ctx: _Ctx, agent_id: int,
             'reason': _reason(spec, f_cur, f_new, ctx.lam[c], ctx.lam_season[c], workdays, status),
             'effect': {
                 'manager_km_week': round(effect['km'], 1),
-                'truck_km_week': round(effect['truck_km'], 1) if tkm is not None else None,
+                'truck_km_week': round(effect['truck_km'], 1) if truck_known else None,
                 'weak_days_week': round(effect['weak'], 2),
                 'minutes_week': int(round(effect['minutes'])),
             },
         }
         change['decision'] = ctx.book.change_status(agent_id, change)
         changes.append(change)
-    # по первому дню «стало»; «убрать из маршрута» (дней нет) — в конце
-    changes.sort(key=lambda ch: (ch['to']['pattern'][0] if ch['to']['pattern'] else [pt.CYCLE_WEEKS + 1, 0],
-                                 ch['customer_id']))
+    return changes, hints
 
-    code = _code(snap, agent_id)
-    logger.info('[Routes] Оптимизация %s: клиентов %d, C %.0f → %.0f драм/нед (старт %.0f), '
-                'ходов %d, возмущений %d, %.1f с%s', code, len(lines), before_state.total,
-                state.total, stats.cost_start, stats.accepted, stats.perturbations, stats.seconds,
-                ' — СТОП ПО ВРЕМЕНИ' if stats.time_capped else '')
-    outcome = ManagerOutcome(agent_id, code, cids, specs, final, before_state.total, state.total, stats)
-    part = {'changes': changes, 'hints': hints, 'time_capped': stats.time_capped,
-            'cost_before': before_state.total, 'cost_after': state.total, 'truck_cost': truck_cost,
-            'final': dict(zip(cids, final)), 'addresses': {c: info[c].address_id for c in cids}}
-    return outcome, part
+
+# --- Режим Б: передача магазинов между менеджерами (этап 4) ---
+
+TRANSFER_MAX_SECONDS = 60.0      # страховочный предел поиска передач: весь расчёт — не больше 2 мин
+TRANSFER_HOME_CANDIDATES = 3     # кандидаты передачи: + 3 менеджера, чей дом ближе всего к клиенту
+TRANSFER_NEIGHBORS = 10          # ближайшие клиенты в радиусе — партнёры обмена
+TRANSFER_GROUP_RADIUS = 3.0      # передача группой: клиенты того же менеджера в те же дни — в 3 радиусах
+MONTH_DAYS = 365.25 / 12
+TRANSFER_REASONS = {
+    'km': 'в этот район уже ездит {to} — меньше км',
+    'weak': 'у {to} в этот день не хватает заказов — день станет сильнее',
+    'overload': 'у {frm} перегружен день — станет короче',
+    None: 'отдельно почти ничего не меняет — выгода вместе с другими изменениями',
+    'owner': 'передача принята владельцем',
+}
+
+
+class _Grid:
+    """Точки по клеткам не меньше радиуса: соседи в радиусе (по прямой) — из 3 × 3 клеток."""
+
+    def __init__(self, items: Iterable[tuple[Any, Point]], radius_km: float):
+        self.radius = radius_km
+        self.dlat = radius_km / 111.0
+        self.dlon = radius_km / 80.0   # 1° долготы в Армении (широта 38,8–41,4) — больше 83 км
+        self.cells: dict[tuple[int, int], list[tuple[Any, Point]]] = defaultdict(list)
+        for key, p in items:
+            self.cells[self._cell(p)].append((key, p))
+
+    def _cell(self, p: Point) -> tuple[int, int]:
+        return math.floor(p[0] / self.dlat), math.floor(p[1] / self.dlon)
+
+    def near(self, p: Point) -> list[tuple[float, Any]]:
+        ci, cj = self._cell(p)
+        out = []
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                for key, q in self.cells.get((ci + di, cj + dj), ()):
+                    d = haversine_km(p, q)
+                    if d < self.radius:
+                        out.append((d, key))
+        return out
+
+
+class _Distances:
+    """Км и минуты между всеми точками клиентов расчёта режима Б (norms.km — по дорогам или по
+    прямой × извилистость, как _matrices) — один раз; матрицы менеджеров (вершина 0 — дом) собираются
+    из них построчно. Строки — array('d'): у менеджера до тысячи гостей, и списки чисел заняли бы
+    в несколько раз больше памяти."""
+
+    def __init__(self, points: Iterable[Point], norms: ev.Norms):
+        self.norms = norms
+        pts = sorted(set(points))
+        self.index = {p: i for i, p in enumerate(pts)}
+        n = len(pts)
+        self.city = [in_city(p, norms.city_center, norms.city_radius_km) for p in pts]
+        zero = bytes(8 * n)
+        self.km = [array('d', zero) for _ in range(n)]
+        self.mins = [array('d', zero) for _ in range(n)]
+        for a in range(n):
+            pa, ka, ma, ca = pts[a], self.km[a], self.mins[a], self.city[a]
+            for b in range(a + 1, n):
+                d = norms.km(pa, pts[b])
+                m = d / (norms.speed_city_kmh if ca and self.city[b] else norms.speed_region_kmh) * 60.0
+                ka[b] = self.km[b][a] = d
+                ma[b] = self.mins[b][a] = m
+
+    def matrices(self, home: Point | None, points: Sequence[Point],
+                 depot: Point | None) -> tuple[sr.Matrix, sr.Matrix, sr.Matrix | None]:
+        """То же, что _matrices(home, points, depot, norms), из готовых расстояний."""
+        norms = self.norms
+        gi = [self.index[p] for p in points]
+        if home is not None:
+            hk = [norms.km(home, p) for p in points]
+            home_city = in_city(home, norms.city_center, norms.city_radius_km)
+            hm = [d / (norms.speed_city_kmh if home_city and self.city[g] else norms.speed_region_kmh) * 60.0
+                  for d, g in zip(hk, gi)]
+        else:   # без дома — нули: открытый путь, как на этапе 1
+            hk = hm = [0.0] * len(gi)
+        km = [array('d', [0.0, *hk])]
+        mins = [array('d', [0.0, *hm])]
+        if len(gi) == 1:
+            def get(row: array) -> tuple[float, ...]:
+                return (row[gi[0]],)
+        elif gi:
+            get = itemgetter(*gi)
+        for r, g in enumerate(gi):
+            km.append(array('d', (hk[r], *get(self.km[g]))))
+            mins.append(array('d', (hm[r], *get(self.mins[g]))))
+        tkm = None
+        if depot is not None:
+            dk = [norms.km(depot, p) for p in points]
+            tkm = [array('d', [0.0, *dk])]
+            for r in range(len(gi)):
+                row = array('d', km[r + 1])
+                row[0] = dk[r]
+                tkm.append(row)
+        return km, mins, tkm
+
+
+def revenue_month(model: ev.CustomerModel) -> float:
+    """Выручка клиента в среднем за месяц — по истории заказов за 12 месяцев (с первого заказа, если
+    он был позже), как λ: экспозиция — не меньше 3 недель. У затихших — сколько брали, пока покупали."""
+    dem = model.year_hist
+    if not dem.values:
+        return 0.0
+    return sum(v[0] for v in dem.values) / max(dem.exposure_days, dm.MIN_EXPOSURE_DAYS) * MONTH_DAYS
+
+
+def _transfer_effect_json(e: Mapping[str, float], trucks: bool) -> dict[str, Any]:
+    # + 0.0: «−0.0» после округления — просто 0
+    return {'manager_km_week': round(e['km'], 1) + 0.0,
+            'truck_km_week': round(e['truck_km'], 1) + 0.0 if trucks else None,
+            'weak_days_week': round(e['weak'], 2) + 0.0, 'minutes_week': int(round(e['minutes']))}
+
+
+def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int],
+                  evals: Mapping[int, ev.ManagerEval], outcomes_a: Sequence[ManagerOutcome],
+                  parts_a: Mapping[int, Mapping[str, Any]], started: float) -> RunOutcome:
+    """Режим Б (план этапа 4, §3–§5): старт — результат режима А; клиентов можно передавать
+    менеджерам-кандидатам (у кандидата в каком-то дне есть клиент ближе transfer_radius_km или его дом
+    среди 3 ближайших), не передаются закреплённые, убираемые из маршрута и клиенты нескольких
+    менеджеров; отклонённая передача (клиент → менеджер) запрещена, принятая — закреплена. «Было →
+    стало» — полным оценщиком, как в режиме А; эффект передачи — к текущему плану, по обоим менеджерам."""
+    snap, bundle, before, book = ctx.snap, ctx.bundle, ctx.before, ctx.book
+    s = bundle.settings
+    norms = before.norms
+    run_set = set(run_ids)
+    radius = float(s['transfer_radius_km'])
+    t0 = ctx.clock()
+
+    # точка клиента у менеджера — координата адреса шаблона ERP (как в режиме А)
+    point: dict[tuple[int, int], Point | None] = {}
+    for a in run_ids:
+        for c, info in ctx.pairs.get(a, {}).items():
+            key = (c, info.address_id)
+            point[(a, c)] = (before.coords.get(key) or ev.visit_coord(snap, *key)).point
+    owners = Counter(c for a in before.included_ids for c in ctx.pairs.get(a, {}))
+
+    def eligible(a: int, c: int) -> bool:
+        spec = ctx.specs[(a, c)]
+        return owners[c] == 1 and point[(a, c)] is not None and not spec.removed
+
+    # принятые передачи: клиент закреплён у нового менеджера в принятых днях
+    fixed: dict[int, tuple[int, int, pt.Pattern]] = {}
+    for (a, c), (b, p) in sorted(book.accepted_transfer.items()):
+        if a in run_set and b in run_set and b != a and (a, c) in point and eligible(a, c):
+            fixed[c] = (a, b, p)
+    movable = [(a, c) for a in run_ids for c in sorted(ctx.pairs.get(a, {}))
+               if c not in fixed and eligible(a, c) and not ctx.specs[(a, c)].locked]
+
+    # кандидаты: менеджеры с клиентом в радиусе + 3 ближайших по дому, без отклонённых владельцем
+    grid = _Grid(((a, p) for (a, _), p in sorted(point.items()) if p is not None), radius)
+    homes = {a: evals[a].home for a in run_ids if evals[a].home is not None}
+    cand: dict[int, list[int]] = {}
+    near_of: dict[int, frozenset[int]] = {}   # кандидаты по соседям — для передачи группой
+    for a, c in movable:
+        p = point[(a, c)]
+        rejected = book.rejected_transfer.get((a, c), frozenset())
+        near = {b for _, b in grid.near(p) if b != a} - rejected
+        by_home = sorted((haversine_km(p, h), b) for b, h in homes.items() if b != a)
+        mgrs = (near | {b for _, b in by_home[:TRANSFER_HOME_CANDIDATES]}) - rejected
+        if mgrs:
+            cand[c] = sorted(mgrs)
+            near_of[c] = frozenset(near)
+    origin = {c: a for a, c in movable if c in cand}
+    origin.update({c: v[0] for c, v in fixed.items()})
+    guests: dict[int, set[int]] = defaultdict(set)
+    for c, mgrs in cand.items():
+        for b in mgrs:
+            guests[b].add(c)
+    for c, (_, b, _) in fixed.items():
+        guests[b].add(c)
+    client_grid = _Grid(((c, point[(origin[c], c)]) for c in sorted(cand)), radius)
+    neighbors = {c: [x for _, x in sorted(client_grid.near(point[(origin[c], c)])) if x != c][:TRANSFER_NEIGHBORS]
+                 for c in sorted(cand)}
+    group_grid = _Grid(((c, point[(origin[c], c)]) for c in sorted(cand)), radius * TRANSFER_GROUP_RADIUS)
+    around = {c: [x for _, x in sorted(group_grid.near(point[(origin[c], c)])) if x != c] for c in sorted(cand)}
+
+    # задачи менеджеров: свои клиенты (как в режиме А) + гости — пока без визитов
+    fresh = ctx.params['start'] == 'fresh'
+    change_penalty = 0.0 if fresh else float(s['penalty_change'])
+    workdays = set(s['workdays'])
+    dist = _Distances((p for p in point.values() if p is not None), norms)
+    final_a = {o.agent_id: dict(zip(o.customers, o.final)) for o in outcomes_a}
+    own_of: dict[int, list[int]] = {}
+    index_of: dict[int, dict[int, int]] = {}
+    weights_of: dict[int, sr.Weights] = {}
+    has_tkm: dict[int, bool] = {}
+    truck_costs: dict[int, bool] = {}
+    before_states: dict[int, sr.State] = {}
+    states: dict[int, sr.State] = {}
+    for a in run_ids:
+        me = evals[a]
+        own = sorted(ctx.pairs.get(a, {}))
+        gs = sorted(guests.get(a, ()))
+        cids = own + gs
+        specs = [ctx.specs[(a, c)] for c in own] + [ctx.specs[(origin[c], c)] for c in gs]
+        pts = [point[(a, c)] for c in own] + [point[(origin[c], c)] for c in gs]
+        located = [i for i, p in enumerate(pts) if p is not None]
+        node_of = {i: n + 1 for n, i in enumerate(located)}
+        depot = bundle.depot if me.truck is not None else None
+        km, mins, tkm = dist.matrices(me.home, [pts[i] for i in located], depot)
+        weights, truck_cost = _weights(ctx, a, me, tkm is not None)
+        base_slots = {sr.slot_of_day(w, d) for spec in specs[:len(own)] for w, d in spec.current
+                      if d in workdays}
+        lines = []
+        for i, (c, spec) in enumerate(zip(cids, specs)):
+            guest = i >= len(own)
+            if guest and c in fixed:   # принятая передача: у нового менеджера — принятые дни
+                allowed, locked = (_slots(fixed[c][2]),), True
+            else:
+                allowed, locked = tuple(_slots(x) for x in spec.allowed), spec.locked
+            lines.append(sr.Line(
+                customer_id=c, node=node_of.get(i, 0), minutes=before.visit_minutes[before.models[c].size],
+                current=() if guest else _slots(spec.current), allowed=allowed, locked=locked,
+                u=sr.make_u(random.Random(zlib.crc32(f'{a}|{c}|truck'.encode('utf-8'))))))
+        prob = sr.Problem(
+            agent_id=a, lines=lines, km=km, mins=mins, tkm=tkm, weights=weights,
+            workday=tuple(sr.day_of_slot(j)[1] in workdays for j in range(sr.SLOTS)),
+            base=tuple(j in base_slots for j in range(sr.SLOTS)),
+            neighbors=sr.nearest_lines([line.node for line in lines], km),
+            seed=zlib.crc32(str(a).encode('utf-8')))
+        before_states[a] = sr.State(prob, [line.current for line in lines],
+                                    [ctx.visit(c, ctx.freq_before[c]) for c in cids],
+                                    change_penalty=0.0, trucks=True)
+        start = [() if c in fixed else _slots(final_a[a][c]) for c in own]
+        start += [_slots(fixed[c][2]) if c in fixed else () for c in gs]
+        # частота клиента одна у любого менеджера; у принятой передачи — по принятым дням
+        target = [ctx.visit(c, pt.pattern_freq(fixed[c][2]) if c in fixed else ctx.freq_after[c])
+                  for c in cids]
+        states[a] = sr.State(prob, start, target, change_penalty=change_penalty, trucks=truck_cost)
+        states[a].adopt_tours(parts_a[a]['state'])   # своя нумерация та же: старт = итог режима А
+        own_of[a] = own
+        index_of[a] = {c: i for i, c in enumerate(cids)}
+        weights_of[a], has_tkm[a], truck_costs[a] = weights, tkm is not None, truck_cost
+
+    clients = []
+    for c in sorted(origin):
+        a = origin[c]
+        if c in fixed:
+            mgrs, fx = [fixed[c][1]], fixed[c][1]
+        else:
+            mgrs, fx = cand[c], None
+        clients.append(tr.Client(c, a, {m: index_of[m][c] for m in (a, *mgrs)}, fx, near_of.get(c, frozenset())))
+    market = tr.Market(states, clients, neighbors, float(s['penalty_transfer']), around)
+    budget = min(float(s['optimizer_seconds_per_manager']) * len(run_ids), TRANSFER_MAX_SECONDS)
+    seed = zlib.crc32(('transfer|' + ','.join(map(str, run_ids))).encode('utf-8'))
+    setup_seconds = ctx.clock() - t0
+    tstats = tr.search(market, seconds=budget, seed=seed, clock=ctx.clock)
+
+    # итог по менеджерам: свои клиенты — предложения по дням; переданные — предложение «передать»
+    finals = {a: {c: _pairs_of(states[a].pattern[i]) for c, i in index_of[a].items() if states[a].pattern[i]}
+              for a in run_ids}
+    balance = {a: {'given': [0, 0.0, 0.0], 'received': [0, 0.0, 0.0]} for a in run_ids}
+    outcomes: list[ManagerOutcome] = []
+    parts: dict[int, dict[str, Any]] = {}
+    by_agent_a = {o.agent_id: o for o in outcomes_a}
+    for a in run_ids:
+        own = own_of[a]
+        specs = [ctx.specs[(a, c)] for c in own]
+        moved = {c: market.owner[c] for c in own if market.owner.get(c, a) != a}
+        final = [finals[moved.get(c, a)].get(c, ()) for c in own]
+        changes, hints = _day_changes(ctx, a, own, specs, final, states[a].pattern[:len(own)],
+                                      before_states[a], has_tkm[a], skip=moved)
+        for c, b in sorted(moved.items()):
+            change = _transfer_change(ctx, c, a, b, before_states, states, index_of, weights_of,
+                                      has_tkm, fixed)
+            changes.append(change)
+            for side, agent in (('given', a), ('received', b)):
+                row = balance[agent][side]
+                row[0] += 1
+                row[1] += change['_revenue']
+                row[2] += change['_debt']
+            del change['_revenue'], change['_debt']
+        _sort_changes(changes)
+        o = by_agent_a[a]
+        outcomes.append(ManagerOutcome(a, o.code, own, specs, final, before_states[a].total, states[a].total,
+                                       o.stats, moved_to=moved))
+        parts[a] = {'changes': changes, 'hints': hints,
+                    'time_capped': parts_a[a]['time_capped'] or tstats.time_capped,
+                    'cost_before': before_states[a].total, 'cost_after': states[a].total,
+                    'truck_cost': truck_costs[a]}
+
+    # «Стало»: у каждого менеджера — кто у него сейчас (адрес — из шаблона ERP прежнего менеджера)
+    address = {(a, c): info.address_id for a in run_ids for c, info in ctx.pairs.get(a, {}).items()}
+    for c, a in origin.items():
+        for b in run_ids:
+            address.setdefault((b, c), address[(a, c)])
+    base_days = {a: {(w, d) for c in own_of[a] for w, d in ctx.specs[(a, c)].current if d in workdays}
+                 for a in run_ids}
+    after_plan = _after_plan_moved(snap.plan, finals, address, base_days)
+    after_snap = replace(snap, plan=after_plan)
+    included = before.included_ids
+    f_after_inc = after_plan.visits_per_week_among(included)
+    after_models = {c: replace(m, visits_per_week=f_after_inc.get(c, 0.0)) for c, m in before.models.items()}
+    after = ev.evaluate_plan(after_snap, bundle, calib, run_ids, visit_minutes=before.visit_minutes,
+                             models=after_models, roads=norms.roads)
+    result = _result(ctx, run_ids, parts, after_snap, after, f_after_inc)
+    result['params']['mode'] = MODE_TRANSFER
+
+    def side(v: list) -> dict[str, Any]:
+        return {'stores': v[0], 'revenue_month': _i(v[1]), 'debt': _i(v[2])}
+
+    for m in result['managers']:
+        m['balance'] = {k: side(v) for k, v in balance[m['agent_id']].items()}
+    given = [balance[a]['given'] for a in run_ids]
+    result['transfers'] = {
+        'count': sum(v[0] for v in given), 'accepted_fixed': len(fixed),
+        'revenue_month': _i(sum(v[1] for v in given)), 'debt': _i(sum(v[2] for v in given)),
+        'candidates': len(clients), 'radius_km': radius, 'penalty_week': _num(float(s['penalty_transfer'])),
+        'cost_days_only': _i(tstats.cost_start), 'cost': _i(tstats.cost_end),
+        'time_capped': tstats.time_capped, 'seconds': round(tstats.seconds + setup_seconds, 1),
+    }
+    result['seconds'] = round(ctx.clock() - started, 1)
+    logger.info('[Routes] Передачи: кандидатов %d, передач %d, C %.0f → %.0f драм/нед, подготовка %.1f с, '
+                'поиск %.1f с (ходов %d, внутри менеджеров %d, возмущений %d)%s', len(clients),
+                result['transfers']['count'], tstats.cost_start, tstats.cost_end, setup_seconds,
+                tstats.seconds, tstats.accepted, tstats.intra_accepted, tstats.perturbations,
+                ' — СТОП ПО ВРЕМЕНИ' if tstats.time_capped else '')
+    return RunOutcome(result, outcomes, before, after, transfer=tstats)
+
+
+def _transfer_change(ctx: _Ctx, c: int, a: int, b: int, before_states: Mapping[int, sr.State],
+                     states: Mapping[int, sr.State], index_of: Mapping[int, Mapping[int, int]],
+                     weights_of: Mapping[int, sr.Weights], has_tkm: Mapping[int, bool],
+                     fixed: Mapping[int, Any]) -> dict[str, Any]:
+    """Предложение «передать клиента c от a к b» (план §5): эффект — этой передачи к текущему плану по
+    обоим менеджерам (Δ км, слабых дней, минут), выручка в месяц и долг, которые переходят, причина
+    простыми словами по главному эффекту. _revenue и _debt — неокруглённые, для баланса."""
+    snap, s = ctx.snap, ctx.bundle.settings
+    spec = ctx.specs[(a, c)]
+    new_slots = states[b].pattern[index_of[b][c]]
+    new = _pairs_of(new_slots)
+    f_cur, f_new = pt.pattern_freq(spec.current), pt.pattern_freq(new)
+    params = ctx.visit(c, max(0.0, ctx.freq_before[c] - f_cur + f_new))
+    give = tr.side_effect(before_states[a], index_of[a][c], (), params)
+    take = tr.side_effect(before_states[b], index_of[b][c], new_slots, params)
+    total = {k: give[k] + take[k] for k in give}
+    trucks = has_tkm[a] or has_tkm[b]
+    kind = 'owner' if c in fixed else tr.main_effect(
+        give, take, weights_of[a].manager_per_km, weights_of[b].manager_per_km,
+        float(s['penalty_weak_day']), float(s['penalty_overtime_per_min']))
+
+    def name(agent_id: int) -> str:
+        agent = snap.agents.get(agent_id)
+        return agent.name if agent and agent.name else _code(snap, agent_id)
+
+    reason = TRANSFER_REASONS[kind].format(frm=name(a), to=name(b))
+    freq_reason = _reason(spec, f_cur, f_new, ctx.lam[c], ctx.lam_season[c], set(s['workdays']),
+                          ctx.before.models[c].status) if not spec.locked else None
+    revenue = revenue_month(ctx.before.models[c])
+    debt = snap.debts.get(c, 0.0)
+    change = {
+        'customer_id': c, 'type': 'transfer', 'from_agent': a, 'to_agent': b,
+        'from': {'freq': _num(f_cur), 'pattern': pt.pattern_json(spec.current), 'text': pt.pattern_text(spec.current)},
+        'to': {'freq': _num(f_new), 'pattern': pt.pattern_json(new), 'text': pt.pattern_text(new)},
+        'reason': f'{reason}; {freq_reason}' if freq_reason and kind != 'owner' else reason,
+        'reason_kind': kind,
+        'revenue_month': _i(revenue), 'debt': _i(debt),
+        'effect': _transfer_effect_json(total, trucks),
+        'effect_from': _transfer_effect_json(give, trucks),
+        'effect_to': _transfer_effect_json(take, trucks),
+        '_revenue': revenue, '_debt': debt,
+    }
+    change['decision'] = ctx.book.change_status(a, change)
+    return change
+
+
+def _after_plan_moved(plan: CurrentPlan, finals: Mapping[int, Mapping[int, pt.Pattern]],
+                      address: Mapping[tuple[int, int], int],
+                      base_days: Mapping[int, Collection[pt.Slot]]) -> CurrentPlan:
+    """Предложенный план режима Б (цикл 2 недели): у менеджеров расчёта — те, кто у них «стало»
+    (переданные — с адресом из шаблона прежнего менеджера), плюс пустые рабочие дни, в которые менеджер
+    работает сейчас (такой день — слабый); остальные менеджеры — текущий план в обе недели."""
+    days: list[PlanDay] = []
+    for d in plan.days:
+        if d.agent_id in finals:
+            continue
+        weeks = (1, 2) if plan.cycle_weeks == 1 else (d.week,)
+        days.extend(PlanDay(d.agent_id, w, d.weekday, d.visits) for w in weeks)
+    for agent_id, final in finals.items():
+        by_slot: dict[pt.Slot, list[int]] = defaultdict(list)
+        for c, p in final.items():
+            for slot in p:
+                by_slot[slot].append(c)
+        for slot in base_days.get(agent_id, ()):
+            by_slot.setdefault(slot, [])
+        for (w, d), cs in by_slot.items():
+            days.append(PlanDay(agent_id, w, d, tuple(PlanVisit(c, address[(agent_id, c)], n)
+                                                      for n, c in enumerate(sorted(cs)))))
+    days.sort(key=lambda x: (x.agent_id, x.week, x.weekday))
+    counts = Counter(v.customer_id for d in days for v in d.visits)
+    return CurrentPlan(pt.CYCLE_WEEKS, tuple(days),
+                       {c: n / pt.CYCLE_WEEKS for c, n in counts.items()}, False)
 
 
 def _fuel_price(ctx: _Ctx, fuel: str) -> float:
@@ -963,14 +1460,29 @@ Proposal = tuple[pt.Pattern, pt.Pattern]   # («было», «стало») пр
 
 
 def proposals_of(result: Mapping[str, Any] | None) -> dict[tuple[int, int], Proposal]:
-    """(менеджер, клиент) → предложение последнего расчёта: шаблоны «было» и «стало»."""
+    """(менеджер, клиент) → предложение последнего расчёта: шаблоны «было» и «стало» (без передач)."""
     out: dict[tuple[int, int], Proposal] = {}
     for m in (result or {}).get('managers', []):
         for ch in m.get('changes', []):
+            if ch.get('type') == 'transfer':   # дни у другого менеджера — не шаблон этого
+                continue
             frm = pt.parse_pattern(ch.get('from', {}).get('pattern'))
             to = pt.parse_pattern(ch.get('to', {}).get('pattern'))
             if frm is not None and to is not None:
                 out[(m['agent_id'], ch['customer_id'])] = (frm, to)
+    return out
+
+
+def export_transfers(snap: Snapshot, bundle: Bundle, book: DecisionBook,
+                     pairs: Mapping[int, Mapping[int, PairInfo]]) -> dict[tuple[int, int], tuple[int, pt.Pattern]]:
+    """Принятые передачи, которые входят в план для ERP: (от кого, клиент) → (кому, дни). Оба
+    менеджера в расчёте, у получателя клиента ещё нет, «убрать из маршрута» не принято (иначе клиент
+    убирается, а не передаётся)."""
+    out = {}
+    for (a, c), (b, p) in sorted(book.accepted_transfer.items()):
+        if (bundle.included(a, snap.active_agents) and bundle.included(b, snap.active_agents)
+                and c in pairs.get(a, {}) and c not in pairs.get(b, {}) and (a, c) not in book.accepted_remove):
+            out[(a, c)] = (b, p)
     return out
 
 
@@ -981,8 +1493,10 @@ def export_patterns(snap: Snapshot, bundle: Bundle, book: DecisionBook,
     Принято «убрать из маршрута» — шаблон пустой (в плане клиента нет); принятый шаблон — как есть;
     принята только частота — шаблон из предложения последнего расчёта, если оно сделано от того же
     «было», этой частоты и допустимо, иначе из текущих дней (наибольшее совпадение, затем меньшая
-    загрузка дня)."""
+    загрузка дня). Принята передача (export_transfers) — клиента у прежнего менеджера нет, у нового —
+    принятые дни (решения прежнего менеджера по дням и частоте этого клиента не действуют)."""
     workdays = bundle.settings['workdays']
+    moved = export_transfers(snap, bundle, book, pairs)
     out: dict[int, dict[int, pt.Pattern]] = {}
     for a in _agent_order(snap):
         if not bundle.included(a, snap.active_agents):
@@ -993,6 +1507,8 @@ def export_patterns(snap: Snapshot, bundle: Bundle, book: DecisionBook,
         pending = []
         for c in sorted(info):
             key, cur = (a, c), info[c].pattern
+            if key in moved:
+                continue
             lock = book.accepted_pattern.get(key)
             freq = book.accepted_freq.get(key)
             if key in book.accepted_remove:
@@ -1016,6 +1532,8 @@ def export_patterns(snap: Snapshot, bundle: Bundle, book: DecisionBook,
                 new[c] = min(cands, key=lambda p: (-len(set(cur) & set(p)), sum(load[x] for x in p), p))
             load.update(new[c])
         out[a] = new
+    for (_, c), (b, p) in moved.items():
+        out[b][c] = p
     return out
 
 
@@ -1024,12 +1542,14 @@ def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
                 distance: Distance | None = None) -> dict[str, Any]:
     """Текущий план + только принятые изменения (export_patterns), по каждому менеджеру в расчёте,
     цикл 2 недели. Принято «убрать из маршрута» — клиента нет в строках плана, в изменениях —
-    type 'remove'. Устаревшие решения (приняты на другом плане клиента) не применяются —
-    они в stale_decisions. Порядок внутри дня — NN + 2-opt от дома (этап 1); distance — функция
-    расстояния оценки (Norms.distance, None — по прямой)."""
+    type 'remove'; принята передача — клиент в строках нового менеджера (отметка «передать», адрес —
+    из шаблона прежнего), в изменениях — type 'transfer' строкой прежнего менеджера. Устаревшие решения
+    (приняты на другом плане клиента) не применяются — они в stale_decisions. Порядок внутри дня —
+    NN + 2-opt от дома (этап 1); distance — функция расстояния оценки (Norms.distance, None — по прямой)."""
     pairs = plan_pairs(snap.plan)
     book = DecisionBook.from_rows(decisions, pairs)
     planned = export_patterns(snap, bundle, book, pairs, proposals or {})
+    moved_in = {(b, c): a for (a, c), (b, _) in export_transfers(snap, bundle, book, pairs).items()}
     coords: dict[tuple[int, int], Coord] = {}
 
     def coord(c: int, addr: int) -> Coord:
@@ -1040,8 +1560,10 @@ def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
     rows: list[dict[str, Any]] = []
     changes: list[dict[str, Any]] = []
     managers: list[dict[str, Any]] = []
+    n_changes: Counter = Counter()
     for a, new in planned.items():
-        info = pairs.get(a, {})
+        # переданные этому менеджеру — с адресом и «было» из шаблона прежнего менеджера
+        info = {**pairs.get(a, {}), **{c: pairs[frm][c] for (b, c), frm in moved_in.items() if b == a}}
         agent = snap.agents.get(a)
         code, name = _code(snap, a), agent.name if agent else ''
         home, _ = ev.manager_home(snap, bundle, a)
@@ -1061,24 +1583,42 @@ def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
                              'no': no, 'customer_id': c, 'customer_code': cust.code if cust else '',
                              'customer_name': cust.name if cust else '',
                              'address_id': info[c].address_id or None,
-                             'mark': MARKS.get(pt.change_type(info[c].pattern, new[c]) or '', '')})
-        n_changes = 0
+                             'mark': MARKS['transfer'] if (a, c) in moved_in
+                             else MARKS.get(pt.change_type(info[c].pattern, new[c]) or '', '')})
         for c in sorted(new):
             removed = not new[c]   # принято «убрать из маршрута»: в строках плана клиента нет
-            ctype = 'remove' if removed else pt.change_type(info[c].pattern, new[c])
+            frm = moved_in.get((a, c))
+            if frm is not None:
+                ctype = 'transfer'
+            else:
+                ctype = 'remove' if removed else pt.change_type(info[c].pattern, new[c])
             if ctype is None:
                 continue
-            n_changes += 1
             cust = snap.customers.get(c)
             cur = info[c].pattern
-            changes.append({'agent_id': a, 'agent_code': code, 'agent_name': name, 'customer_id': c,
-                            'customer_code': cust.code if cust else '',
-                            'customer_name': cust.name if cust else '', 'type': ctype,
-                            'from': {'freq': _num(pt.pattern_freq(cur)), 'pattern': pt.pattern_json(cur),
-                                     'text': pt.pattern_text(cur)},
-                            'to': {'freq': _num(pt.pattern_freq(new[c])), 'pattern': pt.pattern_json(new[c]),
-                                   'text': cst.REMOVE_TEXT if removed else pt.pattern_text(new[c])}})
-        managers.append({'agent_id': a, 'code': code, 'name': name, 'changes': n_changes})
+            row = {'agent_id': a, 'agent_code': code, 'agent_name': name, 'customer_id': c,
+                   'customer_code': cust.code if cust else '',
+                   'customer_name': cust.name if cust else '', 'type': ctype,
+                   'from': {'freq': _num(pt.pattern_freq(cur)), 'pattern': pt.pattern_json(cur),
+                            'text': pt.pattern_text(cur)},
+                   'to': {'freq': _num(pt.pattern_freq(new[c])), 'pattern': pt.pattern_json(new[c]),
+                          'text': cst.REMOVE_TEXT if removed else pt.pattern_text(new[c])}}
+            if frm is not None:   # передача — строкой прежнего менеджера: «передать: от → кому»
+                frm_agent = snap.agents.get(frm)
+                row.update({'agent_id': frm, 'agent_code': _code(snap, frm),
+                            'agent_name': frm_agent.name if frm_agent else '',
+                            'from_agent': frm, 'to_agent': a, 'from_agent_code': _code(snap, frm),
+                            'to_agent_code': code})
+                row['from']['text'] = f"{_code(snap, frm)}: {row['from']['text']}"
+                row['to']['text'] = f"{code}: {row['to']['text']}"
+            n_changes[row['agent_id']] += 1
+            changes.append(row)
+        managers.append({'agent_id': a, 'code': code, 'name': name})
+    for m in managers:
+        m['changes'] = n_changes[m['agent_id']]
+    if moved_in:   # строка передачи — у прежнего менеджера: изменения снова по менеджерам
+        order = {m['agent_id']: i for i, m in enumerate(managers)}
+        changes.sort(key=lambda x: order.get(x['agent_id'], len(order)))
     return {'cycle_weeks': pt.CYCLE_WEEKS, 'data_as_of': snap.data_as_of.isoformat(timespec='seconds'),
             'managers': managers, 'rows': rows, 'changes': changes,
             'stale_decisions': stale_json(snap, bundle, book, pairs)}
@@ -1095,7 +1635,7 @@ def decisions_view(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision]
     items.sort(key=lambda x: (x['agent_code'], x['customer_name'], x['customer_id'], x['kind']))
     planned = export_patterns(snap, bundle, book, pairs, proposals or {})
     export_changes = sum(1 for a, new in planned.items() for c, p in new.items()
-                         if p != pairs[a][c].pattern)
+                         if c not in pairs[a] or p != pairs[a][c].pattern)   # нет в плане — передан ему
     return {
         'data_as_of': snap.data_as_of.isoformat(timespec='seconds'),
         'summary': {

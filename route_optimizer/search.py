@@ -525,6 +525,23 @@ class State:
         delta += self.change_penalty * ((moved_a - self.moved[a]) + (moved_b - self.moved[b]))
         return delta, (((a, pb, a_slot_of, moved_a), (b, pa, b_slot_of, moved_b)), tuple(plans))
 
+    def eval_exchange(self, out_i: int, in_i: int) -> tuple[float, tuple]:
+        """Δ C, если клиент in_i (сейчас без визитов у этого менеджера) занимает ровно дни клиента
+        out_i, а out_i остаётся без визитов (этап 4, обмен клиентами между менеджерами). На каждом
+        дне один визит уходит и один приходит; k-й визит in_i — на дне k-го визита out_i."""
+        slots = list(self.slot_of[out_i])
+        delta = 0.0
+        plans = []
+        for k, j in enumerate(slots):
+            d, plan = self._eval_day(j, out_i, k, in_i, k)
+            delta += d
+            plans.append(plan)
+        new = self.pattern[out_i]
+        moved_out = is_moved(self.lines[out_i].current, ())
+        moved_in = is_moved(self.lines[in_i].current, new)
+        delta += self.change_penalty * ((moved_out - self.moved[out_i]) + (moved_in - self.moved[in_i]))
+        return delta, (((out_i, (), [], moved_out), (in_i, new, slots, moved_in)), tuple(plans))
+
     def apply(self, move: tuple) -> None:
         updates, plans = move
         for plan in plans:
@@ -534,6 +551,26 @@ class State:
             self.slot_of[i] = list(slot_of)
             self.n_moved += int(moved) - int(self.moved[i])
             self.moved[i] = moved
+        self.total = self._total()
+
+    def adopt_tours(self, other: State) -> None:
+        """Туры дней с тем же составом — из другого состояния с той же нумерацией строк и вершин
+        (режим Б начинается с туров итога режима А: старт стоит ровно столько же, сколько итог А).
+        У строк с тем же шаблоном берётся и порядок визитов (k → день): от него флаги «заказал»
+        грузовика; дни с другим составом строятся заново."""
+        same = [i < len(other.lines) and self.pattern[i] == other.pattern[i]
+                and self.params[i] == other.params[i] for i in range(len(self.lines))]
+        for i, ok in enumerate(same):
+            if ok:
+                self.slot_of[i] = list(other.slot_of[i])
+        for j in range(SLOTS):
+            if (self.members[j] == other.members[j] and self.trucks == other.trucks
+                    and all(same[i] for i in self.members[j])):
+                self.tour[j] = list(other.tour[j])
+                self.ttour[j] = [list(t) for t in other.ttour[j]]
+            else:
+                self._rebuild_tours(j)
+            self._set_exact(j)
         self.total = self._total()
 
     # -- доводка, проверка, снимки --

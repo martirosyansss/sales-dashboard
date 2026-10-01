@@ -1,5 +1,7 @@
 /* «Маршруты · оптимизация» /routes/optimize — этап 3, режим А: магазины остаются у своих менеджеров,
-   программа предлагает дни визитов и частоту. Интерфейс «для чайников» (docs/plans/ux-simple-plan.md):
+   программа предлагает дни визитов и частоту; этап 4, режим Б (params.mode = 'transfer', «Дополнительно»):
+   ещё и передать магазин другому менеджеру — группа «Передать другому менеджеру» (по одному, с
+   подтверждением), баланс «отдаёт / получает» в карточке, стрелки передач на карте (docs/plans/stage-4-plan.md). Интерфейс «для чайников» (docs/plans/ux-simple-plan.md):
    шаг 1 — посчитать; шаг 2 — главное человеческим языком, три показателя, карточки менеджеров,
    предложения менеджера группами по смыслу, карта (свёрнута); шаг 3 — принять и выгрузить Excel.
    Контракт — docs/plans/stage-3-plan.md §10 и §10.1 (не меняется):
@@ -31,9 +33,10 @@
                         '#0d9298', '#b8b90c', '#ae55c1', '#37981b', '#fe80c0', '#d64651'];
     const MGR_OTHER = '#8b93a7';
     // Вид изменения — для листа «Изменения» в Excel (как было)
-    const TYPE_TEXT = { move: 'перенос', frequency: 'частота', both: 'перенос и частота', remove: 'убрать' };
-    // Какие решения отправляет изменение: у «both» — два, шаблон дней и частота; «убрать из маршрута» — remove
-    const KINDS = { move: ['pattern'], frequency: ['freq'], both: ['pattern', 'freq'], remove: ['remove'] };
+    const TYPE_TEXT = { move: 'перенос', frequency: 'частота', both: 'перенос и частота', remove: 'убрать', transfer: 'передать' };
+    // Какие решения отправляет изменение: у «both» — два, шаблон дней и частота; «убрать из маршрута» — remove;
+    // «передать другому менеджеру» (этап 4) — transfer: кому и в какие дни
+    const KINDS = { move: ['pattern'], frequency: ['freq'], both: ['pattern', 'freq'], remove: ['remove'], transfer: ['transfer'] };
     const ACTION_STATUS = { accept: 'accepted', reject: 'rejected', reset: null };
     // Состояние строки предложения — подпись и значок (без решения — только кнопки)
     const ROW_STATUS = {
@@ -46,14 +49,23 @@
         accepted: { cls: 'is-bad', icon: 'fa-user-minus', text: 'Будет убран из маршрута' },
         rejected: { cls: 'is-ok', icon: 'fa-user-check', text: 'Остаётся в маршруте' },
     };
+    // «Передать другому менеджеру»: принять — передать, отклонить — оставить у своего
+    const TRANSFER_ROW_STATUS = {
+        accepted: { cls: 'is-ok', icon: 'fa-people-arrows', text: 'Будет передан' },
+        rejected: { cls: 'is-off', icon: 'fa-minus', text: 'Остаётся у своего менеджера' },
+    };
     const DECISION_WORD = { none: 'пока не решено', accepted: 'принято', rejected: 'оставлено как есть', mixed: 'принято частично' };
     const REMOVE_WORD = { none: 'пока не решено', accepted: 'убрать из маршрута', rejected: 'оставить в маршруте', mixed: 'пока не решено' };
+    const TRANSFER_WORD = { none: 'пока не решено', accepted: 'передать', rejected: 'оставить у своего менеджера', mixed: 'пока не решено' };
     // Затих, потерян, ни одного заказа за год (§15)
     const SILENT = new Set(['dormant', 'lost', 'never']);
-    // Группы предложений по смыслу (бриф): порядок, значок, короткая подпись переключателя
-    const GROUP_ORDER = ['freq', 'move', 'offday', 'winback', 'remove', 'other'];
-    const GROUP_ICON = { freq: 'fa-calendar-minus', move: 'fa-shuffle', offday: 'fa-calendar-xmark', winback: 'fa-hand-holding-heart',
-                         remove: 'fa-user-minus', other: 'fa-pen', hints: 'fa-lightbulb' };
+    // Группы предложений по смыслу (бриф): порядок, значок, короткая подпись переключателя;
+    // incoming — магазины, которые этому менеджеру передают другие (решение то же, что у отдающего)
+    const GROUP_ORDER = ['transfer', 'incoming', 'freq', 'move', 'offday', 'winback', 'remove', 'other'];
+    const GROUP_ICON = { transfer: 'fa-people-arrows', incoming: 'fa-people-arrows', freq: 'fa-calendar-minus', move: 'fa-shuffle',
+                         offday: 'fa-calendar-xmark', winback: 'fa-hand-holding-heart', remove: 'fa-user-minus', other: 'fa-pen', hints: 'fa-lightbulb' };
+    // Решения только по одному магазину, с подтверждением: «Принять все в группе» у этих групп нет
+    const ONE_BY_ONE = new Set(['remove', 'transfer', 'incoming']);
     const RUN_NOTE_TAIL = 'ERP только читается';
     const PLAN_HEAD = ['Код менеджера', 'Менеджер', 'Неделя цикла', 'День', '№', 'Код клиента', 'Клиент', 'Отметка'];
     const PLAN_COLS = [14, 28, 13, 7, 6, 14, 42, 18];
@@ -256,6 +268,9 @@
         retry: null,
         map: null, mapFailed: false, layers: null,
         mapAgent: null, mapMode: 'after', mapDay: null,
+        mapTransfers: false,   // стрелки передач на карте («Показать передачи» или «На карте» у передачи)
+        mapFocus: null,        // передача, у которой открыть подсказку после отрисовки (c._key)
+        transferMarkers: null, // c._key → маркер магазина передачи на карте
         exporting: false,
         decisions: null,       // GET /api/routes/decisions: {data_as_of, summary, decisions}
         decError: '',          // список решений не загрузился
@@ -472,6 +487,7 @@
             agent_ids: state.managers ? pickable().filter(m => state.pick.has(String(m.agent_id))).map(m => m.agent_id) : null,
             start: val('roStart', 'current') === 'fresh' ? 'fresh' : 'current',
             frequencies: val('roFreq', 'sales') === 'current' ? 'current' : 'sales',
+            mode: val('roMode', 'days') === 'transfer' ? 'transfer' : 'days',
         };
     }
 
@@ -481,6 +497,7 @@
         const check = (name, v) => document.querySelectorAll('input[name="' + name + '"]').forEach(r => { r.checked = r.value === v; });
         check('roStart', p.start);
         check('roFreq', p.frequencies);
+        check('roMode', p.mode === 'transfer' ? 'transfer' : 'days');
         if (state.managers && Array.isArray(p.agent_ids)) {
             const ok = new Set(pickable().map(m => String(m.agent_id)));
             state.pick = new Set(p.agent_ids.map(String).filter(id => ok.has(id)));
@@ -509,7 +526,7 @@
         note.textContent = busy ? 'Можно уйти со страницы — расчёт продолжится на сервере'
             : (none ? 'Отметьте хотя бы одного менеджера в «Дополнительно»' : runNote());
         note.classList.toggle('is-warn', none && !busy);
-        ['roMgrFs', 'roStartFs', 'roFreqFs'].forEach(id => { $(id).disabled = busy; });
+        ['roMgrFs', 'roModeFs', 'roStartFs', 'roFreqFs'].forEach(id => { $(id).disabled = busy; });
         const rb = $('roRecalcBtn');
         rb.setAttribute('aria-disabled', busy ? 'true' : 'false');
         rb.setAttribute('aria-busy', busy ? 'true' : 'false');
@@ -533,6 +550,7 @@
         if (!has) return;
         const t = parseTime(r.generated_at), n = r.managers.length, p = r.params;
         const parts = [(t ? 'Посчитано ' + dayTime(t) : 'Последний расчёт') + ' по ' + n + ' ' + plural(n, 'менеджеру', 'менеджерам', 'менеджерам')];
+        if (p.mode === 'transfer') parts.push('с передачей магазинов между менеджерами');
         if (p.start === 'fresh') parts.push('магазины разложены заново');
         if (p.frequencies === 'current') parts.push('частота — как сейчас');
         const el = $('roDoneText');
@@ -700,7 +718,9 @@
         if (total === null || total <= 0) {
             text = 'Читаю данные из ERP…';
         } else if (done !== null && done >= total) {
-            text = 'Сравниваю, что было и что станет…';
+            // режим с передачами: после дней по менеджерам — поиск передач (дольше остального)
+            text = state.lastRun && state.lastRun.mode === 'transfer'
+                ? 'Ищу, каких магазинов выгодно передать другим менеджерам…' : 'Сравниваю, что было и что станет…';
         } else {
             const k = Math.min(total, Math.max(0, done || 0) + 1);
             const who = typeof p.agent_name === 'string' && p.agent_name ? p.agent_name
@@ -745,6 +765,7 @@
             agent_ids: Array.isArray(p.agent_ids) ? p.agent_ids : null,
             start: p.start === 'fresh' ? 'fresh' : 'current',
             frequencies: p.frequencies === 'current' ? 'current' : 'sales',
+            mode: p.mode === 'transfer' ? 'transfer' : 'days',
         };
         setParams(params);
         if (state.managers && params.agent_ids) params.agent_ids = readParams().agent_ids;   // без исключённых с тех пор
@@ -830,6 +851,7 @@
             m.before = obj(m.before);
             m.after = obj(m.after);
             m.feasibility = obj(m.feasibility);
+            m.balance = isObj(m.balance) ? { given: obj(m.balance.given), received: obj(m.balance.received) } : null;
             m.days_before = arr(m.days_before).filter(d => isObj(d) && num(d.weekday) !== null);
             m.days_after = arr(m.days_after).filter(d => isObj(d) && num(d.weekday) !== null);
             m.days_before.concat(m.days_after).forEach(d => { d.stops = arr(d.stops).filter(isObj); });
@@ -839,7 +861,9 @@
                 c.to = obj(c.to);
                 c.effect = obj(c.effect);
                 const dec = obj(c.decision);
-                c.decision = { pattern: decisionOf(dec.pattern), freq: decisionOf(dec.freq), remove: decisionOf(dec.remove) };
+                c.decision = { pattern: decisionOf(dec.pattern), freq: decisionOf(dec.freq), remove: decisionOf(dec.remove),
+                    transfer: decisionOf(dec.transfer) };
+                if (c.type === 'transfer') { c.from_agent = num(c.from_agent); c.to_agent = num(c.to_agent); c.effect_from = obj(c.effect_from); c.effect_to = obj(c.effect_to); }
                 if (!KINDS[c.type]) c.type = num(c.from.freq) !== num(c.to.freq) ? 'frequency' : 'move';
                 c._agent = m.agent_id;
                 c._key = m.agent_id + ':' + c.customer_id;
@@ -865,6 +889,12 @@
     const allChanges = () => (state.result ? state.result.managers.flatMap(m => m.changes) : []);
     const kindsOf = (c) => KINDS[c.type] || KINDS.move;
     const isRemove = (c) => c.type === 'remove';
+    const isTransfer = (c) => c.type === 'transfer';
+    const transferMode = () => !!state.result && state.result.params.mode === 'transfer';
+    // Имя менеджера по id — из результата (все стороны передачи в расчёте), иначе из списка менеджеров
+    const agentName = (id) => { const m = id === null || id === undefined ? null : mgrOf(id); return m ? mgrName(m) : 'другой менеджер'; };
+    // Передачи, где этот менеджер получает магазин (предложение — в списке отдающего)
+    const incomingOf = (m) => allChanges().filter(c => isTransfer(c) && String(c.to_agent) === String(m.agent_id));
     const isSilent = (id) => { const c = custOf(id); return !!c && SILENT.has(c.status); };
 
     function statusOf(c) {
@@ -879,6 +909,7 @@
 
     // Группа предложения по смыслу: убрать → вернуть (перестал покупать) → с нерабочего дня → реже → другой день
     function groupOf(c) {
+        if (isTransfer(c)) return 'transfer';
         if (isRemove(c)) return 'remove';
         if (isSilent(c.customer_id)) return 'winback';
         if (offDaysOf(c.from.pattern).length) return 'offday';
@@ -890,6 +921,11 @@
 
     // Заголовок и причина группы (бриф): «Посещать раз в 2 недели — 60 магазинов» · «заказывают реже…»
     function groupText(key, list) {
+        if (key === 'transfer') return { title: 'Передать другому менеджеру', chip: 'Передать',
+            reason: 'К этим магазинам ближе ездит другой менеджер или у него в этот день не хватает заказов. '
+                + 'Вместе с магазином уходят его выручка и долг. Решение — по каждому магазину отдельно.' };
+        if (key === 'incoming') return { title: 'Получает от других менеджеров', chip: 'Получает',
+            reason: 'Эти магазины программа предлагает передать этому менеджеру. Решить можно здесь или у того, кто отдаёт.' };
         if (key === 'freq') {
             const half = list.every(c => Math.abs((num(c.to.freq) || 0) - 0.5) < 1e-9);
             return { title: half ? 'Посещать раз в 2 недели' : 'Посещать реже', chip: 'Реже',
@@ -913,7 +949,29 @@
     }
 
     // Почему программа это предлагает — одной-двумя фразами для «?» у магазина
+    // Сколько уходит вместе с магазином: «выручка ≈ 120 тыс. драм в месяц, долг 45 тыс. драм»
+    function moneyText(c) {
+        const rev = num(c.revenue_month), debt = num(c.debt);
+        const bits = [];
+        if (rev !== null) bits.push('выручка ≈' + NB + moneyShort(rev) + NB + 'драм в месяц');
+        if (debt !== null) bits.push(debt > 0 ? 'долг ' + moneyShort(debt) + NB + 'драм' : (debt < 0 ? 'переплата ' + moneyShort(-debt) + NB + 'драм' : 'долга нет'));
+        return bits.join(', ');
+    }
+
+    function transferReason(c) {
+        const to = agentName(c.to_agent), frm = agentName(c.from_agent);
+        const why = {
+            km: 'В этот район уже ездит ' + to + ' — так меньше км.',
+            weak: 'У ' + to + ' в этот день не хватает заказов — с этим магазином день станет сильнее.',
+            overload: 'У ' + frm + ' перегружен день — станет короче.',
+            owner: 'Эту передачу вы уже приняли раньше.',
+        }[c.reason_kind] || 'Отдельно эта передача почти ничего не меняет — выгода появляется вместе с другими изменениями.';
+        const money = moneyText(c);
+        return why + (money ? ' Вместе с магазином уходит ' + money + ' — планы продаж и кредитов обоих менеджеров нужно пересчитать.' : '');
+    }
+
     function rowReason(c) {
+        if (isTransfer(c)) return transferReason(c);
         const reason = String(c.reason || '');
         if (/шаблон принят владельцем/.test(reason)) return 'Эти дни вы уже приняли раньше — программа их сохранила.';
         if (/частота принята владельцем/.test(reason)) return 'Эту частоту визитов вы уже приняли раньше.';
@@ -947,7 +1005,20 @@
 
     // Эффект одного предложения, применённого к текущему плану, — коротко (в неделю). Перенос сам по себе
     // может добавить км: выгода — от того, как переставлены все магазины вместе, это и говорим
+    // «у Армена −5,2 км, у Гора +1,1 км в неделю» — эффект передачи по обоим менеджерам
+    function transferEffectText(c) {
+        const side = (e, id) => {
+            const km = num(obj(e).manager_km_week);
+            return km !== null && round(km, 1) !== 0 ? 'у ' + agentName(id) + ' ' + (km < 0 ? MINUS : '+') + fmt(Math.abs(km), 1) + NB + 'км' : null;
+        };
+        const bits = [side(c.effect_from, c.from_agent), side(c.effect_to, c.to_agent)].filter(Boolean);
+        const weak = num(c.effect.weak_days_week);
+        if (weak !== null && Math.abs(weak) >= 0.1) bits.push('слабых дней ' + (weak < 0 ? MINUS : '+') + fmt(Math.abs(weak), 1));
+        return bits.length ? 'Отдельно эта передача: ' + bits.join(', ') + ' в неделю.' : 'Отдельно эта передача почти не меняет км.';
+    }
+
     function effectText(c, m) {
+        if (isTransfer(c)) return transferEffectText(c);
         const e = c.effect;
         const km = num(e.manager_km_week), mins = num(e.minutes_week), weak = num(e.weak_days_week);
         const bits = [];
@@ -965,6 +1036,18 @@
     // Эффект группы: визиты — точно (сумма частот), время — примерно (сумма по магазинам по одному).
     // Километры по группе не складываем: перенос одного магазина сам по себе может добавить км, выгода — от всех вместе
     function groupEffect(list, m) {
+        if (list.length && list.every(isTransfer)) {   // передачи: сколько магазинов и выручки уходит или приходит
+            const rev = list.reduce((a, c) => a + (num(c.revenue_month) || 0), 0);
+            const debt = list.reduce((a, c) => a + (num(c.debt) || 0), 0);
+            const incoming = !!m && String(list[0].to_agent) === String(m.agent_id);
+            const n = list.length;
+            return { tone: 0,
+                text: (incoming ? 'придёт ' : 'уйдёт ') + fmt(n) + ' ' + plural(n, 'магазин', 'магазина', 'магазинов')
+                    + ' — ≈' + NB + moneyShort(rev) + NB + 'драм выручки в месяц',
+                tip: 'Выручка — в среднем за месяц по заказам магазина за последние 12 месяцев. Долг этих магазинов на сегодня — '
+                    + moneyShort(debt) + NB + 'драм (как на странице клиентов). Километры по группе не складываем: '
+                    + 'выгода от передачи зависит от того, как переставлены все магазины вместе.' };
+        }
         let dv = 0, mins = 0;
         list.forEach(c => {
             const ff = num(c.from.freq), tf = isRemove(c) ? 0 : num(c.to.freq);
@@ -1129,6 +1212,22 @@
                 nodes: ['ожидаемая выручка уменьшится: ', mark(lost.map(x => x.s.word + ' на ' + fmt(Math.abs((x.a - x.b) / x.b * 100), 1) + '%').join(', '), -1)] });
         }
 
+        // 5. Передачи между менеджерами — одной строкой (только в расчёте с передачами)
+        if (transferMode()) {
+            const t = obj(r.transfers), nt = num(t.count) || 0;
+            const tipText = 'Магазин предлагается отдать другому менеджеру, если тот и так ездит рядом или у него в этот день не хватает заказов. '
+                + 'Передача должна экономить заметно — больше ' + fmt(num(t.penalty_week) ?? 2000) + NB + 'драм в неделю, иначе отношения с магазином рвать незачем. '
+                + 'Выручка компании от передач не меняется, но меняются планы продаж и кредитов менеджеров: сколько каждый отдаёт и получает — в карточках менеджеров.';
+            if (nt) {
+                items.push({ tone: 1, tip: tipText, tipLabel: 'передачи',
+                    nodes: [mark('передать ' + fmt(nt) + ' ' + plural(nt, 'магазин', 'магазина', 'магазинов'), 1),
+                        ' другим менеджерам (≈' + NB + moneyShort(t.revenue_month) + NB + 'драм выручки в месяц) — это уже учтено в цифрах выше'] });
+            } else {
+                items.push({ tone: 0, tip: tipText, tipLabel: 'передачи',
+                    nodes: ['передавать магазины между менеджерами ', mark('невыгодно', 0), ' — ни одна передача не экономит заметно'] });
+            }
+        }
+
         items.forEach(it => list.append(h('li', { class: it.tone > 0 ? 'is-good' : (it.tone < 0 ? 'is-bad' : 'is-same') },
             h('span', { class: 'ico', 'aria-hidden': 'true' }, icon(it.tone > 0 ? 'fa-check' : (it.tone < 0 ? 'fa-arrow-up' : 'fa-equals'))),
             h('span', { class: 'txt' }, it.nodes, it.tip ? [' ', tip(it.tip, it.tipLabel)] : null))));
@@ -1235,7 +1334,8 @@
         // Сколько предложений в каких группах и откуда данные
         const cnt = {};
         allChanges().forEach(c => { const g = groupOf(c); cnt[g] = (cnt[g] || 0) + 1; });
-        const words = { freq: 'посещать реже', move: 'на другой день', offday: 'с нерабочего дня', winback: 'вернуть', remove: 'убрать', other: 'другое' };
+        const words = { transfer: 'передать другому менеджеру', freq: 'посещать реже', move: 'на другой день', offday: 'с нерабочего дня',
+            winback: 'вернуть', remove: 'убрать', other: 'другое' };
         const foot = $('roAllFoot');
         foot.textContent = '';
         const n = allChanges().length;
@@ -1264,6 +1364,22 @@
             + minText() + ', нужны новые магазины.';
     }
 
+    // Баланс передач менеджера (ответ владельца №17): «отдаёт 3 магазина (≈ 450 тыс. драм в месяц) · получает 1 (…)»
+    function balanceNode(m) {
+        if (!transferMode() || !m.balance) return null;
+        const g = m.balance.given, r = m.balance.received;
+        const ng = num(g.stores) || 0, nr = num(r.stores) || 0;
+        if (!ng && !nr) return h('p', { class: 'ro-card-bal is-none', text: 'Магазины не передаёт и не получает' });
+        const part = (word, n, x) => word + ' ' + fmt(n) + ' ' + plural(n, 'магазин', 'магазина', 'магазинов')
+            + ' (≈' + NB + moneyShort(x.revenue_month) + NB + 'драм в месяц)';
+        const text = [ng ? part('отдаёт', ng, g) : null, nr ? part('получает', nr, r) : null].filter(Boolean).join(' · ');
+        const debt = (x) => moneyShort(num(x.debt) || 0) + NB + 'драм';
+        return h('p', { class: 'ro-card-bal' }, icon('fa-people-arrows'), h('span', { text: cap(text) }),
+            tip('Если принять все передачи этого менеджера. Выручка — в среднем за месяц по заказам магазинов за 12 месяцев. Долг магазинов: '
+                + (ng ? 'уходит ' + debt(g) : '') + (ng && nr ? ', ' : '') + (nr ? 'приходит ' + debt(r) : '')
+                + '. По этим цифрам пересчитайте планы продаж и кредитов.', 'баланс передач'));
+    }
+
     function cardNode(m) {
         const n = m.changes.length, open = state.panelAgent === String(m.agent_id);
         const sum = [];
@@ -1281,10 +1397,11 @@
         sum.push(h('span', { text: n ? fmt(n) + ' ' + plural(n, 'предложение', 'предложения', 'предложений') : 'изменений нет' }));
         const st = mgrProgress(m), decided = st.accepted + st.rejected + st.mixed;
         const warn = feasText(m);
-        const btn = (n || m.hints.length) ? h('button', { type: 'button', class: 'rt-btn ' + (open ? 'rt-btn-primary' : 'rt-btn-ghost') + ' ro-card-btn',
+        const bal = balanceNode(m);
+        const btn = (n || m.hints.length || incomingOf(m).length) ? h('button', { type: 'button', class: 'rt-btn ' + (open ? 'rt-btn-primary' : 'rt-btn-ghost') + ' ro-card-btn',
             'aria-expanded': String(open), 'aria-controls': 'roPanel', dataset: { open: String(m.agent_id) },
             'aria-label': (open ? 'Свернуть предложения: ' : 'Посмотреть предложения: ') + mgrName(m) },
-            h('span', { text: open ? 'Свернуть предложения' : (n ? 'Посмотреть предложения' : 'Посмотреть подсказки') }),
+            h('span', { text: open ? 'Свернуть предложения' : (n || incomingOf(m).length ? 'Посмотреть предложения' : 'Посмотреть подсказки') }),
             icon(open ? 'fa-chevron-up' : 'fa-arrow-down')) : null;
         return h('li', { class: 'ro-card' + (open ? ' is-open' : ''), dataset: { agent: String(m.agent_id) } },
             h('div', { class: 'ro-card-head' },
@@ -1292,6 +1409,7 @@
                 h('span', { class: 'ro-card-name', text: mgrName(m) }),
                 m.code ? h('span', { class: 'ro-card-code', text: String(m.code) }) : null),
             h('p', { class: 'ro-card-sum' }, sum.map((x, i) => (i ? [h('span', { class: 'sep', 'aria-hidden': 'true', text: ' · ' }), x] : x))),
+            bal,
             warn ? h('p', { class: 'ro-card-warn' }, icon('fa-triangle-exclamation'), h('span', { text: warn })) : null,
             m.time_capped === true ? h('p', { class: 'ro-card-note', text: 'Расчёт остановлен по времени — повторный может немного отличаться.' }) : null,
             n ? h('div', { class: 'ro-card-prog' },
@@ -1361,8 +1479,8 @@
     }
 
     const passQuery = (q) => !state.pf.q || q.includes(state.pf.q);
-    // «Принять все в группе»: только без решения и не «убрать» (убрать — решение по каждому магазину)
-    const bulkable = (c) => !c._saving && !isRemove(c) && statusOf(c) === 'none' && passQuery(c._q);
+    // «Принять все в группе»: только без решения, не «убрать» и не «передать» (решение по каждому магазину)
+    const bulkable = (c) => !c._saving && !isRemove(c) && !isTransfer(c) && statusOf(c) === 'none' && passQuery(c._q);
 
     function renderPanel() {
         const box = $('roPanel');
@@ -1381,6 +1499,9 @@
             if (!by.has(g)) by.set(g, []);
             by.get(g).push(c);
         });
+        const inc = incomingOf(m);   // передают этому менеджеру — то же решение, что у отдающего
+        if (inc.length) by.set('incoming', inc);
+        const total = m.changes.length + inc.length;
         const keys = GROUP_ORDER.filter(k => by.has(k));
         keys.forEach(k => by.get(k).sort((a, b) => custName(a.customer_id).localeCompare(custName(b.customer_id), 'ru')));
         if (!['all'].concat(keys, m.hints.length ? ['hints'] : []).includes(state.pf.group)) state.pf.group = 'all';
@@ -1398,7 +1519,7 @@
         state.panelStats = h('p', { class: 'ro-panel-stats' });
         box.append(state.panelStats);
 
-        if (!m.changes.length && !m.hints.length) {
+        if (!total && !m.hints.length) {
             box.append(h('p', { class: 'rt-placeholder', text: 'Программа не предлагает ничего менять у этого менеджера.' }));
             renderPanelStats();
             return;
@@ -1406,7 +1527,7 @@
 
         // Переключатели групп и поиск
         const chips = h('div', { class: 'rt-chips ro-gchips', role: 'group', 'aria-label': 'Какие предложения показать' },
-            h('button', { type: 'button', class: 'rt-chip', dataset: { pgroup: 'all' } }, 'Все', h('span', { class: 'cnt', text: fmt(m.changes.length) })),
+            h('button', { type: 'button', class: 'rt-chip', dataset: { pgroup: 'all' } }, 'Все', h('span', { class: 'cnt', text: fmt(total) })),
             keys.map(k => h('button', { type: 'button', class: 'rt-chip g-' + k, dataset: { pgroup: k } },
                 groupText(k, by.get(k)).chip, h('span', { class: 'cnt', text: fmt(by.get(k).length) }))),
             m.hints.length ? h('button', { type: 'button', class: 'rt-chip g-hints', dataset: { pgroup: 'hints' } }, 'Подсказки',
@@ -1436,7 +1557,7 @@
         list.forEach(c => g.listEl.append(rowNode(c, m)));
         g.toggle = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost', 'aria-expanded': 'false', 'aria-controls': id + '_l', dataset: { gact: 'list', g: key } },
             icon('fa-chevron-down'), h('span'));
-        g.accept = key === 'remove' ? null : h('button', { type: 'button', class: 'rt-btn ro-btn-ok', dataset: { gact: 'accept', g: key } },
+        g.accept = ONE_BY_ONE.has(key) ? null : h('button', { type: 'button', class: 'rt-btn ro-btn-ok', dataset: { gact: 'accept', g: key } },
             icon('fa-check-double'), h('span'));
         const eff = groupEffect(list, m);
         g.el = h('section', { class: 'ro-grp g-' + key, 'aria-labelledby': id + '_t', dataset: { g: key } },
@@ -1485,16 +1606,18 @@
     }
 
     function rowNode(c, m) {
-        const id = c.customer_id, code = custCode(id), silent = silenceText(id);
+        const id = c.customer_id, code = custCode(id), silent = silenceText(id), transfer = isTransfer(c);
         const details = [rowReason(c), isRemove(c) ? null : cycleWeekNote(c.to.pattern), effectText(c, m)].filter(Boolean).join(' ');
         const main = h('div', { class: 'ro-item-main' },
             h('div', { class: 'ro-item-name' }, h('span', { class: 'n', text: custName(id) }), code ? h('span', { class: 'c', text: code }) : null,
                 silent ? h('span', { class: 'tag', text: silent }) : null),
             h('div', { class: 'ro-item-change' },
-                h('span', { class: 'lbl', text: 'было: ' }), h('span', { class: 'from', text: patternHuman(c.from.pattern) }),
+                h('span', { class: 'lbl', text: 'было: ' }), h('span', { class: 'from', text: (transfer ? 'у ' + agentName(c.from_agent) + ' — ' : '') + patternHuman(c.from.pattern) }),
                 h('span', { class: 'arr', 'aria-hidden': 'true', text: ' → ' }),
-                h('span', { class: 'lbl', text: 'станет: ' }), h('span', { class: 'to', text: isRemove(c) ? 'не посещать' : patternHuman(c.to.pattern) }),
-                ' ', tip(details, 'почему — ' + custName(id))));
+                h('span', { class: 'lbl', text: 'станет: ' }),
+                h('span', { class: 'to', text: isRemove(c) ? 'не посещать' : (transfer ? 'у ' + agentName(c.to_agent) + ' — ' : '') + patternHuman(c.to.pattern) }),
+                ' ', tip(details, 'почему — ' + custName(id))),
+            transfer && moneyText(c) ? h('div', { class: 'ro-item-note', text: cap(moneyText(c)) }) : null);
         const side = h('div', { class: 'ro-item-side' });
         const el = h('li', { class: 'ro-item', dataset: { key: c._key } }, main, side);
         state.rows.set(c._key, { el, side, c });
@@ -1503,19 +1626,20 @@
     }
 
     // Состояние и кнопки строки. Фокус был на кнопке строки — переходит на главную кнопку нового состояния.
-    // «Убрать из маршрута»: «Убрать…» (с подтверждением) — принять, «Оставить» — отклонить
+    // «Убрать из маршрута»: «Убрать…» (с подтверждением) — принять, «Оставить» — отклонить;
+    // «Передать другому менеджеру»: «Передать…» (с подтверждением), «Оставить», «На карте»
     function refreshRow(c) {
         const r = state.rows.get(c._key);
         if (!r) return;
-        const st = statusOf(c), remove = isRemove(c);
-        r.el.className = 'ro-item' + (remove ? ' is-remove' : '') + (st === 'none' ? '' : ' is-' + st);
+        const st = statusOf(c), remove = isRemove(c), transfer = isTransfer(c);
+        r.el.className = 'ro-item' + (remove ? ' is-remove' : '') + (transfer ? ' is-transfer' : '') + (st === 'none' ? '' : ' is-' + st);
         r.el.setAttribute('aria-busy', c._saving ? 'true' : 'false');
         const hadFocus = r.side.contains(document.activeElement);
         r.side.textContent = '';
         const name = custName(c.customer_id);
         const btn = (cls, ico, text, act, label) => h('button', { type: 'button', class: 'rt-btn rt-btn-sm ' + cls, dataset: { act, key: c._key },
             'aria-disabled': c._saving ? 'true' : null, 'aria-label': (label || text) + ': ' + name }, ico ? icon(ico) : null, text);
-        const S = st === 'none' ? null : ((remove ? REMOVE_ROW_STATUS[st] : ROW_STATUS[st]) || ROW_STATUS.mixed);
+        const S = st === 'none' ? null : ((remove ? REMOVE_ROW_STATUS[st] : (transfer ? TRANSFER_ROW_STATUS[st] : ROW_STATUS[st])) || ROW_STATUS.mixed);
         if (c._saving) r.side.append(h('span', { class: 'ro-pill' }, spin(), 'Сохраняю…'));
         else if (S) r.side.append(h('span', { class: 'ro-pill ' + S.cls }, icon(S.icon), S.text));
         const acts = h('div', { class: 'ro-item-acts' });
@@ -1523,6 +1647,11 @@
             if (st === 'none') acts.append(btn('ro-btn-remove', 'fa-user-minus', 'Убрать…', 'accept', 'Убрать из маршрута'),
                 btn('rt-btn-ghost', null, 'Оставить', 'reject', 'Оставить в маршруте'));
             else acts.append(btn('rt-btn-ghost', 'fa-rotate-left', 'Отменить', 'reset', 'Отменить решение'));
+        } else if (transfer) {
+            if (st === 'none') acts.append(btn('ro-btn-ok', 'fa-people-arrows', 'Передать…', 'accept', 'Передать менеджеру ' + agentName(c.to_agent)),
+                btn('rt-btn-ghost', null, 'Оставить', 'reject', 'Оставить у ' + agentName(c.from_agent)));
+            else acts.append(btn('rt-btn-ghost', 'fa-rotate-left', 'Отменить', 'reset', 'Отменить решение'));
+            acts.append(btn('rt-btn-ghost', 'fa-map-location-dot', 'На карте', 'map', 'Показать передачу на карте'));
         } else {
             if (st === 'none' || st === 'mixed') acts.append(btn('ro-btn-ok', 'fa-check', 'Принять', 'accept'));
             if (st === 'none') acts.append(btn('rt-btn-ghost', null, 'Оставить как есть', 'reject'));
@@ -1594,12 +1723,14 @@
     function renderPanelStats() {
         const m = panelMgr(), el = state.panelStats;
         if (!m || !el) return;
-        const n = m.changes.length, st = mgrProgress(m);
+        const n = m.changes.length, st = mgrProgress(m), inc = incomingOf(m).length;
         el.textContent = '';
-        if (!n) { el.append('Предложений нет', m.hints.length ? ' — только подсказки.' : '.'); return; }
+        const incText = inc ? 'получает от других менеджеров ' + fmt(inc) + ' ' + plural(inc, 'магазин', 'магазина', 'магазинов') : '';
+        if (!n) { el.append('Своих предложений нет', inc ? ' — ' + incText + '.' : (m.hints.length ? ' — только подсказки.' : '.')); return; }
         el.append(h('b', { text: fmt(n) }), ' ' + plural(n, 'предложение', 'предложения', 'предложений'));
         if (st.accepted + st.mixed) el.append(' · принято ', h('b', { text: fmt(st.accepted + st.mixed) }));
         if (st.rejected) el.append(' · оставлено как есть ', h('b', { text: fmt(st.rejected) }));
+        if (inc) el.append(' · ' + incText);
         el.append('. Примите группу целиком или откройте магазины и решите по каждому.');
     }
 
@@ -1615,6 +1746,15 @@
         if (b.dataset.act) {
             const r = state.rows.get(b.dataset.key);
             if (!r) return;
+            if (b.dataset.act === 'map') { showTransfer(r.c); return; }
+            if (b.dataset.act === 'accept' && isTransfer(r.c)) {
+                const money = moneyText(r.c);
+                const ok = window.confirm('Передать «' + custName(r.c.customer_id) + '» от ' + agentName(r.c.from_agent) + ' к '
+                    + agentName(r.c.to_agent) + '?\n\n'
+                    + (money ? 'Вместе с магазином уходит ' + money + ' — пересчитайте планы продаж и кредитов обоих менеджеров. ' : '')
+                    + 'В ERP ничего не изменится, пока вы сами не внесёте план. Решение можно отменить.');
+                if (!ok) return;
+            }
             if (b.dataset.act === 'accept' && isRemove(r.c)) {
                 const ok = window.confirm('Убрать «' + custName(r.c.customer_id) + '» из маршрута?\n\n'
                     + 'Менеджер перестанет посещать этот магазин. В ERP ничего не изменится, пока вы сами не внесёте план. '
@@ -1678,6 +1818,10 @@
         if (kind === 'remove') {   // «убрать из маршрута»: значение — «без визитов», было — шаблон дней
             return { customer_id: c.customer_id, agent_id: c._agent, kind, value: [], from: c.from.pattern, action };
         }
+        if (kind === 'transfer') {   // «передать»: кому и в какие дни, было — шаблон дней у своего менеджера
+            return { customer_id: c.customer_id, agent_id: c._agent, kind, value: { agent_id: c.to_agent, pattern: c.to.pattern },
+                from: c.from.pattern, action };
+        }
         const side = kind === 'pattern' ? 'pattern' : 'freq';
         return { customer_id: c.customer_id, agent_id: c._agent, kind, value: c.to[side], from: c.from[side], action };
     }
@@ -1737,9 +1881,10 @@
         }
         afterDecisions(todo);
         loadDecisions();
-        const one = todo.length === 1 && isRemove(todo[0]);
+        const one = todo.length === 1 && isRemove(todo[0]), moved = todo.length === 1 && isTransfer(todo[0]);
         const done = (one ? { accept: 'Будет убран из маршрута', reject: 'Остаётся в маршруте', reset: 'Решение отменено' }
-            : { accept: 'Принято', reject: 'Оставлено как есть', reset: 'Решение отменено' })[action];
+            : (moved ? { accept: 'Будет передан', reject: 'Остаётся у своего менеджера', reset: 'Решение отменено' }
+                : { accept: 'Принято', reject: 'Оставлено как есть', reset: 'Решение отменено' }))[action];
         const who = todo.length === 1 ? ': ' + custName(todo[0].customer_id) : ' ' + fmt(todo.length);
         announce(err ? 'Не сохранилось' + who + '. ' + sentence(cap(whyText(err))) : done + who);
     }
@@ -1852,6 +1997,11 @@
 
     // Решение словами: «дни: пн каждую неделю → чт раз в 2 недели», «как часто: раз в неделю → раз в 2 недели»
     function decChange(x) {
+        if (x.kind === 'transfer') {
+            const v = obj(x.value);
+            return { label: 'передать', from: (x.agent_code ? 'у ' + x.agent_code + ' — ' : '') + (x.from ? patternHuman(x.from) : humanPlanText(x.from_text)),
+                to: (v.agent_code ? 'у ' + v.agent_code + ' — ' : '') + (Array.isArray(v.pattern) ? patternHuman(v.pattern) : humanPlanText(x.to_text)) };
+        }
         if (x.kind === 'remove') return { label: 'убрать', from: x.from ? patternHuman(x.from) : humanPlanText(x.from_text), to: 'не посещать' };
         if (x.kind === 'freq') return { label: 'как часто', from: x.from !== null && x.from !== undefined ? freqHuman(x.from) : humanPlanText(x.from_text),
             to: x.value !== null && x.value !== undefined ? freqHuman(x.value) : humanPlanText(x.to_text) };
@@ -1862,7 +2012,8 @@
     function decRow(x, i) {
         const word = x.stale ? { cls: 'is-warn', icon: 'fa-triangle-exclamation', text: 'устарело' }
             : (x.kind === 'remove' ? (x.status === 'accepted' ? REMOVE_ROW_STATUS.accepted : REMOVE_ROW_STATUS.rejected)
-                : (x.status === 'accepted' ? ROW_STATUS.accepted : ROW_STATUS.rejected));
+                : (x.kind === 'transfer' ? (x.status === 'accepted' ? TRANSFER_ROW_STATUS.accepted : TRANSFER_ROW_STATUS.rejected)
+                    : (x.status === 'accepted' ? ROW_STATUS.accepted : ROW_STATUS.rejected)));
         const name = decName(x), ch = decChange(x);
         return h('li', { class: 'ro-item ro-dec-row' + (x.stale ? ' is-stale' : (x.status === 'rejected' ? ' is-rejected' : ' is-accepted')) },
             h('div', { class: 'ro-item-main' },
@@ -1894,9 +2045,12 @@
         if (touched.length) afterDecisions(touched);
     }
 
-    // у «убрать из маршрута» значение одно — совпадает всегда
+    // у «убрать из маршрута» значение одно — совпадает всегда; у «передать» — кому и в какие дни
     const sameValue = (kind, a, b) => (kind === 'remove' ? true
         : (kind === 'pattern' ? patternKey(a) === patternKey(b) : num(a) === num(b)));
+    const sameDecision = (c, k, x) => (k === 'transfer'
+        ? String(c.to_agent) === String(obj(x.value).agent_id) && patternKey(c.to.pattern) === patternKey(obj(x.value).pattern)
+        : sameValue(k, c.to[k === 'pattern' ? 'pattern' : 'freq'], x.value));
 
     async function resetOne(x, i) {
         if (state.decBusy) return;
@@ -1904,9 +2058,11 @@
         state.decBusy = true;
         renderDecisions();
         try {
-            await api('POST', '/api/routes/decisions', { customer_id: x.customer_id, agent_id: x.agent_id, kind: x.kind, value: x.value, action: 'reset' });
+            // у «передать» значение в списке — с кодом и именем менеджера, серверу — только кому и дни
+            const value = x.kind === 'transfer' ? { agent_id: obj(x.value).agent_id, pattern: obj(x.value).pattern } : x.value;
+            await api('POST', '/api/routes/decisions', { customer_id: x.customer_id, agent_id: x.agent_id, kind: x.kind, value, action: 'reset' });
             clearRowDecisions((c, k) => k === x.kind && String(c._agent) === String(x.agent_id)
-                && String(c.customer_id) === String(x.customer_id) && sameValue(k, c.to[k === 'pattern' ? 'pattern' : 'freq'], x.value));
+                && String(c.customer_id) === String(x.customer_id) && sameDecision(c, k, x));
             state.lastDecision = Date.now();
             markDirty();
             announce('Решение отменено: ' + decName(x));
@@ -2020,8 +2176,62 @@
         sel.value = state.mapAgent || '';
         sel.disabled = !r.managers.length;
         document.querySelectorAll('input[name="roMapMode"]').forEach(x => { x.checked = x.value === state.mapMode; });
+        renderTransferToggle();
         renderDays();
         drawMap();
+    }
+
+    // «Показать передачи»: стрелки от магазина к дому менеджера, которому его передают (только с передачами)
+    function renderTransferToggle() {
+        const b = $('roMapTransfers'), n = allChanges().filter(isTransfer).length;
+        b.hidden = !(transferMode() && n);
+        if (b.hidden) state.mapTransfers = false;
+        b.setAttribute('aria-pressed', String(!!state.mapTransfers));
+        b.querySelector('span').textContent = state.mapTransfers ? 'Скрыть передачи' : 'Показать передачи';
+    }
+
+    const mapTransfersOf = (m) => (m && state.mapTransfers ? allChanges().filter(c => isTransfer(c)
+        && (String(c.from_agent) === String(m.agent_id) || String(c.to_agent) === String(m.agent_id))) : []);
+
+    // Направление стрелки на карте: азимут от a к b, градусы (0 — на север)
+    const bearing = (a, b) => Math.atan2((b[1] - a[1]) * Math.cos(a[0] * Math.PI / 180), b[0] - a[0]) * 180 / Math.PI;
+
+    function drawTransfers(m, bounds) {
+        state.transferMarkers = new Map();
+        mapTransfersOf(m).forEach(c => {
+            const cust = custOf(c.customer_id) || {};
+            if (num(cust.lat) === null || num(cust.lon) === null) return;
+            const at = [num(cust.lat), num(cust.lon)];
+            const to = mgrOf(c.to_agent), frm = mgrOf(c.from_agent);
+            const toHome = to ? homeOf(to) : null, fromHome = frm ? homeOf(frm) : null;
+            const color = to && to._color ? to._color : MGR_OTHER;
+            if (fromHome) L.polyline([fromHome, at], { color: '#a7b0c0', weight: 2, opacity: 0.7, dashArray: '4 6', interactive: false }).addTo(state.layers.route);
+            if (toHome) {
+                L.polyline([at, toHome], { color: '#0c0f14', weight: 6, opacity: 0.55, interactive: false }).addTo(state.layers.route);
+                L.polyline([at, toHome], { color, weight: 3, opacity: 0.95, interactive: false }).addTo(state.layers.route);
+                const mid = [at[0] + (toHome[0] - at[0]) * 0.7, at[1] + (toHome[1] - at[1]) * 0.7];
+                L.marker(mid, { icon: L.divIcon({ className: 'rt-arrow', html: h('span', { style: 'color:' + color + ';transform:rotate(' + bearing(at, toHome).toFixed(0) + 'deg)' }, icon('fa-arrow-up')),
+                    iconSize: [20, 20], iconAnchor: [10, 10] }), keyboard: false, interactive: false }).addTo(state.layers.route);
+                bounds.push(toHome);
+            }
+            const mk = L.marker(at, { icon: pin('rt-pin-transfer', color, 'fa-people-arrows', 24), title: 'Передать: ' + custName(c.customer_id), zIndexOffset: 800 })
+                .bindTooltip(() => h('div', {}, h('b', { text: custName(c.customer_id) }), h('br'),
+                    h('span', { style: 'color:#a7b0c0', text: 'передать: ' + agentName(c.from_agent) + ' → ' + agentName(c.to_agent) })), { direction: 'top', offset: [0, -10] })
+                .bindPopup(() => popupNode(frm || m, c.customer_id), { maxWidth: 320 })
+                .addTo(state.layers.route);
+            state.transferMarkers.set(c._key, mk);
+            bounds.push(at);
+            if (fromHome) bounds.push(fromHome);
+        });
+    }
+
+    // «На карте» у передачи: карта отдающего менеджера, стрелки передач, подсказка у этого магазина
+    function showTransfer(c) {
+        state.mapTransfers = true;
+        state.mapFocus = c._key;
+        renderTransferToggle();
+        const m = mgrOf(c._agent);
+        if (m) showOnMap(m);
     }
 
     function onMapToggle() {
@@ -2114,6 +2324,8 @@
         }
         box.append(item(h('span', { class: 'rt-lg-ico', style: 'border:1.5px solid #a7b0c0;border-radius:50%', 'aria-hidden': 'true' }, icon('fa-house')), 'дом менеджера'));
         if (depotOf()) box.append(item(h('span', { class: 'rt-lg-ico', style: 'background:#eef1f6;color:#0c0f14', 'aria-hidden': 'true' }, icon('fa-warehouse')), 'склад'));
+        if (mapTransfersOf(m).length) box.append(item(h('span', { class: 'rt-lg-ico', style: 'border:1.5px solid #a7b0c0;border-radius:50%', 'aria-hidden': 'true' },
+            icon('fa-people-arrows')), 'передать — стрелка к дому того, кому передают'));
     }
 
     // Дни магазина в плане режима словами: «пн и чт каждую неделю»
@@ -2138,7 +2350,7 @@
         const row = (k, v) => h('div', { class: 'rt-pop-row' }, h('span', { text: k }), h('b', { text: v }));
         const silent = silenceText(cid);
         const rate = orderRateText(c.lam_year);
-        const word = ch ? (isRemove(ch) ? REMOVE_WORD : DECISION_WORD)[statusOf(ch)] || DECISION_WORD.none : 'изменений нет';
+        const word = ch ? (isRemove(ch) ? REMOVE_WORD : (isTransfer(ch) ? TRANSFER_WORD : DECISION_WORD))[statusOf(ch)] || DECISION_WORD.none : 'изменений нет';
         return h('div', { class: 'rt-pop' },
             h('div', { class: 'rt-pop-t', text: custName(cid) }),
             c.code ? h('div', { class: 'rt-pop-s', text: String(c.code) }) : null,
@@ -2203,6 +2415,7 @@
                 bounds.push(home);
             }
         }
+        drawTransfers(m, bounds);
         const dp = depotOf();
         if (dp) {
             L.marker(dp, { icon: pin('rt-pin-depot', null, 'fa-warehouse', 28), title: 'Склад', zIndexOffset: 1000 })
@@ -2212,6 +2425,9 @@
         state.map.invalidateSize();
         if (bounds.length) state.map.fitBounds(L.latLngBounds(bounds).pad(0.08), { animate: !RM, maxZoom: 15 });
         else state.map.setView(YEREVAN, 9, { animate: !RM });
+        const focus = state.mapFocus && state.transferMarkers ? state.transferMarkers.get(state.mapFocus) : null;
+        state.mapFocus = null;
+        if (focus) focus.openPopup();
     }
 
     // Маршрут дня: дом → остановки в порядке объезда → дом; визиты без координат пропускаются
@@ -2297,7 +2513,7 @@
     function markText(v) {
         if (Array.isArray(v)) return v.map(markText).filter(Boolean).join(', ');
         if (v === null || v === undefined || v === '') return '';
-        const MARK = { move: 'перенос', frequency: 'частота', freq: 'частота', both: 'перенос, частота', remove: 'убрать' };
+        const MARK = { move: 'перенос', frequency: 'частота', freq: 'частота', both: 'перенос, частота', remove: 'убрать', transfer: 'передать' };
         return MARK[v] || String(v);
     }
 
@@ -2370,7 +2586,8 @@
                 str(pick(x, 'agent_name', 'manager_name') ?? m.name),
                 str(pick(x, 'customer_code') ?? (cid !== null ? custCode(cid) : '')),
                 str(pick(x, 'customer_name') ?? (cid !== null ? custName(cid) : '')),
-                TYPE_TEXT[type] || markText(type),
+                type === 'transfer' && pick(x, 'from_agent_code') && pick(x, 'to_agent_code')
+                    ? 'передать: ' + pick(x, 'from_agent_code') + ' → ' + pick(x, 'to_agent_code') : (TYPE_TEXT[type] || markText(type)),
                 side('from', 'from_text'),
                 side('to', 'to_text'),
                 str(pick(x, 'reason') ?? c.reason),
@@ -2539,6 +2756,12 @@
         $('roPanel').addEventListener('input', debounce(onPanelSearch, 150));
 
         $('roMapBox').addEventListener('toggle', onMapToggle);
+        $('roMapTransfers').addEventListener('click', () => {
+            state.mapTransfers = !state.mapTransfers;
+            renderTransferToggle();
+            drawMap();
+            announce(state.mapTransfers ? 'На карте — передачи магазинов' : 'Передачи скрыты');
+        });
         $('roMapMgr').addEventListener('change', (e) => {
             state.mapAgent = e.target.value;
             state.mapDay = null;

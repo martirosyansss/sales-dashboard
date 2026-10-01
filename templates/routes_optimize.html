@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=8">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=9">
 {% endblock %}
 
 {% block content %}
@@ -78,6 +78,22 @@
                             <div id="roMgrsErr" class="ro-inline-err d-none"></div>
                         </fieldset>
                         <div class="ro-side">
+                            <fieldset class="ro-fs" id="roModeFs">
+                                <legend class="ro-legend">Магазины между менеджерами</legend>
+                                <div class="ro-opts">
+                                    <label class="ro-opt">
+                                        <input type="radio" name="roMode" value="days" checked>
+                                        <span class="ro-opt-t">Только дни внутри менеджера <em>как раньше</em></span>
+                                        <span class="ro-opt-d">Каждый магазин остаётся у своего менеджера. Меняются только дни и как часто посещать.</span>
+                                    </label>
+                                    <label class="ro-opt">
+                                        <input type="radio" name="roMode" value="transfer">
+                                        <span class="ro-opt-t">Разрешить передавать магазины между менеджерами</span>
+                                        <span class="ro-opt-d">Программа предложит отдать магазин другому менеджеру, если он и так ездит рядом или у него
+                                            в этот день не хватает заказов. Каждую передачу вы решаете отдельно. Считается дольше — около минуты.</span>
+                                    </label>
+                                </div>
+                            </fieldset>
                             <fieldset class="ro-fs" id="roStartFs">
                                 <legend class="ro-legend">С чего начать</legend>
                                 <div class="ro-opts">
@@ -207,6 +223,9 @@
                                 <label><input type="radio" name="roMapMode" value="before">Сейчас</label>
                                 <label><input type="radio" name="roMapMode" value="after" checked>Если принять</label>
                             </div>
+                            <button type="button" id="roMapTransfers" class="rt-btn rt-btn-ghost rt-btn-sm" aria-pressed="false" hidden>
+                                <i class="fas fa-people-arrows" aria-hidden="true"></i><span>Показать передачи</span>
+                            </button>
                             <span class="rt-maptools-note" id="roMapNote"></span>
                         </div>
                         <div class="ro-mapgrid">
@@ -274,5 +293,5 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_optimize.js') }}?v=4"></script>
+<script src="{{ url_for('static', filename='js/routes_optimize.js') }}?v=5"></script>
 {% endblock %}

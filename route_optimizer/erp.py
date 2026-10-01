@@ -276,6 +276,25 @@ SELECT LTRIM(RTRIM(c.fCODE)), c.fNAME, c.fISCLOSED
 FROM CARS c WITH (NOLOCK)
 """
 
+# Долг клиента на сегодня — формула дашборда (DEBT_CALCULATION_FORMULA.md, /api/customers в app_v2.py):
+# ДОЛГ = ДЕБЕТ (HICUSTOMERSDEBT: D − C, клиент — через DOCUMENTS) − |Type01| − |Type02| (HIRESTCUSTOMERSSUM)
+SQL_CUSTOMER_DEBIT = """
+SELECT doc.fCUSTOMERID, SUM(CASE WHEN d.fDBCR = 'D' THEN d.fSUM ELSE -d.fSUM END)
+FROM HICUSTOMERSDEBT d WITH (NOLOCK)
+JOIN DOCUMENTS doc WITH (NOLOCK) ON doc.fISN = d.fDEBTDOCISN
+WHERE doc.fCUSTOMERID IN ({ph})
+GROUP BY doc.fCUSTOMERID
+"""
+
+SQL_CUSTOMER_REST = """
+SELECT r.fCUSTOMERID,
+       SUM(CASE WHEN r.fTYPE = '01' THEN r.fSUM ELSE 0 END),
+       SUM(CASE WHEN r.fTYPE = '02' THEN r.fSUM ELSE 0 END)
+FROM HIRESTCUSTOMERSSUM r WITH (NOLOCK)
+WHERE r.fCUSTOMERID IN ({ph})
+GROUP BY r.fCUSTOMERID
+"""
+
 SQL_CAR_USAGE = """
 SELECT LTRIM(RTRIM(s.fDELIVERYCAR)), s.fSALESAGENTID, COUNT(*)
 FROM SALES s WITH (NOLOCK)
@@ -398,6 +417,20 @@ def tracks(conn: Any, since: datetime, until: datetime) -> dict[int, list[Fix]]:
 
 def cars(conn: Any) -> dict[str, Car]:
     return {_str(r[0]): Car(_str(r[0]), _str(r[1]), bool(r[2])) for r in _select(conn, SQL_CARS)}
+
+
+def customer_debts(conn: Any, ids: Sequence[int]) -> dict[int, float]:
+    """Долг клиентов на сегодня: дебет (D − C) − |возвраты Type01| − |переплаты Type02| — как на
+    странице клиентов дашборда. Клиента без записей нет в словаре (долг 0)."""
+    debit: dict[int, float] = {}
+    rest: dict[int, float] = {}
+    for chunk in _chunks(sorted(set(ids))):
+        ph = _placeholders(len(chunk))
+        for r in _select(conn, SQL_CUSTOMER_DEBIT.format(ph=ph), chunk):
+            debit[int(r[0])] = float(r[1] or 0)
+        for r in _select(conn, SQL_CUSTOMER_REST.format(ph=ph), chunk):
+            rest[int(r[0])] = abs(float(r[1] or 0)) + abs(float(r[2] or 0))
+    return {c: debit.get(c, 0.0) - rest.get(c, 0.0) for c in sorted(set(debit) | set(rest))}
 
 
 def car_usage(conn: Any, since: date, until: date) -> dict[str, dict[int, int]]:

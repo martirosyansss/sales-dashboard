@@ -34,6 +34,7 @@ from route_optimizer import patterns as pt  # noqa: E402
 from route_optimizer import plan as pl  # noqa: E402
 from route_optimizer import search as sr  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
+from route_optimizer import transfer as tr  # noqa: E402
 from route_optimizer.snapshot import Snapshot, SnapshotCache  # noqa: E402
 
 TODAY = date(2026, 9, 30)
@@ -3142,7 +3143,8 @@ def test_store_remove_decisions_and_migration_4_to_5(tmp_path):
     s = st.Store(path)
     assert s.load().settings['lost_mult'] == 8 and s.last_scenario().result == {'n': 1}
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('5',)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(st.SCHEMA_VERSION),)                                        # 4 → 5 → … → текущая
         got = conn.execute(f'SELECT {cols} FROM decision').fetchall()
         assert sorted(got, key=str) == sorted(rows, key=str)                 # все значения — как были
         indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
@@ -3770,3 +3772,457 @@ def test_optimizer_matrices_and_run_use_road_km():
     for a, wk in straight.before.weeks.items():
         assert road.before.weeks[a].manager_km == pytest.approx(wk.manager_km * 2 / detour, rel=1e-6)
         assert road.before.weeks[a].truck_km == pytest.approx(wk.truck_km * 2 / detour, rel=1e-6)
+
+
+# ============================== этап 4: передача магазинов между менеджерами (режим Б) ==============================
+
+W_CLUSTER, E_CLUSTER = (40.18, 44.30), (40.18, 44.80)      # районы двух менеджеров, ≈ 42 км друг от друга
+
+
+def _overlap_rows(own=24, cross=3, seed=4):
+    """Строки шаблонов: у каждого менеджера own магазинов в своём районе и cross — в районе другого
+    (туда ездят оба: районы пересекаются). День — по кругу пн–сб."""
+    rng = random.Random(seed)
+    rows, points, cross_ids = [], {}, {1: [], 2: []}
+    cid = 2000
+    for a, mine, other in ((1, W_CLUSTER, E_CLUSTER), (2, E_CLUSTER, W_CLUSTER)):
+        for k in range(own + cross):
+            cid += 1
+            center = mine if k < own else other
+            if k >= own:
+                cross_ids[a].append(cid)
+            points[cid + 50000] = (cid, (center[0] + rng.uniform(-0.01, 0.01),
+                                         center[1] + rng.uniform(-0.012, 0.012)))
+            day = 1 + k % 6
+            rows.append(_row(a, a * 10 + day, 1, day, 1, cid, k, cid + 50000))
+    return rows, points, cross_ids
+
+
+def _overlap_snapshot(rows=None, debts=None, snapshot_id='overlap'):
+    """Два менеджера с пересекающимися районами; все магазины заказывают раз в неделю по 60 000 драм
+    (слабых дней нет — передача выгодна только километрами)."""
+    base_rows, points, _ = _overlap_rows()
+    rows = base_rows if rows is None else rows
+    start = TODAY - timedelta(days=365)
+    cids = sorted({r.customer_id for r in rows})
+    orders = {c: tuple(dm.Order(c, start + timedelta(days=i), 1, 60000.0, 50.0) for i in range(c % 7, 365, 7))
+              for c in cids}
+    return replace(
+        make_snapshot(), id=snapshot_id,
+        agents={1: erp.Agent(1, 'A001', 'Арман', False), 2: erp.Agent(2, 'A002', 'Гор', False)},
+        plan=pl.build_plan(rows),
+        customers={c: erp.Customer(c, f'C{c}', f'Клиент {c}', '036', 'Այլ', False, '101') for c in cids},
+        erp_points=points, default_address={p[0]: addr for addr, p in points.items()}, gps_points={},
+        orders_by_customer=orders,
+        company_orders_by_day=dict(Counter(o.date for os in orders.values() for o in os)),
+        first_order={c: TODAY - timedelta(days=600) for c in cids},
+        auto_homes={1: geo.HomeGuess(W_CLUSTER[0] + 0.02, W_CLUSTER[1], 'night', 20),
+                    2: geo.HomeGuess(E_CLUSTER[0] + 0.02, E_CLUSTER[1], 'night', 20)},
+        facts={}, active_agents=frozenset({1, 2}), cars={}, car_usage={}, debts=debts or {})
+
+
+def _strip_run(r):
+    out = {k: v for k, v in r.items() if k not in ('generated_at', 'seconds')}
+    if 'transfers' in out:
+        out['transfers'] = {k: v for k, v in out['transfers'].items() if k != 'seconds'}
+    return out
+
+
+def test_transfer_keys_params_and_decision_parsing():
+    assert pt.transfer_key(2, _wk(4)) == '{"agent_id":2,"pattern":[[1,4],[2,4]]}'
+    assert pt.parse_transfer_key(pt.transfer_key(2, _wk(4))) == (2, _wk(4))
+    assert pt.parse_transfer_key('[[1,4]]') is None and pt.parse_transfer_key('x') is None
+    assert opt.parse_params({'mode': 'transfer'})[0]['mode'] == 'transfer'
+    assert opt.parse_params({'mode': 'days'})[0] == opt.parse_params({})[0]     # режим А — как на этапе 3
+    assert set(opt.parse_params({'mode': 'both'})[1]) == {'mode'}
+    base = {'customer_id': 5, 'agent_id': 1, 'kind': 'transfer', 'from': [[1, 2], [2, 2]], 'action': 'accept'}
+    d, errors = opt.parse_decision({**base, 'value': {'agent_id': 2, 'pattern': [[2, 4], [1, 4]]}})
+    assert not errors and d.value == '{"agent_id":2,"pattern":[[1,4],[2,4]]}' and d.from_value == '[[1,2],[2,2]]'
+    for bad in ({'agent_id': 1, 'pattern': [[1, 4]]},           # самому себе
+                {'agent_id': 2}, {'agent_id': 2, 'pattern': [[3, 1]]}, {'agent_id': True, 'pattern': [[1, 4]]},
+                {'agent_id': 2, 'pattern': [[1, 4]], 'x': 1}, [[1, 4]], None):
+        assert 'value' in opt.parse_decision({**base, 'value': bad})[1], bad
+
+
+def test_transfer_decision_state_and_book():
+    p10, p_new = _wk(2), _wk(4)
+    value = pt.transfer_key(2, p_new)
+
+    def state(pairs, status='accepted', frm=pt.pattern_key(p10)):
+        return opt.decision_state(st.Decision(10, 1, 'transfer', value, status, from_value=frm), pairs)
+
+    info = opt.PairInfo
+    assert state({1: {10: info(p10, 0)}, 2: {11: info(_wk(3), 0)}}) == opt.DECISION_ACTIVE
+    assert state({1: {10: info(_wk(5), 0)}, 2: {}}) == opt.DECISION_STALE        # дни в ERP изменились
+    assert state({1: {}, 2: {}}) == opt.DECISION_STALE                           # клиента нет ни у кого
+    assert state({1: {}, 2: {10: info(_wk(6), 0)}}) == opt.DECISION_RETIRED      # в ERP уже передан
+    assert state({1: {10: info(_wk(5), 0)}, 2: {}}, 'rejected') == opt.DECISION_RETIRED
+    book = opt.DecisionBook.from_rows([
+        st.Decision(10, 1, 'transfer', value, 'accepted', from_value=pt.pattern_key(p10)),
+        st.Decision(12, 1, 'transfer', pt.transfer_key(2, _wk(1)), 'rejected')])
+    assert book.accepted_transfer == {(1, 10): (2, p_new)}
+    assert book.rejected_transfer == {(1, 12): frozenset({2})}
+    change = {'customer_id': 10, 'type': 'transfer', 'to_agent': 2, 'from': {'pattern': pt.pattern_json(p10)},
+              'to': {'pattern': pt.pattern_json(p_new)}}
+    assert book.change_status(1, change) == {'transfer': 'accepted'}
+    assert book.change_status(1, {**change, 'to_agent': 3}) == {'transfer': None}    # другому — не это решение
+
+
+def test_customer_debts_use_dashboard_formula():
+    class Cursor:
+        def __init__(self):
+            self.sql = ''
+
+        def execute(self, sql, params):
+            self.sql = sql
+
+        def fetchall(self):
+            if 'HICUSTOMERSDEBT' in self.sql:     # дебет: D − C по документам клиента
+                return [(1, 1000.0), (2, -50.0)]
+            return [(1, -100.0, 200.0), (3, 30.0, None)]   # Type01, Type02 — вычитаются по модулю
+
+        def close(self):
+            pass
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+    assert erp.customer_debts(Conn(), [1, 2, 3]) == {1: 700.0, 2: -50.0, 3: -30.0}
+    for name in ('SQL_CUSTOMER_DEBIT', 'SQL_CUSTOMER_REST'):
+        erp.check_sql(getattr(erp, name).format(ph='?'))
+
+
+def test_revenue_month_by_order_history():
+    def model(values, exposure):
+        dem = dm.Demand(1.0, values, exposure)
+        return ev.CustomerModel(1, dem, dem, dem, 'small', 1.0)
+
+    assert opt.revenue_month(model(((60000.0, 1.0), (40000.0, 1.0)), 365)) == \
+        pytest.approx(100000 / 365 * 365.25 / 12)
+    assert opt.revenue_month(model(((30000.0, 1.0),), 7)) == pytest.approx(30000 / 21 * 365.25 / 12)  # ≥ 3 нед.
+    assert opt.revenue_month(model((), 365)) == 0.0
+
+
+def test_distances_matrices_equal_optimizer_matrices():
+    norms = ev.Norms.from_settings(st.DEFAULT_SETTINGS)
+    rng = random.Random(3)
+    pts = [(40.1 + rng.random() * 0.2, 44.4 + rng.random() * 0.3) for _ in range(12)]
+    dist = opt._Distances(pts + [(40.3, 44.9)], norms)
+    for home, depot, sub in (((40.18, 44.51), (40.15, 44.46), pts[:7]), (None, None, pts[3:]),
+                             ((40.2, 44.5), None, pts[:1])):
+        want = opt._matrices(home, sub, depot, norms)
+        got = dist.matrices(home, sub, depot)
+        for w, g in zip(want, got):
+            if w is None:
+                assert g is None
+                continue
+            assert [list(r) for r in g] == [pytest.approx(r, abs=1e-9) for r in w]
+
+
+def _market(seed=1, n=24, trucks=True):
+    """Два менеджера, у каждого все n клиентов: свои (с визитами) и гости (без визитов)."""
+    rng = random.Random(seed)
+    pts = [(40.1 + rng.random() * 0.25, 44.35 + rng.random() * 0.35) for _ in range(n)]
+    norms = ev.Norms.from_settings(st.DEFAULT_SETTINGS)
+    six = range(1, 7)
+    freqs = [rng.choice((0.5, 1.0, 1.0, 2.0)) for _ in pts]
+    allowed = [tuple(_slots(p) for p in pt.standard_patterns(f, six)) for f in freqs]
+    params = []
+    for _ in pts:
+        p, m = rng.choice((0.3, 0.7, 1.0)), rng.choice((20000.0, 50000.0, 90000.0))
+        params.append(sr.VisitParams(mu=p * m, var=p * m * m * 1.3 - (p * m) ** 2, p_low=p, p_year=rng.random(),
+                                     kg=rng.random() * 900.0))
+    owner = [1 if i < n // 2 else 2 for i in range(n)]
+    states = {}
+    for a, home in ((1, (40.12, 44.40)), (2, (40.30, 44.62))):
+        km, mins, tkm = opt._matrices(home, pts, (40.15, 44.46) if trucks else None, norms)
+        lines = [sr.Line(customer_id=100 + i, node=i + 1, minutes=10.0,
+                         current=rng.choice(allowed[i]) if owner[i] == a else (), allowed=allowed[i],
+                         locked=False, u=sr.make_u(random.Random(a * 1000 + i))) for i in range(n)]
+        base = tuple(sr.day_of_slot(j)[1] in six and any(j in ln.current for ln in lines) for j in range(sr.SLOTS))
+        weights = sr.Weights(manager_per_km=45.0, truck_per_km=150.0 if trucks else 0.0, weak_day=20000.0,
+                             poor_trip=3000.0, overtime_per_min=500.0, window_min=540.0,
+                             min_day_revenue=100000.0, min_trip_revenue=150000.0, truck_capacity_kg=3000.0)
+        prob = sr.Problem(agent_id=a, lines=lines, km=km, mins=mins, tkm=tkm, weights=weights,
+                          workday=tuple(sr.day_of_slot(j)[1] in six for j in range(sr.SLOTS)), base=base,
+                          neighbors=sr.nearest_lines([ln.node for ln in lines], km), seed=a)
+        states[a] = sr.State(prob, [ln.current for ln in lines], params, change_penalty=300.0, trucks=trucks)
+    clients = [tr.Client(100 + i, owner[i], {1: i, 2: i}) for i in range(n)]
+    neighbors = {100 + i: [100 + j for j in range(n) if j != i][:8] for i in range(n)}
+    return tr.Market(states, clients, neighbors, 2000.0)
+
+
+def test_market_incremental_equals_scratch_after_random_moves():
+    """Передачи (и группой), обмены и переносы внутри менеджера вперемешку: оценка хода = факт, а после
+    300 ходов туры, км, μ/σ², грузовик и стоимость каждого менеджера — как с нуля (§5), клиента
+    посещает ровно один менеджер, стоимость компании = Σ менеджеров + плата за передачи."""
+    market = _market()
+    assert market.consistency_error() < 1e-9
+    rng = random.Random(9)
+    cids = sorted(market.clients)
+    kinds = Counter()
+    while sum(kinds.values()) < 300:
+        roll = rng.random()
+        before = market.total
+        if roll < 0.3:
+            cid = rng.choice(cids)
+            delta, move = market.eval_transfer(cid, 3 - market.owner[cid])
+            market.apply(move)
+            kinds['transfer'] += 1
+        elif roll < 0.45:
+            cid = rng.choice(cids)
+            hit = market.eval_group(cid, 3 - market.owner[cid])
+            if hit is None:
+                continue
+            delta, move = hit
+            market.apply(move)
+            kinds['group'] += 1
+        elif roll < 0.7:
+            c1 = rng.choice(cids)
+            hits = [h for h in (market.eval_swap(c1, c2) for c2 in cids if c2 != c1) if h is not None]
+            if not hits:
+                continue
+            delta, move = rng.choice(hits)
+            market.apply(move)
+            kinds['swap'] += 1
+        else:
+            cid = rng.choice(cids)
+            a = market.owner[cid]
+            state, i = market.states[a], market.clients[cid].lines[a]
+            alts = [p for p in state.lines[i].allowed if p != state.pattern[i]]
+            delta, move = state.eval_relocate(i, rng.choice(alts))
+            state.apply(move)
+            market.total = market._total()
+            kinds['relocate'] += 1
+        assert market.total - before == pytest.approx(delta, abs=1e-6)
+        if not sum(kinds.values()) % 50:
+            market.polish()
+    assert min(kinds.values()) > 20 and len(kinds) == 4
+    assert market.consistency_error() < 1e-6
+    assert market.n_moved == sum(1 for cid, c in market.clients.items() if market.owner[cid] != c.origin)
+
+
+def test_market_search_is_deterministic_and_never_worse():
+    runs = []
+    for _ in range(2):
+        market = _market(seed=5, trucks=False)
+        start = market.total
+        stats = tr.search(market, seconds=30, seed=11)
+        assert not stats.time_capped and market.total <= start + 1e-6
+        assert market.consistency_error() < 1e-6
+        runs.append((dict(market.owner), [list(market.states[a].pattern) for a in (1, 2)], market.total))
+    assert runs[0] == runs[1]
+
+
+def test_transfers_remove_overlap_of_districts():
+    """Два менеджера ездят в районы друг друга: режим Б передаёт «чужие» магазины тому, у кого они
+    рядом, — у каждого остаётся свой район, км меньше, чем в режиме А; передача — с балансом.
+    Режим А собирает 3 «чужих» магазина в один день — поездка ≈ 84 км в неделю (≈ 3 800 драм);
+    по одному передавать невыгодно (поездка остаётся), выгодно только группой — и только если передача
+    дешевле: 3 × 500 драм (при 2 000 по умолчанию — 6 000, больше выгоды)."""
+    rows, _, cross = _overlap_rows()
+    debts = {c: 1000.0 * (c % 5) for c in cross[1] + cross[2]}
+    snap = _overlap_snapshot(debts=debts)
+    days = opt.run_optimization(snap, _bundle(), None, [], {})
+    out = opt.run_optimization(snap, _bundle(penalty_transfer=500), None, [], {'mode': 'transfer'})
+    res = out.result
+    assert res['params']['mode'] == 'transfer' and 'transfers' not in days.result
+    assert all('balance' not in m for m in days.result['managers'])
+    moved = {(ch['from_agent'], ch['to_agent'], ch['customer_id'])
+             for m in res['managers'] for ch in m['changes'] if ch['type'] == 'transfer'}
+    assert moved == {(1, 2, c) for c in cross[1]} | {(2, 1, c) for c in cross[2]}
+    assert res['transfers']['count'] == 6
+    # у каждого — только свой район
+    for m in res['managers']:
+        lons = [s['lon'] for d in m['days_after'] for s in d['stops']]
+        assert lons and all((lon < 44.55) == (m['agent_id'] == 1) for lon in lons)
+    # км меньше, чем в режиме А; старт поиска — итог режима А, и стоимость не хуже его
+    assert res['after']['manager_km_week'] < days.result['after']['manager_km_week'] - 150   # 2 поездки по 84 км
+    assert out.transfer.cost_start == pytest.approx(sum(o.cost_after for o in days.managers), abs=1e-6)
+    assert out.transfer.cost_end < out.transfer.cost_start
+    assert res['after']['revenue_week_low'] == pytest.approx(days.result['after']['revenue_week_low'], abs=1)
+    # предложение «передать»: поля, эффект по обоим менеджерам, выручка и долг
+    m1 = _manager(res, 1)
+    ch = next(c for c in m1['changes'] if c['type'] == 'transfer')
+    assert {'from_agent', 'to_agent', 'revenue_month', 'debt', 'effect_from', 'effect_to', 'reason_kind'} <= set(ch)
+    assert ch['decision'] == {'transfer': None} and ch['reason_kind'] == 'km'
+    assert ch['effect_from']['manager_km_week'] < -50 and ch['effect']['manager_km_week'] < -50
+    assert ch['effect']['manager_km_week'] == pytest.approx(
+        ch['effect_from']['manager_km_week'] + ch['effect_to']['manager_km_week'], abs=0.11)
+    assert ch['debt'] == round(debts[ch['customer_id']])
+    assert ch['revenue_month'] == round(opt.revenue_month(out.before.models[ch['customer_id']]))
+    assert ch['reason'].startswith('в этот район уже ездит Гор')
+    # баланс: у каждого «отдаёт» = сумма его передач, по компании «отдано» = «получено»
+    for m in res['managers']:
+        mine = [c for c in m['changes'] if c['type'] == 'transfer']
+        assert m['balance']['given']['stores'] == len(mine) == 3
+        assert abs(m['balance']['given']['revenue_month'] - sum(c['revenue_month'] for c in mine)) <= len(mine)
+        assert abs(m['balance']['given']['debt'] - sum(c['debt'] for c in mine)) <= len(mine)
+    for key in ('stores', 'revenue_month', 'debt'):
+        assert sum(m['balance']['given'][key] for m in res['managers']) == \
+            sum(m['balance']['received'][key] for m in res['managers'])
+    assert res['transfers']['revenue_month'] == sum(m['balance']['given']['revenue_month'] for m in res['managers'])
+    o1 = next(o for o in out.managers if o.agent_id == 1)
+    assert o1.moved_to == {c: 2 for c in cross[1]}
+    # повторяемость
+    again = opt.run_optimization(snap, _bundle(penalty_transfer=500), None, [], {'mode': 'transfer'})
+    assert _strip_run(again.result) == _strip_run(res)
+
+
+def test_transfer_penalty_and_owner_decisions():
+    rows, _, cross = _overlap_rows()
+    snap = _overlap_snapshot()
+    # передача дороже выгоды (по умолчанию 2 000: группа из 3 — 6 000 при выгоде ≈ 3 800) — ничего
+    # не передаётся, «стало» как в режиме А
+    none = opt.run_optimization(snap, _bundle(), None, [], {'mode': 'transfer'})
+    assert none.result['transfers']['count'] == 0
+    days = opt.run_optimization(snap, _bundle(), None, [], {})
+    for mb, ma in zip(none.result['managers'], days.result['managers']):   # туры могли стать короче
+        same = {k: v for k, v in ma['after'].items() if k != 'cost'}
+        assert {k: v for k, v in mb['after'].items() if k != 'cost'} == same
+        assert mb['after']['cost'] <= ma['after']['cost']
+    # принятая передача закреплена в принятых днях, отклонённая (клиент → менеджер) запрещена
+    c_acc, c_rej = cross[1][0], cross[1][1]
+    pairs = opt.plan_pairs(snap.plan)
+    fixed_days = _wk(6)
+    decisions = [st.Decision(c_acc, 1, 'transfer', pt.transfer_key(2, fixed_days), 'accepted',
+                             from_value=pt.pattern_key(pairs[1][c_acc].pattern)),
+                 st.Decision(c_rej, 1, 'transfer', pt.transfer_key(2, _wk(1)), 'rejected',
+                             from_value=pt.pattern_key(pairs[1][c_rej].pattern))]
+    res = opt.run_optimization(snap, _bundle(penalty_transfer=500), None, decisions, {'mode': 'transfer'}).result
+    m1 = _manager(res, 1)
+    acc = _change(m1, c_acc)
+    assert acc['type'] == 'transfer' and acc['to']['pattern'] == pt.pattern_json(fixed_days)
+    assert acc['decision'] == {'transfer': 'accepted'} and acc['reason_kind'] == 'owner'
+    assert res['transfers']['accepted_fixed'] == 1
+    rej = _change(m1, c_rej)
+    assert rej is None or rej['type'] != 'transfer'          # отклонённому менеджеру не передаётся
+
+
+def _use_overlap(client, snap):
+    client.application.extensions['route_optimizer'].snapshots = SnapshotCache(lambda: snap)
+
+
+def test_api_transfer_decision_export_and_stale(client):
+    rows, _, cross = _overlap_rows()
+    _use_overlap(client, _overlap_snapshot(debts={c: 5000.0 for c in cross[1]}))
+    assert client.post('/api/routes/settings', json={'settings': {'penalty_transfer': 500}}).status_code == 200
+    res = _wait_job(client, _start(client, {'mode': 'transfer'}))['result']
+    assert res['params']['mode'] == 'transfer' and res['transfers']['count'] == 6
+    assert all(set(m['balance']) == {'given', 'received'} for m in res['managers'])
+    m1 = _manager(res, 1)
+    ch, ch2 = [c for c in m1['changes'] if c['type'] == 'transfer'][:2]
+    c = ch['customer_id']
+
+    def decide(change, action):
+        return client.post('/api/routes/decisions', json={
+            'customer_id': change['customer_id'], 'agent_id': 1, 'kind': 'transfer', 'action': action,
+            'value': {'agent_id': change['to_agent'], 'pattern': change['to']['pattern']},
+            'from': change['from']['pattern']})
+
+    assert decide(ch, 'accept').get_json() == {'success': True}
+    bad = client.post('/api/routes/decisions', json={'customer_id': c, 'agent_id': 1, 'kind': 'transfer',
+                                                      'action': 'accept',
+                                                      'value': {'agent_id': 99, 'pattern': [[1, 1]]}})
+    assert bad.status_code == 400 and 'value' in bad.get_json()['errors']     # кому — нет маршрутов в ERP
+    last = _manager(client.get('/api/routes/optimize/last').get_json()['result'], 1)
+    assert _change(last, c)['decision'] == {'transfer': 'accepted'}
+
+    # план для ERP: клиент — у нового менеджера с отметкой «передать», в изменениях — «передать: от → кому»
+    ex = client.get('/api/routes/plan-export').get_json()
+    mine = [r for r in ex['rows'] if r['customer_id'] == c]
+    assert {r['agent_id'] for r in mine} == {2} and {r['mark'] for r in mine} == {'передать'}
+    assert sorted([r['week'], r['weekday']] for r in mine) == ch['to']['pattern']
+    assert mine[0]['address_id'] == c + 50000                               # адрес — из шаблона прежнего
+    tch = [x for x in ex['changes'] if x['customer_id'] == c]
+    assert len(tch) == 1 and tch[0]['type'] == 'transfer' and tch[0]['agent_id'] == 1
+    assert (tch[0]['from_agent_code'], tch[0]['to_agent_code']) == ('A001', 'A002')
+    assert tch[0]['from']['text'].startswith('A001: ') and tch[0]['to']['text'].startswith('A002: ')
+    assert {m['agent_id']: m['changes'] for m in ex['managers']} == {1: 1, 2: 0}
+    view = client.get('/api/routes/decisions').get_json()
+    assert view['summary']['export_changes'] == 1 and view['summary']['accepted'] == 1
+    item = view['decisions'][0]
+    assert item['kind'] == 'transfer' and item['value']['agent_code'] == 'A002'
+    assert item['to_text'].startswith('передать A002: ') and item['stale'] is False
+
+    # отклонённая передача в следующем расчёте этому менеджеру не предлагается; принятая — закреплена
+    assert decide(ch2, 'reject').get_json() == {'success': True}
+    res2 = _wait_job(client, _start(client, {'mode': 'transfer'}))['result']
+    m1b = _manager(res2, 1)
+    assert _change(m1b, c)['decision'] == {'transfer': 'accepted'}
+    c2 = _change(m1b, ch2['customer_id'])
+    assert c2 is None or c2['type'] != 'transfer'
+
+    # дни клиента в ERP изменились — решение устарело: не применяется и показывается
+    changed = [replace(r, weekday=r.weekday % 6 + 1) if r.customer_id == c else r for r in rows]
+    _use_overlap(client, _overlap_snapshot(rows=changed, snapshot_id='overlap-2'))
+    ex2 = client.get('/api/routes/plan-export').get_json()
+    assert {r['agent_id'] for r in ex2['rows'] if r['customer_id'] == c} == {1}
+    assert [x['customer_id'] for x in ex2['stale_decisions']] == [c]
+    # в ERP уже передали — решение отработало и уходит из списка
+    done = [replace(r, agent_id=2, template_id=99) if r.customer_id == c else r for r in rows]
+    _use_overlap(client, _overlap_snapshot(rows=done, snapshot_id='overlap-3'))
+    view = client.get('/api/routes/decisions').get_json()
+    assert c not in [x['customer_id'] for x in view['decisions'] if x['kind'] == 'transfer']
+
+
+def test_api_optimize_mode_validation(client):
+    r = client.post('/api/routes/optimize', json={'mode': 'magic'})
+    assert r.status_code == 400 and set(r.get_json()['errors']) == {'mode'}
+    d = _wait_job(client, _start(client, {'mode': 'days'}))
+    assert d['result']['params'] == {'agent_ids': [1, 2], 'start': 'current', 'frequencies': 'sales'}
+    assert set(d['result']) == RESULT_KEYS                                   # режим А — без новых полей
+
+
+def test_store_migrates_schema_5_to_6_keeps_values(tmp_path):
+    """Схема 5 → 6: вид решения transfer (CHECK пересобран), все решения, настройки и расчёты — как были;
+    новые настройки — по умолчанию; одно принятое решение каждого вида — и у передачи."""
+    path = str(tmp_path / 'v5.db')
+    rows = [(103, 1, 'pattern', '[[2,2]]', '[[1,2],[2,2]]', 'accepted', '2026-09-01T10:00:00', 'owner'),
+            (103, 1, 'remove', '[]', '[[1,2],[2,2]]', 'rejected', '2026-09-01T10:00:01', 'owner'),
+            (105, 2, 'freq', '1', None, 'retired', '2026-09-03T10:00:00', 'owner')]
+    cols = 'customer_id, agent_id, kind, value, from_value, status, updated_at, updated_by'
+    transfer_row = f'INSERT INTO decision({cols}) VALUES(?, 1, ?, ?, NULL, ?, ?, NULL)'
+    with closing(sqlite3.connect(path)) as conn:
+        for sql in st._SCHEMA[:5]:
+            conn.execute(sql)
+        conn.execute(f'CREATE TABLE decision({st._DECISION_COLUMNS_V5})')
+        conn.execute(st._SCENARIO_TABLE)
+        conn.execute(st._DECISION_ONE_ACCEPTED)
+        conn.execute("INSERT INTO meta VALUES('schema_version', '5')")
+        conn.execute("INSERT INTO settings VALUES('penalty_change', '450')")
+        conn.executemany(f'INSERT INTO decision({cols}) VALUES(?, ?, ?, ?, ?, ?, ?, ?)', rows)
+        conn.execute("INSERT INTO scenario VALUES('s1', 'x', 'qa', '{}', ?)", (json.dumps({'n': 1}),))
+        with pytest.raises(sqlite3.IntegrityError):                          # в схеме 5 transfer нет
+            conn.execute(transfer_row, (1, 'transfer', pt.transfer_key(2, _wk(1)), 'accepted', 'x'))
+        conn.commit()
+    s = st.Store(path)
+    bundle = s.load()
+    assert bundle.settings['penalty_change'] == 450
+    assert (bundle.settings['penalty_transfer'], bundle.settings['transfer_radius_km']) == (2000, 1.5)
+    assert s.last_scenario().result == {'n': 1}
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('6',)
+        assert sorted(conn.execute(f'SELECT {cols} FROM decision').fetchall(), key=str) == sorted(rows, key=str)
+        indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        assert 'decision_one_accepted' in indexes
+    s.save_decision(103, 1, 'transfer', pt.transfer_key(2, _wk(4)), 'accept', 'qa', '[[1,2],[2,2]]')
+    s.save_decision(103, 1, 'transfer', pt.transfer_key(3, _wk(5)), 'accept', 'qa', '[[1,2],[2,2]]')
+    got = [d for d in s.load_decisions() if d.kind == 'transfer']
+    assert [(d.value, d.status) for d in got] == [(pt.transfer_key(3, _wk(5)), 'accepted')]   # одно принятое
+    with closing(sqlite3.connect(path)) as conn:                             # передача самому себе — битая
+        conn.execute(transfer_row, (7, 'transfer', pt.transfer_key(1, _wk(1)), 'rejected', 'x'))
+        conn.commit()
+    with pytest.raises(st.StoreError, match='решение'):
+        s.load_decisions()
+
+
+def test_store_transfer_settings_validation(store):
+    for key, bad in (('penalty_transfer', -1), ('penalty_transfer', 2e6), ('transfer_radius_km', 0),
+                     ('transfer_radius_km', 50)):
+        _, errors = st.validate_payload({'settings': {key: bad}}, store.load(), REF)
+        assert f'settings.{key}' in errors
+    _save(store, {'settings': {'penalty_transfer': 3500, 'transfer_radius_km': 2.5}})
+    s = store.load().settings
+    assert (s['penalty_transfer'], s['transfer_radius_km']) == (3500, 2.5)

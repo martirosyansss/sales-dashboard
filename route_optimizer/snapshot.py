@@ -11,7 +11,7 @@ import logging
 import threading
 import time as _time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Any, Callable, Hashable
 
@@ -58,6 +58,8 @@ class Snapshot:
     fixes_by_agent: dict[int, tuple[Fix, ...]]      # последние 45 дней
     cars: dict[str, erp.Car]
     car_usage: dict[str, dict[int, int]]            # машина → агент → документов за 90 дней
+    # клиенты плана: долг на сегодня по формуле дашборда (этап 4, режим Б); нет записи — долга нет
+    debts: dict[int, float] = field(default_factory=dict)
 
     def ref_data(self) -> RefData:
         return RefData(car_codes=frozenset(self.cars), agent_ids=frozenset(self.plan.agent_ids),
@@ -85,6 +87,7 @@ def build_snapshot(conn: Any, today: date, snapshot_id: str, as_of: datetime) ->
     fixes = erp.tracks(conn, midnight - timedelta(days=TRACK_WINDOW_DAYS), midnight)
     cars = erp.cars(conn)
     usage = erp.car_usage(conn, today - timedelta(days=CAR_USAGE_DAYS), today + timedelta(days=1))
+    debts = erp.customer_debts(conn, plan_customers)
 
     # Координаты ERP: валидные и не «дефолтные» (одна точка у ≥ 3 клиентов во всём справочнике).
     valid = [a for a in addresses if is_valid_point(a.lat, a.lon)]
@@ -131,7 +134,7 @@ def build_snapshot(conn: Any, today: date, snapshot_id: str, as_of: datetime) ->
         active_agents=active_agents(orders, visits, today - timedelta(days=ACTIVE_WINDOW_DAYS), today),
         recent_visits=tuple(v for v in visits if v.day >= today - timedelta(days=CALIB_WINDOW_DAYS)),
         fixes_by_agent={a: tuple(fs) for a, fs in fixes.items()},
-        cars=cars, car_usage=usage,
+        cars=cars, car_usage=usage, debts=debts,
     )
     logger.info('[Routes] Снимок %s: агентов с планом %d (с работой за 8 нед. %d), клиентов плана %d, '
                 'заказов в окне %d, визитов %d, точек трека %d', snapshot_id, len(plan.agent_ids),

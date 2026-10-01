@@ -21,9 +21,9 @@ from datetime import datetime
 from typing import Any, Callable, Collection, Mapping
 
 from .geo import ARMENIA_LAT, ARMENIA_LON, Point, is_valid_point
-from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key
+from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, parse_transfer_key
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -49,9 +49,17 @@ _DECISION_COLUMNS_V4 = (
     "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (customer_id, agent_id, kind, value)")
 # Схема 5 (§15): вид решения remove — убрать клиента из маршрута менеджера (value — REMOVE_VALUE,
 # from_value — шаблон клиента, от которого принято решение).
-_DECISION_COLUMNS = (
+# Как была создана миграцией 4 → 5 (история миграций не меняется).
+_DECISION_COLUMNS_V5 = (
     "customer_id INTEGER NOT NULL, agent_id INTEGER NOT NULL, "
     "kind TEXT NOT NULL CHECK (kind IN ('pattern', 'freq', 'remove')), value TEXT NOT NULL, "
+    "from_value TEXT, status TEXT NOT NULL CHECK (status IN ('accepted', 'rejected', 'retired')), "
+    "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (customer_id, agent_id, kind, value)")
+# Схема 6 (этап 4): вид решения transfer — передать клиента от менеджера agent_id другому менеджеру
+# (value — patterns.transfer_key: кому и в какие дни; from_value — шаблон клиента у agent_id).
+_DECISION_COLUMNS = (
+    "customer_id INTEGER NOT NULL, agent_id INTEGER NOT NULL, "
+    "kind TEXT NOT NULL CHECK (kind IN ('pattern', 'freq', 'remove', 'transfer')), value TEXT NOT NULL, "
     "from_value TEXT, status TEXT NOT NULL CHECK (status IN ('accepted', 'rejected', 'retired')), "
     "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (customer_id, agent_id, kind, value)")
 _DECISION_COPY = 'customer_id, agent_id, kind, value, from_value, status, updated_at, updated_by'
@@ -116,10 +124,20 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     # строки переносятся как есть; частичный уникальный индекс уходит вместе со старой таблицей и
     # создаётся заново (на клиента у менеджера — одно принятое решение каждого вида, и remove тоже).
     4: (
-        f"CREATE TABLE decision_v5({_DECISION_COLUMNS})",
+        f"CREATE TABLE decision_v5({_DECISION_COLUMNS_V5})",
         f"INSERT INTO decision_v5({_DECISION_COPY}) SELECT {_DECISION_COPY} FROM decision",
         "DROP TABLE decision",
         "ALTER TABLE decision_v5 RENAME TO decision",
+        _DECISION_ONE_ACCEPTED,
+    ),
+    # 5 → 6 (этап 4): вид решения transfer — так же, как 4 → 5: таблица пересобирается, строки
+    # переносятся как есть, частичный уникальный индекс создаётся заново. Настройки (penalty_transfer,
+    # transfer_radius_km) миграции не требуют: нет ключа — значение по умолчанию.
+    5: (
+        f"CREATE TABLE decision_v6({_DECISION_COLUMNS})",
+        f"INSERT INTO decision_v6({_DECISION_COPY}) SELECT {_DECISION_COPY} FROM decision",
+        "DROP TABLE decision",
+        "ALTER TABLE decision_v6 RENAME TO decision",
         _DECISION_ONE_ACCEPTED,
     ),
 }
@@ -174,6 +192,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'dormant_mult': 3,
     'lost_min_days': 120,      # «потерян»: дольше max(120 дн, 6 × интервал)
     'lost_mult': 6,
+    # Этап 4 — передача магазинов между менеджерами (режим Б): плата за передачу, драм в неделю
+    # (передача должна окупаться заметно), и радиус «у менеджера есть клиент рядом», км
+    'penalty_transfer': 2000,
+    'transfer_radius_km': 1.5,
 }
 
 # Числовые настройки: ключ -> (мин, макс, допускается null)
@@ -212,6 +234,8 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'dormant_mult': (1, 20, False),
     'lost_min_days': (1, 730, False),
     'lost_mult': (1, 50, False),
+    'penalty_transfer': (0, 1e6, False),
+    'transfer_radius_km': (0.1, 20, False),
 }
 
 TRUCK_CAPACITY_KG = (100, 30000)
@@ -309,7 +333,7 @@ class Changes:
     managers: tuple[ManagerProfile, ...]
 
 
-DECISION_KINDS = ('pattern', 'freq', 'remove')
+DECISION_KINDS = ('pattern', 'freq', 'remove', 'transfer')
 DECISION_ACTIONS = ('accept', 'reject', 'reset')
 REMOVE_VALUE = '[]'   # value решения remove: шаблон «без визитов» (patterns.pattern_key(()))
 
@@ -318,8 +342,10 @@ REMOVE_VALUE = '[]'   # value решения remove: шаблон «без ви�
 class Decision:
     """Решение владельца по предложению (этап 3): accepted — закрепить, rejected — запретить
     шаблон (kind='pattern') или частоту (kind='freq') клиента у менеджера; remove (§15) —
-    accepted: убрать клиента из маршрута менеджера, rejected: оставить.
-    value — канонический JSON: patterns.pattern_key / patterns.freq_key / REMOVE_VALUE; from_value —
+    accepted: убрать клиента из маршрута менеджера, rejected: оставить; transfer (этап 4) —
+    accepted: передать клиента другому менеджеру в указанные дни, rejected: этому менеджеру не передавать.
+    value — канонический JSON: patterns.pattern_key / patterns.freq_key / REMOVE_VALUE /
+    patterns.transfer_key; from_value —
     шаблон (pattern_key; у remove — тоже шаблон) или частота (freq_key) клиента, от которых
     принималось решение; None — неизвестно (решение схемы 3)."""
     customer_id: int
@@ -716,6 +742,9 @@ def _loaded_decision(row: tuple) -> tuple[Decision, list[str]]:
     else:
         if kind == 'remove':
             value_ok = value == REMOVE_VALUE
+        elif kind == 'transfer':
+            hit = parse_transfer_key(value)
+            value_ok = hit is not None and hit[0] != agent_id
         else:
             value_ok = (parse_pattern_key(value) if kind == 'pattern' else parse_freq_key(value)) is not None
         if not value_ok:
