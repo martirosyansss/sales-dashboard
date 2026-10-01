@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=9">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=10">
 {% endblock %}
 
 {% block content %}
@@ -85,9 +85,9 @@
                         <h3 class="rt-card-title" id="rsHTrucks"><i class="fas fa-truck" aria-hidden="true"></i>Машины доставки</h3>
                         <span class="rt-card-state" id="rsStTrucks"></span>
                     </div>
-                    <p class="rt-card-lead">Список машин — из ERP. Укажите, сколько тонн возит машина, сколько литров тратит на 100 км
-                        и чьи заказы возит. Если менеджера возят две машины — назначьте обе, расчёт возьмёт большую.
-                        Подсказка «по накладным» — какая машина чаще всего возила его заказы за 3 месяца.</p>
+                    <p class="rt-card-lead">Список машин — из ERP. Укажите, сколько тонн возит машина и сколько литров тратит на 100 км.
+                        Машина закреплена за водителем: заказы всех менеджеров за день программа сама разложит по машинам и рейсам.
+                        Подсказка «по накладным» — сколько машина обычно возила в день за 3 месяца.</p>
                     <div id="rsTrucks"></div>
                 </section>
 
@@ -167,5 +167,5 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=7"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=8"></script>
 {% endblock %}

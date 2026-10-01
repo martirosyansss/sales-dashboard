@@ -324,26 +324,23 @@ def _agent_order(snap: Snapshot) -> list[int]:
                   key=lambda a: (snap.agents[a].code if a in snap.agents else '', a))
 
 
-def _suggested_agent(snap: Snapshot, car_code: str, plan_agents: set[int]) -> int | None:
-    """Агент с шаблонами, чьи продажи эта машина возила чаще всех за 90 дней."""
-    usage = [(n, a) for a, n in snap.car_usage.get(car_code, {}).items() if a in plan_agents]
-    return max(usage)[1] if usage else None
-
-
 def _trucks_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
-    plan_agents = set(snap.plan.agent_ids)
+    """Машины CARS и их настройки. Машина закреплена за водителем, а не за менеджером (ответ
+    владельца №29) — вместо менеджера подсказка из ERP: сколько машина возит в день (90 дней)."""
     out = []
     for code, car in sorted(snap.cars.items()):
         t = bundle.trucks.get(code)
+        days, avg, top = snap.car_days.get(code, (0, None, None))
         out.append({
             'car_code': code,
             'name': car.name,
             'erp_closed': car.closed,
             'capacity_kg': t.capacity_kg if t else None,
             'fuel_l_per_100km': t.fuel_l_per_100km if t else None,
-            'agent_id': t.agent_id if t else None,
-            'suggested_agent_id': _suggested_agent(snap, code, plan_agents),
             'active': t.active if t else not car.closed,
+            'erp_days': days,
+            'erp_kg_day': round(avg) if avg is not None else None,
+            'erp_kg_day_max': round(top) if top is not None else None,
         })
     return out
 

@@ -695,6 +695,24 @@
    СЕЗОНЫ: «как считаются цифры»
    ------------------------------------------------------------------------ */
 .rt-season { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+/* Настройки → машины: подсказка из накладных ERP */
+.rs-erp { font-size: .875rem; color: var(--rt-fg-dim); }
+.rs-erp small, .rs-erp-none { font-size: .8rem; color: var(--rt-fg-mute); }
+
+/* Развоз по дням: день доставки — карточка с машинами (парк, fleet-plan §4) */
+.rt-fleet-days { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 12px; margin-top: 12px; }
+.rt-fleet-day { background: var(--rt-inset); border: 1px solid var(--rt-line); border-top: 3px solid var(--rt-acc); border-radius: var(--rt-radius-sm); padding: 12px 14px; min-width: 0; }
+.rt-fleet-day.is-short { border-top-color: var(--rt-danger); }
+.rt-fleet-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 8px; }
+.rt-page .rt-fleet-head h3 { font-size: 1rem; font-weight: 700; margin: 0; }
+.rt-fleet-from { font-size: .8rem; color: var(--rt-fg-mute); }
+.rt-fleet-sum { flex-basis: 100%; font-size: .875rem; color: var(--rt-fg-dim); }
+.rt-fleet-trucks { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.rt-fleet-trucks li { display: flex; flex-direction: column; gap: 1px; font-size: .9rem; }
+.rt-fleet-trucks .n { font-weight: 600; color: var(--rt-fg); overflow-wrap: anywhere; }
+.rt-fleet-trucks .s { color: var(--rt-fg-dim); font-size: .85rem; }
+.rt-fleet-note { margin: 8px 0 0; font-size: .85rem; color: var(--rt-fg-mute); }
+
 .rt-season-card {
     background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm);
     border-top: 3px solid var(--rt-line); padding: 12px 14px; min-width: 0;

@@ -249,7 +249,6 @@
         depot: null,           // [lat, lon] — склад из обзора
         season: null,          // сезоны из обзора: месяцы зимы — для подсказок
         roads: false,          // км по дорогам на карте (обзор: distance_source = 'roads')
-        noTruck: 0, noFuel: 0, // из обзора: менеджеров без машины и машин без расхода — для строки про дизель
         settings: null,        // настройки: порог дня, рабочие дни, «потерян» через N дней
         pick: new Set(),       // выбранные менеджеры (agent_id строкой)
         result: null,          // результат расчёта (§10.1)
@@ -1134,6 +1133,10 @@
         { key: 'revenue_week_peak', mkey: 'revenue_peak', word: 'летом' },
         { key: 'revenue_week_year', mkey: 'revenue_year', word: 'в среднем за год' },
     ];
+    const truckTipText = () => 'Машина закреплена за водителем, а не за менеджером: заказы всех менеджеров за день развозятся по машинам '
+        + 'и рейсам вместе — с учётом тоннажа и рабочего дня машины. Поэтому дни визитов разных менеджеров связаны: если заказы из одного района '
+        + 'приходятся на один день доставки, машина едет туда один раз. Литры — км рейса × расход машины, которая его везёт; в среднем за год. '
+        + 'Рейсы, загрузка и км парка — в «Все цифры».';
     const kmTipText = () => 'Сколько километров менеджеры проезжают за неделю: из дома к магазинам дня в самом коротком порядке и обратно домой. '
         + (state.roads ? 'Км — по дорогам на карте.' : 'Км — по прямой с поправкой на извилистость дорог.')
         + ' Литры и драмы — по расходу машин менеджеров и ценам топлива из настроек.';
@@ -1153,6 +1156,24 @@
         const items = [];
         const n = allChanges().length;
         $('roMainLead').textContent = n ? 'Если принять все предложения:' : 'Текущий план уже близок к лучшему.';
+
+        // 0. Дизель грузовиков — первой строкой (парк: заказы всех менеджеров развозят машины вместе)
+        const tlb = num(r.before.truck_liters_week), tla = num(r.after.truck_liters_week);
+        const link = (hash, text) => h('a', { href: '/routes/settings#' + hash, text });
+        if (tlb !== null && tla !== null) {
+            const dl = tlb - tla, ab = num(r.before.truck_amd_week), aa = num(r.after.truck_amd_week);
+            const money = ab !== null && aa !== null ? ' (≈' + NB + moneyRound(ab) + ' → ' + moneyRound(aa) + NB + 'драм)' : '';
+            items.push({ tone: Math.abs(dl) < 1 ? 0 : (dl > 0 ? 1 : -1), tip: truckTipText(), tipLabel: 'дизель грузовиков',
+                nodes: Math.abs(dl) < 1
+                    ? ['дизель грузовиков почти не изменится — ', mark(fmt(tla) + NB + 'л в неделю', 0), money]
+                    : ['дизель грузовиков: ', mark(fmt(tlb) + ' → ' + fmt(tla) + NB + 'л в неделю', dl > 0 ? 1 : -1),
+                        money, ' — на ' + fmt(Math.abs(dl)) + NB + 'л ' + (dl > 0 ? 'меньше' : 'больше')] });
+        } else {
+            note.append(icon('fa-truck'), h('span', {}, depotOf()
+                ? ['Укажите тоннаж и расход машин ', link('trucks', 'в настройках'), ' — тогда программа будет экономить дизель грузовиков.']
+                : ['Укажите склад и машины ', link('depot', 'в настройках'), ' — тогда программа будет экономить дизель грузовиков.']));
+            note.hidden = false;
+        }
 
         // 1. Километры менеджеров: литры и драмы, если посчитаны
         const kb = total('before', 'manager_km_week', 'manager_km'), ka = total('after', 'manager_km_week', 'manager_km');
@@ -1231,30 +1252,6 @@
         items.forEach(it => list.append(h('li', { class: it.tone > 0 ? 'is-good' : (it.tone < 0 ? 'is-bad' : 'is-same') },
             h('span', { class: 'ico', 'aria-hidden': 'true' }, icon(it.tone > 0 ? 'fa-check' : (it.tone < 0 ? 'fa-arrow-up' : 'fa-equals'))),
             h('span', { class: 'txt' }, it.nodes, it.tip ? [' ', tip(it.tip, it.tipLabel)] : null))));
-
-        // Грузовики — одной строкой. Только итог компании: сумма по части менеджеров ввела бы в заблуждение
-        const tb = num(r.before.truck_km_week), ta = num(r.after.truck_km_week);
-        const tlb = num(r.before.truck_liters_week), tla = num(r.after.truck_liters_week);
-        const link = (hash, text) => h('a', { href: '/routes/settings#' + hash, text });
-        if (tb === null && ta === null) {
-            note.append(icon('fa-truck'), h('span', {}, 'Дизель грузовиков не посчитан: ',
-                depotOf() ? 'укажите машины менеджеров' : 'укажите склад и машины', ' — ', link(depotOf() ? 'trucks' : 'depot', 'в настройках'), '.'));
-        } else {
-            const d = (tb || 0) - (ta || 0);
-            const km = Math.abs(d) >= 1 ? 'Грузовики будут проезжать на ' + fmt(Math.abs(d)) + NB + 'км в неделю ' + (d > 0 ? 'меньше' : 'больше') + '. '
-                : 'Пробег грузовиков почти не изменится. ';
-            if (tlb !== null && tla !== null) {
-                const dl = tlb - tla;
-                note.append(icon('fa-truck'), h('span', {}, km, Math.abs(dl) >= 1
-                    ? 'Дизеля — на ≈' + NB + fmt(Math.abs(dl)) + NB + 'л в неделю ' + (dl > 0 ? 'меньше' : 'больше') + '.' : 'Дизель почти не изменится.'));
-            } else {
-                const miss = [state.noTruck ? 'у ' + state.noTruck + ' ' + plural(state.noTruck, 'менеджера', 'менеджеров', 'менеджеров') + ' нет машины' : '',
-                    state.noFuel ? 'у ' + state.noFuel + ' ' + plural(state.noFuel, 'машины', 'машин', 'машин') + ' не указан расход' : ''].filter(Boolean);
-                note.append(icon('fa-truck'), h('span', {}, km, 'Дизель посчитан не для всех машин' + (miss.length ? ': ' + miss.join(', ') : '') + ' — ',
-                    link('trucks', 'заполнить в настройках'), '.'));
-            }
-        }
-        note.hidden = false;
     }
 
     // ---------- Три крупных показателя ----------
@@ -1302,10 +1299,19 @@
             { label: 'Топливо менеджеров, литров в неделю', b: num(r.before.manager_liters_week), a: num(r.after.manager_liters_week), d: 0, lower: true },
             { label: 'Топливо менеджеров, драм в неделю', b: num(r.before.manager_amd_week), a: num(r.after.manager_amd_week), d: 0, lower: true,
                 none: 'не посчитано — нет цен топлива' },
-            { label: 'Км грузовиков в неделю', b: total('before', 'truck_km_week', 'truck_km'), a: total('after', 'truck_km_week', 'truck_km'), d: 0, lower: true,
+            { label: 'Дизель грузовиков, литров в неделю', b: num(r.before.truck_liters_week), a: num(r.after.truck_liters_week),
+                d: 0, lower: true, none: 'не посчитан — укажите тоннаж и расход машин' },
+            { label: 'Дизель грузовиков, драм в неделю', b: num(r.before.truck_amd_week), a: num(r.after.truck_amd_week), d: 0, lower: true,
+                none: 'не посчитано — нет машин или цены дизеля' },
+            { label: 'Км грузовиков в неделю', b: num(r.before.truck_km_week), a: num(r.after.truck_km_week), d: 0, lower: true,
                 none: 'не посчитано — нет склада или машин' },
-            { label: 'Дизель грузовиков, литров в неделю', b: total('before', 'truck_liters_week', 'truck_liters'), a: total('after', 'truck_liters_week', 'truck_liters'),
-                d: 0, lower: true, none: 'не посчитан — нет расхода машин' },
+            { label: 'Рейсов грузовиков в неделю', b: num(r.before.trips_week), a: num(r.after.trips_week), d: 1, lower: true, none: 'не посчитано' },
+            { label: 'Рейсов в день доставки', b: num(r.before.trips_per_day), a: num(r.after.trips_per_day), d: 1, lower: true, none: 'не посчитано' },
+            { label: 'Загрузка машины в рейсе, %', b: num(r.before.avg_load_pct), a: num(r.after.avg_load_pct), d: 0, lower: false, none: 'не посчитано' },
+            { label: 'Загрузка в пик (летом), %', b: num(r.before.avg_load_pct_peak), a: num(r.after.avg_load_pct_peak), d: 0, lower: null, none: 'не посчитано' },
+            { label: 'Машино-часов в неделю', b: num(r.before.truck_hours_week), a: num(r.after.truck_hours_week), d: 0, lower: true, none: 'не посчитано' },
+            { label: 'Дней доставки, когда в пик машины не успевают', b: num(r.before.truck_days_short_week), a: num(r.after.truck_days_short_week),
+                d: 1, lower: true, none: 'не посчитано' },
             { label: 'Время у магазинов, часов в день', b: total('before', 'avg_plan_work_hours', 'avg_work_hours', true),
                 a: total('after', 'avg_plan_work_hours', 'avg_work_hours', true), d: 1, lower: null },
             { label: 'Рабочий день с дорогой из дома, часов', b: total('before', 'avg_plan_hours', 'avg_plan_hours', true),
@@ -2677,11 +2683,6 @@
             state.depot = num(dp.lat) !== null && num(dp.lon) !== null ? [num(dp.lat), num(dp.lon)] : null;
             state.season = obj(d.season);
             state.roads = d.distance_source === 'roads';
-            // для строки про дизель: у скольких менеджеров в расчёте нет машины, у скольких машин нет расхода
-            const inc = list.filter(m => m.included !== false);
-            state.noTruck = inc.filter(m => !isObj(m.truck)).length;
-            state.noFuel = new Set(inc.filter(m => isObj(m.truck) && num(m.truck.fuel_l_per_100km) === null)
-                .map(m => String(m.truck.car_code || m.truck.name || m.agent_id))).size;
             state.pick = new Set(state.managers.filter(m => m.included).map(m => String(m.agent_id)));
             renderPicker();
         } else {

@@ -13,8 +13,10 @@
 - передача группой: c и ближайшие клиенты X в те же дни — к Y (одна поездка X в район исчезает
   только вместе со всеми её клиентами);
 - переносы дней внутри менеджера — ходы режима А (search._descent) по тем, кто сейчас у менеджера.
-Стоимость компании = Σ стоимостей менеджеров (драм в неделю) + penalty_transfer × число клиентов,
-которые посещаются не своим менеджером по плану ERP. Детерминизм — как в режиме А: порядок и
+Стоимость компании = Σ своих стоимостей менеджеров (драм в неделю) + дизель парка (общий
+search.FleetEstimate) + penalty_transfer × число клиентов, которые посещаются не своим менеджером по
+плану ERP. Ход двух менеджеров меняет парк дважды: вторая половина хода оценивается по парку после
+первой (State.fleet_push / fleet_pop). Детерминизм — как в режиме А: порядок и
 возмущения ILS от seed, число возмущений ограничено счётчиком, время — только страховочный стоп.
 """
 from __future__ import annotations
@@ -65,6 +67,10 @@ class Market:
         все клиенты в радиусе по близости (из них — группа для передачи группой; нет — neighbors)."""
         self.states = dict(states)
         self.agents = sorted(self.states)
+        fleets = {id(st.fleet): st.fleet for st in self.states.values()}
+        if len(fleets) > 1:
+            raise ValueError('у менеджеров разные парки машин')
+        self.fleet: sr.FleetEstimate | None = next(iter(fleets.values()), None)
         self.clients = {c.customer_id: c for c in clients}
         self.neighbors = {cid: tuple(neighbors.get(cid, ())) for cid in self.clients}
         around = neighbors if around is None else around
@@ -81,7 +87,8 @@ class Market:
         self.total = self._total()
 
     def _total(self) -> float:
-        return sum(self.states[a].total for a in self.agents) + self.penalty * self.n_moved
+        fleet = self.fleet.total if self.fleet is not None else 0.0
+        return sum(self.states[a].own_total() for a in self.agents) + fleet + self.penalty * self.n_moved
 
     def movable(self, cid: int) -> bool:
         return self.clients[cid].fixed is None and len(self.clients[cid].lines) > 1
@@ -104,10 +111,12 @@ class Market:
         i = c.lines[to]
         cache: dict = {}
         best = None
+        pushed = self.states[frm].fleet_push(out[1])   # приход — по парку, где клиент уже ушёл
         for p in st.lines[i].allowed:
             d, move = st.eval_relocate(i, p, cache)
             if best is None or d < best[0]:
                 best = (d, move)
+        self.states[frm].fleet_pop(pushed)
         delta = out[0] + best[0] + self.penalty * self._moved_delta(cid, frm, to)
         return delta, ('transfer', cid, frm, to, out[1], best[1])
 
@@ -124,7 +133,9 @@ class Market:
                 or p1 not in self._allowed[x][b.lines[x]]:
             return None
         dx, mx = sx.eval_exchange(a.lines[x], b.lines[x])     # c2 занимает дни c1 у x
+        pushed = sx.fleet_push(mx)
         dy, my = sy.eval_exchange(b.lines[y], a.lines[y])     # c1 занимает дни c2 у y
+        sx.fleet_pop(pushed)
         dn = self._moved_delta(c1, x, y) + self._moved_delta(c2, y, x)
         return dx + dy + self.penalty * dn, ('swap', c1, c2, x, y, mx, my)
 
@@ -141,13 +152,16 @@ class Market:
                          and to in self.clients[d].lines and days & set(st.pattern[self.clients[d].lines[frm]])]
         if len(group) < 2:
             return None
-        saved = (self.states[frm].snapshot(), self.states[to].snapshot(), self.n_moved, self.total)
+        saved = (self.states[frm].snapshot(False), self.states[to].snapshot(False), self.n_moved, self.total,
+                 self.fleet.snapshot() if self.fleet is not None else None)
         moves = []
         for d in group[:GROUP_MAX]:
             move = self.eval_transfer(d, to)[1]
             self.apply(move)
             moves.append(move)
         delta = self.total - saved[3]
+        if self.fleet is not None:
+            self.fleet.restore(saved[4])
         self.states[frm].restore(saved[0])
         self.states[to].restore(saved[1])
         for move in moves:
@@ -202,14 +216,18 @@ class Market:
     def polish(self, all_days: bool = False) -> None:
         for a in self.agents:
             self.states[a].polish(range(sr.SLOTS) if all_days else None)
+        if self.fleet is not None:
+            self.fleet.polish(range(sr.SLOTS) if all_days else None)
         self.total = self._total()
 
     def snapshot(self) -> tuple:
-        return ({a: self.states[a].snapshot() for a in self.agents}, dict(self.owner), self.n_moved,
-                self.total)
+        return ({a: self.states[a].snapshot(False) for a in self.agents}, dict(self.owner), self.n_moved,
+                self.total, self.fleet.snapshot() if self.fleet is not None else None)
 
     def restore(self, snap: tuple) -> None:
-        states, owner, n_moved, total = snap
+        states, owner, n_moved, total, fleet = snap
+        if self.fleet is not None:
+            self.fleet.restore(fleet)
         for a in self.agents:
             self.states[a].restore(states[a])
         self.owner = dict(owner)
@@ -219,16 +237,21 @@ class Market:
     def recomputed_total(self) -> float:
         """Стоимость компании заново по состояниям и владельцам (для тестов: равна self.total)."""
         moved = sum(1 for cid, c in self.clients.items() if self.owner[cid] != c.origin)
-        return sum(self.states[a].total for a in self.agents) + self.penalty * moved
+        fleet = sum(self.fleet.cost) if self.fleet is not None else 0.0
+        return sum(self.states[a].own_total() for a in self.agents) + fleet + self.penalty * moved
 
     def consistency_error(self) -> float:
-        """Наибольшее расхождение инкрементальных агрегатов с расчётом с нуля по всем менеджерам;
-        inf — клиент посещается не ровно одним менеджером или owner неверен."""
+        """Наибольшее расхождение инкрементальных агрегатов с расчётом с нуля по всем менеджерам и
+        парку; inf — клиент посещается не ровно одним менеджером, owner неверен или состав туров
+        парка не совпадает с визитами менеджеров."""
         for cid, c in self.clients.items():
             present = [a for a in c.lines if self.states[a].pattern[c.lines[a]]]
             if present != [self.owner[cid]]:
                 return float('inf')
         worst = max((self.states[a].consistency_error() for a in self.agents), default=0.0)
+        if self.fleet is not None:
+            worst = max(worst, self.fleet.consistency_error(
+                [e for a in self.agents for e in self.states[a].fleet_entries()]))
         return max(worst, abs(self.recomputed_total() - self.total) / max(1.0, abs(self.total)))
 
 
@@ -412,36 +435,44 @@ def search(market: Market, *, seconds: float, seed: int, clock: Callable[[], flo
 
 # --- Эффект передачи, применённой к текущему плану ---
 
-EFFECT_ZERO = {'km': 0.0, 'minutes': 0.0, 'weak': 0.0, 'truck_km': 0.0, 'over': 0.0}
+EFFECT_ZERO = {'km': 0.0, 'minutes': 0.0, 'weak': 0.0, 'over': 0.0}
 
 
 def side_effect(before: sr.State, i: int, new: sr.SlotPattern,
                 new_params: sr.VisitParams) -> dict[str, float]:
     """Эффект для одного менеджера, если клиент i получает шаблон new (() — уходит от менеджера,
-    из () — приходит к нему), к текущему плану before: Δ км, минут, ожидаемых слабых дней, км грузовика
-    и минут сверх рабочего дня — в неделю. Затронутые дни — с нуля (NN + 2-opt), как change_effect."""
+    из () — приходит к нему), к текущему плану before: Δ км, минут, ожидаемых слабых дней и минут сверх
+    рабочего дня — в неделю. Затронутые дни — с нуля (NN + 2-opt), как change_effect. Км парка — по обоим
+    менеджерам сразу (transfer_fleet_km): у парка дни общие."""
     prob = before.prob
     window = prob.weights.window_min
     old = before.pattern[i]
     old_set, new_set = set(old), set(new)
     days = (old_set ^ new_set) if before.params[i] == new_params else (old_set | new_set)
-    kept = {j: k for k, j in enumerate(before.slot_of[i]) if j in new_set}
-    free = [k for k in range(sr.MAX_VISITS) if k not in kept.values()]
-    new_k = dict(kept)
-    new_k.update(zip([j for j in new if j not in kept], free))
-    new_flags = {j: tuple(u < new_params.p_year for u in prob.lines[i].u[k]) for j, k in new_k.items()}
     out = dict(EFFECT_ZERO)
     for j in sorted(days):
         base = before.day_metrics(j)
-        entries = [(m, before.params[m], before.flags[m][before.slot_of[m].index(j)])
-                   for m in sorted(before.members[j]) if m != i]
+        entries = [(m, before.params[m]) for m in sorted(before.members[j]) if m != i]
         if j in new_set:
-            entries.append((i, new_params, new_flags[j]))
-        after = sr._exact_day(prob, entries, j, before.trucks)
-        for key in ('km', 'minutes', 'weak', 'truck_km'):
+            entries.append((i, new_params))
+        after = sr._exact_day(prob, entries, j)
+        for key in ('km', 'minutes', 'weak'):
             out[key] += after[key] - base[key]
         out['over'] += max(0.0, after['minutes'] - window) - max(0.0, base['minutes'] - window)
     return {key: value / sr.W for key, value in out.items()}
+
+
+def transfer_fleet_km(giver: sr.State, i: int, taker: sr.State, k: int, new: sr.SlotPattern,
+                      new_params: sr.VisitParams) -> float | None:
+    """Δ км парка в неделю, если клиент (строка i у giver, гостевая строка k у taker) уходит от giver
+    и приходит к taker в дни new — к парку «было» (giver.fleet); нет парка — None. Ушедшие и пришедшие
+    визиты оцениваются вместе: в тот же день парк везёт клиента так же."""
+    fleet = giver.fleet
+    if fleet is None:
+        return None
+    out, _ = sr.fleet_change(giver, i, (), new_params)
+    _, inn = sr.fleet_change(taker, k, new, new_params)
+    return fleet.effect_km(out, inn)
 
 
 def main_effect(giver: Mapping[str, float], taker: Mapping[str, float], giver_km_cost: float,

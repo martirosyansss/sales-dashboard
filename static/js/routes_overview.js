@@ -10,6 +10,7 @@
     const $ = (id) => document.getElementById(id);
 
     const WD_SHORT = { 1: 'Пн', 2: 'Вт', 3: 'Ср', 4: 'Чт', 5: 'Пт', 6: 'Сб', 7: 'Вс' };
+    const WD_GEN = { 1: 'понедельника', 2: 'вторника', 3: 'среды', 4: 'четверга', 5: 'пятницы', 6: 'субботы' };   // «заказы вторника»
     const WD_FULL = { 1: 'понедельник', 2: 'вторник', 3: 'среда', 4: 'четверг', 5: 'пятница', 6: 'суббота', 7: 'воскресенье' };
     const MONTHS = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
     const MONTHS_FULL = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
@@ -36,8 +37,7 @@
     const RISK_PAGE = 30;                                  // строк «Клиентов под риском» до «Показать все»
     const NORM_SRC = { manual: 'задано вручную', gps: 'по GPS-трекам', default: 'по умолчанию' };
     const ORDER_NOTE = 'Порядок объезда — самый короткий внутри дня (так менеджеры фактически ездят по GPS). № в ERP — порядок в маршруте ERP.';
-    const P_POOR = 0.5;       // «бедный рейс»: P(0 < выручка рейса < порога) ≥ 0.5
-    const P_OVERFLOW = 0.2;   // «не влезет летом»: P(груз пикового дня > тоннажа) ≥ 0.2
+    const P_SHORT = 0.5;      // «машин не хватает»: в пик рейсы не укладываются в день машин в половине проб и чаще
     const YEREVAN = [40.1792, 44.4991];
     const LS_KEY = 'routesMapFilter';
     const RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -383,6 +383,7 @@
         renderLegend();
         renderHeat();
         renderHeatLegend();
+        renderFleet();
         renderSeason();
         renderRisk();
         ensureMap();
@@ -424,12 +425,16 @@
         + 'не наберёт ' + minDayText() + ' (шанс меньше 50%). Считаются рабочие дни всех менеджеров в расчёте за неделю.';
     const kmTip = () => 'Из дома к магазинам дня в самом коротком порядке и обратно домой, по плану из ERP. '
         + (state.data.distance_source === 'roads' ? 'Км — по дорогам на карте.' : 'Км — по прямой с поправкой на извилистость дорог.');
+    // Парк машин посчитан, если есть склад и хотя бы одна активная машина с тоннажем и расходом (fleet)
     const truckIssue = () => {
         const d = state.data;
         const noDepot = !d.depot || num(d.depot.lat) === null || num(d.depot.lon) === null;
-        const noTrucks = !d.managers.some(m => m.included !== false && m.truck);
-        return noDepot ? { hash: 'depot', text: 'укажите склад и машины' } : (noTrucks ? { hash: 'trucks', text: 'укажите машины менеджеров' } : null);
+        return noDepot ? { hash: 'depot', text: 'укажите склад и машины' }
+            : (!d.fleet ? { hash: 'trucks', text: 'укажите тоннаж и расход машин' } : null);
     };
+    const fleetTip = () => 'Машина закреплена за водителем, а не за менеджером: заказы всех менеджеров за день развозятся '
+        + 'по машинам и рейсам вместе — с учётом тоннажа и рабочего дня машины. Заказы дня везут на следующий рабочий день '
+        + '(субботы — в понедельник). Литры — км рейса × расход машины, которая его везёт; в среднем за год.';
 
     // «Главное сейчас»: 2–4 предложения человеческим языком
     function renderMain() {
@@ -470,16 +475,15 @@
             h('span', { class: 'txt' }, it.nodes, ' ', tip(it.tip, it.label)))));
 
         // Грузовики — одной строкой: что указать, чтобы посчитать дизель, или сколько его уходит
-        const issue = truckIssue(), tl = num(t.truck_liters_week), tamd = num(t.truck_amd_week);
+        const issue = truckIssue(), tl = num(t.truck_liters_week), tamd = num(t.truck_amd_week), trips = num(t.trips_per_day);
         if (issue) {
             note.append(icon('fa-truck'), h('span', {}, 'Чтобы посчитать дизель грузовиков, ' + issue.text + ' — ',
                 h('a', { href: '/routes/settings#' + issue.hash, text: 'в настройках' }), '.'));
-        } else if (tl === null) {
-            note.append(icon('fa-truck'), h('span', {}, 'Грузовики проезжают ≈' + NB + approx(t.truck_km_week) + NB + 'км в неделю. Дизель посчитан не для всех машин: '
-                + 'у части не указан расход или менеджеру не назначена машина — ', h('a', { href: '/routes/settings#trucks', text: 'заполнить в настройках' }), '.'));
         } else {
-            note.append(icon('fa-truck'), h('span', {}, 'Грузовики проезжают ≈' + NB + approx(t.truck_km_week) + NB + 'км в неделю и тратят ≈' + NB + approx(tl) + NB + 'л дизеля'
-                + (tamd !== null ? ' (≈' + NB + moneyApprox(tamd) + NB + 'драм)' : '') + '.'));
+            note.append(icon('fa-truck'), h('span', {}, 'Грузовики проезжают ≈' + NB + approx(t.truck_km_week) + NB + 'км в неделю, это ≈' + NB
+                + approx(tl) + NB + 'литров дизеля' + (tamd !== null ? ' (≈' + NB + moneyApprox(tamd) + NB + 'драм)' : '')
+                + (trips !== null ? '; в день — ≈' + NB + fmt(trips, 1) + NB + unitWord(trips, 'рейс', 'рейса', 'рейсов') : '') + '. ',
+                h('a', { href: '#rtFleetSection', text: 'Развоз по дням' }), ' ', tip(fleetTip(), 'дизель грузовиков')));
         }
         note.hidden = false;
     }
@@ -492,17 +496,18 @@
         switch (w.code) {
             case 'erp_stale': return null;   // уже в плашке у заголовка
             case 'no_depot': return { p: 1, hash: 'depot', btn: 'Указать склад', text: 'Не указан склад — без него не посчитать рейсы машин и дизель.' };
-            case 'no_truck': {
-                const k = inc.filter(m => !m.truck).length;
-                return { p: 2, hash: 'trucks', btn: 'Указать машины',
-                    text: 'У ' + k + ' из ' + inc.length + ' ' + plural(inc.length, 'менеджера', 'менеджеров', 'менеджеров') + ' не указана машина — их рейсы и дизель не посчитаны.' };
+            case 'no_fleet': return { p: 2, hash: 'trucks', btn: 'Заполнить машины',
+                text: 'Укажите тоннаж и расход машин — тогда программа посчитает дизель грузовиков.' };
+            case 'truck_incomplete': {
+                const k = n(/У (\d+)/);
+                return { p: 3, hash: 'trucks', btn: 'Заполнить машины',
+                    text: (k ? 'У ' + k + ' ' + plural(+k, 'машины', 'машин', 'машин') : 'У части машин') + ' не указан тоннаж или расход — в развозе их нет.' };
             }
-            case 'truck_no_capacity': case 'truck_no_fuel': {
-                const trucks = new Map();
-                inc.forEach(m => { if (m.truck) trucks.set(String(m.truck.car_code || m.truck.name), m.truck); });
-                const k = [...trucks.values()].filter(tr => num(tr.capacity_kg) === null || num(tr.fuel_l_per_100km) === null).length;
-                return { p: 3, key: 'truck_data', hash: 'trucks', btn: 'Заполнить машины',
-                    text: 'У ' + (k || 'части') + ' ' + plural(k || 5, 'машины', 'машин', 'машин') + ' не указан тоннаж или расход — не посчитаны загрузка и литры дизеля.' };
+            case 'fleet_short': {
+                const k = n(/в ([\d,.]+) дн/);
+                return { p: 3, hash: 'trucks', btn: 'Проверить машины',
+                    text: 'В пик ' + (k ? 'в ' + k + ' ' + plural(Math.round(num(k.replace(',', '.')) || 0), 'день', 'дня', 'дней') + ' доставки в неделю' : 'в часть дней')
+                        + ' машины не успевают развезти заказы за рабочий день — нужна ещё машина или рейс после конца дня.' };
             }
             case 'no_fuel_prices': return { p: 4, hash: 'fuel', btn: 'Указать цены',
                 text: 'Не указаны цены топлива' + (n(/\(([^)]+)\)/) ? ' (' + n(/\(([^)]+)\)/) + ')' : '') + ' — расходы на топливо в драмах не посчитаны.' };
@@ -972,14 +977,10 @@
         if (m.included === false) tags.push('<span class="rt-badge" title="Менеджер не входит в итоги. Включить можно в настройках.">не в расчёте</span>');
         if ((m.flags || []).includes('inactive')) tags.push('<span class="rt-badge b-warn" title="Нет заказов и визитов за 8 недель — по умолчанию менеджер не входит в расчёт">без работы 8 недель</span>');
         if (!hasHome(m)) tags.push('<span class="rt-badge b-warn" title="Дом неизвестен — день считается от первого клиента до последнего">нет дома</span>');
-        if (!m.truck) tags.push('<span class="rt-badge" title="Машина не назначена — рейсы не посчитаны">нет машины</span>');
-        if ((m.flags || []).includes('multi_truck')) tags.push('<span class="rt-badge" title="Менеджера возят несколько машин — считаем по самой большой">2+ машины</span>');
-        const truck = m.truck ? (m.truck.car_code || m.truck.name || '')
-            + (num(m.truck.capacity_kg) !== null ? ' · ' + fmt(num(m.truck.capacity_kg) / 1000, 1) + ' т' : '') : '';
         let tr = '<tr' + (m.included === false ? ' class="is-excluded"' : '') + '>'
             + '<th scope="row" class="rt-heat-mgr"><div class="rt-mgr"><span class="rt-dot" style="background:' + mgrColor(mi) + '"></span>'
             + '<div class="rt-mgr-txt"><span class="n" title="' + esc(mgrName(m)) + '">' + esc(mgrName(m)) + '</span>'
-            + '<span class="c">' + esc([m.code, truck].filter(Boolean).join(' · ')) + '</span>'
+            + '<span class="c">' + esc(m.code || '') + '</span>'
             + (tags.length ? '<span class="tags">' + tags.join('') + '</span>' : '') + '</div></div></th>';
         state.idx.cols.forEach((c, ci) => {
             const di = m._byKey.get(c.week + '-' + c.weekday);
@@ -994,13 +995,11 @@
     }
 
     function dayFlags(day) {
-        const tr = day.truck || null, flags = day.flags || [];
+        const flags = day.flags || [];
         return {
             visits: num(day.visits) || 0,
             p: num(day.p_day_ge_min),
             over: flags.includes('overtime') || (num(day.overtime_minutes) || 0) > 0,
-            poor: !!tr && num(tr.p_poor_trip) !== null && num(tr.p_poor_trip) >= P_POOR,
-            load: !!tr && num(tr.p_overflow_peak) !== null && num(tr.p_overflow_peak) >= P_OVERFLOW,
             off: isOff(day),
         };
     }
@@ -1015,8 +1014,6 @@
             + ', ожидаемая выручка зимой ' + money(day.revenue_low_exp)
             + ', шанс набрать ' + (minDay !== null ? fmt(minDay) + ' драм' : 'норму') + ' — ' + pct(f.p);
         if (f.over) t += '; переработка ' + hm(day.overtime_minutes);
-        if (f.poor) t += '; машина скорее всего повезёт мало заказов';
-        if (f.load) t += '; летом груз может не влезть в машину';
         if (f.off) t += '; день вне рабочей недели';
         return t + '.';
     }
@@ -1028,9 +1025,7 @@
         const attrs = ' type="button" class="' + cls + '" data-mi="' + mi + '" data-di="' + di + '" data-ci="' + ci
             + '" tabindex="-1" aria-pressed="false" aria-label="' + label + '" title="' + label + '"';
         if (!f.visits) return '<button' + attrs + '><span class="rt-hc-sub">нет визитов</span></button>';
-        const icons = (f.over ? '<i class="fas fa-clock f-over"></i>' : '')
-            + (f.poor ? '<i class="fas fa-truck f-poor"></i>' : '')
-            + (f.load ? '<i class="fas fa-weight-hanging f-load"></i>' : '');
+        const icons = f.over ? '<i class="fas fa-clock f-over"></i>' : '';
         return '<button' + attrs + '>'
             + '<span class="rt-hc-top"><span class="rt-hc-v">' + moneyShort(day.revenue_low_exp) + '</span>'
             + (icons ? '<span class="rt-hc-flags" aria-hidden="true">' + icons + '</span>' : '') + '</span>'
@@ -1092,9 +1087,57 @@
             + item('<span class="rt-hl-sw s-mid" aria-hidden="true"></span>', '50–80%')
             + item('<span class="rt-hl-sw s-good" aria-hidden="true"></span>', '80% и больше')
             + item('<i class="fas fa-clock f-over" aria-hidden="true"></i>', 'переработка')
-            + item('<i class="fas fa-truck f-poor" aria-hidden="true"></i>', 'машина повезёт мало заказов')
-            + item('<i class="fas fa-weight-hanging f-load" aria-hidden="true"></i>', 'летом может не влезть в машину')
             + item('<span class="rt-hl-sw" style="background:transparent;border:1px dashed #7c8698" aria-hidden="true"></span>', 'день вне рабочей недели');
+    }
+
+    // ---------- Развоз по дням (парк машин) ----------
+    // День доставки заказов дня визита: пн–пт → следующий день той же недели, сб и вс → пн следующей недели
+    function fleetDayOf(day) {
+        const f = state.data.fleet;
+        if (!f || !Array.isArray(f.days)) return null;
+        const w = Number(day.week) || 1, wd = Number(day.weekday), cycle = Number(f.cycle_weeks) || 1;
+        const key = wd >= 1 && wd <= 5 ? [w, wd + 1] : [(w % cycle) + 1, 1];
+        return f.days.find(x => Number(x.week) === key[0] && Number(x.weekday) === key[1]) || null;
+    }
+
+    // «83 заказа», «43 точки»: среднее за пробу округлено до целого — слово по нему
+    const count = (v, one, few, many) => { const n = Math.round(num(v) || 0); return fmt(n) + NB + plural(n, one, few, many); };
+
+    function renderFleet() {
+        const f = state.data.fleet, sec = $('rtFleetSection'), box = $('rtFleetDays'), lead = $('rtFleetLead');
+        box.textContent = '';
+        lead.textContent = '';
+        if (!f || !Array.isArray(f.days)) {
+            const issue = truckIssue();
+            lead.append('Развоз не посчитан: ', issue ? issue.text : 'нет данных', ' — ',
+                h('a', { href: '/routes/settings#' + (issue ? issue.hash : 'trucks'), text: 'в настройках' }), '.');
+            sec.hidden = false;
+            return;
+        }
+        const trucks = (f.trucks || []).map(t => (t.name ? t.name + ' ' : '') + t.car_code + ' (' + fmt(num(t.capacity_kg) / 1000, 1) + NB + 'т, '
+            + fmt(t.fuel_l_per_100km, 1) + NB + 'л/100 км)');
+        lead.append('Машины: ' + trucks.join(', ') + '. Рабочий день машины ' + (f.work_start || '') + '–' + (f.work_end || '')
+            + '. Цифры — в среднем за год; загрузка в пик — летом. ', tip(fleetTip(), 'развоз'));
+        const multi = (Number(f.cycle_weeks) || 1) > 1;
+        f.days.forEach(d => {
+            const short = num(d.p_short_peak) !== null && num(d.p_short_peak) >= P_SHORT;
+            const title = (WD_FULL[d.weekday] ? cap(WD_FULL[d.weekday]) : d.label) + (multi ? ', ' + d.week + '-я неделя' : '');
+            const trips = num(d.trips);
+            const card = h('article', { class: 'rt-fleet-day' + (short ? ' is-short' : '') },
+                h('header', { class: 'rt-fleet-head' },
+                    h('h3', { text: title }),
+                    h('span', { class: 'rt-fleet-from', text: 'заказы ' + (Number(d.weekday) === 1 ? 'субботы' : (WD_GEN[Number(d.weekday) - 1] || '')) }),
+                    h('span', { class: 'rt-fleet-sum', text: (trips === null ? '—' : fmt(trips, 1) + NB + unitWord(trips, 'рейс', 'рейса', 'рейсов'))
+                        + ' · ' + count(d.orders, 'заказ', 'заказа', 'заказов') + ' · ' + fmt(d.kg, 0) + NB + 'кг · ' + fmt(d.km, 0) + NB + 'км · ' + fmt(d.liters, 1) + NB + 'л' })),
+                h('ul', { class: 'rt-fleet-trucks' }, (d.trucks || []).map(t => h('li', {},
+                    h('span', { class: 'n', text: (t.name ? t.name + ' ' : '') + t.car_code }),
+                    h('span', { class: 's', text: fmt(t.trips, 1) + NB + unitWord(t.trips, 'рейс', 'рейса', 'рейсов') + ' · ' + count(t.stops, 'точка', 'точки', 'точек') + ' · '
+                        + fmt(t.kg, 0) + NB + 'кг · ' + fmt(t.km, 0) + NB + 'км · ' + fmt(t.hours, 1) + NB + 'ч · загрузка ' + fmt(t.load_pct, 0) + '%' })))),
+                h('p', { class: 'rt-fleet-note' }, 'В пик: ' + fmt(d.kg_peak, 0) + NB + 'кг, загрузка ' + fmt(d.load_pct_peak, 0) + '%',
+                    short ? [' · ', mark('машины не успевают за рабочий день', -1)] : ''));
+            box.append(card);
+        });
+        sec.hidden = false;
     }
 
     // ---------- Панель дня ----------
@@ -1174,12 +1217,10 @@
     function dayHTML(s) {
         const { m, mi, day } = s, st = state.settings || {};
         const minDay = num(st.min_day_revenue), minTrip = num(st.min_trip_revenue);
-        const f = dayFlags(day), tr = day.truck || null, d = state.data;
+        const f = dayFlags(day), d = state.data;
         const badge = (cls, ico, txt) => '<span class="rt-badge ' + cls + '"><i class="fas ' + ico + '" aria-hidden="true"></i>' + txt + '</span>';
         const badges = [];
         if (f.over) badges.push(badge('b-danger', 'fa-clock', 'переработка ' + hm(day.overtime_minutes)));
-        if (f.poor) badges.push(badge('b-warn', 'fa-truck', 'машина повезёт мало заказов · шанс ' + pct(tr.p_poor_trip)));
-        if (f.load) badges.push(badge('b-warn', 'fa-weight-hanging', 'летом может не влезть · ' + pct(tr.p_overflow_peak)));
         if ((day.flags || []).includes('no_home') || !hasHome(m)) badges.push(badge('', 'fa-house', 'дом неизвестен — от первого клиента'));
         if (f.off) badges.push(badge('', 'fa-moon', 'день вне рабочей недели'));
         if ((day.flags || []).includes('sunday_order')) badges.push(badge('', 'fa-calendar-day', 'заказ воскресенья — доставка в понедельник'));
@@ -1216,18 +1257,18 @@
                 + (work !== null && trackDays !== null && trackDays < num(fact.days) ? ' (по треку — ' + fmt(trackDays) + NB + 'дн.)' : ''));
             stats += mstat('Обычный день по GPS', (fact.day_start && fact.day_end) ? esc(fact.day_start) + '–' + esc(fact.day_end) : '—', parts.join(' · '), '', true);
         }
-        if (tr) {
-            const trips = num(tr.trips_exp);
-            stats += mstat('Машина' + (day.delivery_label ? ' · доставка ' + esc(day.delivery_label) : ''),
-                (trips === null ? '—' : fmt(trips, 1) + ' ' + unitWord(trips, 'рейс', 'рейса', 'рейсов')) + ' · ' + fmt(tr.km_exp, 1) + ' км',
-                fmt(tr.liters_exp, 1) + ' л дизеля · заказов не будет: ' + pct(tr.p_no_trip)
-                    + ' · летом загрузка ' + (num(tr.load_pct_peak) === null ? '—' : fmt(tr.load_pct_peak) + '%')
-                    + (f.poor && minTrip !== null ? ' · меньше ' + fmt(minTrip) + ' драм: ' + pct(tr.p_poor_trip) : ''),
-                '', true);
+        // Заказы дня везёт парк вместе с заказами других менеджеров — день доставки целиком
+        const fd = fleetDayOf(day);
+        if (fd) {
+            const trips = num(fd.trips);
+            stats += mstat('Развоз' + (day.delivery_label ? ' · доставка ' + esc(day.delivery_label) : ''),
+                (trips === null ? '—' : fmt(trips, 1) + ' ' + unitWord(trips, 'рейс', 'рейса', 'рейсов')) + ' · ' + fmt(fd.km, 0) + ' км',
+                'все менеджеры вместе: ' + count(fd.orders, 'заказ', 'заказа', 'заказов') + ', ' + fmt(fd.kg, 0) + ' кг, ' + fmt(fd.liters, 1) + ' л дизеля · '
+                    + '<a href="#rtFleetSection">Развоз по дням</a>', '', true);
         } else {
             const noDepot = !d.depot || num(d.depot.lat) === null;
-            stats += mstat('Машина', '—', noDepot ? 'рейс не посчитан: ' + setLink('depot', 'укажите склад')
-                : 'рейс не посчитан: ' + setLink('trucks', 'назначьте машину'), '', true);
+            stats += mstat('Развоз', '—', noDepot ? 'не посчитан: ' + setLink('depot', 'укажите склад')
+                : 'не посчитан: ' + setLink('trucks', 'укажите тоннаж и расход машин'), '', true);
         }
 
         // Остановки — в порядке объезда; точка и её источник — этого визита (адрес шаблона)
@@ -1320,15 +1361,14 @@
             card('is-low', 'fa-snowflake', 'Зима — низкий сезон', monthsText(low), [
                 'выручка дня и шанс набрать ' + (minDay !== null ? fmt(minDay) + ' драм' : 'норму дня'),
                 'слабые дни в таблице',
-                'рейсы, где машина везёт меньше ' + (minTrip !== null ? fmt(minTrip) + ' драм' : 'нормы рейса'),
             ])
             + card('is-peak', 'fa-sun', 'Лето — пик', monthsText(peak), [
-                'загрузка машин',
-                'риск, что груз не влезет в машину',
+                'загрузка машин в пик',
+                'успевают ли машины развезти заказы за рабочий день',
             ])
             + card('is-year', 'fa-calendar', 'Весь год', 'в среднем за 12 месяцев', [
                 'дизель и пробег грузовиков',
-                'число рейсов',
+                'число рейсов и рейсы, где машина везёт меньше ' + (minTrip !== null ? fmt(minTrip) + ' драм' : 'нормы рейса'),
                 'выручка клиента «в среднем»',
             ])
             + card('is-plan', 'fa-route', 'Маршрут дня', 'от сезона не зависит', [

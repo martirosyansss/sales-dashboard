@@ -8,10 +8,14 @@
 - тур менеджера «дом → клиенты дня → дом»: удаление — выигрыш d(prev,c) + d(c,next) − d(prev,next),
   вставка — самая дешёвая позиция; без дома вершина 0 фиктивная (нулевые расстояния) — открытый путь;
 - выручка дня (низкий сезон) — нормальное приближение: μ = Σ p·m, σ² = Σ (p·E[V²] − (p·m)²);
-- грузовик — S сценариев с общими случайными числами: у каждого визита клиента (порядковый номер k
-  в цикле) заранее вытянуто равномерное u[k][s], «заказал» = u < p_год; флаг переезжает вместе
-  с визитом. Тур «склад → заказавшие → склад» на сценарий; км = среднее × ceil(кг пика / тоннаж).
-Через каждые 50 принятых ходов изменённые туры проходят 2-opt, дни пересчитываются точно.
+- грузовики — общий для всех менеджеров парк (FleetEstimate, план fleet-plan §3): S сценариев с
+  общими случайными числами — у каждого визита клиента (порядковый номер k в цикле) заранее вытянуто
+  равномерное u[k][s], «заказал» = u < p_год; флаг переезжает вместе с визитом. На слот и сценарий —
+  гигантский тур «склад → заказавшие точки дня у всех менеджеров → склад»; км парка — тур, нарезанный
+  по тоннажу. Менеджеры связаны через общие дни доставки: поиск идёт по менеджерам по очереди
+  (Гаусс–Зейдель), стоимость состояния — его слагаемые + дизель всего парка.
+Через каждые 50 принятых ходов изменённые туры менеджера проходят 2-opt, дни пересчитываются точно;
+туры парка — 2-opt после поиска менеджера (FleetEstimate.polish).
 """
 from __future__ import annotations
 
@@ -19,7 +23,7 @@ import heapq
 import math
 import random
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Sequence
 
@@ -84,8 +88,8 @@ class VisitParams:
     mu: float          # p × средний заказ, низкий сезон
     var: float         # p × E[V²] − (p × m)²
     p_low: float
-    p_year: float      # флаги «заказал» для км грузовика — по году, как на этапе 1
-    kg: float          # ожидаемый кг в пик: p_пик × средний кг
+    p_year: float      # флаги «заказал» для парка — по году, как в точной оценке
+    kg: float          # кг заказа, если заказал (средний за год) — нарезка рейсов парка по тоннажу
 
     @property
     def sure(self) -> bool:
@@ -101,17 +105,15 @@ NO_VISIT = VisitParams(0.0, 0.0, 0.0, 0.0, 0.0)
 
 @dataclass(frozen=True)
 class Weights:
-    """Веса стоимости §4, драм. truck_per_km = 0 — грузовик не в стоимости. Штраф за переносы
-    задаётся состоянию отдельно (при старте «fresh» он 0)."""
+    """Веса стоимости §4, драм. Дизель парка — в FleetEstimate. Штраф за переносы задаётся
+    состоянию отдельно (при старте «fresh» он 0)."""
     manager_per_km: float
-    truck_per_km: float
     weak_day: float
     poor_trip: float
     overtime_per_min: float
     window_min: float
     min_day_revenue: float
     min_trip_revenue: float
-    truck_capacity_kg: float | None
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,7 @@ class Line:
     allowed: tuple[SlotPattern, ...]            # из чего выбирает поиск (закреплённый — один)
     locked: bool
     u: tuple[tuple[float, ...], ...]            # [визит k][сценарий s] — числа для флагов
+    gnode: int = 0                              # вершина в матрице парка ≥ 1; 0 — без координат
 
 
 @dataclass
@@ -132,7 +135,6 @@ class Problem:
     lines: list[Line]
     km: Matrix                  # менеджер: вершина 0 — дом (без дома — нули)
     mins: Matrix                # минуты в пути по тем же рёбрам
-    tkm: Matrix | None          # грузовик: вершина 0 — склад; None — нет склада или машины
     weights: Weights
     workday: tuple[bool, ...]   # по слотам
     base: tuple[bool, ...]      # рабочие слоты, где менеджер работает сейчас: пустой — слабый день
@@ -228,22 +230,373 @@ def _insertion(t: Sequence[int], x: int, d: Matrix) -> tuple[int, float, int, in
     return best_pos, best, best_a, best_b
 
 
+def nn_multi(nodes: Iterable[int], d: Matrix) -> list[int]:
+    """Nearest-neighbor от вершины 0 по мультимножеству вершин (одна точка может встретиться
+    дважды: клиента в этот день посещают два менеджера) + 2-opt; ничьи — по номеру вершины."""
+    left = Counter(nodes)
+    tour = [0]
+    cur = 0
+    while left:
+        row = d[cur]
+        cur = min(left, key=lambda j: (row[j], j))
+        tour.append(cur)
+        left[cur] -= 1
+        if not left[cur]:
+            del left[cur]
+    return two_opt(tour, d)
+
+
+# --- Парк машин: быстрая оценка (fleet-plan §3) ---
+
+class FleetEstimate:
+    """Дизель парка для поиска — общий для всех менеджеров расчёта.
+
+    На слот визита j (заказы везут на следующий рабочий день) и сценарий s — гигантский тур «склад →
+    точки всех визитов дня, где клиент заказал (флаг сценария) → склад»: удаление и самая дешёвая
+    вставка — как у тура менеджера. Км парка — тур, нарезанный по ходу объезда по тоннажу самой большой
+    машины (route-first, cluster-second): новый рейс, когда следующий заказ переполнит машину или рейс не
+    уложится в рабочий день машины (как в точной оценке); заказ тяжелее машины — отдельными рейсами. Литры — км × средний расход парка. Машино-минуты (езда +
+    разгрузка) сверх рабочего дня всех машин — штраф как за переработку менеджера. Стоимость дня —
+    драм в неделю (среднее по сценариям / W). Тур — на день доставки: заказы сб и вс одной недели везут
+    вместе в пн, поэтому у слота вс тот же тур, что у сб (group).
+
+    Вершины — клиенты расчёта с координатами (0 — склад); kg — кг заказа клиента. static — визиты
+    менеджеров вне поиска (их дни не меняются). Оценки eval запоминаются до изменения тура (memo):
+    поиск много раз проверяет одни и те же визиты, а туры меняются только принятыми ходами.
+    """
+
+    def __init__(self, km: Matrix, city: Sequence[bool], kg: Sequence[float], *, capacity_kg: float,
+                 per_km: float, overtime_per_min: float, capacity_min: float, unload_stop: float,
+                 unload_tonne: float, speed_city_kmh: float, speed_region_kmh: float, trip_minutes: float):
+        self.d = km
+        self.city = list(city)
+        self.kg = list(kg)
+        self.unload = [0.0] + [unload_stop + unload_tonne * w / 1000.0 for w in self.kg[1:]]
+        self.cap = capacity_kg
+        self.per_km = per_km
+        self.ot = overtime_per_min
+        self.capacity_min = capacity_min
+        self.trip_minutes = trip_minutes   # рейс не длиннее рабочего дня машины
+        self.fc = 60.0 / speed_city_kmh
+        self.fr = 60.0 / speed_region_kmh
+        self.static: list[tuple[int, int, tuple[bool, ...]]] = []
+        # слот визита → тур дня доставки: вс — к сб той же недели (оба везут в пн); туры вс пустые
+        self.group = [j - 1 if day_of_slot(j)[1] == 7 else j for j in range(SLOTS)]
+        self.tours: list[list[list[int]]] = [[[0] for _ in range(TRUCK_SCENARIOS)] for _ in range(SLOTS)]
+        self.km = [[0.0] * TRUCK_SCENARIOS for _ in range(SLOTS)]
+        self.mins = [[0.0] * TRUCK_SCENARIOS for _ in range(SLOTS)]
+        self.cost = [0.0] * SLOTS
+        self.total = 0.0
+        self.dirty: set[int] = set()
+        self.memo: list[list[dict]] = [[{} for _ in range(TRUCK_SCENARIOS)] for _ in range(SLOTS)]
+        self.pre: list[list[tuple | None]] = [[None] * TRUCK_SCENARIOS for _ in range(SLOTS)]   # _walk тура
+
+    # -- состав и пересчёт --
+
+    def build(self, entries: Iterable[tuple[int, int, Sequence[bool]]],
+              static: Iterable[tuple[int, int, Sequence[bool]]] = ()) -> None:
+        """Туры с нуля (NN + 2-opt) по визитам: (слот, вершина, флаги сценариев). static — визиты
+        менеджеров вне поиска (входят в туры и в проверку согласованности)."""
+        self.static = [(j, g, tuple(f)) for j, g, f in static]
+        members = self._members(list(entries) + self.static)
+        for j in range(SLOTS):
+            for s in range(TRUCK_SCENARIOS):
+                self.tours[j][s] = nn_multi(sorted(members[(j, s)].elements()), self.d)
+            self._refresh(j)
+        self.dirty.clear()
+        self.total = sum(self.cost)
+
+    def _members(self, entries: Iterable[tuple[int, int, Sequence[bool]]]) -> dict[tuple[int, int], Counter]:
+        """Состав туров: (тур дня доставки, сценарий) → вершины; entries — (слот визита, вершина, флаги)."""
+        out: dict[tuple[int, int], Counter] = {(j, s): Counter() for j in range(SLOTS)
+                                               for s in range(TRUCK_SCENARIOS)}
+        for j, g, flags in entries:
+            if g:
+                for s in range(TRUCK_SCENARIOS):
+                    if flags[s]:
+                        out[(self.group[j], s)][g] += 1
+        return out
+
+    def adopt(self, other: FleetEstimate) -> None:
+        """Туры с тем же составом — из другого парка с той же нумерацией вершин (режим Б начинается
+        с туров итога режима А); остальные остаются построенными заново."""
+        for j in range(SLOTS):
+            for s in range(TRUCK_SCENARIOS):
+                if Counter(other.tours[j][s][1:]) == Counter(self.tours[j][s][1:]):
+                    self.tours[j][s] = list(other.tours[j][s])
+            self._refresh(j)
+        self.total = sum(self.cost)
+
+    def _walk(self, t: Sequence[int]) -> tuple:
+        """Нарезка тура t (t[0] — склад) по ходу объезда с записью состояний: новый рейс, когда следующий
+        заказ переполнит машину или рейс не уложится в рабочий день машины (езда + разгрузка + обратно на
+        склад, как в точной оценке). Перед позицией k — (prev, load, минуты рейса, км, минуты) в P, L, T,
+        K, M; если на k начинается рейс (после закрытия прежнего) — км и минуты в этот момент в SK, SM
+        (иначе None); в конце — км и минуты всего тура."""
+        d, kg, un, city = self.d, self.kg, self.unload, self.city
+        cap, fc, fr, window = self.cap, self.fc, self.fr, self.trip_minutes
+        d0, c0 = d[0], city[0]
+        n = len(t)
+        P, L, T = [0] * (n + 1), [0.0] * (n + 1), [0.0] * (n + 1)
+        K, M = [0.0] * (n + 1), [0.0] * (n + 1)
+        SK: list[float | None] = [None] * (n + 1)
+        SM: list[float | None] = [None] * (n + 1)
+        km = mins = load = trip = 0.0
+        prev = 0
+        for k in range(1, n):
+            x = t[k]
+            P[k], L[k], T[k], K[k], M[k] = prev, load, trip, km, mins
+            w = kg[x]
+            heavy = w > cap
+            if prev:
+                cx = city[x]
+                go = d[prev][x] * (fc if city[prev] and cx else fr) + un[x]
+                if heavy or load + w > cap or trip + go + d0[x] * (fc if c0 and cx else fr) > window:
+                    e = d[prev][0]                          # закрыть текущий рейс
+                    km += e
+                    mins += e * (fc if city[prev] and c0 else fr)
+                    prev, load, trip = 0, 0.0, 0.0
+            if not prev:                                    # здесь начинается рейс
+                SK[k], SM[k] = km, mins
+            if heavy:                                       # тяжелее машины — отдельными рейсами
+                e = d0[x] * 2.0 * math.ceil(w / cap)
+                km += e
+                mins += e * (fc if c0 and city[x] else fr) + un[x]
+                continue
+            e = d[prev][x]
+            go = e * (fc if city[prev] and city[x] else fr) + un[x]
+            km += e
+            mins += go
+            trip += go
+            load += w
+            prev = x
+        P[n], L[n], T[n], K[n], M[n] = prev, load, trip, km, mins
+        if prev:
+            e = d[prev][0]
+            km += e
+            mins += e * (fc if city[prev] and c0 else fr)
+        return P, L, T, K, M, SK, SM, km, mins
+
+    def split(self, t: Sequence[int]) -> tuple[float, float]:
+        """(км, машино-минуты) тура t (t[0] — склад), нарезанного на рейсы по ходу объезда (_walk)."""
+        return self._walk(t)[7:]
+
+    def _resume(self, new: Sequence[int], k0: int, pre: tuple, limit: int, delta: int) -> tuple[float, float]:
+        """Нарезка нового тура new с позиции k0, где он впервые отличается от текущего: состояние перед
+        k0 — из записи текущего тура pre (_walk). Начиная с limit тур new совпадает с текущим со сдвигом
+        delta: как только рейс начинается там же, где у текущего тура, остаток км и минут — его."""
+        d, kg, un, city = self.d, self.kg, self.unload, self.city
+        cap, fc, fr, window = self.cap, self.fc, self.fr, self.trip_minutes
+        d0, c0 = d[0], city[0]
+        P, L, T, K, M, SK, SM, TK, TM = pre
+        prev, load, trip, km, mins = P[k0], L[k0], T[k0], K[k0], M[k0]
+        for k in range(k0, len(new)):
+            x = new[k]
+            w = kg[x]
+            heavy = w > cap
+            if prev:
+                cx = city[x]
+                go = d[prev][x] * (fc if city[prev] and cx else fr) + un[x]
+                if heavy or load + w > cap or trip + go + d0[x] * (fc if c0 and cx else fr) > window:
+                    e = d[prev][0]
+                    km += e
+                    mins += e * (fc if city[prev] and c0 else fr)
+                    prev, load, trip = 0, 0.0, 0.0
+            if not prev and k >= limit:
+                q = k + delta
+                sk = SK[q]
+                if sk is not None:                          # рейс начинается там же — дальше всё как было
+                    return km + (TK - sk), mins + (TM - SM[q])
+            if heavy:
+                e = d0[x] * 2.0 * math.ceil(w / cap)
+                km += e
+                mins += e * (fc if c0 and city[x] else fr) + un[x]
+                continue
+            e = d[prev][x]
+            go = e * (fc if city[prev] and city[x] else fr) + un[x]
+            km += e
+            mins += go
+            trip += go
+            load += w
+            prev = x
+        if prev:
+            e = d[prev][0]
+            km += e
+            mins += e * (fc if city[prev] and c0 else fr)
+        return km, mins
+
+    def cost_of(self, km: Sequence[float], mins: Sequence[float]) -> float:
+        """Стоимость дня парка, драм в неделю: дизель + машино-минуты сверх рабочего дня всех машин."""
+        over = sum(max(0.0, m - self.capacity_min) for m in mins)
+        return (self.per_km * sum(km) + self.ot * over) / TRUCK_SCENARIOS / W
+
+    def _refresh(self, j: int) -> None:
+        for s in range(TRUCK_SCENARIOS):
+            pre = self.pre[j][s] = self._walk(self.tours[j][s])
+            self.km[j][s], self.mins[j][s] = pre[7], pre[8]
+            self.memo[j][s].clear()
+        self.cost[j] = self.cost_of(self.km[j], self.mins[j])
+
+    # -- оценка и применение --
+
+    def eval(self, j: int, s: int, rem: int, ins: int) -> tuple[int, int, float, float]:
+        """Удалить вершину rem и/или вставить ins (0 — нет) в тур (j, s): (позиция удаления, позиция
+        вставки — в туре после удаления, км, минуты). Тур не меняется."""
+        memo = self.memo[j][s]
+        hit = memo.get((rem, ins))
+        if hit is not None:
+            return hit
+        t = self.tours[j][s]
+        r_pos = i_pos = -1
+        base = t
+        k0 = limit = len(t) + 1
+        if rem:
+            r_pos = t.index(rem)
+            base = t[:r_pos] + t[r_pos + 1:]
+            k0 = limit = r_pos
+        new = base
+        if ins:
+            i_pos = _insertion(base, ins, self.d)[0]
+            new = base[:i_pos] + [ins] + base[i_pos:]
+            k0 = min(k0, i_pos)
+            limit = max(i_pos, limit) + 1 if rem else i_pos + 1
+        pre = self.pre[j][s]
+        if pre is None:
+            pre = self.pre[j][s] = self._walk(t)
+        km, mins = self._resume(new, k0, pre, limit, (1 if rem else 0) - (1 if ins else 0))
+        hit = memo[(rem, ins)] = (r_pos, i_pos, km, mins)
+        return hit
+
+    def apply(self, j: int, ops: Sequence[tuple], cost: float) -> tuple:
+        """ops — (s, позиция удаления, позиция вставки, rem, ins, км, минуты) из eval; возвращает
+        запись для revert."""
+        undo = []
+        for s, r_pos, i_pos, rem, ins, km, mins in ops:
+            t = self.tours[j][s]
+            if r_pos >= 0:
+                del t[r_pos]
+            if i_pos >= 0:
+                t.insert(i_pos, ins)
+            undo.append((s, r_pos, i_pos, rem, ins, self.km[j][s], self.mins[j][s]))
+            self.km[j][s], self.mins[j][s] = km, mins
+            self.memo[j][s].clear()
+            self.pre[j][s] = None
+        record = (j, undo, self.cost[j])
+        self.cost[j] = cost
+        self.total = sum(self.cost)
+        self.dirty.add(j)
+        return record
+
+    def revert(self, record: tuple) -> None:
+        j, undo, cost = record
+        for s, r_pos, i_pos, rem, ins, km, mins in reversed(undo):
+            t = self.tours[j][s]
+            if i_pos >= 0:
+                del t[i_pos]
+            if r_pos >= 0:
+                t.insert(r_pos, rem)
+            self.km[j][s], self.mins[j][s] = km, mins
+            self.memo[j][s].clear()
+            self.pre[j][s] = None
+        self.cost[j] = cost
+        self.total = sum(self.cost)
+
+    def effect_km(self, removals: Iterable[tuple[int, int, Sequence[bool]]],
+                  insertions: Iterable[tuple[int, int, Sequence[bool]]]) -> float:
+        """Δ км парка в неделю, если визиты removals (слот визита, вершина, флаги) уходят, а insertions
+        приходят. Изменения применяются по очереди и откатываются: туры остаются как были."""
+        ops: dict[tuple[int, int], tuple[list[int], list[int]]] = {}
+        for side, items in ((0, removals), (1, insertions)):
+            for j, g, flags in items:
+                if g:
+                    for s in range(TRUCK_SCENARIOS):
+                        if flags[s]:
+                            ops.setdefault((self.group[j], s), ([], []))[side].append(g)
+        before, dirty = sum(map(sum, self.km)), set(self.dirty)
+        records = []
+        for (jj, s), (rems, inss) in sorted(ops.items()):
+            rems, inss = list(rems), list(inss)
+            for g in [g for g in rems if g in inss]:          # та же точка уходит и приходит — тур тот же
+                rems.remove(g)
+                inss.remove(g)
+            for k in range(max(len(rems), len(inss))):
+                rem = rems[k] if k < len(rems) else 0
+                ins = inss[k] if k < len(inss) else 0
+                r_pos, i_pos, km, mins = self.eval(jj, s, rem, ins)
+                records.append(self.apply(jj, [(s, r_pos, i_pos, rem, ins, km, mins)], self.cost[jj]))
+        after = sum(map(sum, self.km))
+        for record in reversed(records):
+            self.revert(record)
+        self.dirty = dirty
+        return (after - before) / TRUCK_SCENARIOS / W
+
+    # -- доводка, проверка, снимки --
+
+    def polish(self, days: Iterable[int] | None = None) -> None:
+        """2-opt туров изменённых дней (или указанных) и пересчёт их км и стоимости."""
+        todo = sorted(self.dirty) if days is None else sorted(set(days))
+        for j in todo:
+            for t in self.tours[j]:
+                two_opt(t, self.d)
+            self._refresh(j)
+        self.dirty.clear()
+        self.total = sum(self.cost)
+
+    def consistency_error(self, entries: Iterable[tuple[int, int, Sequence[bool]]]) -> float:
+        """Наибольшее относительное расхождение хранимых км, минут и стоимости с расчётом по текущим
+        турам; inf — состав туров не совпадает с визитами entries (+ static)."""
+        members = self._members(list(entries) + self.static)
+        worst = 0.0
+        for j in range(SLOTS):
+            for s in range(TRUCK_SCENARIOS):
+                t = self.tours[j][s]
+                if t[0] != 0 or Counter(t[1:]) != members[(j, s)]:
+                    return math.inf
+                km, mins = self.split(t)
+                worst = max(worst, abs(km - self.km[j][s]) / max(1.0, km),
+                            abs(mins - self.mins[j][s]) / max(1.0, mins))
+            want = self.cost_of(self.km[j], self.mins[j])
+            worst = max(worst, abs(want - self.cost[j]) / max(1.0, abs(want)))
+        return max(worst, abs(sum(self.cost) - self.total) / max(1.0, abs(self.total)))
+
+    def snapshot(self) -> tuple:
+        return ([[list(t) for t in day] for day in self.tours], [list(x) for x in self.km],
+                [list(x) for x in self.mins], list(self.cost), self.total, set(self.dirty))
+
+    def restore(self, snap: tuple) -> None:
+        tours, km, mins, cost, total, dirty = snap
+        self.tours = [[list(t) for t in day] for day in tours]
+        self.km = [list(x) for x in km]
+        self.mins = [list(x) for x in mins]
+        self.cost = list(cost)
+        self.total = total
+        self.dirty = set(dirty)
+        for day in self.memo:
+            for m in day:
+                m.clear()
+        self.pre = [[None] * TRUCK_SCENARIOS for _ in range(SLOTS)]
+
+
 # --- Состояние ---
 
-_AGG = ('km', 'drv', 'vm', 'mu', 'var', 'sure', 'logq', 'n', 'kg', 'tsum', 'cost')
+_AGG = ('km', 'drv', 'vm', 'mu', 'var', 'sure', 'logq', 'n', 'cost')
 
 
 class State:
-    """Решение менеджера: шаблоны клиентов, туры и агрегаты дней, стоимость C (драм/нед)."""
+    """Решение менеджера: шаблоны клиентов, туры и агрегаты дней, стоимость C (драм/нед).
+
+    fleet — общий парк (FleetEstimate), в котором уже есть визиты этого состояния (fleet_entries);
+    total = свои слагаемые (own_total) + дизель всего парка."""
 
     def __init__(self, prob: Problem, patterns: Sequence[SlotPattern],
-                 params: Sequence[VisitParams], *, change_penalty: float, trucks: bool):
+                 params: Sequence[VisitParams], *, change_penalty: float,
+                 fleet: FleetEstimate | None = None):
         self.prob = prob
         self.w = prob.weights
         self.lines = prob.lines
         self.params = list(params)
         self.change_penalty = change_penalty
-        self.trucks = trucks and prob.tkm is not None
+        self.fleet = fleet
         n = len(prob.lines)
         self.flags = [[tuple(u < self.params[i].p_year for u in prob.lines[i].u[k])
                        for k in range(MAX_VISITS)] for i in range(n)]
@@ -257,36 +610,38 @@ class State:
                 self.members[j].add(i)
         for name in _AGG:
             setattr(self, name, [0.0] * SLOTS)
-        self.tkm = [[0.0] * TRUCK_SCENARIOS for _ in range(SLOTS)]
         self.tour: list[list[int]] = [[0] for _ in range(SLOTS)]
-        self.ttour: list[list[list[int]]] = [[[0] for _ in range(TRUCK_SCENARIOS)] for _ in range(SLOTS)]
         self.dirty: set[int] = set()
         for j in range(SLOTS):
             self._rebuild_tours(j)
             self._set_exact(j)
         self.total = self._total()
 
+    def attach(self, fleet: FleetEstimate | None) -> None:
+        """Подключить парк, в котором уже есть визиты этого состояния (fleet_entries)."""
+        self.fleet = fleet
+        self.total = self._total()
+
+    def fleet_entries(self) -> list[tuple[int, int, tuple[bool, ...]]]:
+        """Визиты состояния для парка: (слот, вершина парка, флаги «заказал» по сценариям)."""
+        return [(j, self.lines[i].gnode, self.flags[i][k])
+                for i, slots in enumerate(self.slot_of) if self.lines[i].gnode
+                for k, j in enumerate(slots)]
+
     # -- точный расчёт дня --
 
-    def _flag(self, i: int, j: int, s: int) -> bool:
-        return self.flags[i][self.slot_of[i].index(j)][s]
-
     def _rebuild_tours(self, j: int) -> None:
-        """Туры дня с нуля: NN + 2-opt (как на этапе 1)."""
+        """Тур дня с нуля: NN + 2-opt (как на этапе 1)."""
         lines = self.lines
         mem = sorted(self.members[j])
         self.tour[j] = nn_tour((lines[i].node for i in mem if lines[i].node), self.prob.km)
-        if self.trucks:
-            for s in range(TRUCK_SCENARIOS):
-                self.ttour[j][s] = nn_tour((lines[i].node for i in mem
-                                            if lines[i].node and self._flag(i, j, s)), self.prob.tkm)
 
     def exact_values(self, j: int) -> tuple[float, ...]:
-        """Агрегаты дня с нуля по текущим турам и составу (порядок — как _AGG, без cost)."""
+        """Агрегаты дня с нуля по текущему туру и составу (порядок — как _AGG, без cost)."""
         prob = self.prob
         km = tour_length(self.tour[j], prob.km)
         drv = tour_length(self.tour[j], prob.mins)
-        vm = mu = var = logq = kg = 0.0
+        vm = mu = var = logq = 0.0
         sure = n = 0
         for i in sorted(self.members[j]):
             pr = self.params[i]
@@ -298,23 +653,16 @@ class State:
                 sure += 1
             else:
                 logq += pr.log_q
-            if self.lines[i].node:
-                kg += pr.kg
-        tkm = ([tour_length(t, prob.tkm) for t in self.ttour[j]] if self.trucks
-               else [0.0] * TRUCK_SCENARIOS)
-        return km, drv, vm, mu, var, sure, logq, n, kg, sum(tkm), tkm
+        return km, drv, vm, mu, var, sure, logq, n
 
     def _set_exact(self, j: int) -> None:
-        km, drv, vm, mu, var, sure, logq, n, kg, tsum, tkm = self.exact_values(j)
-        self.tkm[j] = tkm
-        vals = (km, drv, vm, mu, var, sure, logq, n, kg, tsum,
-                self._cost(j, km, drv, vm, mu, var, sure, logq, n, kg, tsum))
-        for name, v in zip(_AGG, vals):
+        vals = self.exact_values(j)
+        for name, v in zip(_AGG, (*vals, self._cost(j, *vals))):
             getattr(self, name)[j] = v
 
     def _cost(self, j: int, km: float, drv: float, vm: float, mu: float, var: float, sure: int,
-              logq: float, n: int, kg: float, tsum: float) -> float:
-        """Стоимость дня, драм в неделю (§4)."""
+              logq: float, n: int) -> float:
+        """Стоимость дня менеджера, драм в неделю (§4); дизель парка — в FleetEstimate."""
         w = self.w
         c = w.manager_per_km * km
         over = vm + drv - w.window_min
@@ -324,41 +672,42 @@ class State:
             c += w.weak_day * (1.0 - p_at_least(mu, var, w.min_day_revenue))
         if w.poor_trip and n > 0:
             c += w.poor_trip * p_poor(mu, var, sure, logq, w.min_trip_revenue)
-        if self.trucks and w.truck_per_km and tsum > 0.0:
-            cap = w.truck_capacity_kg
-            mult = math.ceil(kg / cap) if cap and kg > cap else 1
-            c += w.truck_per_km * tsum / TRUCK_SCENARIOS * mult
         return c / W
 
-    def _total(self) -> float:
+    def own_total(self) -> float:
+        """Свои слагаемые менеджера (без парка) + штраф за переносы."""
         return sum(self.cost) + self.change_penalty * self.n_moved
 
+    def _total(self) -> float:
+        return self.own_total() + (self.fleet.total if self.fleet is not None else 0.0)
+
+    def refresh(self) -> None:
+        """Пересчитать total: парк общий, его могли изменить другие менеджеры."""
+        self.total = self._total()
+
     def day_metrics(self, j: int) -> dict[str, float]:
-        """Метрики дня для отчёта: км, минуты, ожидаемый «слабый» день, км грузовика (с резкой)."""
+        """Метрики дня для отчёта: км, минуты, ожидаемый «слабый» день."""
         w = self.w
         counted = self.prob.workday[j] and (self.n[j] > 0 or self.prob.base[j])
-        cap = w.truck_capacity_kg
-        mult = math.ceil(self.kg[j] / cap) if cap and self.kg[j] > cap else 1
         return {
             'km': self.km[j],
             'minutes': self.vm[j] + self.drv[j],
             'weak': (1.0 - p_at_least(self.mu[j], self.var[j], w.min_day_revenue)) if counted else 0.0,
-            'truck_km': self.tsum[j] / TRUCK_SCENARIOS * mult,
         }
 
     # -- оценка изменения одного дня --
 
     def _eval_day(self, j: int, out_i: int, out_k: int, in_i: int, in_k: int) -> tuple[float, tuple]:
-        """Δ стоимости дня j, если из него уходит визит (out_i, out_k) и/или приходит (in_i, in_k);
-        -1 — нет. Туры не меняются: возвращается план применения (позиции вставки/удаления)."""
+        """Δ стоимости дня j (менеджер + парк), если из него уходит визит (out_i, out_k) и/или
+        приходит (in_i, in_k); -1 — нет. Туры не меняются: возвращается план применения. Парк — тур дня
+        доставки этого слота (fleet.group[j])."""
         prob = self.prob
         lines = self.lines
         kd, md = prob.km, prob.mins
         km, drv, vm, mu, var = self.km[j], self.drv[j], self.vm[j], self.mu[j], self.var[j]
-        sure, logq, n, kg = self.sure[j], self.logq[j], self.n[j], self.kg[j]
+        sure, logq, n = self.sure[j], self.logq[j], self.n[j]
         t = self.tour[j]
         m_rem = m_ins = -1
-        x = y = 0
         if out_i >= 0:
             pr = self.params[out_i]
             vm -= lines[out_i].minutes
@@ -371,7 +720,6 @@ class State:
                 logq -= pr.log_q
             x = lines[out_i].node
             if x:
-                kg -= pr.kg
                 m_rem, dk, a, b = _removal(t, x, kd)
                 km += dk
                 drv += md[a][b] - md[a][x] - md[x][b]
@@ -387,7 +735,6 @@ class State:
                 logq += pr.log_q
             y = lines[in_i].node
             if y:
-                kg += pr.kg
                 base = t if m_rem < 0 else t[:m_rem] + t[m_rem + 1:]
                 m_ins, dk, a, b = _insertion(base, y, kd)
                 km += dk
@@ -396,40 +743,64 @@ class State:
         if m_rem >= 0 and m_ins < 0 and len(t) == 2:
             km = drv = 0.0
         if n == 0:
-            vm = mu = var = logq = kg = 0.0
-        tsum = self.tsum[j]
-        tops = None
-        if self.trucks and (x or y):
-            td = prob.tkm
-            lengths = list(self.tkm[j])
+            vm = mu = var = logq = 0.0
+        cost = self._cost(j, km, drv, vm, mu, var, sure, logq, n)
+        delta = cost - self.cost[j]
+        fops = None
+        fcost = 0.0
+        fleet = self.fleet
+        gx = lines[out_i].gnode if out_i >= 0 else 0
+        gy = lines[in_i].gnode if in_i >= 0 else 0
+        fj = j
+        if fleet is not None and (gx or gy):
+            fj = fleet.group[j]
+            kms, mins = list(fleet.km[fj]), list(fleet.mins[fj])
             for s in range(TRUCK_SCENARIOS):
-                rem = bool(x) and self.flags[out_i][out_k][s]
-                ins = bool(y) and self.flags[in_i][in_k][s]
-                if not (rem or ins):
+                rem = gx if gx and self.flags[out_i][out_k][s] else 0
+                ins = gy if gy and self.flags[in_i][in_k][s] else 0
+                if rem == ins:      # оба нет — или та же точка уходит и приходит: тур тот же
                     continue
-                tt = self.ttour[j][s]
-                length = self.tkm[j][s]
-                r_pos = i_pos = -1
-                if rem:
-                    r_pos, dk, _, _ = _removal(tt, x, td)
-                    length += dk
-                    if not ins and len(tt) == 2:
-                        length = 0.0
-                if ins:
-                    base = tt if r_pos < 0 else tt[:r_pos] + tt[r_pos + 1:]
-                    i_pos, dk, _, _ = _insertion(base, y, td)
-                    length += dk
-                if tops is None:
-                    tops = []
-                tops.append((s, r_pos, i_pos, length))
-                lengths[s] = length
-            tsum = sum(lengths)
-        cost = self._cost(j, km, drv, vm, mu, var, sure, logq, n, kg, tsum)
-        plan = (j, out_i, in_i, m_rem, m_ins, (km, drv, vm, mu, var, sure, logq, n, kg, tsum, cost), tops)
-        return cost - self.cost[j], plan
+                r_pos, i_pos, kms[s], mins[s] = fleet.eval(fj, s, rem, ins)
+                if fops is None:
+                    fops = []
+                fops.append((s, r_pos, i_pos, rem, ins, kms[s], mins[s]))
+            if fops:
+                fcost = fleet.cost_of(kms, mins)
+                delta += fcost - fleet.cost[fj]
+        plan = (j, out_i, in_i, m_rem, m_ins, (km, drv, vm, mu, var, sure, logq, n, cost), fops, fcost, fj)
+        return delta, plan
+
+    def _eval_days(self, items: Sequence[tuple], cache: dict | None = None) -> tuple[float, list[tuple]]:
+        """Δ и планы дней хода: items — (ключ кэша или None, день, out_i, out_k, in_i, in_k). Дни с общим
+        туром парка (сб и вс одной недели) оцениваются по очереди: следующий — по парку после
+        предыдущего (временно применён и откатан), без кэша."""
+        fleet = self.fleet
+        shared: set[int] = set()
+        if fleet is not None and len(items) > 1:
+            seen: set[int] = set()
+            for item in items:
+                g = fleet.group[item[1]]
+                (shared if g in seen else seen).add(g)
+        delta = 0.0
+        plans = []
+        records = []
+        for key, j, out_i, out_k, in_i, in_k in items:
+            together = bool(shared) and fleet.group[j] in shared
+            hit = cache.get(key) if cache is not None and key is not None and not together else None
+            if hit is None:
+                hit = self._eval_day(j, out_i, out_k, in_i, in_k)
+                if cache is not None and key is not None and not together:
+                    cache[key] = hit
+            delta += hit[0]
+            plans.append(hit[1])
+            if together and hit[1][6]:
+                records.append(fleet.apply(hit[1][8], hit[1][6], hit[1][7]))
+        for record in reversed(records):
+            fleet.revert(record)
+        return delta, plans
 
     def _apply_day(self, plan: tuple) -> None:
-        j, out_i, in_i, m_rem, m_ins, vals, tops = plan
+        j, out_i, in_i, m_rem, m_ins, vals, fops, fcost, fj = plan
         t = self.tour[j]
         if m_rem >= 0:
             del t[m_rem]
@@ -441,15 +812,20 @@ class State:
             self.members[j].add(in_i)
         for name, v in zip(_AGG, vals):
             getattr(self, name)[j] = v
-        if tops:
-            for s, r_pos, i_pos, length in tops:
-                tt = self.ttour[j][s]
-                if r_pos >= 0:
-                    del tt[r_pos]
-                if i_pos >= 0:
-                    tt.insert(i_pos, self.lines[in_i].node)
-                self.tkm[j][s] = length
+        if fops:
+            self.fleet.apply(fj, fops, fcost)
         self.dirty.add(j)
+
+    def fleet_push(self, move: tuple) -> list[tuple]:
+        """Временно применить к парку изменения хода (режим Б: ход второго менеджера оценивается по
+        парку после хода первого); вернуть записи для fleet_pop."""
+        if self.fleet is None:
+            return []
+        return [self.fleet.apply(plan[8], plan[6], plan[7]) for plan in move[1] if plan[6]]
+
+    def fleet_pop(self, records: Sequence[tuple]) -> None:
+        for record in reversed(records):
+            self.fleet.revert(record)
 
     # -- ходы --
 
@@ -464,26 +840,9 @@ class State:
         old_set = set(self.pattern[i])
         added = [j for j in new if j not in old_set]
         free = sorted(set(range(len(new))) - set(kept))
-        delta = 0.0
-        plans = []
-        for k, j in gone:
-            key = ('out', j)
-            hit = cache.get(key) if cache is not None else None
-            if hit is None:
-                hit = self._eval_day(j, i, k, -1, -1)
-                if cache is not None:
-                    cache[key] = hit
-            delta += hit[0]
-            plans.append(hit[1])
-        for k, j in zip(free, added):
-            key = ('in', j, k if self.trucks else 0)
-            hit = cache.get(key) if cache is not None else None
-            if hit is None:
-                hit = self._eval_day(j, -1, -1, i, k)
-                if cache is not None:
-                    cache[key] = hit
-            delta += hit[0]
-            plans.append(hit[1])
+        items = [(('out', j), j, i, k, -1, -1) for k, j in gone]
+        items += [(('in', j, k if self.fleet is not None else 0), j, -1, -1, i, k) for k, j in zip(free, added)]
+        delta, plans = self._eval_days(items, cache)
         new_slot_of = [0] * len(new)
         for k in kept:
             new_slot_of[k] = self.slot_of[i][k]
@@ -504,16 +863,9 @@ class State:
         b_added = [j for j in pa if j not in sb]
         a_new_k = dict(zip(a_added, sorted(k for k, _ in a_gone)))   # новый день a → номер визита
         b_new_k = dict(zip(b_added, sorted(k for k, _ in b_gone)))
-        delta = 0.0
-        plans = []
-        for k, j in a_gone:                      # a уходит, b приходит
-            d, plan = self._eval_day(j, a, k, b, b_new_k[j])
-            delta += d
-            plans.append(plan)
-        for k, j in b_gone:                      # b уходит, a приходит
-            d, plan = self._eval_day(j, b, k, a, a_new_k[j])
-            delta += d
-            plans.append(plan)
+        items = [(None, j, a, k, b, b_new_k[j]) for k, j in a_gone]          # a уходит, b приходит
+        items += [(None, j, b, k, a, a_new_k[j]) for k, j in b_gone]         # b уходит, a приходит
+        delta, plans = self._eval_days(items)
         a_slot_of = list(self.slot_of[a])
         for j, k in a_new_k.items():
             a_slot_of[k] = j
@@ -530,12 +882,7 @@ class State:
         out_i, а out_i остаётся без визитов (этап 4, обмен клиентами между менеджерами). На каждом
         дне один визит уходит и один приходит; k-й визит in_i — на дне k-го визита out_i."""
         slots = list(self.slot_of[out_i])
-        delta = 0.0
-        plans = []
-        for k, j in enumerate(slots):
-            d, plan = self._eval_day(j, out_i, k, in_i, k)
-            delta += d
-            plans.append(plan)
+        delta, plans = self._eval_days([(None, j, out_i, k, in_i, k) for k, j in enumerate(slots)])
         new = self.pattern[out_i]
         moved_out = is_moved(self.lines[out_i].current, ())
         moved_in = is_moved(self.lines[in_i].current, new)
@@ -557,17 +904,15 @@ class State:
         """Туры дней с тем же составом — из другого состояния с той же нумерацией строк и вершин
         (режим Б начинается с туров итога режима А: старт стоит ровно столько же, сколько итог А).
         У строк с тем же шаблоном берётся и порядок визитов (k → день): от него флаги «заказал»
-        грузовика; дни с другим составом строятся заново."""
+        для парка (fleet_entries — после adopt_tours); дни с другим составом строятся заново."""
         same = [i < len(other.lines) and self.pattern[i] == other.pattern[i]
                 and self.params[i] == other.params[i] for i in range(len(self.lines))]
         for i, ok in enumerate(same):
             if ok:
                 self.slot_of[i] = list(other.slot_of[i])
         for j in range(SLOTS):
-            if (self.members[j] == other.members[j] and self.trucks == other.trucks
-                    and all(same[i] for i in self.members[j])):
+            if self.members[j] == other.members[j] and all(same[i] for i in self.members[j]):
                 self.tour[j] = list(other.tour[j])
-                self.ttour[j] = [list(t) for t in other.ttour[j]]
             else:
                 self._rebuild_tours(j)
             self._set_exact(j)
@@ -576,20 +921,18 @@ class State:
     # -- доводка, проверка, снимки --
 
     def polish(self, days: Iterable[int] | None = None) -> None:
-        """2-opt туров изменённых дней (или указанных) и точный пересчёт их агрегатов."""
+        """2-opt туров менеджера изменённых дней (или указанных) и точный пересчёт их агрегатов.
+        Туры парка — FleetEstimate.polish (после поиска менеджера: 2-opt гигантских туров дорог)."""
         todo = sorted(self.dirty) if days is None else sorted(set(days))
         for j in todo:
             two_opt(self.tour[j], self.prob.km)
-            if self.trucks:
-                for tt in self.ttour[j]:
-                    two_opt(tt, self.prob.tkm)
             self._set_exact(j)
         self.dirty.clear()
         self.total = self._total()
 
     def consistency_error(self) -> float:
         """Наибольшее относительное расхождение инкрементальных агрегатов с расчётом с нуля
-        (inf — туры не совпадают с составом дня). Для тестов §5."""
+        (inf — туры не совпадают с составом дня). Для тестов §5. Парк — FleetEstimate.consistency_error."""
         worst = 0.0
         lines = self.lines
         for j in range(SLOTS):
@@ -597,45 +940,39 @@ class State:
             nodes = sorted(lines[i].node for i in mem if lines[i].node)
             if sorted(self.tour[j][1:]) != nodes or self.tour[j][0] != 0:
                 return math.inf
-            if self.trucks:
-                for s in range(TRUCK_SCENARIOS):
-                    want = sorted(lines[i].node for i in mem if lines[i].node and self._flag(i, j, s))
-                    if sorted(self.ttour[j][s][1:]) != want:
-                        return math.inf
             exact = self.exact_values(j)
             stored = (self.km[j], self.drv[j], self.vm[j], self.mu[j], self.var[j], self.sure[j],
-                      self.logq[j], self.n[j], self.kg[j], self.tsum[j])
-            for got, want in zip(stored, exact[:10]):
+                      self.logq[j], self.n[j])
+            for got, want in zip(stored, exact):
                 worst = max(worst, abs(got - want) / max(1.0, abs(want)))
-            for got, want in zip(self.tkm[j], exact[10]):
-                worst = max(worst, abs(got - want) / max(1.0, abs(want)))
-            want = self._cost(j, *exact[:10])
+            want = self._cost(j, *exact)
             worst = max(worst, abs(self.cost[j] - want) / max(1.0, abs(want)))
         for i, p in enumerate(self.pattern):
             if sorted(self.slot_of[i]) != list(p):
                 return math.inf
         return worst
 
-    def snapshot(self) -> tuple:
+    def snapshot(self, with_fleet: bool = True) -> tuple:
+        """Снимок решения; with_fleet=False — без парка (его снимает тот, кто ведёт всех менеджеров)."""
         return (list(self.pattern), [list(x) for x in self.slot_of], list(self.moved), self.n_moved,
                 [set(m) for m in self.members], [list(t) for t in self.tour],
-                [[list(t) for t in day] for day in self.ttour], [list(x) for x in self.tkm],
-                {name: list(getattr(self, name)) for name in _AGG}, set(self.dirty), self.total)
+                {name: list(getattr(self, name)) for name in _AGG}, set(self.dirty),
+                self.fleet.snapshot() if with_fleet and self.fleet is not None else None)
 
     def restore(self, snap: tuple) -> None:
-        (pattern, slot_of, moved, n_moved, members, tour, ttour, tkm, agg, dirty, total) = snap
+        (pattern, slot_of, moved, n_moved, members, tour, agg, dirty, fleet) = snap
         self.pattern = list(pattern)
         self.slot_of = [list(x) for x in slot_of]
         self.moved = list(moved)
         self.n_moved = n_moved
         self.members = [set(m) for m in members]
         self.tour = [list(t) for t in tour]
-        self.ttour = [[list(t) for t in day] for day in ttour]
-        self.tkm = [list(x) for x in tkm]
         for name in _AGG:
             setattr(self, name, list(agg[name]))
         self.dirty = set(dirty)
-        self.total = total
+        if fleet is not None:
+            self.fleet.restore(fleet)
+        self.total = self._total()
 
 
 # --- Стартовые решения ---
@@ -849,57 +1186,71 @@ def search(state: State, *, seconds: float, clock: Callable[[], float] = time.pe
 
 # --- Эффект отдельного изменения (§8): точный пересчёт затронутых дней ---
 
-def _exact_day(prob: Problem, entries: Sequence[tuple[int, VisitParams, tuple[bool, ...]]],
-               j: int, trucks: bool) -> dict[str, float]:
-    """Метрики дня с нуля: entries — (строка, параметры визита, флаги по сценариям)."""
+def _exact_day(prob: Problem, entries: Sequence[tuple[int, VisitParams]], j: int) -> dict[str, float]:
+    """Метрики дня менеджера с нуля: entries — (строка, параметры визита)."""
     w = prob.weights
     lines = prob.lines
-    nodes = [lines[i].node for i, _, _ in entries if lines[i].node]
+    nodes = [lines[i].node for i, _ in entries if lines[i].node]
     tour = nn_tour(nodes, prob.km)
     km = tour_length(tour, prob.km)
     drv = tour_length(tour, prob.mins)
-    vm = sum(lines[i].minutes for i, _, _ in entries)
-    mu = sum(pr.mu for _, pr, _ in entries)
-    var = sum(pr.var for _, pr, _ in entries)
+    vm = sum(lines[i].minutes for i, _ in entries)
+    mu = sum(pr.mu for _, pr in entries)
+    var = sum(pr.var for _, pr in entries)
     counted = prob.workday[j] and (entries or prob.base[j])
     weak = (1.0 - p_at_least(mu, var, w.min_day_revenue)) if counted else 0.0
-    truck_km = 0.0
-    if trucks and prob.tkm is not None:
-        kg = sum(pr.kg for i, pr, _ in entries if lines[i].node)
-        total = 0.0
-        for s in range(TRUCK_SCENARIOS):
-            t = nn_tour([lines[i].node for i, _, fl in entries if lines[i].node and fl[s]], prob.tkm)
-            total += tour_length(t, prob.tkm)
-        cap = w.truck_capacity_kg
-        mult = math.ceil(kg / cap) if cap and kg > cap else 1
-        truck_km = total / TRUCK_SCENARIOS * mult
-    return {'km': km, 'minutes': vm + drv, 'weak': weak, 'truck_km': truck_km}
+    return {'km': km, 'minutes': vm + drv, 'weak': weak}
+
+
+def new_visit_flags(before: State, i: int, new: SlotPattern,
+                    new_params: VisitParams) -> dict[int, tuple[bool, ...]]:
+    """Флаги «заказал» визитов клиента i в шаблоне new: визиты на общих днях сохраняют номер k,
+    новые дни получают свободные номера по порядку (как eval_relocate)."""
+    new_set = set(new)
+    kept = {j: k for k, j in enumerate(before.slot_of[i]) if j in new_set}
+    free = [k for k in range(MAX_VISITS) if k not in kept.values()]
+    new_k = dict(kept)
+    new_k.update(zip([j for j in new if j not in kept], free))
+    u = before.lines[i].u
+    return {j: tuple(x < new_params.p_year for x in u[k]) for j, k in new_k.items()}
+
+
+def fleet_change(before: State, i: int, new: SlotPattern,
+                 new_params: VisitParams) -> tuple[list[tuple], list[tuple]]:
+    """Визиты клиента i для парка (слот, вершина, флаги): какие уходят и какие приходят при смене
+    шаблона на new. Параметры те же — только разные дни; другие — все дни (меняются флаги)."""
+    g = before.lines[i].gnode
+    if not g:
+        return [], []
+    old, new_set = before.pattern[i], set(new)
+    same = before.params[i] == new_params
+    flags = new_visit_flags(before, i, new, new_params)
+    out = [(j, g, before.flags[i][k]) for k, j in enumerate(before.slot_of[i])
+           if not same or j not in new_set]
+    inn = [(j, g, flags[j]) for j in new if not same or j not in set(old)]
+    return out, inn
 
 
 def change_effect(before: State, i: int, new: SlotPattern, new_params: VisitParams) -> dict[str, float]:
     """Эффект смены шаблона (и частоты) клиента i, применённой к текущему плану (before — точное
-    состояние «было»): Δ км менеджера, км грузовика, ожидаемых слабых дней и минут — в неделю.
-    Затронутые дни пересчитываются с нуля (NN + 2-opt); при смене частоты меняется p клиента,
-    поэтому затронуты все его дни «было» и «стало»."""
+    состояние «было»): Δ км менеджера, ожидаемых слабых дней и минут — в неделю; км парка — по
+    быстрой оценке парка «было» (before.fleet; нет парка — 0). Дни менеджера пересчитываются с нуля
+    (NN + 2-opt); при смене частоты меняется p клиента, поэтому затронуты все его дни «было» и «стало»."""
     prob = before.prob
     old = before.pattern[i]
     old_set, new_set = set(old), set(new)
     same_params = before.params[i] == new_params
     days = (old_set ^ new_set) if same_params else (old_set | new_set)
-    # визиты на общих днях сохраняют номер k (и флаги), новые дни получают свободные номера по порядку
-    kept = {j: k for k, j in enumerate(before.slot_of[i]) if j in new_set}
-    free = [k for k in range(MAX_VISITS) if k not in kept.values()]
-    new_k = dict(kept)
-    new_k.update(zip([j for j in new if j not in kept], free))
-    new_flags = {j: tuple(u < new_params.p_year for u in prob.lines[i].u[k]) for j, k in new_k.items()}
-    out = {'km': 0.0, 'minutes': 0.0, 'weak': 0.0, 'truck_km': 0.0}
+    out = {'km': 0.0, 'minutes': 0.0, 'weak': 0.0}
     for j in sorted(days):
         base = before.day_metrics(j)
-        entries = [(m, before.params[m], before.flags[m][before.slot_of[m].index(j)])
-                   for m in sorted(before.members[j]) if m != i]
+        entries = [(m, before.params[m]) for m in sorted(before.members[j]) if m != i]
         if j in new_set:
-            entries.append((i, new_params, new_flags[j]))
-        after = _exact_day(prob, entries, j, before.trucks)
+            entries.append((i, new_params))
+        after = _exact_day(prob, entries, j)
         for key in out:
             out[key] += after[key] - base[key]
-    return {key: value / W for key, value in out.items()}
+    res = {key: value / W for key, value in out.items()}
+    res['truck_km'] = (before.fleet.effect_km(*fleet_change(before, i, new, new_params))
+                       if before.fleet is not None else 0.0)
+    return res

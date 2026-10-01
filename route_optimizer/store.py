@@ -196,6 +196,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # (передача должна окупаться заметно), и радиус «у менеджера есть клиент рядом», км
     'penalty_transfer': 2000,
     'transfer_radius_km': 1.5,
+    # Парк машин (fleet-plan §2): рабочий день машины и разгрузка на точке — 8 мин + 6 мин на тонну.
+    # Нет ключа в базе — значение по умолчанию: миграция не нужна
+    'truck_work_start': '09:00',
+    'truck_work_end': '18:00',
+    'unload_min_per_stop': 8,
+    'unload_min_per_tonne': 6,
 }
 
 # Числовые настройки: ключ -> (мин, макс, допускается null)
@@ -236,6 +242,8 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'lost_mult': (1, 50, False),
     'penalty_transfer': (0, 1e6, False),
     'transfer_radius_km': (0.1, 20, False),
+    'unload_min_per_stop': (0, 120, False),
+    'unload_min_per_tonne': (0, 120, False),
 }
 
 TRUCK_CAPACITY_KG = (100, 30000)
@@ -429,15 +437,15 @@ def validate_settings(values: Mapping[str, Any],
     out: dict[str, Any] = {}
     errors: dict[str, str] = {}
 
-    for key in ('work_start', 'work_end'):
+    for key in ('work_start', 'work_end', 'truck_work_start', 'truck_work_end'):
         v = values.get(key)
         if not isinstance(v, str) or not _HHMM_RE.match(v):
             errors[key] = 'время в формате ЧЧ:ММ'
         else:
             out[key] = v
-    if 'work_start' in out and 'work_end' in out \
-            and _minutes(out['work_end']) <= _minutes(out['work_start']):
-        errors['work_end'] = 'конец рабочего дня должен быть позже начала'
+    for start, end in (('work_start', 'work_end'), ('truck_work_start', 'truck_work_end')):
+        if start in out and end in out and _minutes(out[end]) <= _minutes(out[start]):
+            errors[end] = 'конец рабочего дня должен быть позже начала'
 
     days, err = _check_int_set(values.get('workdays'), 1, 7, 'дней недели')
     if err:

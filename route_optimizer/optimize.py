@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Callable, Collection, Iterable, Mapping, 
 
 from . import demand as dm
 from . import evaluate as ev
+from . import fleet as fl
 from . import frequency as fq
 from . import patterns as pt
 from . import search as sr
@@ -66,7 +67,7 @@ MAX_AGENTS = 500
 MAX_ID = 2 ** 31 - 1
 # Поля дня в результате (§10.1) — подмножество дня обзора этапа 1
 DAY_KEYS = ('week', 'weekday', 'label', 'visits', 'revenue_low_exp', 'p_day_ge_min', 'work_minutes',
-            'commute_minutes', 'plan_minutes', 'manager_km', 'truck', 'stops')
+            'commute_minutes', 'plan_minutes', 'manager_km', 'stops')
 MARKS = {'move': 'перенос', 'both': 'перенос, частота', 'frequency': 'частота', 'remove': 'убрать',
          'transfer': 'передать'}
 SOURCE_STATUS = 'status'   # убрать из маршрута по статусу клиента (§15): потерян или без заказов
@@ -553,16 +554,16 @@ def season_lam(model: ev.CustomerModel) -> float:
 
 def visit_params(model: ev.CustomerModel, f_total: float) -> sr.VisitParams:
     """Параметры визита при частоте f_total (все визиты клиента у менеджеров в расчёте / нед):
-    p = min(1, λ/f) по сезону, как Draw этапа 1."""
-    low, year, peak = model.low, model.year, model.peak
+    p = min(1, λ/f) по сезону, как Draw этапа 1; kg — кг заказа, если клиент заказал (средний за год):
+    по нему быстрая оценка парка режет рейсы по тоннажу."""
+    low, year = model.low, model.year
     p_low = dm.visit_probability(low.lam, f_total) if low.values else 0.0
     mean = low.mean_revenue
     square = fmean(v[0] * v[0] for v in low.values) if low.values else 0.0
     mu = p_low * mean
     p_year = dm.visit_probability(year.lam, f_total) if year.values else 0.0
-    p_peak = dm.visit_probability(peak.lam, f_total) if peak.values else 0.0
     return sr.VisitParams(mu=mu, var=max(0.0, p_low * square - mu * mu), p_low=p_low,
-                          p_year=p_year, kg=p_peak * peak.mean_kg if peak.values else 0.0)
+                          p_year=p_year, kg=year.mean_kg if year.values else 0.0)
 
 
 def _slots(p: pt.Pattern) -> sr.SlotPattern:
@@ -573,11 +574,11 @@ def _pairs_of(slots: Sequence[int]) -> pt.Pattern:
     return tuple(sorted(sr.day_of_slot(j) for j in slots))
 
 
-def _matrices(home: Point | None, points: Sequence[Point], depot: Point | None,
-              norms: ev.Norms) -> tuple[sr.Matrix, sr.Matrix, sr.Matrix | None]:
-    """Матрицы менеджера (вершина 0 — дом; без дома — нули: открытый путь, как на этапе 1) и
-    грузовика (вершина 0 — склад). Км — norms.km (по дорогам, иначе по прямой × извилистость);
-    минуты — км / скорость участка (город, если оба конца в городе)."""
+def _matrices(home: Point | None, points: Sequence[Point],
+              norms: ev.Norms) -> tuple[sr.Matrix, sr.Matrix]:
+    """Матрицы менеджера: вершина 0 — дом (без дома — нули: открытый путь, как на этапе 1). Км —
+    norms.km (по дорогам, иначе по прямой × извилистость); минуты — км / скорость участка (город,
+    если оба конца в городе)."""
     pts: list[Point | None] = [home, *points]
     n = len(pts)
     city = [p is not None and in_city(p, norms.city_center, norms.city_radius_km) for p in pts]
@@ -592,21 +593,91 @@ def _matrices(home: Point | None, points: Sequence[Point], depot: Point | None,
             speed = norms.speed_city_kmh if city[a] and city[b] else norms.speed_region_kmh
             km[a][b] = km[b][a] = d
             mins[a][b] = mins[b][a] = d / speed * 60.0
-    tkm = None
-    if depot is not None:
-        tkm = [list(row) for row in km]
-        tkm[0] = [0.0] * n
-        for b in range(1, n):
-            d = norms.km(depot, pts[b])
-            tkm[0][b] = tkm[b][0] = d
-    return km, mins, tkm
+    return km, mins
+
+
+def truck_u(customer_id: int) -> tuple[tuple[float, ...], ...]:
+    """Числа «заказал» визитов клиента для парка (визит k, сценарий s). Seed — клиент, а не менеджер:
+    у кого бы ни был клиент, флаги те же (общие случайные числа «было → стало» и при передаче)."""
+    return sr.make_u(random.Random(zlib.crc32(f'{customer_id}|truck'.encode('utf-8'))))
+
+
+# --- Парк машин (fleet-plan §3) ---
+
+@dataclass
+class _Fleet:
+    """Парк расчёта: машины, вершины быстрой оценки (клиент и его точка; 0 — склад), веса и визиты
+    менеджеров в расчёте, которых поиск не меняет (static: клиент, вершина, слоты)."""
+    trucks: list[fl.FleetTruck]
+    node: dict[tuple[int, Point], int]
+    km: sr.Matrix
+    city: list[bool]
+    kg: list[float]
+    kw: dict[str, float]
+    static: list[tuple[int, int, sr.SlotPattern]]
+
+    def gnode(self, customer_id: int, point: Point | None) -> int:
+        return self.node.get((customer_id, point), 0) if point is not None else 0
+
+    def estimate(self, entries: Iterable[tuple[int, int, Sequence[bool]]],
+                 visit: Callable[[int], sr.VisitParams]) -> sr.FleetEstimate:
+        """Быстрая оценка парка с визитами entries и static (параметры static — visit(клиент))."""
+        static = []
+        for c, g, slots in self.static:
+            u, p = truck_u(c), visit(c).p_year
+            static += [(j, g, tuple(x < p for x in u[k])) for k, j in enumerate(slots)]
+        est = sr.FleetEstimate(self.km, self.city, self.kg, **self.kw)
+        est.build(entries, static)
+        return est
+
+
+def _fleet_setup(ctx: _Ctx, run_ids: Sequence[int]) -> _Fleet | None:
+    """Парк для поиска: нужны склад и хотя бы одна активная машина с тоннажем и расходом (иначе
+    дизель грузовиков в стоимость не входит). Вершины — клиенты всех менеджеров в расчёта: их заказы
+    везут те же машины."""
+    snap, bundle, before = ctx.snap, ctx.bundle, ctx.before
+    s = bundle.settings
+    norms = before.norms
+    trucks, _ = fl.fleet_trucks(bundle.trucks, {code: car.name for code, car in snap.cars.items()})
+    if bundle.depot is None or not trucks:
+        return None
+    keys: set[tuple[int, Point]] = set()
+    visits: dict[int, list[tuple[int, Point | None, pt.Pattern]]] = {}
+    for a in sorted(before.included_ids):
+        for c, info in sorted(ctx.pairs.get(a, {}).items()):
+            point = ctx.coord(c, info.address_id).point
+            visits.setdefault(a, []).append((c, point, info.pattern))
+            if point is not None:
+                keys.add((c, point))
+    order = sorted(keys)
+    node = {key: n + 1 for n, key in enumerate(order)}
+    points = [p for _, p in order]
+    if ctx.dist is None:
+        ctx.dist = _Distances(points, norms)
+    km = ctx.dist.rows(bundle.depot, points)
+    depot_city = in_city(bundle.depot, norms.city_center, norms.city_radius_km)
+    city = [depot_city] + [ctx.dist.city[ctx.dist.index[p]] for p in points]
+    kg = [0.0] + [before.models[c].year.mean_kg if before.models[c].year.values else 0.0 for c, _ in order]
+    tn = fl.TruckNorms.from_settings(s)
+    l100 = fmean(t.l100 for t in trucks)
+    kw = dict(capacity_kg=max(t.capacity_kg for t in trucks),
+              per_km=float(s['truck_priority']) * _fuel_price(ctx, 'diesel') * l100 / 100.0,
+              overtime_per_min=float(s['penalty_overtime_per_min']),
+              capacity_min=len(trucks) * tn.work_minutes, unload_stop=tn.unload_min_per_stop,
+              unload_tonne=tn.unload_min_per_tonne, speed_city_kmh=norms.speed_city_kmh,
+              speed_region_kmh=norms.speed_region_kmh, trip_minutes=tn.work_minutes)
+    run = set(run_ids)
+    static = [(c, node[(c, p)], _slots(pattern)) for a, vs in sorted(visits.items()) if a not in run
+              for c, p, pattern in vs if p is not None]
+    return _Fleet(trucks, node, km, city, kg, kw, static)
 
 
 # --- Расчёт ---
 
 @dataclass
 class ManagerOutcome:
-    """Итог по менеджеру для проверок (tests/routes_optimize_check.py)."""
+    """Итог по менеджеру для проверок (tests/routes_optimize_check.py). cost_before / cost_after —
+    свои слагаемые менеджера (без дизеля парка: он общий — RunOutcome)."""
     agent_id: int
     code: str
     customers: list[int]
@@ -620,11 +691,17 @@ class ManagerOutcome:
 
 @dataclass
 class RunOutcome:
+    """cost_before / cost_after — быстрая оценка компании, драм в неделю: Σ менеджеров + дизель парка
+    (fleet_before / fleet_after; None — парк не в стоимости)."""
     result: dict[str, Any]
     managers: list[ManagerOutcome]
     before: ev.PlanEvaluation
     after: ev.PlanEvaluation
     transfer: tr.TransferStats | None = None                 # режим Б: поиск передач
+    cost_before: float = 0.0
+    cost_after: float = 0.0
+    fleet_before: float | None = None
+    fleet_after: float | None = None
 
 
 @dataclass
@@ -644,6 +721,10 @@ class _Ctx:
     clock: Callable[[], float]
     params_cache: dict[tuple[int, float], sr.VisitParams]
     fuel_sources: list[tuple[str, float, str]]
+    fleet: _Fleet | None = None                  # парк в стоимости (склад и машины заданы)
+    dist: _Distances | None = None               # расстояния между клиентами расчёта (парк, режим Б)
+    fleet_before: sr.FleetEstimate | None = None  # парк текущего плана — эффект изменений
+    fleet_a: sr.FleetEstimate | None = None       # парк итога режима А — старт режима Б
 
     def visit(self, cid: int, f_total: float) -> sr.VisitParams:
         key = (cid, round(f_total, 9))
@@ -651,6 +732,9 @@ class _Ctx:
         if hit is None:
             hit = self.params_cache[key] = visit_params(self.before.models[cid], f_total)
         return hit
+
+    def coord(self, cid: int, address_id: int) -> Coord:
+        return self.before.coords.get((cid, address_id)) or ev.visit_coord(self.snap, cid, address_id)
 
 
 def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | None,
@@ -661,7 +745,11 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
     """Режим А по выбранным менеджерам → результат §10.1 (статусы решений — на момент расчёта);
     params['mode'] = 'transfer' — затем режим Б (передача магазинов, _run_transfer). roads — расстояния
     по дорогам (None — по прямой × извилистость). Принятые передачи режим А не учитывает: магазин
-    считается у прежнего менеджера (в план для ERP передача входит)."""
+    считается у прежнего менеджера (в план для ERP передача входит).
+
+    Дизель парка общий: менеджеры связаны через дни доставки. Поиск — по менеджерам по очереди
+    (Гаусс–Зейдель): каждый ищет при текущих днях остальных (уже найденных — их итог, ещё нет —
+    старт), после него туры парка проходят 2-opt."""
     started = clock()
     s = bundle.settings
     params = {**DEFAULT_PARAMS, **params}
@@ -695,18 +783,34 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
             freq_after[c] += len(spec.allowed[0] if spec else info.pattern) / pt.CYCLE_WEEKS
     ctx = _Ctx(snap, bundle, params, before, book, pairs, specs, freq_before, dict(freq_after),
                lam, lam_season, abc, clock, {}, [])
+    ctx.fleet = _fleet_setup(ctx, run_ids)
 
     evals = {me.agent_id: me for me in before.evals}
+    tasks = [_manager_task(ctx, a, evals[a]) for a in run_ids]
+    fleet = None
+    if ctx.fleet is not None:
+        ctx.fleet_before = ctx.fleet.estimate([e for t in tasks for e in t.before_state.fleet_entries()],
+                                              lambda c: ctx.visit(c, ctx.freq_before[c]))
+        fleet = ctx.fleet.estimate([e for t in tasks for e in t.state.fleet_entries()],
+                                   lambda c: ctx.visit(c, ctx.freq_after[c]))
+        for t in tasks:
+            t.before_state.attach(ctx.fleet_before)
+            t.state.attach(fleet)
     outcomes: list[ManagerOutcome] = []
     parts: dict[int, dict[str, Any]] = {}
-    for n, a in enumerate(run_ids):
+    for n, t in enumerate(tasks):
         if progress:
-            progress(n, len(run_ids), _code(snap, a))
-        outcome, part = _optimize_manager(ctx, a, evals[a])
+            progress(n, len(run_ids), _code(snap, t.agent_id))
+        outcome, part = _search_manager(ctx, t)
         outcomes.append(outcome)
-        parts[a] = part
+        parts[t.agent_id] = part
     if progress:
         progress(len(run_ids), len(run_ids), None)
+    ctx.fleet_a = fleet
+    fleet_before = ctx.fleet_before.total if ctx.fleet_before is not None else None
+    fleet_after = fleet.total if fleet is not None else None
+    if fleet is not None:
+        logger.info('[Routes] Парк (быстрая оценка): %.0f → %.0f драм/нед', fleet_before, fleet_after)
     if params.get('mode') == MODE_TRANSFER:   # режим Б: старт — результат режима А
         return _run_transfer(ctx, calib, run_ids, evals, outcomes, parts, started)
 
@@ -721,39 +825,48 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
     result['seconds'] = round(clock() - started, 1)
     logger.info('[Routes] Оптимизация: менеджеров %d, изменений %d, %.1f с', len(run_ids),
                 sum(len(m['changes']) for m in result['managers']), result['seconds'])
-    return RunOutcome(result, outcomes, before, after)
+    return RunOutcome(result, outcomes, before, after,
+                      cost_before=sum(o.cost_before for o in outcomes) + (fleet_before or 0.0),
+                      cost_after=sum(o.cost_after for o in outcomes) + (fleet_after or 0.0),
+                      fleet_before=fleet_before, fleet_after=fleet_after)
 
 
-def _optimize_manager(ctx: _Ctx, agent_id: int,
-                      me: ev.ManagerEval) -> tuple[ManagerOutcome, dict[str, Any]]:
-    snap, bundle, before = ctx.snap, ctx.bundle, ctx.before
-    s = bundle.settings
-    norms = before.norms
+@dataclass
+class _Task:
+    """Задача менеджера режима А: состояние текущего плана (эффект изменений) и старт поиска."""
+    agent_id: int
+    me: ev.ManagerEval
+    cids: list[int]
+    specs: list[PairSpec]
+    points: list[Point | None]
+    prob: sr.Problem
+    before_state: sr.State
+    state: sr.State
+    fresh: bool
+
+
+def _manager_task(ctx: _Ctx, agent_id: int, me: ev.ManagerEval) -> _Task:
+    s = ctx.bundle.settings
+    norms = ctx.before.norms
     info = ctx.pairs.get(agent_id, {})
     cids = sorted(info)
     specs = [ctx.specs[(agent_id, c)] for c in cids]
-    coords: list[Coord] = []
-    for c in cids:
-        key = (c, info[c].address_id)
-        coords.append(before.coords.get(key) or ev.visit_coord(snap, *key))
-    points = [co.point for co in coords]
+    points = [ctx.coord(c, info[c].address_id).point for c in cids]
     located = [i for i, p in enumerate(points) if p is not None]
     node_of = {i: n + 1 for n, i in enumerate(located)}
-    truck = me.truck
-    depot = bundle.depot if truck is not None else None
-    km, mins, tkm = _matrices(me.home, [points[i] for i in located], depot, norms)
-    weights, truck_cost = _weights(ctx, agent_id, me, tkm is not None)
+    km, mins = _matrices(me.home, [points[i] for i in located], norms)
+    weights = _weights(ctx, agent_id, me)
 
     workdays = set(s['workdays'])
     base_slots = {sr.slot_of_day(w, d) for spec in specs for w, d in spec.current if d in workdays}
     lines = [sr.Line(customer_id=c, node=node_of.get(i, 0),
-                     minutes=before.visit_minutes[before.models[c].size],
+                     minutes=ctx.before.visit_minutes[ctx.before.models[c].size],
                      current=_slots(spec.current), allowed=tuple(_slots(p) for p in spec.allowed),
-                     locked=spec.locked,
-                     u=sr.make_u(random.Random(zlib.crc32(f'{agent_id}|{c}|truck'.encode('utf-8')))))
+                     locked=spec.locked, u=truck_u(c),
+                     gnode=ctx.fleet.gnode(c, points[i]) if ctx.fleet is not None else 0)
              for i, (c, spec) in enumerate(zip(cids, specs))]
     prob = sr.Problem(
-        agent_id=agent_id, lines=lines, km=km, mins=mins, tkm=tkm, weights=weights,
+        agent_id=agent_id, lines=lines, km=km, mins=mins, weights=weights,
         workday=tuple(sr.day_of_slot(j)[1] in workdays for j in range(sr.SLOTS)),
         base=tuple(j in base_slots for j in range(sr.SLOTS)),
         neighbors=sr.nearest_lines([line.node for line in lines], km),
@@ -761,59 +874,64 @@ def _optimize_manager(ctx: _Ctx, agent_id: int,
 
     before_params = [ctx.visit(c, ctx.freq_before[c]) for c in cids]
     target_params = [ctx.visit(c, ctx.freq_after[c]) for c in cids]
-    before_state = sr.State(prob, [line.current for line in lines], before_params,
-                            change_penalty=0.0, trucks=True)
+    before_state = sr.State(prob, [line.current for line in lines], before_params, change_penalty=0.0)
     fresh = ctx.params['start'] == 'fresh'
     penalty = 0.0 if fresh else float(s['penalty_change'])
-    if fresh:
-        state = sr.State(prob, [line.allowed[0] if line.locked else () for line in lines],
-                         target_params, change_penalty=penalty, trucks=truck_cost)
-        sr.greedy_fill(state, sr.fresh_order(prob, me.home, points))
+    if fresh:   # жадная вставка — в свою очередь поиска (парк уже с днями остальных)
+        start = [line.allowed[0] if line.locked else () for line in lines]
     else:
         # старт — текущие шаблоны, визиты нерабочих дней — на субботе той же недели (Р3-9)
-        base = [_slots(pt.workday_pattern(spec.current, workdays)) for spec in specs]
-        state = sr.State(prob, sr.current_start(prob, base), target_params, change_penalty=penalty,
-                         trucks=truck_cost)
+        start = sr.current_start(prob, [_slots(pt.workday_pattern(spec.current, workdays)) for spec in specs])
+    state = sr.State(prob, start, target_params, change_penalty=penalty)
+    return _Task(agent_id, me, cids, specs, points, prob, before_state, state, fresh)
+
+
+def _search_manager(ctx: _Ctx, task: _Task) -> tuple[ManagerOutcome, dict[str, Any]]:
+    """Поиск менеджера при текущих днях остальных (парк общий), затем 2-opt туров парка."""
+    s = ctx.bundle.settings
+    agent_id, state, before_state = task.agent_id, task.state, task.before_state
+    state.refresh()
+    if task.fresh:
+        sr.greedy_fill(state, sr.fresh_order(task.prob, task.me.home, task.points))
     stats = sr.search(state, seconds=float(s['optimizer_seconds_per_manager']), clock=ctx.clock)
+    if state.fleet is not None:
+        state.fleet.polish()
+        state.refresh()
     final = [_pairs_of(p) for p in state.pattern]
 
-    changes, hints = _day_changes(ctx, agent_id, cids, specs, final, state.pattern, before_state,
-                                  tkm is not None)
+    changes, hints = _day_changes(ctx, agent_id, task.cids, task.specs, final, state.pattern, before_state,
+                                  ctx.fleet is not None)
     _sort_changes(changes)
 
-    code = _code(snap, agent_id)
-    logger.info('[Routes] Оптимизация %s: клиентов %d, C %.0f → %.0f драм/нед (старт %.0f), '
-                'ходов %d, возмущений %d, %.1f с%s', code, len(lines), before_state.total,
+    code = _code(ctx.snap, agent_id)
+    logger.info('[Routes] Оптимизация %s: клиентов %d, C %.0f → %.0f драм/нед (старт %.0f; с парком), '
+                'ходов %d, возмущений %d, %.1f с%s', code, len(task.cids), before_state.total,
                 state.total, stats.cost_start, stats.accepted, stats.perturbations, stats.seconds,
                 ' — СТОП ПО ВРЕМЕНИ' if stats.time_capped else '')
-    outcome = ManagerOutcome(agent_id, code, cids, specs, final, before_state.total, state.total, stats)
+    outcome = ManagerOutcome(agent_id, code, task.cids, task.specs, final, before_state.own_total(),
+                             state.own_total(), stats)
+    info = ctx.pairs.get(agent_id, {})
     part = {'changes': changes, 'hints': hints, 'time_capped': stats.time_capped,
-            'cost_before': before_state.total, 'cost_after': state.total, 'truck_cost': truck_cost,
-            'final': dict(zip(cids, final)), 'addresses': {c: info[c].address_id for c in cids},
+            'cost_before': before_state.own_total(), 'cost_after': state.own_total(),
+            'final': dict(zip(task.cids, final)), 'addresses': {c: info[c].address_id for c in task.cids},
             'state': state}   # режим Б начинает с туров этого состояния (в результат не попадает)
     return outcome, part
 
 
-def _weights(ctx: _Ctx, agent_id: int, me: ev.ManagerEval, has_tkm: bool) -> tuple[sr.Weights, bool]:
-    """Веса стоимости менеджера (§4): топливо менеджера и дизель — по настройкам или запасной цене;
-    второе — считается ли грузовик в стоимости (есть склад, машина и её расход)."""
+def _weights(ctx: _Ctx, agent_id: int, me: ev.ManagerEval) -> sr.Weights:
+    """Веса стоимости менеджера (§4): топливо менеджера — по настройкам или запасной цене. Дизель
+    парка — общий (_fleet_setup)."""
     s = ctx.bundle.settings
     norms = ctx.before.norms
-    truck = me.truck
     profile = ctx.bundle.profile(agent_id)
     l100 = (profile.car_fuel_l_per_100km if profile.car_fuel_l_per_100km is not None
             else float(s['manager_car_default_l_per_100km']))
     price = _fuel_price(ctx, me.fuel_type)
-    truck_cost = has_tkm and truck is not None and truck.fuel_l_per_100km is not None
-    truck_per_km = (float(s['truck_priority']) * _fuel_price(ctx, 'diesel')
-                    * truck.fuel_l_per_100km / 100.0) if truck_cost else 0.0
-    weights = sr.Weights(
-        manager_per_km=price * l100 / 100.0, truck_per_km=truck_per_km,
+    return sr.Weights(
+        manager_per_km=price * l100 / 100.0,
         weak_day=float(s['penalty_weak_day']), poor_trip=float(s['penalty_poor_trip']),
         overtime_per_min=float(s['penalty_overtime_per_min']), window_min=norms.work_minutes,
-        min_day_revenue=norms.min_day_revenue, min_trip_revenue=norms.min_trip_revenue,
-        truck_capacity_kg=truck.capacity_kg if truck is not None else None)
-    return weights, truck_cost
+        min_day_revenue=norms.min_day_revenue, min_trip_revenue=norms.min_trip_revenue)
 
 
 def _sort_changes(changes: list[dict[str, Any]]) -> None:
@@ -912,10 +1030,10 @@ class _Grid:
 
 
 class _Distances:
-    """Км и минуты между всеми точками клиентов расчёта режима Б (norms.km — по дорогам или по
-    прямой × извилистость, как _matrices) — один раз; матрицы менеджеров (вершина 0 — дом) собираются
-    из них построчно. Строки — array('d'): у менеджера до тысячи гостей, и списки чисел заняли бы
-    в несколько раз больше памяти."""
+    """Км и минуты между всеми точками клиентов расчёта (norms.km — по дорогам или по прямой ×
+    извилистость, как _matrices) — один раз; матрицы менеджеров режима Б (вершина 0 — дом) и матрица
+    парка (вершина 0 — склад) собираются из них построчно. Строки — array('d'): у менеджера до тысячи
+    гостей, и списки чисел заняли бы в несколько раз больше памяти."""
 
     def __init__(self, points: Iterable[Point], norms: ev.Norms):
         self.norms = norms
@@ -934,9 +1052,22 @@ class _Distances:
                 ka[b] = self.km[b][a] = d
                 ma[b] = self.mins[b][a] = m
 
-    def matrices(self, home: Point | None, points: Sequence[Point],
-                 depot: Point | None) -> tuple[sr.Matrix, sr.Matrix, sr.Matrix | None]:
-        """То же, что _matrices(home, points, depot, norms), из готовых расстояний."""
+    def _get(self, points: Sequence[Point]) -> tuple[list[int], Callable[[array], tuple[float, ...]]]:
+        gi = [self.index[p] for p in points]
+        if len(gi) == 1:
+            def get(row: array) -> tuple[float, ...]:
+                return (row[gi[0]],)
+            return gi, get
+        return gi, (itemgetter(*gi) if gi else (lambda row: ()))
+
+    def rows(self, start: Point, points: Sequence[Point]) -> sr.Matrix:
+        """Км между start (вершина 0) и точками points (1..n) — матрица парка от склада."""
+        gi, get = self._get(points)
+        dk = [self.norms.km(start, p) for p in points]
+        return [array('d', [0.0, *dk])] + [array('d', (dk[r], *get(self.km[g]))) for r, g in enumerate(gi)]
+
+    def matrices(self, home: Point | None, points: Sequence[Point]) -> tuple[sr.Matrix, sr.Matrix]:
+        """То же, что _matrices(home, points, norms), из готовых расстояний."""
         norms = self.norms
         gi = [self.index[p] for p in points]
         if home is not None:
@@ -948,23 +1079,11 @@ class _Distances:
             hk = hm = [0.0] * len(gi)
         km = [array('d', [0.0, *hk])]
         mins = [array('d', [0.0, *hm])]
-        if len(gi) == 1:
-            def get(row: array) -> tuple[float, ...]:
-                return (row[gi[0]],)
-        elif gi:
-            get = itemgetter(*gi)
+        _, get = self._get(points)
         for r, g in enumerate(gi):
             km.append(array('d', (hk[r], *get(self.km[g]))))
             mins.append(array('d', (hm[r], *get(self.mins[g]))))
-        tkm = None
-        if depot is not None:
-            dk = [norms.km(depot, p) for p in points]
-            tkm = [array('d', [0.0, *dk])]
-            for r in range(len(gi)):
-                row = array('d', km[r + 1])
-                row[0] = dk[r]
-                tkm.append(row)
-        return km, mins, tkm
+        return km, mins
 
 
 def revenue_month(model: ev.CustomerModel) -> float:
@@ -976,10 +1095,11 @@ def revenue_month(model: ev.CustomerModel) -> float:
     return sum(v[0] for v in dem.values) / max(dem.exposure_days, dm.MIN_EXPOSURE_DAYS) * MONTH_DAYS
 
 
-def _transfer_effect_json(e: Mapping[str, float], trucks: bool) -> dict[str, Any]:
+def _transfer_effect_json(e: Mapping[str, float], truck_km: float | None) -> dict[str, Any]:
+    """Эффект передачи; truck_km — Δ км парка (общий для обоих менеджеров; None — не посчитан)."""
     # + 0.0: «−0.0» после округления — просто 0
     return {'manager_km_week': round(e['km'], 1) + 0.0,
-            'truck_km_week': round(e['truck_km'], 1) + 0.0 if trucks else None,
+            'truck_km_week': round(truck_km, 1) + 0.0 if truck_km is not None else None,
             'weak_days_week': round(e['weak'], 2) + 0.0, 'minutes_week': int(round(e['minutes']))}
 
 
@@ -1050,13 +1170,13 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
     fresh = ctx.params['start'] == 'fresh'
     change_penalty = 0.0 if fresh else float(s['penalty_change'])
     workdays = set(s['workdays'])
-    dist = _Distances((p for p in point.values() if p is not None), norms)
+    if ctx.dist is None:   # без парка расстояния ещё не считались
+        ctx.dist = _Distances((p for p in point.values() if p is not None), norms)
+    dist = ctx.dist
     final_a = {o.agent_id: dict(zip(o.customers, o.final)) for o in outcomes_a}
     own_of: dict[int, list[int]] = {}
     index_of: dict[int, dict[int, int]] = {}
     weights_of: dict[int, sr.Weights] = {}
-    has_tkm: dict[int, bool] = {}
-    truck_costs: dict[int, bool] = {}
     before_states: dict[int, sr.State] = {}
     states: dict[int, sr.State] = {}
     for a in run_ids:
@@ -1068,9 +1188,8 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
         pts = [point[(a, c)] for c in own] + [point[(origin[c], c)] for c in gs]
         located = [i for i, p in enumerate(pts) if p is not None]
         node_of = {i: n + 1 for n, i in enumerate(located)}
-        depot = bundle.depot if me.truck is not None else None
-        km, mins, tkm = dist.matrices(me.home, [pts[i] for i in located], depot)
-        weights, truck_cost = _weights(ctx, a, me, tkm is not None)
+        km, mins = dist.matrices(me.home, [pts[i] for i in located])
+        weights = _weights(ctx, a, me)
         base_slots = {sr.slot_of_day(w, d) for spec in specs[:len(own)] for w, d in spec.current
                       if d in workdays}
         lines = []
@@ -1083,26 +1202,33 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
             lines.append(sr.Line(
                 customer_id=c, node=node_of.get(i, 0), minutes=before.visit_minutes[before.models[c].size],
                 current=() if guest else _slots(spec.current), allowed=allowed, locked=locked,
-                u=sr.make_u(random.Random(zlib.crc32(f'{a}|{c}|truck'.encode('utf-8'))))))
+                u=truck_u(c), gnode=ctx.fleet.gnode(c, pts[i]) if ctx.fleet is not None else 0))
         prob = sr.Problem(
-            agent_id=a, lines=lines, km=km, mins=mins, tkm=tkm, weights=weights,
+            agent_id=a, lines=lines, km=km, mins=mins, weights=weights,
             workday=tuple(sr.day_of_slot(j)[1] in workdays for j in range(sr.SLOTS)),
             base=tuple(j in base_slots for j in range(sr.SLOTS)),
             neighbors=sr.nearest_lines([line.node for line in lines], km),
             seed=zlib.crc32(str(a).encode('utf-8')))
+        # парк «было» — тот же, что в режиме А: гости без визитов, свои — текущие дни
         before_states[a] = sr.State(prob, [line.current for line in lines],
                                     [ctx.visit(c, ctx.freq_before[c]) for c in cids],
-                                    change_penalty=0.0, trucks=True)
+                                    change_penalty=0.0, fleet=ctx.fleet_before)
         start = [() if c in fixed else _slots(final_a[a][c]) for c in own]
         start += [_slots(fixed[c][2]) if c in fixed else () for c in gs]
         # частота клиента одна у любого менеджера; у принятой передачи — по принятым дням
         target = [ctx.visit(c, pt.pattern_freq(fixed[c][2]) if c in fixed else ctx.freq_after[c])
                   for c in cids]
-        states[a] = sr.State(prob, start, target, change_penalty=change_penalty, trucks=truck_cost)
+        states[a] = sr.State(prob, start, target, change_penalty=change_penalty)
         states[a].adopt_tours(parts_a[a]['state'])   # своя нумерация та же: старт = итог режима А
         own_of[a] = own
         index_of[a] = {c: i for i, c in enumerate(cids)}
-        weights_of[a], has_tkm[a], truck_costs[a] = weights, tkm is not None, truck_cost
+        weights_of[a] = weights
+    if ctx.fleet is not None:   # парк старта — по дням старта (с принятыми передачами); туры — режима А
+        fleet = ctx.fleet.estimate([e for a in run_ids for e in states[a].fleet_entries()],
+                                   lambda c: ctx.visit(c, ctx.freq_after[c]))
+        fleet.adopt(ctx.fleet_a)
+        for a in run_ids:
+            states[a].attach(fleet)
 
     clients = []
     for c in sorted(origin):
@@ -1131,10 +1257,9 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
         moved = {c: market.owner[c] for c in own if market.owner.get(c, a) != a}
         final = [finals[moved.get(c, a)].get(c, ()) for c in own]
         changes, hints = _day_changes(ctx, a, own, specs, final, states[a].pattern[:len(own)],
-                                      before_states[a], has_tkm[a], skip=moved)
+                                      before_states[a], ctx.fleet is not None, skip=moved)
         for c, b in sorted(moved.items()):
-            change = _transfer_change(ctx, c, a, b, before_states, states, index_of, weights_of,
-                                      has_tkm, fixed)
+            change = _transfer_change(ctx, c, a, b, before_states, states, index_of, weights_of, fixed)
             changes.append(change)
             for side, agent in (('given', a), ('received', b)):
                 row = balance[agent][side]
@@ -1144,12 +1269,11 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
             del change['_revenue'], change['_debt']
         _sort_changes(changes)
         o = by_agent_a[a]
-        outcomes.append(ManagerOutcome(a, o.code, own, specs, final, before_states[a].total, states[a].total,
-                                       o.stats, moved_to=moved))
+        outcomes.append(ManagerOutcome(a, o.code, own, specs, final, before_states[a].own_total(),
+                                       states[a].own_total(), o.stats, moved_to=moved))
         parts[a] = {'changes': changes, 'hints': hints,
                     'time_capped': parts_a[a]['time_capped'] or tstats.time_capped,
-                    'cost_before': before_states[a].total, 'cost_after': states[a].total,
-                    'truck_cost': truck_costs[a]}
+                    'cost_before': before_states[a].own_total(), 'cost_after': states[a].own_total()}
 
     # «Стало»: у каждого менеджера — кто у него сейчас (адрес — из шаблона ERP прежнего менеджера)
     address = {(a, c): info.address_id for a in run_ids for c, info in ctx.pairs.get(a, {}).items()}
@@ -1187,16 +1311,20 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
                 result['transfers']['count'], tstats.cost_start, tstats.cost_end, setup_seconds,
                 tstats.seconds, tstats.accepted, tstats.intra_accepted, tstats.perturbations,
                 ' — СТОП ПО ВРЕМЕНИ' if tstats.time_capped else '')
-    return RunOutcome(result, outcomes, before, after, transfer=tstats)
+    fleet_before = ctx.fleet_before.total if ctx.fleet_before is not None else None
+    fleet_after = market.fleet.total if market.fleet is not None else None
+    return RunOutcome(result, outcomes, before, after, transfer=tstats,
+                      cost_before=sum(o.cost_before for o in outcomes) + (fleet_before or 0.0),
+                      cost_after=tstats.cost_end, fleet_before=fleet_before, fleet_after=fleet_after)
 
 
 def _transfer_change(ctx: _Ctx, c: int, a: int, b: int, before_states: Mapping[int, sr.State],
                      states: Mapping[int, sr.State], index_of: Mapping[int, Mapping[int, int]],
-                     weights_of: Mapping[int, sr.Weights], has_tkm: Mapping[int, bool],
-                     fixed: Mapping[int, Any]) -> dict[str, Any]:
+                     weights_of: Mapping[int, sr.Weights], fixed: Mapping[int, Any]) -> dict[str, Any]:
     """Предложение «передать клиента c от a к b» (план §5): эффект — этой передачи к текущему плану по
-    обоим менеджерам (Δ км, слабых дней, минут), выручка в месяц и долг, которые переходят, причина
-    простыми словами по главному эффекту. _revenue и _debt — неокруглённые, для баланса."""
+    обоим менеджерам (Δ км, слабых дней, минут; км парка — общие), выручка в месяц и долг, которые
+    переходят, причина простыми словами по главному эффекту. _revenue и _debt — неокруглённые, для
+    баланса."""
     snap, s = ctx.snap, ctx.bundle.settings
     spec = ctx.specs[(a, c)]
     new_slots = states[b].pattern[index_of[b][c]]
@@ -1206,7 +1334,8 @@ def _transfer_change(ctx: _Ctx, c: int, a: int, b: int, before_states: Mapping[i
     give = tr.side_effect(before_states[a], index_of[a][c], (), params)
     take = tr.side_effect(before_states[b], index_of[b][c], new_slots, params)
     total = {k: give[k] + take[k] for k in give}
-    trucks = has_tkm[a] or has_tkm[b]
+    truck_km = tr.transfer_fleet_km(before_states[a], index_of[a][c], before_states[b], index_of[b][c],
+                                    new_slots, params)
     kind = 'owner' if c in fixed else tr.main_effect(
         give, take, weights_of[a].manager_per_km, weights_of[b].manager_per_km,
         float(s['penalty_weak_day']), float(s['penalty_overtime_per_min']))
@@ -1227,9 +1356,9 @@ def _transfer_change(ctx: _Ctx, c: int, a: int, b: int, before_states: Mapping[i
         'reason': f'{reason}; {freq_reason}' if freq_reason and kind != 'owner' else reason,
         'reason_kind': kind,
         'revenue_month': _i(revenue), 'debt': _i(debt),
-        'effect': _transfer_effect_json(total, trucks),
-        'effect_from': _transfer_effect_json(give, trucks),
-        'effect_to': _transfer_effect_json(take, trucks),
+        'effect': _transfer_effect_json(total, truck_km),
+        'effect_from': _transfer_effect_json(give, None),   # км парка — общие, в effect
+        'effect_to': _transfer_effect_json(take, None),
         '_revenue': revenue, '_debt': debt,
     }
     change['decision'] = ctx.book.change_status(a, change)
@@ -1344,20 +1473,14 @@ def _week_json(wk: ev.WeekTotals, cost: float) -> dict[str, Any]:
     return {'visits': _num(wk.visits), 'revenue_low': _i(wk.revenue_low),
             'revenue_peak': _i(wk.revenue_peak), 'revenue_year': _i(wk.revenue_year),
             'manager_km': _r(wk.manager_km, 1),
-            'truck_km': _r(wk.truck_km, 1), 'truck_liters': _r(wk.truck_liters, 1),
             'days_below_min': _num(wk.days_below_min), 'avg_work_hours': _r(wk.avg_work_hours, 1),
             'avg_plan_hours': _r(wk.avg_plan_hours, 1), 'cost': _i(cost)}
 
 
-def _empty_week(like: ev.WeekTotals) -> ev.WeekTotals:
-    """Неделя менеджера без дней в плане: всё по нулям; грузовик — 0, если в «было» он считался."""
-    def zero(x: float | None) -> float | None:
-        return None if x is None else 0.0
-
+def _empty_week() -> ev.WeekTotals:
+    """Неделя менеджера без дней в плане: всё по нулям."""
     return ev.WeekTotals(visits=0.0, revenue_low=0.0, revenue_year=0.0, revenue_peak=0.0, manager_km=0.0,
-                         manager_liters=0.0, truck_km=zero(like.truck_km),
-                         truck_liters=zero(like.truck_liters), days_below_min=0.0,
-                         trips_poor=zero(like.trips_poor), avg_plan_hours=None, avg_work_hours=None)
+                         manager_liters=0.0, days_below_min=0.0, avg_plan_hours=None, avg_work_hours=None)
 
 
 def _company(snap: Snapshot, bundle: Bundle, pe: ev.PlanEvaluation) -> dict[str, Any]:
@@ -1387,7 +1510,7 @@ def _result(ctx: _Ctx, run_ids: Sequence[int], parts: Mapping[int, Mapping[str, 
         wk_before = before.weeks[a]
         # все клиенты менеджера убраны из маршрута (§15), а работал он только в нерабочий день — в
         # «стало» у него нет ни одного дня: неделя без визитов
-        wk_after = after.weeks.get(a) or _empty_week(wk_before)
+        wk_after = after.weeks.get(a) or _empty_week()
         managers.append({
             'agent_id': a, 'code': _code(snap, a), 'name': agent.name if agent else '',
             'before': _week_json(wk_before, part['cost_before']),
@@ -1444,7 +1567,7 @@ def _result(ctx: _Ctx, run_ids: Sequence[int], parts: Mapping[int, Mapping[str, 
         'snapshot_as_of': snap.data_as_of.isoformat(timespec='seconds'),
         'fuel_price_used': _num(fuel_used),
         'fuel_price_source': fuel_source,
-        'truck_costs': any(parts[a]['truck_cost'] for a in run_ids),
+        'truck_costs': ctx.fleet is not None,   # дизель парка в стоимости поиска
         'before': _company(snap, bundle, before),
         'after': _company(after_snap, bundle, after),
         'managers': managers,

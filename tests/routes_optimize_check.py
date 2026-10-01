@@ -15,9 +15,9 @@ ERP читается одним снимком этапа 1 (erp._select, тол
   - шаблоны: все допустимые, закреплённые не тронуты, запрещённые не выбраны;
   - время: нет дней «стало» с планом длиннее окна, если у менеджера в «было» таких не было;
     если были — в неделю их не больше;
-  - стоимость: C_стало ≤ C_было у каждого менеджера (быстрая оценка; у менеджера с визитами в
-    нерабочий день — C_стало ≤ C старта поиска, где они уже на субботе, Р3-9); итог «стало» не хуже по
-    слабым дням и км менеджеров (полная оценка этапа 1) — если хуже, отчёт показывает, где и почему;
+  - стоимость: C_стало ≤ C_было компании — менеджеры + дизель парка (быстрая оценка; парк общий,
+    поэтому сравнение — по компании, а у менеджеров — справочно); итог «стало» не хуже по слабым дням и
+    км менеджеров (полная оценка этапа 1) — если хуже, отчёт показывает, где и почему;
   - выручка: снижение частоты не уменьшает выручку модели ни в один сезон (зима, лето, год) — ни
     по компании, ни у менеджера (частота по продажам — по самому высокому спросу из сезонов);
   - скорость: весь расчёт ≤ 2 мин при optimizer_seconds_per_manager = 8;
@@ -33,6 +33,11 @@ ERP читается одним снимком этапа 1 (erp._select, тол
     его передач;
   - повторяемость; весь расчёт ≤ 2 мин;
   - ключевой показатель — слабые зимние дни A002/10 и A004/11 в режиме Б против режима А.
+Парк машин (fleet-plan §5): дизель парка «было → стало» (режимы А и Б), рейсов в день, загрузка, тоннаж и
+рабочий день машин соблюдены (рейсы пересчитываются заново по пробам «стало»); сверка «как сейчас» с
+фактом ERP за 4 недели (SALES.fDELIVERYCAR, только SELECT) — справочно.
+ROUTES_TEST_TRUCKS="код:кг:л100,…" — тестовые машины только в КОПИИ базы (остальные машины в копии
+выключаются); рабочая база не меняется.
 Код выхода: 0 — все критерии выполнены, 1 — нет.
 """
 from __future__ import annotations
@@ -42,8 +47,10 @@ import shutil
 import sys
 import tempfile
 import time
-from collections import Counter
+from collections import Counter, defaultdict
+from dataclasses import replace
 from datetime import timedelta
+from statistics import fmean
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -51,12 +58,14 @@ os.chdir(ROOT)
 
 import app_v2  # noqa: E402  — только строка подключения к ERP; сервер не запускается
 from route_optimizer import demand as dm  # noqa: E402
+from route_optimizer import erp  # noqa: E402
 from route_optimizer import evaluate as ev  # noqa: E402
+from route_optimizer import fleet as fl  # noqa: E402
 from route_optimizer import optimize as opt  # noqa: E402
 from route_optimizer import patterns as pt  # noqa: E402
 from route_optimizer import status as cst  # noqa: E402
 from route_optimizer.snapshot import load_snapshot  # noqa: E402
-from route_optimizer.store import DEFAULT_SETTINGS, Bundle, Store  # noqa: E402
+from route_optimizer.store import DEFAULT_SETTINGS, Bundle, Changes, Store, Truck  # noqa: E402
 
 TIME_LIMIT_S = 120.0
 SECONDS_PER_MANAGER = 8
@@ -64,7 +73,8 @@ PARAMS = {'agent_ids': None, 'start': 'current', 'frequencies': 'sales'}
 
 
 def load_settings() -> tuple[Bundle, list, str]:
-    """(настройки, решения, откуда) — из копии базы маршрутов; сама база не открывается на запись."""
+    """(настройки, решения, откуда) — из копии базы маршрутов; сама база не открывается на запись.
+    ROUTES_TEST_TRUCKS — тестовые машины: пишутся только в копию, остальные машины копии выключаются."""
     path = os.environ.get('ROUTES_DB_PATH') or os.path.join(ROOT, 'route_optimizer.db')
     if not os.path.exists(path):
         return Bundle(dict(DEFAULT_SETTINGS), None, {}, {}), [], 'по умолчанию (базы маршрутов нет)'
@@ -75,7 +85,20 @@ def load_settings() -> tuple[Bundle, list, str]:
             shutil.copy2(path + suffix, copy + suffix)
     try:
         store = Store(copy)
-        return store.load(), store.load_decisions(), f'копия {path}'
+        source = f'копия {path}'
+        spec = os.environ.get('ROUTES_TEST_TRUCKS')
+        if spec:
+            bundle = store.load()
+            test = {}
+            for item in spec.split(','):
+                code, cap, l100 = item.rsplit(':', 2)
+                test[code.strip()] = Truck(code.strip(), float(cap), float(l100), None, True)
+            trucks = [test.get(c) or replace(t, active=False) for c, t in bundle.trucks.items()]
+            trucks += [t for c, t in test.items() if c not in bundle.trucks]
+            store.save(Changes(bundle.settings, False, None, tuple(trucks), ()), 'routes_optimize_check')
+            source += ' + тестовые машины ' + ', '.join(f'{c} {t.capacity_kg / 1000:g} т / {t.fuel_l_per_100km:g} л'
+                                                       for c, t in test.items()) + ' (только в копии)'
+        return store.load(), store.load_decisions(), source
     finally:
         shutil.rmtree(folder, ignore_errors=True)
 
@@ -125,7 +148,10 @@ def main() -> int:
     print(f'  параметры: все менеджеры в расчёте, старт «текущий план», частота «по продажам», '
           f'{SECONDS_PER_MANAGER} с на менеджера; цена топлива {res["fuel_price_used"]} драм/л '
           f'({"настройки" if res["fuel_price_source"] == "settings" else "по умолчанию"}); '
-          f'грузовики в стоимости: {"да" if res["truck_costs"] else "нет"}')
+          f'дизель парка в стоимости: {"да" if res["truck_costs"] else "нет"}')
+    trucks, incomplete = fl.fleet_trucks(bundle.trucks, {c: car.name for c, car in snap.cars.items()})
+    print(f'  парк: {", ".join(f"{t.car_code} ({t.name}) {t.capacity_kg / 1000:g} т, {t.l100:g} л/100 км" for t in trucks) or "нет"}'
+          f'; склад {bundle.depot}; без тоннажа или расхода (не в расчёте): {len(incomplete)}')
     print()
 
     # --- таблица «было → стало» ---
@@ -215,22 +241,16 @@ def main() -> int:
     # Р3-9: визиты в нерабочий день (вс) переносятся всегда — «было» с ними не с чем сравнивать: нерабочий
     # день не несёт штрафа слабого дня, а обязательный перенос несёт штраф за изменение. У такого
     # менеджера C_стало сравнивается со стартом поиска — текущим планом, где эти визиты уже на субботе
-    workdays = set(settings['workdays'])
-    cost_bad, cost_notes = [], []
-    for m in res['managers']:
-        o = by_agent[m['agent_id']]
-        off = sum(1 for spec in o.specs if any(d not in workdays for _, d in spec.current))
-        if off:
-            start = round(o.stats.cost_start)
-            (cost_notes if m['after']['cost'] <= start else cost_bad).append(
-                f'{m["code"]}: у {off} клиентов визиты в нерабочий день — сравнение со стартом, где они уже на '
-                f'субботе: C {num(start, 0)} → {num(m["after"]["cost"], 0)} (C_было с визитами в нерабочий '
-                f'день — {num(m["before"]["cost"], 0)})')
-        elif m['after']['cost'] > m['before']['cost']:
-            cost_bad.append(f'{m["code"]}: {m["before"]["cost"]} → {m["after"]["cost"]}')
-    results.append(('Стоимость: C_стало ≤ C_было у каждого менеджера (быстрая оценка)', not cost_bad,
-                    f'C компании {num(sum(o.cost_before for o in out.managers), 0)} → '
-                    f'{num(sum(o.cost_after for o in out.managers), 0)} драм/нед', cost_notes + cost_bad))
+    # Парк общий (fleet-plan §3): менеджер может стать дороже сам, если парку так выгоднее, — поэтому
+    # критерий — по компании (менеджеры + дизель парка); у менеджеров — справочно
+    cost_notes = [f'{m["code"]}: свои слагаемые {num(m["before"]["cost"], 0)} → {num(m["after"]["cost"], 0)}'
+                  for m in res['managers'] if m['after']['cost'] > m['before']['cost']]
+    fleet_txt = (f'; из них дизель парка {num(out.fleet_before, 0)} → {num(out.fleet_after, 0)}'
+                 if out.fleet_before is not None else '')
+    results.append(('Стоимость: C_стало ≤ C_было компании — менеджеры + дизель парка (быстрая оценка)',
+                    out.cost_after <= out.cost_before + 1e-6,
+                    f'C компании {num(out.cost_before, 0)} → {num(out.cost_after, 0)} драм/нед{fleet_txt}',
+                    cost_notes))
 
     weak_ok = ta['days_below_min'] <= tb['days_below_min']
     km_ok = ta['manager_km_week'] <= tb['manager_km_week']
@@ -339,10 +359,19 @@ def main() -> int:
                   + f'; км {e["manager_km_week"]:+.1f}, грузовик '
                   + (f'{e["truck_km_week"]:+.1f}' if e['truck_km_week'] is not None else '—')
                   + f' км, слабых дней {e["weak_days_week"]:+.2f}, минут {e["minutes_week"]:+d}')
+    fleet_results = check_fleet(out, bundle, 'А', run_seconds)
+    results += fleet_results
+    for title, ok, detail, lines in fleet_results:
+        print(f'{status(ok):<12} {title}: {detail}')
+        for line in lines:
+            print(f'             {line}')
     passed = sum(1 for _, ok, _, _ in results if ok)
     verdict = 'ПРОЙДЕНО' if passed == len(results) else 'НЕ ПРОЙДЕНО'
     print(f'ИТОГ режима А: {verdict} по {passed} из {len(results)} критериев')
     print()
+    if out.before.fleet is not None:
+        reality_check(snap, out.before)
+        print()
     results_b = check_transfer(snap, bundle, calib, decisions, out, window)
     passed_b = sum(1 for _, ok, _, _ in results_b if ok)
     verdict_b = 'ПРОЙДЕНО' if passed_b == len(results_b) else 'НЕ ПРОЙДЕНО'
@@ -392,7 +421,7 @@ def check_transfer(snap, bundle, calib, decisions, out_a, window: float) -> list
           f'лето {arrow(tb["revenue_week_peak"], ta["revenue_week_peak"], 0)}, '
           f'год {arrow(tb["revenue_week_year"], ta["revenue_week_year"], 0)}; '
           f'визитов в неделю — режим А {num(taa["visits_week"])}')
-    cost_a = sum(o.cost_after for o in out_a.managers)
+    cost_a = out_a.cost_after          # компания режима А: менеджеры + дизель парка
     print(f'  C компании (быстрая оценка, драм/нед): итог режима А {num(cost_a, 0)}, '
           f'старт режима Б (то же + принятые передачи) {num(out.transfer.cost_start, 0)}, итог режима Б '
           f'{num(out.transfer.cost_end, 0)}; поиск передач {out.transfer.seconds:.1f} с '
@@ -451,7 +480,7 @@ def check_transfer(snap, bundle, calib, decisions, out_a, window: float) -> list
                     f'менеджеров с нарушением {len(time_bad)}', time_bad))
     cost_ok = out.transfer.cost_end <= out.transfer.cost_start + 1e-6 and \
         (tr['accepted_fixed'] or out.transfer.cost_end <= cost_a + 1e-6)
-    results.append(('Б: стоимость компании ≤ режима А (быстрая оценка, вместе с платой за передачи)', cost_ok,
+    results.append(('Б: стоимость компании ≤ режима А (быстрая оценка, с дизелем парка и платой за передачи)', cost_ok,
                     f'C режима А {num(cost_a, 0)} → режима Б {num(out.transfer.cost_end, 0)} драм/нед', []))
     results.append(('Б: закреплённые и клиенты нескольких менеджеров не передаются',
                     not locked_moved and not shared_moved,
@@ -480,11 +509,123 @@ def check_transfer(snap, bundle, calib, decisions, out_a, window: float) -> list
     results.append((f'Б: скорость — расчёт ≤ {TIME_LIMIT_S / 60:g} мин', run_seconds <= TIME_LIMIT_S,
                     f'{run_seconds:.1f} с (повтор {runs[1][1]:.1f} с); '
                     f'стоп по времени: {"да" if capped else "нет"}', []))
+    results += check_fleet(out, bundle, 'Б', run_seconds)
     for title, ok, detail, lines in results:
         print(f'{status(ok):<12} {title}: {detail}')
         for line in lines:
             print(f'             {line}')
     return results
+
+
+def _fleet_week(pe) -> dict:
+    return pe.fleet.week() if pe.fleet is not None else {}
+
+
+def check_fleet(out, bundle, mode: str, run_seconds: float) -> list:
+    """Парк машин «было → стало» (полная оценка) и проверка рейсов «стало» заново по пробам: тоннаж
+    машины не превышен, машина в рабочий день (кроме рейсов «за пределами дня» — нехватка машин)."""
+    if out.before.fleet is None:
+        print(f'  Парк машин (режим {mode}): не посчитан — нет склада или машин с тоннажем и расходом')
+        return []
+    s = bundle.settings
+    fb, fa = _fleet_week(out.before), _fleet_week(out.after)
+    diesel = s['fuel_price_diesel']
+    print(f'Парк машин, режим {mode} (полная оценка, год; по заказам всех менеджеров в расчёте):')
+    print(f'  дизель парка {arrow(fb["liters"], fa["liters"])} л/нед'
+          + (f' ({arrow(fb["liters"] * diesel, fa["liters"] * diesel, 0)} драм)' if diesel else '')
+          + f'; км парка {arrow(fb["km"], fa["km"])}; рейсов в неделю {arrow(fb["trips"], fa["trips"])}, '
+          f'в день {arrow(fb["trips_per_day"], fa["trips_per_day"])}; машино-часов {arrow(fb["hours"], fa["hours"])}')
+    print(f'  загрузка рейса {arrow(fb["load_pct"], fa["load_pct"])}% (в пик {arrow(fb["load_pct_peak"], fa["load_pct_peak"])}%); '
+          f'дней с нехваткой машин в пик в неделю {arrow(fb["days_short"], fa["days_short"])}; выручка рейса '
+          f'{arrow(fb["trip_revenue"], fa["trip_revenue"], 0)} драм, рейсов < {num(s["min_trip_revenue"], 0)} — '
+          f'{arrow(100 * (fb["poor_trip_share"] or 0), 100 * (fa["poor_trip_share"] or 0), 0)}%')
+    norms, tn = out.after.norms, fl.TruckNorms.from_settings(s)
+    trucks = out.after.fleet.trucks
+    cap = {t.car_code: t.capacity_kg for t in trucks}
+    over_kg = over_time = trips = extra = 0
+    by_day = defaultdict(list)
+    for me in out.after.evals:
+        if me.included:
+            for r in me.days:
+                by_day[fl.delivery_key(r.day.week, r.day.weekday, 2)].extend(
+                    fl.DeliveryVisit(v.customer_id, r.day.weekday, v.point, v.year, v.peak)
+                    for v in r.stops if v.point is not None)
+    for key, visits in sorted(by_day.items()):
+        visits = sorted(visits, key=lambda v: (v.customer_id, v.weekday, v.point))
+        points = sorted({v.point for v in visits})
+        node = {p: i + 1 for i, p in enumerate(points)}
+        d, m = fl._matrices(points, bundle.depot, norms)
+        for stops in fl._samples(visits, node, 'year', fl.FLEET_SAMPLES, tn):
+            used = Counter()
+            for t in fl.plan_trips(stops, d, m, trucks, tn):
+                trips += 1
+                extra += t.extra
+                over_kg += t.kg > cap[t.truck] + 1e-6
+                if not t.extra:
+                    used[t.truck] += t.minutes
+            over_time += sum(1 for v in used.values() if v > tn.work_minutes + 1e-6)
+    print('  по машинам в среднем за день доставки «стало»:')
+    agg = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0])
+    for dday in out.after.fleet.days:
+        for t in dday.trucks:
+            a = agg[t.car_code]
+            a[0] += t.trips; a[1] += t.kg; a[2] += t.km; a[3] += t.liters
+    n_days = len(out.after.fleet.days) or 1
+    for code, (tr_, kg, km, lit) in sorted(agg.items()):
+        print(f'    {code}: рейсов {tr_ / n_days:.1f}, {kg / n_days:,.0f} кг, {km / n_days:.0f} км, {lit / n_days:.1f} л'
+              .replace(',', ' ') + f' (загрузка {kg / max(tr_, 1e-9) / cap[code] * 100:.0f}%)')
+    return [
+        (f'Парк ({mode}): тоннаж машин не превышен, рабочий день машин соблюдён (рейсы «стало» заново, '
+         f'{fl.FLEET_SAMPLES} проб на день)', over_kg == 0 and over_time == 0,
+         f'рейсов {trips}, сверх тоннажа {over_kg}, машин с днём длиннее нормы {over_time}; рейсов за пределами дня '
+         f'(нехватка машин) {extra} ({100 * extra / max(trips, 1):.1f}%)', []),
+        (f'Парк ({mode}): дизель парка «стало» не больше «было»', fa['liters'] <= fb['liters'] + 1e-6,
+         f'{arrow(fb["liters"], fa["liters"])} л/нед (полная оценка); расчёт {run_seconds:.1f} с', []),
+    ]
+
+
+def reality_check(snap, before) -> None:
+    """Справочно: модель «как сейчас» (рейсов и кг на день доставки, год) против факта ERP за последние
+    4 недели — сколько машин выезжало и сколько кг везли по SALES.fDELIVERYCAR (только SELECT)."""
+    until = snap.today
+    since = until - timedelta(days=28)
+    conn = erp.connect(app_v2.db.connection_string)
+    try:
+        rows = erp.car_days(conn, since, until)
+    finally:
+        erp.close_quietly(conn)
+    by_date = defaultdict(lambda: [0, 0.0, 0])
+    for r in rows:
+        if r.kg > 0:
+            x = by_date[r.day]
+            x[0] += 1
+            x[1] += r.kg
+            x[2] += r.docs
+    model = defaultdict(list)
+    for d in before.fleet.days:
+        model[d.weekday].append(d)
+    print(f'Сверка с ERP (справочно): модель «как сейчас» (год) против факта {since:%d.%m}–{until - timedelta(days=1):%d.%m} '
+          f'по SALES.fDELIVERYCAR')
+    print(f'  {"день":<5} {"факт: машин":>12} {"факт: кг":>10} {"факт: док.":>10} {"модель: рейсов":>15} '
+          f'{"модель: заказов":>16} {"модель: кг":>11} {"модель: кг в пик":>17}')
+    fact_wd = defaultdict(list)
+    for day, x in by_date.items():
+        fact_wd[day.isoweekday()].append(x)
+    for wd in range(1, 8):
+        f = fact_wd.get(wd, [])
+        md = model.get(wd, [])
+        if not f and not md:
+            continue
+        print(f'  {pt.DAY_SHORT[wd]:<5} {num(fmean(x[0] for x in f) if f else None):>12} '
+              f'{num(fmean(x[1] for x in f) if f else None, 0):>10} {num(fmean(x[2] for x in f) if f else None, 0):>10} '
+              f'{num(fmean(d.trips for d in md) if md else None):>15} {num(fmean(d.orders for d in md) if md else None):>16} '
+              f'{num(fmean(d.kg for d in md) if md else None, 0):>11} {num(fmean(d.kg_peak for d in md) if md else None, 0):>17}')
+    days = sorted(by_date)
+    if days:
+        print(f'  итого факт: {len(days)} дней с развозом, в среднем {fmean(by_date[d][0] for d in days):.1f} машин и '
+              f'{fmean(by_date[d][1] for d in days):,.0f} кг в день'.replace(',', ' ')
+              + f'; модель «как сейчас»: {before.fleet.week()["trips_per_day"]:.1f} рейсов и '
+              f'{before.fleet.week()["kg_per_day"]:,.0f} кг в день доставки'.replace(',', ' '))
 
 
 if __name__ == '__main__':

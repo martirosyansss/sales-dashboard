@@ -295,11 +295,16 @@ WHERE r.fCUSTOMERID IN ({ph})
 GROUP BY r.fCUSTOMERID
 """
 
-SQL_CAR_USAGE = """
-SELECT LTRIM(RTRIM(s.fDELIVERYCAR)), s.fSALESAGENTID, COUNT(*)
+# Сколько везла машина в день: документов и кг (вес — как в SQL_SALES_DOCS: количество × вес товара)
+SQL_CAR_DAYS = """
+SELECT LTRIM(RTRIM(s.fDELIVERYCAR)), CAST(s.fDATE AS date), COUNT(*), SUM(ISNULL(k.kg, 0))
 FROM SALES s WITH (NOLOCK)
+OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
+             FROM SALEDOCDETAILS sd WITH (NOLOCK)
+             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = sd.fPRODUCTID
+             WHERE sd.fISN = s.fISN) k
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(s.fDELIVERYCAR)) <> ''
-GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR)), s.fSALESAGENTID
+GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR)), CAST(s.fDATE AS date)
 """
 
 
@@ -433,9 +438,16 @@ def customer_debts(conn: Any, ids: Sequence[int]) -> dict[int, float]:
     return {c: debit.get(c, 0.0) - rest.get(c, 0.0) for c in sorted(set(debit) | set(rest))}
 
 
-def car_usage(conn: Any, since: date, until: date) -> dict[str, dict[int, int]]:
-    """Сколько документов продажи вёз каждый автомобиль у каждого агента: {машина: {агент: n}}."""
-    out: dict[str, dict[int, int]] = {}
-    for r in _select(conn, SQL_CAR_USAGE, (since, until)):
-        out.setdefault(_str(r[0]), {})[int(r[1])] = int(r[2])
-    return out
+@dataclass(frozen=True)
+class CarDay:
+    """Машина в день по продажам ERP (SALES.fDELIVERYCAR): документов и кг."""
+    car_code: str
+    day: date
+    docs: int
+    kg: float
+
+
+def car_days(conn: Any, since: date, until: date) -> list[CarDay]:
+    """Сколько везла каждая машина в каждый день [since, until): документов и кг."""
+    return [CarDay(_str(r[0]), _day(r[1]), int(r[2]), float(r[3] or 0))
+            for r in _select(conn, SQL_CAR_DAYS, (since, until))]

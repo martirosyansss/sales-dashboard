@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Оценка текущего плана: день менеджера, рейс машины, Монте-Карло, агрегаты, факт GPS, калибровка.
+"""Оценка текущего плана: день менеджера, Монте-Карло, парк машин, агрегаты, факт GPS, калибровка.
 
 Чистая логика — без Flask и без БД. Единицы: км, минуты, кг, драмы (AMD), вероятности 0..1.
 Всё детерминировано: у каждого визита свой поток случайных чисел с seed = 42 + crc32(клиент|день
@@ -17,12 +17,13 @@ from statistics import fmean, median
 from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, Sequence
 
 from . import demand as dm
+from . import fleet as fl
 from . import status as cst
 from .frequency import plural
 from .geo import (GPS_MAX_ACCURACY_M, Coord, Fix, Point, haversine_km, in_city, is_valid_point,
                   resolve_coord, track_km, usable_fixes)
 from .plan import WEEKDAY_LABELS, CurrentPlan, PlanDay, delivery_weekday
-from .tsp import Distance, delivery_km, route_order
+from .tsp import Distance, route_order
 
 if TYPE_CHECKING:
     from .roads import RoadDistances
@@ -31,8 +32,6 @@ if TYPE_CHECKING:
 
 BASE_SEED = 42
 MC_REVENUE_SAMPLES = 500   # низкий сезон: выручка дня и рейса
-MC_TRUCK_KM_SAMPLES = 30   # год: км и рейсы машины (TSP на каждую пробу)
-MC_PEAK_SAMPLES = 500      # пик: кг машины
 DAY_BELOW_MIN_P = 0.5      # «слабый» день: P(выручка ≥ минимума) < 0.5
 
 FACT_WINDOW_DAYS = 56      # факт по GPS — последние 8 недель
@@ -480,18 +479,10 @@ class Norms:
         return self.km if self.roads is not None else None
 
 
-@dataclass(frozen=True)
-class TruckSpec:
-    car_code: str
-    name: str | None
-    capacity_kg: float | None
-    fuel_l_per_100km: float | None
-
-
 def visit_seed(customer_id: int, weekday: int, purpose: str) -> int:
     """Стабильный seed потока случайных чисел визита (не зависит от PYTHONHASHSEED и версии Python).
 
-    Ключ — клиент, день недели и цель (low | truck_year | peak). Неделя цикла, менеджер и место
+    Ключ — клиент, день недели и цель (low | truck_year | truck_peak). Неделя цикла, менеджер и место
     визита в дне в ключ не входят: у визита, который не меняется, одни и те же случайные числа
     в плане «было» (W = 1) и «стало» (W = 2) и в обеих неделях цикла — общие случайные числа,
     и неизменный день не даёт шума Монте-Карло в «было → стало»."""
@@ -590,64 +581,6 @@ def revenue_stats(draws: Sequence[Draw], customers: Sequence[int], weekday: int,
 
 
 @dataclass(frozen=True)
-class TruckDay:
-    km: float                      # по дорогам (или по прямой × извилистость)
-    liters: float | None
-    trips: float
-    p_no_trip: float
-    p_poor_trip: float
-    kg_peak_p90: float
-    load_pct_peak: float | None
-    p_overflow_peak: float | None
-
-
-def truck_day(visits: Sequence[VisitModel], weekday: int, depot: Point, truck: TruckSpec,
-              norms: Norms, low: RevenueStats) -> TruckDay:
-    """Рейс машины менеджера за день (D+1: рейс = заказы одного дня).
-
-    visits — в каноническом порядке (по id клиента): тур и нарезка зависят от набора заказавших,
-    а не от порядка визитов в плане.
-    - год, 30 проб: заказавшие → тур NN + 2-opt от склада, нарезка по тоннажу → км, рейсы;
-      клиенты без координат в км не входят;
-    - низкий сезон: P(нет заказов), P(бедный рейс) — из тех же проб, что выручка дня;
-    - пик, 500 проб: кг p90, загрузка % и P(перегруз) относительно тоннажа.
-    """
-    samples: list[list[tuple[Point, float]]] = [[] for _ in range(MC_TRUCK_KM_SAMPLES)]
-    for v in visits:
-        year = v.year
-        k = len(year.values)
-        if v.point is None or not k or year.p <= 0.0:
-            continue
-        orders, picks = visit_uniforms(v.customer_id, weekday, 'truck_year', MC_TRUCK_KM_SAMPLES)
-        for s in range(MC_TRUCK_KM_SAMPLES):
-            if orders[s] < year.p:
-                samples[s].append((v.point, year.values[int(picks[s] * k)][1]))
-    dist = norms.distance
-    km_sum = trips_sum = 0.0
-    for stops in samples:
-        trip = delivery_km(depot, stops, truck.capacity_kg, dist)
-        km_sum += trip.km
-        trips_sum += trip.trips
-    # по дорогам км уже итоговые (извилистость — только у участков по прямой, внутри norms.km);
-    # без дорог — км по прямой × извилистость, как раньше
-    km = km_sum / MC_TRUCK_KM_SAMPLES * (1.0 if dist is not None else norms.detour)
-    liters = km * truck.fuel_l_per_100km / 100.0 if truck.fuel_l_per_100km is not None else None
-
-    _, kgs, _ = _outcomes([v.peak for v in visits], [v.customer_id for v in visits], weekday, 'peak',
-                          MC_PEAK_SAMPLES)
-    kgs.sort()
-    kg90 = quantile(kgs, 0.9)
-    cap = truck.capacity_kg
-    return TruckDay(
-        km=km, liters=liters, trips=trips_sum / MC_TRUCK_KM_SAMPLES,
-        p_no_trip=low.p_no_orders, p_poor_trip=low.p_poor_trip,
-        kg_peak_p90=kg90,
-        load_pct_peak=kg90 / cap * 100.0 if cap else None,
-        p_overflow_peak=sum(1 for k in kgs if k > cap) / len(kgs) if cap else None,
-    )
-
-
-@dataclass(frozen=True)
 class DayResult:
     day: PlanDay
     workday: bool
@@ -666,7 +599,6 @@ class DayResult:
     low: RevenueStats
     revenue_year: float
     revenue_peak: float       # ожидаемая выручка дня в пик (лето)
-    truck: TruckDay | None
     stops: tuple[VisitModel, ...]  # в порядке объезда; визиты без координат — в конце
 
     @property
@@ -675,9 +607,9 @@ class DayResult:
 
 
 def evaluate_day(day: PlanDay, visits: Sequence[VisitModel], *, home: Point | None, norms: Norms,
-                 manager_l100: float, truck: TruckSpec | None, depot: Point | None,
-                 workday: bool) -> DayResult:
-    """Метрики дня менеджера (§6): маршрут, время, литры, выручка низкого сезона, рейс машины.
+                 manager_l100: float, workday: bool) -> DayResult:
+    """Метрики дня менеджера (§6): маршрут, время, литры, выручка низкого сезона. Рейсы машин — по
+    дням доставки всех менеджеров сразу (fleet.evaluate_fleet), а не по дню менеджера.
 
     Порядок объезда — NN + 2-opt от дома, а не fROWNUM: по GPS менеджеры порядок fROWNUM
     не соблюдают, и км «по fROWNUM» завышаются до 3 раз (A002/9: 423 км/день против 136 км
@@ -700,8 +632,6 @@ def evaluate_day(day: PlanDay, visits: Sequence[VisitModel], *, home: Point | No
     mc = sorted(visits, key=lambda v: v.customer_id)
     low = revenue_stats([v.low for v in mc], [v.customer_id for v in mc], day.weekday,
                         MC_REVENUE_SAMPLES, norms.min_day_revenue, norms.min_trip_revenue)
-    truck_res = (truck_day(mc, day.weekday, depot, truck, norms, low)
-                 if truck is not None and depot is not None else None)
     flags = []
     if round(overtime) > 0:
         flags.append('overtime')
@@ -720,7 +650,7 @@ def evaluate_day(day: PlanDay, visits: Sequence[VisitModel], *, home: Point | No
         liters=km * manager_l100 / 100.0,
         low=low, revenue_year=math.fsum(v.year.expected_revenue for v in visits),
         revenue_peak=math.fsum(v.peak.expected_revenue for v in visits),
-        truck=truck_res, stops=tuple(stops),
+        stops=tuple(stops),
     )
 
 
@@ -878,21 +808,8 @@ class ManagerEval:
     active: bool              # есть заказы или визиты за 8 недель (Snapshot.active_agents)
     home: Point | None
     home_source: str
-    truck: TruckSpec | None
-    truck_count: int
     fuel_type: str
     days: tuple[DayResult, ...]
-
-
-def _pick_truck(snap: Snapshot, bundle: Bundle, agent_id: int) -> tuple[TruckSpec | None, int]:
-    """Машина менеджера: активные с agent_id; несколько — самая большая по тоннажу."""
-    mine = [t for t in bundle.trucks.values() if t.active and t.agent_id == agent_id]
-    if not mine:
-        return None, 0
-    best = max(mine, key=lambda t: (t.capacity_kg or 0.0, t.car_code))
-    car = snap.cars.get(best.car_code)
-    return TruckSpec(best.car_code, car.name if car else None, best.capacity_kg,
-                     best.fuel_l_per_100km), len(mine)
 
 
 def manager_home(snap: Snapshot, bundle: Bundle, agent_id: int) -> tuple[Point | None, str]:
@@ -927,6 +844,21 @@ def plan_points(snap: Snapshot, bundle: Bundle,
     return points
 
 
+def _day_visits(snap: Snapshot, day: PlanDay, models: Mapping[int, CustomerModel],
+                visit_minutes: Mapping[str, float], coords: dict[tuple[int, int], Coord]) -> list[VisitModel]:
+    """Визиты дня в порядке fROWNUM; координата — этого визита (клиент + адрес шаблона)."""
+    visits = []
+    for erp_no, pv in enumerate(day.visits, 1):
+        key = (pv.customer_id, pv.address_id)
+        if key not in coords:
+            coords[key] = visit_coord(snap, pv.customer_id, pv.address_id)
+        coord = coords[key]
+        m = models[pv.customer_id]
+        visits.append(VisitModel(pv.customer_id, coord.point, visit_minutes[m.size],
+                                 m.draw('low'), m.draw('year'), m.draw('peak'), erp_no, coord.source))
+    return visits
+
+
 def _evaluate_manager(snap: Snapshot, bundle: Bundle, agent_id: int, included: bool,
                       models: Mapping[int, CustomerModel], visit_minutes: Mapping[str, float],
                       norms: Norms, coords: dict[tuple[int, int], Coord]) -> ManagerEval:
@@ -935,30 +867,15 @@ def _evaluate_manager(snap: Snapshot, bundle: Bundle, agent_id: int, included: b
     home, home_source = manager_home(snap, bundle, agent_id)
     l100 = (profile.car_fuel_l_per_100km if profile.car_fuel_l_per_100km is not None
             else float(s['manager_car_default_l_per_100km']))
-    truck, truck_count = _pick_truck(snap, bundle, agent_id)
     workdays = set(s['workdays'])
-    results = []
-    for day in snap.plan.days_of(agent_id):
-        visits = []
-        for erp_no, pv in enumerate(day.visits, 1):   # day.visits — в порядке fROWNUM
-            key = (pv.customer_id, pv.address_id)
-            if key not in coords:
-                coords[key] = visit_coord(snap, pv.customer_id, pv.address_id)
-            coord = coords[key]
-            m = models[pv.customer_id]
-            visits.append(VisitModel(pv.customer_id, coord.point, visit_minutes[m.size],
-                                     m.draw('low'), m.draw('year'), m.draw('peak'),
-                                     erp_no, coord.source))
-        results.append(evaluate_day(day, visits, home=home, norms=norms, manager_l100=l100,
-                                    truck=truck, depot=bundle.depot,
-                                    workday=day.weekday in workdays))
+    results = [evaluate_day(day, _day_visits(snap, day, models, visit_minutes, coords), home=home,
+                            norms=norms, manager_l100=l100, workday=day.weekday in workdays)
+               for day in snap.plan.days_of(agent_id)]
     return ManagerEval(agent_id, included, agent_id in snap.active_agents, home, home_source,
-                       truck, truck_count, profile.car_fuel_type or DEFAULT_MANAGER_FUEL,
-                       tuple(results))
+                       profile.car_fuel_type or DEFAULT_MANAGER_FUEL, tuple(results))
 
 
 def _day_json(r: DayResult) -> dict[str, Any]:
-    t = r.truck
     return {
         'week': r.day.week, 'weekday': r.day.weekday,
         'label': WEEKDAY_LABELS.get(r.day.weekday, str(r.day.weekday)),
@@ -973,12 +890,6 @@ def _day_json(r: DayResult) -> dict[str, Any]:
         'revenue_low_exp': _i(r.low.expected), 'revenue_low_p10': _i(r.low.p10),
         'revenue_low_p90': _i(r.low.p90), 'p_day_ge_min': _r(r.low.p_ge_min, 2),
         'revenue_year_exp': _i(r.revenue_year),
-        'truck': None if t is None else {
-            'km_exp': _r(t.km, 1), 'liters_exp': _r(t.liters, 1), 'trips_exp': _r(t.trips, 1),
-            'p_no_trip': _r(t.p_no_trip, 2), 'p_poor_trip': _r(t.p_poor_trip, 2),
-            'kg_peak_p90': _i(t.kg_peak_p90), 'load_pct_peak': _r(t.load_pct_peak, 1),
-            'p_overflow_peak': _r(t.p_overflow_peak, 2),
-        },
         'customer_ids': list(r.customer_ids),
         # Порядок объезда (NN + 2-opt, см. evaluate_day); координата — этого визита, а не клиента
         'stops': [{'customer_id': v.customer_id, 'erp_rownum': v.erp_no,
@@ -996,10 +907,7 @@ class WeekTotals:
     revenue_peak: float            # пик (лето)
     manager_km: float
     manager_liters: float
-    truck_km: float | None
-    truck_liters: float | None
     days_below_min: float
-    trips_poor: float | None
     avg_plan_hours: float | None
     avg_work_hours: float | None   # у клиентов (без дороги из дома) — сравнимо с фактом GPS
 
@@ -1009,9 +917,6 @@ def _week(me: ManagerEval, cycle_weeks: int) -> WeekTotals:
     W = 2, дают одни и те же цифры недели до последнего бита, а не «почти равные»."""
     days = me.days
     work = [r for r in days if r.workday]
-    trucks = [r.truck for r in days if r.truck is not None]
-    has_truck = bool(trucks)
-    liters_known = has_truck and all(t.liters is not None for t in trucks)
     w = float(cycle_weeks)
     fsum = math.fsum
     return WeekTotals(
@@ -1021,10 +926,7 @@ def _week(me: ManagerEval, cycle_weeks: int) -> WeekTotals:
         revenue_peak=fsum(r.revenue_peak for r in days) / w,
         manager_km=fsum(r.km for r in days) / w,
         manager_liters=fsum(r.liters for r in days) / w,
-        truck_km=fsum(t.km for t in trucks) / w if has_truck else None,
-        truck_liters=fsum(t.liters for t in trucks) / w if liters_known else None,
         days_below_min=sum(1 for r in work if _is_weak_day(r)) / w,
-        trips_poor=fsum(t.p_poor_trip for t in trucks) / w if has_truck else None,
         avg_plan_hours=fmean(r.plan_min for r in work) / 60.0 if work else None,
         avg_work_hours=fmean(r.work_min for r in work) / 60.0 if work else None,
     )
@@ -1049,7 +951,8 @@ def _warning(code: str, text: str, anchor: str | None) -> dict[str, Any]:
 @dataclass(frozen=True)
 class PlanEvaluation:
     """Полная оценка плана snap.plan (текущего W = 1 или предложенного W = 2): нормы, модели
-    клиентов, менеджеры и их недели. Итоги компании — plan_totals."""
+    клиентов, менеджеры и их недели, парк машин (fleet: заказы всех менеджеров в расчёте; None — нет
+    склада или машин с тоннажем и расходом). Итоги компании — plan_totals."""
     norms: Norms
     road: dict[str, tuple[float, str]]
     visit: dict[str, tuple[float, str]]
@@ -1060,6 +963,8 @@ class PlanEvaluation:
     included_ids: frozenset[int]
     evals: tuple[ManagerEval, ...]
     weeks: dict[int, WeekTotals]
+    fleet: fl.FleetEval | None = None
+    trucks_incomplete: tuple[str, ...] = ()   # активные машины без тоннажа или расхода — не в расчёте
 
 
 def evaluate_plan(snap: Snapshot, bundle: Bundle, calib: Calibration | None = None,
@@ -1104,16 +1009,45 @@ def evaluate_plan(snap: Snapshot, bundle: Bundle, calib: Calibration | None = No
     evals = tuple(_evaluate_manager(snap, bundle, a, a in included_ids, models, visit_minutes,
                                     norms, coords)
                   for a in all_ids if a in wanted)
+    trucks, incomplete = fl.fleet_trucks(bundle.trucks, {code: car.name for code, car in snap.cars.items()})
+    fleet = None
+    if bundle.depot is not None and trucks:
+        fleet = _evaluate_fleet(snap, bundle, included_ids, evals, models, visit_minutes, coords, norms,
+                                trucks)
     return PlanEvaluation(norms=norms, road=road, visit=visit, visit_minutes=dict(visit_minutes),
                           season=season, models=dict(models), coords=coords,
                           included_ids=included_ids, evals=evals,
-                          weeks={me.agent_id: _week(me, cycle) for me in evals})
+                          weeks={me.agent_id: _week(me, cycle) for me in evals},
+                          fleet=fleet, trucks_incomplete=tuple(incomplete))
+
+
+def _evaluate_fleet(snap: Snapshot, bundle: Bundle, included_ids: Collection[int],
+                    evals: Sequence[ManagerEval], models: Mapping[int, CustomerModel],
+                    visit_minutes: Mapping[str, float], coords: dict[tuple[int, int], Coord],
+                    norms: Norms, trucks: Sequence[fl.FleetTruck]) -> fl.FleetEval:
+    """Парк по заказам ВСЕХ менеджеров в расчёте (и тех, кого сейчас не оценивают: их заказы везут те
+    же машины). Визиты без координат в рейсы не входят."""
+    days = {(r.day.agent_id, r.day.week, r.day.weekday): r.stops for me in evals for r in me.days}
+    by_day: dict[tuple[int, int], list[fl.DeliveryVisit]] = {}
+    for day in snap.plan.days:
+        if day.agent_id not in included_ids:
+            continue
+        stops = days.get((day.agent_id, day.week, day.weekday))
+        if stops is None:
+            stops = _day_visits(snap, day, models, visit_minutes, coords)
+        by_day.setdefault((day.week, day.weekday), []).extend(
+            fl.DeliveryVisit(v.customer_id, day.weekday, v.point, v.year, v.peak)
+            for v in stops if v.point is not None)
+    return fl.evaluate_fleet(by_day, snap.plan.cycle_weeks, bundle.depot, trucks, norms,
+                             fl.TruckNorms.from_settings(bundle.settings),
+                             float(bundle.settings['min_trip_revenue']))
 
 
 def plan_totals(snap: Snapshot, bundle: Bundle, pe: PlanEvaluation) -> dict[str, Any]:
-    """Итоги компании по оценённым менеджерам в расчёте — в неделю (§6 этапа 1)."""
+    """Итоги компании по оценённым менеджерам в расчёте — в неделю (§6 этапа 1); парк — по всем
+    менеджерам в расчёте."""
     return _totals(snap, bundle, [me for me in pe.evals if me.included], pe.weeks, pe.models,
-                   pe.coords)
+                   pe.coords, pe.fleet)
 
 
 def build_overview(snap: Snapshot, bundle: Bundle, calib: Calibration | None = None,
@@ -1136,10 +1070,6 @@ def build_overview(snap: Snapshot, bundle: Bundle, calib: Calibration | None = N
         agent = snap.agents.get(me.agent_id)
         wk = weeks[me.agent_id]
         flags = []
-        if me.truck_count > 1:
-            flags.append('multi_truck')
-        if me.truck is None:
-            flags.append('no_truck')
         if me.home is None:
             flags.append('no_home')
         if not me.active:
@@ -1151,16 +1081,12 @@ def build_overview(snap: Snapshot, bundle: Bundle, calib: Calibration | None = N
             'included': me.included,
             'home': {'lat': me.home[0] if me.home else None, 'lon': me.home[1] if me.home else None,
                      'source': me.home_source},
-            'truck': None if me.truck is None else {
-                'car_code': me.truck.car_code, 'name': me.truck.name,
-                'capacity_kg': me.truck.capacity_kg, 'fuel_l_per_100km': me.truck.fuel_l_per_100km},
             'flags': flags,
             'week': {
                 'visits': _num(wk.visits), 'revenue_low': _i(wk.revenue_low),
                 'revenue_year': _i(wk.revenue_year), 'manager_km': _r(wk.manager_km, 1),
-                'manager_liters': _r(wk.manager_liters, 1), 'truck_km': _r(wk.truck_km, 1),
-                'truck_liters': _r(wk.truck_liters, 1), 'days_below_min': _num(wk.days_below_min),
-                'trips_poor': _r(wk.trips_poor, 1), 'avg_plan_hours': _r(wk.avg_plan_hours, 1),
+                'manager_liters': _r(wk.manager_liters, 1), 'days_below_min': _num(wk.days_below_min),
+                'avg_plan_hours': _r(wk.avg_plan_hours, 1),
                 'avg_work_hours': _r(wk.avg_work_hours, 1),
             },
             'fact': _fact_json(snap.facts.get(me.agent_id)),
@@ -1168,10 +1094,10 @@ def build_overview(snap: Snapshot, bundle: Bundle, calib: Calibration | None = N
         })
 
     included = [me for me in evals if me.included]
-    totals = _totals(snap, bundle, included, weeks, models, coords)
+    totals = _totals(snap, bundle, included, weeks, models, coords, pe.fleet)
     # вне расчёта «авто» (нет работы за 8 недель), а не по явному выбору владельца
     idle = [me for me in evals if not me.included and bundle.included_source(me.agent_id) == 'auto']
-    warnings = _warnings(snap, bundle, included, totals, season, idle)
+    warnings = _warnings(snap, bundle, included, totals, season, idle, pe)
     warnings += _road_warnings(roads, plan_points(snap, bundle, dict(coords)), failed)
     customers_json = _customers_json(snap, models, coords)
 
@@ -1190,6 +1116,7 @@ def build_overview(snap: Snapshot, bundle: Bundle, calib: Calibration | None = N
         'weekdays': sorted(set(s['workdays']) | plan_weekdays),
         'depot': {'lat': bundle.depot[0], 'lon': bundle.depot[1]} if bundle.depot else None,
         'totals': totals,
+        'fleet': _fleet_json(pe.fleet, bundle) if pe.fleet is not None else None,
         'managers': managers_json,
         'customers': customers_json,
         'at_risk_customers': _at_risk_json(snap, models, included),
@@ -1198,20 +1125,18 @@ def build_overview(snap: Snapshot, bundle: Bundle, calib: Calibration | None = N
 
 def _totals(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
             weeks: Mapping[int, WeekTotals], models: Mapping[int, CustomerModel],
-            coords: Mapping[tuple[int, int], Coord]) -> dict[str, Any]:
+            coords: Mapping[tuple[int, int], Coord], fleet: fl.FleetEval | None = None) -> dict[str, Any]:
     """Итоги компании — только по включённым менеджерам (§6); всё — в неделю: число дней и
-    слабых дней делится на W (для W = 1 цифры те же)."""
+    слабых дней делится на W (для W = 1 цифры те же). Грузовики — парк (fleet; None — не посчитан)."""
     s = bundle.settings
     cycle = snap.plan.cycle_weeks
     work_days = [r for me in included for r in me.days if r.workday]
     all_days = [r for me in included for r in me.days]
     wk = [weeks[me.agent_id] for me in included]
 
-    with_truck = [w for w in wk if w.truck_km is not None]
-    truck_km = sum(w.truck_km for w in with_truck) if with_truck else None
-    truck_liters = (sum(w.truck_liters for w in with_truck)
-                    if with_truck and all(w.truck_liters is not None for w in with_truck) else None)
+    fw = fleet.week() if fleet is not None else {}
     diesel = s['fuel_price_diesel']
+    truck_liters = fw.get('liters')
     truck_amd = truck_liters * diesel if truck_liters is not None and diesel is not None else None
 
     manager_amd: float | None = 0.0
@@ -1222,8 +1147,6 @@ def _totals(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
             break
         manager_amd += weeks[me.agent_id].manager_liters * price
 
-    loads = [r.truck.load_pct_peak for r in all_days
-             if r.truck is not None and r.truck.load_pct_peak is not None]
     facts = [snap.facts[me.agent_id] for me in included if me.agent_id in snap.facts]
     fact_days = sum(f.days for f in facts)
     fact_hours = sum(f.hours * f.days for f in facts) / fact_days if fact_days else None
@@ -1253,14 +1176,23 @@ def _totals(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
         'days_total': _num(len(work_days) / cycle),
         'days_below_min': _num(sum(1 for r in work_days if _is_weak_day(r)) / cycle),
         'avg_p_day_ge_min': _r(fmean(r.low.p_ge_min for r in work_days), 2) if work_days else None,
-        'trips_poor_week': _r(sum(w.trips_poor for w in with_truck), 1) if with_truck else None,
-        'truck_km_week': _r(truck_km, 1),
+        # парк машин (fleet-plan §2): дни доставки всех менеджеров в расчёте, год; загрузка — и в пик
+        'trips_poor_week': _r(fw.get('trips_poor'), 1),        # рейсов с выручкой < min_trip_revenue
+        'truck_km_week': _r(fw.get('km'), 1),
         'truck_liters_week': _r(truck_liters, 1),
         'truck_amd_week': _i(truck_amd),
+        'trips_week': _r(fw.get('trips'), 1),
+        'trips_per_day': _r(fw.get('trips_per_day'), 1),
+        'truck_kg_per_day': _i(fw.get('kg_per_day')),
+        'truck_hours_week': _r(fw.get('hours'), 1),
+        'truck_days_short_week': _num(fw['days_short']) if fleet is not None else None,
+        'avg_load_pct': _r(fw.get('load_pct'), 1),
+        'avg_trip_revenue': _i(fw.get('trip_revenue')),
+        'poor_trip_share': _r(fw.get('poor_trip_share'), 2),
         'manager_km_week': _r(sum(w.manager_km for w in wk), 1),
         'manager_liters_week': _r(sum(w.manager_liters for w in wk), 1),
         'manager_amd_week': _i(manager_amd) if included else None,
-        'avg_load_pct_peak': _r(fmean(loads), 1) if loads else None,
+        'avg_load_pct_peak': _r(fw.get('load_pct_peak'), 1),
         'avg_plan_hours': _r(fmean(r.plan_min for r in work_days) / 60.0, 1) if work_days else None,
         # у клиентов (визиты + дорога между ними) — сравнимо с работой по GPS (avg_fact_work_hours)
         'avg_plan_work_hours': (_r(fmean(r.work_min for r in work_days) / 60.0, 1)
@@ -1281,9 +1213,36 @@ def _totals(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
     }
 
 
+def _fleet_json(fe: fl.FleetEval, bundle: Bundle) -> dict[str, Any]:
+    """Парк для «Обзора»: машины расчёта и «Развоз по дням» — день доставки → машины (средние за
+    пробу, год), загрузка и нехватка машин в пик."""
+    s = bundle.settings
+
+    def truck_json(t: fl.TruckLoad) -> dict[str, Any]:
+        return {'car_code': t.car_code, 'name': t.name, 'capacity_kg': _num(t.capacity_kg),
+                'trips': _r(t.trips, 1), 'stops': _r(t.stops, 1), 'kg': _i(t.kg), 'km': _r(t.km, 1),
+                'liters': _r(t.liters, 1), 'hours': _r(t.minutes / 60.0, 1), 'load_pct': _r(t.load_pct, 0)}
+
+    return {
+        'trucks': [{'car_code': t.car_code, 'name': t.name, 'capacity_kg': _num(t.capacity_kg),
+                    'fuel_l_per_100km': _num(t.l100)} for t in fe.trucks],
+        'work_start': s['truck_work_start'], 'work_end': s['truck_work_end'],
+        'cycle_weeks': fe.cycle_weeks,
+        'days': [{
+            'week': d.week, 'weekday': d.weekday, 'label': WEEKDAY_LABELS[d.weekday],
+            'visits': d.visits, 'orders': _r(d.orders, 1), 'kg': _i(d.kg), 'km': _r(d.km, 1),
+            'liters': _r(d.liters, 1), 'trips': _r(d.trips, 1), 'hours': _r(d.minutes / 60.0, 1),
+            'load_pct': _r(d.load_pct, 0), 'kg_peak': _i(d.kg_peak), 'trips_peak': _r(d.trips_peak, 1),
+            'load_pct_peak': _r(d.load_pct_peak, 0), 'p_short': _r(d.p_short, 2),
+            'p_short_peak': _r(d.p_short_peak, 2),
+            'trucks': [truck_json(t) for t in d.trucks],
+        } for d in fe.days],
+    }
+
+
 def _warnings(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
               totals: Mapping[str, Any], season: Season,
-              idle: Sequence[ManagerEval]) -> list[dict[str, Any]]:
+              idle: Sequence[ManagerEval], pe: PlanEvaluation) -> list[dict[str, Any]]:
     s = bundle.settings
     out = []
     if idle:
@@ -1293,21 +1252,21 @@ def _warnings(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
                                                   f'визитов): {codes} — не входят в расчёт. '
                                                   f'Включить можно в настройках.', 'managers'))
     if bundle.depot is None:
-        out.append(_warning('no_depot', 'Не указан склад — рейсы машин не посчитаны', 'depot'))
-    no_truck = [me for me in included if me.truck is None]
-    if no_truck:
-        out.append(_warning('no_truck', f'Нет машины у {len(no_truck)} из {len(included)} '
-                                        f'менеджеров — их рейсы не посчитаны', 'trucks'))
-    used = {me.truck.car_code: me.truck for me in included if me.truck is not None}
-    no_cap = sorted(c for c, t in used.items() if t.capacity_kg is None)
-    if no_cap:
-        out.append(_warning('truck_no_capacity', 'Не указан тоннаж машин: ' + ', '.join(no_cap)
-                            + ' — загрузка и деление на рейсы не посчитаны', 'trucks'))
-    no_fuel = sorted(c for c, t in used.items() if t.fuel_l_per_100km is None)
-    if no_fuel:
-        out.append(_warning('truck_no_fuel', 'Не указан расход л/100 км машин: ' + ', '.join(no_fuel)
-                            + ' — литры грузовиков не посчитаны', 'trucks'))
-    needed = ({'diesel'} if used else set()) | {me.fuel_type for me in included}
+        out.append(_warning('no_depot', 'Не указан склад — дизель грузовиков не посчитан', 'depot'))
+    elif pe.fleet is None:
+        out.append(_warning('no_fleet', 'Укажите тоннаж и расход машин — тогда программа посчитает '
+                                        'дизель грузовиков', 'trucks'))
+    if pe.trucks_incomplete and pe.fleet is not None:
+        codes = pe.trucks_incomplete
+        out.append(_warning('truck_incomplete', f'У {len(codes)} {plural(len(codes), "машины", "машин", "машин")} '
+                                                f'не указан тоннаж или расход ({", ".join(codes)}) — в развозе '
+                                                f'их нет', 'trucks'))
+    short = totals.get('truck_days_short_week')
+    if short:
+        out.append(_warning('fleet_short', f'В пик в {_num(short)} дн. доставки в неделю машины не '
+                                           f'успевают развезти заказы за рабочий день — нужна ещё машина '
+                                           f'или рейс после конца дня', 'trucks'))
+    needed = ({'diesel'} if pe.fleet is not None else set()) | {me.fuel_type for me in included}
     missing = sorted(f for f in needed if s.get(f'fuel_price_{f}') is None)
     if missing:
         names = {'diesel': 'дизель', 'petrol': 'бензин', 'lpg': 'газ'}

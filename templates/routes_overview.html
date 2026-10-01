@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=9">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=10">
 {% endblock %}
 
 {% block content %}
@@ -130,6 +130,18 @@
             </div>
         </section>
 
+        <!-- РАЗВОЗ ПО ДНЯМ: парк машин (fleet-plan §4) -->
+        <section class="rt-section" id="rtFleetSection" aria-labelledby="rtFleetTitle" hidden>
+            <div class="rt-shead">
+                <h2 id="rtFleetTitle">Развоз по дням</h2>
+                <span class="rt-shead-note">день доставки → рейсы, машины, точки, кг, км и загрузка</span>
+            </div>
+            <div class="rt-panel rt-panel-pad">
+                <p class="rt-lead" id="rtFleetLead"></p>
+                <div class="rt-fleet-days" id="rtFleetDays"></div>
+            </div>
+        </section>
+
         <!-- МАГАЗИНЫ, КОТОРЫЕ ПЕРЕСТАЛИ ПОКУПАТЬ (§15) -->
         <section class="rt-section" id="rtRiskSection" aria-labelledby="rtRiskTitle">
             <div class="rt-shead">
@@ -185,5 +197,5 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_overview.js') }}?v=6"></script>
+<script src="{{ url_for('static', filename='js/routes_overview.js') }}?v=8"></script>
 {% endblock %}

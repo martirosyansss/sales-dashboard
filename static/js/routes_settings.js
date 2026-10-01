@@ -35,6 +35,13 @@
             { key: 'work_end', label: 'Конец', type: 'time' },
             { key: 'workdays', kind: 'workdays', label: 'Рабочие дни' },
         ] },
+        // Парк машин (fleet-plan §2): рабочий день машины и разгрузка — для рейсов и «хватает ли машин»
+        { title: 'Машины доставки', items: [
+            { key: 'truck_work_start', label: 'Машина выезжает', type: 'time' },
+            { key: 'truck_work_end', label: 'Машина возвращается до', type: 'time', hint: 'рейсы, которые не успевают, — «нужна ещё машина»' },
+            { key: 'unload_min_per_stop', label: 'Разгрузка на точке, минут', min: 0, max: 120, step: 1 },
+            { key: 'unload_min_per_tonne', label: 'И ещё на каждую тонну, минут', min: 0, max: 120, step: 1 },
+        ] },
         { title: 'Сколько длится визит, минут', items: [
             { key: 'visit_min_small', label: 'Небольшой магазин', min: 1, max: 120, step: 0.5, nullable: true, auto: true, hint: 'пусто — берём по стоянкам у магазинов в GPS-треках' },
             { key: 'visit_min_medium', label: 'Средний магазин', min: 1, max: 120, step: 0.5, nullable: true, auto: true },
@@ -423,21 +430,14 @@
     }
 
     // ---------- 02 · Машины ----------
-    function agentOptions(selected) {
-        const opts = [h('option', { value: '', text: '— не назначена —' })];
-        let found = selected === null || selected === undefined || selected === '';
-        state.data.managers.forEach(m => {
-            const on = String(m.agent_id) === String(selected);
-            if (on) found = true;
-            opts.push(h('option', { value: String(m.agent_id), text: (m.name || 'Менеджер ' + m.agent_id) + (m.code ? ' · ' + m.code : ''), selected: on }));
-        });
-        if (!found) opts.push(h('option', { value: String(selected), text: 'Агент ' + selected + ' (без маршрутов)', selected: true }));
-        return opts;
+    // Машина закреплена за водителем, а не за менеджером (ответ владельца №29): вместо «чей менеджер» —
+    // подсказка из ERP, сколько машина возит в день (по накладным за 3 месяца)
+    function erpHint(t) {
+        const avg = num(t.erp_kg_day), top = num(t.erp_kg_day_max), days = num(t.erp_days);
+        if (avg === null) return h('span', { class: 'rs-erp-none', text: 'по накладным за 3 месяца не возила' });
+        return h('span', { class: 'rs-erp' }, 'обычно возит в день ≈' + '\u00a0' + fmt(avg / 1000, 1) + '\u00a0т, максимум '
+            + fmt(top / 1000, 1) + '\u00a0т', h('small', { text: ' · ' + fmt(days) + ' ' + plural(days, 'день', 'дня', 'дней') + ' с развозом' }));
     }
-    const agentName = (id) => {
-        const m = state.data.managers.find(x => String(x.agent_id) === String(id));
-        return m ? (m.name || 'Менеджер ' + m.agent_id) : 'агент ' + id;
-    };
 
     function renderTrucks() {
         const box = $('rsTrucks');
@@ -451,31 +451,14 @@
         trucks.forEach((t, i) => {
             const code = String(t.car_code ?? '');
             const who = 'машина ' + code;
-            const capE = errNode(), fuelE = errNode(), agE = errNode(), actE = errNode();
+            const capE = errNode(), fuelE = errNode(), actE = errNode();
             const cap = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 0.1, max: 30, step: 0.1,
                 value: num(t.capacity_kg) === null ? '' : String(round(num(t.capacity_kg) / 1000, 3)),
                 placeholder: '—', 'aria-label': 'Тоннаж в тоннах — ' + who, dataset: { f: 'cap' } });
             const fuel = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 1, max: 80, step: 0.1,
                 value: num(t.fuel_l_per_100km) === null ? '' : String(t.fuel_l_per_100km),
                 placeholder: '—', 'aria-label': 'Расход, литров на 100 км — ' + who, dataset: { f: 'fuel' } });
-            const agent = h('select', { class: 'rt-select', 'aria-label': 'Менеджер — ' + who, dataset: { f: 'agent' } },
-                agentOptions(t.agent_id));
             const active = h('input', { type: 'checkbox', checked: t.active !== false, 'aria-label': 'Машина работает — ' + who, dataset: { f: 'active' } });
-            const agentCell = h('td', { class: 'w-sel', dataset: { label: 'Менеджер' } }, agent, agE);
-            const sug = t.suggested_agent_id;
-            if (sug !== null && sug !== undefined && sug !== '' && String(sug) !== String(t.agent_id ?? '')) {
-                const hint = h('button', { type: 'button', class: 'rt-hintbtn' }, icon('fa-wand-magic-sparkles'),
-                    'по накладным: ' + agentName(sug) + ' — подставить');
-                hint.addEventListener('click', () => {
-                    if (![...agent.options].some(o => o.value === String(sug))) agent.append(h('option', { value: String(sug), text: 'Агент ' + sug }));
-                    agent.value = String(sug);
-                    agent.dispatchEvent(new Event('change', { bubbles: true }));
-                    hint.remove();
-                    flash(agent);
-                    announce('Машина ' + code + ': назначен ' + agentName(sug));
-                });
-                agentCell.append(hint);
-            }
             const nameCell = h('td', { class: 'rt-cell-name' },
                 h('span', { class: 'n', text: code || '—' }),
                 h('span', { class: 'c', text: t.name || '' }),
@@ -484,22 +467,21 @@
                 nameCell,
                 h('td', { class: 'w-num w-half', dataset: { label: 'Тоннаж, т' } }, cap, capE),
                 h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л на 100 км' } }, fuel, fuelE),
-                agentCell,
+                h('td', { class: 'rs-erp-cell', dataset: { label: 'По накладным ERP' } }, erpHint(t)),
                 h('td', { class: 'w-chk', dataset: { label: 'Работает' } }, active, actE));
             tbody.append(tr);
             const keys = (f) => ['trucks.' + i + '.' + f, 'trucks.' + code + '.' + f];
             reg(keys('capacity_kg').concat(['trucks.' + i, 'trucks.' + code]), cap, capE, 'Машина ' + code + ', тоннаж');
             reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Машина ' + code + ', расход');
-            reg(keys('agent_id'), agent, agE, 'Машина ' + code + ', менеджер');
             reg(keys('active').concat(keys('car_code')), active, actE, 'Машина ' + code);
         });
         const table = h('table', { class: 'rt-table' },
-            h('caption', { class: 'rt-sr-only', text: 'Машины доставки: тоннаж, расход и менеджер' }),
+            h('caption', { class: 'rt-sr-only', text: 'Машины доставки: тоннаж, расход и сколько машина возит в день по накладным ERP' }),
             h('thead', {}, h('tr', {},
                 h('th', { scope: 'col', text: 'Машина' }),
                 h('th', { scope: 'col', text: 'Тоннаж, т' }),
                 h('th', { scope: 'col', text: 'Расход, л на 100 км' }),
-                h('th', { scope: 'col', text: 'Менеджер' }),
+                h('th', { scope: 'col', text: 'По накладным ERP' }),
                 h('th', { scope: 'col', class: 'w-chk', text: 'Работает' }))),
             tbody);
         box.append(h('div', { class: 'rt-table-scroll' }, table));
@@ -715,22 +697,19 @@
         const depotOk = !dp.empty && !dp.error;
         set('rsStDepot', depotOk ? 'ok' : 'todo', depotOk ? 'заполнено' : 'не указан');
 
-        // машины: у каждого менеджера в расчёте — работающая машина с тоннажем и расходом
+        // машины: в расчёте — работающие машины с тоннажем и расходом; нужна хотя бы одна
         const rows = [...$('rsManagers').querySelectorAll('tbody tr')];
         const inCalc = rows.filter(tr => tr.querySelector('[data-f="inc"]').checked);
-        const incIds = inCalc.map(tr => String(state.data.managers[+tr.dataset.i].agent_id));
-        const full = new Map();
+        let full = 0, noData = 0;
         $('rsTrucks').querySelectorAll('tbody tr').forEach(tr => {
             const q = (f) => tr.querySelector('[data-f="' + f + '"]');
-            if (!q('active').checked || !q('agent').value) return;
-            const ok = String(q('cap').value).trim() !== '' && String(q('fuel').value).trim() !== '';
-            full.set(q('agent').value, full.get(q('agent').value) || ok);
+            if (!q('active').checked) return;
+            if (String(q('cap').value).trim() !== '' && String(q('fuel').value).trim() !== '') full += 1;
+            else noData += 1;
         });
-        const noTruck = incIds.filter(a => !full.has(a)).length, noData = incIds.filter(a => full.has(a) && !full.get(a)).length;
-        const trucksOk = !!incIds.length && !noTruck && !noData;
-        set('rsStTrucks', trucksOk ? 'ok' : (full.size ? 'part' : 'todo'), trucksOk ? 'заполнено'
-            : [noTruck ? 'без машины — ' + noTruck + ' ' + plural(noTruck, 'менеджер', 'менеджера', 'менеджеров') : '',
-               noData ? 'без тоннажа или расхода — ' + noData + ' ' + plural(noData, 'машина', 'машины', 'машин') : ''].filter(Boolean).join(', '));
+        const trucksOk = full > 0 && !noData;
+        set('rsStTrucks', trucksOk ? 'ok' : (full ? 'part' : 'todo'), trucksOk ? 'заполнено · ' + full + ' ' + plural(full, 'машина', 'машины', 'машин')
+            : (full ? 'в расчёте ' + full + ', без тоннажа или расхода — ' + noData : 'нет машины с тоннажем и расходом'));
 
         // цены: дизель (грузовики) и то топливо, на котором ездят менеджеры в расчёте
         const need = new Set(['diesel']);
@@ -1044,7 +1023,6 @@
         if (dp.error) errors.depot = dp.error;
         else if (!dp.empty) depot = { lat: dp.lat, lon: dp.lon };
 
-        const idVal = (v) => v === '' ? null : (/^\d+$/.test(v) ? Number(v) : v);
         const trucks = [];
         $('rsTrucks').querySelectorAll('tbody tr').forEach(tr => {
             const i = +tr.dataset.i, t = state.data.trucks[i];
@@ -1057,7 +1035,6 @@
                 car_code: t.car_code,
                 capacity_kg: cap.value === null || cap.value === undefined ? null : Math.round(cap.value * 1000),
                 fuel_l_per_100km: fuel.value === undefined ? null : fuel.value,
-                agent_id: idVal(q('agent').value),
                 active: q('active').checked,
             });
         });

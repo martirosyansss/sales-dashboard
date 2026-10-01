@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 from route_optimizer import demand as dm  # noqa: E402
 from route_optimizer import erp, geo, tsp  # noqa: E402
 from route_optimizer import evaluate as ev  # noqa: E402
+from route_optimizer import fleet as fl  # noqa: E402
 from route_optimizer import frequency as fq  # noqa: E402
 from route_optimizer import optimize as opt  # noqa: E402
 from route_optimizer import patterns as pt  # noqa: E402
@@ -387,7 +388,7 @@ def test_route_metrics_city_and_region():
 
 def test_p_day_ge_min_known_answers():
     day = pl.PlanDay(1, 1, 1, ())
-    kw = dict(home=YEREVAN, norms=NORMS, manager_l100=9.0, truck=None, depot=None, workday=True)
+    kw = dict(home=YEREVAN, norms=NORMS, manager_l100=9.0, workday=True)
     sure = ev.evaluate_day(day, [_visit(1, revenue=60000), _visit(2, revenue=60000)], **kw)
     assert sure.low.p_ge_min == 1.0 and sure.low.p10 == sure.low.p90 == sure.low.expected == 120000
     short = ev.evaluate_day(day, [_visit(1, revenue=40000), _visit(2, revenue=40000)], **kw)
@@ -405,9 +406,7 @@ def test_evaluate_day_deterministic_and_route():
     rng = random.Random(1)
     visits = [_visit(i, (40.1 + rng.random() * 0.2, 44.4 + rng.random() * 0.2), p=0.4)
               for i in range(15)] + [_visit(99, None, p=0.4)]
-    truck = ev.TruckSpec('CAR1', 'HOWO', 3000.0, 18.0)
-    kw = dict(home=YEREVAN, norms=NORMS, manager_l100=9.0, truck=truck, depot=(40.15, 44.46),
-              workday=True)
+    kw = dict(home=YEREVAN, norms=NORMS, manager_l100=9.0, workday=True)
     a = ev.evaluate_day(day, visits, **kw)
     b = ev.evaluate_day(day, visits, **kw)
     assert a == b                                        # тот же seed — тот же результат
@@ -417,24 +416,112 @@ def test_evaluate_day_deterministic_and_route():
     assert a.liters == pytest.approx(a.km * 9.0 / 100)
     assert a.plan_min == pytest.approx(a.drive_min + 160.0)
     other = ev.evaluate_day(pl.PlanDay(6, 1, 2, ()), visits, **kw)   # другой менеджер — те же числа визитов
-    assert other.low == a.low and other.truck == a.truck
+    assert other.low == a.low
 
 
-def test_truck_day_capacity_and_overflow():
-    day = pl.PlanDay(1, 1, 1, ())
-    pts = [(40.16, 44.47), (40.17, 44.48), (40.18, 44.49)]
-    visits = [_visit(i, pts[i], p=1.0, revenue=50000, kg=1500) for i in range(3)]
-    kw = dict(home=YEREVAN, norms=NORMS, manager_l100=9.0, depot=(40.15, 44.46), workday=True)
-    r = ev.evaluate_day(day, visits, truck=ev.TruckSpec('C', None, 3000.0, 20.0), **kw)
-    t = r.truck
-    assert t.trips == 2.0                                 # 1500+1500 ≤ 3000, третий — новый рейс
-    assert t.kg_peak_p90 == 4500 and t.load_pct_peak == pytest.approx(150.0)
-    assert t.p_overflow_peak == 1.0 and t.p_no_trip == 0.0 and t.p_poor_trip == 0.0
-    assert t.liters == pytest.approx(t.km * 20.0 / 100)
-    no_cap = ev.evaluate_day(day, visits, truck=ev.TruckSpec('C', None, None, None), **kw).truck
-    assert no_cap.trips == 1.0 and no_cap.load_pct_peak is None and no_cap.liters is None
-    assert ev.evaluate_day(day, visits, truck=ev.TruckSpec('C', None, 3000.0, 20.0),
-                           **dict(kw, depot=None)).truck is None
+# --- парк машин: точная оценка дня доставки (fleet-plan §2) ---
+# Было: «рейс машины менеджера» (truck_day — машина одного менеджера, правило №3). Отменено ответом
+# владельца №29: машина закреплена за водителем, заказы дня всех менеджеров распределяются по парку.
+
+TN = fl.TruckNorms(work_minutes=540.0, unload_min_per_stop=8.0, unload_min_per_tonne=6.0)
+FORD = fl.FleetTruck('333DO33', 'FORD', 3500.0, 16.0)
+HOWO = fl.FleetTruck('991AT61', 'HOWO', 10000.0, 30.0)
+
+
+def _line_matrix(xs):
+    """Точки на прямой: склад — 0, км = |x_i − x_j|; минуты = км (60 км/ч)."""
+    pts = [0.0, *xs]
+    d = [[abs(a - b) for b in pts] for a in pts]
+    return d, [row[:] for row in d]
+
+
+def _stops(kgs, rev=50000.0):
+    return [fl._Stop(i + 1, kg, rev, TN.unload(kg)) for i, kg in enumerate(kgs)]
+
+
+def test_fleet_savings_known_optimum_two_sides():
+    d, m = _line_matrix([-10, -11, 10, 11])
+    trips = fl.plan_trips(_stops([500] * 4), d, m, [HOWO], TN)
+    assert len(trips) == 2 and sum(t.km for t in trips) == pytest.approx(44.0)   # по рейсу на сторону
+    assert all(t.truck == HOWO.car_code and not t.extra and t.stops == 2 for t in trips)
+    assert sum(t.liters for t in trips) == pytest.approx(44.0 * 30.0 / 100)
+    assert fl.plan_trips([], d, m, [HOWO], TN) == [] and fl.plan_trips(_stops([1]), d, m, [], TN) == []
+
+
+def test_fleet_capacity_several_trips_of_one_truck():
+    d, m = _line_matrix([5, 6, 7, 8])
+    trips = fl.plan_trips(_stops([1500] * 4), d, m, [FORD], TN)
+    # по двое в рейс (3 000 ≤ 3 500, третий переполнил бы): {5, 6} и {7, 8} — оптимум 12 + 16 км
+    assert sorted(t.km for t in trips) == pytest.approx([12.0, 16.0])
+    assert all(t.kg <= FORD.capacity_kg and t.truck == FORD.car_code and not t.extra for t in trips)
+    heavy = fl.plan_trips(_stops([25000]), d, m, [HOWO], TN)            # тяжелее машины — 3 поездки поровну
+    assert len(heavy) == 3 and all(t.kg == pytest.approx(25000 / 3) for t in heavy)
+    assert sum(t.km for t in heavy) == pytest.approx(3 * 10.0)
+
+
+def test_fleet_time_window_and_shortage():
+    d, m = _line_matrix([30, -30, 31])
+    short = fl.TruckNorms(work_minutes=100.0, unload_min_per_stop=8.0, unload_min_per_tonne=6.0)
+    stops = [fl._Stop(i + 1, 100.0, 50000.0, short.unload(100.0)) for i in range(3)]
+    one = fl.plan_trips(stops, d, m, [FORD], short)
+    # {30, 31}: 62 км + 2 разгрузки ≈ 79 мин; {−30}: 60 + 8,6 — вместе больше 100 мин: второй — за пределами дня
+    assert sorted(t.extra for t in one) == [False, True]
+    assert all(t.minutes <= 100.0 for t in one)                          # рейс не длиннее рабочего дня
+    two = fl.plan_trips(stops, d, m, [FORD, fl.FleetTruck('X', None, 3500.0, 16.0)], short)
+    assert not any(t.extra for t in two) and {t.truck for t in two} == {'333DO33', 'X'}
+    used = Counter()
+    for t in two:
+        used[t.truck] += t.minutes
+    assert max(used.values()) <= 100.0                                   # время машины соблюдено
+
+
+def test_fleet_heavy_trip_to_big_truck_light_to_cheapest():
+    d, m = _line_matrix([10, -10])
+    trips = fl.plan_trips(_stops([5000, 500]), d, m, [HOWO, FORD], TN)
+    by_kg = {t.kg: t for t in trips}
+    assert by_kg[5000].truck == HOWO.car_code and by_kg[500].truck == FORD.car_code   # 16 л < 30 л
+    assert by_kg[5000].liters == pytest.approx(20.0 * 30.0 / 100)
+
+
+def test_fleet_trip_recut_for_smaller_truck_with_time():
+    d, m = _line_matrix([1, 2, 3, 4, 5, 6, -50])
+    tn = fl.TruckNorms(work_minutes=200.0, unload_min_per_stop=8.0, unload_min_per_tonne=6.0)
+    stops = [fl._Stop(i + 1, 1000.0, 50000.0, tn.unload(1000.0)) for i in range(6)]
+    stops.append(fl._Stop(7, 9000.0, 50000.0, tn.unload(9000.0)))
+    trips = fl.plan_trips(stops, d, m, [HOWO, FORD], tn)
+    # 9 т (162 мин) занимает HOWO; рейс 6 т ему уже не успеть, а FORD не поднимет — он режется по 3,5 т
+    assert not any(t.extra for t in trips)
+    ford = [t for t in trips if t.truck == FORD.car_code]
+    assert len(ford) == 2 and all(t.kg <= 3500 for t in ford)
+    assert sum(t.kg for t in trips) == pytest.approx(15000.0)
+
+
+def test_fleet_day_deterministic_and_order_free():
+    rng = random.Random(4)
+    vs = [fl.DeliveryVisit(i, 1 + i % 3, (40.1 + rng.random() * 0.2, 44.4 + rng.random() * 0.3),
+                           ev.Draw(0.6, ((60000.0, 300.0), (20000.0, 80.0))), ev.Draw(0.8, ((90000.0, 600.0),)))
+          for i in range(40)]
+    a = fl.fleet_day(1, 2, vs, (40.15, 44.46), [FORD, HOWO], NORMS, TN, 150000.0)
+    b = fl.fleet_day(1, 2, list(reversed(vs)), (40.15, 44.46), [FORD, HOWO], NORMS, TN, 150000.0)
+    assert a == b and a.trips > 0 and a.kg_peak > a.kg
+    assert a.liters == pytest.approx(sum(t.liters for t in a.trucks))
+    assert a.km == pytest.approx(sum(t.km for t in a.trucks))
+    assert all(t.load_pct <= 100.0 + 1e-9 for t in a.trucks)            # тоннаж не превышен
+    assert a.trip_revenue / a.trips_total == pytest.approx(
+        sum(v.year.p * fmean(x[0] for x in v.year.values) for v in vs) / a.trips, rel=0.25)
+
+
+def test_fleet_delivery_key():
+    assert fl.delivery_key(1, 3, 2) == (1, 4)
+    assert fl.delivery_key(1, 6, 2) == (2, 1) and fl.delivery_key(2, 6, 2) == (1, 1)   # сб → пн
+    assert fl.delivery_key(1, 7, 1) == (1, 1) and fl.delivery_key(1, 5, 1) == (1, 6)
+
+
+def test_fleet_trucks_only_active_and_complete():
+    trucks = {'B': st.Truck('B', 3500.0, 16.0, 3, True), 'A': st.Truck('A', None, 30.0, None, True),
+              'C': st.Truck('C', 10000.0, 30.0, None, False), 'D': st.Truck('D', 10000.0, None)}
+    fleet, incomplete = fl.fleet_trucks(trucks, {'B': 'FORD'})
+    assert fleet == [fl.FleetTruck('B', 'FORD', 3500.0, 16.0)] and incomplete == ['A', 'D']
 
 
 def test_weak_day_uses_displayed_probability():
@@ -446,8 +533,7 @@ def test_weak_day_uses_displayed_probability():
 def test_overtime_and_flags():
     day = pl.PlanDay(1, 1, 7, ())
     visits = [_visit(i, minutes=20.0) for i in range(30)]    # 600 мин визитов > 540
-    r = ev.evaluate_day(day, visits, home=None, norms=NORMS, manager_l100=9.0, truck=None,
-                        depot=None, workday=False)
+    r = ev.evaluate_day(day, visits, home=None, norms=NORMS, manager_l100=9.0, workday=False)
     assert r.overtime_min == pytest.approx(60.0)
     assert set(r.flags) == {'overtime', 'no_home', 'off_day', 'sunday_order'}
 
@@ -678,7 +764,7 @@ def test_day_time_split_work_and_commute():
     day = pl.PlanDay(1, 1, 1, ())
     a, b = (YEREVAN[0] + 0.02, YEREVAN[1]), (YEREVAN[0] + 0.04, YEREVAN[1])   # в городе
     visits = [_visit(1, a, minutes=5.0), _visit(2, b, minutes=5.0), _visit(3, None, minutes=5.0)]
-    kw = dict(norms=NORMS, manager_l100=9.0, truck=None, depot=None, workday=True)
+    kw = dict(norms=NORMS, manager_l100=9.0, workday=True)
 
     def leg(p, q):   # все участки в городе: 25 км/ч
         return geo.haversine_km(p, q) * 1.3 / 25.0 * 60
@@ -1240,7 +1326,7 @@ def make_snapshot(snapshot_id='syn-1'):
         active_agents=frozenset({1, 2}),
         recent_visits=(), fixes_by_agent={},
         cars={'CAR1': erp.Car('CAR1', 'HOWO', False), 'CAR2': erp.Car('CAR2', 'FORD', True)},
-        car_usage={'CAR1': {1: 120, 3: 500}},
+        car_days={'CAR1': (40, 8100.0, 16800.0)},
     )
 
 
@@ -1263,13 +1349,15 @@ OVERVIEW_TOTALS = {'managers', 'days_total', 'days_below_min', 'avg_p_day_ge_min
                    'truck_km_week', 'truck_liters_week', 'truck_amd_week', 'manager_km_week',
                    'manager_liters_week', 'manager_amd_week', 'avg_load_pct_peak', 'avg_plan_hours',
                    'avg_plan_work_hours', 'avg_fact_hours', 'avg_fact_work_hours',
-                   'avg_fact_pause_hours', 'revenue_week_low', 'revenue_week_year', 'coords'}
+                   'avg_fact_pause_hours', 'revenue_week_low', 'revenue_week_year', 'coords',
+                   'trips_week', 'trips_per_day', 'truck_kg_per_day', 'truck_hours_week',
+                   'truck_days_short_week', 'avg_load_pct', 'avg_trip_revenue', 'poor_trip_share'}
 FACT_KEYS = {'visits_per_day', 'day_start', 'day_end', 'hours', 'work_hours', 'pause_hours',
              'productive_share', 'days', 'track_days'}
 DAY_KEYS = {'week', 'weekday', 'label', 'delivery_label', 'visits', 'visits_no_coords', 'flags',
             'plan_minutes', 'drive_minutes', 'visit_minutes', 'overtime_minutes', 'work_minutes',
             'commute_minutes', 'manager_km', 'manager_km_rownum', 'manager_liters', 'revenue_low_exp',
-            'revenue_low_p10', 'revenue_low_p90', 'p_day_ge_min', 'truck', 'customer_ids', 'stops'}
+            'revenue_low_p10', 'revenue_low_p90', 'p_day_ge_min', 'customer_ids', 'stops'}
 STOP_KEYS = {'customer_id', 'erp_rownum', 'lat', 'lon', 'coord_source'}
 DEFAULT_NORMS = {'detour_factor': {'value': 1.3, 'source': 'default'},
                  'speed_city_kmh': {'value': 25.0, 'source': 'default'},
@@ -1288,16 +1376,16 @@ def test_api_overview_contract(client):
     d = r.get_json()
     assert d['success'] and d['from_cache'] is False
     assert {'generated_at', 'data_as_of', 'warnings', 'season', 'cycle_weeks', 'weekdays', 'depot',
-            'norms', 'totals', 'managers', 'customers'} <= set(d)
+            'norms', 'totals', 'managers', 'customers', 'fleet'} <= set(d)
     assert OVERVIEW_TOTALS <= set(d['totals'])
     assert d['norms'] == DEFAULT_NORMS                  # треков нет — нормы дорог по умолчанию
     assert d['season'] == {'low_months': [1, 2, 3], 'peak_months': [6, 7, 8], 'source': 'auto',
                            'index': {str(m): v for m, v in sorted(make_snapshot().season_index.items())}}
-    assert d['weekdays'] == [1, 2, 3, 4, 5, 6, 7] and d['depot'] is None
-    assert {'no_depot', 'no_truck', 'no_home', 'off_days'} <= {w['code'] for w in d['warnings']}
+    assert d['weekdays'] == [1, 2, 3, 4, 5, 6, 7] and d['depot'] is None and d['fleet'] is None
+    assert {'no_depot', 'no_home', 'off_days'} <= {w['code'] for w in d['warnings']}
     assert all(set(w) == {'code', 'text', 'link'} for w in d['warnings'])
     m1 = next(m for m in d['managers'] if m['agent_id'] == 1)
-    assert m1['home'] == {'lat': 40.18, 'lon': 44.51, 'source': 'gps_auto'} and m1['truck'] is None
+    assert m1['home'] == {'lat': 40.18, 'lon': 44.51, 'source': 'gps_auto'} and 'truck' not in m1
     assert m1['fact']['day_start'] == '10:40' and m1['fact']['days'] == 40
     assert all(set(m['fact']) == FACT_KEYS for m in d['managers'])   # и у менеджера без факта
     assert (d['totals']['avg_fact_work_hours'], d['totals']['avg_fact_pause_hours']) == (None, None)
@@ -1326,7 +1414,9 @@ def test_api_settings_get_and_post(client):
     assert d['settings'] == st.DEFAULT_SETTINGS and d['depot'] is None
     car1 = next(t for t in d['trucks'] if t['car_code'] == 'CAR1')
     car2 = next(t for t in d['trucks'] if t['car_code'] == 'CAR2')
-    assert car1['suggested_agent_id'] == 1 and car1['active'] is True   # агент 3 без шаблонов
+    # машина закреплена за водителем: вместо «чей менеджер» — сколько возит в день по ERP
+    assert (car1['erp_days'], car1['erp_kg_day'], car1['erp_kg_day_max']) == (40, 8100, 16800)
+    assert car1['active'] is True and 'agent_id' not in car1 and car2['erp_kg_day'] is None
     assert car2['erp_closed'] is True and car2['active'] is False
     m1 = next(m for m in d['managers'] if m['agent_id'] == 1)
     assert m1['home_suggestion'] == {'lat': 40.18, 'lon': 44.51, 'method': 'night', 'days': 20}
@@ -1348,9 +1438,12 @@ def test_api_settings_get_and_post(client):
     assert r.status_code == 200 and r.get_json() == {'success': True}
     ov = client.get('/api/routes/overview').get_json()
     assert ov['from_cache'] is False and ov['depot'] == {'lat': 40.15, 'lon': 44.46}
-    m1 = next(m for m in ov['managers'] if m['agent_id'] == 1)
-    assert m1['truck']['car_code'] == 'CAR1' and all(day['truck'] for day in m1['days'])
+    assert ov['fleet']['trucks'] == [{'car_code': 'CAR1', 'name': 'HOWO', 'capacity_kg': 3000,
+                                      'fuel_l_per_100km': 18}]
     assert ov['totals']['truck_km_week'] > 0 and ov['totals']['truck_amd_week'] > 0
+    assert ov['totals']['trips_week'] > 0 and ov['fleet']['days']
+    day = ov['fleet']['days'][0]
+    assert day['trucks'][0]['car_code'] == 'CAR1' and day['label'] in ('Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб')
 
     r = client.post('/api/routes/settings', json={'settings': {'detour_factor': 9}})
     assert r.status_code == 400 and 'settings.detour_factor' in r.get_json()['errors']
@@ -1925,28 +2018,47 @@ def _slots(p):
     return tuple(sorted(sr.slot_of_day(w, d) for w, d in p))
 
 
-def _search_problem(points, current, allowed, *, home=YEREVAN, depot=None, workdays=range(1, 7),
-                    locked=(), capacity=None, minutes=10.0):
-    """Задача менеджера на синтетике: points — точки клиентов (None — без координат)."""
+def _search_problem(points, current, allowed, *, home=YEREVAN, workdays=range(1, 7), locked=(),
+                    minutes=10.0, fleet_nodes=False):
+    """Задача менеджера на синтетике: points — точки клиентов (None — без координат). fleet_nodes —
+    вершины парка: те же номера, что у менеджера (матрица парка — _fleet_estimate по тем же точкам)."""
     located = [p for p in points if p is not None]
-    km, mins, tkm = opt._matrices(home, located, depot, NORMS)
+    km, mins = opt._matrices(home, located, NORMS)
     nodes, n = [], 0
     for p in points:
         n += p is not None
         nodes.append(n if p is not None else 0)
     lines = [sr.Line(customer_id=100 + i, node=nodes[i], minutes=minutes, current=_slots(current[i]),
                      allowed=tuple(_slots(a) for a in allowed[i]), locked=i in locked,
-                     u=sr.make_u(random.Random(i)))
+                     u=sr.make_u(random.Random(i)), gnode=nodes[i] if fleet_nodes else 0)
              for i in range(len(points))]
     wd = set(workdays)
     workday = tuple(sr.day_of_slot(j)[1] in wd for j in range(sr.SLOTS))
     base = tuple(workday[j] and any(j in line.current for line in lines) for j in range(sr.SLOTS))
-    weights = sr.Weights(manager_per_km=45.0, truck_per_km=150.0 if depot else 0.0, weak_day=20000.0,
-                         poor_trip=3000.0, overtime_per_min=500.0, window_min=540.0,
-                         min_day_revenue=100000.0, min_trip_revenue=150000.0,
-                         truck_capacity_kg=capacity)
-    return sr.Problem(agent_id=7, lines=lines, km=km, mins=mins, tkm=tkm, weights=weights,
+    weights = sr.Weights(manager_per_km=45.0, weak_day=20000.0, poor_trip=3000.0, overtime_per_min=500.0,
+                         window_min=540.0, min_day_revenue=100000.0, min_trip_revenue=150000.0)
+    return sr.Problem(agent_id=7, lines=lines, km=km, mins=mins, weights=weights,
                       workday=workday, base=base, neighbors=sr.nearest_lines(nodes, km), seed=7)
+
+
+DEPOT = (40.15, 44.46)
+
+
+def _fleet_estimate(points, kg, *, depot=DEPOT, capacity=3000.0, trucks=1, per_km=150.0, trip_minutes=540.0):
+    """Быстрая оценка парка по точкам задачи (вершины — как у _search_problem с fleet_nodes)."""
+    located = [p for p in points if p is not None]
+    km, _ = opt._matrices(depot, located, NORMS)                 # вершина 0 — склад
+    city = [geo.in_city(p, YEREVAN, 12.0) for p in [depot, *located]]
+    kgs = [0.0] + [kg[i] for i, p in enumerate(points) if p is not None]
+    return sr.FleetEstimate(km, city, kgs, capacity_kg=capacity, per_km=per_km, overtime_per_min=500.0,
+                            capacity_min=540.0 * trucks, unload_stop=8.0, unload_tonne=6.0,
+                            speed_city_kmh=25.0, speed_region_kmh=45.0, trip_minutes=trip_minutes)
+
+
+def _with_fleet(state, fleet, static=()):
+    fleet.build(state.fleet_entries(), static)
+    state.attach(fleet)
+    return state
 
 
 def test_incremental_state_matches_recomputation_after_1000_moves():
@@ -1962,10 +2074,14 @@ def test_incremental_state_matches_recomputation_after_1000_moves():
         m = rng.choice((20000.0, 50000.0, 90000.0))
         params.append(sr.VisitParams(mu=p * m, var=p * m * m * 1.3 - (p * m) ** 2, p_low=p,
                                      p_year=rng.random(), kg=rng.random() * 900.0))
-    prob = _search_problem(points, current, allowed, depot=(40.15, 44.46), capacity=3000.0)
-    state = sr.State(prob, [line.current for line in prob.lines], params, change_penalty=300.0,
-                     trucks=True)
-    assert state.consistency_error() < 1e-9
+    prob = _search_problem(points, current, allowed, fleet_nodes=True)
+    state = sr.State(prob, [line.current for line in prob.lines], params, change_penalty=300.0)
+    # парк: тоннаж 1,5 т — рейсы режутся, 1 машина — бывают минуты сверх дня; чужие визиты (static)
+    fleet = _fleet_estimate(points, [pr.kg for pr in params], capacity=1500.0)
+    static = [(j, g, (True, False, True, True)) for j, g in ((0, 1), (2, 5), (8, 7))]
+    _with_fleet(state, fleet, static)
+    assert state.consistency_error() < 1e-9 and fleet.consistency_error(state.fleet_entries()) < 1e-9
+    assert fleet.total > 0 and state.total == pytest.approx(state.own_total() + fleet.total)
     by_size: dict[int, list[int]] = {}
     for i, line in enumerate(prob.lines):
         by_size.setdefault(len(line.current), []).append(i)
@@ -1986,8 +2102,12 @@ def test_incremental_state_matches_recomputation_after_1000_moves():
         state.apply(move)
         assert state.total - before == pytest.approx(delta, abs=1e-6)   # оценка хода = факт
         moves += 1
-    # туры, км, минуты, μ, σ², кг, км грузовика и стоимость дней — как при расчёте с нуля
+        if moves % 250 == 0:
+            fleet.polish()
+            state.refresh()
+    # туры, км, минуты, μ, σ² и стоимость дней; туры парка, км и минуты рейсов — как при расчёте с нуля
     assert state.consistency_error() < 1e-6
+    assert fleet.consistency_error(state.fleet_entries()) < 1e-6
 
 
 def _three_clusters():
@@ -2007,7 +2127,7 @@ def test_search_makes_mixed_days_compact_and_is_deterministic():
     for _ in range(2):
         prob = _search_problem(points, current, allowed, workdays=three)
         state = sr.State(prob, [line.current for line in prob.lines], [sr.NO_VISIT] * len(points),
-                         change_penalty=300.0, trucks=False)
+                         change_penalty=300.0)
         km_before, cost_before = sum(state.km), state.total
         stats = sr.search(state, seconds=30)
         assert not stats.time_capped and state.total < cost_before
@@ -2026,7 +2146,7 @@ def test_search_keeps_locked_customers():
     allowed[5] = [current[5]]                                    # «чужой» во вторнике закреплён
     prob = _search_problem(points, current, allowed, workdays=three, locked={5})
     state = sr.State(prob, [line.current for line in prob.lines], [sr.NO_VISIT] * len(points),
-                     change_penalty=300.0, trucks=False)
+                     change_penalty=300.0)
     sr.search(state, seconds=30)
     assert state.pattern[5] == _slots(_wk(2))
     assert state.pattern[11] == _slots(_wk(2)) and state.pattern[17] == _slots(_wk(3))   # остальные — к своим
@@ -2036,7 +2156,7 @@ def test_search_time_cap_is_flagged_and_state_stays_valid():
     points, current, allowed, three = _three_clusters()
     prob = _search_problem(points, current, allowed, workdays=three)
     state = sr.State(prob, [line.current for line in prob.lines], [sr.NO_VISIT] * len(points),
-                     change_penalty=300.0, trucks=False)
+                     change_penalty=300.0)
     ticks = iter(range(0, 10 ** 7, 100))                     # каждый взгляд на часы — «+100 с»
     stats = sr.search(state, seconds=8, clock=lambda: next(ticks))
     assert stats.time_capped and stats.perturbations == 0
@@ -2064,10 +2184,10 @@ def test_change_effect_of_single_move():
     points, current, allowed, three = _three_clusters()
     prob = _search_problem(points, current, allowed, workdays=three)
     before = sr.State(prob, [line.current for line in prob.lines], [sr.NO_VISIT] * len(points),
-                      change_penalty=0.0, trucks=False)
+                      change_penalty=0.0)
     effect = sr.change_effect(before, 5, _slots(_wk(1)), sr.NO_VISIT)   # «чужой» — к своим, в пн
     assert effect['km'] < -40 and effect['minutes'] < -40
-    assert effect['weak'] == 0.0 and effect['truck_km'] == 0.0
+    assert effect['weak'] == 0.0 and effect['truck_km'] == 0.0           # парка нет
     assert sr.change_effect(before, 5, before.pattern[5], sr.NO_VISIT) == \
         {'km': 0.0, 'minutes': 0.0, 'weak': 0.0, 'truck_km': 0.0}
 
@@ -2293,8 +2413,9 @@ RESULT_KEYS = {'cycle_weeks', 'params', 'generated_at', 'seconds', 'snapshot_as_
                'stale_decisions'}
 MANAGER_RESULT_KEYS = {'agent_id', 'code', 'name', 'before', 'after', 'feasibility', 'time_capped',
                        'days_before', 'days_after', 'changes', 'hints'}
-WEEK_RESULT_KEYS = {'visits', 'revenue_low', 'revenue_peak', 'revenue_year', 'manager_km', 'truck_km',
-                    'truck_liters', 'days_below_min', 'avg_work_hours', 'avg_plan_hours', 'cost'}
+# км и литры грузовиков у менеджера больше нет: парк общий (ответ №29) — они в before/after компании
+WEEK_RESULT_KEYS = {'visits', 'revenue_low', 'revenue_peak', 'revenue_year', 'manager_km',
+                    'days_below_min', 'avg_work_hours', 'avg_plan_hours', 'cost'}
 DECISION_ITEM_KEYS = {'customer_id', 'customer_code', 'customer_name', 'agent_id', 'agent_code',
                       'agent_name', 'manager_included', 'kind', 'status', 'stale', 'value', 'from',
                       'to_text', 'from_text', 'current_text', 'updated_at', 'updated_by'}
@@ -2528,7 +2649,7 @@ def _big_snapshot(seed=1, n_agents=2, per_agent=160):
         first_order={c: TODAY - timedelta(days=600) for c in orders},
         auto_homes={a: geo.HomeGuess(40.18, 44.51, 'night', 20) for a in agents}, facts={},
         active_agents=frozenset(agents),
-        cars={f'CAR{a}': erp.Car(f'CAR{a}', 'HOWO', False) for a in agents}, car_usage={})
+        cars={f'CAR{a}': erp.Car(f'CAR{a}', 'HOWO', False) for a in agents}, car_days={})
 
 
 def _truck_bundle(n_agents=2, **settings):
@@ -2561,14 +2682,17 @@ def test_unchanged_plan_w1_and_w2_give_identical_monte_carlo():
     assert 0 < t1['days_below_min'] < t1['days_total'] and t1['truck_km_week'] > 0
     for key in ('days_below_min', 'avg_p_day_ge_min', 'trips_poor_week', 'truck_km_week',
                 'truck_liters_week', 'manager_km_week', 'revenue_week_low', 'revenue_week_peak',
-                'revenue_week_year', 'avg_load_pct_peak'):
+                'revenue_week_year', 'avg_load_pct_peak', 'trips_week', 'trips_per_day', 'truck_hours_week',
+                'truck_days_short_week', 'avg_load_pct', 'avg_trip_revenue', 'poor_trip_share'):
         assert t2[key] == t1[key], key
+    assert one.fleet.week() == two.fleet.week()                     # парк в неделю — до бита
+    assert len(two.fleet.days) == 2 * len(one.fleet.days)
     assert all(two.weeks[a] == one.weeks[a] for a in one.weeks)     # все поля недели — до бита
     by_day = {(me.agent_id, r.day.weekday): r for me in one.evals for r in me.days}
     for me in two.evals:
         for r in me.days:
             r1 = by_day[(me.agent_id, r.day.weekday)]
-            assert r.low == r1.low and r.truck == r1.truck, (me.agent_id, r.day.week, r.day.weekday)
+            assert r.low == r1.low, (me.agent_id, r.day.week, r.day.weekday)
 
 
 def test_day_monte_carlo_is_keyed_by_visit():
@@ -2579,11 +2703,10 @@ def test_day_monte_carlo_is_keyed_by_visit():
     rng = random.Random(3)
     visits = [_visit(i, (40.1 + rng.random() * 0.2, 44.4 + rng.random() * 0.2), p=0.35)
               for i in range(30)]
-    kw = dict(home=YEREVAN, norms=NORMS, manager_l100=9.0, truck=ev.TruckSpec('C', None, 3000.0, 20.0),
-              depot=(40.15, 44.46), workday=True)
+    kw = dict(home=YEREVAN, norms=NORMS, manager_l100=9.0, workday=True)
     a = ev.evaluate_day(pl.PlanDay(1, 1, 3, ()), visits, **kw)
     b = ev.evaluate_day(pl.PlanDay(9, 2, 3, ()), list(reversed(visits)), **kw)
-    assert (a.low, a.truck) == (b.low, b.truck)
+    assert a.low == b.low
     draws, ids = [v.low for v in visits], [v.customer_id for v in visits]
     full, _, _ = ev._outcomes(draws, ids, 3, 'low', 300)
     part, _, _ = ev._outcomes(draws[:-1], ids[:-1], 3, 'low', 300)
@@ -2635,7 +2758,7 @@ def test_ils_stops_after_ten_idle_perturbations():
     points, current, allowed, three = _three_clusters()
     prob = _search_problem(points, current, allowed, workdays=three)
     state = sr.State(prob, [line.current for line in prob.lines], [sr.NO_VISIT] * len(points),
-                     change_penalty=300.0, trucks=False)
+                     change_penalty=300.0)
     stats = sr.search(state, seconds=30)
     assert stats.perturbations == 10 and not stats.time_capped
 
@@ -3650,17 +3773,17 @@ def test_route_metrics_and_order_use_road_km_without_detour():
 
 def test_truck_km_by_roads_no_double_detour():
     r = _roads()
-    day = pl.PlanDay(1, 1, 1, ())
-    truck = ev.TruckSpec('C', None, 3000.0, 20.0)
-    kw = dict(home=None, manager_l100=9.0, truck=truck, workday=True)
-    visits = [_visit(1, RN[2], p=1.0)]
-    road = ev.evaluate_day(day, visits, norms=replace(NORMS, roads=r), depot=RN[0], **kw).truck
+    draw = ev.Draw(1.0, ((60000.0, 10.0),))
+    visits = [fl.DeliveryVisit(1, 1, RN[2], draw, draw)]
+
+    def day(norms, depot):
+        return fl.fleet_day(1, 2, visits, depot, [FORD], norms, TN, 150000.0)
+
+    road = day(replace(NORMS, roads=r), RN[0])
     assert road.km == pytest.approx(2 * r.km(RN[0], RN[2]))
     far_depot = _west(RN[0], 0.7)                                 # склад не привязан — участки по прямой
-    fallback = ev.evaluate_day(day, visits, norms=replace(NORMS, roads=r), depot=far_depot, **kw).truck
-    assert fallback.km == pytest.approx(2 * geo.haversine_km(far_depot, RN[2]) * 1.3)
-    straight = ev.evaluate_day(day, visits, norms=NORMS, depot=RN[0], **kw).truck
-    assert straight.km == pytest.approx(2 * geo.haversine_km(RN[0], RN[2]) * 1.3)
+    assert day(replace(NORMS, roads=r), far_depot).km == pytest.approx(2 * geo.haversine_km(far_depot, RN[2]) * 1.3)
+    assert day(NORMS, RN[0]).km == pytest.approx(2 * geo.haversine_km(RN[0], RN[2]) * 1.3)
     one = tsp.delivery_km(RN[0], [(RN[1], 10.0), (RN[2], 10.0)], None, r.km)
     assert one.km == pytest.approx(r.km(RN[0], RN[1]) + r.km(RN[1], RN[2]) + r.km(RN[2], RN[0]))
 
@@ -3703,7 +3826,7 @@ def test_overview_uses_road_km_for_managers_and_trucks():
     assert road.norms.roads is roads and straight.norms.roads is None
     for a, wk in straight.weeks.items():
         assert road.weeks[a].manager_km == pytest.approx(wk.manager_km * 2 / detour, rel=1e-6)
-        assert road.weeks[a].truck_km == pytest.approx(wk.truck_km * 2 / detour, rel=1e-6)
+    assert road.fleet.week()['km'] == pytest.approx(straight.fleet.week()['km'] * 2 / detour, rel=1e-6)
     ov = ev.build_overview(snap, bundle, roads=roads)
     assert ov['distance_source'] == 'roads'
     assert not [w for w in ov['warnings'] if w['code'].startswith('roads')]
@@ -3757,21 +3880,23 @@ def test_optimizer_matrices_and_run_use_road_km():
     norms = replace(ev.Norms.from_settings(bundle.settings), roads=roads)
     home, depot = (40.18, 44.51), bundle.depot
     pts = [(40.18, 44.50), (40.19, 44.52), (40.20, 44.55)]
-    km, mins, tkm = opt._matrices(home, pts, depot, norms)
+    km, mins = opt._matrices(home, pts, norms)
     allp = [home, *pts]
     for i in range(4):
         for j in range(4):
             if i != j:
                 assert km[i][j] == pytest.approx(2 * geo.haversine_km(allp[i], allp[j]), rel=1e-6)
+    tkm = opt._Distances(pts, norms).rows(depot, pts)                # матрица парка: вершина 0 — склад
     for j in range(1, 4):
-        assert tkm[0][j] == pytest.approx(2 * geo.haversine_km(depot, allp[j]), rel=1e-6)
+        assert tkm[0][j] == pytest.approx(2 * geo.haversine_km(depot, pts[j - 1]), rel=1e-6)
     straight = opt.run_optimization(snap, bundle, None, [], {})
     road = opt.run_optimization(snap, bundle, None, [], {}, roads=roads)
     detour = straight.before.norms.detour
     assert road.before.norms.roads is roads and road.after.norms.roads is roads
     for a, wk in straight.before.weeks.items():
         assert road.before.weeks[a].manager_km == pytest.approx(wk.manager_km * 2 / detour, rel=1e-6)
-        assert road.before.weeks[a].truck_km == pytest.approx(wk.truck_km * 2 / detour, rel=1e-6)
+    assert road.before.fleet.week()['km'] == pytest.approx(straight.before.fleet.week()['km'] * 2 / detour,
+                                                           rel=1e-6)
 
 
 # ============================== этап 4: передача магазинов между менеджерами (режим Б) ==============================
@@ -3818,7 +3943,7 @@ def _overlap_snapshot(rows=None, debts=None, snapshot_id='overlap'):
         first_order={c: TODAY - timedelta(days=600) for c in cids},
         auto_homes={1: geo.HomeGuess(W_CLUSTER[0] + 0.02, W_CLUSTER[1], 'night', 20),
                     2: geo.HomeGuess(E_CLUSTER[0] + 0.02, E_CLUSTER[1], 'night', 20)},
-        facts={}, active_agents=frozenset({1, 2}), cars={}, car_usage={}, debts=debts or {})
+        facts={}, active_agents=frozenset({1, 2}), cars={}, car_days={}, debts=debts or {})
 
 
 def _strip_run(r):
@@ -3909,15 +4034,14 @@ def test_distances_matrices_equal_optimizer_matrices():
     rng = random.Random(3)
     pts = [(40.1 + rng.random() * 0.2, 44.4 + rng.random() * 0.3) for _ in range(12)]
     dist = opt._Distances(pts + [(40.3, 44.9)], norms)
-    for home, depot, sub in (((40.18, 44.51), (40.15, 44.46), pts[:7]), (None, None, pts[3:]),
-                             ((40.2, 44.5), None, pts[:1])):
-        want = opt._matrices(home, sub, depot, norms)
-        got = dist.matrices(home, sub, depot)
+    for home, sub in (((40.18, 44.51), pts[:7]), (None, pts[3:]), ((40.2, 44.5), pts[:1])):
+        want = opt._matrices(home, sub, norms)
+        got = dist.matrices(home, sub)
         for w, g in zip(want, got):
-            if w is None:
-                assert g is None
-                continue
             assert [list(r) for r in g] == [pytest.approx(r, abs=1e-9) for r in w]
+        depot = (40.15, 44.46)                                       # матрица парка = матрица «дома» на складе
+        assert [list(r) for r in dist.rows(depot, sub)] == \
+            [pytest.approx(r, abs=1e-9) for r in opt._matrices(depot, sub, norms)[0]]
 
 
 def _market(seed=1, n=24, trucks=True):
@@ -3936,18 +4060,24 @@ def _market(seed=1, n=24, trucks=True):
     owner = [1 if i < n // 2 else 2 for i in range(n)]
     states = {}
     for a, home in ((1, (40.12, 44.40)), (2, (40.30, 44.62))):
-        km, mins, tkm = opt._matrices(home, pts, (40.15, 44.46) if trucks else None, norms)
+        km, mins = opt._matrices(home, pts, norms)
+        # числа «заказал» — по клиенту (как opt.truck_u): у обоих менеджеров одни и те же
         lines = [sr.Line(customer_id=100 + i, node=i + 1, minutes=10.0,
                          current=rng.choice(allowed[i]) if owner[i] == a else (), allowed=allowed[i],
-                         locked=False, u=sr.make_u(random.Random(a * 1000 + i))) for i in range(n)]
+                         locked=False, u=sr.make_u(random.Random(i)), gnode=i + 1 if trucks else 0)
+                 for i in range(n)]
         base = tuple(sr.day_of_slot(j)[1] in six and any(j in ln.current for ln in lines) for j in range(sr.SLOTS))
-        weights = sr.Weights(manager_per_km=45.0, truck_per_km=150.0 if trucks else 0.0, weak_day=20000.0,
-                             poor_trip=3000.0, overtime_per_min=500.0, window_min=540.0,
-                             min_day_revenue=100000.0, min_trip_revenue=150000.0, truck_capacity_kg=3000.0)
-        prob = sr.Problem(agent_id=a, lines=lines, km=km, mins=mins, tkm=tkm, weights=weights,
+        weights = sr.Weights(manager_per_km=45.0, weak_day=20000.0, poor_trip=3000.0, overtime_per_min=500.0,
+                             window_min=540.0, min_day_revenue=100000.0, min_trip_revenue=150000.0)
+        prob = sr.Problem(agent_id=a, lines=lines, km=km, mins=mins, weights=weights,
                           workday=tuple(sr.day_of_slot(j)[1] in six for j in range(sr.SLOTS)), base=base,
                           neighbors=sr.nearest_lines([ln.node for ln in lines], km), seed=a)
-        states[a] = sr.State(prob, [ln.current for ln in lines], params, change_penalty=300.0, trucks=trucks)
+        states[a] = sr.State(prob, [ln.current for ln in lines], params, change_penalty=300.0)
+    if trucks:   # общий парк обоих менеджеров: тоннаж 2 т — рейсы режутся
+        fleet = _fleet_estimate(pts, [pr.kg for pr in params], capacity=2000.0)
+        fleet.build([e for st_ in states.values() for e in st_.fleet_entries()])
+        for st_ in states.values():
+            st_.attach(fleet)
     clients = [tr.Client(100 + i, owner[i], {1: i, 2: i}) for i in range(n)]
     neighbors = {100 + i: [100 + j for j in range(n) if j != i][:8] for i in range(n)}
     return tr.Market(states, clients, neighbors, 2000.0)
@@ -3955,9 +4085,10 @@ def _market(seed=1, n=24, trucks=True):
 
 def test_market_incremental_equals_scratch_after_random_moves():
     """Передачи (и группой), обмены и переносы внутри менеджера вперемешку: оценка хода = факт, а после
-    300 ходов туры, км, μ/σ², грузовик и стоимость каждого менеджера — как с нуля (§5), клиента
-    посещает ровно один менеджер, стоимость компании = Σ менеджеров + плата за передачи."""
+    300 ходов туры, км, μ/σ² и стоимость каждого менеджера и туры парка — как с нуля (§5), клиента
+    посещает ровно один менеджер, стоимость компании = Σ менеджеров + парк + плата за передачи."""
     market = _market()
+    assert market.fleet is not None and market.fleet.total > 0
     assert market.consistency_error() < 1e-9
     rng = random.Random(9)
     cids = sorted(market.clients)
@@ -4226,3 +4357,246 @@ def test_store_transfer_settings_validation(store):
     _save(store, {'settings': {'penalty_transfer': 3500, 'transfer_radius_km': 2.5}})
     s = store.load().settings
     assert (s['penalty_transfer'], s['transfer_radius_km']) == (3500, 2.5)
+
+
+# ============================== парк машин: оценка, оптимизатор, настройки (fleet-plan) ==============================
+
+def test_fleet_mixes_orders_of_managers_in_one_trip():
+    """Правило «одна машина = один менеджер» отменено (№29): заказы двух менеджеров одного дня
+    доставки, которые лежат рядом, едут одним рейсом одной машины."""
+    rows = [_row(1, 11, 1, 1, 1, 201, 1, 2001), _row(2, 21, 1, 1, 1, 202, 1, 2002)]
+    orders = {c: _orders_every(c, a, 7, 60000.0, 300.0) for a, c in ((1, 201), (2, 202))}
+    snap = replace(make_snapshot(), plan=pl.build_plan(rows),
+                   customers={c: erp.Customer(c, f'C{c}', f'Клиент {c}', '036', 'Այլ', False, '101')
+                              for c in (201, 202)},
+                   erp_points={2001: (201, (40.40, 44.50)), 2002: (202, (40.401, 44.501))},
+                   default_address={201: 2001, 202: 2002}, gps_points={}, orders_by_customer=orders,
+                   first_order={c: TODAY - timedelta(days=600) for c in orders})
+    bundle = st.Bundle(dict(st.DEFAULT_SETTINGS), (40.15, 44.46),
+                       {'CAR1': st.Truck('CAR1', 3000.0, 25.0, 1, True)}, {})
+    pe = ev.evaluate_plan(snap, bundle)
+    (day,) = pe.fleet.days
+    assert (day.week, day.weekday) == (1, 2)                          # визиты пн → доставка вт
+    assert day.trips == pytest.approx(1.0) and day.orders == pytest.approx(2.0)   # p = 1: оба заказа, один рейс
+    t = ev.plan_totals(snap, bundle, pe)
+    assert t['truck_liters_week'] == pytest.approx(t['truck_km_week'] * 25.0 / 100, abs=0.06)
+    assert t['trips_week'] == pytest.approx(1.0) and t['avg_load_pct'] == pytest.approx(20.0)
+    no_fleet = ev.evaluate_plan(snap, replace(bundle, trucks={'CAR1': st.Truck('CAR1', None, 25.0)}))
+    assert no_fleet.fleet is None and no_fleet.trucks_incomplete == ('CAR1',)
+    assert ev.plan_totals(snap, bundle, no_fleet)['truck_km_week'] is None
+
+
+def test_overview_fleet_block_and_warnings():
+    snap = make_snapshot()
+    bundle = st.Bundle(dict(st.DEFAULT_SETTINGS), (40.15, 44.46),
+                       {'CAR1': st.Truck('CAR1', 3000.0, 25.0), 'CAR2': st.Truck('CAR2', None, None)}, {})
+    ov = ev.build_overview(snap, bundle)
+    codes = {w['code'] for w in ov['warnings']}
+    assert 'truck_incomplete' in codes and 'no_fleet' not in codes and 'no_depot' not in codes
+    f = ov['fleet']
+    assert f['trucks'][0]['car_code'] == 'CAR1' and (f['work_start'], f['work_end']) == ('09:00', '18:00')
+    assert [d['label'] for d in f['days']] == ['Пн', 'Вт', 'Ср']      # вс → пн, пн → вт, вт → ср
+    assert all(d['trips'] >= 0 and set(d) >= {'kg', 'km', 'liters', 'load_pct', 'trucks', 'p_short_peak'}
+               for d in f['days'])
+    none = ev.build_overview(snap, replace(bundle, trucks={}))
+    assert none['fleet'] is None and 'no_fleet' in {w['code'] for w in none['warnings']}
+
+
+def test_fleet_estimate_matches_split_and_cost():
+    """Быстрая оценка парка: км тура, нарезанного по тоннажу, и машино-минуты сверх дня — как по
+    определению; ход «уйти + прийти» в тот же день той же точки тур не меняет."""
+    pts = [(40.20, 44.50), (40.21, 44.51), (40.40, 44.80)]
+    fleet = _fleet_estimate(pts, [1000.0, 1500.0, 900.0], capacity=2000.0)
+    fleet.build([(0, 1, (True,) * 4), (0, 2, (True,) * 4), (0, 3, (True, False, True, False))])
+    d = fleet.d
+    t = fleet.tours[0][0]
+    assert sorted(t[1:]) == [1, 2, 3]
+    km, mins = fleet.split(t)
+    legs, prev, load = 0.0, 0, 0.0
+    for x in t[1:]:                                                   # по определению: новый рейс, если переполнит
+        if prev and load + fleet.kg[x] > 2000.0:
+            legs += d[prev][0]
+            prev, load = 0, 0.0
+        legs += d[prev][x]
+        prev, load = x, load + fleet.kg[x]
+    legs += d[prev][0]
+    assert km == pytest.approx(legs) and mins > km                   # минуты: езда + разгрузка
+    assert fleet.cost[0] == pytest.approx(fleet.cost_of(fleet.km[0], fleet.mins[0]))
+    assert fleet.effect_km([(0, 3, (True,) * 4)], [(0, 3, (True,) * 4)]) == 0.0
+    gone = fleet.effect_km([(0, 3, (True, False, True, False))], [])
+    assert gone < 0                                                   # дальняя точка ушла — км меньше
+    snap = fleet.snapshot()
+    rec = fleet.apply(0, [(0, *fleet.eval(0, 0, 3, 0)[:2], 3, 0, *fleet.eval(0, 0, 3, 0)[2:])], 0.0)
+    fleet.revert(rec)
+    assert fleet.snapshot()[:5] == snap[:5]                           # откат хода — ровно как было
+
+
+def test_search_gauss_seidel_aligns_far_orders_with_other_manager():
+    """Менеджеры связаны через дни доставки: у B дальний магазин во вторник, а парк и так ездит в тот
+    же район (дом напротив) в понедельник — с заказами менеджера A. Для B дни почти равноценны, а парку
+    выгоднее везти всё одним рейсом — поиск переносит магазин B на понедельник. Без парка — нет."""
+    near = [(40.181 + 0.002 * k, 44.512) for k in range(4)]
+    points = near + [(40.45, 44.80), (40.4501, 44.8001)]          # 5 — магазин B, 6 — магазин A рядом
+    current = [_wk(1), _wk(2), _wk(1), _wk(2), _wk(2)]
+    allowed = [[c] for c in current[:4]] + [[_wk(1), _wk(2)]]
+    prob = _search_problem(points[:5], current, allowed, workdays=(1, 2), fleet_nodes=True)
+    params = [sr.VisitParams(mu=0.0, var=0.0, p_low=0.0, p_year=1.0, kg=200.0)] * 5
+    state = sr.State(prob, [line.current for line in prob.lines], params, change_penalty=300.0)
+    fleet = _fleet_estimate(points, [200.0] * len(points))
+    _with_fleet(state, fleet, [(j, 6, (True,) * 4) for j in (0, 7)])   # A: по понедельникам обеих недель
+    own_before, fleet_before = state.own_total(), fleet.total
+    sr.search(state, seconds=30)
+    assert state.pattern[4] == _slots(_wk(1))
+    assert fleet.total < fleet_before - 1000 and state.own_total() < own_before + 300 + 500
+    assert fleet.consistency_error(state.fleet_entries()) < 1e-9
+    alone = sr.State(_search_problem(points[:5], current, allowed, workdays=(1, 2)),
+                     [line.current for line in prob.lines], params, change_penalty=300.0)
+    sr.search(alone, seconds=30)
+    assert alone.pattern[4] == _slots(_wk(2))                      # без парка переносить незачем
+
+
+def test_optimizer_with_fleet_deterministic_and_not_worse():
+    snap, bundle = _big_snapshot(n_agents=2, per_agent=60), _truck_bundle()
+    a = opt.run_optimization(snap, bundle, None, [], {})
+    b = opt.run_optimization(snap, bundle, None, [], {})
+    assert [o.final for o in a.managers] == [o.final for o in b.managers]
+    assert a.result['truck_costs'] is True and a.fleet_before is not None and a.fleet_after is not None
+    assert a.cost_after <= a.cost_before + 1e-6                      # компания с парком — не хуже
+    assert a.cost_after == pytest.approx(sum(o.cost_after for o in a.managers) + a.fleet_after)
+    tb, ta = a.result['before'], a.result['after']
+    assert tb['truck_liters_week'] > 0 and ta['truck_liters_week'] > 0 and ta['trips_week'] > 0
+    effects = [ch['effect']['truck_km_week'] for m in a.result['managers'] for ch in m['changes']]
+    assert effects and all(e is not None for e in effects)
+    t = opt.run_optimization(snap, bundle, None, [], {'mode': 'transfer'})
+    assert t.transfer.cost_end <= t.transfer.cost_start + 1e-6
+    assert t.transfer.cost_start == pytest.approx(a.cost_after, rel=1e-9)   # старт Б = итог А (с парком)
+    moved = [ch for m in t.result['managers'] for ch in m['changes'] if ch['type'] == 'transfer']
+    assert all(ch['effect']['truck_km_week'] is not None and ch['effect_from']['truck_km_week'] is None
+               for ch in moved)
+    no_fleet = opt.run_optimization(snap, _bundle(), None, [], {})
+    assert no_fleet.result['truck_costs'] is False and no_fleet.fleet_after is None
+    assert all(ch['effect']['truck_km_week'] is None for m in no_fleet.result['managers'] for ch in m['changes'])
+
+
+def test_store_fleet_settings_defaults_and_validation(store):
+    s = store.load().settings
+    assert (s['truck_work_start'], s['truck_work_end'], s['unload_min_per_stop'], s['unload_min_per_tonne']) == \
+        ('09:00', '18:00', 8, 6)
+    for key, bad in (('truck_work_end', '08:00'), ('truck_work_start', '9:00'), ('unload_min_per_stop', -1),
+                     ('unload_min_per_tonne', 500)):
+        _, errors = st.validate_payload({'settings': {key: bad}}, store.load(), REF)
+        assert f'settings.{key}' in errors, key
+    _save(store, {'settings': {'truck_work_start': '08:00', 'truck_work_end': '20:00', 'unload_min_per_stop': 5}})
+    tn = fl.TruckNorms.from_settings(store.load().settings)
+    assert (tn.work_minutes, tn.unload(1000.0)) == (720.0, 11.0)
+
+
+def test_store_fleet_keeps_owner_trucks_on_copy(tmp_path):
+    """Схема не меняется (6): новые нормы машин — значения по умолчанию, машины владельца (тоннаж,
+    расход, «чей менеджер» для справки) на КОПИИ базы — как были; тестовые машины пишутся только в копию."""
+    with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro&immutable=1', uri=True)) as conn:
+        trucks = sorted(conn.execute('SELECT car_code, capacity_kg, fuel_l_per_100km, agent_id, active '
+                                     'FROM trucks').fetchall())
+    copy = tmp_path / 'owner.db'
+    copy.write_bytes(OWNER_DB.read_bytes())
+    store = st.Store(str(copy))
+    bundle = store.load()
+    assert bundle.settings['truck_work_start'] == '09:00' and st.SCHEMA_VERSION == 6
+    assert sorted((t.car_code, t.capacity_kg, t.fuel_l_per_100km, t.agent_id, int(t.active))
+                  for t in bundle.trucks.values()) == trucks
+    if trucks:
+        code = trucks[0][0]
+        ref = st.RefData(frozenset(bundle.trucks), frozenset(), frozenset())
+        changes, errors = st.validate_payload({'trucks': [{'car_code': code, 'capacity_kg': 3500,
+                                                           'fuel_l_per_100km': 16}]}, bundle, ref)
+        assert errors == {}
+        store.save(changes, 'qa')
+        after = store.load().trucks
+        assert (after[code].capacity_kg, after[code].fuel_l_per_100km) == (3500, 16)
+        assert after[code].agent_id == trucks[0][3]                    # справочное поле не теряется
+        assert all(after[c] == bundle.trucks[c] for c in bundle.trucks if c != code)
+
+
+def test_fleet_estimate_eval_resume_equals_split_from_scratch():
+    """Оценка хода в парке продолжает нарезку с места изменения и выходит, когда рейсы совпали с прежними:
+    км и минуты — как нарезка нового тура с нуля (тяжёлые заказы, разный тоннаж и длина дня машины,
+    удаление и вставка)."""
+    rng = random.Random(1)
+    checked = 0
+    for _ in range(200):
+        n = rng.randint(1, 40)
+        pts = [(40.0 + rng.random() * 0.5, 44.2 + rng.random() * 0.6) for _ in range(n)]
+        kg = [rng.choice((50.0, 300.0, 900.0, 1500.0, 4000.0)) for _ in range(n)]
+        fleet = _fleet_estimate(pts, kg, capacity=rng.choice((1000.0, 3000.0, 20000.0)),
+                                trip_minutes=rng.choice((90.0, 540.0)))   # 90 мин — рейсы режет и время
+        fleet.build([(0, rng.randint(1, n), (True,) * 4) for _ in range(rng.randint(0, 30))])
+        t = fleet.tours[0][0]
+        for _ in range(10):
+            rem = rng.choice(t[1:]) if len(t) > 1 and rng.random() < 0.7 else 0
+            ins = rng.randint(1, n) if rng.random() < 0.7 else 0
+            if not (rem or ins):
+                continue
+            r_pos, i_pos, km, mins = fleet.eval(0, 0, rem, ins)
+            new = list(t)
+            if r_pos >= 0:
+                del new[r_pos]
+            if i_pos >= 0:
+                new.insert(i_pos, ins)
+            assert (km, mins) == pytest.approx(fleet.split(new), rel=1e-12, abs=1e-9)
+            assert fleet.eval(0, 0, rem, ins) == (r_pos, i_pos, km, mins)   # из памяти — то же
+            checked += 1
+    assert checked > 1000
+
+
+def test_fleet_sunday_orders_share_saturday_delivery_tour():
+    """Заказы сб и вс одной недели везут вместе в пн: у слота вс тот же тур парка, что у сб. Если вс —
+    рабочий день и ход двигает визиты между сб и вс, оба дня оцениваются по одному туру по очереди —
+    оценка хода = факт, туры = визиты (и после 400 случайных ходов)."""
+    rng = random.Random(21)
+    seven = range(1, 8)
+    points = [(40.05 + rng.random() * 0.3, 44.35 + rng.random() * 0.35) for _ in range(24)]
+    freqs = [rng.choice((0.5, 1.0, 2.0)) for _ in points]
+    allowed = [pt.standard_patterns(f, seven) for f in freqs]
+    current = [rng.choice(a) for a in allowed]
+    params = [sr.VisitParams(mu=30000.0, var=1e8, p_low=0.5, p_year=rng.random(), kg=300.0) for _ in points]
+    prob = _search_problem(points, current, allowed, workdays=seven, fleet_nodes=True)
+    state = sr.State(prob, [line.current for line in prob.lines], params, change_penalty=300.0)
+    fleet = _fleet_estimate(points, [300.0] * len(points), capacity=1500.0, trip_minutes=240.0)
+    _with_fleet(state, fleet)
+    sat, sun = sr.slot_of_day(1, 6), sr.slot_of_day(1, 7)
+    assert fleet.group[sun] == sat and fleet.group[sat] == sat
+    assert all(t == [0] for t in fleet.tours[sun]) and fleet.consistency_error(state.fleet_entries()) < 1e-9
+    moved_pairs = 0
+    for _ in range(400):
+        i = rng.randrange(len(points))
+        alts = [p for p in prob.lines[i].allowed if p != state.pattern[i]]
+        if not alts:
+            continue
+        new = rng.choice(alts)
+        days = set(state.pattern[i]) ^ set(new)
+        moved_pairs += any(fleet.group[j] == fleet.group[k] for j in days for k in days if j != k)
+        before = state.total
+        delta, move = state.eval_relocate(i, new)
+        state.apply(move)
+        assert state.total - before == pytest.approx(delta, abs=1e-6)
+    assert moved_pairs > 5                                           # ходы сб ↔ вс были
+    assert state.consistency_error() < 1e-6 and fleet.consistency_error(state.fleet_entries()) < 1e-6
+    # эффект: два визита уходят с сб и вс (один тур), третий приходит на сб — туры потом как были
+    gone = [e for e in state.fleet_entries() if fleet.group[e[0]] == sat][:2]
+    snap = fleet.snapshot()
+    km = fleet.effect_km(gone, [(sun, 1, (True,) * 4)])
+    assert fleet.snapshot()[:5] == snap[:5] and len(gone) == 2 and km != 0.0
+
+
+def test_fleet_split_cuts_trip_by_truck_day():
+    """Рейс не длиннее рабочего дня машины (как в точной оценке): две далёкие точки в разные стороны
+    при коротком дне — два рейса, при длинном — один."""
+    pts = [(40.45, 44.60), (40.46, 44.61)]
+    for minutes, trips in ((100.0, 2), (1000.0, 1)):
+        fleet = _fleet_estimate(pts, [100.0, 100.0], capacity=3000.0, trip_minutes=minutes)
+        fleet.build([(0, 1, (True,) * 4), (0, 2, (True,) * 4)])
+        d = fleet.d
+        one = d[0][1] + d[1][2] + d[2][0]
+        two = 2 * d[0][1] + 2 * d[0][2]
+        km, _ = fleet.split(fleet.tours[0][0])
+        assert km == pytest.approx(one if trips == 1 else two)
