@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import threading
 import time
+import uuid
 from collections import Counter
 from contextlib import closing
 from dataclasses import replace
@@ -4334,7 +4335,7 @@ def test_store_migrates_schema_5_to_6_keeps_values(tmp_path):
     assert (bundle.settings['penalty_transfer'], bundle.settings['transfer_radius_km']) == (2000, 1.5)
     assert s.last_scenario().result == {'n': 1}
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('6',)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() ==             (str(st.SCHEMA_VERSION),)                                       # 5 → 6 → … → текущая
         assert sorted(conn.execute(f'SELECT {cols} FROM decision').fetchall(), key=str) == sorted(rows, key=str)
         indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
         assert 'decision_one_accepted' in indexes
@@ -4501,7 +4502,7 @@ def test_store_fleet_keeps_owner_trucks_on_copy(tmp_path):
     copy.write_bytes(OWNER_DB.read_bytes())
     store = st.Store(str(copy))
     bundle = store.load()
-    assert bundle.settings['truck_work_start'] == '09:00' and st.SCHEMA_VERSION == 6
+    assert bundle.settings['truck_work_start'] == '09:00' and st.SCHEMA_VERSION >= 6
     assert sorted((t.car_code, t.capacity_kg, t.fuel_l_per_100km, t.agent_id, int(t.active))
                   for t in bundle.trucks.values()) == trucks
     if trucks:
@@ -4600,3 +4601,446 @@ def test_fleet_split_cuts_trip_by_truck_day():
         two = 2 * d[0][1] + 2 * d[0][2]
         km, _ = fleet.split(fleet.tours[0][0])
         assert km == pytest.approx(one if trips == 1 else two)
+
+
+# ============================== план развоза (dispatch-plan.md) ==============================
+
+from route_optimizer import dispatch as dp  # noqa: E402
+
+DP_DAY = date(2026, 10, 1)                 # четверг: везём заказы среды 30.09
+DP_DEPOT = (40.19462, 44.6004)
+DP_NORMS = ev.Norms.from_settings(st.DEFAULT_SETTINGS)
+SIX = [1, 2, 3, 4, 5, 6]
+
+
+def _isn(i):
+    return str(uuid.UUID(int=i)).upper()
+
+
+def _dorder(i, cid, kg, *, day=date(2026, 9, 30), agent=1, van=0, shipped=None, rev=10000.0, car=''):
+    return dp.DispatchOrder(_isn(i), f'N{i}', day, cid, agent, car, rev, kg, shipped, van)
+
+
+def _dp_ctx(trucks=(HOWO, FORD), tn=TN):
+    return dp.DayContext(DP_DAY, DP_DEPOT, {t.car_code: t for t in trucks}, DP_NORMS, tn, 9 * 60)
+
+
+def _coord_of(points):
+    return lambda c: geo.Coord(*points[c], 'erp') if points.get(c) else geo.NO_COORD
+
+
+def _dp_stops(spec, excluded=()):
+    """spec: (клиент, точка | None, кг); заказ i — i-я строка."""
+    orders = [_dorder(i + 1, cid, kg) for i, (cid, _, kg) in enumerate(spec)]
+    points = {cid: p for cid, p, _ in spec}
+    return dp.build_stops([o for o in orders if o.isn not in excluded], _coord_of(points)), orders
+
+
+def _info(s):
+    return {'customer_id': s.customer_id}
+
+
+def _trip_of(view, cid):
+    return [t for tr in view['trucks'] for t in tr['trips'] if any(s['customer_id'] == cid for s in t['stops'])]
+
+
+def test_dispatch_days_and_order_window():
+    sat, mon, tue = date(2026, 10, 3), date(2026, 10, 5), date(2026, 10, 6)
+    assert dp.next_workday(date(2026, 10, 1), SIX) == date(2026, 10, 2)
+    assert dp.next_workday(sat, SIX) == mon                                       # субботние — в понедельник
+    assert dp.order_window(tue, SIX) == (mon, tue)                                # заказы понедельника
+    assert dp.order_window(mon, SIX) == (sat, mon)                                # сб и вс → пн
+    assert dp.order_window(mon, [1, 2, 3, 4, 5]) == (date(2026, 10, 2), mon)      # пятидневка: пт, сб, вс
+    assert dp.backlog_since(sat, SIX) == date(2026, 10, 1)                        # ещё 2 рабочих дня раньше окна
+    assert dp.previous_workday(mon, []) == date(2026, 10, 4)                      # без рабочих дней — любой
+
+
+def test_dispatch_selection_shipped_cancelled_self_and_backlog():
+    since = date(2026, 9, 30)
+    orders = [
+        _dorder(1, 101, 100.0),                                            # не отгружен — везём
+        _dorder(2, 102, 50.0, shipped=date(2026, 9, 30)),                   # отгружен в тот же день — уже нет
+        _dorder(3, 103, 70.0, shipped=DP_DAY),                              # прошедшая дата: везли в D — в отборе
+        _dorder(4, 104, 80.0, shipped=date(2026, 10, 2)),                   # отгрузили позже — тоже в отборе
+        _dorder(5, 105, 900.0, agent=7, van=7),                             # менеджер развозит сам
+        _dorder(6, 106, 60.0, day=date(2026, 9, 28)),                       # прошлых дней, не отгружен
+        _dorder(7, 107, 60.0, day=date(2026, 9, 28), shipped=date(2026, 9, 29)),
+    ]
+    sel = dp.to_deliver(orders, DP_DAY, since)
+    assert [o.customer_id for o in sel.main] == [101, 103, 104]
+    assert [o.customer_id for o in sel.backlog] == [106]
+    assert [o.customer_id for o in sel.self_delivery] == [105]
+    assert sel.shipped_before == 1
+    stops = dp.build_stops(sel.main + [_dorder(8, 101, 25.0, agent=2)],
+                           _coord_of({101: (40.18, 44.5), 103: (40.2, 44.52)}))
+    s101 = stops[0]
+    assert (s101.customer_id, s101.kg, len(s101.orders), s101.agent_id) == (101, 125.0, 2, 1)  # главный — самый тяжёлый
+    assert [s.coord_source for s in stops] == ['erp', 'erp', 'none']
+
+
+def test_route_day_and_route_trip_keep_order_and_items():
+    pts = [(40.20, 44.62), (40.21, 44.63), (40.17, 44.45), (40.16, 44.44)]
+    trips = fl.route_day(pts, [300.0] * 4, [1.0] * 4, DP_DEPOT, [FORD], DP_NORMS, TN)
+    assert sorted(i for t in trips for i in t.items) == [0, 1, 2, 3]
+    assert all(t.stops == len(t.items) for t in trips)
+    heavy = fl.route_day([pts[0]], [12000.0], [1.0], DP_DEPOT, [HOWO, FORD], DP_NORMS, TN)
+    assert [t.items for t in heavy] == [(0,), (0,)] and all(t.kg == pytest.approx(6000.0) for t in heavy)
+    # 2-opt: «восьмёрка» по квадрату распутывается, длина не растёт
+    sq = [(40.20, 44.60), (40.22, 44.62), (40.22, 44.60), (40.20, 44.62)]
+    seq, km, minutes = fl.route_trip(sq, [100.0] * 4, DP_DEPOT, DP_NORMS, TN)
+    _, km_raw, _ = fl.route_trip(sq, [100.0] * 4, DP_DEPOT, DP_NORMS, TN, reorder=False)
+    assert sorted(seq) == [0, 1, 2, 3] and km < km_raw - 0.5
+    assert minutes > 4 * TN.unload(100.0)
+    assert fl.route_trip([], [], DP_DEPOT, DP_NORMS, TN) == ([], 0.0, 0.0)
+    # закреплённые рейсы уже заняли машину: при used = рабочий день FORD новый рейс берёт HOWO
+    t2 = fl.route_day(pts[:1], [300.0], [1.0], DP_DEPOT, [HOWO, FORD], DP_NORMS, TN, used={FORD.car_code: 540.0})
+    assert [t.truck for t in t2] == [HOWO.car_code]
+
+
+def test_dispatch_build_capacity_time_all_stops_deterministic():
+    rng = random.Random(7)
+    spec = [(100 + i, (40.15 + rng.random() * 0.08, 44.45 + rng.random() * 0.15), rng.choice([100.0, 300.0, 600.0]))
+            for i in range(25)]
+    spec += [(200, (40.23, 44.55), 12000.0), (201, None, 50.0)]
+    stops, _ = _dp_stops(spec)
+    howo2 = fl.FleetTruck('123AV61', 'HOWO', 10000.0, 30.0)
+    ctx = _dp_ctx((HOWO, howo2, FORD))
+    draft = dp.build(ctx, stops, None, ['991AT61', '333DO33', '123AV61', 'NOPE'], 'now')
+    assert draft.trucks == ['123AV61', '333DO33', '991AT61']          # неизвестная машина отброшена
+    assert dp.build(ctx, list(reversed(stops)), None, ['333DO33', '123AV61', '991AT61'], 'now').to_json()['trips'] == \
+        draft.to_json()['trips']                                       # детерминизм
+    view = dp.plan_view(ctx, stops, draft, _info)
+    assert view['unassigned'] == [] and view['overflow']['trips'] == 0
+    caps = {t.car_code: t.capacity_kg for t in ctx.trucks.values()}
+    trips = [t for tr in view['trucks'] for t in tr['trips']]
+    assert all(t['kg'] <= caps[t['truck']] + 0.5 and not t['over_time'] for t in trips)
+    for tr in view['trucks']:                                           # время машины — последовательно, в пределах дня
+        assert tr['minutes'] <= TN.work_minutes and tr['trips'][0]['depart'] == '09:00'
+        assert all(a['return'] == b['depart'] for a, b in zip(tr['trips'], tr['trips'][1:]))
+    heavy = _trip_of(view, 200)                                         # 12 т > 10 т — две поездки по 6 т
+    assert len(heavy) == 2 and all(s['kg'] == 6000 and s['share'] == 2 for t in heavy for s in t['stops'])
+    kg = Counter()
+    for t in trips:
+        for s in t['stops']:
+            kg[s['customer_id']] += s['kg']
+    assert kg == Counter({s.customer_id: round(s.kg) for s in stops if s.point is not None})
+    assert 201 not in kg                                                # без точки — не в рейсах
+    assert view['summary']['stops'] == 26 and view['summary']['km'] == pytest.approx(
+        sum(t['km'] for t in trips), abs=0.05)
+
+
+EAST = [(101, (40.200, 44.640), 200.0), (102, (40.205, 44.650), 200.0), (103, (40.210, 44.645), 200.0)]
+WEST = [(104, (40.170, 44.450), 200.0), (105, (40.165, 44.440), 200.0), (106, (40.175, 44.445), 200.0)]
+
+
+def test_dispatch_edits_move_pin_exclude_include_and_rebuild():
+    ctx = _dp_ctx()
+    stops, orders = _dp_stops(EAST + WEST)
+    draft = dp.build(ctx, stops, None, ['991AT61', '333DO33'], 'now')
+    km0 = dp.plan_view(ctx, stops, draft, _info)['summary']['km']
+    ids = {o.isn for o in orders}
+    src = next(t for t in draft.trips if 104 in t.stops)
+    # перенести 104 в новый рейс HOWO — лишняя поездка туда и обратно
+    draft = dp.apply_edit(ctx, stops, draft, {'action': 'move', 'customer_id': 104, 'from_trip': src.id,
+                                              'to_trip': None, 'truck': '991AT61'}, ids)
+    view = dp.plan_view(ctx, stops, draft, _info)
+    solo = _trip_of(view, 104)[0]
+    assert solo['truck'] == '991AT61' and [s['customer_id'] for s in solo['stops']] == [104]
+    assert view['summary']['km'] > km0
+    # закрепить одиночный рейс; новая сборка его не трогает, 104 больше никуда не кладётся
+    draft = dp.apply_edit(ctx, stops, draft, {'action': 'pin', 'trip': solo['id'], 'truck': '991AT61'}, ids)
+    rebuilt = dp.build(ctx, stops, draft, ['991AT61', '333DO33'], 'now2')
+    pinned = [t for t in rebuilt.trips if t.pinned]
+    assert [(t.id, t.truck, t.stops) for t in pinned] == [(solo['id'], '991AT61', [104])]
+    assert sum(t.stops.count(104) for t in rebuilt.trips) == 1
+    assert rebuilt.next_id > max(t.id for t in rebuilt.trips)
+    # вернуть 104 в рейс запада: вставка + 2-opt; пустой рейс исчезает, км — как до переноса
+    west = next(t for t in rebuilt.trips if 105 in t.stops)
+    back = dp.apply_edit(ctx, stops, rebuilt, {'action': 'move', 'customer_id': 104, 'from_trip': solo['id'],
+                                               'to_trip': west.id}, ids)
+    assert solo['id'] not in {t.id for t in back.trips} and 104 in west.stops
+    assert dp.plan_view(ctx, stops, back, _info)['summary']['km'] == pytest.approx(km0, abs=0.2)
+    # закрепить рейс за другой машиной — рейс уходит к ней последним
+    east = next(t for t in back.trips if 101 in t.stops)
+    other = '991AT61' if east.truck == '333DO33' else '333DO33'
+    back = dp.apply_edit(ctx, stops, back, {'action': 'pin', 'trip': east.id, 'truck': other}, ids)
+    assert back.trips[-1] is east and (east.truck, east.pinned) == (other, True)
+    back = dp.apply_edit(ctx, stops, back, {'action': 'unpin', 'trip': east.id}, ids)
+    assert east.pinned is False
+    # «не везём сегодня»: заказ 102 исключён — точки нет в рейсах; вернули — точка «ещё не в рейсах»
+    isn102 = orders[1].isn
+    back = dp.apply_edit(ctx, stops, back, {'action': 'exclude', 'order': isn102.lower()}, ids)
+    assert back.excluded == {isn102}
+    stops_ex, _ = _dp_stops(EAST + WEST, back.excluded)
+    assert _trip_of(dp.plan_view(ctx, stops_ex, back, _info), 102) == []
+    back = dp.apply_edit(ctx, stops_ex, back, {'action': 'include', 'order': isn102}, ids)
+    assert back.excluded == set()
+    view = dp.plan_view(ctx, stops, back, _info)
+    assert [u['customer_id'] for u in view['unassigned']] == [102]
+    back = dp.apply_edit(ctx, stops, back, {'action': 'move', 'customer_id': 102, 'from_trip': None,
+                                            'to_trip': east.id}, ids)
+    assert 102 in east.stops and dp.plan_view(ctx, stops, back, _info)['unassigned'] == []
+    # заказы прошлых дней: добавить в развоз / убрать
+    old = _isn(99)
+    back = dp.apply_edit(ctx, stops, back, {'action': 'include', 'order': old}, ids, {old})
+    assert back.added == {old}
+    back = dp.apply_edit(ctx, stops, back, {'action': 'exclude', 'order': old}, ids, {old})
+    assert back.added == set()
+
+
+@pytest.mark.parametrize('edit, text', [
+    ({'action': 'move', 'customer_id': 999, 'from_trip': None}, 'Точка не найдена'),
+    ({'action': 'move', 'customer_id': 101, 'from_trip': None, 'to_trip': None, 'truck': '991AT61'}, 'уже в рейсе'),
+    ({'action': 'move', 'customer_id': 101, 'from_trip': 12345}, 'Рейс не найден'),
+    ({'action': 'move', 'customer_id': 101, 'from_trip': 1, 'truck': 'XXX'}, 'не работает'),
+    ({'action': 'pin', 'trip': 1, 'truck': 'XXX'}, 'не работает'),
+    ({'action': 'exclude', 'order': 'nope'}, 'Заказ не найден'),
+    ({'action': 'drop'}, 'Неизвестное действие'),
+])
+def test_dispatch_edit_errors(edit, text):
+    ctx = _dp_ctx()
+    stops, orders = _dp_stops(EAST)
+    draft = dp.build(ctx, stops, None, ['333DO33', '991AT61'], 'now')
+    assert [t.id for t in draft.trips] == [1]
+    with pytest.raises(dp.DispatchError, match=text):
+        dp.apply_edit(ctx, stops, draft, edit, {o.isn for o in orders})
+
+
+def test_dispatch_draft_json_roundtrip_and_garbage():
+    d = dp.Draft(['CAR1'], {_isn(1)}, {_isn(2)}, [dp.DraftTrip(3, 'CAR1', [101, 102], True)], 4, 'x')
+    assert dp.Draft.from_json(json.loads(json.dumps(d.to_json()))) == d
+    junk = dp.Draft.from_json({'trucks': ['A', 5], 'excluded': ['bad', _isn(1)], 'next_id': 'x',
+                               'trips': [{'id': 2, 'truck': 'A', 'stops': [1, 'x', True]}, {'id': 2, 'truck': 'B', 'stops': []},
+                                         'junk', {'id': True, 'truck': 'A', 'stops': []}]})
+    assert (junk.trucks, junk.excluded, [(t.id, t.stops) for t in junk.trips], junk.next_id) == \
+        (['A'], {_isn(1)}, [(2, [1])], 3)
+    assert dp.Draft.from_json(None) == dp.Draft()
+
+
+def test_dispatch_baseline_by_manager_cars_and_plan_vs_fact():
+    ctx = _dp_ctx()
+    # у обоих менеджеров магазины и на востоке, и на западе: «по менеджерам» обе машины едут в оба конца
+    orders = [_dorder(1, 101, 300.0, agent=1), _dorder(2, 104, 300.0, agent=1), _dorder(3, 102, 300.0, agent=2),
+              _dorder(4, 105, 300.0, agent=2), _dorder(5, 106, 300.0, agent=3)]
+    pts = {c: p for c, p, _ in EAST + WEST}
+    stops = dp.build_stops(orders, _coord_of(pts))
+    groups = dp.manager_trucks(stops, {1: ('XXX', '333DO33'), 2: ('991AT61',)}, [HOWO, FORD])
+    assert {k: [s.customer_id for s in v] for k, v in groups.items()} == \
+        {'333DO33': [101, 104], '991AT61': [102, 105, 106]}            # нет машины в истории — самая большая
+    draft = dp.build(ctx, stops, None, ['333DO33', '991AT61'], 'now')
+    base = dp.baseline(ctx, stops, draft, {1: ('333DO33',), 2: ('991AT61',)})
+    assert base['trips'] == 2 and base['km'] > dp.plan_view(ctx, stops, draft, _info)['summary']['km'] + 10
+    assert dp.baseline(ctx, stops, dp.Draft(), {}) is None             # машин дня нет — сравнивать не с чем
+    # план и факт: восток и запад развезли две машины «вперемешку» — по плану короче; чужая машина и
+    # магазин без точки — в skipped
+    docs = [dp.ShippedDoc(101, 1, '333DO33', 1.0, 200.0), dp.ShippedDoc(104, 1, '333DO33', 1.0, 200.0),
+            dp.ShippedDoc(102, 2, '991AT61', 1.0, 200.0), dp.ShippedDoc(105, 2, '991AT61', 1.0, 200.0),
+            dp.ShippedDoc(103, 3, 'ZZZ', 1.0, 50.0), dp.ShippedDoc(999, 3, '333DO33', 1.0, 70.0)]
+    r = dp.plan_vs_fact(ctx, docs, _coord_of(pts))
+    assert (r['stops'], r['kg'], r['trucks']) == (4, 800, ['333DO33', '991AT61'])
+    assert r['fact']['trips'] == 2 and r['plan']['km'] < r['fact']['km'] and r['saved_km'] > 0
+    assert r['skipped'] == {'docs': 2, 'kg': 120, 'cars_not_set': ['ZZZ']}
+
+
+def test_store_dispatch_drafts_and_geo_overrides(store):
+    assert store.load_dispatch('2026-10-01') is None
+    assert store.save_dispatch('2026-10-01', {'a': 1}, 'qa') == 1
+    assert store.save_dispatch('2026-10-01', {'a': 2}, 'qa', expected_rev=1) == 2
+    assert store.save_dispatch('2026-10-01', {'a': 3}, 'qa', expected_rev=1) is None    # другая вкладка
+    assert store.load_dispatch('2026-10-01') == ({'a': 2}, 2)
+    store.save_dispatch('2026-05-01', {'old': 1}, 'qa')
+    store.save_dispatch('2026-10-02', {'b': 1}, 'qa')                   # старше 120 дней — удаляется
+    assert store.load_dispatch('2026-05-01') is None and store.load_dispatch('2026-10-02') == ({'b': 1}, 1)
+    store.delete_dispatch('2026-10-01')
+    assert store.load_dispatch('2026-10-01') is None
+    store.save_geo_override(999, (40.2, 44.5), 'qa')
+    store.save_geo_override(998, (40.3, 44.6), 'qa')
+    store.save_geo_override(998, None, 'qa')
+    b = store.load()
+    assert b.geo_overrides == {999: (40.2, 44.5)}
+    fp = b.fingerprint()
+    store.save_geo_override(999, (40.21, 44.5), 'qa')
+    assert store.load().fingerprint() != fp                             # кэш оценки пересчитается
+    for bad in ((0, (40.2, 44.5)), (5, (55.0, 44.5)), (True, (40.2, 44.5))):
+        with pytest.raises(ValueError):
+            store.save_geo_override(*bad, 'qa')
+
+
+def test_store_migrates_schema_6_to_7_keeps_values(tmp_path):
+    """6 → 7: новые таблицы customer_geo_override и dispatch_plan; всё прежнее — как было."""
+    path = str(tmp_path / 'v6.db')
+    with closing(sqlite3.connect(path)) as conn:
+        for sql in st._SCHEMA[:-2]:
+            conn.execute(sql)
+        conn.execute("INSERT INTO meta VALUES('schema_version', '6')")
+        conn.execute("INSERT INTO settings VALUES('penalty_change', '450')")
+        conn.execute("INSERT INTO depot VALUES(1, 40.19, 44.6, 'x', 'owner')")
+        conn.execute("INSERT INTO trucks VALUES('CAR1', 10000, 30, NULL, 1, 'x', 'owner')")
+        conn.execute("INSERT INTO scenario VALUES('s1', 'x', 'qa', '{}', '{\"n\": 1}')")
+        conn.commit()
+        before = {t: sorted(conn.execute(f'SELECT * FROM {t}').fetchall())
+                  for t in ('settings', 'depot', 'trucks', 'manager_profile', 'decision', 'scenario')}
+    s = st.Store(path)
+    b = s.load()
+    assert (b.settings['penalty_change'], b.depot, b.trucks['CAR1'].capacity_kg, b.geo_overrides) == \
+        (450, (40.19, 44.6), 10000, {})
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('7',)
+        assert {t: sorted(conn.execute(f'SELECT * FROM {t}').fetchall()) for t in before} == before
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert {'customer_geo_override', 'dispatch_plan'} <= tables
+    s.save_geo_override(5, (40.2, 44.5), 'qa')
+    assert s.save_dispatch('2026-10-01', {'x': 1}, 'qa') == 1
+
+
+def test_store_owner_copy_gets_dispatch_tables(tmp_path):
+    """КОПИЯ базы владельца: новые таблицы появляются, сохранённое — как было; запись — только в копию."""
+    def dump(conn):
+        return {t: sorted(conn.execute(f'SELECT * FROM {t}').fetchall())
+                for t in ('settings', 'depot', 'trucks', 'manager_profile')}
+
+    with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro&immutable=1', uri=True)) as conn:
+        before = dump(conn)
+    copy = tmp_path / 'owner.db'
+    copy.write_bytes(OWNER_DB.read_bytes())
+    s = st.Store(str(copy))
+    s.load()
+    s.save_geo_override(123, (40.2, 44.5), 'qa')
+    with closing(sqlite3.connect(str(copy))) as conn:
+        assert dump(conn) == before
+        assert conn.execute('SELECT COUNT(*) FROM customer_geo_override').fetchone() == (1,)
+
+
+def test_geo_override_used_across_section(client):
+    snap = make_snapshot()
+    assert ev.visit_coord(snap, 103, 0).source == 'gps'
+    assert ev.visit_coord(snap, 103, 0, {103: (40.21, 44.51)}) == geo.Coord(40.21, 44.51, 'manual')
+    assert ev.visit_coord(snap, 999, 0, {103: (40.21, 44.51)}) == geo.NO_COORD
+    r = client.post('/api/routes/geo-override', json={'customer_id': 103, 'lat': 40.21, 'lon': 44.51})
+    assert r.status_code == 200 and r.get_json() == {'success': True}
+    c103 = client.get('/api/routes/overview').get_json()['customers']['103']
+    assert (c103['coord_source'], c103['lat'], c103['lon']) == ('manual', 40.21, 44.51)
+    assert client.post('/api/routes/geo-override', json={'customer_id': 103, 'lat': None, 'lon': None}).status_code == 200
+    assert client.get('/api/routes/overview').get_json()['customers']['103']['coord_source'] == 'gps'
+    for body in ({'customer_id': 103, 'lat': 55.0, 'lon': 44.5}, {'customer_id': 103, 'lat': 40.2},
+                 {'customer_id': 'x', 'lat': 40.2, 'lon': 44.5}, {'customer_id': 103, 'lat': True, 'lon': 44.5},
+                 {'customer_id': 103, 'lat': 40.2, 'lon': None}, [1]):
+        assert client.post('/api/routes/geo-override', json=body).status_code == 400, body
+    assert client.post('/api/routes/geo-override', data='x', content_type='text/plain').status_code == 415
+
+
+def _dispatch_setup(client, orders, docs=()):
+    state = client.application.extensions['route_optimizer']
+    calls = []
+    data = dp.DispatchData(tuple(orders), {101: ('C101', 'Клиент <101>'), 102: ('C102', 'Клиент 102'),
+                                           104: ('C104', 'Клиент 104'), 999: ('C999', 'Новый')},
+                           {101: 'Ереван, <b>1</b>'}, {1: ('CAR1',), 2: ('CAR2',)}, datetime(2026, 9, 30, 18, 0))
+
+    def loader(since, until, day):
+        calls.append((since, until, day))
+        return data
+
+    state.dispatch_loader = loader
+    state.fact_loader = lambda day: dp.FactData(tuple(docs), {})
+    r = client.post('/api/routes/settings', json={
+        'depot': {'lat': DP_DEPOT[0], 'lon': DP_DEPOT[1]},
+        'trucks': [{'car_code': 'CAR1', 'capacity_kg': 10000, 'fuel_l_per_100km': 30, 'active': True},
+                   {'car_code': 'CAR2', 'capacity_kg': 3500, 'fuel_l_per_100km': 16, 'active': True}]})
+    assert r.status_code == 200, r.get_json()
+    return calls
+
+
+def test_api_dispatch_flow(client):
+    orders = [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2), _dorder(3, 104, 1200.0, agent=2),
+              _dorder(4, 999, 50.0), _dorder(5, 104, 100.0, agent=2, van=2),
+              _dorder(6, 102, 70.0, day=date(2026, 9, 28))]
+    calls = _dispatch_setup(client, orders)
+    r = client.get('/api/routes/dispatch?date=2026-10-01')
+    assert r.status_code == 200 and r.headers['Cache-Control'].startswith('no-cache')
+    d = r.get_json()
+    assert calls == [(date(2026, 9, 28), date(2026, 10, 1), DP_DAY)]     # окно с запасом на прошлые дни
+    assert (d['day'], d['weekday'], d['order_dates'], d['plan'], d['rev']) == \
+        ('2026-10-01', 4, {'since': '2026-09-30', 'until': '2026-09-30'}, None, 0)
+    assert d['orders'] == {'count': 4, 'kg': 1950, 'revenue': 40000, 'customers': 4, 'shipped_before': 0,
+                           'excluded': 0, 'self_delivery': 1, 'self_delivery_kg': 100, 'no_coords': 1, 'no_coords_kg': 50}
+    assert [s['customer_id'] for s in d['stops_no_coords']] == [999]
+    assert [o['customer_id'] for o in d['backlog']] == [102] and d['backlog'][0]['added'] is False
+    assert [(t['car_code'], t['ready'], t['selected']) for t in d['trucks']] == [('CAR1', True, True), ('CAR2', True, True)]
+    assert d['problems'] == []
+    client.get('/api/routes/dispatch?date=2026-10-01')
+    assert len(calls) == 1                                              # заказы — из кэша
+    assert client.get('/api/routes/dispatch?date=2026-13-01').status_code == 400
+    # «Собрать рейсы»
+    assert client.post('/api/routes/dispatch/build', data='x', content_type='text/plain').status_code == 415
+    assert client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['ZZZ']}).status_code == 400
+    assert client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': []}).status_code == 400
+    assert client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': 0, 'action': 'unpin', 'trip': 1}).status_code == 409
+    r = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']})
+    assert r.status_code == 200, r.get_json()
+    d = r.get_json()
+    plan = d['plan']
+    assert d['rev'] == 1 and plan['summary']['stops'] == 3 and plan['unassigned'] == []
+    assert {'trucks', 'unassigned', 'overflow', 'summary', 'built_at', 'baseline'} <= set(plan)
+    stop = next(s for t in plan['trucks'] for tr in t['trips'] for s in tr['stops'] if s['customer_id'] == 101)
+    assert (stop['name'], stop['address'], stop['agent_code'], stop['coord_source']) == \
+        ('Клиент <101>', 'Ереван, <b>1</b>', 'A001', 'erp')            # экранирует страница, сервер отдаёт как есть
+    assert [o['isn'] for o in stop['orders']] == [_isn(1)]
+    trip_id = next(tr['id'] for t in plan['trucks'] for tr in t['trips'] if stop in tr['stops'])
+    # правка со старым номером — 409; с актуальным — перенос в новый рейс CAR1
+    body = {'date': '2026-10-01', 'action': 'move', 'customer_id': 101, 'from_trip': trip_id, 'to_trip': None, 'truck': 'CAR1'}
+    stale = client.post('/api/routes/dispatch/edit', json={**body, 'rev': 0})
+    assert stale.status_code == 409 and stale.get_json()['conflict'] is True
+    r = client.post('/api/routes/dispatch/edit', json={**body, 'rev': 1})
+    assert r.status_code == 200, r.get_json()
+    d = r.get_json()
+    assert d['rev'] == 2 and isinstance(d['delta_km'], float)
+    solo = [tr for t in d['plan']['trucks'] for tr in t['trips'] if [s['customer_id'] for s in tr['stops']] == [101]]
+    assert len(solo) == 1 and solo[0]['truck'] == 'CAR1'
+    bad = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': 2, 'action': 'pin', 'trip': solo[0]['id'], 'truck': 'ZZZ'})
+    assert bad.status_code == 400 and 'не работает' in bad.get_json()['error']
+    # не везём 104 → в «не везём сегодня»; заказ прошлых дней — добавить
+    r = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': 2, 'action': 'exclude', 'order': _isn(3)})
+    d = r.get_json()
+    assert d['orders']['excluded'] == 1 and [o['customer_id'] for o in d['excluded']] == [104]
+    assert all(s['customer_id'] != 104 for t in d['plan']['trucks'] for tr in t['trips'] for s in tr['stops'])
+    r = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': 3, 'action': 'include', 'order': _isn(6)})
+    d = r.get_json()
+    assert d['backlog'][0]['added'] is True and d['orders']['count'] == 4     # 3 дня − 1 исключённый + 1 прошлых дней
+    # ручная точка магазина без координат → он «ещё не в рейсах»
+    assert client.post('/api/routes/geo-override', json={'customer_id': 999, 'lat': 40.2, 'lon': 44.55}).status_code == 200
+    d = client.get('/api/routes/dispatch?date=2026-10-01').get_json()
+    assert d['stops_no_coords'] == [] and [u['customer_id'] for u in d['plan']['unassigned']] == [999]
+    assert d['plan']['unassigned'][0]['coord_source'] == 'manual'
+    # «Начать заново»
+    d = client.post('/api/routes/dispatch/reset', json={'date': '2026-10-01'}).get_json()
+    assert d['plan'] is None and d['rev'] == 0 and d['orders']['excluded'] == 0
+
+
+def test_api_dispatch_problems_and_fact(client):
+    state = client.application.extensions['route_optimizer']
+    state.dispatch_loader = lambda since, until, day: dp.DispatchData((_dorder(1, 101, 10.0),), {}, {}, {}, datetime(2026, 9, 30))
+    d = client.get('/api/routes/dispatch?date=2026-10-01').get_json()
+    assert {p['code'] for p in d['problems']} == {'no_depot', 'no_trucks'}
+    assert all(p['link'].startswith('/routes/settings#') for p in d['problems'])
+    r = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1']})
+    assert r.status_code == 400
+    docs = [dp.ShippedDoc(101, 1, 'CAR1', 1.0, 300.0), dp.ShippedDoc(104, 2, 'CAR2', 1.0, 300.0),
+            dp.ShippedDoc(102, 1, '', 1.0, 10.0)]
+    _dispatch_setup(client, [_dorder(1, 101, 10.0)], docs)
+    assert client.get('/api/routes/dispatch/fact?date=2999-01-01').status_code == 400
+    r = client.get('/api/routes/dispatch/fact?date=2026-09-29')
+    assert r.status_code == 200
+    f = r.get_json()['fact']
+    assert (f['stops'], f['trucks'], f['skipped']['docs']) == (2, ['CAR1', 'CAR2'], 1)
+    assert {'km', 'liters', 'trips', 'trips_over_time'} <= set(f['fact']) and f['plan']['trips'] >= 1
+
+
+def test_api_dispatch_erp_down_is_503(client):
+    state = client.application.extensions['route_optimizer']
+
+    def down(since, until, day):
+        raise erp.ErpError('нет связи')
+
+    state.dispatch_loader = down
+    r = client.get('/api/routes/dispatch?date=2026-10-01')
+    assert r.status_code == 503 and r.get_json()['error'] == 'База данных ERP недоступна'

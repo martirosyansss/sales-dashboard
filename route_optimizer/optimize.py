@@ -734,7 +734,7 @@ class _Ctx:
         return hit
 
     def coord(self, cid: int, address_id: int) -> Coord:
-        return self.before.coords.get((cid, address_id)) or ev.visit_coord(self.snap, cid, address_id)
+        return self.before.coords.get((cid, address_id)) or ev.visit_coord(self.snap, cid, address_id, self.bundle.geo_overrides)
 
 
 def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | None,
@@ -1123,7 +1123,7 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
     for a in run_ids:
         for c, info in ctx.pairs.get(a, {}).items():
             key = (c, info.address_id)
-            point[(a, c)] = (before.coords.get(key) or ev.visit_coord(snap, *key)).point
+            point[(a, c)] = (before.coords.get(key) or ev.visit_coord(snap, *key, bundle.geo_overrides)).point
     owners = Counter(c for a in before.included_ids for c in ctx.pairs.get(a, {}))
 
     def eligible(a: int, c: int) -> bool:
@@ -1530,7 +1530,7 @@ def _result(ctx: _Ctx, run_ids: Sequence[int], parts: Mapping[int, Mapping[str, 
         for v in d.visits:
             if v.customer_id not in first:
                 key = (v.customer_id, v.address_id)
-                first[v.customer_id] = before.coords.get(key) or ev.visit_coord(snap, *key)
+                first[v.customer_id] = before.coords.get(key) or ev.visit_coord(snap, *key, bundle.geo_overrides)
     run_customers = sorted({c for a in run_ids for c in ctx.pairs.get(a, {})})
     customers = {}
     for c in run_customers:
@@ -1677,7 +1677,7 @@ def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
 
     def coord(c: int, addr: int) -> Coord:
         if (c, addr) not in coords:
-            coords[(c, addr)] = ev.visit_coord(snap, c, addr)
+            coords[(c, addr)] = ev.visit_coord(snap, c, addr, bundle.geo_overrides)
         return coords[(c, addr)]
 
     rows: list[dict[str, Any]] = []

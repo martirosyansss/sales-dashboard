@@ -14,16 +14,19 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import wraps
 from typing import Any, Callable
 
 from flask import Blueprint, Response, current_app, jsonify, render_template, request, session
 
+from . import dispatch as dp
 from . import evaluate, optimize
+from . import fleet as fl
 from .erp import ErpError
+from .geo import is_valid_point
 from .roads import RoadDistances, RoadProvider, roads_version
-from .snapshot import ResultCache, Snapshot, SnapshotCache
+from .snapshot import MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import DEFAULT_MANAGER_FUEL, Bundle, Decision, Store, StoreError, validate_payload
 
 logger = logging.getLogger(__name__)
@@ -100,6 +103,11 @@ class RoutesState:
     results: ResultCache
     jobs: OptimizeJobs = field(default_factory=OptimizeJobs)
     roads: RoadProvider | None = None     # None — карты дорог нет, км по прямой
+    # план развоза: заказы ERP на дату (since, until, day) → DispatchData; факт развоза за дату → FactData
+    dispatch_loader: Callable[[date, date, date], dp.DispatchData] | None = None
+    fact_loader: Callable[[date], dp.FactData] | None = None
+    dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
+    dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 def _now() -> str:
@@ -154,6 +162,11 @@ def settings_page() -> str:
 @bp.get('/routes/optimize')
 def optimize_page() -> str:
     return render_template('routes_optimize.html')
+
+
+@bp.get('/routes/dispatch')
+def dispatch_page() -> str:
+    return render_template('routes_dispatch.html')
 
 
 # --- API ---
@@ -625,3 +638,359 @@ def api_plan_export() -> Any:
     body = optimize.plan_export(snap, bundle, _live_decisions(state, snap),
                                 optimize.proposals_of(_last_result(state)), distance)
     return jsonify({'success': True, 'generated_at': _now(), **body})
+
+
+# --- План развоза на завтра (dispatch-plan.md) ---
+
+DISPATCH_TTL_SECONDS = 120        # заказы дня из ERP: правки логиста не перечитывают ERP каждый раз
+DISPATCH_CACHE_DAYS = 8
+_DAY_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+_MAX_TRUCKS = 50
+
+
+def _parse_day(raw: Any) -> date | None:
+    if not isinstance(raw, str) or not _DAY_RE.match(raw):
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _dispatch_data(state: RoutesState, since: date, until: date, day: date, refresh: bool) -> dp.DispatchData:
+    """Заказы дня из ERP; кэш DISPATCH_TTL_SECONDS. «Обновить» перечитывает ERP не чаще раза в минуту."""
+    key = (since, until, day)
+    now = time.monotonic()
+    with state.dispatch_lock:
+        hit = state.dispatch_cache.get(key)
+    if hit is not None:
+        age = now - hit[0]
+        if age < MIN_REFRESH_SECONDS or (age < DISPATCH_TTL_SECONDS and not refresh):
+            return hit[1]
+    if state.dispatch_loader is None:
+        raise ErpError('Загрузчик заказов не подключён')
+    data = state.dispatch_loader(since, until, day)
+    with state.dispatch_lock:
+        state.dispatch_cache[key] = (time.monotonic(), data)
+        while len(state.dispatch_cache) > DISPATCH_CACHE_DAYS:
+            state.dispatch_cache.pop(next(iter(state.dispatch_cache)))
+    return data
+
+
+def _ready_trucks(snap: Snapshot, bundle: Bundle, active_only: bool = True) -> dict[str, fl.FleetTruck]:
+    """Машины, готовые к расчёту: тоннаж и расход заданы (и активны — для плана)."""
+    names = {code: car.name for code, car in snap.cars.items()}
+    if active_only:
+        ready, _ = fl.fleet_trucks(bundle.trucks, names)
+        return {t.car_code: t for t in ready}
+    return {code: fl.FleetTruck(code, names.get(code), float(t.capacity_kg), float(t.fuel_l_per_100km))
+            for code, t in sorted(bundle.trucks.items())
+            if t.capacity_kg is not None and t.fuel_l_per_100km is not None}
+
+
+def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
+                  trucks: dict[str, fl.FleetTruck], points: list[Any]) -> dp.DayContext | None:
+    """Контекст расчёта рейсов; склада или машин нет — None (страница объясняет, что заполнить)."""
+    if bundle.depot is None or not trucks:
+        return None
+    s = bundle.settings
+    calib = _calibration(state, snap, s)
+    roads = _roads(state, snap, bundle)
+    if roads is not None and not roads.failed:
+        roads.ensure([*points, bundle.depot])
+    norms = evaluate.Norms.from_settings(s, calib, roads if roads is not None and not roads.failed else None)
+    h, m = map(int, s['truck_work_start'].split(':'))
+    return dp.DayContext(day, bundle.depot, trucks, norms, fl.TruckNorms.from_settings(s), h * 60 + m)
+
+
+@dataclass
+class _DispatchDay:
+    """Всё о дне развоза для ответа и правок."""
+    day: date
+    since: date
+    until: date
+    data: dp.DispatchData
+    deliver: list[dp.DispatchOrder]
+    backlog: list[dp.DispatchOrder]
+    shipped_before: int
+    self_delivery: list[dp.DispatchOrder]
+    draft: dp.Draft | None
+    rev: int
+    stops: list[dp.Stop]
+    ctx: dp.DayContext | None
+    ready: dict[str, fl.FleetTruck]
+    snap: Snapshot
+    bundle: Bundle
+
+
+def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = False,
+              draft: dp.Draft | None = None, rev: int | None = None) -> _DispatchDay:
+    snap, _ = state.snapshots.cached()
+    since, until = dp.order_window(day, bundle.settings['workdays'])
+    data = _dispatch_data(state, dp.backlog_since(since, bundle.settings['workdays']), until, day, refresh)
+    sel = dp.to_deliver(data.orders, day, since)
+    deliver, backlog = sel.main, sel.backlog
+    if draft is None:
+        stored = state.store.load_dispatch(day.isoformat())
+        draft, rev = (dp.Draft.from_json(stored[0]), stored[1]) if stored is not None else (None, 0)
+    excluded = draft.excluded if draft is not None else set()
+    added = draft.added if draft is not None else set()
+    coords: dict[int, Any] = {}
+
+    def coord(cid: int) -> Any:
+        if cid not in coords:
+            coords[cid] = evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides)
+        return coords[cid]
+
+    stops = dp.build_stops([o for o in deliver if o.isn not in excluded] + [o for o in backlog if o.isn in added],
+                           coord)
+    ready = _ready_trucks(snap, bundle)
+    ctx = _dispatch_ctx(state, snap, bundle, day, ready, [s.point for s in stops if s.point is not None])
+    return _DispatchDay(day, since, until, data, deliver, backlog, sel.shipped_before, sel.self_delivery, draft,
+                        rev or 0, stops, ctx, ready, snap, bundle)
+
+
+def _stop_info(dd: _DispatchDay) -> Callable[[dp.Stop], dict[str, Any]]:
+    agents = dd.snap.agents
+
+    def info(s: dp.Stop) -> dict[str, Any]:
+        code, name = dd.data.customers.get(s.customer_id) or (
+            (dd.snap.customers[s.customer_id].code, dd.snap.customers[s.customer_id].name)
+            if s.customer_id in dd.snap.customers else (str(s.customer_id), ''))
+        agent = agents.get(s.agent_id)
+        return {
+            'customer_id': s.customer_id, 'code': code, 'name': name,
+            'address': dd.data.addresses.get(s.customer_id, ''),
+            'lat': round(s.point[0], 6) if s.point else None, 'lon': round(s.point[1], 6) if s.point else None,
+            'coord_source': s.coord_source, 'revenue': round(s.revenue),
+            'agent_id': s.agent_id, 'agent_code': agent.code if agent else '', 'agent_name': agent.name if agent else '',
+            'orders': [{'isn': o.isn, 'doc_num': o.doc_num, 'kg': round(o.kg), 'revenue': round(o.revenue),
+                        'order_date': o.order_date.isoformat()} for o in s.orders],
+        }
+    return info
+
+
+def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
+    s = dd.bundle.settings
+    today = date.today()
+    info = _stop_info(dd)
+    draft = dd.draft
+    excluded = draft.excluded if draft is not None else set()
+    selected = set(draft.trucks) if draft is not None else set(dd.ready)
+    problems = []
+    if dd.bundle.depot is None:
+        problems.append({'code': 'no_depot', 'text': 'Укажите склад — откуда выезжают машины',
+                         'link': SETTINGS_TRUCKS_URL.replace('#trucks', '#depot')})
+    if not dd.ready:
+        problems.append({'code': 'no_trucks', 'text': 'Укажите тоннаж и расход машин', 'link': SETTINGS_TRUCKS_URL})
+    trucks = []
+    for code, car in sorted(dd.snap.cars.items()):
+        t = dd.bundle.trucks.get(code)
+        ready = dd.ready.get(code)
+        if ready is None and (t is None or not t.active):   # не настроена — в списке не нужна
+            continue
+        trucks.append({'car_code': code, 'name': car.name,
+                       'capacity_kg': ready.capacity_kg if ready else None,
+                       'l100': ready.l100 if ready else None,
+                       'ready': ready is not None, 'selected': ready is not None and code in selected})
+    added = draft.added if draft is not None else set()
+    no_coords = [s for s in dd.stops if s.point is None]
+    active = [o for o in dd.deliver if o.isn not in excluded] + [o for o in dd.backlog if o.isn in added]
+    excl = [o for o in dd.deliver if o.isn in excluded]
+
+    def order_json(o: dp.DispatchOrder) -> dict[str, Any]:
+        code, name = dd.data.customers.get(o.customer_id) or ('', '')
+        return {'isn': o.isn, 'doc_num': o.doc_num, 'customer_id': o.customer_id, 'code': code, 'name': name,
+                'order_date': o.order_date.isoformat(), 'kg': round(o.kg), 'revenue': round(o.revenue),
+                'added': o.isn in added}
+
+    body: dict[str, Any] = {
+        'day': dd.day.isoformat(), 'weekday': dd.day.isoweekday(),
+        'today': today.isoformat(), 'is_past': dd.day < today,
+        'default_day': dp.next_workday(today, s['workdays']).isoformat(),
+        'order_dates': {'since': dd.since.isoformat(), 'until': (dd.until - timedelta(days=1)).isoformat()},
+        'data_as_of': dd.data.loaded_at.isoformat(timespec='seconds'),
+        'work_start': s['truck_work_start'], 'work_end': s['truck_work_end'],
+        'depot': {'lat': dd.bundle.depot[0], 'lon': dd.bundle.depot[1]} if dd.bundle.depot else None,
+        'problems': problems, 'trucks': trucks, 'rev': dd.rev,
+        'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
+                   'revenue': round(sum(o.revenue for o in active)), 'customers': len(dd.stops),
+                   'shipped_before': dd.shipped_before, 'excluded': len(excl),
+                   'self_delivery': len(dd.self_delivery),
+                   'self_delivery_kg': round(sum(o.kg for o in dd.self_delivery)),
+                   'no_coords': len(no_coords), 'no_coords_kg': round(sum(x.kg for x in no_coords))},
+        'stops_no_coords': [info(x) | {'kg': round(x.kg)} for x in no_coords],
+        'excluded': [order_json(o) for o in excl],
+        # не отгружены с прошлых дней: в план — только добавленные логистом (added)
+        'backlog': [order_json(o) for o in dd.backlog],
+        'backlog_since': dp.backlog_since(dd.since, s['workdays']).isoformat(),
+        'plan': None,
+    }
+    if draft is not None and dd.ctx is not None:
+        plan = dp.plan_view(dd.ctx, dd.stops, draft, info)
+        plan['built_at'] = draft.built_at
+        plan['baseline'] = dp.baseline(dd.ctx, dd.stops, draft, dd.data.agent_cars)
+        body['plan'] = plan
+    return body
+
+
+SETTINGS_TRUCKS_URL = '/routes/settings#trucks'
+
+
+@bp.get('/api/routes/dispatch')
+@_api
+def api_dispatch() -> Any:
+    """День развоза (?date=YYYY-MM-DD, по умолчанию — следующий рабочий день): машины, заказы,
+    черновик рейсов с цифрами, сравнение «по менеджерам». ?refresh=1 — перечитать заказы ERP."""
+    state = _state()
+    bundle = state.store.load()
+    raw = request.args.get('date')
+    day = _parse_day(raw) if raw else dp.next_workday(date.today(), bundle.settings['workdays'])
+    if day is None:
+        return _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
+    dd = _load_day(state, bundle, day, refresh=request.args.get('refresh') == '1')
+    return jsonify({'success': True, **_dispatch_body(dd)})
+
+
+def _dispatch_request() -> tuple[Any, Any, Any]:
+    """(тело, день, None) или (None, None, ответ с ошибкой)."""
+    payload, error = _json_body()
+    if error is not None:
+        return None, None, error
+    if not isinstance(payload, dict):
+        return None, None, _bad_request({'_': 'ожидался JSON-объект'})
+    day = _parse_day(payload.get('date'))
+    if day is None:
+        return None, None, _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
+    return payload, day, None
+
+
+def _conflict(text: str) -> Any:
+    return jsonify({'success': False, 'error': text, 'conflict': True}), 409
+
+
+@bp.post('/api/routes/dispatch/build')
+@_api
+def api_dispatch_build() -> Any:
+    """«Собрать рейсы»: {"date", "trucks": [коды машин дня]}. Закреплённые рейсы и исключённые заказы
+    прежнего черновика сохраняются, остальное раскладывается заново."""
+    payload, day, error = _dispatch_request()
+    if error is not None:
+        return error
+    codes = payload.get('trucks')
+    if not isinstance(codes, list) or len(codes) > _MAX_TRUCKS or not all(isinstance(c, str) for c in codes):
+        return _bad_request({'trucks': 'ожидался список машин'})
+    state = _state()
+    bundle = state.store.load()
+    dd = _load_day(state, bundle, day)
+    if dd.ctx is None:
+        return _bad_request({'_': 'Сначала укажите склад и тоннаж с расходом машин в настройках'})
+    unknown = sorted(set(codes) - set(dd.ready))
+    if unknown:
+        return _bad_request({'trucks': 'машина не готова к расчёту: ' + ', '.join(unknown)})
+    if not codes:
+        return _bad_request({'trucks': 'отметьте хотя бы одну машину'})
+    started = time.perf_counter()
+    draft = dp.build(dd.ctx, dd.stops, dd.draft, codes, _now())
+    rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'))
+    logger.info('[Routes] Развоз на %s собран (%s) за %.1f с: точек %d, рейсов %d, машин %d', day,
+                session.get('username'), time.perf_counter() - started, len(dd.stops), len(draft.trips), len(codes))
+    dd.draft, dd.rev = draft, rev or 0
+    return jsonify({'success': True, **_dispatch_body(dd)})
+
+
+@bp.post('/api/routes/dispatch/edit')
+@_api
+def api_dispatch_edit() -> Any:
+    """Правка логиста: {"date", "rev", "action": move | pin | unpin | exclude | include, …}
+    (dispatch.apply_edit). rev — номер черновика, от которого правка: план изменён в другой вкладке — 409.
+    В ответе — день целиком и delta_km: как изменились км плана."""
+    payload, day, error = _dispatch_request()
+    if error is not None:
+        return error
+    state = _state()
+    bundle = state.store.load()
+    dd = _load_day(state, bundle, day)
+    if dd.draft is None or dd.ctx is None:
+        return _conflict('Сначала соберите рейсы')
+    if payload.get('rev') != dd.rev:
+        return _conflict('План изменили в другой вкладке — обновите страницу')
+    info = _stop_info(dd)
+    km_before = dp.plan_view(dd.ctx, dd.stops, dd.draft, info)['summary']['km']
+    try:
+        draft = dp.apply_edit(dd.ctx, dd.stops, dd.draft, payload, {o.isn for o in dd.deliver},
+                              {o.isn for o in dd.backlog})
+    except dp.DispatchError as e:
+        return _bad_request({'_': str(e)})
+    rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)
+    if rev is None:
+        return _conflict('План изменили в другой вкладке — обновите страницу')
+    dd = _load_day(state, bundle, day, draft=draft, rev=rev)
+    body = _dispatch_body(dd)
+    body['delta_km'] = round(body['plan']['summary']['km'] - km_before, 1) if body['plan'] else None
+    return jsonify({'success': True, **body})
+
+
+@bp.post('/api/routes/dispatch/reset')
+@_api
+def api_dispatch_reset() -> Any:
+    """«Начать заново»: черновик на дату удаляется (исключения и закрепления — тоже)."""
+    payload, day, error = _dispatch_request()
+    if error is not None:
+        return error
+    state = _state()
+    state.store.delete_dispatch(day.isoformat())
+    dd = _load_day(state, state.store.load(), day)
+    return jsonify({'success': True, **_dispatch_body(dd)})
+
+
+@bp.get('/api/routes/dispatch/fact')
+@_api
+def api_dispatch_fact() -> Any:
+    """«План и факт» за прошедшую дату: км фактической раскладки по машинам ERP (каждая — лучшим
+    маршрутом) против рейсов программы на тех же машинах и тех же доставках."""
+    state = _state()
+    bundle = state.store.load()
+    day = _parse_day(request.args.get('date'))
+    if day is None or day >= date.today():
+        return _bad_request({'date': 'прошедшая дата в формате ГГГГ-ММ-ДД'})
+    if state.fact_loader is None:
+        raise ErpError('Загрузчик факта не подключён')
+    snap, _ = state.snapshots.cached()
+    trucks = _ready_trucks(snap, bundle, active_only=False)
+    data = state.fact_loader(day)
+
+    def coord(cid: int) -> Any:
+        return evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides)
+
+    ctx = _dispatch_ctx(state, snap, bundle, day, trucks,
+                        [p for d in data.docs if (p := coord(d.customer_id).point) is not None])
+    if ctx is None:
+        return _bad_request({'_': 'Сначала укажите склад и тоннаж с расходом машин в настройках'})
+    return jsonify({'success': True, 'fact': dp.plan_vs_fact(ctx, data.docs, coord)})
+
+
+@bp.post('/api/routes/geo-override')
+@_api
+def api_geo_override() -> Any:
+    """Ручная точка клиента: {"customer_id", "lat", "lon"}; lat и lon = null — убрать (снова ERP/GPS).
+    Точка действует во всём разделе: обзор, оптимизация, развоз."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    if not isinstance(payload, dict) or set(payload) != {'customer_id', 'lat', 'lon'}:
+        return _bad_request({'_': 'ожидалось {"customer_id", "lat", "lon"}'})
+    cid = payload['customer_id']
+    if isinstance(cid, bool) or not isinstance(cid, int) or not 0 < cid < 2 ** 31:
+        return _bad_request({'customer_id': 'ожидался код клиента'})
+    lat, lon = payload['lat'], payload['lon']
+    point = None
+    if lat is not None or lon is not None:
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in (lat, lon)) \
+                or not is_valid_point(lat, lon):
+            return _bad_request({'point': 'точка вне Армении'})
+        point = (float(lat), float(lon))
+    state = _state()
+    state.store.save_geo_override(cid, point, session.get('username'))
+    logger.info('[Routes] Точка клиента %d %s (%s)', cid, 'поставлена' if point else 'убрана', session.get('username'))
+    return jsonify({'success': True})

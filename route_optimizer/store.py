@@ -16,14 +16,14 @@ import math
 import os
 import re
 import sqlite3
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Collection, Mapping
 
 from .geo import ARMENIA_LAT, ARMENIA_LON, Point, is_valid_point
 from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, parse_transfer_key
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -72,6 +72,15 @@ _SCENARIO_TABLE = (
     "CREATE TABLE IF NOT EXISTS scenario(id TEXT PRIMARY KEY, created_at TEXT NOT NULL, "
     "created_by TEXT, params TEXT NOT NULL, result TEXT NOT NULL)")
 SCENARIOS_KEPT = 5
+# Схема 7 (план развоза): ручная точка клиента — перекрывает ERP и GPS во всём разделе; черновик плана
+# развоза на дату (data — JSON: машины дня, исключённые заказы, рейсы; rev — номер правки).
+_GEO_OVERRIDE_TABLE = (
+    "CREATE TABLE IF NOT EXISTS customer_geo_override(customer_id INTEGER PRIMARY KEY, "
+    "lat REAL NOT NULL, lon REAL NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT)")
+_DISPATCH_TABLE = (
+    "CREATE TABLE IF NOT EXISTS dispatch_plan(day TEXT PRIMARY KEY, data TEXT NOT NULL, "
+    "rev INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, updated_by TEXT)")
+DISPATCH_KEPT_DAYS = 120    # черновики старше — удаляются при сохранении
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -85,6 +94,8 @@ _SCHEMA = (
     _DECISION_TABLE,
     _SCENARIO_TABLE,
     _DECISION_ONE_ACCEPTED,
+    _GEO_OVERRIDE_TABLE,
+    _DISPATCH_TABLE,
 )
 
 # Миграции: версия → DDL перехода на следующую. Выполняются в одной транзакции с записью версии.
@@ -140,6 +151,8 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "ALTER TABLE decision_v6 RENAME TO decision",
         _DECISION_ONE_ACCEPTED,
     ),
+    # 6 → 7 (план развоза): две новые таблицы; прежние таблицы и значения не меняются
+    6: (_GEO_OVERRIDE_TABLE, _DISPATCH_TABLE),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -294,6 +307,8 @@ class Bundle:
     depot: Point | None
     trucks: dict[str, Truck]
     managers: dict[int, ManagerProfile]
+    # ручные точки клиентов (customer_geo_override): перекрывают ERP и GPS во всём разделе
+    geo_overrides: dict[int, Point] = field(default_factory=dict)
 
     def profile(self, agent_id: int) -> ManagerProfile:
         return self.managers.get(agent_id) or ManagerProfile(agent_id)
@@ -318,6 +333,7 @@ class Bundle:
             'depot': self.depot,
             'trucks': [asdict(t) for _, t in sorted(self.trucks.items())],
             'managers': [asdict(m) for _, m in sorted(self.managers.items())],
+            'geo': sorted(self.geo_overrides.items()),
         }
         raw = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
         return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
@@ -860,6 +876,8 @@ class Store:
                     manager_rows = conn.execute(
                         'SELECT agent_id, included, home_lat, home_lon, car_fuel_l_per_100km, '
                         'car_fuel_type, updated_at, updated_by FROM manager_profile').fetchall()
+                    geo_rows = conn.execute(
+                        'SELECT customer_id, lat, lon FROM customer_geo_override').fetchall()
                     conn.execute('COMMIT')
                 except BaseException:
                     if conn.in_transaction:
@@ -903,7 +921,12 @@ class Store:
                 raise StoreError(f'{self._name()}: повреждена запись менеджера {row[0]!r} '
                                  f'({", ".join(problems)}){_FIX_HINT}')
             managers[profile.agent_id] = profile
-        return Bundle(settings, depot, trucks, managers)
+        geo: dict[int, Point] = {}
+        for customer_id, lat, lon in geo_rows:
+            if not _is_int(customer_id) or not is_valid_point(lat, lon):
+                raise StoreError(f'{self._name()}: повреждена ручная точка клиента {customer_id!r}{_FIX_HINT}')
+            geo[customer_id] = (float(lat), float(lon))
+        return Bundle(settings, depot, trucks, managers, geo)
 
     def save(self, changes: Changes, user: str | None) -> None:
         """Записать проверенные изменения одной транзакцией (всё или ничего)."""
@@ -1106,3 +1129,65 @@ class Store:
         """id сохранённых расчётов, новые первыми."""
         return [r[0] for r in self._read(lambda conn: conn.execute(
             'SELECT id FROM scenario ORDER BY rowid DESC').fetchall())]
+
+    # --- План развоза: ручные точки клиентов и черновики плана на дату ---
+
+    def save_geo_override(self, customer_id: int, point: Point | None, user: str | None) -> None:
+        """Ручная точка клиента (проверенная: в Армении); None — убрать, снова ERP/GPS."""
+        if not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
+            raise ValueError('customer_id: положительное целое')
+        if point is not None and not is_valid_point(*point):
+            raise ValueError('точка вне Армении')
+
+        def write(conn: sqlite3.Connection) -> None:
+            if point is None:
+                conn.execute('DELETE FROM customer_geo_override WHERE customer_id = ?', (customer_id,))
+            else:
+                conn.execute('INSERT INTO customer_geo_override(customer_id, lat, lon, updated_at, updated_by) '
+                             'VALUES(?, ?, ?, ?, ?) ON CONFLICT(customer_id) DO UPDATE SET lat = excluded.lat, '
+                             'lon = excluded.lon, updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                             (customer_id, float(point[0]), float(point[1]), _now(), user))
+
+        self._transaction(write, 'не удалось сохранить точку клиента')
+
+    def load_dispatch(self, day: str) -> tuple[dict[str, Any], int] | None:
+        """Черновик плана развоза на дату (YYYY-MM-DD): (данные, номер правки) или None."""
+        row = self._read(lambda conn: conn.execute(
+            'SELECT data, rev FROM dispatch_plan WHERE day = ?', (day,)).fetchone())
+        if row is None:
+            return None
+        try:
+            data = json.loads(row[0])
+        except (TypeError, ValueError, RecursionError) as e:
+            raise StoreError(f'{self._name()}: повреждён план развоза на {day}{_FIX_HINT}') from e
+        if not isinstance(data, dict) or not _is_int(row[1]):
+            raise StoreError(f'{self._name()}: повреждён план развоза на {day}{_FIX_HINT}')
+        return data, row[1]
+
+    def save_dispatch(self, day: str, data: Mapping[str, Any], user: str | None,
+                      expected_rev: int | None = None) -> int | None:
+        """Сохранить черновик на дату; возвращает новый номер правки. expected_rev — номер, от которого
+        делалась правка: черновик с тех пор изменён (другая вкладка) — None, ничего не записано.
+        Черновики старше DISPATCH_KEPT_DAYS от этой даты удаляются."""
+        raw = json.dumps(data, ensure_ascii=False, sort_keys=True)
+        now = _now()
+
+        def write(conn: sqlite3.Connection) -> int | None:
+            row = conn.execute('SELECT rev FROM dispatch_plan WHERE day = ?', (day,)).fetchone()
+            current = row[0] if row is not None else 0
+            if expected_rev is not None and expected_rev != current:
+                return None
+            rev = current + 1
+            conn.execute('INSERT INTO dispatch_plan(day, data, rev, updated_at, updated_by) VALUES(?, ?, ?, ?, ?) '
+                         'ON CONFLICT(day) DO UPDATE SET data = excluded.data, rev = excluded.rev, '
+                         'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                         (day, raw, rev, now, user))
+            conn.execute('DELETE FROM dispatch_plan WHERE day < date(?, ?)', (day, f'-{DISPATCH_KEPT_DAYS} days'))
+            return rev
+
+        return self._transaction(write, 'не удалось сохранить план развоза')
+
+    def delete_dispatch(self, day: str) -> None:
+        """«Начать заново»: черновик на дату удаляется."""
+        self._transaction(lambda conn: conn.execute('DELETE FROM dispatch_plan WHERE day = ?', (day,)),
+                          'не удалось удалить план развоза')

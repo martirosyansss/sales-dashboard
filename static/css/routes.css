@@ -1,5 +1,5 @@
 /* ============================================================================
-   «Маршруты»: /routes (обзор), /routes/optimize (оптимизация), /routes/settings (настройки)
+   «Маршруты»: /routes (обзор), /routes/optimize (оптимизация), /routes/dispatch (развоз), /routes/settings (настройки)
    Тёмная панель дашборда, но спокойнее и крупнее — интерфейс «для чайников»
    (docs/plans/ux-simple-plan.md): вывод первым и человеческим языком, шаги с одной главной
    кнопкой, подробности — по раскрытию, обычный регистр, основной текст ≥ 15 px.
@@ -113,7 +113,7 @@
 .rt-pill.is-warn { color: var(--rt-warn); border-color: var(--rt-warn-line); background: var(--rt-warn-bg); }
 .rt-toolbar { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
-/* Вкладки раздела: Обзор · Оптимизация · Настройки */
+/* Вкладки раздела: Обзор · Оптимизация · Развоз · Настройки */
 .rt-tabs {
     display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px;
     background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: 12px;
@@ -1349,4 +1349,108 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
     .ro-done-acts .rt-btn { flex: 1 1 auto; }
     .ro-run .rt-btn-lg { width: 100%; }
     .ro-export-row .rt-btn-lg { width: 100%; }
+}
+
+/* ==========================================================================
+   /routes/dispatch — «Развоз»: машины дня, заказы, рейсы по машинам, правки логиста.
+   Классы .dp-* — только этой страницы.
+   ========================================================================== */
+#rtDispatch { max-width: 1280px; margin: 0 auto; }
+.dp-dayrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 14px; }
+.dp-daylabel { font-size: .9375rem; font-weight: 600; color: var(--rt-fg-dim); }
+.rt-input.dp-date { width: auto; min-width: 170px; height: 40px; font-family: var(--rt-mono); color-scheme: dark; }
+.dp-datenote { flex-basis: 100%; font-size: .9375rem; color: var(--rt-fg-dim); }
+.dp-note { font-size: .9375rem; color: var(--rt-fg-dim); margin: 10px 0 0; line-height: 1.5; }
+.dp-trucks { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.dp-truck {
+    display: grid; grid-template-columns: 22px 12px minmax(0, 1fr); align-items: center; gap: 10px;
+    padding: 12px 14px; border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); background: var(--rt-panel); cursor: pointer; margin: 0;
+}
+.dp-truck:hover { border-color: var(--rt-acc-dim); }
+.dp-truck:has(input:checked) { border-color: var(--rt-acc-dim); background: var(--rt-panel-2); }
+.dp-truck input { width: 20px; height: 20px; accent-color: var(--rt-acc); margin: 0; }
+.dp-truck.is-off { opacity: .6; cursor: default; }
+.dp-truck-t { display: flex; flex-direction: column; min-width: 0; }
+.dp-truck-t b { font-weight: 700; overflow-wrap: anywhere; }
+.dp-truck-sub { font-size: .875rem; color: var(--rt-fg-dim); }
+.dp-truck-empty { margin: 0; color: var(--rt-fg-dim); }
+.dp-orders { font-size: 1.125rem; margin: 0 0 8px; }
+.dp-orders b { font-weight: 800; }
+.dp-facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: .9375rem; color: var(--rt-fg); }
+.dp-facts li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding-left: 16px; position: relative; }
+.dp-facts li::before { content: ""; position: absolute; left: 2px; top: .62em; width: 6px; height: 6px; border-radius: 50%; background: var(--rt-fg-mute); }
+.dp-facts li.is-warn::before { background: var(--rt-warn); }
+.dp-facts li.is-mute { color: var(--rt-fg-dim); }
+.dp-run { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 18px; }
+.dp-run .dp-note { margin: 0; }
+.dp-pick { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 14px; }
+.dp-picklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 420px; overflow-y: auto; align-content: start; }
+.dp-pickitem {
+    width: 100%; text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 9px 12px; cursor: pointer;
+    border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); background: var(--rt-inset); color: var(--rt-fg); font: inherit;
+}
+.dp-pickitem:hover, .dp-pickitem[aria-pressed="true"] { border-color: var(--rt-acc); }
+.dp-pickitem[aria-pressed="true"] { background: var(--rt-acc-glow); }
+.dp-pick-addr, .dp-pick-kg { font-size: .875rem; color: var(--rt-fg-dim); overflow-wrap: anywhere; }
+.dp-pickmap { height: 320px; border-radius: var(--rt-radius-sm); background: #0b0e13; }
+.dp-pickform { margin-top: 10px; }
+.dp-picklabel { display: block; font-size: .9375rem; font-weight: 600; margin-bottom: 6px; }
+.dp-pickform .rt-coord { display: flex; gap: 8px; flex-wrap: wrap; }
+.dp-pickform .rt-input { flex: 1 1 200px; min-width: 0; }
+.dp-olist { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.dp-oitem {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; padding: 9px 12px;
+    border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); background: var(--rt-inset);
+}
+.dp-oitem-t { display: flex; flex-direction: column; min-width: 0; flex: 1 1 260px; }
+.dp-oitem-t span { font-size: .875rem; color: var(--rt-fg-dim); overflow-wrap: anywhere; }
+.dp-map { height: 460px; border-radius: 0; }
+.dp-lg { display: inline-flex; align-items: center; gap: 6px; margin-right: 12px; }
+.dp-dot-open { background: #0c0f14 !important; box-shadow: 0 0 0 2px #ffb547; }
+.dp-trucklist { display: grid; gap: 12px; margin-top: 12px; }
+.dp-tcard { border-left: 4px solid var(--dp-c, var(--rt-line)); margin-bottom: 0; }
+.dp-thead { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; margin-bottom: 8px; }
+.dp-tstats { margin: 0; font-size: .9375rem; color: var(--rt-fg-dim); }
+.dp-tstats.is-bad { color: var(--rt-danger); }
+.dp-trip { border-top: 1px solid var(--rt-line-soft); padding-top: 12px; margin-top: 12px; }
+.dp-trip.is-bad { border-top-color: var(--rt-danger-line); }
+.dp-trip-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-bottom: 8px; }
+.rt-page .dp-trip-t { font-size: 1rem; font-weight: 700; margin: 0; }
+.dp-trip-meta { font-size: .9375rem; color: var(--rt-fg-dim); }
+.dp-trip-flags { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.dp-trip-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.dp-trip-truck { display: inline-flex; align-items: center; gap: 6px; font-size: .875rem; color: var(--rt-fg-dim); margin: 0; }
+.dp-trip-truck .rt-select { height: 34px; width: auto; max-width: 220px; font-size: .875rem; }
+.dp-stops td.dp-no { font-family: var(--rt-mono); font-weight: 700; width: 36px; }
+.dp-stops td.num, .dp-small td.num { white-space: nowrap; font-family: var(--rt-mono); }
+.dp-stops td.rt-cell-name b { display: block; }
+.dp-stops .dp-sub { display: block; font-size: .875rem; color: var(--rt-fg-dim); overflow-wrap: anywhere; }
+.dp-stops .rt-badge { margin-top: 4px; }
+.dp-stops td.dp-acts { white-space: nowrap; width: 1%; }
+.dp-acts .dp-move { height: 34px; width: 190px; font-size: .875rem; margin-right: 6px; }
+.dp-unassigned { border-color: var(--rt-warn-line); }
+.dp-fact { margin-top: 22px; }
+.dp-fact-lead { font-size: 1.125rem; font-weight: 700; margin: 14px 0 10px; }
+.dp-toast {
+    position: fixed; z-index: 1080; left: 50%; bottom: 22px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
+    max-width: min(560px, calc(100vw - 32px)); padding: 12px 16px; border-radius: 12px; background: var(--rt-panel-2);
+    border: 1px solid var(--rt-ok); color: var(--rt-fg); font-size: .9375rem; box-shadow: var(--rt-shadow); transition: opacity .2s, transform .2s;
+}
+.dp-toast.is-on { opacity: 1; transform: translate(-50%, 0); }
+@media (max-width: 767px) {
+    .dp-pick { grid-template-columns: minmax(0, 1fr); }
+    .dp-picklist { max-height: 260px; }
+    .dp-map { height: 360px; }
+    .dp-trip-tools { margin-left: 0; width: 100%; }
+}
+@media (max-width: 575px) {
+    .dp-stops td.dp-acts { display: flex; flex-wrap: wrap; gap: 8px; white-space: normal; width: auto; }
+    .dp-acts .dp-move { flex: 1 1 180px; width: auto; margin-right: 0; }
+    .dp-trip-truck { flex: 1 1 100%; }
+    .dp-trip-truck .rt-select { flex: 1 1 auto; max-width: none; }
+    .dp-run .rt-btn-lg { width: 100%; }
+}
+@media (max-width: 420px) {
+    .rt-page .rt-tabs a { font-size: .8125rem; padding: 0 4px; }
+    .dp-dayrow .rt-input.dp-date { flex: 1 1 100%; }
 }

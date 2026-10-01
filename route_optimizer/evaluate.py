@@ -764,8 +764,12 @@ def customer_models(snap: Snapshot, s: Mapping[str, Any], season: Season,
     return models
 
 
-def visit_coord(snap: Snapshot, customer_id: int, address_id: int) -> Coord:
-    """Координата визита: ERP-адрес шаблона → дефолтный адрес клиента → GPS (§3)."""
+def visit_coord(snap: Snapshot, customer_id: int, address_id: int,
+                manual: Mapping[int, Point] | None = None) -> Coord:
+    """Координата визита: ручная точка клиента (Bundle.geo_overrides — логист поставил на карте) →
+    ERP-адрес шаблона → дефолтный адрес клиента → GPS (§3)."""
+    if manual and customer_id in manual:
+        return resolve_coord(manual[customer_id], None, None)
     erp: Point | None = None
     for addr in (address_id, snap.default_address.get(customer_id)):
         entry = snap.erp_points.get(addr) if addr else None
@@ -832,7 +836,7 @@ def plan_points(snap: Snapshot, bundle: Bundle,
         for pv in d.visits:
             key = (pv.customer_id, pv.address_id)
             if key not in coords:
-                coords[key] = visit_coord(snap, pv.customer_id, pv.address_id)
+                coords[key] = visit_coord(snap, pv.customer_id, pv.address_id, bundle.geo_overrides)
             if coords[key].point is not None:
                 points.append(coords[key].point)
     for agent_id in snap.plan.agent_ids:
@@ -845,13 +849,14 @@ def plan_points(snap: Snapshot, bundle: Bundle,
 
 
 def _day_visits(snap: Snapshot, day: PlanDay, models: Mapping[int, CustomerModel],
-                visit_minutes: Mapping[str, float], coords: dict[tuple[int, int], Coord]) -> list[VisitModel]:
+                visit_minutes: Mapping[str, float], coords: dict[tuple[int, int], Coord],
+                manual: Mapping[int, Point] | None = None) -> list[VisitModel]:
     """Визиты дня в порядке fROWNUM; координата — этого визита (клиент + адрес шаблона)."""
     visits = []
     for erp_no, pv in enumerate(day.visits, 1):
         key = (pv.customer_id, pv.address_id)
         if key not in coords:
-            coords[key] = visit_coord(snap, pv.customer_id, pv.address_id)
+            coords[key] = visit_coord(snap, pv.customer_id, pv.address_id, manual)
         coord = coords[key]
         m = models[pv.customer_id]
         visits.append(VisitModel(pv.customer_id, coord.point, visit_minutes[m.size],
@@ -868,7 +873,8 @@ def _evaluate_manager(snap: Snapshot, bundle: Bundle, agent_id: int, included: b
     l100 = (profile.car_fuel_l_per_100km if profile.car_fuel_l_per_100km is not None
             else float(s['manager_car_default_l_per_100km']))
     workdays = set(s['workdays'])
-    results = [evaluate_day(day, _day_visits(snap, day, models, visit_minutes, coords), home=home,
+    results = [evaluate_day(day, _day_visits(snap, day, models, visit_minutes, coords, bundle.geo_overrides),
+                            home=home,
                             norms=norms, manager_l100=l100, workday=day.weekday in workdays)
                for day in snap.plan.days_of(agent_id)]
     return ManagerEval(agent_id, included, agent_id in snap.active_agents, home, home_source,
@@ -1034,7 +1040,7 @@ def _evaluate_fleet(snap: Snapshot, bundle: Bundle, included_ids: Collection[int
             continue
         stops = days.get((day.agent_id, day.week, day.weekday))
         if stops is None:
-            stops = _day_visits(snap, day, models, visit_minutes, coords)
+            stops = _day_visits(snap, day, models, visit_minutes, coords, bundle.geo_overrides)
         by_day.setdefault((day.week, day.weekday), []).extend(
             fl.DeliveryVisit(v.customer_id, day.weekday, v.point, v.year, v.peak)
             for v in stops if v.point is not None)

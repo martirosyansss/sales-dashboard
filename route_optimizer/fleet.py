@@ -93,6 +93,7 @@ class Trip:
     capacity_kg: float     # тоннаж машины, которая везёт
     liters: float
     extra: bool            # не уложился в рабочий день ни одной машины
+    items: tuple[int, ...] = ()   # номера заказов (индексы stops) по порядку объезда
 
 
 @dataclass
@@ -194,22 +195,26 @@ def _cut(seq: Sequence[int], stops: Sequence[_Stop], cap: float) -> list[list[in
 
 
 def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[FleetTruck],
-               tn: TruckNorms) -> list[Trip]:
-    """Рейсы дня доставки одной пробы (шаги 1–4 из шапки модуля). stops — заказы пробы."""
+               tn: TruckNorms, used: Mapping[str, float] | None = None) -> list[Trip]:
+    """Рейсы дня доставки одной пробы (шаги 1–4 из шапки модуля). stops — заказы пробы.
+    used — минуты, которые машины уже заняты (закреплённые логистом рейсы плана развоза)."""
     if not stops or not trucks:
         return []
     cap = max(t.capacity_kg for t in trucks)
     window = tn.work_minutes
     # заказ тяжелее самой большой машины — отдельными рейсами «склад → клиент → склад» поровну
     vs: list[_Stop] = []
+    origin: list[int] = []         # vs → номер заказа в stops
     singles: list[int] = []
-    for s in stops:
+    for i, s in enumerate(stops):
         if s.kg > cap + _EPS:
             n = math.ceil(s.kg / cap)
             for _ in range(n):
                 singles.append(len(vs))
+                origin.append(i)
                 vs.append(_Stop(s.node, s.kg / n, s.revenue / n, tn.unload(s.kg / n)))
         else:
+            origin.append(i)
             vs.append(s)
     single_set = set(singles)
     light = [v for v in range(len(vs)) if v not in single_set]
@@ -227,7 +232,7 @@ def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[Fl
         return (-kg, -minutes, tuple(vs[v].node for v in seq), seq, km, minutes, kg)
 
     queue = sorted(item(r) for r in routes)
-    used = {t.car_code: 0.0 for t in trucks}
+    used = {t.car_code: float((used or {}).get(t.car_code, 0.0)) for t in trucks}
     trips: list[Trip] = []
     while queue:
         _, _, _, seq, km, minutes, kg = queue.pop(0)
@@ -247,8 +252,39 @@ def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[Fl
             truck = min(fits, key=lambda t: (t.l100, -t.capacity_kg, t.car_code))
         used[truck.car_code] += minutes
         trips.append(Trip(truck.car_code, len(seq), kg, math.fsum(vs[v].revenue for v in seq), km, minutes,
-                          truck.capacity_kg, km * truck.l100 / 100.0, extra))
+                          truck.capacity_kg, km * truck.l100 / 100.0, extra, tuple(origin[v] for v in seq)))
     return trips
+
+
+# --- День с известными заказами (план развоза, dispatch.py) ---
+
+def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[float], depot: Point,
+              trucks: Sequence[FleetTruck], norms: Norms, tn: TruckNorms,
+              used: Mapping[str, float] | None = None) -> list[Trip]:
+    """Рейсы дня по известным заказам — тот же расчёт, что у пробы Монте-Карло (plan_trips):
+    заказ i — точка points[i], kgs[i] кг; Trip.items — номера заказов по порядку объезда.
+    Тяжелее самой большой машины — несколько поездок к одному заказу поровну."""
+    uniq = sorted(set(points))
+    node = {p: i + 1 for i, p in enumerate(uniq)}
+    d, m = _matrices(uniq, depot, norms)
+    stops = [_Stop(node[p], float(kg), float(rev), tn.unload(float(kg)))
+             for p, kg, rev in zip(points, kgs, revenues)]
+    return plan_trips(stops, d, m, trucks, tn, used)
+
+
+def route_trip(points: Sequence[Point], kgs: Sequence[float], depot: Point, norms: Norms,
+               tn: TruckNorms, reorder: bool = True) -> tuple[list[int], float, float]:
+    """Рейс «склад → points → склад»: (порядок объезда — номера points, км, минуты: езда + разгрузка).
+    reorder — улучшить порядок 2-opt (от заданного; длина не растёт), иначе — как задан."""
+    if not points:
+        return [], 0.0, 0.0
+    d, m = _matrices(points, depot, norms)
+    stops = [_Stop(i + 1, float(kg), 0.0, tn.unload(float(kg))) for i, kg in enumerate(kgs)]
+    seq = list(range(len(points)))
+    if reorder:
+        seq = _two_opt(seq, stops, d)
+    minutes = _closed(seq, stops, m) + math.fsum(s.unload for s in stops)
+    return seq, _closed(seq, stops, d), minutes
 
 
 # --- День доставки: Монте-Карло ---

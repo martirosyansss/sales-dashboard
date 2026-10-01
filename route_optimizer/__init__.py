@@ -16,6 +16,7 @@ from typing import Any
 
 from flask import Flask
 
+from . import erp
 from .roads import RoadProvider, osm_path
 from .snapshot import ResultCache, SnapshotCache, load_snapshot
 from .store import Store
@@ -42,6 +43,8 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         snapshots=SnapshotCache(lambda: load_snapshot(connection_string)),
         results=ResultCache(),
         roads=roads,
+        dispatch_loader=lambda since, until, day: erp.load_dispatch_data(connection_string, since, until, day),
+        fact_loader=lambda day: erp.load_fact_data(connection_string, day),
     )
     app.register_blueprint(bp)
     logger.info('[Routes] Раздел «Маршруты» подключён; база настроек: %s; карта дорог: %s%s', path,

@@ -15,12 +15,13 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterator, Sequence
 
 import pyodbc
 
 from .demand import SaleDoc
+from .dispatch import DispatchData, DispatchOrder, FactData, ShippedDoc
 from .evaluate import ActualVisit
 from .geo import Fix
 from .plan import TemplateRow
@@ -307,6 +308,56 @@ WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(s.fDELIVERYC
 GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR)), CAST(s.fDATE AS date)
 """
 
+# План развоза (dispatch-plan §1, проверено по данным 2026-10-01):
+# - заказы — ORDERS с fSTATE = 2 (проведён; удалённые заказы остаются только в DOCUMENTS с fDOCSTATE = 99,
+#   в ORDERS их нет); fDELIVERYDATE и fDELIVERYADDRESSID в заказах не заполняются — день доставки
+#   считаем по дате заказа, адрес — адрес клиента по умолчанию;
+# - строки заказа — SALEDOCDETAILS по fISN заказа (PROVIDINGDELIVERIES ссылается на реализации);
+# - «уже отгружен» — первая проведённая реализация SALES по заказу (DOCPARENTS, fPARENTDOCTYPE = 1);
+#   у заказа бывают и другие дочерние документы — берём только SALES;
+# - fVANAGENTID = fSALESAGENTID — менеджер развозит сам (A000, A008/6 «19 литров»): не для машин парка.
+SQL_DISPATCH_ORDERS = """
+SELECT CAST(o.fISN AS nvarchar(36)), RTRIM(o.fDOCNUM), CAST(o.fDATE AS date), o.fCUSTOMERID,
+       o.fSALESAGENTID, LTRIM(RTRIM(ISNULL(o.fDELIVERYCAR, ''))), o.fTOTALSUM, ISNULL(k.kg, 0), sh.shipped,
+       o.fVANAGENTID
+FROM ORDERS o WITH (NOLOCK)
+OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
+             FROM SALEDOCDETAILS sd WITH (NOLOCK)
+             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = sd.fPRODUCTID
+             WHERE sd.fISN = o.fISN) k
+OUTER APPLY (SELECT MIN(CAST(s.fDATE AS date)) AS shipped
+             FROM DOCPARENTS p WITH (NOLOCK)
+             JOIN SALES s WITH (NOLOCK) ON s.fISN = p.fISN
+             WHERE p.fPARENTISN = o.fISN AND p.fPARENTDOCTYPE = 1 AND s.fSTATE = 2) sh
+WHERE o.fSTATE = 2 AND o.fDATE >= ? AND o.fDATE < ?
+"""
+
+# Адрес доставки клиента текстом (по умолчанию) — для карточки рейса и листа водителю
+SQL_ADDRESS_TEXT = """
+SELECT a.fCUSTOMERID, a.fADDRESS
+FROM CUSTOMERDELIVERYADDRESSES a WITH (NOLOCK)
+WHERE a.fDEFAULT = 1 AND a.fCUSTOMERID IN ({ph})
+"""
+
+# Какие машины везли заказы менеджера (сравнение «по менеджерам»): документов за период
+SQL_AGENT_CARS = """
+SELECT s.fSALESAGENTID, LTRIM(RTRIM(s.fDELIVERYCAR)), COUNT(*)
+FROM SALES s WITH (NOLOCK)
+WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) <> ''
+GROUP BY s.fSALESAGENTID, LTRIM(RTRIM(s.fDELIVERYCAR))
+"""
+
+# Факт развоза за дату: проведённые реализации с машиной, кг и суммой («план и факт»)
+SQL_SHIPPED = """
+SELECT s.fCUSTOMERID, s.fSALESAGENTID, LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))), s.fTOTALSUM, ISNULL(k.kg, 0)
+FROM SALES s WITH (NOLOCK)
+OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
+             FROM SALEDOCDETAILS sd WITH (NOLOCK)
+             JOIN PRODUCTS pr WITH (NOLOCK) ON pr.fID = sd.fPRODUCTID
+             WHERE sd.fISN = s.fISN) k
+WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
+"""
+
 
 # --- Справочники ---
 
@@ -451,3 +502,69 @@ def car_days(conn: Any, since: date, until: date) -> list[CarDay]:
     """Сколько везла каждая машина в каждый день [since, until): документов и кг."""
     return [CarDay(_str(r[0]), _day(r[1]), int(r[2]), float(r[3] or 0))
             for r in _select(conn, SQL_CAR_DAYS, (since, until))]
+
+
+# --- План развоза ---
+
+def dispatch_orders(conn: Any, since: date, until: date) -> list[DispatchOrder]:
+    """Проведённые заказы с датой в [since, until): кг, сумма, машина в заказе и дата отгрузки."""
+    return [DispatchOrder(isn=_str(r[0]).upper(), doc_num=_str(r[1]), order_date=_day(r[2]),
+                          customer_id=int(r[3]), agent_id=int(r[4] or 0), car_code=_str(r[5]),
+                          revenue=float(r[6] or 0), kg=float(r[7] or 0),
+                          shipped=_day(r[8]) if r[8] is not None else None, van_agent_id=int(r[9] or 0))
+            for r in _select(conn, SQL_DISPATCH_ORDERS, (since, until))]
+
+
+def address_texts(conn: Any, ids: Sequence[int]) -> dict[int, str]:
+    """Адрес по умолчанию текстом: клиент → «Марз, город, улица, дом»."""
+    out: dict[int, str] = {}
+    for chunk in _chunks(sorted(set(ids))):
+        for r in _select(conn, SQL_ADDRESS_TEXT.format(ph=_placeholders(len(chunk))), chunk):
+            text = _str(r[1])
+            if text:
+                out.setdefault(int(r[0]), text)
+    return out
+
+
+def agent_cars(conn: Any, since: date, until: date) -> dict[int, tuple[str, ...]]:
+    """Менеджер → машины, которые везли его заказы за период, от самой частой (ничьи — по коду)."""
+    counts: dict[int, list[tuple[int, str]]] = {}
+    for r in _select(conn, SQL_AGENT_CARS, (since, until)):
+        counts.setdefault(int(r[0]), []).append((-int(r[2]), _str(r[1])))
+    return {a: tuple(code for _, code in sorted(cs)) for a, cs in counts.items()}
+
+
+def shipped_docs(conn: Any, day: date) -> list[ShippedDoc]:
+    """Проведённые реализации за день: клиент, менеджер, машина, сумма, кг."""
+    return [ShippedDoc(customer_id=int(r[0]), agent_id=int(r[1] or 0), car_code=_str(r[2]),
+                       revenue=float(r[3] or 0), kg=float(r[4] or 0))
+            for r in _select(conn, SQL_SHIPPED, (day, day + timedelta(days=1)))]
+
+
+AGENT_CARS_DAYS = 90   # «машина менеджера по истории» — за 90 дней до даты развоза
+
+
+def load_dispatch_data(connection_string: str, since: date, until: date, day: date) -> DispatchData:
+    """Заказы к развозу на day (дата заказа в [since, until)) и справочники к ним — одним соединением."""
+    conn = connect(connection_string)
+    try:
+        orders = dispatch_orders(conn, since, until)
+        ids = sorted({o.customer_id for o in orders})
+        names = {c.id: (c.code, c.name) for c in customers(conn, ids).values()}
+        return DispatchData(orders=tuple(orders), customers=names, addresses=address_texts(conn, ids),
+                            agent_cars=agent_cars(conn, day - timedelta(days=AGENT_CARS_DAYS), day),
+                            loaded_at=datetime.now().replace(microsecond=0))
+    finally:
+        close_quietly(conn)
+
+
+def load_fact_data(connection_string: str, day: date) -> FactData:
+    """Факт развоза за прошедшую дату: реализации с машинами и справочники клиентов."""
+    conn = connect(connection_string)
+    try:
+        docs = shipped_docs(conn, day)
+        ids = sorted({d.customer_id for d in docs})
+        names = {c.id: (c.code, c.name) for c in customers(conn, ids).values()}
+        return FactData(docs=tuple(docs), customers=names)
+    finally:
+        close_quietly(conn)
