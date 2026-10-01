@@ -1,56 +1,60 @@
 /* «Маршруты · оптимизация» /routes/optimize — этап 3, режим А: магазины остаются у своих менеджеров,
-   программа предлагает дни визитов и частоту.
-   Контракт — docs/plans/stage-3-plan.md §10 и §10.1:
+   программа предлагает дни визитов и частоту. Интерфейс «для чайников» (docs/plans/ux-simple-plan.md):
+   шаг 1 — посчитать; шаг 2 — главное человеческим языком, три показателя, карточки менеджеров,
+   предложения менеджера группами по смыслу, карта (свёрнута); шаг 3 — принять и выгрузить Excel.
+   Контракт — docs/plans/stage-3-plan.md §10 и §10.1 (не меняется):
      POST /api/routes/optimize → job_id (409 — расчёт уже идёт, в ответе job_id идущей задачи);
      опрос GET /api/routes/optimize/<job_id> раз в 1,5 с; GET /api/routes/optimize/last (404 — расчётов
      ещё не было); POST /api/routes/decisions — одно решение или {items: [...]} одной транзакцией,
      {action: 'reset_all'}; GET /api/routes/decisions — «Ваши решения» и число изменений для Excel;
      GET /api/routes/plan-export — строки плана, Excel собирается здесь (SheetJS, глобальный XLSX).
-   Галочки менеджеров, дома и склад — из GET /api/routes/overview, порог дня — из GET /api/routes/settings.
+   Галочки менеджеров, дома, склад и сезоны — из GET /api/routes/overview, порог дня и рабочие дни — из
+   GET /api/routes/settings. Тексты «было → станет», причины, группы и итоги считаются здесь из этих ответов.
    Безопасность: строки из ERP и из ответов сервера выводятся только текстом — узлы собирает h()
    через textContent; в подсказки и попапы Leaflet уходят готовые DOM-узлы, а не HTML-строки. */
 (function () {
     'use strict';
 
     const $ = (id) => document.getElementById(id);
-    const NB = '\u00a0';     // неразрывный пробел: число не отрывается от единицы
-    const MINUS = '\u2212';
+    const NB = ' ';     // неразрывный пробел: число не отрывается от единицы
+    const MINUS = '−';
 
     const WD_SHORT = { 1: 'Пн', 2: 'Вт', 3: 'Ср', 4: 'Чт', 5: 'Пт', 6: 'Сб', 7: 'Вс' };
+    const WD_LOWER = { 1: 'пн', 2: 'вт', 3: 'ср', 4: 'чт', 5: 'пт', 6: 'сб', 7: 'вс' };
     const WD_FULL = { 1: 'понедельник', 2: 'вторник', 3: 'среда', 4: 'четверг', 5: 'пятница', 6: 'суббота', 7: 'воскресенье' };
+    const WD_FROM = { 1: 'понедельника', 2: 'вторника', 3: 'среды', 4: 'четверга', 5: 'пятницы', 6: 'субботы', 7: 'воскресенья' };
+    const MONTHS_FULL = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
     // Цвет точки на карте — день недели. Оттенки из палитры менеджеров обзора (контраст к тёмной карте ≥ 3:1)
     const WD_COLORS = { 1: '#18c1fc', 2: '#fe904d', 3: '#b0a2ff', 4: '#b8b90c', 5: '#14cfa3', 6: '#fe80c0', 7: '#8b93a7' };
     // Цвета менеджеров — как в обзоре: слот по позиции менеджера в ответе
     const MGR_COLORS = ['#18c1fc', '#fe904d', '#b0a2ff', '#a77601', '#397be9', '#14cfa3',
                         '#0d9298', '#b8b90c', '#ae55c1', '#37981b', '#fe80c0', '#d64651'];
     const MGR_OTHER = '#8b93a7';
-    const TYPE_TEXT = { move: 'перенос', frequency: 'частота', both: 'перенос и частота' };
-    // Какие решения отправляет изменение: у «both» — два, шаблон дней и частота
-    const KINDS = { move: ['pattern'], frequency: ['freq'], both: ['pattern', 'freq'] };
+    // Вид изменения — для листа «Изменения» в Excel (как было)
+    const TYPE_TEXT = { move: 'перенос', frequency: 'частота', both: 'перенос и частота', remove: 'убрать' };
+    // Какие решения отправляет изменение: у «both» — два, шаблон дней и частота; «убрать из маршрута» — remove
+    const KINDS = { move: ['pattern'], frequency: ['freq'], both: ['pattern', 'freq'], remove: ['remove'] };
     const ACTION_STATUS = { accept: 'accepted', reject: 'rejected', reset: null };
-    const STATUS = {
-        none: { cls: 'b-none', icon: 'fa-circle-question', text: 'без решения' },
-        accepted: { cls: 'b-ok', icon: 'fa-lock', text: 'принято' },
-        rejected: { cls: '', icon: 'fa-ban', text: 'отклонено' },
-        mixed: { cls: 'b-warn', icon: 'fa-circle-half-stroke', text: 'частично' },
+    // Состояние строки предложения — подпись и значок (без решения — только кнопки)
+    const ROW_STATUS = {
+        accepted: { cls: 'is-ok', icon: 'fa-check', text: 'Принято' },
+        rejected: { cls: 'is-off', icon: 'fa-minus', text: 'Оставлено как есть' },
+        mixed: { cls: 'is-warn', icon: 'fa-circle-half-stroke', text: 'Принято частично' },
     };
-    // Эффект изменения, применённого к текущему плану — в неделю; меньше — лучше
-    const EFFECTS = [
-        { key: 'manager_km_week', label: 'менеджер', unit: NB + 'км', d: 1, title: 'Пробег менеджера за неделю' },
-        { key: 'truck_km_week', label: 'грузовик', unit: NB + 'км', d: 1, title: 'Пробег грузовика за неделю' },
-        { key: 'weak_days_week', label: 'слабые дни', unit: '', d: 2, title: 'Ожидаемое число слабых дней зимой за неделю' },
-        { key: 'minutes_week', label: 'время', unit: NB + 'мин', d: 0, title: 'Время менеджера за неделю' },
-    ];
-    const HINT_ICON = { freq_up: 'fa-arrow-trend-up', no_orders: 'fa-circle-exclamation' };
-    const START_HINT = {
-        current: 'За основу — текущие дни из ERP: программа меняет только то, что даёт выгоду. Изменений будет немного.',
-        fresh: 'Клиенты раскладываются по дням заново, как будто плана нет. Изменений будет намного больше — так виден предел экономии.',
+    // «Убрать из маршрута» (§15): принять — убрать, отклонить — оставить
+    const REMOVE_ROW_STATUS = {
+        accepted: { cls: 'is-bad', icon: 'fa-user-minus', text: 'Будет убран из маршрута' },
+        rejected: { cls: 'is-ok', icon: 'fa-user-check', text: 'Остаётся в маршруте' },
     };
-    const FREQ_HINT = {
-        sales: 'Частота только снижается — там, где клиент заказывает реже, чем его посещают. Повысить частоту программа лишь подскажет.',
-        current: 'Сколько раз в неделю посещать клиента — как сейчас в ERP; меняются только дни.',
-    };
-    const RUN_NOTE = 'обычно 1–2 минуты · ERP только читается, в ERP ничего не записывается';
+    const DECISION_WORD = { none: 'пока не решено', accepted: 'принято', rejected: 'оставлено как есть', mixed: 'принято частично' };
+    const REMOVE_WORD = { none: 'пока не решено', accepted: 'убрать из маршрута', rejected: 'оставить в маршруте', mixed: 'пока не решено' };
+    // Затих, потерян, ни одного заказа за год (§15)
+    const SILENT = new Set(['dormant', 'lost', 'never']);
+    // Группы предложений по смыслу (бриф): порядок, значок, короткая подпись переключателя
+    const GROUP_ORDER = ['freq', 'move', 'offday', 'winback', 'remove', 'other'];
+    const GROUP_ICON = { freq: 'fa-calendar-minus', move: 'fa-shuffle', offday: 'fa-calendar-xmark', winback: 'fa-hand-holding-heart',
+                         remove: 'fa-user-minus', other: 'fa-pen', hints: 'fa-lightbulb' };
+    const RUN_NOTE_TAIL = 'ERP только читается';
     const PLAN_HEAD = ['Код менеджера', 'Менеджер', 'Неделя цикла', 'День', '№', 'Код клиента', 'Клиент', 'Отметка'];
     const PLAN_COLS = [14, 28, 13, 7, 6, 14, 42, 18];
     const CHANGE_HEAD = ['Код менеджера', 'Менеджер', 'Код клиента', 'Клиент', 'Что меняется', 'Было', 'Стало', 'Причина',
@@ -59,7 +63,6 @@
     const POLL_MS = 1500;
     const POLL_MAX_MS = 15000;
     const JOB_TTL_MS = 3 * 3600 * 1000;      // сохранённую задачу старше 3 часов не подхватываем
-    const OPEN_ALL_MAX = 40;                 // столько предложений и меньше — все менеджеры раскрыты сразу
     const STALE_LIST_MAX = 12;               // устаревших решений в предупреждении — не больше
     const LS_JOB = 'routesOptimizeJob';
     const LS_DIRTY = 'routesOptimizeDirty';
@@ -87,13 +90,6 @@
         if (r === 0) return '0';
         return (r > 0 ? '+' : MINUS) + fmt(Math.abs(r), d);
     }
-    // −1 — стало меньше, +1 — больше, 0 — без изменений (после округления до d знаков)
-    function trend(v, d) {
-        const n = num(v);
-        if (n === null) return 0;
-        const r = round(n, d);
-        return r < 0 ? -1 : (r > 0 ? 1 : 0);
-    }
     function moneyShort(v) {
         const n = num(v);
         if (n === null) return '—';
@@ -101,6 +97,11 @@
         if (a >= 1e6) return fmt(n / 1e6, 1) + NB + 'млн';
         if (a >= 1e3) return fmt(Math.round(n / 1e3)) + NB + 'тыс.';
         return fmt(Math.round(n));
+    }
+    // «≈ 22 000» — сумма округлена так, чтобы было понятно порядок, а не копейки
+    function moneyRound(v) {
+        const a = Math.abs(v), step = a >= 10000 ? 1000 : (a >= 1000 ? 100 : 10);
+        return fmt(Math.round(v / step) * step);
     }
     function plural(n, one, few, many) {
         const a = Math.abs(Math.trunc(n)) % 100, b = a % 10;
@@ -121,7 +122,7 @@
         const n = num(sec);
         if (n === null) return '';
         const s = Math.max(0, Math.round(n)), m = Math.floor(s / 60), r = s % 60;
-        return m ? m + NB + 'мин' + (r ? ' ' + r + NB + 'с' : '') : r + NB + 'с';
+        return m ? m + NB + 'мин' + (r ? ' ' + r + NB + 'с' : '') : r + NB + plural(r, 'секунду', 'секунды', 'секунд');
     }
     const clock = (ms) => {
         const s = Math.max(0, Math.floor(ms / 1000));
@@ -133,7 +134,22 @@
         return Number.isNaN(t.getTime()) ? null : t;
     }
     const stamp = (t) => t.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    // «30.09 в 23:21»
+    const dayTime = (t) => t.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) + ' в '
+        + t.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
     const ymd = (t) => t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
+    // Месяцы подряд — «январь – март» (в т.ч. через Новый год), иначе перечислением
+    function monthsText(list) {
+        const ms = [...new Set(arr(list).map(Number).filter(m => m >= 1 && m <= 12))].sort((a, b) => a - b);
+        if (!ms.length) return '';
+        if (ms.length === 1) return MONTHS_FULL[ms[0] - 1];
+        const gaps = ms.filter((m, i) => ms[(i + 1) % ms.length] !== (m % 12) + 1);
+        if (gaps.length === 1) {
+            const end = gaps[0], start = ms[(ms.indexOf(end) + 1) % ms.length];
+            return MONTHS_FULL[start - 1] + ' – ' + MONTHS_FULL[end - 1];
+        }
+        return ms.map(m => MONTHS_FULL[m - 1]).join(', ');
+    }
 
     // Узел DOM: строки-дети становятся текстом (никакого innerHTML с данными)
     function h(tag, props, ...kids) {
@@ -154,19 +170,83 @@
     }
     const icon = (cls) => h('i', { class: 'fas ' + cls, 'aria-hidden': 'true' });
     const spin = () => h('span', { class: 'rt-spin-inline', 'aria-hidden': 'true' });
+    // Число, выделенное маркером: зелёным — лучше, красным — хуже
+    const mark = (text, tone) => h('b', { class: 'rt-mark' + (tone > 0 ? ' is-good' : (tone < 0 ? ' is-bad' : '')), text });
+
+    // ---------- Подсказки «?» (toggletip) ----------
+    // Кнопка «?» раскрывает пояснение рядом: клик, Enter или пробел — показать или скрыть; Esc и клик мимо — скрыть.
+    // Пузырь стоит в DOM сразу за кнопкой (скринридер читает его следующим), на экране — у кнопки, в пределах окна.
+    let tipSeq = 0;
+    function tip(text, label) {
+        const id = 'roTip' + (++tipSeq);
+        return h('span', { class: 'rt-tip' },
+            h('button', { type: 'button', class: 'rt-tip-btn', 'aria-expanded': 'false', 'aria-controls': id,
+                'aria-label': 'Пояснение' + (label ? ': ' + label : '') }, '?'),
+            h('span', { class: 'rt-tip-bubble', id, role: 'note', hidden: true }, text));
+    }
+    function setTip(btn, open) {
+        const bubble = document.getElementById(btn.getAttribute('aria-controls'));
+        if (!bubble) return;
+        btn.setAttribute('aria-expanded', String(open));
+        bubble.hidden = !open;
+        if (open) placeTip(btn, bubble);
+    }
+    function placeTip(btn, bubble) {
+        const r = btn.getBoundingClientRect(), vw = document.documentElement.clientWidth, vh = window.innerHeight;
+        bubble.style.left = '0px';
+        bubble.style.top = '0px';
+        const w = bubble.offsetWidth, ht = bubble.offsetHeight;
+        const left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, vw - w - 8));
+        let top = r.bottom + 8;
+        if (top + ht > vh - 8 && r.top - ht - 8 > 8) top = r.top - ht - 8;   // снизу не влезает — над кнопкой
+        bubble.style.left = Math.round(left) + 'px';
+        bubble.style.top = Math.round(top) + 'px';
+    }
+    const openTips = () => [...document.querySelectorAll('#rtOptimize .rt-tip-btn[aria-expanded="true"]')];
+    function initTips() {
+        const root = $('rtOptimize');
+        root.addEventListener('click', (e) => {
+            const b = e.target.closest('.rt-tip-btn');
+            if (b) {
+                e.preventDefault();
+                const open = b.getAttribute('aria-expanded') !== 'true';
+                openTips().forEach(x => { if (x !== b) setTip(x, false); });
+                setTip(b, open);
+            }
+        });
+        document.addEventListener('click', (e) => {
+            if (e.target.closest('.rt-tip')) return;
+            openTips().forEach(x => setTip(x, false));
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            const list = openTips();
+            if (!list.length) return;
+            list.forEach(x => setTip(x, false));
+            list[0].focus();
+        });
+        const follow = () => openTips().forEach(b => placeTip(b, document.getElementById(b.getAttribute('aria-controls'))));
+        window.addEventListener('scroll', follow, { passive: true });
+        window.addEventListener('resize', follow);
+    }
 
     // ---------- Состояние ----------
     const state = {
         managers: null,        // из обзора: [{agent_id, code, name, included}] — галочки параметров
         homes: new Map(),      // agent_id → [lat, lon] — дома из обзора
         depot: null,           // [lat, lon] — склад из обзора
-        settings: null,        // настройки: порог дня для текстов
+        season: null,          // сезоны из обзора: месяцы зимы — для подсказок
+        roads: false,          // км по дорогам на карте (обзор: distance_source = 'roads')
+        noTruck: 0, noFuel: 0, // из обзора: менеджеров без машины и машин без расхода — для строки про дизель
+        settings: null,        // настройки: порог дня, рабочие дни, «потерян» через N дней
         pick: new Set(),       // выбранные менеджеры (agent_id строкой)
         result: null,          // результат расчёта (§10.1)
-        entries: new Map(),    // «агент:клиент» → строка предложения
-        groups: [],            // группы менеджеров в списке предложений
-        open: new Set(),       // раскрытые группы (agent_id строкой)
-        filter: { type: 'all', q: '' },
+        byAgent: new Map(),    // agent_id строкой → менеджер результата
+        panelAgent: null,      // чьи предложения открыты (agent_id строкой)
+        pf: { group: 'all', q: '', raw: '' },   // фильтр предложений в панели: группа и поиск
+        pgroups: [],           // группы панели: {key, list, el, listEl, toggle, …}
+        rows: new Map(),       // «агент:клиент» → {el, side} — строки, которые сейчас на экране
+        paramsOpen: false,     // после расчёта развернули «Изменить параметры»
         dirty: false,          // после расчёта менялись решения — пора пересчитать
         lastDecision: 0,       // когда на этой странице последний раз сохранилось решение (мс)
         job: null,             // {id, timer, inflight, fails, started, resumed, alive}
@@ -181,7 +261,6 @@
         decError: '',          // список решений не загрузился
         decSeq: 0,             // номер запроса списка: ответ старого запроса не перезаписывает новый
         decBusy: false,        // идёт «Сбросить все» или отмена решения из списка
-        decOpen: false,        // список «Ваши решения» раскрыт
     };
 
     // Липкое меню дашборда переносится на 2–3 строки — прокрутка к разделам учитывает его высоту
@@ -236,14 +315,96 @@
     }
     const sentence = (s) => { const t = String(s || '').trim(); return !t || /[.!?…]$/.test(t) ? t : t + '.'; };
 
-    // ---------- 01 · Параметры ----------
-    const mgrName = (m) => (m && m.name ? String(m.name) : 'Менеджер ' + (m ? (m.code || m.agent_id) : ''));
-
-    function renderHints() {
-        const val = (name) => (document.querySelector('input[name="' + name + '"]:checked') || {}).value;
-        $('roStartHint').textContent = START_HINT[val('roStart')] || '';
-        $('roFreqHint').textContent = FREQ_HINT[val('roFreq')] || '';
+    // ---------- Слова вместо жаргона (словарь брифа) ----------
+    const minDay = () => num(state.settings && state.settings.min_day_revenue);
+    // «100 000 драм» — порог дня; без настроек — «дневной нормы»
+    const minText = () => (minDay() !== null ? fmt(minDay()) + NB + 'драм' : 'дневной нормы');
+    const workdays = () => {
+        const w = state.settings && Array.isArray(state.settings.workdays) ? state.settings.workdays.map(Number) : null;
+        return new Set(w && w.length ? w : [1, 2, 3, 4, 5, 6]);
+    };
+    // «пн», «пн и чт», «пн, ср и пт»
+    function daysList(days) {
+        const names = days.map(d => WD_LOWER[d] || String(d));
+        return names.length <= 1 ? (names[0] || '') : names.slice(0, -1).join(', ') + ' и ' + names[names.length - 1];
     }
+    const uniqSorted = (list) => [...new Set(list)].sort((a, b) => a - b);
+    const pairsOf = (p) => arr(p).filter(Array.isArray).map(x => [num(x[0]) || 1, num(x[1])]).filter(x => x[1] !== null);
+    // Визиты словами: «вт каждую неделю», «чт раз в 2 недели», «пн и чт каждую неделю»; пусто — «не посещать»
+    function patternHuman(p) {
+        const pairs = pairsOf(p);
+        if (!pairs.length) return 'не посещать';
+        const w1 = uniqSorted(pairs.filter(x => x[0] === 1).map(x => x[1]));
+        const w2 = uniqSorted(pairs.filter(x => x[0] === 2).map(x => x[1]));
+        if (w1.join() === w2.join()) return daysList(w1) + ' каждую неделю';
+        if (!w2.length) return daysList(w1) + ' раз в 2 недели';
+        if (!w1.length) return daysList(w2) + ' раз в 2 недели';
+        return daysList(w1) + ' в 1-ю неделю, ' + daysList(w2) + ' во 2-ю';
+    }
+    // Визит «раз в 2 недели» — в какую неделю двухнедельного цикла (так и в Excel)
+    function cycleWeekNote(p) {
+        const weeks = uniqSorted(pairsOf(p).map(x => x[0]));
+        if (weeks.length !== 1) return null;
+        return 'Визит — в ' + (weeks[0] === 1 ? '1-ю' : '2-ю') + ' неделю из двух.';
+    }
+    function freqHuman(f) {
+        const n = num(f);
+        if (n === null) return '—';
+        if (n <= 0) return 'не посещать';
+        if (Math.abs(n - 0.5) < 1e-9) return 'раз в 2 недели';
+        if (Math.abs(n - 1) < 1e-9) return 'раз в неделю';
+        return fmt(n, 1) + ' ' + (Number.isInteger(n) ? plural(n, 'раз', 'раза', 'раз') : 'раза') + ' в неделю';
+    }
+    // Текст шаблона с сервера («пн, 1-я неделя из 2») — теми же словами, что и на странице
+    const humanPlanText = (t) => String(t || '—').replace(/, каждую неделю/g, ' каждую неделю')
+        .replace(/, 1-я неделя из 2/g, ' раз в 2 недели').replace(/, 2-я неделя из 2/g, ' раз в 2 недели')
+        .replace(/клиента нет в плане/g, 'магазина нет в плане');
+    // Как часто магазин заказывает: «примерно раз в 3 недели», «почти каждую неделю», «2 раза в неделю»
+    function orderRateText(lam) {
+        const l = num(lam);
+        if (l === null) return null;
+        if (l <= 0) return 'за год ни одного заказа';
+        if (l >= 0.95) return 'заказывает ' + fmt(round(l, 1), 1) + ' ' + (Number.isInteger(round(l, 1)) ? plural(round(l, 1), 'раз', 'раза', 'раз') : 'раза') + ' в неделю';
+        const w = Math.round(1 / l);
+        return w <= 1 ? 'заказывает почти каждую неделю' : 'заказывает примерно раз в ' + w + ' ' + plural(w, 'неделю', 'недели', 'недель');
+    }
+    function monthsAgo(days) {
+        const m = Math.floor(days / 30.4);
+        if (m >= 12) return 'больше года';
+        return m <= 1 ? 'больше месяца' : 'больше ' + m + ' месяцев';
+    }
+    // Статус покупок (§15) словами: «перестал покупать 79 дней назад», «не покупает больше 9 месяцев»
+    function silenceText(id) {
+        const c = custOf(id) || {}, d = num(c.silent_days);
+        if (c.status === 'never') return 'ни одного заказа за год';
+        if (c.status === 'lost') return d !== null ? 'не покупает ' + monthsAgo(d) : 'давно не покупает';
+        if (c.status === 'dormant') return d !== null ? 'перестал покупать ' + fmt(d) + NB + plural(d, 'день', 'дня', 'дней') + ' назад' : 'перестал покупать';
+        return null;
+    }
+    const lostMonths = () => {
+        const d = num(state.settings && state.settings.lost_min_days);
+        const m = Math.max(1, Math.round((d !== null ? d : 120) / 30));
+        return m === 1 ? 'месяца' : m + ' ' + (m % 10 === 1 && m % 100 !== 11 ? 'месяца' : 'месяцев');
+    };
+    function durText(mins) {
+        const m = Math.round(Math.abs(mins));
+        if (m < 60) return m + NB + 'мин';
+        const hh = Math.floor(m / 60), r = m % 60;
+        return hh + NB + 'ч' + (r ? ' ' + r + NB + 'мин' : '');
+    }
+    // Разница в длине дня словами: «почти на час короче», «на 20 минут длиннее»; меньше 5 минут — null
+    function dayShift(minutes) {
+        const m = Math.abs(minutes), word = minutes > 0 ? 'короче' : 'длиннее';
+        if (m < 5) return null;
+        if (m < 40) return 'на ' + Math.max(5, Math.round(m / 5) * 5) + ' минут ' + word;
+        if (m < 58) return 'почти на час ' + word;
+        if (m < 70) return 'на час ' + word;
+        const hh = Math.round(m / 30) / 2;
+        return 'на ' + fmt(hh, 1) + ' ' + (Number.isInteger(hh) ? plural(hh, 'час', 'часа', 'часов') : 'часа') + ' ' + word;
+    }
+
+    // ---------- Шаг 1 · Посчитать ----------
+    const mgrName = (m) => (m && m.name ? String(m.name) : 'Менеджер ' + (m ? (m.code || m.agent_id) : ''));
 
     // Менеджеры вне расчёта (галочка «в расчёте» в настройках) выбрать нельзя — сервер их не посчитает;
     // рядом — ссылка на настройки, где их включают
@@ -281,7 +442,7 @@
 
     function renderPickCount() {
         const n = pickable().length, off = state.managers ? state.managers.length - n : 0;
-        $('roMgrCount').textContent = n ? 'выбрано ' + state.pick.size + ' из ' + n + (off ? ' · не в расчёте ' + off : '') : '';
+        $('roMgrCount').textContent = n ? 'отмечено ' + state.pick.size + ' из ' + n + (off ? ' · не в расчёте ' + off : '') : '';
         updateRunState();
     }
 
@@ -314,7 +475,7 @@
         };
     }
 
-    // Параметры результата — в форму (перед «Пересчитать с учётом решений»); менеджер, которого с тех пор
+    // Параметры результата — в форму (перед «Пересчитать»); менеджер, которого с тех пор
     // исключили из расчёта, не выбирается
     function setParams(p) {
         const check = (name, v) => document.querySelectorAll('input[name="' + name + '"]').forEach(r => { r.checked = r.value === v; });
@@ -325,10 +486,16 @@
             state.pick = new Set(p.agent_ids.map(String).filter(id => ok.has(id)));
             renderPicker();
         }
-        renderHints();
     }
 
     const running = () => !!state.job || state.starting;
+    // «≈ 5 секунд» — по длительности последнего расчёта, с запасом до 5 секунд
+    function runNote() {
+        const s = state.result ? num(state.result.seconds) : null;
+        const sec = Math.max(5, Math.ceil((s || 0) / 5) * 5);
+        return sec < 60 ? '≈' + NB + sec + NB + 'секунд, ' + RUN_NOTE_TAIL
+            : '≈' + NB + Math.ceil(sec / 60) + NB + 'мин, ' + RUN_NOTE_TAIL;
+    }
 
     function updateRunState() {
         const busy = running();
@@ -337,21 +504,51 @@
         btn.setAttribute('aria-disabled', busy || none ? 'true' : 'false');
         btn.setAttribute('aria-busy', busy ? 'true' : 'false');
         btn.querySelector('i').className = busy ? 'rt-spin-inline' : 'fas fa-play';
-        btn.querySelector('span').textContent = busy ? 'Идёт расчёт…' : 'Рассчитать';
+        btn.querySelector('span').textContent = busy ? 'Считаю…' : 'Посчитать предложения';
         const note = $('roRunNote');
-        note.textContent = busy ? 'можно уйти со страницы — расчёт продолжится на сервере'
-            : (none ? 'Выберите хотя бы одного менеджера' : RUN_NOTE);
+        note.textContent = busy ? 'Можно уйти со страницы — расчёт продолжится на сервере'
+            : (none ? 'Отметьте хотя бы одного менеджера в «Дополнительно»' : runNote());
         note.classList.toggle('is-warn', none && !busy);
         ['roMgrFs', 'roStartFs', 'roFreqFs'].forEach(id => { $(id).disabled = busy; });
-        $('roRecalcBtn').setAttribute('aria-disabled', busy ? 'true' : 'false');
+        const rb = $('roRecalcBtn');
+        rb.setAttribute('aria-disabled', busy ? 'true' : 'false');
+        rb.setAttribute('aria-busy', busy ? 'true' : 'false');
+        rb.querySelector('i').className = busy ? 'rt-spin-inline' : 'fas fa-rotate';
+        rb.querySelector('span').textContent = busy ? 'Считаю…' : (state.dirty ? 'Пересчитать с учётом решений' : 'Пересчитать');
+        rb.classList.toggle('rt-btn-primary', state.dirty && !busy);
+        rb.classList.toggle('rt-btn-ghost', !(state.dirty && !busy));
         $('roStaleNote').classList.toggle('d-none', !(busy && state.result));
+    }
+
+    // После расчёта шаг 1 — одна строка «Посчитано … · Пересчитать»; форма — по «Изменить параметры»
+    function renderStep1() {
+        const r = state.result, has = !!r;
+        $('roStep1').classList.toggle('is-done', has);
+        $('roDone').hidden = !has;
+        const formOpen = !has || state.paramsOpen;
+        $('roForm').hidden = !formOpen;
+        const tg = $('roParamsToggle');
+        tg.setAttribute('aria-expanded', String(has && state.paramsOpen));
+        tg.textContent = state.paramsOpen ? 'Скрыть параметры' : 'Изменить параметры';
+        if (!has) return;
+        const t = parseTime(r.generated_at), n = r.managers.length, p = r.params;
+        const parts = [(t ? 'Посчитано ' + dayTime(t) : 'Последний расчёт') + ' по ' + n + ' ' + plural(n, 'менеджеру', 'менеджерам', 'менеджерам')];
+        if (p.start === 'fresh') parts.push('магазины разложены заново');
+        if (p.frequencies === 'current') parts.push('частота — как сейчас');
+        const el = $('roDoneText');
+        el.textContent = '';
+        el.append(icon('fa-circle-check'), h('span', { text: parts.join(', ') }));
+        const snap = parseTime(r.snapshot_as_of);
+        if (snap) el.append(tip('Данные ERP прочитаны ' + dayTime(snap) + (num(r.seconds) !== null ? ', расчёт занял ' + duration(r.seconds) : '')
+            + '. «Пересчитать» — посчитать заново с теми же менеджерами и с учётом ваших решений.', 'когда посчитано'));
     }
 
     // ---------- Запуск и опрос задачи ----------
     function run(params) {
         if (running()) { announce('Расчёт уже идёт — дождитесь окончания'); return; }
         if (Array.isArray(params.agent_ids) && !params.agent_ids.length) {
-            announce('Выберите хотя бы одного менеджера');
+            announce('Отметьте хотя бы одного менеджера');
+            $('roMore').open = true;
             const first = $('roMgrs').querySelector('input');
             if (first) first.focus();
             return;
@@ -412,7 +609,7 @@
         const started = startedAt || Date.now();
         state.job = { id, timer: null, inflight: false, fails: 0, started, resumed, alive: false };
         try { localStorage.setItem(LS_JOB, JSON.stringify({ id, at: started })); } catch (e) { /* приватный режим */ }
-        showRunning(resumed ? 'Проверяю ход расчёта…' : 'Готовлю данные…');
+        showRunning(resumed ? 'Проверяю ход расчёта…' : 'Читаю данные из ERP…');
         poll();
     }
 
@@ -495,20 +692,20 @@
         updateRunState();
     }
 
-    // «Менеджер 4 из 9 — A003/9 · Имя»: done — сколько менеджеров уже посчитано, agent_code — тот, что считается сейчас
+    // «Считаю менеджера 4 из 9 — Имя»: done — сколько менеджеров уже посчитано, agent_code — тот, что считается сейчас
     function showProgress(p) {
         const done = num(p.done), total = num(p.total);
         const code = p.agent_code === null || p.agent_code === undefined ? '' : String(p.agent_code);
         let text;
         if (total === null || total <= 0) {
-            text = 'Готовлю данные ERP…';
+            text = 'Читаю данные из ERP…';
         } else if (done !== null && done >= total) {
-            text = 'Итоговая оценка «было → стало»…';
+            text = 'Сравниваю, что было и что станет…';
         } else {
             const k = Math.min(total, Math.max(0, done || 0) + 1);
             const who = typeof p.agent_name === 'string' && p.agent_name ? p.agent_name
                 : ((code && state.managers && state.managers.find(m => String(m.code) === code)) || {}).name;
-            text = 'Менеджер ' + k + ' из ' + total + (code ? ' — ' + code : '') + (who ? ' · ' + who : '');
+            text = 'Считаю менеджера ' + k + ' из ' + total + (who ? ' — ' + who : (code ? ' — ' + code : ''));
         }
         const el = $('roProgressText');
         if (el.textContent !== text) el.textContent = text;   // живой регион объявляет только смену менеджера
@@ -539,9 +736,10 @@
     }
     function hideRunError() { $('roRunError').classList.add('d-none'); }
 
+    // «Пересчитать»: те же менеджеры и параметры, что у показанного результата; решения сервер учтёт сам
     function recalc() {
         if (running()) { announce('Расчёт уже идёт — дождитесь окончания'); return; }
-        if ([...state.entries.values()].some(e => e.saving)) { announce('Дождитесь, пока сохранятся решения'); return; }
+        if (allChanges().some(c => c._saving)) { announce('Дождитесь, пока сохранятся решения'); return; }
         const p = state.result ? state.result.params : {};
         const params = {
             agent_ids: Array.isArray(p.agent_ids) ? p.agent_ids : null,
@@ -551,17 +749,20 @@
         setParams(params);
         if (state.managers && params.agent_ids) params.agent_ids = readParams().agent_ids;   // без исключённых с тех пор
         if (Array.isArray(params.agent_ids) && !params.agent_ids.length) {
-            announce('Менеджеры этого расчёта больше не в расчёте — выберите менеджеров');
+            announce('Менеджеры этого расчёта больше не в расчёте — отметьте менеджеров');
+            state.paramsOpen = true;
+            renderStep1();
+            $('roMore').open = true;
             return;
         }
         start(params);
         const box = $('roProgress');
-        scrollTo(box);
+        scrollTo($('roStep1'));
         box.focus({ preventScroll: true });
     }
 
     // ---------- Последний расчёт ----------
-    // fresh — ждём результат новой задачи: если он новее показанного, решения «свежие» (баннер снимается)
+    // fresh — ждём результат новой задачи: если он новее показанного, решения «свежие» (подсказка снимается)
     async function loadLast(fresh, focus, startedAt) {
         if (!state.result) $('roLoading').classList.remove('d-none');
         $('roLoadError').classList.add('d-none');
@@ -597,19 +798,20 @@
         }
     }
 
-    // Готовый результат новой задачи: фокус — на итог. Решения до запуска в него вошли; сохранённые
+    // Готовый результат новой задачи: фокус — на шаг 2. Решения до запуска в него вошли; сохранённые
     // уже во время расчёта (startedAt — начало задачи) — нет, и «пересчитайте» остаётся
     function acceptResult(res, focus, startedAt) {
         const stale = !!startedAt && state.lastDecision > startedAt;
         clearDirty();
+        state.paramsOpen = false;
         setResult(res);
         if (stale) markDirty();
         const n = allChanges().length;
         announce('Расчёт готов: ' + (n ? n + ' ' + plural(n, 'предложение', 'предложения', 'предложений') : 'изменений нет'));
         const a = document.activeElement;
         if (focus && (!a || a === document.body || $('roProgress').contains(a) || a === $('roRunBtn') || a === $('roRecalcBtn'))) {
-            $('roResTitle').focus({ preventScroll: true });
-            scrollTo(document.querySelector('.ro-resbar'));
+            $('roStep2Title').focus({ preventScroll: true });
+            scrollTo($('roStep2'));
         }
     }
 
@@ -637,10 +839,13 @@
                 c.to = obj(c.to);
                 c.effect = obj(c.effect);
                 const dec = obj(c.decision);
-                c.decision = { pattern: decisionOf(dec.pattern), freq: decisionOf(dec.freq) };
+                c.decision = { pattern: decisionOf(dec.pattern), freq: decisionOf(dec.freq), remove: decisionOf(dec.remove) };
                 if (!KINDS[c.type]) c.type = num(c.from.freq) !== num(c.to.freq) ? 'frequency' : 'move';
+                c._agent = m.agent_id;
                 c._key = m.agent_id + ':' + c.customer_id;
                 c._q = searchKey(c.customer_id);
+                c._saving = false;
+                c._error = '';
             });
             m.hints = arr(m.hints).filter(isObj);
             m.hints.forEach(x => { x._q = searchKey(x.customer_id); });
@@ -655,65 +860,160 @@
     const decisionOf = (v) => (v === 'accepted' || v === 'rejected' ? v : null);
 
     const custOf = (id) => (state.result && isObj(state.result.customers[String(id)]) ? state.result.customers[String(id)] : null);
-    const custName = (id) => { const c = custOf(id); return c && c.name ? String(c.name) : 'Клиент ' + id; };
+    const custName = (id) => { const c = custOf(id); return c && c.name ? String(c.name) : 'Магазин ' + id; };
     const custCode = (id) => { const c = custOf(id); return c && c.code ? String(c.code) : ''; };
     const allChanges = () => (state.result ? state.result.managers.flatMap(m => m.changes) : []);
     const kindsOf = (c) => KINDS[c.type] || KINDS.move;
+    const isRemove = (c) => c.type === 'remove';
+    const isSilent = (id) => { const c = custOf(id); return !!c && SILENT.has(c.status); };
 
     function statusOf(c) {
         const vals = kindsOf(c).map(k => c.decision[k]);
         if (vals.every(v => v === vals[0])) return vals[0] || 'none';
         return 'mixed';
     }
+    const acceptedAny = (c) => kindsOf(c).some(k => c.decision[k] === 'accepted');
+
+    // Дни недели шаблона, в которые менеджер не работает (воскресенье)
+    const offDaysOf = (p) => { const wd = workdays(); return uniqSorted(pairsOf(p).map(x => x[1]).filter(d => !wd.has(d))); };
+
+    // Группа предложения по смыслу: убрать → вернуть (перестал покупать) → с нерабочего дня → реже → другой день
+    function groupOf(c) {
+        if (isRemove(c)) return 'remove';
+        if (isSilent(c.customer_id)) return 'winback';
+        if (offDaysOf(c.from.pattern).length) return 'offday';
+        const ff = num(c.from.freq), tf = num(c.to.freq);
+        if (ff !== null && tf !== null && tf < ff - 1e-9) return 'freq';
+        if (ff !== null && tf !== null && Math.abs(tf - ff) < 1e-9) return 'move';
+        return 'other';
+    }
+
+    // Заголовок и причина группы (бриф): «Посещать раз в 2 недели — 60 магазинов» · «заказывают реже…»
+    function groupText(key, list) {
+        if (key === 'freq') {
+            const half = list.every(c => Math.abs((num(c.to.freq) || 0) - 0.5) < 1e-9);
+            return { title: half ? 'Посещать раз в 2 недели' : 'Посещать реже', chip: 'Реже',
+                reason: 'Заказывают реже, чем их посещают, — визиты впустую.' };
+        }
+        if (key === 'move') return { title: 'Перенести на другой день', chip: 'Другой день',
+            reason: 'Так день получается компактнее, а выручка по дням — ровнее.' };
+        if (key === 'offday') {
+            const days = uniqSorted(list.flatMap(c => offDaysOf(c.from.pattern)));
+            if (days.length === 1 && WD_FROM[days[0]]) {
+                const from = (days[0] === 2 || days[0] === 3 ? 'со ' : 'с ') + WD_FROM[days[0]];   // «со вторника», «с воскресенья»
+                return { title: 'Перенести ' + from, chip: cap(from), reason: cap(WD_FULL[days[0]]) + ' — нерабочий день.' };
+            }
+            return { title: 'Перенести с нерабочих дней', chip: 'С выходных', reason: 'В эти дни менеджеры не работают.' };
+        }
+        if (key === 'winback') return { title: 'Постараться вернуть', chip: 'Вернуть',
+            reason: 'Раньше покупали регулярно, сейчас перестали. Визит раз в 2 недели — чтобы попробовать вернуть.' };
+        if (key === 'remove') return { title: 'Убрать из маршрута', chip: 'Убрать',
+            reason: 'Не покупают больше ' + lostMonths() + ' или ни разу за год. Решение — по каждому магазину отдельно.' };
+        return { title: 'Другие изменения', chip: 'Другое', reason: 'Меняются и дни, и число визитов.' };
+    }
+
+    // Почему программа это предлагает — одной-двумя фразами для «?» у магазина
+    function rowReason(c) {
+        const reason = String(c.reason || '');
+        if (/шаблон принят владельцем/.test(reason)) return 'Эти дни вы уже приняли раньше — программа их сохранила.';
+        if (/частота принята владельцем/.test(reason)) return 'Эту частоту визитов вы уже приняли раньше.';
+        if (/удаление принято владельцем/.test(reason)) return 'Вы уже решили убрать этот магазин из маршрута.';
+        const g = groupOf(c), silent = silenceText(c.customer_id);
+        if (g === 'remove') return cap(silent || 'перестал покупать') + '.';
+        if (g === 'winback') return cap(silent || 'перестал покупать') + '. Визит раз в 2 недели — чтобы попробовать вернуть.';
+        const off = offDaysOf(c.from.pattern);
+        const offText = off.length ? cap(off.map(d => WD_FULL[d]).join(' и ')) + (off.length > 1 ? ' — нерабочие дни.' : ' — нерабочий день.') : '';
+        const ff = num(c.from.freq), tf = num(c.to.freq);
+        if (ff !== null && tf !== null && tf < ff - 1e-9) {
+            const rate = orderRateText(obj(custOf(c.customer_id)).lam_year);
+            const season = /в сезон/.test(reason) ? ' В сезон заказывает чаще — это учтено.' : '';
+            return (offText ? offText + ' ' : '') + (rate ? cap(rate) : 'Заказывает редко') + ', а посещают его ' + freqHuman(ff) + '.' + season;
+        }
+        return offText || 'Так день получается компактнее, а выручка по дням — ровнее.';
+    }
+
+    // Сколько км в неделю меняется у менеджера, если принять все его предложения (минус — меньше)
+    const mgrKmDelta = (m) => {
+        const b = m ? num(m.before.manager_km) : null, a = m ? num(m.after.manager_km) : null;
+        return b !== null && a !== null ? a - b : null;
+    };
+    // «≈ 2 ч», «≈ 45 мин» — время округлено, чтобы не казалось точным
+    function approxDur(mins) {
+        const m = Math.abs(mins);
+        if (m >= 60) return fmt(Math.round(m / 30) / 2, 1) + NB + 'ч';
+        return Math.max(5, Math.round(m / 5) * 5) + NB + 'мин';
+    }
+    const visitsWord = (n) => (Number.isInteger(n) ? plural(n, 'визит', 'визита', 'визитов') : 'визита');
+
+    // Эффект одного предложения, применённого к текущему плану, — коротко (в неделю). Перенос сам по себе
+    // может добавить км: выгода — от того, как переставлены все магазины вместе, это и говорим
+    function effectText(c, m) {
+        const e = c.effect;
+        const km = num(e.manager_km_week), mins = num(e.minutes_week), weak = num(e.weak_days_week);
+        const bits = [];
+        if (km !== null && round(km, 1) !== 0) bits.push((km < 0 ? MINUS : '+') + fmt(Math.abs(km), 1) + NB + 'км');
+        if (mins !== null && Math.round(mins) !== 0) bits.push((mins < 0 ? MINUS : '+') + durText(mins));
+        if (weak !== null && Math.abs(weak) >= 0.1) bits.push('слабых дней ' + (weak < 0 ? MINUS : '+') + fmt(Math.abs(weak), 1));
+        let text = bits.length ? 'Отдельно это изменение: ' + bits.join(', ') + ' в неделю.' : 'Отдельно это изменение почти не меняет км и время.';
+        const total = mgrKmDelta(m);
+        if (km !== null && round(km, 1) > 0 && total !== null && total < -1) {
+            text += ' Вместе с остальными изменениями у менеджера выходит ' + MINUS + fmt(-total) + NB + 'км в неделю.';
+        }
+        return text;
+    }
+
+    // Эффект группы: визиты — точно (сумма частот), время — примерно (сумма по магазинам по одному).
+    // Километры по группе не складываем: перенос одного магазина сам по себе может добавить км, выгода — от всех вместе
+    function groupEffect(list, m) {
+        let dv = 0, mins = 0;
+        list.forEach(c => {
+            const ff = num(c.from.freq), tf = isRemove(c) ? 0 : num(c.to.freq);
+            if (ff !== null && tf !== null) dv += tf - ff;
+            const mm = num(c.effect.minutes_week);
+            if (mm !== null) mins += mm;
+        });
+        if (Math.abs(dv) >= 0.25) {
+            const n = round(Math.abs(dv), 1);
+            return { tone: dv < 0 ? 1 : -1,
+                text: 'на ' + fmt(n, 1) + ' ' + visitsWord(n) + ' в неделю ' + (dv < 0 ? 'меньше' : 'больше')
+                    + (dv < 0 && mins <= -20 ? ' — это ≈' + NB + approxDur(mins) + ' работы' : ''),
+                tip: 'Визиты посчитаны точно. Время — примерно: сумма по каждому магазину, если принимать их по одному.' };
+        }
+        const km = mgrKmDelta(m);
+        return { tone: 0, text: 'визитов столько же — меняются только дни',
+            tip: 'Сколько километров это сэкономит, зависит от того, как переставлены все магазины вместе.'
+                + (km !== null && km < -1 ? ' Если принять все предложения этого менеджера, он будет проезжать на ' + fmt(-km) + NB + 'км в неделю меньше.' : '') };
+    }
 
     function setResult(raw) {
         const prev = state.result;
         const res = normalizeResult(raw);
         state.result = res;
+        state.byAgent = new Map(res.managers.map(m => [String(m.agent_id), m]));
         state.dirty = readDirty();
-        if (!prev || String(prev.generated_at) !== String(res.generated_at)) initOpen(res);
+        if (state.panelAgent && !state.byAgent.has(state.panelAgent)) state.panelAgent = null;
+        if (!prev || String(prev.generated_at) !== String(res.generated_at)) state.pf = { group: 'all', q: '', raw: '' };
         $('roEmpty').classList.add('d-none');
         $('roLoadError').classList.add('d-none');
         $('roLoading').classList.add('d-none');
         $('roResult').classList.remove('d-none');
-        renderHead();
-        renderStaleResult();
-        renderKpi();
-        renderFuelNote();
-        renderManagers();
-        renderProposals();
+        renderStep1();
+        renderTexts();
         renderMapSection();
+        renderStep3();
         renderDecisions();
-        renderExport();
         renderRecalc();
         updateRunState();
         loadDecisions();       // расчёт мог отметить решения отработавшими — список и число для Excel заново
     }
 
-    // Раскрытые группы: немного предложений — все, иначе первый менеджер с изменениями
-    function initOpen(res) {
-        const total = res.managers.reduce((s, m) => s + m.changes.length, 0);
-        const withChanges = res.managers.filter(m => m.changes.length);
-        state.open = new Set((total <= OPEN_ALL_MAX ? res.managers : withChanges.slice(0, 1)).map(m => String(m.agent_id)));
-    }
-
-    function renderHead() {
-        const r = state.result, p = r.params;
-        const t = parseTime(r.generated_at), snap = parseTime(r.snapshot_as_of);
-        const parts = [];
-        if (t) parts.push('посчитано ' + stamp(t) + (num(r.seconds) !== null ? ' за ' + duration(r.seconds) : ''));
-        if (snap) parts.push('данные ERP на ' + stamp(snap));
-        parts.push(p.start === 'fresh' ? 'построено с нуля' : 'улучшен текущий план');
-        parts.push(p.frequencies === 'current' ? 'частота как сейчас' : 'частота по продажам');
-        parts.push(r.managers.length + ' ' + plural(r.managers.length, 'менеджер', 'менеджера', 'менеджеров'));
-        const capped = r.managers.filter(m => m.time_capped === true).length;
-        if (capped) parts.push('у ' + capped + ' ' + plural(capped, 'менеджера', 'менеджеров', 'менеджеров')
-            + ' расчёт остановлен по времени — повторный может немного отличаться');
-        $('roResMeta').textContent = parts.join(' · ');
-        const pill = $('roFresh');
-        pill.textContent = t ? 'РАСЧЁТ ОТ ' + stamp(t) : 'ПОСЛЕДНИЙ РАСЧЁТ';
-        pill.title = snap ? 'Данные ERP на ' + stamp(snap) : '';
-        pill.classList.remove('d-none');
+    // Всё, что зависит от настроек (порог дня, рабочие дни) и сезонов, — заново
+    function renderTexts() {
+        renderMain();
+        renderKpis();
+        renderAllTable();
+        renderCards();
+        renderPanel();
     }
 
     // ---------- Решения → «пересчитайте» ----------
@@ -731,10 +1031,11 @@
         try { localStorage.removeItem(LS_DIRTY); } catch (e) { /* нет доступа к localStorage */ }
     }
     function renderRecalc() {
-        $('roRecalc').classList.toggle('d-none', !state.dirty || !state.result);
+        $('roRecalc').hidden = !state.dirty || !state.result;
+        updateRunState();
     }
 
-    // ---------- Плитки «было → стало» ----------
+    // ---------- Шаг 2 · Главное ----------
     // Итог компании: ключ из before/after, иначе сумма (или среднее) по менеджерам
     function total(side, key, mkey, avg) {
         const r = state.result, v = num(r[side][key]);
@@ -745,517 +1046,626 @@
         const s = vals.reduce((a, b) => a + b, 0);
         return avg ? s / vals.length : s;
     }
-
-    // Плитка: val — узлы, sub — строки (каждая — узел, текст или их список)
-    function tile(id, o) {
-        const el = $(id);
-        el.className = 'rt-tile' + (o.cls ? ' ' + o.cls : '');
-        const v = el.querySelector('[data-v]'), s = el.querySelector('[data-s]');
-        v.textContent = '';
-        s.textContent = '';
-        v.classList.toggle('is-empty', !!o.empty);
-        v.append(...[].concat(o.val).filter(x => x !== null && x !== undefined));
-        (o.sub || []).filter(Boolean).forEach(line => s.append(h('span', { class: 'ro-sub-line' }, line)));
-        if (o.title) el.title = o.title; else el.removeAttribute('title');
-    }
-
-    function baNodes(was, now, d, unit) {
-        return [
-            h('span', { class: 'rt-sr-only', text: 'было ' }),
-            h('span', { class: 'ro-was', text: fmt(was, d) }),
-            h('span', { class: 'ro-arrow', 'aria-hidden': 'true', text: '→' }),
-            h('span', { class: 'rt-sr-only', text: ', стало ' }),
-            h('span', { class: 'ro-now', text: fmt(now, d) }),
-            unit ? h('small', { text: unit }) : null,
-        ];
-    }
-
-    // «на 402 меньше (−26%)» — зелёным, если стало лучше; good: +1 лучше, −1 хуже, 0 — без оценки
-    function changeWords(was, now, d, unit, good) {
-        const diff = now - was, t = trend(diff, d);
-        if (!t) return h('b', { class: 'ro-delta', text: 'без изменений' });
-        const p = was ? Math.round(diff / Math.abs(was) * 100) : 0;
-        return h('b', { class: 'ro-delta' + (good > 0 ? ' is-good' : (good < 0 ? ' is-bad' : '')),
-            text: 'на ' + fmt(Math.abs(diff), d) + (unit ? NB + unit : '') + (t < 0 ? ' меньше' : ' больше') + (p ? ' (' + signed(p, 0) + '%)' : '') });
-    }
-
-    // lower: true — меньше лучше, null — без оценки
-    function tileBA(id, was, now, o) {
-        const has = was !== null || now !== null;
-        const both = was !== null && now !== null;
-        const t = both ? trend(now - was, o.d) : 0;
-        const good = o.lower === null ? 0 : (o.lower ? -t : t);
-        tile(id, {
-            cls: good > 0 ? 't-ok' : (good < 0 ? 't-danger' : ''),
-            empty: !has,
-            val: has ? baNodes(was, now, o.d, o.unit) : '—',
-            sub: [both ? changeWords(was, now, o.d, o.word, good) : null].concat(o.sub || []),
-            title: o.title,
-        });
-    }
-
-    function renderKpi() {
-        const r = state.result, st = state.settings || {};
-        const minDay = num(st.min_day_revenue);
-        const minText = minDay !== null ? fmt(minDay) + NB + 'драм' : 'норму дня';
-
-        const vb = total('before', 'visits_week', 'visits'), va = total('after', 'visits_week', 'visits');
-        // визиты «раз в 2 недели» дают половинки: 6 → 5,5, поэтому один знак после запятой
-        tileBA('roKVisits', vb, va, { d: 1, lower: true,
-            sub: [r.params.frequencies === 'current' ? 'частота визитов как сейчас' : 'частота — по продажам'],
-            title: 'Сколько визитов менеджеры делают за неделю, по всем менеджерам расчёта.' });
-
-        const wb = total('before', 'days_below_min', 'days_below_min'), wa = total('after', 'days_below_min', 'days_below_min');
-        const days = num(r.after.days_total) ?? num(r.before.days_total);
-        tileBA('roKWeak', wb, wa, { d: 1, lower: true, unit: NB + 'в нед.',
-            sub: ['дней' + (days !== null ? ' из ' + fmt(days, 1) : '') + ', где шанс набрать ' + minText + ' меньше 50%'],
-            title: 'Слабый день — зимой шанс набрать норму дня меньше 50%. Считается по зимним заказам, в среднем за неделю.' });
-
-        const kb = total('before', 'manager_km_week', 'manager_km'), ka = total('after', 'manager_km_week', 'manager_km');
-        const lb = num(r.before.manager_liters_week), la = num(r.after.manager_liters_week);
-        tileBA('roKMgrKm', kb, ka, { d: 0, lower: true, unit: NB + 'км/нед', word: 'км',
-            sub: [lb !== null || la !== null ? 'топливо ' + fmt(lb) + ' → ' + fmt(la) + NB + 'л в неделю' : null],
-            title: 'Дом → клиенты дня в самом коротком порядке объезда → дом; по прямой с поправкой на извилистость дорог.' });
-
-        // Км грузовиков есть, если заданы склад и машины менеджеров; без расхода машин нет литров, и
-        // грузовики не участвуют в выборе дней (truck_costs = false) — просим указать именно расход
-        const tb = total('before', 'truck_km_week', 'truck_km'), ta = total('after', 'truck_km_week', 'truck_km');
-        if (tb === null && ta === null) {
-            // склад уже указан — не хватает машин, закреплённых за менеджерами
-            const ask = depotOf() ? h('a', { href: '/routes/settings#trucks', text: 'закрепите машины за менеджерами' })
-                : h('a', { href: '/routes/settings#depot', text: 'укажите склад и машины' });
-            tile('roKTruck', {
-                empty: true, val: '—',
-                sub: [[ask, ' — тогда программа учтёт и дизель грузовиков']],
-                title: 'Без склада и машин менеджеров рейсы грузовиков не считаются и в выборе дней не участвуют.',
-            });
-        } else {
-            const tlb = total('before', 'truck_liters_week', 'truck_liters'), tla = total('after', 'truck_liters_week', 'truck_liters');
-            const noFuel = [h('a', { href: '/routes/settings#trucks', text: 'укажите расход машин' }),
-                r.truck_costs === false ? ' — литры не посчитаны, грузовики не участвуют в выборе дней' : ' — литры не посчитаны'];
-            tileBA('roKTruck', tb, ta, { d: 0, lower: true, unit: NB + 'км/нед', word: 'км',
-                sub: [tlb !== null || tla !== null ? 'дизель ' + fmt(tlb) + ' → ' + fmt(tla) + NB + 'л в неделю' : noFuel],
-                title: 'Склад → клиенты, которые заказали, → склад; в среднем по году.' });
-        }
-
-        renderRevenueTile();
-
-        const hb = total('before', 'avg_plan_work_hours', 'avg_work_hours', true), ha = total('after', 'avg_plan_work_hours', 'avg_work_hours', true);
-        const pb = total('before', 'avg_plan_hours', 'avg_plan_hours', true), pa = total('after', 'avg_plan_hours', 'avg_plan_hours', true);
-        tileBA('roKHours', hb, ha, { d: 1, lower: null, unit: NB + 'ч', word: 'ч',
-            sub: [pb !== null || pa !== null ? 'с дорогой из дома ' + fmt(pb, 1) + ' → ' + fmt(pa, 1) + NB + 'ч' : null],
-            title: 'У клиентов — визиты и дорога между ними, в среднем за рабочий день. С дорогой из дома — весь день.' });
-
-        renderChangesTile();
-    }
-
-    // Выручка по модели заказов «было → стало» в каждом сезоне: зима (низкий сезон), лето (пик), год.
-    // Частота снижается только там, где визитов больше, чем заказов в любой сезон, — потерь быть не должно
     const SEASONS = [
-        { key: 'revenue_week_low', mkey: 'revenue_low', label: 'зима' },
-        { key: 'revenue_week_peak', mkey: 'revenue_peak', label: 'лето' },
-        { key: 'revenue_week_year', mkey: 'revenue_year', label: 'год' },
+        { key: 'revenue_week_low', mkey: 'revenue_low', word: 'зимой' },
+        { key: 'revenue_week_peak', mkey: 'revenue_peak', word: 'летом' },
+        { key: 'revenue_week_year', mkey: 'revenue_year', word: 'в среднем за год' },
     ];
-    function renderRevenueTile() {
-        const rows = SEASONS.map(s => ({ s, b: total('before', s.key, s.mkey), a: total('after', s.key, s.mkey) }))
-            .filter(x => x.b !== null || x.a !== null);
-        // ro-tile-wide: на телефоне плитка — во всю ширину (три строки «было → стало» не помещаются в половину)
-        if (!rows.length) { tile('roKRevenue', { cls: 'ro-tile-wide', empty: true, val: '—', sub: ['выручка не посчитана'] }); return; }
-        const lost = rows.filter(x => x.b !== null && x.a !== null && x.a < x.b - 1);   // 1 драм — округление
-        tile('roKRevenue', {
-            cls: 'ro-tile-wide ' + (lost.length ? 't-danger' : 't-ok'),
-            val: h('span', { class: 'ro-rev' }, rows.map(x => h('span', { class: 'ro-revrow' },
-                h('span', { class: 'l', text: x.s.label }),
-                h('span', { class: 'rt-sr-only', text: ': было ' }), h('span', { class: 'ro-was', text: moneyShort(x.b) }),
-                h('span', { class: 'ro-arrow', 'aria-hidden': 'true', text: '→' }),
-                h('span', { class: 'rt-sr-only', text: ', стало ' }), h('span', { class: 'ro-now', text: moneyShort(x.a) })))),
-            sub: [lost.length
-                ? h('b', { class: 'ro-delta is-bad', text: 'меньше: ' + lost.map(x => x.s.label + ' ' + signed((x.a - x.b) / Math.abs(x.b) * 100, 1) + '%').join(', ') })
-                : h('b', { class: 'ro-delta is-good', text: 'без потерь ни в один сезон' })],
-            title: 'Ожидаемая выручка в неделю по модели заказов: зима — низкий сезон, лето — пик, год — в среднем. '
-                + 'Частота снижается только там, где визитов больше, чем заказов в любой сезон.',
-        });
+    const kmTipText = () => 'Сколько километров менеджеры проезжают за неделю: из дома к магазинам дня в самом коротком порядке и обратно домой. '
+        + (state.roads ? 'Км — по дорогам на карте.' : 'Км — по прямой с поправкой на извилистость дорог.')
+        + ' Литры и драмы — по расходу машин менеджеров и ценам топлива из настроек.';
+    function weakTipText() {
+        const months = monthsText(state.season && state.season.low_months);
+        const days = num(state.result.after.days_total) ?? num(state.result.before.days_total);
+        return 'Считаем по заказам зимы' + (months ? ' (' + months + ')' : '') + ' — это самое слабое время года. День слабый, '
+            + 'если он скорее всего не наберёт ' + minText() + ' (шанс меньше 50%).'
+            + (days !== null ? ' Всего рабочих дней у менеджеров — ' + fmt(days, 1) + ' в неделю.' : '');
     }
 
-    function renderChangesTile() {
-        const all = allChanges();
-        const by = { move: 0, frequency: 0, both: 0 };
-        const st = { accepted: 0, rejected: 0, mixed: 0, none: 0 };
-        all.forEach(c => { by[c.type] = (by[c.type] || 0) + 1; st[statusOf(c)]++; });
-        const kinds = [by.move ? 'перенос ' + fmt(by.move) : '', by.frequency ? 'частота ' + fmt(by.frequency) : '',
-                       by.both ? 'оба ' + fmt(by.both) : ''].filter(Boolean).join(' · ');
-        const decided = [st.accepted ? 'принято ' + fmt(st.accepted) : '', st.rejected ? 'отклонено ' + fmt(st.rejected) : '',
-                         st.mixed ? 'частично ' + fmt(st.mixed) : ''].filter(Boolean).join(', ');
-        tile('roKChanges', {
-            cls: 't-acc',
-            val: h('span', { class: 'ro-now', text: fmt(all.length) }),
-            sub: all.length ? [kinds, decided || 'решений пока нет'] : ['текущий план уже близок к лучшему'],
-            title: 'Перенос — другой день, частота — другое число визитов в неделю; «оба» — и то и другое.',
-        });
-    }
+    function renderMain() {
+        const r = state.result, list = $('roMainList'), note = $('roMainNote');
+        list.textContent = '';
+        note.textContent = '';
+        note.hidden = true;
+        const items = [];
+        const n = allChanges().length;
+        $('roMainLead').textContent = n ? 'Если принять все предложения:' : 'Текущий план уже близок к лучшему.';
 
-    function renderFuelNote() {
-        const r = state.result, el = $('roFuelNote');
-        el.textContent = '';
-        if (r.fuel_price_source !== 'fallback') { el.classList.add('d-none'); return; }
-        el.append(icon('fa-gas-pump'), h('span', {},
-            'Цена топлива в настройках не указана — при сравнении вариантов литры посчитаны по условной цене ',
-            h('b', { text: fmt(r.fuel_price_used) + NB + 'драм/л' }), '. ',
-            h('a', { href: '/routes/settings#norms', text: 'Указать цены' })));
-        el.classList.remove('d-none');
-    }
-
-    // ---------- 02 · Таблица менеджеров ----------
-    const MCOLS = [
-        { key: 'visits', d: 1, lower: true, label: 'Визитов в неделю' },
-        { key: 'manager_km', d: 0, lower: true, label: 'Км менеджера' },
-        { key: 'truck_km', d: 0, lower: true, label: 'Км грузовика' },
-        { key: 'days_below_min', d: 1, lower: true, label: 'Слабых дней' },
-        { key: 'avg_work_hours', d: 1, lower: null, label: 'Часы у клиентов' },
-    ];
-
-    function baCell(was, now, d, lower) {
-        if (was === null && now === null) return h('span', { class: 'ro-muted', text: '—' });
-        const t = was !== null && now !== null ? trend(now - was, d) : 0;
-        const good = lower === null ? 0 : (lower ? -t : t);
-        return h('span', { class: 'ro-bacell' },
-            h('span', { class: 'rt-sr-only', text: 'было ' }), h('span', { class: 'was', text: fmt(was, d) }),
-            h('span', { class: 'arr', 'aria-hidden': 'true', text: '→' }),
-            h('span', { class: 'rt-sr-only', text: ', стало ' }),
-            h('span', { class: 'now' + (good > 0 ? ' is-good' : (good < 0 ? ' is-bad' : '')), text: fmt(now, d) }));
-    }
-
-    // «зимой 517 тыс./нед → 100 000 возможно максимум в 5 из 6 дней»
-    function feasNode(f) {
-        const rev = num(f.revenue_week_low), max = num(f.max_days_ge_min), wd = num(f.workdays);
-        if (rev === null || max === null || !wd) return h('span', { class: 'ro-muted', text: '—' });
-        const minDay = num(state.settings && state.settings.min_day_revenue);
-        const normText = minDay !== null ? fmt(minDay) : 'норму дня';
-        const head = 'зимой ' + moneyShort(rev) + '/нед → ' + normText;
-        const k = Math.max(0, Math.min(Math.floor(max), wd));
-        const ok = f.reachable === true || (f.reachable !== false && k >= wd);
-        let text;
-        if (ok) text = head + ' возможно во все ' + wd + ' ' + plural(wd, 'день', 'дня', 'дней');
-        else if (k === 0) text = head + ' не набрать ни в один из ' + wd + ' ' + genDays(wd);
-        else text = head + ' возможно максимум в ' + k + ' из ' + wd + ' ' + genDays(wd);
-        return h('span', { class: 'ro-feas' + (ok ? '' : ' is-warn') }, ok ? null : icon('fa-triangle-exclamation'), text,
-            ok ? null : h('span', { class: 'ro-feas-note', text: normText + ' во все дни зимой недостижимо без новых клиентов' }));
-    }
-
-    function renderManagers() {
-        const tb = $('roMgrBody'), r = state.result;
-        tb.textContent = '';
-        if (!r.managers.length) {
-            tb.append(h('tr', {}, h('td', { colspan: '8', class: 'rt-empty', text: 'В расчёте нет менеджеров.' })));
-            return;
+        // 1. Километры менеджеров: литры и драмы, если посчитаны
+        const kb = total('before', 'manager_km_week', 'manager_km'), ka = total('after', 'manager_km_week', 'manager_km');
+        if (kb !== null && ka !== null) {
+            const d = kb - ka;
+            if (Math.abs(d) < 1) {
+                items.push({ tone: 0, nodes: ['пробег менеджеров почти не изменится — ', mark(fmt(ka) + NB + 'км в неделю', 0)], tip: kmTipText(), tipLabel: 'километры' });
+            } else {
+                const extra = [];
+                const lb = num(r.before.manager_liters_week), la = num(r.after.manager_liters_week);
+                if (lb !== null && la !== null && Math.abs(lb - la) >= 1) extra.push('≈' + NB + fmt(Math.abs(lb - la)) + NB + 'л топлива');
+                const ab = num(r.before.manager_amd_week), aa = num(r.after.manager_amd_week);
+                if (ab !== null && aa !== null && Math.abs(ab - aa) >= 100) extra.push('≈' + NB + moneyRound(Math.abs(ab - aa)) + NB + 'драм');
+                items.push({ tone: d > 0 ? 1 : -1, tip: kmTipText(), tipLabel: 'километры',
+                    nodes: ['менеджеры будут проезжать ', mark('на ' + fmt(Math.abs(d)) + NB + 'км в неделю ' + (d > 0 ? 'меньше' : 'больше'), d > 0 ? 1 : -1),
+                        extra.length ? ' (' + extra.join(', ') + ')' : ''] });
+            }
         }
-        r.managers.forEach(m => {
-            const tags = [];
-            if (m.time_capped === true) {
-                tags.push(h('span', { class: 'rt-badge b-warn', text: 'стоп по времени',
-                    title: 'Расчёт этого менеджера остановлен по времени — повторный расчёт может немного отличаться' }));
+
+        // 2. Слабые дни зимой
+        const wb = total('before', 'days_below_min', 'days_below_min'), wa = total('after', 'days_below_min', 'days_below_min');
+        if (wb !== null && wa !== null) {
+            const phrase = 'дней, когда выручка меньше ' + minText() + ', зимой ';
+            const rb = round(wb, 1), ra = round(wa, 1);
+            if (ra < rb) items.push({ tone: 1, nodes: [phrase + 'станет ', mark(fmt(wa, 1) + ' вместо ' + fmt(wb, 1), 1)], tip: weakTipText(), tipLabel: 'слабые дни' });
+            else if (ra > rb) items.push({ tone: -1, nodes: [phrase + 'станет больше: ', mark(fmt(wa, 1) + ' вместо ' + fmt(wb, 1), -1)], tip: weakTipText(), tipLabel: 'слабые дни' });
+            else if (!ra) items.push({ tone: 1, nodes: ['дней, когда выручка меньше ' + minText() + ', зимой ', mark('нет и не будет', 1)], tip: weakTipText(), tipLabel: 'слабые дни' });
+            else items.push({ tone: 0, nodes: [phrase + 'останется столько же — ', mark(fmt(wa, 1), 0)], tip: weakTipText(), tipLabel: 'слабые дни' });
+        }
+
+        // 3. Визиты и длина рабочего дня
+        const vb = total('before', 'visits_week', 'visits'), va = total('after', 'visits_week', 'visits');
+        const pb = total('before', 'avg_plan_hours', 'avg_plan_hours', true), pa = total('after', 'avg_plan_hours', 'avg_plan_hours', true);
+        if (vb !== null && va !== null && vb > 0) {
+            const dv = vb - va, p = Math.round(Math.abs(dv) / vb * 100);
+            const shift = pb !== null && pa !== null ? dayShift((pb - pa) * 60) : null;
+            const nodes = [];
+            if (Math.abs(dv) < 0.5) nodes.push('визитов будет столько же — ', mark(fmt(va) + ' в неделю', 0));
+            else nodes.push('визитов станет ', mark('на ' + (p ? p + '%' : fmt(Math.abs(dv), 1)) + ' ' + (dv > 0 ? 'меньше' : 'больше'), dv > 0 ? 1 : -1),
+                ' — ' + fmt(va, 1) + ' вместо ' + fmt(vb, 1) + ' в неделю');
+            if (shift) nodes.push(', а рабочий день — ' + shift);
+            items.push({ tone: dv > 0.4 ? 1 : (dv < -0.4 ? -1 : 0), nodes, tipLabel: 'визиты',
+                tip: 'Визит — один заход менеджера в магазин. Рабочий день — от выезда из дома до возвращения, в среднем'
+                    + (pb !== null && pa !== null ? ': сейчас ' + fmt(pb, 1) + NB + 'ч, станет ' + fmt(pa, 1) + NB + 'ч.' : '.') });
+        }
+
+        // 4. Выручка — не меняется или меняется
+        const rows = SEASONS.map(s => ({ s, b: total('before', s.key, s.mkey), a: total('after', s.key, s.mkey) }))
+            .filter(x => x.b !== null && x.a !== null);
+        if (rows.length) {
+            const lost = rows.filter(x => x.a < x.b - 1);   // 1 драм — округление
+            const now = rows.map(x => x.s.word + ' ≈' + NB + moneyShort(x.b)).join(', ');
+            const tipText = 'Программа снижает частоту только там, где магазин заказывает реже, чем его посещают, поэтому ожидаемая выручка не падает. '
+                + 'Ожидаемая выручка в неделю сейчас: ' + now + ' драм. У тех, кто перестал покупать, её уже нет — их визиты ничего не приносят.';
+            if (!lost.length) items.push({ tone: 1, nodes: [mark('выручка не уменьшится', 1), ' — ни зимой, ни летом'], tip: tipText, tipLabel: 'выручка' });
+            else items.push({ tone: -1, tip: tipText, tipLabel: 'выручка',
+                nodes: ['ожидаемая выручка уменьшится: ', mark(lost.map(x => x.s.word + ' на ' + fmt(Math.abs((x.a - x.b) / x.b * 100), 1) + '%').join(', '), -1)] });
+        }
+
+        items.forEach(it => list.append(h('li', { class: it.tone > 0 ? 'is-good' : (it.tone < 0 ? 'is-bad' : 'is-same') },
+            h('span', { class: 'ico', 'aria-hidden': 'true' }, icon(it.tone > 0 ? 'fa-check' : (it.tone < 0 ? 'fa-arrow-up' : 'fa-equals'))),
+            h('span', { class: 'txt' }, it.nodes, it.tip ? [' ', tip(it.tip, it.tipLabel)] : null))));
+
+        // Грузовики — одной строкой. Только итог компании: сумма по части менеджеров ввела бы в заблуждение
+        const tb = num(r.before.truck_km_week), ta = num(r.after.truck_km_week);
+        const tlb = num(r.before.truck_liters_week), tla = num(r.after.truck_liters_week);
+        const link = (hash, text) => h('a', { href: '/routes/settings#' + hash, text });
+        if (tb === null && ta === null) {
+            note.append(icon('fa-truck'), h('span', {}, 'Дизель грузовиков не посчитан: ',
+                depotOf() ? 'укажите машины менеджеров' : 'укажите склад и машины', ' — ', link(depotOf() ? 'trucks' : 'depot', 'в настройках'), '.'));
+        } else {
+            const d = (tb || 0) - (ta || 0);
+            const km = Math.abs(d) >= 1 ? 'Грузовики будут проезжать на ' + fmt(Math.abs(d)) + NB + 'км в неделю ' + (d > 0 ? 'меньше' : 'больше') + '. '
+                : 'Пробег грузовиков почти не изменится. ';
+            if (tlb !== null && tla !== null) {
+                const dl = tlb - tla;
+                note.append(icon('fa-truck'), h('span', {}, km, Math.abs(dl) >= 1
+                    ? 'Дизеля — на ≈' + NB + fmt(Math.abs(dl)) + NB + 'л в неделю ' + (dl > 0 ? 'меньше' : 'больше') + '.' : 'Дизель почти не изменится.'));
+            } else {
+                const miss = [state.noTruck ? 'у ' + state.noTruck + ' ' + plural(state.noTruck, 'менеджера', 'менеджеров', 'менеджеров') + ' нет машины' : '',
+                    state.noFuel ? 'у ' + state.noFuel + ' ' + plural(state.noFuel, 'машины', 'машин', 'машин') + ' не указан расход' : ''].filter(Boolean);
+                note.append(icon('fa-truck'), h('span', {}, km, 'Дизель посчитан не для всех машин' + (miss.length ? ': ' + miss.join(', ') : '') + ' — ',
+                    link('trucks', 'заполнить в настройках'), '.'));
+            }
+        }
+        note.hidden = false;
+    }
+
+    // ---------- Три крупных показателя ----------
+    function kpiNode(o) {
+        const both = o.was !== null && o.now !== null;
+        const diff = both ? o.now - o.was : null;
+        const t = both ? (round(diff, o.d) < 0 ? -1 : (round(diff, o.d) > 0 ? 1 : 0)) : 0;
+        const good = o.lower ? -t : t;
+        const pctText = both && o.was ? ' (' + signed(diff / Math.abs(o.was) * 100, 0) + '%)' : '';
+        const unit = both && o.unit ? NB + o.unit(Math.abs(round(diff, o.d))) : '';
+        return h('div', { class: 'rt-kpi' + (good > 0 ? ' is-good' : (good < 0 ? ' is-bad' : '')) },
+            h('div', { class: 'rt-kpi-label' }, h('span', { text: o.label }), o.tip ? tip(o.tip, o.label) : null),
+            h('div', { class: 'rt-kpi-val' },
+                h('span', { class: 'rt-sr-only', text: 'сейчас ' }), h('span', { class: 'was', text: fmt(o.was, o.d) }),
+                h('span', { class: 'arr', 'aria-hidden': 'true', text: '→' }),
+                h('span', { class: 'rt-sr-only', text: ', если принять — ' }), h('span', { class: 'now', text: fmt(o.now, o.d) })),
+            h('div', { class: 'rt-kpi-delta' }, both ? (t ? signed(diff, o.d) + unit + pctText : 'без изменений') : 'не посчитано'));
+    }
+
+    function renderKpis() {
+        const box = $('roKpis');
+        box.textContent = '';
+        // слово к разнице: «−412 км», «−14 дней», «−465 визитов»; дробное — «3,5 дня»
+        const word = (one, few, many) => (v) => (Number.isInteger(v) ? plural(v, one, few, many) : few);
+        box.append(
+            kpiNode({ label: 'Км в неделю', was: total('before', 'manager_km_week', 'manager_km'), now: total('after', 'manager_km_week', 'manager_km'),
+                d: 0, lower: true, unit: () => 'км', tip: kmTipText() }),
+            kpiNode({ label: 'Слабых дней зимой', was: total('before', 'days_below_min', 'days_below_min'), now: total('after', 'days_below_min', 'days_below_min'),
+                d: 1, lower: true, unit: word('день', 'дня', 'дней'), tip: 'Слабый день — день, когда выручка меньше ' + minText() + '. ' + weakTipText() }),
+            kpiNode({ label: 'Визитов в неделю', was: total('before', 'visits_week', 'visits'), now: total('after', 'visits_week', 'visits'),
+                d: 1, lower: true, unit: word('визит', 'визита', 'визитов'), tip: 'Сколько раз за неделю менеджеры заходят в магазины — по всем менеджерам расчёта. '
+                    + 'Визит «раз в 2 недели» считается как половина визита в неделю.' }));
+    }
+
+    // ---------- «Все цифры» ----------
+    function renderAllTable() {
+        const r = state.result, tb = $('roAllTable').tBodies[0];
+        tb.textContent = '';
+        const days = num(r.after.days_total) ?? num(r.before.days_total);
+        const rows = [
+            { label: 'Визитов в неделю', b: total('before', 'visits_week', 'visits'), a: total('after', 'visits_week', 'visits'), d: 1, lower: true },
+            { label: 'Дней с выручкой меньше ' + minText() + ' зимой' + (days !== null ? ' (из ' + fmt(days, 1) + ')' : ''),
+                b: total('before', 'days_below_min', 'days_below_min'), a: total('after', 'days_below_min', 'days_below_min'), d: 1, lower: true },
+            { label: 'Км менеджеров в неделю', b: total('before', 'manager_km_week', 'manager_km'), a: total('after', 'manager_km_week', 'manager_km'), d: 0, lower: true },
+            { label: 'Топливо менеджеров, литров в неделю', b: num(r.before.manager_liters_week), a: num(r.after.manager_liters_week), d: 0, lower: true },
+            { label: 'Топливо менеджеров, драм в неделю', b: num(r.before.manager_amd_week), a: num(r.after.manager_amd_week), d: 0, lower: true,
+                none: 'не посчитано — нет цен топлива' },
+            { label: 'Км грузовиков в неделю', b: total('before', 'truck_km_week', 'truck_km'), a: total('after', 'truck_km_week', 'truck_km'), d: 0, lower: true,
+                none: 'не посчитано — нет склада или машин' },
+            { label: 'Дизель грузовиков, литров в неделю', b: total('before', 'truck_liters_week', 'truck_liters'), a: total('after', 'truck_liters_week', 'truck_liters'),
+                d: 0, lower: true, none: 'не посчитан — нет расхода машин' },
+            { label: 'Время у магазинов, часов в день', b: total('before', 'avg_plan_work_hours', 'avg_work_hours', true),
+                a: total('after', 'avg_plan_work_hours', 'avg_work_hours', true), d: 1, lower: null },
+            { label: 'Рабочий день с дорогой из дома, часов', b: total('before', 'avg_plan_hours', 'avg_plan_hours', true),
+                a: total('after', 'avg_plan_hours', 'avg_plan_hours', true), d: 1, lower: true },
+        ].concat(SEASONS.map(s => ({ label: 'Ожидаемая выручка в неделю ' + s.word + ', драм', b: total('before', s.key, s.mkey),
+            a: total('after', s.key, s.mkey), money: true, lower: false })));
+        rows.forEach(x => {
+            const both = x.b !== null && x.a !== null;
+            const f = (v) => (x.money ? moneyShort(v) : fmt(v, x.d));
+            let diff = '—', cls = '';
+            if (both) {
+                const dd = x.a - x.b, rr = x.money ? Math.round(dd / 1000) : round(dd, x.d);
+                if (!rr) diff = 'без изменений';
+                else {
+                    diff = (dd > 0 ? '+' : MINUS) + (x.money ? moneyShort(Math.abs(dd)) : fmt(Math.abs(dd), x.d))
+                        + (x.b ? ' (' + signed(dd / Math.abs(x.b) * 100, 0) + '%)' : '');
+                    if (x.lower !== null) cls = ((dd < 0) === !!x.lower) ? 'is-good' : 'is-bad';
+                }
             }
             tb.append(h('tr', {},
-                h('td', { class: 'rt-cell-name' },
-                    h('div', { class: 'rt-mgr' },
-                        h('span', { class: 'rt-dot', style: 'background:' + m._color, 'aria-hidden': 'true' }),
-                        h('div', { class: 'rt-mgr-txt' },
-                            h('a', { class: 'n ro-mgr-link', href: '#roG' + m._i, dataset: { g: String(m._i) },
-                                title: 'К предложениям: ' + mgrName(m), text: mgrName(m) }),
-                            m.code ? h('span', { class: 'c', text: String(m.code) }) : null,
-                            tags.length ? h('span', { class: 'tags' }, tags) : null))),
-                MCOLS.map(c => h('td', { class: 'w-half', dataset: { label: c.label } },
-                    baCell(num(m.before[c.key]), num(m.after[c.key]), c.d, c.lower))),
-                h('td', { class: 'w-half ro-cnum', dataset: { label: 'Изменений' }, text: fmt(m.changes.length) }),
-                h('td', { class: 'ro-feas-cell', dataset: { label: 'Норма дня' } }, feasNode(m.feasibility))));
+                h('th', { scope: 'row', text: x.label }),
+                both || x.b !== null || x.a !== null
+                    ? [h('td', { class: 'num', text: f(x.b) }), h('td', { class: 'num', text: f(x.a) }), h('td', { class: 'num ' + cls, text: diff })]
+                    : h('td', { class: 'muted', colspan: '3', text: x.none || 'не посчитано' })));
         });
-    }
-
-    function onMgrLink(ev) {
-        const a = ev.target.closest('a[data-g]');
-        if (!a) return;
-        ev.preventDefault();
-        const g = state.groups[+a.dataset.g];
-        if (!g) return;
-        if (g.sec.hidden) {   // группа скрыта фильтром — сбрасываем фильтр
-            state.filter = { type: 'all', q: '' };
-            $('roSearch').value = '';
-            renderTypeChips();
-            applyFilter();
+        // Сколько предложений в каких группах и откуда данные
+        const cnt = {};
+        allChanges().forEach(c => { const g = groupOf(c); cnt[g] = (cnt[g] || 0) + 1; });
+        const words = { freq: 'посещать реже', move: 'на другой день', offday: 'с нерабочего дня', winback: 'вернуть', remove: 'убрать', other: 'другое' };
+        const foot = $('roAllFoot');
+        foot.textContent = '';
+        const n = allChanges().length;
+        const snap = parseTime(r.snapshot_as_of);
+        foot.append((n ? 'Предложений: ' + fmt(n) + ' — ' + GROUP_ORDER.filter(g => cnt[g]).map(g => words[g] + ' ' + fmt(cnt[g])).join(', ') + '. '
+            : 'Предложений нет. ') + (snap ? 'Данные ERP на ' + dayTime(snap) + '.' : ''));
+        if (r.fuel_price_source === 'fallback') {
+            foot.append(' Цены топлива в настройках не указаны — при выборе дней программа брала условную цену '
+                + fmt(r.fuel_price_used) + NB + 'драм за литр. ', h('a', { href: '/routes/settings#fuel', text: 'Указать цены' }), '.');
         }
-        setOpen(g, true);
-        scrollTo(g.sec);
-        g.toggle.focus({ preventScroll: true });
     }
 
-    // ---------- 03 · Предложения ----------
-    const patternDays = (p) => [...new Set(arr(p).map(x => num(Array.isArray(x) ? x[1] : null))
-        .filter(w => w !== null && w >= 1 && w <= 7))].sort((a, b) => a - b);
-
-    // Текст шаблона, если сервер его не прислал: «вт, каждую неделю», «чт, 1-я неделя из 2»
-    function patternText(pairs, W) {
-        const by = new Map();
-        pairs.forEach(([w, wd]) => {
-            if (!by.has(wd)) by.set(wd, new Set());
-            by.get(wd).add(w);
-        });
-        if (!by.size) return 'нет визитов';
-        const wds = [...by.keys()].sort((a, b) => a - b);
-        const names = wds.map(wd => (WD_SHORT[wd] || String(wd)).toLowerCase());
-        const sets = wds.map(wd => [...by.get(wd)].sort((a, b) => a - b).join(','));
-        const every = Array.from({ length: W }, (_, i) => i + 1).join(',');
-        if (sets.every(s => s === every)) return names.join(' и ') + ', каждую неделю';
-        if (sets.every(s => s === sets[0]) && !sets[0].includes(',')) return names.join(' и ') + ', ' + sets[0] + '-я неделя из ' + W;
-        return wds.map((wd, i) => names[i] + ' (нед. ' + sets[i].replace(/,/g, ' и ') + ')').join(', ');
-    }
-    function sideText(side) {
-        if (typeof side.text === 'string' && side.text) return side.text;
-        const pairs = arr(side.pattern).filter(Array.isArray).map(x => [num(x[0]) || 1, num(x[1])]).filter(x => x[1] !== null);
-        return patternText(pairs, Math.max(2, ...pairs.map(x => x[0])));
+    // ---------- Карточки менеджеров ----------
+    function mgrProgress(m) {
+        const st = { accepted: 0, rejected: 0, mixed: 0, none: 0 };
+        m.changes.forEach(c => { st[statusOf(c)]++; });
+        return st;
     }
 
-    function renderProposals() {
-        const box = $('roProps');
+    function feasText(m) {
+        const f = m.feasibility, max = num(f.max_days_ge_min), wd = num(f.workdays);
+        if (f.reachable !== false || max === null || !wd) return null;
+        const k = Math.max(0, Math.min(Math.floor(max), wd));
+        if (k === 0) return 'Зимой заказов не хватает ни на один день по ' + minText() + ' — нужны новые магазины.';
+        return 'Зимой заказов хватает на ' + k + ' ' + plural(k, 'день', 'дня', 'дней') + ' из ' + wd + ' — чтобы каждый день приносил '
+            + minText() + ', нужны новые магазины.';
+    }
+
+    function cardNode(m) {
+        const n = m.changes.length, open = state.panelAgent === String(m.agent_id);
+        const sum = [];
+        const kb = num(m.before.manager_km), ka = num(m.after.manager_km);
+        if (kb !== null && ka !== null) {
+            const d = ka - kb;
+            sum.push(Math.abs(d) < 1 ? h('span', { text: 'км почти без изменений' })
+                : h('span', { class: d < 0 ? 'is-good' : 'is-bad', text: (d < 0 ? MINUS : '+') + fmt(Math.abs(d)) + NB + 'км в неделю' }));
+        }
+        const wb = num(m.before.days_below_min), wa = num(m.after.days_below_min);
+        if (wb !== null && wa !== null) {
+            sum.push(!wb && !wa ? h('span', { text: 'слабых дней нет' })
+                : h('span', { class: wa < wb ? 'is-good' : (wa > wb ? 'is-bad' : ''), text: 'слабых дней ' + fmt(wb, 1) + ' → ' + fmt(wa, 1) }));
+        }
+        sum.push(h('span', { text: n ? fmt(n) + ' ' + plural(n, 'предложение', 'предложения', 'предложений') : 'изменений нет' }));
+        const st = mgrProgress(m), decided = st.accepted + st.rejected + st.mixed;
+        const warn = feasText(m);
+        const btn = (n || m.hints.length) ? h('button', { type: 'button', class: 'rt-btn ' + (open ? 'rt-btn-primary' : 'rt-btn-ghost') + ' ro-card-btn',
+            'aria-expanded': String(open), 'aria-controls': 'roPanel', dataset: { open: String(m.agent_id) },
+            'aria-label': (open ? 'Свернуть предложения: ' : 'Посмотреть предложения: ') + mgrName(m) },
+            h('span', { text: open ? 'Свернуть предложения' : (n ? 'Посмотреть предложения' : 'Посмотреть подсказки') }),
+            icon(open ? 'fa-chevron-up' : 'fa-arrow-down')) : null;
+        return h('li', { class: 'ro-card' + (open ? ' is-open' : ''), dataset: { agent: String(m.agent_id) } },
+            h('div', { class: 'ro-card-head' },
+                h('span', { class: 'rt-dot', style: 'background:' + m._color, 'aria-hidden': 'true' }),
+                h('span', { class: 'ro-card-name', text: mgrName(m) }),
+                m.code ? h('span', { class: 'ro-card-code', text: String(m.code) }) : null),
+            h('p', { class: 'ro-card-sum' }, sum.map((x, i) => (i ? [h('span', { class: 'sep', 'aria-hidden': 'true', text: ' · ' }), x] : x))),
+            warn ? h('p', { class: 'ro-card-warn' }, icon('fa-triangle-exclamation'), h('span', { text: warn })) : null,
+            m.time_capped === true ? h('p', { class: 'ro-card-note', text: 'Расчёт остановлен по времени — повторный может немного отличаться.' }) : null,
+            n ? h('div', { class: 'ro-card-prog' },
+                h('span', { class: 'bar', 'aria-hidden': 'true' },
+                    h('span', { class: 'ok', style: 'width:' + ((st.accepted + st.mixed) / n * 100).toFixed(1) + '%' }),
+                    h('span', { class: 'off', style: 'width:' + (st.rejected / n * 100).toFixed(1) + '%' })),
+                h('span', { class: 'txt', text: decided ? 'решено ' + fmt(decided) + ' из ' + fmt(n) : 'решений пока нет' })) : null,
+            btn);
+    }
+
+    function renderCards() {
+        const ul = $('roCards');
+        ul.textContent = '';
+        if (!state.result.managers.length) {
+            ul.append(h('li', { class: 'rt-placeholder', text: 'В расчёте нет менеджеров.' }));
+            return;
+        }
+        state.result.managers.forEach(m => ul.append(cardNode(m)));
+    }
+
+    // Карточка перерисовывается целиком (прогресс, кнопка); фокус на её кнопке сохраняется
+    function refreshCard(agentId) {
+        const m = state.byAgent.get(String(agentId));
+        const old = $('roCards').querySelector('.ro-card[data-agent="' + String(agentId) + '"]');
+        if (!m || !old) return;
+        const hadFocus = old.contains(document.activeElement);
+        const fresh = cardNode(m);
+        old.replaceWith(fresh);
+        if (hadFocus) { const b = fresh.querySelector('button[data-open]'); if (b) b.focus({ preventScroll: true }); }
+    }
+
+    function onCardsClick(ev) {
+        const b = ev.target.closest('button[data-open]');
+        if (!b) return;
+        if (state.panelAgent === b.dataset.open) closePanel(true);
+        else openPanel(b.dataset.open);
+    }
+
+    // ---------- Предложения менеджера ----------
+    const panelMgr = () => (state.panelAgent ? state.byAgent.get(state.panelAgent) || null : null);
+
+    function openPanel(agentId) {
+        const prev = state.panelAgent;
+        state.panelAgent = String(agentId);
+        if (prev !== state.panelAgent) state.pf = { group: 'all', q: '', raw: '' };
+        renderPanel();
+        if (prev) refreshCard(prev);
+        refreshCard(state.panelAgent);
+        const panel = $('roPanel');
+        scrollTo(panel);
+        const t = $('roPanelTitle');
+        if (t) t.focus({ preventScroll: true });
+        const m = panelMgr();
+        announce('Открыты предложения: ' + mgrName(m));
+    }
+
+    function closePanel(focusCard) {
+        const prev = state.panelAgent;
+        state.panelAgent = null;
+        renderPanel();
+        if (!prev) return;
+        refreshCard(prev);
+        if (focusCard) {
+            const b = $('roCards').querySelector('.ro-card[data-agent="' + prev + '"] button[data-open]');
+            if (b) { b.focus({ preventScroll: true }); b.closest('.ro-card').scrollIntoView({ behavior: RM ? 'auto' : 'smooth', block: 'nearest' }); }
+        }
+    }
+
+    const passQuery = (q) => !state.pf.q || q.includes(state.pf.q);
+    // «Принять все в группе»: только без решения и не «убрать» (убрать — решение по каждому магазину)
+    const bulkable = (c) => !c._saving && !isRemove(c) && statusOf(c) === 'none' && passQuery(c._q);
+
+    function renderPanel() {
+        const box = $('roPanel');
         box.textContent = '';
-        state.entries = new Map();
-        state.groups = [];
-        const r = state.result;
-        if (!r.managers.length) box.append(h('p', { class: 'rt-empty', text: 'В расчёте нет менеджеров.' }));
-        r.managers.forEach(m => box.append(groupNode(m)));
-        renderTypeChips();
-        applyFilter();
-    }
+        state.rows = new Map();
+        state.pgroups = [];
+        const m = panelMgr();
+        if (!m) { box.hidden = true; return; }
+        box.hidden = false;
+        box.style.setProperty('--mgr', m._color);
 
-    function groupNode(m) {
-        const gid = 'roG' + m._i;
-        const open = state.open.has(String(m.agent_id));
-        const g = { m, days: [], hints: [], shown: 0, busy: false, empty: null, hintsBox: null };
-        g.toggle = h('button', { type: 'button', class: 'ro-group-toggle', 'aria-expanded': String(open), 'aria-controls': gid + 'b' },
-            icon('fa-chevron-down chev'),
-            h('span', { class: 'rt-dot', style: 'background:' + m._color, 'aria-hidden': 'true' }),
-            h('span', { class: 'n', text: mgrName(m) }),
-            m.code ? h('span', { class: 'c', text: String(m.code) }) : null);
-        g.toggle.addEventListener('click', () => setOpen(g, g.toggle.getAttribute('aria-expanded') !== 'true'));
-        g.stats = h('span', { class: 'ro-gstats' });
-        g.all = h('button', { type: 'button', class: 'rt-btn rt-btn-sm ro-btn-ok' }, icon('fa-check-double'), h('span'));
-        g.all.addEventListener('click', () => acceptAll(g));
-        const mapBtn = h('button', { type: 'button', class: 'rt-hintbtn', 'aria-label': 'Показать на карте: ' + mgrName(m) },
-            icon('fa-map-location-dot'), 'на карте');
-        mapBtn.addEventListener('click', () => showOnMap(m));
-        g.body = h('div', { class: 'ro-group-body', id: gid + 'b', hidden: !open });
-
-        // Внутри менеджера — по дню «стало» (дни недели шаблона после изменения)
-        const byDay = new Map();
+        // группы по смыслу, внутри — по названию магазина
+        const by = new Map();
         m.changes.forEach(c => {
-            const wds = patternDays(c.to.pattern);
-            const key = wds.join(',') || '?';
-            if (!byDay.has(key)) byDay.set(key, { wds, list: [] });
-            byDay.get(key).list.push(c);
+            const g = groupOf(c);
+            if (!by.has(g)) by.set(g, []);
+            by.get(g).push(c);
         });
-        [...byDay.values()]
-            .sort((a, b) => (a.wds[0] || 9) - (b.wds[0] || 9) || a.wds.length - b.wds.length || a.wds.join().localeCompare(b.wds.join()))
-            .forEach(dg => {
-                dg.list.sort((a, b) => custName(a.customer_id).localeCompare(custName(b.customer_id), 'ru'));
-                const day = { count: h('span', { class: 's' }), entries: [] };
-                const ul = h('ul', { class: 'ro-rows' });
-                dg.list.forEach(c => {
-                    const e = { c, m, g, el: null, side: null, saving: false, error: '' };
-                    buildRow(e);
-                    state.entries.set(c._key, e);
-                    day.entries.push(e);
-                    ul.append(e.el);
-                });
-                const title = dg.wds.length ? cap(dg.wds.map(w => WD_FULL[w]).join(' + ')) : 'День не указан';
-                day.el = h('div', { class: 'ro-dayg' },
-                    h('h4', { class: 'ro-dayg-head' },
-                        dg.wds.map(w => h('span', { class: 'sw', style: 'background:' + (WD_COLORS[w] || MGR_OTHER), 'aria-hidden': 'true' })),
-                        title, day.count),
-                    ul);
-                g.days.push(day);
-                g.body.append(day.el);
-            });
-        if (!m.changes.length) {
-            g.empty = h('p', { class: 'ro-empty-row', text: 'Изменений нет — дни и частоту этого менеджера программа менять не предлагает.' });
-            g.body.append(g.empty);
+        const keys = GROUP_ORDER.filter(k => by.has(k));
+        keys.forEach(k => by.get(k).sort((a, b) => custName(a.customer_id).localeCompare(custName(b.customer_id), 'ru')));
+        if (!['all'].concat(keys, m.hints.length ? ['hints'] : []).includes(state.pf.group)) state.pf.group = 'all';
+
+        box.append(h('div', { class: 'ro-panel-head' },
+            h('h3', { class: 'ro-panel-title', id: 'roPanelTitle', tabindex: '-1' },
+                h('span', { class: 'rt-dot', style: 'background:' + m._color, 'aria-hidden': 'true' }),
+                h('span', { class: 'pre', text: 'Предложения — ' }), h('span', { class: 'n', text: mgrName(m) }),
+                m.code ? h('span', { class: 'c', text: String(m.code) }) : null),
+            h('div', { class: 'ro-panel-acts' },
+                h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', dataset: { pact: 'map' }, 'aria-label': 'Показать на карте: ' + mgrName(m) },
+                    icon('fa-map-location-dot'), 'На карте'),
+                h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', dataset: { pact: 'close' }, 'aria-label': 'Свернуть предложения: ' + mgrName(m) },
+                    icon('fa-xmark'), 'Свернуть'))));
+        state.panelStats = h('p', { class: 'ro-panel-stats' });
+        box.append(state.panelStats);
+
+        if (!m.changes.length && !m.hints.length) {
+            box.append(h('p', { class: 'rt-placeholder', text: 'Программа не предлагает ничего менять у этого менеджера.' }));
+            renderPanelStats();
+            return;
         }
-        // Подсказки: не применяются, только к сведению
-        if (m.hints.length) {
-            const ul = h('ul');
-            m.hints.forEach(x => {
-                const code = custCode(x.customer_id);
-                const li = h('li', {}, icon(HINT_ICON[x.kind] || 'fa-lightbulb'),
-                    h('span', {}, h('span', { class: 'n', text: custName(x.customer_id) }), code ? h('span', { class: 'c', text: code }) : null,
-                        ' — ', String(x.text || '')));
-                g.hints.push({ el: li, q: x._q });
-                ul.append(li);
-            });
-            g.hintsBox = h('div', { class: 'ro-hints' }, h('h4', { text: 'Подсказки — программа их не применяет' }), ul);
-            g.body.append(g.hintsBox);
-        }
-        g.sec = h('section', { class: 'ro-group', id: gid, 'aria-label': 'Предложения — ' + mgrName(m) },
-            h('div', { class: 'ro-group-head' },
-                h('h3', { class: 'ro-group-title' }, g.toggle),
-                g.stats,
-                h('div', { class: 'ro-group-acts' }, mapBtn, m.changes.length ? g.all : null)),
-            g.body);
-        state.groups.push(g);
-        return g.sec;
+
+        // Переключатели групп и поиск
+        const chips = h('div', { class: 'rt-chips ro-gchips', role: 'group', 'aria-label': 'Какие предложения показать' },
+            h('button', { type: 'button', class: 'rt-chip', dataset: { pgroup: 'all' } }, 'Все', h('span', { class: 'cnt', text: fmt(m.changes.length) })),
+            keys.map(k => h('button', { type: 'button', class: 'rt-chip g-' + k, dataset: { pgroup: k } },
+                groupText(k, by.get(k)).chip, h('span', { class: 'cnt', text: fmt(by.get(k).length) }))),
+            m.hints.length ? h('button', { type: 'button', class: 'rt-chip g-hints', dataset: { pgroup: 'hints' } }, 'Подсказки',
+                h('span', { class: 'cnt', text: fmt(m.hints.length) })) : null);
+        const search = h('label', { class: 'ro-search', for: 'roPanelSearch' },
+            icon('fa-magnifying-glass'), h('span', { class: 'rt-sr-only', text: 'Найти магазин по названию или коду' }),
+            h('input', { type: 'search', id: 'roPanelSearch', class: 'rt-input', placeholder: 'Найти магазин…', autocomplete: 'off', spellcheck: 'false' }));
+        box.append(h('div', { class: 'ro-panel-tools' }, chips, search));
+        search.querySelector('input').value = state.pf.raw || '';   // панель перерисовали — поиск остаётся
+
+        const wrap = h('div', { class: 'ro-grps' });
+        keys.forEach(k => wrap.append(groupNode(m, k, by.get(k))));
+        if (m.hints.length) wrap.append(hintsNode(m));
+        state.noMatch = h('p', { class: 'rt-placeholder', hidden: true, text: 'Ничего не нашлось — проверьте название или код магазина.' });
+        wrap.append(state.noMatch);
+        box.append(wrap);
+        applyPanelFilter();
     }
 
-    function setOpen(g, open) {
-        g.toggle.setAttribute('aria-expanded', String(open));
-        g.body.hidden = !open;
-        if (open) state.open.add(String(g.m.agent_id));
-        else state.open.delete(String(g.m.agent_id));
+    function groupNode(m, key, list) {
+        const t = groupText(key, list);
+        const id = 'roG_' + key;
+        const g = { key, list, busy: false, open: state.pf.group === key };
+        g.count = h('span', { class: 'ro-grp-count' });
+        g.state = h('span', { class: 'ro-grp-state' });
+        g.listEl = h('ul', { class: 'ro-list', id: id + '_l', 'aria-label': t.title, hidden: true });
+        list.forEach(c => g.listEl.append(rowNode(c, m)));
+        g.toggle = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost', 'aria-expanded': 'false', 'aria-controls': id + '_l', dataset: { gact: 'list', g: key } },
+            icon('fa-chevron-down'), h('span'));
+        g.accept = key === 'remove' ? null : h('button', { type: 'button', class: 'rt-btn ro-btn-ok', dataset: { gact: 'accept', g: key } },
+            icon('fa-check-double'), h('span'));
+        const eff = groupEffect(list, m);
+        g.el = h('section', { class: 'ro-grp g-' + key, 'aria-labelledby': id + '_t', dataset: { g: key } },
+            h('div', { class: 'ro-grp-head' },
+                h('span', { class: 'ro-grp-ico', 'aria-hidden': 'true' }, icon(GROUP_ICON[key] || 'fa-pen')),
+                h('div', { class: 'ro-grp-titles' },
+                    h('h4', { class: 'ro-grp-title', id: id + '_t' }, t.title, ' — ', g.count),
+                    h('p', { class: 'ro-grp-reason', text: t.reason }),
+                    h('p', { class: 'ro-grp-eff' + (eff.tone > 0 ? ' is-good' : (eff.tone < 0 ? ' is-bad' : '')) },
+                        'Если принять всю группу: ', h('b', { text: eff.text }), ' ', tip(eff.tip, 'эффект группы'))),
+                g.state),
+            h('div', { class: 'ro-grp-acts' }, g.accept, g.toggle),
+            g.listEl);
+        state.pgroups.push(g);
+        return g.el;
     }
 
-    function buildRow(e) {
-        const c = e.c, id = c.customer_id, cust = custOf(id) || {};
-        const meta = [custCode(id), cust.abc ? 'класс ' + cust.abc : ''].filter(Boolean).join(' · ');
-        const effects = EFFECTS.map(f => {
-            const v = num(c.effect[f.key]);
-            if (v === null) return null;
-            const t = trend(v, f.d);
-            return h('span', { class: 'ro-eff' + (t < 0 ? ' is-good' : (t > 0 ? ' is-bad' : '')),
-                title: f.title + ' — ' + (t < 0 ? 'лучше' : (t > 0 ? 'хуже' : 'без изменений')) },
-                f.label, h('b', { text: signed(v, f.d) + (t ? f.unit : '') }));
-        }).filter(Boolean);
-        const main = h('div', { class: 'ro-row-main' },
-            h('div', { class: 'ro-cust' }, h('span', { class: 'n', text: custName(id) }), meta ? h('span', { class: 'c', text: meta }) : null),
-            h('div', { class: 'ro-change' },
-                h('span', { class: 'rt-badge', text: TYPE_TEXT[c.type] }),
-                h('span', { class: 'rt-sr-only', text: 'было: ' }),
-                h('span', { class: 'from', text: sideText(c.from) }),
-                h('span', { class: 'arr', 'aria-hidden': 'true', text: '→' }),
-                h('span', { class: 'rt-sr-only', text: ', стало: ' }),
-                h('span', { class: 'to', text: sideText(c.to) })),
-            c.reason ? h('div', { class: 'ro-reason', text: String(c.reason) }) : null,
-            effects.length ? h('div', { class: 'ro-effects' }, effects) : null);
-        e.side = h('div', { class: 'ro-row-side' });
-        e.el = h('li', { class: 'ro-row', dataset: { key: c._key } }, main, e.side);
-        refreshRow(e);
+    function hintsNode(m) {
+        const id = 'roG_hints';
+        const g = { key: 'hints', list: [], hints: m.hints, open: state.pf.group === 'hints' };
+        g.count = h('span', { class: 'ro-grp-count' });
+        g.state = h('span', { class: 'ro-grp-state' });
+        g.listEl = h('ul', { class: 'ro-list', id: id + '_l', 'aria-label': 'Подсказки', hidden: true });
+        g.hintRows = m.hints.map(x => {
+            const code = custCode(x.customer_id);
+            const li = h('li', { class: 'ro-item is-hint' },
+                h('div', { class: 'ro-item-main' },
+                    h('div', { class: 'ro-item-name' }, h('span', { class: 'n', text: custName(x.customer_id) }), code ? h('span', { class: 'c', text: code }) : null),
+                    h('div', { class: 'ro-item-change', text: cap(String(x.text || '')) })));
+            g.listEl.append(li);
+            return { el: li, q: x._q };
+        });
+        g.toggle = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost', 'aria-expanded': 'false', 'aria-controls': id + '_l', dataset: { gact: 'list', g: 'hints' } },
+            icon('fa-chevron-down'), h('span'));
+        g.el = h('section', { class: 'ro-grp g-hints', 'aria-labelledby': id + '_t', dataset: { g: 'hints' } },
+            h('div', { class: 'ro-grp-head' },
+                h('span', { class: 'ro-grp-ico', 'aria-hidden': 'true' }, icon(GROUP_ICON.hints)),
+                h('div', { class: 'ro-grp-titles' },
+                    h('h4', { class: 'ro-grp-title', id: id + '_t' }, 'Подсказки', ' — ', g.count),
+                    h('p', { class: 'ro-grp-reason', text: 'Эти магазины заказывают чаще, чем их посещают. Программа это не меняет — решите сами.' })),
+                g.state),
+            h('div', { class: 'ro-grp-acts' }, g.toggle),
+            g.listEl);
+        state.pgroups.push(g);
+        return g.el;
     }
 
-    // Статус и кнопки строки. Фокус был на кнопке строки — переходит на главную кнопку нового состояния
-    function refreshRow(e) {
-        const c = e.c, st = statusOf(c), S = STATUS[st];
-        e.el.className = 'ro-row' + (st === 'none' ? '' : ' is-' + st);
-        e.el.setAttribute('aria-busy', e.saving ? 'true' : 'false');
-        const hadFocus = e.side.contains(document.activeElement);
-        e.side.textContent = '';
-        e.side.append(h('span', { class: 'rt-badge ro-status ' + S.cls }, e.saving ? spin() : icon(S.icon), e.saving ? 'сохраняю…' : S.text));
+    function rowNode(c, m) {
+        const id = c.customer_id, code = custCode(id), silent = silenceText(id);
+        const details = [rowReason(c), isRemove(c) ? null : cycleWeekNote(c.to.pattern), effectText(c, m)].filter(Boolean).join(' ');
+        const main = h('div', { class: 'ro-item-main' },
+            h('div', { class: 'ro-item-name' }, h('span', { class: 'n', text: custName(id) }), code ? h('span', { class: 'c', text: code }) : null,
+                silent ? h('span', { class: 'tag', text: silent }) : null),
+            h('div', { class: 'ro-item-change' },
+                h('span', { class: 'lbl', text: 'было: ' }), h('span', { class: 'from', text: patternHuman(c.from.pattern) }),
+                h('span', { class: 'arr', 'aria-hidden': 'true', text: ' → ' }),
+                h('span', { class: 'lbl', text: 'станет: ' }), h('span', { class: 'to', text: isRemove(c) ? 'не посещать' : patternHuman(c.to.pattern) }),
+                ' ', tip(details, 'почему — ' + custName(id))));
+        const side = h('div', { class: 'ro-item-side' });
+        const el = h('li', { class: 'ro-item', dataset: { key: c._key } }, main, side);
+        state.rows.set(c._key, { el, side, c });
+        refreshRow(c);
+        return el;
+    }
+
+    // Состояние и кнопки строки. Фокус был на кнопке строки — переходит на главную кнопку нового состояния.
+    // «Убрать из маршрута»: «Убрать…» (с подтверждением) — принять, «Оставить» — отклонить
+    function refreshRow(c) {
+        const r = state.rows.get(c._key);
+        if (!r) return;
+        const st = statusOf(c), remove = isRemove(c);
+        r.el.className = 'ro-item' + (remove ? ' is-remove' : '') + (st === 'none' ? '' : ' is-' + st);
+        r.el.setAttribute('aria-busy', c._saving ? 'true' : 'false');
+        const hadFocus = r.side.contains(document.activeElement);
+        r.side.textContent = '';
         const name = custName(c.customer_id);
-        const btn = (cls, ico, text, act) => h('button', { type: 'button', class: 'rt-btn rt-btn-sm ' + cls, dataset: { act },
-            'aria-disabled': e.saving ? 'true' : null, 'aria-label': text + ': ' + name }, icon(ico), text);
-        const acts = h('div', { class: 'ro-actions' });
-        if (st === 'none' || st === 'mixed') acts.append(btn('ro-btn-ok', 'fa-check', 'Принять', 'accept'));
-        if (st === 'none') acts.append(btn('rt-btn-ghost', 'fa-xmark', 'Отклонить', 'reject'));
-        if (st !== 'none') acts.append(btn('rt-btn-ghost', 'fa-rotate-left', 'Отменить решение', 'reset'));
-        e.side.append(acts);
-        if (e.error) e.side.append(h('div', { class: 'ro-row-err', role: 'alert', text: e.error }));
+        const btn = (cls, ico, text, act, label) => h('button', { type: 'button', class: 'rt-btn rt-btn-sm ' + cls, dataset: { act, key: c._key },
+            'aria-disabled': c._saving ? 'true' : null, 'aria-label': (label || text) + ': ' + name }, ico ? icon(ico) : null, text);
+        const S = st === 'none' ? null : ((remove ? REMOVE_ROW_STATUS[st] : ROW_STATUS[st]) || ROW_STATUS.mixed);
+        if (c._saving) r.side.append(h('span', { class: 'ro-pill' }, spin(), 'Сохраняю…'));
+        else if (S) r.side.append(h('span', { class: 'ro-pill ' + S.cls }, icon(S.icon), S.text));
+        const acts = h('div', { class: 'ro-item-acts' });
+        if (remove) {
+            if (st === 'none') acts.append(btn('ro-btn-remove', 'fa-user-minus', 'Убрать…', 'accept', 'Убрать из маршрута'),
+                btn('rt-btn-ghost', null, 'Оставить', 'reject', 'Оставить в маршруте'));
+            else acts.append(btn('rt-btn-ghost', 'fa-rotate-left', 'Отменить', 'reset', 'Отменить решение'));
+        } else {
+            if (st === 'none' || st === 'mixed') acts.append(btn('ro-btn-ok', 'fa-check', 'Принять', 'accept'));
+            if (st === 'none') acts.append(btn('rt-btn-ghost', null, 'Оставить как есть', 'reject'));
+            if (st !== 'none') acts.append(btn('rt-btn-ghost', 'fa-rotate-left', 'Отменить', 'reset', 'Отменить решение'));
+        }
+        r.side.append(acts);
+        if (c._error) r.side.append(h('div', { class: 'ro-item-err', role: 'alert', text: c._error }));
         if (hadFocus) {
             const b = acts.querySelector(st === 'none' ? '[data-act="accept"]' : '[data-act="reset"]') || acts.querySelector('button');
             if (b) b.focus({ preventScroll: true });
         }
     }
 
-    const passType = (c) => state.filter.type === 'all' || (state.filter.type === 'move' ? c.type !== 'frequency' : c.type !== 'move');
-    const passQuery = (q) => !state.filter.q || q.includes(state.filter.q);
-    const filtering = () => state.filter.type !== 'all' || !!state.filter.q;
+    function setGroupOpen(g, open) {
+        g.open = open;
+        g.listEl.hidden = !open;
+        g.toggle.setAttribute('aria-expanded', String(open));
+    }
 
-    function applyFilter() {
-        const f = state.filter, on = filtering();
-        let shown = 0, all = 0;
-        state.groups.forEach(g => {
-            let gShown = 0;
-            g.days.forEach(d => {
-                let n = 0;
-                d.entries.forEach(e => {
-                    const ok = passType(e.c) && passQuery(e.c._q);
-                    e.el.hidden = !ok;
-                    if (ok) n++;
-                });
-                d.el.hidden = !n;
-                d.count.textContent = '· ' + n + ' ' + plural(n, 'клиент', 'клиента', 'клиентов');
-                gShown += n;
-            });
-            let hShown = 0;
-            g.hints.forEach(x => {
-                const ok = f.type === 'all' && passQuery(x.q);
-                x.el.hidden = !ok;
-                if (ok) hShown++;
-            });
-            if (g.hintsBox) g.hintsBox.hidden = !hShown;
-            if (g.empty) g.empty.hidden = on;
-            g.shown = gShown;
-            g.sec.hidden = on && !gShown && !hShown;
-            shown += gShown;
-            all += g.m.changes.length;
+    // Заголовки групп: число, сколько решено, кнопки; фильтр (группа, поиск) — что видно
+    function applyPanelFilter() {
+        const f = state.pf, searching = !!f.q;
+        let shown = 0;
+        state.pgroups.forEach(g => {
+            let n = 0;
+            if (g.key === 'hints') {
+                g.hintRows.forEach(x => { const ok = passQuery(x.q); x.el.hidden = !ok; if (ok) n++; });
+            } else {
+                g.list.forEach(c => { const r = state.rows.get(c._key), ok = passQuery(c._q); if (r) r.el.hidden = !ok; if (ok) n++; });
+            }
+            g.shown = n;
+            const visible = (f.group === 'all' || f.group === g.key) && (!searching || n > 0);
+            g.el.hidden = !visible;
+            if (visible && (searching || f.group === g.key)) setGroupOpen(g, true);
+            if (visible) shown += n;
             renderGroupHead(g);
         });
-        $('roShown').textContent = all ? (on ? 'показано ' + fmt(shown) + ' из ' + fmt(all) : 'всего ' + fmt(all)) : '';
-        $('roNoMatch').hidden = !(on && state.groups.length && state.groups.every(g => g.sec.hidden));
+        if (state.noMatch) state.noMatch.hidden = !(searching && !shown);
+        document.querySelectorAll('#roPanel .ro-gchips .rt-chip').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.pgroup === f.group)));
+        renderPanelStats();
     }
 
     function renderGroupHead(g) {
-        const n = g.m.changes.length;
-        const st = { accepted: 0, rejected: 0, mixed: 0, none: 0 };
-        g.m.changes.forEach(c => { st[statusOf(c)]++; });
-        let pending = 0;
-        g.days.forEach(d => d.entries.forEach(e => { if (!e.el.hidden && !e.saving && statusOf(e.c) === 'none') pending++; }));
-        const s = g.stats;
-        s.textContent = '';
-        if (!n) {
-            s.append('изменений нет');
-        } else {
-            if (filtering()) s.append('показано ', h('b', { text: fmt(g.shown) }), ' из ');
-            s.append(h('b', { text: fmt(n) }), ' ' + plural(n, 'предложение', 'предложения', 'предложений'));
-            if (st.accepted) s.append(' · принято ', h('b', { text: fmt(st.accepted) }));
-            if (st.rejected) s.append(' · отклонено ', h('b', { text: fmt(st.rejected) }));
-            if (st.mixed) s.append(' · частично ', h('b', { text: fmt(st.mixed) }));
-            if (st.none && st.none !== n) s.append(' · без решения ', h('b', { text: fmt(st.none) }));
+        const total = g.key === 'hints' ? g.hintRows.length : g.list.length;
+        const n = state.pf.q ? g.shown : total;
+        g.count.textContent = (state.pf.q ? 'найдено ' : '') + fmt(n) + ' ' + plural(n, 'магазин', 'магазина', 'магазинов');
+        g.toggle.querySelector('span').textContent = g.open ? 'Скрыть магазины' : 'Показать магазины';
+        if (g.key === 'hints') { g.state.textContent = 'к сведению'; return; }
+        let acc = 0, rej = 0, pending = 0;
+        g.list.forEach(c => {
+            const st = statusOf(c);
+            if (st === 'accepted' || st === 'mixed') acc++;
+            else if (st === 'rejected') rej++;
+            if (bulkable(c)) pending++;
+        });
+        g.state.textContent = '';
+        if (acc + rej === total) g.state.append(icon('fa-circle-check'), ' решено по всем');
+        else g.state.append((acc ? 'принято ' + fmt(acc) : 'принято 0') + ' из ' + fmt(total) + (rej ? ' · оставлено ' + fmt(rej) : ''));
+        g.state.classList.toggle('is-done', acc + rej === total);
+        if (g.accept) {
+            const word = state.pf.q ? 'Принять найденные' : 'Принять все в группе';
+            g.accept.querySelector('span').textContent = g.busy ? 'Сохраняю…' : word + ' (' + fmt(pending) + ')';
+            g.accept.setAttribute('aria-disabled', g.busy || !pending ? 'true' : 'false');
+            g.accept.hidden = !pending && !g.busy;
+            g.accept.setAttribute('aria-label', word + ': ' + groupText(g.key, g.list).title + ', без решения — ' + pending);
         }
-        const word = filtering() ? 'Принять показанные' : 'Принять все';
-        g.all.querySelector('span').textContent = g.busy ? 'Сохраняю…' : word + ' (' + pending + ')';
-        g.all.setAttribute('aria-disabled', g.busy || !pending ? 'true' : 'false');
-        g.all.setAttribute('aria-label', word + ' предложения без решения у менеджера ' + mgrName(g.m) + ': ' + pending);
-        g.all.title = pending ? '' : 'Нет предложений без решения';
     }
 
-    function renderTypeChips() {
-        const all = allChanges();
-        const cnt = { all: all.length, move: all.filter(c => c.type !== 'frequency').length, frequency: all.filter(c => c.type !== 'move').length };
-        $('roTypeChips').querySelectorAll('.rt-chip').forEach(b => {
-            b.setAttribute('aria-pressed', b.dataset.type === state.filter.type ? 'true' : 'false');
-            b.querySelector('.ro-cnt').textContent = fmt(cnt[b.dataset.type]);
-        });
+    function renderPanelStats() {
+        const m = panelMgr(), el = state.panelStats;
+        if (!m || !el) return;
+        const n = m.changes.length, st = mgrProgress(m);
+        el.textContent = '';
+        if (!n) { el.append('Предложений нет', m.hints.length ? ' — только подсказки.' : '.'); return; }
+        el.append(h('b', { text: fmt(n) }), ' ' + plural(n, 'предложение', 'предложения', 'предложений'));
+        if (st.accepted + st.mixed) el.append(' · принято ', h('b', { text: fmt(st.accepted + st.mixed) }));
+        if (st.rejected) el.append(' · оставлено как есть ', h('b', { text: fmt(st.rejected) }));
+        el.append('. Примите группу целиком или откройте магазины и решите по каждому.');
     }
 
-    function onTypeChip(ev) {
-        const b = ev.target.closest('.rt-chip');
-        if (!b || !b.dataset.type || b.dataset.type === state.filter.type) return;
-        state.filter.type = b.dataset.type;
-        renderTypeChips();
-        applyFilter();
+    function refreshPanelHeads() {
+        state.pgroups.forEach(renderGroupHead);
+        renderPanelStats();
     }
 
-    function onSearch() {
-        const q = norm($('roSearch').value.trim());
-        if (q === state.filter.q) return;
-        state.filter.q = q;
-        // поиск раскрывает менеджеров, у которых нашлись клиенты
-        if (q) state.groups.forEach(g => {
-            if (g.days.some(d => d.entries.some(e => e.c._q.includes(q))) || g.hints.some(x => x.q.includes(q))) setOpen(g, true);
-        });
-        applyFilter();
-    }
-
-    function onRowAction(ev) {
-        const b = ev.target.closest('button[data-act]');
+    function onPanelClick(ev) {
+        const b = ev.target.closest('button');
         if (!b || b.getAttribute('aria-disabled') === 'true') return;
-        const li = b.closest('.ro-row');
-        const e = li && state.entries.get(li.dataset.key);
-        if (e) decide([e], b.dataset.act);
+        const m = panelMgr();
+        if (b.dataset.act) {
+            const r = state.rows.get(b.dataset.key);
+            if (!r) return;
+            if (b.dataset.act === 'accept' && isRemove(r.c)) {
+                const ok = window.confirm('Убрать «' + custName(r.c.customer_id) + '» из маршрута?\n\n'
+                    + 'Менеджер перестанет посещать этот магазин. В ERP ничего не изменится, пока вы сами не внесёте план. '
+                    + 'Решение можно отменить.');
+                if (!ok) return;
+            }
+            decide([r.c], b.dataset.act);
+            return;
+        }
+        if (b.dataset.gact) {
+            const g = state.pgroups.find(x => x.key === b.dataset.g);
+            if (!g) return;
+            if (b.dataset.gact === 'list') { setGroupOpen(g, !g.open); renderGroupHead(g); return; }
+            if (b.dataset.gact === 'accept') acceptGroup(g);
+            return;
+        }
+        if (b.dataset.pgroup) {
+            state.pf.group = b.dataset.pgroup;
+            applyPanelFilter();
+            return;
+        }
+        if (b.dataset.pact === 'close') closePanel(true);
+        else if (b.dataset.pact === 'map' && m) showOnMap(m);
+    }
+
+    function onPanelSearch(ev) {
+        if (ev.target.id !== 'roPanelSearch') return;
+        const q = norm(ev.target.value.trim());
+        state.pf.raw = ev.target.value;
+        if (q === state.pf.q) return;
+        state.pf.q = q;
+        applyPanelFilter();
+    }
+
+    async function acceptGroup(g) {
+        if (g.busy) return;
+        const list = g.list.filter(bulkable);
+        if (!list.length) { announce('В этой группе нет предложений без решения'); return; }
+        g.busy = true;
+        g.accept.querySelector('i').className = 'rt-spin-inline';
+        renderGroupHead(g);
+        const hadFocus = document.activeElement === g.accept;
+        try {
+            await decide(list, 'accept');
+        } finally {
+            g.busy = false;
+            g.accept.querySelector('i').className = 'fas fa-check-double';
+            renderGroupHead(g);
+        }
+        // всё в группе решено — кнопка «Принять все» исчезла, фокус переходит на «Показать магазины»
+        if (hadFocus && g.accept.hidden) g.toggle.focus({ preventScroll: true });
     }
 
     // ---------- Решения: оптимистично, одним запросом, с откатом при ошибке ----------
@@ -1264,35 +1674,38 @@
 
     // Тело решения: «было» (from) — строка «было» предложения: решение привязано к плану, на котором
     // принималось, и если план клиента в ERP потом изменится, оно не применится молча
-    function decisionItem(e, kind, action) {
+    function decisionItem(c, kind, action) {
+        if (kind === 'remove') {   // «убрать из маршрута»: значение — «без визитов», было — шаблон дней
+            return { customer_id: c.customer_id, agent_id: c._agent, kind, value: [], from: c.from.pattern, action };
+        }
         const side = kind === 'pattern' ? 'pattern' : 'freq';
-        return { customer_id: e.c.customer_id, agent_id: e.m.agent_id, kind, value: e.c.to[side], from: e.c.from[side], action };
+        return { customer_id: c.customer_id, agent_id: c._agent, kind, value: c.to[side], from: c.from[side], action };
     }
 
-    // Все выбранные строки (и оба вида у «перенос и частота») — одним запросом, одной транзакцией:
-    // сохранилось всё или ничего, поэтому при ошибке откатываются все строки
+    // Все выбранные предложения (и оба вида у «другой день и реже») — одним запросом, одной транзакцией:
+    // сохранилось всё или ничего, поэтому при ошибке откатываются все
     async function decide(list, action) {
         if (!(action in ACTION_STATUS)) return;
         const target = ACTION_STATUS[action];
         const todo = [];
-        list.forEach(e => {
-            if (e.saving) return;
+        list.forEach(c => {
+            if (c._saving) return;
             // отправляем только те виды решения, что меняются (у «частично» — недостающий)
-            const kinds = kindsOf(e.c).filter(k => e.c.decision[k] !== target);
+            const kinds = kindsOf(c).filter(k => c.decision[k] !== target);
             if (!kinds.length) return;
-            e.prev = Object.assign({}, e.c.decision);
-            e.kinds = kinds;
-            kinds.forEach(k => { e.c.decision[k] = target; });
-            e.saving = true;
-            e.error = '';
-            refreshRow(e);
-            todo.push(e);
+            c._prev = Object.assign({}, c.decision);
+            c._kinds = kinds;
+            kinds.forEach(k => { c.decision[k] = target; });
+            c._saving = true;
+            c._error = '';
+            refreshRow(c);
+            todo.push(c);
         });
         if (!todo.length) return;
         afterDecisions(todo);
         const owners = [];
         const items = [];
-        todo.forEach(e => e.kinds.forEach(k => { items.push(decisionItem(e, k, action)); owners.push(e); }));
+        todo.forEach(c => c._kinds.forEach(k => { items.push(decisionItem(c, k, action)); owners.push(c); }));
         let err = null;
         try {
             await api('POST', '/api/routes/decisions', items.length === 1 ? items[0] : { items });
@@ -1303,20 +1716,20 @@
         const rowErr = new Map();
         if (err && err.data && isObj(err.data.errors)) {
             Object.entries(err.data.errors).forEach(([k, v]) => {
-                const m = /^items\.(\d+)/.exec(k);
-                if (m && owners[+m[1]] && !rowErr.has(owners[+m[1]])) rowErr.set(owners[+m[1]], String(v));
+                const mm = /^items\.(\d+)/.exec(k);
+                if (mm && owners[+mm[1]] && !rowErr.has(owners[+mm[1]])) rowErr.set(owners[+mm[1]], String(v));
             });
         }
-        todo.forEach(e => {
+        todo.forEach(c => {
             if (err) {
-                e.kinds.forEach(k => { e.c.decision[k] = decisionOf(e.prev[k]); });
-                const own = rowErr.get(e);
-                e.error = own ? 'Не сохранилось: ' + own.replace(/[.!]\s*$/, '') + '.'
+                c._kinds.forEach(k => { c.decision[k] = decisionOf(c._prev[k]); });
+                const own = rowErr.get(c);
+                c._error = own ? 'Не сохранилось: ' + own.replace(/[.!]\s*$/, '') + '.'
                     : (rowErr.size ? 'Не сохранилось вместе с другими — в списке есть ошибка. Нажмите ещё раз.'
                         : 'Не сохранилось: ' + whyText(err) + '. Нажмите ещё раз.');
             }
-            e.saving = false;
-            refreshRow(e);
+            c._saving = false;
+            refreshRow(c);
         });
         if (!err) {
             state.lastDecision = Date.now();
@@ -1324,19 +1737,62 @@
         }
         afterDecisions(todo);
         loadDecisions();
-        const done = { accept: 'Принято', reject: 'Отклонено', reset: 'Решение отменено' }[action];
-        const who = todo.length === 1 ? ': ' + custName(todo[0].c.customer_id) : ' ' + fmt(todo.length);
+        const one = todo.length === 1 && isRemove(todo[0]);
+        const done = (one ? { accept: 'Будет убран из маршрута', reject: 'Остаётся в маршруте', reset: 'Решение отменено' }
+            : { accept: 'Принято', reject: 'Оставлено как есть', reset: 'Решение отменено' })[action];
+        const who = todo.length === 1 ? ': ' + custName(todo[0].customer_id) : ' ' + fmt(todo.length);
         announce(err ? 'Не сохранилось' + who + '. ' + sentence(cap(whyText(err))) : done + who);
     }
 
     function afterDecisions(list) {
-        new Set(list.map(e => e.g)).forEach(renderGroupHead);
-        renderChangesTile();
-        renderExport();
+        new Set(list.map(c => String(c._agent))).forEach(refreshCard);
+        refreshPanelHeads();
+        renderStep3();
         renderRecalc();
     }
 
-    // ---------- 05 · Ваши решения ----------
+    // ---------- Шаг 3 · Принять и выгрузить ----------
+    function renderStep3() {
+        const has = !!state.result;
+        $('roStep3Empty').hidden = has;
+        $('roStep3Body').hidden = !has;
+        if (!has) return;
+        let acc = 0;
+        const mgrs = new Set();
+        allChanges().forEach(c => { if (acceptedAny(c)) { acc++; mgrs.add(String(c._agent)); } });
+        const el = $('roAccepted');
+        el.textContent = '';
+        if (acc) {
+            el.append(icon('fa-circle-check'), h('span', {}, 'Вы приняли ', h('b', { text: fmt(acc) + ' ' + plural(acc, 'изменение', 'изменения', 'изменений') }),
+                ' у ' + mgrs.size + ' ' + plural(mgrs.size, 'менеджера', 'менеджеров', 'менеджеров') + '.'));
+            el.classList.add('is-done');
+        } else {
+            el.append(h('span', { text: 'Вы пока ничего не приняли. Откройте менеджера в шаге 2 и нажмите «Принять» — принятое попадёт в план для ERP.' }));
+            el.classList.remove('is-done');
+        }
+        renderExport();
+        renderStepWarn();
+    }
+
+    // Одна-две строки простыми словами: решения устарели, данные ERP обновились
+    function renderStepWarn() {
+        const box = $('roStepWarn');
+        box.textContent = '';
+        if (!state.result) return;
+        const s = state.decisions ? state.decisions.summary : null;
+        const stale = Math.max(state.result.stale_decisions.length, s ? num(s.stale) || 0 : 0);
+        const line = (...kids) => box.append(h('p', { class: 'ro-warn' }, icon('fa-triangle-exclamation'), h('span', {}, kids)));
+        if (stale) {
+            line(h('b', { text: fmt(stale) + ' ' + plural(stale, 'решение больше не действует', 'решения больше не действуют', 'решений больше не действуют') }),
+                ': план этих магазинов в ERP изменился после вашего решения, поэтому ' + plural(stale, 'оно не входит', 'они не входят', 'они не входят')
+                + ' ни в расчёт, ни в файл. ', h('button', { type: 'button', class: 'rt-linkbtn', dataset: { showdec: '1' }, text: 'Показать' }));
+        }
+        const mm = state.decisions ? dataMismatch(state.decisions.data_as_of) : null;
+        if (mm) line('Данные ERP обновились после расчёта (расчёт — на ' + stamp(mm.calc) + ', сейчас — на ' + stamp(mm.now)
+            + '). Нажмите «Пересчитать» в шаге 1, чтобы предложения совпали с текущим планом.');
+    }
+
+    // ---------- Ваши решения ----------
     // Список действующих решений и число изменений для Excel — с сервера (решения могли прийти из другой
     // вкладки, по менеджерам вне этого расчёта, отработать в ERP или устареть)
     let decTimer = null;
@@ -1358,96 +1814,89 @@
         }
         renderDecisions();
         renderExport();
+        renderStepWarn();
     }
 
-    const decName = (x) => (x.customer_name ? String(x.customer_name) : 'Клиент ' + x.customer_id);
+    const decName = (x) => (x.customer_name ? String(x.customer_name) : 'Магазин ' + x.customer_id);
     const dataMismatch = (asOf) => {
         const a = parseTime(asOf), b = state.result ? parseTime(state.result.snapshot_as_of) : null;
         return a && b && a.getTime() !== b.getTime() ? { now: a, calc: b } : null;
     };
 
     function renderDecisions() {
-        const d = state.decisions, counts = $('roDecCounts'), list = $('roDecList'), warn = $('roDecWarn');
-        const toggle = $('roDecToggle'), reset = $('roDecReset');
+        const d = state.decisions, counts = $('roDecCounts'), list = $('roDecList'), reset = $('roDecReset');
         counts.textContent = '';
         list.textContent = '';
-        warn.textContent = '';
         const errBox = $('roDecErr');
         errBox.classList.toggle('d-none', !state.decError);
         errBox.textContent = state.decError ? 'Список решений не загрузился: ' + state.decError + '.' : '';
         if (!d) {
             counts.append(state.decError ? '—' : 'Загружаю решения…');
-            toggle.hidden = true;
+            $('roDecSum').textContent = '';
             reset.setAttribute('aria-disabled', 'true');
-            warn.classList.add('d-none');
             return;
         }
         const s = d.summary, items = d.decisions;
-        const acc = num(s.accepted) || 0, rej = num(s.rejected) || 0, stale = num(s.stale) || 0, exp = num(s.export_changes);
+        const acc = num(s.accepted) || 0, rej = num(s.rejected) || 0, stale = num(s.stale) || 0;
+        $('roDecSum').textContent = items.length ? fmt(items.length) : 'пока нет';
         if (!items.length) {
-            counts.append('Решений нет — примите или отклоните предложения выше.');
+            counts.append('Решений нет — примите или оставьте предложения в шаге 2.');
         } else {
-            counts.append('принято ', h('b', { text: fmt(acc) }), ' · отклонено ', h('b', { text: fmt(rej) }));
+            counts.append('принято ', h('b', { text: fmt(acc) }), ' · оставлено как есть ', h('b', { text: fmt(rej) }));
             if (stale) counts.append(' · ', h('b', { class: 'is-warn', text: fmt(stale) }), ' ' + plural(stale, 'устарело', 'устарели', 'устарели'));
-            if (exp !== null) counts.append(' · в план для ERP ' + plural(exp, 'войдёт', 'войдут', 'войдут') + ' ', h('b', { text: fmt(exp) }),
-                ' ' + plural(exp, 'изменение', 'изменения', 'изменений'));
         }
-        toggle.hidden = !items.length;
-        toggle.setAttribute('aria-expanded', String(state.decOpen && !!items.length));
-        toggle.textContent = state.decOpen ? 'скрыть список' : 'показать список (' + fmt(items.length) + ')';
-        list.hidden = !state.decOpen || !items.length;
         reset.setAttribute('aria-disabled', !items.length || state.decBusy ? 'true' : 'false');
+        list.hidden = !items.length;
         items.forEach((x, i) => list.append(decRow(x, i)));
+    }
 
-        const notes = [];
-        if (stale) {
-            notes.push(h('span', {}, h('b', { text: fmt(stale) + ' ' + plural(stale, 'решение устарело', 'решения устарели', 'решений устарели') }),
-                ' — план клиента в ERP изменился после решения, поэтому ' + plural(stale, 'оно не применяется', 'они не применяются', 'они не применяются')
-                + ' ни в расчёте, ни в плане для ERP. Отмените ' + plural(stale, 'его', 'их', 'их') + ' или пересчитайте.'));
-        }
-        const mm = dataMismatch(d.data_as_of);
-        if (mm) notes.push(h('span', {}, 'Данные ERP обновились после расчёта: расчёт — на ' + stamp(mm.calc) + ', сейчас — на '
-            + stamp(mm.now) + '. Пересчитайте, чтобы предложения совпали с текущим планом.'));
-        warn.classList.toggle('d-none', !notes.length);
-        if (notes.length) warn.append(icon('fa-triangle-exclamation'), h('span', { class: 'rt-alert-text' }, notes.map(n => h('span', { class: 'ro-sub-line' }, n))));
+    // Решение словами: «дни: пн каждую неделю → чт раз в 2 недели», «как часто: раз в неделю → раз в 2 недели»
+    function decChange(x) {
+        if (x.kind === 'remove') return { label: 'убрать', from: x.from ? patternHuman(x.from) : humanPlanText(x.from_text), to: 'не посещать' };
+        if (x.kind === 'freq') return { label: 'как часто', from: x.from !== null && x.from !== undefined ? freqHuman(x.from) : humanPlanText(x.from_text),
+            to: x.value !== null && x.value !== undefined ? freqHuman(x.value) : humanPlanText(x.to_text) };
+        return { label: 'дни', from: Array.isArray(x.from) ? patternHuman(x.from) : humanPlanText(x.from_text),
+            to: Array.isArray(x.value) ? patternHuman(x.value) : humanPlanText(x.to_text) };
     }
 
     function decRow(x, i) {
-        const st = x.stale ? { cls: 'b-warn', icon: 'fa-triangle-exclamation', text: 'устарело' }
-            : (x.status === 'accepted' ? STATUS.accepted : STATUS.rejected);
-        const name = decName(x);
-        return h('li', { class: 'ro-row ro-dec-row' + (x.stale ? ' is-stale' : (x.status === 'rejected' ? ' is-rejected' : ' is-accepted')) },
-            h('div', { class: 'ro-row-main' },
-                h('div', { class: 'ro-cust' }, h('span', { class: 'n', text: name }),
+        const word = x.stale ? { cls: 'is-warn', icon: 'fa-triangle-exclamation', text: 'устарело' }
+            : (x.kind === 'remove' ? (x.status === 'accepted' ? REMOVE_ROW_STATUS.accepted : REMOVE_ROW_STATUS.rejected)
+                : (x.status === 'accepted' ? ROW_STATUS.accepted : ROW_STATUS.rejected));
+        const name = decName(x), ch = decChange(x);
+        return h('li', { class: 'ro-item ro-dec-row' + (x.stale ? ' is-stale' : (x.status === 'rejected' ? ' is-rejected' : ' is-accepted')) },
+            h('div', { class: 'ro-item-main' },
+                h('div', { class: 'ro-item-name' }, h('span', { class: 'n', text: name }),
                     h('span', { class: 'c', text: [x.customer_code, x.agent_code || x.agent_name].filter(Boolean).map(String).join(' · ') })),
-                h('div', { class: 'ro-change' },
-                    h('span', { class: 'rt-badge', text: x.kind === 'freq' ? 'частота' : 'дни' }),
-                    x.from_text ? [h('span', { class: 'rt-sr-only', text: 'было: ' }), h('span', { class: 'from', text: String(x.from_text) }),
-                        h('span', { class: 'arr', 'aria-hidden': 'true', text: '→' }), h('span', { class: 'rt-sr-only', text: ', стало: ' })] : null,
-                    h('span', { class: 'to', text: String(x.to_text || '—') })),
-                x.stale ? h('div', { class: 'ro-reason is-warn', text: 'сейчас в ERP: ' + String(x.current_text || '—') + ' — решение не применяется' }) : null,
-                x.manager_included === false ? h('div', { class: 'ro-reason', text: 'менеджер не в расчёте — в план для ERP не войдёт' }) : null),
-            h('div', { class: 'ro-row-side' },
-                h('span', { class: 'rt-badge ro-status ' + st.cls }, icon(st.icon), st.text),
-                h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', dataset: { i: String(i) },
-                    'aria-disabled': state.decBusy ? 'true' : null, 'aria-label': 'Отменить решение: ' + name },
-                icon('fa-rotate-left'), 'Отменить')));
+                h('div', { class: 'ro-item-change' }, h('span', { class: 'lbl', text: ch.label + ': ' }),
+                    h('span', { class: 'from', text: ch.from }), h('span', { class: 'arr', 'aria-hidden': 'true', text: ' → ' }),
+                    h('span', { class: 'rt-sr-only', text: ', станет: ' }), h('span', { class: 'to', text: ch.to })),
+                x.stale ? h('div', { class: 'ro-item-note is-warn', text: 'Сейчас в ERP: ' + humanPlanText(x.current_text) + ' — решение не применяется.' }) : null,
+                x.manager_included === false ? h('div', { class: 'ro-item-note', text: 'Менеджер не в расчёте — в план для ERP не войдёт.' }) : null),
+            h('div', { class: 'ro-item-side' },
+                h('span', { class: 'ro-pill ' + word.cls }, icon(word.icon), word.text),
+                h('div', { class: 'ro-item-acts' },
+                    h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', dataset: { i: String(i) },
+                        'aria-disabled': state.decBusy ? 'true' : null, 'aria-label': 'Отменить решение: ' + name },
+                    icon('fa-rotate-left'), 'Отменить'))));
     }
 
-    // Решение сняли не из строки предложения (список, «Сбросить все») — статусы строк на экране вслед за сервером
+    // Решение сняли не из строки предложения (список, «Сбросить все») — статусы предложений вслед за сервером
     function clearRowDecisions(match) {
         const touched = [];
-        state.entries.forEach(e => {
+        allChanges().forEach(c => {
             let changed = false;
-            kindsOf(e.c).forEach(k => {
-                if (e.c.decision[k] && match(e, k)) { e.c.decision[k] = null; changed = true; }
+            kindsOf(c).forEach(k => {
+                if (c.decision[k] && match(c, k)) { c.decision[k] = null; changed = true; }
             });
-            if (changed) { refreshRow(e); touched.push(e); }
+            if (changed) { refreshRow(c); touched.push(c); }
         });
         if (touched.length) afterDecisions(touched);
     }
 
-    const sameValue = (kind, a, b) => (kind === 'pattern' ? patternKey(a) === patternKey(b) : num(a) === num(b));
+    // у «убрать из маршрута» значение одно — совпадает всегда
+    const sameValue = (kind, a, b) => (kind === 'remove' ? true
+        : (kind === 'pattern' ? patternKey(a) === patternKey(b) : num(a) === num(b)));
 
     async function resetOne(x, i) {
         if (state.decBusy) return;
@@ -1456,8 +1905,8 @@
         renderDecisions();
         try {
             await api('POST', '/api/routes/decisions', { customer_id: x.customer_id, agent_id: x.agent_id, kind: x.kind, value: x.value, action: 'reset' });
-            clearRowDecisions((e, k) => k === x.kind && String(e.m.agent_id) === String(x.agent_id)
-                && String(e.c.customer_id) === String(x.customer_id) && sameValue(k, e.c.to[k === 'pattern' ? 'pattern' : 'freq'], x.value));
+            clearRowDecisions((c, k) => k === x.kind && String(c._agent) === String(x.agent_id)
+                && String(c.customer_id) === String(x.customer_id) && sameValue(k, c.to[k === 'pattern' ? 'pattern' : 'freq'], x.value));
             state.lastDecision = Date.now();
             markDirty();
             announce('Решение отменено: ' + decName(x));
@@ -1468,10 +1917,10 @@
         } finally {
             state.decBusy = false;
             await fetchDecisions();
-            if (hadFocus) {   // строка ушла из списка — фокус на соседнюю, иначе на кнопку списка
+            if (hadFocus) {   // строка ушла из списка — фокус на соседнюю, иначе на «Сбросить все»
                 const btns = $('roDecList').querySelectorAll('button[data-i]');
                 const next = btns[Math.min(i, btns.length - 1)];
-                (next && !$('roDecList').hidden ? next : $('roDecToggle').hidden ? $('roDecReset') : $('roDecToggle')).focus();
+                (next || $('roDecReset')).focus();
             }
         }
     }
@@ -1479,7 +1928,7 @@
     async function resetAll() {
         const n = state.decisions ? state.decisions.decisions.length : 0;
         if (state.decBusy || !n) return;
-        if (!window.confirm('Сбросить все решения (' + n + ')?\n\nПринятые и отклонённые предложения снова станут «без решения», '
+        if (!window.confirm('Сбросить все решения (' + n + ')?\n\nПринятые и оставленные предложения снова станут «пока не решено», '
             + 'в план для ERP не войдёт ни одно изменение. Отменить сброс нельзя.')) return;
         state.decBusy = true;
         renderDecisions();
@@ -1506,40 +1955,7 @@
         if (x) resetOne(x, +b.dataset.i);
     }
 
-    // Итог расчёта: принятые решения, которые в нём не применены (план клиента в ERP изменился)
-    function renderStaleResult() {
-        const box = $('roStaleDec'), list = state.result.stale_decisions;
-        box.textContent = '';
-        box.classList.toggle('d-none', !list.length);
-        if (!list.length) return;
-        const n = list.length;
-        const ul = h('ul', {}, list.slice(0, STALE_LIST_MAX).map(x => h('li', {},
-            h('b', { text: decName(x) }), x.agent_code ? ' (' + x.agent_code + ')' : '', ': решено ',
-            (x.from_text ? '«' + x.from_text + '» → ' : '') + '«' + String(x.to_text || '—') + '», сейчас в ERP — «' + String(x.current_text || '—') + '»')));
-        if (n > STALE_LIST_MAX) ul.append(h('li', { text: 'и ещё ' + fmt(n - STALE_LIST_MAX) + ' — весь список в разделе «Ваши решения»' }));
-        box.append(icon('fa-triangle-exclamation'), h('span', { class: 'rt-alert-text' },
-            h('b', { text: fmt(n) + ' ' + plural(n, 'принятое решение не применено', 'принятых решения не применены', 'принятых решений не применены') }),
-            ' в этом расчёте — план клиента в ERP изменился после решения.', ul));
-    }
-
-    async function acceptAll(g) {
-        if (g.busy) return;
-        const list = [];
-        g.days.forEach(d => d.entries.forEach(e => { if (!e.el.hidden && !e.saving && statusOf(e.c) === 'none') list.push(e); }));
-        if (!list.length) { announce('У этого менеджера нет предложений без решения'); return; }
-        g.busy = true;
-        g.all.querySelector('i').className = 'rt-spin-inline';
-        renderGroupHead(g);
-        try {
-            await decide(list, 'accept');
-        } finally {
-            g.busy = false;
-            g.all.querySelector('i').className = 'fas fa-check-double';
-            renderGroupHead(g);
-        }
-    }
-
-    // ---------- 04 · Карта ----------
+    // ---------- Карта (свёрнута; строится при первом раскрытии) ----------
     const weekOf = (d) => Math.max(1, num(d.week) || 1);
     const dayKey = (d) => weekOf(d) + '-' + num(d.weekday);
     const wdColor = (wd) => WD_COLORS[wd] || MGR_OTHER;
@@ -1551,7 +1967,7 @@
         return r.managers.find(m => String(m.agent_id) === state.mapAgent) || null;
     }
     const modeDays = (m) => (m ? (state.mapMode === 'before' ? m.days_before : m.days_after) : []);
-    // Длина цикла на карте: «было» — как в плане ERP, «стало» — цикл расчёта (2 недели)
+    // Длина цикла на карте: «сейчас» — как в плане ERP, «если принять» — цикл расчёта (2 недели)
     function cycleOf(m) {
         const w = modeDays(m).reduce((a, d) => Math.max(a, weekOf(d)), 1);
         return state.mapMode === 'after' ? Math.max(w, num(state.result.cycle_weeks) || 1) : w;
@@ -1590,6 +2006,7 @@
         state.map = map;
         state.layers = { points: L.layerGroup().addTo(map), route: L.layerGroup().addTo(map), base: L.layerGroup().addTo(map) };
     }
+    const mapOpen = () => $('roMapBox').open;
 
     function renderMapSection() {
         const r = state.result, sel = $('roMapMgr');
@@ -1603,8 +2020,14 @@
         sel.value = state.mapAgent || '';
         sel.disabled = !r.managers.length;
         document.querySelectorAll('input[name="roMapMode"]').forEach(x => { x.checked = x.value === state.mapMode; });
-        ensureMap();
         renderDays();
+        drawMap();
+    }
+
+    function onMapToggle() {
+        if (!mapOpen() || !state.result) return;
+        ensureMap();
+        if (state.map) state.map.invalidateSize();
         drawMap();
     }
 
@@ -1622,21 +2045,21 @@
         for (let w = 1; w <= W; w++) {
             const list = days.filter(d => weekOf(d) === w).sort((a, b) => num(a.weekday) - num(b.weekday));
             if (!list.length) continue;
-            const grid = h('div', { class: 'ro-daylist', role: 'group', 'aria-label': W > 1 ? 'Неделя ' + w : 'Дни недели' },
+            const grid = h('div', { class: 'ro-daylist', role: 'group', 'aria-label': W > 1 ? w + '-я неделя' : 'Дни недели' },
                 list.map(d => dayButton(d, W)));
-            box.append(W > 1 ? h('div', { class: 'ro-weekrow' }, h('span', { class: 'lbl', 'aria-hidden': 'true', text: 'Неделя ' + w }), grid) : grid);
+            box.append(W > 1 ? h('div', { class: 'ro-weekrow' }, h('span', { class: 'lbl', 'aria-hidden': 'true', text: w + '-я неделя' }), grid) : grid);
         }
         renderDayInfo();
     }
 
     function dayButton(d, W) {
         const wd = num(d.weekday), w = weekOf(d), visits = num(d.visits) || 0;
-        const full = (WD_FULL[wd] || 'день ' + wd) + (W > 1 ? ', неделя ' + w : '');
+        const full = (WD_FULL[wd] || 'день ' + wd) + (W > 1 ? ', ' + w + '-я неделя' : '');
         return h('button', { type: 'button', class: 'ro-dayb' + (w > 1 ? ' is-w2' : ''), style: '--wd:' + wdColor(wd),
             'aria-pressed': String(state.mapDay === dayKey(d)), dataset: { key: dayKey(d) },
             'aria-label': cap(full) + ': ' + fmt(visits) + ' ' + plural(visits, 'визит', 'визита', 'визитов') + ', ' + fmt(d.manager_km, 1) + ' км' },
             h('span', { class: 'd', text: WD_SHORT[wd] || String(wd) }),
-            h('span', { class: 's', text: fmt(visits) + ' виз · ' + fmt(d.manager_km, 0) + ' км' }));
+            h('span', { class: 's', text: fmt(visits) + ' ' + plural(visits, 'визит', 'визита', 'визитов') + ' · ' + fmt(d.manager_km, 0) + ' км' }));
     }
 
     function selectDay(key) {
@@ -1652,16 +2075,15 @@
         const d = m && selectedDay(m);
         if (!d) return;
         const W = cycleOf(m), wd = num(d.weekday), visits = num(d.visits) || 0;
-        const minDay = num(state.settings && state.settings.min_day_revenue);
         const noGeo = d.stops.filter(st => !stopGeo(st)).length;
         box.append(...[
-            h('div', { class: 'ro-dayinfo-t', text: cap(WD_FULL[wd] || 'день ' + wd) + (W > 1 ? ', неделя ' + weekOf(d) : '')
-                + (state.mapMode === 'before' ? ' — было' : ' — стало') }),
+            h('div', { class: 'ro-dayinfo-t', text: cap(WD_FULL[wd] || 'день ' + wd) + (W > 1 ? ', ' + weekOf(d) + '-я неделя' : '')
+                + (state.mapMode === 'before' ? ' — сейчас' : ' — если принять') }),
             h('div', { text: fmt(visits) + ' ' + plural(visits, 'визит', 'визита', 'визитов') + ' · ' + fmt(d.manager_km, 1) + NB + 'км · весь день ' + hm(d.plan_minutes) }),
-            num(d.p_day_ge_min) !== null ? h('div', { text: 'шанс набрать ' + (minDay !== null ? fmt(minDay) + NB + 'драм' : 'норму дня') + ' зимой — ' + pct(d.p_day_ge_min) }) : null,
+            num(d.p_day_ge_min) !== null ? h('div', { text: 'шанс набрать ' + minText() + ' зимой — ' + pct(d.p_day_ge_min) }) : null,
             noGeo ? h('div', { class: 'ro-warnline' }, icon('fa-location-crosshairs'),
-                fmt(noGeo) + ' ' + plural(noGeo, 'клиент', 'клиента', 'клиентов') + ' без координат — на карте их нет') : null,
-            homeOf(m) ? null : h('div', { class: 'ro-warnline' }, icon('fa-house'), 'дом неизвестен — линия от первого клиента до последнего'),
+                fmt(noGeo) + ' ' + plural(noGeo, 'магазин', 'магазина', 'магазинов') + ' без координат — на карте их нет') : null,
+            homeOf(m) ? null : h('div', { class: 'ro-warnline' }, icon('fa-house'), 'дом неизвестен — линия от первого магазина до последнего'),
             h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm mt-2', dataset: { all: '1' } }, icon('fa-xmark'), 'Показать все дни'),
         ].filter(Boolean));   // append(null) вставил бы текст «null»
     }
@@ -1672,7 +2094,7 @@
         const ids = new Set(), noGeo = new Set();
         modeDays(m).forEach(d => d.stops.forEach(st => { (stopGeo(st) ? ids : noGeo).add(String(st.customer_id)); }));
         noGeo.forEach(id => { if (ids.has(id)) noGeo.delete(id); });
-        note.textContent = 'на карте ' + fmt(ids.size) + ' ' + plural(ids.size, 'клиент', 'клиента', 'клиентов')
+        note.textContent = 'на карте ' + fmt(ids.size) + ' ' + plural(ids.size, 'магазин', 'магазина', 'магазинов')
             + (noGeo.size ? ' · без координат ' + fmt(noGeo.size) : '');
     }
 
@@ -1683,43 +2105,48 @@
         const W = cycleOf(m);
         const wds = [...new Set(modeDays(m).map(d => num(d.weekday)))].sort((a, b) => a - b);
         const item = (sw, text) => h('span', { class: 'rt-lg rt-lg-static' }, sw, text);
+        box.append(h('span', { class: 'rt-lg-cap', text: 'Цвет точки — день недели:' }));
         wds.forEach(wd => box.append(item(h('span', { class: 'ro-lg-sw', style: 'background:' + wdColor(wd), 'aria-hidden': 'true' }),
             WD_SHORT[wd] || String(wd))));
         if (W > 1) {
-            box.append(item(h('span', { class: 'ro-lg-sw', style: 'background:#a7b0c0', 'aria-hidden': 'true' }), 'неделя 1 или каждую неделю'));
-            box.append(item(h('span', { class: 'ro-lg-sw is-hollow', style: 'color:#a7b0c0', 'aria-hidden': 'true' }), 'только неделя 2 — пунктир'));
+            box.append(item(h('span', { class: 'ro-lg-sw', style: 'background:#a7b0c0', 'aria-hidden': 'true' }), 'каждую неделю или в 1-ю'));
+            box.append(item(h('span', { class: 'ro-lg-sw is-hollow', style: 'color:#a7b0c0', 'aria-hidden': 'true' }), 'только во 2-ю неделю — пунктир'));
         }
-        box.append(item(h('span', { class: 'rt-lg-ico', style: 'border:1.5px solid #a7b0c0;border-radius:50%', 'aria-hidden': 'true' }, icon('fa-house')), 'Дом менеджера'));
-        if (depotOf()) box.append(item(h('span', { class: 'rt-lg-ico', style: 'background:#eef1f6;color:#0c0f14', 'aria-hidden': 'true' }, icon('fa-warehouse')), 'Склад'));
+        box.append(item(h('span', { class: 'rt-lg-ico', style: 'border:1.5px solid #a7b0c0;border-radius:50%', 'aria-hidden': 'true' }, icon('fa-house')), 'дом менеджера'));
+        if (depotOf()) box.append(item(h('span', { class: 'rt-lg-ico', style: 'background:#eef1f6;color:#0c0f14', 'aria-hidden': 'true' }, icon('fa-warehouse')), 'склад'));
     }
 
-    // Дни клиента в плане режима: «пн и чт, каждую неделю»
-    function visitsText(m, side, cid) {
+    // Дни магазина в плане режима словами: «пн и чт каждую неделю»
+    function visitsHuman(m, side, cid) {
         const days = side === 'before' ? m.days_before : m.days_after;
         const pairs = [];
         days.forEach(d => { if (d.stops.some(st => String(st.customer_id) === String(cid))) pairs.push([weekOf(d), num(d.weekday)]); });
         const W = Math.max(side === 'after' ? num(state.result.cycle_weeks) || 1 : 1, ...days.map(weekOf));
-        return patternText(pairs, W);
+        if (W === 1) return patternHuman(pairs.flatMap(([, d]) => [[1, d], [2, d]]));   // недельный план — обе недели
+        if (W > 2) return daysList(uniqSorted(pairs.map(x => x[1])));
+        return patternHuman(pairs);
     }
 
     function tipNode(m, cid) {
         return h('div', {}, h('b', { text: custName(cid) }), h('br'),
-            h('span', { style: 'color:#a7b0c0', text: visitsText(m, state.mapMode, cid) }));
+            h('span', { style: 'color:#a7b0c0', text: visitsHuman(m, state.mapMode, cid) }));
     }
 
     function popupNode(m, cid) {
         const c = custOf(cid) || {};
         const ch = m.changes.find(x => String(x.customer_id) === String(cid)) || null;
         const row = (k, v) => h('div', { class: 'rt-pop-row' }, h('span', { text: k }), h('b', { text: v }));
-        const lam = num(c.lam_year);
+        const silent = silenceText(cid);
+        const rate = orderRateText(c.lam_year);
+        const word = ch ? (isRemove(ch) ? REMOVE_WORD : DECISION_WORD)[statusOf(ch)] || DECISION_WORD.none : 'изменений нет';
         return h('div', { class: 'rt-pop' },
             h('div', { class: 'rt-pop-t', text: custName(cid) }),
-            h('div', { class: 'rt-pop-s', text: [c.code, c.abc ? 'класс ' + c.abc : ''].filter(Boolean).map(String).join(' · ') || '—' }),
-            row('Было', ch ? sideText(ch.from) : visitsText(m, 'before', cid)),
-            row('Стало', ch ? sideText(ch.to) : visitsText(m, 'after', cid)),
-            ch && ch.reason ? h('div', { class: 'rt-pop-note', text: String(ch.reason) }) : null,
-            lam !== null ? row('Заказывает', fmt(lam, 2) + ' ' + (Number.isInteger(round(lam, 2)) ? plural(lam, 'раз', 'раза', 'раз') : 'раза') + ' в неделю') : null,
-            row('Решение', ch ? STATUS[statusOf(ch)].text : 'изменений нет'));
+            c.code ? h('div', { class: 'rt-pop-s', text: String(c.code) }) : null,
+            row('Сейчас', ch ? patternHuman(ch.from.pattern) : visitsHuman(m, 'before', cid)),
+            row('Если принять', ch ? (isRemove(ch) ? 'не посещать' : patternHuman(ch.to.pattern)) : visitsHuman(m, 'after', cid)),
+            ch ? h('div', { class: 'rt-pop-note', text: rowReason(ch) }) : null,
+            silent ? row('Покупки', silent) : (rate ? row('Заказы', rate) : null),
+            row('Решение', word));
     }
 
     function pin(cls, color, ico, size) {
@@ -1734,7 +2161,7 @@
         const m = curMgr();
         updateMapNote(m);
         renderMapLegend(m);
-        if (!state.map) return;
+        if (!state.map || !mapOpen()) return;
         const layers = state.layers;
         layers.points.clearLayers();
         layers.route.clearLayers();
@@ -1742,7 +2169,7 @@
         const bounds = [];
         if (m) {
             const days = modeDays(m), W = cycleOf(m), sel = selectedDay(m);
-            // Точка — клиент × день недели; только неделя 2 — пунктиром и полупрозрачно
+            // Точка — магазин × день недели; только 2-я неделя — пунктиром и полупрозрачно
             const pts = new Map();
             days.forEach(d => {
                 const wd = num(d.weekday), w = weekOf(d);
@@ -1815,13 +2242,15 @@
         state.mapAgent = String(m.agent_id);
         state.mapDay = null;
         $('roMapMgr').value = state.mapAgent;
+        const box = $('roMapBox');
         renderDays();
-        drawMap();
-        scrollTo($('roMapSection'));
+        if (!box.open) box.open = true;   // toggle → onMapToggle нарисует карту
+        else drawMap();
+        scrollTo(box);
         announce('На карте: ' + mgrName(m));
     }
 
-    // ---------- 06 · План для ERP (Excel) ----------
+    // ---------- План для ERP (Excel) ----------
     const acceptedChanges = () => (state.result ? state.result.managers.flatMap(m => m.changes
         .filter(c => kindsOf(c).some(k => c.decision[k] === 'accepted')).map(c => ({ c, m }))) : []);
 
@@ -1829,22 +2258,21 @@
     // этого расчёта, без устаревших и уже исполненных в ERP
     function renderExport() {
         const s = state.decisions ? state.decisions.summary : null;
-        const n = s ? num(s.export_changes) : null, stale = s ? num(s.stale) || 0 : 0;
+        const n = s ? num(s.export_changes) : null;
         const btn = $('roExportBtn'), note = $('roExportNote');
         btn.setAttribute('aria-disabled', n === 0 || state.exporting ? 'true' : 'false');
-        let text;
+        let status = '';
         if (n === null) {
-            text = state.decError ? 'Не удалось узнать, сколько изменений войдёт в файл, — его всё равно можно скачать.'
-                : 'Считаю принятые изменения…';
+            status = state.decError ? 'Сколько изменений войдёт в файл, узнать не удалось — его всё равно можно скачать.' : '';
         } else if (n) {
-            text = 'В файл ' + plural(n, 'войдёт', 'войдут', 'войдут') + ' ' + fmt(n) + ' '
+            status = 'В файл ' + plural(n, 'войдёт', 'войдут', 'войдут') + ' ' + fmt(n) + ' '
                 + plural(n, 'принятое изменение', 'принятых изменения', 'принятых изменений') + '.';
         } else {
-            text = 'Принятых изменений нет — план совпадает с текущим. Примите предложения выше, и они войдут в файл.';
+            status = 'Пока нечего выгружать: примите хотя бы одно предложение.';
         }
-        if (stale) text += ' Устаревших решений — ' + fmt(stale) + ': в файл они не войдут.';
-        note.textContent = text;
-        note.classList.toggle('is-off', n === 0);
+        note.textContent = '';
+        note.append('В файле — новый план по менеджерам и дням; внесите его в ERP вручную. ',
+            status ? h('span', { class: n === 0 ? 'is-warn' : 'is-ok', text: status }) : null);
     }
 
     function setExportBusy(on) {
@@ -1869,7 +2297,7 @@
     function markText(v) {
         if (Array.isArray(v)) return v.map(markText).filter(Boolean).join(', ');
         if (v === null || v === undefined || v === '') return '';
-        const MARK = { move: 'перенос', frequency: 'частота', freq: 'частота', both: 'перенос, частота' };
+        const MARK = { move: 'перенос', frequency: 'частота', freq: 'частота', both: 'перенос, частота', remove: 'убрать' };
         return MARK[v] || String(v);
     }
 
@@ -1900,6 +2328,28 @@
 
     const patternKey = (p) => JSON.stringify(arr(p).filter(Array.isArray).map(x => [num(x[0]), num(x[1])])
         .sort((a, b) => a[0] - b[0] || a[1] - b[1]));
+
+    // Текст шаблона для Excel: с сервера, иначе — из пар [неделя, день]: «вт, каждую неделю»
+    function patternText(pairs, W) {
+        const by = new Map();
+        pairs.forEach(([w, wd]) => {
+            if (!by.has(wd)) by.set(wd, new Set());
+            by.get(wd).add(w);
+        });
+        if (!by.size) return 'нет визитов';
+        const wds = [...by.keys()].sort((a, b) => a - b);
+        const names = wds.map(wd => (WD_SHORT[wd] || String(wd)).toLowerCase());
+        const sets = wds.map(wd => [...by.get(wd)].sort((a, b) => a - b).join(','));
+        const every = Array.from({ length: W }, (_, i) => i + 1).join(',');
+        if (sets.every(s => s === every)) return names.join(' и ') + ', каждую неделю';
+        if (sets.every(s => s === sets[0]) && !sets[0].includes(',')) return names.join(' и ') + ', ' + sets[0] + '-я неделя из ' + W;
+        return wds.map((wd, i) => names[i] + ' (неделя ' + sets[i].replace(/,/g, ' и ') + ')').join(', ');
+    }
+    function sideText(side) {
+        if (typeof side.text === 'string' && side.text) return side.text;
+        const pairs = arr(side.pattern).filter(Array.isArray).map(x => [num(x[0]) || 1, num(x[1])]).filter(x => x[1] !== null);
+        return patternText(pairs, Math.max(2, ...pairs.map(x => x[0])));
+    }
 
     // Лист «Изменения»: принятые строки; с сервера, иначе — из результата на экране
     function changeRows(d) {
@@ -1979,11 +2429,11 @@
         const stale = arr(d.stale_decisions).filter(isObj);
         if (stale.length) {
             const ul = h('ul', {}, stale.slice(0, STALE_LIST_MAX).map(x => h('li', {}, h('b', { text: decName(x) }),
-                x.agent_code ? ' (' + x.agent_code + ')' : '', ': решено «' + String(x.to_text || '—') + '», сейчас в ERP — «'
-                + String(x.current_text || '—') + '»')));
+                x.agent_code ? ' (' + x.agent_code + ')' : '', ': решено «' + humanPlanText(x.to_text) + '», сейчас в ERP — «'
+                + humanPlanText(x.current_text) + '»')));
             if (stale.length > STALE_LIST_MAX) ul.append(h('li', { text: 'и ещё ' + fmt(stale.length - STALE_LIST_MAX) }));
             lines.push(h('span', {}, h('b', { text: 'Не вошли ' + fmt(stale.length) + ' ' + plural(stale.length, 'устаревшее решение', 'устаревших решения', 'устаревших решений') }),
-                ' — план клиента в ERP изменился после решения.', ul));
+                ' — план этих магазинов в ERP изменился после решения.', ul));
         }
         const mm = dataMismatch(d.data_as_of);
         if (mm) lines.push(h('span', {}, 'План для ERP собран по данным ERP на ' + stamp(mm.now) + ', а расчёт на экране — на '
@@ -1992,18 +2442,11 @@
         if (lines.length) box.append(icon('fa-triangle-exclamation'), h('span', { class: 'rt-alert-text' }, lines.map(x => h('span', { class: 'ro-sub-line' }, x))));
     }
 
-    // ---------- Справочники: менеджеры, дома, склад, порог дня ----------
+    // ---------- Справочники: менеджеры, дома, склад, сезоны, порог дня ----------
     async function loadRefs() {
         $('roMgrsErr').classList.add('d-none');
         const [ov, st] = await Promise.allSettled([api('GET', '/api/routes/overview'), api('GET', '/api/routes/settings')]);
-        if (st.status === 'fulfilled' && isObj(st.value.settings)) {
-            state.settings = st.value.settings;
-            if (state.result) {
-                renderKpi();
-                renderManagers();
-                renderDayInfo();
-            }
-        }
+        if (st.status === 'fulfilled' && isObj(st.value.settings)) state.settings = st.value.settings;
         if (ov.status === 'fulfilled') {
             const d = ov.value;
             const list = arr(d.managers).filter(m => isObj(m) && m.agent_id !== null && m.agent_id !== undefined);
@@ -2015,12 +2458,15 @@
             });
             const dp = obj(d.depot);
             state.depot = num(dp.lat) !== null && num(dp.lon) !== null ? [num(dp.lat), num(dp.lon)] : null;
+            state.season = obj(d.season);
+            state.roads = d.distance_source === 'roads';
+            // для строки про дизель: у скольких менеджеров в расчёте нет машины, у скольких машин нет расхода
+            const inc = list.filter(m => m.included !== false);
+            state.noTruck = inc.filter(m => !isObj(m.truck)).length;
+            state.noFuel = new Set(inc.filter(m => isObj(m.truck) && num(m.truck.fuel_l_per_100km) === null)
+                .map(m => String(m.truck.car_code || m.truck.name || m.agent_id))).size;
             state.pick = new Set(state.managers.filter(m => m.included).map(m => String(m.agent_id)));
             renderPicker();
-            if (state.result) {
-                renderKpi();       // склад известен — плитка грузовиков просит именно то, чего не хватает
-                drawMap();
-            }
         } else {
             const e = ov.reason || {};
             const box = $('roMgrs');
@@ -2028,7 +2474,7 @@
             box.append(h('span', { class: 'ro-muted', text: 'Список менеджеров не загрузился — расчёт пойдёт по менеджерам «в расчёте» из настроек.' }));
             const err = $('roMgrsErr');
             err.textContent = '';
-            const again = h('button', { type: 'button', class: 'rt-hintbtn', text: 'Загрузить снова' });
+            const again = h('button', { type: 'button', class: 'rt-linkbtn', text: 'Загрузить снова' });
             again.addEventListener('click', () => {
                 box.textContent = '';
                 box.append(h('span', { class: 'ro-muted' }, spin(), ' Загружаю список менеджеров…'));
@@ -2038,25 +2484,33 @@
             err.classList.remove('d-none');
             updateRunState();
         }
+        // тексты зависят от порога дня, рабочих дней, сезонов и склада — перерисовать с ними
+        if (state.result) {
+            renderTexts();
+            renderDayInfo();
+            drawMap();
+        }
     }
 
     // ---------- События ----------
     document.addEventListener('DOMContentLoaded', () => {
         syncNavOffset();
         window.addEventListener('resize', syncNavOffset);
-        renderHints();
+        initTips();
         $('roMgrs').parentElement.querySelector('.ro-quick').hidden = true;
+        renderStep1();
+        renderStep3();
         updateRunState();
 
         $('roForm').addEventListener('submit', (e) => {
             e.preventDefault();
             if ($('roRunBtn').getAttribute('aria-disabled') === 'true' && !running()) {
-                announce('Выберите хотя бы одного менеджера');
+                announce('Отметьте хотя бы одного менеджера');
+                $('roMore').open = true;
                 return;
             }
             run(readParams());
         });
-        $('roForm').addEventListener('change', (e) => { if (e.target.name === 'roStart' || e.target.name === 'roFreq') renderHints(); });
         $('roMgrs').addEventListener('change', onPick);
         $('roMgrAll').addEventListener('click', () => setPick('all'));
         $('roMgrNone').addEventListener('click', () => setPick('none'));
@@ -2070,12 +2524,21 @@
             if ($('roRecalcBtn').getAttribute('aria-disabled') === 'true') { announce('Расчёт уже идёт — дождитесь окончания'); return; }
             recalc();
         });
+        $('roParamsToggle').addEventListener('click', () => {
+            state.paramsOpen = !state.paramsOpen;
+            renderStep1();
+            if (state.paramsOpen) {
+                if (state.result) setParams(state.result.params);
+                $('roMore').open = true;
+                $('roRunBtn').focus();
+            }
+        });
 
-        $('roTypeChips').addEventListener('click', onTypeChip);
-        $('roSearch').addEventListener('input', debounce(onSearch, 150));
-        $('roProps').addEventListener('click', onRowAction);
-        $('roMgrBody').addEventListener('click', onMgrLink);
+        $('roCards').addEventListener('click', onCardsClick);
+        $('roPanel').addEventListener('click', onPanelClick);
+        $('roPanel').addEventListener('input', debounce(onPanelSearch, 150));
 
+        $('roMapBox').addEventListener('toggle', onMapToggle);
         $('roMapMgr').addEventListener('change', (e) => {
             state.mapAgent = e.target.value;
             state.mapDay = null;
@@ -2099,14 +2562,17 @@
             if (b) b.focus();
         });
         $('roExportBtn').addEventListener('click', exportPlan);
+        $('roStepWarn').addEventListener('click', (e) => {
+            if (!e.target.closest('button[data-showdec]')) return;
+            const box = $('roDecBox');
+            box.open = true;
+            scrollTo(box);
+            box.querySelector('summary').focus({ preventScroll: true });
+        });
         $('roDecList').addEventListener('click', onDecList);
         $('roDecReset').addEventListener('click', () => {
             if ($('roDecReset').getAttribute('aria-disabled') === 'true') { announce('Решений нет — сбрасывать нечего'); return; }
             resetAll();
-        });
-        $('roDecToggle').addEventListener('click', () => {
-            state.decOpen = !state.decOpen;
-            renderDecisions();
         });
 
         loadRefs();

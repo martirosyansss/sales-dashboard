@@ -1,29 +1,33 @@
 # -*- coding: utf-8 -*-
 """Порядок объезда: nearest-neighbor + 2-opt; нарезка тура машины на рейсы по тоннажу.
 
-Чистая логика — без Flask и без БД. Расстояния — км по прямой (haversine);
-поправку на извилистость дорог (detour_factor) применяет вызывающий код.
+Чистая логика — без Flask и без БД. Расстояние — функция dist(a, b), км: по умолчанию по прямой
+(haversine), и тогда поправку на извилистость дорог (detour_factor) применяет вызывающий код;
+оценка передаёт Norms.km — по дорогам (этап 5), с извилистостью только у участков по прямой.
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Callable, Sequence
 
 from .geo import Point, haversine_km
 
 Matrix = list[list[float]]
+Distance = Callable[[Point, Point], float]   # км между точками; симметричная
 
 _EPS = 1e-12
 
 
-def distance_matrix(points: Sequence[Point]) -> Matrix:
+def distance_matrix(points: Sequence[Point], dist: Distance | None = None) -> Matrix:
+    """Симметричная матрица км; dist=None — по прямой."""
+    d = haversine_km if dist is None else dist
     n = len(points)
-    dist = [[0.0] * n for _ in range(n)]
+    out = [[0.0] * n for _ in range(n)]
     for i in range(n):
         for j in range(i + 1, n):
-            dist[i][j] = dist[j][i] = haversine_km(points[i], points[j])
-    return dist
+            out[i][j] = out[j][i] = d(points[i], points[j])
+    return out
 
 
 def nearest_neighbor(dist: Matrix, start: int = 0) -> list[int]:
@@ -64,23 +68,24 @@ def two_opt(tour: Sequence[int], dist: Matrix) -> list[int]:
     return t
 
 
-def solve_tour(start: Point, points: Sequence[Point]) -> list[int]:
+def solve_tour(start: Point, points: Sequence[Point], dist_fn: Distance | None = None) -> list[int]:
     """Замкнутый тур start → points → start. Возвращает индексы points в порядке объезда."""
     if not points:
         return []
-    dist = distance_matrix([start, *points])
+    dist = distance_matrix([start, *points], dist_fn)
     tour = two_opt(nearest_neighbor(dist, 0), dist)
     return [i - 1 for i in tour[1:]]
 
 
-def route_order(points: Sequence[Point], home: Point | None) -> list[int]:
+def route_order(points: Sequence[Point], home: Point | None,
+                dist_fn: Distance | None = None) -> list[int]:
     """Порядок объезда точек менеджером (NN + 2-opt): замкнутый тур от дома;
     без дома — открытый путь со свободными концами (фиктивная вершина с нулевыми расстояниями)."""
     if len(points) <= 1:
         return list(range(len(points)))
     if home is not None:
-        return solve_tour(home, points)
-    dist = distance_matrix(points)
+        return solve_tour(home, points, dist_fn)
+    dist = distance_matrix(points, dist_fn)
     full = [[0.0] * (len(points) + 1)] + [[0.0, *row] for row in dist]
     tour = two_opt(nearest_neighbor(full, 0), full)
     return [i - 1 for i in tour[1:]]
@@ -118,26 +123,28 @@ def split_by_capacity(kgs: Sequence[float],
 
 @dataclass(frozen=True)
 class Delivery:
-    km: float   # по прямой, без извилистости
+    km: float   # по dist; dist=None — по прямой, без извилистости
     trips: int
 
 
 def delivery_km(depot: Point, stops: Sequence[tuple[Point, float]],
-                capacity: float | None) -> Delivery:
+                capacity: float | None, dist: Distance | None = None) -> Delivery:
     """Км и число рейсов машины за день: тур NN + 2-opt от склада, затем нарезка по тоннажу.
 
     stops — (точка клиента, кг заказа). Каждый рейс: склад → клиенты рейса → склад.
+    dist — функция расстояния (None — по прямой).
     """
     if not stops:
         return Delivery(0.0, 0)
-    order = solve_tour(depot, [p for p, _ in stops])
+    d = haversine_km if dist is None else dist
+    order = solve_tour(depot, [p for p, _ in stops], dist)
     points = [stops[i][0] for i in order]
     kgs = [stops[i][1] for i in order]
     trips, heavy = split_by_capacity(kgs, capacity)
     km = 0.0
     for trip in trips:
         path = [depot, *(points[i] for i in trip), depot]
-        km += sum(haversine_km(a, b) for a, b in zip(path, path[1:]))
+        km += sum(d(a, b) for a, b in zip(path, path[1:]))
     for i, n in heavy:
-        km += 2.0 * haversine_km(depot, points[i]) * n
+        km += 2.0 * d(depot, points[i]) * n
     return Delivery(km, len(trips) + sum(n for _, n in heavy))

@@ -14,56 +14,68 @@
     const MONTHS_FULL = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
     const FUEL = [['petrol', 'бензин'], ['diesel', 'дизель'], ['lpg', 'газ']];
     const HOME_METHOD = { night: 'по ночёвкам', morning: 'по первым точкам дня', first_point: 'по первым точкам дня' };
-    const SECTIONS = ['depot', 'trucks', 'managers', 'norms', 'season', 'calibration'];
+    const SECTIONS = ['depot', 'trucks', 'fuel', 'managers', 'norms', 'season', 'calibration'];
     const RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    // Нормы: ключ настроек → подпись простыми словами. min/max — подсказка браузеру,
+    // Нормы: ключ настроек → подпись простыми словами и пояснение в одну строку. min/max — подсказка браузеру,
     // окончательную проверку диапазонов делает сервер (§9), его ошибки показываются у поля.
+    // place: 'fuel' — в «Обязательно заполнить», остальное — в «Можно не трогать»
     const NORMS = [
+        { place: 'fuel', title: 'Цена за литр, драм', items: [
+            { key: 'fuel_price_diesel', label: 'Дизель', min: 1, max: 10000, step: 1, nullable: true, hint: 'для грузовиков и машин на дизеле' },
+            { key: 'fuel_price_petrol', label: 'Бензин', min: 1, max: 10000, step: 1, nullable: true, hint: 'для машин менеджеров на бензине' },
+            { key: 'fuel_price_lpg', label: 'Газ', min: 1, max: 10000, step: 1, nullable: true, hint: 'нужен, только если кто-то из менеджеров ездит на газе' },
+        ] },
+        { place: 'fuel', title: 'Машины менеджеров', items: [
+            { key: 'manager_car_default_l_per_100km', label: 'Расход, если не указан, л на 100 км', min: 1, max: 40, step: 0.1,
+                hint: 'для менеджеров, у которых в «Проверьте» расход не заполнен' },
+        ] },
         { title: 'Рабочий день', items: [
             { key: 'work_start', label: 'Начало', type: 'time' },
             { key: 'work_end', label: 'Конец', type: 'time' },
             { key: 'workdays', kind: 'workdays', label: 'Рабочие дни' },
         ] },
-        { title: 'Сколько длится визит, мин', items: [
-            { key: 'visit_min_small', label: 'Мелкий магазин', min: 1, max: 120, step: 0.5, nullable: true, auto: true, hint: 'пусто — по стоянкам у клиентов в GPS-треках' },
+        { title: 'Сколько длится визит, минут', items: [
+            { key: 'visit_min_small', label: 'Небольшой магазин', min: 1, max: 120, step: 0.5, nullable: true, auto: true, hint: 'пусто — берём по стоянкам у магазинов в GPS-треках' },
             { key: 'visit_min_medium', label: 'Средний магазин', min: 1, max: 120, step: 0.5, nullable: true, auto: true },
             { key: 'visit_min_large', label: 'Крупный магазин и сеть', min: 1, max: 120, step: 0.5, nullable: true, auto: true },
         ] },
         { title: 'Размер магазина — по среднему заказу', items: [
-            { key: 'size_small_max_kg', label: 'Мелкий — до, кг', min: 1, max: 100000, step: 1 },
+            { key: 'size_small_max_kg', label: 'Небольшой — до, кг', min: 1, max: 100000, step: 1 },
             { key: 'size_medium_max_kg', label: 'Средний — до, кг', min: 1, max: 100000, step: 1, hint: 'тяжелее — крупный' },
         ] },
-        { title: 'Пороги выручки', items: [
-            { key: 'min_day_revenue', label: 'День менеджера — не меньше, драм', min: 0, max: 100000000, step: 1000, hint: 'проверяем по зимним заказам' },
-            { key: 'min_trip_revenue', label: 'Рейс машины — не меньше, драм', min: 0, max: 100000000, step: 1000 },
+        { title: 'Сколько должен приносить', items: [
+            { key: 'min_day_revenue', label: 'День менеджера — не меньше, драм', min: 0, max: 100000000, step: 1000, hint: 'день, который зимой скорее всего не наберёт столько, считается слабым' },
+            { key: 'min_trip_revenue', label: 'Рейс машины — не меньше, драм', min: 0, max: 100000000, step: 1000, hint: 'меньше — машина едет почти пустая' },
         ] },
-        // auto: пустое поле — «авто» (калибровка по GPS, без неё — по умолчанию), см. autoText()
+        // auto: пустое поле — «авто» (по GPS-трекам, без них — по умолчанию), см. autoText()
         { title: 'Дороги и скорость', items: [
-            { key: 'detour_factor', label: 'Извилистость дорог', min: 1, max: 3, step: 0.01, nullable: true, auto: true, hint: 'во сколько раз путь по дорогам длиннее прямой; пусто — берём по GPS-трекам' },
+            { key: 'detour_factor', label: 'Во сколько раз дорога длиннее прямой', min: 1, max: 3, step: 0.01, nullable: true, auto: true, hint: 'пусто — берём по GPS-трекам' },
             { key: 'speed_city_kmh', label: 'Скорость в городе, км/ч', min: 5, max: 120, step: 1, nullable: true, auto: true, hint: 'пусто — берём по GPS-трекам' },
             { key: 'speed_region_kmh', label: 'Скорость по области, км/ч', min: 5, max: 120, step: 1, nullable: true, auto: true, hint: 'пусто — берём по GPS-трекам' },
             { key: 'city_center', kind: 'coord', label: 'Центр города — широта, долгота', lat: 'city_center_lat', lon: 'city_center_lon' },
             { key: 'city_radius_km', label: 'Радиус города, км', min: 1, max: 50, step: 0.5, hint: 'внутри — городская скорость' },
         ] },
-        { title: 'Топливо', items: [
-            { key: 'fuel_price_diesel', label: 'Дизель, драм за литр', min: 1, max: 10000, step: 1, nullable: true, hint: 'пусто — стоимость в драмах не считаем' },
-            { key: 'fuel_price_petrol', label: 'Бензин, драм за литр', min: 1, max: 10000, step: 1, nullable: true },
-            { key: 'fuel_price_lpg', label: 'Газ, драм за литр', min: 1, max: 10000, step: 1, nullable: true },
-            { key: 'manager_car_default_l_per_100km', label: 'Машина менеджера, если расход не указан, л/100 км', min: 1, max: 40, step: 0.1 },
-            { key: 'truck_priority', label: 'Дизель грузовиков важнее в … раз', min: 1, max: 10, step: 0.1, hint: 'для будущих предложений по маршрутам' },
+        // Этап 3 — как программа сравнивает варианты дней: во сколько драм «обходится» каждая неприятность
+        { title: 'Как программа выбирает дни', items: [
+            { key: 'penalty_weak_day', label: 'Слабый день зимой обходится как, драм', min: 0, max: 10000000, step: 1000, hint: 'больше — сильнее выравнивает выручку по дням' },
+            { key: 'penalty_poor_trip', label: 'Почти пустой рейс обходится как, драм', min: 0, max: 10000000, step: 500, hint: 'рейс, где заказов меньше нормы рейса' },
+            { key: 'penalty_overtime_per_min', label: 'Минута сверх рабочего дня обходится как, драм', min: 0, max: 1000000, step: 50 },
+            { key: 'penalty_change', label: 'Перенос магазина на другой день обходится как, драм', min: 0, max: 1000000, step: 50, hint: 'больше — меньше переносов ради мелкой экономии' },
+            { key: 'truck_priority', label: 'Дизель грузовиков важнее бензина менеджеров во столько раз', min: 1, max: 10, step: 0.1 },
+            { key: 'fuel_price_fallback', label: 'Цена топлива, если в «Ценах топлива» пусто, драм за литр', min: 1, max: 10000, step: 1, hint: 'только чтобы сравнивать варианты' },
+            { key: 'optimizer_seconds_per_manager', label: 'Время расчёта на менеджера — не больше, секунд', min: 1, max: 120, step: 1 },
+            { key: 'abc_a_share', label: 'Крупные магазины — доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'самые крупные вместе дают эту долю; крупные и средние — не реже раза в неделю' },
+            { key: 'abc_b_share', label: 'Средние магазины — следующая доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'остальные — небольшие, их можно посещать раз в 2 недели' },
+            { key: 'freq_safety', label: 'Запас по визитам', min: 0.5, max: 3, step: 0.1, hint: 'визитов в неделю — не меньше, чем заказов в неделю × запас' },
         ] },
-        // Этап 3 — оптимизация дней визитов: штрафы в драмах в неделю, классы ABC, частота по продажам
-        { title: 'Оптимизация', items: [
-            { key: 'penalty_weak_day', label: 'Слабый день зимой — штраф, драм', min: 0, max: 10000000, step: 1000, hint: 'день, в который выручка скорее всего не дотянет до порога; больше — сильнее выравниваем дни' },
-            { key: 'penalty_poor_trip', label: 'Бедный рейс — штраф, драм', min: 0, max: 10000000, step: 500, hint: 'заказы дня меньше порога рейса' },
-            { key: 'penalty_overtime_per_min', label: 'Минута сверх рабочего дня — штраф, драм', min: 0, max: 1000000, step: 50 },
-            { key: 'penalty_change', label: 'Перенос магазина на другой день — штраф, драм', min: 0, max: 1000000, step: 50, hint: 'больше — меньше переносов ради мелкой экономии' },
-            { key: 'fuel_price_fallback', label: 'Цена топлива для расчёта, если не задана, драм/л', min: 1, max: 10000, step: 1, hint: 'пока цены в «Топливе» пустые' },
-            { key: 'optimizer_seconds_per_manager', label: 'Время расчёта на менеджера — не больше, с', min: 1, max: 120, step: 1 },
-            { key: 'abc_a_share', label: 'Класс A — доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'самые крупные клиенты вместе дают эту долю; A и B — не реже раза в неделю' },
-            { key: 'abc_b_share', label: 'Класс B — следующая доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'A и B вместе — меньше 1; остальные — класс C, можно раз в 2 недели' },
-            { key: 'freq_safety', label: 'Запас частоты', min: 0.5, max: 3, step: 0.1, hint: 'визитов в неделю — не меньше, чем заказов в неделю × запас' },
+        // §15 — статус магазина по давности последнего заказа (ответ владельца №27)
+        { title: 'Кто перестал покупать', items: [
+            { key: 'status_new_days', label: 'Новый магазин — первый заказ за последние, дней', min: 1, max: 365, step: 1, hint: 'новые не считаются переставшими покупать' },
+            { key: 'dormant_min_days', label: 'Перестал покупать — не заказывает дольше, дней', min: 1, max: 365, step: 1, hint: 'таким — визит раз в 2 недели, чтобы попробовать вернуть' },
+            { key: 'dormant_mult', label: 'Перестал покупать — во сколько раз дольше обычного', min: 1, max: 20, step: 0.5 },
+            { key: 'lost_min_days', label: 'Давно не покупает — дольше, дней', min: 1, max: 730, step: 1, hint: 'или ни одного заказа за год: программа предложит убрать из маршрута' },
+            { key: 'lost_mult', label: 'Давно не покупает — во сколько раз дольше обычного', min: 1, max: 50, step: 0.5 },
         ] },
     ];
     // def — «авто» без калибровки по GPS (как ROAD_NORMS и VISIT_NORMS в route_optimizer/evaluate.py)
@@ -199,6 +211,7 @@
             count++;
         });
         box.append(h('b', { text: (fromClient ? 'Проверьте поля — ' : 'Не сохранено — ') + 'нужно исправить: ' + count }), list);
+        if ($('rsAuto').querySelector('.is-invalid')) $('rsAuto').open = true;   // ошибка в свёрнутом блоке — раскрываем его
         const alert = $('rsSaveError');
         alert.classList.remove('d-none');
         alert.scrollIntoView({ behavior: RM ? 'auto' : 'smooth', block: 'start' });
@@ -216,10 +229,24 @@
     }
 
     function focusField(el) {
+        openFolds(el);
         // группа (рабочие дни, сети, месяцы) сама фокус не принимает — фокусируем первый элемент внутри
         const target = el.matches('input, select, textarea, button') ? el : (el.querySelector('input, select, button') || el);
         el.scrollIntoView({ behavior: RM ? 'auto' : 'smooth', block: 'center' });
         target.focus({ preventScroll: true });
+    }
+
+    // Поле или раздел внутри свёрнутого блока — раскрыть все блоки над ним
+    function openFolds(el) {
+        for (let d = el.closest('details'); d; d = d.parentElement && d.parentElement.closest('details')) d.open = true;
+    }
+
+    function plural(n, one, few, many) {
+        const a = Math.abs(Math.trunc(n)) % 100, b = a % 10;
+        if (a > 10 && a < 20) return many;
+        if (b > 1 && b < 5) return few;
+        if (b === 1) return one;
+        return many;
     }
 
     function flash(el) {
@@ -250,6 +277,7 @@
             $('rsForm').classList.remove('d-none');
             state.initial = snapshot();
             updateDirty();
+            renderProgress();
             if (state.map) state.map.invalidateSize();
             if (!afterSave) jumpToHash();
         } catch (e) {
@@ -278,10 +306,10 @@
         const id = (location.hash || '').slice(1);
         if (!SECTIONS.includes(id)) return;
         const sec = $(id);
+        openFolds(sec);
         requestAnimationFrame(() => {
             sec.scrollIntoView({ behavior: 'auto', block: 'start' });
-            const panel = sec.querySelector('.rt-panel');
-            if (panel) flash(panel);
+            flash(sec.classList.contains('rt-card') ? sec : (sec.querySelector('.rt-group') || sec));
         });
     }
 
@@ -293,6 +321,7 @@
         renderNorms();
         renderSeason();
         renderCalib();
+        updateSources();
     }
 
     // ---------- 01 · Склад ----------
@@ -452,7 +481,7 @@
             const tr = h('tr', { class: t.erp_closed ? 'is-closed' : null, dataset: { i: String(i) } },
                 nameCell,
                 h('td', { class: 'w-num w-half', dataset: { label: 'Тоннаж, т' } }, cap, capE),
-                h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л/100 км' } }, fuel, fuelE),
+                h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л на 100 км' } }, fuel, fuelE),
                 agentCell,
                 h('td', { class: 'w-chk', dataset: { label: 'Работает' } }, active, actE));
             tbody.append(tr);
@@ -467,7 +496,7 @@
             h('thead', {}, h('tr', {},
                 h('th', { scope: 'col', text: 'Машина' }),
                 h('th', { scope: 'col', text: 'Тоннаж, т' }),
-                h('th', { scope: 'col', text: 'Расход, л/100 км' }),
+                h('th', { scope: 'col', text: 'Расход, л на 100 км' }),
                 h('th', { scope: 'col', text: 'Менеджер' }),
                 h('th', { scope: 'col', class: 'w-chk', text: 'Работает' }))),
             tbody);
@@ -523,22 +552,44 @@
                 'aria-label': 'Дом, широта и долгота — ' + name, dataset: { f: 'home' } });
             const sug = m.home_suggestion;
             const hasSug = !!sug && num(sug.lat) !== null && num(sug.lon) !== null;
-            const gpsBtn = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', disabled: !hasSug,
-                title: hasSug ? 'Подставить дом, найденный по GPS' : 'По GPS дом не найден',
-                'aria-label': 'Из GPS — ' + name }, icon('fa-satellite-dish'), 'Из GPS');
-            gpsBtn.addEventListener('click', () => {
+            // Дом по GPS: «Верно» — закрепить найденную точку, «Поправить» — закрепить и исправить вручную
+            const homeState = h('div', { class: 'rs-home', 'aria-live': 'polite' });
+            const pinGps = () => {
                 homeInp.value = fmtCoord(sug.lat, sug.lon);
                 homeE.textContent = '';
                 homeInp.classList.remove('is-invalid');
                 homeInp.removeAttribute('aria-invalid');
                 homeInp.dispatchEvent(new Event('input', { bubbles: true }));
                 flash(homeInp);
-                announce(name + ': дом подставлен из GPS');
-            });
-            const sugText = hasSug
-                ? 'по GPS: ' + fmtCoord(sug.lat, sug.lon) + ' · ' + (HOME_METHOD[sug.method] || 'по треку')
-                  + (num(sug.days) !== null ? ', ' + fmt(sug.days) + ' дн.' : '')
-                : 'по GPS дом не найден';
+            };
+            const how = hasSug ? (HOME_METHOD[sug.method] || 'по треку') + (num(sug.days) !== null ? ', ' + fmt(sug.days) + ' ' + dayWord(sug.days) : '') : '';
+            const isGps = () => {
+                const p = parseCoord(homeInp.value);
+                return hasSug && !p.empty && !p.error && Math.abs(p.lat - num(sug.lat)) < 1e-4 && Math.abs(p.lon - num(sug.lon)) < 1e-4;
+            };
+            const smallBtn = (text, label, fn) => {
+                const b = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': label + ' — ' + name }, text);
+                b.addEventListener('click', fn);
+                return b;
+            };
+            const renderHome = () => {
+                homeState.textContent = '';
+                const p = parseCoord(homeInp.value);
+                if (p.empty && hasSug) {
+                    homeState.append(h('span', { class: 'rt-badge b-gps', text: 'найден по GPS' }), h('span', { class: 'how', text: how }),
+                        smallBtn('Верно', 'Дом верный', () => { pinGps(); announce(name + ': дом по GPS закреплён'); }),
+                        smallBtn('Поправить', 'Поправить дом', () => { pinGps(); homeInp.focus(); homeInp.select(); announce(name + ': поправьте координаты дома'); }));
+                } else if (p.empty) {
+                    homeState.append(h('span', { class: 'rt-badge b-warn', text: 'не найден' }), h('span', { class: 'how', text: 'впишите широту и долготу дома' }));
+                } else if (isGps()) {
+                    homeState.append(h('span', { class: 'rt-badge b-ok', text: 'по GPS, проверен' }));
+                } else {
+                    homeState.append(h('span', { class: 'rt-badge b-manual', text: 'указан вручную' }),
+                        hasSug ? smallBtn('Взять из GPS', 'Взять дом из GPS', () => { pinGps(); announce(name + ': дом подставлен из GPS'); }) : null);
+                }
+            };
+            homeInp.addEventListener('input', renderHome);
+            renderHome();
             homeInp.addEventListener('change', () => checkCoordField(homeInp, homeE));
             const fuelL = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 1, max: 40, step: 0.1,
                 value: num(m.car_fuel_l_per_100km) === null ? '' : String(m.car_fuel_l_per_100km),
@@ -550,13 +601,13 @@
             tbody.append(h('tr', { dataset: { i: String(i) } },
                 h('td', { class: 'w-chk w-inc', dataset: { label: 'В расчёте' } }, inc, incSrc, incE),
                 h('td', { class: 'rt-cell-name' }, h('span', { class: 'n', text: name }), h('span', { class: 'c', text: m.code || '' }),
-                    m.inactive ? h('span', { class: 'rt-badge b-warn mt-1', text: 'без работы 8 нед.',
+                    m.inactive ? h('span', { class: 'rt-badge b-warn mt-1', text: 'без работы 8 недель',
                         title: 'Нет заказов и визитов за 8 недель — по умолчанию не в расчёте' }) : null),
                 h('td', { class: 'w-coord', dataset: { label: 'Дом — широта, долгота' } },
-                    h('div', { class: 'rt-coord' }, homeInp, gpsBtn),
-                    h('div', { class: 'rt-field-hint mt-1', text: sugText }),
+                    homeInp,
+                    homeState,
                     homeE),
-                h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л/100 км' } }, fuelL, fuelE),
+                h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л на 100 км' } }, fuelL, fuelE),
                 h('td', { class: 'w-sel w-half', style: 'min-width:130px', dataset: { label: 'Топливо' } }, type, typeE)));
             const keys = (f) => ['managers.' + i + '.' + f, 'managers.' + m.agent_id + '.' + f];
             reg(keys('included').concat(keys('agent_id'), ['managers.' + i, 'managers.' + m.agent_id]), inc, incE, name);
@@ -570,7 +621,7 @@
                 h('th', { scope: 'col', class: 'w-chk w-inc', text: 'В расчёте' }),
                 h('th', { scope: 'col', text: 'Менеджер' }),
                 h('th', { scope: 'col', text: 'Дом — широта, долгота' }),
-                h('th', { scope: 'col', text: 'Расход, л/100 км' }),
+                h('th', { scope: 'col', text: 'Расход, л на 100 км' }),
                 h('th', { scope: 'col', text: 'Топливо' }))),
             tbody);
         box.append(h('div', { class: 'rt-table-scroll' }, table));
@@ -587,13 +638,14 @@
 
     // ---------- 04 · Нормы ----------
     function renderNorms() {
-        const box = $('rsNorms');
+        const box = $('rsNorms'), fuel = $('rsFuel');
         box.textContent = '';
+        fuel.textContent = '';
         const s = state.data.settings;
         NORMS.forEach(g => {
             const group = h('div', { class: 'rt-group' }, h('h3', { text: g.title }));
             g.items.forEach(it => group.append(normField(it, s)));
-            box.append(group);
+            (g.place === 'fuel' ? fuel : box).append(group);
         });
         box.append(chainsGroup(s));
     }
@@ -631,8 +683,71 @@
         if (hint) inp.setAttribute('aria-describedby', hint.id);
         reg(['settings.' + it.key], inp, err, it.label);
         const label = h('label', { for: id, text: it.label });
-        // «авто · по GPS 1,40» не влезает в узкое поле справа от подписи — поле на всю ширину под ней
-        return h('div', { class: 'rt-field' }, it.auto ? [label, inp] : h('div', { class: 'rt-field-row' }, label, inp), hint, err);
+        // «авто · по GPS 1,40» не влезает в узкое поле справа от подписи — поле на всю ширину под ней;
+        // рядом с подписью — откуда цифра: «авто по GPS», «по умолчанию» или «вручную»
+        const src = it.auto ? h('span', { class: 'rt-badge rt-field-src', dataset: { src: it.key } }) : null;
+        return h('div', { class: 'rt-field' }, it.auto ? [h('div', { class: 'rs-lblrow' }, label, src), inp] : h('div', { class: 'rt-field-row' }, label, inp), hint, err);
+    }
+
+    // Откуда цифра у «авто»-полей: пусто — по GPS (или по умолчанию, если GPS мало), заполнено — вручную
+    function updateSources() {
+        document.querySelectorAll('#rsForm [data-src]').forEach(el => {
+            const inp = document.querySelector('[data-norm="' + el.dataset.src + '"]');
+            const manual = !!inp && String(inp.value).trim() !== '';
+            const gps = num((state.data.calibration || {})[el.dataset.src]) !== null;
+            el.className = 'rt-badge rt-field-src ' + (manual ? 'b-manual' : (gps ? 'b-gps' : 'b-none'));
+            el.textContent = manual ? 'вручную' : (gps ? 'авто по GPS' : 'по умолчанию');
+        });
+    }
+
+    // «Обязательно заполнить»: склад, машины, цены топлива — сколько из трёх заполнено (по тому, что сейчас в форме)
+    function renderProgress() {
+        if (!state.data) return;
+        const set = (id, st, text) => {
+            const el = $(id);
+            el.className = 'rt-card-state is-' + st;
+            el.textContent = '';
+            el.append(icon(st === 'ok' ? 'fa-circle-check' : 'fa-circle-exclamation'), text);
+        };
+        const dp = parseCoord($('rsDepot').value);
+        const depotOk = !dp.empty && !dp.error;
+        set('rsStDepot', depotOk ? 'ok' : 'todo', depotOk ? 'заполнено' : 'не указан');
+
+        // машины: у каждого менеджера в расчёте — работающая машина с тоннажем и расходом
+        const rows = [...$('rsManagers').querySelectorAll('tbody tr')];
+        const inCalc = rows.filter(tr => tr.querySelector('[data-f="inc"]').checked);
+        const incIds = inCalc.map(tr => String(state.data.managers[+tr.dataset.i].agent_id));
+        const full = new Map();
+        $('rsTrucks').querySelectorAll('tbody tr').forEach(tr => {
+            const q = (f) => tr.querySelector('[data-f="' + f + '"]');
+            if (!q('active').checked || !q('agent').value) return;
+            const ok = String(q('cap').value).trim() !== '' && String(q('fuel').value).trim() !== '';
+            full.set(q('agent').value, full.get(q('agent').value) || ok);
+        });
+        const noTruck = incIds.filter(a => !full.has(a)).length, noData = incIds.filter(a => full.has(a) && !full.get(a)).length;
+        const trucksOk = !!incIds.length && !noTruck && !noData;
+        set('rsStTrucks', trucksOk ? 'ok' : (full.size ? 'part' : 'todo'), trucksOk ? 'заполнено'
+            : [noTruck ? 'без машины — ' + noTruck + ' ' + plural(noTruck, 'менеджер', 'менеджера', 'менеджеров') : '',
+               noData ? 'без тоннажа или расхода — ' + noData + ' ' + plural(noData, 'машина', 'машины', 'машин') : ''].filter(Boolean).join(', '));
+
+        // цены: дизель (грузовики) и то топливо, на котором ездят менеджеры в расчёте
+        const need = new Set(['diesel']);
+        inCalc.forEach(tr => need.add(tr.querySelector('[data-f="type"]').value || 'petrol'));
+        const names = { diesel: 'дизель', petrol: 'бензин', lpg: 'газ' };
+        const miss = [...need].filter(k => { const i = document.querySelector('[data-norm="fuel_price_' + k + '"]'); return !i || String(i.value).trim() === ''; });
+        const fuelOk = !miss.length;
+        set('rsStFuel', fuelOk ? 'ok' : 'todo', fuelOk ? 'заполнено' : 'не указано: ' + miss.map(k => names[k] || k).join(', '));
+
+        // дома менеджеров в расчёте
+        const noHome = inCalc.filter(tr => tr.querySelector('.rs-home .b-warn')).length;
+        set('rsStManagers', noHome ? 'part' : 'ok', noHome ? 'дом не найден — ' + noHome + ' ' + plural(noHome, 'менеджер', 'менеджера', 'менеджеров') : 'дома на месте');
+
+        const n = [depotOk, trucksOk, fuelOk].filter(Boolean).length;
+        $('rsProgress').querySelectorAll('.rt-progress-bar > span').forEach((el, i) => el.classList.toggle('is-ok', i < n));
+        const t = $('rsProgressText');
+        t.textContent = n === 3 ? 'Всё заполнено' : 'Заполнено ' + n + ' из 3';
+        t.classList.toggle('is-done', n === 3);
+        $('rsStep1').classList.toggle('is-done', n === 3);
     }
 
     // Подсказка в пустом поле нормы дорог: что возьмёт расчёт — калибровку по GPS или значение по умолчанию
@@ -723,7 +838,7 @@
         reg(['settings.low_months', 'settings.peak_months'], rows, err, 'Месяцы сезонов');
         box.append(
             h('p', { class: 'rt-lead', text: 'Выручку дня (100 000) проверяем по низкому сезону, загрузку машин — по пику. '
-                + 'Автомат сравнивает каждый месяц со средним по трём годам продаж.' }),
+                + 'Программа сравнивает каждый месяц со средним по трём годам продаж.' }),
             seg, thr, bars, rows, err,
             h('p', { class: 'rt-field-hint mt-2', id: 'rsSeasonSummary', 'aria-live': 'polite' }),
             h('p', { class: 'rt-season-fallback', id: 'rsSeasonFallback', hidden: true }));
@@ -1045,10 +1160,11 @@
             const t = e.target;
             if (t.id === 'rsDepot') syncDepot({ pan: false, strict: false });
             if (t.dataset && (t.dataset.norm === 'low_season_index_max' || t.dataset.norm === 'peak_season_index_min')) updateSeasonUI();
-            if (t.dataset && t.dataset.norm) updateCalib();
+            if (t.dataset && t.dataset.norm) { updateCalib(); updateSources(); }
             updateDirty();
+            renderProgress();
         });
-        form.addEventListener('change', () => updateDirty());
+        form.addEventListener('change', () => { updateDirty(); renderProgress(); });
         // колесо мыши не должно менять число в поле, над которым случайно прокручивают страницу
         form.addEventListener('wheel', (e) => {
             if (e.target.type === 'number' && e.target === document.activeElement) e.target.blur();

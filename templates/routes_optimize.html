@@ -5,77 +5,113 @@
 {% block extra_css %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=6">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=8">
 {% endblock %}
 
 {% block content %}
 <div class="rt-page" id="rtOptimize">
 
-    <!-- ШАПКА -->
-    <div class="rt-topbar">
-        <div class="rt-brand">
-            <h1><span class="rt-accent">//</span> Маршруты · оптимизация</h1>
-            <span id="roFresh" class="rt-pill d-none"></span>
+    <!-- ШАПКА: что это за страница — одной строкой -->
+    <header class="rt-head">
+        <div class="rt-head-row">
+            <h1 class="rt-title">Оптимизация маршрутов</h1>
+            <nav class="rt-tabs" aria-label="Разделы маршрутов">
+                <a href="/routes">Обзор</a>
+                <a href="/routes/optimize" aria-current="page">Оптимизация</a>
+                <a href="/routes/settings">Настройки</a>
+            </nav>
         </div>
-        <nav class="rt-tabs" aria-label="Разделы маршрутов">
-            <a href="/routes">Обзор</a>
-            <a href="/routes/optimize" aria-current="page">Оптимизация</a>
-            <a href="/routes/settings">Настройки</a>
-        </nav>
-    </div>
+        <p class="rt-head-lead">Программа предлагает, в какие дни посещать магазины, чтобы меньше ездить и чтобы в каждом дне
+            хватало заказов. В ERP ничего не меняется, пока вы сами не внесёте план.</p>
+    </header>
 
     <!-- Объявления для скринридеров -->
     <div id="roStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
 
-    <!-- 01 · ПАРАМЕТРЫ -->
-    <section class="rt-section" id="roParams" aria-labelledby="roParamsTitle">
-        <div class="rt-shead">
-            <span class="rt-kicker">01</span>
-            <h2 id="roParamsTitle">Что посчитать</h2>
-            <span class="rt-shead-note">магазины остаются у своих менеджеров — меняются дни визитов и частота</span>
-        </div>
-        <div class="rt-panel rt-panel-pad">
-            <form id="roForm" novalidate>
-                <div class="ro-params">
-                    <fieldset class="ro-fs" id="roMgrFs">
-                        <legend class="ro-legend">Менеджеры <span id="roMgrCount" class="ro-legend-note"></span></legend>
-                        <div class="ro-quick">
-                            <button type="button" class="rt-hintbtn" id="roMgrAll">все</button>
-                            <button type="button" class="rt-hintbtn" id="roMgrNone">снять все</button>
-                        </div>
-                        <div id="roMgrs" class="ro-mgrs">
-                            <span class="ro-muted"><span class="rt-spin-inline" aria-hidden="true"></span> Загружаю список менеджеров…</span>
-                        </div>
-                        <div id="roMgrsErr" class="ro-inline-err d-none"></div>
-                    </fieldset>
-                    <div class="ro-side">
-                        <fieldset class="ro-fs" id="roStartFs">
-                            <legend class="ro-legend">С чего начать</legend>
-                            <div class="rt-seg ro-seg">
-                                <label><input type="radio" name="roStart" value="current" checked aria-describedby="roStartHint">Улучшить текущий план</label>
-                                <label><input type="radio" name="roStart" value="fresh" aria-describedby="roStartHint">Построить с нуля</label>
-                            </div>
-                            <p class="ro-hint" id="roStartHint"></p>
-                        </fieldset>
-                        <fieldset class="ro-fs" id="roFreqFs">
-                            <legend class="ro-legend">Частота визитов</legend>
-                            <div class="rt-seg ro-seg">
-                                <label><input type="radio" name="roFreq" value="sales" checked aria-describedby="roFreqHint">По продажам (рекомендуется)</label>
-                                <label><input type="radio" name="roFreq" value="current" aria-describedby="roFreqHint">Как сейчас</label>
-                            </div>
-                            <p class="ro-hint" id="roFreqHint"></p>
-                        </fieldset>
-                    </div>
-                </div>
-                <div class="ro-run">
-                    <button type="submit" id="roRunBtn" class="rt-btn rt-btn-primary" aria-describedby="roRunNote">
-                        <i class="fas fa-play" aria-hidden="true"></i><span>Рассчитать</span>
+    <!-- ШАГ 1 · ПОСЧИТАТЬ -->
+    <section class="rt-step" id="roStep1" aria-labelledby="roStep1Title">
+        <div class="rt-step-mark" aria-hidden="true"><span>1</span></div>
+        <div class="rt-step-body">
+            <h2 class="rt-step-title" id="roStep1Title"><span class="rt-sr-only">Шаг 1. </span>Посчитать</h2>
+
+            <!-- После расчёта шаг сворачивается в одну строку -->
+            <div id="roDone" class="ro-done" hidden>
+                <span class="ro-done-text" id="roDoneText"></span>
+                <div class="ro-done-acts">
+                    <button type="button" id="roRecalcBtn" class="rt-btn rt-btn-ghost">
+                        <i class="fas fa-rotate" aria-hidden="true"></i><span>Пересчитать</span>
                     </button>
-                    <span class="ro-run-note" id="roRunNote">обычно 1–2 минуты · ERP только читается, в ERP ничего не записывается</span>
+                    <button type="button" id="roParamsToggle" class="rt-linkbtn" aria-expanded="false" aria-controls="roForm">Изменить параметры</button>
                 </div>
+            </div>
+            <p id="roRecalc" class="ro-recalc" hidden>
+                <i class="fas fa-rotate" aria-hidden="true"></i>
+                <span>Вы уже приняли или отклонили часть предложений. Нажмите «Пересчитать» — принятое закрепится,
+                    отклонённое больше не предложится, остальные дни подстроятся.</span>
+            </p>
+            <p id="roStaleNote" class="ro-note d-none"><i class="fas fa-hourglass-half" aria-hidden="true"></i>
+                <span>Идёт новый расчёт — ниже прежний результат, он заменится, когда расчёт закончится.</span></p>
+
+            <form id="roForm" novalidate>
+                <div class="ro-run">
+                    <button type="submit" id="roRunBtn" class="rt-btn rt-btn-primary rt-btn-lg" aria-describedby="roRunNote">
+                        <i class="fas fa-play" aria-hidden="true"></i><span>Посчитать предложения</span>
+                    </button>
+                    <span class="ro-run-note" id="roRunNote">≈ 5 секунд, ERP только читается</span>
+                </div>
+
+                <details class="rt-fold ro-more" id="roMore">
+                    <summary><span class="rt-fold-t">Дополнительно</span> <span class="rt-fold-note">можно не трогать</span></summary>
+                    <div class="rt-fold-body ro-params">
+                        <fieldset class="ro-fs" id="roMgrFs">
+                            <legend class="ro-legend">Кого посчитать <span id="roMgrCount" class="ro-legend-note"></span></legend>
+                            <div class="ro-quick">
+                                <button type="button" class="rt-linkbtn" id="roMgrAll">Отметить всех</button>
+                                <button type="button" class="rt-linkbtn" id="roMgrNone">Снять все</button>
+                            </div>
+                            <div id="roMgrs" class="ro-mgrs">
+                                <span class="ro-muted"><span class="rt-spin-inline" aria-hidden="true"></span> Загружаю список менеджеров…</span>
+                            </div>
+                            <div id="roMgrsErr" class="ro-inline-err d-none"></div>
+                        </fieldset>
+                        <div class="ro-side">
+                            <fieldset class="ro-fs" id="roStartFs">
+                                <legend class="ro-legend">С чего начать</legend>
+                                <div class="ro-opts">
+                                    <label class="ro-opt">
+                                        <input type="radio" name="roStart" value="current" checked>
+                                        <span class="ro-opt-t">Улучшить текущий план <em>рекомендуется</em></span>
+                                        <span class="ro-opt-d">Программа берёт дни из ERP и меняет только то, что даёт заметную выгоду. Изменений будет немного.</span>
+                                    </label>
+                                    <label class="ro-opt">
+                                        <input type="radio" name="roStart" value="fresh">
+                                        <span class="ro-opt-t">Разложить заново</span>
+                                        <span class="ro-opt-d">Как будто плана нет. Изменений будет намного больше — так видно, сколько можно сэкономить в пределе.</span>
+                                    </label>
+                                </div>
+                            </fieldset>
+                            <fieldset class="ro-fs" id="roFreqFs">
+                                <legend class="ro-legend">Как часто посещать</legend>
+                                <div class="ro-opts">
+                                    <label class="ro-opt">
+                                        <input type="radio" name="roFreq" value="sales" checked>
+                                        <span class="ro-opt-t">По заказам <em>рекомендуется</em></span>
+                                        <span class="ro-opt-d">Посещать столько, сколько магазин реально заказывает. Кто заказывает редко — раз в 2 недели.
+                                            Кто перестал покупать — вернуть или убрать из маршрута, решаете вы.</span>
+                                    </label>
+                                    <label class="ro-opt">
+                                        <input type="radio" name="roFreq" value="current">
+                                        <span class="ro-opt-t">Как сейчас</span>
+                                        <span class="ro-opt-d">Сколько раз в неделю посещать — как сейчас в ERP. Меняются только дни.</span>
+                                    </label>
+                                </div>
+                            </fieldset>
+                        </div>
+                    </div>
+                </details>
             </form>
 
             <!-- Ход расчёта -->
@@ -104,229 +140,139 @@
         </div>
     </section>
 
-    <!-- Последний расчёт -->
-    <div id="roLoading" class="rt-loading" role="status" aria-live="polite">
-        <div class="rt-spinner" aria-hidden="true"></div>Загружаю последний расчёт…
-    </div>
-    <div id="roLoadError" class="rt-alert d-none" role="alert">
-        <i class="fas fa-plug-circle-xmark" aria-hidden="true"></i>
-        <span id="roLoadErrorText" class="rt-alert-text"></span>
-        <button id="roLoadRetry" type="button" class="rt-btn rt-btn-ghost">Повторить</button>
-    </div>
-    <div id="roEmpty" class="ro-empty d-none">
-        <span class="ico" aria-hidden="true"><i class="fas fa-route"></i></span>
-        <h2>Расчётов ещё не было</h2>
-        <p>Выберите менеджеров и нажмите «Рассчитать». Здесь появятся итог «было → стало», предложения с кнопками
-            «Принять» и «Отклонить», карта дней и план для ERP в Excel — в нём будут только принятые изменения.</p>
-    </div>
+    <!-- ШАГ 2 · ЧТО ПРЕДЛАГАЕТ ПРОГРАММА -->
+    <section class="rt-step" id="roStep2" aria-labelledby="roStep2Title">
+        <div class="rt-step-mark" aria-hidden="true"><span>2</span></div>
+        <div class="rt-step-body">
+            <h2 class="rt-step-title" id="roStep2Title" tabindex="-1"><span class="rt-sr-only">Шаг 2. </span>Что предлагает программа</h2>
 
-    <div id="roResult" class="d-none">
+            <div id="roLoading" class="ro-loading" role="status" aria-live="polite">
+                <span class="rt-spin-inline" aria-hidden="true"></span> Загружаю последний расчёт…
+            </div>
+            <div id="roLoadError" class="rt-alert d-none" role="alert">
+                <i class="fas fa-plug-circle-xmark" aria-hidden="true"></i>
+                <span id="roLoadErrorText" class="rt-alert-text"></span>
+                <button id="roLoadRetry" type="button" class="rt-btn rt-btn-ghost">Повторить</button>
+            </div>
+            <p id="roEmpty" class="rt-placeholder d-none">Расчётов ещё не было. Нажмите «Посчитать предложения» — здесь появится,
+                что изменится, если принять предложения: сколько километров и времени сэкономят менеджеры и в какие дни
+                ездить к каким магазинам.</p>
 
-        <div class="ro-resbar">
-            <h2 id="roResTitle" class="ro-restitle" tabindex="-1">Итог: было → стало</h2>
-            <span id="roResMeta" class="ro-resmeta"></span>
+            <div id="roResult" class="d-none">
+                <!-- Главное: вывод человеческим языком -->
+                <div class="rt-main" id="roMain" aria-labelledby="roMainTitle">
+                    <h3 class="rt-main-title" id="roMainTitle"><i class="fas fa-lightbulb" aria-hidden="true"></i>Главное</h3>
+                    <p class="rt-main-lead" id="roMainLead">Если принять все предложения:</p>
+                    <ul class="rt-main-list" id="roMainList"></ul>
+                    <p class="rt-main-note" id="roMainNote" hidden></p>
+                </div>
+
+                <!-- Три главных показателя -->
+                <div class="rt-kpis ro-kpis" id="roKpis" role="group" aria-label="Три главных показателя: сейчас и если принять предложения"></div>
+
+                <details class="rt-fold" id="roAllBox">
+                    <summary><span class="rt-fold-t">Все цифры</span> <span class="rt-fold-note">сейчас и если принять — по всем показателям</span></summary>
+                    <div class="rt-fold-body">
+                        <div class="rt-table-scroll ro-num-scroll">
+                            <table class="rt-numtable" id="roAllTable">
+                                <caption class="rt-sr-only">Все показатели: сейчас, если принять предложения, и разница</caption>
+                                <thead><tr><th scope="col">Показатель</th><th scope="col">Сейчас</th><th scope="col">Если принять</th><th scope="col">Разница</th></tr></thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                        <p class="rt-fold-foot" id="roAllFoot"></p>
+                    </div>
+                </details>
+
+                <!-- Менеджеры -->
+                <div class="ro-cards-head">
+                    <h3 class="rt-h3" id="roCardsTitle">Предложения по менеджерам</h3>
+                    <p class="rt-h3-note">Откройте менеджера — предложения собраны в группы, их можно принять целой группой или по одному магазину.</p>
+                </div>
+                <ul class="ro-cards" id="roCards" aria-labelledby="roCardsTitle"></ul>
+
+                <!-- Предложения выбранного менеджера -->
+                <section class="ro-panel" id="roPanel" hidden aria-labelledby="roPanelTitle"></section>
+
+                <!-- Карта: свёрнута -->
+                <details class="rt-fold ro-mapfold" id="roMapBox">
+                    <summary><span class="rt-fold-t"><i class="fas fa-map-location-dot" aria-hidden="true"></i>Показать на карте</span>
+                        <span class="rt-fold-note">магазины менеджера по дням недели — сейчас и если принять</span></summary>
+                    <div class="rt-fold-body ro-mapbody">
+                        <div class="rt-maptools ro-maptools">
+                            <label for="roMapMgr">Менеджер
+                                <select id="roMapMgr" class="rt-select"></select>
+                            </label>
+                            <div class="rt-seg" role="radiogroup" aria-label="Какой план показать на карте">
+                                <label><input type="radio" name="roMapMode" value="before">Сейчас</label>
+                                <label><input type="radio" name="roMapMode" value="after" checked>Если принять</label>
+                            </div>
+                            <span class="rt-maptools-note" id="roMapNote"></span>
+                        </div>
+                        <div class="ro-mapgrid">
+                            <div class="rt-mapcol">
+                                <div id="roMap" class="rt-map ro-map" role="region" aria-label="Карта: магазины выбранного менеджера, цвет точки — день недели"></div>
+                                <div id="roMapLegend" class="rt-maplegend" aria-label="Легенда карты"></div>
+                            </div>
+                            <div class="ro-days" role="group" aria-labelledby="roDaysTitle">
+                                <h4 class="ro-days-head" id="roDaysTitle">Маршрут дня</h4>
+                                <p class="ro-days-sub">Нажмите день — на карте появится объезд от дома и обратно.</p>
+                                <div id="roDays"></div>
+                                <div id="roDayInfo" class="ro-dayinfo" aria-live="polite"></div>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+            </div>
         </div>
-        <p id="roStaleNote" class="ro-note d-none"><i class="fas fa-hourglass-half" aria-hidden="true"></i>
-            <span>Идёт новый расчёт — ниже прежний результат, он заменится, когда расчёт закончится.</span></p>
+    </section>
 
-        <!-- Решения есть — пора пересчитать -->
-        <div id="roRecalc" class="rt-alert is-warn ro-recalc d-none" role="status">
-            <i class="fas fa-rotate" aria-hidden="true"></i>
-            <span class="rt-alert-text"><b>Есть решения — пересчитайте.</b>
-                Принятые изменения закрепятся, отклонённые больше не предложатся, остальные дни подстроятся под них.</span>
-            <button type="button" id="roRecalcBtn" class="rt-btn rt-btn-primary">
-                <i class="fas fa-rotate" aria-hidden="true"></i><span>Пересчитать с учётом решений</span>
-            </button>
-        </div>
+    <!-- ШАГ 3 · ПРИНЯТЬ И ВЫГРУЗИТЬ -->
+    <section class="rt-step" id="roStep3" aria-labelledby="roStep3Title">
+        <div class="rt-step-mark" aria-hidden="true"><span>3</span></div>
+        <div class="rt-step-body">
+            <h2 class="rt-step-title" id="roStep3Title"><span class="rt-sr-only">Шаг 3. </span>Принять и выгрузить</h2>
+            <p class="rt-placeholder" id="roStep3Empty">Сначала посчитайте предложения — потом здесь можно будет скачать план для ERP.</p>
 
-        <!-- Принятые решения, которые в этом расчёте не применены: план клиента в ERP изменился -->
-        <div id="roStaleDec" class="rt-alert is-warn d-none" role="status"></div>
-
-        <!-- KPI «было → стало» простыми словами -->
-        <div class="rt-ribbon ro-ribbon" role="group" aria-label="Главные показатели: было и стало">
-            <div class="rt-tile" id="roKVisits">
-                <span class="rt-tile-label">Визитов в неделю</span>
-                <span class="rt-tile-val ro-ba" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
-            </div>
-            <div class="rt-tile" id="roKWeak">
-                <span class="rt-tile-label">Слабые дни зимой</span>
-                <span class="rt-tile-val ro-ba" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
-            </div>
-            <div class="rt-tile" id="roKMgrKm">
-                <span class="rt-tile-label">Км менеджеров</span>
-                <span class="rt-tile-val ro-ba" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
-            </div>
-            <div class="rt-tile" id="roKTruck">
-                <span class="rt-tile-label">Грузовики</span>
-                <span class="rt-tile-val ro-ba" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
-            </div>
-            <div class="rt-tile" id="roKHours">
-                <span class="rt-tile-label">Часы у клиентов в день</span>
-                <span class="rt-tile-val ro-ba" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
-            </div>
-            <div class="rt-tile" id="roKChanges">
-                <span class="rt-tile-label">Изменений</span>
-                <span class="rt-tile-val ro-ba" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
-            </div>
-            <div class="rt-tile ro-tile-wide" id="roKRevenue">
-                <span class="rt-tile-label">Выручка в неделю, модель</span>
-                <span class="rt-tile-val ro-revval" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
-            </div>
-        </div>
-        <p id="roFuelNote" class="ro-note d-none"></p>
-
-        <!-- 02 · МЕНЕДЖЕРЫ -->
-        <section class="rt-section" aria-labelledby="roMgrTitle">
-            <div class="rt-shead">
-                <span class="rt-kicker">02</span>
-                <h2 id="roMgrTitle">По менеджерам</h2>
-                <span class="rt-shead-note">всё — в неделю; зелёным — стало лучше</span>
-            </div>
-            <div class="rt-panel rt-panel-pad">
-                <div class="rt-table-scroll">
-                    <table class="rt-table ro-mtable">
-                        <caption class="rt-sr-only">Менеджеры: было и стало, число изменений и можно ли зимой набирать норму дня</caption>
-                        <thead>
-                            <tr>
-                                <th scope="col">Менеджер</th>
-                                <th scope="col">Визитов в неделю</th>
-                                <th scope="col">Км менеджера</th>
-                                <th scope="col">Км грузовика</th>
-                                <th scope="col">Слабых дней</th>
-                                <th scope="col">Часы у клиентов</th>
-                                <th scope="col">Изменений</th>
-                                <th scope="col">Норма дня</th>
-                            </tr>
-                        </thead>
-                        <tbody id="roMgrBody"></tbody>
-                    </table>
-                </div>
-            </div>
-        </section>
-
-        <!-- 03 · ПРЕДЛОЖЕНИЯ -->
-        <section class="rt-section" id="roPropSection" aria-labelledby="roPropTitle">
-            <div class="rt-shead">
-                <span class="rt-kicker">03</span>
-                <h2 id="roPropTitle">Предложения</h2>
-                <span class="rt-shead-note">по менеджерам, внутри — по дню «стало»</span>
-            </div>
-            <div class="rt-panel">
-                <div class="ro-ptools">
-                    <div class="rt-chips" id="roTypeChips" role="group" aria-label="Какие предложения показать">
-                        <button type="button" class="rt-chip" data-type="all" aria-pressed="true">Все <span class="ro-cnt"></span></button>
-                        <button type="button" class="rt-chip" data-type="move" aria-pressed="false">Перенос <span class="ro-cnt"></span></button>
-                        <button type="button" class="rt-chip" data-type="frequency" aria-pressed="false">Частота <span class="ro-cnt"></span></button>
-                    </div>
-                    <label class="ro-search" for="roSearch">
-                        <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
-                        <span class="rt-sr-only">Найти клиента по названию или коду</span>
-                        <input type="search" id="roSearch" class="rt-input" placeholder="Клиент или код…" autocomplete="off" spellcheck="false">
-                    </label>
-                    <span id="roShown" class="ro-shown" role="status" aria-live="polite"></span>
-                </div>
-                <p class="ro-effnote">Эффект — в неделю, если применить к текущему плану только это изменение, поэтому строки не складываются.
-                    Минус — меньше километров, минут или слабых дней, то есть лучше.</p>
-                <div id="roProps"></div>
-                <p id="roNoMatch" class="rt-empty" hidden>По этому фильтру предложений нет.</p>
-            </div>
-        </section>
-
-        <!-- 04 · КАРТА -->
-        <section class="rt-section" id="roMapSection" aria-labelledby="roMapTitle">
-            <div class="rt-shead">
-                <span class="rt-kicker">04</span>
-                <h2 id="roMapTitle">Карта менеджера</h2>
-                <span class="rt-shead-note">цвет точки — день недели</span>
-            </div>
-            <div class="rt-panel">
-                <div class="rt-maptools ro-maptools">
-                    <label for="roMapMgr">Менеджер
-                        <select id="roMapMgr" class="rt-select"></select>
-                    </label>
-                    <div class="rt-seg" role="radiogroup" aria-label="Какой план показать на карте">
-                        <label><input type="radio" name="roMapMode" value="before">Было</label>
-                        <label><input type="radio" name="roMapMode" value="after" checked>Стало</label>
-                    </div>
-                    <span class="rt-maptools-note" id="roMapNote"></span>
-                </div>
-                <div class="ro-mapgrid">
-                    <div class="rt-mapcol">
-                        <div id="roMap" class="rt-map ro-map" role="region" aria-label="Карта: клиенты выбранного менеджера, цвет — день недели"></div>
-                        <div id="roMapLegend" class="rt-maplegend" aria-label="Легенда карты"></div>
-                    </div>
-                    <div class="ro-days" role="group" aria-labelledby="roDaysTitle">
-                        <h3 class="ro-days-head" id="roDaysTitle">Маршрут дня</h3>
-                        <p class="ro-days-sub">Нажмите день — на карте появится объезд от дома и обратно.</p>
-                        <div id="roDays"></div>
-                        <div id="roDayInfo" class="ro-dayinfo" aria-live="polite"></div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- 05 · ВАШИ РЕШЕНИЯ -->
-        <section class="rt-section" id="roDecSection" aria-labelledby="roDecTitle">
-            <div class="rt-shead">
-                <span class="rt-kicker">05</span>
-                <h2 id="roDecTitle">Ваши решения</h2>
-                <span class="rt-shead-note">действуют во всех следующих расчётах, пока их не отменить</span>
-            </div>
-            <div class="rt-panel rt-panel-pad">
-                <p class="rt-lead">Принятое решение закрепляет дни и частоту клиента, отклонённое запрещает это предложение.
-                    Когда план в ERP изменён так, как решено, решение отрабатывает и из списка уходит сам.
-                    Если план клиента в ERP изменился иначе, решение устаревает и больше не применяется.</p>
-                <div class="ro-dec-head">
-                    <span id="roDecCounts" class="ro-dec-counts" role="status" aria-live="polite">Загружаю решения…</span>
-                    <div class="ro-dec-acts">
-                        <button type="button" id="roDecToggle" class="rt-hintbtn" aria-expanded="false" aria-controls="roDecList" hidden>показать список</button>
-                        <button type="button" id="roDecReset" class="rt-btn rt-btn-ghost rt-btn-sm" aria-disabled="true">
-                            <i class="fas fa-trash-can" aria-hidden="true"></i><span>Сбросить все</span>
-                        </button>
-                    </div>
-                </div>
-                <div id="roDecWarn" class="rt-alert is-warn d-none mt-3 mb-0" role="status"></div>
-                <div id="roDecErr" class="ro-inline-err d-none" role="alert"></div>
-                <ul id="roDecList" class="ro-rows ro-dec-list" aria-label="Решения владельца" hidden></ul>
-            </div>
-        </section>
-
-        <!-- 06 · ЭКСПОРТ -->
-        <section class="rt-section" id="roExportSection" aria-labelledby="roExportTitle">
-            <div class="rt-shead">
-                <span class="rt-kicker">06</span>
-                <h2 id="roExportTitle">План для ERP</h2>
-                <span class="rt-shead-note">текущий план + только принятые изменения</span>
-            </div>
-            <div class="rt-panel rt-panel-pad">
-                <p class="rt-lead">В файле два листа. «План» — весь цикл 2 недели по менеджерам и дням, внутри дня — кратчайший объезд от дома.
-                    «Изменения» — только принятые строки: что было и что стало.</p>
+            <div id="roStep3Body" hidden>
+                <p class="ro-accepted" id="roAccepted" role="status" aria-live="polite"></p>
                 <div class="ro-export-row">
-                    <button type="button" id="roExportBtn" class="rt-btn rt-btn-primary" aria-describedby="roExportNote">
+                    <button type="button" id="roExportBtn" class="rt-btn rt-btn-primary rt-btn-lg" aria-describedby="roExportNote">
                         <i class="fas fa-file-excel" aria-hidden="true"></i><span>Скачать план для ERP (Excel)</span>
                     </button>
-                    <span id="roExportNote" class="ro-export-note"></span>
+                    <p class="ro-export-note" id="roExportNote">В файле — новый план по менеджерам и дням; внесите его в ERP вручную.</p>
                 </div>
+                <div id="roStepWarn" class="ro-warns"></div>
                 <div id="roExportWarn" class="rt-alert is-warn d-none mt-3 mb-0" role="status"></div>
                 <div id="roExportErr" class="rt-alert d-none mt-3 mb-0" role="alert">
                     <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
                     <span id="roExportErrText" class="rt-alert-text"></span>
                 </div>
+
+                <details class="rt-fold" id="roDecBox">
+                    <summary><span class="rt-fold-t">Ваши решения</span> <span class="rt-fold-note" id="roDecSum"></span></summary>
+                    <div class="rt-fold-body">
+                        <p class="rt-fold-lead">Решение действует во всех следующих расчётах, пока вы его не отмените. Когда план в ERP
+                            изменят так, как вы решили, решение уходит из списка само. Если план магазина в ERP изменился иначе,
+                            решение больше не действует — оно помечено «устарело».</p>
+                        <div class="ro-dec-head">
+                            <span id="roDecCounts" class="ro-dec-counts" role="status" aria-live="polite">Загружаю решения…</span>
+                            <button type="button" id="roDecReset" class="rt-btn rt-btn-ghost rt-btn-sm" aria-disabled="true">
+                                <i class="fas fa-trash-can" aria-hidden="true"></i><span>Сбросить все</span>
+                            </button>
+                        </div>
+                        <div id="roDecErr" class="ro-inline-err d-none" role="alert"></div>
+                        <ul id="roDecList" class="ro-list ro-dec-list" aria-label="Ваши решения"></ul>
+                    </div>
+                </details>
             </div>
-        </section>
-    </div>
+        </div>
+    </section>
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_optimize.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/routes_optimize.js') }}?v=4"></script>
 {% endblock %}

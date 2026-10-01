@@ -5,26 +5,27 @@
 {% block extra_css %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=5">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=8">
 {% endblock %}
 
 {% block content %}
 <div class="rt-page" id="rtSettings">
 
-    <div class="rt-topbar">
-        <div class="rt-brand">
-            <a href="/routes" class="rt-iconbtn" title="К маршрутам" aria-label="Назад к маршрутам"><i class="fas fa-arrow-left" aria-hidden="true"></i></a>
-            <h1><span class="rt-accent">//</span> Настройки маршрутов</h1>
+    <header class="rt-head">
+        <div class="rt-head-row">
+            <h1 class="rt-title">Настройки маршрутов</h1>
+            <nav class="rt-tabs" aria-label="Разделы маршрутов">
+                <a href="/routes">Обзор</a>
+                <a href="/routes/optimize">Оптимизация</a>
+                <a href="/routes/settings" aria-current="page">Настройки</a>
+            </nav>
         </div>
-        <nav class="rt-tabs" aria-label="Разделы маршрутов">
-            <a href="/routes">Обзор</a>
-            <a href="/routes/optimize">Оптимизация</a>
-            <a href="/routes/settings" aria-current="page">Настройки</a>
-        </nav>
-    </div>
+        <p class="rt-head-lead">Здесь указывают то, что программа не может узнать сама: где склад, какие машины и сколько стоит топливо.
+            Остальное она подобрала по ERP и GPS — это можно не трогать.</p>
+    </header>
 
     <div id="rsStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
 
@@ -38,91 +39,112 @@
     </div>
 
     <form id="rsForm" class="d-none" novalidate>
-        <nav class="rt-snav" aria-label="Разделы настроек">
-            <a href="#depot"><span class="k">01</span>Склад</a>
-            <a href="#trucks"><span class="k">02</span>Машины</a>
-            <a href="#managers"><span class="k">03</span>Менеджеры</a>
-            <a href="#norms"><span class="k">04</span>Нормы</a>
-            <a href="#season"><span class="k">05</span>Сезон</a>
-            <a href="#calibration"><span class="k">06</span>Калибровка по GPS</a>
-        </nav>
-
-        <div id="rsSaveError" class="rt-alert d-none" role="alert" tabindex="-1">
+        <div id="rsSaveError" class="rt-alert d-none mt-3" role="alert" tabindex="-1">
             <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
             <div id="rsSaveErrorText" class="rt-alert-text"></div>
         </div>
 
-        <!-- 01 · СКЛАД -->
-        <section class="rt-section" id="depot" aria-labelledby="rsHDepot">
-            <div class="rt-shead"><span class="rt-kicker">01</span><h2 id="rsHDepot">Склад</h2>
-                <span class="rt-shead-note">отсюда выезжают и сюда возвращаются машины</span></div>
-            <div class="rt-panel rt-panel-pad">
-                <div class="rt-depot">
-                    <div id="rsDepotMap" class="rt-depotmap" role="region" aria-label="Карта: нажмите, чтобы поставить склад"></div>
-                    <div>
-                        <p class="rt-lead">Нажмите на карте, где стоит склад, — точку можно потянуть мышью.
-                            Или вставьте координаты из Google Maps: правый клик по месту → первая строка меню.</p>
-                        <div class="rt-field">
-                            <label for="rsDepot">Широта, долгота</label>
-                            <div class="rt-coord">
-                                <input id="rsDepot" class="rt-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
-                                       placeholder="40.17920, 44.49910" aria-describedby="rsDepotNote rsDepotErr">
-                                <button type="button" class="rt-iconbtn" id="rsDepotClear" title="Убрать склад" aria-label="Убрать координаты склада">
-                                    <i class="fas fa-xmark" aria-hidden="true"></i></button>
+        <!-- 1 · ОБЯЗАТЕЛЬНО ЗАПОЛНИТЬ -->
+        <section class="rt-step" id="rsStep1" aria-labelledby="rsStep1Title">
+            <div class="rt-step-mark" aria-hidden="true"><span>1</span></div>
+            <div class="rt-step-body">
+                <h2 class="rt-step-title" id="rsStep1Title"><span class="rt-sr-only">Шаг 1. </span>Обязательно заполнить</h2>
+                <div class="rt-progress" id="rsProgress">
+                    <span class="rt-progress-bar" aria-hidden="true"><span></span><span></span><span></span></span>
+                    <span class="rt-progress-text" id="rsProgressText" role="status" aria-live="polite"></span>
+                    <span class="rt-progress-note">без этого программа не посчитает рейсы машин и расходы на топливо</span>
+                </div>
+
+                <section class="rt-card" id="depot" aria-labelledby="rsHDepot">
+                    <div class="rt-card-head">
+                        <h3 class="rt-card-title" id="rsHDepot"><i class="fas fa-warehouse" aria-hidden="true"></i>Склад</h3>
+                        <span class="rt-card-state" id="rsStDepot"></span>
+                    </div>
+                    <p class="rt-card-lead">Отсюда выезжают и сюда возвращаются машины. Нажмите на карте, где стоит склад, — точку можно потянуть мышью.
+                        Или вставьте координаты из Google Maps: правый клик по месту → первая строка меню.</p>
+                    <div class="rt-depot">
+                        <div id="rsDepotMap" class="rt-depotmap" role="region" aria-label="Карта: нажмите, чтобы поставить склад"></div>
+                        <div>
+                            <div class="rt-field">
+                                <label for="rsDepot">Широта, долгота</label>
+                                <div class="rt-coord">
+                                    <input id="rsDepot" class="rt-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
+                                           placeholder="40.17920, 44.49910" aria-describedby="rsDepotNote rsDepotErr">
+                                    <button type="button" class="rt-iconbtn" id="rsDepotClear" title="Убрать склад" aria-label="Убрать координаты склада">
+                                        <i class="fas fa-xmark" aria-hidden="true"></i></button>
+                                </div>
+                                <div class="rt-coord-note" id="rsDepotNote"></div>
+                                <div class="rt-ferr" id="rsDepotErr"></div>
                             </div>
-                            <div class="rt-coord-note" id="rsDepotNote"></div>
-                            <div class="rt-ferr" id="rsDepotErr"></div>
                         </div>
                     </div>
-                </div>
+                </section>
+
+                <section class="rt-card" id="trucks" aria-labelledby="rsHTrucks">
+                    <div class="rt-card-head">
+                        <h3 class="rt-card-title" id="rsHTrucks"><i class="fas fa-truck" aria-hidden="true"></i>Машины доставки</h3>
+                        <span class="rt-card-state" id="rsStTrucks"></span>
+                    </div>
+                    <p class="rt-card-lead">Список машин — из ERP. Укажите, сколько тонн возит машина, сколько литров тратит на 100 км
+                        и чьи заказы возит. Если менеджера возят две машины — назначьте обе, расчёт возьмёт большую.
+                        Подсказка «по накладным» — какая машина чаще всего возила его заказы за 3 месяца.</p>
+                    <div id="rsTrucks"></div>
+                </section>
+
+                <section class="rt-card" id="fuel" aria-labelledby="rsHFuel">
+                    <div class="rt-card-head">
+                        <h3 class="rt-card-title" id="rsHFuel"><i class="fas fa-gas-pump" aria-hidden="true"></i>Цены топлива</h3>
+                        <span class="rt-card-state" id="rsStFuel"></span>
+                    </div>
+                    <p class="rt-card-lead">По ним литры переводятся в драмы. Пустая цена — расходы в драмах не считаются.</p>
+                    <div id="rsFuel" class="rt-form-grid"></div>
+                </section>
             </div>
         </section>
 
-        <!-- 02 · МАШИНЫ -->
-        <section class="rt-section" id="trucks" aria-labelledby="rsHTrucks">
-            <div class="rt-shead"><span class="rt-kicker">02</span><h2 id="rsHTrucks">Машины доставки</h2>
-                <span class="rt-shead-note">список — из ERP, тоннаж и расход вводите здесь</span></div>
-            <div class="rt-panel rt-panel-pad">
-                <p class="rt-lead">Одна машина возит заказы одного менеджера. Если менеджера возят две машины — назначьте обе, расчёт возьмёт большую.
-                    Подсказка «по накладным» — какая машина чаще всего возила его заказы за 3 месяца.</p>
-                <div id="rsTrucks"></div>
+        <!-- 2 · ПРОВЕРЬТЕ -->
+        <section class="rt-step" id="rsStep2" aria-labelledby="rsStep2Title">
+            <div class="rt-step-mark" aria-hidden="true"><span>2</span></div>
+            <div class="rt-step-body">
+                <h2 class="rt-step-title" id="rsStep2Title"><span class="rt-sr-only">Шаг 2. </span>Проверьте</h2>
+                <section class="rt-card" id="managers" aria-labelledby="rsHManagers">
+                    <div class="rt-card-head">
+                        <h3 class="rt-card-title" id="rsHManagers"><i class="fas fa-user-check" aria-hidden="true"></i>Менеджеры: дом и кто в расчёте</h3>
+                        <span class="rt-card-state" id="rsStManagers"></span>
+                    </div>
+                    <p class="rt-card-lead">День менеджера начинается и заканчивается дома. Программа нашла дома по GPS — если точка верная,
+                        нажмите «Верно», если нет — «Поправить» и впишите свою. «В расчёте» программа ставит сама: без заказов и визитов
+                        8 недель — не в расчёте. Галочку можно поставить или снять вручную, «вернуть авто» — отдать решение программе.</p>
+                    <div id="rsManagers"></div>
+                </section>
             </div>
         </section>
 
-        <!-- 03 · МЕНЕДЖЕРЫ -->
-        <section class="rt-section" id="managers" aria-labelledby="rsHManagers">
-            <div class="rt-shead"><span class="rt-kicker">03</span><h2 id="rsHManagers">Менеджеры</h2>
-                <span class="rt-shead-note">кто в расчёте, где дом, на чём ездит</span></div>
-            <div class="rt-panel rt-panel-pad">
-                <p class="rt-lead">День менеджера начинается и заканчивается дома. Пустое поле «Дом» — дом ищется по GPS автоматически;
-                    «Из GPS» закрепляет найденную точку, её можно поправить.
-                    «В расчёте» с пометкой «авто» решает работа: шаблон без заказов и визитов за 8 недель не в расчёте, появилась работа — снова в расчёте.
-                    Галочка, поставленная или снятая вручную, держится, пока не нажмёте «вернуть авто».</p>
-                <div id="rsManagers"></div>
+        <!-- 3 · МОЖНО НЕ ТРОГАТЬ -->
+        <section class="rt-step" id="rsStep3" aria-labelledby="rsStep3Title">
+            <div class="rt-step-mark" aria-hidden="true"><span>3</span></div>
+            <div class="rt-step-body">
+                <h2 class="rt-step-title" id="rsStep3Title"><span class="rt-sr-only">Шаг 3. </span>Можно не трогать — программа подобрала сама</h2>
+                <details class="rt-fold" id="rsAuto">
+                    <summary><span class="rt-fold-t">Показать нормы, сезоны и правила расчёта</span>
+                        <span class="rt-fold-note">время визита, дороги, пороги выручки, сезоны, как программа выбирает дни</span></summary>
+                    <div class="rt-fold-body">
+                        <section class="rs-sub" id="norms" aria-labelledby="rsHNorms">
+                            <h3 class="rt-h3" id="rsHNorms">Нормы и правила</h3>
+                            <p class="rt-h3-note">У полей с пометкой «авто по GPS» пусто — значит, программа берёт цифру из GPS-треков сама.</p>
+                            <div id="rsNorms" class="rt-form-grid mt-3"></div>
+                        </section>
+                        <section class="rs-sub" id="season" aria-labelledby="rsHSeason">
+                            <h3 class="rt-h3" id="rsHSeason">Сезоны</h3>
+                            <div id="rsSeason" class="mt-2"></div>
+                        </section>
+                        <section class="rs-sub" id="calibration" aria-labelledby="rsHCalib">
+                            <h3 class="rt-h3" id="rsHCalib">Что показали GPS-треки</h3>
+                            <div id="rsCalib" class="mt-2"></div>
+                        </section>
+                    </div>
+                </details>
             </div>
-        </section>
-
-        <!-- 04 · НОРМЫ -->
-        <section class="rt-section" id="norms" aria-labelledby="rsHNorms">
-            <div class="rt-shead"><span class="rt-kicker">04</span><h2 id="rsHNorms">Нормы</h2>
-                <span class="rt-shead-note">правила, по которым считаются маршруты</span></div>
-            <div class="rt-panel rt-panel-pad">
-                <div id="rsNorms" class="rt-form-grid"></div>
-            </div>
-        </section>
-
-        <!-- 05 · СЕЗОН -->
-        <section class="rt-section" id="season" aria-labelledby="rsHSeason">
-            <div class="rt-shead"><span class="rt-kicker">05</span><h2 id="rsHSeason">Сезон</h2>
-                <span class="rt-shead-note">зимой проверяем выручку, летом — загрузку машин</span></div>
-            <div class="rt-panel rt-panel-pad" id="rsSeason"></div>
-        </section>
-
-        <!-- 06 · КАЛИБРОВКА -->
-        <section class="rt-section" id="calibration" aria-labelledby="rsHCalib">
-            <div class="rt-shead"><span class="rt-kicker">06</span><h2 id="rsHCalib">Калибровка по GPS</h2>
-                <span class="rt-shead-note">подсказки по реальным трекам менеджеров</span></div>
-            <div class="rt-panel rt-panel-pad" id="rsCalib"></div>
         </section>
 
         <div class="rt-savebar">
@@ -134,7 +156,7 @@
     <div class="position-fixed bottom-0 end-0 p-3" style="z-index:1080">
         <div id="rsToast" class="toast rt-toast align-items-center border-0" role="status" aria-live="polite" aria-atomic="true">
             <div class="d-flex">
-                <div class="toast-body"><i class="fas fa-circle-check me-2" aria-hidden="true"></i>Настройки сохранены — «Маршруты» пересчитаются</div>
+                <div class="toast-body"><i class="fas fa-circle-check me-2" aria-hidden="true"></i>Настройки сохранены — маршруты пересчитаются</div>
                 <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Закрыть"></button>
             </div>
         </div>
@@ -145,5 +167,5 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=4"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=6"></script>
 {% endblock %}

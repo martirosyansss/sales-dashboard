@@ -10,6 +10,10 @@
   решение привязано к плану, на котором принималось (from_value): план клиента в ERP изменился —
   принятое решение устарело (не применяется, показывается), отклонённое — отработало (retired);
   принятое, которое в ERP уже исполнено, — тоже отработало;
+- статус клиента (§15, status.py): у затихших, потерянных и без заказов λ = 0 (модели этапа 1);
+  в режиме «по продажам» затихшему — раз в 2 недели, потерянному и без заказов — предложение
+  «убрать из маршрута» (remove): в плане «стало» его нет; решение remove принято — убран в любом
+  режиме, отклонено («оставить») — дальше как обычный клиент без продаж (раз в 2 недели);
 - выгрузка для ERP — текущий план + только принятые изменения, порядок дня — NN + 2-opt от дома.
 
 Чистая логика — без Flask и без БД: настройки и решения передаёт вызывающий.
@@ -31,13 +35,15 @@ from . import evaluate as ev
 from . import frequency as fq
 from . import patterns as pt
 from . import search as sr
+from . import status as cst
 from .evaluate import _day_json, _i, _num, _r
-from .geo import Coord, Point, haversine_km, in_city
+from .geo import Coord, Point, in_city
 from .plan import CurrentPlan, PlanDay, PlanVisit, WEEKDAY_LABELS
-from .store import DecisionInput
-from .tsp import route_order
+from .store import REMOVE_VALUE, DecisionInput
+from .tsp import Distance, route_order
 
 if TYPE_CHECKING:
+    from .roads import RoadDistances
     from .snapshot import Snapshot
     from .store import Bundle, Decision
 
@@ -53,7 +59,8 @@ MAX_ID = 2 ** 31 - 1
 # Поля дня в результате (§10.1) — подмножество дня обзора этапа 1
 DAY_KEYS = ('week', 'weekday', 'label', 'visits', 'revenue_low_exp', 'p_day_ge_min', 'work_minutes',
             'commute_minutes', 'plan_minutes', 'manager_km', 'truck', 'stops')
-MARKS = {'move': 'перенос', 'both': 'перенос, частота', 'frequency': 'частота'}
+MARKS = {'move': 'перенос', 'both': 'перенос, частота', 'frequency': 'частота', 'remove': 'убрать'}
+SOURCE_STATUS = 'status'   # убрать из маршрута по статусу клиента (§15): потерян или без заказов
 # Решение относительно плана снимка (decision_state)
 DECISION_ACTIVE, DECISION_STALE, DECISION_RETIRED = 'active', 'stale', 'retired'
 NOT_IN_PLAN_TEXT = 'клиента нет в плане менеджера'
@@ -100,10 +107,11 @@ def parse_params(payload: Any) -> tuple[dict[str, Any] | None, dict[str, str]]:
 
 
 def parse_decision(payload: Any) -> tuple[DecisionInput | None, dict[str, str]]:
-    """Одно решение: {"customer_id", "agent_id", "kind": "pattern"|"freq", "value": [[неделя, день], …]
-    | 0.5, "action": "accept"|"reject"|"reset", "from": шаблон | частота клиента в предложении}.
-    from — от чего принимается решение (строка «было» предложения); нет — возьмётся план снимка
-    (bind_decisions); для reset не нужен."""
+    """Одно решение: {"customer_id", "agent_id", "kind": "pattern"|"freq"|"remove", "value": [[неделя,
+    день], …] | 0.5 | [] (remove: значение можно не присылать), "action": "accept"|"reject"|"reset",
+    "from": шаблон | частота клиента в предложении}. remove: accept — убрать из маршрута, reject —
+    оставить; from — шаблон. from — от чего принимается решение (строка «было» предложения); нет —
+    возьмётся план снимка (bind_decisions); для reset не нужен."""
     if not isinstance(payload, dict):
         return None, {'_': 'ожидался JSON-объект'}
     errors: dict[str, str] = {}
@@ -118,12 +126,19 @@ def parse_decision(payload: Any) -> tuple[DecisionInput | None, dict[str, str]]:
     action = payload.get('action')
     raw_from = payload.get('from')
     value = from_value = None
-    if kind == 'pattern':
-        p = pt.parse_pattern(payload.get('value'))
-        if p is None:
-            errors['value'] = 'шаблон — список пар [неделя 1–2, день недели 1–7] без повторов'
+    if kind in ('pattern', 'remove'):
+        if kind == 'remove':
+            raw = payload.get('value')
+            if raw is None or (isinstance(raw, list) and not raw):
+                value = REMOVE_VALUE
+            else:
+                errors['value'] = 'убрать из маршрута — значение не нужно (или пустой список [])'
         else:
-            value = pt.pattern_key(p)
+            p = pt.parse_pattern(payload.get('value'))
+            if p is None:
+                errors['value'] = 'шаблон — список пар [неделя 1–2, день недели 1–7] без повторов'
+            else:
+                value = pt.pattern_key(p)
         if raw_from is not None and action != 'reset':
             p = pt.parse_pattern(raw_from)
             if p is None:
@@ -143,7 +158,7 @@ def parse_decision(payload: Any) -> tuple[DecisionInput | None, dict[str, str]]:
             else:
                 from_value = pt.freq_key(f)
     else:
-        errors['kind'] = 'вид решения: pattern (шаблон) или freq (частота)'
+        errors['kind'] = 'вид решения: pattern (шаблон), freq (частота) или remove (убрать из маршрута)'
     if action not in ('accept', 'reject', 'reset'):
         errors['action'] = 'действие: accept, reject или reset'
     if errors or value is None:
@@ -192,17 +207,18 @@ def parse_decisions(payload: Any) -> tuple[DecisionRequest | None, dict[str, str
 
 def current_value(pairs: Mapping[int, Mapping[int, PairInfo]], agent_id: int, customer_id: int,
                   kind: str) -> str | None:
-    """Шаблон (pattern_key) или частота (freq_key) клиента у менеджера в плане снимка;
-    None — клиента нет в плане менеджера."""
+    """Шаблон (pattern_key; и для remove — решение принимается от шаблона) или частота (freq_key)
+    клиента у менеджера в плане снимка; None — клиента нет в плане менеджера."""
     info = pairs.get(agent_id, {}).get(customer_id)
     if info is None:
         return None
-    return pt.pattern_key(info.pattern) if kind == 'pattern' else pt.freq_key(pt.pattern_freq(info.pattern))
+    return pt.freq_key(pt.pattern_freq(info.pattern)) if kind == 'freq' else pt.pattern_key(info.pattern)
 
 
 def decision_state(d: Decision, pairs: Mapping[int, Mapping[int, PairInfo]]) -> str:
     """Решение относительно плана снимка (текущий шаблон или частота клиента у менеджера):
-    - принятое, и в ERP уже так (value = текущему) — retired: план применён, замка больше нет;
+    - принятое, и в ERP уже так (value = текущему; remove — клиента у менеджера больше нет) —
+      retired: план применён, замка больше нет;
     - принятое на другом плане (from_value ≠ текущему) или клиента у менеджера больше нет —
       stale: не применяется, владелец видит его в списке устаревших;
     - отклонённое на другом плане (или клиента нет) — retired: запрет относился к прежнему плану;
@@ -210,7 +226,8 @@ def decision_state(d: Decision, pairs: Mapping[int, Mapping[int, PairInfo]]) -> 
     cur = current_value(pairs, d.agent_id, d.customer_id, d.kind)
     moved_on = cur is None or (d.from_value is not None and d.from_value != cur)
     if d.status == 'accepted':
-        if cur is not None and d.value == cur:
+        done = cur is None if d.kind == 'remove' else (cur is not None and d.value == cur)
+        if done:
             return DECISION_RETIRED
         return DECISION_STALE if moved_on else DECISION_ACTIVE
     return DECISION_RETIRED if moved_on else DECISION_ACTIVE
@@ -238,7 +255,8 @@ def bind_decisions(request: DecisionRequest, pairs: Mapping[int, Mapping[int, Pa
 @dataclass(frozen=True)
 class DecisionBook:
     """Решения владельца для расчёта. Ключи — (менеджер, клиент). stale — принятые, но устаревшие
-    (приняты на другом плане): не закрепляют ничего."""
+    (приняты на другом плане): не закрепляют ничего. accepted_remove — убрать из маршрута,
+    rejected_remove — оставить (удаление больше не предлагается)."""
     accepted_pattern: dict[tuple[int, int], pt.Pattern]
     accepted_freq: dict[tuple[int, int], float]
     rejected_pattern: dict[tuple[int, int], frozenset[pt.Pattern]]
@@ -246,6 +264,8 @@ class DecisionBook:
     # (клиент, менеджер, вид, значение) → (статус, от чего принималось)
     status: dict[tuple[int, int, str, str], tuple[str, str | None]]
     stale: tuple[Decision, ...] = ()
+    accepted_remove: frozenset[tuple[int, int]] = frozenset()
+    rejected_remove: frozenset[tuple[int, int]] = frozenset()
 
     @classmethod
     def from_rows(cls, rows: Sequence[Decision],
@@ -256,6 +276,8 @@ class DecisionBook:
         acc_f: dict[tuple[int, int], float] = {}
         rej_p: dict[tuple[int, int], set[pt.Pattern]] = defaultdict(set)
         rej_f: dict[tuple[int, int], set[float]] = defaultdict(set)
+        acc_r: set[tuple[int, int]] = set()
+        rej_r: set[tuple[int, int]] = set()
         status = {}
         stale = []
         for d in rows:
@@ -266,7 +288,9 @@ class DecisionBook:
                 continue
             key = (d.agent_id, d.customer_id)
             status[(d.customer_id, d.agent_id, d.kind, d.value)] = (d.status, d.from_value)
-            if d.kind == 'pattern':
+            if d.kind == 'remove':
+                (acc_r if d.status == 'accepted' else rej_r).add(key)
+            elif d.kind == 'pattern':
                 p = pt.parse_pattern_key(d.value)
                 if p is None:
                     continue
@@ -283,7 +307,8 @@ class DecisionBook:
                 else:
                     rej_f[key].add(f)
         return cls(acc_p, acc_f, {k: frozenset(v) for k, v in rej_p.items()},
-                   {k: frozenset(v) for k, v in rej_f.items()}, status, tuple(stale))
+                   {k: frozenset(v) for k, v in rej_f.items()}, status, tuple(stale),
+                   accepted_remove=frozenset(acc_r), rejected_remove=frozenset(rej_r))
 
     def _status(self, customer_id: int, agent_id: int, kind: str, value: str,
                 from_key: str) -> str | None:
@@ -295,9 +320,13 @@ class DecisionBook:
 
     def change_status(self, agent_id: int, change: Mapping[str, Any]) -> dict[str, str | None]:
         """Статусы решений для строки предложения: по шаблону «стало» и (если частота меняется)
-        по частоте «стало». Решение относится к строке, только если принималось от того же «было»:
-        решение по прежнему плану клиента к новому предложению не приклеивается."""
+        по частоте «стало»; у «убрать из маршрута» — решение remove. Решение относится к строке,
+        только если принималось от того же «было»: решение по прежнему плану клиента к новому
+        предложению не приклеивается."""
         cid, frm, to = change['customer_id'], change['from'], change['to']
+        if change['type'] == 'remove':
+            return {'remove': self._status(cid, agent_id, 'remove', REMOVE_VALUE,
+                                           pt.pattern_key(frm['pattern']))}
         freq = None
         if change['type'] != 'move':
             freq = self._status(cid, agent_id, 'freq', pt.freq_key(to['freq']), pt.freq_key(frm['freq']))
@@ -317,9 +346,12 @@ def with_decisions(result: Mapping[str, Any], decisions: Sequence[Decision]) -> 
 
 
 def _side_text(kind: str, key: str | None) -> tuple[Any, str | None]:
-    """(значение для JSON, текст) шаблона или частоты по каноническому тексту."""
+    """(значение для JSON, текст) шаблона или частоты по каноническому тексту; remove — «убрать из
+    маршрута» (исходное значение и план сейчас у remove — шаблон: kind 'pattern')."""
     if key is None:
         return None, None
+    if kind == 'remove':
+        return [], cst.REMOVE_TEXT
     if kind == 'pattern':
         p = pt.parse_pattern_key(key)
         return (pt.pattern_json(p), pt.pattern_text(p)) if p is not None else (None, None)
@@ -332,9 +364,10 @@ def decision_json(snap: Snapshot, d: Decision, pairs: Mapping[int, Mapping[int, 
     """Решение для владельца: клиент, менеджер, что решено («было → стало»), что в плане сейчас."""
     agent, cust = snap.agents.get(d.agent_id), snap.customers.get(d.customer_id)
     cur = current_value(pairs, d.agent_id, d.customer_id, d.kind)
+    plan_kind = 'pattern' if d.kind == 'remove' else d.kind   # «было» и «сейчас» у remove — шаблон
     value, to_text = _side_text(d.kind, d.value)
-    frm, from_text = _side_text(d.kind, d.from_value)
-    _, current_text = _side_text(d.kind, cur)
+    frm, from_text = _side_text(plan_kind, d.from_value)
+    _, current_text = _side_text(plan_kind, cur)
     return {'customer_id': d.customer_id, 'customer_code': cust.code if cust else '',
             'customer_name': cust.name if cust else '',
             'agent_id': d.agent_id, 'agent_code': _code(snap, d.agent_id),
@@ -407,21 +440,29 @@ def resolve_agents(snap: Snapshot, bundle: Bundle,
 class PairSpec:
     current: pt.Pattern
     target: float
-    source: str                        # manual | sales | current | locked
+    source: str                        # manual | sales | current | locked | status
     allowed: tuple[pt.Pattern, ...]
     locked: bool
     forbidden: frozenset[pt.Pattern]
+    removed: bool = False              # убрать из маршрута (§15): частота 0, единственный шаблон ()
 
 
 def pair_spec(key: tuple[int, int], current: pt.Pattern, f_sales: float | None, mode: str,
-              workdays: Collection[int], book: DecisionBook) -> PairSpec:
-    """Целевая частота и допустимые шаблоны: принятый шаблон — закреплён (единственный);
+              workdays: Collection[int], book: DecisionBook, status: str | None = None) -> PairSpec:
+    """Целевая частота и допустимые шаблоны: принятое «убрать из маршрута» — клиент убран; принятый
+    шаблон — закреплён (единственный); в режиме «по продажам» потерянный и без заказов за год
+    (status, §15) — убран, если владелец не оставил его, не закрепил шаблон и не задал частоту;
     иначе частота по §2 и шаблоны по §3 без запрещённых. Нет ни одного — частота остаётся
     текущей; запрещено всё — клиент остаётся как есть."""
     forbidden = book.rejected_pattern.get(key, frozenset())
+    if key in book.accepted_remove:
+        return PairSpec(current, 0.0, fq.SOURCE_MANUAL, ((),), False, forbidden, removed=True)
     lock = book.accepted_pattern.get(key)
     if lock is not None:
         return PairSpec(current, pt.pattern_freq(lock), 'locked', (lock,), True, forbidden)
+    if (mode == 'sales' and status in cst.REMOVABLE and key not in book.rejected_remove
+            and key not in book.accepted_freq):
+        return PairSpec(current, 0.0, SOURCE_STATUS, ((),), False, forbidden, removed=True)
     f_cur = pt.pattern_freq(current)
     target, source = fq.target_frequency(f_cur, f_sales, mode, book.accepted_freq.get(key),
                                          book.rejected_freq.get(key, ()))
@@ -430,6 +471,10 @@ def pair_spec(key: tuple[int, int], current: pt.Pattern, f_sales: float | None, 
         target, source = f_cur, fq.SOURCE_CURRENT
         allowed = pt.allowed_patterns(current, target, workdays, forbidden)
     return PairSpec(current, target, source, tuple(allowed or [current]), False, forbidden)
+
+
+def _status_code(model: ev.CustomerModel) -> str | None:
+    return model.status.status if model.status is not None else None
 
 
 def season_lam(model: ev.CustomerModel) -> float:
@@ -464,8 +509,8 @@ def _pairs_of(slots: Sequence[int]) -> pt.Pattern:
 def _matrices(home: Point | None, points: Sequence[Point], depot: Point | None,
               norms: ev.Norms) -> tuple[sr.Matrix, sr.Matrix, sr.Matrix | None]:
     """Матрицы менеджера (вершина 0 — дом; без дома — нули: открытый путь, как на этапе 1) и
-    грузовика (вершина 0 — склад). Км — по прямой × извилистость; минуты — км / скорость участка
-    (город, если оба конца в городе)."""
+    грузовика (вершина 0 — склад). Км — norms.km (по дорогам, иначе по прямой × извилистость);
+    минуты — км / скорость участка (город, если оба конца в городе)."""
     pts: list[Point | None] = [home, *points]
     n = len(pts)
     city = [p is not None and in_city(p, norms.city_center, norms.city_radius_km) for p in pts]
@@ -476,7 +521,7 @@ def _matrices(home: Point | None, points: Sequence[Point], depot: Point | None,
         if pa is None:
             continue
         for b in range(a + 1, n):
-            d = haversine_km(pa, pts[b]) * norms.detour
+            d = norms.km(pa, pts[b])
             speed = norms.speed_city_kmh if city[a] and city[b] else norms.speed_region_kmh
             km[a][b] = km[b][a] = d
             mins[a][b] = mins[b][a] = d / speed * 60.0
@@ -485,7 +530,7 @@ def _matrices(home: Point | None, points: Sequence[Point], depot: Point | None,
         tkm = [list(row) for row in km]
         tkm[0] = [0.0] * n
         for b in range(1, n):
-            d = haversine_km(depot, pts[b]) * norms.detour
+            d = norms.km(depot, pts[b])
             tkm[0][b] = tkm[b][0] = d
     return km, mins, tkm
 
@@ -542,8 +587,10 @@ class _Ctx:
 def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | None,
                      decisions: Sequence[Decision], params: Mapping[str, Any], *,
                      progress: ProgressFn | None = None,
-                     clock: Callable[[], float] = time.perf_counter) -> RunOutcome:
-    """Режим А по выбранным менеджерам → результат §10.1 (статусы решений — на момент расчёта)."""
+                     clock: Callable[[], float] = time.perf_counter,
+                     roads: RoadDistances | None = None) -> RunOutcome:
+    """Режим А по выбранным менеджерам → результат §10.1 (статусы решений — на момент расчёта).
+    roads — расстояния по дорогам (None — по прямой × извилистость)."""
     started = clock()
     s = bundle.settings
     params = {**DEFAULT_PARAMS, **params}
@@ -552,12 +599,14 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
     if error:
         raise OptimizeError(error)
     book = DecisionBook.from_rows(decisions, pairs)   # устаревшие — не закрепляют, а показываются
-    before = ev.evaluate_plan(snap, bundle, calib, run_ids)
+    before = ev.evaluate_plan(snap, bundle, calib, run_ids, roads=roads)
+    roads = before.norms.roads   # None, если граф не собрался
     included = before.included_ids
     models = before.models
 
     # Частоты (§2): ABC — по клиентам планов всех менеджеров в расчёте; частота по продажам —
-    # по самому высокому спросу из года, низкого сезона и пика: ни в один сезон заказы не теряются
+    # по самому высокому спросу из года, низкого сезона и пика: ни в один сезон заказы не теряются.
+    # У затихших, потерянных и без заказов λ = 0 (§15): класс C, по продажам — раз в 2 недели
     inc_customers = sorted({c for a in included for c in pairs.get(a, {})})
     lam = {c: models[c].year.lam for c in inc_customers}
     lam_season = {c: season_lam(models[c]) for c in inc_customers}
@@ -565,7 +614,7 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
                          s['abc_a_share'], s['abc_b_share'])
     f_sales = {c: fq.sales_frequency(lam_season[c], abc[c], s['freq_safety']) for c in inc_customers}
     specs = {(a, c): pair_spec((a, c), info.pattern, f_sales[c], params['frequencies'],
-                               s['workdays'], book)
+                               s['workdays'], book, _status_code(models[c]))
              for a in run_ids for c, info in pairs.get(a, {}).items()}
     freq_before = snap.plan.visits_per_week_among(included)
     freq_after: dict[int, float] = Counter()
@@ -594,7 +643,7 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
     f_after_inc = after_plan.visits_per_week_among(included)
     after_models = {c: replace(m, visits_per_week=f_after_inc.get(c, 0.0)) for c, m in models.items()}
     after = ev.evaluate_plan(after_snap, bundle, calib, run_ids,
-                             visit_minutes=before.visit_minutes, models=after_models)
+                             visit_minutes=before.visit_minutes, models=after_models, roads=roads)
     result = _result(ctx, run_ids, parts, after_snap, after, f_after_inc)
     result['seconds'] = round(clock() - started, 1)
     logger.info('[Routes] Оптимизация: менеджеров %d, изменений %d, %.1f с', len(run_ids),
@@ -662,7 +711,9 @@ def _optimize_manager(ctx: _Ctx, agent_id: int,
                          target_params, change_penalty=penalty, trucks=truck_cost)
         sr.greedy_fill(state, sr.fresh_order(prob, me.home, points))
     else:
-        state = sr.State(prob, sr.current_start(prob), target_params, change_penalty=penalty,
+        # старт — текущие шаблоны, визиты нерабочих дней — на субботе той же недели (Р3-9)
+        base = [_slots(pt.workday_pattern(spec.current, workdays)) for spec in specs]
+        state = sr.State(prob, sr.current_start(prob, base), target_params, change_penalty=penalty,
                          trucks=truck_cost)
     stats = sr.search(state, seconds=float(s['optimizer_seconds_per_manager']), clock=ctx.clock)
     final = [_pairs_of(p) for p in state.pattern]
@@ -671,9 +722,13 @@ def _optimize_manager(ctx: _Ctx, agent_id: int,
     hints = []
     for i, c in enumerate(cids):
         spec = specs[i]
-        for kind, text in fq.frequency_hints(ctx.lam[c], ctx.freq_before[c], s['freq_safety']):
-            hints.append({'customer_id': c, 'kind': kind, 'text': text})
-        ctype = pt.change_type(spec.current, final[i])
+        status = before.models[c].status
+        # подсказки по продажам — не у затихших и потерянных; «за год ни одного заказа» — если
+        # клиента не предлагается убрать (режим «как сейчас» или владелец оставил его)
+        if status is None or not status.silent or (status.status == cst.NEVER and not spec.removed):
+            for kind, text in fq.frequency_hints(ctx.lam[c], ctx.freq_before[c], s['freq_safety']):
+                hints.append({'customer_id': c, 'kind': kind, 'text': text})
+        ctype = 'remove' if spec.removed else pt.change_type(spec.current, final[i])
         if ctype is None:
             continue
         f_cur, f_new = pt.pattern_freq(spec.current), pt.pattern_freq(final[i])
@@ -685,8 +740,8 @@ def _optimize_manager(ctx: _Ctx, agent_id: int,
             'from': {'freq': _num(f_cur), 'pattern': pt.pattern_json(spec.current),
                      'text': pt.pattern_text(spec.current)},
             'to': {'freq': _num(f_new), 'pattern': pt.pattern_json(final[i]),
-                   'text': pt.pattern_text(final[i])},
-            'reason': _reason(spec, f_cur, f_new, ctx.lam[c], ctx.lam_season[c]),
+                   'text': cst.REMOVE_TEXT if spec.removed else pt.pattern_text(final[i])},
+            'reason': _reason(spec, f_cur, f_new, ctx.lam[c], ctx.lam_season[c], workdays, status),
             'effect': {
                 'manager_km_week': round(effect['km'], 1),
                 'truck_km_week': round(effect['truck_km'], 1) if tkm is not None else None,
@@ -696,7 +751,9 @@ def _optimize_manager(ctx: _Ctx, agent_id: int,
         }
         change['decision'] = ctx.book.change_status(agent_id, change)
         changes.append(change)
-    changes.sort(key=lambda ch: (ch['to']['pattern'][0], ch['customer_id']))
+    # по первому дню «стало»; «убрать из маршрута» (дней нет) — в конце
+    changes.sort(key=lambda ch: (ch['to']['pattern'][0] if ch['to']['pattern'] else [pt.CYCLE_WEEKS + 1, 0],
+                                 ch['customer_id']))
 
     code = _code(snap, agent_id)
     logger.info('[Routes] Оптимизация %s: клиентов %d, C %.0f → %.0f драм/нед (старт %.0f), '
@@ -720,14 +777,26 @@ def _fuel_price(ctx: _Ctx, fuel: str) -> float:
     return value
 
 
-def _reason(spec: PairSpec, f_cur: float, f_new: float, lam: float, lam_season: float) -> str | None:
+def _reason(spec: PairSpec, f_cur: float, f_new: float, lam: float, lam_season: float,
+            workdays: Collection[int], status: cst.CustomerStatus | None = None) -> str | None:
+    silent = status is not None and status.silent
+    if spec.removed:   # §15: «не покупает 150 дн (обычно раз в 14 дн)» / «ни одного заказа за год»
+        if spec.source == fq.SOURCE_MANUAL:
+            return 'удаление принято владельцем'
+        return cst.silence_text(status) if silent else None
     if spec.locked:
         return 'шаблон принят владельцем'
+    # визиты в нерабочий день переносятся всегда (Р3-9) — причина видна и при смене частоты
+    off = pt.off_days_text(spec.current, workdays)
     if pt.same_freq(f_cur, f_new):
-        return None
+        return off
     if spec.source == fq.SOURCE_MANUAL:
-        return 'частота принята владельцем'
-    return fq.order_rate_text(lam, lam_season)
+        why = 'частота принята владельцем'
+    elif silent:   # затих (или владелец оставил потерянного): раз в 2 недели — попробовать вернуть
+        why = cst.win_back_text(status)
+    else:
+        why = fq.order_rate_text(lam, lam_season)
+    return f'{off}; {why}' if off else why
 
 
 def _after_plan(plan: CurrentPlan, outcomes: Mapping[int, ManagerOutcome],
@@ -783,6 +852,17 @@ def _week_json(wk: ev.WeekTotals, cost: float) -> dict[str, Any]:
             'avg_plan_hours': _r(wk.avg_plan_hours, 1), 'cost': _i(cost)}
 
 
+def _empty_week(like: ev.WeekTotals) -> ev.WeekTotals:
+    """Неделя менеджера без дней в плане: всё по нулям; грузовик — 0, если в «было» он считался."""
+    def zero(x: float | None) -> float | None:
+        return None if x is None else 0.0
+
+    return ev.WeekTotals(visits=0.0, revenue_low=0.0, revenue_year=0.0, revenue_peak=0.0, manager_km=0.0,
+                         manager_liters=0.0, truck_km=zero(like.truck_km),
+                         truck_liters=zero(like.truck_liters), days_below_min=0.0,
+                         trips_poor=zero(like.trips_poor), avg_plan_hours=None, avg_work_hours=None)
+
+
 def _company(snap: Snapshot, bundle: Bundle, pe: ev.PlanEvaluation) -> dict[str, Any]:
     totals = ev.plan_totals(snap, bundle, pe)
     totals['visits_week'] = _num(sum(pe.weeks[me.agent_id].visits for me in pe.evals if me.included))
@@ -808,15 +888,18 @@ def _result(ctx: _Ctx, run_ids: Sequence[int], parts: Mapping[int, Mapping[str, 
         part = parts[a]
         agent = snap.agents.get(a)
         wk_before = before.weeks[a]
+        # все клиенты менеджера убраны из маршрута (§15), а работал он только в нерабочий день — в
+        # «стало» у него нет ни одного дня: неделя без визитов
+        wk_after = after.weeks.get(a) or _empty_week(wk_before)
         managers.append({
             'agent_id': a, 'code': _code(snap, a), 'name': agent.name if agent else '',
             'before': _week_json(wk_before, part['cost_before']),
-            'after': _week_json(after.weeks[a], part['cost_after']),
+            'after': _week_json(wk_after, part['cost_after']),
             'feasibility': feasibility(wk_before.revenue_low, float(s['min_day_revenue']),
                                        len(s['workdays'])),
             'time_capped': part['time_capped'],
             'days_before': _days_json(before_evals[a], renumber=False),
-            'days_after': _days_json(after_evals[a], renumber=True),
+            'days_after': _days_json(after_evals[a], renumber=True) if a in after_evals else [],
             'changes': part['changes'],
             'hints': part['hints'],
         })
@@ -833,14 +916,18 @@ def _result(ctx: _Ctx, run_ids: Sequence[int], parts: Mapping[int, Mapping[str, 
     for c in run_customers:
         cust = snap.customers.get(c)
         coord = first.get(c)
+        status = before.models[c].status
         customers[str(c)] = {
             'code': cust.code if cust else '', 'name': cust.name if cust else '',
             'lat': coord.lat if coord else None, 'lon': coord.lon if coord else None,
             'coord_source': coord.source if coord else 'none',
             'size': before.models[c].size, 'abc': ctx.abc.get(c),
-            'lam_year': _r(ctx.lam.get(c, before.models[c].year.lam), 2),
+            'lam_year': _r(before.models[c].year_hist.lam, 2),   # по истории заказов, и у затихших
             'freq_current': _r(ctx.freq_before.get(c, 0.0), 2),
             'freq_target': _r(f_after_inc.get(c, 0.0), 2),
+            # §15: статус по давности последнего заказа (у затихших и потерянных в расчёте λ = 0)
+            'status': status.status if status is not None else cst.ACTIVE,
+            'silent_days': status.silent_days if status is not None else None,
         }
 
     fallback = [(fuel, price) for fuel, price, source in ctx.fuel_sources if source == 'fallback']
@@ -891,9 +978,10 @@ def export_patterns(snap: Snapshot, bundle: Bundle, book: DecisionBook,
                     pairs: Mapping[int, Mapping[int, PairInfo]],
                     proposals: Mapping[tuple[int, int], Proposal]) -> dict[int, dict[int, pt.Pattern]]:
     """Шаблоны плана для ERP по менеджерам в расчёте: текущие + действующие принятые решения.
-    Принятый шаблон — как есть; принята только частота — шаблон из предложения последнего расчёта,
-    если оно сделано от того же «было», этой частоты и допустимо, иначе из текущих дней
-    (наибольшее совпадение, затем меньшая загрузка дня)."""
+    Принято «убрать из маршрута» — шаблон пустой (в плане клиента нет); принятый шаблон — как есть;
+    принята только частота — шаблон из предложения последнего расчёта, если оно сделано от того же
+    «было», этой частоты и допустимо, иначе из текущих дней (наибольшее совпадение, затем меньшая
+    загрузка дня)."""
     workdays = bundle.settings['workdays']
     out: dict[int, dict[int, pt.Pattern]] = {}
     for a in _agent_order(snap):
@@ -907,7 +995,9 @@ def export_patterns(snap: Snapshot, bundle: Bundle, book: DecisionBook,
             key, cur = (a, c), info[c].pattern
             lock = book.accepted_pattern.get(key)
             freq = book.accepted_freq.get(key)
-            if lock is not None:
+            if key in book.accepted_remove:
+                new[c] = ()
+            elif lock is not None:
                 new[c] = lock
             elif freq is not None and not pt.same_freq(freq, pt.pattern_freq(cur)):
                 pending.append(c)
@@ -930,10 +1020,13 @@ def export_patterns(snap: Snapshot, bundle: Bundle, book: DecisionBook,
 
 
 def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
-                proposals: Mapping[tuple[int, int], Proposal] | None = None) -> dict[str, Any]:
+                proposals: Mapping[tuple[int, int], Proposal] | None = None,
+                distance: Distance | None = None) -> dict[str, Any]:
     """Текущий план + только принятые изменения (export_patterns), по каждому менеджеру в расчёте,
-    цикл 2 недели. Устаревшие решения (приняты на другом плане клиента) не применяются —
-    они в stale_decisions. Порядок внутри дня — NN + 2-opt от дома (этап 1)."""
+    цикл 2 недели. Принято «убрать из маршрута» — клиента нет в строках плана, в изменениях —
+    type 'remove'. Устаревшие решения (приняты на другом плане клиента) не применяются —
+    они в stale_decisions. Порядок внутри дня — NN + 2-opt от дома (этап 1); distance — функция
+    расстояния оценки (Norms.distance, None — по прямой)."""
     pairs = plan_pairs(snap.plan)
     book = DecisionBook.from_rows(decisions, pairs)
     planned = export_patterns(snap, bundle, book, pairs, proposals or {})
@@ -959,7 +1052,7 @@ def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
         for (week, weekday) in sorted(by_slot):
             cs = sorted(by_slot[(week, weekday)])
             located = [c for c in cs if coord(c, info[c].address_id).point is not None]
-            order = route_order([coord(c, info[c].address_id).point for c in located], home)
+            order = route_order([coord(c, info[c].address_id).point for c in located], home, distance)
             seq = [located[k] for k in order] + [c for c in cs if coord(c, info[c].address_id).point is None]
             for no, c in enumerate(seq, 1):
                 cust = snap.customers.get(c)
@@ -971,7 +1064,8 @@ def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
                              'mark': MARKS.get(pt.change_type(info[c].pattern, new[c]) or '', '')})
         n_changes = 0
         for c in sorted(new):
-            ctype = pt.change_type(info[c].pattern, new[c])
+            removed = not new[c]   # принято «убрать из маршрута»: в строках плана клиента нет
+            ctype = 'remove' if removed else pt.change_type(info[c].pattern, new[c])
             if ctype is None:
                 continue
             n_changes += 1
@@ -982,8 +1076,8 @@ def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
                             'customer_name': cust.name if cust else '', 'type': ctype,
                             'from': {'freq': _num(pt.pattern_freq(cur)), 'pattern': pt.pattern_json(cur),
                                      'text': pt.pattern_text(cur)},
-                            'to': {'freq': _num(pt.pattern_freq(new[c])),
-                                   'pattern': pt.pattern_json(new[c]), 'text': pt.pattern_text(new[c])}})
+                            'to': {'freq': _num(pt.pattern_freq(new[c])), 'pattern': pt.pattern_json(new[c]),
+                                   'text': cst.REMOVE_TEXT if removed else pt.pattern_text(new[c])}})
         managers.append({'agent_id': a, 'code': code, 'name': name, 'changes': n_changes})
     return {'cycle_weeks': pt.CYCLE_WEEKS, 'data_as_of': snap.data_as_of.isoformat(timespec='seconds'),
             'managers': managers, 'rows': rows, 'changes': changes,

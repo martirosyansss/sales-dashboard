@@ -41,6 +41,12 @@ YEREVAN = (40.1792, 44.4991)
 GYUMRI = (40.7894, 43.8475)
 
 
+@pytest.fixture(autouse=True)
+def _no_road_map(monkeypatch, tmp_path):
+    """Тесты не зависят от карты дорог на диске: по умолчанию карты нет (км по прямой)."""
+    monkeypatch.setenv('ROUTES_OSM_PATH', str(tmp_path / 'no-map.osm.pbf'))
+
+
 # ============================== geo ==============================
 
 def test_haversine_known_distances():
@@ -1856,7 +1862,9 @@ def test_allowed_patterns_current_nonstandard_and_forbidden():
     assert mon_tue in pt.allowed_patterns(mon_tue, 2.0, six)      # частота та же — допустим
     assert mon_tue not in pt.allowed_patterns(_wk(1, 4), 2.0, six)
     sunday = _wk(7)
-    assert pt.allowed_patterns(sunday, 1.0, six) == sorted(pt.standard_patterns(1.0, six) + [sunday])
+    # Р3-9: воскресенье (нерабочий день) не допускается и при той же частоте — раньше текущий шаблон
+    # с ним оставался допустимым; вместо него — суббота той же недели, она и так среди стандартных
+    assert pt.allowed_patterns(sunday, 1.0, six) == pt.standard_patterns(1.0, six)
     # частота ниже — воскресенье (нерабочий день) не сохраняется: только рабочие дни
     assert pt.allowed_patterns(sunday, 0.5, six) == pt.standard_patterns(0.5, six)
     assert pt.allowed_patterns(_wk(1, 4), 1.0, six) == pt.standard_patterns(1.0, six)
@@ -2239,8 +2247,9 @@ def test_store_migrates_schema_3_to_4_keeps_decisions(tmp_path):
     assert got == {(103, 'pattern', '[[2,2]]'): ('accepted', None, 'owner'),     # последнее по времени
                    (103, 'freq', '0.5'): ('accepted', None, 'owner'),
                    (104, 'pattern', '[[1,3],[2,3]]'): ('rejected', None, 'owner')}
-    with sqlite3.connect(path) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('4',)
+    with sqlite3.connect(path) as conn:   # 3 → 4 → 5 (§15: вид решения remove) одной транзакцией
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(st.SCHEMA_VERSION),)
     broken = str(tmp_path / 'v3-broken.db')
     v3(broken, broken=True)
     with pytest.raises(st.StoreError):
@@ -2291,7 +2300,7 @@ DECISION_ITEM_KEYS = {'customer_id', 'customer_code', 'customer_name', 'agent_id
 CHANGE_KEYS = {'customer_id', 'type', 'from', 'to', 'reason', 'effect', 'decision'}
 EFFECT_KEYS = {'manager_km_week', 'truck_km_week', 'weak_days_week', 'minutes_week'}
 OPT_CUSTOMER_KEYS = {'code', 'name', 'lat', 'lon', 'coord_source', 'size', 'abc', 'lam_year',
-                     'freq_current', 'freq_target'}
+                     'freq_current', 'freq_target', 'status', 'silent_days'}
 
 
 def _wait_job(client, job_id, timeout=30.0):
@@ -2331,7 +2340,7 @@ def test_api_optimize_contract_and_last(client):
     assert (res['fuel_price_used'], res['fuel_price_source'], res['truck_costs']) == (500, 'fallback', False)
     assert OVERVIEW_TOTALS | {'visits_week', 'revenue_week_peak'} <= set(res['before'])
     assert set(res['after']) == set(res['before']) and res['stale_decisions'] == []
-    assert (res['before']['visits_week'], res['after']['visits_week']) == (6, 5.5)
+    assert (res['before']['visits_week'], res['after']['visits_week']) == (6, 5)   # 103 убран (§15)
     for m in res['managers']:
         assert set(m) == MANAGER_RESULT_KEYS and m['time_capped'] is False
         assert set(m['before']) == WEEK_RESULT_KEYS == set(m['after'])
@@ -2341,15 +2350,20 @@ def test_api_optimize_contract_and_last(client):
         assert {day['week'] for day in m['days_after']} == {1, 2}
         for ch in m['changes']:
             assert set(ch) == CHANGE_KEYS and set(ch['effect']) == EFFECT_KEYS
-            assert ch['decision'] == {'pattern': None, 'freq': None}
+            assert ch['decision'] == ({'remove': None} if ch['type'] == 'remove'
+                                      else {'pattern': None, 'freq': None})
     m1 = _manager(res, 1)
+    # 103 — ни одного заказа за год (§15): предложение «убрать из маршрута» вместо частоты
     c103 = _change(m1, 103)
-    assert c103['type'] == 'frequency' and c103['from']['text'] == 'вт, каждую неделю'
-    assert c103['to']['freq'] == 0.5 and c103['reason'] == 'за год ни одного заказа'
-    assert {'customer_id': 103, 'kind': 'no_orders', 'text': 'за год ни одного заказа'} in m1['hints']
+    assert c103['type'] == 'remove' and c103['from']['text'] == 'вт, каждую неделю'
+    assert c103['to'] == {'freq': 0, 'pattern': [], 'text': 'убрать из маршрута'}
+    assert c103['reason'] == 'ни одного заказа за год'
+    assert c103['effect']['manager_km_week'] < 0 and c103['effect']['minutes_week'] < 0
+    assert not [x for x in m1['hints'] if x['customer_id'] == 103]
     assert set(res['customers']) == {'101', '102', '103', '104'}
     assert all(set(c) == OPT_CUSTOMER_KEYS for c in res['customers'].values())
-    assert res['customers']['103']['freq_target'] == 0.5 and res['customers']['104']['abc'] == 'A'
+    assert res['customers']['103']['freq_target'] == 0 and res['customers']['104']['abc'] == 'A'
+    assert res['customers']['103']['status'] == 'never' and res['customers']['101']['status'] == 'active'
     last = client.get('/api/routes/optimize/last').get_json()
     assert last['job']['id'] == job_id and last['result']['managers'] == res['managers']
 
@@ -2411,15 +2425,17 @@ def test_api_optimize_validation(client):
 
 
 def test_api_decisions_lock_forbid_and_export(client):
-    res = _wait_job(client, _start(client))['result']
-    m1 = _manager(res, 1)
-    c103, c104 = _change(m1, 103), _change(m1, 104)
-    assert c103 is not None and c104 is not None and c104['type'] == 'move'
-
     def decide(cid, kind, value, action):
         r = client.post('/api/routes/decisions', json={'customer_id': cid, 'agent_id': 1, 'kind': kind,
                                                        'value': value, 'action': action})
         assert r.status_code == 200 and r.get_json() == {'success': True}
+
+    decide(103, 'remove', [], 'reject')    # §15: 103 без заказов владелец оставил — дальше частота
+    res = _wait_job(client, _start(client))['result']
+    m1 = _manager(res, 1)
+    c103, c104 = _change(m1, 103), _change(m1, 104)
+    assert c103 is not None and c104 is not None and c104['type'] == 'move'
+    assert c103['type'] == 'frequency' and c103['to']['freq'] == 0.5
 
     decide(103, 'pattern', c103['to']['pattern'], 'accept')
     decide(103, 'freq', c103['to']['freq'], 'accept')
@@ -2624,23 +2640,544 @@ def test_ils_stops_after_ten_idle_perturbations():
 
 
 def test_frequency_drop_moves_sunday_customer_to_a_workday():
-    """S4: при снижении частоты новый шаблон — только из рабочих дней; воскресенье сохраняет только
-    клиент, у которого частота не меняется."""
+    """S4: при снижении частоты новый шаблон — только из рабочих дней. Р3-9: и при той же частоте
+    воскресенье больше не сохраняется (раньше текущий шаблон с ним был допустим) — вместо него
+    суббота той же недели."""
     six = range(1, 7)
     mon_sun = _wk(1, 7)
-    assert mon_sun in pt.allowed_patterns(mon_sun, 2.0, six)
-    for f in (1.0, 0.5):
+    assert mon_sun not in pt.allowed_patterns(mon_sun, 2.0, six)
+    assert _wk(1, 6) in pt.allowed_patterns(mon_sun, 2.0, six)         # пн + сб: нестандартный, но допустим
+    for f in (2.0, 1.0, 0.5):
         assert all(d in six for p in pt.allowed_patterns(mon_sun, f, six) for _, d in p)
     assert _wk(1) in pt.allowed_patterns(mon_sun, 1.0, six)            # «тот же день» — рабочий
     rows = [_row(1, 11, 1, 1, 1, 101, 1, 1001), _row(1, 11, 1, 1, 1, 102, 2, 1002),
             _row(1, 13, 1, 7, 1, 103, 1, 0),                         # 103: вс, заказов нет → раз в 2 недели
             _row(1, 13, 1, 7, 1, 104, 2, 1004), _row(2, 21, 1, 1, 1, 104, 1, 1004)]
-    out = opt.run_optimization(replace(make_snapshot(), plan=pl.build_plan(rows)), _bundle(), None, [], {})
+    keep = [st.Decision(103, 1, 'remove', st.REMOVE_VALUE, 'rejected')]   # §15: владелец оставил 103
+    out = opt.run_optimization(replace(make_snapshot(), plan=pl.build_plan(rows)), _bundle(), None, keep, {})
     o = next(o for o in out.managers if o.agent_id == 1)
     spec, final = dict(zip(o.customers, o.specs)), dict(zip(o.customers, o.final))
     assert len(final[103]) == 1 and all(d in six for _, d in final[103])
     assert all(d in six for p in spec[103].allowed for _, d in p)
-    assert _wk(7) in spec[104].allowed                                # частота та же — воскресенье можно
+    assert spec[104].target == 1.0 and _wk(7) not in spec[104].allowed and _wk(6) in spec[104].allowed
+    assert len(final[104]) == 2 and all(d in six for _, d in final[104])
+
+
+# Р3-9 (ответ владельца №26): воскресенье — нерабочий день, воскресные визиты в шаблонах ERP — случайность.
+
+def test_non_workday_pattern_is_never_allowed():
+    """Шаблон с нерабочим днём не допускается даже текущий при той же частоте; вместо него — он же, где
+    визит перенесён на субботу той же недели (суббота не рабочая или занята — ближайший рабочий день
+    перед ней), частота та же. Нестандартный шаблон из рабочих дней по-прежнему допустим."""
+    six, five = range(1, 7), range(1, 6)
+    assert pt.workday_pattern(_wk(7), six) == _wk(6)
+    assert pt.workday_pattern(((2, 7),), six) == ((2, 6),)                # неделя цикла — та же
+    assert pt.workday_pattern(_wk(6, 7), six) == _wk(5, 6)                 # суббота занята — пятница
+    assert pt.workday_pattern(_wk(7), five) == _wk(5)                      # суббота не рабочая — пятница
+    assert pt.workday_pattern(_wk(1, 2), six) == _wk(1, 2)                 # рабочие дни — как есть
+    for current, f in ((_wk(7), 1.0), (((1, 7),), 0.5), (_wk(1, 7), 2.0), (_wk(6, 7), 2.0),
+                       (_wk(2, 4, 7), 3.0), (_wk(2, 4, 7), 2.0), (_wk(7), 0.5)):
+        allowed = pt.allowed_patterns(current, f, six)
+        assert current not in allowed and all(d in six for p in allowed for _, d in p), current
+        assert all(len(p) == 2 * f for p in allowed), current
+    assert _wk(5, 6) in pt.allowed_patterns(_wk(6, 7), 2.0, six)
+    assert _wk(2, 4, 6) in pt.allowed_patterns(_wk(2, 4, 7), 3.0, six)
+    assert _wk(1, 2) in pt.allowed_patterns(_wk(1, 2), 2.0, six)          # нестандартный рабочий — как раньше
+    assert pt.off_days_text(_wk(1, 7), six) == 'воскресенье — нерабочий день'
+    assert pt.off_days_text(_wk(6, 7), five) == 'суббота и воскресенье — нерабочие дни'
+    assert pt.off_days_text(_wk(1, 6), six) is None
+
+
+def test_current_start_moves_sunday_visits_to_saturday_of_same_week():
+    """Старт «current»: визит в воскресенье — на субботу той же недели цикла, частота та же, даже если
+    суббота загружена; при снижении частоты — «тот же день» от субботы, неделя — с меньшей нагрузкой."""
+    six = range(1, 7)
+    points = [(40.18, 44.50), (40.19, 44.51), (40.20, 44.52), (40.17, 44.49)]
+    current = [_wk(7), ((2, 7),), _wk(1, 7), _wk(7)]
+    targets = [1.0, 0.5, 2.0, 0.5]                                   # 4-й: вс каждую неделю → раз в 2 недели
+    allowed = [pt.allowed_patterns(c, f, six) for c, f in zip(current, targets)]
+    prob = _search_problem(points, current, allowed)
+    base = [_slots(pt.workday_pattern(c, six)) for c in current]
+    # суббота 2-й недели загружена сильнее (1-й, 2-й и 3-й клиенты) — 4-й клиент встаёт в субботу 1-й
+    assert sr.current_start(prob, base) == [_slots(_wk(6)), _slots(((2, 6),)), _slots(_wk(1, 6)),
+                                            _slots(((1, 6),))]
+
+
+def test_optimization_starts_sunday_customer_on_saturday(monkeypatch):
+    """Расчёт целиком: старт поиска — 104 из воскресенья на субботе той же недели (поиск отключён, чтобы
+    увидеть сам старт); предложение — перенос с причиной «воскресенье — нерабочий день»."""
+    starts = {}
+
+    def no_search(state, **kwargs):
+        starts[state.prob.agent_id] = list(state.pattern)
+        return sr.SearchStats(cost_start=state.total, cost_end=state.total)
+
+    monkeypatch.setattr(sr, 'search', no_search)
+    out = opt.run_optimization(make_snapshot(), _bundle(), None, [], {})
+    o = next(o for o in out.managers if o.agent_id == 1)
+    assert dict(zip(o.customers, starts[1]))[104] == _slots(_wk(6))
+    c104 = _change(_manager(out.result, 1), 104)
+    assert (c104['type'], c104['from']['text'], c104['to']['text'], c104['reason']) == \
+        ('move', 'вс, каждую неделю', 'сб, каждую неделю', 'воскресенье — нерабочий день')
+
+
+def test_sunday_move_is_mandatory_even_if_change_penalty_exceeds_saving():
+    """Перенос с воскресенья предлагается всегда — даже при штрафе за изменение 1 млн драм, который
+    больше любого выигрыша: прочие клиенты при таком штрафе дни не меняют (только частоту)."""
+    out = opt.run_optimization(make_snapshot(), _bundle(penalty_change=1_000_000), None, [], {})
+    m1 = _manager(out.result, 1)
+    c104 = _change(m1, 104)
+    assert c104['type'] == 'move' and c104['reason'] == 'воскресенье — нерабочий день'
+    assert c104['from']['text'] == 'вс, каждую неделю' and all(1 <= d <= 6 for _, d in c104['to']['pattern'])
+    # прочие — только частота или «убрать из маршрута» (103 без заказов, §15), дни не меняются
+    assert all(ch['type'] in ('frequency', 'remove') for ch in m1['changes'] if ch['customer_id'] != 104)
+    o = next(o for o in out.managers if o.agent_id == 1)
+    assert o.stats.cost_start >= 1_000_000 and o.cost_after <= o.stats.cost_start   # штраф — как обычно
+
+
+def test_manager_with_whole_template_on_sunday_ends_on_workdays():
+    """Весь шаблон менеджера — воскресенье: после расчёта все визиты в рабочие дни, частоты — целевые,
+    у каждого клиента — предложение с причиной «воскресенье — нерабочий день»; 103 без заказов за
+    год — «убрать из маршрута» (§15): переносить его некуда."""
+    six = range(1, 7)
+    rows = [_row(1, 13, 1, 7, 1, c, n, addr)
+            for n, (c, addr) in enumerate(((101, 1001), (102, 1002), (103, 0), (104, 1004)), 1)]
+    rows += [_row(2, 21, 1, 1, 1, 104, 1, 1004), _row(2, 21, 1, 1, 1, 101, 2, 1001)]
+    out = opt.run_optimization(replace(make_snapshot(), plan=pl.build_plan(rows)), _bundle(), None, [], {})
+    o = next(o for o in out.managers if o.agent_id == 1)
+    assert all(d in six for p in o.final for _, d in p)
+    assert all(p in s.allowed and len(p) == 2 * s.target for p, s in zip(o.final, o.specs))
+    m1 = _manager(out.result, 1)
+    assert sorted(ch['customer_id'] for ch in m1['changes']) == [101, 102, 103, 104]
+    assert _change(m1, 103)['type'] == 'remove'
+    assert all(ch['reason'].startswith('воскресенье — нерабочий день') for ch in m1['changes']
+               if ch['type'] != 'remove')
+    assert m1['days_after'] and all(day['weekday'] in six for day in m1['days_after'])
+
+
+# §15 (ответ владельца №27): статус клиента по давности последнего заказа — затихшие и потерянные.
+
+from route_optimizer import status as cst  # noqa: E402
+
+STATUS_S = dict(st.DEFAULT_SETTINGS)
+PEAK = [6, 7, 8]
+
+
+def _weekly_until(cid, silent_days, agent=1, revenue=30000.0, kg=40.0, since_days=365):
+    """Заказы раз в неделю с since_days дней назад; последний — silent_days дней назад."""
+    last = TODAY - timedelta(days=silent_days)
+    n = (since_days - silent_days) // 7 + 1
+    return tuple(dm.Order(cid, last - timedelta(days=7 * k), agent, revenue, kg) for k in reversed(range(n)))
+
+
+def _dates(cid, *days_ago, revenue=10000.0):
+    return tuple(dm.Order(cid, TODAY - timedelta(days=d), 1, revenue, 5.0)
+                 for d in sorted(days_ago, reverse=True))
+
+
+def _status(orders, first=TODAY - timedelta(days=600), as_of=TODAY, peak=PEAK, **settings):
+    return cst.customer_status(orders, first, as_of, peak, {**STATUS_S, **settings})
+
+
+def _status_snapshot(orders_by_cid, snapshot_id='syn-risk'):
+    """make_snapshot, где у клиентов свои заказы (затихшие, потерянные)."""
+    base = make_snapshot(snapshot_id)
+    orders = {**base.orders_by_customer, **orders_by_cid}
+    return replace(base, orders_by_customer=orders,
+                   company_orders_by_day=dict(Counter(o.date for os in orders.values() for o in os)))
+
+
+def test_customer_status_rules():
+    """Таблица §15: новый, без заказов, сезонный, затих, потерян, активный; ≥ 3 заказов — по обычному
+    интервалу, 1–2 — по 120 / 240 дн; пороги — из настроек."""
+    active = _status(_weekly_until(1, 3))
+    assert (active.status, active.silent_days, active.usual_interval_days) == ('active', 3, 7.0)
+    assert (active.orders, active.revenue, active.last_order) == (52, 52 * 30000.0, TODAY - timedelta(days=3))
+    dormant = _status(_weekly_until(1, 50))                       # 50 > max(45, 3 × 7)
+    assert (dormant.status, dormant.silent_days, dormant.silent) == ('dormant', 50, True)
+    assert _status(_weekly_until(1, 45)).status == 'active'        # ровно порог — ещё не затих
+    lost = _status(_weekly_until(1, 130))                         # 130 > max(120, 6 × 7)
+    assert lost.status == 'lost' and lost.orders == 34
+    # редкий клиент — порог по его интервалу: раз в 30 дней, 80 дн тишины — норма (порог 90)
+    monthly = [TODAY - timedelta(days=d) for d in range(80, 365, 30)]
+    orders = tuple(dm.Order(1, day, 1, 10000.0, 5.0) for day in monthly)
+    assert (_status(orders).status, _status(orders).usual_interval_days) == ('active', 30.0)
+    later = tuple(dm.Order(1, day - timedelta(days=20), 1, 10000.0, 5.0) for day in monthly)   # тишина 100
+    assert _status(later).status == 'dormant'                      # 100 > 90, но меньше max(120, 180)
+    # 1–2 заказа: затих — больше 120 дн тишины, потерян — больше 240 (без пика: единственный заказ
+    # летом сделал бы клиента сезонным)
+    assert [_status(_dates(1, d), peak=[]).status for d in (120, 121, 240, 241)] == \
+        ['active', 'dormant', 'dormant', 'lost']
+    assert _status(_dates(1, 30, 130)).status == 'active'
+    assert _status(_dates(1, 130, 250)).usual_interval_days is None
+    # нет заказов за 12 месяцев — «без заказов» (и когда первой покупки нет вовсе)
+    never = _status(())
+    assert (never.status, never.silent_days, never.orders, never.last_order) == ('never', None, 0, None)
+    assert _status((), first=None).status == 'never' and _status(_dates(1, 400)).status == 'never'
+    # новый: первый заказ меньше 60 дн назад — не трогаем, хоть и молчит
+    assert _status(_dates(1, 59), first=TODAY - timedelta(days=59), peak=[]).status == 'new'
+    assert _status(_dates(1, 59), first=TODAY - timedelta(days=60), peak=[]).status == 'active'
+    assert _status(_dates(1, 59), first=None, peak=[]).status == 'new'   # первая покупка — из окна
+    # пороги — из настроек
+    assert _status(_weekly_until(1, 50), dormant_min_days=60).status == 'active'
+    assert _status(_weekly_until(1, 50), dormant_min_days=30, lost_min_days=40).status == 'lost'
+    assert _status(_weekly_until(1, 30), dormant_mult=5, dormant_min_days=1).status == 'active'   # 30 < 5 × 7
+    assert _status(_dates(1, 30), status_new_days=31, first=TODAY - timedelta(days=30)).status == 'new'
+
+
+def test_customer_status_seasonal():
+    """≥ 80% заказов окна — в пиковых месяцах, а сейчас не пик: не затих, даже если молчит. В пик —
+    обычные правила; меньше 80% в пике — тоже."""
+    summer = tuple(dm.Order(1, date(2026, 6, 1) + timedelta(days=7 * k), 1, 30000.0, 40.0) for k in range(13))
+    st_off = _status(summer)                                        # сентябрь 2026 — не пик
+    assert st_off.status == 'seasonal' and st_off.silent_days == 37 and not st_off.silent
+    assert _status(summer, as_of=date(2026, 11, 20)).status == 'seasonal'   # 88 дн тишины, всё ещё сезонный
+    assert _status(summer, peak=[6, 7, 8, 9]).status == 'active'   # сентябрь — пик: 37 < max(45, 21)
+    assert _status(summer, peak=[6, 7, 8, 11], as_of=date(2026, 11, 20)).status == 'dormant'
+    assert _status(summer, peak=[]).status == 'active'             # пика нет — сезонных нет
+    mixed = summer + _dates(1, 300, 290, 280, 270)                  # 13 из 17 в пике (76%) — не сезонный
+    assert _status(mixed, as_of=date(2026, 11, 20)).status == 'dormant'
+
+
+def test_customer_status_as_of_has_no_future_leakage():
+    """Статус на дату as_of — только по заказам до неё: будущие заказы и первая покупка после as_of
+    не учитываются."""
+    start = TODAY - timedelta(days=200)
+    orders = tuple(dm.Order(1, start + timedelta(days=7 * k), 1, 20000.0, 5.0) for k in range(28))
+    first = start
+    assert _status(orders, first=first, as_of=TODAY - timedelta(days=250)).status == 'never'  # ещё не покупал
+    assert _status(orders, first=first, as_of=TODAY - timedelta(days=180)).status == 'new'
+    assert _status(orders, first=first).status == 'active'
+    # перерыв: последний заказ до перерыва — 102 дня назад, потом снова — 11 дней назад
+    gap = tuple(o for o in orders if not TODAY - timedelta(days=100) < o.date < TODAY - timedelta(days=15))
+    then = _status(gap, first=first, as_of=TODAY - timedelta(days=40))
+    assert (then.status, then.silent_days, then.orders) == ('dormant', 62, 15)
+    assert then.last_order == TODAY - timedelta(days=102)
+    now = _status(gap, first=first)                                 # а сегодня — снова покупает
+    assert (now.status, now.silent_days, now.orders) == ('active', 11, 16)
+
+
+def test_status_texts_and_risk_summary():
+    assert cst.silence_text(_status(())) == 'ни одного заказа за год'
+    assert cst.silence_text(_status(_weekly_until(1, 60))) == 'не покупает 60 дн (обычно раз в 7 дн)'
+    assert cst.silence_text(_status(_dates(1, 130))) == 'не покупает 130 дн'
+    assert cst.win_back_text(_status(_weekly_until(1, 60))) == \
+        'не покупает 60 дн (обычно раз в 7 дн) — визит раз в 2 недели, попробовать вернуть'
+    summary = cst.risk_summary([_status(_weekly_until(1, 60)), _status(_weekly_until(1, 130)),
+                                _status(()), _status(_weekly_until(1, 2))])
+    assert summary == {'dormant': 1, 'dormant_rev_year': 44 * 30000, 'lost': 1, 'lost_rev_year': 34 * 30000,
+                       'never': 1}
+
+
+def test_silent_customers_have_zero_demand_but_keep_history():
+    """Затих, потерян, без заказов — λ = 0 во всех сезонах: ожидаемая выручка дня и недели без них;
+    прошлые заказы (средний заказ, кг, класс размера) и выручка за год — остаются для показа."""
+    snap = _status_snapshot({102: _weekly_until(102, 60)})
+    ov = ev.build_overview(snap, _bundle())
+    calm = ev.build_overview(snap, _bundle(dormant_min_days=90, lost_min_days=200))   # тот же — не затих
+    c, c0 = ov['customers']['102'], calm['customers']['102']
+    assert (c['status'], c['silent_days'], c['usual_interval_days'], c['orders_year']) == \
+        ('dormant', 60, 7.0, 44)
+    assert c0['status'] == 'active' and c0['rev_week_low'] > 0 and c0['p_low'] > 0
+    assert [c[k] for k in ('rev_week_low', 'rev_week_year', 'p_low', 'p_year', 'rev_visit_low')] == [0] * 5
+    assert c['orders_per_week_year'] == c0['orders_per_week_year'] > 0.5          # по истории
+    assert c['rev_week_year_hist'] == c0['rev_week_year'] and c['rev_year_hist'] == 44 * 30000
+    assert c['last_order_date'] == (TODAY - timedelta(days=60)).isoformat()
+    assert all(c[k] == c0[k] for k in ('avg_order_amd', 'avg_order_kg', 'size'))
+    # понедельник менеджера 1 (101 и 102): выручка дня меньше ровно на вклад 102
+    def monday(o):
+        return next(d for m in o['managers'] if m['agent_id'] == 1 for d in m['days'] if d['weekday'] == 1)
+    assert monday(calm)['revenue_low_exp'] - monday(ov)['revenue_low_exp'] == \
+        pytest.approx(c0['rev_visit_low'], abs=1)
+    assert monday(ov)['p_day_ge_min'] <= monday(calm)['p_day_ge_min']
+    for key in ('revenue_week_low', 'revenue_week_peak', 'revenue_week_year'):
+        assert ov['totals'][key] < calm['totals'][key], key
+    models = ev.evaluate_plan(snap, _bundle()).models
+    m = models[102]
+    assert (m.year.lam, m.low.lam, m.peak.lam) == (0.0, 0.0, 0.0) and m.hist.lam > 0.5 and m.year.values
+    assert models[101].hist is models[101].year and models[101].status.status == 'active'
+
+
+def test_overview_at_risk_totals_and_list():
+    """Итог «под риском» и список: затихшие, потерянные и без заказов у менеджеров в расчёте, по
+    убыванию выручки за год; у клиента нескольких менеджеров — все они."""
+    snap = _status_snapshot({102: _weekly_until(102, 60), 101: _weekly_until(101, 150, revenue=60000.0)})
+    ov = ev.build_overview(snap, _bundle())
+    assert ov['totals']['at_risk'] == {'dormant': 1, 'dormant_rev_year': 44 * 30000,
+                                       'lost': 1, 'lost_rev_year': 31 * 60000, 'never': 1}
+    rows = ov['at_risk_customers']
+    assert [(r['customer_id'], r['status']) for r in rows] == \
+        [(101, 'lost'), (102, 'dormant'), (103, 'never')]
+    assert all(set(r) == {'customer_id', 'code', 'name', 'status', 'silent_days', 'usual_interval_days',
+                          'orders_year', 'rev_year_hist', 'last_order_date', 'managers'} for r in rows)
+    assert [x['code'] for x in rows[0]['managers']] == ['A001', 'A002']
+    assert (rows[0]['silent_days'], rows[0]['orders_year'], rows[0]['usual_interval_days']) == (150, 31, 7.0)
+    assert (rows[2]['silent_days'], rows[2]['rev_year_hist'], rows[2]['last_order_date']) == (None, 0, None)
+    # менеджер 1 вне расчёта — его клиенты (кроме 101 у менеджера 2) не в итоге и не в списке
+    off = ev.build_overview(snap, _bundle([st.ManagerProfile(1, included=False)]))
+    assert [r['customer_id'] for r in off['at_risk_customers']] == [101]
+    assert off['totals']['at_risk'] == {'dormant': 0, 'dormant_rev_year': 0, 'lost': 1,
+                                        'lost_rev_year': 31 * 60000, 'never': 0}
+    assert off['customers']['102']['status'] == 'dormant'           # статус клиента — у всех клиентов плана
+
+
+def test_api_overview_status_fields(client):
+    snap = _status_snapshot({102: _weekly_until(102, 60)})
+    client.application.extensions['route_optimizer'].snapshots = SnapshotCache(lambda: snap)
+    d = client.get('/api/routes/overview').get_json()
+    assert d['success'] and OVERVIEW_TOTALS <= set(d['totals'])
+    assert set(d['totals']['at_risk']) == {'dormant', 'dormant_rev_year', 'lost', 'lost_rev_year', 'never'}
+    assert (d['totals']['at_risk']['dormant'], d['totals']['at_risk']['never']) == (1, 1)
+    status_keys = {'status', 'silent_days', 'usual_interval_days', 'orders_year', 'rev_year_hist',
+                   'rev_week_year_hist', 'last_order_date'}
+    assert all(CUSTOMER_KEYS | status_keys <= set(c) for c in d['customers'].values())
+    assert {k: c['status'] for k, c in d['customers'].items()} == \
+        {'101': 'active', '102': 'dormant', '103': 'never', '104': 'active'}
+    assert [r['customer_id'] for r in d['at_risk_customers']] == [102, 103]
+
+
+def test_pair_spec_status_removal_and_owner_decisions():
+    """Потерянный и без заказов — «убрать» только в режиме «по продажам» и если владелец не решил
+    иначе: оставил (reject), закрепил шаблон, задал частоту. Принятое «убрать» — в любом режиме."""
+    six = list(range(1, 7))
+    empty = opt.DecisionBook.from_rows([])
+    lost = opt.pair_spec((1, 10), _wk(2), 0.5, 'sales', six, empty, 'lost')
+    assert (lost.removed, lost.target, lost.allowed, lost.source, lost.locked) == \
+        (True, 0.0, ((),), 'status', False)
+    assert opt.pair_spec((1, 10), _wk(2), 0.5, 'sales', six, empty, 'never').removed
+    for status in ('dormant', 'seasonal', 'new', 'active', None):
+        spec = opt.pair_spec((1, 10), _wk(2), 0.5, 'sales', six, empty, status)
+        assert not spec.removed and spec.target == 0.5, status
+    assert not opt.pair_spec((1, 10), _wk(2), 0.5, 'current', six, empty, 'lost').removed
+    book = opt.DecisionBook.from_rows([
+        st.Decision(10, 1, 'remove', st.REMOVE_VALUE, 'rejected'),
+        st.Decision(11, 1, 'pattern', pt.pattern_key(_wk(4)), 'accepted'),
+        st.Decision(12, 1, 'freq', '1', 'accepted'),
+        st.Decision(13, 1, 'remove', st.REMOVE_VALUE, 'accepted'),
+        st.Decision(13, 1, 'pattern', pt.pattern_key(_wk(4)), 'accepted'),
+    ])
+    assert (book.accepted_remove, book.rejected_remove) == (frozenset({(1, 13)}), frozenset({(1, 10)}))
+    kept = opt.pair_spec((1, 10), _wk(2), 0.5, 'sales', six, book, 'never')
+    assert not kept.removed and kept.target == 0.5                 # оставлен — раз в 2 недели
+    assert opt.pair_spec((1, 11), _wk(2), 0.5, 'sales', six, book, 'lost').locked
+    assert opt.pair_spec((1, 12), _wk(2), 0.5, 'sales', six, book, 'lost').target == 1.0
+    for mode in ('sales', 'current'):                              # принятое «убрать» важнее шаблона
+        spec = opt.pair_spec((1, 13), _wk(2), 0.5, mode, six, book, 'active')
+        assert (spec.removed, spec.source) == (True, 'manual')
+
+
+def test_remove_decision_state_parse_and_status():
+    """Решение remove привязано к шаблону, от которого принято: клиента у менеджера нет — исполнено;
+    шаблон в ERP другой — принятое устарело, отклонённое отработало."""
+    pairs = {1: {10: opt.PairInfo(_wk(2), 0)}}
+    tue, thu = pt.pattern_key(_wk(2)), pt.pattern_key(_wk(4))
+
+    def state(status, frm, cid=10):
+        d = st.Decision(cid, 1, 'remove', st.REMOVE_VALUE, status, from_value=frm)
+        return opt.decision_state(d, pairs)
+
+    assert [state('accepted', tue), state('accepted', None), state('accepted', thu)] == \
+        ['active', 'active', 'stale']
+    assert state('accepted', tue, cid=11) == 'retired'
+    assert [state('rejected', tue), state('rejected', thu), state('rejected', tue, cid=11)] == \
+        ['active', 'retired', 'retired']
+    base = {'customer_id': 5, 'agent_id': 1, 'kind': 'remove', 'action': 'accept'}
+    for extra in ({}, {'value': None}, {'value': []}):
+        d, errors = opt.parse_decision({**base, **extra})
+        assert not errors and (d.kind, d.value, d.from_value) == ('remove', '[]', None), extra
+    d, errors = opt.parse_decision({**base, 'from': [[2, 2], [1, 2]]})
+    assert not errors and d.from_value == '[[1,2],[2,2]]'
+    for bad in ({'value': [[1, 2]]}, {'value': 0}, {'value': True}, {'from': [[3, 1]]}, {'from': 1}):
+        assert opt.parse_decision({**base, **bad})[1], bad
+    book = opt.DecisionBook.from_rows([st.Decision(10, 1, 'remove', st.REMOVE_VALUE, 'accepted',
+                                                   from_value=tue)])
+    ch = {'customer_id': 10, 'type': 'remove', 'from': {'freq': 1, 'pattern': [[1, 2], [2, 2]]},
+          'to': {'freq': 0, 'pattern': []}}
+    assert book.change_status(1, ch) == {'remove': 'accepted'}
+    assert book.change_status(1, {**ch, 'from': {'freq': 1, 'pattern': [[1, 4], [2, 4]]}}) == {'remove': None}
+
+
+def test_optimizer_dormant_biweekly_and_lost_removed():
+    """Режим «по продажам»: затихшему — раз в 2 недели с причиной «попробовать вернуть», потерянному и
+    без заказов — «убрать из маршрута» у каждого его менеджера (в «стало» его нет), эффект — км и минуты
+    со знаком минус; выручка модели «было → стало» не меняется (у них λ = 0). «Как сейчас» — только дни."""
+    snap = _status_snapshot({102: _weekly_until(102, 60), 101: _weekly_until(101, 150, revenue=60000.0)})
+    out = opt.run_optimization(snap, _bundle(), None, [], {})
+    res = out.result
+    m1, m2 = _manager(res, 1), _manager(res, 2)
+    c101, c102, c103 = _change(m1, 101), _change(m1, 102), _change(m1, 103)
+    assert (c102['type'], c102['to']['freq']) == ('frequency', 0.5)
+    assert c102['reason'] == \
+        'не покупает 60 дн (обычно раз в 7 дн) — визит раз в 2 недели, попробовать вернуть'
+    assert (c101['type'], c101['reason'], c101['to']['text']) == \
+        ('remove', 'не покупает 150 дн (обычно раз в 7 дн)', 'убрать из маршрута')
+    assert (c103['type'], c103['reason']) == ('remove', 'ни одного заказа за год')
+    assert _change(m2, 101)['type'] == 'remove'
+    for ch in (c101, c103, _change(m2, 101)):
+        e = ch['effect']
+        assert e['manager_km_week'] < 0 and e['minutes_week'] < 0 and ch['decision'] == {'remove': None}
+    after_ids = {s['customer_id'] for m in res['managers'] for d in m['days_after'] for s in d['stops']}
+    assert 101 not in after_ids and 103 not in after_ids and 102 in after_ids
+    assert not [x for m in res['managers'] for x in m['hints'] if x['customer_id'] in (101, 102, 103)]
+    assert {c: res['customers'][str(c)]['status'] for c in (101, 102, 103, 104)} == \
+        {101: 'lost', 102: 'dormant', 103: 'never', 104: 'active'}
+    assert res['customers']['102']['lam_year'] > 0.5                 # по истории — сколько заказывал
+    assert (res['customers']['101']['freq_target'], res['customers']['102']['freq_target']) == (0, 0.5)
+    for key in ('revenue_week_low', 'revenue_week_peak', 'revenue_week_year'):
+        assert abs(res['after'][key] - res['before'][key]) <= 1, key
+    assert res['before']['at_risk']['lost'] == 1 and res['after']['at_risk']['lost'] == 0
+    for o in out.managers:                                          # частоты и шаблоны — как у всех
+        for spec, final in zip(o.specs, o.final):
+            assert final in spec.allowed and len(final) == 2 * spec.target
+    as_is = opt.run_optimization(snap, _bundle(), None, [], {'frequencies': 'current'}).result
+    assert all(ch['type'] == 'move' for m in as_is['managers'] for ch in m['changes'])
+
+
+def test_manager_left_without_days_after_removals():
+    """Весь шаблон менеджера — воскресенье, и все его клиенты без заказов: в «стало» у него нет ни
+    одного дня — неделя без визитов, а не сбой расчёта (живые данные: A007/4)."""
+    rows = [_row(1, 11, 1, 1, 1, 101, 1, 1001), _row(1, 11, 1, 1, 1, 102, 2, 1002),
+            _row(1, 13, 1, 7, 1, 104, 1, 1004), _row(2, 21, 1, 7, 1, 103, 1, 0)]
+    snap = replace(make_snapshot(), plan=pl.build_plan(rows))
+    res = opt.run_optimization(snap, _bundle(), None, [], {}).result
+    m2 = _manager(res, 2)
+    assert [(c['customer_id'], c['type']) for c in m2['changes']] == [(103, 'remove')]
+    assert (m2['before']['visits'], m2['after']['visits'], m2['days_after']) == (1, 0, [])
+    assert m2['after']['avg_work_hours'] is None and m2['after']['manager_km'] == 0
+    assert res['after']['managers'] == 1 and res['before']['managers'] == 2
+
+
+def test_api_remove_decisions_export_and_keep(client):
+    """«Убрать» принято — в выгрузке для ERP клиента нет, в изменениях — «убрать»; действует в
+    следующем расчёте в любом режиме. «Оставить» — удаление больше не предлагается: раз в 2 недели."""
+    res = _wait_job(client, _start(client))['result']
+    c103 = _change(_manager(res, 1), 103)
+    item = {'customer_id': 103, 'agent_id': 1, 'kind': 'remove', 'value': c103['to']['pattern'],
+            'from': c103['from']['pattern'], 'action': 'accept'}
+    assert client.post('/api/routes/decisions', json=item).get_json() == {'success': True}
+    last = client.get('/api/routes/optimize/last').get_json()['result']
+    assert _change(_manager(last, 1), 103)['decision'] == {'remove': 'accepted'}
+    d = client.get('/api/routes/decisions').get_json()
+    [x] = d['decisions']
+    assert set(x) == DECISION_ITEM_KEYS
+    assert (x['kind'], x['status'], x['stale'], x['value'], x['from']) == \
+        ('remove', 'accepted', False, [], [[1, 2], [2, 2]])
+    assert (x['to_text'], x['from_text'], x['current_text']) == ('убрать из маршрута', 'вт, каждую неделю',
+                                                                  'вт, каждую неделю')
+    assert d['summary'] == {'accepted': 1, 'rejected': 0, 'stale': 0, 'export_changes': 1}
+    ex = client.get('/api/routes/plan-export').get_json()
+    assert [(c['agent_id'], c['customer_id'], c['type'], c['to']) for c in ex['changes']] == \
+        [(1, 103, 'remove', {'freq': 0, 'pattern': [], 'text': 'убрать из маршрута'})]
+    assert not [r for r in ex['rows'] if r['customer_id'] == 103] and {r['mark'] for r in ex['rows']} == {''}
+    assert {m['agent_id']: m['changes'] for m in ex['managers']} == {1: 1, 2: 0}
+    res2 = _wait_job(client, _start(client, {'frequencies': 'current'}))['result']   # «как сейчас» — тоже
+    c = _change(_manager(res2, 1), 103)
+    assert (c['type'], c['reason'], c['decision']) == \
+        ('remove', 'удаление принято владельцем', {'remove': 'accepted'})
+    assert all(s['customer_id'] != 103 for day in _manager(res2, 1)['days_after'] for s in day['stops'])
+    # «Оставить»: то же решение — отклонено
+    assert client.post('/api/routes/decisions', json={**item, 'action': 'reject'}).status_code == 200
+    res3 = _wait_job(client, _start(client))['result']
+    c = _change(_manager(res3, 1), 103)
+    assert (c['type'], c['to']['freq']) == ('frequency', 0.5)
+    assert c['reason'] == 'ни одного заказа за год — визит раз в 2 недели, попробовать вернуть'
+    assert {'customer_id': 103, 'kind': 'no_orders', 'text': 'за год ни одного заказа'} in \
+        _manager(res3, 1)['hints']
+    ex = client.get('/api/routes/plan-export').get_json()
+    assert ex['changes'] == [] and len([r for r in ex['rows'] if r['customer_id'] == 103]) == 2
+    assert client.get('/api/routes/decisions').get_json()['summary']['rejected'] == 1
+
+
+def test_api_remove_decision_retired_or_stale_with_erp(client, tmp_path):
+    """Принятое «убрать»: ERP убрал клиента у менеджера — решение отработало; ERP перенёс его на
+    другой день — решение устарело: не применяется в выгрузке и видно в списке."""
+    item = {'customer_id': 103, 'agent_id': 1, 'kind': 'remove', 'action': 'accept'}
+    assert client.post('/api/routes/decisions', json=item).status_code == 200
+    _use_snapshot(client, 'syn-thu', plan=_plan_rows(day_103=4))           # 103 теперь в четверг
+    d = client.get('/api/routes/decisions').get_json()
+    [x] = d['decisions']
+    assert x['stale'] and x['current_text'] == 'чт, каждую неделю' and d['summary']['export_changes'] == 0
+    ex = client.get('/api/routes/plan-export').get_json()
+    assert ex['changes'] == [] and [s['customer_id'] for s in ex['stale_decisions']] == [103]
+    assert [(r['week'], r['weekday']) for r in ex['rows'] if r['customer_id'] == 103] == [(1, 4), (2, 4)]
+    _use_snapshot(client, 'syn-tue')                                         # как было — снова действует
+    assert client.get('/api/routes/decisions').get_json()['summary']['export_changes'] == 1
+    rows = [_row(1, 11, 1, 1, 1, 101, 1, 1001), _row(1, 11, 1, 1, 1, 102, 2, 1002),
+            _row(2, 21, 1, 1, 1, 104, 1, 1004), _row(2, 21, 1, 1, 1, 101, 2, 1001),
+            _row(1, 13, 1, 7, 1, 104, 1, 1004)]
+    _use_snapshot(client, 'syn-gone', plan=pl.build_plan(rows))            # ERP: 103 у менеджера 1 убран
+    assert client.get('/api/routes/decisions').get_json()['decisions'] == []
+    with closing(sqlite3.connect(str(tmp_path / 'routes.db'))) as conn:
+        assert conn.execute('SELECT customer_id, kind, status FROM decision').fetchall() == \
+            [(103, 'remove', 'retired')]
+
+
+def test_store_remove_decisions_and_migration_4_to_5(tmp_path):
+    """Схема 4 → 5: вид решения remove (CHECK пересобран), все решения и значения — как были, частичный
+    уникальный индекс снова на месте: одно принятое решение каждого вида, и remove тоже."""
+    path = str(tmp_path / 'v4.db')
+    rows = [(103, 1, 'pattern', '[[2,2]]', '[[1,2],[2,2]]', 'accepted', '2026-09-01T10:00:00', 'owner'),
+            (103, 1, 'freq', '0.5', '1', 'accepted', '2026-09-01T10:00:01', 'owner'),
+            (104, 1, 'pattern', '[[1,3],[2,3]]', '[[1,7],[2,7]]', 'rejected', '2026-09-02T10:00:00', None),
+            (105, 2, 'freq', '1', None, 'retired', '2026-09-03T10:00:00', 'owner')]
+    cols = 'customer_id, agent_id, kind, value, from_value, status, updated_at, updated_by'
+
+    def insert(conn, cid, kind, value, status='accepted'):
+        conn.execute(f'INSERT INTO decision({cols}) VALUES(?, 1, ?, ?, NULL, ?, ?, NULL)',
+                     (cid, kind, value, status, 'x'))
+
+    with closing(sqlite3.connect(path)) as conn:
+        for sql in st._SCHEMA[:5]:
+            conn.execute(sql)
+        conn.execute(f'CREATE TABLE decision({st._DECISION_COLUMNS_V4})')
+        conn.execute(st._SCENARIO_TABLE)
+        conn.execute(st._DECISION_ONE_ACCEPTED)
+        conn.execute("INSERT INTO meta VALUES('schema_version', '4')")
+        conn.execute("INSERT INTO settings VALUES('lost_mult', '8')")
+        conn.executemany(f'INSERT INTO decision({cols}) VALUES(?, ?, ?, ?, ?, ?, ?, ?)', rows)
+        conn.execute("INSERT INTO scenario VALUES('s1', 'x', 'qa', '{}', '{\"n\": 1}')")
+        with pytest.raises(sqlite3.IntegrityError):                          # в схеме 4 remove нет
+            insert(conn, 1, 'remove', '[]')
+        conn.commit()
+    s = st.Store(path)
+    assert s.load().settings['lost_mult'] == 8 and s.last_scenario().result == {'n': 1}
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('5',)
+        got = conn.execute(f'SELECT {cols} FROM decision').fetchall()
+        assert sorted(got, key=str) == sorted(rows, key=str)                 # все значения — как были
+        indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        assert 'decision_one_accepted' in indexes
+    assert {(d.customer_id, d.kind) for d in s.load_decisions()} == \
+        {(103, 'pattern'), (103, 'freq'), (104, 'pattern')}
+    s.save_decision(103, 1, 'remove', st.REMOVE_VALUE, 'accept', 'qa', '[[1,2],[2,2]]')
+    d = next(x for x in s.load_decisions() if x.kind == 'remove')
+    assert (d.value, d.from_value, d.status, d.updated_by) == ('[]', '[[1,2],[2,2]]', 'accepted', 'qa')
+    with closing(sqlite3.connect(path)) as conn, pytest.raises(sqlite3.IntegrityError):
+        insert(conn, 103, 'remove', '[0]')                                   # второе принятое remove
+    with closing(sqlite3.connect(path)) as conn, pytest.raises(sqlite3.IntegrityError):
+        insert(conn, 1, 'drop', '[]')                                        # неизвестный вид
+    with closing(sqlite3.connect(path)) as conn:                             # битое значение — явная ошибка
+        insert(conn, 7, 'remove', '[[1,2]]', 'rejected')
+        conn.commit()
+    with pytest.raises(st.StoreError, match='решение'):
+        s.load_decisions()
+
+
+STATUS_KEYS = ('status_new_days', 'dormant_min_days', 'dormant_mult', 'lost_min_days', 'lost_mult')
+
+
+def test_store_status_settings_validation(store):
+    assert [store.load().settings[k] for k in STATUS_KEYS] == [60, 45, 3, 120, 6]
+    _, errors = st.validate_payload({'settings': {'status_new_days': 0, 'dormant_mult': 0.5,
+                                                  'lost_min_days': 1000, 'dormant_min_days': None}},
+                                    store.load(), REF)
+    assert set(errors) == {'settings.status_new_days', 'settings.dormant_mult', 'settings.lost_min_days',
+                           'settings.dormant_min_days'}
+    _, errors = st.validate_payload({'settings': {'dormant_min_days': 150, 'lost_mult': 2}},
+                                    store.load(), REF)
+    assert set(errors) == {'settings.lost_min_days', 'settings.lost_mult'}   # «потерян» мягче «затих»
+    _save(store, {'settings': dict(zip(STATUS_KEYS, (30, 30, 2, 90, 4)))})
+    assert [store.load().settings[k] for k in STATUS_KEYS] == [30, 30, 2, 90, 4]
 
 
 def test_decision_state_against_plan():
@@ -2753,6 +3290,8 @@ def _plan_rows(day_103=2, day_104=7, with_104=True):
 def test_api_decisions_batch_list_and_stale(client):
     """S5 + M2: «Принять все» — одним запросом; список «Ваши решения»; ERP изменился — решение
     устарело: в выгрузку не идёт, видно в списке, в выгрузке и в следующем расчёте."""
+    keep = {'customer_id': 103, 'agent_id': 1, 'kind': 'remove', 'action': 'reject'}   # §15: оставить
+    assert client.post('/api/routes/decisions', json=keep).status_code == 200
     res = _wait_job(client, _start(client))['result']
     m1 = _manager(res, 1)
     c103, c104 = _change(m1, 103), _change(m1, 104)
@@ -2760,12 +3299,13 @@ def test_api_decisions_batch_list_and_stale(client):
     # одна ошибка — не сохраняется ничего (все или ни одного), ошибка — по строке
     r = client.post('/api/routes/decisions', json={'items': [*batch, {**batch[2], 'customer_id': 999}]})
     assert r.status_code == 400 and set(r.get_json()['errors']) == {'items.3.customer_id'}
-    assert client.get('/api/routes/decisions').get_json()['decisions'] == []
+    listed = client.get('/api/routes/decisions').get_json()['decisions']
+    assert [(x['customer_id'], x['kind'], x['status']) for x in listed] == [(103, 'remove', 'rejected')]
     r = client.post('/api/routes/decisions', json={'items': batch})
     assert r.status_code == 200 and r.get_json() == {'success': True, 'saved': 3}
     d = client.get('/api/routes/decisions').get_json()
     assert d['success'] and d['data_as_of'] == res['snapshot_as_of']
-    assert d['summary'] == {'accepted': 3, 'rejected': 0, 'stale': 0, 'export_changes': 2}
+    assert d['summary'] == {'accepted': 3, 'rejected': 1, 'stale': 0, 'export_changes': 2}
     assert all(set(x) == DECISION_ITEM_KEYS for x in d['decisions'])
     x = next(x for x in d['decisions'] if (x['customer_id'], x['kind']) == (104, 'pattern'))
     assert (x['agent_code'], x['customer_name'], x['status'], x['stale']) == \
@@ -2783,7 +3323,7 @@ def test_api_decisions_batch_list_and_stale(client):
     assert [(s['customer_id'], s['current_text']) for s in ex['stale_decisions']] == \
         [(104, 'ср, каждую неделю')]
     d = client.get('/api/routes/decisions').get_json()
-    assert d['summary'] == {'accepted': 2, 'rejected': 0, 'stale': 1, 'export_changes': 1}
+    assert d['summary'] == {'accepted': 2, 'rejected': 1, 'stale': 1, 'export_changes': 1}
     assert [x['customer_id'] for x in d['decisions'] if x['stale']] == [104]
     res2 = _wait_job(client, _start(client))['result']
     assert [(s['customer_id'], s['kind']) for s in res2['stale_decisions']] == [(104, 'pattern')]
@@ -2795,6 +3335,8 @@ def test_api_decisions_retire_reset_and_reset_all(client, tmp_path):
     """M3: исполненное в ERP принятое решение и отклонённое на прежнем плане — отработали (retired):
     не действуют, не видны и не возвращаются. «Сбросить все» и сброс одного — в том числе решения
     по клиенту, которого у менеджера уже нет."""
+    keep = {'customer_id': 103, 'agent_id': 1, 'kind': 'remove', 'action': 'reject'}   # §15: оставить
+    assert client.post('/api/routes/decisions', json=keep).status_code == 200
     res = _wait_job(client, _start(client))['result']
     m1 = _manager(res, 1)
     c103, c104 = _change(m1, 103), _change(m1, 104)
@@ -2807,9 +3349,10 @@ def test_api_decisions_retire_reset_and_reset_all(client, tmp_path):
     d = client.get('/api/routes/decisions').get_json()
     assert d['decisions'] == []
     assert d['summary'] == {'accepted': 0, 'rejected': 0, 'stale': 0, 'export_changes': 0}
-    with closing(sqlite3.connect(str(tmp_path / 'routes.db'))) as conn:
-        assert conn.execute('SELECT customer_id, status FROM decision ORDER BY customer_id').fetchall() == \
-            [(103, 'retired'), (104, 'retired')]
+    with closing(sqlite3.connect(str(tmp_path / 'routes.db'))) as conn:   # «оставить» 103 — тоже
+        assert conn.execute('SELECT customer_id, kind, status FROM decision ORDER BY customer_id, kind'
+                            ).fetchall() == [(103, 'pattern', 'retired'), (103, 'remove', 'retired'),
+                                             (104, 'pattern', 'retired')]
     _use_snapshot(client, 'syn-4')                       # план вернули как было — решения не оживают
     assert client.get('/api/routes/decisions').get_json()['decisions'] == []
 
@@ -2876,3 +3419,354 @@ def test_api_keeps_only_last_result_in_memory(client):
     assert jobs.jobs[first].result is None and jobs.jobs[second].result is not None
     d = client.get(f'/api/routes/optimize/{first}').get_json()
     assert d['job']['status'] == 'done' and len(d['result']['managers']) == 2
+
+
+# ============================== этап 5: расстояния по дорогам ==============================
+
+from route_optimizer import roads as rd  # noqa: E402
+
+# Синтетический граф (без карты): 0 → 1 — односторонняя (≈ 1 км на север; задана как oneway=-1 от
+# 1 к 0 и продублирована), 1 ↔ 2 ↔ 0 — объезд ≈ 5 км в обе стороны; 3 ↔ 4 — отдельный островок.
+RN = {0: (40.30, 44.30), 1: (40.309, 44.30), 2: (40.3045, 44.33), 3: (40.40, 44.40), 4: (40.401, 44.40)}
+R_WAYS = [([1, 0], -1), ([0, 1], 1), ([1, 2], 0), ([2, 0], 0), ([3, 4], 0)]
+KM_PER_DEG_LON = geo.haversine_km((40.30, 44.30), (40.30, 45.30))
+
+
+def _road_graph():
+    return rd.RoadGraph.from_ways(RN, R_WAYS)
+
+
+def _roads():
+    return rd.RoadDistances.for_graph(_road_graph())
+
+
+def _west(p, km):
+    return (p[0], p[1] - km / KM_PER_DEG_LON)
+
+
+def _north(p, km):
+    return (p[0] + km / KM_PER_DEG_LAT, p[1])
+
+
+def test_roads_way_direction_for_car():
+    assert rd.way_direction({'highway': 'residential'}) == 0
+    assert rd.way_direction({'highway': 'primary', 'oneway': 'yes'}) == 1
+    assert rd.way_direction({'highway': 'primary', 'oneway': 'true'}) == 1
+    assert rd.way_direction({'highway': 'primary', 'oneway': '-1'}) == -1
+    assert rd.way_direction({'highway': 'tertiary', 'junction': 'roundabout'}) == 1
+    assert rd.way_direction({'highway': 'residential', 'junction': 'circular'}) == 1
+    assert rd.way_direction({'highway': 'residential', 'junction': 'circular', 'oneway': 'no'}) == 0
+    assert rd.way_direction({'highway': 'motorway'}) == 1
+    assert rd.way_direction({'highway': 'motorway', 'oneway': 'no'}) == 0
+    assert rd.way_direction({'highway': 'secondary_link'}) == 0
+    assert rd.way_direction({'highway': 'footway'}) is None
+    assert rd.way_direction({'highway': 'service', 'access': 'private'}) is None
+    assert rd.way_direction({'highway': 'track'}) is None
+    assert rd.way_direction({'highway': 'residential', 'motor_vehicle': 'no'}) is None
+    assert rd.way_direction({'highway': 'residential', 'motorcar': 'private'}) is None
+    assert rd.way_direction({'highway': 'residential', 'motorcar': 'no'}) is None
+    assert rd.way_direction({'highway': 'residential', 'motorcar': 'yes'}) == 0
+
+
+def test_roads_oneway_respected_then_symmetrized():
+    net = rd.RoadNetwork(_road_graph())
+    h = geo.haversine_km
+    d01, d10 = h(RN[0], RN[1]), h(RN[1], RN[2]) + h(RN[2], RN[0])
+    (n0, n1), snap = net.snap([RN[0], RN[1]])                   # индексы узлов графа ≠ id OSM
+    assert list(snap) == [0.0, 0.0]
+    there = net.distances(rd.np.array([n0]), rd.np.array([n1]))[0, 0]
+    back = net.distances(rd.np.array([n1]), rd.np.array([n0]))[0, 0]
+    assert there == pytest.approx(d01)        # повторная линия не складывается в двойной вес
+    assert back == pytest.approx(d10)         # против одностороннего — только объездом
+    assert net.distances(rd.np.array([n0]), rd.np.array([n1]), reverse=True)[0, 0] == pytest.approx(d10)
+    r = _roads()
+    r.ensure([RN[0], RN[1]])
+    assert r.km(RN[0], RN[1]) == r.km(RN[1], RN[0]) == pytest.approx((d01 + d10) / 2, rel=1e-6)
+
+
+def test_roads_snap_offset_and_fallback_beyond_half_km():
+    r = _roads()
+    near, far = _west(RN[0], 0.3), _west(RN[0], 0.7)
+    r.ensure([near, far, RN[1]])
+    base = r.km(RN[0], RN[1])
+    # ключ точки — 6 знаков (~0,1 м): привязка считается от округлённой точки
+    assert r.km(near, RN[1]) == pytest.approx(geo.haversine_km(near, RN[0]) + base, abs=1e-3)
+    assert r.km(far, RN[1]) is None                               # дальше 0,5 км — не привязана
+    norms = replace(NORMS, roads=r)
+    assert norms.km(far, RN[1]) == pytest.approx(geo.haversine_km(far, RN[1]) * 1.3)
+    assert norms.km(near, RN[1]) == pytest.approx(r.km(near, RN[1]))   # по дорогам — без извилистости
+    assert r.unsnapped([near, far, RN[1], far]) == 1
+
+
+def test_roads_unreachable_island_falls_back():
+    r = _roads()
+    r.ensure([RN[3], RN[0]])
+    assert r.km(RN[3], RN[0]) is None                  # островок вне сильно связной компоненты
+    assert replace(NORMS, roads=r).km(RN[3], RN[0]) == pytest.approx(
+        geo.haversine_km(RN[3], RN[0]) * 1.3)
+
+
+def test_roads_same_node_is_straight_line():
+    a = _north(RN[2], 0.1)
+    b = (RN[2][0], RN[2][1] + 0.1 / KM_PER_DEG_LON)
+    r = _roads()
+    r.ensure([a, b])
+    assert r.km(a, b) == pytest.approx(geo.haversine_km(a, b))    # не 0,1 + 0,1 через узел
+    assert r.km(a, a) == 0.0
+
+
+def _grid(n=6, step_km=0.5):
+    """Сетка n × n узлов с шагом ≈ step_km: чётные улицы-строки — односторонние на восток,
+    нечётные — на запад, столбцы — в обе стороны (граф сильно связный)."""
+    nodes = {r * n + c: (40.30 + r * step_km / KM_PER_DEG_LAT, 44.30 + c * step_km / KM_PER_DEG_LON)
+             for r in range(n) for c in range(n)}
+    ways = [([r * n + c for c in range(n)], 1 if r % 2 == 0 else -1) for r in range(n)]
+    ways += [([r * n + c for r in range(n)], 0) for c in range(n)]
+    return nodes, rd.RoadGraph.from_ways(nodes, ways, source='grid')
+
+
+def _grid_batches():
+    """Три порции точек: каждая приносит новые узлы; во второй — ещё и точки у старых узлов,
+    в третьей — точка дальше 0,5 км от дорог."""
+    nodes, _ = _grid()
+    rows = [[nodes[r * 6 + c] for c in range(6)] for r in range(6)]
+    return [rows[0] + rows[1],
+            rows[2] + rows[3] + [_north(rows[0][2], 0.1), _west(rows[1][4], 0.05)],
+            rows[4] + rows[5] + [_west(rows[4][0], 0.8)]]
+
+
+def _assert_same_km(pts, want, *got):
+    for a in pts:
+        for b in pts:
+            w = want.km(a, b)
+            for r in got:
+                g = r.km(a, b)
+                assert (g is None) == (w is None), (a, b)
+                assert w is None or g == pytest.approx(w, rel=1e-6), (a, b)
+
+
+def test_roads_incremental_cache_equals_full(tmp_path):
+    _, graph = _grid()
+    batches = _grid_batches()
+    pts = [p for b in batches for p in b]
+    full = rd.RoadDistances.for_graph(graph)
+    full.ensure(pts)
+    calls = []
+
+    def loader():
+        calls.append(1)
+        return rd.RoadNetwork(graph)
+
+    path = str(tmp_path / 'grid.dist.npz')
+    step = rd.RoadDistances('v1', loader, path, lambda: graph.identity)
+    sizes = []
+    for batch in batches:
+        step.ensure(batch)
+        sizes.append(step.size)
+    assert sizes[0][1] < sizes[1][1] < sizes[2][1] == full.size[1]   # каждая порция — новые узлы
+    assert step.size == full.size and step.unsnapped(pts) == 1
+    step.ensure(batches[0])                                        # новых точек нет — граф не нужен
+    assert len(calls) == 3
+    reread = rd.RoadDistances('v1', loader, path, lambda: graph.identity)
+    reread.ensure(pts)                                             # всё в файле — граф не нужен
+    assert len(calls) == 3 and reread.size == full.size
+    _assert_same_km(pts, full, step, reread)
+    # другой граф (другие индексы узлов) — кэш не годится, хотя версия карты та же
+    _, other_graph = _grid(step_km=0.6)
+    other = rd.RoadDistances.for_graph(other_graph, 'v1', path)
+    other.ensure(pts[:1])
+    assert other.size == (1, 1)
+
+
+def test_roads_corrupt_dist_cache_is_recomputed(tmp_path):
+    _, graph = _grid()
+    pts = [p for b in _grid_batches() for p in b]
+    path = tmp_path / 'grid.dist.npz'
+    first = rd.RoadDistances.for_graph(graph, 'v1', str(path))
+    first.ensure(pts)
+    data = path.read_bytes()
+    for broken in (data[:len(data) // 2], b'', b'not a zip'):     # обрыв записи, пустой, мусор
+        path.write_bytes(broken)
+        again = rd.RoadDistances.for_graph(graph, 'v1', str(path))
+        again.ensure(pts)                                          # без исключения — пересчёт
+        assert not again.failed and again.size == first.size
+        _assert_same_km(pts, first, again)
+
+
+def _write_pbf(path, nodes, ways):
+    osmium = pytest.importorskip('osmium')
+    from osmium.osm.mutable import Node, Way
+    w = osmium.SimpleWriter(str(path))
+    for i, (lat, lon) in sorted(nodes.items()):
+        w.add_node(Node(id=i + 1, location=(lon, lat)))
+    for k, (refs, tags) in enumerate(ways):
+        w.add_way(Way(id=100 + k, nodes=[r + 1 for r in refs], tags=tags))
+    w.close()
+
+
+def test_roads_graph_from_map_and_corrupt_graph_cache(tmp_path, monkeypatch):
+    path = tmp_path / 'tiny.osm.pbf'
+    _write_pbf(path, RN, [([1, 0], {'highway': 'primary', 'oneway': '-1'}),
+                          ([1, 2], {'highway': 'residential'}),
+                          ([2, 0], {'highway': 'residential'}),
+                          ([0, 2], {'highway': 'footway'}),             # не для машины
+                          ([3, 4], {'highway': 'service', 'motorcar': 'no'})])
+    version = rd.map_signature(str(path))
+    graph = rd.load_graph(str(path), version)
+    assert graph.n_nodes == 3 and len(graph.src) == 5             # 0 → 1, 1 ↔ 2, 2 ↔ 0
+    graph_path = tmp_path / 'tiny.graph.npz'
+    cached = rd.RoadGraph.load(str(graph_path), version)
+    assert cached is not None and cached.identity == graph.identity
+    assert rd.RoadGraph.stored_identity(str(graph_path), version) == graph.identity
+    assert rd.RoadGraph.load(str(graph_path), 'other-map') is None
+    graph_path.write_bytes(graph_path.read_bytes()[:1000])        # обрыв записи
+    assert rd.RoadGraph.load(str(graph_path), version) is None
+    assert rd.RoadGraph.stored_identity(str(graph_path), version) is None
+    assert rd.load_graph(str(path), version).identity == graph.identity   # пересобран из карты
+    assert rd.RoadGraph.load(str(graph_path), version) is not None
+
+    def disk_full(*args, **kwargs):
+        raise OSError('нет места')
+
+    monkeypatch.setattr(rd, '_save_npz', disk_full)               # кэш не записался — граф в памяти
+    assert rd.load_graph(str(path), version, rebuild=True).identity == graph.identity
+    roads = rd.RoadProvider(str(path)).get()
+    roads.ensure([RN[0], RN[1]])
+    assert not roads.failed and roads.km(RN[0], RN[1]) is not None
+
+
+def test_route_metrics_and_order_use_road_km_without_detour():
+    r = _roads()
+    norms = replace(NORMS, roads=r)
+    km, minutes = ev.route_metrics([RN[1], RN[2]], RN[0], norms)
+    legs = r.km(RN[0], RN[1]) + r.km(RN[1], RN[2]) + r.km(RN[2], RN[0])
+    assert km == pytest.approx(legs)                              # ×1,3 не применяется
+    assert minutes == pytest.approx(legs / 45.0 * 60)             # вне радиуса города — область
+    assert norms.distance == norms.km and NORMS.distance is None
+    assert sorted(tsp.route_order([RN[1], RN[2]], RN[0], norms.distance)) == [0, 1]
+
+
+def test_truck_km_by_roads_no_double_detour():
+    r = _roads()
+    day = pl.PlanDay(1, 1, 1, ())
+    truck = ev.TruckSpec('C', None, 3000.0, 20.0)
+    kw = dict(home=None, manager_l100=9.0, truck=truck, workday=True)
+    visits = [_visit(1, RN[2], p=1.0)]
+    road = ev.evaluate_day(day, visits, norms=replace(NORMS, roads=r), depot=RN[0], **kw).truck
+    assert road.km == pytest.approx(2 * r.km(RN[0], RN[2]))
+    far_depot = _west(RN[0], 0.7)                                 # склад не привязан — участки по прямой
+    fallback = ev.evaluate_day(day, visits, norms=replace(NORMS, roads=r), depot=far_depot, **kw).truck
+    assert fallback.km == pytest.approx(2 * geo.haversine_km(far_depot, RN[2]) * 1.3)
+    straight = ev.evaluate_day(day, visits, norms=NORMS, depot=RN[0], **kw).truck
+    assert straight.km == pytest.approx(2 * geo.haversine_km(RN[0], RN[2]) * 1.3)
+    one = tsp.delivery_km(RN[0], [(RN[1], 10.0), (RN[2], 10.0)], None, r.km)
+    assert one.km == pytest.approx(r.km(RN[0], RN[1]) + r.km(RN[1], RN[2]) + r.km(RN[2], RN[0]))
+
+
+def test_overview_without_roads_unchanged_and_warns():
+    snap, bundle = make_snapshot(), _truck_bundle()
+    ov = ev.build_overview(snap, bundle)
+    assert ov['distance_source'] == 'straight'
+    assert [w for w in ov['warnings'] if w['code'].startswith('roads')] == [
+        {'code': 'roads_off', 'link': '/routes/settings#norms',
+         'text': 'Карта дорог не подключена — км считаются по прямой с поправкой на извилистость'}]
+    # все точки плана дальше 0,5 км от дорог — те же км, что по прямой × извилистость
+    far = ev.build_overview(snap, bundle, roads=_roads())
+    assert far['distance_source'] == 'roads'
+    n = len({rd.point_key(p) for p in ev.plan_points(snap, bundle, {})})
+    assert [w['text'] for w in far['warnings'] if w['code'] == 'roads_unsnapped'] == [
+        f'{n} точек плана дальше 0,5 км от дорог на карте — км до них считаются по прямой с '
+        f'поправкой на извилистость']
+    assert far['totals'] == ov['totals'] and far['managers'] == ov['managers']
+
+
+def _double_roads(snap, bundle):
+    """«Дороги» ровно вдвое длиннее прямой: полный граф на точках плана с весом 2 × haversine."""
+    pts = sorted({rd.point_key(p) for p in ev.plan_points(snap, bundle, {})})
+    pairs = [(i, j) for i in range(len(pts)) for j in range(len(pts)) if i != j]
+    graph = rd.RoadGraph.from_arrays([p[0] for p in pts], [p[1] for p in pts],
+                                     [i for i, _ in pairs], [j for _, j in pairs],
+                                     [2 * geo.haversine_km(pts[i], pts[j]) for i, j in pairs])
+    return rd.RoadDistances.for_graph(graph)
+
+
+def test_overview_uses_road_km_for_managers_and_trucks():
+    """Дороги ровно вдвое длиннее прямой: км менеджеров и машин — ×2 вместо ×1,3 (без двойной
+    извилистости), порядок объезда тот же."""
+    snap, bundle = make_snapshot(), _truck_bundle()
+    roads = _double_roads(snap, bundle)
+    straight = ev.evaluate_plan(snap, bundle)
+    road = ev.evaluate_plan(snap, bundle, roads=roads)
+    detour = straight.norms.detour
+    assert road.norms.roads is roads and straight.norms.roads is None
+    for a, wk in straight.weeks.items():
+        assert road.weeks[a].manager_km == pytest.approx(wk.manager_km * 2 / detour, rel=1e-6)
+        assert road.weeks[a].truck_km == pytest.approx(wk.truck_km * 2 / detour, rel=1e-6)
+    ov = ev.build_overview(snap, bundle, roads=roads)
+    assert ov['distance_source'] == 'roads'
+    assert not [w for w in ov['warnings'] if w['code'].startswith('roads')]
+
+
+def test_api_overview_cache_key_includes_road_map(client):
+    from types import SimpleNamespace as NS
+    d = client.get('/api/routes/overview').get_json()
+    assert d['distance_source'] == 'straight' and 'roads_off' in {w['code'] for w in d['warnings']}
+    state = client.application.extensions['route_optimizer']
+    state.roads = NS(get=_roads)                                  # «подложили карту»
+    d = client.get('/api/routes/overview').get_json()
+    assert d['from_cache'] is False and d['distance_source'] == 'roads'
+    assert client.get('/api/routes/overview').get_json()['from_cache'] is True
+    assert client.get('/api/routes/plan-export').status_code == 200
+
+
+def test_road_provider_missing_or_broken_map(tmp_path, client):
+    path = tmp_path / 'armenia.osm.pbf'
+    provider = rd.RoadProvider(str(path))
+    assert provider.get() is None                                 # карты нет — по прямой
+    path.write_bytes(b'not a pbf')
+    roads = provider.get()
+    assert roads is not None and roads.version == rd.map_signature(str(path))
+    assert rd.roads_version(roads) == roads.version
+    roads.ensure([RN[0], RN[1]])                                  # граф не собрался — не падаем
+    assert roads.failed and roads.km(RN[0], RN[1]) is None
+    assert provider.get() is roads                                # до смены файла карты — тот же сбой
+    assert rd.roads_version(None) == 'off' and rd.roads_version(roads) == roads.version + ':failed'
+    # карта есть, но не загрузилась — по прямой, и это не «карта не подключена»
+    ov = ev.build_overview(make_snapshot(), _bundle(), roads=roads)
+    codes = {w['code']: w['text'] for w in ov['warnings']}
+    assert ov['distance_source'] == 'straight' and 'roads_off' not in codes
+    assert codes['roads_failed'].startswith('Карту дорог не удалось загрузить')
+    client.application.extensions['route_optimizer'].roads = provider
+    d = client.get('/api/routes/overview').get_json()
+    assert d['success'] and d['distance_source'] == 'straight'
+    assert 'roads_failed' in {w['code'] for w in d['warnings']}
+    assert client.get('/api/routes/plan-export').status_code == 200
+
+
+def test_delivery_heavy_round_trips_use_distance_function():
+    depot, a = (40.15, 44.46), (40.20, 44.50)
+    heavy = tsp.delivery_km(depot, [(a, 250.0)], 100.0, lambda p, q: 7.0)
+    assert heavy == tsp.Delivery(2 * 7.0 * 3, 3)                  # ceil(250 / 100) = 3 поездки туда-обратно
+
+
+def test_optimizer_matrices_and_run_use_road_km():
+    snap, bundle = make_snapshot(), _truck_bundle()
+    roads = _double_roads(snap, bundle)
+    norms = replace(ev.Norms.from_settings(bundle.settings), roads=roads)
+    home, depot = (40.18, 44.51), bundle.depot
+    pts = [(40.18, 44.50), (40.19, 44.52), (40.20, 44.55)]
+    km, mins, tkm = opt._matrices(home, pts, depot, norms)
+    allp = [home, *pts]
+    for i in range(4):
+        for j in range(4):
+            if i != j:
+                assert km[i][j] == pytest.approx(2 * geo.haversine_km(allp[i], allp[j]), rel=1e-6)
+    for j in range(1, 4):
+        assert tkm[0][j] == pytest.approx(2 * geo.haversine_km(depot, allp[j]), rel=1e-6)
+    straight = opt.run_optimization(snap, bundle, None, [], {})
+    road = opt.run_optimization(snap, bundle, None, [], {}, roads=roads)
+    detour = straight.before.norms.detour
+    assert road.before.norms.roads is roads and road.after.norms.roads is roads
+    for a, wk in straight.before.weeks.items():
+        assert road.before.weeks[a].manager_km == pytest.approx(wk.manager_km * 2 / detour, rel=1e-6)
+        assert road.before.weeks[a].truck_km == pytest.approx(wk.truck_km * 2 / detour, rel=1e-6)

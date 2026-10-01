@@ -22,6 +22,7 @@ from flask import Blueprint, Response, current_app, jsonify, render_template, re
 
 from . import evaluate, optimize
 from .erp import ErpError
+from .roads import RoadDistances, RoadProvider, roads_version
 from .snapshot import ResultCache, Snapshot, SnapshotCache
 from .store import DEFAULT_MANAGER_FUEL, Bundle, Decision, Store, StoreError, validate_payload
 
@@ -98,6 +99,7 @@ class RoutesState:
     snapshots: SnapshotCache
     results: ResultCache
     jobs: OptimizeJobs = field(default_factory=OptimizeJobs)
+    roads: RoadProvider | None = None     # None — карты дорог нет, км по прямой
 
 
 def _now() -> str:
@@ -166,10 +168,14 @@ def api_overview() -> Any:
     state = _state()
     snap, stale = state.snapshots.get(refresh=request.args.get('refresh') == '1', allow_stale=True)
     bundle = state.store.load()
-    # калибровку — до кэша оценки: get_or_compute держит lock, вложенный вызов бы завис
+    # калибровку и расстояния по дорогам — до кэша оценки: get_or_compute держит lock (вложенный
+    # вызов бы завис, а первый расчёт матрицы дорог — минуты — задержал бы остальные запросы)
     calib = _calibration(state, snap, bundle.settings)
+    roads = _roads(state, snap, bundle)
+    # версия карты — в ключе: появилась или обновилась карта — оценка пересчитывается
     payload, from_cache = state.results.get_or_compute(
-        ('overview', snap.id, bundle.fingerprint()), lambda: _compute_overview(snap, bundle, calib))
+        ('overview', snap.id, bundle.fingerprint(), roads_version(roads)),
+        lambda: _compute_overview(snap, bundle, calib, roads))
     body = {'success': True, **payload, 'from_cache': from_cache}
     if stale:   # кэшированный payload не трогаем — предупреждение только в этом ответе
         body['warnings'] = [{'code': 'erp_stale', 'link': None,
@@ -178,13 +184,23 @@ def api_overview() -> Any:
     return jsonify(body)
 
 
-def _compute_overview(snap: Snapshot, bundle: Bundle,
-                      calib: evaluate.Calibration) -> dict[str, Any]:
+def _compute_overview(snap: Snapshot, bundle: Bundle, calib: evaluate.Calibration,
+                      roads: RoadDistances | None) -> dict[str, Any]:
     started = time.perf_counter()
-    payload = evaluate.build_overview(snap, bundle, calib)
+    payload = evaluate.build_overview(snap, bundle, calib, roads)
     payload['generated_at'] = datetime.now().isoformat(timespec='seconds')
     logger.info('[Routes] Оценка плана за %.1f с (снимок %s)', time.perf_counter() - started, snap.id)
     return payload
+
+
+def _roads(state: RoutesState, snap: Snapshot, bundle: Bundle) -> RoadDistances | None:
+    """Расстояния по дорогам для плана снимка: все точки плана — одним расчётом (первый раз —
+    минуты, дальше кэш на диске). Карты нет — None; граф не собрался — roads.failed (оценка
+    считает по прямой и предупреждает roads_failed)."""
+    roads = state.roads.get() if state.roads is not None else None
+    if roads is not None:
+        roads.ensure(evaluate.plan_points(snap, bundle, {}))
+    return roads
 
 
 def _calibration(state: RoutesState, snap: Snapshot, s: dict[str, Any]) -> evaluate.Calibration:
@@ -456,13 +472,14 @@ def _run_optimize(state: RoutesState, job: OptimizeJob, snap: Snapshot, bundle: 
     """Тело фоновой задачи: ошибки — в job.error по-русски, подробности — только в журнал."""
     try:
         calib = _calibration(state, snap, bundle.settings)
+        roads = _roads(state, snap, bundle)
 
         def progress(done: int, total: int, agent_code: str | None) -> None:
             with state.jobs.lock:
                 job.done, job.total, job.agent_code = done, total, agent_code
 
         outcome = optimize.run_optimization(snap, bundle, calib, decisions, job.params,
-                                            progress=progress)
+                                            progress=progress, roads=roads)
         try:
             state.store.save_scenario(job.id, job.created_by, job.params, outcome.result)
         except Exception:   # расчёт готов — отдаём его; не сохранился только след в таблице scenario
@@ -601,7 +618,13 @@ def api_plan_export() -> Any:
     state = _state()
     snap, _ = state.snapshots.cached()
     bundle = state.store.load()
+    # порядок внутри дня — той же функцией расстояния, что и в оценке (по дорогам, если есть карта)
+    roads = _roads(state, snap, bundle)
+    distance = None
+    if roads is not None and not roads.failed:
+        calib = _calibration(state, snap, bundle.settings)
+        distance = evaluate.Norms.from_settings(bundle.settings, calib, roads).distance
     # принята только частота — в план идёт тот шаблон, что был в предложении
     body = optimize.plan_export(snap, bundle, _live_decisions(state, snap),
-                                optimize.proposals_of(_last_result(state)))
+                                optimize.proposals_of(_last_result(state)), distance)
     return jsonify({'success': True, 'generated_at': _now(), **body})

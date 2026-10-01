@@ -27,8 +27,15 @@
         none: ['b-none', 'нет', 'координаты нет — на карте не показан'],
     };
     const HOME_SRC = { manual: 'указан вручную', gps_auto: 'найден по GPS автоматически', none: 'не известен' };
+    // Статус клиента по давности последнего заказа (§15): [класс бейджа, подпись]; active — без бейджа
+    const STATUS = {
+        dormant: ['b-warn', 'перестал покупать'], lost: ['b-danger', 'давно не покупает'], never: ['b-danger', 'ни одного заказа за год'],
+        new: ['b-ok', 'новый'], seasonal: ['b-none', 'сезонный'],
+    };
+    const SILENT = new Set(['dormant', 'lost', 'never']);   // в ожидаемой выручке их нет (λ = 0)
+    const RISK_PAGE = 30;                                  // строк «Клиентов под риском» до «Показать все»
     const NORM_SRC = { manual: 'задано вручную', gps: 'по GPS-трекам', default: 'по умолчанию' };
-    const ORDER_NOTE = 'Порядок объезда — самый короткий внутри дня (так менеджеры фактически ездят по GPS). № в ERP — порядок в шаблоне.';
+    const ORDER_NOTE = 'Порядок объезда — самый короткий внутри дня (так менеджеры фактически ездят по GPS). № в ERP — порядок в маршруте ERP.';
     const P_POOR = 0.5;       // «бедный рейс»: P(0 < выручка рейса < порога) ≥ 0.5
     const P_OVERFLOW = 0.2;   // «не влезет летом»: P(груз пикового дня > тоннажа) ≥ 0.2
     const YEREVAN = [40.1792, 44.4991];
@@ -54,6 +61,9 @@
         return fmt(Math.round(n));
     }
     const pct = (p) => num(p) === null ? '—' : Math.round(num(p) * 100) + '%';
+    const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+    // «2026-07-02» → «02.07.2026»
+    const dateRu = (s) => (typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s.slice(8, 10) + '.' + s.slice(5, 7) + '.' + s.slice(0, 4) : '—');
     function hm(minutes) {
         const n = num(minutes);
         if (n === null) return '—';
@@ -112,6 +122,7 @@
         sel: null,                    // выбранный день: {agent, week, weekday}
         map: null, mapFailed: false, custLayer: null, routeLayer: null, baseLayer: null,
         loading: false, lastRefresh: false,
+        riskSort: 'rev', riskAll: false,   // «Клиенты под риском»: сортировка и «Показать все»
     };
 
     // Липкое меню дашборда переносится на 2–3 строки — прокрутка к разделу учитывает его высоту
@@ -211,6 +222,8 @@
             m.days.forEach(day => { day.stops = Array.isArray(day.stops) ? day.stops : []; });
         });
         d.customers = (d.customers && typeof d.customers === 'object') ? d.customers : {};
+        d.at_risk_customers = Array.isArray(d.at_risk_customers)
+            ? d.at_risk_customers.filter(x => x && typeof x === 'object') : [];
         d.totals = (d.totals && typeof d.totals === 'object') ? d.totals : {};
         d.warnings = Array.isArray(d.warnings) ? d.warnings : [];
         d.norms = (d.norms && typeof d.norms === 'object') ? d.norms : {};
@@ -265,7 +278,7 @@
     function dayTitle(day) {
         return (WD_FULL[day.weekday] || ('день ' + day.weekday)) + (state.idx.W > 1 ? ', неделя ' + (day.week || 1) : '');
     }
-    const dayShort = (day) => (WD_SHORT[day.weekday] || '?') + (state.idx.W > 1 ? ' нед.' + (day.week || 1) : '');
+    const dayShort = (day) => (WD_SHORT[day.weekday] || '?') + (state.idx.W > 1 ? ' (' + (day.week || 1) + '-я неделя)' : '');
     const mgrName = (m) => (m && m.name) ? String(m.name) : ('Менеджер ' + (m ? m.agent_id : ''));
 
     // Ожидаемая выручка ОДНОГО визита зимой. Сервер отдаёт её сам (rev_visit_low); если поля нет —
@@ -289,17 +302,89 @@
         return di === undefined ? null : { mi, di, m, day: m.days[di] };
     }
 
+    // ---------- Узлы DOM и подсказки «?» ----------
+    // Узел DOM: строки-дети становятся текстом (никакого innerHTML с данными)
+    function h(tag, props, ...kids) {
+        const el = document.createElement(tag);
+        Object.entries(props || {}).forEach(([k, v]) => {
+            if (v === null || v === undefined || v === false) return;
+            if (k === 'class') el.className = v;
+            else if (k === 'text') el.textContent = v;
+            else if (k === 'dataset') Object.assign(el.dataset, v);
+            else if (typeof v === 'boolean') el[k] = v;
+            else el.setAttribute(k, String(v));
+        });
+        kids.flat(Infinity).forEach(c => {
+            if (c === null || c === undefined || c === false) return;
+            el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+        });
+        return el;
+    }
+    const icon = (cls) => h('i', { class: 'fas ' + cls, 'aria-hidden': 'true' });
+    const mark = (text, tone) => h('b', { class: 'rt-mark' + (tone > 0 ? ' is-good' : (tone < 0 ? ' is-bad' : (tone === 'warn' ? ' is-warn' : ''))), text });
+    // Кнопка «?» раскрывает пояснение рядом (toggletip): клик — показать/скрыть, Esc и клик мимо — скрыть
+    let tipSeq = 0;
+    function tip(text, label) {
+        const id = 'rtTip' + (++tipSeq);
+        return h('span', { class: 'rt-tip' },
+            h('button', { type: 'button', class: 'rt-tip-btn', 'aria-expanded': 'false', 'aria-controls': id,
+                'aria-label': 'Пояснение' + (label ? ': ' + label : '') }, '?'),
+            h('span', { class: 'rt-tip-bubble', id, role: 'note', hidden: true }, text));
+    }
+    function setTip(btn, open) {
+        const bubble = document.getElementById(btn.getAttribute('aria-controls'));
+        if (!bubble) return;
+        btn.setAttribute('aria-expanded', String(open));
+        bubble.hidden = !open;
+        if (open) placeTip(btn, bubble);
+    }
+    function placeTip(btn, bubble) {
+        const r = btn.getBoundingClientRect(), vw = document.documentElement.clientWidth, vh = window.innerHeight;
+        bubble.style.left = '0px';
+        bubble.style.top = '0px';
+        const w = bubble.offsetWidth, ht = bubble.offsetHeight;
+        const left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, vw - w - 8));
+        let top = r.bottom + 8;
+        if (top + ht > vh - 8 && r.top - ht - 8 > 8) top = r.top - ht - 8;
+        bubble.style.left = Math.round(left) + 'px';
+        bubble.style.top = Math.round(top) + 'px';
+    }
+    const openTips = () => [...document.querySelectorAll('#rtOverview .rt-tip-btn[aria-expanded="true"]')];
+    function initTips() {
+        $('rtOverview').addEventListener('click', (e) => {
+            const b = e.target.closest('.rt-tip-btn');
+            if (!b) return;
+            e.preventDefault();
+            const open = b.getAttribute('aria-expanded') !== 'true';
+            openTips().forEach(x => { if (x !== b) setTip(x, false); });
+            setTip(b, open);
+        });
+        document.addEventListener('click', (e) => { if (!e.target.closest('.rt-tip')) openTips().forEach(x => setTip(x, false)); });
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            const list = openTips();
+            if (!list.length) return;
+            list.forEach(x => setTip(x, false));
+            list[0].focus();
+        });
+        const follow = () => openTips().forEach(b => placeTip(b, document.getElementById(b.getAttribute('aria-controls'))));
+        window.addEventListener('scroll', follow, { passive: true });
+        window.addEventListener('resize', follow);
+    }
+
     // ---------- Рендер ----------
     function render() {
         $('rtBody').classList.remove('d-none');
         renderFresh();
-        renderChecklist();
-        renderTiles();
+        renderMain();
+        renderTodo();
+        renderKpis();
         renderMapTools();
         renderLegend();
         renderHeat();
         renderHeatLegend();
         renderSeason();
+        renderRisk();
         ensureMap();
         renderMap();
         renderSide();
@@ -309,168 +394,241 @@
         const d = state.data, el = $('rtFresh');
         const t = parseTime(d.data_as_of) || parseTime(d.generated_at);
         const stale = d.warnings.some(w => w && w.code === 'erp_stale');
-        el.textContent = 'ДАННЫЕ НА ' + (t ? t.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—')
-            + (stale ? ' · ERP НЕДОСТУПНА' : (d.from_cache ? ' · ИЗ ПАМЯТИ' : ''));
-        el.classList.toggle('is-cache', !!d.from_cache || stale);
+        el.textContent = (stale ? 'ERP недоступна — данные на ' : 'Данные ERP на ')
+            + (t ? t.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
+        el.className = 'rt-pill' + (stale ? ' is-warn' : (d.from_cache ? ' is-cache' : ''));
         el.title = stale
             ? 'ERP сейчас недоступна — показаны прежние данные. «Обновить» попробует прочитать ERP снова.'
             : (d.from_cache
                 ? 'Расчёт взят из памяти сервера. «Обновить» — прочитать ERP заново и пересчитать.'
                 : 'Только что прочитано из ERP');
-        el.classList.remove('d-none');
     }
 
-    function renderChecklist() {
-        const list = $('rtCheckList');
-        list.textContent = '';
-        const warns = (Array.isArray(state.data.warnings) ? state.data.warnings : []).filter(w => w && w.text);
-        // сначала то, что настраивается (есть ссылка), потом справочные пометки
-        const items = warns.map(w => ({ text: String(w.text), link: safeLink(w.link) }))
-            .sort((a, b) => (b.link ? 1 : 0) - (a.link ? 1 : 0));
-        const anyLink = items.some(w => w.link);
-        items.forEach(w => {
-            const li = document.createElement('li');
-            li.className = 'rt-check-item' + (w.link ? '' : ' is-info');
-            const box = document.createElement('span');
-            box.className = 'rt-check-box';
-            box.setAttribute('aria-hidden', 'true');
-            const txt = document.createElement('span');
-            txt.className = 'txt';
-            txt.textContent = w.text;
-            li.append(box, txt);
-            if (w.link) {
-                const a = document.createElement('a');
-                a.className = 'rt-btn rt-btn-ghost rt-btn-sm rt-check-go';
-                a.href = w.link;
-                a.setAttribute('aria-label', 'Настроить: ' + w.text);
-                a.innerHTML = 'Настроить <i class="fas fa-arrow-right" aria-hidden="true"></i>';
-                li.appendChild(a);
-            }
-            list.appendChild(li);
-        });
-        $('rtCheckTitle').textContent = anyLink ? 'Что осталось настроить' : 'Обратите внимание';
-        document.querySelector('#rtChecklist .rt-check-note').textContent = anyLink
-            ? 'без этого часть цифр не посчитана' : 'как читать цифры ниже';
-        $('rtChecklist').classList.toggle('d-none', !items.length);
+    // Порог дня словами: «100 000 драм»; без настроек — «дневной нормы»
+    const minDayText = () => { const v = num((state.settings || {}).min_day_revenue); return v !== null ? fmt(v) + NB + 'драм' : 'дневной нормы'; };
+    // «≈ 4 450» — большое число округлено, чтобы не казалось точным до километра
+    function approx(v) {
+        const n = num(v);
+        if (n === null) return '—';
+        const a = Math.abs(n), step = a >= 1000 ? 50 : (a >= 100 ? 10 : 1);
+        return fmt(Math.round(n / step) * step);
     }
-
-    // Плитка: val/sub — только числа и статичный текст (без строк из ERP)
-    function tile(id, o) {
-        const el = $(id);
-        el.className = 'rt-tile' + (o.cls ? ' ' + o.cls : '');
-        const v = el.querySelector('[data-v]');
-        v.innerHTML = o.val;
-        v.classList.toggle('is-empty', !!o.empty);
-        el.querySelector('[data-s]').innerHTML = o.sub || '';
-        if (o.title) el.title = o.title; else el.removeAttribute('title');
-    }
-
-    function renderTiles() {
-        const d = state.data, t = d.totals, s = state.settings || {};
-        const minDay = num(s.min_day_revenue), minTrip = num(s.min_trip_revenue), dayH = workHours(s);
+    const moneyApprox = (v) => { const n = num(v); if (n === null) return '—'; const a = Math.abs(n); return a >= 1e6 ? fmt(n / 1e6, 1) + NB + 'млн' : fmt(Math.round(n / (a >= 1e4 ? 1000 : 100)) * (a >= 1e4 ? 1000 : 100)); };
+    const lowMonths = () => monthsText((state.data.season || {}).low_months);
+    const lostMonths = () => {
+        const d = num((state.settings || {}).lost_min_days);
+        const m = Math.max(1, Math.round((d !== null ? d : 120) / 30));
+        return m === 1 ? 'месяца' : m + ' месяцев';
+    };
+    const weakTip = () => 'Считаем по заказам зимы (' + lowMonths() + ') — это самое слабое время года. День слабый, если он скорее всего '
+        + 'не наберёт ' + minDayText() + ' (шанс меньше 50%). Считаются рабочие дни всех менеджеров в расчёте за неделю.';
+    const kmTip = () => 'Из дома к магазинам дня в самом коротком порядке и обратно домой, по плану из ERP. '
+        + (state.data.distance_source === 'roads' ? 'Км — по дорогам на карте.' : 'Км — по прямой с поправкой на извилистость дорог.');
+    const truckIssue = () => {
+        const d = state.data;
         const noDepot = !d.depot || num(d.depot.lat) === null || num(d.depot.lon) === null;
         const noTrucks = !d.managers.some(m => m.included !== false && m.truck);
-        const truckHint = noDepot ? setLink('depot', 'укажите склад')
-            : (noTrucks ? setLink('trucks', 'назначьте машины менеджерам') : null);
+        return noDepot ? { hash: 'depot', text: 'укажите склад и машины' } : (noTrucks ? { hash: 'trucks', text: 'укажите машины менеджеров' } : null);
+    };
 
-        // 1. Слабые дни зимой: N из M дают меньше 100 000 драм
+    // «Главное сейчас»: 2–4 предложения человеческим языком
+    function renderMain() {
+        const t = state.data.totals, list = $('rtMainList'), note = $('rtMainNote');
+        list.textContent = '';
+        note.textContent = '';
+        note.hidden = true;
+        const items = [];
         const below = num(t.days_below_min), total = num(t.days_total);
-        if (below === null || !total) {
-            tile('kpiWeak', { val: '—', empty: true, sub: 'в плане нет дней с визитами' });
-        } else {
-            tile('kpiWeak', {
-                cls: below > 0 ? 't-danger' : 't-ok',
-                val: fmt(below) + ' <small>из ' + fmt(total) + '</small>',
-                sub: genDays(total) + ' ' + (below % 10 === 1 && below % 100 !== 11 ? 'даёт' : 'дают') + ' меньше '
-                    + (minDay !== null ? fmt(minDay) + NB + 'драм' : 'дневной нормы'),
-                title: num(t.avg_p_day_ge_min) !== null
-                    ? 'В среднем день набирает норму с шансом ' + pct(t.avg_p_day_ge_min) + '. Слабый день — шанс меньше 50%. Считаем по зимним заказам.'
-                    : 'Слабый день — шанс набрать норму меньше 50%. Считаем по зимним заказам.',
-            });
+        if (below !== null && total) {
+            items.push(below > 0
+                ? { tone: -1, nodes: [mark(fmt(below) + ' из ' + fmt(total), -1), ' рабочих ' + genDays(total) + ' менеджеров зимой ' + (below % 10 === 1 && below % 100 !== 11 ? 'приносит' : 'приносят')
+                    + ' меньше ' + minDayText()], tip: weakTip(), label: 'слабые дни' }
+                : { tone: 1, nodes: ['все ' + fmt(total) + ' рабочих ' + genDays(total) + ' зимой приносят ', mark('не меньше ' + minDayText(), 1)], tip: weakTip(), label: 'слабые дни' });
         }
-
-        // 2. Бедные рейсы: ≈N в неделю меньше 150 000
-        const poor = num(t.trips_poor_week);
-        if (truckHint) {
-            tile('kpiPoor', { val: '—', empty: true, sub: 'не посчитаны: ' + truckHint });
-        } else if (poor === null) {
-            tile('kpiPoor', { val: '—', empty: true, sub: 'нет данных о рейсах' });
-        } else {
-            tile('kpiPoor', {
-                cls: poor >= 1 ? 't-warn' : 't-ok',
-                val: '≈' + fmt(poor, poor < 10 ? 1 : 0),
-                sub: 'рейсов в неделю везут меньше ' + (minTrip !== null ? fmt(minTrip) + NB + 'драм' : 'нормы рейса'),
-                title: 'Бедный рейс — машина везёт заказов меньше нормы рейса. Считаем по зимним заказам.',
-            });
+        const mk = num(t.manager_km_week);
+        if (mk !== null) {
+            const extra = [num(t.manager_liters_week) !== null ? '≈' + NB + approx(t.manager_liters_week) + NB + 'л топлива' : '',
+                num(t.manager_amd_week) !== null ? '≈' + NB + moneyApprox(t.manager_amd_week) + NB + 'драм' : ''].filter(Boolean);
+            items.push({ tone: 0, nodes: ['менеджеры проезжают ', mark('≈' + NB + approx(mk) + NB + 'км в неделю', 0), extra.length ? ' (' + extra.join(', ') + ')' : ''],
+                tip: kmTip(), label: 'километры' });
         }
+        const r = t.at_risk;
+        if (r && typeof r === 'object') {
+            const n = (num(r.dormant) || 0) + (num(r.lost) || 0) + (num(r.never) || 0);
+            const rev = (num(r.dormant_rev_year) || 0) + (num(r.lost_rev_year) || 0);
+            if (n) {
+                items.push({ tone: 'warn', nodes: [mark(fmt(n) + ' ' + plural(n, 'магазин перестал', 'магазина перестали', 'магазинов перестали') + ' покупать', 'warn'),
+                    rev ? ' (раньше брали ≈' + NB + moneyShort(rev) + NB + 'драм в год)' : '', ' — менеджеры ездят к ним впустую'],
+                    tip: 'Перестал покупать — заказывал регулярно, но давно не заказывает. Список — ниже, в «Магазины под риском». '
+                        + 'Оптимизация предложит тех, кто не покупает больше ' + lostMonths() + ', убрать из маршрута, остальных — посещать реже; решаете вы.',
+                    label: 'магазины под риском' });
+            }
+        }
+        items.forEach(it => list.append(h('li', { class: it.tone === 'warn' ? 'is-warn' : (it.tone > 0 ? 'is-good' : (it.tone < 0 ? 'is-bad' : 'is-same')) },
+            h('span', { class: 'ico', 'aria-hidden': 'true' },
+                icon(it.tone === 'warn' ? 'fa-store-slash' : (it.tone > 0 ? 'fa-check' : (it.tone < 0 ? 'fa-triangle-exclamation' : 'fa-car')))),
+            h('span', { class: 'txt' }, it.nodes, ' ', tip(it.tip, it.label)))));
 
-        // 3. Дизель грузовиков: N л/нед (≈ драм)
-        const tl = num(t.truck_liters_week), tamd = num(t.truck_amd_week);
-        if (truckHint) {
-            tile('kpiDiesel', { cls: 't-acc', val: '—', empty: true, sub: 'не посчитан: ' + truckHint });
+        // Грузовики — одной строкой: что указать, чтобы посчитать дизель, или сколько его уходит
+        const issue = truckIssue(), tl = num(t.truck_liters_week), tamd = num(t.truck_amd_week);
+        if (issue) {
+            note.append(icon('fa-truck'), h('span', {}, 'Чтобы посчитать дизель грузовиков, ' + issue.text + ' — ',
+                h('a', { href: '/routes/settings#' + issue.hash, text: 'в настройках' }), '.'));
         } else if (tl === null) {
-            tile('kpiDiesel', { cls: 't-acc', val: '—', empty: true, sub: setLink('trucks', 'укажите расход машин') });
+            note.append(icon('fa-truck'), h('span', {}, 'Грузовики проезжают ≈' + NB + approx(t.truck_km_week) + NB + 'км в неделю. Дизель посчитан не для всех машин: '
+                + 'у части не указан расход или менеджеру не назначена машина — ', h('a', { href: '/routes/settings#trucks', text: 'заполнить в настройках' }), '.'));
         } else {
-            tile('kpiDiesel', {
-                cls: 't-acc',
-                val: fmt(tl) + ' <small>л/нед</small>',
-                sub: fmt(t.truck_km_week) + NB + 'км · ' + (tamd !== null ? '≈' + NB + '<b>' + fmt(tamd) + '</b>' + NB + 'драм' : setLink('norms', 'укажите цену дизеля')),
-                title: 'Считаем по среднему году: сколько заказов в среднем везут машины.',
-            });
+            note.append(icon('fa-truck'), h('span', {}, 'Грузовики проезжают ≈' + NB + approx(t.truck_km_week) + NB + 'км в неделю и тратят ≈' + NB + approx(tl) + NB + 'л дизеля'
+                + (tamd !== null ? ' (≈' + NB + moneyApprox(tamd) + NB + 'драм)' : '') + '.'));
         }
+        note.hidden = false;
+    }
 
-        // 4. Пробег менеджеров: N км/нед
-        const mk = num(t.manager_km_week), ml = num(t.manager_liters_week), mamd = num(t.manager_amd_week);
-        if (mk === null) {
-            tile('kpiMgrKm', { val: '—', empty: true, sub: 'нет маршрутов с координатами' });
-        } else {
-            tile('kpiMgrKm', {
-                val: fmt(mk) + ' <small>км/нед</small>',
-                sub: (ml !== null ? fmt(ml) + NB + 'л топлива' : 'расход не посчитан')
-                    + (mamd !== null ? ' · ≈' + NB + '<b>' + fmt(mamd) + '</b>' + NB + 'драм' : (ml !== null ? ' · ' + setLink('norms', 'укажите цены топлива') : '')),
-                title: 'По плану: дом → клиенты дня в самом коротком порядке объезда → дом, по прямой с поправкой на извилистость дорог.',
-            });
+    // «Что ещё настроить»: не больше трёх строк, главное первым, у каждой одна кнопка; технические — под «ещё N»
+    function todoOf(w) {
+        const d = state.data, text = String(w.text || '');
+        const inc = d.managers.filter(m => m.included !== false);
+        const n = (re) => { const m = re.exec(text); return m ? m[1] : null; };
+        switch (w.code) {
+            case 'erp_stale': return null;   // уже в плашке у заголовка
+            case 'no_depot': return { p: 1, hash: 'depot', btn: 'Указать склад', text: 'Не указан склад — без него не посчитать рейсы машин и дизель.' };
+            case 'no_truck': {
+                const k = inc.filter(m => !m.truck).length;
+                return { p: 2, hash: 'trucks', btn: 'Указать машины',
+                    text: 'У ' + k + ' из ' + inc.length + ' ' + plural(inc.length, 'менеджера', 'менеджеров', 'менеджеров') + ' не указана машина — их рейсы и дизель не посчитаны.' };
+            }
+            case 'truck_no_capacity': case 'truck_no_fuel': {
+                const trucks = new Map();
+                inc.forEach(m => { if (m.truck) trucks.set(String(m.truck.car_code || m.truck.name), m.truck); });
+                const k = [...trucks.values()].filter(tr => num(tr.capacity_kg) === null || num(tr.fuel_l_per_100km) === null).length;
+                return { p: 3, key: 'truck_data', hash: 'trucks', btn: 'Заполнить машины',
+                    text: 'У ' + (k || 'части') + ' ' + plural(k || 5, 'машины', 'машин', 'машин') + ' не указан тоннаж или расход — не посчитаны загрузка и литры дизеля.' };
+            }
+            case 'no_fuel_prices': return { p: 4, hash: 'fuel', btn: 'Указать цены',
+                text: 'Не указаны цены топлива' + (n(/\(([^)]+)\)/) ? ' (' + n(/\(([^)]+)\)/) + ')' : '') + ' — расходы на топливо в драмах не посчитаны.' };
+            case 'no_home': {
+                const k = inc.filter(m => !hasHome(m)).length || n(/у (\d+)/) || 1;
+                return { p: 5, hash: 'managers', btn: 'Указать дом',
+                    text: 'Не известен дом у ' + k + ' ' + plural(k, 'менеджера', 'менеджеров', 'менеджеров') + ' — день считается от первого магазина, а не от дома.' };
+            }
+            case 'season_unknown': return { p: 6, hash: 'season', btn: 'Задать сезоны', text: 'Мало продаж, чтобы найти зиму и лето самим, — задайте месяцы вручную.' };
+            case 'season_empty': return { p: 6, hash: 'season', btn: 'Проверить сезоны', text: 'Зима и лето подобраны по запасному правилу — проверьте месяцы.' };
+            case 'inactive_templates': {
+                const codes = n(/\):\s*([^—]+?)\s+—/);
+                return { p: 7, hash: 'managers', btn: 'Проверить', info: true,
+                    text: (codes ? 'Менеджер ' + codes : 'Часть менеджеров') + ' без заказов и визитов 8 недель — не входит в расчёт.' };
+            }
+            case 'off_days': {
+                const k = n(/(\d+)/);
+                return { p: 8, info: true, text: (k ? k + ' ' + plural(+k, 'день', 'дня', 'дней') : 'Часть дней') + ' в плане — в нерабочий день (воскресенье). Оптимизация предложит перенести эти визиты.' };
+            }
+            case 'coords_missing': {
+                const m = /у (\d+) из (\d+)/.exec(text);
+                return { p: 9, info: true, text: m ? 'У ' + m[1] + ' из ' + m[2] + ' визитов нет координат — их километры не посчитаны.' : 'У части визитов нет координат — их километры не посчитаны.' };
+            }
+            case 'roads_off': case 'roads_failed':
+                return { p: 10, info: true, text: 'Километры считаются по прямой с поправкой на извилистость дорог — карта дорог не подключена.' };
+            case 'roads_unsnapped': return { p: 10, info: true, text: 'Несколько магазинов далеко от дорог на карте — до них километры считаются по прямой.' };
+            case 'templates_multiweek_unverified': return { p: 11, info: true, text: 'В ERP есть маршруты не на одну неделю — программа развернула их по допущению.' };
+            default: {
+                const link = safeLink(w.link);
+                return text ? { p: 12, info: !link, link, btn: 'Настроить', text } : null;
+            }
         }
+    }
 
-        // 5. Загрузка машин летом: N%
-        const load = num(t.avg_load_pct_peak);
-        if (truckHint) {
-            tile('kpiLoad', { val: '—', empty: true, sub: 'не посчитана: ' + truckHint });
-        } else if (load === null) {
-            tile('kpiLoad', { val: '—', empty: true, sub: setLink('trucks', 'укажите тоннаж машин') });
-        } else {
-            tile('kpiLoad', {
-                cls: load > 100 ? 't-danger' : (load >= 85 ? 't-warn' : ''),
-                val: fmt(load) + '<small>%</small>',
-                sub: 'тоннажа в загруженный летний день' + (load > 100 ? ' — нужен второй рейс' : ''),
-                title: 'Летний пик: так заполнена машина в тяжёлый день (9 из 10 летних дней — легче).',
-            });
-        }
-
-        // 6. Рабочий день: у клиентов: план X ч · факт по GPS Y ч; плюс паузы без визитов ≈ Z ч в день;
-        // с дорогой из дома — W ч из 9. План «у клиентов» (визиты и дорога между ними) сравнивается с работой
-        // по GPS-треку — ездой и стоянками от первого визита до конца последнего; паузы (разрывы трека дольше
-        // 15 минут) — отдельно. С дорогой из дома — с рабочим днём из настроек (по нему же переработка).
-        // Переработка по плану красит плитку красным; факт GPS в ней остаётся нейтральным (.rt-tile-fact).
-        const pw = num(t.avg_plan_work_hours), ph = num(t.avg_plan_hours);
-        const fw = num(t.avg_fact_work_hours), fp = num(t.avg_fact_pause_hours);
-        const small = (s) => '<small>' + s + '</small>';
-        const hours = (v) => fmt(v, 1) + small(NB + 'ч');
-        tile('kpiDay', {
-            cls: (ph !== null && dayH !== null && ph > dayH) ? 't-danger' : '',
-            val: (pw === null && fw === null) ? '—'
-                : small('у' + NB + 'клиентов:') + ' ' + small('план') + NB + (pw !== null ? hours(pw) : '—') + small(NB + '·') + ' '
-                  + '<span class="rt-tile-fact">' + small('факт' + NB + 'по' + NB + 'GPS') + NB
-                  + (fw !== null ? hours(fw) : small('нет' + NB + 'данных')) + '</span>',
-            empty: pw === null && fw === null,
-            sub: [fp !== null ? 'плюс паузы без визитов ≈' + NB + '<b>' + fmt(fp, 1) + NB + 'ч</b> в день' : '',
-                  ph !== null ? 'с дорогой из дома — <b>' + fmt(ph, 1) + NB + 'ч</b>' + (dayH !== null ? ' из ' + fmt(dayH, 1) : '') : '']
-                .filter(Boolean).join('; ') || 'нет данных',
-            title: 'У клиентов — визиты и дорога между ними, от первого клиента до последнего. Факт по GPS — то же по треку: '
-                + 'езда и стоянки у магазинов, в среднем за день (последние 45 дней). '
-                + 'Паузы — отрезки дольше 15 минут без GPS-отметок и без визитов: перерывы, простои или выключенный телефон. '
-                + 'С дорогой из дома — ещё путь к первому клиенту и домой от последнего: это сравнивается с рабочим днём из настроек.',
+    function renderTodo() {
+        const seen = new Set(), items = [];
+        state.data.warnings.filter(w => w && (w.text || w.code)).forEach(w => {
+            const it = todoOf(w);
+            if (!it) return;
+            const key = it.key || w.code || it.text;
+            if (seen.has(key)) return;
+            seen.add(key);
+            items.push(it);
         });
+        items.sort((a, b) => (a.info ? 1 : 0) - (b.info ? 1 : 0) || a.p - b.p);
+        const main = items.filter(x => !x.info).slice(0, 3), rest = items.filter(x => !main.includes(x));
+        const row = (x) => h('li', { class: 'rt-todo-item' + (x.info ? ' is-info' : '') },
+            h('span', { class: 'txt', text: x.text }),
+            (x.hash || x.link) && x.btn ? h('a', { class: 'rt-btn rt-btn-ghost rt-btn-sm', href: x.link || '/routes/settings#' + x.hash,
+                'aria-label': x.btn + ': ' + x.text }, x.btn, icon('fa-arrow-right')) : null);
+        const list = $('rtTodoList'), more = $('rtTodoMoreList');
+        list.textContent = '';
+        more.textContent = '';
+        main.forEach(x => list.append(row(x)));
+        rest.forEach(x => more.append(row(x)));
+        $('rtTodoMore').hidden = !rest.length;
+        $('rtTodoMoreSum').textContent = main.length ? 'ещё ' + rest.length + ' — для справки' : 'Для справки: ' + rest.length;
+        if (!main.length && rest.length) $('rtTodoMore').open = false;
+        $('rtTodoTitle').lastChild.textContent = main.length ? 'Что ещё настроить' : 'Для справки';
+        $('rtTodo').classList.toggle('d-none', !items.length);
+    }
+
+    // Четыре крупных показателя; нет данных — короткая фраза и кнопка, без прочерков
+    function kpi(o) {
+        return h('div', { class: 'rt-kpi' + (o.tone ? ' is-' + o.tone : '') },
+            h('div', { class: 'rt-kpi-label' }, h('span', { text: o.label }), o.tip ? tip(o.tip, o.label) : null),
+            o.now !== null ? h('div', { class: 'rt-kpi-val' }, h('span', { class: 'now', text: o.now }), o.unit ? h('span', { class: 'unit', text: o.unit }) : null) : null,
+            h('div', { class: 'rt-kpi-sub' }, o.sub));
+    }
+
+    function renderKpis() {
+        const t = state.data.totals, s = state.settings || {}, box = $('rtKpis');
+        box.textContent = '';
+        const dayH = workHours(s);
+        const below = num(t.days_below_min), total = num(t.days_total);
+        box.append(below === null || !total
+            ? kpi({ label: 'Слабые дни зимой', now: null, sub: 'В плане нет дней с визитами — посчитать нечего.' })
+            : kpi({ label: 'Слабые дни зимой', tone: below > 0 ? 'bad' : 'good', now: fmt(below), unit: 'из ' + fmt(total), tip: weakTip(),
+                sub: [genDays(total) + ', когда выручка меньше ' + minDayText()] }));
+
+        const mk = num(t.manager_km_week), ml = num(t.manager_liters_week), mamd = num(t.manager_amd_week);
+        box.append(mk === null
+            ? kpi({ label: 'Км менеджеров в неделю', now: null, sub: 'Нет маршрутов с координатами — посчитать нечего.' })
+            : kpi({ label: 'Км менеджеров в неделю', now: fmt(mk), unit: 'км', tip: kmTip(),
+                sub: ml === null ? 'расход топлива не посчитан'
+                    : ['≈' + NB + fmt(ml) + NB + 'л топлива', mamd !== null ? [' · ≈' + NB, h('b', { text: fmt(mamd) }), NB + 'драм']
+                        : [' · ', h('a', { href: '/routes/settings#fuel', text: 'укажите цены топлива' })]] }));
+
+        const r = t.at_risk;
+        if (!r || typeof r !== 'object') {
+            box.append(kpi({ label: 'Магазины под риском', now: null, sub: 'Кто перестал покупать, не посчитано.' }));
+        } else {
+            const dormant = num(r.dormant) || 0, lost = (num(r.lost) || 0) + (num(r.never) || 0), n = dormant + lost;
+            const rev = (num(r.dormant_rev_year) || 0) + (num(r.lost_rev_year) || 0);
+            box.append(!n
+                ? kpi({ label: 'Магазины под риском', tone: 'good', now: '0', sub: 'все магазины покупают как обычно' })
+                : kpi({ label: 'Магазины под риском', tone: 'warn', now: fmt(n), unit: plural(n, 'магазин', 'магазина', 'магазинов'),
+                    tip: 'Перестал покупать — давно не заказывает, хотя раньше заказывал регулярно. Не покупает больше ' + lostMonths()
+                        + ' или ни разу за год — оптимизация предложит убрать из маршрута.',
+                    sub: [fmt(dormant) + ' перестали покупать недавно, ' + fmt(lost) + ' — давно', rev ? ' · брали ≈' + NB + moneyShort(rev) + NB + 'драм в год' : '',
+                        h('br'), h('a', { class: 'rt-linkbtn', href: '#rtRiskSection', text: 'Показать список' })] }));
+        }
+
+        const pw = num(t.avg_plan_work_hours), ph = num(t.avg_plan_hours), fw = num(t.avg_fact_work_hours), fp = num(t.avg_fact_pause_hours);
+        const over = ph !== null && dayH !== null && ph > dayH;
+        box.append(pw === null && fw === null
+            ? kpi({ label: 'Рабочий день у магазинов', now: null, sub: 'Нет данных о визитах — посчитать нечего.' })
+            : kpi({ label: 'Рабочий день у магазинов', tone: over ? 'bad' : null, now: pw !== null ? fmt(pw, 1) : fmt(fw, 1),
+                unit: pw !== null ? 'ч по плану' : 'ч по GPS',
+                tip: 'По плану — визиты и дорога между магазинами, в среднем за день. На деле — то же по GPS за последние 45 дней. '
+                    + 'Перерывы — отрезки дольше 15 минут без движения и без визитов.',
+                sub: [pw !== null && fw !== null ? ['на деле по GPS — ', h('b', { text: fmt(fw, 1) + NB + 'ч' })] : (fw === null ? 'данных GPS нет' : ''),
+                    fp !== null ? ', ещё ≈' + NB + fmt(fp, 1) + NB + 'ч перерывов' : '',
+                    ph !== null ? [h('br'), 'с дорогой из дома по плану — ' + fmt(ph, 1) + NB + 'ч' + (dayH !== null ? ' из ' + fmt(dayH, 1) : '')] : ''] }));
+    }
+
+    // Правила статуса словами — с порогами из настроек (без настроек — по умолчанию, §15)
+    function riskRules() {
+        const s = state.settings || {};
+        const v = (k, def) => (num(s[k]) !== null ? num(s[k]) : def);
+        return {
+            dormant: 'перестал покупать — не заказывает больше ' + fmt(v('dormant_min_days', 45)) + NB + 'дней и в ' + fmt(v('dormant_mult', 3), 1)
+                + ' раза дольше, чем обычно между заказами: оптимизация предложит визит раз в 2 недели, чтобы попробовать вернуть',
+            lost: 'давно не покупает — больше ' + fmt(v('lost_min_days', 120)) + NB + 'дней или ни одного заказа за год: оптимизация предложит убрать из маршрута, решаете вы',
+            other: 'новые магазины (первый заказ меньше ' + fmt(v('status_new_days', 60)) + NB + 'дней назад) и сезонные (покупают летом) сюда не попадают',
+        };
     }
 
     // ---------- Фильтры карты ----------
@@ -540,6 +698,7 @@
             '<span class="rt-lg rt-lg-static"><span class="rt-lg-ico" style="background:#eef1f6;color:#0c0f14" aria-hidden="true"><i class="fas fa-warehouse"></i></span>Склад</span>' +
             '<span class="rt-lg rt-lg-static"><span class="rt-lg-ico" style="border:1.5px solid #a7b0c0;border-radius:50%" aria-hidden="true"><i class="fas fa-house"></i></span>Дом менеджера</span>' +
             '<span class="rt-lg rt-lg-static"><span class="rt-lg-ico" aria-hidden="true"><span class="rt-dot" style="background:#a7b0c0;width:7px;height:7px"></span></span>точка крупнее — магазин крупнее</span>');
+        box.insertAdjacentHTML('afterbegin', '<span class="rt-lg-cap">Цвет точки — менеджер (нажмите, чтобы оставить только его):</span>');
         syncFilterUI();
     }
 
@@ -615,7 +774,7 @@
         const f = filteredCustomers();
         const s = resolveSel();
         $('rtNoCoords').innerHTML = s ? ''
-            : (f.noGeo ? 'нет на карте: <b>' + fmt(f.noGeo) + '</b> ' + plural(f.noGeo, 'клиент', 'клиента', 'клиентов') + ' без координат'
+            : (f.noGeo ? 'нет на карте: <b>' + fmt(f.noGeo) + '</b> ' + plural(f.noGeo, 'магазин', 'магазина', 'магазинов') + ' без координат'
                 : (f.pts.length ? 'все клиенты на карте' : ''));
         updateRouteBar(s);
         if (!state.map) return;
@@ -662,6 +821,23 @@
         return [...by.entries()].map(([mi, ds]) => mgrName(state.data.managers[mi]) + ': ' + ds.join(', ')).join(' · ');
     }
 
+    // Статус словами: «не покупает 60 дней (обычно заказывал раз в 7 дней)», «ни одного заказа за год»
+    function statusNote(c) {
+        if (!c) return '';
+        if (c.status === 'never') return 'ни одного заказа за год';
+        if (c.status === 'new') return 'первый заказ недавно — не трогаем';
+        if (c.status === 'seasonal') return 'покупает в пик, сейчас не пик';
+        const days = num(c.silent_days), every = num(c.usual_interval_days);
+        if (days === null) return '';
+        return 'не покупает ' + fmt(days) + NB + plural(days, 'день', 'дня', 'дней') + (every !== null ? ' (обычно заказывал раз в ' + fmt(Math.round(every)) + NB + plural(Math.round(every), 'день', 'дня', 'дней') + ')' : '');
+    }
+
+    // Бейдж статуса клиента (затих, потерян, …); у обычного клиента — пусто. Текст — только наш
+    function statusBadge(c) {
+        const st = c && STATUS[c.status];
+        return st ? '<span class="rt-badge rt-st ' + st[0] + '" title="' + esc(cap(statusNote(c))) + '">' + st[1] + '</span>' : '';
+    }
+
     // coordSource — источник точки этого визита (маршрут дня), иначе — точки клиента на карте
     function popupHTML(c, visits, coordSource) {
         const row = (k, v) => '<div class="rt-pop-row"><span>' + esc(k) + '</span><b>' + esc(v) + '</b></div>';
@@ -677,10 +853,13 @@
         });
         const src = COORD[coordSource || c.coord_source] || COORD.none;
         const opw = num(c.orders_per_week_year);
+        const st = STATUS[c.status];
         return '<div class="rt-pop">'
             + '<div class="rt-pop-t">' + esc(c.name || 'Клиент') + '</div>'
             + '<div class="rt-pop-s">' + esc([c.code, c.area, c.group].filter(Boolean).join(' · ')) + '</div>'
             + mg + '<hr>'
+            + (st ? row('Статус', st[1] + ' — ' + statusNote(c)) : '')
+            + (SILENT.has(c.status) && num(c.rev_week_year_hist) ? row('Брал в неделю', moneyShort(c.rev_week_year_hist)) : '')
             + row('Размер', SIZE[c.size] || '—')
             + row('Точка на карте', src[2])
             + row('Заказывает', opw === null ? '—' : fmt(opw, 1) + ' ' + unitWord(opw, 'раз', 'раза', 'раз') + ' в неделю')
@@ -791,7 +970,7 @@
     function rowHTML(m, mi) {
         const tags = [];
         if (m.included === false) tags.push('<span class="rt-badge" title="Менеджер не входит в итоги. Включить можно в настройках.">не в расчёте</span>');
-        if ((m.flags || []).includes('inactive')) tags.push('<span class="rt-badge b-warn" title="Нет заказов и визитов за 8 недель — по умолчанию шаблон не входит в расчёт">без работы 8 нед.</span>');
+        if ((m.flags || []).includes('inactive')) tags.push('<span class="rt-badge b-warn" title="Нет заказов и визитов за 8 недель — по умолчанию менеджер не входит в расчёт">без работы 8 недель</span>');
         if (!hasHome(m)) tags.push('<span class="rt-badge b-warn" title="Дом неизвестен — день считается от первого клиента до последнего">нет дома</span>');
         if (!m.truck) tags.push('<span class="rt-badge" title="Машина не назначена — рейсы не посчитаны">нет машины</span>');
         if ((m.flags || []).includes('multi_truck')) tags.push('<span class="rt-badge" title="Менеджера возят несколько машин — считаем по самой большой">2+ машины</span>');
@@ -810,7 +989,7 @@
         });
         const wk = m.week || {};
         tr += '<td class="rt-heat-week"><span class="v">' + moneyShort(wk.revenue_low) + '</span>'
-            + '<span class="s">' + fmt(wk.visits) + ' виз · ' + fmt(wk.manager_km) + ' км</span></td>';
+            + '<span class="s">' + fmt(wk.visits) + ' ' + plural(num(wk.visits) || 0, 'визит', 'визита', 'визитов') + ' · ' + fmt(wk.manager_km) + ' км</span></td>';
         return tr + '</tr>';
     }
 
@@ -836,7 +1015,7 @@
             + ', ожидаемая выручка зимой ' + money(day.revenue_low_exp)
             + ', шанс набрать ' + (minDay !== null ? fmt(minDay) + ' драм' : 'норму') + ' — ' + pct(f.p);
         if (f.over) t += '; переработка ' + hm(day.overtime_minutes);
-        if (f.poor) t += '; бедный рейс';
+        if (f.poor) t += '; машина скорее всего повезёт мало заказов';
         if (f.load) t += '; летом груз может не влезть в машину';
         if (f.off) t += '; день вне рабочей недели';
         return t + '.';
@@ -855,7 +1034,7 @@
         return '<button' + attrs + '>'
             + '<span class="rt-hc-top"><span class="rt-hc-v">' + moneyShort(day.revenue_low_exp) + '</span>'
             + (icons ? '<span class="rt-hc-flags" aria-hidden="true">' + icons + '</span>' : '') + '</span>'
-            + '<span class="rt-hc-sub">' + fmt(f.visits) + ' виз · ' + pct(f.p) + '</span></button>';
+            + '<span class="rt-hc-sub">' + fmt(f.visits) + ' ' + plural(f.visits, 'визит', 'визита', 'визитов') + ' · ' + pct(f.p) + '</span></button>';
     }
 
     function markSelectedCell() {
@@ -908,12 +1087,12 @@
         const minDay = num((state.settings || {}).min_day_revenue);
         const item = (sw, txt) => '<span class="rt-hl-item">' + sw + '<span>' + txt + '</span></span>';
         $('rtHeatLegend').innerHTML =
-            '<span>Шанс набрать ' + (minDay !== null ? fmt(minDay) + ' драм' : 'дневную норму') + ' зимой:</span>'
+            '<span>Цвет клетки — хватит ли заказов зимой, чтобы день принёс ' + (minDay !== null ? fmt(minDay) + '&nbsp;драм' : 'дневную норму') + ':</span>'
             + item('<span class="rt-hl-sw s-bad" aria-hidden="true"></span>', 'меньше 50%')
             + item('<span class="rt-hl-sw s-mid" aria-hidden="true"></span>', '50–80%')
             + item('<span class="rt-hl-sw s-good" aria-hidden="true"></span>', '80% и больше')
             + item('<i class="fas fa-clock f-over" aria-hidden="true"></i>', 'переработка')
-            + item('<i class="fas fa-truck f-poor" aria-hidden="true"></i>', 'бедный рейс')
+            + item('<i class="fas fa-truck f-poor" aria-hidden="true"></i>', 'машина повезёт мало заказов')
             + item('<i class="fas fa-weight-hanging f-load" aria-hidden="true"></i>', 'летом может не влезть в машину')
             + item('<span class="rt-hl-sw" style="background:transparent;border:1px dashed #7c8698" aria-hidden="true"></span>', 'день вне рабочей недели');
     }
@@ -965,10 +1144,10 @@
         return '<div class="rt-side-empty">'
             + '<span class="ico" aria-hidden="true"><i class="fas fa-hand-pointer"></i></span>'
             + '<h3>Выберите день менеджера</h3>'
-            + '<p class="mb-0">Нажмите на клетку в таблице «Неделя по дням» ниже — здесь появятся клиенты этого дня в порядке объезда, '
+            + '<p class="mb-0">Нажмите на клетку в таблице «По дням недели» ниже — здесь появятся магазины этого дня в порядке объезда, '
             + 'а на карте — маршрут от дома и обратно.</p>'
             + '<div class="facts">'
-            + '<span>Клиентов на карте</span><b>' + fmt(f.pts.length) + '</b>'
+            + '<span>Магазинов на карте</span><b>' + fmt(f.pts.length) + '</b>'
             + '<span>Без координат</span><b>' + fmt(f.noGeo) + '</b>'
             + '<span>Менеджеров</span><b>' + fmt(f.managers) + '</b>'
             + '<span>Визитов за цикл</span><b>' + fmt(f.visits) + '</b>'
@@ -999,7 +1178,7 @@
         const badge = (cls, ico, txt) => '<span class="rt-badge ' + cls + '"><i class="fas ' + ico + '" aria-hidden="true"></i>' + txt + '</span>';
         const badges = [];
         if (f.over) badges.push(badge('b-danger', 'fa-clock', 'переработка ' + hm(day.overtime_minutes)));
-        if (f.poor) badges.push(badge('b-warn', 'fa-truck', 'бедный рейс · шанс ' + pct(tr.p_poor_trip)));
+        if (f.poor) badges.push(badge('b-warn', 'fa-truck', 'машина повезёт мало заказов · шанс ' + pct(tr.p_poor_trip)));
         if (f.load) badges.push(badge('b-warn', 'fa-weight-hanging', 'летом может не влезть · ' + pct(tr.p_overflow_peak)));
         if ((day.flags || []).includes('no_home') || !hasHome(m)) badges.push(badge('', 'fa-house', 'дом неизвестен — от первого клиента'));
         if (f.off) badges.push(badge('', 'fa-moon', 'день вне рабочей недели'));
@@ -1064,6 +1243,7 @@
                 + '<td class="no">' + (num(st.erp_rownum) === null ? '—' : fmt(st.erp_rownum)) + '</td>'
                 + '<td class="l nm"><span class="n">' + esc(c ? (c.name || 'Клиент') : 'Клиент ' + id) + '</span>'
                 + '<span class="c">' + esc(c ? (c.code || '') : String(id)) + '</span>'
+                + statusBadge(c)                                                                     // §15: затих, потерян, …
                 + '<span class="rt-dl-meta">' + badge + '<span>' + size + '</span></span></td>'   // телефон: вместо двух колонок
                 + '<td class="l rt-dl-wide">' + badge + '</td>'
                 + '<td class="l rt-dl-wide">' + size + '</td>'
@@ -1072,15 +1252,17 @@
                 + '<td>' + fmt(c && c.avg_order_kg) + '</td></tr>';
         }).join('');
         const noGeo = stops.filter(st => !stopGeo(st)).length;
+        const silent = stops.some(st => SILENT.has((custOf(st.customer_id) || {}).status));
         const list = stops.length
             ? '<div class="rt-daylist-wrap"><table class="rt-daylist"><caption class="rt-sr-only">Клиенты дня в порядке объезда</caption><thead><tr>'
               + '<th scope="col" class="wrap" title="Порядок объезда — самый короткий внутри дня">№ объезда</th>'
-              + '<th scope="col" class="wrap" title="Порядок в шаблоне маршрута ERP">№ в ERP</th>'
+              + '<th scope="col" class="wrap" title="Порядок в маршруте ERP">№ в ERP</th>'
               + '<th scope="col" class="l">Клиент</th><th scope="col" class="l rt-dl-wide">Точка</th><th scope="col" class="l rt-dl-wide">Размер</th>'
               + '<th scope="col" title="Шанс, что клиент закажет при визите зимой">Шанс</th>'
               + '<th scope="col" title="Ожидаемая выручка этого визита зимой, драм">Выручка</th>'
               + '<th scope="col" title="Средний вес заказа за год">Кг</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
-              + '<p class="rt-day-note mt-2 mb-0">' + ORDER_NOTE + ' Шанс и выручка — зимние: шанс заказа при визите × средний зимний заказ. Кг — средний заказ за год.</p>'
+              + '<p class="rt-day-note mt-2 mb-0">' + ORDER_NOTE + ' Шанс и выручка — зимние: шанс заказа при визите × средний зимний заказ. Кг — средний заказ за год.'
+              + (silent ? ' У затихших и потерянных шанс и выручка — 0: они перестали покупать.' : '') + '</p>'
             : '<p class="rt-empty px-0">В этот день по плану визитов нет.</p>';
 
         return '<div class="rt-day" id="rtDay">'
@@ -1094,7 +1276,7 @@
             + (badges.length ? '<div class="rt-day-flags">' + badges.join('') + '</div>' : '')
             + '<div class="rt-day-stats">' + stats + '</div>'
             + (noGeo ? '<p class="rt-day-note"><i class="fas fa-location-crosshairs" aria-hidden="true"></i>'
-                + fmt(noGeo) + ' ' + plural(noGeo, 'клиент', 'клиента', 'клиентов') + ' без координат — на карте их нет, линия идёт мимо.</p>' : '')
+                + fmt(noGeo) + ' ' + plural(noGeo, 'магазин', 'магазина', 'магазинов') + ' без координат — на карте их нет, линия идёт мимо.</p>' : '')
             + list
             + '<div class="rt-day-actions"><button type="button" class="rt-btn rt-btn-ghost" id="rtDayBack">'
             + '<i class="fas fa-arrow-left" aria-hidden="true"></i>К таблице</button></div>'
@@ -1138,7 +1320,7 @@
             card('is-low', 'fa-snowflake', 'Зима — низкий сезон', monthsText(low), [
                 'выручка дня и шанс набрать ' + (minDay !== null ? fmt(minDay) + ' драм' : 'норму дня'),
                 'слабые дни в таблице',
-                'бедные рейсы (меньше ' + (minTrip !== null ? fmt(minTrip) + ' драм' : 'нормы рейса') + ')',
+                'рейсы, где машина везёт меньше ' + (minTrip !== null ? fmt(minTrip) + ' драм' : 'нормы рейса'),
             ])
             + card('is-peak', 'fa-sun', 'Лето — пик', monthsText(peak), [
                 'загрузка машин',
@@ -1152,7 +1334,7 @@
             + card('is-plan', 'fa-route', 'Маршрут дня', 'от сезона не зависит', [
                 'пробег и топливо менеджеров',
                 'часы рабочего дня',
-                'клиенты — из шаблонов ERP, порядок объезда — самый короткий внутри дня',
+                'магазины дня — из маршрутов ERP, порядок объезда — самый короткий внутри дня',
             ].concat(normsItems(state.data.norms)));
         $('rtSeasonSrc').textContent = se.source === 'manual'
             ? 'Месяцы сезонов заданы вручную в настройках.'
@@ -1173,10 +1355,66 @@
         }).join('');
     }
 
+    // ---------- Клиенты под риском (§15) ----------
+    // Сортировка: по выручке за год (сколько брал) или по дням без заказов; «без заказов за год» — как
+    // самые долгие. Строки — только через esc(): имена и коды — из ERP
+    function riskSorted() {
+        const rows = state.data.at_risk_customers.slice();
+        const days = (x) => (num(x.silent_days) === null ? Infinity : num(x.silent_days));
+        const rev = (x) => num(x.rev_year_hist) || 0;
+        rows.sort(state.riskSort === 'days'
+            ? (a, b) => days(b) - days(a) || rev(b) - rev(a) || num(a.customer_id) - num(b.customer_id)
+            : (a, b) => rev(b) - rev(a) || days(b) - days(a) || num(a.customer_id) - num(b.customer_id));
+        return rows;
+    }
+
+    function riskRowHTML(x) {
+        const st = STATUS[x.status] || ['', String(x.status || '—')];
+        const mgrs = (Array.isArray(x.managers) ? x.managers : []).filter(m => m && typeof m === 'object');
+        const every = num(x.usual_interval_days);
+        const td = (label, cls, html) => '<td data-label="' + label + '"' + (cls ? ' class="' + cls + '"' : '') + '>' + html + '</td>';
+        return '<tr>'
+            + '<td class="rt-cell-name"><span class="n">' + esc(x.name || 'Клиент ' + x.customer_id) + '</span>'
+            + '<span class="c">' + esc(x.code || '') + '</span></td>'
+            + td('Менеджер', 'rt-risk-mgr', mgrs.length ? mgrs.map(m => '<span>' + esc(m.name || m.code || '')
+                + (m.name && m.code ? ' <small>' + esc(m.code) + '</small>' : '') + '</span>').join('') : '—')
+            + td('Что случилось', '', '<span class="rt-badge rt-st ' + st[0] + '">' + esc(st[1]) + '</span>')
+            + td('Не покупает, дней', 'w-half num', num(x.silent_days) === null ? '—' : fmt(x.silent_days))
+            + td('Обычно заказывал', 'w-half num', every === null ? '—' : 'раз в ' + fmt(Math.round(every)) + NB + plural(Math.round(every), 'день', 'дня', 'дней'))
+            + td('Заказов за год', 'w-half num', fmt(x.orders_year))
+            + td('Купил за год', 'w-half num', money(x.rev_year_hist))
+            + td('Последний заказ', 'w-half', dateRu(x.last_order_date))
+            + '</tr>';
+    }
+
+    function renderRisk() {
+        const rows = riskSorted(), n = rows.length, rules = riskRules();
+        const r = state.data.totals.at_risk || {};
+        const lead = $('rtRiskLead');
+        lead.textContent = '';
+        lead.append('Раньше заказывали регулярно, а теперь не заказывают. Оптимизация предложит тех, кто перестал покупать недавно, '
+            + 'посещать раз в 2 недели, а тех, кто не покупает давно, — убрать из маршрута. Решаете вы. ',
+            tip(cap(rules.dormant) + '. ' + cap(rules.lost) + '. ' + cap(rules.other) + '. Здесь — магазины менеджеров, которые в расчёте.', 'как отбираются магазины'));
+        $('rtRiskSort').querySelectorAll('.rt-chip').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.sort === state.riskSort)));
+        const shown = state.riskAll ? rows : rows.slice(0, RISK_PAGE);
+        $('rtRiskBody').innerHTML = shown.map(riskRowHTML).join('');
+        $('rtRiskEmpty').classList.toggle('d-none', n > 0);
+        document.querySelector('.rt-risk-scroll').classList.toggle('d-none', !n);
+        $('rtRiskSort').hidden = n < 2;
+        const rev = (num(r.dormant_rev_year) || 0) + (num(r.lost_rev_year) || 0);
+        $('rtRiskCount').textContent = n ? fmt(n) + ' ' + plural(n, 'магазин', 'магазина', 'магазинов')
+            + (rev ? ' · брали ' + moneyShort(rev) + NB + 'драм в год' : '') : '';
+        const more = $('rtRiskMore');
+        more.hidden = n <= RISK_PAGE;
+        more.textContent = state.riskAll ? 'Свернуть список' : 'Показать все (' + fmt(n) + ')';
+        more.setAttribute('aria-expanded', String(state.riskAll));
+    }
+
     // ---------- События ----------
     document.addEventListener('DOMContentLoaded', () => {
         loadFilter();
         syncNavOffset();
+        initTips();
         window.addEventListener('resize', syncNavOffset);
         $('rtRefreshBtn').addEventListener('click', () => load(true));
         $('rtRetryBtn').addEventListener('click', () => load(state.lastRefresh));
@@ -1190,6 +1428,18 @@
         heat.addEventListener('keydown', onHeatKey);
         $('rtSide').addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && state.sel) { e.preventDefault(); closeDay(true); }
+        });
+        $('rtRiskSort').addEventListener('click', (e) => {
+            const b = e.target.closest('.rt-chip');
+            if (!b || !state.data || b.dataset.sort === state.riskSort) return;
+            state.riskSort = b.dataset.sort === 'days' ? 'days' : 'rev';
+            renderRisk();
+            announce(state.riskSort === 'days' ? 'Список отсортирован по дням без заказов' : 'Список отсортирован по выручке за год');
+        });
+        $('rtRiskMore').addEventListener('click', () => {
+            if (!state.data) return;
+            state.riskAll = !state.riskAll;
+            renderRisk();
         });
         load(false);
     });

@@ -34,6 +34,9 @@ instance/
 # DBHub MCP server config (contains DB credentials)
 dbhub.toml
 
+# Карта дорог OpenStreetMap и кэши графа/расстояний (раздел «Маршруты», этап 5)
+data/roads/
+
 # Database
 *.db
 *.db-wal

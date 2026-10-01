@@ -23,7 +23,7 @@ from typing import Any, Callable, Collection, Mapping
 from .geo import ARMENIA_LAT, ARMENIA_LON, Point, is_valid_point
 from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -41,11 +41,20 @@ _DECISION_TABLE_V3 = (
 # Схема 4: from_value — шаблон или частота клиента, от которых принималось решение (решение
 # привязано к плану: план в ERP изменился — решение устарело); retired — решение отработало
 # (исполнено в ERP или отклонённое предложение потеряло смысл) и больше не действует.
-_DECISION_COLUMNS = (
+# Как была создана миграцией 3 → 4 (история миграций не меняется).
+_DECISION_COLUMNS_V4 = (
     "customer_id INTEGER NOT NULL, agent_id INTEGER NOT NULL, "
     "kind TEXT NOT NULL CHECK (kind IN ('pattern', 'freq')), value TEXT NOT NULL, from_value TEXT, "
     "status TEXT NOT NULL CHECK (status IN ('accepted', 'rejected', 'retired')), "
     "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (customer_id, agent_id, kind, value)")
+# Схема 5 (§15): вид решения remove — убрать клиента из маршрута менеджера (value — REMOVE_VALUE,
+# from_value — шаблон клиента, от которого принято решение).
+_DECISION_COLUMNS = (
+    "customer_id INTEGER NOT NULL, agent_id INTEGER NOT NULL, "
+    "kind TEXT NOT NULL CHECK (kind IN ('pattern', 'freq', 'remove')), value TEXT NOT NULL, "
+    "from_value TEXT, status TEXT NOT NULL CHECK (status IN ('accepted', 'rejected', 'retired')), "
+    "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (customer_id, agent_id, kind, value)")
+_DECISION_COPY = 'customer_id, agent_id, kind, value, from_value, status, updated_at, updated_by'
 _DECISION_TABLE = f"CREATE TABLE IF NOT EXISTS decision({_DECISION_COLUMNS})"
 # на клиента у менеджера — не больше одного принятого решения каждого вида
 _DECISION_ONE_ACCEPTED = (
@@ -90,7 +99,7 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     # принятого решения вида на клиента у менеджера (дубли, если есть, — кроме последнего
     # по времени) и частичный уникальный индекс, который это гарантирует дальше.
     3: (
-        f"CREATE TABLE decision_v4({_DECISION_COLUMNS})",
+        f"CREATE TABLE decision_v4({_DECISION_COLUMNS_V4})",
         "INSERT INTO decision_v4(customer_id, agent_id, kind, value, from_value, status, updated_at, "
         "updated_by) SELECT customer_id, agent_id, kind, value, NULL, status, updated_at, updated_by "
         "FROM decision",
@@ -101,6 +110,16 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "AND d2.agent_id = decision.agent_id AND d2.kind = decision.kind "
         "AND (d2.updated_at > decision.updated_at "
         "OR (d2.updated_at = decision.updated_at AND d2.value > decision.value)))",
+        _DECISION_ONE_ACCEPTED,
+    ),
+    # 4 → 5 (§15): вид решения remove. SQLite не меняет CHECK столбца — пересобираем таблицу: все
+    # строки переносятся как есть; частичный уникальный индекс уходит вместе со старой таблицей и
+    # создаётся заново (на клиента у менеджера — одно принятое решение каждого вида, и remove тоже).
+    4: (
+        f"CREATE TABLE decision_v5({_DECISION_COLUMNS})",
+        f"INSERT INTO decision_v5({_DECISION_COPY}) SELECT {_DECISION_COPY} FROM decision",
+        "DROP TABLE decision",
+        "ALTER TABLE decision_v5 RENAME TO decision",
         _DECISION_ONE_ACCEPTED,
     ),
 }
@@ -148,6 +167,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'abc_a_share': 0.5,
     'abc_b_share': 0.3,
     'freq_safety': 1.0,
+    # §15 — статус клиента по давности последнего заказа (status.customer_status), дни и множители
+    # обычного интервала между заказами
+    'status_new_days': 60,     # первый заказ позже — «новый», не трогаем
+    'dormant_min_days': 45,    # «затих»: не покупает дольше max(45 дн, 3 × интервал)
+    'dormant_mult': 3,
+    'lost_min_days': 120,      # «потерян»: дольше max(120 дн, 6 × интервал)
+    'lost_mult': 6,
 }
 
 # Числовые настройки: ключ -> (мин, макс, допускается null)
@@ -181,6 +207,11 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'abc_a_share': (0.05, 0.95, False),
     'abc_b_share': (0.05, 0.95, False),
     'freq_safety': (0.5, 3.0, False),
+    'status_new_days': (1, 365, False),
+    'dormant_min_days': (1, 365, False),
+    'dormant_mult': (1, 20, False),
+    'lost_min_days': (1, 730, False),
+    'lost_mult': (1, 50, False),
 }
 
 TRUCK_CAPACITY_KG = (100, 30000)
@@ -278,17 +309,19 @@ class Changes:
     managers: tuple[ManagerProfile, ...]
 
 
-DECISION_KINDS = ('pattern', 'freq')
+DECISION_KINDS = ('pattern', 'freq', 'remove')
 DECISION_ACTIONS = ('accept', 'reject', 'reset')
+REMOVE_VALUE = '[]'   # value решения remove: шаблон «без визитов» (patterns.pattern_key(()))
 
 
 @dataclass(frozen=True)
 class Decision:
     """Решение владельца по предложению (этап 3): accepted — закрепить, rejected — запретить
-    шаблон (kind='pattern') или частоту (kind='freq') клиента у менеджера.
-    value — канонический JSON: patterns.pattern_key / patterns.freq_key; from_value — шаблон
-    (pattern_key) или частота (freq_key) клиента, от которых принималось решение; None — неизвестно
-    (решение схемы 3)."""
+    шаблон (kind='pattern') или частоту (kind='freq') клиента у менеджера; remove (§15) —
+    accepted: убрать клиента из маршрута менеджера, rejected: оставить.
+    value — канонический JSON: patterns.pattern_key / patterns.freq_key / REMOVE_VALUE; from_value —
+    шаблон (pattern_key; у remove — тоже шаблон) или частота (freq_key) клиента, от которых
+    принималось решение; None — неизвестно (решение схемы 3)."""
     customer_id: int
     agent_id: int
     kind: str
@@ -399,6 +432,12 @@ def validate_settings(values: Mapping[str, Any],
     if 'abc_a_share' in out and 'abc_b_share' in out \
             and out['abc_a_share'] + out['abc_b_share'] >= 1:
         errors['abc_b_share'] = 'доли классов A и B вместе должны быть меньше 1'
+    # «потерян» проверяется раньше «затих» — его порог не может быть мягче
+    if 'dormant_min_days' in out and 'lost_min_days' in out \
+            and out['lost_min_days'] < out['dormant_min_days']:
+        errors['lost_min_days'] = 'порог «потерян» не может быть меньше порога «затих»'
+    if 'dormant_mult' in out and 'lost_mult' in out and out['lost_mult'] < out['dormant_mult']:
+        errors['lost_mult'] = 'множитель «потерян» не может быть меньше множителя «затих»'
 
     groups = values.get('chain_groups')
     if not isinstance(groups, list) or len(groups) > _MAX_LIST \
@@ -675,10 +714,14 @@ def _loaded_decision(row: tuple) -> tuple[Decision, list[str]]:
     if kind not in DECISION_KINDS:
         problems.append('вид решения')
     else:
-        if (parse_pattern_key(value) if kind == 'pattern' else parse_freq_key(value)) is None:
+        if kind == 'remove':
+            value_ok = value == REMOVE_VALUE
+        else:
+            value_ok = (parse_pattern_key(value) if kind == 'pattern' else parse_freq_key(value)) is not None
+        if not value_ok:
             problems.append('значение')
-        if from_value is not None and (parse_pattern_key(from_value) if kind == 'pattern'
-                                       else parse_plan_freq_key(from_value)) is None:
+        if from_value is not None and (parse_plan_freq_key(from_value) if kind == 'freq'
+                                       else parse_pattern_key(from_value)) is None:
             problems.append('исходное значение')
     if status not in ('accepted', 'rejected'):
         problems.append('статус')

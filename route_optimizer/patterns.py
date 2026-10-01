@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import math
 from itertools import combinations
-from typing import Any, Collection, Iterable
+from typing import Any, Collection, Iterable, Mapping
 
 CYCLE_WEEKS = 2
 
@@ -21,6 +21,9 @@ FREQUENCIES = (0.5, 1.0, 2.0, 3.0)
 TWICE_DAYS = ((1, 4), (2, 5), (3, 6), (1, 3), (2, 4), (4, 6))
 THRICE_DAYS = ((1, 3, 5), (2, 4, 6))
 DAY_SHORT = {1: 'пн', 2: 'вт', 3: 'ср', 4: 'чт', 5: 'пт', 6: 'сб', 7: 'вс'}
+DAY_NAMES = {1: 'понедельник', 2: 'вторник', 3: 'среда', 4: 'четверг', 5: 'пятница', 6: 'суббота',
+             7: 'воскресенье'}
+SATURDAY = 6
 _EPS = 1e-9
 
 
@@ -70,21 +73,38 @@ def sub_patterns(current: Pattern, freq: float) -> list[Pattern]:
     return sorted(weekly(days) for days in combinations(both, n))
 
 
+def workday_pattern(p: Pattern, workdays: Collection[int]) -> Pattern:
+    """Шаблон, где визиты нерабочих дней перенесены на рабочие (Р3-9: воскресенье — нерабочий день):
+    на субботу той же недели цикла, а если суббота не рабочая или в ней уже есть визит — на
+    ближайший свободный рабочий день перед ней. Частота та же; свободного рабочего дня в неделе
+    нет — визит выпадает."""
+    wd = set(workdays)
+    out = {(w, d) for w, d in p if d in wd}
+    for w, d in sorted(p):
+        if d not in wd:
+            day = next((x for x in range(SATURDAY, 0, -1) if x in wd and (w, x) not in out), None)
+            if day is not None:
+                out.add((w, day))
+    return make_pattern(out)
+
+
 def allowed_patterns(current: Pattern, target: float, workdays: Collection[int],
                      forbidden: Collection[Pattern] = ()) -> list[Pattern]:
-    """Шаблоны, из которых выбирает поиск (§3):
+    """Шаблоны, из которых выбирает поиск (§3, Р3-9):
     - стандартные для целевой частоты, только рабочие дни;
-    - текущий шаблон — пока частота не меняется (даже нестандартный или с воскресеньем);
-    - при снижении частоты — и шаблоны из дней текущего («тот же день», §6), но только из рабочих
-      дней: новый шаблон нерабочий день (воскресенье) не сохраняет;
+    - шаблон с нерабочим днём (воскресенье) — никогда, даже текущий; вместо текущего — он же,
+      где визиты нерабочих дней перенесены на субботу (workday_pattern);
+    - текущий шаблон (так перенесённый) — пока частота не меняется, даже нестандартный;
+    - при снижении частоты — и шаблоны из дней текущего («тот же день», §6);
     - без запрещённых владельцем."""
     out = set(standard_patterns(target, workdays))
+    base = workday_pattern(current, workdays)
     cur_freq = pattern_freq(current)
     if same_freq(target, cur_freq):
-        out.add(current)
+        if len(base) == len(current):
+            out.add(base)
     elif target < cur_freq:
-        wd = set(workdays)
-        out.update(p for p in sub_patterns(current, target) if all(d in wd for _, d in p))
+        out.update(sub_patterns(base, target))
     out.difference_update(forbidden)
     return sorted(out)
 
@@ -100,9 +120,19 @@ def change_type(before: Pattern, after: Pattern) -> str | None:
     return 'frequency' if a <= b or b <= a else 'both'
 
 
-def _days_text(days: Iterable[int]) -> str:
-    names = [DAY_SHORT.get(d, str(d)) for d in sorted(days)]
+def _days_text(days: Iterable[int], labels: Mapping[int, str] = DAY_SHORT) -> str:
+    names = [labels.get(d, str(d)) for d in sorted(days)]
     return names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' и ' + names[-1]
+
+
+def off_days_text(p: Pattern, workdays: Collection[int]) -> str | None:
+    """Причина обязательного переноса (Р3-9): «воскресенье — нерабочий день»; None — в шаблоне
+    только рабочие дни."""
+    wd = set(workdays)
+    off = {d for _, d in p if d not in wd}
+    if not off:
+        return None
+    return _days_text(off, DAY_NAMES) + (' — нерабочий день' if len(off) == 1 else ' — нерабочие дни')
 
 
 def pattern_text(p: Pattern) -> str:

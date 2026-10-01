@@ -14,12 +14,16 @@ ERP читается одним снимком этапа 1 (erp._select, тол
   - шаблоны: все допустимые, закреплённые не тронуты, запрещённые не выбраны;
   - время: нет дней «стало» с планом длиннее окна, если у менеджера в «было» таких не было;
     если были — в неделю их не больше;
-  - стоимость: C_стало ≤ C_было у каждого менеджера (быстрая оценка); итог «стало» не хуже по
+  - стоимость: C_стало ≤ C_было у каждого менеджера (быстрая оценка; у менеджера с визитами в
+    нерабочий день — C_стало ≤ C старта поиска, где они уже на субботе, Р3-9); итог «стало» не хуже по
     слабым дням и км менеджеров (полная оценка этапа 1) — если хуже, отчёт показывает, где и почему;
   - выручка: снижение частоты не уменьшает выручку модели ни в один сезон (зима, лето, год) — ни
     по компании, ни у менеджера (частота по продажам — по самому высокому спросу из сезонов);
   - скорость: весь расчёт ≤ 2 мин при optimizer_seconds_per_manager = 8;
-  - повторяемость: второй запуск с теми же параметрами даёт те же шаблоны.
+  - повторяемость: второй запуск с теми же параметрами даёт те же шаблоны;
+  - статус клиента (§15): у потерянных и без заказов за год — предложение «убрать из маршрута», у
+    затихших частота «стало» ≤ 0.5 (кроме решений владельца); выручка «было/стало» — без них (у
+    затихших, потерянных и без заказов λ = 0). Сводка по статусам — отдельной строкой.
 Код выхода: 0 — все критерии выполнены, 1 — нет.
 """
 from __future__ import annotations
@@ -37,9 +41,11 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 
 import app_v2  # noqa: E402  — только строка подключения к ERP; сервер не запускается
+from route_optimizer import demand as dm  # noqa: E402
 from route_optimizer import evaluate as ev  # noqa: E402
 from route_optimizer import optimize as opt  # noqa: E402
 from route_optimizer import patterns as pt  # noqa: E402
+from route_optimizer import status as cst  # noqa: E402
 from route_optimizer.snapshot import load_snapshot  # noqa: E402
 from route_optimizer.store import DEFAULT_SETTINGS, Bundle, Store  # noqa: E402
 
@@ -115,7 +121,8 @@ def main() -> int:
 
     # --- таблица «было → стало» ---
     header = (f'{"Менеджер":<9} {"визитов/нед":>15} {"слабых дн./нед":>15} {"км/нед":>17} '
-              f'{"ч у клиентов":>13} {"C, драм/нед":>19} {"перен.":>6} {"частота":>7} {"оба":>4} {"поиск, с":>8}')
+              f'{"ч у клиентов":>13} {"C, драм/нед":>19} {"перен.":>6} {"частота":>7} {"оба":>4} '
+              f'{"убрать":>6} {"поиск, с":>8}')
     print(header)
     print('-' * len(header))
     by_agent = {o.agent_id: o for o in out.managers}
@@ -128,7 +135,8 @@ def main() -> int:
               f'{arrow(b["manager_km"], a["manager_km"]):>17} '
               f'{arrow(b["avg_work_hours"], a["avg_work_hours"]):>13} '
               f'{arrow(b["cost"], a["cost"], 0):>19} {kinds["move"]:>6} {kinds["frequency"]:>7} '
-              f'{kinds["both"]:>4} {o.stats.seconds:>8.2f}' + ('  СТОП ПО ВРЕМЕНИ' if m['time_capped'] else ''))
+              f'{kinds["both"]:>4} {kinds["remove"]:>6} {o.stats.seconds:>8.2f}'
+              + ('  СТОП ПО ВРЕМЕНИ' if m['time_capped'] else ''))
     tb, ta = res['before'], res['after']
     print('-' * len(header))
     print(f'{"Компания":<9} {arrow(tb["visits_week"], ta["visits_week"]):>15} '
@@ -146,6 +154,24 @@ def main() -> int:
         if not f['reachable']:
             print(f'  {m["code"]}: зимой {num(f["revenue_week_low"], 0)} драм/нед → 100 000 возможно '
                   f'максимум в {f["max_days_ge_min"]} из {f["workdays"]} дней')
+    print()
+
+    # --- статус клиента (§15): сводка ---
+    models = out.before.models
+    statuses = {c: models[c].status for c in sorted({c for o in out.managers for c in o.customers})}
+    counts = Counter(s.status for s in statuses.values() if s is not None)
+    risk = tb['at_risk']
+    silent = [c for c, s in statuses.items() if s is not None and s.silent]
+    # сколько затихшие, потерянные и без заказов давали бы в неделю по истории заказов — в «было» не входит
+    hist_week = sum(dm.visit_probability(models[c].year_hist.lam, models[c].visits_per_week)
+                    * models[c].visits_per_week * models[c].year_hist.mean_revenue for c in silent)
+    labels = (('active', 'активных'), ('new', 'новых'), ('seasonal', 'сезонных'))
+    print(f'Статус клиентов менеджеров расчёта ({len(statuses)}): затихли {risk["dormant"]} '
+          f'({num(risk["dormant_rev_year"] / 1e6)} млн драм в год), потеряны {risk["lost"]} '
+          f'({num(risk["lost_rev_year"] / 1e6)} млн драм в год), без заказов за год {risk["never"]}; '
+          + ', '.join(f'{name} {counts.get(code, 0)}' for code, name in labels))
+    print(f'  в выручке модели «было» и «стало» их нет (λ = 0); по истории они давали бы '
+          f'≈ {num(hist_week, 0)} драм/нед')
     print()
 
     # --- критерии ---
@@ -177,24 +203,25 @@ def main() -> int:
     results.append((f'Время: дней «стало» длиннее {window / 60:g} ч не больше, чем «было»', not time_bad,
                     f'менеджеров с нарушением {len(time_bad)}', time_bad))
 
-    # Объяснение роста C: частота снижена у клиента с визитами в нерабочий день (вс) — новый шаблон только
-    # в рабочие дни, а рабочий день без выручки — «слабый» (штраф), тогда как нерабочий день «было» в
-    # стоимость слабых дней не входит
+    # Р3-9: визиты в нерабочий день (вс) переносятся всегда — «было» с ними не с чем сравнивать: нерабочий
+    # день не несёт штрафа слабого дня, а обязательный перенос несёт штраф за изменение. У такого
+    # менеджера C_стало сравнивается со стартом поиска — текущим планом, где эти визиты уже на субботе
     workdays = set(settings['workdays'])
-    cost_bad = []
+    cost_bad, cost_notes = [], []
     for m in res['managers']:
-        if m['after']['cost'] <= m['before']['cost']:
-            continue
         o = by_agent[m['agent_id']]
-        forced = sum(1 for spec, final in zip(o.specs, o.final)
-                     if len(final) < len(spec.current) and any(d not in workdays for _, d in spec.current))
-        why = (f' — у {forced} клиентов с визитами в нерабочий день снижена частота: новый шаблон только в '
-               f'рабочие дни, и эти дни попадают под штраф слабого дня, а нерабочий день в «было» его не '
-               f'несёт' if forced else '')
-        cost_bad.append(f'{m["code"]}: {m["before"]["cost"]} → {m["after"]["cost"]}{why}')
+        off = sum(1 for spec in o.specs if any(d not in workdays for _, d in spec.current))
+        if off:
+            start = round(o.stats.cost_start)
+            (cost_notes if m['after']['cost'] <= start else cost_bad).append(
+                f'{m["code"]}: у {off} клиентов визиты в нерабочий день — сравнение со стартом, где они уже на '
+                f'субботе: C {num(start, 0)} → {num(m["after"]["cost"], 0)} (C_было с визитами в нерабочий '
+                f'день — {num(m["before"]["cost"], 0)})')
+        elif m['after']['cost'] > m['before']['cost']:
+            cost_bad.append(f'{m["code"]}: {m["before"]["cost"]} → {m["after"]["cost"]}')
     results.append(('Стоимость: C_стало ≤ C_было у каждого менеджера (быстрая оценка)', not cost_bad,
                     f'C компании {num(sum(o.cost_before for o in out.managers), 0)} → '
-                    f'{num(sum(o.cost_after for o in out.managers), 0)} драм/нед', cost_bad))
+                    f'{num(sum(o.cost_after for o in out.managers), 0)} драм/нед', cost_notes + cost_bad))
 
     weak_ok = ta['days_below_min'] <= tb['days_below_min']
     km_ok = ta['manager_km_week'] <= tb['manager_km_week']
@@ -254,13 +281,45 @@ def main() -> int:
                     'шаблоны совпадают' if same else 'шаблоны различаются'
                     + (' (был стоп по времени — повторяемость не гарантируется)' if capped else ''), []))
 
+    # §15: потерянным и без заказов — «убрать из маршрута», затихшим — частота ≤ 0.5; решения владельца
+    # (оставить, закреплённый шаблон, принятая частота) — его выбор. В выручке модели их нет (λ = 0)
+    book = opt.DecisionBook.from_rows(decisions, opt.plan_pairs(snap.plan))
+    status_bad = []
+    removed = dormant = dormant_ok = 0
+    for o in out.managers:
+        for cid, spec, final in zip(o.customers, o.specs, o.final):
+            s = statuses.get(cid)
+            owner = spec.source in ('manual', 'locked') or (o.agent_id, cid) in book.rejected_remove
+            if s is None or s.status not in cst.SILENT:
+                continue
+            if s.status in cst.REMOVABLE:
+                if spec.removed and not final:
+                    removed += 1
+                elif not owner:
+                    status_bad.append(f'{o.code}/{cid}: {s.status} — нет предложения «убрать»')
+                continue
+            dormant += 1
+            if pt.pattern_freq(final) <= 0.5 + 1e-9:
+                dormant_ok += 1
+            elif not owner:
+                status_bad.append(f'{o.code}/{cid}: затих — частота «стало» {pt.pattern_freq(final):g}')
+    silent_rev = sum(models[c].draw(season).expected_revenue
+                     for c in silent for season in ('low', 'year', 'peak'))
+    results.append(('Статус клиента (§15): потерянным и без заказов — «убрать», затихшим — ≤ раз в 2 недели, '
+                    'в выручке их нет', not status_bad and silent_rev == 0,
+                    f'предложений «убрать» {removed}, затихших с частотой ≤ 0,5 — {dormant_ok} из {dormant}; '
+                    f'выручка модели у них {num(silent_rev, 0)} драм/нед', status_bad[:8]))
+
     for title, ok, detail, lines in results:
         print(f'{status(ok):<12} {title}: {detail}')
         for line in lines:
             print(f'             {line}')
     print()
 
-    samples = [(m['code'], ch) for m in res['managers'] for ch in m['changes']][:3]
+    changes = [(m['code'], ch) for m in res['managers'] for ch in m['changes']]
+    samples = changes[:3]
+    samples += [x for x in changes if x[1]['type'] == 'remove'][:2]                    # потерян, без заказов
+    samples += [x for x in changes if cst.WIN_BACK_TEXT in (x[1]['reason'] or '')][:2]  # затих
     if samples:
         print('Примеры предложений (эффект — этого изменения к текущему плану, в неделю):')
         for code, ch in samples:

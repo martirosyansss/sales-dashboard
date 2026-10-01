@@ -11,18 +11,21 @@ import math
 import random
 import zlib
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from statistics import fmean, median
 from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, Sequence
 
 from . import demand as dm
+from . import status as cst
+from .frequency import plural
 from .geo import (GPS_MAX_ACCURACY_M, Coord, Fix, Point, haversine_km, in_city, is_valid_point,
                   resolve_coord, track_km, usable_fixes)
 from .plan import WEEKDAY_LABELS, CurrentPlan, PlanDay, delivery_weekday
-from .tsp import delivery_km, route_order
+from .tsp import Distance, delivery_km, route_order
 
 if TYPE_CHECKING:
+    from .roads import RoadDistances
     from .snapshot import Snapshot
     from .store import Bundle
 
@@ -440,9 +443,11 @@ class Norms:
     city_radius_km: float
     min_day_revenue: float
     min_trip_revenue: float
+    roads: RoadDistances | None = field(default=None, compare=False, repr=False)   # None — по прямой
 
     @classmethod
-    def from_settings(cls, s: Mapping[str, Any], calib: Calibration | None = None) -> Norms:
+    def from_settings(cls, s: Mapping[str, Any], calib: Calibration | None = None,
+                      roads: RoadDistances | None = None) -> Norms:
         """Нормы расчёта; извилистость и скорости — действующие (road_norms), а не «как в поле»."""
         h1, m1 = map(int, s['work_start'].split(':'))
         h2, m2 = map(int, s['work_end'].split(':'))
@@ -456,7 +461,23 @@ class Norms:
             city_radius_km=float(s['city_radius_km']),
             min_day_revenue=float(s['min_day_revenue']),
             min_trip_revenue=float(s['min_trip_revenue']),
+            roads=roads,
         )
+
+    def km(self, a: Point, b: Point) -> float:
+        """Км участка — единая функция расстояния расчёта: по дорогам; карты нет, точка дальше
+        0,5 км от дороги или пути нет — по прямой × извилистость."""
+        if self.roads is not None:
+            d = self.roads.km(a, b)
+            if d is not None:
+                return d
+        return haversine_km(a, b) * self.detour
+
+    @property
+    def distance(self) -> Distance | None:
+        """Функция расстояния для порядка объезда и рейсов (tsp): km; без дорог — None (tsp считает
+        по прямой, извилистость — постоянный множитель, порядок тот же, что и раньше)."""
+        return self.km if self.roads is not None else None
 
 
 @dataclass(frozen=True)
@@ -488,13 +509,13 @@ def visit_uniforms(customer_id: int, weekday: int, purpose: str,
 def route_metrics(points: Sequence[Point], home: Point | None, norms: Norms) -> tuple[float, float]:
     """(км, минуты в пути) маршрута менеджера: дом → точки → дом; без дома — от первой до последней.
 
-    km = Σ haversine × detour; время участка = км × detour / скорость × 60, скорость городская,
-    если оба конца в городе, иначе областная.
+    km участка — norms.km (по дорогам, иначе по прямой × извилистость); время участка =
+    км / скорость × 60, скорость городская, если оба конца в городе, иначе областная.
     """
     path = [home, *points, home] if home is not None else list(points)
     km = minutes = 0.0
     for a, b in zip(path, path[1:]):
-        leg = haversine_km(a, b) * norms.detour
+        leg = norms.km(a, b)
         both_city = (in_city(a, norms.city_center, norms.city_radius_km)
                      and in_city(b, norms.city_center, norms.city_radius_km))
         speed = norms.speed_city_kmh if both_city else norms.speed_region_kmh
@@ -570,7 +591,7 @@ def revenue_stats(draws: Sequence[Draw], customers: Sequence[int], weekday: int,
 
 @dataclass(frozen=True)
 class TruckDay:
-    km: float                      # с учётом извилистости
+    km: float                      # по дорогам (или по прямой × извилистость)
     liters: float | None
     trips: float
     p_no_trip: float
@@ -601,12 +622,15 @@ def truck_day(visits: Sequence[VisitModel], weekday: int, depot: Point, truck: T
         for s in range(MC_TRUCK_KM_SAMPLES):
             if orders[s] < year.p:
                 samples[s].append((v.point, year.values[int(picks[s] * k)][1]))
+    dist = norms.distance
     km_sum = trips_sum = 0.0
     for stops in samples:
-        trip = delivery_km(depot, stops, truck.capacity_kg)
+        trip = delivery_km(depot, stops, truck.capacity_kg, dist)
         km_sum += trip.km
         trips_sum += trip.trips
-    km = km_sum / MC_TRUCK_KM_SAMPLES * norms.detour
+    # по дорогам км уже итоговые (извилистость — только у участков по прямой, внутри norms.km);
+    # без дорог — км по прямой × извилистость, как раньше
+    km = km_sum / MC_TRUCK_KM_SAMPLES * (1.0 if dist is not None else norms.detour)
     liters = km * truck.fuel_l_per_100km / 100.0 if truck.fuel_l_per_100km is not None else None
 
     _, kgs, _ = _outcomes([v.peak for v in visits], [v.customer_id for v in visits], weekday, 'peak',
@@ -661,7 +685,7 @@ def evaluate_day(day: PlanDay, visits: Sequence[VisitModel], *, home: Point | No
     """
     located = [v for v in visits if v.point is not None]
     rownum_points = [v.point for v in located]
-    order = route_order(rownum_points, home)
+    order = route_order(rownum_points, home, norms.distance)
     points = [rownum_points[i] for i in order]
     km, drive = route_metrics(points, home, norms)
     _, drive_between = route_metrics(points, None, norms)   # от первого клиента до последнего
@@ -755,6 +779,13 @@ class CustomerModel:
     peak: dm.Demand
     size: str                  # длительность визита — по классу (visit_norms)
     visits_per_week: float
+    status: cst.CustomerStatus | None = None   # §15: затих, потерян, без заказов — λ = 0 во всех сезонах
+    hist: dm.Demand | None = None             # спрос за год до статуса (для показа); None — как year
+
+    @property
+    def year_hist(self) -> dm.Demand:
+        """Спрос за год по истории заказов — сколько клиент брал, даже если сейчас λ = 0."""
+        return self.hist if self.hist is not None else self.year
 
     def draw(self, season: str) -> Draw:
         dem: dm.Demand = getattr(self, season)
@@ -766,7 +797,9 @@ def customer_models(snap: Snapshot, s: Mapping[str, Any], season: Season,
     """Спрос клиентов плана в окне [today − 365, today): год, низкий сезон, пик.
 
     f_i (визитов в неделю в p = min(1, λ/f)) — только по дням включённых менеджеров
-    (CurrentPlan.visits_per_week_among).
+    (CurrentPlan.visits_per_week_among). Статус клиента на today (§15, status.customer_status):
+    у затихшего, потерянного и без заказов λ = 0 во всех сезонах — ожидаемая выручка 0; прошлые
+    заказы (средний заказ и кг — класс размера) и спрос по истории (CustomerModel.hist) остаются.
     """
     freq = snap.plan.visits_per_week_among(included)
     end = snap.today
@@ -792,7 +825,12 @@ def customer_models(snap: Snapshot, s: Mapping[str, Any], season: Season,
         size = dm.size_class(year.mean_kg if year.values else None,
                              customer.group if customer else None, chain,
                              s['size_small_max_kg'], s['size_medium_max_kg'])
-        models[cid] = CustomerModel(cid, year, low, peak, size, freq.get(cid, 0.0))
+        status = cst.customer_status(orders, first, end, season.peak, s)
+        hist = year
+        if status.silent:
+            year, low, peak = (dm.Demand(0.0, d.values, d.exposure_days, d.fallback)
+                               for d in (year, low, peak))
+        models[cid] = CustomerModel(cid, year, low, peak, size, freq.get(cid, 0.0), status, hist)
     return models
 
 
@@ -866,6 +904,27 @@ def manager_home(snap: Snapshot, bundle: Bundle, agent_id: int) -> tuple[Point |
     if auto is not None:
         return (auto.lat, auto.lon), 'gps_auto'
     return None, 'none'
+
+
+def plan_points(snap: Snapshot, bundle: Bundle,
+                coords: dict[tuple[int, int], Coord]) -> list[Point]:
+    """Все точки плана для расчёта расстояний одним разом: координаты визитов (заполняет coords),
+    дома менеджеров плана и склад."""
+    points: list[Point] = []
+    for d in snap.plan.days:
+        for pv in d.visits:
+            key = (pv.customer_id, pv.address_id)
+            if key not in coords:
+                coords[key] = visit_coord(snap, pv.customer_id, pv.address_id)
+            if coords[key].point is not None:
+                points.append(coords[key].point)
+    for agent_id in snap.plan.agent_ids:
+        home, _ = manager_home(snap, bundle, agent_id)
+        if home is not None:
+            points.append(home)
+    if bundle.depot is not None:
+        points.append(bundle.depot)
+    return points
 
 
 def _evaluate_manager(snap: Snapshot, bundle: Bundle, agent_id: int, included: bool,
@@ -1006,20 +1065,27 @@ class PlanEvaluation:
 def evaluate_plan(snap: Snapshot, bundle: Bundle, calib: Calibration | None = None,
                   agent_ids: Collection[int] | None = None, *,
                   visit_minutes: Mapping[str, float] | None = None,
-                  models: Mapping[int, CustomerModel] | None = None) -> PlanEvaluation:
+                  models: Mapping[int, CustomerModel] | None = None,
+                  roads: RoadDistances | None = None) -> PlanEvaluation:
     """Оценка произвольного плана snap.plan тем же оценщиком этапа 1.
 
     agent_ids — каких менеджеров оценивать (None — всех с планом); f_i в p = min(1, λ/f) — по
     включённым менеджерам этого плана. visit_minutes — длительности визитов по классам (для
     «стало» — те же, что в «было», иначе доли классов нового плана сдвинули бы «авто»-нормы);
-    models — готовые модели клиентов (спрос не пересчитывается).
+    models — готовые модели клиентов (спрос не пересчитывается). roads — расстояния по дорогам
+    (None — по прямой × извилистость): все точки плана считаются одним разом до оценки; карта не
+    загрузилась (roads.failed) — по прямой, norms.roads = None.
     """
     s = bundle.settings
     road = road_norms(s, calib)
-    norms = Norms.from_settings(s, calib)
+    coords: dict[tuple[int, int], Coord] = {}
+    if roads is not None:
+        roads.ensure(plan_points(snap, bundle, coords))
+        if roads.failed:   # граф не собрался — считаем по прямой (в журнале — причина)
+            roads = None
+    norms = Norms.from_settings(s, calib, roads)
     season = resolve_season(snap.season_index, s)
     cycle = snap.plan.cycle_weeks
-    coords: dict[tuple[int, int], Coord] = {}
 
     def agent_key(agent_id: int) -> tuple[str, int]:
         agent = snap.agents.get(agent_id)
@@ -1050,15 +1116,17 @@ def plan_totals(snap: Snapshot, bundle: Bundle, pe: PlanEvaluation) -> dict[str,
                    pe.coords)
 
 
-def build_overview(snap: Snapshot, bundle: Bundle,
-                   calib: Calibration | None = None) -> dict[str, Any]:
+def build_overview(snap: Snapshot, bundle: Bundle, calib: Calibration | None = None,
+                   roads: RoadDistances | None = None) -> dict[str, Any]:
     """Оценка текущего плана → тело ответа /api/routes/overview (§10.1) без success/generated_at/from_cache.
 
     calib — калибровка по GPS этого снимка: из неё «авто»-нормы дорог (road_norms) и длительности
-    визитов (visit_norms).
+    визитов (visit_norms). roads — расстояния по дорогам (None — по прямой × извилистость).
     """
     s = bundle.settings
-    pe = evaluate_plan(snap, bundle, calib)
+    pe = evaluate_plan(snap, bundle, calib, roads=roads)
+    failed = roads is not None and pe.norms.roads is None   # карта есть, но не загрузилась
+    roads = pe.norms.roads
     road, visit, season, models, coords = pe.road, pe.visit, pe.season, pe.models, pe.coords
     cycle = snap.plan.cycle_weeks
     evals, weeks = pe.evals, pe.weeks
@@ -1104,11 +1172,13 @@ def build_overview(snap: Snapshot, bundle: Bundle,
     # вне расчёта «авто» (нет работы за 8 недель), а не по явному выбору владельца
     idle = [me for me in evals if not me.included and bundle.included_source(me.agent_id) == 'auto']
     warnings = _warnings(snap, bundle, included, totals, season, idle)
+    warnings += _road_warnings(roads, plan_points(snap, bundle, dict(coords)), failed)
     customers_json = _customers_json(snap, models, coords)
 
     plan_weekdays = {d.weekday for d in snap.plan.days}
     return {
         'data_as_of': snap.data_as_of.isoformat(timespec='seconds'),
+        'distance_source': 'straight' if roads is None else 'roads',
         'warnings': warnings,
         'season': {
             'low_months': season.low, 'peak_months': season.peak, 'source': season.source,
@@ -1122,6 +1192,7 @@ def build_overview(snap: Snapshot, bundle: Bundle,
         'totals': totals,
         'managers': managers_json,
         'customers': customers_json,
+        'at_risk_customers': _at_risk_json(snap, models, included),
     }
 
 
@@ -1175,6 +1246,7 @@ def _totals(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
                 visits_coords += 1
                 revs_coords.append(rev)
     rev_total, rev_coords = math.fsum(revs), math.fsum(revs_coords)
+    plan_customers = sorted({pv.customer_id for r in all_days for pv in r.day.visits})
 
     return {
         'managers': len(included),
@@ -1203,6 +1275,9 @@ def _totals(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
             'visits_total': _num(visits_total / cycle), 'visits_with_coords': _num(visits_coords / cycle),
             'revenue_share_with_coords': _r(rev_coords / rev_total, 2) if rev_total > 0 else None,
         },
+        # §15: клиенты этих менеджеров под риском — затихли и потеряны (выручка за 12 мес, драм),
+        # без заказов за год
+        'at_risk': cst.risk_summary(models[c].status for c in plan_customers if models[c].status is not None),
     }
 
 
@@ -1276,9 +1351,30 @@ def _warnings(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
     return out
 
 
+def _road_warnings(roads: RoadDistances | None, points: Sequence[Point],
+                   failed: bool = False) -> list[dict[str, Any]]:
+    """Км по прямой: карты нет или она не загрузилась — у всех участков, точка дальше 0,5 км от
+    дороги — у её участков."""
+    if failed:
+        return [_warning('roads_failed', 'Карту дорог не удалось загрузить (подробности — в журнале '
+                                         'сервера) — км считаются по прямой с поправкой на '
+                                         'извилистость', 'norms')]
+    if roads is None:
+        return [_warning('roads_off', 'Карта дорог не подключена — км считаются по прямой с '
+                                      'поправкой на извилистость', 'norms')]
+    n = roads.unsnapped(points)
+    if not n:
+        return []
+    return [_warning('roads_unsnapped', f'{n} {plural(n, "точка", "точки", "точек")} плана дальше '
+                                        f'0,5 км от дорог на карте — км до них считаются по прямой '
+                                        f'с поправкой на извилистость', None)]
+
+
 def _customers_json(snap: Snapshot, models: Mapping[int, CustomerModel],
                     coords: Mapping[tuple[int, int], Coord]) -> dict[str, Any]:
-    """Клиенты плана; координата — первого визита клиента в плане."""
+    """Клиенты плана; координата — первого визита клиента в плане. Выручка и шансы — модели (у
+    затихших и потерянных — 0); orders_per_week_year, rev_week_year_hist, rev_year_hist — по истории
+    заказов: сколько клиент брал (§15)."""
     first: dict[int, Coord] = {}
     for d in snap.plan.days:
         for pv in d.visits:
@@ -1289,6 +1385,9 @@ def _customers_json(snap: Snapshot, models: Mapping[int, CustomerModel],
         c = snap.customers.get(cid)
         coord = first.get(cid)
         low, year = m.draw('low'), m.draw('year')
+        hist = m.year_hist
+        st = m.status
+        hist_week = m.visits_per_week * dm.visit_probability(hist.lam, m.visits_per_week) * hist.mean_revenue
         out[str(cid)] = {
             'code': c.code if c else '', 'name': c.name if c else '',
             'lat': coord.lat if coord else None, 'lon': coord.lon if coord else None,
@@ -1296,7 +1395,7 @@ def _customers_json(snap: Snapshot, models: Mapping[int, CustomerModel],
             'size': m.size,
             'group': (c.group_name or c.group) if c else None,
             'area': c.area if c else None,
-            'orders_per_week_year': _r(m.year.lam, 2),
+            'orders_per_week_year': _r(hist.lam, 2),
             'avg_order_amd': _i(m.year.mean_revenue) if m.year.values else None,
             'avg_order_kg': _i(m.year.mean_kg) if m.year.values else None,
             'rev_week_low': _i(m.visits_per_week * low.expected_revenue),
@@ -1305,5 +1404,46 @@ def _customers_json(snap: Snapshot, models: Mapping[int, CustomerModel],
             'p_year': _r(year.p, 2),
             'rev_visit_low': _i(low.expected_revenue),
             'visits_per_week': _r(m.visits_per_week, 2),
+            # §15 — статус по давности последнего заказа
+            'status': st.status if st else cst.ACTIVE,
+            'silent_days': st.silent_days if st else None,
+            'usual_interval_days': _r(st.usual_interval_days, 1) if st else None,
+            'orders_year': st.orders if st else len(hist.values),
+            'rev_year_hist': _i(st.revenue) if st else _i(math.fsum(v[0] for v in hist.values)),
+            'rev_week_year_hist': _i(hist_week),
+            'last_order_date': st.last_order.isoformat() if st and st.last_order else None,
         }
     return out
+
+
+def _at_risk_json(snap: Snapshot, models: Mapping[int, CustomerModel],
+                  included: Sequence[ManagerEval]) -> list[dict[str, Any]]:
+    """«Клиенты под риском» (§15): затихшие, потерянные и без заказов за год у менеджеров в расчёте —
+    по убыванию выручки за 12 месяцев (сколько брал), затем по дням без заказов."""
+    agents: dict[int, set[int]] = {}
+    for me in included:
+        for r in me.days:
+            for pv in r.day.visits:
+                agents.setdefault(pv.customer_id, set()).add(me.agent_id)
+    rows = []
+    for cid, ids in agents.items():
+        st = models[cid].status
+        if st is None or not st.silent:
+            continue
+        c = snap.customers.get(cid)
+        managers = sorted(({'agent_id': a, 'code': snap.agents[a].code if a in snap.agents else str(a),
+                            'name': snap.agents[a].name if a in snap.agents else ''} for a in ids),
+                          key=lambda x: (x['code'], x['agent_id']))
+        rows.append({
+            'customer_id': cid, 'code': c.code if c else '', 'name': c.name if c else '',
+            'status': st.status, 'silent_days': st.silent_days,
+            'usual_interval_days': _r(st.usual_interval_days, 1), 'orders_year': st.orders,
+            'rev_year_hist': _i(st.revenue),
+            'last_order_date': st.last_order.isoformat() if st.last_order else None,
+            'managers': managers,
+        })
+    def silence(x: dict[str, Any]) -> int:   # без заказов за год (тишины нет) — как самые долгие
+        return x['silent_days'] if x['silent_days'] is not None else 10 ** 6
+
+    rows.sort(key=lambda x: (-x['rev_year_hist'], -silence(x), x['customer_id']))
+    return rows

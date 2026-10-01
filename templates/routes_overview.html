@@ -5,33 +5,36 @@
 {% block extra_css %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=5">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=8">
 {% endblock %}
 
 {% block content %}
 <div class="rt-page" id="rtOverview">
 
     <!-- ШАПКА -->
-    <div class="rt-topbar">
-        <div class="rt-brand">
-            <h1><span class="rt-accent">//</span> Маршруты · как сейчас</h1>
-            <span id="rtFresh" class="rt-pill d-none"></span>
+    <header class="rt-head">
+        <div class="rt-head-row">
+            <div class="rt-head-title">
+                <h1 class="rt-title">Маршруты сейчас</h1>
+                <span id="rtFresh" class="rt-pill d-none"></span>
+            </div>
+            <div class="rt-head-tools">
+                <nav class="rt-tabs" aria-label="Разделы маршрутов">
+                    <a href="/routes" aria-current="page">Обзор</a>
+                    <a href="/routes/optimize">Оптимизация</a>
+                    <a href="/routes/settings">Настройки</a>
+                </nav>
+                <button id="rtRefreshBtn" type="button" class="rt-btn rt-btn-ghost" title="Заново прочитать данные из ERP и пересчитать">
+                    <i class="fas fa-rotate" aria-hidden="true"></i><span>Обновить</span>
+                </button>
+            </div>
         </div>
-        <nav class="rt-tabs" aria-label="Разделы маршрутов">
-            <a href="/routes" aria-current="page">Обзор</a>
-            <a href="/routes/optimize">Оптимизация</a>
-            <a href="/routes/settings">Настройки</a>
-        </nav>
-        <div class="rt-toolbar">
-            <button id="rtRefreshBtn" type="button" class="rt-btn rt-btn-ghost" title="Заново прочитать данные из ERP и пересчитать">
-                <i class="fas fa-rotate" aria-hidden="true"></i><span>Обновить</span>
-            </button>
-            <a href="/routes/settings" class="rt-btn rt-btn-ghost"><i class="fas fa-sliders" aria-hidden="true"></i><span>Настройки</span></a>
-        </div>
-    </div>
+        <p class="rt-head-lead">Как менеджеры ездят по текущему плану из ERP: сколько приносит каждый день, сколько километров
+            они проезжают и какие магазины перестали покупать.</p>
+    </header>
 
     <!-- Объявления для скринридеров -->
     <div id="rtStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
@@ -49,55 +52,34 @@
 
     <div id="rtBody" class="d-none">
 
-        <!-- ЧЕК-ЛИСТ: что осталось настроить -->
-        <section id="rtChecklist" class="rt-check d-none" aria-labelledby="rtCheckTitle">
-            <div class="rt-check-head">
-                <i class="fas fa-list-check" aria-hidden="true"></i>
-                <h2 id="rtCheckTitle">Что осталось настроить</h2>
-                <span class="rt-check-note">без этого часть цифр не посчитана</span>
-            </div>
-            <ul id="rtCheckList" class="rt-check-list"></ul>
-        </section>
-
-        <!-- KPI-ЛЕНТА простыми словами -->
-        <div class="rt-ribbon" role="group" aria-label="Главные показатели текущего плана">
-            <div class="rt-tile" id="kpiWeak">
-                <span class="rt-tile-label">Слабые дни зимой</span>
-                <span class="rt-tile-val" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
-            </div>
-            <div class="rt-tile" id="kpiPoor">
-                <span class="rt-tile-label">Бедные рейсы</span>
-                <span class="rt-tile-val" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
-            </div>
-            <div class="rt-tile t-acc" id="kpiDiesel">
-                <span class="rt-tile-label">Дизель грузовиков</span>
-                <span class="rt-tile-val" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
-            </div>
-            <div class="rt-tile" id="kpiMgrKm">
-                <span class="rt-tile-label">Пробег менеджеров</span>
-                <span class="rt-tile-val" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
-            </div>
-            <div class="rt-tile" id="kpiLoad">
-                <span class="rt-tile-label">Загрузка машин летом</span>
-                <span class="rt-tile-val" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
-            </div>
-            <div class="rt-tile" id="kpiDay">
-                <span class="rt-tile-label">Рабочий день</span>
-                <span class="rt-tile-val" data-v>–</span>
-                <span class="rt-tile-sub" data-s></span>
+        <!-- ГЛАВНОЕ СЕЙЧАС -->
+        <div class="rt-main ov-main" aria-labelledby="rtMainTitle">
+            <h2 class="rt-main-title" id="rtMainTitle"><i class="fas fa-lightbulb" aria-hidden="true"></i>Главное сейчас</h2>
+            <ul class="rt-main-list" id="rtMainList"></ul>
+            <p class="rt-main-note" id="rtMainNote" hidden></p>
+            <div class="rt-main-cta">
+                <a href="/routes/optimize" class="rt-btn rt-btn-primary rt-btn-lg">Посмотреть, что можно улучшить<i class="fas fa-arrow-right" aria-hidden="true"></i></a>
+                <span class="rt-cta-note">Оптимизация предложит, в какие дни ездить к каким магазинам</span>
             </div>
         </div>
 
-        <!-- 01 · КАРТА + ПАНЕЛЬ ДНЯ -->
+        <!-- ЧТО ЕЩЁ НАСТРОИТЬ: не больше трёх строк -->
+        <section id="rtTodo" class="rt-todo d-none" aria-labelledby="rtTodoTitle">
+            <h2 class="rt-todo-title" id="rtTodoTitle"><i class="fas fa-list-check" aria-hidden="true"></i>Что ещё настроить</h2>
+            <ul id="rtTodoList" class="rt-todo-list"></ul>
+            <details id="rtTodoMore" class="rt-todo-more" hidden>
+                <summary id="rtTodoMoreSum"></summary>
+                <ul id="rtTodoMoreList" class="rt-todo-list"></ul>
+            </details>
+        </section>
+
+        <!-- ЧЕТЫРЕ ПОКАЗАТЕЛЯ -->
+        <div class="rt-kpis is-4" id="rtKpis" role="group" aria-label="Главные показатели текущего плана"></div>
+
+        <!-- КАРТА + ПАНЕЛЬ ДНЯ -->
         <section class="rt-section" id="rtMapSection" aria-labelledby="rtMapTitle">
             <div class="rt-shead">
-                <span class="rt-kicker">01</span>
-                <h2 id="rtMapTitle">Карта клиентов</h2>
+                <h2 id="rtMapTitle">Карта магазинов</h2>
                 <span class="rt-shead-note" id="rtCoordsNote"></span>
             </div>
             <div class="rt-panel">
@@ -113,13 +95,13 @@
                         <i class="fas fa-route" aria-hidden="true"></i>
                         <span id="rtRouteBarText"></span>
                         <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rtRouteClear">
-                            <i class="fas fa-xmark" aria-hidden="true"></i>Показать всех клиентов
+                            <i class="fas fa-xmark" aria-hidden="true"></i>Показать все магазины
                         </button>
                     </div>
                 </div>
                 <div class="rt-mapgrid">
                     <div class="rt-mapcol">
-                        <div id="rtMap" class="rt-map" role="region" aria-label="Карта клиентов, домов менеджеров и склада"></div>
+                        <div id="rtMap" class="rt-map" role="region" aria-label="Карта магазинов, домов менеджеров и склада"></div>
                         <div id="rtMapLegend" class="rt-maplegend" aria-label="Легенда карты"></div>
                     </div>
                     <aside class="rt-side" aria-label="День менеджера">
@@ -129,17 +111,16 @@
             </div>
         </section>
 
-        <!-- 02 · ТЕПЛОВАЯ ТАБЛИЦА -->
+        <!-- ПО ДНЯМ НЕДЕЛИ -->
         <section class="rt-section" aria-labelledby="rtHeatTitle">
             <div class="rt-shead">
-                <span class="rt-kicker">02</span>
-                <h2 id="rtHeatTitle">Неделя по дням</h2>
-                <span class="rt-shead-note">в клетке — ожидаемая выручка зимой, визиты и шанс набрать норму</span>
+                <h2 id="rtHeatTitle">По дням недели</h2>
+                <span class="rt-shead-note" id="rtHeatNote">в клетке — сколько день принесёт зимой, сколько визитов и шанс набрать дневную норму</span>
             </div>
             <div class="rt-panel">
                 <div class="rt-scroll">
                     <table class="rt-heat" id="rtHeat">
-                        <caption class="rt-sr-only">Менеджеры по дням недели. Нажмите на день, чтобы увидеть клиентов и маршрут. Стрелки переходят между днями.</caption>
+                        <caption class="rt-sr-only">Менеджеры по дням недели. Нажмите на день, чтобы увидеть магазины и маршрут. Стрелки переходят между днями.</caption>
                         <thead></thead>
                         <tbody></tbody>
                     </table>
@@ -149,19 +130,54 @@
             </div>
         </section>
 
-        <!-- 03 · ОТКУДА ЦИФРЫ -->
-        <section class="rt-section" aria-labelledby="rtSeasonTitle">
+        <!-- МАГАЗИНЫ, КОТОРЫЕ ПЕРЕСТАЛИ ПОКУПАТЬ (§15) -->
+        <section class="rt-section" id="rtRiskSection" aria-labelledby="rtRiskTitle">
             <div class="rt-shead">
-                <span class="rt-kicker">03</span>
-                <h2 id="rtSeasonTitle">Какой сезон в какой цифре</h2>
-                <span class="rt-shead-note">прогноз по продажам за последний год</span>
+                <h2 id="rtRiskTitle">Магазины под риском</h2>
+                <span class="rt-shead-note">перестали покупать — менеджеры ездят к ним впустую</span>
             </div>
             <div class="rt-panel rt-panel-pad">
+                <p class="rt-lead" id="rtRiskLead"></p>
+                <div class="rt-risk-tools">
+                    <div class="rt-chips" id="rtRiskSort" role="group" aria-label="Порядок списка">
+                        <button type="button" class="rt-chip" data-sort="rev" aria-pressed="true">Сначала крупные</button>
+                        <button type="button" class="rt-chip" data-sort="days" aria-pressed="false">Сначала давно не покупают</button>
+                    </div>
+                    <span class="rt-risk-count" id="rtRiskCount" role="status" aria-live="polite"></span>
+                </div>
+                <div class="rt-table-scroll rt-risk-scroll">
+                    <table class="rt-table rt-risk-table">
+                        <caption class="rt-sr-only">Магазины, которые перестали покупать: менеджер, что случилось, сколько дней без заказов, как часто заказывал, заказы и покупки за год, последний заказ</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Магазин</th>
+                                <th scope="col">Менеджер</th>
+                                <th scope="col">Что случилось</th>
+                                <th scope="col" class="num">Не покупает, дней</th>
+                                <th scope="col" class="num">Обычно заказывал</th>
+                                <th scope="col" class="num">Заказов за год</th>
+                                <th scope="col" class="num">Купил за год</th>
+                                <th scope="col">Последний заказ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="rtRiskBody"></tbody>
+                    </table>
+                </div>
+                <div id="rtRiskEmpty" class="rt-empty px-0 d-none">Все магазины менеджеров в расчёте покупают как обычно.</div>
+                <button type="button" class="rt-linkbtn" id="rtRiskMore" hidden></button>
+            </div>
+        </section>
+
+        <!-- КАК СЧИТАЮТСЯ ЦИФРЫ: свёрнуто -->
+        <details class="rt-fold" id="rtSeasonBox">
+            <summary><span class="rt-fold-t"><i class="fas fa-circle-question" aria-hidden="true"></i>Как считаются цифры</span>
+                <span class="rt-fold-note">какой сезон в какой цифре</span></summary>
+            <div class="rt-fold-body">
                 <div class="rt-season" id="rtSeason"></div>
                 <div class="rt-months" id="rtMonths" aria-hidden="true"></div>
                 <p class="rt-season-src" id="rtSeasonSrc"></p>
             </div>
-        </section>
+        </details>
     </div>
 </div>
 {% endblock %}
@@ -169,5 +185,5 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_overview.js') }}?v=4"></script>
+<script src="{{ url_for('static', filename='js/routes_overview.js') }}?v=6"></script>
 {% endblock %}

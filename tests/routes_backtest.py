@@ -6,7 +6,7 @@
 
 Модель прогоняется на 4 прошлых неделях пн–сб и сверяется с фактом:
   - выручка: у каждого включённого менеджера |model_week / fact_in_plan − 1| ≤ 10%;
-  - км:      у каждого менеджера |Σ model_km / Σ track_km − 1| ≤ 20%.
+  - км:      у каждого менеджера |Σ road_km / Σ track_km − 1| ≤ 15% (этап 5: км по дорогам).
 Цифры не подгоняются: если критерий не выполнен, отчёт так и говорит. Код выхода: 0 — всё
 пройдено, 1 — нет.
 
@@ -26,14 +26,18 @@
   - fact_in_plan — средняя недельная выручка заказов этого агента от клиентов его плана пн–сб;
     fact_total — вся выручка агента; заказ = документы клиента за дату заказа, агент заказа —
     агент самого крупного документа;
-  - км: detour = медиана (км трека / км по прямой) по дням 6 недель перед тестом
-    (≥ 8 визитов с GPS, ≥ 30 точек трека); на тестовых днях model_km = км по прямой между
-    точками визитов (по fSTARTTIME) × detour, track_km — км трека между первым и последним визитом;
+  - км: на тестовых днях (≥ 8 визитов с GPS, ≥ 30 точек трека) road_km = км по дорогам карты
+    OpenStreetMap между точками визитов по fSTARTTIME (route_optimizer.roads; точка дальше 0,5 км
+    от дороги — участок по прямой × detour), track_km — км трека между первым и последним визитом.
+    Для сравнения — прежняя модель этапа 1: км по прямой между теми же точками × detour, где
+    detour = медиана (км трека / км по прямой) по дням 6 недель перед тестом. Кэш расстояний
+    бэктеста — отдельный файл рядом с картой (<карта>.backtest.npz): GPS-точки визитов не
+    смешиваются с точками плана;
   - время дня (третий блок, справочно — в ИТОГ не входит): по тем же 6 неделям калибруются
     скорости движения и средняя стоянка на визит (как в разделе), длительности по классам — по
     долям классов в плане пн–сб менеджеров в сверке (класс — по среднему кг заказа в окне оценки);
     на тестовых днях с ≥ 8 визитами с GPS и ≥ 30 точками трека модель = Σ длительностей всех
-    визитов дня + дорога между точками визитов по fSTARTTIME (по прямой × извилистость / скорость
+    визитов дня + дорога между точками визитов по fSTARTTIME (км по дорогам / скорость
     город/область), факт — работа по треку того же дня (как в разделе): окно «первый fSTARTTIME →
     конец последнего визита» без пауз — разрывов трека > 15 мин; отметка — ±20% по менеджеру.
     Справочно — окно целиком и доля пауз в нём.
@@ -42,6 +46,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time as _time
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from statistics import fmean
@@ -55,10 +60,11 @@ from route_optimizer import demand as dm  # noqa: E402
 from route_optimizer import erp  # noqa: E402
 from route_optimizer import evaluate as ev  # noqa: E402
 from route_optimizer import plan as pl  # noqa: E402
+from route_optimizer import roads as rd  # noqa: E402
 from route_optimizer.store import DEFAULT_SETTINGS, Store  # noqa: E402
 
 REV_TOLERANCE = 0.10
-KM_TOLERANCE = 0.20
+KM_TOLERANCE = 0.15      # этап 5: км по дорогам
 TIME_TOLERANCE = 0.20    # справочно: в ИТОГ не входит
 TEST_WEEKS = 4
 EST_WEEKS = 12
@@ -212,7 +218,31 @@ def main() -> int:
     visit_avg = ev.calibrate_visit_minutes(calib_days)
     calib = ev.Calibration(detour, speed_city, speed_region, detour_days, visit_avg)
     road = ev.road_norms({}, calib)                        # только калибровка, без ручных чисел
-    norms = ev.Norms.from_settings(dict(s, **dict.fromkeys(ev.ROAD_NORMS)), calib)
+
+    # --- км по дорогам: те же точки визитов тестовых дней по fSTARTTIME (этап 5) ---
+    test_visits: dict[tuple[int, date], list[ev.ActualVisit]] = defaultdict(list)
+    for v in visits:
+        if is_test_day(v.day, test_start, test_end):
+            test_visits[(v.agent_id, v.day)].append(v)
+
+    def day_points(d: ev.DayTrack) -> list[tuple[float, float]]:
+        """Точки визитов дня с GPS по fSTARTTIME — как в day_tracks."""
+        vs = sorted((v for v in test_visits[(d.agent_id, d.day)] if ev.visit_point_ok(v)),
+                    key=lambda v: v.start)
+        return [(v.lat, v.lon) for v in vs]
+
+    roads = rd.open_roads(cache_name='backtest')
+    all_points = [p for d in test_days for p in day_points(d)]
+    roads_seconds = 0.0
+    if roads is not None:
+        started = _time.perf_counter()
+        roads.ensure(all_points)
+        roads_seconds = _time.perf_counter() - started
+        if roads.failed:
+            roads = None
+    norms = ev.Norms.from_settings(dict(s, **dict.fromkeys(ev.ROAD_NORMS)), calib, roads)
+    road_km = {(d.agent_id, d.day): sum(norms.km(a, b) for a, b in zip(pts, pts[1:]))
+               for d in test_days for pts in [day_points(d)]}
 
     def size_of(cid: int) -> str:
         own = by_customer.get(cid)                         # заказы в окне оценки спроса
@@ -251,6 +281,13 @@ def main() -> int:
     detour_txt = f'{detour:.3f}' if detour is not None else 'нет данных'
     print(f'  извилистость (калибровка {calib_start} … {test_start - timedelta(days=1)}): '
           f'{detour_txt} по {detour_days} дн.')
+    if roads is None:
+        print(f'  КАРТЫ ДОРОГ НЕТ ({rd.osm_path()}) — км модели по прямой × извилистость')
+    else:
+        n_points = len({rd.point_key(p) for p in all_points})
+        print(f'  км по дорогам: точек визитов {n_points}, дальше 0,5 км от дороги '
+              f'{roads.unsnapped(all_points)} (для них участки по прямой × {norms.detour:g}); '
+              f'расчёт расстояний {roads_seconds:.0f} с')
     print(f'  цикл плана: {cycle} нед.; менеджеров в сверке: {len(rows)}')
     left_out = [a for a in plan.agent_ids if a not in included]
     if left_out:
@@ -260,8 +297,9 @@ def main() -> int:
             for a in left_out))
     print()
     header = (f'{"Менеджер":<9} {"model_week":>11} {"fact_in_plan":>12} {"fact_total":>11} '
-              f'{"вне плана":>9} {"откл.":>7} {"выручка":<12} {"дн.км":>5} {"model_km":>9} '
-              f'{"track_km":>9} {"откл.":>7} {"км":<12}')
+              f'{"вне плана":>9} {"откл.":>7} {"выручка":<12} {"дн.км":>5} {"road_km":>9} '
+              f'{"track_km":>9} {"откл.":>7} {"км ±" + format(KM_TOLERANCE, ".0%"):<12} '
+              f'{"прям×изв":>9} {"откл.":>7}')
     print(header)
     print('-' * len(header))
 
@@ -281,16 +319,29 @@ def main() -> int:
         outside = 1 - r['fact_in_plan'] / r['fact_total'] if r['fact_total'] > 0 else None
         kd = km_by_agent.get(r['agent_id'], [])
         track_km = sum(d.track_km for d in kd)
-        model_km = sum(d.straight_km for d in kd) * detour if kd and detour else None
+        model_km = sum(road_km[(d.agent_id, d.day)] for d in kd) if kd else None
         km_dev = model_km / track_km - 1 if model_km is not None and track_km > 0 else None
         km_ok = km_dev is not None and abs(km_dev) <= KM_TOLERANCE
+        # прежняя модель этапа 1 — для сравнения, в ИТОГ не входит
+        old_km = sum(d.straight_km for d in kd) * detour if kd and detour else None
+        old_dev = old_km / track_km - 1 if old_km is not None and track_km > 0 else None
         results.append((code, r, rev_ok, km_ok))
         print(f'{code:<9} {money(r["model"]):>11} {money(r["fact_in_plan"]):>12} '
               f'{money(r["fact_total"]):>11} '
               f'{(f"{outside * 100:.1f}%" if outside is not None else "—"):>9} '
               f'{pct(rev_dev):>7} {state(rev_ok, rev_dev):<12} {len(kd):>5} '
               f'{(f"{model_km:.1f}" if model_km is not None else "—"):>9} '
-              f'{(f"{track_km:.1f}" if kd else "—"):>9} {pct(km_dev):>7} {state(km_ok, km_dev):<12}')
+              f'{(f"{track_km:.1f}" if kd else "—"):>9} {pct(km_dev):>7} {state(km_ok, km_dev):<12} '
+              f'{(f"{old_km:.1f}" if old_km is not None else "—"):>9} {pct(old_dev):>7}')
+
+    kd_all = [d for _, r, _, _ in results for d in km_by_agent.get(r['agent_id'], [])]
+    track_all = sum(d.track_km for d in kd_all)
+    if track_all > 0:
+        road_all = sum(road_km[(d.agent_id, d.day)] for d in kd_all)
+        old_all = sum(d.straight_km for d in kd_all) * detour if detour else None
+        print(f'Км всего за {len(kd_all)} дн.: трек {track_all:.1f}; по дорогам {road_all:.1f} '
+              f'({pct(road_all / track_all - 1)}); по прямой × извилистость '
+              + (f'{old_all:.1f} ({pct(old_all / track_all - 1)})' if old_all is not None else '—'))
 
     print()
     print('Диагностика выручки (в неделю):')
@@ -309,7 +360,7 @@ def main() -> int:
     print(f'  скорость движения: город {num(speed_city)}, область {num(speed_region)} км/ч '
           f'(в модели {road["speed_city_kmh"][0]:g} / {road["speed_region_kmh"][0]:g}); '
           f'извилистость {road["detour_factor"][0]:g}')
-    print('  модель = Σ длительностей визитов дня + дорога между ними (по прямой × извилистость / '
+    print('  модель = Σ длительностей визитов дня + дорога между ними (км по дорогам / '
           'скорость); работа = езда и стоянки по треку в окне «первый визит → конец последнего», '
           'без пауз (разрывов трека > 15 мин); окно и доля пауз — справочно')
     header = (f'{"Менеджер":<9} {"дн.":>4} {"модель, ч/день":>14} {"работа GPS, ч/день":>18} '

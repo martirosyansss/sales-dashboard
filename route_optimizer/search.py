@@ -603,19 +603,22 @@ class State:
 
 # --- Стартовые решения ---
 
-def current_start(prob: Problem) -> list[SlotPattern]:
-    """Старт «current»: текущие шаблоны, приведённые к целевой частоте. Закреплённые и допустимые
-    текущие — как есть; остальные — допустимый шаблон с наибольшим числом общих с текущим дней
-    (1/нед → 0.5: тот же день; 2/нед → 1: день из пары), при равенстве — с меньшей нагрузкой дней
-    (минуты визитов уже расставленных клиентов), затем первый по порядку."""
+def current_start(prob: Problem, base: Sequence[SlotPattern] | None = None) -> list[SlotPattern]:
+    """Старт «current»: текущие шаблоны, приведённые к целевой частоте. base — от чего строится
+    старт по клиентам (по умолчанию текущие шаблоны; в расчёте — текущие, где визиты нерабочих дней
+    уже на субботе той же недели, Р3-9). Закреплённые и допустимые base — как есть; остальные —
+    допустимый шаблон с наибольшим числом общих с base дней (1/нед → 0.5: тот же день; 2/нед → 1:
+    день из пары), при равенстве — с меньшей нагрузкой дней (минуты визитов уже расставленных
+    клиентов), затем первый по порядку."""
+    refs = [line.current for line in prob.lines] if base is None else list(base)
     load = [0.0] * SLOTS
     out: list[SlotPattern] = [()] * len(prob.lines)
     pending = []
     for i, line in enumerate(prob.lines):
         if line.locked:
             out[i] = line.allowed[0]
-        elif line.current in line.allowed:
-            out[i] = line.current
+        elif refs[i] in line.allowed:
+            out[i] = refs[i]
         else:
             pending.append(i)
             continue
@@ -623,7 +626,7 @@ def current_start(prob: Problem) -> list[SlotPattern]:
             load[j] += line.minutes
     for i in pending:
         line = prob.lines[i]
-        cur = set(line.current)
+        cur = set(refs[i])
         best = min(line.allowed, key=lambda p: (-len(cur & set(p)), sum(load[j] for j in p), p))
         out[i] = best
         for j in best:
