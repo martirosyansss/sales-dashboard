@@ -745,7 +745,9 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
         roads.ensure([*points, bundle.depot])
     norms = evaluate.Norms.from_settings(s, calib, roads if roads is not None and not roads.failed else None)
     h, m = map(int, s['truck_work_start'].split(':'))
-    return dp.DayContext(day, bundle.depot, trucks, norms, fl.TruckNorms.from_settings(s), h * 60 + m)
+    h2, m2 = map(int, s['truck_overtime_end'].split(':'))
+    return dp.DayContext(day, bundle.depot, trucks, norms, fl.TruckNorms.from_settings(s), h * 60 + m,
+                         float(h2 * 60 + m2 - (h * 60 + m)))
 
 
 @dataclass
@@ -834,6 +836,12 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
                         rev or 0, stops, ctx, ready, snap, bundle)
 
 
+def _day_stops(dd: _DispatchDay, draft: dp.Draft) -> list[dp.Stop]:
+    """Точки развоза дня для черновика draft (его «не везём сегодня» и добавленные заказы)."""
+    return dp.build_stops(_active_orders(dd.deliver, dd.backlog, draft),
+                          lambda cid: evaluate.visit_coord(dd.snap, cid, 0, dd.bundle.geo_overrides))
+
+
 def _stop_info(dd: _DispatchDay) -> Callable[[dp.Stop], dict[str, Any]]:
     agents = dd.snap.agents
 
@@ -897,6 +905,7 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         'default_day': dp.next_workday(today, s['workdays']).isoformat(),
         'order_dates': {'since': dd.since.isoformat(), 'until': (dd.until - timedelta(days=1)).isoformat()},
         'work_start': s['truck_work_start'], 'work_end': s['truck_work_end'],
+        'overtime_end': s['truck_overtime_end'],
         'depot': {'lat': dd.bundle.depot[0], 'lon': dd.bundle.depot[1]} if dd.bundle.depot else None,
         'problems': problems, 'trucks': trucks, 'rev': dd.rev,
         'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
@@ -911,6 +920,9 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         'backlog': [order_json(o) for o in dd.backlog],
         'backlog_since': dp.backlog_since(dd.since, s['workdays']).isoformat(),
         'plan': None,
+        'overtime': draft.overtime if draft is not None else False,
+        'overtime_ok': draft.overtime_ok if draft is not None else False,
+        'overtime_days_month': _overtime_days(_state().store, dd.day),
         **_freshness(dd.day, dd.bundle, dd.data, dd.deliver, dd.backlog, draft),
     }
     if draft is not None and dd.ctx is not None:
@@ -923,6 +935,14 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
 
 
 SETTINGS_TRUCKS_URL = '/routes/settings#trucks'
+
+
+def _overtime_days(store: Store, day: date) -> int:
+    """Дней месяца, когда машины по плану развоза работали после конца дня: форс-мажор не должен стать
+    нормой (ответ владельца №32)."""
+    first = day.replace(day=1)
+    last = (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    return store.count_dispatch_overtime(first.isoformat(), last.isoformat())
 
 
 @bp.get('/api/routes/dispatch')
@@ -1002,6 +1022,7 @@ def api_dispatch_build() -> Any:
     draft = dp.build(dd.ctx, dd.stops, dd.draft, codes, _now())
     # отметка сборки: все заказы дня (и исключённые — они не «новые») + добавленные заказы прошлых дней
     draft.built_orders = dp.order_marks([*dd.deliver, *(o for o in dd.backlog if o.isn in draft.added)])
+    draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'))
     logger.info('[Routes] Развоз на %s собран (%s) за %.1f с: точек %d, рейсов %d, машин %d', day,
                 session.get('username'), time.perf_counter() - started, len(dd.stops), len(draft.trips), len(codes))
@@ -1032,6 +1053,8 @@ def api_dispatch_edit() -> Any:
                               {o.isn for o in dd.backlog})
     except dp.DispatchError as e:
         return _bad_request({'_': str(e)})
+    # заказы после правки («не везём сегодня» / вернуть меняют точки и вес) — отметка дня по ним
+    draft.overtime = dp.runs_late(dd.ctx, _day_stops(dd, draft), draft)
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)
     if rev is None:
         return _conflict('План изменили в другой вкладке — обновите страницу')
@@ -1039,6 +1062,33 @@ def api_dispatch_edit() -> Any:
     body = _dispatch_body(dd)
     body['delta_km'] = round(body['plan']['summary']['km'] - km_before, 1) if body['plan'] else None
     return jsonify({'success': True, **body})
+
+
+@bp.post('/api/routes/dispatch/overtime')
+@_api
+def api_dispatch_overtime() -> Any:
+    """«Везти после конца дня» (форс-мажор, ответ владельца №32): {"date", "rev"} — магазины, не
+    поместившиеся до конца рабочего дня, раскладываются по машинам дня с переработкой (dispatch.overtime).
+    rev — номер черновика: план изменён в другой вкладке — 409."""
+    payload, day, error = _dispatch_request()
+    if error is not None:
+        return error
+    state = _state()
+    bundle = state.store.load()
+    dd = _load_day(state, bundle, day)
+    if dd.draft is None or dd.ctx is None:
+        return _conflict('Сначала соберите рейсы')
+    if payload.get('rev') != dd.rev:
+        return _conflict('План изменили в другой вкладке — обновите страницу')
+    draft = dp.overtime(dd.ctx, dd.stops, dd.draft)
+    draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
+    rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)
+    if rev is None:
+        return _conflict('План изменили в другой вкладке — обновите страницу')
+    logger.info('[Routes] Развоз на %s: после конца дня (%s), переработка: %s', day, session.get('username'),
+                draft.overtime)
+    dd = _load_day(state, bundle, day, draft=draft, rev=rev)
+    return jsonify({'success': True, **_dispatch_body(dd)})
 
 
 @bp.post('/api/routes/dispatch/reset')

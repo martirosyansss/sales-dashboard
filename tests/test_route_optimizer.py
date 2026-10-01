@@ -4871,6 +4871,134 @@ def test_dispatch_edit_errors(edit, text):
         dp.apply_edit(ctx, stops, draft, edit, {o.isn for o in orders})
 
 
+def test_dispatch_build_never_plans_past_end_of_day():
+    """Живой случай 30.09: логист выбрал одну машину, а груза — на несколько; рейсы шли до 04:06 следующих
+    суток. Теперь за конец рабочего дня рейсы не планируются: что машина не успевает — «не поместились»
+    (no_room), время рейсов честное. Модель парка (overflow=True) по-прежнему везёт всё — считает нехватку."""
+    rng = random.Random(3)
+    spec = [(100 + i, (40.05 + rng.random() * 0.3, 44.30 + rng.random() * 0.4), rng.choice([300.0, 600.0, 900.0]))
+            for i in range(60)]
+    spec += [(300, (40.10, 44.35), 7000.0)]                            # 7 т > 3,5 т FORD — две поездки
+    stops, _ = _dp_stops(spec)
+    ctx = _dp_ctx((FORD,))
+    draft = dp.build(ctx, stops, None, [FORD.car_code], 'now')
+    view = dp.plan_view(ctx, stops, draft, _info)
+    [truck] = view['trucks']
+    assert truck['minutes'] <= TN.work_minutes and not any(t['over_time'] for t in truck['trips'])
+    assert '(+' not in truck['return']
+    left = {u['customer_id'] for u in view['unassigned']}
+    assert left and left == draft.no_room and all(u['no_room'] for u in view['unassigned'])
+    placed = {s['customer_id'] for t in truck['trips'] for s in t['stops']}
+    assert placed | left == {cid for cid, p, _ in spec} and not placed & left
+    heavy = _trip_of(view, 300)                                        # тяжёлый — либо целиком, либо нигде
+    assert len(heavy) in (0, 2) and (len(heavy) == 2) == (300 not in left)
+    assert dp.Draft.from_json(json.loads(json.dumps(draft.to_json()))).no_room == draft.no_room
+    everything = fl.route_day([s.point for s in stops], [s.kg for s in stops], [s.revenue for s in stops],
+                              DP_DEPOT, [FORD], DP_NORMS, TN)
+    assert sorted({i for t in everything for i in t.items}) == list(range(len(stops)))
+    assert dp._hhmm(17 * 60 + 32) == '17:32' and dp._hhmm(28 * 60 + 6) == '04:06 (+1)'
+
+
+def test_dispatch_day_end_cuts_trip_and_drops_heavy_whole():
+    """Ревью: рейс, который целиком не успевает, режется — начало по ходу объезда везёт машина, что ещё
+    успевает; тяжёлый заказ, у которого влезли не все поездки, снимается целиком, а его время не
+    пропадает — мелкие заказы рядом едут."""
+    near = [(40.20 + 0.002 * i, 44.61 + 0.002 * i) for i in range(10)]
+    whole = fl.route_day(near, [100.0] * 10, [1.0] * 10, DP_DEPOT, [FORD], DP_NORMS, TN, overflow=False)
+    [trip] = whole
+    left = trip.minutes - 1.0                                         # на минуту меньше, чем нужно рейсу
+    part = fl.route_day(near, [100.0] * 10, [1.0] * 10, DP_DEPOT, [FORD], DP_NORMS, TN,
+                        used={FORD.car_code: TN.work_minutes - left}, overflow=False)
+    assert 0 < sum(t.stops for t in part) < 10 and sum(t.minutes for t in part) <= left + 1e-6
+    # 7 т = две поездки FORD по 3,5 т, а времени — на одну: тяжёлый не едет вовсе, мелкие — едут
+    pts = [(40.20, 44.62)] + near[:6]
+    kgs = [7000.0] + [200.0] * 6
+    one_way = fl.route_day(pts[:1], [3500.0], [1.0], DP_DEPOT, [FORD], DP_NORMS, TN)[0].minutes
+    used = {FORD.car_code: TN.work_minutes - one_way * 1.5}
+    trips = fl.route_day(pts, kgs, [1.0] * 7, DP_DEPOT, [FORD], DP_NORMS, TN, used=used, overflow=False)
+    items = [i for t in trips for i in t.items]
+    assert 0 not in items and items and sum(t.minutes for t in trips) <= one_way * 1.5 + 1e-6
+    # дальняя точка первой по ходу объезда не мешает ближней: ближняя едет, дальняя — нет
+    far, close = (40.40, 44.95), (40.196, 44.602)
+    t_far = fl.route_day([far], [100.0], [1.0], DP_DEPOT, [FORD], DP_NORMS, TN)[0].minutes
+    t_close = fl.route_day([close], [100.0], [1.0], DP_DEPOT, [FORD], DP_NORMS, TN)[0].minutes
+    assert t_close * 2 < t_far
+    used = {FORD.car_code: TN.work_minutes - (t_close + t_far) / 2}
+    for pts2 in ([far, close], [close, far]):
+        got = fl.route_day(pts2, [100.0, 100.0], [1.0, 1.0], DP_DEPOT, [FORD], DP_NORMS, TN, used=used, overflow=False)
+        assert [pts2[i] for t in got for i in t.items] == [close], pts2
+
+
+def test_dispatch_overtime_and_baseline_same_stores():
+    """«Везти после конца дня» (№32): не поместившиеся — по машинам дня с переработкой, отметка дня;
+    рейсы дня не меняются. Сравнение «как обычно» — по тем же магазинам, что в рейсах."""
+    rng = random.Random(3)
+    spec = [(100 + i, (40.05 + rng.random() * 0.3, 44.30 + rng.random() * 0.4), rng.choice([300.0, 600.0, 900.0]))
+            for i in range(60)]
+    stops, _ = _dp_stops(spec)
+    ctx = _dp_ctx((FORD,))
+    draft = dp.build(ctx, stops, None, [FORD.car_code], 'now')
+    assert draft.no_room and not draft.overtime
+    day_trips = [(t.id, list(t.stops)) for t in draft.trips]
+    base = dp.baseline(ctx, stops, draft, {1: (FORD.car_code,)})
+    view = dp.plan_view(ctx, stops, draft, _info)
+    assert base['km'] == pytest.approx(view['summary']['km'], rel=0.5)  # те же магазины, а не все 60
+    assert not dp.runs_late(ctx, stops, draft)
+    after = dp.overtime(ctx, stops, dp.Draft.from_json(draft.to_json()))
+    assert [(t.id, t.stops) for t in after.trips[:len(day_trips)]] == day_trips
+    assert dp.runs_late(ctx, stops, after) and after.no_room == set()   # предела нет — везут всё
+    v2 = dp.plan_view(ctx, stops, after, _info)
+    assert v2['unassigned'] == [] and after.overtime_ok and v2['trucks'][0]['late']
+    assert v2['trucks'][0]['over_time']                                 # предела нет (ctx без него) — окно дня
+    after.overtime = True
+    assert dp.Draft.from_json(json.loads(json.dumps(after.to_json()))).overtime is True
+    # предел форс-мажора (truck_overtime_end, по умолчанию 20:00): позже машина не работает, остальное — «не поместились»
+    capped = replace(ctx, overtime_minutes=TN.work_minutes + 120.0)
+    late = dp.overtime(capped, stops, dp.Draft.from_json(draft.to_json()))
+    v3 = dp.plan_view(capped, stops, late, _info)
+    t3 = v3['trucks'][0]
+    assert t3['minutes'] <= TN.work_minutes + 120.0 + 1e-6 and t3['late'] and not t3['over_time']  # принятая — не ошибка
+    assert v3['overflow']['trips'] == 0
+    assert dp.plan_view(capped, stops, replace(late, overtime_ok=False), _info)['trucks'][0]['over_time']  # не принята — ошибка
+    assert late.no_room and all(u['no_room'] for u in v3['unassigned'])
+    assert len(late.trips) > len(draft.trips)
+    again = dp.overtime(ctx, stops, after)                             # повтор — ничего не добавляет
+    assert len(again.trips) == len(after.trips)
+    # перенос «не поместившегося» в рейс вручную — он больше не «не поместился»
+    d3 = dp.Draft.from_json(draft.to_json())
+    cid = min(d3.no_room)
+    dp.apply_edit(ctx, stops, d3, {'action': 'move', 'customer_id': cid, 'from_trip': None,
+                                   'to_trip': d3.trips[0].id, 'truck': None}, set())
+    assert cid not in d3.no_room
+
+
+def test_dispatch_overtime_goes_to_truck_that_finishes_first_and_settings_load():
+    """Переработка — машине, что раньше закончит (часы сверх дня короче), а не самой экономичной;
+    база без ключа предела, где день машин кончается позже 20:00, — открывается (предел = конец дня)."""
+    cheap = fl.FleetTruck('C1', 'cheap', 5000.0, 10.0)
+    dear = fl.FleetTruck('D1', 'dear', 5000.0, 30.0)
+    pt_ = [(40.21, 44.63)]
+    used = {'C1': 600.0, 'D1': 300.0}
+    [t] = fl.route_day(pt_, [100.0], [1.0], DP_DEPOT, [cheap, dear], DP_NORMS,
+                       replace(TN, work_minutes=720.0), used, overflow=False, earliest=True)
+    assert t.truck == 'D1'
+    [t] = fl.route_day(pt_, [100.0], [1.0], DP_DEPOT, [cheap, dear], DP_NORMS,
+                       replace(TN, work_minutes=720.0), used, overflow=False)
+    assert t.truck == 'C1'
+
+
+def test_store_overtime_end_default_follows_late_work_end(tmp_path):
+    path = str(tmp_path / 'r.db')
+    s = st.Store(path)
+    s.load()
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('truck_work_end', '\"21:00\"')")
+        conn.commit()
+    assert s.load().settings['truck_overtime_end'] == '21:00'
+    changes, errors = st.validate_payload({'settings': {'truck_overtime_end': '20:00'}}, s.load(), REF)
+    assert 'settings.truck_overtime_end' in errors
+
+
 def test_dispatch_draft_json_roundtrip_and_garbage():
     d = dp.Draft(['CAR1'], {_isn(1)}, {_isn(2)}, [dp.DraftTrip(3, 'CAR1', [101, 102], True)], 4, 'x')
     assert dp.Draft.from_json(json.loads(json.dumps(d.to_json()))) == d
@@ -4918,6 +5046,11 @@ def test_store_dispatch_drafts_and_geo_overrides(store):
     assert store.load_dispatch('2026-05-01') is None and store.load_dispatch('2026-10-02') == ({'b': 1}, 1)
     store.delete_dispatch('2026-10-01')
     assert store.load_dispatch('2026-10-01') is None
+    store.save_dispatch('2026-10-05', {'overtime': True}, 'qa')
+    store.save_dispatch('2026-10-06', {'overtime': False}, 'qa')
+    store.save_dispatch('2026-11-02', {'overtime': True}, 'qa')
+    assert store.count_dispatch_overtime('2026-10-01', '2026-10-31') == 1
+    assert store.count_dispatch_overtime('2026-10-01', '2026-11-30') == 2
     store.save_geo_override(999, (40.2, 44.5), 'qa')
     store.save_geo_override(998, (40.3, 44.6), 'qa')
     store.save_geo_override(998, None, 'qa')
@@ -5081,6 +5214,30 @@ def test_api_dispatch_flow(client):
     # «Начать заново»
     d = client.post('/api/routes/dispatch/reset', json={'date': '2026-10-01'}).get_json()
     assert d['plan'] is None and d['rev'] == 0 and d['orders']['excluded'] == 0
+
+
+def test_api_dispatch_overtime_button(client):
+    """Кнопка «Везти после 18:00»: день машины 10 минут — ничего не помещается; после кнопки все в
+    рейсах с переработкой, отметка дня и счётчик дней с переработкой за месяц."""
+    _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2)])
+    r = client.post('/api/routes/settings', json={'settings': {'truck_work_start': '09:00', 'truck_work_end': '09:10'}})
+    assert r.status_code == 200, r.get_json()
+    d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert d['plan']['summary']['trips'] == 0 and all(u['no_room'] for u in d['plan']['unassigned'])
+    assert (d['overtime'], d['overtime_days_month']) == (False, 0)
+    assert client.post('/api/routes/dispatch/overtime', json={'date': '2026-10-01', 'rev': 0}).status_code == 409
+    r = client.post('/api/routes/dispatch/overtime', json={'date': '2026-10-01', 'rev': d['rev']})
+    assert r.status_code == 200, r.get_json()
+    d = r.get_json()
+    assert d['plan']['unassigned'] == [] and d['overtime'] is True and d['overtime_days_month'] == 1
+    assert d['overtime_ok'] is True and any(t['late'] for t in d['plan']['trucks'])
+    assert not any(t['over_time'] for t in d['plan']['trucks'])        # до 20:00 — принятая переработка
+    # «не везём сегодня» все заказы: машины больше не работают после конца дня — отметка снимается сразу
+    for isn in (_isn(1), _isn(2)):
+        d = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': d['rev'], 'action': 'exclude',
+                                                           'order': isn}).get_json()
+    assert d['overtime'] is False and d['overtime_days_month'] == 0
+    assert client.get('/api/routes/dispatch?date=2026-10-02').get_json()['overtime_days_month'] == 0
 
 
 def test_api_dispatch_problems_and_fact(client):

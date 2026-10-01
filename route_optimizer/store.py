@@ -239,6 +239,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Нет ключа в базе — значение по умолчанию: миграция не нужна
     'truck_work_start': '09:00',
     'truck_work_end': '18:00',
+    # Форс-мажор (ответ владельца №32): «Везти после конца дня» в «Развозе» — машины возвращаются не позже
+    'truck_overtime_end': '20:00',
     'unload_min_per_stop': 8,
     'unload_min_per_tonne': 6,
     # «Развоз»: до этого времени менеджеры ещё принимают заказы на следующий рабочий день (заканчивают
@@ -510,7 +512,8 @@ def validate_settings(values: Mapping[str, Any],
     out: dict[str, Any] = {}
     errors: dict[str, str] = {}
 
-    for key in ('work_start', 'work_end', 'truck_work_start', 'truck_work_end', 'dispatch_ready_time'):
+    for key in ('work_start', 'work_end', 'truck_work_start', 'truck_work_end', 'truck_overtime_end',
+                'dispatch_ready_time'):
         v = values.get(key)
         if not isinstance(v, str) or not _HHMM_RE.match(v):
             errors[key] = 'время в формате ЧЧ:ММ'
@@ -519,6 +522,9 @@ def validate_settings(values: Mapping[str, Any],
     for start, end in (('work_start', 'work_end'), ('truck_work_start', 'truck_work_end')):
         if start in out and end in out and _minutes(out[end]) <= _minutes(out[start]):
             errors[end] = 'конец рабочего дня должен быть позже начала'
+    if ('truck_work_end' in out and 'truck_overtime_end' in out
+            and _minutes(out['truck_overtime_end']) < _minutes(out['truck_work_end'])):
+        errors['truck_overtime_end'] = 'не раньше конца рабочего дня машины'
 
     days, err = _check_int_set(values.get('workdays'), 1, 7, 'дней недели')
     if err:
@@ -1042,6 +1048,12 @@ class Store:
                 raw[key] = json.loads(value)
             except (TypeError, ValueError) as e:
                 raise StoreError(f'{self._name()}: повреждена настройка «{key}»{_FIX_HINT}') from e
+        # предела форс-мажора в базе ещё нет (база до этой настройки), а день машин кончается позже 20:00 —
+        # предел = конец дня: значение по умолчанию не должно делать базу «повреждённой»
+        work_end = raw.get('truck_work_end')
+        if ('truck_overtime_end' not in {k for k, _ in setting_rows} and isinstance(work_end, str)
+                and _HHMM_RE.match(work_end) and _minutes(work_end) > _minutes(raw['truck_overtime_end'])):
+            raw['truck_overtime_end'] = work_end
         settings, errors = validate_settings(raw, known_groups=None)
         if errors:
             raise StoreError(f'{self._name()}: повреждены настройки ('
@@ -1349,6 +1361,15 @@ class Store:
             return rev
 
         return self._transaction(write, 'не удалось сохранить план развоза')
+
+    def count_dispatch_overtime(self, since: str, until: str) -> int:
+        """Дней в [since, until] (YYYY-MM-DD), когда машины по плану развоза работали дольше дня
+        (черновик с "overtime": true). Битый JSON черновика не считается и не роняет запрос."""
+        row = self._read(lambda conn: conn.execute(
+            "SELECT COUNT(*) FROM dispatch_plan WHERE day BETWEEN ? AND ? "
+            "AND CASE WHEN json_valid(data) THEN json_extract(data, '$.overtime') END = 1",
+            (since, until)).fetchone())
+        return int(row[0]) if row else 0
 
     def delete_dispatch(self, day: str) -> None:
         """«Начать заново»: черновик на дату удаляется."""

@@ -796,6 +796,7 @@
 .rt-card-state.is-ok { color: var(--rt-ok); background: var(--rt-ok-bg); }
 .rt-card-state.is-todo { color: var(--rt-warn); background: var(--rt-warn-bg); }
 .rt-card-state.is-part { color: var(--rt-warn); background: var(--rt-warn-bg); }
+.rt-card-state.is-bad { color: var(--rt-danger); background: var(--rt-danger-bg); }
 .rt-card-lead { font-size: .9375rem; color: var(--rt-fg-dim); margin: 0 0 14px; max-width: 92ch; line-height: 1.55; }
 
 /* Настройки: подразделы в «Можно не трогать», дом менеджера, откуда цифра у поля */

@@ -39,6 +39,8 @@
         { title: 'Машины доставки', items: [
             { key: 'truck_work_start', label: 'Машина выезжает', type: 'time' },
             { key: 'truck_work_end', label: 'Машина возвращается до', type: 'time', hint: 'рейсы, которые не успевают, — «нужна ещё машина»' },
+            { key: 'truck_overtime_end', label: 'Форс-мажор: машина возвращается не позже', type: 'time',
+              hint: 'кнопка «Везти после конца дня» в «Развозе» — только в исключительные дни' },
             { key: 'unload_min_per_stop', label: 'Разгрузка на точке, минут', min: 0, max: 120, step: 1 },
             { key: 'unload_min_per_tonne', label: 'И ещё на каждую тонну, минут', min: 0, max: 120, step: 1 },
             { key: 'dispatch_ready_time', label: 'Рейсы на завтра собирать после', type: 'time',

@@ -394,7 +394,7 @@
             cb.value = t.car_code;
             cb.checked = !!t.selected;
             cb.disabled = !t.ready;
-            cb.addEventListener('change', () => { renderTruckCount(); renderFresh(); });
+            cb.addEventListener('change', () => { renderTruckCount(); renderFresh(); if (state.data.plan) renderUnassigned(state.data.plan); });
             const sw = document.createElement('span');
             sw.className = 'rt-dot';
             sw.style.background = t.ready ? truckColor(t.car_code) : 'transparent';
@@ -660,7 +660,7 @@
         const bad = [];
         plan.trucks.forEach(t => t.trips.forEach((tr, i) => {
             const who = truckLabel(t) + ', երթ ' + (i + 1) + '՝ ';
-            if (tr.over_time) bad.push(who + 'չի հասցնում վերադառնալ մինչև ' + state.data.work_end + '-ը։');
+            if (tr.over_time) bad.push(who + 'չի հասցնում վերադառնալ մինչև ' + endOfDay() + '-ը։');
             if (tr.over_capacity) bad.push(who + kgText(tr.kg) + ' բեռ, իսկ մեքենան տանում է մինչև ' + kgText(t.capacity_kg) + '։');
             if (tr.no_truck) bad.push(who + 'այս մեքենան այսօր նշված չէ որպես աշխատող։');
         }));
@@ -754,14 +754,56 @@
     function renderUnassigned(plan) {
         const box = $('dpUnassigned');
         box.textContent = '';
-        if (!plan.unassigned.length) return;
+        // Не поместились до конца рабочего дня выбранных машин (сборка за конец дня не планирует) — отдельно
+        const noRoom = plan.unassigned.filter(s => s.no_room), other = plan.unassigned.filter(s => !s.no_room);
+        const kgOf = (list) => list.reduce((a, s) => a + (s.kg || 0), 0);
+        if (noRoom.length) {
+            const card = document.createElement('section');
+            card.className = 'rt-card dp-unassigned';
+            card.innerHTML = '<div class="rt-card-head"><h3 class="rt-card-title"><i class="fas fa-triangle-exclamation" aria-hidden="true"></i>Չտեղավորվեցին մինչև '
+                + esc(state.data.work_end) + '-ը</h3><span class="rt-card-state is-bad"></span></div>';
+            card.querySelector('.rt-card-state').textContent = pl(noRoom.length, 'խանութ') + ', ' + kgText(kgOf(noRoom));
+            // Сначала — ещё машина; форс-мажор (ответ владельца №32) — везти после конца дня, до предела
+            const unpicked = state.data.trucks.filter(t => t.ready && !t.selected).length;
+            const changed = trucksChanged();
+            const month = state.data.overtime_days_month || 0;
+            const monthText = month ? ' Այս ամիս արտաժամյա՝ ' + pl(month, 'օր') + '։' : '';
+            const lead = document.createElement('p');
+            lead.className = 'rt-card-lead';
+            if (state.data.overtime_ok) {
+                lead.textContent = 'Մեքենաներն արդեն աշխատում են ' + state.data.work_end + '-ից հետո, բայց սրանք չեն հասցնում նույնիսկ մինչև '
+                    + state.data.overtime_end + '-ը։ Նշեք «Այսօր չենք տանում»՝ դրանք կանցնեն հաջորդ օրվան։' + monthText;
+            } else if (unpicked || changed) {
+                lead.textContent = 'Ընտրված մեքենաները չեն հասցնի այս խանութներին առաքել մինչև ' + state.data.work_end + '-ը։ '
+                    + (unpicked ? 'Կա ևս ' + pl(unpicked, 'մեքենա') + '՝ չնշված։ Նշեք 1-ին քայլում և սեղմեք «Վերակազմել երթերը»։ ' : '')
+                    + 'Կամ ավելացրեք խանութը որևէ երթի ձեռքով։';
+            } else {
+                lead.textContent = 'Բոլոր մեքենաներն արդեն նշված են, բայց չեն հասցնում մինչև ' + state.data.work_end + '-ը։';
+            }
+            card.append(lead);
+            if (!state.data.overtime_ok && !changed) {
+                const p = document.createElement('p');
+                p.className = 'rt-card-lead';
+                p.textContent = 'Եթե այս պատվերները պետք է տանել այսօր, մեքենաները կաշխատեն ' + state.data.work_end + '-ից հետո՝ մինչև '
+                    + state.data.overtime_end + '-ը։ Սա բացառություն է, ոչ թե ամենօրյա կարգ։' + monthText;
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'rt-btn rt-btn-ghost dp-overtime-btn';
+                btn.innerHTML = '<i class="fas fa-moon" aria-hidden="true"></i> Տանել ' + esc(state.data.work_end) + '-ից հետո';
+                btn.addEventListener('click', overtime);
+                card.append(p, btn);
+            }
+            card.appendChild(stopList(noRoom, null, true));
+            box.appendChild(card);
+        }
+        if (!other.length) return;
         const card = document.createElement('section');
         card.className = 'rt-card dp-unassigned';
         card.innerHTML = '<div class="rt-card-head"><h3 class="rt-card-title"><i class="fas fa-inbox" aria-hidden="true"></i>Դեռ ոչ մի երթում չեն</h3><span class="rt-card-state is-todo"></span></div>'
             + '<p class="rt-card-lead">Նոր կամ վերադարձված պատվերներ, կամ խանութներ, որոնց տեղը նոր եք նշել։ Յուրաքանչյուրի համար ընտրեք՝ որ երթին ավելացնել, '
             + 'կամ պարզապես սեղմեք «Վերակազմել երթերը» 2-րդ քայլում։</p>';
-        card.querySelector('.rt-card-state').textContent = pl(plan.unassigned.length, 'խանութ') + ', ' + kgText(plan.overflow.unassigned_kg);
-        card.appendChild(stopList(plan.unassigned, null, true));
+        card.querySelector('.rt-card-state').textContent = pl(other.length, 'խանութ') + ', ' + kgText(kgOf(other));
+        card.appendChild(stopList(other, null, true));
         box.appendChild(card);
     }
 
@@ -811,6 +853,7 @@
         if (tr.over_time) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">ուշանում է</span>');
         if (tr.over_capacity) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">գերբեռնված</span>');
         if (tr.pinned) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-ok"><i class="fas fa-lock" aria-hidden="true"></i>ամրացված</span>');
+        else if (tr.late) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn"><i class="fas fa-moon" aria-hidden="true"></i>արտաժամյա</span>');
         const tog = document.createElement('button');
         tog.type = 'button';
         tog.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-editbtn';
@@ -876,7 +919,7 @@
         tb.textContent = '';
         b.trucks.forEach(r => {
             const tr = document.createElement('tr');
-            [truckLabel(truckBy(r.car_code)) + (r.over_time ? ' — չի հասցնում մեկ օրում' : ''), fmt(r.stops), fmt(r.kg), fmt(r.trips), fmt(r.km, 1)].forEach((v, i) => {
+            [truckLabel(truckBy(r.car_code)) + (r.over_time ? ' — չի հասցնում մինչև ' + endOfDay() + '-ը' : ''), fmt(r.stops), fmt(r.kg), fmt(r.trips), fmt(r.km, 1)].forEach((v, i) => {
                 const td = document.createElement('td');
                 td.textContent = v;
                 td.setAttribute('data-label', ['Մեքենա', 'Կետեր', 'կգ', 'Երթեր', 'կմ'][i]);
@@ -945,8 +988,8 @@
         plan.unassigned.forEach(s => {
             if (s.lat === null) return;
             bounds.push([s.lat, s.lon]);
-            L.circleMarker([s.lat, s.lon], { radius: 7, color: '#ffb547', weight: 3, fillColor: '#0c0f14', fillOpacity: 1 })
-                .bindTooltip('Դեռ երթում չէ՝ ' + esc(s.name || s.code)).addTo(state.layers);
+            L.circleMarker([s.lat, s.lon], { radius: 7, color: s.no_room ? '#ff6b79' : '#ffb547', weight: 3, fillColor: '#0c0f14', fillOpacity: 1 })
+                .bindTooltip((s.no_room ? 'Չտեղավորվեց մինչև ' + esc(state.data.work_end) + '-ը՝ ' : 'Դեռ երթում չէ՝ ') + esc(s.name || s.code)).addTo(state.layers);
         });
         if (depot) {
             bounds.push(depot);
@@ -1060,6 +1103,30 @@
             + 'body{font-family:"Segoe UI",Sylfaen,"Noto Sans Armenian",Arial,sans-serif;color:#000;margin:0;padding:12mm;font-size:15px}'
             + '.sheet{page-break-after:always;break-after:page}.sheet:last-child{page-break-after:auto;break-after:auto}'
             + 'h1{font-size:24px;margin:0 0 4px}h2{font-size:19px;margin:18px 0 6px}.sub{font-size:15px;margin:0 0 10px}'
+    // Конец дня машин сегодня: принятая переработка («Везти после конца дня») — её предел
+    const endOfDay = () => (state.data.overtime_ok ? state.data.overtime_end : state.data.work_end);
+
+    // «Везти после конца дня»: не поместившиеся — по машинам дня с переработкой (форс-мажор)
+    async function overtime() {
+        if (state.busy) return;
+        if (!window.confirm('Մեքենաները կաշխատեն ' + state.data.work_end + '-ից հետո՝ մինչև ' + state.data.overtime_end + '-ը։ Շարունակե՞լ։')) return;
+        hideActionError();
+        setBusy(true);
+        try {
+            const data = await api('POST', '/api/routes/dispatch/overtime', { date: state.day, rev: state.data.rev });
+            setBusy(false);
+            setData(data);
+            const late = data.plan.unassigned.filter(s => s.no_room).length, rest = data.plan.unassigned.length - late;
+            toast(late ? pl(late, 'խանութ') + ' չեն հասցնում նույնիսկ մինչև ' + data.overtime_end + '-ը։'
+                : rest ? pl(rest, 'խանութ') + ' դեռ ոչ մի երթում չեն։'
+                : 'Բոլոր խանութները երթերում են' + (data.overtime ? '՝ արտաժամյա' : '') + '։');
+        } catch (e) {
+            setBusy(false);
+            render();
+            showActionError(e);
+        }
+    }
+
             + 'table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:7px 8px;vertical-align:top;text-align:left}'
             + 'th{font-size:13px;background:#eee}td.n{font-size:22px;font-weight:700;width:38px;text-align:center}td.kg{font-size:18px;font-weight:700;white-space:nowrap;width:90px}'
             + 'td.ok{width:60px}.addr{font-size:17px}.nm{font-weight:700}@media screen{body{background:#fff}}'

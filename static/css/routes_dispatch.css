@@ -158,3 +158,4 @@
     .dp-editbtn { margin-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) { #rtDispatch * { scroll-behavior: auto !important; } }
+.dp-overtime-btn { margin: 0 0 14px; }

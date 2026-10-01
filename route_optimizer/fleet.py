@@ -21,7 +21,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .geo import Point, in_city
@@ -196,10 +197,35 @@ def _cut(seq: Sequence[int], stops: Sequence[_Stop], cap: float) -> list[list[in
     return out
 
 
+def _time_head(seq: Sequence[int], stops: Sequence[_Stop], m: Matrix, trucks: Sequence[FleetTruck],
+               used: Mapping[str, float], window: float) -> int:
+    """Сколько первых точек рейса (по ходу объезда) успевает хоть одна машина до конца рабочего дня
+    (с её тоннажем и уже занятым временем); 0 — ни одной."""
+    best = 0
+    for t in trucks:
+        left = window - used[t.car_code]
+        k, kg, unload = 0, 0.0, 0.0
+        while k < len(seq):
+            kg += stops[seq[k]].kg
+            unload += stops[seq[k]].unload
+            if kg > t.capacity_kg + _EPS or _closed(seq[:k + 1], stops, m) + unload > left + _EPS:
+                break
+            k += 1
+        best = max(best, k)
+    return best
+
+
 def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[FleetTruck],
-               tn: TruckNorms, used: Mapping[str, float] | None = None) -> list[Trip]:
+               tn: TruckNorms, used: Mapping[str, float] | None = None, overflow: bool = True,
+               earliest: bool = False) -> list[Trip]:
     """Рейсы дня доставки одной пробы (шаги 1–4 из шапки модуля). stops — заказы пробы.
-    used — минуты, которые машины уже заняты (закреплённые логистом рейсы плана развоза)."""
+    used — минуты, которые машины уже заняты (закреплённые логистом рейсы плана развоза).
+    overflow — рейс, который ни одна машина не успевает до конца рабочего дня, всё равно везёт машина,
+    освободившаяся раньше всех (модель парка: так считается нехватка машин); False — за конец дня не
+    планируем (план развоза): от такого рейса берётся начало по ходу объезда, которое машина ещё
+    успевает, остальное — снова в очередь; что не успевает никто — не назначается. Целостность
+    тяжёлых заказов при overflow=False — в route_day. earliest — рейс достаётся машине, которая раньше
+    всех его закончит (переработка: часы сверх дня — короче), а не самой экономичной."""
     if not stops or not trucks:
         return []
     cap = max(t.capacity_kg for t in trucks)
@@ -226,6 +252,12 @@ def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[Fl
     def drive(seq: Sequence[int]) -> tuple[float, float]:
         return _closed(seq, vs, d), _closed(seq, vs, m)
 
+    def shortest(seq: list[int]) -> tuple:
+        """Рейс в порядке 2-opt (короче по км) или как есть — что быстрее по минутам: голова рейса
+        резалась под время, и порядок, короче по км, может не успеть."""
+        a, b = item(seq), item(_two_opt(seq, vs, d))
+        return b if b[5] <= a[5] + _EPS else a
+
     def item(seq: list[int]) -> tuple:
         km, drive_min = drive(seq)
         minutes = drive_min + math.fsum(vs[v].unload for v in seq)
@@ -247,9 +279,21 @@ def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[Fl
                 if len(pieces) > 1:
                     queue = sorted(queue + [item(_two_opt(p, vs, d)) for p in pieces])
                     continue
+            if not overflow:
+                if len(seq) > 1:
+                    # порядок объезда случаен по направлению: успевает больше — с того конца и режем;
+                    # ни с одного конца ни одной точки — отрываем крайнюю, чтобы проверить остальные
+                    fwd = _time_head(seq, vs, m, trucks, used, window)
+                    back = _time_head(seq[::-1], vs, m, trucks, used, window)
+                    s2, head = (seq, fwd) if fwd >= back else (seq[::-1], back)
+                    head = min(max(head, 1), len(seq) - 1)
+                    queue = sorted(queue + [shortest(s2[:head]), shortest(s2[head:])])
+                continue
             # рейс за пределами дня: везёт машина, которая поднимет груз и освободится раньше всех
             fits = [t for t in trucks if t.capacity_kg >= kg - _EPS]
             truck = min(fits, key=lambda t: (used[t.car_code], t.l100, t.car_code))
+        elif earliest:
+            truck = min(fits, key=lambda t: (used[t.car_code] + minutes, t.l100, t.car_code))
         else:
             truck = min(fits, key=lambda t: (t.l100, -t.capacity_kg, t.car_code))
         used[truck.car_code] += minutes
@@ -262,16 +306,31 @@ def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[Fl
 
 def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[float], depot: Point,
               trucks: Sequence[FleetTruck], norms: Norms, tn: TruckNorms,
-              used: Mapping[str, float] | None = None) -> list[Trip]:
+              used: Mapping[str, float] | None = None, overflow: bool = True,
+              earliest: bool = False) -> list[Trip]:
     """Рейсы дня по известным заказам — тот же расчёт, что у пробы Монте-Карло (plan_trips):
     заказ i — точка points[i], kgs[i] кг; Trip.items — номера заказов по порядку объезда.
-    Тяжелее самой большой машины — несколько поездок к одному заказу поровну."""
+    Тяжелее самой большой машины — несколько поездок к одному заказу поровну. overflow=False (план
+    развоза) — за конец рабочего дня не планируем; тяжёлый заказ, у которого влезли не все поездки,
+    снимается целиком (полдоставки не бывает), и рейсы собираются заново без него — его время
+    достаётся другим заказам."""
     uniq = sorted(set(points))
     node = {p: i + 1 for i, p in enumerate(uniq)}
     d, m = _matrices(uniq, depot, norms)
     stops = [_Stop(node[p], float(kg), float(rev), tn.unload(float(kg)))
              for p, kg, rev in zip(points, kgs, revenues)]
-    return plan_trips(stops, d, m, trucks, tn, used)
+    if overflow or not trucks:
+        return plan_trips(stops, d, m, trucks, tn, used, overflow, earliest)
+    cap = max(t.capacity_kg for t in trucks)
+    keep = list(range(len(stops)))
+    while True:
+        trips = [replace(t, items=tuple(keep[i] for i in t.items))
+                 for t in plan_trips([stops[i] for i in keep], d, m, trucks, tn, used, overflow, earliest)]
+        pieces = Counter(i for t in trips for i in t.items if stops[i].kg > cap + _EPS)
+        partial = {i for i, n in pieces.items() if n < math.ceil(stops[i].kg / cap)}
+        if not partial:
+            return trips
+        keep = [i for i in keep if i not in partial]
 
 
 def route_trip(points: Sequence[Point], kgs: Sequence[float], depot: Point, norms: Norms,
