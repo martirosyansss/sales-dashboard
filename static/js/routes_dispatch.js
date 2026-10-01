@@ -851,9 +851,9 @@
         const flags = document.createElement('span');
         flags.className = 'dp-trip-flags';
         if (tr.over_time) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">ուշանում է</span>');
+        else if (tr.late) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn"><i class="fas fa-moon" aria-hidden="true"></i>արտաժամյա</span>');
         if (tr.over_capacity) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">գերբեռնված</span>');
         if (tr.pinned) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-ok"><i class="fas fa-lock" aria-hidden="true"></i>ամրացված</span>');
-        else if (tr.late) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn"><i class="fas fa-moon" aria-hidden="true"></i>արտաժամյա</span>');
         const tog = document.createElement('button');
         tog.type = 'button';
         tog.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-editbtn';
@@ -1072,6 +1072,30 @@
         }
     }
 
+    // Конец дня машин сегодня: принятая переработка («Везти после конца дня») — её предел
+    const endOfDay = () => (state.data.overtime_ok ? state.data.overtime_end : state.data.work_end);
+
+    // «Везти после конца дня»: не поместившиеся — по машинам дня с переработкой (форс-мажор)
+    async function overtime() {
+        if (state.busy) return;
+        if (!window.confirm('Մեքենաները կաշխատեն ' + state.data.work_end + '-ից հետո՝ մինչև ' + state.data.overtime_end + '-ը։ Շարունակե՞լ։')) return;
+        hideActionError();
+        setBusy(true);
+        try {
+            const data = await api('POST', '/api/routes/dispatch/overtime', { date: state.day, rev: state.data.rev });
+            setBusy(false);
+            setData(data);
+            const late = data.plan.unassigned.filter(s => s.no_room).length, rest = data.plan.unassigned.length - late;
+            toast(late ? pl(late, 'խանութ') + ' չեն հասցնում նույնիսկ մինչև ' + data.overtime_end + '-ը։'
+                : rest ? pl(rest, 'խանութ') + ' դեռ ոչ մի երթում չեն։'
+                : 'Բոլոր խանութները երթերում են' + (data.overtime ? '՝ արտաժամյա' : '') + '։');
+        } catch (e) {
+            setBusy(false);
+            render();
+            showActionError(e);
+        }
+    }
+
     async function excludeStop(stop) {
         if (!needPlan()) return;
         const orders = stop.orders || [];
@@ -1103,30 +1127,6 @@
             + 'body{font-family:"Segoe UI",Sylfaen,"Noto Sans Armenian",Arial,sans-serif;color:#000;margin:0;padding:12mm;font-size:15px}'
             + '.sheet{page-break-after:always;break-after:page}.sheet:last-child{page-break-after:auto;break-after:auto}'
             + 'h1{font-size:24px;margin:0 0 4px}h2{font-size:19px;margin:18px 0 6px}.sub{font-size:15px;margin:0 0 10px}'
-    // Конец дня машин сегодня: принятая переработка («Везти после конца дня») — её предел
-    const endOfDay = () => (state.data.overtime_ok ? state.data.overtime_end : state.data.work_end);
-
-    // «Везти после конца дня»: не поместившиеся — по машинам дня с переработкой (форс-мажор)
-    async function overtime() {
-        if (state.busy) return;
-        if (!window.confirm('Մեքենաները կաշխատեն ' + state.data.work_end + '-ից հետո՝ մինչև ' + state.data.overtime_end + '-ը։ Շարունակե՞լ։')) return;
-        hideActionError();
-        setBusy(true);
-        try {
-            const data = await api('POST', '/api/routes/dispatch/overtime', { date: state.day, rev: state.data.rev });
-            setBusy(false);
-            setData(data);
-            const late = data.plan.unassigned.filter(s => s.no_room).length, rest = data.plan.unassigned.length - late;
-            toast(late ? pl(late, 'խանութ') + ' չեն հասցնում նույնիսկ մինչև ' + data.overtime_end + '-ը։'
-                : rest ? pl(rest, 'խանութ') + ' դեռ ոչ մի երթում չեն։'
-                : 'Բոլոր խանութները երթերում են' + (data.overtime ? '՝ արտաժամյա' : '') + '։');
-        } catch (e) {
-            setBusy(false);
-            render();
-            showActionError(e);
-        }
-    }
-
             + 'table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:7px 8px;vertical-align:top;text-align:left}'
             + 'th{font-size:13px;background:#eee}td.n{font-size:22px;font-weight:700;width:38px;text-align:center}td.kg{font-size:18px;font-weight:700;white-space:nowrap;width:90px}'
             + 'td.ok{width:60px}.addr{font-size:17px}.nm{font-weight:700}@media screen{body{background:#fff}}'
