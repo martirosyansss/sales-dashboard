@@ -17,7 +17,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from functools import wraps
-from typing import Any, Callable
+from typing import Any, Callable, Collection, Sequence
 
 from flask import Blueprint, Response, current_app, jsonify, render_template, request, session
 
@@ -747,7 +747,7 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
     h, m = map(int, s['truck_work_start'].split(':'))
     h2, m2 = map(int, s['truck_overtime_end'].split(':'))
     return dp.DayContext(day, bundle.depot, trucks, norms, fl.TruckNorms.from_settings(s), h * 60 + m,
-                         float(h2 * 60 + m2 - (h * 60 + m)))
+                         float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']))
 
 
 @dataclass
@@ -768,6 +768,7 @@ class _DispatchDay:
     ready: dict[str, fl.FleetTruck]
     snap: Snapshot
     bundle: Bundle
+    carried: set[str] = field(default_factory=set)   # перенесённые на этот день «Везти завтра» прошлых дней
 
 
 def _day_orders(state: RoutesState, bundle: Bundle, day: date,
@@ -783,12 +784,46 @@ def _stored_draft(state: RoutesState, day: date) -> tuple[dp.Draft | None, int]:
     return (dp.Draft.from_json(stored[0]), stored[1]) if stored is not None else (None, 0)
 
 
+def _backlog_in(draft: dp.Draft | None, carried: Collection[str]) -> set[str]:
+    """Заказы прошлых дней в развозе дня: добавленные логистом + перенесённые сюда «Везти завтра»
+    (carried), кроме тех, что логист этого дня из развоза убрал (dropped)."""
+    if draft is None:
+        return set(carried)
+    return set(draft.added) | (set(carried) - draft.dropped)
+
+
 def _active_orders(deliver: list[dp.DispatchOrder], backlog: list[dp.DispatchOrder],
-                   draft: dp.Draft | None) -> list[dp.DispatchOrder]:
-    """Заказы в развозе: заказы дня без «не везём сегодня» + добавленные логистом заказы прошлых дней."""
+                   draft: dp.Draft | None, carried: Collection[str] = ()) -> list[dp.DispatchOrder]:
+    """Заказы в развозе: заказы дня без «не везём сегодня» + заказы прошлых дней в развозе (_backlog_in)."""
     excluded = draft.excluded if draft is not None else set()
-    added = draft.added if draft is not None else set()
-    return [o for o in deliver if o.isn not in excluded] + [o for o in backlog if o.isn in added]
+    inside = _backlog_in(draft, carried)
+    return [o for o in deliver if o.isn not in excluded] + [o for o in backlog if o.isn in inside]
+
+
+def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: list[dp.DispatchOrder]) -> set[str]:
+    """Заказы, которые логист перенёс на этот день («Везти завтра», №25) в планах с прошлого рабочего дня
+    по вчера (и из нерабочего дня между ними) и которые ещё не отгружены. Битый черновик — без переносов."""
+    out: set[str] = set()
+    d = dp.previous_workday(day, workdays)
+    while d < day:
+        try:
+            stored = state.store.load_dispatch(d.isoformat())
+        except StoreError:
+            stored = None
+        if stored is not None:
+            out |= dp.Draft.from_json(stored[0]).deferred
+        d += timedelta(days=1)
+    return out & {o.isn for o in backlog}
+
+
+def _defer_target(day: date, workdays: Sequence[int]) -> tuple[date, date]:
+    """(день доставки, куда «Везти завтра», самая ранняя дата заказа, которую он ещё видит)."""
+    target = dp.next_workday(day, workdays)
+    since, _ = dp.order_window(target, workdays)
+    return target, dp.backlog_since(since, workdays)
+
+
+
 
 
 def _orders_sig(data: dp.DispatchData) -> str:
@@ -799,11 +834,17 @@ def _orders_sig(data: dp.DispatchData) -> str:
 
 
 def _freshness(day: date, bundle: Bundle, data: dp.DispatchData, deliver: list[dp.DispatchOrder],
-               backlog: list[dp.DispatchOrder], draft: dp.Draft | None) -> dict[str, Any]:
-    """«Заказы ещё поступают» и что изменилось с последней сборки — для подсказки вверху страницы."""
+               backlog: list[dp.DispatchOrder], draft: dp.Draft | None,
+               carried: Collection[str] = ()) -> dict[str, Any]:
+    """«Заказы ещё поступают» и что изменилось с последней сборки — для подсказки вверху страницы.
+    Перенесённые сюда из прошлого дня — как заказы дня: появился перенос — «новые», сняли — «убраны»."""
     s = bundle.settings
-    changes = None if draft is None else dp.since_build(draft.built_orders, deliver, [*deliver, *backlog],
-                                                        draft.excluded)
+    changes = None
+    if draft is not None:
+        inside = _backlog_in(draft, carried)
+        moved_in = [o for o in backlog if o.isn in set(carried) - draft.dropped]
+        changes = dp.since_build(draft.built_orders, [*deliver, *moved_in],
+                                 [*deliver, *(o for o in backlog if o.isn in inside)], draft.excluded)
     return {
         'orders_still_coming': dp.orders_still_coming(day, s['workdays'], _clock(), s['dispatch_ready_time']),
         'ready_time': s['dispatch_ready_time'],
@@ -822,6 +863,7 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
     deliver, backlog = sel.main, sel.backlog
     if draft is None:
         draft, rev = _stored_draft(state, day)
+    carried = _carried(state, day, bundle.settings['workdays'], backlog)
     coords: dict[int, Any] = {}
 
     def coord(cid: int) -> Any:
@@ -829,16 +871,16 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
             coords[cid] = evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides)
         return coords[cid]
 
-    stops = dp.build_stops(_active_orders(deliver, backlog, draft), coord)
+    stops = dp.build_stops(_active_orders(deliver, backlog, draft, carried), coord)
     ready = _ready_trucks(snap, bundle)
     ctx = _dispatch_ctx(state, snap, bundle, day, ready, [s.point for s in stops if s.point is not None])
     return _DispatchDay(day, since, until, data, deliver, backlog, sel.shipped_before, sel.self_delivery, draft,
-                        rev or 0, stops, ctx, ready, snap, bundle)
+                        rev or 0, stops, ctx, ready, snap, bundle, carried)
 
 
 def _day_stops(dd: _DispatchDay, draft: dp.Draft) -> list[dp.Stop]:
     """Точки развоза дня для черновика draft (его «не везём сегодня» и добавленные заказы)."""
-    return dp.build_stops(_active_orders(dd.deliver, dd.backlog, draft),
+    return dp.build_stops(_active_orders(dd.deliver, dd.backlog, draft, dd.carried),
                           lambda cid: evaluate.visit_coord(dd.snap, cid, 0, dd.bundle.geo_overrides))
 
 
@@ -888,16 +930,17 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
                        'capacity_kg': ready.capacity_kg if ready else None,
                        'l100': ready.l100 if ready else None,
                        'ready': ready is not None, 'selected': ready is not None and code in selected})
-    added = draft.added if draft is not None else set()
+    added = _backlog_in(draft, dd.carried)
     no_coords = [s for s in dd.stops if s.point is None]
-    active = _active_orders(dd.deliver, dd.backlog, draft)
+    active = _active_orders(dd.deliver, dd.backlog, draft, dd.carried)
     excl = [o for o in dd.deliver if o.isn in excluded]
 
     def order_json(o: dp.DispatchOrder) -> dict[str, Any]:
         code, name = dd.data.customers.get(o.customer_id) or ('', '')
         return {'isn': o.isn, 'doc_num': o.doc_num, 'customer_id': o.customer_id, 'code': code, 'name': name,
                 'order_date': o.order_date.isoformat(), 'kg': round(o.kg), 'revenue': round(o.revenue),
-                'added': o.isn in added}
+                'added': o.isn in added, 'deferred': draft is not None and o.isn in draft.deferred,
+                'carried': o.isn in dd.carried}
 
     body: dict[str, Any] = {
         'day': dd.day.isoformat(), 'weekday': dd.day.isoweekday(),
@@ -922,8 +965,10 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         'plan': None,
         'overtime': draft.overtime if draft is not None else False,
         'overtime_ok': draft.overtime_ok if draft is not None else False,
+        'min_trip_revenue': s['min_trip_revenue'],
+        'defer_to': _defer_target(dd.day, s['workdays'])[0].isoformat(),
         'overtime_days_month': _overtime_days(_state().store, dd.day),
-        **_freshness(dd.day, dd.bundle, dd.data, dd.deliver, dd.backlog, draft),
+        **_freshness(dd.day, dd.bundle, dd.data, dd.deliver, dd.backlog, draft, dd.carried),
     }
     if draft is not None and dd.ctx is not None:
         plan = dp.plan_view(dd.ctx, dd.stops, draft, info)
@@ -973,11 +1018,12 @@ def api_dispatch_status() -> Any:
         return _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
     _, _, data, sel = _day_orders(state, bundle, day, refresh=False)
     draft, rev = _stored_draft(state, day)
-    active = _active_orders(sel.main, sel.backlog, draft)
+    carried = _carried(state, day, bundle.settings['workdays'], sel.backlog)
+    active = _active_orders(sel.main, sel.backlog, draft, carried)
     return jsonify({'success': True, 'day': day.isoformat(), 'rev': rev,
                     'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
                                'revenue': round(sum(o.revenue for o in active))},
-                    **_freshness(day, bundle, data, sel.main, sel.backlog, draft)})
+                    **_freshness(day, bundle, data, sel.main, sel.backlog, draft, carried)})
 
 
 def _dispatch_request() -> tuple[Any, Any, Any]:
@@ -1019,9 +1065,11 @@ def api_dispatch_build() -> Any:
     if not codes:
         return _bad_request({'trucks': 'отметьте хотя бы одну машину'})
     started = time.perf_counter()
+    # первая сборка дня: перенесённые сюда заказы прошлого дня — сразу в развозе
     draft = dp.build(dd.ctx, dd.stops, dd.draft, codes, _now())
     # отметка сборки: все заказы дня (и исключённые — они не «новые») + добавленные заказы прошлых дней
-    draft.built_orders = dp.order_marks([*dd.deliver, *(o for o in dd.backlog if o.isn in draft.added)])
+    inside = _backlog_in(draft, dd.carried)
+    draft.built_orders = dp.order_marks([*dd.deliver, *(o for o in dd.backlog if o.isn in inside)])
     draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'))
     logger.info('[Routes] Развоз на %s собран (%s) за %.1f с: точек %d, рейсов %d, машин %d', day,
@@ -1048,11 +1096,17 @@ def api_dispatch_edit() -> Any:
         return _conflict('План изменили в другой вкладке — обновите страницу')
     info = _stop_info(dd)
     km_before = dp.plan_view(dd.ctx, dd.stops, dd.draft, info)['summary']['km']
+    workdays = bundle.settings['workdays']
+    deferred_before = set(dd.draft.deferred)
     try:
         draft = dp.apply_edit(dd.ctx, dd.stops, dd.draft, payload, {o.isn for o in dd.deliver},
-                              {o.isn for o in dd.backlog})
+                              {o.isn for o in dd.backlog}, defer_since=_defer_target(day, workdays)[1],
+                              carried=dd.carried)
     except dp.DispatchError as e:
         return _bad_request({'_': str(e)})
+    if day < date.today() and draft.deferred != deferred_before:
+        # перенос с прошедшего дня меняет развоз уже другого дня — задним числом нельзя
+        return _bad_request({'_': 'Прошедший день — перенос на другой день не меняется'})
     # заказы после правки («не везём сегодня» / вернуть меняют точки и вес) — отметка дня по ним
     draft.overtime = dp.runs_late(dd.ctx, _day_stops(dd, draft), draft)
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)

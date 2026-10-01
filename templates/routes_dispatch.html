@@ -10,7 +10,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=13">
 <!-- Страница на армянском (ответ владельца №31), интерфейс «для чайников» — свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=3">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=4">
 {% endblock %}
 
 {% block content %}
@@ -220,5 +220,5 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=9"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=10"></script>
 {% endblock %}

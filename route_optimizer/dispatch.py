@@ -26,7 +26,7 @@ import math
 import re
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
 
 from . import fleet as fl
 from .geo import Coord, Point
@@ -186,10 +186,10 @@ def _totals(items: Sequence[tuple[float, float]]) -> dict[str, Any]:
 
 def since_build(built: Mapping[str, tuple[float, float]] | None, main: Sequence[DispatchOrder],
                 pending: Sequence[DispatchOrder], excluded: set[str]) -> dict[str, Any] | None:
-    """Что изменилось с последней сборки. new — заказы дня, которых при сборке не было (кроме тех, что
-    логист уже исключил); removed — заказы сборки, которых больше нет среди неотгруженных (отменили или
-    уже отгрузили; их кг и сумма — из отметки). pending — все неотгруженные к дню заказы (дня и прошлых
-    дней). Отметки нет — None."""
+    """Что изменилось с последней сборки. new — заказы дня (и перенесённые сюда из прошлого дня), которых
+    при сборке не было (кроме тех, что логист уже исключил); removed — заказы сборки, которых больше нет
+    в развозе дня (отменили, уже отгрузили, сняли перенос; их кг и сумма — из отметки). pending — заказы
+    развоза дня: заказы дня и прошлых дней, что в нём. Отметки нет — None."""
     if built is None:
         return None
     new = [(o.kg, o.revenue) for o in main if o.isn not in built and o.isn not in excluded]
@@ -254,6 +254,11 @@ class Draft:
     # логист нажал «Везти после конца дня»: рейсы до предела (truck_overtime_end) — принятая переработка,
     # а не ошибка; новая сборка сбрасывает
     overtime_ok: bool = False
+    # заказы (fISN), перенесённые на следующий день доставки («Везти завтра», №25): следующий день сам
+    # берёт их в развоз при загрузке (carried), искать их среди «не отгружены с прошлых дней» не нужно
+    deferred: set[str] = field(default_factory=set)
+    # перенесённые сюда из прошлого дня (carried), которые логист этого дня убрал из развоза
+    dropped: set[str] = field(default_factory=set)
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -262,7 +267,8 @@ class Draft:
                 'trips': [{'id': t.id, 'truck': t.truck, 'stops': list(t.stops), 'pinned': t.pinned}
                           for t in self.trips],
                 'next_id': self.next_id, 'built_at': self.built_at, 'built_orders': built,
-                'no_room': sorted(self.no_room), 'overtime': self.overtime, 'overtime_ok': self.overtime_ok}
+                'no_room': sorted(self.no_room), 'overtime': self.overtime, 'overtime_ok': self.overtime_ok,
+                'deferred': sorted(self.deferred), 'dropped': sorted(self.dropped)}
 
     @classmethod
     def from_json(cls, raw: Any) -> Draft:
@@ -286,8 +292,10 @@ class Draft:
         next_id = max([next_id if _is_int(next_id) else 1, *(t.id + 1 for t in trips)])
         built = raw.get('built_at') if isinstance(raw.get('built_at'), str) else None
         no_room = {c for c in (raw.get('no_room') or [])[:MAX_BUILT_ORDERS] if _is_int(c)}
+        def isns(key: str) -> set[str]:
+            return {x for x in (raw.get(key) or [])[:MAX_BUILT_ORDERS] if isinstance(x, str) and ISN_RE.match(x)}
         return cls(trucks, excluded, added, trips, next_id, built, _built_orders(raw.get('built_orders')), no_room,
-                   raw.get('overtime') is True, raw.get('overtime_ok') is True)
+                   raw.get('overtime') is True, raw.get('overtime_ok') is True, isns('deferred'), isns('dropped'))
 
 
 def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
@@ -321,6 +329,7 @@ class DayContext:
     tn: fl.TruckNorms
     work_start_min: int                  # начало рабочего дня машины, минут от полуночи
     overtime_minutes: float | None = None   # форс-мажор: длина дня машины до truck_overtime_end; None — без предела
+    min_trip_revenue: float = 0.0        # рейс дешевле — «бедный» (ответ владельца №25: везти сейчас или завтра)
 
 
 def _hhmm(minutes: float) -> str:
@@ -376,7 +385,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     sel = _selected(ctx, trucks)
     codes = {t.car_code for t in sel}
     draft = Draft(trucks=sorted(codes), excluded=set(old.excluded), added=set(old.added), next_id=old.next_id,
-                  built_at=now)
+                  built_at=now, deferred=set(old.deferred), dropped=set(old.dropped))
     pinned = [DraftTrip(t.id, t.truck, list(t.stops), True) for t in old.trips if t.pinned and t.truck in codes]
     tmp = Draft(trips=pinned)
     _clean(tmp, routable)
@@ -460,7 +469,8 @@ def _insert_cheapest(ctx: DayContext, cids: list[int], cid: int, stops: Mapping[
 
 
 def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mapping[str, Any],
-               order_ids: set[str], backlog_ids: set[str] = frozenset()) -> Draft:
+               order_ids: set[str], backlog_ids: set[str] = frozenset(), defer_since: date | None = None,
+               carried: Collection[str] = ()) -> Draft:
     """Правка логиста (§3) поверх черновика; затронутые рейсы пересчитываются (порядок — 2-opt).
     edit:
       {"action": "move", "customer_id", "from_trip": id|null, "to_trip": id|null, "truck": код|null}
@@ -469,7 +479,12 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
       {"action": "pin", "trip": id, "truck": код} — закрепить машину за рейсом (рейс уходит к ней);
       {"action": "unpin", "trip": id};
       {"action": "exclude" | "include", "order": fISN} — «не везём сегодня» / вернуть; заказ прошлых
-          дней (backlog_ids) — убрать из развоза / добавить в развоз.
+          дней (backlog_ids) — убрать из развоза / добавить в развоз (перенесённый сюда — carried —
+          убранный запоминается в dropped); перенос на завтра снимается;
+      {"action": "defer_trip", "trip": id} — «везти завтра» (№25: рейс дешевле min_trip_revenue): заказы
+          рейса — не сегодня (excluded / из added) и в deferred — следующий день доставки возьмёт их сам;
+          заказ старше defer_since (вне окна «не отгружены с прошлых дней» следующего дня) — ошибка:
+          завтра его не будет видно, решать надо сегодня.
     Ошибка — DispatchError с текстом для логиста."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
@@ -478,11 +493,35 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
         isn = edit.get('order')
         isn = isn.upper() if isinstance(isn, str) else None
         if isn in backlog_ids:
-            (draft.added.discard if action == 'exclude' else draft.added.add)(isn)
+            if action == 'exclude':
+                draft.added.discard(isn)
+                if isn in carried:
+                    draft.dropped.add(isn)
+            else:
+                draft.added.add(isn)
+                draft.dropped.discard(isn)
+            draft.deferred.discard(isn)
             return draft
         if isn not in order_ids:
             raise DispatchError('Заказ не найден среди заказов дня — обновите страницу')
         (draft.excluded.add if action == 'exclude' else draft.excluded.discard)(isn)
+        draft.deferred.discard(isn)
+        return draft
+    if action == 'defer_trip':
+        trip = _trip(draft, edit.get('trip'))
+        if defer_since is not None and any(o.order_date < defer_since for c in trip.stops for o in routable[c].orders):
+            raise DispatchError('Заказы этого рейса слишком давние для переноса на завтра — решите сегодня')
+        for cid in trip.stops:
+            for o in routable[cid].orders:
+                if o.isn in order_ids:
+                    draft.excluded.add(o.isn)
+                else:
+                    draft.added.discard(o.isn)
+                draft.deferred.add(o.isn)
+        moved = set(trip.stops)
+        for t in draft.trips:                    # тяжёлый заказ в нескольких рейсах — переносится целиком
+            t.stops = [c for c in t.stops if c not in moved]
+        draft.trips = [t for t in draft.trips if t.stops]
         return draft
     if action in ('pin', 'unpin'):
         trip = _trip(draft, edit.get('trip'))
@@ -558,14 +597,18 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
         slot = per_truck.setdefault(t.truck, {'used': 0.0, 'trips': []})
         depart = slot['used']
         slot['used'] += minutes
+        revenue = math.fsum(routable[c].revenue / shares[c] for c in cids)
         tj = {
             'id': t.id, 'truck': t.truck, 'pinned': t.pinned,
             'km': _r(km), 'minutes': round(minutes), 'kg': round(kg),
-            'revenue': round(math.fsum(routable[c].revenue / shares[c] for c in cids)),
+            'revenue': round(revenue),
             'liters': _r(km * l100 / 100.0) if l100 is not None else None,
             'load_pct': round(kg / cap * 100.0) if cap else None,
             'depart': _hhmm(ctx.work_start_min + depart), 'return': _hhmm(ctx.work_start_min + slot['used']),
             'over_time': slot['used'] > limit + _EPS, 'late': slot['used'] > window + _EPS,
+            # бедный — по полной выручке точек: тяжёлый заказ на несколько поездок перенос не объединит
+            'poor': ctx.min_trip_revenue > 0
+                    and math.fsum(routable[c].revenue for c in cids) < ctx.min_trip_revenue,
             'over_capacity': cap is not None and kg > cap + 0.5,
             'no_truck': truck is None,
             'stops': [{**info(routable[c]), 'kg': round(routable[c].kg / shares[c]),
@@ -598,6 +641,7 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
         'overflow': {'trips': len(over), 'kg': sum(t['kg'] for t in over),
                      'unassigned_kg': sum(u['kg'] for u in unassigned)},
         'summary': {'trips': len(trips_json), 'trucks': len(trucks_json), 'km': _r(km_total),
+                    'poor_trips': sum(1 for t in trips_json if t['poor']),
                     'liters': _r(math.fsum(t['liters'] or 0.0 for t in trips_json)),
                     'kg': sum(t['kg'] for t in trips_json), 'stops': len(in_trips)},
     }

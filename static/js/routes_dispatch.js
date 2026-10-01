@@ -67,6 +67,8 @@
         'отметьте хотя бы одну машину': 'Նշեք գոնե մեկ մեքենա',
         'Сначала укажите склад и тоннаж с расходом машин в настройках': 'Նախ կարգավորումներում նշեք պահեստը և մեքենաների տոննաժն ու ծախսը',
         'Сначала соберите рейсы': 'Նախ կազմեք երթերը',
+        'Заказы этого рейса слишком давние для переноса на завтра — решите сегодня': 'Այս երթի պատվերները շատ հին են վաղվան տեղափոխելու համար — որոշեք այսօր',
+        'Прошедший день — перенос на другой день не меняется': 'Անցած օր է — այլ օր տեղափոխումը չի փոխվում',
         'План изменили в другой вкладке — обновите страницу': 'Պլանը փոխել են մեկ այլ ներդիրում — թարմացրեք էջը',
         'Рейс не найден — обновите страницу': 'Երթը չի գտնվել — թարմացրեք էջը',
         'Заказ не найден среди заказов дня — обновите страницу': 'Պատվերը չի գտնվել օրվա պատվերների մեջ — թարմացրեք էջը',
@@ -588,7 +590,9 @@
         b.textContent = o.name || o.code || ('հաճախորդ ' + o.customer_id);
         const s = document.createElement('span');
         s.textContent = (o.code ? o.code + ' · ' : '') + 'պատվեր ' + (o.doc_num || '') + (o.order_date ? ', ' + dateRu(o.order_date) : '')
-            + ' · ' + kgText(o.kg) + ' · ' + money(o.revenue);
+            + ' · ' + kgText(o.kg) + ' · ' + money(o.revenue)
+            + (o.deferred ? ' · կտարվի ' + dayHuman(state.data.defer_to, true) : '')
+            + (o.carried ? ' · տեղափոխված է նախորդ օրից' : '');
         t.append(b, s);
         const btn = document.createElement('button');
         btn.type = 'button';
@@ -853,6 +857,7 @@
         if (tr.over_time) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">ուշանում է</span>');
         else if (tr.late) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn"><i class="fas fa-moon" aria-hidden="true"></i>արտաժամյա</span>');
         if (tr.over_capacity) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">գերբեռնված</span>');
+        if (tr.poor) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn">' + esc(fmt(state.data.min_trip_revenue)) + NB + 'դրամից պակաս</span>');
         if (tr.pinned) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-ok"><i class="fas fa-lock" aria-hidden="true"></i>ամրացված</span>');
         const tog = document.createElement('button');
         tog.type = 'button';
@@ -865,9 +870,32 @@
         tog.addEventListener('click', () => toggleEdit(tr.id));
         head.append(title, time, meta, flags, tog);
         div.appendChild(head);
+        if (tr.poor && !state.data.is_past) div.appendChild(poorNote(tr));
         if (editing) div.appendChild(tripTools(t, tr, i));
         div.appendChild(stopList(tr.stops, tr.id, editing));
         return div;
+    }
+
+    // Рейс дешевле порога (ответ владельца №25): везти сейчас или завтра — решает логист
+    function poorNote(tr) {
+        const box = document.createElement('div');
+        box.className = 'dp-poor';
+        const p = document.createElement('p');
+        p.textContent = 'Երթի ապրանքը՝ ' + fmt(tr.revenue) + NB + 'դրամ, ' + fmt(state.data.min_trip_revenue) + NB + 'դրամից պակաս։ '
+            + 'Կարող եք տանել ' + dayHuman(state.data.defer_to, true) + '՝ այլ երթերի հետ։ Այսօր կխնայվի մինչև ≈ ' + fmt(tr.km) + NB + 'կմ'
+            + (tr.liters !== null ? ' (' + fmt(tr.liters, 1) + NB + 'լ)' : '') + ', իսկ '
+            + pl(tr.stops.length, 'խանութ') + ' կստանա առաքումը ավելի ուշ։';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'rt-btn rt-btn-ghost rt-btn-sm';
+        btn.innerHTML = '<i class="fas fa-calendar-plus" aria-hidden="true"></i><span></span>';
+        btn.lastChild.textContent = 'Տանել ' + dayHuman(state.data.defer_to, true);
+        btn.addEventListener('click', () => {
+            if (!window.confirm(pl(tr.stops.length, 'խանութ') + ' կստանա առաքումը ' + dayHuman(state.data.defer_to, true) + '։ Շարունակե՞լ։')) return;
+            edit({ action: 'defer_trip', trip: tr.id }, 'Երթը տեղափոխվեց վաղվան');
+        });
+        box.append(p, btn);
+        return box;
     }
 
     // Правка рейса: машина и «закрепить» — с пояснением, что это значит

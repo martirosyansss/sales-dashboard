@@ -4999,6 +4999,54 @@ def test_store_overtime_end_default_follows_late_work_end(tmp_path):
     assert 'settings.truck_overtime_end' in errors
 
 
+def test_dispatch_poor_trip_and_defer_to_next_day():
+    """№25: рейс дешевле min_trip_revenue — «бедный»; «Везти завтра» снимает его заказы с сегодняшнего
+    развоза (excluded) и помечает перенос (deferred); тяжёлый заказ в двух рейсах переносится целиком;
+    «вернуть» заказ — перенос снимается."""
+    spec = EAST + WEST + [(200, (40.23, 44.55), 12000.0)]
+    stops, orders = _dp_stops(spec)
+    ctx = replace(_dp_ctx((HOWO, FORD)), min_trip_revenue=150000.0)
+    draft = dp.build(ctx, stops, None, [HOWO.car_code, FORD.car_code], 'now')
+    view = dp.plan_view(ctx, stops, draft, _info)
+    trips = [t for tr in view['trucks'] for t in tr['trips']]
+    assert all(t['poor'] for t in trips) and view['summary']['poor_trips'] == len(trips)   # заказы по 10 000 драм
+    assert not any(t['poor'] for tr in dp.plan_view(_dp_ctx((HOWO, FORD)), stops, draft, _info)['trucks']
+                   for t in tr['trips'])                                    # порог 0 — бедных нет
+    ids = {o.isn for o in orders}
+    heavy = [t for t in draft.trips if 200 in t.stops]
+    assert len(heavy) == 2
+    d = dp.apply_edit(ctx, stops, draft, {'action': 'defer_trip', 'trip': heavy[0].id}, ids)
+    isn200 = {o.isn for o in orders if o.customer_id == 200}
+    assert isn200 <= d.excluded and isn200 <= d.deferred
+    assert all(200 not in t.stops for t in d.trips)                         # и вторая поездка — тоже
+    assert dp.Draft.from_json(json.loads(json.dumps(d.to_json()))).deferred == d.deferred
+    one = next(iter(isn200))
+    d = dp.apply_edit(ctx, stops, d, {'action': 'include', 'order': one}, ids)
+    assert one not in d.deferred and one not in d.excluded
+
+
+def test_dispatch_split_heavy_order_is_not_poor():
+    """Тяжёлый заказ на две поездки: на поездку — половина выручки, но перенос ничего не объединит —
+    «бедный» считается по полной выручке точки."""
+    orders = [_dorder(1, 200, 12000.0, rev=20000.0)]
+    stops = dp.build_stops(orders, _coord_of({200: (40.23, 44.55)}))
+    ctx = replace(_dp_ctx((HOWO, FORD)), min_trip_revenue=15000.0)
+    draft = dp.build(ctx, stops, None, [HOWO.car_code, FORD.car_code], 'now')
+    trips = [t for tr in dp.plan_view(ctx, stops, draft, _info)['trucks'] for t in tr['trips']]
+    assert len(trips) == 2 and all(t['revenue'] == 10000 for t in trips) and not any(t['poor'] for t in trips)
+
+
+def test_dispatch_carried_from_non_workday_draft(client):
+    """Перенос, сделанный в плане нерабочего дня (вс), доходит до следующего дня доставки (пн)."""
+    import route_optimizer.views as rv
+    state = client.application.extensions['route_optimizer']
+    isn = _isn(77)
+    state.store.save_dispatch('2026-10-04', dp.Draft(deferred={isn}).to_json(), 'qa')     # воскресенье
+    backlog = [_dorder(77, 101, 100.0, day=date(2026, 10, 2))]
+    assert rv._carried(state, date(2026, 10, 5), SIX, backlog) == {isn}
+    assert rv._carried(state, date(2026, 10, 5), SIX, []) == set()          # уже отгружен — не несём
+
+
 def test_dispatch_draft_json_roundtrip_and_garbage():
     d = dp.Draft(['CAR1'], {_isn(1)}, {_isn(2)}, [dp.DraftTrip(3, 'CAR1', [101, 102], True)], 4, 'x')
     assert dp.Draft.from_json(json.loads(json.dumps(d.to_json()))) == d
@@ -5238,6 +5286,87 @@ def test_api_dispatch_overtime_button(client):
                                                            'order': isn}).get_json()
     assert d['overtime'] is False and d['overtime_days_month'] == 0
     assert client.get('/api/routes/dispatch?date=2026-10-02').get_json()['overtime_days_month'] == 0
+
+
+def test_api_dispatch_defer_trip_goes_to_next_day(client):
+    """«Везти завтра» на 01.10 — заказы сразу в развозе 02.10 (до первой сборки и в ней), без ручного
+    «добавить» среди заказов прошлых дней."""
+    _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2)])
+    assert client.post('/api/routes/settings', json={'settings': {'min_trip_revenue': 150000}}).status_code == 200
+    d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert d['min_trip_revenue'] == 150000 and d['plan']['summary']['poor_trips'] >= 1
+    trip = next(t for tr in d['plan']['trucks'] for t in tr['trips'] if any(x['customer_id'] == 101 for x in t['stops']))
+    assert trip['poor']
+    moved = {x['customer_id'] for x in trip['stops']}
+    r = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': d['rev'], 'action': 'defer_trip',
+                                                       'trip': trip['id']})
+    assert r.status_code == 200, r.get_json()
+    d = r.get_json()
+    assert {o['customer_id'] for o in d['excluded']} == moved
+    assert not {x['customer_id'] for tr in d['plan']['trucks'] for t in tr['trips'] for x in t['stops']} & moved
+    nxt = client.get('/api/routes/dispatch?date=2026-10-02').get_json()     # следующий день, рейсов ещё нет
+    carried = {o['customer_id'] for o in nxt['backlog'] if o['added']}
+    assert carried == moved and nxt['orders']['count'] >= len(moved)
+    b = client.post('/api/routes/dispatch/build', json={'date': '2026-10-02', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert moved <= {x['customer_id'] for tr in b['plan']['trucks'] for t in tr['trips'] for x in t['stops']}
+
+
+def test_api_dispatch_defer_when_next_day_already_built_and_undo(client):
+    """План следующего дня уже собран: перенос он видит сам при загрузке (его черновик не меняется) —
+    заказы в развозе и подсказка «новые с последней сборки»; отмена («вернуть») — убираются оттуда,
+    чтобы не повезли дважды. Логист следующего дня может убрать перенесённый заказ — это запоминается.
+    Слишком давний заказ на завтра не переносится; прошедший день перенос не меняет."""
+    _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2),
+                             _dorder(6, 104, 70.0, agent=2, day=date(2026, 9, 28))])
+    assert client.post('/api/routes/settings', json={'settings': {'min_trip_revenue': 150000}}).status_code == 200
+    nxt = client.post('/api/routes/dispatch/build', json={'date': '2026-10-02', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert nxt['plan'] is not None
+    d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    trip = next(t for tr in d['plan']['trucks'] for t in tr['trips'] if any(x['customer_id'] == 101 for x in t['stops']))
+    isns = {o['isn'] for x in trip['stops'] for o in x['orders']}
+    d = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': d['rev'], 'action': 'defer_trip',
+                                                       'trip': trip['id']}).get_json()
+    assert all(o['deferred'] for o in d['excluded'] if o['isn'] in isns)
+    n2 = client.get('/api/routes/dispatch?date=2026-10-02').get_json()
+    assert isns <= {o['isn'] for o in n2['backlog'] if o['added'] and o['carried']}
+    assert n2['rev'] == nxt['rev']                                          # чужой черновик не трогаем
+    assert n2['new_since_build']['count'] == len(isns)                      # → «пересоберите рейсы»
+    # логист 02.10 убирает один перенесённый заказ — запоминается, не возвращается
+    one = sorted(isns)[0]
+    n2 = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-02', 'rev': n2['rev'], 'action': 'exclude',
+                                                        'order': one}).get_json()
+    assert one not in {o['isn'] for o in n2['backlog'] if o['added']}
+    assert one not in {o['isn'] for o in client.get('/api/routes/dispatch?date=2026-10-02').get_json()['backlog']
+                       if o['added']}
+    for isn in isns:                                                         # «вернуть» на сегодня
+        d = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': d['rev'], 'action': 'include',
+                                                           'order': isn}).get_json()
+    n3 = client.get('/api/routes/dispatch?date=2026-10-02').get_json()
+    assert not isns & {o['isn'] for o in n3['backlog'] if o['added']}
+    # заказ 28.09 (прошлые дни, добавлен на 01.10): 02.10 его уже не увидит — переносить нельзя
+    d = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': d['rev'], 'action': 'include',
+                                                       'order': _isn(6)}).get_json()
+    d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    old = next(t for tr in d['plan']['trucks'] for t in tr['trips'] if any(x['customer_id'] == 104 for x in t['stops']))
+    r = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': d['rev'], 'action': 'defer_trip',
+                                                       'trip': old['id']})
+    assert r.status_code == 400 and 'слишком давние' in r.get_json()['errors']['_']
+
+
+def test_api_dispatch_defer_refused_on_past_day(client, monkeypatch):
+    import route_optimizer.views as rv
+    _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2)])
+    d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    trip = d['plan']['trucks'][0]['trips'][0]
+
+    class Later(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 10, 5)
+    monkeypatch.setattr(rv, 'date', Later)
+    r = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': d['rev'], 'action': 'defer_trip',
+                                                       'trip': trip['id']})
+    assert r.status_code == 400 and 'Прошедший день' in r.get_json()['errors']['_']
 
 
 def test_api_dispatch_problems_and_fact(client):
