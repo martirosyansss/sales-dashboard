@@ -37,7 +37,7 @@ from .security import (check_pin, hash_pin, new_token, pepper_id, pepper_tag, pi
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 PIN_MAX_FAILS = 5
 PIN_LOCK = timedelta(minutes=15)
@@ -50,6 +50,8 @@ SNAPSHOT_KEEP_DAYS = 7    # промежуточные снимки /day без 
 PHOTOS_PER_DAY = 300
 PHOTO_BYTES_PER_DAY = 300 * 1024 * 1024
 REJECTED_PER_DAY = 1000
+
+SUPERSEDED_BY = 'auto: superseded'   # decided_by предложений водителя, закрытых принятием другого по тому же клиенту
 
 DEFAULT_REASONS: dict[str, tuple[tuple[str, str], ...]] = {
     'refuse': (
@@ -95,6 +97,10 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS events_stop ON events(stop_id, type)",
     "CREATE INDEX IF NOT EXISTS events_driver ON events(driver_id, date)",
     "CREATE INDEX IF NOT EXISTS events_snapshot ON events(snapshot_id)",
+    "CREATE INDEX IF NOT EXISTS events_type ON events(type, date)",
+    # решение логиста по предложению водителя geo_suggest (driver-geo-plan.md §4); нет строки — предложение открыто
+    "CREATE TABLE IF NOT EXISTS geo_suggest_decision(event_id TEXT PRIMARY KEY, decision TEXT NOT NULL "
+    "CHECK (decision IN ('accepted','rejected')), decided_at TEXT NOT NULL, decided_by TEXT)",
     # отклонённые события — для «Конца дня» (/status) и офиса; принятое позже с тем же id — удаляется отсюда
     "CREATE TABLE IF NOT EXISTS rejected_events(id TEXT PRIMARY KEY, terminal_id INTEGER NOT NULL, "
     "driver_id INTEGER NOT NULL, date TEXT, type TEXT, received_at TEXT NOT NULL, error TEXT NOT NULL, "
@@ -194,6 +200,13 @@ _MIGRATIONS: dict[int, tuple[str | Callable[[sqlite3.Connection], None], ...]] =
         "CREATE INDEX snapshot_stops_stop ON snapshot_stops(stop_id, snapshot_id)",
         "CREATE INDEX snapshot_stops_day ON snapshot_stops(date, snapshot_id)",
         "CREATE INDEX IF NOT EXISTS events_snapshot ON events(snapshot_id)",
+    ),
+    # v3 → v4 (только добавляет): решения по предложениям водителей geo_suggest; индекс событий по типу —
+    # точки водителей (arrived) и предложения читаются без полного перебора событий.
+    3: (
+        "CREATE INDEX IF NOT EXISTS events_type ON events(type, date)",
+        "CREATE TABLE IF NOT EXISTS geo_suggest_decision(event_id TEXT PRIMARY KEY, decision TEXT NOT NULL "
+        "CHECK (decision IN ('accepted','rejected')), decided_at TEXT NOT NULL, decided_by TEXT)",
     ),
 }
 
@@ -813,6 +826,59 @@ class Store:
             'WHERE e.date = ? ORDER BY e.at_utc, e.received_at, e.id', (day,)).fetchall())
         return [_event_json(r, self._name()) for r in rows]
 
+    # --- точки и предложения водителей (driver-geo-plan.md §4): клиент точки — по самой новой версии в снимках /day ---
+
+    def arrived_fixes(self, since: str, until: str) -> list[tuple[int, str, Any, Any, Any]]:
+        """Отметки arrived за даты since…until (включительно): (клиент, дата, lat, lon, accuracy) как прислал терминал.
+        Не учитываются: точка, которую /day никому не выдавал (unknown_stop, клиента нет), и событие с флагом
+        date_suspicious (дата не сходится с моментом терминала — день отметки неизвестен)."""
+        rows = self._read(lambda c: c.execute(
+            f"SELECT {_stop_customer_sql('$.customer.id')}, e.date, json_extract(e.payload, '$.lat'), "
+            "json_extract(e.payload, '$.lon'), json_extract(e.payload, '$.accuracy') FROM events e "
+            "WHERE e.type = 'arrived' AND e.date >= ? AND e.date <= ? AND e.stop_id IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM json_each(e.flags) f WHERE f.value = 'date_suspicious')",
+            (since, until)).fetchall())
+        return [(r[0], r[1], r[2], r[3], r[4]) for r in rows if isinstance(r[0], int) and not isinstance(r[0], bool)]
+
+    def open_suggestions(self) -> list[dict[str, Any]]:
+        """Предложения водителей geo_suggest без решения, новые первыми (по моменту терминала)."""
+        rows = self._read(lambda c: c.execute(_SUGGEST_SQL + ' ORDER BY e.at_utc DESC, e.received_at DESC, e.id DESC').fetchall())
+        return [x for r in rows if (x := _suggestion(r)) is not None]
+
+    def decide_suggestion(self, event_id: str, decision: str, user: str | None,
+                          apply: Callable[[dict[str, Any]], None]) -> dict[str, Any] | None:
+        """Решение по открытому предложению. Решение пишется в транзакции courier.db, apply(предложение) вызывается
+        внутри неё до COMMIT: исключение в apply — решения нет, предложение остаётся открытым. apply пишет в другую
+        базу (ручная точка — route_optimizer.db) и фиксирует её сам, поэтому это не одна атомарная транзакция: если
+        после успешного apply не удастся COMMIT courier.db, точка уже сохранена, а предложение останется открытым
+        (повторное «принять» безопасно — та же точка). Параллельное решение ждёт (BEGIN IMMEDIATE) и получает None.
+        accepted — остальные открытые предложения того же клиента закрываются как rejected с decided_by
+        SUPERSEDED_BY (точка уже выбрана); их id — в поле superseded результата.
+        None — предложения нет, клиент неизвестен или решение уже есть."""
+        if decision not in ('accepted', 'rejected'):
+            raise ValueError('decision: accepted или rejected')
+
+        def write(conn: sqlite3.Connection) -> dict[str, Any] | None:
+            r = conn.execute(_SUGGEST_SQL + ' AND e.id = ?', (event_id,)).fetchone()
+            sug = _suggestion(r) if r is not None else None
+            if sug is None:
+                return None
+            now = _now()
+            conn.execute('INSERT INTO geo_suggest_decision(event_id, decision, decided_at, decided_by) '
+                         'VALUES(?, ?, ?, ?)', (event_id, decision, now, user))
+            sug['superseded'] = []
+            if decision == 'accepted':
+                for r in conn.execute(_SUGGEST_SQL).fetchall():
+                    other = _suggestion(r)
+                    if other is not None and other['customer_id'] == sug['customer_id']:
+                        conn.execute('INSERT INTO geo_suggest_decision(event_id, decision, decided_at, decided_by) '
+                                     "VALUES(?, 'rejected', ?, ?)", (other['event_id'], now, SUPERSEDED_BY))
+                        sug['superseded'].append(other['event_id'])
+            apply(sug)
+            return sug
+
+        return self._transaction(write, 'не удалось сохранить решение по предложению водителя')
+
     def rejected_for(self, driver_id: int, day: str) -> list[dict[str, Any]]:
         rows = self._read(lambda c: c.execute(
             'SELECT id, message, type, received_at FROM rejected_events WHERE driver_id = ? '
@@ -1050,6 +1116,34 @@ def _stop_json(car_code: str, raw: str, name: str) -> dict[str, Any]:
         raise StoreError(f'{name}: повреждена точка дня{_FIX_HINT}')
     data['car_code'] = car_code
     return data
+
+
+def _stop_customer_sql(path: str) -> str:
+    """Подзапрос: поле path клиента точки события e (самая новая версия точки в снимках /day)."""
+    return (f"(SELECT json_extract(d.data, '{path}') FROM snapshot_stops s JOIN stop_data d ON d.hash = s.data_hash "
+            "WHERE s.stop_id = e.stop_id ORDER BY s.snapshot_id DESC LIMIT 1)")
+
+
+# открытые предложения водителей: событие geo_suggest без строки в geo_suggest_decision
+_SUGGEST_SQL = (f"SELECT e.id, e.date, e.at_device, dr.name, e.payload, {_stop_customer_sql('$.customer')} "
+                "FROM events e LEFT JOIN drivers dr ON dr.id = e.driver_id WHERE e.type = 'geo_suggest' "
+                "AND NOT EXISTS (SELECT 1 FROM geo_suggest_decision g WHERE g.event_id = e.id)")
+
+
+def _suggestion(r: Sequence[Any]) -> dict[str, Any] | None:
+    """Строка _SUGGEST_SQL → предложение; клиент точки неизвестен или данные битые — None (не показывается)."""
+    try:
+        payload, customer = json.loads(r[4]), json.loads(r[5]) if r[5] else None
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or not isinstance(customer, dict):
+        return None
+    cid = customer.get('id')
+    if isinstance(cid, bool) or not isinstance(cid, int):
+        return None
+    return {'event_id': r[0], 'customer_id': cid, 'code': customer.get('code'), 'name': customer.get('name'),
+            'lat': payload.get('lat'), 'lon': payload.get('lon'), 'accuracy': payload.get('accuracy'),
+            'note': payload.get('note'), 'driver_name': r[3], 'date': r[1], 'at': r[2]}
 
 
 def _event_json(r: Sequence[Any], name: str) -> dict[str, Any]:

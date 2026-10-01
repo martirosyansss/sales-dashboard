@@ -1819,7 +1819,7 @@ def test_l4_migration_v2_to_v3(tmp_path, now):
     assert [d.name for d in st_.match_pin('1234')] == ['A']
     with closing(sqlite3.connect(path)) as conn:
         version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
-        assert version == '3' == str(SCHEMA_VERSION)
+        assert version == str(SCHEMA_VERSION)   # v2 → v3 → … → текущая
         assert conn.execute('SELECT COUNT(*) FROM stop_data').fetchone()[0] == 3              # x — один раз
         assert conn.execute('SELECT snapshot_id FROM stop_replaces').fetchone()[0] == 2
         cols = {r[1] for r in conn.execute('PRAGMA table_info(snapshot_stops)')}

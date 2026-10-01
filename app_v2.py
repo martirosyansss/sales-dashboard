@@ -12964,6 +12964,8 @@ route_optimizer.init_app(app, db)
 
 import courier
 courier.init_app(app, db)
+# точки и предложения водителей «Առաքիչ» — в «Маршруты» (driver-geo-plan.md §4)
+route_optimizer.attach_driver_geo(app, courier.driver_geo(app))
 
 
 def _serve_waitress(port: int = 5000) -> bool:

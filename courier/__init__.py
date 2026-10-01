@@ -26,6 +26,7 @@ from flask import Flask, Request, Response
 
 from . import api, erp_day, views
 from .day import DayService
+from .geo import DriverSource
 from .routes_link import routes_view
 from .state import API_PREFIX, EXTENSION_KEY, CourierState
 from .store import Store
@@ -36,7 +37,7 @@ DB_FILENAME = 'courier.db'
 DEFAULT_PUBLIC_HOST = 'araqich.orix.am'
 ROUTES_EXTENSION = 'route_optimizer'
 
-__all__ = ['API_PREFIX', 'init_app', 'public_guard']
+__all__ = ['API_PREFIX', 'driver_geo', 'init_app', 'public_guard']
 
 
 def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
@@ -62,6 +63,12 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         app.register_error_handler(code, api.json_http_error)
     logger.info('[Courier] Раздел «Առաքիչ» подключён; база: %s; публичный хост: %s%s', path, host,
                 '; COURIER_DEMO=1' if demo else '')
+
+
+def driver_geo(app: Flask) -> DriverSource:
+    """Точки и предложения водителей для «Маршрутов» (driver-geo-plan.md §4) — после init_app:
+    route_optimizer.attach_driver_geo(app, courier.driver_geo(app))."""
+    return DriverSource(app.extensions[EXTENSION_KEY].store)
 
 
 def is_public(request: Request, public_host: str) -> bool:

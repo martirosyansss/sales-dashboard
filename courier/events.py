@@ -32,6 +32,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
+from route_optimizer.geo import is_valid_point
+
 from . import clock
 from .store import REJECTED_PER_DAY, EventTx, Store
 
@@ -39,11 +41,14 @@ logger = logging.getLogger(__name__)
 
 MAX_BATCH = 200
 MAX_PAYLOAD_BYTES = 20_000
-EVENT_TYPES = ('delivery', 'payment', 'tare', 'return', 'scan', 'scan_cancel', 'unreadable', 'arrived', 'day_closed')
+EVENT_TYPES = ('delivery', 'payment', 'tare', 'return', 'scan', 'scan_cancel', 'unreadable', 'arrived', 'day_closed',
+               'geo_suggest')
 STOPLESS_TYPES = ('day_closed', 'scan_cancel')   # stop_id не обязателен
 MONEY_MAX = 1e9
 QTY_MAX = 1e6
 DATE_SUSPICIOUS_DAYS = 2
+SUGGEST_MAX_ACCURACY_M = 100.0   # geo_suggest: точность обязательна и не хуже 100 м
+SUGGEST_NOTE_MAX = 200
 EPS = 1e-9
 
 UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
@@ -361,6 +366,18 @@ def _arrived(p: Mapping[str, Any]) -> None:
         raise Reject('accuracy՝ սխալ արժեք')
 
 
+def _geo_suggest(p: Mapping[str, Any]) -> None:
+    """Предложение водителя «точка неверная — здесь» (контракт v1.2): как arrived, но точка в Армении, точность
+    обязательна (0 < accuracy ≤ SUGGEST_MAX_ACCURACY_M), комментарий — до SUGGEST_NOTE_MAX символов."""
+    _arrived(p)
+    if not is_valid_point(p.get('lat'), p.get('lon')):
+        raise Reject('Կետը Հայաստանից դուրս է')
+    accuracy = _num(p.get('accuracy'))
+    if accuracy is None or not 0 < accuracy <= SUGGEST_MAX_ACCURACY_M:
+        raise Reject(f'accuracy՝ պարտադիր է, 0-ից մինչև {SUGGEST_MAX_ACCURACY_M:g} մ')
+    _text(p.get('note'), SUGGEST_NOTE_MAX, 'note')
+
+
 # --- одна запись ---
 
 def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -421,6 +438,8 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who) -> tupl
             flags.append('unknown_line')
     elif etype == 'arrived':
         _arrived(payload)
+    elif etype == 'geo_suggest':
+        _geo_suggest(payload)
     elif etype == 'day_closed':
         if not isinstance(payload.get('summary'), dict):
             raise Reject('summary՝ պետք է լինի օբյեկտ')
