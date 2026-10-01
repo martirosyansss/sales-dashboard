@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 DEMAND_WINDOW_DAYS = 365   # окно спроса [today − 365, today)
 DOCS_LOOKBACK_DAYS = 14    # документы берём с запасом: заказ у границы окна мог отгружаться позже
 TRACK_WINDOW_DAYS = 45     # трек — дом менеджера и калибровка
-CAR_USAGE_DAYS = 90        # подсказка «сколько машина возит в день»
+CAR_USAGE_DAYS = 90        # подсказка «сколько машина возит в день»; экспедиторы без машины — за тот же срок
+CAR_IDLE_DAYS = 60         # машина ERP без накладных дольше — «активна» по умолчанию выключена
+EXPEDITOR_MIN_DOCS = 5     # меньше накладных без машины за 90 дней — случайность, не экспедитор
 SNAPSHOT_TTL_SECONDS = 600
 MIN_REFRESH_SECONDS = 60   # ERP боевая: снимок не пересобирается чаще раза в минуту
 
@@ -60,10 +62,20 @@ class Snapshot:
     car_days: dict[str, tuple[int, float, float]]   # машина → (дней, кг в день в среднем, максимум) за 90 дней
     # клиенты плана: долг на сегодня по формуле дашборда (этап 4, режим Б); нет записи — долга нет
     debts: dict[int, float] = field(default_factory=dict)
+    car_last_used: dict[str, date] = field(default_factory=dict)       # машина → последняя накладная (всё время)
+    # экспедитор → (накладных без машины, последний день) за 90 дней; от EXPEDITOR_MIN_DOCS накладных
+    expeditors: dict[int, tuple[int, date]] = field(default_factory=dict)
 
     def ref_data(self) -> RefData:
         return RefData(car_codes=frozenset(self.cars), agent_ids=frozenset(self.plan.agent_ids),
-                       group_codes=frozenset(self.customer_groups))
+                       group_codes=frozenset(self.customer_groups), van_agent_ids=frozenset(self.expeditors))
+
+    @property
+    def active_cars(self) -> frozenset[str]:
+        """Машины ERP, которые «авто» работают: не закрыты и возили накладные за последние CAR_IDLE_DAYS дней."""
+        return frozenset(code for code, car in self.cars.items()
+                         if not car.closed and (last := self.car_last_used.get(code)) is not None
+                         and (self.today - last).days <= CAR_IDLE_DAYS)
 
 
 def build_snapshot(conn: Any, today: date, snapshot_id: str, as_of: datetime) -> Snapshot:
@@ -87,6 +99,9 @@ def build_snapshot(conn: Any, today: date, snapshot_id: str, as_of: datetime) ->
     fixes = erp.tracks(conn, midnight - timedelta(days=TRACK_WINDOW_DAYS), midnight)
     cars = erp.cars(conn)
     usage = car_load_stats(erp.car_days(conn, today - timedelta(days=CAR_USAGE_DAYS), today))
+    last_used = erp.car_last_used(conn)
+    vans = {a: v for a, v in erp.expeditors(conn, today - timedelta(days=CAR_USAGE_DAYS),
+                                            today + timedelta(days=1)).items() if v[0] >= EXPEDITOR_MIN_DOCS}
     debts = erp.customer_debts(conn, plan_customers)
 
     # Координаты ERP: валидные и не «дефолтные» (одна точка у ≥ 3 клиентов во всём справочнике).
@@ -134,7 +149,7 @@ def build_snapshot(conn: Any, today: date, snapshot_id: str, as_of: datetime) ->
         active_agents=active_agents(orders, visits, today - timedelta(days=ACTIVE_WINDOW_DAYS), today),
         recent_visits=tuple(v for v in visits if v.day >= today - timedelta(days=CALIB_WINDOW_DAYS)),
         fixes_by_agent={a: tuple(fs) for a, fs in fixes.items()},
-        cars=cars, car_days=usage, debts=debts,
+        cars=cars, car_days=usage, debts=debts, car_last_used=last_used, expeditors=vans,
     )
     logger.info('[Routes] Снимок %s: агентов с планом %d (с работой за 8 нед. %d), клиентов плана %d, '
                 'заказов в окне %d, визитов %d, точек трека %d', snapshot_id, len(plan.agent_ids),

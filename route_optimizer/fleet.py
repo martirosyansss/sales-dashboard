@@ -66,17 +66,19 @@ class TruckNorms:
 
 
 def fleet_trucks(trucks: Mapping[str, Any], names: Mapping[str, str | None]) -> tuple[list[FleetTruck], list[str]]:
-    """(машины расчёта, активные машины без тоннажа или расхода). trucks — store.Truck по коду,
-    names — название машины по коду (CARS). Привязка машины к менеджеру в расчёте не участвует."""
+    """(машины расчёта, активные машины без тоннажа или расхода). trucks — store.Truck по коду с действующим
+    «активна» (Bundle.resolved_trucks: «авто» не разрешено — машина не в расчёте), names — название машины по
+    коду (CARS); у ручной машины — её название. Привязка машины к менеджеру в расчёте не участвует."""
     fleet, incomplete = [], []
     for code in sorted(trucks):
         t = trucks[code]
-        if not t.active:
+        if t.active is not True:
             continue
         if t.capacity_kg is None or t.fuel_l_per_100km is None:
             incomplete.append(code)
             continue
-        fleet.append(FleetTruck(code, names.get(code), float(t.capacity_kg), float(t.fuel_l_per_100km)))
+        fleet.append(FleetTruck(code, names.get(code) or t.name, float(t.capacity_kg),
+                                float(t.fuel_l_per_100km)))
     return fleet, incomplete
 
 

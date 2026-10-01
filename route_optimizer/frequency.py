@@ -4,9 +4,11 @@
 Чистая логика — без Flask и без БД. Частоты — визитов в неделю, λ — заказов в неделю за год,
 выручка — драм в неделю.
 
-Почему частота автоматически только снижается: если клиент заказывает чаще, чем его посещают
+Почему частота по продажам только снижается: если клиент заказывает чаще, чем его посещают
 (λ > f), лишние заказы уже приходят (по телефону или через других агентов), и модель
 p = min(1, λ/f) показала бы от повышения частоты выдуманный рост выручки. Повышение — подсказка.
+Исключение — правило владельца (ответ №30): каждый магазин — не реже раза в неделю; визит
+«раз в 2 недели» поднимается до еженедельного.
 """
 from __future__ import annotations
 
@@ -14,12 +16,14 @@ from typing import Collection, Mapping
 
 from .patterns import FREQUENCIES, same_freq
 
-CLASS_MIN_FREQ = {'A': 1.0, 'B': 1.0, 'C': 0.5}
+MIN_FREQ = 1.0   # №30: менеджер заходит в каждый магазин каждую неделю, как бы редко тот ни заказывал
 _EPS = 1e-9
 
 SOURCE_MANUAL = 'manual'     # частоту принял владелец
 SOURCE_SALES = 'sales'       # снижена по продажам
 SOURCE_CURRENT = 'current'   # как сейчас
+SOURCE_RULE = 'rule'         # поднята до минимума MIN_FREQ (№30)
+RULE_TEXT = 'каждый магазин — не реже раза в неделю'
 
 
 def abc_classes(revenue_week: Mapping[int, float], a_share: float, b_share: float) -> dict[int, str]:
@@ -41,8 +45,8 @@ def abc_classes(revenue_week: Mapping[int, float], a_share: float, b_share: floa
     return out
 
 
-def sales_frequency(lam: float, abc: str, safety: float) -> float | None:
-    """f_sales = max(минимум класса, min{f ∈ {0.5, 1, 2, 3} : f ≥ λ × запас}).
+def sales_frequency(lam: float, safety: float) -> float | None:
+    """f_sales = max(MIN_FREQ, min{f ∈ {0.5, 1, 2, 3} : f ≥ λ × запас}).
 
     λ — наибольшая из λ_год, λ_низкий сезон, λ_пик (season_lam): частота, подобранная по году,
     летом недодаёт заказов (p = min(1, λ/f) упирается в 1), и модель теряет выручку сезона.
@@ -51,16 +55,23 @@ def sales_frequency(lam: float, abc: str, safety: float) -> float | None:
     fits = [f for f in FREQUENCIES if f >= need - _EPS]
     if not fits:
         return None
-    return max(CLASS_MIN_FREQ[abc], fits[0])
+    return max(MIN_FREQ, fits[0])
 
 
 def target_frequency(current: float, f_sales: float | None, mode: str, accepted: float | None = None,
-                     rejected: Collection[float] = ()) -> tuple[float, str]:
-    """(целевая частота, источник). Ручная частота владельца важнее всего; в режиме «по продажам» —
-    min(текущая, f_sales), т.е. только снижение; отклонённая владельцем частота не предлагается
-    (остаётся текущая); в режиме «как сейчас» — текущая."""
+                     rejected: Collection[float] = (), store_freq: float | None = None) -> tuple[float, str]:
+    """(целевая частота пары менеджер–магазин, источник). Ручная частота владельца важнее всего; в
+    режиме «по продажам» магазин, который все менеджеры вместе посещают реже раза в неделю
+    (store_freq; None — только этот менеджер, = current), — MIN_FREQ (№30), иначе min(текущая,
+    f_sales), т.е. только снижение; отклонённая владельцем частота не предлагается (остаётся
+    текущая); в режиме «как сейчас» — текущая."""
     if accepted is not None:
         return accepted, SOURCE_MANUAL
+    total = current if store_freq is None else store_freq
+    if mode == 'sales' and total < MIN_FREQ - _EPS and current < MIN_FREQ - _EPS:
+        if any(same_freq(MIN_FREQ, r) for r in rejected):
+            return current, SOURCE_CURRENT
+        return MIN_FREQ, SOURCE_RULE
     if mode == 'sales' and f_sales is not None and f_sales < current - _EPS:
         if any(same_freq(f_sales, r) for r in rejected):
             return current, SOURCE_CURRENT
@@ -135,16 +146,18 @@ def can_visit_text(f: float) -> str:
     return f'можно посещать {fmt_decimal(f, 1)} {_times(f)}'
 
 
-def frequency_hints(lam_year: float, freq_now: float, safety: float) -> list[tuple[str, str]]:
+def frequency_hints(lam_year: float, freq_now: float, safety: float, freq_after: float = 0.0,
+                    rejected: Collection[float] = ()) -> list[tuple[str, str]]:
     """Подсказки, которые не применяются автоматически: [(вид, текст)].
-    no_orders — за год ни одного заказа; freq_up — заказывает чаще, чем его посещают (λ > f)."""
+    no_orders — за год ни одного заказа; freq_up — заказывает чаще, чем его посещают (λ > f); её нет,
+    если предложение уже даёт столько визитов (freq_after) или владелец эту частоту отклонил."""
     if lam_year <= 0:
         return [('no_orders', 'за год ни одного заказа')]
     if lam_year <= freq_now + _EPS:
         return []
     need = lam_year * safety
     f_up = next((f for f in FREQUENCIES if f >= need - _EPS), FREQUENCIES[-1])
-    if f_up <= freq_now + _EPS:
+    if f_up <= max(freq_now, freq_after) + _EPS or any(same_freq(f_up, r) for r in rejected):
         return []
     rate = f'{fmt_decimal(lam_year, 1)} {_times(round(lam_year, 1))} в неделю'
     return [('freq_up', f'заказывает {rate} {visits_text(freq_now)} — {can_visit_text(f_up)}')]

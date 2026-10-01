@@ -71,12 +71,24 @@ class DispatchOrder:
 
 @dataclass(frozen=True)
 class ShippedDoc:
-    """Реализация за прошедший день (SALES): кто и на какой машине вёз."""
+    """Реализация за прошедший день (SALES): кто и на какой машине вёз. van_agent_id — кто вёз
+    (SALES.fVANAGENTID): экспедиторы возят без машины в накладной — тогда car_code пуст."""
     customer_id: int
     agent_id: int
     car_code: str
     revenue: float
     kg: float
+    van_agent_id: int = 0
+
+
+def fact_car(d: ShippedDoc, van_trucks: Mapping[int, str]) -> str:
+    """Машина, которая фактически везла накладную: машина в накладной; без неё — ручная машина экспедитора
+    (store.Bundle.van_trucks). Менеджер развозит сам (fVANAGENTID = fSALESAGENTID) — не машина парка: ''."""
+    if d.car_code:
+        return d.car_code
+    if d.van_agent_id and d.van_agent_id != d.agent_id:
+        return van_trucks.get(d.van_agent_id, '')
+    return ''
 
 
 @dataclass(frozen=True)
@@ -84,7 +96,8 @@ class DispatchData:
     orders: tuple[DispatchOrder, ...]
     customers: dict[int, tuple[str, str]]          # клиент → (код, название)
     addresses: dict[int, str]                      # клиент → адрес текстом
-    agent_cars: dict[int, tuple[str, ...]]         # менеджер → машины за 90 дней, от самой частой
+    # менеджер → кто возил за 90 дней, от самого частого: код машины ERP или id экспедитора без машины (int)
+    agent_cars: dict[int, tuple[str | int, ...]]
     loaded_at: datetime
 
 
@@ -526,6 +539,16 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
 
 # --- Сравнение «по менеджерам» ---
 
+def history_cars(agent_cars: Mapping[int, Sequence[str | int]], van_trucks: Mapping[int, str]) -> dict[int, tuple[str, ...]]:
+    """Машины менеджера по истории: экспедитор без машины (int) → закреплённая за ним ручная машина; не
+    закреплена — пропускается. Порядок (от самой частой) и без повторов."""
+    out: dict[int, tuple[str, ...]] = {}
+    for agent, cars in agent_cars.items():
+        codes = [c if isinstance(c, str) else van_trucks.get(c, '') for c in cars]
+        out[agent] = tuple(dict.fromkeys(c for c in codes if c))
+    return out
+
+
 def manager_trucks(stops: Sequence[Stop], agent_cars: Mapping[int, Sequence[str]],
                    trucks: Sequence[fl.FleetTruck]) -> dict[str, list[Stop]]:
     """Привычная схема: заказы менеджера везёт его машина по истории (SALES.fDELIVERYCAR за 90 дней) —
@@ -575,21 +598,25 @@ def baseline(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
 
 # --- План и факт (прошедшая дата) ---
 
-def plan_vs_fact(ctx: DayContext, docs: Sequence[ShippedDoc], coord: Callable[[int], Coord]) -> dict[str, Any]:
+def plan_vs_fact(ctx: DayContext, docs: Sequence[ShippedDoc], coord: Callable[[int], Coord],
+                 van_trucks: Mapping[int, str] | None = None) -> dict[str, Any]:
     """Те же доставки дня: как их фактически развезли машины ERP (каждая — лучшим для неё маршрутом)
-    против рейсов программы на тех же машинах. Машины без тоннажа и расхода в настройках и клиенты
+    против рейсов программы на тех же машинах. Накладная без машины, которую вёз экспедитор, — рейс его
+    ручной машины (van_trucks: экспедитор → машина). Машины без тоннажа и расхода в настройках и клиенты
     без координат в сравнение не входят (их число — в skipped)."""
+    vans = van_trucks or {}
     groups: dict[str, dict[int, list[ShippedDoc]]] = {}
     skipped_docs = skipped_kg = 0.0
     no_car: set[str] = set()
     for d in docs:
-        if d.car_code not in ctx.trucks or coord(d.customer_id).point is None:
+        car = fact_car(d, vans)
+        if car not in ctx.trucks or coord(d.customer_id).point is None:
             skipped_docs += 1
             skipped_kg += d.kg
-            if d.car_code and d.car_code not in ctx.trucks:
-                no_car.add(d.car_code)
+            if car and car not in ctx.trucks:
+                no_car.add(car)
             continue
-        groups.setdefault(d.car_code, {}).setdefault(d.customer_id, []).append(d)
+        groups.setdefault(car, {}).setdefault(d.customer_id, []).append(d)
 
     def stop(cid: int, ds: Sequence[ShippedDoc]) -> Stop:
         c = coord(cid)

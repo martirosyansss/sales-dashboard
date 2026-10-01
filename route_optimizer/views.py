@@ -27,7 +27,7 @@ from . import fleet as fl
 from .erp import ErpError
 from .geo import is_valid_point
 from .roads import RoadDistances, RoadProvider, roads_version
-from .snapshot import MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
+from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import DEFAULT_MANAGER_FUEL, Bundle, Decision, Store, StoreError, validate_payload
 
 logger = logging.getLogger(__name__)
@@ -251,6 +251,8 @@ def api_settings_get() -> Any:
         'settings': s,
         'depot': {'lat': bundle.depot[0], 'lon': bundle.depot[1]} if bundle.depot else None,
         'trucks': _trucks_json(snap, bundle),
+        'expeditors': _expeditors_json(snap, bundle),
+        'car_idle_days': CAR_IDLE_DAYS,
         'managers': _managers_json(snap, bundle),
         'customer_groups': _groups_json(snap),
         'season': {
@@ -344,24 +346,61 @@ def _agent_order(snap: Snapshot) -> list[int]:
 
 
 def _trucks_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
-    """Машины CARS и их настройки. Машина закреплена за водителем, а не за менеджером (ответ
-    владельца №29) — вместо менеджера подсказка из ERP: сколько машина возит в день (90 дней)."""
+    """Машины CARS и их настройки, затем ручные машины (их нет в ERP). Машина закреплена за водителем, а не
+    за менеджером (ответ владельца №29) — вместо менеджера подсказка из ERP: сколько машина возит в день
+    (90 дней) и когда последний раз была в накладных. «Активна» — действующее значение; active_source:
+    manual — выбор владельца, auto — решают накладные (auto_active: возила за CAR_IDLE_DAYS дней)."""
     out = []
+    active_cars = snap.active_cars
     for code, car in sorted(snap.cars.items()):
         t = bundle.trucks.get(code)
+        if t is not None and t.manual:
+            continue   # номер ручной машины появился в ERP — показываем её среди ручных
         days, avg, top = snap.car_days.get(code, (0, None, None))
+        last = snap.car_last_used.get(code)
         out.append({
             'car_code': code,
             'name': car.name,
+            'manual': False,
             'erp_closed': car.closed,
             'capacity_kg': t.capacity_kg if t else None,
             'fuel_l_per_100km': t.fuel_l_per_100km if t else None,
-            'active': t.active if t else not car.closed,
+            'active': bundle.truck_active(code, active_cars),
+            'active_source': 'auto' if t is None or t.active is None else 'manual',
+            'auto_active': code in active_cars,
+            'last_used': last.isoformat() if last else None,
             'erp_days': days,
             'erp_kg_day': round(avg) if avg is not None else None,
             'erp_kg_day_max': round(top) if top is not None else None,
         })
+    for code, t in sorted(bundle.trucks.items()):
+        if t.manual:
+            out.append({
+                'car_code': code, 'name': t.name, 'manual': True, 'erp_closed': False,
+                'capacity_kg': t.capacity_kg, 'fuel_l_per_100km': t.fuel_l_per_100km,
+                'active': bool(t.active), 'active_source': 'manual', 'auto_active': None, 'last_used': None,
+                'van_agent_id': t.van_agent_id, 'van': _agent_json(snap, t.van_agent_id),
+                'erp_days': 0, 'erp_kg_day': None, 'erp_kg_day_max': None,
+            })
     return out
+
+
+def _agent_json(snap: Snapshot, agent_id: int | None) -> dict[str, Any] | None:
+    """Экспедитор: код, имя, накладных без машины за 90 дней и последний день (если возил)."""
+    if agent_id is None:
+        return None
+    agent = snap.agents.get(agent_id)
+    docs, last = snap.expeditors.get(agent_id, (0, None))
+    return {'agent_id': agent_id, 'code': agent.code if agent else str(agent_id), 'name': agent.name if agent else '',
+            'docs': docs, 'last_day': last.isoformat() if last else None}
+
+
+def _expeditors_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
+    """Кто возил заказы без машины в накладных за 90 дней (от самого частого) и за какой ручной машиной
+    закреплён (truck: код или None) — выбор экспедитора и подсказка «нет нужной машины?»."""
+    linked = bundle.van_trucks()
+    return [{**_agent_json(snap, a), 'truck': linked.get(a)}
+            for a in sorted(snap.expeditors, key=lambda a: (-snap.expeditors[a][0], a))]
 
 
 def _managers_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
@@ -687,9 +726,9 @@ def _ready_trucks(snap: Snapshot, bundle: Bundle, active_only: bool = True) -> d
     """Машины, готовые к расчёту: тоннаж и расход заданы (и активны — для плана)."""
     names = {code: car.name for code, car in snap.cars.items()}
     if active_only:
-        ready, _ = fl.fleet_trucks(bundle.trucks, names)
+        ready, _ = fl.fleet_trucks(bundle.resolved_trucks(snap.active_cars), names)
         return {t.car_code: t for t in ready}
-    return {code: fl.FleetTruck(code, names.get(code), float(t.capacity_kg), float(t.fuel_l_per_100km))
+    return {code: fl.FleetTruck(code, names.get(code) or t.name, float(t.capacity_kg), float(t.fuel_l_per_100km))
             for code, t in sorted(bundle.trucks.items())
             if t.capacity_kg is not None and t.fuel_l_per_100km is not None}
 
@@ -829,12 +868,15 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     if not dd.ready:
         problems.append({'code': 'no_trucks', 'text': 'Укажите тоннаж и расход машин', 'link': SETTINGS_TRUCKS_URL})
     trucks = []
-    for code, car in sorted(dd.snap.cars.items()):
-        t = dd.bundle.trucks.get(code)
+    manual = {code: t for code, t in dd.bundle.trucks.items() if t.manual}
+    names = {code: car.name for code, car in dd.snap.cars.items() if code not in manual}
+    names.update({code: t.name for code, t in manual.items()})
+    for code in sorted(names):
         ready = dd.ready.get(code)
-        if ready is None and (t is None or not t.active):   # не настроена — в списке не нужна
+        # не настроена или не работает — в списке не нужна
+        if ready is None and (code not in dd.bundle.trucks or not dd.bundle.truck_active(code, dd.snap.active_cars)):
             continue
-        trucks.append({'car_code': code, 'name': car.name,
+        trucks.append({'car_code': code, 'name': names[code], 'manual': code in manual,
                        'capacity_kg': ready.capacity_kg if ready else None,
                        'l100': ready.l100 if ready else None,
                        'ready': ready is not None, 'selected': ready is not None and code in selected})
@@ -874,7 +916,8 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     if draft is not None and dd.ctx is not None:
         plan = dp.plan_view(dd.ctx, dd.stops, draft, info)
         plan['built_at'] = draft.built_at
-        plan['baseline'] = dp.baseline(dd.ctx, dd.stops, draft, dd.data.agent_cars)
+        plan['baseline'] = dp.baseline(dd.ctx, dd.stops, draft,
+                                       dp.history_cars(dd.data.agent_cars, dd.bundle.van_trucks()))
         body['plan'] = plan
     return body
 
@@ -1015,7 +1058,8 @@ def api_dispatch_reset() -> Any:
 @_api
 def api_dispatch_fact() -> Any:
     """«План и факт» за прошедшую дату: км фактической раскладки по машинам ERP (каждая — лучшим
-    маршрутом) против рейсов программы на тех же машинах и тех же доставках."""
+    маршрутом) против рейсов программы на тех же машинах и тех же доставках. Накладные экспедитора без
+    машины — рейсы закреплённой за ним ручной машины."""
     state = _state()
     bundle = state.store.load()
     day = _parse_day(request.args.get('date'))
@@ -1034,7 +1078,7 @@ def api_dispatch_fact() -> Any:
                         [p for d in data.docs if (p := coord(d.customer_id).point) is not None])
     if ctx is None:
         return _bad_request({'_': 'Сначала укажите склад и тоннаж с расходом машин в настройках'})
-    return jsonify({'success': True, 'fact': dp.plan_vs_fact(ctx, data.docs, coord)})
+    return jsonify({'success': True, 'fact': dp.plan_vs_fact(ctx, data.docs, coord, bundle.van_trucks())})
 
 
 @bp.post('/api/routes/geo-override')
@@ -1061,3 +1105,36 @@ def api_geo_override() -> Any:
     state.store.save_geo_override(cid, point, session.get('username'))
     logger.info('[Routes] Точка клиента %d %s (%s)', cid, 'поставлена' if point else 'убрана', session.get('username'))
     return jsonify({'success': True})
+
+
+ROAD_LINES_MAX_POINTS = 3000   # точек во всех линиях одного запроса (день развоза — сотни)
+
+
+@bp.post('/api/routes/road-lines')
+@_api
+def api_road_lines() -> Any:
+    """Линии рейсов для карты вдоль дорог: {"lines": [[[широта, долгота], …], …]} — точки каждой линии
+    по порядку объезда. Ответ: те же линии по дорогам; "lines": null — карты дорог нет или она не
+    загрузилась: карта рисует по прямой."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    lines = payload.get('lines') if isinstance(payload, dict) else None
+    if not isinstance(lines, list) or not all(isinstance(line, list) for line in lines):
+        return _bad_request({'lines': 'ожидался список линий из точек [широта, долгота]'})
+    parsed: list[list[tuple[float, float]]] = []
+    for line in lines:
+        points = []
+        for p in line:
+            if not (isinstance(p, list) and len(p) == 2
+                    and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in p)
+                    and is_valid_point(p[0], p[1])):
+                return _bad_request({'lines': 'точка вне Армении или не [широта, долгота]'})
+            points.append((float(p[0]), float(p[1])))
+        parsed.append(points)
+    if sum(map(len, parsed)) > ROAD_LINES_MAX_POINTS:
+        return _bad_request({'lines': f'не больше {ROAD_LINES_MAX_POINTS} точек за запрос'})
+    state = _state()
+    roads = state.roads.get() if state.roads is not None else None
+    out = roads.lines(parsed) if roads is not None else None
+    return jsonify({'success': True, 'lines': out})

@@ -698,6 +698,26 @@
 /* Настройки → машины: подсказка из накладных ERP */
 .rs-erp { font-size: .875rem; color: var(--rt-fg-dim); }
 .rs-erp small, .rs-erp-none { font-size: .8rem; color: var(--rt-fg-mute); }
+.rs-erp-box { display: flex; flex-direction: column; gap: 2px; }
+.rs-erp-last { font-size: .8rem; color: var(--rt-fg-mute); }
+.rs-idle { display: block; margin-top: 6px; font-size: .8125rem; line-height: 1.4; color: var(--rt-warn); }
+.rs-idle[hidden] { display: none; }
+.rs-idle.is-soft { color: var(--rt-fg-dim); font-style: italic; }
+/* Ручные машины: подсказка, кнопки в строке, форма добавления */
+.rs-mt-hint .rt-btn { flex: 0 0 auto; }
+.rs-mt-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.rs-mt-acts .rt-btn-sm { height: 30px; padding: 0 10px; }
+.rs-mt-form {
+    margin-top: 14px; padding: 14px 16px; background: var(--rt-inset); border: 1px solid var(--rt-acc-dim);
+    border-radius: var(--rt-radius-sm);
+}
+.rs-mt-form[hidden] { display: none; }
+.rs-mt-title { font-size: 1rem; font-weight: 700; margin: 0 0 10px; }
+.rs-mt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 10px 14px; align-items: start; }
+.rs-mt-grid .rt-input, .rs-mt-grid .rt-select { width: 100%; }
+.rs-mt-check { display: flex; align-items: center; gap: 8px; min-height: 44px; margin-top: 22px; cursor: pointer; }
+.rs-mt-check input { width: 20px; height: 20px; }
+.rs-mt-btns { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 8px; }
 
 /* Развоз по дням: день доставки — карточка с машинами (парк, fleet-plan §4) */
 .rt-fleet-days { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 12px; margin-top: 12px; }
@@ -1067,6 +1087,7 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
 }
 .ro-grp[hidden] { display: none; }
 .ro-grp.g-move    { --g: #6aa8ff; --gbg: rgba(106, 168, 255, .13); }
+.ro-grp.g-weekly  { --g: #7bd88f; --gbg: rgba(123, 216, 143, .13); }
 .ro-grp.g-offday  { --g: #b7a8ff; --gbg: rgba(183, 168, 255, .13); }
 .ro-grp.g-winback { --g: #ffb547; --gbg: rgba(255, 181, 71, .13); }
 .ro-grp.g-remove  { --g: #ff6b79; --gbg: rgba(255, 107, 121, .13); }

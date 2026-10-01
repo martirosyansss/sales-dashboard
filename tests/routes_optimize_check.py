@@ -310,7 +310,7 @@ def main() -> int:
                     'шаблоны совпадают' if same else 'шаблоны различаются'
                     + (' (был стоп по времени — повторяемость не гарантируется)' if capped else ''), []))
 
-    # §15: потерянным и без заказов — «убрать из маршрута», затихшим — частота ≤ 0.5; решения владельца
+    # §15: потерянным и без заказов — «убрать из маршрута», затихшим — частота ≤ 1 (№30); решения владельца
     # (оставить, закреплённый шаблон, принятая частота) — его выбор. В выручке модели их нет (λ = 0)
     book = opt.DecisionBook.from_rows(decisions, opt.plan_pairs(snap.plan))
     status_bad = []
@@ -328,15 +328,15 @@ def main() -> int:
                     status_bad.append(f'{o.code}/{cid}: {s.status} — нет предложения «убрать»')
                 continue
             dormant += 1
-            if pt.pattern_freq(final) <= 0.5 + 1e-9:
+            if pt.pattern_freq(final) <= 1 + 1e-9:
                 dormant_ok += 1
             elif not owner:
                 status_bad.append(f'{o.code}/{cid}: затих — частота «стало» {pt.pattern_freq(final):g}')
     silent_rev = sum(models[c].draw(season).expected_revenue
                      for c in silent for season in ('low', 'year', 'peak'))
-    results.append(('Статус клиента (§15): потерянным и без заказов — «убрать», затихшим — ≤ раз в 2 недели, '
+    results.append(('Статус клиента (§15): потерянным и без заказов — «убрать», затихшим — ≤ раз в неделю, '
                     'в выручке их нет', not status_bad and silent_rev == 0,
-                    f'предложений «убрать» {removed}, затихших с частотой ≤ 0,5 — {dormant_ok} из {dormant}; '
+                    f'предложений «убрать» {removed}, затихших с частотой ≤ 1 — {dormant_ok} из {dormant}; '
                     f'выручка модели у них {num(silent_rev, 0)} драм/нед', status_bad[:8]))
 
     for title, ok, detail, lines in results:

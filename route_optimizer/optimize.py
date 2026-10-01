@@ -11,9 +11,9 @@
   принятое решение устарело (не применяется, показывается), отклонённое — отработало (retired);
   принятое, которое в ERP уже исполнено, — тоже отработало;
 - статус клиента (§15, status.py): у затихших, потерянных и без заказов λ = 0 (модели этапа 1);
-  в режиме «по продажам» затихшему — раз в 2 недели, потерянному и без заказов — предложение
+  в режиме «по продажам» затихшему — раз в неделю (№30), потерянному и без заказов — предложение
   «убрать из маршрута» (remove): в плане «стало» его нет; решение remove принято — убран в любом
-  режиме, отклонено («оставить») — дальше как обычный клиент без продаж (раз в 2 недели);
+  режиме, отклонено («оставить») — дальше как обычный клиент без продаж (раз в неделю);
 - выгрузка для ERP — текущий план + только принятые изменения, порядок дня — NN + 2-opt от дома.
 
 Чистая логика — без Flask и без БД: настройки и решения передаёт вызывающий.
@@ -516,7 +516,8 @@ class PairSpec:
 
 
 def pair_spec(key: tuple[int, int], current: pt.Pattern, f_sales: float | None, mode: str,
-              workdays: Collection[int], book: DecisionBook, status: str | None = None) -> PairSpec:
+              workdays: Collection[int], book: DecisionBook, status: str | None = None,
+              store_freq: float | None = None) -> PairSpec:
     """Целевая частота и допустимые шаблоны: принятое «убрать из маршрута» — клиент убран; принятый
     шаблон — закреплён (единственный); в режиме «по продажам» потерянный и без заказов за год
     (status, §15) — убран, если владелец не оставил его, не закрепил шаблон и не задал частоту;
@@ -533,7 +534,7 @@ def pair_spec(key: tuple[int, int], current: pt.Pattern, f_sales: float | None, 
         return PairSpec(current, 0.0, SOURCE_STATUS, ((),), False, forbidden, removed=True)
     f_cur = pt.pattern_freq(current)
     target, source = fq.target_frequency(f_cur, f_sales, mode, book.accepted_freq.get(key),
-                                         book.rejected_freq.get(key, ()))
+                                         book.rejected_freq.get(key, ()), store_freq)
     allowed = pt.allowed_patterns(current, target, workdays, forbidden)
     if not allowed and not pt.same_freq(target, f_cur):
         target, source = f_cur, fq.SOURCE_CURRENT
@@ -543,6 +544,15 @@ def pair_spec(key: tuple[int, int], current: pt.Pattern, f_sales: float | None, 
 
 def _status_code(model: ev.CustomerModel) -> str | None:
     return model.status.status if model.status is not None else None
+
+
+def demand_capped(model: ev.CustomerModel, f_cap: float) -> ev.CustomerModel:
+    """Модель магазина, поднятого правилом №30 до раза в неделю: λ каждого сезона — не выше частоты
+    «было». Заказы сверх неё уже приходят без визита (см. frequency.py), поэтому лишний визит не
+    добавляет ни выручки, ни кг — меньше только доля визитов с заказом. При f = f_cap модель та же."""
+    def cap(d: dm.Demand) -> dm.Demand:
+        return replace(d, lam=min(d.lam, f_cap))
+    return replace(model, year=cap(model.year), low=cap(model.low), peak=cap(model.peak))
 
 
 def season_lam(model: ev.CustomerModel) -> float:
@@ -638,7 +648,8 @@ def _fleet_setup(ctx: _Ctx, run_ids: Sequence[int]) -> _Fleet | None:
     snap, bundle, before = ctx.snap, ctx.bundle, ctx.before
     s = bundle.settings
     norms = before.norms
-    trucks, _ = fl.fleet_trucks(bundle.trucks, {code: car.name for code, car in snap.cars.items()})
+    trucks, _ = fl.fleet_trucks(bundle.resolved_trucks(snap.active_cars),
+                                {code: car.name for code, car in snap.cars.items()})
     if bundle.depot is None or not trucks:
         return None
     keys: set[tuple[int, Point]] = set()
@@ -726,11 +737,14 @@ class _Ctx:
     fleet_before: sr.FleetEstimate | None = None  # парк текущего плана — эффект изменений
     fleet_a: sr.FleetEstimate | None = None       # парк итога режима А — старт режима Б
 
+    raised: dict[int, ev.CustomerModel] = field(default_factory=dict)   # №30: спрос ≤ частоты «было»
+
     def visit(self, cid: int, f_total: float) -> sr.VisitParams:
         key = (cid, round(f_total, 9))
         hit = self.params_cache.get(key)
         if hit is None:
-            hit = self.params_cache[key] = visit_params(self.before.models[cid], f_total)
+            model = self.raised.get(cid) or self.before.models[cid]
+            hit = self.params_cache[key] = visit_params(model, f_total)
         return hit
 
     def coord(self, cid: int, address_id: int) -> Coord:
@@ -765,17 +779,17 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
 
     # Частоты (§2): ABC — по клиентам планов всех менеджеров в расчёте; частота по продажам —
     # по самому высокому спросу из года, низкого сезона и пика: ни в один сезон заказы не теряются.
-    # У затихших, потерянных и без заказов λ = 0 (§15): класс C, по продажам — раз в 2 недели
+    # У затихших, потерянных и без заказов λ = 0 (§15): по продажам — минимум, раз в неделю (№30)
     inc_customers = sorted({c for a in included for c in pairs.get(a, {})})
     lam = {c: models[c].year.lam for c in inc_customers}
     lam_season = {c: season_lam(models[c]) for c in inc_customers}
     abc = fq.abc_classes({c: lam[c] * models[c].year.mean_revenue for c in inc_customers},
                          s['abc_a_share'], s['abc_b_share'])
-    f_sales = {c: fq.sales_frequency(lam_season[c], abc[c], s['freq_safety']) for c in inc_customers}
-    specs = {(a, c): pair_spec((a, c), info.pattern, f_sales[c], params['frequencies'],
-                               s['workdays'], book, _status_code(models[c]))
-             for a in run_ids for c, info in pairs.get(a, {}).items()}
+    f_sales = {c: fq.sales_frequency(lam_season[c], s['freq_safety']) for c in inc_customers}
     freq_before = snap.plan.visits_per_week_among(included)
+    specs = {(a, c): pair_spec((a, c), info.pattern, f_sales[c], params['frequencies'],
+                               s['workdays'], book, _status_code(models[c]), freq_before.get(c))
+             for a in run_ids for c, info in pairs.get(a, {}).items()}
     freq_after: dict[int, float] = Counter()
     for a in included:
         for c, info in pairs.get(a, {}).items():
@@ -783,6 +797,8 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
             freq_after[c] += len(spec.allowed[0] if spec else info.pattern) / pt.CYCLE_WEEKS
     ctx = _Ctx(snap, bundle, params, before, book, pairs, specs, freq_before, dict(freq_after),
                lam, lam_season, abc, clock, {}, [])
+    ctx.raised = {c: demand_capped(models[c], freq_before[c])
+                  for (_, c), spec in specs.items() if spec.source == fq.SOURCE_RULE}
     ctx.fleet = _fleet_setup(ctx, run_ids)
 
     evals = {me.agent_id: me for me in before.evals}
@@ -818,7 +834,8 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
     after_plan = _after_plan(snap.plan, {o.agent_id: o for o in outcomes}, pairs, s['workdays'])
     after_snap = replace(snap, plan=after_plan)
     f_after_inc = after_plan.visits_per_week_among(included)
-    after_models = {c: replace(m, visits_per_week=f_after_inc.get(c, 0.0)) for c, m in models.items()}
+    after_models = {c: replace(m, visits_per_week=f_after_inc.get(c, 0.0))
+                    for c, m in {**models, **ctx.raised}.items()}
     after = ev.evaluate_plan(after_snap, bundle, calib, run_ids,
                              visit_minutes=before.visit_minutes, models=after_models, roads=roads)
     result = _result(ctx, run_ids, parts, after_snap, after, f_after_inc)
@@ -957,7 +974,9 @@ def _day_changes(ctx: _Ctx, agent_id: int, cids: Sequence[int], specs: Sequence[
         # подсказки по продажам — не у затихших и потерянных; «за год ни одного заказа» — если
         # клиента не предлагается убрать (режим «как сейчас» или владелец оставил его)
         if status is None or not status.silent or (status.status == cst.NEVER and not spec.removed):
-            for kind, text in fq.frequency_hints(ctx.lam[c], ctx.freq_before[c], s['freq_safety']):
+            for kind, text in fq.frequency_hints(ctx.lam[c], ctx.freq_before[c], s['freq_safety'],
+                                                 ctx.freq_after.get(c, 0.0),
+                                                 ctx.book.rejected_freq.get((agent_id, c), ())):
                 hints.append({'customer_id': c, 'kind': kind, 'text': text})
         if c in skip:
             continue
@@ -1286,7 +1305,8 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
     after_snap = replace(snap, plan=after_plan)
     included = before.included_ids
     f_after_inc = after_plan.visits_per_week_among(included)
-    after_models = {c: replace(m, visits_per_week=f_after_inc.get(c, 0.0)) for c, m in before.models.items()}
+    after_models = {c: replace(m, visits_per_week=f_after_inc.get(c, 0.0))
+                    for c, m in {**before.models, **ctx.raised}.items()}
     after = ev.evaluate_plan(after_snap, bundle, calib, run_ids, visit_minutes=before.visit_minutes,
                              models=after_models, roads=norms.roads)
     result = _result(ctx, run_ids, parts, after_snap, after, f_after_inc)
@@ -1418,8 +1438,10 @@ def _reason(spec: PairSpec, f_cur: float, f_new: float, lam: float, lam_season: 
         return off
     if spec.source == fq.SOURCE_MANUAL:
         why = 'частота принята владельцем'
-    elif silent:   # затих (или владелец оставил потерянного): раз в 2 недели — попробовать вернуть
+    elif silent:   # затих (или владелец оставил потерянного): раз в неделю — попробовать вернуть
         why = cst.win_back_text(status)
+    elif spec.source == fq.SOURCE_RULE:
+        why = fq.RULE_TEXT
     else:
         why = fq.order_rate_text(lam, lam_season)
     return f'{off}; {why}' if off else why

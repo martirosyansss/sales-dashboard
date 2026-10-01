@@ -76,14 +76,14 @@
             { key: 'truck_priority', label: 'Дизель грузовиков важнее бензина менеджеров во столько раз', min: 1, max: 10, step: 0.1 },
             { key: 'fuel_price_fallback', label: 'Цена топлива, если в «Ценах топлива» пусто, драм за литр', min: 1, max: 10000, step: 1, hint: 'только чтобы сравнивать варианты' },
             { key: 'optimizer_seconds_per_manager', label: 'Время расчёта на менеджера — не больше, секунд', min: 1, max: 120, step: 1 },
-            { key: 'abc_a_share', label: 'Крупные магазины — доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'самые крупные вместе дают эту долю; крупные и средние — не реже раза в неделю' },
-            { key: 'abc_b_share', label: 'Средние магазины — следующая доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'остальные — небольшие, их можно посещать раз в 2 недели' },
+            { key: 'abc_a_share', label: 'Крупные магазины — доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'самые крупные вместе дают эту долю' },
+            { key: 'abc_b_share', label: 'Средние магазины — следующая доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'остальные — небольшие; любой магазин посещается не реже раза в неделю' },
             { key: 'freq_safety', label: 'Запас по визитам', min: 0.5, max: 3, step: 0.1, hint: 'визитов в неделю — не меньше, чем заказов в неделю × запас' },
         ] },
         // §15 — статус магазина по давности последнего заказа (ответ владельца №27)
         { title: 'Кто перестал покупать', items: [
             { key: 'status_new_days', label: 'Новый магазин — первый заказ за последние, дней', min: 1, max: 365, step: 1, hint: 'новые не считаются переставшими покупать' },
-            { key: 'dormant_min_days', label: 'Перестал покупать — не заказывает дольше, дней', min: 1, max: 365, step: 1, hint: 'таким — визит раз в 2 недели, чтобы попробовать вернуть' },
+            { key: 'dormant_min_days', label: 'Перестал покупать — не заказывает дольше, дней', min: 1, max: 365, step: 1, hint: 'таким — визит каждую неделю, чтобы попробовать вернуть' },
             { key: 'dormant_mult', label: 'Перестал покупать — во сколько раз дольше обычного', min: 1, max: 20, step: 0.5 },
             { key: 'lost_min_days', label: 'Давно не покупает — дольше, дней', min: 1, max: 730, step: 1, hint: 'или ни одного заказа за год: программа предложит убрать из маршрута' },
             { key: 'lost_mult', label: 'Давно не покупает — во сколько раз дольше обычного', min: 1, max: 50, step: 0.5 },
@@ -103,6 +103,7 @@
         data: null, initial: '', dirty: false, saving: false,
         map: null, marker: null,
         fields: new Map(),              // ключ ошибки сервера → {el, errEl, label}
+        manual: [],                     // ручные машины формы: {key, car_code, name, van_agent_id, …}
         season: { mode: 'auto', low: new Set(), peak: new Set() },
     };
 
@@ -307,6 +308,7 @@
     function normalize(d) {
         d.settings = (d.settings && typeof d.settings === 'object') ? d.settings : {};
         d.trucks = Array.isArray(d.trucks) ? d.trucks : [];
+        d.expeditors = Array.isArray(d.expeditors) ? d.expeditors : [];
         d.managers = Array.isArray(d.managers) ? d.managers : [];
         d.customer_groups = Array.isArray(d.customer_groups) ? d.customer_groups : [];
         d.season = (d.season && typeof d.season === 'object') ? d.season : {};
@@ -433,50 +435,138 @@
 
     // ---------- 02 · Машины ----------
     // Машина закреплена за водителем, а не за менеджером (ответ владельца №29): вместо «чей менеджер» —
-    // подсказка из ERP, сколько машина возит в день (по накладным за 3 месяца)
+    // подсказка из ERP, сколько машина возит в день (по накладным за 3 месяца) и когда возила последний раз.
+    // «Работает» у машины ERP: авто — решают накладные (возила за car_idle_days дней и не закрыта в ERP),
+    // ручной выбор держится до «вернуть авто». Ручные машины (их нет в ERP: экспедиторы возят без машины
+    // в накладных) добавляются здесь же и сохраняются общей кнопкой «Сохранить».
+    const dateRu = (iso) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || '')); return m ? m[3] + '.' + m[2] + '.' + m[1] : ''; };
+    const codeKey = (c) => String(c || '').replace(/[\s-]+/g, '').toUpperCase();   // как store.code_key
+    const MANUAL_CODE = /^[\p{L}\p{N}_\- ]{1,20}$/u;
+    let manualSeq = 0;
+
     function erpHint(t) {
         const avg = num(t.erp_kg_day), top = num(t.erp_kg_day_max), days = num(t.erp_days);
-        if (avg === null) return h('span', { class: 'rs-erp-none', text: 'по накладным за 3 месяца не возила' });
-        return h('span', { class: 'rs-erp' }, 'обычно возит в день ≈' + '\u00a0' + fmt(avg / 1000, 1) + '\u00a0т, максимум '
-            + fmt(top / 1000, 1) + '\u00a0т', h('small', { text: ' · ' + fmt(days) + ' ' + plural(days, 'день', 'дня', 'дней') + ' с развозом' }));
+        const load = avg === null ? h('span', { class: 'rs-erp-none', text: 'по накладным за 3 месяца не возила' })
+            : h('span', { class: 'rs-erp' }, 'обычно возит в день ≈' + ' ' + fmt(avg / 1000, 1) + ' т, максимум '
+                + fmt(top / 1000, 1) + ' т', h('small', { text: ' · ' + fmt(days) + ' ' + plural(days, 'день', 'дня', 'дней') + ' с развозом' }));
+        return h('div', { class: 'rs-erp-box' }, load,
+            h('span', { class: 'rs-erp-last', text: t.last_used ? 'последний раз в накладных: ' + dateRu(t.last_used) : 'в накладных не было' }));
+    }
+
+    // Ручная машина: что о её экспедиторе известно из накладных (без машины, за 3 месяца)
+    function vanHint(m) {
+        const v = vanInfo(m.van_agent_id);
+        if (!v) return h('span', { class: 'rs-erp-none', text: 'машины нет в ERP — рейсы в «Плане и факте» не видны, пока не выбран экспедитор' });
+        return h('div', { class: 'rs-erp-box' },
+            h('span', { class: 'rs-erp', text: 'возит экспедитор ' + v.code + (v.name ? ' · ' + v.name : '') }),
+            h('span', { class: 'rs-erp-last', text: num(v.docs) ? fmt(v.docs) + ' ' + plural(v.docs, 'накладная', 'накладные', 'накладных')
+                + ' без машины за 3 месяца, последняя — ' + dateRu(v.last_day) : 'за 3 месяца накладных без машины не было' }));
+    }
+
+    function vanInfo(id) {
+        if (id === null || id === undefined) return null;
+        const e = (state.data.expeditors || []).find(x => x.agent_id === id);
+        if (e) return e;
+        const t = state.data.trucks.find(x => x.manual && x.van && x.van.agent_id === id);
+        return t ? t.van : { agent_id: id, code: String(id), name: '', docs: 0, last_day: null };
+    }
+
+    // «выключена, потому что не возила» — только пока «Работает» решает авто
+    function idleText(t) {
+        const tail = ' — выключена; включите, если машина работает';
+        if (t.erp_closed) return 'закрыта в ERP' + tail;
+        if (!t.last_used) return 'в накладных не было' + tail;
+        return 'не возила с ' + dateRu(t.last_used) + tail;
+    }
+
+    function truckRow(t, i) {
+        const manual = !!t.manual;
+        const code = String(t.car_code ?? '');
+        const who = 'машина ' + code;
+        const capE = errNode(), fuelE = errNode(), actE = errNode();
+        const cap = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 0.1, max: 30, step: 0.1,
+            value: num(t.capacity_kg) === null ? '' : String(round(num(t.capacity_kg) / 1000, 3)),
+            placeholder: '—', 'aria-label': 'Тоннаж в тоннах — ' + who, dataset: { f: 'cap' } });
+        const fuel = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 1, max: 80, step: 0.1,
+            value: num(t.fuel_l_per_100km) === null ? '' : String(t.fuel_l_per_100km),
+            placeholder: '—', 'aria-label': 'Расход, литров на 100 км — ' + who, dataset: { f: 'fuel' } });
+        const wasManual = manual || t.active_source === 'manual', autoOn = t.auto_active === true;
+        const active = h('input', { type: 'checkbox', checked: t.active !== false, 'aria-label': 'Машина работает — ' + who,
+            dataset: { f: 'active', mode: wasManual ? 'manual' : 'auto' } });
+        const actSrc = h('span', { class: 'rt-inc-src' });
+        const idle = h('span', { class: 'rs-idle', role: 'note' });
+        const setMode = (mode) => {
+            active.dataset.mode = mode;
+            actSrc.textContent = '';
+            // авто и давно не возила — выключена; владелец включил сам — мягкое напоминание, не выключаем
+            const offByAuto = mode === 'auto' && !autoOn && !manual;
+            const stale = mode === 'manual' && active.checked && !autoOn && !manual;
+            idle.textContent = offByAuto ? idleText(t) : (stale ? 'в накладных давно нет — проверьте, работает ли машина' : '');
+            idle.classList.toggle('is-soft', stale);
+            idle.hidden = !idle.textContent;
+            if (manual) return;
+            if (mode === 'auto') {
+                actSrc.append(h('span', { class: 'rt-badge', text: 'авто',
+                    title: autoOn ? 'Авто: возила по накладным за последние ' + (state.data.car_idle_days || 60) + ' дней — работает'
+                        : 'Авто: давно не возила по накладным или закрыта в ERP — выключена' }));
+                return;
+            }
+            const back = h('button', { type: 'button', class: 'rt-hintbtn', 'aria-label': 'Вернуть авто — ' + who,
+                title: 'Снять ручной выбор: работает, если возила по накладным за последние ' + (state.data.car_idle_days || 60) + ' дней' }, 'вернуть авто');
+            back.addEventListener('click', () => {
+                active.checked = autoOn;
+                setMode('auto');
+                updateDirty();
+                renderProgress();
+                active.focus();
+                announce(code + ': «Работает» — снова авто');
+            });
+            actSrc.append(back);
+        };
+        setMode(active.dataset.mode);
+        // галочку вернули к авто-значению у машины, которая была «авто», — она и остаётся «авто»
+        active.addEventListener('change', () => setMode(manual || wasManual || active.checked !== autoOn ? 'manual' : 'auto'));
+
+        const nameCell = h('td', { class: 'rt-cell-name' },
+            h('span', { class: 'n', text: code || '—' }),
+            h('span', { class: 'c', text: t.name || '' }),
+            t.erp_closed ? h('span', { class: 'rt-badge b-warn mt-1', text: 'закрыта в ERP' }) : null,
+            manual ? h('span', { class: 'rt-badge b-manual mt-1', text: 'добавлена вручную' }) : null);
+        const tr = h('tr', { class: t.erp_closed ? 'is-closed' : null, dataset: manual ? { mk: t.key } : { i: String(i) } },
+            nameCell,
+            h('td', { class: 'w-num w-half', dataset: { label: 'Тоннаж, т' } }, cap, capE),
+            h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л на 100 км' } }, fuel, fuelE),
+            h('td', { class: 'rs-erp-cell', dataset: { label: manual ? 'Экспедитор' : 'По накладным ERP' } }, manual ? vanHint(t) : erpHint(t), idle),
+            h('td', { class: 'w-chk w-inc', dataset: { label: 'Работает' } }, active, actSrc, actE));
+        if (manual) {
+            const edit = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Изменить — ' + who },
+                icon('fa-pen'), 'Изменить');
+            const del = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Удалить — ' + who },
+                icon('fa-trash-can'), 'Удалить');
+            edit.addEventListener('click', () => openManualForm(t.key));
+            del.addEventListener('click', () => removeManual(t.key));
+            nameCell.append(h('span', { class: 'rs-mt-acts' }, edit, del));
+            const keys = (f) => ['manual_trucks.' + code + '.' + f];
+            reg(keys('capacity_kg'), cap, capE, 'Машина ' + code + ', тоннаж');
+            reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Машина ' + code + ', расход');
+            reg(keys('active'), active, actE, 'Машина ' + code);
+            reg(keys('car_code').concat(keys('name'), keys('van_agent_id'), ['manual_trucks.' + code]), edit, actE, 'Машина ' + code);
+        } else {
+            const keys = (f) => ['trucks.' + i + '.' + f, 'trucks.' + code + '.' + f];
+            reg(keys('capacity_kg').concat(['trucks.' + i, 'trucks.' + code]), cap, capE, 'Машина ' + code + ', тоннаж');
+            reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Машина ' + code + ', расход');
+            reg(keys('active').concat(keys('car_code')), active, actE, 'Машина ' + code);
+        }
+        return tr;
     }
 
     function renderTrucks() {
         const box = $('rsTrucks');
         box.textContent = '';
-        const trucks = state.data.trucks;
-        if (!trucks.length) {
-            box.append(h('p', { class: 'rt-empty px-0', text: 'В ERP нет машин — назначать нечего.' }));
-            return;
-        }
-        const tbody = h('tbody');
-        trucks.forEach((t, i) => {
-            const code = String(t.car_code ?? '');
-            const who = 'машина ' + code;
-            const capE = errNode(), fuelE = errNode(), actE = errNode();
-            const cap = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 0.1, max: 30, step: 0.1,
-                value: num(t.capacity_kg) === null ? '' : String(round(num(t.capacity_kg) / 1000, 3)),
-                placeholder: '—', 'aria-label': 'Тоннаж в тоннах — ' + who, dataset: { f: 'cap' } });
-            const fuel = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 1, max: 80, step: 0.1,
-                value: num(t.fuel_l_per_100km) === null ? '' : String(t.fuel_l_per_100km),
-                placeholder: '—', 'aria-label': 'Расход, литров на 100 км — ' + who, dataset: { f: 'fuel' } });
-            const active = h('input', { type: 'checkbox', checked: t.active !== false, 'aria-label': 'Машина работает — ' + who, dataset: { f: 'active' } });
-            const nameCell = h('td', { class: 'rt-cell-name' },
-                h('span', { class: 'n', text: code || '—' }),
-                h('span', { class: 'c', text: t.name || '' }),
-                t.erp_closed ? h('span', { class: 'rt-badge b-warn mt-1', text: 'закрыта в ERP' }) : null);
-            const tr = h('tr', { class: t.erp_closed ? 'is-closed' : null, dataset: { i: String(i) } },
-                nameCell,
-                h('td', { class: 'w-num w-half', dataset: { label: 'Тоннаж, т' } }, cap, capE),
-                h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л на 100 км' } }, fuel, fuelE),
-                h('td', { class: 'rs-erp-cell', dataset: { label: 'По накладным ERP' } }, erpHint(t)),
-                h('td', { class: 'w-chk', dataset: { label: 'Работает' } }, active, actE));
-            tbody.append(tr);
-            const keys = (f) => ['trucks.' + i + '.' + f, 'trucks.' + code + '.' + f];
-            reg(keys('capacity_kg').concat(['trucks.' + i, 'trucks.' + code]), cap, capE, 'Машина ' + code + ', тоннаж');
-            reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Машина ' + code + ', расход');
-            reg(keys('active').concat(keys('car_code')), active, actE, 'Машина ' + code);
-        });
+        state.manual = state.data.trucks.filter(t => t.manual).map(t => Object.assign({}, t, { key: 'm' + (++manualSeq) }));
+        const tbody = h('tbody', { id: 'rsTrucksBody' });
+        state.data.trucks.forEach((t, i) => { if (!t.manual) tbody.append(truckRow(t, i)); });
+        state.manual.forEach(m => tbody.append(truckRow(m)));
         const table = h('table', { class: 'rt-table' },
             h('caption', { class: 'rt-sr-only', text: 'Машины доставки: тоннаж, расход и сколько машина возит в день по накладным ERP' }),
             h('thead', {}, h('tr', {},
@@ -484,9 +574,165 @@
                 h('th', { scope: 'col', text: 'Тоннаж, т' }),
                 h('th', { scope: 'col', text: 'Расход, л на 100 км' }),
                 h('th', { scope: 'col', text: 'По накладным ERP' }),
-                h('th', { scope: 'col', class: 'w-chk', text: 'Работает' }))),
+                h('th', { scope: 'col', class: 'w-chk w-inc', text: 'Работает' }))),
             tbody);
-        box.append(h('div', { class: 'rt-table-scroll' }, table));
+        const addBtn = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', id: 'rsMtAdd', 'aria-expanded': 'false', 'aria-controls': 'rsMtForm' },
+            icon('fa-plus'), 'Добавить машину вручную');
+        addBtn.addEventListener('click', () => openManualForm(null));
+        box.append(
+            h('div', { class: 'rt-alert is-info rs-mt-hint', id: 'rsMtHint' }, icon('fa-circle-info'), h('span', { class: 'rt-alert-text', id: 'rsMtHintText' }), addBtn),
+            h('div', { class: 'rt-table-scroll' }, table),
+            manualForm());
+        renderManualHint();
+    }
+
+    // «Нет нужной машины?» — экспедиторы, которые возят без машины в накладных и ещё без ручной машины
+    function renderManualHint() {
+        const linked = new Set(state.manual.map(m => m.van_agent_id).filter(v => v !== null && v !== undefined));
+        const free = (state.data.expeditors || []).filter(e => !linked.has(e.agent_id)).map(e => e.code);
+        let text = 'Нет нужной машины? Её нет в ERP — добавьте вручную.';
+        if (free.length) {
+            const list = free.slice(0, 3);
+            const names = list.length === 1 ? list[0] : list.slice(0, -1).join(', ') + ' и ' + list[list.length - 1];
+            text += ' Например, ' + (free.length === 1 ? 'экспедитор ' + names + ' возит' : 'экспедиторы ' + names + (free.length > 3 ? ' и другие' : '') + ' возят')
+                + ' без машины в накладных.';
+        }
+        $('rsMtHintText').textContent = text;
+    }
+
+    // ---- Форма «Добавить машину вручную» / «Изменить» (внутри общей формы — поля не отслеживаются как изменения) ----
+    function manualForm() {
+        const f = (id, label, input, hint) => h('div', { class: 'rt-field' }, h('label', { for: id, text: label }), input,
+            hint ? h('div', { class: 'rt-field-hint', text: hint }) : null);
+        const nt = { noTrack: '1' };
+        const code = h('input', { class: 'rt-input', id: 'rsMtCode', type: 'text', maxlength: 20, autocomplete: 'off', spellcheck: 'false', placeholder: 'например 35 XY 123', dataset: nt });
+        const name = h('input', { class: 'rt-input', id: 'rsMtName', type: 'text', maxlength: 60, autocomplete: 'off', placeholder: 'например ГАЗель', dataset: nt });
+        const cap = h('input', { class: 'rt-input', id: 'rsMtCap', type: 'number', inputmode: 'decimal', min: 0.1, max: 30, step: 0.1, placeholder: '—', dataset: nt });
+        const fuel = h('input', { class: 'rt-input', id: 'rsMtFuel', type: 'number', inputmode: 'decimal', min: 1, max: 80, step: 0.1, placeholder: '—', dataset: nt });
+        const van = h('select', { class: 'rt-select', id: 'rsMtVan', dataset: nt });
+        const act = h('input', { type: 'checkbox', id: 'rsMtActive', checked: true, dataset: nt });
+        const ok = h('button', { type: 'button', class: 'rt-btn rt-btn-primary rt-btn-sm', id: 'rsMtOk' }, icon('fa-check'), h('span', { text: 'Добавить в список' }));
+        const cancel = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', id: 'rsMtCancel' }, 'Отмена');
+        ok.addEventListener('click', applyManualForm);
+        cancel.addEventListener('click', closeManualForm);
+        const wrap = h('div', { class: 'rs-mt-form', id: 'rsMtForm', role: 'group', 'aria-labelledby': 'rsMtTitle', hidden: true },
+            h('h4', { class: 'rs-mt-title', id: 'rsMtTitle', text: 'Новая машина' }),
+            h('div', { class: 'rs-mt-grid' },
+                f('rsMtCode', 'Номер', code, 'как на машине; номер не должен совпадать с машинами из ERP'),
+                f('rsMtName', 'Марка или название', name),
+                f('rsMtCap', 'Тоннаж, т', cap),
+                f('rsMtFuel', 'Расход, л на 100 км', fuel),
+                f('rsMtVan', 'Экспедитор (можно не указывать)', van, 'его накладные без машины в ERP программа будет считать рейсами этой машины'),
+                h('label', { class: 'rs-mt-check' }, act, 'Машина работает')),
+            h('div', { class: 'rt-ferr', id: 'rsMtErr', role: 'alert' }),
+            h('div', { class: 'rs-mt-btns' }, ok, cancel),
+            h('p', { class: 'rt-field-hint mb-0', text: 'Машина попадёт в список; записать — кнопкой «Сохранить» внизу страницы.' }));
+        wrap.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') { e.preventDefault(); applyManualForm(); }
+            if (e.key === 'Escape') { e.preventDefault(); closeManualForm(); }
+        });
+        return wrap;
+    }
+
+    function fillVanOptions(selected, editingKey) {
+        const sel = $('rsMtVan');
+        sel.textContent = '';
+        sel.append(h('option', { value: '', text: '— без экспедитора —' }));
+        const list = (state.data.expeditors || []).slice();
+        if (selected !== null && selected !== undefined && !list.some(e => e.agent_id === selected)) list.push(vanInfo(selected));
+        list.forEach(e => {
+            const other = state.manual.find(m => m.van_agent_id === e.agent_id && m.key !== editingKey);
+            sel.append(h('option', { value: String(e.agent_id), selected: e.agent_id === selected, disabled: !!other,
+                text: e.code + (e.name ? ' · ' + e.name : '') + (num(e.docs) ? ' · ' + fmt(e.docs) + ' ' + plural(e.docs, 'накладная', 'накладные', 'накладных') + ' без машины' : '')
+                    + (other ? ' (уже у машины ' + other.car_code + ')' : '') }));
+        });
+    }
+
+    function openManualForm(key) {
+        const m = key ? state.manual.find(x => x.key === key) : null;
+        const tr = m ? $('rsTrucksBody').querySelector('tr[data-mk="' + key + '"]') : null;
+        const cur = (f) => tr ? tr.querySelector('[data-f="' + f + '"]') : null;
+        const form = $('rsMtForm');
+        form.dataset.key = key || '';
+        $('rsMtTitle').textContent = m ? 'Машина ' + m.car_code : 'Новая машина';
+        $('rsMtOk').querySelector('span').textContent = m ? 'Применить' : 'Добавить в список';
+        $('rsMtCode').value = m ? m.car_code : '';
+        $('rsMtCode').disabled = !!m;
+        $('rsMtCode').title = m ? 'Номер не меняется — удалите машину и добавьте заново' : '';
+        $('rsMtName').value = m ? (m.name || '') : '';
+        $('rsMtCap').value = cur('cap') ? cur('cap').value : '';
+        $('rsMtFuel').value = cur('fuel') ? cur('fuel').value : '';
+        $('rsMtActive').checked = cur('active') ? cur('active').checked : true;
+        fillVanOptions(m ? m.van_agent_id : null, key);
+        $('rsMtErr').textContent = '';
+        form.hidden = false;
+        $('rsMtAdd').setAttribute('aria-expanded', 'true');
+        form.scrollIntoView({ behavior: RM ? 'auto' : 'smooth', block: 'nearest' });
+        (m ? $('rsMtName') : $('rsMtCode')).focus({ preventScroll: true });
+    }
+
+    function closeManualForm() {
+        $('rsMtForm').hidden = true;
+        $('rsMtAdd').setAttribute('aria-expanded', 'false');
+        $('rsMtAdd').focus();
+    }
+
+    function applyManualForm() {
+        const key = $('rsMtForm').dataset.key || null;
+        const err = (text, el) => { $('rsMtErr').textContent = text; if (el) el.focus(); };
+        const code = String($('rsMtCode').value).trim().replace(/\s+/g, ' ');
+        if (!key) {
+            if (!MANUAL_CODE.test(code)) return err('Номер — до 20 букв и цифр (можно пробел и дефис).', $('rsMtCode'));
+            if (state.data.trucks.some(t => !t.manual && codeKey(t.car_code) === codeKey(code))) return err('Машина ' + code + ' уже есть в списке из ERP — заполните её строку.', $('rsMtCode'));
+            if (state.manual.some(m => codeKey(m.car_code) === codeKey(code))) return err('Машина с таким номером уже добавлена.', $('rsMtCode'));
+        }
+        const name = String($('rsMtName').value).trim().replace(/\s+/g, ' ');
+        if (name.length > 60) return err('Название — не длиннее 60 символов.', $('rsMtName'));
+        const cap = readNum($('rsMtCap'), true), fuel = readNum($('rsMtFuel'), true);
+        if (cap.error || (cap.value !== null && (cap.value < 0.1 || cap.value > 30))) return err('Тоннаж — от 0,1 до 30 т.', $('rsMtCap'));
+        if (fuel.error || (fuel.value !== null && (fuel.value < 1 || fuel.value > 80))) return err('Расход — от 1 до 80 л на 100 км.', $('rsMtFuel'));
+        const vanRaw = $('rsMtVan').value;
+        const data = {
+            name: name || null,
+            capacity_kg: cap.value === null ? null : Math.round(cap.value * 1000),
+            fuel_l_per_100km: fuel.value,
+            active: $('rsMtActive').checked,
+            van_agent_id: vanRaw === '' ? null : Number(vanRaw),
+        };
+        let m;
+        if (key) {
+            m = state.manual.find(x => x.key === key);
+            Object.assign(m, data);
+            const old = $('rsTrucksBody').querySelector('tr[data-mk="' + key + '"]');
+            old.replaceWith(truckRow(m));
+        } else {
+            m = Object.assign({ car_code: code, manual: true, active_source: 'manual', key: 'm' + (++manualSeq) }, data);
+            state.manual.push(m);
+            $('rsTrucksBody').append(truckRow(m));
+        }
+        $('rsMtForm').hidden = true;
+        $('rsMtAdd').setAttribute('aria-expanded', 'false');
+        renderManualHint();
+        updateDirty();
+        renderProgress();
+        const row = $('rsTrucksBody').querySelector('tr[data-mk="' + m.key + '"]');
+        flash(row);
+        row.querySelector('button').focus({ preventScroll: true });
+        row.scrollIntoView({ behavior: RM ? 'auto' : 'smooth', block: 'nearest' });
+        announce('Машина ' + m.car_code + (key ? ' изменена' : ' добавлена в список') + ' — нажмите «Сохранить»');
+    }
+
+    function removeManual(key) {
+        const i = state.manual.findIndex(x => x.key === key);
+        if (i < 0) return;
+        const [m] = state.manual.splice(i, 1);
+        $('rsTrucksBody').querySelector('tr[data-mk="' + key + '"]').remove();
+        if ($('rsMtForm').dataset.key === key) $('rsMtForm').hidden = true;
+        renderManualHint();
+        updateDirty();
+        renderProgress();
+        $('rsMtAdd').focus();
+        announce('Машина ' + m.car_code + ' убрана из списка — нажмите «Сохранить»');
     }
 
     // ---------- 03 · Менеджеры ----------
@@ -1025,20 +1271,36 @@
         if (dp.error) errors.depot = dp.error;
         else if (!dp.empty) depot = { lat: dp.lat, lon: dp.lon };
 
-        const trucks = [];
+        const trucks = [], manualTrucks = [];
+        // ошибки сервера по ручным машинам приходят по номеру в списке — тот же номер у полей строки
+        const alias = (from, to) => { const f = findField(from); if (f) state.fields.set(normKey(to), f); };
         $('rsTrucks').querySelectorAll('tbody tr').forEach(tr => {
-            const i = +tr.dataset.i, t = state.data.trucks[i];
             const q = (f) => tr.querySelector('[data-f="' + f + '"]');
             const cap = readNum(q('cap'), true), fuel = readNum(q('fuel'), true);
-            if (cap.error) errors['trucks.' + i + '.capacity_kg'] = cap.error;
-            else if (cap.value !== null && (cap.value < 0.1 || cap.value > 30)) errors['trucks.' + i + '.capacity_kg'] = 'Тоннаж — от 0,1 до 30 т';
-            if (fuel.error) errors['trucks.' + i + '.fuel_l_per_100km'] = fuel.error;
-            trucks.push({
-                car_code: t.car_code,
+            const m = tr.dataset.mk ? state.manual.find(x => x.key === tr.dataset.mk) : null;
+            const p = m ? 'manual_trucks.' + manualTrucks.length + '.' : 'trucks.' + tr.dataset.i + '.';
+            if (cap.error) errors[p + 'capacity_kg'] = cap.error;
+            else if (cap.value !== null && (cap.value < 0.1 || cap.value > 30)) errors[p + 'capacity_kg'] = 'Тоннаж — от 0,1 до 30 т';
+            if (fuel.error) errors[p + 'fuel_l_per_100km'] = fuel.error;
+            const item = {
+                car_code: m ? m.car_code : state.data.trucks[+tr.dataset.i].car_code,
                 capacity_kg: cap.value === null || cap.value === undefined ? null : Math.round(cap.value * 1000),
                 fuel_l_per_100km: fuel.value === undefined ? null : fuel.value,
-                active: q('active').checked,
-            });
+            };
+            const act = q('active');
+            if (m) {
+                ['capacity_kg', 'fuel_l_per_100km', 'active', 'car_code', 'name', 'van_agent_id']
+                    .forEach(f => alias('manual_trucks.' + m.car_code + '.' + f, p + f));
+                alias('manual_trucks.' + m.car_code, p.slice(0, -1));
+                manualTrucks.push(Object.assign(item, { name: m.name || null, active: act.checked,
+                    van_agent_id: m.van_agent_id === undefined ? null : m.van_agent_id }));
+                return;
+            }
+            // «Работает»: ручной выбор — true/false; нажали «вернуть авто» — null; «авто» без изменений не шлём —
+            // иначе сохранение заморозило бы решение по накладным
+            if (act.dataset.mode === 'manual') item.active = act.checked;
+            else if (state.data.trucks[+tr.dataset.i].active_source === 'manual') item.active = null;
+            trucks.push(item);
         });
 
         const managers = [];
@@ -1063,7 +1325,7 @@
             else if (m.included_source === 'manual') item.included = null;
             managers.push(item);
         });
-        return { payload: { settings: s, depot, trucks, managers }, errors };
+        return { payload: { settings: s, depot, trucks, managers, manual_trucks: manualTrucks }, errors };
     }
 
     function snapshot() {
@@ -1071,8 +1333,10 @@
             .filter(el => !el.dataset.noTrack)
             .map(el => (el.type === 'checkbox' || el.type === 'radio') ? (el.checked ? '1' : '0') : el.value);
         // «вернуть авто» может не менять галочку — режим «В расчёте» тоже изменение
-        const incModes = [...document.querySelectorAll('#rsManagers [data-f="inc"]')].map(el => el.dataset.mode || '');
-        return JSON.stringify([vals, incModes, state.season.mode, [...state.season.low].sort(), [...state.season.peak].sort()]);
+        const incModes = [...document.querySelectorAll('#rsManagers [data-f="inc"], #rsTrucks [data-f="active"]')].map(el => el.dataset.mode || '');
+        // ручные машины: номер, название и экспедитор живут не в полях строки
+        const manual = (state.manual || []).map(m => [m.car_code, m.name || null, m.van_agent_id === undefined ? null : m.van_agent_id]);
+        return JSON.stringify([vals, incModes, manual, state.season.mode, [...state.season.low].sort(), [...state.season.peak].sort()]);
     }
 
     function updateDirty() {

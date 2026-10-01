@@ -277,6 +277,24 @@ SELECT LTRIM(RTRIM(c.fCODE)), c.fNAME, c.fISCLOSED
 FROM CARS c WITH (NOLOCK)
 """
 
+# Когда машина последний раз везла проведённую реализацию (за всё время) — машины без развоза выключены «авто»
+SQL_CAR_LAST_USED = """
+SELECT LTRIM(RTRIM(s.fDELIVERYCAR)), MAX(CAST(s.fDATE AS date))
+FROM SALES s WITH (NOLOCK)
+WHERE s.fSTATE = 2 AND LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) <> ''
+GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR))
+"""
+
+# Экспедиторы: везли проведённые реализации БЕЗ машины в накладной (fDELIVERYCAR пусто), и не свои —
+# fVANAGENTID = fSALESAGENTID — менеджер развозит сам, это не машина парка. Документов и последний день.
+SQL_EXPEDITORS = """
+SELECT s.fVANAGENTID, COUNT(*), MAX(CAST(s.fDATE AS date))
+FROM SALES s WITH (NOLOCK)
+WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) = ''
+  AND ISNULL(s.fVANAGENTID, 0) <> 0 AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0)
+GROUP BY s.fVANAGENTID
+"""
+
 # Долг клиента на сегодня — формула дашборда (DEBT_CALCULATION_FORMULA.md, /api/customers в app_v2.py):
 # ДОЛГ = ДЕБЕТ (HICUSTOMERSDEBT: D − C, клиент — через DOCUMENTS) − |Type01| − |Type02| (HIRESTCUSTOMERSSUM)
 SQL_CUSTOMER_DEBIT = """
@@ -339,17 +357,22 @@ FROM CUSTOMERDELIVERYADDRESSES a WITH (NOLOCK)
 WHERE a.fDEFAULT = 1 AND a.fCUSTOMERID IN ({ph})
 """
 
-# Какие машины везли заказы менеджера (сравнение «по менеджерам»): документов за период
+# Какие машины везли заказы менеджера (сравнение «по менеджерам»): документов за период. Накладная без
+# машины, которую вёз экспедитор (не сам менеджер), — строка с пустой машиной и id экспедитора: за ним может
+# быть закреплена ручная машина (store.Truck.van_agent_id).
 SQL_AGENT_CARS = """
-SELECT s.fSALESAGENTID, LTRIM(RTRIM(s.fDELIVERYCAR)), COUNT(*)
+SELECT s.fSALESAGENTID, x.car, CASE WHEN x.car = '' THEN s.fVANAGENTID ELSE 0 END, COUNT(*)
 FROM SALES s WITH (NOLOCK)
-WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) <> ''
-GROUP BY s.fSALESAGENTID, LTRIM(RTRIM(s.fDELIVERYCAR))
+CROSS APPLY (SELECT LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) AS car) x
+WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ?
+  AND (x.car <> '' OR (ISNULL(s.fVANAGENTID, 0) <> 0 AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0)))
+GROUP BY s.fSALESAGENTID, x.car, CASE WHEN x.car = '' THEN s.fVANAGENTID ELSE 0 END
 """
 
 # Факт развоза за дату: проведённые реализации с машиной, кг и суммой («план и факт»)
 SQL_SHIPPED = """
-SELECT s.fCUSTOMERID, s.fSALESAGENTID, LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))), s.fTOTALSUM, ISNULL(k.kg, 0)
+SELECT s.fCUSTOMERID, s.fSALESAGENTID, LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))), s.fTOTALSUM, ISNULL(k.kg, 0),
+       s.fVANAGENTID
 FROM SALES s WITH (NOLOCK)
 OUTER APPLY (SELECT SUM(sd.fQUANTITY * pr.fWEIGHT) AS kg
              FROM SALEDOCDETAILS sd WITH (NOLOCK)
@@ -475,6 +498,16 @@ def cars(conn: Any) -> dict[str, Car]:
     return {_str(r[0]): Car(_str(r[0]), _str(r[1]), bool(r[2])) for r in _select(conn, SQL_CARS)}
 
 
+def car_last_used(conn: Any) -> dict[str, date]:
+    """Машина → день последней проведённой реализации с ней (за всё время)."""
+    return {_str(r[0]): _day(r[1]) for r in _select(conn, SQL_CAR_LAST_USED)}
+
+
+def expeditors(conn: Any, since: date, until: date) -> dict[int, tuple[int, date]]:
+    """Экспедитор → (накладных без машины, последний день) за [since, until)."""
+    return {int(r[0]): (int(r[1]), _day(r[2])) for r in _select(conn, SQL_EXPEDITORS, (since, until))}
+
+
 def customer_debts(conn: Any, ids: Sequence[int]) -> dict[int, float]:
     """Долг клиентов на сегодня: дебет (D − C) − |возвраты Type01| − |переплаты Type02| — как на
     странице клиентов дашборда. Клиента без записей нет в словаре (долг 0)."""
@@ -526,18 +559,21 @@ def address_texts(conn: Any, ids: Sequence[int]) -> dict[int, str]:
     return out
 
 
-def agent_cars(conn: Any, since: date, until: date) -> dict[int, tuple[str, ...]]:
-    """Менеджер → машины, которые везли его заказы за период, от самой частой (ничьи — по коду)."""
-    counts: dict[int, list[tuple[int, str]]] = {}
+def agent_cars(conn: Any, since: date, until: date) -> dict[int, tuple[str | int, ...]]:
+    """Менеджер → кто везли его заказы за период, от самого частого (ничьи — машины по коду, потом
+    экспедиторы по id): код машины ERP (str) или id экспедитора, возившего без машины (int) —
+    dispatch.history_cars заменяет его закреплённой ручной машиной."""
+    counts: dict[int, list[tuple[int, int, str, int]]] = {}
     for r in _select(conn, SQL_AGENT_CARS, (since, until)):
-        counts.setdefault(int(r[0]), []).append((-int(r[2]), _str(r[1])))
-    return {a: tuple(code for _, code in sorted(cs)) for a, cs in counts.items()}
+        car, van = _str(r[1]), int(r[2] or 0)
+        counts.setdefault(int(r[0]), []).append((-int(r[3]), 0 if car else 1, car, van))
+    return {a: tuple(car or van for _, _, car, van in sorted(cs)) for a, cs in counts.items()}
 
 
 def shipped_docs(conn: Any, day: date) -> list[ShippedDoc]:
-    """Проведённые реализации за день: клиент, менеджер, машина, сумма, кг."""
+    """Проведённые реализации за день: клиент, менеджер, машина, сумма, кг, экспедитор."""
     return [ShippedDoc(customer_id=int(r[0]), agent_id=int(r[1] or 0), car_code=_str(r[2]),
-                       revenue=float(r[3] or 0), kg=float(r[4] or 0))
+                       revenue=float(r[3] or 0), kg=float(r[4] or 0), van_agent_id=int(r[5] or 0))
             for r in _select(conn, SQL_SHIPPED, (day, day + timedelta(days=1)))]
 
 

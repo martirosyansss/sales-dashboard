@@ -62,6 +62,9 @@ SNAP_MAX_KM = 0.5          # дальше от дороги — точка не 
 KEY_DECIMALS = 6           # ключ точки в кэше расстояний (~0,1 м)
 DIJKSTRA_BATCH = 16        # источников за вызов: строка — по всем узлам графа (~6 МБ на источник)
 MIN_EDGE_KM = 1e-9         # нулевые рёбра (узлы с одной координатой) — чуть больше нуля
+PATH_SIMPLIFY_KM = 0.005   # линия на карте: отклонение от дороги не больше 5 м
+PATH_LIMIT_FACTOR = 3.0    # поиск пути для карты — в пределах 3 × по прямой + 2 км (не нашёлся — без предела)
+PATH_LIMIT_SLACK_KM = 2.0
 GRAPH_FORMAT = 2
 DIST_FORMAT = 2
 RULES_VERSION = 2          # правила way_direction: поменялись — граф и кэш расстояний пересобираются
@@ -340,6 +343,80 @@ class RoadNetwork:
             out[k:k + DIJKSTRA_BATCH] = rows[:, targets]
         return out
 
+    def lines(self, lines: Sequence[Sequence[Point]]) -> list[list[Point]]:
+        """Ломаные вдоль дорог для карты: каждая линия (точки по порядку объезда) → точки по кратчайшему
+        пути A → B между соседними точками, упрощённые до PATH_SIMPLIFY_KM. Участок, где точка не
+        привязана или пути нет, — по прямой. Поиск — Dijkstra от каждого узла-начала с пределом
+        PATH_LIMIT_FACTOR × по прямой (не нашёлся — без предела)."""
+        points = list({point_key(p) for line in lines for p in line})
+        snapped, _ = self.snap(points)
+        node = {p: int(n) for p, n in zip(points, snapped)}
+        legs: dict[int, dict[int, float]] = {}   # узел-начало → узел-конец → км по прямой
+        for line in lines:
+            for a, b in zip(line, line[1:]):
+                na, nb = node[point_key(a)], node[point_key(b)]
+                if na >= 0 and nb >= 0 and na != nb:
+                    legs.setdefault(na, {})[nb] = haversine_km(a, b)
+        paths: dict[tuple[int, int], Any] = {}
+        for na, targets in legs.items():
+            limit = PATH_LIMIT_FACTOR * max(targets.values()) + PATH_LIMIT_SLACK_KM
+            dist, pred = dijkstra(self._g, directed=True, indices=na, return_predecessors=True, limit=limit)
+            if not all(math.isfinite(dist[nb]) for nb in targets):
+                dist, pred = dijkstra(self._g, directed=True, indices=na, return_predecessors=True)
+            for nb in targets:
+                if math.isfinite(dist[nb]):
+                    paths[na, nb] = _walk_back(pred, na, nb)
+        out: list[list[Point]] = []
+        for line in lines:
+            if not line:
+                out.append([])
+                continue
+            lat: list[Any] = [np.array([line[0][0]])]
+            lon: list[Any] = [np.array([line[0][1]])]
+            for a, b in zip(line, line[1:]):
+                path = paths.get((node[point_key(a)], node[point_key(b)]))
+                if path is not None:
+                    lat.append(self.graph.lat[path])
+                    lon.append(self.graph.lon[path])
+                lat.append(np.array([b[0]]))
+                lon.append(np.array([b[1]]))
+            la, lo = np.concatenate(lat), np.concatenate(lon)
+            keep = _simplify(self._project(la, lo), PATH_SIMPLIFY_KM)
+            out.append([(round(float(la[i]), 5), round(float(lo[i]), 5)) for i in keep])
+        return out
+
+
+def _walk_back(pred: Any, source: int, target: int) -> Any:
+    """Узлы пути source → target по массиву предшественников Dijkstra."""
+    path = [target]
+    while path[-1] != source:
+        path.append(int(pred[path[-1]]))
+    return np.array(path[::-1], dtype=np.int64)
+
+
+def _simplify(xy: Any, tol: float) -> Any:
+    """Индексы точек ломаной xy (км) после упрощения Рамера — Дугласа — Пекера с допуском tol км;
+    первая и последняя точки остаются всегда."""
+    n = len(xy)
+    keep = np.zeros(n, dtype=bool)
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j - i < 2:
+            continue
+        dx, dy = xy[j] - xy[i]
+        rel = xy[i + 1:j] - xy[i]
+        seg = math.hypot(dx, dy)
+        d = (np.abs(dx * rel[:, 1] - dy * rel[:, 0]) / seg if seg > 0
+             else np.hypot(rel[:, 0], rel[:, 1]))
+        k = int(np.argmax(d))
+        if d[k] > tol:
+            m = i + 1 + k
+            keep[m] = True
+            stack += [(i, m), (m, j)]
+    return np.flatnonzero(keep)
+
 
 # --- Кэш расстояний ---
 
@@ -452,6 +529,17 @@ class RoadDistances:
         if not math.isfinite(road):
             return None
         return sa + road + sb
+
+    def lines(self, lines: Sequence[Sequence[Point]]) -> list[list[Point]] | None:
+        """Линии рейсов вдоль дорог для карты (RoadNetwork.lines); дороги сломаны — None: рисовать по
+        прямой. Граф загружается на время запроса (из кэша на диске — доли секунды)."""
+        if self.failed:
+            return None
+        try:
+            return self._load_network().lines(lines)
+        except Exception:
+            logger.exception('[Routes] Линии по дорогам не построены — на карте по прямой')
+            return None
 
     def unsnapped(self, points: Iterable[Point | None]) -> int:
         """Сколько разных точек из набора дальше SNAP_MAX_KM от дороги (из посчитанных)."""

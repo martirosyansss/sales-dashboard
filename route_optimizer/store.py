@@ -16,14 +16,14 @@ import math
 import os
 import re
 import sqlite3
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from typing import Any, Callable, Collection, Mapping
 
 from .geo import ARMENIA_LAT, ARMENIA_LON, Point, is_valid_point
 from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, parse_transfer_key
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -81,21 +81,35 @@ _DISPATCH_TABLE = (
     "CREATE TABLE IF NOT EXISTS dispatch_plan(day TEXT PRIMARY KEY, data TEXT NOT NULL, "
     "rev INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, updated_by TEXT)")
 DISPATCH_KEPT_DAYS = 120    # черновики старше — удаляются при сохранении
+# Машины. Схема 1–7 — как была создана (история миграций не меняется).
+_TRUCKS_TABLE_V1 = (
+    "CREATE TABLE IF NOT EXISTS trucks(car_code TEXT PRIMARY KEY, capacity_kg REAL, "
+    "fuel_l_per_100km REAL, agent_id INTEGER, active INTEGER NOT NULL DEFAULT 1, "
+    "updated_at TEXT NOT NULL, updated_by TEXT)")
+# Схема 8: active NULL — «авто» (машина ERP возила за CAR_IDLE_DAYS дней и не закрыта); 1/0 — выбор владельца.
+# manual = 1 — машина, которой нет в ERP (владелец добавил сам: экспедиторы возят без машины в накладных):
+# name — марка/название, van_agent_id — экспедитор ERP (SALES.fVANAGENTID), чьи накладные без машины
+# считаются её рейсами; один экспедитор — не больше одной машины.
+_TRUCKS_COLUMNS = (
+    "car_code TEXT PRIMARY KEY, capacity_kg REAL, fuel_l_per_100km REAL, agent_id INTEGER, active INTEGER, "
+    "manual INTEGER NOT NULL DEFAULT 0, name TEXT, van_agent_id INTEGER, updated_at TEXT NOT NULL, updated_by TEXT")
+_TRUCKS_TABLE = f"CREATE TABLE IF NOT EXISTS trucks({_TRUCKS_COLUMNS})"
+_TRUCKS_ONE_VAN = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS trucks_one_van ON trucks(van_agent_id) WHERE van_agent_id IS NOT NULL")
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS depot(id INTEGER PRIMARY KEY CHECK (id = 1), "
     "lat REAL NOT NULL, lon REAL NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT)",
-    "CREATE TABLE IF NOT EXISTS trucks(car_code TEXT PRIMARY KEY, capacity_kg REAL, "
-    "fuel_l_per_100km REAL, agent_id INTEGER, active INTEGER NOT NULL DEFAULT 1, "
-    "updated_at TEXT NOT NULL, updated_by TEXT)",
+    _TRUCKS_TABLE,
     f"CREATE TABLE IF NOT EXISTS manager_profile({_MANAGER_PROFILE_COLUMNS})",
     _DECISION_TABLE,
     _SCENARIO_TABLE,
     _DECISION_ONE_ACCEPTED,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
+    _TRUCKS_ONE_VAN,
 )
 
 # Миграции: версия → DDL перехода на следующую. Выполняются в одной транзакции с записью версии.
@@ -153,6 +167,18 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     ),
     # 6 → 7 (план развоза): две новые таблицы; прежние таблицы и значения не меняются
     6: (_GEO_OVERRIDE_TABLE, _DISPATCH_TABLE),
+    # 7 → 8 (ручные машины и «авто» для «активна»): active становится NULL-абельным — пересобираем таблицу.
+    # Сохранённые 1 и 0 — выбор владельца (решение владельца: он заполнял машины как рабочие), переносятся
+    # как есть; «авто» — только у машин без записи и у новых машин ERP. Остальные значения — как были.
+    7: (
+        f"CREATE TABLE trucks_v8({_TRUCKS_COLUMNS})",
+        "INSERT INTO trucks_v8(car_code, capacity_kg, fuel_l_per_100km, agent_id, active, manual, name, "
+        "van_agent_id, updated_at, updated_by) SELECT car_code, capacity_kg, fuel_l_per_100km, agent_id, "
+        "active, 0, NULL, NULL, updated_at, updated_by FROM trucks",
+        "DROP TABLE trucks",
+        "ALTER TABLE trucks_v8 RENAME TO trucks",
+        _TRUCKS_ONE_VAN,
+    ),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -264,6 +290,9 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
 
 TRUCK_CAPACITY_KG = (100, 30000)
 TRUCK_FUEL_L100 = (1, 80)
+MANUAL_TRUCKS_MAX = 50
+MANUAL_CODE_RE = re.compile(r'^[\w\- ]{1,20}$')   # номер машины: буквы, цифры, пробел, дефис
+MANUAL_NAME_MAX = 60
 MANAGER_FUEL_L100 = (1, 40)
 _MAX_LIST = 500
 
@@ -276,13 +305,18 @@ class StoreError(RuntimeError):
 
 @dataclass(frozen=True)
 class Truck:
+    """Машина парка. active None — «авто» (только у машин ERP: Bundle.resolved_trucks); manual — машины нет
+    в ERP, владелец добавил её сам (name — марка/название, van_agent_id — экспедитор ERP)."""
     car_code: str
     capacity_kg: float | None = None
     fuel_l_per_100km: float | None = None
     agent_id: int | None = None
-    active: bool = True
+    active: bool | None = True
     updated_at: str | None = None
     updated_by: str | None = None
+    manual: bool = False
+    name: str | None = None
+    van_agent_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -329,6 +363,24 @@ class Bundle:
         profile = self.managers.get(agent_id)
         return 'auto' if profile is None or profile.included is None else 'manual'
 
+    def truck_active(self, code: str, active_cars: Collection[str]) -> bool:
+        """Работает ли машина: явный выбор владельца; «авто» (записи нет или active NULL) — машина ERP
+        возила за последние CAR_IDLE_DAYS дней и не закрыта (Snapshot.active_cars)."""
+        t = self.trucks.get(code)
+        if t is None or t.active is None:
+            return code in active_cars
+        return t.active
+
+    def resolved_trucks(self, active_cars: Collection[str]) -> dict[str, Truck]:
+        """Машины с действующим «активна» (bool) — для расчёта парка и развоза."""
+        return {code: t if t.active is not None else replace(t, active=code in active_cars)
+                for code, t in self.trucks.items()}
+
+    def van_trucks(self) -> dict[int, str]:
+        """Экспедитор → ручная машина: его накладные без машины в ERP — рейсы этой машины."""
+        return {t.van_agent_id: code for code, t in sorted(self.trucks.items())
+                if t.manual and t.van_agent_id is not None}
+
     def fingerprint(self) -> str:
         """Отпечаток для кэша оценки: меняется при любом сохранении."""
         data = {
@@ -348,6 +400,7 @@ class RefData:
     car_codes: frozenset[str]
     agent_ids: frozenset[int]      # агенты с шаблонами маршрутов
     group_codes: frozenset[str]    # группы клиентов (CustGrp)
+    van_agent_ids: frozenset[int] = frozenset()   # экспедиторы: возили без машины в накладных (90 дней)
 
 
 @dataclass(frozen=True)
@@ -358,6 +411,7 @@ class Changes:
     depot: Point | None
     trucks: tuple[Truck, ...]
     managers: tuple[ManagerProfile, ...]
+    manual_trucks: tuple[Truck, ...] | None = None   # None — ручные машины не трогаем; иначе — полный список
 
 
 DECISION_KINDS = ('pattern', 'freq', 'remove', 'transfer')
@@ -569,7 +623,7 @@ def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
             errors[f'{path}.car_code'] = 'машина указана дважды'
             continue
         seen.add(code)
-        base = current.get(code) or Truck(code)
+        base = current.get(code) or Truck(code, active=None)   # новая запись — «активна» авто
         fields: dict[str, Any] = {}
         ok = True
         for name, (lo, hi) in (('capacity_kg', TRUCK_CAPACITY_KG),
@@ -588,9 +642,9 @@ def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
                 ok = False
             fields['agent_id'] = a
         if 'active' in item:
-            err = _check_bool(item['active'])
-            if err:
-                errors[f'{path}.active'] = err
+            # null — вернуть «авто»: решают накладные ERP (машина возила за CAR_IDLE_DAYS дней)
+            if item['active'] is not None and _check_bool(item['active']):
+                errors[f'{path}.active'] = 'ожидалось true/false или null («авто»)'
                 ok = False
             fields['active'] = item['active']
         if ok:
@@ -601,6 +655,85 @@ def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
                 agent_id=fields.get('agent_id', base.agent_id),
                 active=fields.get('active', base.active),
             ))
+    return out
+
+
+def code_key(code: str) -> str:
+    """Номер машины для сравнения: без пробелов и дефисов, заглавными («504 CQ 61» = «504-cq61»)."""
+    return re.sub(r'[\s\-]+', '', code).upper()
+
+
+def _validate_manual_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
+                            errors: dict[str, str]) -> list[Truck]:
+    """Ручные машины — ПОЛНЫЙ список (кого нет — удаляется). Номер не совпадает с машинами ERP (и с
+    записями машин ERP в базе) и не повторяется; экспедитор — из возивших без машины за 90 дней (или уже
+    закреплённый за этой машиной), у одного экспедитора — одна машина."""
+    if not isinstance(raw, list) or len(raw) > MANUAL_TRUCKS_MAX:
+        errors['manual_trucks'] = f'ожидался список машин (не больше {MANUAL_TRUCKS_MAX})'
+        return []
+    taken = {code_key(c) for c in ref.car_codes} | {code_key(c) for c, t in current.items() if not t.manual}
+    allowed = {'car_code', 'name', 'capacity_kg', 'fuel_l_per_100km', 'active', 'van_agent_id'}
+    out: list[Truck] = []
+    seen: set[str] = set()
+    vans: dict[int, str] = {}
+    for i, item in enumerate(raw):
+        path = f'manual_trucks.{i}'
+        if not isinstance(item, dict):
+            errors[path] = 'ожидался объект'
+            continue
+        extra = sorted(set(item) - allowed)
+        if extra:
+            errors[path] = 'неизвестные поля: ' + ', '.join(extra)
+            continue
+        code = item.get('car_code')
+        code = ' '.join(code.split()) if isinstance(code, str) else ''
+        if not MANUAL_CODE_RE.match(code):
+            errors[f'{path}.car_code'] = 'номер машины: до 20 букв и цифр (можно пробел и дефис)'
+            continue
+        key = code_key(code)
+        if key in taken:
+            errors[f'{path}.car_code'] = 'машина с таким номером уже есть в ERP — она в списке выше'
+            continue
+        if key in seen:
+            errors[f'{path}.car_code'] = 'машина с таким номером указана дважды'
+            continue
+        seen.add(key)
+        base = current.get(code)
+        base = base if base is not None and base.manual else Truck(code, manual=True)
+        ok = True
+        name = item.get('name', base.name)
+        if name is not None and not isinstance(name, str):
+            errors[f'{path}.name'] = 'ожидался текст'
+            ok = False
+            name = None
+        name = ' '.join(name.split()) or None if name else None
+        if name and len(name) > MANUAL_NAME_MAX:
+            errors[f'{path}.name'] = f'название — не длиннее {MANUAL_NAME_MAX} символов'
+            ok = False
+        nums: dict[str, Any] = {}
+        for key_name, (lo, hi) in (('capacity_kg', TRUCK_CAPACITY_KG), ('fuel_l_per_100km', TRUCK_FUEL_L100)):
+            v, err = _check_number(item.get(key_name, getattr(base, key_name)), lo, hi, nullable=True)
+            if err:
+                errors[f'{path}.{key_name}'] = err
+                ok = False
+            nums[key_name] = v
+        active = item.get('active', True if base.active is None else base.active)
+        if _check_bool(active):
+            errors[f'{path}.active'] = 'ожидалось true/false'
+            ok = False
+        van = item.get('van_agent_id', base.van_agent_id)
+        if van is not None:
+            if not _is_int(van) or (van not in ref.van_agent_ids and van != base.van_agent_id):
+                errors[f'{path}.van_agent_id'] = 'этот агент не возил заказы без машины за 3 месяца'
+                ok = False
+            elif van in vans:
+                errors[f'{path}.van_agent_id'] = f'этот экспедитор уже закреплён за машиной {vans[van]}'
+                ok = False
+            else:
+                vans[van] = code
+        if ok:
+            out.append(Truck(code, nums['capacity_kg'], nums['fuel_l_per_100km'], None, active,
+                             manual=True, name=name, van_agent_id=van))
     return out
 
 
@@ -669,13 +802,14 @@ def validate_payload(payload: Any, current: Bundle,
 
     Каждый раздел необязателен. settings сливаются с текущими и проверяются целиком
     (перекрёстные правила — по итоговым значениям); машины и менеджеры — upsert по ключу,
-    отсутствующие в записи поля сохраняют прежние значения; depot: null — убрать склад.
+    отсутствующие в записи поля сохраняют прежние значения; depot: null — убрать склад;
+    manual_trucks — полный список ручных машин (кого в нём нет — удаляется).
     Ошибки — {"путь.поля": "сообщение"}; при любой ошибке изменения не возвращаются.
     """
     if not isinstance(payload, dict):
         return None, {'_': 'ожидался JSON-объект'}
     errors: dict[str, str] = {}
-    unknown = sorted(set(payload) - {'settings', 'depot', 'trucks', 'managers'})
+    unknown = sorted(set(payload) - {'settings', 'depot', 'trucks', 'managers', 'manual_trucks'})
     if unknown:
         errors['_'] = 'неизвестные разделы: ' + ', '.join(unknown)
 
@@ -707,10 +841,12 @@ def validate_payload(payload: Any, current: Bundle,
         if 'trucks' in payload else []
     managers = _validate_managers(payload['managers'], current.managers, ref, errors) \
         if 'managers' in payload else []
+    manual = tuple(_validate_manual_trucks(payload['manual_trucks'], current.trucks, ref, errors)) \
+        if 'manual_trucks' in payload else None
 
     if errors:
         return None, errors
-    return Changes(settings, depot_set, depot, tuple(trucks), tuple(managers)), {}
+    return Changes(settings, depot_set, depot, tuple(trucks), tuple(managers), manual), {}
 
 
 # --- SQLite ---
@@ -725,7 +861,7 @@ def _is_int(v: Any) -> bool:
 
 def _loaded_truck(row: tuple) -> tuple[Truck, list[str]]:
     """Строка trucks из БД → Truck и список нарушений (те же правила, что при сохранении)."""
-    code, capacity, fuel, agent_id, active, updated_at, updated_by = row
+    code, capacity, fuel, agent_id, active, manual, name, van, updated_at, updated_by = row
     problems = []
     if not isinstance(code, str) or not code.strip():
         problems.append('код машины')
@@ -735,9 +871,16 @@ def _loaded_truck(row: tuple) -> tuple[Truck, list[str]]:
         problems.append('расход')
     if agent_id is not None and not _is_int(agent_id):
         problems.append('менеджер')
-    if active not in (0, 1):
+    if manual not in (0, 1):
+        problems.append('признак «вручную»')
+    if active not in (0, 1) and not (active is None and manual == 0):   # «авто» — только у машин ERP
         problems.append('признак «активна»')
-    return Truck(code, capacity, fuel, agent_id, bool(active), updated_at, updated_by), problems
+    if name is not None and (manual != 1 or not isinstance(name, str) or len(name) > MANUAL_NAME_MAX):
+        problems.append('название')
+    if van is not None and (manual != 1 or not _is_int(van)):
+        problems.append('экспедитор')
+    return Truck(code, capacity, fuel, agent_id, None if active is None else bool(active), updated_at,
+                 updated_by, manual == 1, name, van), problems
 
 
 def _loaded_manager(row: tuple) -> tuple[ManagerProfile, list[str]]:
@@ -874,8 +1017,8 @@ class Store:
                     setting_rows = conn.execute('SELECT key, value FROM settings').fetchall()
                     depot_row = conn.execute('SELECT lat, lon FROM depot WHERE id = 1').fetchone()
                     truck_rows = conn.execute(
-                        'SELECT car_code, capacity_kg, fuel_l_per_100km, agent_id, active, '
-                        'updated_at, updated_by FROM trucks').fetchall()
+                        'SELECT car_code, capacity_kg, fuel_l_per_100km, agent_id, active, manual, name, '
+                        'van_agent_id, updated_at, updated_by FROM trucks').fetchall()
                     manager_rows = conn.execute(
                         'SELECT agent_id, included, home_lat, home_lon, car_fuel_l_per_100km, '
                         'car_fuel_type, updated_at, updated_by FROM manager_profile').fetchall()
@@ -972,7 +1115,24 @@ class Store:
                          'active = excluded.active, updated_at = excluded.updated_at, '
                          'updated_by = excluded.updated_by',
                          (t.car_code, t.capacity_kg, t.fuel_l_per_100km, t.agent_id,
-                          int(t.active), now, user))
+                          None if t.active is None else int(t.active), now, user))
+        if changes.manual_trucks is not None:
+            keep = [t.car_code for t in changes.manual_trucks]
+            conn.execute(f'DELETE FROM trucks WHERE manual = 1 AND car_code NOT IN ({",".join("?" * len(keep))})'
+                         if keep else 'DELETE FROM trucks WHERE manual = 1', keep)
+            # экспедитор переходит от машины к машине в одном сохранении: сначала снимаем, потом ставим
+            # (уникальный индекс trucks_one_van проверяется на каждой строке)
+            conn.execute('UPDATE trucks SET van_agent_id = NULL WHERE manual = 1')
+            for t in changes.manual_trucks:
+                conn.execute('INSERT INTO trucks(car_code, capacity_kg, fuel_l_per_100km, agent_id, active, manual, '
+                             'name, van_agent_id, updated_at, updated_by) VALUES(?, ?, ?, NULL, ?, 1, ?, ?, ?, ?) '
+                             'ON CONFLICT(car_code) DO UPDATE SET capacity_kg = excluded.capacity_kg, '
+                             'fuel_l_per_100km = excluded.fuel_l_per_100km, active = excluded.active, '
+                             'name = excluded.name, van_agent_id = excluded.van_agent_id, '
+                             'updated_at = excluded.updated_at, updated_by = excluded.updated_by '
+                             'WHERE trucks.manual = 1',
+                             (t.car_code, t.capacity_kg, t.fuel_l_per_100km, int(bool(t.active)), t.name,
+                              t.van_agent_id, now, user))
         for m in changes.managers:
             conn.execute('INSERT INTO manager_profile(agent_id, included, home_lat, home_lon, '
                          'car_fuel_l_per_100km, car_fuel_type, updated_at, updated_by) '

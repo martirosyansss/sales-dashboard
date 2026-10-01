@@ -61,8 +61,8 @@
     const SILENT = new Set(['dormant', 'lost', 'never']);
     // Группы предложений по смыслу (бриф): порядок, значок, короткая подпись переключателя;
     // incoming — магазины, которые этому менеджеру передают другие (решение то же, что у отдающего)
-    const GROUP_ORDER = ['transfer', 'incoming', 'freq', 'move', 'offday', 'winback', 'remove', 'other'];
-    const GROUP_ICON = { transfer: 'fa-people-arrows', incoming: 'fa-people-arrows', freq: 'fa-calendar-minus', move: 'fa-shuffle',
+    const GROUP_ORDER = ['transfer', 'incoming', 'freq', 'weekly', 'move', 'offday', 'winback', 'remove', 'other'];
+    const GROUP_ICON = { transfer: 'fa-people-arrows', incoming: 'fa-people-arrows', freq: 'fa-calendar-minus', weekly: 'fa-calendar-plus', move: 'fa-shuffle',
                          offday: 'fa-calendar-xmark', winback: 'fa-hand-holding-heart', remove: 'fa-user-minus', other: 'fa-pen', hints: 'fa-lightbulb' };
     // Решения только по одному магазину, с подтверждением: «Принять все в группе» у этих групп нет
     const ONE_BY_ONE = new Set(['remove', 'transfer', 'incoming']);
@@ -906,13 +906,15 @@
     // Дни недели шаблона, в которые менеджер не работает (воскресенье)
     const offDaysOf = (p) => { const wd = workdays(); return uniqSorted(pairsOf(p).map(x => x[1]).filter(d => !wd.has(d))); };
 
-    // Группа предложения по смыслу: убрать → вернуть (перестал покупать) → с нерабочего дня → реже → другой день
+    // Группа предложения по смыслу: убрать → вернуть (перестал покупать) → с нерабочего дня → реже →
+    // каждую неделю (№30: не реже раза в неделю; и с нерабочего дня — число визитов меняется) → другой день
     function groupOf(c) {
         if (isTransfer(c)) return 'transfer';
         if (isRemove(c)) return 'remove';
         if (isSilent(c.customer_id)) return 'winback';
-        if (offDaysOf(c.from.pattern).length) return 'offday';
         const ff = num(c.from.freq), tf = num(c.to.freq);
+        if (ff !== null && tf !== null && ff < 1 - 1e-9 && Math.abs(tf - 1) < 1e-9) return 'weekly';
+        if (offDaysOf(c.from.pattern).length) return 'offday';
         if (ff !== null && tf !== null && tf < ff - 1e-9) return 'freq';
         if (ff !== null && tf !== null && Math.abs(tf - ff) < 1e-9) return 'move';
         return 'other';
@@ -930,6 +932,8 @@
             return { title: half ? 'Посещать раз в 2 недели' : 'Посещать реже', chip: 'Реже',
                 reason: 'Заказывают реже, чем их посещают, — визиты впустую.' };
         }
+        if (key === 'weekly') return { title: 'Посещать каждую неделю', chip: 'Каждую неделю',
+            reason: 'Каждый магазин менеджер посещает не реже раза в неделю, даже если заказывают реже.' };
         if (key === 'move') return { title: 'Перенести на другой день', chip: 'Другой день',
             reason: 'Так день получается компактнее, а выручка по дням — ровнее.' };
         if (key === 'offday') {
@@ -941,7 +945,7 @@
             return { title: 'Перенести с нерабочих дней', chip: 'С выходных', reason: 'В эти дни менеджеры не работают.' };
         }
         if (key === 'winback') return { title: 'Постараться вернуть', chip: 'Вернуть',
-            reason: 'Раньше покупали регулярно, сейчас перестали. Визит раз в 2 недели — чтобы попробовать вернуть.' };
+            reason: 'Раньше покупали регулярно, сейчас перестали. Визит каждую неделю — чтобы попробовать вернуть.' };
         if (key === 'remove') return { title: 'Убрать из маршрута', chip: 'Убрать',
             reason: 'Не покупают больше ' + lostMonths() + ' или ни разу за год. Решение — по каждому магазину отдельно.' };
         return { title: 'Другие изменения', chip: 'Другое', reason: 'Меняются и дни, и число визитов.' };
@@ -977,9 +981,11 @@
         if (/удаление принято владельцем/.test(reason)) return 'Вы уже решили убрать этот магазин из маршрута.';
         const g = groupOf(c), silent = silenceText(c.customer_id);
         if (g === 'remove') return cap(silent || 'перестал покупать') + '.';
-        if (g === 'winback') return cap(silent || 'перестал покупать') + '. Визит раз в 2 недели — чтобы попробовать вернуть.';
+        if (g === 'winback') return cap(silent || 'перестал покупать') + '. Визит каждую неделю — чтобы попробовать вернуть.';
         const off = offDaysOf(c.from.pattern);
         const offText = off.length ? cap(off.map(d => WD_FULL[d]).join(' и ')) + (off.length > 1 ? ' — нерабочие дни.' : ' — нерабочий день.') : '';
+        if (g === 'weekly') return 'Каждый магазин — не реже раза в неделю, а сейчас его посещают ' + freqHuman(num(c.from.freq)) + '.'
+            + (offText ? ' ' + offText : '');
         const ff = num(c.from.freq), tf = num(c.to.freq);
         if (ff !== null && tf !== null && tf < ff - 1e-9) {
             const rate = orderRateText(obj(custOf(c.customer_id)).lam_year);
@@ -1340,7 +1346,7 @@
         // Сколько предложений в каких группах и откуда данные
         const cnt = {};
         allChanges().forEach(c => { const g = groupOf(c); cnt[g] = (cnt[g] || 0) + 1; });
-        const words = { transfer: 'передать другому менеджеру', freq: 'посещать реже', move: 'на другой день', offday: 'с нерабочего дня',
+        const words = { transfer: 'передать другому менеджеру', freq: 'посещать реже', weekly: 'каждую неделю', move: 'на другой день', offday: 'с нерабочего дня',
             winback: 'вернуть', remove: 'убрать', other: 'другое' };
         const foot = $('roAllFoot');
         foot.textContent = '';

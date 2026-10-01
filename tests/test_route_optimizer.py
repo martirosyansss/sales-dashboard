@@ -1328,6 +1328,7 @@ def make_snapshot(snapshot_id='syn-1'):
         recent_visits=(), fixes_by_agent={},
         cars={'CAR1': erp.Car('CAR1', 'HOWO', False), 'CAR2': erp.Car('CAR2', 'FORD', True)},
         car_days={'CAR1': (40, 8100.0, 16800.0)},
+        car_last_used={'CAR1': TODAY - timedelta(days=1)},   # CAR2 закрыта в ERP и в накладных не была
     )
 
 
@@ -1903,23 +1904,71 @@ def test_abc_classes_thresholds():
 
 
 def test_sales_frequency_rule():
-    assert fq.sales_frequency(0.33, 'C', 1.0) == 0.5
-    assert fq.sales_frequency(0.33, 'B', 1.0) == 1.0          # минимум A и B — раз в неделю
-    assert fq.sales_frequency(0.6, 'C', 1.0) == 1.0
-    assert fq.sales_frequency(1.6, 'A', 1.0) == 2.0
-    assert fq.sales_frequency(2.5, 'C', 1.0) == 3.0
-    assert fq.sales_frequency(0.4, 'C', 2.0) == 1.0           # запас: 0.8 → 1
-    assert fq.sales_frequency(0.0, 'C', 1.0) == 0.5           # нет заказов — минимум класса
-    assert fq.sales_frequency(3.5, 'A', 1.0) is None          # спрос больше 3 визитов — не снижаем
+    assert fq.sales_frequency(0.25, 1.0) == 1.0               # №30: раз в 4 недели — всё равно каждую неделю
+    assert fq.sales_frequency(0.6, 1.0) == 1.0
+    assert fq.sales_frequency(1.6, 1.0) == 2.0
+    assert fq.sales_frequency(2.5, 1.0) == 3.0
+    assert fq.sales_frequency(1.2, 2.0) == 3.0                # запас: 2.4 → 3
+    assert fq.sales_frequency(0.0, 1.0) == 1.0                # нет заказов — минимум
+    assert fq.sales_frequency(3.5, 1.0) is None               # спрос больше 3 визитов — не снижаем
 
 
 def test_target_frequency_only_decreases():
-    assert fq.target_frequency(1.0, 0.5, 'sales') == (0.5, 'sales')
+    assert fq.target_frequency(2.0, 1.0, 'sales') == (1.0, 'sales')
     assert fq.target_frequency(1.0, 2.0, 'sales') == (1.0, 'current')      # рост — только подсказка
     assert fq.target_frequency(4.0, None, 'sales') == (4.0, 'current')
-    assert fq.target_frequency(1.0, 0.5, 'current') == (1.0, 'current')
-    assert fq.target_frequency(1.0, 0.5, 'sales', accepted=2.0) == (2.0, 'manual')   # ручная важнее
-    assert fq.target_frequency(1.0, 0.5, 'sales', rejected=[0.5]) == (1.0, 'current')
+    assert fq.target_frequency(2.0, 1.0, 'current') == (2.0, 'current')
+    assert fq.target_frequency(2.0, 1.0, 'sales', accepted=0.5) == (0.5, 'manual')   # ручная важнее
+    assert fq.target_frequency(2.0, 1.0, 'sales', rejected=[1.0]) == (2.0, 'current')
+
+
+def test_target_frequency_raises_to_weekly():
+    """№30: каждый магазин — каждую неделю; «раз в 2 недели» поднимается до 1 только по продажам."""
+    assert fq.target_frequency(0.5, 1.0, 'sales') == (1.0, 'rule')
+    assert fq.target_frequency(0.5, None, 'sales') == (1.0, 'rule')
+    assert fq.target_frequency(0.5, 1.0, 'current') == (0.5, 'current')
+    assert fq.target_frequency(0.5, 1.0, 'sales', rejected=[1.0]) == (0.5, 'current')  # владелец отклонил
+    assert fq.target_frequency(0.5, 1.0, 'sales', accepted=0.5) == (0.5, 'manual')
+
+
+def test_optimizer_raises_biweekly_store_to_weekly():
+    """№30: 102 заказывает раз в 2 недели и посещается раз в 2 недели — предложение «каждую неделю»
+    с причиной-правилом; «как сейчас» частоту не трогает."""
+    rows = [_row(1, 11, 1, 1, 1, 101, 1, 1001), _row(1, 11, 1, 1, 2, 102, 2, 1002),
+            _row(1, 12, 1, 2, 1, 103, 1, 0), _row(1, 13, 1, 7, 1, 104, 1, 1004),
+            _row(2, 21, 1, 1, 1, 104, 1, 1004), _row(2, 21, 1, 1, 1, 101, 2, 1001)]
+    snap = replace(make_snapshot(), plan=pl.build_plan(rows))
+    c102 = _change(_manager(opt.run_optimization(snap, _bundle(), None, [], {}).result, 1), 102)
+    assert (c102['from']['freq'], c102['to']['freq'], c102['reason']) == (0.5, 1, fq.RULE_TEXT)
+    as_is = opt.run_optimization(snap, _bundle(), None, [], {'frequencies': 'current'}).result
+    c = _change(_manager(as_is, 1), 102)
+    assert c is None or c['to']['freq'] == 0.5
+
+
+def test_weekly_rule_counts_store_total_and_adds_no_revenue():
+    """№30 — про магазин, а не про пару менеджер–магазин: 101 у двух менеджеров раз в 2 недели (в сумме
+    раз в неделю) не поднимается. 102 заказывает чаще визитов (≈ 0,9/нед при визите раз в 2 недели):
+    подъём до раза в неделю выручку и кг модели не меняет — эти заказы уже приходят; подсказки
+    «можно посещать каждую неделю» нет — это уже предложение."""
+    rows = [_row(1, 11, 1, 1, 2, 101, 1, 1001), _row(2, 21, 2, 1, 2, 101, 1, 1001),
+            _row(1, 11, 1, 1, 2, 102, 2, 1002), _row(1, 12, 1, 2, 1, 103, 1, 0),
+            _row(1, 13, 1, 7, 1, 104, 1, 1004), _row(2, 21, 1, 1, 1, 104, 1, 1004)]
+    base = make_snapshot()
+    orders = {**base.orders_by_customer, 102: _orders_every(102, 1, 8, 30000.0, 40.0)}
+    snap = replace(base, plan=pl.build_plan(rows), orders_by_customer=orders,
+                   company_orders_by_day=dict(Counter(o.date for os in orders.values() for o in os)))
+    res = opt.run_optimization(snap, _bundle(), None, [], {}).result
+    m1, m2 = _manager(res, 1), _manager(res, 2)
+    assert res['customers']['102']['lam_year'] > 0.8
+    assert all(_change(m, 101) is None or _change(m, 101)['to']['freq'] == 0.5 for m in (m1, m2))
+    c102 = _change(m1, 102)
+    assert (c102['from']['freq'], c102['to']['freq'], c102['reason']) == (0.5, 1, fq.RULE_TEXT)
+    for key in ('revenue_week_low', 'revenue_week_peak', 'revenue_week_year'):
+        assert abs(res['after'][key] - res['before'][key]) <= 1, key
+    assert not [h for h in m1['hints'] if h['customer_id'] == 102 and h['kind'] == 'freq_up']
+    assert fq.frequency_hints(0.9, 0.5, 1.0, freq_after=1.0) == []
+    assert fq.frequency_hints(0.9, 0.5, 1.0, rejected=[1.0]) == []
+    assert fq.frequency_hints(0.9, 0.5, 1.0)[0][0] == 'freq_up'
 
 
 def test_frequency_hints_and_texts():
@@ -2382,6 +2431,8 @@ def test_store_migrates_schema_3_to_4_keeps_decisions(tmp_path):
 
 
 OWNER_DB = ROOT / 'route_optimizer.db'
+# Сохранённые значения, которые миграции не меняют (у машин схема 8 добавила столбцы — сравниваем прежние).
+_KEPT_COLUMNS = {'trucks': 'car_code, capacity_kg, fuel_l_per_100km, agent_id, active, updated_at, updated_by'}
 
 
 @pytest.mark.skipif(not OWNER_DB.exists(), reason='нет базы маршрутов владельца')
@@ -2389,7 +2440,7 @@ def test_store_migrates_copy_of_owner_db(tmp_path):
     """Настоящая база владельца — только КОПИЯ во временной папке: после миграции все сохранённые
     значения те же, что читались из исходного файла (открытого только на чтение)."""
     def dump(conn):
-        return {table: sorted(conn.execute(f'SELECT * FROM {table}').fetchall())
+        return {table: sorted(conn.execute(f'SELECT {_KEPT_COLUMNS.get(table, "*")} FROM {table}').fetchall())
                 for table in ('settings', 'depot', 'trucks', 'manager_profile')}
 
     # immutable: ни блокировок, ни файлов -wal/-shm рядом с базой владельца
@@ -2553,12 +2604,13 @@ def test_api_decisions_lock_forbid_and_export(client):
                                                        'value': value, 'action': action})
         assert r.status_code == 200 and r.get_json() == {'success': True}
 
+    _use_snapshot(client, plan=_plan_rows(twice_103=True))
     decide(103, 'remove', [], 'reject')    # §15: 103 без заказов владелец оставил — дальше частота
     res = _wait_job(client, _start(client))['result']
     m1 = _manager(res, 1)
     c103, c104 = _change(m1, 103), _change(m1, 104)
     assert c103 is not None and c104 is not None and c104['type'] == 'move'
-    assert c103['type'] == 'frequency' and c103['to']['freq'] == 0.5
+    assert c103['type'] == 'frequency' and (c103['from']['freq'], c103['to']['freq']) == (2, 1)
 
     decide(103, 'pattern', c103['to']['pattern'], 'accept')
     decide(103, 'freq', c103['to']['freq'], 'accept')
@@ -2720,16 +2772,21 @@ def test_sales_frequency_is_season_safe():
     model = ev.CustomerModel(1, dm.Demand(0.25, ((1.0, 1.0),), 365), dm.Demand(0.0, (), 90),
                              dm.Demand(0.99, ((1.0, 1.0),), 92), 'small', 1.0)
     assert opt.season_lam(model) == 0.99
-    assert fq.sales_frequency(0.25, 'C', 1.0) == 0.5 and fq.sales_frequency(0.99, 'C', 1.0) == 1.0
+    assert fq.sales_frequency(0.25, 1.0) == 1.0 and fq.sales_frequency(1.01, 1.0) == 2.0
     assert fq.order_rate_text(0.25, 0.99) == \
         'заказывает раз в 4 недели (0,25 заказа/нед); в сезон — до 0,99 заказа/нед'
     assert fq.order_rate_text(0.33, 0.33) == 'заказывает раз в 3 недели (0,33 заказа/нед)'
-    # 102 заказывает только летом (июнь–август), каждую неделю: по году — раз в 4 недели
+    # 102 заказывает только летом (июнь–август), 2 раза в неделю: по году — раз в 2 недели;
+    # посещают 2 раза в неделю (пн + чт)
     base = make_snapshot()
-    summer = tuple(dm.Order(102, date(2026, 6, 1) + timedelta(days=7 * k), 1, 30000.0, 40.0)
-                   for k in range(13))
+    summer = tuple(dm.Order(102, date(2026, 6, 1) + timedelta(days=7 * k + shift), 1, 30000.0, 40.0)
+                   for k in range(13) for shift in (0, 3))
     orders = {**base.orders_by_customer, 102: summer}
-    snap = replace(base, orders_by_customer=orders,
+    rows = [_row(1, 11, 1, 1, 1, 101, 1, 1001), _row(1, 11, 1, 1, 1, 102, 2, 1002),
+            _row(1, 14, 1, 4, 1, 102, 1, 1002),
+            _row(1, 12, 1, 2, 1, 103, 1, 0), _row(1, 13, 1, 7, 1, 104, 1, 1004),
+            _row(2, 21, 1, 1, 1, 104, 1, 1004), _row(2, 21, 1, 1, 1, 101, 2, 1001)]
+    snap = replace(base, orders_by_customer=orders, plan=pl.build_plan(rows),
                    company_orders_by_day=dict(Counter(o.date for os in orders.values() for o in os)))
 
     def run():
@@ -2742,14 +2799,14 @@ def test_sales_frequency_is_season_safe():
     assert all(m['after'][k] >= m['before'][k] - 1 for m in res['managers']
                for k in ('revenue_low', 'revenue_peak', 'revenue_year'))
     assert res['before']['revenue_week_peak'] > 0
-    # правило «по году» сократило бы 102 до раза в 2 недели — и летом модель потеряла бы выручку
+    # правило «по году» сократило бы 102 до раза в неделю — и летом модель потеряла бы выручку
     real = opt.season_lam
     try:
         opt.season_lam = lambda m: m.year.lam
         old = run()
     finally:
         opt.season_lam = real
-    assert _change(_manager(old, 1), 102)['to']['freq'] == 0.5
+    assert _change(_manager(old, 1), 102)['to']['freq'] == 1
     assert old['after']['revenue_week_peak'] < old['before']['revenue_week_peak']
 
 
@@ -2776,13 +2833,13 @@ def test_frequency_drop_moves_sunday_customer_to_a_workday():
         assert all(d in six for p in pt.allowed_patterns(mon_sun, f, six) for _, d in p)
     assert _wk(1) in pt.allowed_patterns(mon_sun, 1.0, six)            # «тот же день» — рабочий
     rows = [_row(1, 11, 1, 1, 1, 101, 1, 1001), _row(1, 11, 1, 1, 1, 102, 2, 1002),
-            _row(1, 13, 1, 7, 1, 103, 1, 0),                         # 103: вс, заказов нет → раз в 2 недели
+            _row(1, 13, 1, 7, 1, 103, 1, 0),                         # 103: вс, заказов нет → раз в неделю (№30)
             _row(1, 13, 1, 7, 1, 104, 2, 1004), _row(2, 21, 1, 1, 1, 104, 1, 1004)]
     keep = [st.Decision(103, 1, 'remove', st.REMOVE_VALUE, 'rejected')]   # §15: владелец оставил 103
     out = opt.run_optimization(replace(make_snapshot(), plan=pl.build_plan(rows)), _bundle(), None, keep, {})
     o = next(o for o in out.managers if o.agent_id == 1)
     spec, final = dict(zip(o.customers, o.specs)), dict(zip(o.customers, o.final))
-    assert len(final[103]) == 1 and all(d in six for _, d in final[103])
+    assert len(final[103]) == 2 and all(d in six for _, d in final[103])
     assert all(d in six for p in spec[103].allowed for _, d in p)
     assert spec[104].target == 1.0 and _wk(7) not in spec[104].allowed and _wk(6) in spec[104].allowed
     assert len(final[104]) == 2 and all(d in six for _, d in final[104])
@@ -2987,7 +3044,7 @@ def test_status_texts_and_risk_summary():
     assert cst.silence_text(_status(_weekly_until(1, 60))) == 'не покупает 60 дн (обычно раз в 7 дн)'
     assert cst.silence_text(_status(_dates(1, 130))) == 'не покупает 130 дн'
     assert cst.win_back_text(_status(_weekly_until(1, 60))) == \
-        'не покупает 60 дн (обычно раз в 7 дн) — визит раз в 2 недели, попробовать вернуть'
+        'не покупает 60 дн (обычно раз в 7 дн) — визит каждую неделю, попробовать вернуть'
     summary = cst.risk_summary([_status(_weekly_until(1, 60)), _status(_weekly_until(1, 130)),
                                 _status(()), _status(_weekly_until(1, 2))])
     assert summary == {'dormant': 1, 'dormant_rev_year': 44 * 30000, 'lost': 1, 'lost_rev_year': 34 * 30000,
@@ -3122,18 +3179,23 @@ def test_remove_decision_state_parse_and_status():
     assert book.change_status(1, {**ch, 'from': {'freq': 1, 'pattern': [[1, 4], [2, 4]]}}) == {'remove': None}
 
 
-def test_optimizer_dormant_biweekly_and_lost_removed():
-    """Режим «по продажам»: затихшему — раз в 2 недели с причиной «попробовать вернуть», потерянному и
+def test_optimizer_dormant_weekly_and_lost_removed():
+    """Режим «по продажам»: затихшему — раз в неделю (№30) с причиной «попробовать вернуть», потерянному и
     без заказов — «убрать из маршрута» у каждого его менеджера (в «стало» его нет), эффект — км и минуты
     со знаком минус; выручка модели «было → стало» не меняется (у них λ = 0). «Как сейчас» — только дни."""
     snap = _status_snapshot({102: _weekly_until(102, 60), 101: _weekly_until(101, 150, revenue=60000.0)})
+    rows = [_row(1, 11, 1, 1, 1, 101, 1, 1001), _row(1, 11, 1, 1, 1, 102, 2, 1002),
+            _row(1, 14, 1, 4, 1, 102, 1, 1002),                      # 102 — 2 раза в неделю (пн + чт)
+            _row(1, 12, 1, 2, 1, 103, 1, 0), _row(1, 13, 1, 7, 1, 104, 1, 1004),
+            _row(2, 21, 1, 1, 1, 104, 1, 1004), _row(2, 21, 1, 1, 1, 101, 2, 1001)]
+    snap = replace(snap, plan=pl.build_plan(rows))
     out = opt.run_optimization(snap, _bundle(), None, [], {})
     res = out.result
     m1, m2 = _manager(res, 1), _manager(res, 2)
     c101, c102, c103 = _change(m1, 101), _change(m1, 102), _change(m1, 103)
-    assert (c102['type'], c102['to']['freq']) == ('frequency', 0.5)
+    assert (c102['type'], c102['from']['freq'], c102['to']['freq']) == ('frequency', 2, 1)
     assert c102['reason'] == \
-        'не покупает 60 дн (обычно раз в 7 дн) — визит раз в 2 недели, попробовать вернуть'
+        'не покупает 60 дн (обычно раз в 7 дн) — визит каждую неделю, попробовать вернуть'
     assert (c101['type'], c101['reason'], c101['to']['text']) == \
         ('remove', 'не покупает 150 дн (обычно раз в 7 дн)', 'убрать из маршрута')
     assert (c103['type'], c103['reason']) == ('remove', 'ни одного заказа за год')
@@ -3147,7 +3209,7 @@ def test_optimizer_dormant_biweekly_and_lost_removed():
     assert {c: res['customers'][str(c)]['status'] for c in (101, 102, 103, 104)} == \
         {101: 'lost', 102: 'dormant', 103: 'never', 104: 'active'}
     assert res['customers']['102']['lam_year'] > 0.5                 # по истории — сколько заказывал
-    assert (res['customers']['101']['freq_target'], res['customers']['102']['freq_target']) == (0, 0.5)
+    assert (res['customers']['101']['freq_target'], res['customers']['102']['freq_target']) == (0, 1)
     for key in ('revenue_week_low', 'revenue_week_peak', 'revenue_week_year'):
         assert abs(res['after'][key] - res['before'][key]) <= 1, key
     assert res['before']['at_risk']['lost'] == 1 and res['after']['at_risk']['lost'] == 0
@@ -3174,7 +3236,7 @@ def test_manager_left_without_days_after_removals():
 
 def test_api_remove_decisions_export_and_keep(client):
     """«Убрать» принято — в выгрузке для ERP клиента нет, в изменениях — «убрать»; действует в
-    следующем расчёте в любом режиме. «Оставить» — удаление больше не предлагается: раз в 2 недели."""
+    следующем расчёте в любом режиме. «Оставить» — удаление больше не предлагается: раз в неделю (№30)."""
     res = _wait_job(client, _start(client))['result']
     c103 = _change(_manager(res, 1), 103)
     item = {'customer_id': 103, 'agent_id': 1, 'kind': 'remove', 'value': c103['to']['pattern'],
@@ -3203,9 +3265,7 @@ def test_api_remove_decisions_export_and_keep(client):
     # «Оставить»: то же решение — отклонено
     assert client.post('/api/routes/decisions', json={**item, 'action': 'reject'}).status_code == 200
     res3 = _wait_job(client, _start(client))['result']
-    c = _change(_manager(res3, 1), 103)
-    assert (c['type'], c['to']['freq']) == ('frequency', 0.5)
-    assert c['reason'] == 'ни одного заказа за год — визит раз в 2 недели, попробовать вернуть'
+    assert _change(_manager(res3, 1), 103) is None                # был раз в неделю — так и остаётся
     assert {'customer_id': 103, 'kind': 'no_orders', 'text': 'за год ни одного заказа'} in \
         _manager(res3, 1)['hints']
     ex = client.get('/api/routes/plan-export').get_json()
@@ -3403,11 +3463,14 @@ def _item(ch, kind, action='accept', agent_id=1):
             'from': ch['from'][side], 'action': action}
 
 
-def _plan_rows(day_103=2, day_104=7, with_104=True):
-    """План make_snapshot, где дни 103 и 104 у менеджера 1 можно поменять («ERP изменился»)."""
+def _plan_rows(day_103=2, day_104=7, with_104=True, twice_103=False):
+    """План make_snapshot, где дни 103 и 104 у менеджера 1 можно поменять («ERP изменился»);
+    twice_103 — 103 ещё и в пятницу: 2 раза в неделю, есть куда снижать частоту (№30: не реже 1/нед)."""
     rows = [_row(1, 11, 1, 1, 1, 101, 1, 1001), _row(1, 11, 1, 1, 1, 102, 2, 1002),
             _row(1, 12, 1, day_103, 1, 103, 1, 0),
             _row(2, 21, 1, 1, 1, 104, 1, 1004), _row(2, 21, 1, 1, 1, 101, 2, 1001)]
+    if twice_103:
+        rows.append(_row(1, 14, 1, 5, 1, 103, 1, 0))
     if with_104:
         rows.append(_row(1, 13, 1, day_104, 1, 104, 1, 1004))
     return pl.build_plan(rows)
@@ -3416,6 +3479,7 @@ def _plan_rows(day_103=2, day_104=7, with_104=True):
 def test_api_decisions_batch_list_and_stale(client):
     """S5 + M2: «Принять все» — одним запросом; список «Ваши решения»; ERP изменился — решение
     устарело: в выгрузку не идёт, видно в списке, в выгрузке и в следующем расчёте."""
+    _use_snapshot(client, plan=_plan_rows(twice_103=True))
     keep = {'customer_id': 103, 'agent_id': 1, 'kind': 'remove', 'action': 'reject'}   # §15: оставить
     assert client.post('/api/routes/decisions', json=keep).status_code == 200
     res = _wait_job(client, _start(client))['result']
@@ -3439,11 +3503,11 @@ def test_api_decisions_batch_list_and_stale(client):
     assert (x['from_text'], x['to_text'], x['current_text']) == \
         ('вс, каждую неделю', c104['to']['text'], 'вс, каждую неделю')
     f = next(x for x in d['decisions'] if (x['customer_id'], x['kind']) == (103, 'freq'))
-    assert (f['from_text'], f['to_text'], f['value'], f['from']) == ('раз в неделю', 'раз в 2 недели', 0.5, 1)
+    assert (f['from_text'], f['to_text'], f['value'], f['from']) == ('2 раза в неделю', 'раз в неделю', 1, 2)
     ex = client.get('/api/routes/plan-export').get_json()
     assert sorted(c['customer_id'] for c in ex['changes']) == [103, 104] and ex['stale_decisions'] == []
 
-    _use_snapshot(client, 'syn-2', plan=_plan_rows(day_104=3))   # ERP: 104 у менеджера 1 — в среду
+    _use_snapshot(client, 'syn-2', plan=_plan_rows(day_104=3, twice_103=True))   # ERP: 104 у менеджера 1 — в среду
     ex = client.get('/api/routes/plan-export').get_json()
     assert [c['customer_id'] for c in ex['changes']] == [103]
     assert [(s['customer_id'], s['current_text']) for s in ex['stale_decisions']] == \
@@ -3461,6 +3525,7 @@ def test_api_decisions_retire_reset_and_reset_all(client, tmp_path):
     """M3: исполненное в ERP принятое решение и отклонённое на прежнем плане — отработали (retired):
     не действуют, не видны и не возвращаются. «Сбросить все» и сброс одного — в том числе решения
     по клиенту, которого у менеджера уже нет."""
+    _use_snapshot(client, plan=_plan_rows(twice_103=True))
     keep = {'customer_id': 103, 'agent_id': 1, 'kind': 'remove', 'action': 'reject'}   # §15: оставить
     assert client.post('/api/routes/decisions', json=keep).status_code == 200
     res = _wait_job(client, _start(client))['result']
@@ -3471,7 +3536,7 @@ def test_api_decisions_retire_reset_and_reset_all(client, tmp_path):
     moved_to = c104['to']['pattern'][0][1]
     assert c104['to']['pattern'] == [[1, moved_to], [2, moved_to]]
     # ERP: перенос 104 применён, а 103 кто-то перенёс на четверг
-    _use_snapshot(client, 'syn-3', plan=_plan_rows(day_103=4, day_104=moved_to))
+    _use_snapshot(client, 'syn-3', plan=_plan_rows(day_103=4, day_104=moved_to, twice_103=True))
     d = client.get('/api/routes/decisions').get_json()
     assert d['decisions'] == []
     assert d['summary'] == {'accepted': 0, 'rejected': 0, 'stale': 0, 'export_changes': 0}
@@ -3479,13 +3544,13 @@ def test_api_decisions_retire_reset_and_reset_all(client, tmp_path):
         assert conn.execute('SELECT customer_id, kind, status FROM decision ORDER BY customer_id, kind'
                             ).fetchall() == [(103, 'pattern', 'retired'), (103, 'remove', 'retired'),
                                              (104, 'pattern', 'retired')]
-    _use_snapshot(client, 'syn-4')                       # план вернули как было — решения не оживают
+    _use_snapshot(client, 'syn-4', plan=_plan_rows(twice_103=True))   # план вернули — решения не оживают
     assert client.get('/api/routes/decisions').get_json()['decisions'] == []
 
     # сброс одного: клиента 104 у менеджера 1 больше нет — решение устарело, но снять его можно
     one = _item(c104, 'pattern')
     assert client.post('/api/routes/decisions', json=one).status_code == 200
-    _use_snapshot(client, 'syn-5', plan=_plan_rows(with_104=False))
+    _use_snapshot(client, 'syn-5', plan=_plan_rows(with_104=False, twice_103=True))
     [x] = client.get('/api/routes/decisions').get_json()['decisions']
     assert x['stale'] and x['current_text'] == 'клиента нет в плане менеджера'
     assert client.post('/api/routes/decisions', json={**one, 'action': 'accept'}).status_code == 400
@@ -4493,8 +4558,8 @@ def test_store_fleet_settings_defaults_and_validation(store):
 
 
 def test_store_fleet_keeps_owner_trucks_on_copy(tmp_path):
-    """Схема не меняется (6): новые нормы машин — значения по умолчанию, машины владельца (тоннаж,
-    расход, «чей менеджер» для справки) на КОПИИ базы — как были; тестовые машины пишутся только в копию."""
+    """Новые нормы машин — значения по умолчанию, машины владельца (тоннаж, расход, «чей менеджер» для
+    справки, «активна») на КОПИИ базы — как были; тестовые машины пишутся только в копию."""
     with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro&immutable=1', uri=True)) as conn:
         trucks = sorted(conn.execute('SELECT car_code, capacity_kg, fuel_l_per_100km, agent_id, active '
                                      'FROM trucks').fetchall())
@@ -4503,8 +4568,8 @@ def test_store_fleet_keeps_owner_trucks_on_copy(tmp_path):
     store = st.Store(str(copy))
     bundle = store.load()
     assert bundle.settings['truck_work_start'] == '09:00' and st.SCHEMA_VERSION >= 6
-    assert sorted((t.car_code, t.capacity_kg, t.fuel_l_per_100km, t.agent_id, int(t.active))
-                  for t in bundle.trucks.values()) == trucks
+    assert sorted((t.car_code, t.capacity_kg, t.fuel_l_per_100km, t.agent_id, t.active)
+                  for t in bundle.trucks.values()) == [(*row[:4], bool(row[4])) for row in trucks]
     if trucks:
         code = trucks[0][0]
         ref = st.RefData(frozenset(bundle.trucks), frozenset(), frozenset())
@@ -4870,23 +4935,25 @@ def test_store_migrates_schema_6_to_7_keeps_values(tmp_path):
     """6 → 7: новые таблицы customer_geo_override и dispatch_plan; всё прежнее — как было."""
     path = str(tmp_path / 'v6.db')
     with closing(sqlite3.connect(path)) as conn:
-        for sql in st._SCHEMA[:-2]:
-            conn.execute(sql)
+        for sql in st._SCHEMA[:-3]:
+            conn.execute(st._TRUCKS_TABLE_V1 if sql == st._TRUCKS_TABLE else sql)
         conn.execute("INSERT INTO meta VALUES('schema_version', '6')")
         conn.execute("INSERT INTO settings VALUES('penalty_change', '450')")
         conn.execute("INSERT INTO depot VALUES(1, 40.19, 44.6, 'x', 'owner')")
         conn.execute("INSERT INTO trucks VALUES('CAR1', 10000, 30, NULL, 1, 'x', 'owner')")
         conn.execute("INSERT INTO scenario VALUES('s1', 'x', 'qa', '{}', '{\"n\": 1}')")
         conn.commit()
-        before = {t: sorted(conn.execute(f'SELECT * FROM {t}').fetchall())
+        before = {t: sorted(conn.execute(f'SELECT {_KEPT_COLUMNS.get(t, "*")} FROM {t}').fetchall())
                   for t in ('settings', 'depot', 'trucks', 'manager_profile', 'decision', 'scenario')}
     s = st.Store(path)
     b = s.load()
     assert (b.settings['penalty_change'], b.depot, b.trucks['CAR1'].capacity_kg, b.geo_overrides) == \
         (450, (40.19, 44.6), 10000, {})
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('7',)
-        assert {t: sorted(conn.execute(f'SELECT * FROM {t}').fetchall()) for t in before} == before
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(st.SCHEMA_VERSION),)                                       # 6 → 7 → … → текущая
+        assert {t: sorted(conn.execute(f'SELECT {_KEPT_COLUMNS.get(t, "*")} FROM {t}').fetchall())
+                for t in before} == before
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {'customer_geo_override', 'dispatch_plan'} <= tables
     s.save_geo_override(5, (40.2, 44.5), 'qa')
@@ -4896,7 +4963,7 @@ def test_store_migrates_schema_6_to_7_keeps_values(tmp_path):
 def test_store_owner_copy_gets_dispatch_tables(tmp_path):
     """КОПИЯ базы владельца: новые таблицы появляются, сохранённое — как было; запись — только в копию."""
     def dump(conn):
-        return {t: sorted(conn.execute(f'SELECT * FROM {t}').fetchall())
+        return {t: sorted(conn.execute(f'SELECT {_KEPT_COLUMNS.get(t, "*")} FROM {t}').fetchall())
                 for t in ('settings', 'depot', 'trucks', 'manager_profile')}
 
     with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro&immutable=1', uri=True)) as conn:
@@ -5164,11 +5231,10 @@ def test_api_dispatch_freshness_hint_and_new_since_build(client, monkeypatch):
 
 
 def test_store_owner_copy_ready_time_default_and_legacy_draft(tmp_path):
-    """КОПИЯ базы владельца: dispatch_ready_time — по умолчанию (схема не меняется), черновик прежнего
+    """КОПИЯ базы владельца: dispatch_ready_time — по умолчанию (настройка без миграции), черновик прежнего
     формата (без отметки сборки) читается, сравнения «с последней сборки» нет; запись — только в копию."""
     with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro&immutable=1', uri=True)) as conn:
         before = {t: sorted(conn.execute(f'SELECT * FROM {t}').fetchall()) for t in ('settings', 'dispatch_plan')}
-        version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     copy = tmp_path / 'owner.db'
     copy.write_bytes(OWNER_DB.read_bytes())
     s = st.Store(str(copy))
@@ -5180,7 +5246,277 @@ def test_store_owner_copy_ready_time_default_and_legacy_draft(tmp_path):
     assert draft.built_orders is None and draft.trips[0].pinned is True
     assert dp.since_build(draft.built_orders, [], [], set()) is None
     with closing(sqlite3.connect(str(copy))) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == version
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(st.SCHEMA_VERSION),)
         assert sorted(conn.execute('SELECT * FROM settings').fetchall()) == before['settings']
     with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro&immutable=1', uri=True)) as conn:
         assert {t: sorted(conn.execute(f'SELECT * FROM {t}').fetchall()) for t in before} == before
+
+
+# ============================== ручные машины и «авто» для «активна» ==============================
+
+MANUAL_REF = replace(REF, van_agent_ids=frozenset({7, 8}))
+
+
+def _manual(code='35 XY 123', **kw):
+    return {'car_code': code, 'name': 'Газель', 'capacity_kg': 2000, 'fuel_l_per_100km': 14, 'active': True,
+            'van_agent_id': 7, **kw}
+
+
+def _save_ref(store, payload, ref=MANUAL_REF):
+    changes, errors = st.validate_payload(payload, store.load(), ref)
+    assert errors == {}, errors
+    store.save(changes, 'qa')
+
+
+def test_manual_trucks_crud_and_validation(store):
+    _save_ref(store, {'trucks': [{'car_code': 'CAR1', 'capacity_kg': 10000}],
+                      'manual_trucks': [_manual(), _manual('77 AA 001', name=' JAC  N80 ', van_agent_id=None)]})
+    b = store.load()
+    m = b.trucks['35 XY 123']
+    assert (m.manual, m.name, m.capacity_kg, m.fuel_l_per_100km, m.active, m.van_agent_id) == \
+        (True, 'Газель', 2000, 14, True, 7)
+    assert b.trucks['77 AA 001'].name == 'JAC N80' and b.trucks['77 AA 001'].van_agent_id is None
+    assert b.trucks['CAR1'].manual is False and b.van_trucks() == {7: '35 XY 123'}
+    # ошибки — по путям полей, ничего не записывается
+    bad = [_manual('car 1'), _manual('Car-2'), _manual('!!'), _manual('X' * 21), _manual('A1'),
+           _manual('a 1', van_agent_id=None), _manual('A2', name='я' * 61, van_agent_id=None),
+           _manual('A3', van_agent_id=99), _manual('A4', van_agent_id=8), _manual('A5', van_agent_id=8),
+           _manual('A6', capacity_kg=50, van_agent_id=None), _manual('A7', active='да', van_agent_id=None),
+           _manual('A8', bogus=1), 'x']
+    changes, errors = st.validate_payload({'manual_trucks': bad}, b, MANUAL_REF)
+    assert changes is None
+    assert set(errors) == {'manual_trucks.0.car_code', 'manual_trucks.1.car_code', 'manual_trucks.2.car_code',
+                           'manual_trucks.3.car_code', 'manual_trucks.5.car_code', 'manual_trucks.6.name',
+                           'manual_trucks.7.van_agent_id', 'manual_trucks.9.van_agent_id',
+                           'manual_trucks.10.capacity_kg', 'manual_trucks.11.active', 'manual_trucks.12',
+                           'manual_trucks.13'}
+    assert 'уже есть в ERP' in errors['manual_trucks.1.car_code'] and 'дважды' in errors['manual_trucks.5.car_code']
+    assert 'A4' in errors['manual_trucks.9.van_agent_id']                   # экспедитор у двух машин
+    assert st.validate_payload({'manual_trucks': [_manual()] * 51}, b, MANUAL_REF)[1].keys() == {'manual_trucks'}
+    # ручную машину нельзя прислать как машину ERP
+    assert 'trucks.0.car_code' in st.validate_payload({'trucks': [{'car_code': '35 XY 123'}]}, b, MANUAL_REF)[1]
+    assert store.load() == b
+    # правка: экспедиторы меняются местами в одном сохранении; 7 больше не в списке ERP — у своей машины остаётся
+    _save_ref(store, {'manual_trucks': [_manual(van_agent_id=8, active=False), _manual('77 AA 001', van_agent_id=7)]})
+    b = store.load()
+    assert b.van_trucks() == {8: '35 XY 123', 7: '77 AA 001'} and b.trucks['35 XY 123'].active is False
+    _save_ref(store, {'manual_trucks': [_manual('77 AA 001', van_agent_id=7, capacity_kg=2500)]},
+              ref=replace(REF, van_agent_ids=frozenset()))
+    b = store.load()
+    assert '35 XY 123' not in b.trucks and b.trucks['77 AA 001'].capacity_kg == 2500   # удалена — нет в списке
+    # без раздела manual_trucks ручные машины не трогаются; пустой список — удалить все
+    _save_ref(store, {'trucks': [{'car_code': 'CAR1', 'fuel_l_per_100km': 30}]})
+    assert '77 AA 001' in store.load().trucks
+    _save_ref(store, {'manual_trucks': []})
+    assert [c for c, t in store.load().trucks.items() if t.manual] == [] and 'CAR1' in store.load().trucks
+
+
+def test_manual_truck_takes_part_in_fleet_and_dispatch(client):
+    state = client.application.extensions['route_optimizer']
+    state.snapshots = SnapshotCache(lambda: replace(make_snapshot(), expeditors={7: (40, TODAY)}))
+    _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 104, 300.0, agent=2)])
+    r = client.post('/api/routes/settings', json={'manual_trucks': [_manual()]})
+    assert r.status_code == 200, r.get_json()
+    b = state.store.load()
+    snap = make_snapshot()
+    fleet, _ = fl.fleet_trucks(b.resolved_trucks(snap.active_cars), {c: car.name for c, car in snap.cars.items()})
+    assert fl.FleetTruck('35 XY 123', 'Газель', 2000.0, 14.0) in fleet         # модель парка: машина в расчёте
+    d = client.get('/api/routes/dispatch?date=2026-10-01').get_json()
+    mine = next(t for t in d['trucks'] if t['car_code'] == '35 XY 123')
+    assert (mine['name'], mine['manual'], mine['ready'], mine['selected']) == ('Газель', True, True, True)
+    d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['35 XY 123']}).get_json()
+    assert [t['car_code'] for t in d['plan']['trucks']] == ['35 XY 123'] and d['plan']['summary']['stops'] == 2
+    # выключили — в развозе её нет
+    assert client.post('/api/routes/settings', json={'manual_trucks': [_manual(active=False)]}).status_code == 200
+    d = client.get('/api/routes/dispatch?date=2026-10-02').get_json()
+    assert '35 XY 123' not in [t['car_code'] for t in d['trucks']]
+
+
+def test_fact_counts_expeditor_docs_as_manual_truck():
+    ctx = _dp_ctx(trucks=(HOWO, FORD, fl.FleetTruck('VAN1', 'Газель', 2000.0, 14.0)))
+    pts = {c: p for c, p, _ in EAST + WEST}
+    vans = {7: 'VAN1'}
+    docs = [dp.ShippedDoc(101, 1, '991AT61', 1.0, 200.0),
+            dp.ShippedDoc(104, 2, '', 1.0, 300.0, van_agent_id=7),      # экспедитор без машины — его машина
+            dp.ShippedDoc(105, 2, '', 1.0, 100.0, van_agent_id=7),
+            dp.ShippedDoc(102, 3, '', 1.0, 50.0, van_agent_id=3),       # менеджер развозит сам — не в сравнении
+            dp.ShippedDoc(103, 1, '', 1.0, 40.0, van_agent_id=8)]       # экспедитор без ручной машины
+    assert [dp.fact_car(d, vans) for d in docs] == ['991AT61', 'VAN1', 'VAN1', '', '']
+    r = dp.plan_vs_fact(ctx, docs, _coord_of(pts), vans)
+    assert r['trucks'] == ['991AT61', 'VAN1'] and (r['stops'], r['kg']) == (3, 600)
+    assert {t['car_code']: t['kg'] for t in r['fact']['trucks']} == {'991AT61': 200, 'VAN1': 400}
+    assert r['skipped'] == {'docs': 2, 'kg': 90, 'cars_not_set': []}
+    assert dp.plan_vs_fact(ctx, docs, _coord_of(pts))['trucks'] == ['991AT61']   # без привязки — как раньше
+    # «как обычно»: менеджер, чьи заказы возил экспедитор, — на его ручной машине
+    hist = dp.history_cars({1: ('991AT61', 7, 'XXX'), 2: (7, 8, '333DO33'), 3: (8,)}, vans)
+    assert hist == {1: ('991AT61', 'VAN1', 'XXX'), 2: ('VAN1', '333DO33'), 3: ()}
+
+
+def test_api_fact_attributes_expeditor_to_manual_truck(client):
+    state = client.application.extensions['route_optimizer']
+    state.snapshots = SnapshotCache(lambda: replace(make_snapshot(), expeditors={7: (40, TODAY)}))
+    docs = [dp.ShippedDoc(101, 1, 'CAR1', 1.0, 300.0), dp.ShippedDoc(104, 2, '', 1.0, 300.0, van_agent_id=7),
+            dp.ShippedDoc(102, 2, '', 1.0, 30.0, van_agent_id=2)]
+    _dispatch_setup(client, [_dorder(1, 101, 10.0)], docs)
+    f = client.get('/api/routes/dispatch/fact?date=2026-09-29').get_json()['fact']
+    assert f['trucks'] == ['CAR1'] and f['skipped']['docs'] == 2
+    assert client.post('/api/routes/settings', json={'manual_trucks': [_manual()]}).status_code == 200
+    f = client.get('/api/routes/dispatch/fact?date=2026-09-29').get_json()['fact']
+    assert f['trucks'] == ['35 XY 123', 'CAR1'] and f['skipped']['docs'] == 1      # сам менеджер — по-прежнему мимо
+
+
+def test_erp_agent_cars_keeps_expeditors_without_car():
+    class Cur:
+        def execute(self, sql, *args):
+            pass
+
+        def fetchall(self):
+            return [(1, '991AT61', 0, 5), (1, '', 7, 9), (1, 'XXX', 0, 5), (2, '', 8, 3), (2, '', 7, 3)]
+
+        def close(self):
+            pass
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+    assert erp.agent_cars(Conn(), date(2026, 7, 1), date(2026, 10, 1)) == {1: (7, '991AT61', 'XXX'), 2: (7, 8)}
+
+
+def _car_snapshot(today=TODAY):
+    cars = {c: erp.Car(c, 'HOWO', closed) for c, closed in
+            (('USED', False), ('IDLE', False), ('NEVER', False), ('CLOSED', True), ('EDGE', False))}
+    last = {'USED': today - timedelta(days=3), 'IDLE': date(2025, 4, 3), 'CLOSED': today - timedelta(days=1),
+            'EDGE': today - timedelta(days=60)}
+    return replace(make_snapshot(), cars=cars, car_last_used=last)
+
+
+def test_truck_active_auto_by_erp_usage_keeps_owner_choice():
+    snap = _car_snapshot()
+    assert snap.active_cars == frozenset({'USED', 'EDGE'})              # 60 дней — ещё «работает», закрытая — нет
+    b = st.Bundle(st.DEFAULT_SETTINGS, None, {
+        'USED': st.Truck('USED', 5000.0, 20.0, active=None), 'IDLE': st.Truck('IDLE', 5000.0, 20.0, active=None),
+        'NEVER': st.Truck('NEVER', 2200.0, 10.0, active=True),          # владелец включил сам — включена
+        'EDGE': st.Truck('EDGE', 2200.0, 10.0, active=False)}, {})      # выключил сам — выключена
+    assert [b.truck_active(c, snap.active_cars) for c in ('USED', 'IDLE', 'NEVER', 'EDGE', 'CLOSED')] == \
+        [True, False, True, False, False]
+    fleet, incomplete = fl.fleet_trucks(b.resolved_trucks(snap.active_cars), {})
+    assert [t.car_code for t in fleet] == ['NEVER', 'USED'] and incomplete == []
+    assert fl.fleet_trucks(b.trucks, {})[0] == [fl.FleetTruck('NEVER', None, 2200.0, 10.0)]   # «авто» не разрешено — мимо
+
+
+def test_api_settings_trucks_hints_and_auto_active(client):
+    state = client.application.extensions['route_optimizer']
+    snap = replace(_car_snapshot(), agents={**make_snapshot().agents, 7: erp.Agent(7, 'B006/22', 'Экспедитор', False)},
+                   expeditors={7: (1127, TODAY - timedelta(days=28)), 8: (503, TODAY)})
+    state.snapshots = SnapshotCache(lambda: snap)
+    d = client.get('/api/routes/settings').get_json()
+    by = {t['car_code']: t for t in d['trucks']}
+    assert (by['IDLE']['active'], by['IDLE']['active_source'], by['IDLE']['auto_active'], by['IDLE']['last_used']) == \
+        (False, 'auto', False, '2025-04-03')
+    assert (by['USED']['active'], by['NEVER']['last_used'], by['CLOSED']['active']) == (True, None, False)
+    assert d['car_idle_days'] == 60
+    assert [(e['code'], e['docs'], e['truck']) for e in d['expeditors']] == [('B006/22', 1127, None), ('8', 503, None)]
+    # явный выбор владельца держится, null — снова «авто»
+    r = client.post('/api/routes/settings', json={'trucks': [{'car_code': 'IDLE', 'active': True},
+                                                             {'car_code': 'USED', 'capacity_kg': 5000}]})
+    assert r.status_code == 200, r.get_json()
+    by = {t['car_code']: t for t in client.get('/api/routes/settings').get_json()['trucks']}
+    assert (by['IDLE']['active'], by['IDLE']['active_source']) == (True, 'manual')
+    assert (by['USED']['active'], by['USED']['active_source']) == (True, 'auto')     # тоннаж — не выбор «активна»
+    assert client.post('/api/routes/settings', json={'trucks': [{'car_code': 'IDLE', 'active': None}]}).status_code == 200
+    assert {t['car_code']: t for t in client.get('/api/routes/settings').get_json()['trucks']}['IDLE']['active'] is False
+    bad = client.post('/api/routes/settings', json={'trucks': [{'car_code': 'IDLE', 'active': 'да'}]})
+    assert bad.status_code == 400 and 'trucks.0.active' in bad.get_json()['errors']
+    # ручная машина с экспедитором — в списке машин и у экспедитора
+    r = client.post('/api/routes/settings', json={'manual_trucks': [_manual('B22', van_agent_id=7)]})
+    assert r.status_code == 200, r.get_json()
+    d = client.get('/api/routes/settings').get_json()
+    mine = next(t for t in d['trucks'] if t['car_code'] == 'B22')
+    assert (mine['manual'], mine['active_source'], mine['van']['code'], mine['van']['docs']) == (True, 'manual', 'B006/22', 1127)
+    assert d['expeditors'][0]['truck'] == 'B22'
+    clash = client.post('/api/routes/settings', json={'manual_trucks': [_manual('used')]})
+    assert clash.status_code == 400 and 'manual_trucks.0.car_code' in clash.get_json()['errors']
+
+
+def test_store_migrates_schema_7_to_8_truck_active_and_manual(tmp_path):
+    """7 → 8: сохранённая «активна» (1 и 0) — выбор владельца, как была; «авто» — только у машин без записи;
+    остальные значения машин — как были; ручные машины и экспедитор — новые столбцы. Сбой — база версии 7."""
+    def v7(path, broken=False):
+        with closing(sqlite3.connect(path)) as conn:
+            for sql in st._SCHEMA[:-1]:
+                conn.execute(st._TRUCKS_TABLE_V1 if sql == st._TRUCKS_TABLE else sql)
+            conn.execute("INSERT INTO meta VALUES('schema_version', '7')")
+            conn.executemany('INSERT INTO trucks VALUES(?, ?, ?, ?, ?, ?, ?)',
+                             [('CAR1', 10000, 30, 3160, 1, 'x', 'owner'), ('CAR2', 100, None, None, 0, 'x', 'owner')])
+            if broken:
+                conn.execute('CREATE TABLE trucks_v8(x)')               # мешает пересборке
+            conn.commit()
+
+    path = str(tmp_path / 'v7.db')
+    v7(path)
+    s = st.Store(path)
+    b = s.load()
+    assert b.trucks['CAR1'] == st.Truck('CAR1', 10000, 30, 3160, True, 'x', 'owner')
+    assert b.trucks['CAR2'] == st.Truck('CAR2', 100, None, None, False, 'x', 'owner')
+    assert b.truck_active('CAR1', frozenset()) is True and b.truck_active('NEW', {'NEW'}) is True   # «авто» — без записи
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('8',)
+        indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        assert 'trucks_one_van' in indexes
+        with pytest.raises(sqlite3.IntegrityError):                      # один экспедитор — одна машина
+            conn.executemany("INSERT INTO trucks(car_code, manual, van_agent_id, active, updated_at) "
+                             "VALUES(?, 1, 7, 1, 'x')", [('M1',), ('M2',)])
+    broken = str(tmp_path / 'v7-broken.db')
+    v7(broken, broken=True)
+    with pytest.raises(st.StoreError):
+        st.Store(broken).load()
+    with closing(sqlite3.connect(broken)) as conn:
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('7',)
+        assert conn.execute('SELECT active FROM trucks ORDER BY car_code').fetchall() == [(1,), (0,)]
+
+
+def test_store_rejects_broken_truck_rows(tmp_path):
+    path = str(tmp_path / 'r.db')
+    s = st.Store(path)
+    s.load()
+    for row in (("'A', NULL, NULL, NULL, NULL, 1, 'x', NULL", '«активна»'),        # «авто» у ручной машины
+                ("'A', NULL, NULL, NULL, 1, 0, 'x', NULL", 'название'),            # название у машины ERP
+                ("'A', NULL, NULL, NULL, 1, 0, NULL, 7", 'экспедитор'),
+                ("'A', NULL, NULL, NULL, 1, 2, NULL, NULL", 'вручную')):
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute('DELETE FROM trucks')
+            conn.execute(f"INSERT INTO trucks(car_code, capacity_kg, fuel_l_per_100km, agent_id, active, manual, name, "
+                         f"van_agent_id, updated_at) VALUES({row[0]}, 'x')")
+            conn.commit()
+        with pytest.raises(st.StoreError, match=row[1]):
+            s.load()
+
+
+@pytest.mark.skipif(not OWNER_DB.exists(), reason='нет базы маршрутов владельца')
+def test_store_owner_copy_migrates_to_8_and_takes_manual_truck(tmp_path):
+    """КОПИЯ базы владельца: машины — те же числа и «активна» (выбор владельца: 124AV61 и 475DD61 работают,
+    хотя давно не возили — «авто» их не выключает); ручная машина пишется только в копию, файл владельца
+    не меняется."""
+    owner_bytes = OWNER_DB.read_bytes()
+    with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro&immutable=1', uri=True)) as conn:
+        rows = sorted(conn.execute('SELECT car_code, capacity_kg, fuel_l_per_100km, active FROM trucks').fetchall())
+    copy = tmp_path / 'owner.db'
+    copy.write_bytes(owner_bytes)
+    s = st.Store(str(copy))
+    b = s.load()
+    expected = [(c, cap, fuel, None if a is None else bool(a)) for c, cap, fuel, a in rows]
+    assert sorted((t.car_code, t.capacity_kg, t.fuel_l_per_100km, t.active) for t in b.trucks.values()
+                  if not t.manual) == expected
+    saved = {r[0]: r[3] for r in rows}
+    for code in ('124AV61', '475DD61'):
+        if saved.get(code) == 1:
+            assert b.truck_active(code, frozenset()) is True    # давно не возила, но выбор владельца держится
+    ref = st.RefData(frozenset(c for c, t in b.trucks.items() if not t.manual), frozenset(), frozenset(),
+                     frozenset({3191}))
+    changes, errors = st.validate_payload({'manual_trucks': [_manual('B006 22', van_agent_id=3191)]}, b, ref)
+    assert errors == {}
+    s.save(changes, 'qa')
+    assert s.load().van_trucks() == {3191: 'B006 22'}
+    assert OWNER_DB.read_bytes() == owner_bytes
