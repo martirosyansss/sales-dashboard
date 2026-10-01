@@ -5044,3 +5044,143 @@ def test_api_dispatch_erp_down_is_503(client):
     state.dispatch_loader = down
     r = client.get('/api/routes/dispatch?date=2026-10-01')
     assert r.status_code == 503 and r.get_json()['error'] == 'База данных ERP недоступна'
+
+
+# ============================== развоз: свежесть заказов ==============================
+
+@pytest.mark.parametrize('day, now, ready, workdays, expected', [
+    (date(2026, 10, 2), datetime(2026, 10, 1, 11, 27), '17:00', SIX, True),     # пт: заказы четверга ещё идут
+    (date(2026, 10, 2), datetime(2026, 10, 1, 16, 59), '17:00', SIX, True),
+    (date(2026, 10, 2), datetime(2026, 10, 1, 17, 0), '17:00', SIX, False),     # ровно в 17:00 — уже можно
+    (date(2026, 10, 2), datetime(2026, 10, 1, 17, 30), '18:30', SIX, True),     # время — из настроек
+    (date(2026, 10, 2), datetime(2026, 9, 30, 11, 0), '17:00', SIX, False),     # дата через день — приём не начался
+    (date(2026, 10, 2), datetime(2026, 10, 2, 8, 0), '17:00', SIX, False),      # день развоза уже настал
+    (date(2026, 10, 5), datetime(2026, 10, 3, 11, 0), '17:00', SIX, True),      # пн: заказы субботы
+    (date(2026, 10, 5), datetime(2026, 10, 4, 11, 0), '17:00', SIX, False),     # воскресенье — не рабочий день
+    (date(2026, 10, 5), datetime(2026, 10, 2, 11, 0), '17:00', SIX, False),     # пятница — ещё не тот день
+    (date(2026, 10, 5), datetime(2026, 10, 2, 11, 0), '17:00', [1, 2, 3, 4, 5], True),   # пятидневка: пт → пн
+    (date(2026, 10, 3), datetime(2026, 10, 2, 9, 0), '17:00', SIX, True),       # сб: заказы пятницы
+    (date(2026, 9, 30), datetime(2026, 10, 1, 10, 0), '17:00', SIX, False),     # прошедшая дата
+])
+def test_dispatch_orders_still_coming(day, now, ready, workdays, expected):
+    assert dp.orders_still_coming(day, workdays, now, ready) is expected
+
+
+def test_dispatch_since_build_new_removed_and_draft_marks():
+    o1, o2, o3 = _dorder(1, 101, 100.0), _dorder(2, 102, 200.0, rev=5000.0), _dorder(3, 103, 50.0)
+    old = _dorder(9, 109, 70.0, day=date(2026, 9, 28))                          # прошлых дней, добавлен логистом
+    built = dp.order_marks([o1, o2, o3, old])
+    assert dp.since_build(built, [o1, o2, o3], [o1, o2, o3, old], set()) == \
+        {'new': {'count': 0, 'kg': 0, 'revenue': 0}, 'removed': {'count': 0, 'kg': 0, 'revenue': 0}}
+    # пришли 4 и 5 (5 логист уже исключил — не «новый»), 2 отменили, заказ прошлых дней отгрузили
+    o4, o5 = _dorder(4, 104, 1200.0, rev=30000.0), _dorder(5, 105, 40.0)
+    r = dp.since_build(built, [o1, o3, o4, o5], [o1, o3, o4, o5], {o5.isn})
+    assert r == {'new': {'count': 1, 'kg': 1200, 'revenue': 30000},
+                 'removed': {'count': 2, 'kg': 270, 'revenue': 15000}}
+    assert dp.since_build(None, [o1], [o1], set()) is None                      # старый черновик — не с чем сравнить
+    # отметка живёт в черновике: туда и обратно через JSON; битые строки отбрасываются
+    d = dp.Draft(['CAR1'], set(), set(), [], 1, '2026-10-01T15:20:00', built)
+    back = dp.Draft.from_json(json.loads(json.dumps(d.to_json())))
+    assert back == d and back.built_orders[o2.isn] == (200.0, 5000.0)
+    junk = dp.Draft.from_json({'built_orders': {o1.isn: [1, 2], 'bad': [1, 2], o2.isn: [True, 1], o3.isn: [1],
+                                                _isn(7): ['x', 1], _isn(8): [float('nan'), 1]}})
+    assert junk.built_orders == {o1.isn: (1.0, 2.0)}
+    assert dp.Draft.from_json({'built_orders': 'x'}).built_orders is None
+    legacy = {k: v for k, v in d.to_json().items() if k != 'built_orders'}      # черновик до этой правки
+    assert dp.Draft.from_json(legacy).built_orders is None and dp.Draft.from_json(legacy).trucks == ['CAR1']
+
+
+def test_store_dispatch_ready_time_setting(store):
+    assert store.load().settings['dispatch_ready_time'] == '17:00'
+    for bad in ('25:00', '5pm', '', None, 1700):
+        _, errors = st.validate_payload({'settings': {'dispatch_ready_time': bad}}, store.load(), REF)
+        assert 'settings.dispatch_ready_time' in errors, bad
+    _save(store, {'settings': {'dispatch_ready_time': '18:30'}})
+    assert store.load().settings['dispatch_ready_time'] == '18:30'
+
+
+def test_api_dispatch_freshness_hint_and_new_since_build(client, monkeypatch):
+    from route_optimizer import views
+    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 9, 30, 11, 27))   # среда, заказы на чт ещё идут
+    orders = [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2), _dorder(3, 104, 1200.0, agent=2),
+              _dorder(6, 102, 70.0, day=date(2026, 9, 28))]
+    _dispatch_setup(client, orders)
+    state = client.application.extensions['route_optimizer']
+    data0 = state.dispatch_loader(None, None, None)
+    calls = []
+
+    def set_orders(new):
+        data = replace(data0, orders=tuple(new))
+        state.dispatch_loader = lambda since, until, day: (calls.append(day), data)[1]
+        state.dispatch_cache.clear()                                    # как будто прошло 5 минут (TTL кэша)
+
+    set_orders(orders)
+    d = client.get('/api/routes/dispatch?date=2026-10-01').get_json()
+    assert (d['orders_still_coming'], d['ready_time'], d['built_at'], d['new_since_build'], d['removed_since_build']) == \
+        (True, '17:00', None, None, None)
+    assert d['orders']['count'] == 3 and isinstance(d['orders_sig'], str)
+    s = client.get('/api/routes/dispatch/status?date=2026-10-01').get_json()
+    assert (s['orders_still_coming'], s['orders'], s['rev'], s['orders_sig']) == \
+        (True, {'count': 3, 'kg': 1900, 'revenue': 30000}, 0, d['orders_sig'])
+    assert len(calls) == 1                                              # статус — из того же кэша, без ERP
+    assert 'plan' not in s and 'trucks' not in s                        # лёгкий ответ: рейсы не считаются
+    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 9, 30, 17, 5))
+    assert client.get('/api/routes/dispatch/status?date=2026-10-01').get_json()['orders_still_coming'] is False
+    assert client.get('/api/routes/dispatch/status?date=2026-10-02').get_json()['orders_still_coming'] is False
+    assert client.get('/api/routes/dispatch/status?date=x').status_code == 400
+    assert client.get('/api/routes/dispatch/status').status_code == 400
+    # сборка: отметка — заказы дня; заказ прошлых дней добавлен логистом — тоже в отметке
+    d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert d['built_at'] and d['new_since_build'] == {'count': 0, 'kg': 0, 'revenue': 0}
+    d = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': 1, 'action': 'include',
+                                                       'order': _isn(6)}).get_json()
+    assert d['new_since_build']['count'] == 0                           # правка логиста — не «новый заказ»
+    d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    built_at, rev = d['built_at'], d['rev']
+    stored = dp.Draft.from_json(state.store.load_dispatch('2026-10-01')[0])
+    assert set(stored.built_orders) == {_isn(1), _isn(2), _isn(3), _isn(6)}
+    # пришли новые заказы (один — новому магазину 999 без точки), заказ 2 отменили, заказ 3 отгрузили раньше дня
+    set_orders([orders[0], replace(orders[2], shipped=date(2026, 9, 30)), orders[3],
+                _dorder(7, 101, 150.0), _dorder(8, 999, 2000.0, rev=40000.0)])
+    s = client.get('/api/routes/dispatch/status?date=2026-10-01').get_json()
+    assert s['new_since_build'] == {'count': 2, 'kg': 2150, 'revenue': 50000}
+    assert s['removed_since_build'] == {'count': 2, 'kg': 1500, 'revenue': 20000}
+    assert s['orders_sig'] != d['orders_sig'] and s['rev'] == rev and s['built_at'] == built_at
+    d = client.get('/api/routes/dispatch?date=2026-10-01').get_json()
+    assert d['new_since_build']['count'] == 2 and d['plan'] is not None   # рейсы без клика не пересобираются
+    assert state.store.load_dispatch('2026-10-01')[1] == rev
+    # «Пересобрать» — новые учтены, закреплённое и правки остаются
+    trip = d['plan']['trucks'][0]['trips'][0]
+    d = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': rev, 'action': 'pin',
+                                                       'trip': trip['id'], 'truck': trip['truck']}).get_json()
+    assert d['new_since_build']['count'] == 2                           # правка отметку не трогает
+    d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
+    assert d['new_since_build'] == {'count': 0, 'kg': 0, 'revenue': 0} and d['removed_since_build']['count'] == 0
+    assert any(t['pinned'] and t['id'] == trip['id'] for tr in d['plan']['trucks'] for t in tr['trips'])
+    assert d['backlog'][0]['added'] is True
+    # «Начать заново» — отметки нет
+    d = client.post('/api/routes/dispatch/reset', json={'date': '2026-10-01'}).get_json()
+    assert d['new_since_build'] is None and d['built_at'] is None
+
+
+def test_store_owner_copy_ready_time_default_and_legacy_draft(tmp_path):
+    """КОПИЯ базы владельца: dispatch_ready_time — по умолчанию (схема не меняется), черновик прежнего
+    формата (без отметки сборки) читается, сравнения «с последней сборки» нет; запись — только в копию."""
+    with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro&immutable=1', uri=True)) as conn:
+        before = {t: sorted(conn.execute(f'SELECT * FROM {t}').fetchall()) for t in ('settings', 'dispatch_plan')}
+        version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    copy = tmp_path / 'owner.db'
+    copy.write_bytes(OWNER_DB.read_bytes())
+    s = st.Store(str(copy))
+    assert s.load().settings['dispatch_ready_time'] == '17:00'
+    legacy = {'trucks': ['CAR1'], 'excluded': [], 'added': [], 'next_id': 2, 'built_at': '2026-10-01T15:20:00',
+              'trips': [{'id': 1, 'truck': 'CAR1', 'stops': [101], 'pinned': True}]}
+    s.save_dispatch('2026-10-02', legacy, 'qa')
+    draft = dp.Draft.from_json(s.load_dispatch('2026-10-02')[0])
+    assert draft.built_orders is None and draft.trips[0].pinned is True
+    assert dp.since_build(draft.built_orders, [], [], set()) is None
+    with closing(sqlite3.connect(str(copy))) as conn:
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == version
+        assert sorted(conn.execute('SELECT * FROM settings').fetchall()) == before['settings']
+    with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro&immutable=1', uri=True)) as conn:
+        assert {t: sorted(conn.execute(f'SELECT * FROM {t}').fetchall()) for t in before} == before

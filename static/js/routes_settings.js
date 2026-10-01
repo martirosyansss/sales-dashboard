@@ -41,6 +41,8 @@
             { key: 'truck_work_end', label: 'Машина возвращается до', type: 'time', hint: 'рейсы, которые не успевают, — «нужна ещё машина»' },
             { key: 'unload_min_per_stop', label: 'Разгрузка на точке, минут', min: 0, max: 120, step: 1 },
             { key: 'unload_min_per_tonne', label: 'И ещё на каждую тонну, минут', min: 0, max: 120, step: 1 },
+            { key: 'dispatch_ready_time', label: 'Рейсы на завтра собирать после', type: 'time',
+                hint: 'до этого времени менеджеры ещё принимают заказы — «Развоз» об этом напомнит' },
         ] },
         { title: 'Сколько длится визит, минут', items: [
             { key: 'visit_min_small', label: 'Небольшой магазин', min: 1, max: 120, step: 0.5, nullable: true, auto: true, hint: 'пусто — берём по стоянкам у магазинов в GPS-треках' },

@@ -1383,6 +1383,10 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
 .dp-facts li.is-mute { color: var(--rt-fg-dim); }
 .dp-run { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 18px; }
 .dp-run .dp-note { margin: 0; }
+/* «заказы ещё поступают» — нейтрально, не ошибка; «пришли новые заказы» — is-warn */
+.rt-alert.is-info { background: var(--rt-acc-glow); border-color: var(--rt-acc-dim); }
+.rt-alert.is-info > i { color: var(--rt-acc); }
+.dp-fresh-line { margin: 0 0 16px; font-size: .9375rem; color: var(--rt-fg-dim); }
 .dp-pick { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 14px; }
 .dp-picklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 420px; overflow-y: auto; align-content: start; }
 .dp-pickitem {

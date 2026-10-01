@@ -16,13 +16,16 @@
 - Черновик плана (store.dispatch_plan) — машины дня, исключённые заказы и рейсы (клиенты по порядку
   объезда, машина, «закреплён»). Цифры рейсов всегда пересчитываются по текущим заказам: новые
   заказы попадают в «ещё не в рейсах», исчезнувшие — убираются из рейсов.
+- Свежесть заказов: до dispatch_ready_time в последний день приёма заказов на D они ещё поступают
+  (orders_still_coming); черновик помнит заказы последней сборки (Draft.built_orders) — новые и
+  отменённые/отгруженные с тех пор считает since_build.
 """
 from __future__ import annotations
 
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from . import fleet as fl
@@ -34,6 +37,7 @@ if TYPE_CHECKING:
 ISN_RE = re.compile(r'^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$')
 _EPS = 1e-6
 MAX_TRIPS = 500           # защита от битого черновика
+MAX_BUILT_ORDERS = 20000  # заказов в отметке сборки — тоже защита от битого черновика
 BACKLOG_WORKDAYS = 2      # «не отгружены с прошлых дней» — заказы ещё двух рабочих дней раньше окна
 WEEKDAY_FULL = {1: 'понедельник', 2: 'вторник', 3: 'среда', 4: 'четверг', 5: 'пятница', 6: 'суббота',
                 7: 'воскресенье'}
@@ -145,6 +149,42 @@ def to_deliver(orders: Sequence[DispatchOrder], day: date, since: date) -> Selec
                      self_delivery=sorted((o for o in pending if o.self_delivery and o.order_date >= since), key=key))
 
 
+# --- Свежесть заказов ---
+
+def orders_still_coming(day: date, workdays: Sequence[int], now: datetime, ready_time: str) -> bool:
+    """Заказы на day ещё поступают: сегодня — последний день приёма заказов на day (предыдущий рабочий
+    день, для понедельника — суббота) и сейчас раньше ready_time (ЧЧ:ММ). Прошедшая дата, выходной
+    перед днём развоза или дата через несколько дней — False."""
+    if now.date() != previous_workday(day, workdays):
+        return False
+    h, m = map(int, ready_time.split(':'))
+    return now.time() < time(h, m)
+
+
+def order_marks(orders: Sequence[DispatchOrder]) -> dict[str, tuple[float, float]]:
+    """Отметка сборки: какие заказы (кг, сумма) логист видел, когда собирал рейсы."""
+    return {o.isn: (o.kg, o.revenue) for o in orders}
+
+
+def _totals(items: Sequence[tuple[float, float]]) -> dict[str, Any]:
+    return {'count': len(items), 'kg': round(math.fsum(kg for kg, _ in items)),
+            'revenue': round(math.fsum(rev for _, rev in items))}
+
+
+def since_build(built: Mapping[str, tuple[float, float]] | None, main: Sequence[DispatchOrder],
+                pending: Sequence[DispatchOrder], excluded: set[str]) -> dict[str, Any] | None:
+    """Что изменилось с последней сборки. new — заказы дня, которых при сборке не было (кроме тех, что
+    логист уже исключил); removed — заказы сборки, которых больше нет среди неотгруженных (отменили или
+    уже отгрузили; их кг и сумма — из отметки). pending — все неотгруженные к дню заказы (дня и прошлых
+    дней). Отметки нет — None."""
+    if built is None:
+        return None
+    new = [(o.kg, o.revenue) for o in main if o.isn not in built and o.isn not in excluded]
+    alive = {o.isn for o in pending}
+    removed = [v for k, v in sorted(built.items()) if k not in alive]
+    return {'new': _totals(new), 'removed': _totals(removed)}
+
+
 # --- Остановки ---
 
 @dataclass(frozen=True)
@@ -191,12 +231,16 @@ class Draft:
     trips: list[DraftTrip] = field(default_factory=list)
     next_id: int = 1
     built_at: str | None = None
+    # заказы последней сборки: fISN → (кг, сумма); None — черновик собран до этой отметки (сравнивать не с чем)
+    built_orders: dict[str, tuple[float, float]] | None = None
 
     def to_json(self) -> dict[str, Any]:
+        built = None if self.built_orders is None else {
+            k: [round(kg, 3), round(rev, 2)] for k, (kg, rev) in sorted(self.built_orders.items())}
         return {'trucks': list(self.trucks), 'excluded': sorted(self.excluded), 'added': sorted(self.added),
                 'trips': [{'id': t.id, 'truck': t.truck, 'stops': list(t.stops), 'pinned': t.pinned}
                           for t in self.trips],
-                'next_id': self.next_id, 'built_at': self.built_at}
+                'next_id': self.next_id, 'built_at': self.built_at, 'built_orders': built}
 
     @classmethod
     def from_json(cls, raw: Any) -> Draft:
@@ -219,7 +263,23 @@ class Draft:
         next_id = raw.get('next_id')
         next_id = max([next_id if _is_int(next_id) else 1, *(t.id + 1 for t in trips)])
         built = raw.get('built_at') if isinstance(raw.get('built_at'), str) else None
-        return cls(trucks, excluded, added, trips, next_id, built)
+        return cls(trucks, excluded, added, trips, next_id, built, _built_orders(raw.get('built_orders')))
+
+
+def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
+    """Отметка сборки из черновика; нет её (старый черновик) или не словарь — None, битые строки — мимо."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, tuple[float, float]] = {}
+    for k, v in list(raw.items())[:MAX_BUILT_ORDERS]:
+        if isinstance(k, str) and ISN_RE.match(k) and isinstance(v, list) and len(v) == 2 \
+                and all(_is_num(x) for x in v):
+            out[k] = (float(v[0]), float(v[1]))
+    return out
+
+
+def _is_num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
 def _is_int(v: Any) -> bool:

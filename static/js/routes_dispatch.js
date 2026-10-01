@@ -3,6 +3,8 @@
    правки логиста — POST /api/routes/dispatch/edit (move | pin | unpin | exclude | include, с номером
    черновика rev); «Начать заново» — POST /api/routes/dispatch/reset; ручная точка магазина —
    POST /api/routes/geo-override; «План и факт» — GET /api/routes/dispatch/fact?date=….
+   Раз в 5 минут, пока страница открыта, — GET /api/routes/dispatch/status?date=…: «заказы ещё поступают»
+   и сколько заказов пришло или ушло с последней сборки. Рейсы сами не пересобираются — только по кнопке.
    Безопасность: всё, что пришло из ERP (магазины, адреса, менеджеры, машины), выводится только через
    esc() или textContent — в том числе в попапах карты, листах для водителей и Excel. POST — только JSON. */
 (function () {
@@ -33,11 +35,14 @@
     const COLORS = ['#18c1fc', '#fe904d', '#b0a2ff', '#a77601', '#397be9', '#14cfa3', '#0d9298', '#b8b90c', '#ae55c1', '#37981b'];
     const COORD = { erp: 'адрес из ERP', gps: 'по GPS визитов', manual: 'поставлена вручную', none: 'нет точки' };
     const YEREVAN = [40.1792, 44.4991];
+    const POLL_MS = 5 * 60 * 1000;          // автообновление заказов дня
+    const MANAGERS_DONE = '16:40';          // владелец: менеджеры заканчивают день ≈ 16:40
 
     const state = {
         day: null, data: null, busy: false,
         map: null, layers: null, mapFailed: false,
         pickMap: null, pickMarker: null, pickCid: null,
+        fetchedAt: 0,                       // когда последний раз спрашивали сервер о заказах дня
     };
 
     // ---------- Сервер ----------
@@ -118,6 +123,7 @@
     function setData(data) {
         state.data = data;
         state.day = data.day;
+        state.fetchedAt = Date.now();
         const url = new URL(window.location.href);
         url.searchParams.set('date', data.day);
         window.history.replaceState(null, '', url);
@@ -131,13 +137,10 @@
         $('dpTitle').textContent = 'Развоз на ' + (WD_ACC[wd] || '') + ', ' + dateRu(d.day);
         document.title = 'Развоз на ' + dateRu(d.day) + ' — Sales Dashboard';
         $('dpDate').value = d.day;
-        const od = d.order_dates;
-        const ordersDays = od.since === od.until ? 'за ' + WD_SHORT[wdOf(od.since)] + ' ' + dateRu(od.since)
-            : 'с ' + WD_SHORT[wdOf(od.since)] + ' ' + dateRu(od.since) + ' по ' + WD_SHORT[wdOf(od.until)] + ' ' + dateRu(od.until);
-        $('dpDateNote').textContent = (d.is_past ? 'Прошедшая дата — для разбора. ' : '') + 'Везём заказы ' + ordersDays
-            + ' · данные ERP на ' + (d.data_as_of || '').slice(11, 16);
+        renderDateNote();
         $('dpTomorrow').hidden = d.day === d.default_day;
         renderProblems();
+        renderFresh();
         renderTrucks();
         renderOrders();
         renderNoCoords();
@@ -148,13 +151,98 @@
         $('dpBuild').disabled = !d.trucks.some(t => t.ready) || !d.depot;
         $('dpBuildNote').textContent = plan
             ? 'Закреплённые рейсы останутся как есть, остальное программа разложит заново'
-            : '≈ 5 секунд, ERP только читается';
+            : (d.orders_still_coming ? 'Можно собрать и сейчас, а после ' + d.ready_time + ' пересобрать с новыми заказами'
+                : '≈ 5 секунд, ERP только читается');
         $('dpStep1').classList.toggle('is-done', !!plan);
         $('dpStep2').classList.toggle('is-done', !!plan);
         $('dpStep3').hidden = !plan;
         if (plan) renderPlan(plan);
         $('dpFact').hidden = !d.is_past;
         if (!d.is_past) $('dpFactOut').textContent = '';
+    }
+
+    function renderDateNote() {
+        const d = state.data, od = d.order_dates;
+        const ordersDays = od.since === od.until ? 'за ' + WD_SHORT[wdOf(od.since)] + ' ' + dateRu(od.since)
+            : 'с ' + WD_SHORT[wdOf(od.since)] + ' ' + dateRu(od.since) + ' по ' + WD_SHORT[wdOf(od.until)] + ' ' + dateRu(od.until);
+        $('dpDateNote').textContent = (d.is_past ? 'Прошедшая дата — для разбора. ' : '') + 'Везём заказы ' + ordersDays
+            + ' · данные ERP на ' + (d.data_as_of || '').slice(11, 16);
+    }
+
+    // ---------- Заказы ещё поступают · что изменилось с последней сборки ----------
+    function builtWhen(iso) {
+        if (typeof iso !== 'string' || iso.length < 16) return '';
+        const day = iso.slice(0, 10);
+        return (day === state.data.today ? '' : dateRu(day).slice(0, 5) + ' ') + 'в ' + iso.slice(11, 16);
+    }
+    function freshAlert(cls, ico, text) {
+        const div = document.createElement('div');
+        div.className = 'rt-alert dp-fresh-alert ' + cls;
+        div.innerHTML = '<i class="fas ' + ico + '" aria-hidden="true"></i><span class="rt-alert-text"></span>';
+        div.querySelector('.rt-alert-text').textContent = text;
+        return div;
+    }
+    function renderFresh() {
+        const d = state.data, box = $('dpFresh');
+        box.textContent = '';
+        if (d.orders_still_coming) {
+            const o = d.live_orders || d.orders;
+            const done = MANAGERS_DONE < d.ready_time
+                ? 'Менеджеры обычно заканчивают к ' + MANAGERS_DONE + ' — собирайте рейсы после ' + d.ready_time + '.'
+                : 'Собирайте рейсы после ' + d.ready_time + '.';
+            box.appendChild(freshAlert('is-info', 'fa-hourglass-half', 'Заказы на ' + (WD_ACC[d.weekday] || '') + ', ' + dateRu(d.day)
+                + ' ещё поступают: сейчас ' + pl(o.count, 'заказ', 'заказа', 'заказов') + ' (' + kgText(o.kg) + '). ' + done));
+        }
+        if (!d.plan || !d.built_at) return;
+        const when = builtWhen(d.built_at);
+        const n = d.new_since_build, r = d.removed_since_build;
+        const gone = r && r.count ? 'Отменили или уже отгрузили ' + pl(r.count, 'заказ', 'заказа', 'заказов') + ' (' + kgText(r.kg) + ') — в рейсах их уже нет.' : '';
+        if (n && n.count) {
+            const div = freshAlert('is-warn', 'fa-bell', 'С последней сборки ' + when + ' ' + plural(n.count, 'пришёл', 'пришло', 'пришло') + ' '
+                + pl(n.count, 'новый заказ', 'новых заказа', 'новых заказов') + ' (' + kgText(n.kg) + ').' + (gone ? ' ' + gone : ''));
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.id = 'dpRebuild';
+            b.className = 'rt-btn rt-btn-primary rt-btn-sm';
+            b.innerHTML = '<i class="fas fa-rotate" aria-hidden="true"></i><span>Пересобрать</span>';
+            b.title = 'Закреплённые рейсы останутся как есть, остальное программа разложит заново';
+            b.addEventListener('click', build);
+            div.appendChild(b);
+            box.appendChild(div);
+            return;
+        }
+        const p = document.createElement('p');
+        p.className = 'dp-fresh-line';
+        p.textContent = 'Рейсы собраны ' + when + (n ? ' · новых заказов с тех пор нет' : '') + '.' + (gone ? ' ' + gone : '');
+        box.appendChild(p);
+    }
+
+    // Автообновление: раз в POLL_MS спрашиваем сервер о заказах дня (ERP только читается, по правилам кэша).
+    // Заказы изменились — страница перечитывается целиком, но не посреди правки (выбор в списке, точка на карте):
+    // тогда обновляются только подсказки, а страница — при следующей проверке.
+    const interacting = () => {
+        const a = document.activeElement;
+        return state.pickCid !== null || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
+    };
+    async function poll() {
+        const d = state.data;
+        if (!d || d.is_past || state.busy || document.hidden || Date.now() - state.fetchedAt < POLL_MS) return;
+        state.fetchedAt = Date.now();
+        const day = state.day;
+        let s;
+        try { s = await api('GET', '/api/routes/dispatch/status?date=' + encodeURIComponent(day)); } catch (e) { return; }
+        if (state.day !== day || state.data !== d || state.busy) return;     // пока ждали, сменили дату или правили
+        const before = d.new_since_build ? d.new_since_build.count : 0;
+        if ((s.orders_sig !== d.orders_sig || s.rev !== d.rev) && !interacting()) {
+            try { await reloadQuiet(); } catch (e) { return; }
+        } else {
+            ['orders_still_coming', 'ready_time', 'built_at', 'new_since_build', 'removed_since_build', 'data_as_of'].forEach(k => { d[k] = s[k]; });
+            d.live_orders = s.orders;
+            renderDateNote();
+            renderFresh();
+        }
+        const after = state.data.new_since_build ? state.data.new_since_build.count : 0;
+        if (after > before) announce('С последней сборки ' + plural(after, 'пришёл', 'пришло', 'пришло') + ' ' + pl(after, 'новый заказ', 'новых заказа', 'новых заказов'));
     }
 
     function renderProblems() {
@@ -910,6 +998,8 @@
         });
         $('dpNoCoords').addEventListener('toggle', () => { if ($('dpNoCoords').open) ensurePickMap(); });
         $('dpMapBox').addEventListener('toggle', () => { if ($('dpMapBox').open && state.data && state.data.plan) drawMap(); });
+        setInterval(poll, 30 * 1000);       // poll() сам проверяет, прошло ли 5 минут (и после сна компьютера тоже)
+        document.addEventListener('visibilitychange', poll);
         load(day);
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();

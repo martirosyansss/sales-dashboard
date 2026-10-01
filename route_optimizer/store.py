@@ -215,6 +215,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'truck_work_end': '18:00',
     'unload_min_per_stop': 8,
     'unload_min_per_tonne': 6,
+    # «Развоз»: до этого времени менеджеры ещё принимают заказы на следующий рабочий день (заканчивают
+    # ≈ 16:40) — страница подсказывает собирать рейсы позже. Нет ключа в базе — значение по умолчанию
+    'dispatch_ready_time': '17:00',
 }
 
 # Числовые настройки: ключ -> (мин, макс, допускается null)
@@ -453,7 +456,7 @@ def validate_settings(values: Mapping[str, Any],
     out: dict[str, Any] = {}
     errors: dict[str, str] = {}
 
-    for key in ('work_start', 'work_end', 'truck_work_start', 'truck_work_end'):
+    for key in ('work_start', 'work_end', 'truck_work_start', 'truck_work_end', 'dispatch_ready_time'):
         v = values.get(key)
         if not isinstance(v, str) or not _HHMM_RE.match(v):
             errors[key] = 'время в формате ЧЧ:ММ'

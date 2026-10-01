@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -112,6 +113,11 @@ class RoutesState:
 
 def _now() -> str:
     return datetime.now().isoformat(timespec='seconds')
+
+
+def _clock() -> datetime:
+    """Местное время сервера для «заказы ещё поступают» (тесты подменяют)."""
+    return datetime.now()
 
 
 def _state() -> RoutesState:
@@ -723,18 +729,58 @@ class _DispatchDay:
     bundle: Bundle
 
 
+def _day_orders(state: RoutesState, bundle: Bundle, day: date,
+                refresh: bool) -> tuple[date, date, dp.DispatchData, dp.Selection]:
+    """Окно заказов дня, заказы ERP (кэш _dispatch_data) и отбор к доставке."""
+    since, until = dp.order_window(day, bundle.settings['workdays'])
+    data = _dispatch_data(state, dp.backlog_since(since, bundle.settings['workdays']), until, day, refresh)
+    return since, until, data, dp.to_deliver(data.orders, day, since)
+
+
+def _stored_draft(state: RoutesState, day: date) -> tuple[dp.Draft | None, int]:
+    stored = state.store.load_dispatch(day.isoformat())
+    return (dp.Draft.from_json(stored[0]), stored[1]) if stored is not None else (None, 0)
+
+
+def _active_orders(deliver: list[dp.DispatchOrder], backlog: list[dp.DispatchOrder],
+                   draft: dp.Draft | None) -> list[dp.DispatchOrder]:
+    """Заказы в развозе: заказы дня без «не везём сегодня» + добавленные логистом заказы прошлых дней."""
+    excluded = draft.excluded if draft is not None else set()
+    added = draft.added if draft is not None else set()
+    return [o for o in deliver if o.isn not in excluded] + [o for o in backlog if o.isn in added]
+
+
+def _orders_sig(data: dp.DispatchData) -> str:
+    """Отпечаток заказов ERP: изменился — странице есть что перечитать."""
+    raw = repr(sorted((o.isn, o.customer_id, o.agent_id, o.van_agent_id, round(o.kg, 3), round(o.revenue, 2),
+                       o.shipped) for o in data.orders))
+    return hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]
+
+
+def _freshness(day: date, bundle: Bundle, data: dp.DispatchData, deliver: list[dp.DispatchOrder],
+               backlog: list[dp.DispatchOrder], draft: dp.Draft | None) -> dict[str, Any]:
+    """«Заказы ещё поступают» и что изменилось с последней сборки — для подсказки вверху страницы."""
+    s = bundle.settings
+    changes = None if draft is None else dp.since_build(draft.built_orders, deliver, [*deliver, *backlog],
+                                                        draft.excluded)
+    return {
+        'orders_still_coming': dp.orders_still_coming(day, s['workdays'], _clock(), s['dispatch_ready_time']),
+        'ready_time': s['dispatch_ready_time'],
+        'built_at': draft.built_at if draft is not None else None,
+        'new_since_build': changes['new'] if changes else None,
+        'removed_since_build': changes['removed'] if changes else None,
+        'orders_sig': _orders_sig(data),
+        'data_as_of': data.loaded_at.isoformat(timespec='seconds'),
+    }
+
+
 def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = False,
               draft: dp.Draft | None = None, rev: int | None = None) -> _DispatchDay:
     snap, _ = state.snapshots.cached()
-    since, until = dp.order_window(day, bundle.settings['workdays'])
-    data = _dispatch_data(state, dp.backlog_since(since, bundle.settings['workdays']), until, day, refresh)
-    sel = dp.to_deliver(data.orders, day, since)
+    since, until, data, sel = _day_orders(state, bundle, day, refresh)
     deliver, backlog = sel.main, sel.backlog
     if draft is None:
-        stored = state.store.load_dispatch(day.isoformat())
-        draft, rev = (dp.Draft.from_json(stored[0]), stored[1]) if stored is not None else (None, 0)
-    excluded = draft.excluded if draft is not None else set()
-    added = draft.added if draft is not None else set()
+        draft, rev = _stored_draft(state, day)
     coords: dict[int, Any] = {}
 
     def coord(cid: int) -> Any:
@@ -742,8 +788,7 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
             coords[cid] = evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides)
         return coords[cid]
 
-    stops = dp.build_stops([o for o in deliver if o.isn not in excluded] + [o for o in backlog if o.isn in added],
-                           coord)
+    stops = dp.build_stops(_active_orders(deliver, backlog, draft), coord)
     ready = _ready_trucks(snap, bundle)
     ctx = _dispatch_ctx(state, snap, bundle, day, ready, [s.point for s in stops if s.point is not None])
     return _DispatchDay(day, since, until, data, deliver, backlog, sel.shipped_before, sel.self_delivery, draft,
@@ -795,7 +840,7 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
                        'ready': ready is not None, 'selected': ready is not None and code in selected})
     added = draft.added if draft is not None else set()
     no_coords = [s for s in dd.stops if s.point is None]
-    active = [o for o in dd.deliver if o.isn not in excluded] + [o for o in dd.backlog if o.isn in added]
+    active = _active_orders(dd.deliver, dd.backlog, draft)
     excl = [o for o in dd.deliver if o.isn in excluded]
 
     def order_json(o: dp.DispatchOrder) -> dict[str, Any]:
@@ -809,7 +854,6 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         'today': today.isoformat(), 'is_past': dd.day < today,
         'default_day': dp.next_workday(today, s['workdays']).isoformat(),
         'order_dates': {'since': dd.since.isoformat(), 'until': (dd.until - timedelta(days=1)).isoformat()},
-        'data_as_of': dd.data.loaded_at.isoformat(timespec='seconds'),
         'work_start': s['truck_work_start'], 'work_end': s['truck_work_end'],
         'depot': {'lat': dd.bundle.depot[0], 'lon': dd.bundle.depot[1]} if dd.bundle.depot else None,
         'problems': problems, 'trucks': trucks, 'rev': dd.rev,
@@ -825,6 +869,7 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         'backlog': [order_json(o) for o in dd.backlog],
         'backlog_since': dp.backlog_since(dd.since, s['workdays']).isoformat(),
         'plan': None,
+        **_freshness(dd.day, dd.bundle, dd.data, dd.deliver, dd.backlog, draft),
     }
     if draft is not None and dd.ctx is not None:
         plan = dp.plan_view(dd.ctx, dd.stops, draft, info)
@@ -850,6 +895,26 @@ def api_dispatch() -> Any:
         return _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
     dd = _load_day(state, bundle, day, refresh=request.args.get('refresh') == '1')
     return jsonify({'success': True, **_dispatch_body(dd)})
+
+
+@bp.get('/api/routes/dispatch/status')
+@_api
+def api_dispatch_status() -> Any:
+    """Лёгкая проверка для автообновления страницы (раз в 5 минут): заказы дня по тем же правилам кэша
+    (ERP только читается), «заказы ещё поступают» и что изменилось с последней сборки. Рейсы не
+    пересчитываются и не собираются — это делает логист кнопкой."""
+    state = _state()
+    bundle = state.store.load()
+    day = _parse_day(request.args.get('date'))
+    if day is None:
+        return _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
+    _, _, data, sel = _day_orders(state, bundle, day, refresh=False)
+    draft, rev = _stored_draft(state, day)
+    active = _active_orders(sel.main, sel.backlog, draft)
+    return jsonify({'success': True, 'day': day.isoformat(), 'rev': rev,
+                    'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
+                               'revenue': round(sum(o.revenue for o in active))},
+                    **_freshness(day, bundle, data, sel.main, sel.backlog, draft)})
 
 
 def _dispatch_request() -> tuple[Any, Any, Any]:
@@ -892,6 +957,8 @@ def api_dispatch_build() -> Any:
         return _bad_request({'trucks': 'отметьте хотя бы одну машину'})
     started = time.perf_counter()
     draft = dp.build(dd.ctx, dd.stops, dd.draft, codes, _now())
+    # отметка сборки: все заказы дня (и исключённые — они не «новые») + добавленные заказы прошлых дней
+    draft.built_orders = dp.order_marks([*dd.deliver, *(o for o in dd.backlog if o.isn in draft.added)])
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'))
     logger.info('[Routes] Развоз на %s собран (%s) за %.1f с: точек %d, рейсов %d, машин %d', day,
                 session.get('username'), time.perf_counter() - started, len(dd.stops), len(draft.trips), len(codes))
