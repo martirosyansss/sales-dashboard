@@ -1,0 +1,160 @@
+/* «Развоз» /routes/dispatch — интерфейс «для чайников» на армянском (ответ владельца №31).
+   Поверх routes.css: те же токены (--rt-*), только классы этой страницы. */
+
+/* В Golos Text нет армянских букв — берём их из Noto Sans Armenian; текст чуть крупнее */
+#rtDispatch {
+    --rt-font: 'Golos Text', 'Noto Sans Armenian', 'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    font-size: 1rem;
+}
+
+/* --- Шапка --- */
+.dp-kicker { margin: 0 0 2px; font-size: .9375rem; font-weight: 700; color: var(--rt-acc); }
+#rtDispatch .rt-title { font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.125rem); }
+.dp-daynav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 16px; }
+.dp-daynav .rt-btn { height: 40px; gap: 8px; }
+.rt-input.dp-date { width: auto; min-width: 170px; height: 40px; font-family: var(--rt-mono); color-scheme: dark; }
+.dp-datenote { margin: 10px 0 0; font-size: .9375rem; color: var(--rt-fg-dim); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+.dp-datenote .rt-linkbtn { font-size: .9375rem; }
+
+.dp-help { margin-top: 14px; max-width: 780px; }
+.dp-help summary {
+    cursor: pointer; display: inline-flex; align-items: center; gap: 8px; list-style: none;
+    font-weight: 600; color: var(--rt-acc); font-size: .9375rem; padding: 4px 0;
+}
+.dp-help summary::-webkit-details-marker { display: none; }
+.dp-help[open] summary { margin-bottom: 6px; }
+.dp-help ol { margin: 0 0 8px; padding-left: 22px; display: grid; gap: 6px; line-height: 1.5; }
+.dp-help p { margin: 0; color: var(--rt-fg-dim); line-height: 1.5; }
+
+/* --- «Что делать сейчас» --- */
+.dp-todo {
+    display: flex; gap: 16px; align-items: flex-start;
+    margin: 4px 0 26px; padding: 18px 20px;
+    border: 1px solid var(--rt-line); border-left-width: 5px; border-radius: var(--rt-radius);
+    background: var(--rt-panel);
+}
+.dp-todo:empty { display: none; }
+.dp-todo.is-info { border-color: var(--rt-acc-dim); }
+.dp-todo.is-ok { border-color: var(--rt-ok-line); background: linear-gradient(0deg, var(--rt-ok-bg), var(--rt-ok-bg)), var(--rt-panel); }
+.dp-todo.is-warn { border-color: var(--rt-warn-line); background: linear-gradient(0deg, var(--rt-warn-bg), var(--rt-warn-bg)), var(--rt-panel); }
+.dp-todo-ico {
+    flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 1.25rem;
+    background: var(--rt-acc-glow); color: var(--rt-acc);
+}
+.dp-todo.is-ok .dp-todo-ico { background: var(--rt-ok-bg); color: var(--rt-ok); }
+.dp-todo.is-warn .dp-todo-ico { background: var(--rt-warn-bg); color: var(--rt-warn); }
+.dp-todo-body { min-width: 0; flex: 1 1 auto; }
+.dp-todo-k { margin: 0 0 2px; font-size: .8125rem; font-weight: 700; color: var(--rt-fg-mute); }
+#rtDispatch .dp-todo-t { margin: 0 0 6px; font-size: clamp(1.125rem, 1rem + .6vw, 1.375rem); font-weight: 800; line-height: 1.3; }
+.dp-todo-lines p { margin: 0 0 4px; color: var(--rt-fg-dim); line-height: 1.5; }
+.dp-todo-btns { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+
+/* --- Шаги --- */
+.dp-steprow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.dp-steplead { margin: 4px 0 12px; color: var(--rt-fg-dim); font-size: 1rem; line-height: 1.5; }
+.dp-chip {
+    display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 999px;
+    background: var(--rt-panel-2, var(--rt-panel)); border: 1px solid var(--rt-line); font-size: .875rem; color: var(--rt-fg-dim);
+}
+.dp-chip:empty { display: none; }
+
+/* Машины — крупные карточки-переключатели */
+.dp-trucks { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.dp-truck { min-height: 64px; }
+.dp-truck input { width: 22px; height: 22px; }
+.dp-truck-t b { font-size: 1.0625rem; }
+.dp-truck:not(:has(input:checked)):not(.is-off) .dp-truck-t { opacity: .6; text-decoration: line-through; text-decoration-color: var(--rt-fg-mute); }
+
+/* Крупные цифры */
+.dp-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 6px 0 14px; }
+.dp-stat {
+    display: flex; flex-direction: column; gap: 2px; padding: 12px 14px;
+    border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); background: var(--rt-inset);
+}
+.dp-stat b { font-size: 1.5rem; font-weight: 800; line-height: 1.15; white-space: nowrap; }
+.dp-stat span { font-size: .875rem; color: var(--rt-fg-dim); }
+
+/* Что требует внимания — по строке и одной кнопке */
+.dp-attn { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; }
+.dp-attn[hidden] { display: none; }
+.dp-attn-item {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 14px;
+    border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); background: var(--rt-panel);
+}
+.dp-attn-item > i { color: var(--rt-fg-mute); width: 18px; text-align: center; }
+.dp-attn-item.is-warn { border-color: var(--rt-warn-line); background: var(--rt-warn-bg); }
+.dp-attn-item.is-warn > i { color: var(--rt-warn); }
+.dp-attn-t { flex: 1 1 280px; min-width: 0; line-height: 1.45; }
+.dp-howto { margin: 0 0 12px; padding-left: 22px; display: grid; gap: 4px; line-height: 1.5; }
+.dp-run { margin-top: 20px; }
+.dp-note:empty { display: none; }
+
+/* --- Рейсы: итог --- */
+.dp-summary {
+    padding: 18px 20px; margin: 8px 0 16px;
+    border: 1px solid var(--rt-line); border-radius: var(--rt-radius); background: var(--rt-panel);
+}
+.dp-summary .dp-stats { margin-top: 0; }
+.dp-summary-lead { margin: 0 0 14px; font-size: 1.0625rem; line-height: 1.5; color: var(--rt-ok); font-weight: 600; }
+.dp-summary-lead.is-neutral { color: var(--rt-fg-dim); font-weight: 400; }
+.dp-summary-lead:empty { display: none; }
+.dp-summary-cta { display: flex; flex-wrap: wrap; gap: 10px; }
+
+/* Не помещается / ещё не в рейсах */
+.dp-problem { margin-bottom: 14px; }
+.dp-problem ul { margin: 6px 0 8px; padding-left: 20px; display: grid; gap: 4px; }
+.dp-problem .dp-problem-do { margin: 0; font-weight: 600; }
+
+/* Карточка машины и рейс — простой нумерованный список, как в листе водителя */
+.dp-tcard .rt-card-title { font-size: 1.1875rem; }
+.dp-trip-head { align-items: baseline; }
+.dp-trip-time { font-weight: 600; }
+.dp-editbtn { margin-left: auto; }
+.dp-trip.is-editing { background: var(--rt-inset); border-radius: var(--rt-radius-sm); padding: 12px; margin-left: -12px; margin-right: -12px; }
+.dp-trip-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 10px; padding: 10px 12px;
+    border: 1px dashed var(--rt-line); border-radius: var(--rt-radius-sm); }
+.dp-trip-tools .dp-tools-hint { flex: 1 1 100%; margin: 0; font-size: .875rem; color: var(--rt-fg-dim); line-height: 1.45; }
+
+.dp-stoplist { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.dp-stop {
+    display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: 4px 12px; align-items: start;
+    padding: 10px 0; border-top: 1px solid var(--rt-line-soft);
+}
+.dp-stop:first-child { border-top: 0; }
+.dp-num {
+    width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+    font-weight: 800; font-size: .9375rem; background: var(--dp-c, var(--rt-line)); color: #0c0f14;
+}
+.dp-stop-main { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.dp-stop-main b { font-size: 1.0625rem; overflow-wrap: anywhere; }
+.dp-stop-addr { overflow-wrap: anywhere; line-height: 1.4; }
+.dp-stop-sub { font-size: .875rem; color: var(--rt-fg-mute); overflow-wrap: anywhere; }
+.dp-stop-kg { font-weight: 800; font-size: 1.0625rem; white-space: nowrap; text-align: right; }
+.dp-stop-acts { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.dp-stop-acts .rt-select { height: 36px; width: auto; min-width: 200px; max-width: 100%; font-size: .9375rem; }
+.dp-unassigned .dp-num { background: transparent; color: var(--rt-warn); box-shadow: inset 0 0 0 2px var(--rt-warn); }
+
+/* --- Для руководителя --- */
+.dp-analysis { margin-top: 34px; padding-top: 18px; border-top: 1px solid var(--rt-line); }
+#rtDispatch .dp-analysis-t { display: flex; align-items: center; gap: 10px; font-size: 1.0625rem; font-weight: 700; color: var(--rt-fg-dim); margin: 0 0 10px; }
+
+@media (max-width: 640px) {
+    .dp-todo { flex-direction: column; gap: 10px; padding: 16px; }
+    .dp-todo-btns .rt-btn { flex: 1 1 100%; justify-content: center; }
+    .dp-daynav .rt-input.dp-date { flex: 1 1 140px; min-width: 0; }
+    .dp-daynav .rt-btn span { display: none; }
+    .dp-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .dp-trucks { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .dp-truck { padding: 10px; gap: 8px; }
+    .dp-truck-t b { font-size: 1rem; }
+    .dp-stat b { font-size: 1.25rem; white-space: normal; }
+    .dp-summary { padding: 14px; }
+    .dp-summary-cta .rt-btn { flex: 1 1 100%; justify-content: center; }
+    .dp-stop { grid-template-columns: 32px minmax(0, 1fr); }
+    .dp-stop-kg { grid-column: 2; text-align: left; }
+    .dp-stop-acts .rt-select { flex: 1 1 100%; min-width: 0; }
+    .dp-trip.is-editing { margin-left: 0; margin-right: 0; }
+    .dp-editbtn { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) { #rtDispatch * { scroll-behavior: auto !important; } }
