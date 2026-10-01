@@ -207,12 +207,19 @@ def delivery_status(delivered: Mapping[str, float], invoice: Mapping[str, Mappin
 
 
 def _scan_shortfall(tx: EventTx, day: str, stop_id: str, p: Mapping[str, Any], stop: StopCtx) -> list[str]:
-    """§3: маркируемая строка с qty > 0 — сканов (sale) + «не читается» должно хватать (флаг, не отказ)."""
+    """§3: маркируемая строка с qty > 0 — сканов (sale) + «не читается» должно хватать (флаг, не отказ).
+    Накладная S:, сделанная из заказов (replaces), засчитывает и сканы этого товара, сделанные по заказам O:."""
     invoice = stop.lines()
+    replaced = [o for o in (stop.data or {}).get('replaces') or [] if isinstance(o, str)]
     for item in p.get('lines') or []:
         ln = invoice.get(str(item.get('line_id')))
         q = _num(item.get('qty')) or 0.0
-        if ln and ln.get('marked') and q > 0 and tx.covered_units(day, stop_id, str(item['line_id'])) + EPS < q:
+        if not ln or not ln.get('marked') or q <= 0:
+            continue
+        covered = tx.covered_units(day, stop_id, str(item['line_id']))
+        if covered + EPS < q and replaced:
+            covered += tx.covered_by_orders(day, replaced, ln.get('product_id'))
+        if covered + EPS < q:
             return ['scan_short']
     return []
 
@@ -470,12 +477,37 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
 
 # --- чтение: действующие события ---
 
-def effective(events: Iterable[Mapping[str, Any]], etype: str) -> dict[str, Mapping[str, Any]]:
-    """Последнее событие типа по точке (delivery, tare заменяют прежние): по at_utc, received_at, id."""
+def _order(e: Mapping[str, Any]) -> tuple[str, str, str]:
+    return e['at_utc'], e['received_at'], e['id']
+
+
+def effective(events: Iterable[Mapping[str, Any]], etype: str, key: str = 'stop_id') -> dict[str, Mapping[str, Any]]:
+    """Последнее событие типа по точке (delivery, tare заменяют прежние): по at_utc, received_at, id.
+    key — поле точки: 'stop_id' или 'orig_stop_id' (точка, как её прислал терминал, — до сведения O: → S:)."""
     out: dict[str, Mapping[str, Any]] = {}
-    for e in sorted((e for e in events if e['type'] == etype and e['stop_id']),
-                    key=lambda e: (e['at_utc'], e['received_at'], e['id'])):
-        out[e['stop_id']] = e
+    for e in sorted((e for e in events if e['type'] == etype and e.get(key)), key=_order):
+        out[e[key]] = e
+    return out
+
+
+def combined(events: Iterable[Mapping[str, Any]], etype: str) -> dict[str, list[Mapping[str, Any]]]:
+    """Действующие события типа по точке офиса с учётом заказов O:, сведённых к накладной S: (views._attribute:
+    e['stop_id'] — точка офиса, e['orig_stop_id'] — как прислал терминал). Возвращает точку → части, от ранней
+    к поздней. Правило (контракт §5 п. 2): действующее событие ищется по ИСХОДНОЙ точке (последнее по каждому
+    заказу и по самой накладной), затем
+    - собственное событие накладной позже всех событий её заказов — только оно (терминал уже видел накладную
+      и записал её целиком);
+    - иначе — сумма: последнее по каждому заказу + собственное накладной, если есть (заказы, объединённые в одну
+      накладную, доставлены по отдельности — ни одна доставка не теряется).
+    Без заказов — одна часть, как effective()."""
+    groups: dict[str, list[Mapping[str, Any]]] = {}
+    for e in effective(events, etype, 'orig_stop_id').values():
+        groups.setdefault(e['stop_id'], []).append(e)
+    out: dict[str, list[Mapping[str, Any]]] = {}
+    for sid, parts in groups.items():
+        parts.sort(key=_order)
+        own = next((e for e in parts if e['orig_stop_id'] == sid), None)
+        out[sid] = [own] if own is not None and parts[-1] is own else parts
     return out
 
 

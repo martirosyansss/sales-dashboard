@@ -9,7 +9,10 @@ ERP только читаем, поэтому всё состояние терм
   мигрирует одной транзакцией (_MIGRATIONS);
 - точки дня — append-only снимки (day_snapshots + snapshot_stops): новая версия /day добавляет снимок,
   прежние не перезаписываются — по ним офис видит прошлые даты, а события терминала, сделанные офлайн
-  по старой версии накладной, проверяются по всем версиям (контракт §5 п. 3–4);
+  по старой версии накладной, проверяются по всем версиям (контракт §5 п. 3–4). Содержимое точки хранится
+  один раз (stop_data, ключ — sha256 JSON): новая версия /day обычно меняет одну накладную из многих, и снимок
+  ссылается на прежние строки. Хранение: снимки, на которые ссылаются события, и последний снимок каждой
+  (дата, машина) — всегда; прочие промежуточные — SNAPSHOT_KEEP_DAYS дней (_purge_snapshots);
 - запись — одна транзакция: всё или ничего;
 - битая БД — явная StoreError, а НЕ тихий откат на дефолты.
 Все моменты сервера пишутся clock.iso() — всегда со смещением +04:00, поэтому строки сравнимы
@@ -17,6 +20,7 @@ ERP только читаем, поэтому всё состояние терм
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -28,17 +32,19 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Sequence
 
 from . import clock
-from .security import check_pin, hash_pin, new_token, pin_tag, same_hash, token_hash, valid_pin
+from .security import (check_pin, hash_pin, new_token, pepper_id, pepper_tag, pin_pepper, pin_tag, same_hash,
+                       token_hash, valid_pin)
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 PIN_MAX_FAILS = 5
 PIN_LOCK = timedelta(minutes=15)
 NAME_MAX = 60
 TEXT_MAX = 200
 TOUCH_TIMEOUT_S = 0.5     # «последняя связь» — best-effort: занятая база не задерживает запрос терминала
+SNAPSHOT_KEEP_DAYS = 7    # промежуточные снимки /day без событий хранятся столько дней (по saved_at)
 
 # Пределы на терминал за день (Ереван, по времени получения) — контракт §5 п. 10
 PHOTOS_PER_DAY = 300
@@ -74,7 +80,7 @@ _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS terminals(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, "
     "car_code TEXT NOT NULL, token_sha256 TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, created_by TEXT, "
     "revoked_at TEXT, revoked_by TEXT, failed_pin_count INTEGER NOT NULL DEFAULT 0, pin_window_start TEXT, "
-    "locked_until TEXT, last_seen_at TEXT)",
+    "locked_until TEXT, last_seen_at TEXT, admin_pin_hash TEXT)",
     # одна действующая сессия на терминал (новая отменяет старую — open_session)
     "CREATE TABLE IF NOT EXISTS sessions(token_sha256 TEXT PRIMARY KEY, terminal_id INTEGER NOT NULL, "
     "driver_id INTEGER NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)",
@@ -88,6 +94,7 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS events_day ON events(date, car_code)",
     "CREATE INDEX IF NOT EXISTS events_stop ON events(stop_id, type)",
     "CREATE INDEX IF NOT EXISTS events_driver ON events(driver_id, date)",
+    "CREATE INDEX IF NOT EXISTS events_snapshot ON events(snapshot_id)",
     # отклонённые события — для «Конца дня» (/status) и офиса; принятое позже с тем же id — удаляется отсюда
     "CREATE TABLE IF NOT EXISTS rejected_events(id TEXT PRIMARY KEY, terminal_id INTEGER NOT NULL, "
     "driver_id INTEGER NOT NULL, date TEXT, type TEXT, received_at TEXT NOT NULL, error TEXT NOT NULL, "
@@ -112,14 +119,17 @@ _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS day_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, "
     "car_code TEXT NOT NULL, version TEXT NOT NULL, loaded_at TEXT NOT NULL, saved_at TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS day_snapshots_day ON day_snapshots(date, car_code, id)",
+    # содержимое точки — один раз на sha256 JSON (32 байта); снимок ссылается на него
+    "CREATE TABLE IF NOT EXISTS stop_data(hash BLOB PRIMARY KEY, data TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS snapshot_stops(snapshot_id INTEGER NOT NULL, stop_id TEXT NOT NULL, "
-    "date TEXT NOT NULL, car_code TEXT NOT NULL, seq INTEGER NOT NULL, data TEXT NOT NULL, "
+    "date TEXT NOT NULL, car_code TEXT NOT NULL, seq INTEGER NOT NULL, data_hash BLOB NOT NULL, "
     "PRIMARY KEY (snapshot_id, stop_id))",
     "CREATE INDEX IF NOT EXISTS snapshot_stops_stop ON snapshot_stops(stop_id, snapshot_id)",
     "CREATE INDEX IF NOT EXISTS snapshot_stops_day ON snapshot_stops(date, snapshot_id)",
-    # заказ (O:) → накладная (S:), сделанная из него (DOCPARENTS): события O: офис сводит к накладной
+    # заказ (O:) → накладная (S:), сделанная из него (DOCPARENTS): события O: офис сводит к накладной.
+    # snapshot_id — самый новый снимок, в котором связь была (устаревшая связь не перекрывает новую)
     "CREATE TABLE IF NOT EXISTS stop_replaces(order_stop_id TEXT NOT NULL, invoice_stop_id TEXT NOT NULL, "
-    "date TEXT NOT NULL, PRIMARY KEY (order_stop_id, invoice_stop_id))",
+    "date TEXT NOT NULL, snapshot_id INTEGER, PRIMARY KEY (order_stop_id, invoice_stop_id))",
     "CREATE TABLE IF NOT EXISTS cash_handover(date TEXT NOT NULL, driver_id INTEGER NOT NULL, handed REAL NOT NULL, "
     "comment TEXT, updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (date, driver_id))",
     # маркировка: нет строки — стартовое состояние из ERP (PRODUCTS.fMARKABLE, доп. единица)
@@ -140,7 +150,7 @@ _SEED = (
 )
 
 # Миграции: версия → DDL/DML перехода на следующую (выполняются одной транзакцией с записью версии).
-_MIGRATIONS: dict[int, tuple[str, ...]] = {
+_MIGRATIONS: dict[int, tuple[str | Callable[[sqlite3.Connection], None], ...]] = {
     # v1 → v2: точки дня — снимки вместо перезаписи (каждая прежняя версия (дата, машина) — свой снимок,
     # по времени загрузки); pin_tag; snapshot_id события; O: → S:; индексы пределов на терминал.
     1: (
@@ -167,7 +177,40 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "DROP TABLE day_stops",
         *_SEED,
     ),
+    # v2 → v3: содержимое точек — один раз (stop_data по sha256), снимки ссылаются; snapshot_id связи O: → S:
+    # (по самому новому снимку, где она есть); хеш PIN настроек терминала; индекс снимка событий (хранение).
+    2: (
+        "ALTER TABLE terminals ADD COLUMN admin_pin_hash TEXT",
+        "ALTER TABLE stop_replaces ADD COLUMN snapshot_id INTEGER",
+        "UPDATE stop_replaces SET snapshot_id = (SELECT MAX(s.snapshot_id) FROM snapshot_stops s "
+        "WHERE s.stop_id = stop_replaces.invoice_stop_id AND EXISTS (SELECT 1 FROM json_each(s.data, '$.replaces') j "
+        "WHERE j.value = stop_replaces.order_stop_id))",
+        "CREATE TABLE stop_data(hash BLOB PRIMARY KEY, data TEXT NOT NULL)",
+        "CREATE TABLE snapshot_stops_v3(snapshot_id INTEGER NOT NULL, stop_id TEXT NOT NULL, date TEXT NOT NULL, "
+        "car_code TEXT NOT NULL, seq INTEGER NOT NULL, data_hash BLOB NOT NULL, PRIMARY KEY (snapshot_id, stop_id))",
+        lambda conn: _dedup_stop_data(conn),
+        "DROP TABLE snapshot_stops",
+        "ALTER TABLE snapshot_stops_v3 RENAME TO snapshot_stops",
+        "CREATE INDEX snapshot_stops_stop ON snapshot_stops(stop_id, snapshot_id)",
+        "CREATE INDEX snapshot_stops_day ON snapshot_stops(date, snapshot_id)",
+        "CREATE INDEX IF NOT EXISTS events_snapshot ON events(snapshot_id)",
+    ),
 }
+
+
+def _stop_hash(text: str) -> bytes:
+    """Ключ содержимого точки в stop_data: sha256 JSON (32 байта)."""
+    return hashlib.sha256(text.encode('utf-8')).digest()
+
+
+def _dedup_stop_data(conn: sqlite3.Connection) -> None:
+    """Миграция v2 → v3: строки snapshot_stops (data) → stop_data (одна строка на содержимое) + ссылки."""
+    rows = conn.execute('SELECT snapshot_id, stop_id, date, car_code, seq, data FROM snapshot_stops')
+    for snapshot_id, stop_id, day, car, seq, data in rows.fetchall():
+        h = _stop_hash(data)
+        conn.execute('INSERT OR IGNORE INTO stop_data(hash, data) VALUES(?, ?)', (h, data))
+        conn.execute('INSERT INTO snapshot_stops_v3(snapshot_id, stop_id, date, car_code, seq, data_hash) '
+                     'VALUES(?, ?, ?, ?, ?, ?)', (snapshot_id, stop_id, day, car, seq, h))
 
 _FIX_HINT = ' — исправьте или удалите файл; значения по умолчанию молча не подставляются'
 
@@ -347,7 +390,10 @@ class Store:
                 if steps is None:
                     raise StoreError(f'Нет миграции схемы базы «Առաքիչ» с версии {version}')
                 for ddl in steps:
-                    conn.execute(ddl)
+                    if callable(ddl):
+                        ddl(conn)
+                    else:
+                        conn.execute(ddl)
                 version += 1
             conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(version),))
             conn.execute('COMMIT')
@@ -418,14 +464,38 @@ class Store:
             (driver_id,)).fetchone())
         return Driver(int(r[0]), r[1], bool(r[2]), bool(r[3]), r[4]) if r else None
 
-    def _pin_salt(self) -> str:
-        salt = getattr(self, '_salt', None)
-        if salt is None:
-            row = self._read(lambda c: c.execute("SELECT value FROM meta WHERE key = 'pin_salt'").fetchone())
-            if row is None or not row[0]:
-                raise StoreError(f'{self._name()}: нет соли PIN{_FIX_HINT}')
-            salt = self._salt = str(row[0])
-        return salt
+    def _pin_keys(self) -> tuple[str, bytes | None]:
+        """Соль pin_tag базы и перец среды (security.pin_pepper). Первый вызов сверяет отпечаток перца с meta:
+        перец включили — сохранённые tag переводятся сразу (HMAC от прежнего tag); сменили или сняли — tag
+        сбрасываются (NULL), и водитель получает новый при следующем входе (match_pin, как PIN до схемы 2)."""
+        keys = getattr(self, '_keys', None)
+        if keys is not None:
+            return keys
+        row = self._read(lambda c: c.execute("SELECT value FROM meta WHERE key = 'pin_salt'").fetchone())
+        if row is None or not row[0]:
+            raise StoreError(f'{self._name()}: нет соли PIN{_FIX_HINT}')
+        pepper = pin_pepper()
+        want = pepper_id(pepper)
+
+        def sync(conn: sqlite3.Connection) -> None:
+            have = conn.execute("SELECT value FROM meta WHERE key = 'pin_pepper_id'").fetchone()
+            have_id = have[0] if have else 'none'
+            if have_id == want:
+                return
+            if have_id == 'none' and pepper is not None:
+                for did, tag in conn.execute('SELECT id, pin_tag FROM drivers WHERE pin_tag IS NOT NULL').fetchall():
+                    conn.execute('UPDATE drivers SET pin_tag = ? WHERE id = ?', (pepper_tag(tag, pepper), did))
+            else:
+                conn.execute('UPDATE drivers SET pin_tag = NULL')
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('pin_pepper_id', ?)", (want,))
+
+        self._transaction(sync, 'не удалось обновить pin_tag')
+        self._keys = keys = (str(row[0]), pepper)
+        return keys
+
+    def _pin_tag(self, pin: str) -> str:
+        salt, pepper = self._pin_keys()
+        return pin_tag(pin, salt, pepper)
 
     def save_driver(self, driver_id: int | None, name: Any, active: bool, pin: str | None,
                     user: str | None) -> int:
@@ -437,7 +507,7 @@ class Store:
         if pin is not None and not valid_pin(pin):
             raise ValueError('PIN — 4–6 цифр')
         pin_hash = hash_pin(pin) if pin is not None else None
-        tag = pin_tag(pin, self._pin_salt()) if pin is not None else None
+        tag = self._pin_tag(pin) if pin is not None else None
         now = _now()
 
         def conflict(conn: sqlite3.Connection, own_tag: str | None) -> None:
@@ -482,10 +552,11 @@ class Store:
 
     def match_pin(self, pin: str) -> list[Driver]:
         """Активные водители с этим PIN (ожидается один; несколько — конфликт старых данных).
-        Один pbkdf2 (pin_tag) на вход; водители с PIN до схемы 2 сверяются солёным хешем и получают tag."""
+        Один pbkdf2 (pin_tag) на вход; водители без tag (PIN до схемы 2 или сменён перец) сверяются солёным
+        хешем и получают tag."""
         if not valid_pin(pin):
             return []
-        tag = pin_tag(pin, self._pin_salt())
+        tag = self._pin_tag(pin)
         rows = self._read(lambda c: c.execute(
             'SELECT id, name, pin_hash, updated_at, pin_tag FROM drivers WHERE active = 1 AND pin_hash IS NOT NULL '
             'AND (pin_tag = ? OR pin_tag IS NULL) ORDER BY id', (tag,)).fetchall())
@@ -505,17 +576,21 @@ class Store:
 
     # --- терминалы ---
 
-    def create_terminal(self, name: Any, car_code: Any, user: str | None) -> tuple[Terminal, str]:
-        """Новый терминал; токен возвращается ОДИН раз (в базе — только sha256)."""
+    def create_terminal(self, name: Any, car_code: Any, user: str | None,
+                        admin_pin: str | None = None) -> tuple[Terminal, str]:
+        """Новый терминал; токен возвращается ОДИН раз (в базе — только sha256). admin_pin — PIN скрытых
+        настроек терминала (контракт §5 п. 11): в базе только хеш."""
         name = _clean_name(name, 'Имя терминала')
         if not isinstance(car_code, str) or not car_code.strip() or len(car_code.strip()) > 20:
             raise ValueError('Машина не выбрана')
+        admin_hash = hash_pin(admin_pin) if admin_pin is not None else None
         token = new_token()
         now = _now()
 
         def write(conn: sqlite3.Connection) -> int:
-            cur = conn.execute('INSERT INTO terminals(name, car_code, token_sha256, created_at, created_by) '
-                               'VALUES(?, ?, ?, ?, ?)', (name, car_code.strip(), token_hash(token), now, user))
+            cur = conn.execute('INSERT INTO terminals(name, car_code, token_sha256, created_at, created_by, '
+                               'admin_pin_hash) VALUES(?, ?, ?, ?, ?, ?)',
+                               (name, car_code.strip(), token_hash(token), now, user, admin_hash))
             return int(cur.lastrowid)
 
         tid = self._transaction(write, 'не удалось создать терминал')
@@ -642,7 +717,9 @@ class Store:
                  loaded_at: str) -> int:
         """Точки машины на дату — новый снимок, если версия изменилась (прежние снимки не трогаются: события
         по исчезнувшим точкам и прошлые версии накладных остаются проверяемыми). Возвращает id действующего
-        снимка. Связи `replaces` (заказ → накладная) копятся в stop_replaces."""
+        снимка. Содержимое точки пишется в stop_data один раз (тот же JSON — та же строка). Связи `replaces`
+        (заказ → накладная) копятся в stop_replaces с номером самого нового снимка, где они есть. Новый снимок
+        заодно убирает старые промежуточные (_purge_snapshots)."""
         saved_at = _now()
 
         def write(conn: sqlite3.Connection) -> int:
@@ -653,12 +730,17 @@ class Store:
             sid = int(conn.execute('INSERT INTO day_snapshots(date, car_code, version, loaded_at, saved_at) '
                                    'VALUES(?, ?, ?, ?, ?)', (day, car_code, version, loaded_at, saved_at)).lastrowid)
             for s in stops:
-                conn.execute('INSERT INTO snapshot_stops(snapshot_id, stop_id, date, car_code, seq, data) '
-                             'VALUES(?, ?, ?, ?, ?, ?)', (sid, s['stop_id'], day, car_code, int(s['seq']),
-                                                          json.dumps(s, ensure_ascii=False, sort_keys=True)))
+                text = json.dumps(s, ensure_ascii=False, sort_keys=True)
+                h = _stop_hash(text)
+                conn.execute('INSERT OR IGNORE INTO stop_data(hash, data) VALUES(?, ?)', (h, text))
+                conn.execute('INSERT INTO snapshot_stops(snapshot_id, stop_id, date, car_code, seq, data_hash) '
+                             'VALUES(?, ?, ?, ?, ?, ?)', (sid, s['stop_id'], day, car_code, int(s['seq']), h))
                 for order_stop in s.get('replaces') or ():
-                    conn.execute('INSERT OR IGNORE INTO stop_replaces(order_stop_id, invoice_stop_id, date) '
-                                 'VALUES(?, ?, ?)', (str(order_stop), s['stop_id'], day))
+                    conn.execute('INSERT INTO stop_replaces(order_stop_id, invoice_stop_id, date, snapshot_id) '
+                                 'VALUES(?, ?, ?, ?) ON CONFLICT(order_stop_id, invoice_stop_id) DO UPDATE SET '
+                                 'date = excluded.date, snapshot_id = excluded.snapshot_id',
+                                 (str(order_stop), s['stop_id'], day, sid))
+            _purge_snapshots(conn)
             return sid
 
         return self._transaction(write, 'не удалось сохранить точки дня')
@@ -668,8 +750,9 @@ class Store:
         по машине и seq."""
         car_sql, args = ('', (day,)) if car_code is None else (' AND car_code = ?', (day, car_code))
         rows = self._read(lambda c: c.execute(
-            'SELECT s.car_code, s.data FROM snapshot_stops s JOIN (SELECT MAX(id) AS id FROM day_snapshots '
-            f'WHERE date = ?{car_sql} GROUP BY car_code) x ON x.id = s.snapshot_id ORDER BY s.car_code, s.seq',
+            'SELECT s.car_code, d.data FROM snapshot_stops s JOIN (SELECT MAX(id) AS id FROM day_snapshots '
+            f'WHERE date = ?{car_sql} GROUP BY car_code) x ON x.id = s.snapshot_id '
+            'JOIN stop_data d ON d.hash = s.data_hash ORDER BY s.car_code, s.seq',
             args).fetchall())
         return [_stop_json(r[0], r[1], self._name()) for r in rows]
 
@@ -680,25 +763,45 @@ class Store:
         for i in range(0, len(ids), 500):
             chunk = ids[i:i + 500]
             rows = self._read(lambda c: c.execute(
-                'SELECT stop_id, snapshot_id, date, car_code, data FROM snapshot_stops '
-                f"WHERE stop_id IN ({','.join('?' * len(chunk))}) ORDER BY snapshot_id", chunk).fetchall())
+                'SELECT s.stop_id, s.snapshot_id, s.date, s.car_code, d.data FROM snapshot_stops s '
+                'JOIN stop_data d ON d.hash = s.data_hash '
+                f"WHERE s.stop_id IN ({','.join('?' * len(chunk))}) ORDER BY s.snapshot_id", chunk).fetchall())
             for r in rows:
                 out.setdefault(r[0], []).append({'snapshot_id': int(r[1]), 'date': r[2], 'car_code': r[3],
                                                  'data': _stop_json(r[3], r[4], self._name())})
         return out
 
-    def replacements(self, stop_ids: Sequence[str]) -> dict[str, str]:
-        """Заказ O: → накладная S:, сделанная из него (`replaces` из /day). Несколько накладных у заказа (в ERP не
-        встречалось) — первая по stop_id."""
-        out: dict[str, str] = {}
+    def replacement_links(self, stop_ids: Sequence[str]) -> dict[str, list[str]]:
+        """Заказ O: → накладные S:, сделанные из него (`replaces` из /day); главная — первая.
+        Правило выбора (устаревшая связь не перекрывает новую):
+        - действующие связи — те, что есть в ПОСЛЕДНЕМ снимке своей (дата, машина), т. е. накладная с этим
+          replaces сейчас в выдаче /day; их несколько — заказ разделён на несколько накладных: все, по stop_id;
+        - действующих нет (накладную убрали или переделали) — связи из самого нового снимка, где они были.
+        Доставка и деньги заказа считаются только у главной накладной (views._attribute), остальные помечаются."""
+        out: dict[str, list[str]] = {}
         ids = sorted({s for s in stop_ids if s and s.startswith('O:')})
         for i in range(0, len(ids), 500):
             chunk = ids[i:i + 500]
             rows = self._read(lambda c: c.execute(
-                'SELECT order_stop_id, MIN(invoice_stop_id) FROM stop_replaces '
-                f"WHERE order_stop_id IN ({','.join('?' * len(chunk))}) GROUP BY order_stop_id", chunk).fetchall())
-            out.update({r[0]: r[1] for r in rows})
+                'SELECT r.order_stop_id, r.invoice_stop_id, COALESCE(r.snapshot_id, -1), '
+                'x.id IS NOT NULL AND x.id = (SELECT MAX(y.id) FROM day_snapshots y '
+                'WHERE y.date = x.date AND y.car_code = x.car_code) '
+                'FROM stop_replaces r LEFT JOIN day_snapshots x ON x.id = r.snapshot_id '
+                f"WHERE r.order_stop_id IN ({','.join('?' * len(chunk))})", chunk).fetchall())
+            links: dict[str, list[tuple[str, int, bool]]] = {}
+            for order, invoice, snap, current in rows:
+                links.setdefault(order, []).append((invoice, int(snap), bool(current)))
+            for order, ls in links.items():
+                cur = [inv for inv, _, is_cur in ls if is_cur]
+                if not cur:
+                    newest = max(snap for _, snap, _ in ls)
+                    cur = [inv for inv, snap, _ in ls if snap == newest]
+                out[order] = sorted(cur)
         return out
+
+    def replacements(self, stop_ids: Sequence[str]) -> dict[str, str]:
+        """Заказ O: → главная накладная S: (replacement_links)."""
+        return {order: targets[0] for order, targets in self.replacement_links(stop_ids).items()}
 
     # --- события (чтение для офиса и /status) ---
 
@@ -923,6 +1026,21 @@ def _day_start(now_iso: str) -> str:
     return now_iso[:10] + 'T00:00:00+04:00'
 
 
+def _purge_snapshots(conn: sqlite3.Connection) -> int:
+    """Хранение снимков /day: удаляются промежуточные снимки старше SNAPSHOT_KEEP_DAYS (по saved_at), на которые
+    не ссылается ни одно событие и которые не последние для своей (дата, машина); затем — их точки и содержимое,
+    на которое больше никто не ссылается. Связи stop_replaces остаются (снимка связи нет — связь не действующая,
+    см. replacement_links). Возвращает число удалённых снимков."""
+    cutoff = clock.iso(clock.now() - timedelta(days=SNAPSHOT_KEEP_DAYS))
+    n = conn.execute('DELETE FROM day_snapshots WHERE saved_at < ? '
+                     'AND id NOT IN (SELECT MAX(id) FROM day_snapshots GROUP BY date, car_code) '
+                     'AND id NOT IN (SELECT snapshot_id FROM events WHERE snapshot_id IS NOT NULL)', (cutoff,)).rowcount
+    if n:
+        conn.execute('DELETE FROM snapshot_stops WHERE snapshot_id NOT IN (SELECT id FROM day_snapshots)')
+        conn.execute('DELETE FROM stop_data WHERE hash NOT IN (SELECT data_hash FROM snapshot_stops)')
+    return n
+
+
 def _stop_json(car_code: str, raw: str, name: str) -> dict[str, Any]:
     try:
         data = json.loads(raw)
@@ -994,8 +1112,9 @@ class EventTx:
 
     def stop_rows(self, stop_id: str) -> list[dict[str, Any]]:
         """Все версии точки в выдачах /day: [{snapshot_id, date, car_code, data}] по возрастанию снимка."""
-        rows = self.conn.execute('SELECT snapshot_id, date, car_code, data FROM snapshot_stops WHERE stop_id = ? '
-                                 'ORDER BY snapshot_id', (stop_id,)).fetchall()
+        rows = self.conn.execute('SELECT s.snapshot_id, s.date, s.car_code, d.data FROM snapshot_stops s '
+                                 'JOIN stop_data d ON d.hash = s.data_hash WHERE s.stop_id = ? '
+                                 'ORDER BY s.snapshot_id', (stop_id,)).fetchall()
         out = []
         for sid, d, car, raw in rows:
             try:
@@ -1054,6 +1173,30 @@ class EventTx:
             "SELECT COALESCE(SUM(json_extract(payload, '$.qty')), 0) FROM events WHERE date = ? AND stop_id = ? "
             "AND type = 'unreadable' AND json_extract(payload, '$.line_id') = ?", (day, stop_id, line_id)).fetchone()[0]
         return float(scanned or 0) + float(unreadable or 0)
+
+    def covered_by_orders(self, day: str, order_stop_ids: Sequence[str], product_id: Any) -> float:
+        """Сколько штук товара закрыто на заказах O:, из которых сделана накладная (replaces): засчитанные
+        сканы продажи этого товара + «код не читается» по строкам заказа с этим товаром (строка → товар — по всем
+        версиям заказа). Водитель сканировал по заказу, потом пришла накладная — сканы не теряются."""
+        ids = [o for o in order_stop_ids if isinstance(o, str)]
+        if not ids or product_id is None:
+            return 0.0
+        marks = ','.join('?' * len(ids))
+        scanned = self.conn.execute(
+            f"SELECT COALESCE(SUM(units), 0) FROM scans WHERE date = ? AND stop_id IN ({marks}) AND product_id = ? "
+            "AND kind = 'sale' AND counted = 1 AND cancelled = 0", (day, *ids, product_id)).fetchone()[0]
+        unreadable = 0.0
+        rows = self.conn.execute("SELECT stop_id, json_extract(payload, '$.line_id'), json_extract(payload, '$.qty') "
+                                 f"FROM events WHERE date = ? AND type = 'unreadable' AND stop_id IN ({marks})",
+                                 (day, *ids)).fetchall()
+        products: dict[str, dict[str, Any]] = {}
+        for stop_id, line_id, qty in rows:
+            if stop_id not in products:
+                products[stop_id] = {str(ln.get('line_id')): ln.get('product_id') for v in self.stop_rows(stop_id)
+                                     for ln in v['data'].get('lines') or [] if isinstance(ln, dict)}
+            if products[stop_id].get(str(line_id)) == product_id and isinstance(qty, (int, float)):
+                unreadable += float(qty)
+        return float(scanned or 0) + unreadable
 
     def driver_name(self, driver_id: int) -> str | None:
         r = self.conn.execute('SELECT name FROM drivers WHERE id = ?', (driver_id,)).fetchone()

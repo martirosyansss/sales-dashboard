@@ -29,6 +29,7 @@
         units_mismatch: 'Տուփի քանակը չի համընկնում', unknown_scan: 'Անհայտ սկան', no_photo: 'Լուսանկար չկա',
         qty_over_invoice: 'Քանակը ավելի է, քան ապրանքագրի վերջին տարբերակում', no_reason: 'Պատճառը նշված չէ',
         date_suspicious: 'Ամսաթիվը չի համընկնում ժամանակի հետ', no_payment: 'Վճարում չկա',
+        collected_by_other: 'Վերցրել է այլ վարորդ', split_order: 'Մասնակի է՝ բաժանված պատվեր',
     };
     const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const thumbs = (photos) => (photos || []).filter(p => UUID.test(p.id)).map(p => {
@@ -151,6 +152,7 @@
             const r = await api('/api/courier/admin/terminals', { json: { name: $('crTermName').value, car_code: $('crTermCar').value, url: $('crTermUrl').value } });
             $('crQr').innerHTML = r.qr_svg || '<p style="color:#000;padding:8px">QR-ը չստեղծվեց (segno գրադարանը չկա) — օգտագործեք տեքստը ներքևում</p>';
             $('crQrText').textContent = r.qr_text;
+            $('crQrAdminPin').textContent = r.admin_pin || '—';
             $('crQrBox').hidden = false;
             $('crTermForm').reset();
             announce('Տերմինալը ստեղծված է — սկանավորեք QR-ը');
@@ -213,7 +215,8 @@
             + (c.stops.length ? '<details class="rt-fold" style="margin-top:10px"><summary><span class="rt-fold-t">Կետերը</span></summary><div class="rt-fold-body"><div class="rt-table-scroll"><table class="rt-table cr-small">'
               + '<thead><tr><th scope="col">№</th><th scope="col">Հաճախորդ</th><th scope="col">Ապրանքագիր</th><th scope="col">Վճարում</th><th scope="col">Գումար</th><th scope="col">Վիճակ</th></tr></thead><tbody>'
               + c.stops.map(s => '<tr><td>' + fmt(s.seq) + '</td><td>' + esc(s.customer) + '</td><td>' + esc(s.doc_number) + '</td><td>' + esc(COLLECT[s.collect] || '')
-                + '</td><td class="cr-num-cell">' + money(s.amount_due) + '</td><td>' + badge(...(STATUS[s.status] || [s.status, 'b-none'])) + '</td></tr>').join('')
+                + '</td><td class="cr-num-cell">' + money(s.amount_due) + '</td><td>' + badge(...(STATUS[s.status] || [s.status, 'b-none']))
+                + ((s.flags || []).length ? ' <span class="cr-muted">' + esc(flagText(s.flags)) + '</span>' : '') + '</td></tr>').join('')
               + '</tbody></table></div></div></details>' : '')
             + '</section>';
     }
@@ -242,7 +245,7 @@
                         + '<td>' + (st ? badge(st[0], st[1]) : '—') + '</td>'
                         + '<td class="cr-num-cell" title="Ապրանքագիր՝ ' + esc(r.invoice_amount === null || r.invoice_amount === undefined ? '—' : money(r.invoice_amount)) + '">' + (r.amount_due === null || r.amount_due === undefined ? '—' : money(r.amount_due)) + '</td>'
                         + '<td class="cr-num-cell">' + (r.expected === null || r.expected === undefined ? '—' : money(r.expected)) + '</td>'
-                        + '<td class="cr-num-cell">' + money(r.invoice) + '</td><td class="cr-num-cell">' + short + '</td><td class="cr-num-cell">' + money(r.debt) + '</td>'
+                        + '<td class="cr-num-cell"' + (Math.abs((r.invoice_all || 0) - r.invoice) >= 0.005 ? ' title="Բոլոր վարորդները՝ ' + esc(money(r.invoice_all)) + '"' : '') + '>' + money(r.invoice) + '</td><td class="cr-num-cell">' + short + '</td><td class="cr-num-cell">' + money(r.debt) + '</td>'
                         + '<td>' + esc(r.receipts.join(', ')) + '</td><td>' + (r.flags.includes('no_payment') ? badge('Վճարում չկա', 'b-danger') + ' ' : '')
                         + esc(flagText(r.flags.filter(f => f !== 'no_payment'))) + '</td></tr>';
                 }).join('')
@@ -401,7 +404,7 @@
         $('crDriverForm').addEventListener('submit', saveDriver);
         $('crDriverNew').addEventListener('click', resetDriverForm);
         $('crTermForm').addEventListener('submit', createTerminal);
-        $('crQrHide').addEventListener('click', () => { $('crQrBox').hidden = true; $('crQr').innerHTML = ''; $('crQrText').textContent = ''; });
+        $('crQrHide').addEventListener('click', () => { $('crQrBox').hidden = true; $('crQr').innerHTML = ''; $('crQrText').textContent = ''; $('crQrAdminPin').textContent = ''; });
         $('crPane-drivers').addEventListener('click', (ev) => {
             const b = ev.target.closest('button');
             if (!b) return;

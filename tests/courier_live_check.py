@@ -91,6 +91,7 @@ def main() -> int:
                   f"{total:>12,.0f} {coords:>3}/{len(stops):<2} {'да' if debt_ok else 'нет':>5} {took:>5.1f}  "
                   f"{'OK' if ok else 'РАСХОЖДЕНИЕ'}{' (клиент и в S:, и в O:)' if mixed else ''}")
     print()
+    print(f'courier.db (временная): {os.path.getsize(store.path):,} байт — {store.path}')
     print('ВСЕ СОВПАЛО' if not bad else f'РАСХОЖДЕНИЙ: {bad}')
     return 1 if bad else 0
 

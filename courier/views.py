@@ -4,8 +4,10 @@
 Доступ обеспечивает глобальный before_request дашборда (как у «Маршрутов»): аноним — вход, роль user — 403.
 POST — только JSON (или multipart с X-Requested-With для APK): форма с чужого сайта их не отправит.
 ERP только читается (справочники и /day — через кэш); всё, что вводит офис, пишется в courier.db.
-Прошлые даты — только из сохранённых снимков /day (ERP за прошлое не перечитывается). События, записанные
-терминалом по заказу (O:), показываются у накладной, сделанной из него (S:, `replaces`, контракт §5 п. 2).
+Прошлые даты — только из сохранённых снимков /day (ERP и план «Развоза» за прошлое не перечитываются). События,
+записанные терминалом по заказу (O:), показываются у накладной, сделанной из него (S:, `replaces`, контракт §5 п. 2):
+доставка — по правилу events.combined (несколько заказов в одной накладной не теряют доставок); заказ, разделённый
+на несколько накладных, — у главной (store.replacement_links), все его накладные помечены `split_order`.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import json
 import logging
 import math
 import os
+import secrets
 import uuid
 from datetime import date
 from functools import wraps
@@ -190,14 +193,15 @@ def terminals_create() -> Any:
         return _bad('Ընտրեք մեքենան ցուցակից')
     url = body.get('url')
     base = st.public_url if url in (None, 'public') else request.host_url.rstrip('/') + '/api/courier/v1'
+    admin_pin = f'{secrets.randbelow(10 ** 6):06d}'   # PIN скрытых настроек терминала (§5 п. 11), свой у каждого
     try:
-        terminal, token = st.store.create_terminal(body.get('name'), car, _user())
+        terminal, token = st.store.create_terminal(body.get('name'), car, _user(), admin_pin)
     except ValueError as e:
         return _bad(_hy(str(e)))
-    qr_text = json.dumps({'araqich': 1, 'url': base, 'token': token, 'terminal': terminal.name},
+    qr_text = json.dumps({'araqich': 1, 'url': base, 'token': token, 'terminal': terminal.name, 'admin_pin': admin_pin},
                          ensure_ascii=False, separators=(',', ':'))
     return jsonify({'success': True, 'terminal': {'id': terminal.id, 'name': terminal.name, 'car_code': terminal.car_code},
-                    'qr_text': qr_text, 'qr_svg': qr_svg(qr_text)})
+                    'qr_text': qr_text, 'qr_svg': qr_svg(qr_text), 'admin_pin': admin_pin})
 
 
 @bp.post('/api/courier/admin/terminals/<int:terminal_id>/revoke')
@@ -224,15 +228,22 @@ def _needs_photo(e: Mapping[str, Any], status: str | None) -> bool:
     return e['type'] in PHOTO_REQUIRED or (e['type'] == 'delivery' and status in ('partial', 'refuse'))
 
 
-def _attribute(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def _attribute(events: list[dict[str, Any]]) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
     """События заказа O:, из которого сделана накладная S:, — к накладной: e['stop_id'] — точка для офиса,
-    e['orig_stop_id'] — как прислал терминал. Возвращает версии всех задействованных точек (store.stop_versions)."""
+    e['orig_stop_id'] — как прислал терминал. Заказ разделён на несколько накладных — события идут к главной
+    (первой, store.replacement_links), чтобы деньги не считались дважды; все его накладные — во втором значении
+    (флаг `split_order`). Возвращает (версии всех задействованных точек (store.stop_versions), накладные
+    разделённых заказов)."""
     st = state()
-    alias = st.store.replacements([e['stop_id'] for e in events if e['stop_id']])
+    links = st.store.replacement_links([e['stop_id'] for e in events if e['stop_id']])
+    split = {t for targets in links.values() if len(targets) > 1 for t in targets}
     for e in events:
         e['orig_stop_id'] = e['stop_id']
-        e['stop_id'] = alias.get(e['stop_id'], e['stop_id'])
-    return st.store.stop_versions([e['orig_stop_id'] for e in events if e['orig_stop_id']] + list(alias.values()))
+        targets = links.get(e['stop_id'] or '')
+        e['stop_id'] = targets[0] if targets else e['stop_id']
+    versions = st.store.stop_versions([e['orig_stop_id'] for e in events if e['orig_stop_id']]
+                                      + [t for targets in links.values() for t in targets])
+    return versions, split
 
 
 def _version(versions: Mapping[str, list[dict[str, Any]]], stop_id: str | None,
@@ -254,6 +265,20 @@ def _delivery_status(versions: Mapping[str, list[dict[str, Any]]], delivery: Map
                                  delivery.get('snapshot_id')), delivery)
 
 
+def _parts_status(versions: Mapping[str, list[dict[str, Any]]], parts: list[Mapping[str, Any]] | None) -> str:
+    """Статус точки по частям доставки (events.combined): «full» — только если все части полные, «refuse» — если
+    все отказ, иначе «partial»; частей нет — «pending»."""
+    statuses = {_delivery_status(versions, p) for p in parts or ()}
+    if not statuses:
+        return 'pending'
+    return statuses.pop() if len(statuses) == 1 and statuses <= {'full', 'refuse'} else 'partial'
+
+
+def _parts_amount(versions: Mapping[str, list[dict[str, Any]]], parts: list[Mapping[str, Any]]) -> float:
+    """Сколько стоит доставленное по всем частям (у каждой — цены своей точки и версии)."""
+    return round(sum(ev.delivery_amount(p, versions.get(p['orig_stop_id'], [])) for p in parts), 2)
+
+
 def day_overview(day: date, load: bool = True) -> dict[str, Any]:
     """Сводка дня по машинам: точки из выдачи /day (load — терминалам с машиной загружается из ERP; для прошлых
     дат вызывающий передаёт False — только сохранённые снимки), события, флаги, фото."""
@@ -269,7 +294,7 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
                 errors[car] = 'ERP-ն հասանելի չէ'
     stops = st.store.day_stops(ds)
     events = st.store.events_for_day(ds)
-    versions = _attribute(events)
+    versions, split = _attribute(events)
     photos = st.store.photos_for_events([e['id'] for e in events])
     by_car: dict[str, dict[str, Any]] = {}
 
@@ -280,17 +305,18 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
 
     for code in errors:
         car_row(code)
-    deliveries = ev.effective(events, 'delivery')
+    deliveries = ev.combined(events, 'delivery')
     stop_ids = {(s['car_code'], s['stop_id']) for s in stops}
     stop_by_id = {s['stop_id']: s for s in stops}
     for s in stops:
         row = car_row(s['car_code'])
-        status = _delivery_status(versions, deliveries.get(s['stop_id']))
+        status = _parts_status(versions, deliveries.get(s['stop_id']))
         row['total'] += 1
         row[status] += 1
         row['stops'].append({'stop_id': s['stop_id'], 'seq': s.get('seq'), 'doc_number': s.get('doc_number'),
                              'customer': (s.get('customer') or {}).get('name'), 'collect': s.get('collect'),
-                             'amount_due': s.get('amount_due'), 'status': status})
+                             'amount_due': s.get('amount_due'), 'status': status,
+                             'flags': ['split_order'] if s['stop_id'] in split else []})
     for e in events:
         row = car_row(e['car_code'])
         row['drivers'].add(e['driver_name'] or f'#{e["driver_id"]}')
@@ -332,8 +358,11 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
 
 
 def plan_mismatches(day: date) -> dict[str, Any]:
-    """Накладные ERP, которые везёт не та машина, которой их отдал план «Развоза» (только чтение)."""
+    """Накладные ERP, которые везёт не та машина, которой их отдал план «Развоза» (только чтение). Прошлые даты
+    (Ереван) не сравниваются: ERP и route_optimizer за прошлое не читаются (`past`)."""
     st = state()
+    if day < clock.today():
+        return {'plan_exists': None, 'items': [], 'past': True}
     view = routes_view(_routes_state(), day)
     if not view.plan_exists or st.invoice_loader is None:
         return {'plan_exists': view.plan_exists, 'items': []}
@@ -373,16 +402,24 @@ def today_view() -> Any:
 
 def money_view(day: date) -> dict[str, Any]:
     """По водителю: по каждой точке — сколько стоит доставленное (`amount_due` — пересчёт по строкам доставки, а не
-    вся накладная), сколько надо взять (`expected`: только cash / cash_ecr), сколько взял по накладной и в счёт
-    долга, чеки ՀԴՄ; доставленная точка с наличными без оплаты — флаг `no_payment`. Итог и «сдал фактически»."""
+    вся накладная; заказы, сведённые к накладной, — events.combined), сколько надо взять (`expected`: только
+    cash / cash_ecr), сколько взял по накладной (`invoice` — он сам, `invoice_all` — все водители) и в счёт долга,
+    чеки ՀԴՄ (без отменённых платежей). Инварианты:
+    - `expected` точки — один раз за день: только у водителя действующей (последней) доставки; сверяется с оплатами
+      по накладной ВСЕХ водителей (`short`); взял другой водитель — флаг `collected_by_other`, а не `no_payment`;
+    - `no_payment` — доставлено с наличными, а оплаты по накладной нет ни у кого.
+    Итог водителя: `expected` — сумма его `expected`, `expected_short` — сумма его `short`; «сдал фактически»."""
     st = state()
     ds = day.isoformat()
     stops = {s['stop_id']: s for s in st.store.day_stops(ds)}
     events = st.store.events_for_day(ds)
-    versions = _attribute(events)
+    versions, split = _attribute(events)
     hand = st.store.handovers(ds)
     names = {d.id: d.name for d in st.store.list_drivers()}
-    deliveries = ev.effective(events, 'delivery')
+    deliveries = ev.combined(events, 'delivery')
+    paid_by_stop: dict[str, list[dict[str, Any]]] = {}
+    cancelled = {e['payload'].get('cancel_of') for e in events
+                 if e['type'] == 'payment' and e['payload'].get('cancel_of')}   # id отменённых платежей
 
     def info(sid: str) -> dict[str, Any]:
         return stops.get(sid) or _version(versions, sid) or {}
@@ -398,37 +435,48 @@ def money_view(day: date) -> dict[str, Any]:
             continue
         row_of(e['driver_id'], e['stop_id'] or '')['events'].append(e)
         drivers[e['driver_id']]['events'].append(e)
-    for sid, d in deliveries.items():   # доставлено с наличными — строка и без оплаты («վճարում չկա»)
+        paid_by_stop.setdefault(e['stop_id'] or '', []).append(e)
+    for sid, parts in deliveries.items():   # доставлено с наличными — строка и без оплаты («վճարում չկա»)
         if info(sid).get('collect') in CASH_COLLECT:
-            row_of(d['driver_id'], sid)
+            row_of(parts[-1]['driver_id'], sid)
     out = []
     for did in sorted(set(drivers) | set(hand), key=lambda i: (names.get(i) or '', i)):
         data = drivers.get(did, {'rows': {}, 'events': []})
         rows = []
-        expected_total = 0.0
+        expected_total = short_total = 0.0
         for sid, r in sorted(data['rows'].items(), key=lambda kv: ((stops.get(kv[0]) or {}).get('seq') or 0, kv[0])):
             s = info(sid)
-            d = deliveries.get(sid)
+            parts = deliveries.get(sid) or []
             money = ev.payments_total(r['events'])
+            money_all = ev.payments_total(paid_by_stop.get(sid, []))
             receipts = sorted({str(e['payload'].get('ecr_receipt')) for e in r['events']
-                               if e['payload'].get('ecr_receipt') and not e['payload'].get('cancel_of')})
-            due = ev.delivery_amount(d, versions.get(d['orig_stop_id'], [])) if d else None
-            expected = due if s.get('collect') in CASH_COLLECT else None
+                               if e['payload'].get('ecr_receipt') and not e['payload'].get('cancel_of')
+                               and e['id'] not in cancelled})
+            due = _parts_amount(versions, parts) if parts else None
+            owner = parts[-1]['driver_id'] if parts else None   # водитель действующей доставки
+            expected = due if s.get('collect') in CASH_COLLECT and owner == did else None
+            short = None if expected is None else round(expected - money_all['invoice'], 2)
             flags = {f for e in r['events'] for f in e['flags']}
-            if expected and expected > 0 and money['invoice'] <= 0:
-                flags.add('no_payment')
+            if sid in split:
+                flags.add('split_order')
+            if expected and expected > 0:
+                if money_all['invoice'] <= 0:
+                    flags.add('no_payment')
+                elif money['invoice'] < money_all['invoice'] - ev.EPS:
+                    flags.add('collected_by_other')
             expected_total += expected or 0.0
+            short_total += short or 0.0
             rows.append({'stop_id': sid, 'doc_number': s.get('doc_number'), 'car_code': s.get('car_code'),
                          'customer': (s.get('customer') or {}).get('name'), 'collect': s.get('collect'),
                          'amount_due': due, 'invoice_amount': s.get('amount_due'), 'expected': expected,
-                         'short': None if expected is None else round(expected - money['invoice'], 2),
-                         'invoice': money['invoice'], 'debt': money['debt'], 'receipts': receipts,
-                         'status': _delivery_status(versions, d) if s else None, 'flags': sorted(flags)})
+                         'short': short, 'invoice': money['invoice'], 'invoice_all': money_all['invoice'],
+                         'debt': money['debt'], 'receipts': receipts,
+                         'status': _parts_status(versions, parts) if s else None, 'flags': sorted(flags)})
         total = ev.payments_total(data['events'])
         h = hand.get(did)
         collected = round(total['invoice'] + total['debt'], 2)
         out.append({'driver_id': did, 'name': names.get(did) or f'#{did}', 'rows': rows,
-                    'expected': round(expected_total, 2), 'expected_short': round(expected_total - total['invoice'], 2),
+                    'expected': round(expected_total, 2), 'expected_short': round(short_total, 2),
                     'no_payment': sum(1 for r in rows if 'no_payment' in r['flags']),
                     'collected_invoice': total['invoice'], 'collected_debt': total['debt'], 'collected': collected,
                     'handed': h['handed'] if h else None, 'handed_at': h['handed_at'] if h else None,
