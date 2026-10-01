@@ -21,10 +21,26 @@
   та же формула (Σ D − C по DOCUMENTS.fCUSTOMERID − |HIRESTCUSTOMERSSUM 01| − |02|), но движения
   HICUSTOMERSDEBT только с fDATE < D — как «долг на дату» в app_v2 (/api/managers: d.fDATE < дата + 1).
   HIRESTCUSTOMERSSUM без даты — текущий остаток, как и в дашборде.
+- DOCPARENTS (проверено 01.10.2026, только SELECT): столбцы fISN, fDOCTYPE, fPARENTISN, fPARENTDOCTYPE.
+  fISN — дочерний документ (у реализаций SALES fDOCTYPE = 2), fPARENTISN — родитель; fPARENTDOCTYPE = 1 —
+  заказ ORDERS (705 тыс. строк; 2 и 35 — редкие другие документы). За 24–30.09.2026: у 894 из 901 накладной с
+  машиной ровно один родительский заказ, клиент накладной = клиент заказа; обратного направления (накладная —
+  родитель заказа) нет ни одного; заказов с несколькими накладными нет. Отсюда `replaces` точки S: (контракт
+  §5 п. 2) — SQL_SALE_PARENTS.
+
+Точки /day — ПО КЛИЕНТУ (контракт §5 п. 1): у клиента есть накладная машины на дату — точки S: (её заказы,
+из которых сделана накладная, — в `replaces`); у клиента накладной нет — точки O: по заказам, которые «Развоз»
+отдал машине (routes_link.pick_orders) и по которым накладной ещё нет нигде (DispatchOrder.shipped пуст:
+накладная на другой машине — это точка той машины).
+
+Справочники (тара, «дефолтные» точки, менеджеры, машины) кэшируются на REF_TTL_SECONDS — они меняются редко,
+а /day каждой машины перечитывался бы каждую минуту.
 """
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Callable, Mapping, Sequence
@@ -44,6 +60,7 @@ _str = erp._str
 GPS_WINDOW_DAYS = 365
 SOLD_WINDOW_DAYS = 90
 CARS_WINDOW_DAYS = 90
+REF_TTL_SECONDS = 600
 
 # --- Способ оплаты (контракт §2, решение владельца №12) ---
 
@@ -122,6 +139,7 @@ class Doc:
     agent_id: int
     pay_type: str
     amount: float
+    replaces: tuple[str, ...] = ()   # S: — точки O: заказов, из которых сделана накладная (DOCPARENTS)
 
 
 @dataclass(frozen=True)
@@ -181,6 +199,13 @@ SELECT CAST(s.fISN AS nvarchar(36)), RTRIM(s.fDOCNUM), s.fCUSTOMERID, s.fSALESAG
        LTRIM(RTRIM(ISNULL(s.fPAYTYPE, ''))), s.fTOTALSUM
 FROM SALES s WITH (NOLOCK)
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) = ?
+"""
+
+# Заказы, из которых сделаны накладные (см. docstring модуля: fISN — накладная, fPARENTISN — заказ)
+SQL_SALE_PARENTS = """
+SELECT CAST(p.fISN AS nvarchar(36)), CAST(p.fPARENTISN AS nvarchar(36))
+FROM DOCPARENTS p WITH (NOLOCK)
+WHERE p.fPARENTDOCTYPE = 1 AND p.fISN IN ({ph})
 """
 
 SQL_ORDER_PAYTYPES = """
@@ -291,6 +316,39 @@ def day_sales(conn: Any, car_code: str, day: date) -> list[Doc]:
     return out
 
 
+def sale_parents(conn: Any, isns: Sequence[str]) -> dict[str, tuple[str, ...]]:
+    """Накладная → точки O: заказов, из которых она сделана (DOCPARENTS, fPARENTDOCTYPE = 1)."""
+    out: dict[str, set[str]] = {}
+    for chunk in _chunks(sorted(set(isns))):
+        for r in _select(conn, SQL_SALE_PARENTS.format(ph=_ph(len(chunk))), chunk):
+            out.setdefault(_str(r[0]).upper(), set()).add(f'O:{_str(r[1]).upper()}')
+    return {k: tuple(sorted(v)) for k, v in out.items()}
+
+
+# --- Кэш справочников ERP (REF_TTL_SECONDS) ---
+
+_refs: dict[tuple[str, str], tuple[float, Any]] = {}
+_refs_lock = threading.Lock()
+
+
+def _ref(connection_string: str, name: str, load: Callable[[], Any]) -> Any:
+    """Справочник из кэша (ключ — строка подключения и имя); устарел или нет — load() и в кэш."""
+    key = (connection_string, name)
+    with _refs_lock:
+        hit = _refs.get(key)
+        if hit is not None and time.monotonic() - hit[0] < REF_TTL_SECONDS:
+            return hit[1]
+    value = load()
+    with _refs_lock:
+        _refs[key] = (time.monotonic(), value)
+    return value
+
+
+def clear_ref_cache() -> None:
+    with _refs_lock:
+        _refs.clear()
+
+
 def order_docs(conn: Any, orders: Sequence[DispatchOrder]) -> list[Doc]:
     """Заказы «Развоза» → документы точек (способ оплаты — из ORDERS.fPAYTYPE)."""
     pay: dict[str, str] = {}
@@ -387,24 +445,30 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
              pick_orders: OrdersPick) -> DayData:
     """Всё для /day машины на дату — одним read-only соединением.
 
-    Точки — проведённые накладные машины на дату; нет ни одной — заказы окна orders_window, которые
-    pick_orders отдаёт этой машине (план «Развоза» или машина в заказе)."""
+    Точки — по клиенту (docstring модуля): проведённые накладные машины на дату (с `replaces` — их заказами) +
+    заказы окна orders_window, которые pick_orders отдаёт этой машине, у клиентов без накладной машины и без
+    накладной вообще."""
     conn = erp.connect(connection_string)
     try:
-        docs = day_sales(conn, car_code, day)
-        if not docs:
-            picked = pick_orders(erp.dispatch_orders(conn, *orders_window))
-            docs = order_docs(conn, picked) if picked else []
+        sales = day_sales(conn, car_code, day)
+        parents = sale_parents(conn, [d.isn for d in sales]) if sales else {}
+        sales = [Doc(d.stop_id, d.source, d.isn, d.doc_number, d.customer_id, d.agent_id, d.pay_type, d.amount,
+                     parents.get(d.isn, ())) for d in sales]
+        invoiced = {d.customer_id for d in sales}
+        picked = pick_orders(erp.dispatch_orders(conn, *orders_window))
+        pending = [o for o in picked if o.shipped is None and o.customer_id not in invoiced]
+        docs = sales + (order_docs(conn, pending) if pending else [])
         lines = doc_lines(conn, [d.isn for d in docs]) if docs else {}
-        links, tare_names = containers(conn)
+        links, tare_names = _ref(connection_string, 'containers', lambda: containers(conn))
         product_ids = {ln.product_id for ls in lines.values() for ln in ls}
         prods = products(conn, sorted(product_ids | set(tare_names))) if product_ids or tare_names else {}
         codes = gtins(conn, sorted(product_ids)) if product_ids else {}
         cids = sorted({d.customer_id for d in docs})
-        infos = customer_info(conn, cids, default_point_keys(conn)) if cids else {}
+        infos = customer_info(conn, cids, _ref(connection_string, 'default_points', lambda: default_point_keys(conn))) \
+            if cids else {}
         gps = gps_points(conn, cids, day) if cids else {}
-        agents = {a.id: a.name for a in erp.agents(conn).values()}
-        car = erp.cars(conn).get(car_code)
+        agents = _ref(connection_string, 'agents', lambda: {a.id: a.name for a in erp.agents(conn).values()})
+        car = _ref(connection_string, 'cars', lambda: erp.cars(conn)).get(car_code)
         debts: dict[int, float] | None
         try:
             debts = morning_debts(conn, cids, day) if cids else {}

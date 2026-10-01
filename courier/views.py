@@ -4,6 +4,8 @@
 Доступ обеспечивает глобальный before_request дашборда (как у «Маршрутов»): аноним — вход, роль user — 403.
 POST — только JSON (или multipart с X-Requested-With для APK): форма с чужого сайта их не отправит.
 ERP только читается (справочники и /day — через кэш); всё, что вводит офис, пишется в courier.db.
+Прошлые даты — только из сохранённых снимков /day (ERP за прошлое не перечитывается). События, записанные
+терминалом по заказу (O:), показываются у накладной, сделанной из него (S:, `replaces`, контракт §5 п. 2).
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from datetime import date
 from functools import wraps
 from typing import Any, Callable, Iterable, Mapping
 
-from flask import Blueprint, Response, jsonify, render_template, request, session
+from flask import Blueprint, Response, jsonify, render_template, request, send_file, session
 from werkzeug.exceptions import HTTPException
 
 from route_optimizer.erp import ErpError
@@ -27,7 +29,7 @@ from route_optimizer.erp import ErpError
 from . import clock, events as ev
 from .routes_link import routes_view
 from .state import state
-from .store import MarkSetting, PinConflict, Release, StoreError
+from .store import MarkSetting, PinConflict, PinUnverifiable, Release, StoreError
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,7 @@ APK_MAX_BYTES = 200 * 1024 * 1024
 PACK_QTY_MAX = 10000
 PHOTO_REQUIRED = ('return', 'unreadable')   # + delivery «частично»/«отказ» (№18)
 MARKS_LIMIT = 20000
+CASH_COLLECT = ('cash', 'cash_ecr')         # деньги берёт водитель — «Գումար» ждёт оплату
 
 
 def _api(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -139,6 +142,8 @@ def drivers_save() -> Any:
         new_id = state().store.save_driver(did, body.get('name'), body.get('active', True) is not False, pin, _user())
     except PinConflict:
         return _bad('Այս PIN-ն արդեն ունի մեկ այլ վարորդ — ընտրեք ուրիշը')
+    except PinUnverifiable:
+        return _bad('Չհաջողվեց ստուգել, որ PIN-ը չի կրկնվում․ միացնելիս նշեք նոր PIN')
     except LookupError:
         return _bad('Վարորդը չի գտնվել', 404)
     except ValueError as e:
@@ -212,17 +217,46 @@ def _stop_status(stop: Mapping[str, Any] | None, delivery: Mapping[str, Any] | N
         return 'pending'
     delivered = {str(i.get('line_id')): float(i.get('qty') or 0) for i in delivery['payload'].get('lines') or []
                  if isinstance(i, dict)}
-    invoice = {str(ln['line_id']): ln for ln in (stop or {}).get('lines') or []}
-    return ev.delivery_status(delivered, invoice)
+    return ev.delivery_status(delivered, ev.stop_lines(stop))
 
 
 def _needs_photo(e: Mapping[str, Any], status: str | None) -> bool:
     return e['type'] in PHOTO_REQUIRED or (e['type'] == 'delivery' and status in ('partial', 'refuse'))
 
 
+def _attribute(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """События заказа O:, из которого сделана накладная S:, — к накладной: e['stop_id'] — точка для офиса,
+    e['orig_stop_id'] — как прислал терминал. Возвращает версии всех задействованных точек (store.stop_versions)."""
+    st = state()
+    alias = st.store.replacements([e['stop_id'] for e in events if e['stop_id']])
+    for e in events:
+        e['orig_stop_id'] = e['stop_id']
+        e['stop_id'] = alias.get(e['stop_id'], e['stop_id'])
+    return st.store.stop_versions([e['orig_stop_id'] for e in events if e['orig_stop_id']] + list(alias.values()))
+
+
+def _version(versions: Mapping[str, list[dict[str, Any]]], stop_id: str | None,
+             snapshot_id: int | None = None) -> dict[str, Any] | None:
+    """Версия точки из снимка snapshot_id; нет такой — последняя сохранённая; точки нет — None."""
+    vs = versions.get(stop_id or '') or []
+    if snapshot_id is not None:
+        for v in vs:
+            if v['snapshot_id'] == snapshot_id:
+                return v['data']
+    return vs[-1]['data'] if vs else None
+
+
+def _delivery_status(versions: Mapping[str, list[dict[str, Any]]], delivery: Mapping[str, Any] | None) -> str:
+    """Статус доставки — по версии точки, по которой её проверил сервер (заказ O: — по строкам заказа)."""
+    if delivery is None:
+        return 'pending'
+    return _stop_status(_version(versions, delivery.get('orig_stop_id') or delivery['stop_id'],
+                                 delivery.get('snapshot_id')), delivery)
+
+
 def day_overview(day: date, load: bool = True) -> dict[str, Any]:
-    """Сводка дня по машинам: точки из выдачи /day (терминалам с машиной — загружается, если не была),
-    события, флаги, расхождения плана «Развоза» с ERP."""
+    """Сводка дня по машинам: точки из выдачи /day (load — терминалам с машиной загружается из ERP; для прошлых
+    дат вызывающий передаёт False — только сохранённые снимки), события, флаги, фото."""
     st = state()
     ds = day.isoformat()
     terminals = st.store.list_terminals()
@@ -235,6 +269,7 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
                 errors[car] = 'ERP-ն հասանելի չէ'
     stops = st.store.day_stops(ds)
     events = st.store.events_for_day(ds)
+    versions = _attribute(events)
     photos = st.store.photos_for_events([e['id'] for e in events])
     by_car: dict[str, dict[str, Any]] = {}
 
@@ -250,7 +285,7 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
     stop_by_id = {s['stop_id']: s for s in stops}
     for s in stops:
         row = car_row(s['car_code'])
-        status = _stop_status(s, deliveries.get(s['stop_id']))
+        status = _delivery_status(versions, deliveries.get(s['stop_id']))
         row['total'] += 1
         row[status] += 1
         row['stops'].append({'stop_id': s['stop_id'], 'seq': s.get('seq'), 'doc_number': s.get('doc_number'),
@@ -261,7 +296,7 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
         row['drivers'].add(e['driver_name'] or f'#{e["driver_id"]}')
         if row['last_contact'] is None or e['received_at'] > row['last_contact']:
             row['last_contact'] = e['received_at']
-        status = _stop_status(stop_by_id.get(e['stop_id']), e) if e['type'] == 'delivery' else None
+        status = _delivery_status(versions, e) if e['type'] == 'delivery' else None
         if _needs_photo(e, status) and not photos.get(e['id']):
             e['flags'] = [*e['flags'], 'no_photo']
         if e['type'] == 'unreadable':
@@ -283,9 +318,17 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
         row = by_car[code]
         row['drivers'] = sorted(row['drivers'])
         cars.append(row)
-    flagged = [{'id': e['id'], 'car_code': e['car_code'], 'driver_name': e['driver_name'], 'type': e['type'],
-                'stop_id': e['stop_id'], 'at': e['at'], 'flags': e['flags']} for e in events if e['flags']]
-    return {'date': ds, 'cars': cars, 'flagged': flagged, 'rejected': st.store.rejected_for_day(ds)}
+    def brief(e: Mapping[str, Any]) -> dict[str, Any]:
+        s = stop_by_id.get(e['stop_id']) or _version(versions, e['stop_id']) or {}
+        return {'id': e['id'], 'car_code': e['car_code'], 'driver_name': e['driver_name'], 'type': e['type'],
+                'stop_id': e['stop_id'], 'orig_stop_id': e['orig_stop_id'], 'doc_number': s.get('doc_number'),
+                'customer': (s.get('customer') or {}).get('name'), 'at': e['at'], 'flags': e['flags'],
+                'photos': photos.get(e['id'], [])}
+
+    flagged = [brief(e) for e in events if e['flags']]
+    with_photos = [brief(e) for e in events if photos.get(e['id'])]
+    return {'date': ds, 'cars': cars, 'flagged': flagged, 'photo_events': with_photos,
+            'rejected': st.store.rejected_for_day(ds)}
 
 
 def plan_mismatches(day: date) -> dict[str, Any]:
@@ -317,7 +360,7 @@ def today_view() -> Any:
     d = _day()
     if d is None:
         return _bad('Սխալ ամսաթիվ')
-    body = day_overview(d)
+    body = day_overview(d, load=d >= clock.today())   # прошлые даты — из сохранённых снимков, без ERP
     try:
         body['mismatch'] = plan_mismatches(d)
     except ErpError:
@@ -329,41 +372,64 @@ def today_view() -> Any:
 # --- «Գումար»: деньги водителей ---
 
 def money_view(day: date) -> dict[str, Any]:
-    """По водителю: по каждой точке — взял по накладной и в счёт долга, чеки ՀԴՄ; итог и «сдал фактически»."""
+    """По водителю: по каждой точке — сколько стоит доставленное (`amount_due` — пересчёт по строкам доставки, а не
+    вся накладная), сколько надо взять (`expected`: только cash / cash_ecr), сколько взял по накладной и в счёт
+    долга, чеки ՀԴՄ; доставленная точка с наличными без оплаты — флаг `no_payment`. Итог и «сдал фактически»."""
     st = state()
     ds = day.isoformat()
     stops = {s['stop_id']: s for s in st.store.day_stops(ds)}
     events = st.store.events_for_day(ds)
+    versions = _attribute(events)
     hand = st.store.handovers(ds)
     names = {d.id: d.name for d in st.store.list_drivers()}
     deliveries = ev.effective(events, 'delivery')
+
+    def info(sid: str) -> dict[str, Any]:
+        return stops.get(sid) or _version(versions, sid) or {}
+
     drivers: dict[int, dict[str, Any]] = {}
+
+    def row_of(did: int, sid: str) -> dict[str, Any]:
+        drv = drivers.setdefault(did, {'rows': {}, 'events': []})
+        return drv['rows'].setdefault(sid, {'events': []})
+
     for e in events:
         if e['type'] != 'payment':
             continue
-        drv = drivers.setdefault(e['driver_id'], {'rows': {}, 'events': []})
-        drv['events'].append(e)
-        sid = e['stop_id'] or ''
-        row = drv['rows'].setdefault(sid, {'events': []})
-        row['events'].append(e)
+        row_of(e['driver_id'], e['stop_id'] or '')['events'].append(e)
+        drivers[e['driver_id']]['events'].append(e)
+    for sid, d in deliveries.items():   # доставлено с наличными — строка и без оплаты («վճարում չկա»)
+        if info(sid).get('collect') in CASH_COLLECT:
+            row_of(d['driver_id'], sid)
     out = []
     for did in sorted(set(drivers) | set(hand), key=lambda i: (names.get(i) or '', i)):
         data = drivers.get(did, {'rows': {}, 'events': []})
         rows = []
+        expected_total = 0.0
         for sid, r in sorted(data['rows'].items(), key=lambda kv: ((stops.get(kv[0]) or {}).get('seq') or 0, kv[0])):
-            s = stops.get(sid) or {}
+            s = info(sid)
+            d = deliveries.get(sid)
             money = ev.payments_total(r['events'])
             receipts = sorted({str(e['payload'].get('ecr_receipt')) for e in r['events']
                                if e['payload'].get('ecr_receipt') and not e['payload'].get('cancel_of')})
+            due = ev.delivery_amount(d, versions.get(d['orig_stop_id'], [])) if d else None
+            expected = due if s.get('collect') in CASH_COLLECT else None
+            flags = {f for e in r['events'] for f in e['flags']}
+            if expected and expected > 0 and money['invoice'] <= 0:
+                flags.add('no_payment')
+            expected_total += expected or 0.0
             rows.append({'stop_id': sid, 'doc_number': s.get('doc_number'), 'car_code': s.get('car_code'),
                          'customer': (s.get('customer') or {}).get('name'), 'collect': s.get('collect'),
-                         'amount_due': s.get('amount_due'), 'invoice': money['invoice'], 'debt': money['debt'],
-                         'receipts': receipts, 'status': _stop_status(s, deliveries.get(sid)) if s else None,
-                         'flags': sorted({f for e in r['events'] for f in e['flags']})})
+                         'amount_due': due, 'invoice_amount': s.get('amount_due'), 'expected': expected,
+                         'short': None if expected is None else round(expected - money['invoice'], 2),
+                         'invoice': money['invoice'], 'debt': money['debt'], 'receipts': receipts,
+                         'status': _delivery_status(versions, d) if s else None, 'flags': sorted(flags)})
         total = ev.payments_total(data['events'])
         h = hand.get(did)
         collected = round(total['invoice'] + total['debt'], 2)
         out.append({'driver_id': did, 'name': names.get(did) or f'#{did}', 'rows': rows,
+                    'expected': round(expected_total, 2), 'expected_short': round(expected_total - total['invoice'], 2),
+                    'no_payment': sum(1 for r in rows if 'no_payment' in r['flags']),
                     'collected_invoice': total['invoice'], 'collected_debt': total['debt'], 'collected': collected,
                     'handed': h['handed'] if h else None, 'handed_at': h['handed_at'] if h else None,
                     'handed_by': h['handed_by'] if h else None, 'comment': h['comment'] if h else None,
@@ -405,7 +471,7 @@ def money_handover() -> Any:
 MARK_COLUMNS = (
     ('raw', 'Կոդ'), ('gtin', 'GTIN'), ('serial', 'Սերիական համար'), ('product_code', 'Ապրանքի կոդ'),
     ('product_name', 'Ապրանք'), ('customer_code', 'Հաճախորդի կոդ'), ('customer_name', 'Հաճախորդ'),
-    ('tax_id', 'ՀՎՀՀ'), ('doc_number', 'Ապրանքագիր'), ('date', 'Ամսաթիվ'), ('at', 'Ժամանակ'),
+    ('tax_id', 'ՀՎՀՀ'), ('doc_number', 'Ապրանքագիր'), ('order_number', 'Պատվեր'), ('date', 'Ամսաթիվ'), ('at', 'Ժամանակ'),
     ('driver_name', 'Վարորդ'), ('car_code', 'Մեքենա'), ('kind', 'Տեսակ'), ('is_group', 'Խմբային'),
     ('units', 'Հատ'), ('duplicate_elsewhere', 'Կրկնված այլ տեղ'), ('cancelled', 'Չեղարկված'),
 )
@@ -420,14 +486,30 @@ def _marks_args() -> tuple[str, str | None, str | None] | None:
     return q, f, t
 
 
+def _scan_rows(q: str, date_from: str | None, date_to: str | None) -> list[dict[str, Any]]:
+    """Сканы для «Մակնշում»: скан по заказу O:, из которого сделана накладная, — с её номером (`order_number` —
+    номер заказа, как было при скане)."""
+    st = state()
+    rows = st.store.search_scans(q, date_from, date_to, limit=MARKS_LIMIT)
+    alias = st.store.replacements([r['stop_id'] for r in rows if r['stop_id']])
+    versions = st.store.stop_versions(list(set(alias.values()))) if alias else {}
+    for r in rows:
+        r['order_number'] = None
+        target = alias.get(r['stop_id'] or '')
+        if target:
+            s = _version(versions, target) or {}
+            r['order_number'], r['stop_id'] = r['doc_number'], target
+            r['doc_number'] = s.get('doc_number') or r['doc_number']
+    return rows
+
+
 @bp.get('/api/courier/admin/marks')
 @_api
 def marks() -> Any:
     args = _marks_args()
     if args is None:
         return _bad('Սխալ ամսաթիվ')
-    rows = state().store.search_scans(*args, limit=MARKS_LIMIT)
-    return jsonify({'success': True, 'rows': rows, 'limit': MARKS_LIMIT})
+    return jsonify({'success': True, 'rows': _scan_rows(*args), 'limit': MARKS_LIMIT})
 
 
 def marks_csv(rows: Iterable[Mapping[str, Any]]) -> str:
@@ -461,10 +543,34 @@ def marks_export() -> Any:
     args = _marks_args()
     if args is None:
         return _bad('Սխալ ամսաթիվ')
-    text = marks_csv(state().store.search_scans(*args, limit=MARKS_LIMIT))
+    text = marks_csv(_scan_rows(*args))
     name = f'makanshum_{args[1] or "all"}_{args[2] or "all"}.csv'
     return Response(text.encode('utf-8'), mimetype='text/csv; charset=utf-8',
                     headers={'Content-Disposition': f'attachment; filename="{name}"'})
+
+
+# --- Фото и подписи терминала ---
+
+@bp.get('/api/courier/admin/photos/<photo_id>')
+@_api
+def photo_file(photo_id: str) -> Any:
+    """Фото/подпись по id (uuid) — только офису (admin-гейт дашборда). Путь из базы разрешается строго внутри
+    папки фото: запись с чужим путём (../, абсолютный) — 404, а не файл."""
+    if not ev.UUID_RE.match(photo_id):
+        return _bad('Լուսանկարը չի գտնվել', 404)
+    st = state()
+    rec = st.store.photo(photo_id.lower())
+    root = os.path.realpath(st.store.photos_dir)
+    path = os.path.realpath(os.path.join(root, rec['path'])) if rec else ''
+    try:
+        inside = bool(path) and os.path.commonpath([root, path]) == root and path != root
+    except ValueError:   # другой диск (Windows) — не внутри
+        inside = False
+    if not inside or not os.path.isfile(path):
+        return _bad('Լուսանկարը չի գտնվել', 404)
+    resp = send_file(path, mimetype='image/png' if path.lower().endswith('.png') else 'image/jpeg', max_age=0)
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    return resp
 
 
 # --- «Կարգավորումներ» ---

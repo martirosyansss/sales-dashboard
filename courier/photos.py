@@ -4,6 +4,8 @@
 Инварианты: только JPEG/PNG по сигнатуре (а не по имени или Content-Type), ≤ MAX_PHOTO_BYTES;
 id фото — uuid (имя файла строится из него, путь пользователя не используется); повтор уже записанного
 id — duplicate, файл не трогается. Запись атомарна: временный файл → os.replace → строка в базе.
+Пределы терминала за день (store.PHOTOS_PER_DAY, PHOTO_BYTES_PER_DAY) — в транзакции записи строки
+(PhotoLimit; файл тогда удаляется). Офис смотрит фото только через /api/courier/admin/photos/<uuid>.
 """
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ import os
 import uuid
 
 from . import clock
-from .store import Store
+from .store import PhotoLimit, Store
 
 MAX_PHOTO_BYTES = 2 * 1024 * 1024
 PHOTO_KINDS = ('photo', 'signature')
@@ -42,5 +44,9 @@ def save_photo(store: Store, photo_id: str, event_id: str, kind: str, data: byte
     with open(tmp, 'wb') as f:
         f.write(data)
     os.replace(tmp, path)
-    return store.save_photo(photo_id, event_id, kind, rel.replace(os.sep, '/'), len(data),
-                            hashlib.sha256(data).hexdigest(), terminal_id)
+    try:
+        return store.save_photo(photo_id, event_id, kind, rel.replace(os.sep, '/'), len(data),
+                                hashlib.sha256(data).hexdigest(), terminal_id)
+    except PhotoLimit:   # предел дня терминала (проверен в транзакции записи) — файл не оставляем
+        os.remove(path)
+        raise

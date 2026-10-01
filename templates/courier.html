@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=14">
 <!-- «Առաքիչ» — офис терминалов водителей (docs/plans/courier-app-plan.md §4), армянский, «для чайников» -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=1">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=2">
 {% endblock %}
 
 {% block content %}
@@ -109,8 +109,14 @@
         <details class="rt-fold" id="crFlaggedBox" hidden>
             <summary><span class="rt-fold-t"><i class="fas fa-flag" aria-hidden="true"></i>Ինչին ուշադրություն դարձնել</span><span class="rt-fold-note" id="crFlaggedNote"></span></summary>
             <div class="rt-fold-body"><div class="rt-table-scroll"><table class="rt-table">
-                <thead><tr><th scope="col">Ժամ</th><th scope="col">Մեքենա</th><th scope="col">Վարորդ</th><th scope="col">Ինչ</th><th scope="col">Նշում</th></tr></thead>
+                <thead><tr><th scope="col">Ժամ</th><th scope="col">Մեքենա</th><th scope="col">Վարորդ</th><th scope="col">Կետ</th><th scope="col">Ինչ</th><th scope="col">Նշում</th><th scope="col">Լուսանկար</th></tr></thead>
                 <tbody id="crFlaggedRows"></tbody></table></div></div>
+        </details>
+        <details class="rt-fold" id="crPhotosBox" hidden>
+            <summary><span class="rt-fold-t"><i class="fas fa-camera" aria-hidden="true"></i>Լուսանկարներ և ստորագրություններ</span><span class="rt-fold-note" id="crPhotosNote"></span></summary>
+            <div class="rt-fold-body"><div class="rt-table-scroll"><table class="rt-table cr-small">
+                <thead><tr><th scope="col">Ժամ</th><th scope="col">Մեքենա</th><th scope="col">Վարորդ</th><th scope="col">Կետ</th><th scope="col">Ինչ</th><th scope="col">Լուսանկար</th></tr></thead>
+                <tbody id="crPhotosRows"></tbody></table></div></div>
         </details>
         <details class="rt-fold" id="crRejectedBox" hidden>
             <summary><span class="rt-fold-t"><i class="fas fa-ban" aria-hidden="true"></i>Չընդունված տվյալներ</span><span class="rt-fold-note" id="crRejectedNote"></span></summary>
@@ -125,7 +131,8 @@
             <input type="date" id="crMoneyDate" class="rt-input cr-date">
             <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="crMoneyRefresh"><i class="fas fa-rotate" aria-hidden="true"></i>Թարմացնել</button>
         </div>
-        <p class="cr-lead">Որքան է վերցրել վարորդը՝ ապրանքագրերով և պարտքի դիմաց։ Գանձապահը գրում է «Հանձնել է փաստացի»՝ տարբերությունը կերևա։</p>
+        <p class="cr-lead">Որքան պետք է վերցներ վարորդը (առաքված ապրանքի գինը՝ կանխիկ վճարման կետերում) և որքան է վերցրել՝ ապրանքագրերով և պարտքի դիմաց։
+            Գանձապահը գրում է «Հանձնել է փաստացի»՝ տարբերությունը կերևա։</p>
         <div id="crMoneyList"></div>
     </section>
 
@@ -212,5 +219,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/courier.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/courier.js') }}?v=2"></script>
 {% endblock %}

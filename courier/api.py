@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import timedelta
+import threading
+from datetime import date, timedelta
 from functools import wraps
 from typing import Any, Callable
 
@@ -20,10 +21,11 @@ from werkzeug.exceptions import HTTPException
 from route_optimizer.erp import ErpError
 
 from . import clock, events as ev
+from .day import DEMO_DAY
 from .photos import MAX_PHOTO_BYTES, PHOTO_KINDS, image_ext, save_photo
 from .security import token_hash, token_shape_ok, valid_pin
 from .state import state
-from .store import StoreError
+from .store import PHOTO_BYTES_PER_DAY, PHOTOS_PER_DAY, PhotoLimit, StoreError
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,13 @@ MAX_BODY_BYTES = 4 * 1024 * 1024       # пачка ≤ 200 событий ил�
 SEEN_EVERY = timedelta(seconds=30)     # «последняя связь» терминала пишется не чаще
 NO_SESSION = {'courier_api.ping', 'courier_api.login', 'courier_api.app_version', 'courier_api.app_apk'}
 NO_STORE = {'Cache-Control': 'no-store', 'Pragma': 'no-cache'}
+DAY_WINDOW = 1                         # /day терминала: сегодня ± 1 день (контракт §5 п. 3)
+LOGIN_BUSY_RETRY = 2                   # секунд: вход на этом терминале уже проверяется
+
+# Вход по PIN на терминале — по одному: параллельные попытки того же терминала сразу получают 429 (резерв
+# попытки в базе — Store.pin_attempt — ограничивает перебор и между процессами).
+_login_locks: dict[int, threading.Lock] = {}
+_login_locks_guard = threading.Lock()
 
 MSG = {
     'unauthorized': 'Տերմինալը գրանցված չէ կամ անջատված է',
@@ -101,7 +110,7 @@ def _authenticate() -> Any:
                 return error(401, 'session')
             g.courier_session = session
         if terminal.last_seen_at is None or terminal.last_seen_at < clock.iso(clock.now() - SEEN_EVERY):
-            st.store.touch_terminal(terminal.id)
+            st.store.touch_terminal(terminal.id)   # best-effort: занятая база не роняет запрос (лог)
     except StoreError:
         logger.exception('[Courier] База courier.db (%s)', request.path)
         return error(500, 'server')
@@ -116,6 +125,21 @@ def _json_body() -> dict[str, Any] | None:
 def _day_arg() -> Any:
     raw = request.args.get('date')
     return clock.today() if raw is None else clock.parse_day(raw)
+
+
+def _day_allowed(d: date) -> bool:
+    """/day терминала — только сегодня ± DAY_WINDOW (Ереван); демо-дата — при COURIER_DEMO=1."""
+    if state().demo and d == DEMO_DAY:
+        return True
+    return abs((d - clock.today()).days) <= DAY_WINDOW
+
+
+def _login_lock(terminal_id: int) -> threading.Lock:
+    with _login_locks_guard:
+        lock = _login_locks.get(terminal_id)
+        if lock is None:
+            lock = _login_locks[terminal_id] = threading.Lock()
+        return lock
 
 
 def _car_name(code: str) -> str:
@@ -144,8 +168,10 @@ def ping() -> Any:
 @bp.post('/login')
 @_api
 def login() -> Any:
-    """PIN водителя → сессия до 04:00 следующего дня. Блокировка — по терминалу: 5 неверных PIN подряд →
-    429 на 15 минут (за туннелем у всех терминалов один IP). PIN неверного формата не считается попыткой."""
+    """PIN водителя → сессия до 04:00 следующего дня (не дольше 20 ч). Блокировка — по терминалу: 5 неверных PIN
+    в окне 15 минут → 429 на 15 минут (за туннелем у всех терминалов один IP). PIN неверного формата не считается
+    попыткой. Против гонки: вход терминала — по одному (параллельный → 429 с коротким retry_after), а попытка
+    резервируется в базе атомарно ДО проверки PIN — проверок PIN не больше 5 на окно, сколько бы запросов ни пришло."""
     st, t = state(), g.courier_terminal
     body = _json_body()
     pin = body.get('pin') if body else None
@@ -154,13 +180,22 @@ def login() -> Any:
         return _locked(t.locked_until)
     if not valid_pin(pin):
         return error(400, 'bad_request', 'PIN-ը 4–6 թվանշան է')
-    drivers = st.store.match_pin(pin)
+    lock = _login_lock(t.id)
+    if not lock.acquire(blocking=False):
+        return error(429, 'locked', 'Մուտքն արդեն ստուգվում է, փորձեք մի քանի վայրկյանից', retry_after=LOGIN_BUSY_RETRY)
+    try:
+        attempt = st.store.pin_attempt(t.id)
+        if isinstance(attempt, str):
+            return _locked(attempt)
+        drivers = st.store.match_pin(pin)
+        if not drivers:
+            return _locked(attempt.locked_until) if attempt.locked_until else error(403, 'pin')
+        st.store.pin_release(t.id, attempt)   # PIN верный — попытка не в счёт
+    finally:
+        lock.release()
     if len(drivers) > 1:
         logger.warning('[Courier] Один PIN у нескольких активных водителей: %s', [d.id for d in drivers])
         return error(403, 'pin', 'Այս PIN-ը կրկնվում է․ դիմեք ադմինիստրատորին')
-    if not drivers:
-        until = st.store.pin_failed(t.id)
-        return _locked(until) if until else error(403, 'pin')
     driver = drivers[0]
     expires = clock.session_expiry(now)
     token = st.store.open_session(t.id, driver.id, expires)
@@ -190,6 +225,8 @@ def day() -> Any:
     d = _day_arg()
     if d is None:
         return error(400, 'bad_request', 'date՝ ՏՏՏՏ-ԱԱ-ՕՕ ձևաչափով')
+    if not _day_allowed(d):
+        return error(400, 'bad_request', 'Հասանելի են միայն երեկը, այսօրը և վաղը')
     return jsonify(state().days.get(g.courier_terminal.car_code, d))
 
 
@@ -220,6 +257,11 @@ def post_photo() -> Any:
         return error(400, 'bad_request', 'kind՝ photo կամ signature')
     if st.store.has_photo(photo_id.lower()):
         return jsonify({'ok': True, 'duplicate': True})
+    count, total = st.store.photo_usage(t.id)
+    if count >= PHOTOS_PER_DAY:
+        return _photo_limit('count')
+    if total >= PHOTO_BYTES_PER_DAY:
+        return _photo_limit('bytes')
     upload = request.files.get('file')
     if upload is None:
         return error(400, 'bad_request', 'file՝ պարտադիր է')
@@ -228,8 +270,21 @@ def post_photo() -> Any:
         return error(413, 'too_large', 'Ֆայլը 2 ՄԲ-ից մեծ է')
     if not data or image_ext(data) is None:
         return error(400, 'bad_request', 'Միայն JPEG կամ PNG')
-    saved = save_photo(st.store, photo_id.lower(), event_id.lower(), kind, data, t.id)
+    try:
+        saved = save_photo(st.store, photo_id.lower(), event_id.lower(), kind, data, t.id)
+    except PhotoLimit as e:
+        return _photo_limit(e.kind)
     return jsonify({'ok': True, 'duplicate': True} if not saved else {'ok': True})
+
+
+def _photo_limit(kind: str) -> Any:
+    """Предел фото терминала за день (контракт §5 п. 10): штук — 429 с retry_after до полуночи, байт — 413."""
+    if kind == 'bytes':
+        return error(413, 'too_large', f'Այսօրվա լուսանկարների ծավալը սպառված է ({PHOTO_BYTES_PER_DAY // 1048576} ՄԲ)')
+    now = clock.now()
+    midnight = now.replace(hour=0, minute=0, second=0) + timedelta(days=1)
+    return error(429, 'too_large', f'Այսօրվա լուսանկարների քանակը սպառված է ({PHOTOS_PER_DAY})',
+                 retry_after=max(1, int((midnight - now).total_seconds())))
 
 
 @bp.get('/status')

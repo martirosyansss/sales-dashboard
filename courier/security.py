@@ -6,7 +6,11 @@
   поиск — по хешу, затем сравнение hmac.compare_digest (постоянное время);
 - PIN — 4–6 цифр, хранится хешем pbkdf2 (werkzeug, соль на запись). Число итераций снижено
   против дефолта werkzeug: при входе PIN сверяется со всеми активными водителями (PIN определяет
-  водителя), а перебор 10^6 PIN всё равно отсекает блокировка терминала после 5 ошибок.
+  водителя), а перебор 10^6 PIN всё равно отсекает блокировка терминала после 5 ошибок;
+- pin_tag — тот же pbkdf2, но с одной солью на базу (meta.pin_salt, случайная): детерминирован, поэтому
+  одинаковые PIN дают одинаковый tag. Нужен, чтобы проверить «PIN уже у другого активного водителя», не зная
+  PIN (повторное включение водителя), и чтобы вход считал один хеш, а не по хешу на водителя. Офлайн-перебор
+  4–6 цифр по украденной базе это не усложняет и не упрощает заметно: защита PIN — блокировка терминала.
 """
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 PIN_RE = re.compile(r'^\d{4,6}$')
 PIN_METHOD = 'pbkdf2:sha256:60000'
+PIN_TAG_ITERATIONS = 60000
 TOKEN_BYTES = 32
 _TOKEN_RE = re.compile(r'^[A-Za-z0-9_-]{20,128}$')
 
@@ -58,3 +63,10 @@ def check_pin(pin_hash: str | None, pin: str) -> bool:
         return check_password_hash(pin_hash, pin)
     except (ValueError, TypeError):   # битый хеш в базе — не совпадение, а не падение входа
         return False
+
+
+def pin_tag(pin: str, salt_hex: str) -> str:
+    """Детерминированный хеш PIN с солью базы (см. docstring модуля)."""
+    if not valid_pin(pin):
+        raise ValueError('PIN — 4–6 цифр')
+    return hashlib.pbkdf2_hmac('sha256', pin.encode('ascii'), bytes.fromhex(salt_hex), PIN_TAG_ITERATIONS).hex()

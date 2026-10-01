@@ -8,7 +8,10 @@
 - version — sha1 канонического JSON stops: тот же ERP и те же настройки → тот же version;
 - кэш DAY_TTL_SECONDS на (машина, дата): терминалы перезапрашивают /day каждые 15 мин, а офис — чаще,
   ERP боевая; параллельные запросы одной машины ждут одну загрузку;
-- каждая выдача сохраняется в courier.db (day_stops) — по ней проверяются события терминала.
+- каждая новая версия выдачи сохраняется в courier.db снимком (day_snapshots, append-only) — по всем версиям
+  проверяются события терминала, по ним офис смотрит прошлые даты (ERP за прошлое не перечитывается);
+- точка S: может нести `replaces` — точки O: заказов, из которых сделана накладная (контракт §5 п. 2);
+  поле есть только у таких точек.
 """
 from __future__ import annotations
 
@@ -106,6 +109,8 @@ def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | No
                 'tare_expected': [{'tare_id': f'erp:{tid}', 'name': data.tare_names.get(tid, ''), 'qty': round(q, 2)}
                                   for tid, q in sorted(tare.items())],
             })
+            if doc.replaces:
+                stops[-1]['replaces'] = sorted(doc.replaces)
     return stops
 
 

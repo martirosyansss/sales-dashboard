@@ -12965,6 +12965,25 @@ route_optimizer.init_app(app, db)
 import courier
 courier.init_app(app, db)
 
+
+def _serve_waitress(port: int = 5000) -> bool:
+    """Продакшн-сервер по желанию (DASHBOARD_SERVER=waitress, deploy/COURIER_TUNNEL.md): многопоточный
+    waitress вместо встроенного сервера Flask — обязателен перед открытием API терминалов через туннель.
+    False — не включён или waitress не установлен (тогда — как раньше, app.run)."""
+    if os.environ.get('DASHBOARD_SERVER', '').strip().lower() != 'waitress':
+        return False
+    try:
+        from waitress import serve
+    except ImportError:
+        logger.warning("DASHBOARD_SERVER=waitress, но waitress не установлен (pip install -r requirements.txt) — "
+                       "запуск встроенным сервером Flask")
+        return False
+    print(f"Server: waitress, 16 потоков, http://0.0.0.0:{port}")
+    serve(app, host='0.0.0.0', port=port, threads=16, connection_limit=200, channel_timeout=120,
+          cleanup_interval=30, ident='SalesDashboard')
+    return True
+
+
 if __name__ == '__main__':
     print("=" * 80)
     print("Sales Dashboard v2.0 starting...")
@@ -12988,6 +13007,7 @@ if __name__ == '__main__':
     print()
     print("=" * 80)
     
-    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() in ('1', 'true', 'yes')
-    app.run(debug=debug_mode, use_reloader=False, host='0.0.0.0', port=5000)
+    if not _serve_waitress():
+        debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() in ('1', 'true', 'yes')
+        app.run(debug=debug_mode, use_reloader=False, host='0.0.0.0', port=5000)
 

@@ -61,6 +61,13 @@
 .cr-diff.is-ok { color: var(--rt-ok); background: var(--rt-ok-bg); }
 .cr-diff.is-bad { color: var(--rt-danger); background: var(--rt-danger-bg); }
 .cr-num-cell { text-align: right; font-family: var(--rt-mono); white-space: nowrap; }
+.cr-bad { color: var(--rt-danger); }
+.cr-row-bad td { background: var(--rt-danger-bg); }
+
+/* Фото и подписи терминала — миниатюры, полный размер в новой вкладке */
+.cr-thumb { display: inline-block; margin: 2px 4px 2px 0; border-radius: 6px; overflow: hidden; border: 1px solid var(--rt-line); line-height: 0; }
+.cr-thumb img { width: 56px; height: 56px; object-fit: cover; background: #fff; }
+.cr-thumb:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
 
 @media (max-width: 640px) {
     #crPage .rt-tabs { width: 100%; overflow-x: auto; flex-wrap: nowrap; }

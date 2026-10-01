@@ -4,9 +4,12 @@
 Запуск из корня проекта:  python tests/courier_live_check.py [дней=5]
 
 Для каждой машины, возившей накладные за 90 дней, и каждого из последних N рабочих дней (пн–сб, без сегодня)
-собирает ответ /day тем же кодом, что и сервер (erp_day.load_day → day.day_payload), и сравнивает число точек
-с фактом SALES.fDELIVERYCAR (проведённые накладные машины за дату). База courier.db — временная;
-route_optimizer.db не открывается (вид на «Маршруты» пустой: без плана и склада — порядок «auto»).
+собирает ответ /day тем же кодом, что и сервер (erp_day.load_day → day.day_payload), и сравнивает точки-накладные
+(S:) с фактом SALES.fDELIVERYCAR (проведённые накладные машины за дату: число и сумма). Источник точек — по клиенту
+(контракт §5 п. 1): точки O: (заказы без накладной) считаются отдельно и в сравнение не входят; у точки O: не
+должно быть клиента, у которого есть S:. Связь `replaces` (DOCPARENTS) — сколько S: точек её получили.
+База courier.db — временная; route_optimizer.db не открывается (вид на «Маршруты» пустой: без плана и склада —
+порядок «auto»).
 """
 from __future__ import annotations
 
@@ -61,7 +64,7 @@ def main() -> int:
     tmp = tempfile.mkdtemp(prefix='courier_live_')
     store = Store(os.path.join(tmp, 'courier.db'))
     svc = DayService(store, lambda car, d, w, pick: erp_day.load_day(cs, car, d, w, pick), lambda d: RoutesView())
-    head = f"{'Дата':<11} {'Машина':<10} {'ERP':>4} {'/day':>4} {'источник':<8} {'сумма ERP':>12} {'сумма /day':>12} " \
+    head = f"{'Дата':<11} {'Машина':<10} {'ERP':>4} {'S:':>4} {'O:':>4} {'repl':>4} {'сумма ERP':>12} {'сумма S:':>12} " \
            f"{'коорд.':>6} {'долг':>5} {'с':>5}  итог"
     print(head)
     print('-' * len(head))
@@ -75,15 +78,18 @@ def main() -> int:
             stops = body['stops']
             if not stops and not fact_n:
                 continue
-            source = ','.join(sorted({s['source'] for s in stops})) or '—'
-            total = sum(s['amount_due'] for s in stops)
+            inv = [s for s in stops if s['source'] == 'invoice']
+            orders = [s for s in stops if s['source'] == 'order']
+            total = sum(s['amount_due'] for s in inv)
             coords = sum(1 for s in stops if s['lat'] is not None)
             debt_ok = all(s['debt'] is not None for s in stops)
-            ok = (len(stops) == fact_n and abs(total - fact_sum) < 0.01) if fact_n else source == 'order'
+            mixed = {s['customer']['id'] for s in inv} & {s['customer']['id'] for s in orders}
+            repl = sum(1 for s in inv if s.get('replaces'))
+            ok = len(inv) == fact_n and abs(total - fact_sum) < 0.01 and not mixed
             bad += not ok
-            print(f"{d.isoformat():<11} {car:<10} {fact_n:>4} {len(stops):>4} {source:<8} {fact_sum:>12,.0f} "
+            print(f"{d.isoformat():<11} {car:<10} {fact_n:>4} {len(inv):>4} {len(orders):>4} {repl:>4} {fact_sum:>12,.0f} "
                   f"{total:>12,.0f} {coords:>3}/{len(stops):<2} {'да' if debt_ok else 'нет':>5} {took:>5.1f}  "
-                  f"{'OK' if ok else 'РАСХОЖДЕНИЕ'}")
+                  f"{'OK' if ok else 'РАСХОЖДЕНИЕ'}{' (клиент и в S:, и в O:)' if mixed else ''}")
     print()
     print('ВСЕ СОВПАЛО' if not bad else f'РАСХОЖДЕНИЙ: {bad}')
     return 1 if bad else 0

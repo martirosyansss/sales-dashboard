@@ -7,25 +7,35 @@
 - пачка — одна транзакция (Store.batch): проверки видят события этой же пачки (payment → его отмена,
   scan → scan_cancel), а повтор той же пачки параллельно ждёт и получает `duplicates`;
 - `rejected` — только нарушения формы и правил таблицы контракта (тип, дата, момент с зоной, qty < 0 или
-  сверх накладной, нет причины при «частично»/«отказ», amount ≤ 0, неизвестная строка накладной…);
-  отказ хранится в rejected_events — его видят /status («Конец дня») и офис;
+  сверх накладной, amount ≤ 0, неизвестная строка накладной…); отказ хранится в rejected_events (не больше
+  store.REJECTED_PER_DAY на терминал в день — дальше только в ответе) — его видят /status и офис;
+- версии точки (контракт §5 п. 4): терминал работает офлайн по версии /day, которую успел получить, а офис мог
+  изменить накладную. Поэтому строка ищется во ВСЕХ сохранённых версиях точки, и qty отклоняется, только если
+  больше максимума строки по всем версиям; больше действующей версии, но не больше прежней — принимается с
+  флагом `qty_over_invoice` (строка, убранная из новой версии, — тоже: в действующей её qty = 0);
+- мягкие правила v1.1: нет причины при «частично»/«отказ» — флаг `no_reason` (§5 п. 5); `date` дальше чем на
+  2 дня от даты `at` (Ереван) — флаг `date_suspicious` (§5 п. 6);
 - правила §3 (обязательный скан маркировки, номер чека ՀԴՄ, фото) сервер НЕ блокирует — событие
   принимается с флагом (данные терминала важнее), флаги видны в офисе;
 - `foreign` — точка в выдаче /day другой машины или даты; `unknown_stop` — точку /day не выдавал никому
-  (проверить qty нечем — принимается как есть);
+  (проверить qty нечем — принимается как есть); snapshot_id события — снимок действующей версии точки, по
+  которой оно проверено (цены для «Գումար»);
 - повторная delivery/tare по точке не удаляет прежние — «действующая» считается при чтении: последняя
   по моменту терминала (at_utc), затем по received_at и id (effective()).
 """
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import clock
-from .store import EventTx, Store
+from .store import REJECTED_PER_DAY, EventTx, Store
+
+logger = logging.getLogger(__name__)
 
 MAX_BATCH = 200
 MAX_PAYLOAD_BYTES = 20_000
@@ -33,6 +43,8 @@ EVENT_TYPES = ('delivery', 'payment', 'tare', 'return', 'scan', 'scan_cancel', '
 STOPLESS_TYPES = ('day_closed', 'scan_cancel')   # stop_id не обязателен
 MONEY_MAX = 1e9
 QTY_MAX = 1e6
+DATE_SUSPICIOUS_DAYS = 2
+EPS = 1e-9
 
 UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
 STOP_RE = re.compile(r'^[SO]:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$')
@@ -102,27 +114,49 @@ def _uuid(v: Any, what: str) -> str:
 
 # --- контекст точки ---
 
+def stop_lines(data: Mapping[str, Any] | None) -> dict[str, Mapping[str, Any]]:
+    """Строки версии точки по line_id."""
+    if not data:
+        return {}
+    return {str(ln.get('line_id')): ln for ln in data.get('lines') or [] if isinstance(ln, dict)}
+
+
 @dataclass(frozen=True)
 class StopCtx:
-    data: Mapping[str, Any] | None   # точка из выдачи /day (своя или чужая); None — неизвестна
+    data: Mapping[str, Any] | None   # действующая версия точки из выдачи /day (своя или чужая); None — неизвестна
     foreign: bool
+    snapshot_id: int | None = None
+    versions: tuple[Mapping[str, Any], ...] = ()   # все сохранённые версии точки, от старой к новой
 
     def lines(self) -> dict[str, Mapping[str, Any]]:
-        if self.data is None:
-            return {}
-        return {str(ln.get('line_id')): ln for ln in self.data.get('lines') or [] if isinstance(ln, dict)}
+        """Строки действующей версии."""
+        return stop_lines(self.data)
+
+    def any_lines(self) -> dict[str, Mapping[str, Any]]:
+        """Строки всех версий (строка — из самой новой версии, где она есть)."""
+        out: dict[str, Mapping[str, Any]] = {}
+        for v in (*self.versions, *([self.data] if self.data else [])):
+            out.update(stop_lines(v))
+        return out
+
+    def max_qty(self, line_id: str) -> float | None:
+        """Наибольшее qty строки по всем версиям; строки нет ни в одной — None."""
+        qtys = [float(ln.get('qty') or 0) for v in (*self.versions, *([self.data] if self.data else []))
+                for lid, ln in stop_lines(v).items() if lid == line_id]
+        return max(qtys) if qtys else None
 
 
 def _stop_ctx(tx: EventTx, stop_id: str | None, day: str, car_code: str) -> tuple[StopCtx, list[str]]:
+    """Действующая версия — последняя версия точки в снимках своей машины и даты (точка убрана из нового
+    снимка — её последняя версия); своих нет — последняя чужая (`foreign`)."""
     if stop_id is None:
         return StopCtx(None, False), []
     rows = tx.stop_rows(stop_id)
+    if not rows:
+        return StopCtx(None, False), ['unknown_stop']
     own = [r for r in rows if r['date'] == day and r['car_code'] == car_code]
-    if own:
-        return StopCtx(own[0]['data'], False), []
-    if rows:
-        return StopCtx(rows[0]['data'], True), ['foreign']
-    return StopCtx(None, False), ['unknown_stop']
+    cur = (own or rows)[-1]
+    return StopCtx(cur['data'], not own, cur['snapshot_id'], tuple(r['data'] for r in rows)), ([] if own else ['foreign'])
 
 
 # --- правила по типам: нарушение формы или таблицы контракта — Reject, нарушение §3 — флаг ---
@@ -133,6 +167,7 @@ def _delivery(p: Mapping[str, Any], stop: StopCtx) -> list[str]:
         raise Reject('lines՝ պետք է լինի ոչ դատարկ ցուցակ')
     invoice = stop.lines()
     seen: dict[str, float] = {}
+    flags = []
     for item in raw:
         if not isinstance(item, dict):
             raise Reject('lines՝ սխալ տող')
@@ -142,17 +177,19 @@ def _delivery(p: Mapping[str, Any], stop: StopCtx) -> list[str]:
             raise Reject(f'Տողը կրկնվում է՝ {lid}')
         q = _qty(item.get('qty'), 'qty')
         if stop.data is not None:
-            if lid not in invoice:
+            top = stop.max_qty(lid)
+            if top is None:
                 raise Reject(f'Անհայտ տող՝ {lid}')
-            if q > float(invoice[lid].get('qty') or 0) + 1e-9:
+            if q > top + EPS:
                 raise Reject('Քանակը չի կարող գերազանցել ապրանքագրի քանակը')
+            if q > float((invoice.get(lid) or {}).get('qty') or 0) + EPS and 'qty_over_invoice' not in flags:
+                flags.append('qty_over_invoice')   # больше действующей версии, но не больше прежней (§5 п. 4)
         seen[lid] = q
-    flags = []
     status = delivery_status(seen, invoice) if stop.data is not None else ('refuse' if not any(seen.values()) else None)
     if stop.data is not None and set(invoice) - set(seen):
         flags.append('lines_incomplete')
     if status in ('partial', 'refuse') and not _text(p.get('reason_id'), 40, 'reason_id'):
-        raise Reject('«Մասնակի» և «Հրաժարում» դեպքում պատճառը պարտադիր է')
+        flags.append('no_reason')   # v1.1 §5 п. 5: принимается, офис видит
     _text(p.get('comment'), 500, 'comment')
     return flags
 
@@ -175,7 +212,7 @@ def _scan_shortfall(tx: EventTx, day: str, stop_id: str, p: Mapping[str, Any], s
     for item in p.get('lines') or []:
         ln = invoice.get(str(item.get('line_id')))
         q = _num(item.get('qty')) or 0.0
-        if ln and ln.get('marked') and q > 0 and tx.covered_units(day, stop_id, str(item['line_id'])) + 1e-9 < q:
+        if ln and ln.get('marked') and q > 0 and tx.covered_units(day, stop_id, str(item['line_id'])) + EPS < q:
             return ['scan_short']
     return []
 
@@ -201,7 +238,7 @@ def _payment(tx: EventTx, ev: Mapping[str, Any], p: Mapping[str, Any], stop: Sto
             raise Reject('Կարելի է չեղարկել միայն նույն կետի և օրվա ձեր վճարումը')
         if _num(target['payload'].get('amount')) != amount or target['payload'].get('kind') != kind:
             raise Reject('Չեղարկման գումարը պետք է համընկնի վճարման գումարի հետ')
-        if tx.payment_cancelled(target_id):
+        if tx.payment_cancelled(target_id, ev['stop_id']):
             raise Reject('Վճարումն արդեն չեղարկված է')
         out['cancel_of'] = target_id
         return out, flags
@@ -272,14 +309,17 @@ def _scan(tx: EventTx, ev: Mapping[str, Any], p: Mapping[str, Any], stop: StopCt
         flags.append('repeat')
     if any(s != stop_id or d != ev['date'] for s, d, _ in others):
         flags.append('duplicate_elsewhere')
-    invoice = stop.lines()
+    invoice = stop.any_lines()   # строка — во всех версиях точки (накладную могли изменить, пока терминал офлайн)
     line = invoice.get(line_id) if line_id else None
     if stop.data is not None and line_id and line is None:
         flags.append('unknown_line')
     # /day отдаёт штучные GTIN; упаковка (индикатор 1–8) сверяется по GTIN своей штуки — как в терминале
     gtin_keys = {gtin, unit_gtin(gtin)} - {None} if gtin else set()
     if line is None and gtin_keys:
-        line = next((ln for ln in invoice.values() if gtin_keys & set(ln.get('gtins') or [])), None)
+        line = next((ln for ln in stop.lines().values() if gtin_keys & set(ln.get('gtins') or [])), None) \
+            or next((ln for ln in invoice.values() if gtin_keys & set(ln.get('gtins') or [])), None)
+        if line is not None and not line_id:
+            line_id = str(line.get('line_id'))   # найдена по GTIN — скан засчитывается строке (covered_units)
     if stop.data is not None and gtin_keys and not any(gtin_keys & set(ln.get('gtins') or [])
                                                        for ln in invoice.values()):
         flags.append('gtin_not_in_invoice')
@@ -341,6 +381,8 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who) -> tupl
         raise Reject('stop_id՝ պարտադիր է')
     ev = {'id': event_id, 'date': day.isoformat(), 'at': raw['at']}
     stop, flags = _stop_ctx(tx, stop_id, ev['date'], who.car_code)
+    if abs((day - at.astimezone(clock.YEREVAN).date()).days) > DATE_SUSPICIOUS_DAYS:
+        flags.append('date_suspicious')
     stored = dict(payload)
     scan_row = None
     if etype == 'delivery':
@@ -368,7 +410,7 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who) -> tupl
         _text(payload.get('line_id'), 80, 'line_id', required=True)
         _qty(payload.get('qty'), 'qty', positive=True)
         _text(payload.get('reason'), 500, 'reason', required=True)
-        if stop.data is not None and payload['line_id'] not in stop.lines():
+        if stop.data is not None and payload['line_id'] not in stop.any_lines():
             flags.append('unknown_line')
     elif etype == 'arrived':
         _arrived(payload)
@@ -377,7 +419,7 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who) -> tupl
             raise Reject('summary՝ պետք է լինի օբյեկտ')
     row = {'id': event_id, 'terminal_id': who.terminal_id, 'driver_id': who.driver_id, 'car_code': who.car_code,
            'date': ev['date'], 'stop_id': stop_id, 'type': etype, 'at_device': raw['at'], 'at_utc': clock.utc_key(at),
-           'received_at': clock.iso(clock.now()), 'payload': stored, 'flags': flags}
+           'received_at': clock.iso(clock.now()), 'payload': stored, 'flags': flags, 'snapshot_id': stop.snapshot_id}
     return row, scan_row
 
 
@@ -386,6 +428,7 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
     result = Result()
     with store.batch() as conn:
         tx = EventTx(conn)
+        rejected_room: int | None = None   # сколько отказов ещё можно сохранить сегодня (считается при первом)
         for raw in events:
             raw_id = raw.get('id') if isinstance(raw, dict) else None
             if not isinstance(raw_id, str) or not UUID_RE.match(raw_id):
@@ -402,10 +445,18 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
                 except (TypeError, ValueError, OverflowError, KeyError) as e:   # странное значение — отказ
                     raise Reject('Սխալ տվյալներ') from e                         # события, а не 500 на всю пачку
             except Reject as e:
-                tx.insert_rejected(event_id, who.terminal_id, who.driver_id,
-                                   d.isoformat() if (d := clock.parse_day(raw.get('date'))) else None,
-                                   raw.get('type') if isinstance(raw.get('type'), str) else None,
-                                   'bad_request', str(e), json.dumps(raw, ensure_ascii=False, default=str))
+                if rejected_room is None:
+                    rejected_room = REJECTED_PER_DAY - tx.rejected_today(who.terminal_id)
+                if rejected_room > 0:
+                    rejected_room -= 1
+                    tx.insert_rejected(event_id, who.terminal_id, who.driver_id,
+                                       d.isoformat() if (d := clock.parse_day(raw.get('date'))) else None,
+                                       raw.get('type') if isinstance(raw.get('type'), str) else None,
+                                       'bad_request', str(e), json.dumps(raw, ensure_ascii=False, default=str))
+                elif rejected_room == 0:
+                    rejected_room = -1
+                    logger.warning('[Courier] Терминал %s: предел %s отказов за день — дальше не сохраняются',
+                                   who.terminal_id, REJECTED_PER_DAY)
                 result.rejected.append({'id': raw_id, 'error': 'bad_request', 'message': str(e)})
                 continue
             if not tx.insert_event(row):
@@ -443,3 +494,22 @@ def payments_total(events: Iterable[Mapping[str, Any]]) -> dict[str, float]:
             continue
         total[kind] += -amount if p.get('cancel_of') else amount
     return {k: round(v, 2) for k, v in total.items()}
+
+
+def delivery_amount(delivery: Mapping[str, Any], versions: Sequence[Mapping[str, Any]]) -> float:
+    """Сколько стоит доставленное (для «Գումար»): Σ qty × цена по строкам delivery. Цена — из версии точки, по
+    которой доставка проверена (snapshot_id события); строки там нет — из самой новой версии, где она есть;
+    неизвестная строка — 0. Отказ (все qty 0) — 0. versions — store.stop_versions() этой точки."""
+    by_snapshot = {v['snapshot_id']: v['data'] for v in versions}
+    base = stop_lines(by_snapshot.get(delivery.get('snapshot_id')))
+    known: dict[str, Mapping[str, Any]] = {}
+    for v in versions:
+        known.update(stop_lines(v['data']))
+    total = 0.0
+    for item in delivery['payload'].get('lines') or []:
+        if not isinstance(item, dict):
+            continue
+        lid = str(item.get('line_id'))
+        line = base.get(lid) or known.get(lid)
+        total += (_num(item.get('qty')) or 0.0) * ((_num(line.get('price')) or 0.0) if line else 0.0)
+    return round(total, 2)

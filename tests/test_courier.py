@@ -34,6 +34,14 @@ class FakeDb:
     connection_string = 'DRIVER={none};'
 
 
+@pytest.fixture(autouse=True)
+def _fresh_ref_cache():
+    """Кэш справочников ERP (erp_day._ref) — модульный: между тестами не переносится."""
+    ed.clear_ref_cache()
+    yield
+    ed.clear_ref_cache()
+
+
 @pytest.fixture
 def now(monkeypatch):
     """Подменяемое «сейчас» (Ереван): now['t'] = … двигает часы."""
@@ -217,9 +225,10 @@ def test_routes_view_car_customers():
 class FakeErp:
     """Подмена _select: ответ по тексту запроса. Записывает выполненные запросы."""
 
-    def __init__(self, sales=(), orders=()):
+    def __init__(self, sales=(), orders=(), parents=()):
         self.sales = list(sales)
         self.orders = list(orders)
+        self.parents = list(parents)
         self.calls = []
 
     def __call__(self, conn, sql, params=()):
@@ -229,6 +238,9 @@ class FakeErp:
             return self.sales
         if sql == erp.SQL_DISPATCH_ORDERS:
             return self.orders
+        if sql.startswith(ed.SQL_SALE_PARENTS.split('{')[0]):
+            assert 'DOCPARENTS' in sql and 'fPARENTDOCTYPE = 1' in sql
+            return [r for r in self.parents if r[0] in params]
         if sql.startswith(ed.SQL_ORDER_PAYTYPES.split('{')[0]):
             return [(ISN[1], '5')]
         if sql.startswith(ed.SQL_DOC_LINES.split('{')[0]):
@@ -272,9 +284,11 @@ def fake_erp(monkeypatch):
 
 def test_load_day_invoices(fake_erp):
     fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000), (ISN[1], '000318002', 12, 7, '', 3600)]
+    fake_erp.parents = [(ISN[0], ISN[5])]
     data = ed.load_day('cs', '991AT61', date(2026, 10, 2), (date(2026, 9, 29), date(2026, 10, 2)),
-                       lambda orders: pytest.fail('накладные есть — заказы не нужны'))
+                       lambda orders: [])
     assert [d.stop_id for d in data.docs] == [f'S:{ISN[0]}', f'S:{ISN[1]}']
+    assert data.docs[0].replaces == (f'O:{ISN[5]}',) and data.docs[1].replaces == ()
     assert data.car_name == 'HOWO'
     assert data.gtins == {135: ('04850002370146',)}
     assert data.products[135].pack_qty_erp == 20
@@ -282,7 +296,6 @@ def test_load_day_invoices(fake_erp):
     assert data.customers[12].erp_point is None                 # «дефолтная» точка отброшена
     assert data.gps == {12: (40.3, 44.6)}                       # 3 точных визита (500 м — мимо)
     assert data.debts == {11: 50000 - 5000 - 1000, 12: 1000.0}
-    assert erp.SQL_DISPATCH_ORDERS not in fake_erp.calls
 
 
 def test_load_day_falls_back_to_orders(fake_erp):
@@ -506,7 +519,6 @@ def test_events_idempotent_and_duplicates(term, client):
     (lambda e: e['payload']['lines'][0].update(qty=1000), 'գերազանցել'),   # сверх накладной (№22)
     (lambda e: e['payload']['lines'][0].update(line_id='X:1'), 'Անհայտ'),
     (lambda e: e['payload']['lines'].append(dict(e['payload']['lines'][0])), 'կրկնվում'),
-    (lambda e: e['payload']['lines'][0].update(qty=1), 'պատճառ'),          # «частично» без причины
 ])
 def test_delivery_rejections(term, client, mutate, needle):
     s1 = term['day']['stops'][0]
@@ -996,3 +1008,512 @@ def test_bad_moment_rejects_event_not_batch(term, client):
     r = post(client, term['s'], bad, good)
     assert r['accepted'] == [good['id']] and [x['id'] for x in r['rejected']] == [bad['id']]
     assert clock.parse_moment('9999-12-31T23:59:59-04:00') is None
+
+
+# ============================== регрессии независимой проверки (v1.1) ==============================
+
+def _parallel(n, fn):
+    """n потоков стартуют разом (Barrier); результаты — в порядке потоков."""
+    import threading
+    barrier = threading.Barrier(n)
+    out = [None] * n
+
+    def run(i):
+        barrier.wait()
+        out[i] = fn(i)
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    return out
+
+
+def test_h1_parallel_wrong_pins_at_most_five_evaluations(app, st, monkeypatch):
+    """H1: 60 параллельных неверных PIN — PIN проверяется не больше 5 раз, дальше 429 (раньше: 48×403 + 12×429)."""
+    _, terminal, h = make_terminal(st)
+    calls = []
+    real = Store.match_pin
+
+    def counting(self, pin):
+        calls.append(pin)
+        return real(self, pin)
+    monkeypatch.setattr(Store, 'match_pin', counting)
+
+    def attempt(i):
+        r = app.test_client().post('/api/courier/v1/login', json={'pin': f'{9000 + i}'}, headers=h)
+        return r.status_code, r.get_json()
+
+    res = _parallel(60, attempt)
+    codes = [c for c, _ in res]
+    assert set(codes) <= {403, 429}
+    assert len(calls) <= 5 and codes.count(403) <= 5
+    assert all(b['error'] == 'locked' and b['retry_after'] >= 1 for c, b in res if c == 429)
+    # ровно столько попыток, сколько проверок: после 5-й ошибки терминал заблокирован
+    for _ in range(5 - len(calls)):
+        app.test_client().post('/api/courier/v1/login', json={'pin': '0000'}, headers=h)
+    r = app.test_client().post('/api/courier/v1/login', json={'pin': '1234'}, headers=h)
+    assert r.status_code == 429 and r.get_json()['retry_after'] > 60
+    assert len(calls) <= 5
+
+
+def test_h1_login_in_progress_gets_429(client, st):
+    from courier import api
+    _, terminal, h = make_terminal(st)
+    lock = api._login_lock(terminal.id)
+    lock.acquire()
+    try:
+        r = client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=h)
+    finally:
+        lock.release()
+    assert r.status_code == 429 and r.get_json()['error'] == 'locked' and r.get_json()['retry_after'] == 2
+    assert client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=h).status_code == 200
+
+
+def test_parallel_duplicate_batches_accept_once(app, term, st):
+    stop = term['day']['stops'][0]
+    batch = [event('arrived', stop['stop_id'], {'lat': 40.1, 'lon': 44.5}) for _ in range(5)]
+
+    def send(i):
+        r = app.test_client().post('/api/courier/v1/events', json={'events': batch}, headers=term['s'])
+        return r.status_code, r.get_json()
+    res = _parallel(8, send)
+    assert all(c == 200 for c, _ in res)
+    accepted = [x for _, b in res for x in b['accepted']]
+    assert sorted(accepted) == sorted(e['id'] for e in batch)          # каждый id принят ровно один раз
+    assert sum(len(b['duplicates']) for _, b in res) == 5 * 7
+    assert len([e for e in st.store.events_for_day(DEMO) if e['type'] == 'arrived']) == 5
+
+
+# --- M1: окно дат /day, снимки, прошлые даты офиса ---
+
+def test_m1_day_date_window(term, client, st):
+    s = term['s']
+    for d in ('2026-09-30', '2026-10-04', '2025-10-02'):
+        r = client.get(f'/api/courier/v1/day?date={d}', headers=s)
+        assert r.status_code == 400 and r.get_json()['error'] == 'bad_request', d
+    for d in ('2026-10-01', '2026-10-02', '2026-10-03', None):   # ERP «не подключена» (FakeDb) — 503, но не 400
+        r = client.get('/api/courier/v1/day' + (f'?date={d}' if d else ''), headers=s)
+        assert r.status_code == 503, d
+    assert client.get(f'/api/courier/v1/day?date={DEMO}', headers=s).status_code == 200   # COURIER_DEMO=1
+    st.demo = False
+    assert client.get(f'/api/courier/v1/day?date={DEMO}', headers=s).status_code == 400
+
+
+def _stops_v2(stops, mutate):
+    out = json.loads(json.dumps(stops))
+    for s in out:
+        mutate(s)
+    return out
+
+
+def test_m1_snapshots_append_only(st, term):
+    v1 = term['day']['stops']
+    cash = next(s for s in v1 if s['collect'] == 'cash')
+
+    def shrink(s):
+        if s['stop_id'] == cash['stop_id']:
+            s['lines'][0]['qty'] = 8.0
+    v2 = _stops_v2(v1, shrink)
+    sid1 = st.store.save_day(DEMO, 'TEST', v1, term['day']['version'], '2000-01-01T08:00:00+04:00')
+    sid2 = st.store.save_day(DEMO, 'TEST', v2, 'v2', '2000-01-01T09:00:00+04:00')
+    assert sid2 > sid1 and st.store.save_day(DEMO, 'TEST', v2, 'v2', 'x') == sid2      # та же версия — без записи
+    sid3 = st.store.save_day(DEMO, 'TEST', v1, term['day']['version'], '2000-01-01T10:00:00+04:00')
+    assert sid3 > sid2                                                                   # вернулась старая — новый снимок
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM day_snapshots').fetchone()[0] == 3
+    hist = st.store.stop_versions([cash['stop_id']])[cash['stop_id']]
+    assert [v['data']['lines'][0]['qty'] for v in hist] == [10.0, 8.0, 10.0]             # прежние версии целы
+    st.store.save_day(DEMO, 'TEST', v2, 'v2', 'x')
+    current = {s['stop_id']: s for s in st.store.day_stops(DEMO, 'TEST')}
+    assert current[cash['stop_id']]['lines'][0]['qty'] == 8.0
+
+
+def test_m1_office_past_date_does_not_reload_erp(client, st, monkeypatch, now):
+    _, _, h = make_terminal(st, car='991AT61')
+    calls = []
+    monkeypatch.setattr(st.days, 'get', lambda car, d: calls.append((car, d)) or {'stops': []})
+    assert client.get('/api/courier/admin/today?date=2026-10-01').status_code == 200
+    assert client.get('/api/courier/admin/today?date=2000-01-01').status_code == 200
+    assert calls == []                                                   # прошлое — только сохранённые снимки
+    assert client.get('/api/courier/admin/today?date=2026-10-02').status_code == 200
+    assert client.get('/api/courier/admin/today?date=2026-10-03').status_code == 200
+    assert calls == [('991AT61', date(2026, 10, 2)), ('991AT61', date(2026, 10, 3))]
+
+
+V1_SCHEMA = (
+    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    "CREATE TABLE drivers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, pin_hash TEXT, "
+    "active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
+    "updated_by TEXT)",
+    "CREATE TABLE terminals(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, car_code TEXT NOT NULL, "
+    "token_sha256 TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, created_by TEXT, revoked_at TEXT, revoked_by TEXT, "
+    "failed_pin_count INTEGER NOT NULL DEFAULT 0, pin_window_start TEXT, locked_until TEXT, last_seen_at TEXT)",
+    "CREATE TABLE sessions(token_sha256 TEXT PRIMARY KEY, terminal_id INTEGER NOT NULL, driver_id INTEGER NOT NULL, "
+    "created_at TEXT NOT NULL, expires_at TEXT NOT NULL)",
+    "CREATE TABLE events(id TEXT PRIMARY KEY, terminal_id INTEGER NOT NULL, driver_id INTEGER NOT NULL, "
+    "car_code TEXT NOT NULL, date TEXT NOT NULL, stop_id TEXT, type TEXT NOT NULL, at_device TEXT NOT NULL, "
+    "at_utc TEXT NOT NULL, received_at TEXT NOT NULL, payload TEXT NOT NULL, flags TEXT NOT NULL DEFAULT '[]')",
+    "CREATE INDEX events_stop ON events(stop_id, type)",
+    "CREATE TABLE rejected_events(id TEXT PRIMARY KEY, terminal_id INTEGER NOT NULL, driver_id INTEGER NOT NULL, "
+    "date TEXT, type TEXT, received_at TEXT NOT NULL, error TEXT NOT NULL, message TEXT NOT NULL, body TEXT)",
+    "CREATE TABLE scans(event_id TEXT PRIMARY KEY, raw TEXT NOT NULL, gtin TEXT, serial TEXT, is_group INTEGER NOT NULL, "
+    "units REAL NOT NULL, kind TEXT NOT NULL, stop_id TEXT, line_id TEXT, customer_id INTEGER, customer_code TEXT, "
+    "customer_name TEXT, tax_id TEXT, doc_number TEXT, product_id INTEGER, product_code TEXT, product_name TEXT, "
+    "date TEXT NOT NULL, at_device TEXT NOT NULL, driver_id INTEGER NOT NULL, driver_name TEXT, car_code TEXT NOT NULL, "
+    "counted INTEGER NOT NULL, duplicate_elsewhere INTEGER NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0, "
+    "cancel_event_id TEXT)",
+    "CREATE TABLE photos(id TEXT PRIMARY KEY, event_id TEXT NOT NULL, kind TEXT NOT NULL, path TEXT NOT NULL, "
+    "size INTEGER NOT NULL, sha256 TEXT NOT NULL, terminal_id INTEGER NOT NULL, received_at TEXT NOT NULL)",
+    "CREATE TABLE day_stops(date TEXT NOT NULL, stop_id TEXT NOT NULL, car_code TEXT NOT NULL, seq INTEGER NOT NULL, "
+    "data TEXT NOT NULL, version TEXT NOT NULL, loaded_at TEXT NOT NULL, PRIMARY KEY (date, stop_id))",
+    "CREATE TABLE cash_handover(date TEXT NOT NULL, driver_id INTEGER NOT NULL, handed REAL NOT NULL, comment TEXT, "
+    "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (date, driver_id))",
+    "CREATE TABLE marked_products(product_id INTEGER PRIMARY KEY, marked INTEGER NOT NULL, pack_qty REAL, "
+    "updated_at TEXT NOT NULL, updated_by TEXT)",
+    "CREATE TABLE tare_custom(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, "
+    "updated_at TEXT NOT NULL, updated_by TEXT)",
+    "CREATE TABLE reasons(kind TEXT NOT NULL CHECK (kind IN ('refuse', 'return')), id TEXT NOT NULL, text TEXT NOT NULL, "
+    "sort INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (kind, id))",
+    "CREATE TABLE app_release(version_code INTEGER PRIMARY KEY, version_name TEXT NOT NULL, sha256 TEXT NOT NULL, "
+    "size INTEGER NOT NULL, path TEXT NOT NULL, uploaded_at TEXT NOT NULL, uploaded_by TEXT)",
+    "INSERT INTO meta(key, value) VALUES('schema_version', '1')",
+)
+
+
+def test_m1_migration_v1_to_v2(tmp_path, now):
+    from courier.security import hash_pin
+    path = tmp_path / 'old.db'
+    stop = lambda sid, qty: json.dumps({'stop_id': sid, 'seq': 1, 'lines': [{'line_id': 'L:1', 'qty': qty}]})  # noqa: E731
+    with closing(sqlite3.connect(path)) as conn:
+        for ddl in V1_SCHEMA:
+            conn.execute(ddl)
+        conn.executemany('INSERT INTO day_stops VALUES(?, ?, ?, ?, ?, ?, ?)', [
+            ('2026-10-01', 'S:A', 'CAR1', 1, stop('S:A', 5.0), 'v1', '2026-10-01T08:00:00+04:00'),
+            ('2026-10-01', 'S:B', 'CAR1', 2, stop('S:B', 3.0), 'v1', '2026-10-01T08:00:00+04:00'),
+            ('2026-10-01', 'S:C', 'CAR2', 1, stop('S:C', 1.0), 'w1', '2026-10-01T08:05:00+04:00')])
+        conn.execute("INSERT INTO drivers(name, pin_hash, active, created_at, updated_at) VALUES('Old', ?, 0, 'x', 'x')",
+                     (hash_pin('1234'),))
+        conn.execute("INSERT INTO drivers(name, pin_hash, active, created_at, updated_at) VALUES('Live', ?, 1, 'x', 'x')",
+                     (hash_pin('5555'),))
+        conn.execute("INSERT INTO events(id, terminal_id, driver_id, car_code, date, stop_id, type, at_device, at_utc, "
+                     "received_at, payload) VALUES('e1', 1, 2, 'CAR1', '2026-10-01', 'S:A', 'arrived', 'a', 'a', 'r', '{}')")
+        conn.commit()
+    s = Store(str(path))
+    assert [x['stop_id'] for x in s.day_stops('2026-10-01')] == ['S:A', 'S:B', 'S:C']
+    assert s.events_for_day('2026-10-01')[0]['snapshot_id'] is None
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == '2'
+        assert len(conn.execute("SELECT value FROM meta WHERE key = 'pin_salt'").fetchone()[0]) == 32
+        assert conn.execute('SELECT COUNT(*) FROM day_snapshots').fetchone()[0] == 2
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'day_stops'").fetchone() is None
+    # PIN до схемы 2: включить без нового PIN нельзя (сравнить нечем); вход дописывает pin_tag
+    with pytest.raises(ValueError):
+        s.save_driver(1, 'Old', True, None, 'admin')
+    assert [d.name for d in s.match_pin('5555')] == ['Live']
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute('SELECT pin_tag FROM drivers WHERE id = 2').fetchone()[0]
+    with pytest.raises(PinConflict):
+        s.save_driver(1, 'Old', True, '5555', 'admin')
+    s.save_driver(1, 'Old', True, '7777', 'admin')
+    assert [d.name for d in s.match_pin('7777')] == ['Old']
+
+
+# --- M2 и v1.1 §4–6: версии точки, мягкие флаги ---
+
+def test_m2_rejection_vs_flag_after_snapshot_change(term, client, st):
+    v1 = term['day']['stops']
+    cash = next(s for s in v1 if s['collect'] == 'cash')          # 1 строка: 10 шт
+    none = next(s for s in v1 if s['collect'] == 'none')          # 2 строки
+    removed_line = none['lines'][1]
+
+    def change(s):
+        if s['stop_id'] == cash['stop_id']:
+            s['lines'][0]['qty'] = 8.0                              # офис уменьшил накладную
+        if s['stop_id'] == none['stop_id']:
+            s['lines'] = s['lines'][:1]                             # и убрал строку
+    st.store.save_day(DEMO, 'TEST', _stops_v2(v1, change), 'v2', '2000-01-01T11:00:00+04:00')
+    over = event('delivery', cash['stop_id'], {'lines': [{'line_id': cash['lines'][0]['line_id'], 'qty': 10.0}]})
+    exact = event('delivery', cash['stop_id'], {'lines': [{'line_id': cash['lines'][0]['line_id'], 'qty': 8.0}]},
+                  at='2000-01-01T10:05:00+04:00')
+    too_much = event('delivery', cash['stop_id'], {'lines': [{'line_id': cash['lines'][0]['line_id'], 'qty': 10.5}]})
+    gone = event('delivery', none['stop_id'], {'lines': [{'line_id': none['lines'][0]['line_id'], 'qty': 24.0},
+                                                         {'line_id': removed_line['line_id'], 'qty': 15.0}]})
+    unknown = event('delivery', none['stop_id'], {'lines': [{'line_id': 'X:9', 'qty': 1.0}]})
+    r = post(client, term['s'], over, exact, too_much, gone, unknown)
+    assert sorted(r['accepted']) == sorted([over['id'], exact['id'], gone['id']])
+    assert {x['id'] for x in r['rejected']} == {too_much['id'], unknown['id']}
+    flags = {e['id']: e['flags'] for e in st.store.events_for_day(DEMO)}
+    assert 'qty_over_invoice' in flags[over['id']] and 'qty_over_invoice' not in flags[exact['id']]
+    assert 'qty_over_invoice' in flags[gone['id']]                 # строки нет в новой версии, но была в прежней
+    snap = {e['id']: e['snapshot_id'] for e in st.store.events_for_day(DEMO)}
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        newest = conn.execute('SELECT MAX(id) FROM day_snapshots').fetchone()[0]
+    assert snap[over['id']] == newest                               # проверено по действующей версии
+
+
+def test_v11_no_reason_and_date_suspicious_flags(term, client, st):
+    s1 = next(s for s in term['day']['stops'] if s['collect'] == 'cash')
+    partial = event('delivery', s1['stop_id'], {'lines': full_lines(s1, 0.5), 'reason_id': None})
+    refuse = event('delivery', s1['stop_id'], {'lines': full_lines(s1, 0)}, at='2000-01-01T11:00:00+04:00')
+    far = event('arrived', s1['stop_id'], {'lat': 40.1, 'lon': 44.5}, at='2000-01-04T10:00:00+04:00')
+    near = event('arrived', s1['stop_id'], {'lat': 40.1, 'lon': 44.5}, at='2000-01-03T10:00:00+04:00')
+    late_utc = event('arrived', s1['stop_id'], {'lat': 40.1, 'lon': 44.5}, at='2000-01-02T22:30:00Z')   # 03.01 Ереван
+    r = post(client, term['s'], partial, refuse, far, near, late_utc)
+    assert len(r['accepted']) == 5 and r['rejected'] == []
+    flags = {e['id']: e['flags'] for e in st.store.events_for_day(DEMO)}
+    assert 'no_reason' in flags[partial['id']] and 'no_reason' in flags[refuse['id']]
+    assert 'date_suspicious' in flags[far['id']]
+    assert 'date_suspicious' not in flags[near['id']] and 'date_suspicious' not in flags[late_utc['id']]
+
+
+# --- M3: заказы → накладные ---
+
+def test_m3_load_day_per_customer_source(fake_erp, tmp_path):
+    """Клиент с накладной машины — S: (с replaces); без накладной — O:; заказ, по которому накладная уже есть
+    (на другой машине), — не точка этой машины."""
+    d = date(2026, 10, 2)
+    fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
+    fake_erp.parents = [(ISN[0], ISN[2])]
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0),     # стал накладной
+                       (ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0),    # накладной нет
+                       (ISN[3], 'Z0013', date(2026, 10, 1), 13, 7, '991AT61', 900, 1, d, 0)]        # накладная у другой
+    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: list(orders))
+    assert [(x.stop_id, x.replaces) for x in data.docs] == [(f'S:{ISN[0]}', (f'O:{ISN[2]}',)), (f'O:{ISN[1]}', ())]
+    view = rl.RoutesView(depot=YEREVAN)
+    body = dy.day_payload(data, view, Store(str(tmp_path / 'c.db')), datetime(2026, 10, 2, 8, 0, tzinfo=clock.YEREVAN))
+    stops = {s['stop_id']: s for s in body['stops']}
+    assert stops[f'S:{ISN[0]}']['replaces'] == [f'O:{ISN[2]}'] and 'replaces' not in stops[f'O:{ISN[1]}']
+    assert stops[f'O:{ISN[1]}']['source'] == 'order'
+
+
+ORDER_ISN = '0000000A-0000-4000-8000-00000000000A'
+
+
+def test_m3_order_events_attributed_to_invoice(term, client, st):
+    """Водитель работал по заказу O: (накладной ещё не было), потом появилась накладная S: с replaces —
+    офис («Առաքում այսօր», «Գումար», «Մակնշում») показывает события у накладной."""
+    v1 = term['day']['stops']
+    cash = next(s for s in v1 if s['collect'] == 'cash')
+    marked = next(s for s in v1 if any(ln['marked'] for ln in s['lines']))
+    order = json.loads(json.dumps(cash))
+    order.update(stop_id=f'O:{ORDER_ISN}', source='order', doc_number='Z-77')
+    order['lines'] = [{**order['lines'][0], 'line_id': f'{ORDER_ISN}:1'}]
+    others = [s for s in v1 if s['stop_id'] != cash['stop_id']]
+    st.store.save_day(DEMO, 'TEST', [order, *others], 'with-order', '2000-01-01T08:00:00+04:00')
+    d = event('delivery', order['stop_id'], {'lines': [{'line_id': f'{ORDER_ISN}:1', 'qty': 10.0}]})
+    pay = event('payment', order['stop_id'], {'amount': 12000.0, 'kind': 'invoice'})
+    sc = event('scan', order['stop_id'], {'raw': 'ORDER-CODE-1', 'line_id': f'{ORDER_ISN}:1', 'kind': 'sale', 'gtin': None,
+                                          'serial': None, 'is_group': False, 'units': 1})
+    unread = event('unreadable', order['stop_id'], {'line_id': f'{ORDER_ISN}:1', 'qty': 1.0, 'reason': 'x'})
+    assert len(post(client, term['s'], d, pay, sc, unread)['accepted']) == 4
+    invoice = {**json.loads(json.dumps(cash)), 'replaces': [order['stop_id']]}
+    st.store.save_day(DEMO, 'TEST', [invoice, *others], 'with-invoice', '2000-01-01T09:00:00+04:00')
+
+    today = client.get(f'/api/courier/admin/today?date={DEMO}').get_json()
+    car = today['cars'][0]
+    row = next(s for s in car['stops'] if s['stop_id'] == cash['stop_id'])
+    assert row['status'] == 'full' and row['doc_number'] == cash['doc_number']   # по строкам заказа — полностью
+    assert car['removed'] == [] and car['full'] == 1
+    fl = next(f for f in today['flagged'] if f['id'] == unread['id'])
+    assert fl['stop_id'] == cash['stop_id'] and fl['orig_stop_id'] == order['stop_id']
+    assert fl['doc_number'] == cash['doc_number'] and fl['customer'] == cash['customer']['name']
+
+    money = client.get(f'/api/courier/admin/money?date={DEMO}').get_json()['drivers'][0]
+    mrow = next(r for r in money['rows'] if r['stop_id'] == cash['stop_id'])
+    assert (mrow['doc_number'], mrow['invoice'], mrow['expected'], mrow['short']) == (cash['doc_number'], 12000.0,
+                                                                                        12000.0, 0.0)
+    assert 'no_payment' not in mrow['flags'] and len(money['rows']) == 1
+
+    marks = client.get('/api/courier/admin/marks?q=ORDER-CODE').get_json()['rows']
+    assert marks[0]['doc_number'] == cash['doc_number'] and marks[0]['order_number'] == 'Z-77'
+    assert 'Z-77' in client.get(f'/api/courier/admin/marks.csv?from={DEMO}').data.decode('utf-8')
+    assert marked  # демо-день с маркируемой строкой цел
+
+
+# --- M4: «Գումար» — сколько надо взять ---
+
+def test_m4_money_expected_and_no_payment(term, client):
+    stops = {s['collect']: s for s in term['day']['stops']}
+    cash, ecr, none = stops['cash'], stops['cash_ecr'], stops['none']
+    post(client, term['s'],
+         event('delivery', cash['stop_id'], {'lines': full_lines(cash, 0.6), 'reason_id': 'no_money'}),      # 6 × 1200
+         event('delivery', ecr['stop_id'], {'lines': full_lines(ecr)}),                                       # 12 × 700
+         event('payment', ecr['stop_id'], {'amount': 8000.0, 'kind': 'invoice', 'ecr_receipt': '55'}),
+         event('delivery', none['stop_id'], {'lines': full_lines(none)}))
+    drv = client.get(f'/api/courier/admin/money?date={DEMO}').get_json()['drivers'][0]
+    rows = {r['stop_id']: r for r in drv['rows']}
+    assert set(rows) == {cash['stop_id'], ecr['stop_id']}          # «none» без оплаты — не к сдаче
+    c, e = rows[cash['stop_id']], rows[ecr['stop_id']]
+    assert (c['amount_due'], c['invoice_amount'], c['expected'], c['invoice'], c['short']) == (7200.0, 12000.0, 7200.0,
+                                                                                               0.0, 7200.0)
+    assert 'no_payment' in c['flags'] and c['status'] == 'partial'
+    assert (e['expected'], e['invoice'], e['short']) == (8400.0, 8000.0, 400.0) and 'no_payment' not in e['flags']
+    assert (drv['expected'], drv['collected_invoice'], drv['expected_short'], drv['no_payment']) == (15600.0, 8000.0,
+                                                                                                    7600.0, 1)
+    post(client, term['s'], event('delivery', cash['stop_id'], {'lines': full_lines(cash, 0), 'reason_id': 'closed'},
+                                  at='2000-01-01T12:00:00+04:00'))
+    c = {r['stop_id']: r for r in client.get(f'/api/courier/admin/money?date={DEMO}').get_json()['drivers'][0]['rows']}
+    assert c[cash['stop_id']]['expected'] == 0.0 and 'no_payment' not in c[cash['stop_id']]['flags']   # отказ — 0
+
+
+# --- M5: фото в офисе ---
+
+def test_m5_admin_photo_viewer(term, client, st, tmp_path):
+    stop = term['day']['stops'][0]
+    unread = event('unreadable', stop['stop_id'], {'line_id': stop['lines'][0]['line_id'], 'qty': 1.0, 'reason': 'x'})
+    post(client, term['s'], unread)
+    form = photo_form(JPEG, event_id=unread['id'])
+    pid = form['id']
+    assert client.post('/api/courier/v1/photos', data=form, headers=term['s'],
+                       content_type='multipart/form-data').status_code == 200
+    r = client.get(f'/api/courier/admin/photos/{pid}')
+    assert r.status_code == 200 and r.data == JPEG and r.mimetype == 'image/jpeg'
+    assert r.headers['X-Content-Type-Options'] == 'nosniff'
+    assert client.get(f'/api/courier/admin/photos/{pid.upper()}').status_code == 200
+    for bad in ('nope', '..%2F..%2Fcourier.db', str(uuid.uuid4())):
+        assert client.get(f'/api/courier/admin/photos/{bad}').status_code == 404
+    # путь в базе ведёт наружу — не отдаём
+    secret = tmp_path / 'secret.jpg'
+    secret.write_bytes(JPEG)
+    evil = str(uuid.uuid4())
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        conn.execute("INSERT INTO photos VALUES(?, ?, 'photo', ?, 1, 'x', 1, 'x')", (evil, unread['id'], '../secret.jpg'))
+        conn.execute("INSERT INTO photos VALUES(?, ?, 'photo', ?, 1, 'x', 1, 'x')",
+                     (str(uuid.uuid4()), unread['id'], str(secret)))
+        conn.commit()
+    assert client.get(f'/api/courier/admin/photos/{evil}').status_code == 404
+    today = client.get(f'/api/courier/admin/today?date={DEMO}').get_json()
+    assert pid in [p['id'] for f in today['photo_events'] for p in f['photos']]
+    assert unread['id'] in {f['id'] for f in today['photo_events']}
+
+
+# --- доступ: роль user ---
+
+def test_role_user_blocked_from_courier_office(dashboard, monkeypatch):
+    import app_v2
+    client, _ = dashboard
+    users = {'u': {'role': 'user', 'areas': ['01'], 'password_hash': 'x'},
+             'boss': {'role': 'admin', 'areas': [], 'password_hash': 'x'}}
+    monkeypatch.setattr(app_v2, 'load_users', lambda: users)
+    lan = {}   # localhost: внутренняя сеть (cookie сессии теста — на localhost)
+    with client.session_transaction() as sess:
+        sess['username'] = 'u'
+    r = client.get('/courier', headers=lan)
+    assert r.status_code in (302, 403) and '/courier' not in r.headers.get('Location', '')
+    for path in ('/api/courier/admin/today', '/api/courier/admin/drivers', '/api/courier/admin/money',
+                 f'/api/courier/admin/photos/{uuid.uuid4()}', '/api/courier/admin/marks.csv'):
+        assert client.get(path, headers=lan).status_code == 403, path
+    assert client.post('/api/courier/admin/drivers', json={'name': 'x', 'pin': '1234'}, headers=lan).status_code == 403
+    with client.session_transaction() as sess:
+        sess['username'] = 'boss'
+    assert client.get('/api/courier/admin/drivers', headers=lan).status_code == 200
+
+
+# --- L2–L11 ---
+
+def test_l2_payment_cancel_lookup_uses_index(term, st):
+    from courier.store import EventTx
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        plan = ' '.join(str(r) for r in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT 1 FROM events WHERE stop_id = ? AND type = 'payment' "
+            "AND json_extract(payload, '$.cancel_of') = ?", ('S:x', 'y')).fetchall())
+        assert 'events_stop' in plan and 'SCAN events' not in plan
+        assert EventTx(conn).payment_cancelled('y', 'S:x') is False
+
+
+def test_l3_scan_matched_by_gtin_counts_for_line(term, client, st):
+    stop = next(s for s in term['day']['stops'] if any(ln['marked'] for ln in s['lines']))
+    line = next(ln for ln in stop['lines'] if ln['marked'])          # 24 шт, упаковка 6
+    scans = [event('scan', stop['stop_id'], {'raw': f'01{line["gtins"][0]}21S{i}', 'line_id': None, 'kind': 'sale',
+                                             'gtin': line['gtins'][0], 'serial': f'S{i}', 'is_group': True, 'units': 6})
+             for i in range(4)]
+    d = event('delivery', stop['stop_id'], {'lines': full_lines(stop)}, at='2000-01-01T11:00:00+04:00')
+    post(client, term['s'], *scans, d)
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        assert {r[0] for r in conn.execute('SELECT line_id FROM scans')} == {line['line_id']}
+    flags = {e['id']: e['flags'] for e in st.store.events_for_day(DEMO)}
+    assert 'scan_short' not in flags[d['id']]
+
+
+def test_l4_reactivation_runs_duplicate_pin_check(client, st):
+    a = st.store.save_driver(None, 'Ա', True, '1234', 'admin')
+    st.store.save_driver(a, 'Ա', False, None, 'admin')
+    st.store.save_driver(None, 'Բ', True, '1234', 'admin')            # PIN свободен: Ա выключен
+    r = client.post('/api/courier/admin/drivers', json={'id': a, 'name': 'Ա', 'active': True})
+    assert r.status_code == 400 and 'PIN' in r.get_json()['error']
+    assert not st.store.driver(a).active
+    assert client.post('/api/courier/admin/drivers', json={'id': a, 'name': 'Ա', 'active': True,
+                                                           'pin': '4321'}).status_code == 200
+    c = st.store.save_driver(None, 'Գ', False, '9999', 'admin')
+    assert client.post('/api/courier/admin/drivers', json={'id': c, 'name': 'Գ', 'active': True}).status_code == 200
+
+
+def test_l5_pin_change_revokes_sessions(client, st):
+    did, _, h = make_terminal(st)
+    s = login(client, h)
+    st.store.save_driver(did, 'Արամ', True, None, 'admin')            # без нового PIN — сессия жива
+    assert client.get('/api/courier/v1/status', headers=s).status_code == 200
+    st.store.save_driver(did, 'Արամ', True, '8765', 'admin')
+    assert client.get('/api/courier/v1/status', headers=s).get_json()['error'] == 'session'
+    assert client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=h).status_code == 403
+    login(client, h, '8765')
+
+
+def test_l6_session_capped_at_20_hours(client, st, now):
+    _, _, h = make_terminal(st)
+    now['t'] = datetime(2026, 10, 2, 7, 0, tzinfo=clock.YEREVAN)
+    r = client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=h).get_json()
+    assert r['expires_at'] == '2026-10-03T03:00:00+04:00'
+    now['t'] = datetime(2026, 10, 2, 23, 30, tzinfo=clock.YEREVAN)
+    r = client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=h).get_json()
+    assert r['expires_at'] == '2026-10-03T04:00:00+04:00'
+    assert clock.session_expiry(datetime(2026, 10, 2, 0, 30, tzinfo=clock.YEREVAN)) == \
+        datetime(2026, 10, 2, 20, 30, tzinfo=clock.YEREVAN)
+
+
+def test_l7_last_seen_write_never_fails_request(client, st):
+    _, terminal, h = make_terminal(st)
+    blocker = sqlite3.connect(st.store.path, isolation_level=None)
+    try:
+        blocker.execute('BEGIN IMMEDIATE')                                # база занята другой записью
+        r = client.get('/api/courier/v1/ping', headers=h)
+        assert r.status_code == 200 and r.get_json()['ok'] is True
+    finally:
+        blocker.execute('ROLLBACK')
+        blocker.close()
+    assert st.store.terminal(terminal.id).last_seen_at is None            # не записано — и ладно
+    assert client.get('/api/courier/v1/ping', headers=h).status_code == 200
+    assert st.store.terminal(terminal.id).last_seen_at is not None
+
+
+def test_l8_daily_limits(term, client, st, monkeypatch):
+    from courier import api, store as cs
+    monkeypatch.setattr(cs, 'PHOTOS_PER_DAY', 2)
+    monkeypatch.setattr(api, 'PHOTOS_PER_DAY', 2)
+    send = lambda data=JPEG: client.post('/api/courier/v1/photos', data=photo_form(data), headers=term['s'],  # noqa: E731
+                                         content_type='multipart/form-data')
+    assert send().status_code == 200 and send().status_code == 200
+    r = send()
+    assert r.status_code == 429 and r.get_json()['error'] == 'too_large' and r.get_json()['retry_after'] > 0
+    monkeypatch.setattr(cs, 'PHOTOS_PER_DAY', 100)
+    monkeypatch.setattr(api, 'PHOTOS_PER_DAY', 100)
+    monkeypatch.setattr(cs, 'PHOTO_BYTES_PER_DAY', 3 * len(JPEG) - 1)
+    r = send()
+    assert r.status_code == 413 and r.get_json()['error'] == 'too_large'
+    assert len(list(Path(st.store.photos_dir).rglob('*.jpg'))) == 2        # отклонённый файл не остался
+    # отказы: сохраняется не больше предела, в ответе — все
+    monkeypatch.setattr(ev, 'REJECTED_PER_DAY', 2)
+    bad = [event('payment', term['day']['stops'][0]['stop_id'], {'amount': 0, 'kind': 'invoice'}) for _ in range(4)]
+    assert len(post(client, term['s'], *bad)['rejected']) == 4
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM rejected_events').fetchone()[0] == 2
+
+
+def test_l11_reference_data_cached(fake_erp):
+    fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
+    for _ in range(2):
+        ed.load_day('cs', '991AT61', date(2026, 10, 2), (date(2026, 9, 29), date(2026, 10, 2)), lambda o: [])
+    for sql in (ed.SQL_CONTAINERS, ed.SQL_DEFAULT_POINTS, erp.SQL_AGENTS, erp.SQL_CARS):
+        assert fake_erp.calls.count(sql) == 1
+    assert fake_erp.calls.count(ed.SQL_DAY_SALES) == 2                   # данные дня — каждый раз

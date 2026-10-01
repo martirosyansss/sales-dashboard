@@ -6,3 +6,4 @@ numpy>=1.26
 scipy>=1.11
 osmium>=3.7
 segno>=1.6
+waitress>=3.0

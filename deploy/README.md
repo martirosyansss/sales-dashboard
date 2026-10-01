@@ -87,5 +87,8 @@ schtasks /Change /TN SalesDashboard-AutoUpdate /DISABLE   # включить: /E
   поэтому он должен быть **fine-grained и только на чтение одного репозитория**.
 - `FLASK_DEBUG` держите `False` (значение по умолчанию): отладчик Werkzeug
   позволяет выполнять код любому, кто откроет страницу ошибки.
+- Перед открытием API терминалов «Առաքիչ» в интернет (Cloudflare Tunnel) запускайте дашборд
+  через waitress: `DASHBOARD_SERVER=waitress` в `.env` (пакет — в `requirements.txt`). Без этой
+  строки — встроенный сервер Flask, как раньше. Подробно — `deploy/COURIER_TUNNEL.md`.
 - Обновление делает `git reset --hard` — любые ручные правки кода на сервере
   будут затёрты. Правки вносите только через git.

@@ -9,7 +9,8 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta, timezone
 
 YEREVAN = timezone(timedelta(hours=4), 'Asia/Yerevan')
-SESSION_END = time(4, 0)   # сессия водителя живёт до 04:00 следующего дня (контракт §2 /login)
+SESSION_END = time(4, 0)   # сессия водителя живёт до 04:00 следующего дня (контракт §2 /login)…
+SESSION_MAX = timedelta(hours=20)   # …но не дольше 20 часов от входа (контракт §5 п. 9)
 MOMENT_YEARS = (1990, 2100)   # момент терминала вне этих лет — ошибка часов, а не дата
 
 
@@ -28,9 +29,10 @@ def iso(dt: datetime) -> str:
 
 
 def session_expiry(at: datetime) -> datetime:
-    """Конец сессии: 04:00 следующего календарного дня (по Еревану) после входа."""
+    """Конец сессии: 04:00 следующего календарного дня (по Еревану) после входа, но не позже чем через
+    SESSION_MAX: вход в 07:00 живёт до 03:00, а не 21 час (украденная сессия короче)."""
     local = at.astimezone(YEREVAN)
-    return datetime.combine(local.date() + timedelta(days=1), SESSION_END, YEREVAN)
+    return min(datetime.combine(local.date() + timedelta(days=1), SESSION_END, YEREVAN), local + SESSION_MAX)
 
 
 def parse_moment(raw: object) -> datetime | None:
