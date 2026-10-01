@@ -1,0 +1,216 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Առաքիչ — Sales Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=14">
+<!-- «Առաքիչ» — офис терминалов водителей (docs/plans/courier-app-plan.md §4), армянский, «для чайников» -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=1">
+{% endblock %}
+
+{% block content %}
+<div class="rt-page" id="crPage" lang="hy">
+
+    <header class="rt-head">
+        <div class="rt-head-row">
+            <div>
+                <p class="cr-kicker">Առաքիչ</p>
+                <h1 class="rt-title">Վարորդների տերմինալներ</h1>
+            </div>
+            <nav class="rt-tabs" role="tablist" aria-label="Առաքիչի բաժիններ">
+                <a href="#drivers" role="tab" id="crTab-drivers" aria-controls="crPane-drivers">Վարորդներ</a>
+                <a href="#today" role="tab" id="crTab-today" aria-controls="crPane-today">Առաքում այսօր</a>
+                <a href="#money" role="tab" id="crTab-money" aria-controls="crPane-money">Գումար</a>
+                <a href="#marks" role="tab" id="crTab-marks" aria-controls="crPane-marks">Մակնշում</a>
+                <a href="#settings" role="tab" id="crTab-settings" aria-controls="crPane-settings">Կարգավորումներ</a>
+            </nav>
+        </div>
+        <p class="rt-head-lead">Վարորդը տերմինալով տեսնում է իր կետերը, նշում է առաքումը, գումարը, տարան և սկանավորում է մակնշման կոդերը։
+            Այստեղ դուք տեսնում եք, թե ինչ է արվել։ ERP-ում ոչինչ չի փոխվում։</p>
+    </header>
+
+    <div id="crStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+    <div id="crError" class="rt-alert d-none" role="alert">
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        <span id="crErrorText" class="rt-alert-text"></span>
+    </div>
+
+    <!-- ВОДИТЕЛИ И ТЕРМИНАЛЫ -->
+    <section class="cr-pane" id="crPane-drivers" role="tabpanel" aria-labelledby="crTab-drivers" hidden>
+        <div class="cr-grid2">
+            <section class="rt-card" aria-labelledby="crDriversTitle">
+                <div class="rt-card-head"><h2 class="rt-card-title" id="crDriversTitle"><i class="fas fa-id-card" aria-hidden="true"></i>Վարորդներ</h2></div>
+                <p class="rt-card-lead">Յուրաքանչյուր վարորդ մտնում է տերմինալ իր PIN-ով (4–6 թվանշան)։ PIN-ը չի կարող կրկնվել։</p>
+                <div class="rt-table-scroll"><table class="rt-table">
+                    <thead><tr><th scope="col">Անուն</th><th scope="col">PIN</th><th scope="col">Վիճակ</th><th scope="col"><span class="rt-sr-only">Գործողություն</span></th></tr></thead>
+                    <tbody id="crDriverRows"></tbody>
+                </table></div>
+                <form id="crDriverForm" class="cr-form" autocomplete="off">
+                    <h3 class="cr-form-t" id="crDriverFormTitle">Նոր վարորդ</h3>
+                    <input type="hidden" id="crDriverId">
+                    <div class="rt-field"><label for="crDriverName">Անուն</label>
+                        <input id="crDriverName" class="rt-input" maxlength="60" required></div>
+                    <div class="rt-field"><label for="crDriverPin">PIN <span class="cr-hint" id="crDriverPinHint">(4–6 թվանշան)</span></label>
+                        <input id="crDriverPin" class="rt-input" inputmode="numeric" pattern="\d{4,6}" maxlength="6" autocomplete="new-password"></div>
+                    <label class="cr-check"><input type="checkbox" id="crDriverActive" checked> Աշխատում է</label>
+                    <div class="rt-ferr" id="crDriverErr" role="alert"></div>
+                    <div class="cr-btns">
+                        <button type="submit" class="rt-btn rt-btn-primary">Պահպանել</button>
+                        <button type="button" class="rt-linkbtn" id="crDriverNew" hidden>Նոր վարորդ</button>
+                    </div>
+                </form>
+            </section>
+
+            <section class="rt-card" aria-labelledby="crTermTitle">
+                <div class="rt-card-head"><h2 class="rt-card-title" id="crTermTitle"><i class="fas fa-mobile-screen" aria-hidden="true"></i>Տերմինալներ</h2></div>
+                <p class="rt-card-lead">Տերմինալը կցված է մեքենային։ Ստեղծեք տերմինալը, հետո տերմինալով սկանավորեք QR կոդը։
+                    QR-ը ցույց է տրվում <b>միայն մեկ անգամ</b>։ Կորած տերմինալը անջատեք։</p>
+                <div class="rt-table-scroll"><table class="rt-table">
+                    <thead><tr><th scope="col">Տերմինալ</th><th scope="col">Մեքենա</th><th scope="col">Վերջին կապը</th><th scope="col">Վիճակ</th><th scope="col"><span class="rt-sr-only">Գործողություն</span></th></tr></thead>
+                    <tbody id="crTermRows"></tbody>
+                </table></div>
+                <form id="crTermForm" class="cr-form" autocomplete="off">
+                    <h3 class="cr-form-t">Նոր տերմինալ</h3>
+                    <div class="rt-field"><label for="crTermName">Անուն (օրինակ՝ Urovo HOWO)</label>
+                        <input id="crTermName" class="rt-input" maxlength="60" required></div>
+                    <div class="rt-field"><label for="crTermCar">Մեքենա</label>
+                        <select id="crTermCar" class="rt-select" required></select>
+                        <span class="rt-field-hint" id="crTermCarHint">Մեքենաները, որոնք վերջին 90 օրում առաքել են ERP-ի ապրանքագրերով։</span></div>
+                    <div class="rt-field"><label for="crTermUrl">Որտեղից է միանալու</label>
+                        <select id="crTermUrl" class="rt-select">
+                            <option value="public">Ինտերնետով (araqich.orix.am)</option>
+                            <option value="lan">Միայն գրասենյակի ցանցից (փորձարկում)</option>
+                        </select></div>
+                    <div class="rt-ferr" id="crTermErr" role="alert"></div>
+                    <div class="cr-btns"><button type="submit" class="rt-btn rt-btn-primary"><i class="fas fa-qrcode" aria-hidden="true"></i>Ստեղծել և ցույց տալ QR</button></div>
+                </form>
+                <div id="crQrBox" class="cr-qr" hidden>
+                    <p class="cr-qr-warn"><i class="fas fa-eye" aria-hidden="true"></i> Սկանավորեք հիմա՝ էջը փակելուց հետո QR-ը այլևս չի երևա։</p>
+                    <div id="crQr" class="cr-qr-img"></div>
+                    <details class="cr-qr-text"><summary>QR-ի տեքստը (եթե տերմինալը չի կարդում)</summary><code id="crQrText"></code></details>
+                    <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="crQrHide">Թաքցնել</button>
+                </div>
+            </section>
+        </div>
+    </section>
+
+    <!-- ДОСТАВКИ СЕГОДНЯ -->
+    <section class="cr-pane" id="crPane-today" role="tabpanel" aria-labelledby="crTab-today" hidden>
+        <div class="cr-toolbar">
+            <label for="crTodayDate">Օր</label>
+            <input type="date" id="crTodayDate" class="rt-input cr-date">
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="crTodayRefresh"><i class="fas fa-rotate" aria-hidden="true"></i>Թարմացնել</button>
+        </div>
+        <div id="crMismatch"></div>
+        <div id="crTodayCars" class="cr-cars"></div>
+        <details class="rt-fold" id="crFlaggedBox" hidden>
+            <summary><span class="rt-fold-t"><i class="fas fa-flag" aria-hidden="true"></i>Ինչին ուշադրություն դարձնել</span><span class="rt-fold-note" id="crFlaggedNote"></span></summary>
+            <div class="rt-fold-body"><div class="rt-table-scroll"><table class="rt-table">
+                <thead><tr><th scope="col">Ժամ</th><th scope="col">Մեքենա</th><th scope="col">Վարորդ</th><th scope="col">Ինչ</th><th scope="col">Նշում</th></tr></thead>
+                <tbody id="crFlaggedRows"></tbody></table></div></div>
+        </details>
+        <details class="rt-fold" id="crRejectedBox" hidden>
+            <summary><span class="rt-fold-t"><i class="fas fa-ban" aria-hidden="true"></i>Չընդունված տվյալներ</span><span class="rt-fold-note" id="crRejectedNote"></span></summary>
+            <div class="rt-fold-body"><ul id="crRejectedRows" class="cr-list"></ul></div>
+        </details>
+    </section>
+
+    <!-- ДЕНЬГИ ВОДИТЕЛЕЙ -->
+    <section class="cr-pane" id="crPane-money" role="tabpanel" aria-labelledby="crTab-money" hidden>
+        <div class="cr-toolbar">
+            <label for="crMoneyDate">Օր</label>
+            <input type="date" id="crMoneyDate" class="rt-input cr-date">
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="crMoneyRefresh"><i class="fas fa-rotate" aria-hidden="true"></i>Թարմացնել</button>
+        </div>
+        <p class="cr-lead">Որքան է վերցրել վարորդը՝ ապրանքագրերով և պարտքի դիմաց։ Գանձապահը գրում է «Հանձնել է փաստացի»՝ տարբերությունը կերևա։</p>
+        <div id="crMoneyList"></div>
+    </section>
+
+    <!-- МАРКИРОВКА -->
+    <section class="cr-pane" id="crPane-marks" role="tabpanel" aria-labelledby="crTab-marks" hidden>
+        <form id="crMarksForm" class="cr-toolbar" role="search">
+            <label for="crMarksQ" class="rt-sr-only">Որոնում</label>
+            <input id="crMarksQ" class="rt-input cr-search" placeholder="Կոդ, GTIN, հաճախորդ, ՀՎՀՀ կամ ապրանքագիր" maxlength="200">
+            <label for="crMarksFrom">Սկսած</label><input type="date" id="crMarksFrom" class="rt-input cr-date">
+            <label for="crMarksTo">մինչև</label><input type="date" id="crMarksTo" class="rt-input cr-date">
+            <button type="submit" class="rt-btn rt-btn-primary rt-btn-sm"><i class="fas fa-magnifying-glass" aria-hidden="true"></i>Գտնել</button>
+            <a class="rt-btn rt-btn-ghost rt-btn-sm" id="crMarksCsv" href="#"><i class="fas fa-file-csv" aria-hidden="true"></i>CSV</a>
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="crMarksXlsx"><i class="fas fa-file-excel" aria-hidden="true"></i>Excel</button>
+        </form>
+        <p class="cr-lead" id="crMarksNote"></p>
+        <div class="rt-table-scroll"><table class="rt-table cr-small">
+            <thead><tr><th scope="col">Ժամանակ</th><th scope="col">Կոդ</th><th scope="col">GTIN / սերիա</th><th scope="col">Ապրանք</th><th scope="col">Հաճախորդ</th><th scope="col">Ապրանքագիր</th><th scope="col">Վարորդ, մեքենա</th><th scope="col">Տեսակ</th></tr></thead>
+            <tbody id="crMarksRows"></tbody>
+        </table></div>
+    </section>
+
+    <!-- НАСТРОЙКИ -->
+    <section class="cr-pane" id="crPane-settings" role="tabpanel" aria-labelledby="crTab-settings" hidden>
+        <section class="rt-card" aria-labelledby="crProdTitle">
+            <div class="rt-card-head"><h2 class="rt-card-title" id="crProdTitle"><i class="fas fa-barcode" aria-hidden="true"></i>Մակնշվող ապրանքներ</h2></div>
+            <p class="rt-card-lead">Նշեք ապրանքները, որոնց կոդերը վարորդը պետք է սկանավորի, և քանի հատ կա մեկ տուփում (խմբային կոդի համար)։
+                Սկզբում նշված են ERP-ում «մակնշվող» ապրանքները, տուփի քանակը՝ ERP-ի լրացուցիչ միավորից։</p>
+            <div class="cr-toolbar">
+                <label for="crProdQ" class="rt-sr-only">Որոնում</label>
+                <input id="crProdQ" class="rt-input cr-search" placeholder="Կոդ կամ անուն">
+                <label class="cr-check"><input type="checkbox" id="crProdSold" checked> Վաճառվել է վերջին 90 օրում</label>
+                <label class="cr-check"><input type="checkbox" id="crProdMarked"> Միայն մակնշվողները</label>
+                <button type="button" class="rt-btn rt-btn-primary rt-btn-sm" id="crProdSave" disabled>Պահպանել փոփոխությունները</button>
+            </div>
+            <div class="rt-ferr" id="crProdErr" role="alert"></div>
+            <div class="rt-table-scroll cr-tall"><table class="rt-table cr-small">
+                <thead><tr><th scope="col">Կոդ</th><th scope="col">Ապրանք</th><th scope="col">90 օրում</th><th scope="col">Մակնշվող</th><th scope="col">Հատ տուփում</th></tr></thead>
+                <tbody id="crProdRows"></tbody>
+            </table></div>
+        </section>
+
+        <div class="cr-grid2">
+            <section class="rt-card" aria-labelledby="crTareTitle">
+                <div class="rt-card-head"><h2 class="rt-card-title" id="crTareTitle"><i class="fas fa-box-open" aria-hidden="true"></i>Լրացուցիչ տարա</h2></div>
+                <p class="rt-card-lead">ERP-ի տարան (շշեր, արկղեր) տերմինալում կա ինքնաբերաբար։ Այստեղ ավելացրեք այն, ինչ ERP-ում չկա (օրինակ՝ կեգ)։</p>
+                <ul id="crTareList" class="cr-list"></ul>
+                <form id="crTareForm" class="cr-inline" autocomplete="off">
+                    <label for="crTareName" class="rt-sr-only">Տարայի անունը</label>
+                    <input id="crTareName" class="rt-input" placeholder="Կեգ 30լ" maxlength="60" required>
+                    <button type="submit" class="rt-btn rt-btn-ghost rt-btn-sm">Ավելացնել</button>
+                </form>
+            </section>
+            <section class="rt-card" aria-labelledby="crReasonTitle">
+                <div class="rt-card-head"><h2 class="rt-card-title" id="crReasonTitle"><i class="fas fa-list-ul" aria-hidden="true"></i>Պատճառներ</h2></div>
+                <h3 class="cr-form-t">Հրաժարման և մասնակի առաքման պատճառներ</h3>
+                <ul id="crReasonRefuse" class="cr-list"></ul>
+                <form class="cr-inline" data-kind="refuse" autocomplete="off">
+                    <input class="rt-input" placeholder="Նոր պատճառ" maxlength="60" required aria-label="Նոր պատճառ">
+                    <button type="submit" class="rt-btn rt-btn-ghost rt-btn-sm">Ավելացնել</button>
+                </form>
+                <h3 class="cr-form-t">Վերադարձի պատճառներ</h3>
+                <ul id="crReasonReturn" class="cr-list"></ul>
+                <form class="cr-inline" data-kind="return" autocomplete="off">
+                    <input class="rt-input" placeholder="Նոր պատճառ" maxlength="60" required aria-label="Նոր պատճառ">
+                    <button type="submit" class="rt-btn rt-btn-ghost rt-btn-sm">Ավելացնել</button>
+                </form>
+            </section>
+        </div>
+
+        <section class="rt-card" aria-labelledby="crApkTitle">
+            <div class="rt-card-head"><h2 class="rt-card-title" id="crApkTitle"><i class="fab fa-android" aria-hidden="true"></i>Հավելվածի թարմացում (APK)</h2></div>
+            <p class="rt-card-lead" id="crApkCurrent"></p>
+            <form id="crApkForm" class="cr-inline" autocomplete="off">
+                <label for="crApkFile" class="rt-sr-only">APK ֆայլ</label>
+                <input type="file" id="crApkFile" accept=".apk,application/vnd.android.package-archive" required>
+                <label for="crApkCode">version_code</label><input id="crApkCode" class="rt-input cr-num" inputmode="numeric" required>
+                <label for="crApkName">version_name</label><input id="crApkName" class="rt-input cr-num" placeholder="1.0.2" maxlength="40" required>
+                <button type="submit" class="rt-btn rt-btn-ghost rt-btn-sm">Բեռնել</button>
+            </form>
+            <div class="rt-ferr" id="crApkErr" role="alert"></div>
+        </section>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/courier.js') }}?v=1"></script>
+{% endblock %}

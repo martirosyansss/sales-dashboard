@@ -1,0 +1,60 @@
+# -*- coding: utf-8 -*-
+"""Токены терминалов, сессии водителей и PIN.
+
+Инварианты:
+- токен терминала и сессии — 32 случайных байта (base64url); в базе хранится ТОЛЬКО sha256 (hex);
+  поиск — по хешу, затем сравнение hmac.compare_digest (постоянное время);
+- PIN — 4–6 цифр, хранится хешем pbkdf2 (werkzeug, соль на запись). Число итераций снижено
+  против дефолта werkzeug: при входе PIN сверяется со всеми активными водителями (PIN определяет
+  водителя), а перебор 10^6 PIN всё равно отсекает блокировка терминала после 5 ошибок.
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import re
+import secrets
+
+from werkzeug.security import check_password_hash, generate_password_hash
+
+PIN_RE = re.compile(r'^\d{4,6}$')
+PIN_METHOD = 'pbkdf2:sha256:60000'
+TOKEN_BYTES = 32
+_TOKEN_RE = re.compile(r'^[A-Za-z0-9_-]{20,128}$')
+
+
+def new_token() -> str:
+    """32 случайных байта в base64url без «=»."""
+    return secrets.token_urlsafe(TOKEN_BYTES)
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+def token_shape_ok(token: object) -> bool:
+    """Строка похожа на наш токен (до обращения к базе: мусор не ищем)."""
+    return isinstance(token, str) and bool(_TOKEN_RE.match(token))
+
+
+def same_hash(a: str, b: str) -> bool:
+    return hmac.compare_digest(a.encode('ascii'), b.encode('ascii'))
+
+
+def valid_pin(pin: object) -> bool:
+    return isinstance(pin, str) and bool(PIN_RE.match(pin))
+
+
+def hash_pin(pin: str) -> str:
+    if not valid_pin(pin):
+        raise ValueError('PIN — 4–6 цифр')
+    return generate_password_hash(pin, method=PIN_METHOD)
+
+
+def check_pin(pin_hash: str | None, pin: str) -> bool:
+    if not pin_hash or not valid_pin(pin):
+        return False
+    try:
+        return check_password_hash(pin_hash, pin)
+    except (ValueError, TypeError):   # битый хеш в базе — не совпадение, а не падение входа
+        return False

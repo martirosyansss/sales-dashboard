@@ -37,6 +37,10 @@ dbhub.toml
 # Карта дорог OpenStreetMap и кэши графа/расстояний (раздел «Маршруты», этап 5)
 data/roads/
 
+# «Առաքիչ»: фото терминалов и APK — рядом с courier.db, в git не попадают
+courier_photos/
+courier_apk/
+
 # Database
 *.db
 *.db-wal

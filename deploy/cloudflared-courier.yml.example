@@ -1,0 +1,18 @@
+# Cloudflare Tunnel для «Առաքիչ» (API терминалов водителей) — пример config.yml для cloudflared.
+# Скопируйте в C:\ProgramData\Cloudflare\cloudflared\config.yml (или в %USERPROFILE%\.cloudflared\config.yml),
+# подставьте <TUNNEL_ID> и путь к файлу учётных данных туннеля. Подробности — deploy/COURIER_TUNNEL.md.
+# Секретов в этом файле нет; файл <TUNNEL_ID>.json с учётными данными в git НЕ кладётся.
+
+tunnel: <TUNNEL_ID>
+credentials-file: C:\ProgramData\Cloudflare\cloudflared\<TUNNEL_ID>.json
+
+ingress:
+  # Наружу — ТОЛЬКО API терминалов. Дашборд остаётся во внутренней сети.
+  - hostname: araqich.orix.am
+    path: ^/api/courier/v1/
+    service: http://localhost:5000
+    originRequest:
+      connectTimeout: 10s
+      noTLSVerify: false
+  # Всё остальное (другие пути araqich.orix.am и любые другие хосты) — 404 на стороне Cloudflare.
+  - service: http_status:404

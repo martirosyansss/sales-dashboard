@@ -392,6 +392,14 @@ def _auth_and_scope_gate():
     endpoint = request.endpoint or ''
     path = request.path
 
+    # «Առաքիչ»: снаружи (Cloudflare Tunnel, araqich.orix.am) открыт только API терминалов — остальное 404.
+    blocked = courier.public_guard(request)
+    if blocked is not None:
+        return blocked
+    # API терминалов — без входа в дашборд: токен терминала и PIN проверяет courier/api.py.
+    if path.startswith(courier.API_PREFIX):
+        return None
+
     # Статика и публичные страницы — без авторизации.
     if endpoint == 'static' or path == '/favicon.ico' or path in ('/login', '/logout'):
         return None
@@ -12953,6 +12961,9 @@ def api_production_ai_plan():
 
 import route_optimizer
 route_optimizer.init_app(app, db)
+
+import courier
+courier.init_app(app, db)
 
 if __name__ == '__main__':
     print("=" * 80)

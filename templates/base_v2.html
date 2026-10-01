@@ -126,6 +126,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link {% if request.path.startswith('/courier') %}active{% endif %}" href="/courier">
+                            <i class="fas fa-truck me-1"></i> Առաքիչ
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link {% if request.path == '/ai-assistant' %}active{% endif %}" href="/ai-assistant">
                             <i class="fas fa-robot me-1"></i> AI Помощник
                         </a>

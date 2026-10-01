@@ -1,0 +1,69 @@
+/* «Առաքիչ» /courier — офис терминалов водителей, армянский, «для чайников».
+   Поверх routes.css: те же токены (--rt-*), только классы этой страницы (cr-*). */
+
+#crPage {
+    --rt-font: 'Golos Text', 'Noto Sans Armenian', 'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    max-width: 1320px; margin: 0 auto;
+}
+.cr-kicker { margin: 0 0 2px; font-size: .9375rem; font-weight: 700; color: var(--rt-acc); }
+#crPage .rt-tabs a[aria-selected="true"] { background: var(--rt-acc); color: #06201d; }
+.cr-pane { padding-top: 18px; }
+.cr-lead { color: var(--rt-fg-dim); margin: 6px 0 14px; max-width: 92ch; }
+.cr-hint { color: var(--rt-fg-mute); font-size: .8125rem; }
+
+.cr-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 12px; align-items: start; }
+.cr-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-bottom: 14px; }
+.cr-toolbar > label { color: var(--rt-fg-dim); font-size: .9375rem; }
+.rt-input.cr-date { width: auto; min-width: 160px; height: 38px; font-family: var(--rt-mono); color-scheme: dark; }
+.rt-input.cr-search { flex: 1 1 260px; min-width: 0; height: 38px; }
+.rt-input.cr-num { width: 120px; height: 34px; font-family: var(--rt-mono); }
+.cr-check { display: inline-flex; align-items: center; gap: 8px; font-size: .9375rem; color: var(--rt-fg); cursor: pointer; margin: 4px 0 10px; }
+.cr-btns { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.cr-form { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--rt-line); }
+#crPage .cr-form-t { font-size: 1rem; font-weight: 700; margin: 0 0 10px; }
+.cr-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 14px; }
+.cr-inline .rt-input { flex: 1 1 200px; height: 34px; min-width: 0; }
+.cr-inline .rt-input.cr-num { flex: 0 0 120px; }
+.cr-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.cr-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 10px;
+    border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); background: var(--rt-inset); }
+.cr-list li.is-off { opacity: .6; }
+.cr-list li .grow { flex: 1 1 auto; min-width: 0; }
+.cr-small td, .cr-small th { font-size: .875rem; }
+.cr-tall { max-height: 560px; overflow: auto; }
+.cr-mono { font-family: var(--rt-mono); word-break: break-all; }
+.cr-muted { color: var(--rt-fg-mute); }
+
+/* QR регистрации терминала — белый фон, чтобы камера читала */
+.cr-qr { margin-top: 16px; padding: 14px; border: 1px dashed var(--rt-warn-line); border-radius: var(--rt-radius-sm); background: var(--rt-warn-bg); }
+.cr-qr-warn { margin: 0 0 10px; font-weight: 600; color: var(--rt-warn); }
+.cr-qr-img { background: #fff; display: inline-block; padding: 8px; border-radius: 8px; }
+.cr-qr-img svg { display: block; width: min(320px, 70vw); height: auto; }
+.cr-qr-text { margin: 10px 0; font-size: .8125rem; }
+.cr-qr-text code { display: block; margin-top: 6px; word-break: break-all; color: var(--rt-fg); }
+
+/* Машины дня */
+.cr-cars { display: grid; gap: 12px; margin-bottom: 14px; }
+.cr-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin: 8px 0 10px; }
+.cr-stat { display: flex; flex-direction: column; padding: 9px 12px; border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); background: var(--rt-inset); }
+.cr-stat b { font-size: 1.375rem; font-weight: 800; line-height: 1.2; }
+.cr-stat span { font-size: .8125rem; color: var(--rt-fg-dim); }
+.cr-stat.is-ok b { color: var(--rt-ok); }
+.cr-stat.is-warn b { color: var(--rt-warn); }
+.cr-stat.is-bad b { color: var(--rt-danger); }
+.cr-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: .875rem; color: var(--rt-fg-dim); }
+
+/* Деньги: разница «сдал − взял» */
+.cr-money-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--rt-line); }
+.cr-money-foot .rt-input { width: 150px; height: 38px; font-family: var(--rt-mono); text-align: right; }
+.cr-total { font-size: 1.0625rem; }
+.cr-diff { font-weight: 800; padding: 3px 10px; border-radius: 999px; }
+.cr-diff.is-ok { color: var(--rt-ok); background: var(--rt-ok-bg); }
+.cr-diff.is-bad { color: var(--rt-danger); background: var(--rt-danger-bg); }
+.cr-num-cell { text-align: right; font-family: var(--rt-mono); white-space: nowrap; }
+
+@media (max-width: 640px) {
+    #crPage .rt-tabs { width: 100%; overflow-x: auto; flex-wrap: nowrap; }
+    .rt-input.cr-date { min-width: 0; flex: 1 1 140px; }
+    .cr-money-foot .rt-input { width: 100%; }
+}
