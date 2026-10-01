@@ -1354,6 +1354,20 @@
         const snap = parseTime(r.snapshot_as_of);
         foot.append((n ? 'Предложений: ' + fmt(n) + ' — ' + GROUP_ORDER.filter(g => cnt[g]).map(g => words[g] + ' ' + fmt(cnt[g])).join(', ') + '. '
             : 'Предложений нет. ') + (snap ? 'Данные ERP на ' + dayTime(snap) + '.' : ''));
+        // Дизель грузовиков по полной модели (ответ владельца №33): удержан ли и сколько изменений снято
+        const g = r.fleet_gate;
+        if (g) {
+            const lit = (v) => fmt(v, 1) + NB + 'л/нед';
+            if (!g.ok) {
+                foot.append(h('strong', { class: 'ro-warn', text: ' Дизель грузовиков удержать не удалось: было ' + lit(g.liters_before)
+                    + ', стало ' + lit(g.liters_after) + '. Остаток — от обязательных изменений (каждую неделю, перенос с воскресенья, ваши решения).' }));
+            } else if (g.reverted > 0) {
+                foot.append(' Дизель грузовиков не растёт: было ' + lit(g.liters_before) + ', стало ' + lit(g.liters_after) + '. '
+                    + (r.params && r.params.mode === 'transfer'
+                        ? 'Передачи, которые добавили бы дизель, не предлагаются.'
+                        : fmt(g.reverted) + NB + 'переносов не предлагаются — они добавили бы дизель.'));
+            }
+        }
         if (r.fuel_price_source === 'fallback') {
             foot.append(' Цены топлива в настройках не указаны — при выборе дней программа брала условную цену '
                 + fmt(r.fuel_price_used) + NB + 'драм за литр. ', h('a', { href: '/routes/settings#fuel', text: 'Указать цены' }), '.');

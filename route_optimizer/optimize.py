@@ -736,6 +736,7 @@ class _Ctx:
     dist: _Distances | None = None               # расстояния между клиентами расчёта (парк, режим Б)
     fleet_before: sr.FleetEstimate | None = None  # парк текущего плана — эффект изменений
     fleet_a: sr.FleetEstimate | None = None       # парк итога режима А — старт режима Б
+    full_fleet: Any = None                        # _FullFleet — полная модель парка для проверки дизеля (№33)
 
     raised: dict[int, ev.CustomerModel] = field(default_factory=dict)   # №30: спрос ≤ частоты «было»
 
@@ -822,6 +823,12 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
         parts[t.agent_id] = part
     if progress:
         progress(len(run_ids), len(run_ids), None)
+    # №33: дизель грузовиков по полной модели не растёт — откат переносов, которые его увеличивают
+    gate = _fleet_gate(ctx, tasks, outcomes) if ctx.fleet is not None else None
+    if gate is not None and gate.reverted:
+        for t, o in zip(tasks, outcomes):
+            if any(a == t.agent_id for a, _ in gate.reverted):
+                parts[t.agent_id] = _manager_part(ctx, t, o)
     ctx.fleet_a = fleet
     fleet_before = ctx.fleet_before.total if ctx.fleet_before is not None else None
     fleet_after = fleet.total if fleet is not None else None
@@ -839,6 +846,7 @@ def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | Non
     after = ev.evaluate_plan(after_snap, bundle, calib, run_ids,
                              visit_minutes=before.visit_minutes, models=after_models, roads=roads)
     result = _result(ctx, run_ids, parts, after_snap, after, f_after_inc)
+    result['fleet_gate'] = gate.to_json() if gate is not None else None
     result['seconds'] = round(clock() - started, 1)
     logger.info('[Routes] Оптимизация: менеджеров %d, изменений %d, %.1f с', len(run_ids),
                 sum(len(m['changes']) for m in result['managers']), result['seconds'])
@@ -915,11 +923,6 @@ def _search_manager(ctx: _Ctx, task: _Task) -> tuple[ManagerOutcome, dict[str, A
         state.fleet.polish()
         state.refresh()
     final = [_pairs_of(p) for p in state.pattern]
-
-    changes, hints = _day_changes(ctx, agent_id, task.cids, task.specs, final, state.pattern, before_state,
-                                  ctx.fleet is not None)
-    _sort_changes(changes)
-
     code = _code(ctx.snap, agent_id)
     logger.info('[Routes] Оптимизация %s: клиентов %d, C %.0f → %.0f драм/нед (старт %.0f; с парком), '
                 'ходов %d, возмущений %d, %.1f с%s', code, len(task.cids), before_state.total,
@@ -927,12 +930,278 @@ def _search_manager(ctx: _Ctx, task: _Task) -> tuple[ManagerOutcome, dict[str, A
                 ' — СТОП ПО ВРЕМЕНИ' if stats.time_capped else '')
     outcome = ManagerOutcome(agent_id, code, task.cids, task.specs, final, before_state.own_total(),
                              state.own_total(), stats)
-    info = ctx.pairs.get(agent_id, {})
-    part = {'changes': changes, 'hints': hints, 'time_capped': stats.time_capped,
+    return outcome, _manager_part(ctx, task, outcome)
+
+
+def _manager_part(ctx: _Ctx, task: _Task, outcome: ManagerOutcome) -> dict[str, Any]:
+    """Предложения менеджера для результата — по его итоговому состоянию поиска (и после проверки
+    дизеля, №33: она возвращает дни части клиентов и пересчитывает это)."""
+    state, before_state = task.state, task.before_state
+    outcome.final = [_pairs_of(p) for p in state.pattern]
+    outcome.cost_after = state.own_total()
+    changes, hints = _day_changes(ctx, task.agent_id, task.cids, task.specs, outcome.final, state.pattern,
+                                  before_state, ctx.fleet is not None)
+    _sort_changes(changes)
+    info = ctx.pairs.get(task.agent_id, {})
+    return {'changes': changes, 'hints': hints, 'time_capped': outcome.stats.time_capped,
             'cost_before': before_state.own_total(), 'cost_after': state.own_total(),
-            'final': dict(zip(task.cids, final)), 'addresses': {c: info[c].address_id for c in task.cids},
+            'final': dict(zip(task.cids, outcome.final)), 'addresses': {c: info[c].address_id for c in task.cids},
             'state': state}   # режим Б начинает с туров этого состояния (в результат не попадает)
-    return outcome, part
+
+
+# --- Дизель грузовиков по полной модели (ответ владельца №33) ---
+
+GATE_EPS_L = 1e-6            # л/нед: полная модель детерминирована (пробы с постоянными зёрнами) — допуск
+                             # только на сложение, «не больше» значит не больше
+GATE_MAX_TRIES = 120         # предел попыток отката (не времени — итог не зависит от скорости машины)
+
+
+class _FullFleet:
+    """Полная модель парка (Монте-Карло по дням доставки — та же, что в итоговой оценке «было/стало»):
+    литры в неделю по дням доставки плана. День доставки пересчитывается, только если изменился его
+    набор визитов: ключ кэша — (клиент, день визита, точка, p заказа); прошлые заказы клиента (values)
+    в пределах расчёта зависят только от клиента (demand_capped меняет лишь λ), поэтому в ключе не нужны.
+    Один на расчёт (ctx.full_fleet): режим Б пользуется кэшем режима А."""
+
+    def __init__(self, ctx: _Ctx):
+        snap, s = ctx.snap, ctx.bundle.settings
+        self.ctx = ctx
+        self.trucks, _ = fl.fleet_trucks(ctx.bundle.resolved_trucks(snap.active_cars),
+                                         {code: car.name for code, car in snap.cars.items()})
+        self.tn = fl.TruckNorms.from_settings(s)
+        self.coords = dict(ctx.before.coords)
+        self.cache: dict[tuple, float] = {}
+        self._before: tuple[dict[tuple[int, int], float], float] | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self.ctx.bundle.depot is not None and bool(self.trucks)
+
+    def days(self, plan: CurrentPlan, models: Mapping[int, ev.CustomerModel]) -> dict[tuple[int, int], float]:
+        ctx = self.ctx
+        included = ctx.before.included_ids
+        groups: dict[tuple[int, int], list[fl.DeliveryVisit]] = {}
+        for day in plan.days:
+            if day.agent_id not in included:
+                continue
+            for v in ev._day_visits(ctx.snap, day, models, ctx.before.visit_minutes, self.coords,
+                                    ctx.bundle.geo_overrides):
+                if v.point is not None:
+                    key = fl.delivery_key(day.week, day.weekday, plan.cycle_weeks)
+                    groups.setdefault(key, []).append(fl.DeliveryVisit(v.customer_id, day.weekday, v.point,
+                                                                       v.year, v.peak))
+        out = {}
+        for key, vs in groups.items():
+            sig = (key, tuple(sorted((v.customer_id, v.weekday, v.point, v.year.p) for v in vs)))
+            if sig not in self.cache:
+                self.cache[sig] = fl.day_liters(vs, ctx.bundle.depot, self.trucks, ctx.before.norms, self.tn)
+            out[key] = self.cache[sig]
+        return out
+
+    def before(self) -> tuple[dict[tuple[int, int], float], float]:
+        """«Было»: литры по дням доставки и в неделю (план ERP)."""
+        if self._before is None:
+            plan = self.ctx.snap.plan
+            days = self.days(plan, self.ctx.before.models)
+            self._before = (days, math.fsum(days.values()) / plan.cycle_weeks)
+        return self._before
+
+    def week(self, plan: CurrentPlan, models: Mapping[int, ev.CustomerModel]) -> tuple[dict[tuple[int, int], float], float]:
+        days = self.days(plan, models)
+        return days, math.fsum(days.values()) / plan.cycle_weeks
+
+
+def _full_fleet(ctx: _Ctx) -> _FullFleet | None:
+    if ctx.full_fleet is None:
+        ctx.full_fleet = _FullFleet(ctx)
+    return ctx.full_fleet if ctx.full_fleet.ready else None
+
+
+def _plan_models(ctx: _Ctx, plan: CurrentPlan) -> dict[int, ev.CustomerModel]:
+    """Модели клиентов для плана — с его частотами (как итоговая оценка «стало»)."""
+    f = plan.visits_per_week_among(ctx.before.included_ids)
+    return {c: replace(m, visits_per_week=f.get(c, 0.0)) for c, m in {**ctx.before.models, **ctx.raised}.items()}
+
+
+def gate_target(spec: PairSpec, workdays: Collection[int]) -> pt.Pattern:
+    """Шаблон отката: допустимый (той же частоты) с наибольшим числом общих дней с планом ERP
+    (визит в нерабочий день — уже на субботе); ничья — по порядку шаблонов (детерминизм)."""
+    base = set(pt.workday_pattern(spec.current, workdays))
+    return min(spec.allowed, key=lambda p: (-len(base & set(p)), p))
+
+
+GATE_OK = 'ok'                       # «стало» не больше «было»
+GATE_ATTEMPTS = 'attempts'           # исчерпан GATE_MAX_TRIES
+GATE_NO_CANDIDATES = 'no_candidates' # откатывать больше нечего (остаток — от обязательных изменений)
+GATE_NO_TRANSFERS = 'no_transfers'   # режим Б: передачи не удержали дизель — режим Б без них
+
+
+@dataclass
+class GateResult:
+    liters_before: float
+    liters_start: float               # «стало» поиска — до проверки
+    liters_after: float
+    reverted: list[tuple[int, int]]   # режим А — (менеджер, клиент), чьи дни возвращены; Б — (у кого был, клиент)
+    reason: str
+    attempts: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return self.liters_after <= self.liters_before + GATE_EPS_L
+
+    def to_json(self) -> dict[str, Any]:
+        """Для результата и страницы: владелец видит, удержан ли дизель, и сколько изменений снято."""
+        return {'liters_before': round(self.liters_before, 1), 'liters_search': round(self.liters_start, 1),
+                'liters_after': round(self.liters_after, 1), 'reverted': len(self.reverted),
+                'ok': self.ok, 'reason': self.reason}
+
+
+def _gate_log(mode: str, g: GateResult) -> None:
+    text = ('[Routes] Дизель парка%s (полная модель): было %.2f, поиск %.2f, стало %.2f л/нед; снято %d, '
+            'попыток %d — %s')
+    args = (mode, g.liters_before, g.liters_start, g.liters_after, len(g.reverted), g.attempts, g.reason)
+    (logger.info if g.ok else logger.warning)(text, *args)
+
+
+def _fleet_gate(ctx: _Ctx, tasks: Sequence[_Task], outcomes: Sequence[ManagerOutcome]) -> GateResult | None:
+    """№33: дизель грузовиков по полной модели «стало» не больше «было». Поиск дней идёт по быстрой
+    оценке парка, а она иногда ошибается со знаком (другая раскладка рейсов) — поэтому итог проверяется
+    полной моделью. Пока «стало» больше: день доставки с наибольшим приростом → необязательный перенос,
+    привёзший в этот день груз, возвращается на дни, ближайшие к плану ERP (частота та же). Выбор:
+    сначала те, чьи дни возврата сами не выросли; на первом этапе — с наименьшей ценой для менеджера на
+    кг (оценка поиска: км, слабые дни), когда такие кончатся — с наибольшим грузом. Откат, не снизивший
+    литры, отменяется; на втором этапе не помогавшие пробуются снова (после других откатов могут помочь).
+    Не трогаются: закреплённое владельцем, «убрать из маршрута», частота (в т.ч. правило №30), клиенты
+    без ожидаемого груза. outcomes[k].final и состояния поиска обновляются."""
+    full = _full_fleet(ctx)
+    if full is None:
+        return None
+    workdays = ctx.bundle.settings['workdays']
+    plan = ctx.snap.plan
+    by_agent = {o.agent_id: o for o in outcomes}
+    bw = plan.cycle_weeks
+    before_days, liters_before = full.before()
+    # частоты откат не меняет — модели клиентов «стало» одни на всю проверку (как в итоговой оценке)
+    models = _plan_models(ctx, _after_plan(plan, by_agent, ctx.pairs, workdays))
+
+    def after() -> tuple[dict[tuple[int, int], float], float]:
+        return full.week(_after_plan(plan, by_agent, ctx.pairs, workdays), models)
+
+    days, total = after()
+    liters_start = total
+    reverted: list[tuple[int, int]] = []
+    tried: set[tuple[int, int]] = set()   # не помогли на этом этапе
+    attempts = 0
+    reason = GATE_OK
+    gentle = True
+    while total > liters_before + GATE_EPS_L:
+        if attempts >= GATE_MAX_TRIES:
+            reason = GATE_ATTEMPTS
+            break
+        inc = {k: v - before_days.get((k[0] if bw == pt.CYCLE_WEEKS else 1, k[1]), 0.0) for k, v in days.items()}
+        pick = None
+        for key in sorted(inc, key=lambda k: (-inc[k], k)):
+            if inc[key] <= 0:
+                break
+            options = []
+            for t, o in zip(tasks, outcomes):
+                for i, spec in enumerate(t.specs):
+                    if spec.locked or spec.removed or (t.agent_id, i) in tried:
+                        continue
+                    fin, tgt = o.final[i], gate_target(spec, workdays)
+                    lands = {fl.delivery_key(w, d, pt.CYCLE_WEEKS) for w, d in fin}
+                    back = {fl.delivery_key(w, d, pt.CYCLE_WEEKS) for w, d in tgt}
+                    if fin == tgt or key not in lands or key in back:
+                        continue
+                    vp = ctx.visit(t.cids[i], ctx.freq_after[t.cids[i]])
+                    kg = vp.p_year * vp.kg
+                    if kg <= 0:          # без ожидаемого груза литры не изменятся
+                        continue
+                    worse_back = max(inc.get(k, 0.0) for k in back - lands) if back - lands else 0.0
+                    if gentle:
+                        harm = max(0.0, t.state.eval_relocate(i, _slots(tgt))[0])
+                        options.append((worse_back > 0, harm / kg, t.agent_id, i, tgt))
+                    else:
+                        options.append((worse_back > 0, -kg, t.agent_id, i, tgt))
+            if options:
+                pick = min(options)
+                break
+        if pick is None:
+            if gentle:
+                gentle = False
+                tried.clear()
+                continue
+            reason = GATE_NO_CANDIDATES
+            break
+        *_, agent_id, i, tgt = pick
+        o = by_agent[agent_id]
+        was = o.final[i]
+        o.final[i] = tgt
+        attempts += 1
+        new_days, new_total = after()
+        if new_total < total - 1e-9:
+            days, total = new_days, new_total
+            reverted.append((agent_id, i))
+        else:
+            o.final[i] = was
+        tried.add((agent_id, i))
+    # состояния поиска — как итог (туры дней, быстрая оценка парка; с них начинает режим Б)
+    tasks_by_agent = {t.agent_id: t for t in tasks}
+    for agent_id, i in reverted:
+        state = tasks_by_agent[agent_id].state
+        state.apply(state.eval_relocate(i, _slots(by_agent[agent_id].final[i]))[1])
+    g = GateResult(liters_before, liters_start, total,
+                   [(a, tasks_by_agent[a].cids[i]) for a, i in reverted], reason, attempts)
+    _gate_log('', g)
+    return g
+
+
+def _transfer_gate(ctx: _Ctx, market: tr.Market, start: tuple, origin: Mapping[int, int],
+                   fixed: Mapping[int, Any], plan_now: Callable[[], CurrentPlan]) -> GateResult | None:
+    """№33 в режиме Б: дизель грузовиков по полной модели «стало» не больше «было». Передачи, найденные
+    поиском, откатываются по одной (сначала — с наибольшим грузом; не больше GATE_MAX_TRIES): клиент
+    возвращается своему менеджеру в лучший для него день; откат не помог — отменяется. Всё ещё больше —
+    режим Б без найденных передач: start — снимок рынка до поиска (итог режима А, проверенный, плюс
+    принятые владельцем передачи)."""
+    full = _full_fleet(ctx)
+    if full is None:
+        return None
+    _, liters_before = full.before()
+
+    def total_now() -> float:
+        p = plan_now()
+        return full.week(p, _plan_models(ctx, p))[1]
+
+    total = start_total = total_now()
+    reverted: list[tuple[int, int]] = []
+
+    def load(c: int) -> float:
+        vp = ctx.visit(c, ctx.freq_after[c])
+        return vp.p_year * vp.kg
+
+    moved = sorted((c for c, b in market.owner.items() if b != origin[c] and c not in fixed and load(c) > 0),
+                   key=lambda c: (-load(c), c))
+    attempts = 0
+    for c in moved:
+        if total <= liters_before + GATE_EPS_L or attempts >= GATE_MAX_TRIES:
+            break
+        snap, frm = market.snapshot(), market.owner[c]
+        market.apply(market.eval_transfer(c, origin[c])[1])
+        attempts += 1
+        new = total_now()
+        if new < total - 1e-9:
+            total = new
+            reverted.append((frm, c))
+        else:
+            market.restore(snap)
+    reason = GATE_OK
+    if total > liters_before + GATE_EPS_L:
+        market.restore(start)
+        total = total_now()
+        reason = GATE_NO_TRANSFERS
+    g = GateResult(liters_before, start_total, total, reverted, reason, attempts)
+    _gate_log(', режим Б', g)
+    return g
 
 
 def _weights(ctx: _Ctx, agent_id: int, me: ev.ManagerEval) -> sr.Weights:
@@ -1009,6 +1278,9 @@ def _day_changes(ctx: _Ctx, agent_id: int, cids: Sequence[int], specs: Sequence[
 # --- Режим Б: передача магазинов между менеджерами (этап 4) ---
 
 TRANSFER_MAX_SECONDS = 60.0      # страховочный предел поиска передач: весь расчёт — не больше 2 мин
+RUN_TARGET_SECONDS = 105.0       # режим Б целиком (режим А, передачи, проверка дизеля) — с запасом до 2 мин
+TRANSFER_MIN_SECONDS = 15.0      # поиск передач — не меньше, даже если режим А шёл долго
+GATE_RESERVE_SECONDS = 15.0      # запас на проверку дизеля после поиска передач (№33)
 TRANSFER_HOME_CANDIDATES = 3     # кандидаты передачи: + 3 менеджера, чей дом ближе всего к клиенту
 TRANSFER_NEIGHBORS = 10          # ближайшие клиенты в радиусе — партнёры обмена
 TRANSFER_GROUP_RADIUS = 3.0      # передача группой: клиенты того же менеджера в те же дни — в 3 радиусах
@@ -1259,9 +1531,29 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
         clients.append(tr.Client(c, a, {m: index_of[m][c] for m in (a, *mgrs)}, fx, near_of.get(c, frozenset())))
     market = tr.Market(states, clients, neighbors, float(s['penalty_transfer']), around)
     budget = min(float(s['optimizer_seconds_per_manager']) * len(run_ids), TRANSFER_MAX_SECONDS)
+    # весь расчёт — к RUN_TARGET_SECONDS: режим А с проверкой дизеля уже занял время, после поиска — ещё проверка
+    budget = max(TRANSFER_MIN_SECONDS,
+                 min(budget, RUN_TARGET_SECONDS - (ctx.clock() - started) - GATE_RESERVE_SECONDS))
     seed = zlib.crc32(('transfer|' + ','.join(map(str, run_ids))).encode('utf-8'))
     setup_seconds = ctx.clock() - t0
+    start = market.snapshot()
     tstats = tr.search(market, seconds=budget, seed=seed, clock=ctx.clock)
+    address = {(a, c): info.address_id for a in run_ids for c, info in ctx.pairs.get(a, {}).items()}
+    for c, a in origin.items():
+        for b in run_ids:
+            address.setdefault((b, c), address[(a, c)])
+    base_days = {a: {(w, d) for c in own_of[a] for w, d in ctx.specs[(a, c)].current if d in workdays}
+                 for a in run_ids}
+
+    def plan_now() -> CurrentPlan:
+        fin = {a: {c: _pairs_of(states[a].pattern[i]) for c, i in index_of[a].items() if states[a].pattern[i]}
+               for a in run_ids}
+        return _after_plan_moved(snap.plan, fin, address, base_days)
+
+    # №33: дизель грузовиков по полной модели не растёт — откат передач, которые его увеличивают
+    gate = _transfer_gate(ctx, market, start, origin, fixed, plan_now) if ctx.fleet is not None else None
+    if gate is not None:
+        tstats.cost_end = market.total   # стоимость — итога после проверки, а не того, что она откатила
 
     # итог по менеджерам: свои клиенты — предложения по дням; переданные — предложение «передать»
     finals = {a: {c: _pairs_of(states[a].pattern[i]) for c, i in index_of[a].items() if states[a].pattern[i]}
@@ -1295,12 +1587,6 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
                     'cost_before': before_states[a].own_total(), 'cost_after': states[a].own_total()}
 
     # «Стало»: у каждого менеджера — кто у него сейчас (адрес — из шаблона ERP прежнего менеджера)
-    address = {(a, c): info.address_id for a in run_ids for c, info in ctx.pairs.get(a, {}).items()}
-    for c, a in origin.items():
-        for b in run_ids:
-            address.setdefault((b, c), address[(a, c)])
-    base_days = {a: {(w, d) for c in own_of[a] for w, d in ctx.specs[(a, c)].current if d in workdays}
-                 for a in run_ids}
     after_plan = _after_plan_moved(snap.plan, finals, address, base_days)
     after_snap = replace(snap, plan=after_plan)
     included = before.included_ids
@@ -1311,6 +1597,7 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
                              models=after_models, roads=norms.roads)
     result = _result(ctx, run_ids, parts, after_snap, after, f_after_inc)
     result['params']['mode'] = MODE_TRANSFER
+    result['fleet_gate'] = gate.to_json() if gate is not None else None
 
     def side(v: list) -> dict[str, Any]:
         return {'stores': v[0], 'revenue_month': _i(v[1]), 'debt': _i(v[2])}

@@ -1480,3 +1480,4 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
     .rt-page .rt-tabs a { font-size: .8125rem; padding: 0 4px; }
     .dp-dayrow .rt-input.dp-date { flex: 1 1 100%; }
 }
+.ro-warn { color: var(--rt-danger); font-weight: 600; }

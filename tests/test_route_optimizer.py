@@ -2460,7 +2460,7 @@ def test_store_migrates_copy_of_owner_db(tmp_path):
 
 # ============================== этап 3: API ==============================
 
-RESULT_KEYS = {'cycle_weeks', 'params', 'generated_at', 'seconds', 'snapshot_as_of', 'fuel_price_used',
+RESULT_KEYS = {'cycle_weeks', 'fleet_gate', 'params', 'generated_at', 'seconds', 'snapshot_as_of', 'fuel_price_used',
                'fuel_price_source', 'truck_costs', 'before', 'after', 'managers', 'customers',
                'stale_decisions'}
 MANAGER_RESULT_KEYS = {'agent_id', 'code', 'name', 'before', 'after', 'feasibility', 'time_capped',
@@ -4519,6 +4519,102 @@ def test_search_gauss_seidel_aligns_far_orders_with_other_manager():
                      [line.current for line in prob.lines], params, change_penalty=300.0)
     sr.search(alone, seconds=30)
     assert alone.pattern[4] == _slots(_wk(2))                      # без парка переносить незачем
+
+
+def _fake_full_fleet(snap, penalty):
+    """Подмена полной модели парка: литры дня доставки = визиты + penalty за визит не в свой день ERP."""
+    erp_days = {(a, c): {d for _, d in info.pattern} for a, cs in opt.plan_pairs(snap.plan).items()
+                for c, info in cs.items()}
+
+    def days(self, plan, models):
+        out = Counter()
+        for day in plan.days:
+            for v in day.visits:
+                key = fl.delivery_key(day.week, day.weekday, plan.cycle_weeks)
+                out[key] += 1.0 + (penalty if day.weekday not in erp_days.get((day.agent_id, v.customer_id), ()) else 0.0)
+        return dict(out)
+    return days
+
+
+def test_fleet_gate_reverts_moves_that_add_full_model_diesel(monkeypatch):
+    """№33: полная модель говорит, что перенос визита на другой день добавляет дизель — проверка
+    возвращает такие переносы на дни ERP, пока «стало» не станет не больше «было»; предложения и
+    состояния поиска — по итогу. Частоты и обязательное не трогаются."""
+    snap, bundle = _big_snapshot(n_agents=2, per_agent=60), _truck_bundle()
+    plain = opt.run_optimization(snap, bundle, None, [], {})
+    g0 = plain.result['fleet_gate']
+    assert g0 is not None and g0['ok'] and g0['reason'] == opt.GATE_OK
+    # проверка считает ровно то, что потом показывает итоговая оценка «стало»
+    assert g0['liters_after'] == round(plain.after.fleet.week()['liters'], 1)
+    assert g0['liters_before'] == round(plain.before.fleet.week()['liters'], 1)
+    moves = sum(1 for m in plain.result['managers'] for ch in m['changes'] if ch['type'] in ('move', 'both'))
+    assert moves > 0
+    monkeypatch.setattr(opt._FullFleet, 'days', _fake_full_fleet(snap, 50.0))
+    out = opt.run_optimization(snap, bundle, None, [], {})
+    g = out.result['fleet_gate']
+    assert g['reverted'] > 0 and g['liters_search'] > g['liters_before'] and g['ok']
+    assert g['liters_after'] <= g['liters_before']
+    assert out.cost_after == pytest.approx(sum(o.cost_after for o in out.managers) + out.fleet_after)
+    for o in out.managers:
+        for spec, final in zip(o.specs, o.final):
+            assert final in spec.allowed and len(final) == 2 * spec.target     # частоты — как были
+    left = sum(1 for m in out.result['managers'] for ch in m['changes'] if ch['type'] in ('move', 'both'))
+    assert left < moves
+    # ничего не растёт — проверка ничего не возвращает
+    monkeypatch.setattr(opt._FullFleet, 'days', _fake_full_fleet(snap, 0.0))
+    same = opt.run_optimization(snap, bundle, None, [], {})
+    assert same.result['fleet_gate']['reverted'] == 0
+    assert [o.final for o in same.managers] == [o.final for o in plain.managers]
+
+
+def test_day_liters_equals_fleet_day_liters():
+    """Проверка дизеля считает только литры года — ровно как fleet_day (те же пробы)."""
+    rng = random.Random(1)
+    draw = ev.Draw(0.6, ((30000.0, 200.0), (20000.0, 120.0)))
+    vs = [fl.DeliveryVisit(i, rng.choice([1, 2, 3]), (40.1 + rng.random() * 0.2, 44.4 + rng.random() * 0.3),
+                           draw, draw) for i in range(40)]
+    trucks = [HOWO, FORD]
+    liters = fl.fleet_day(1, 2, vs, DP_DEPOT, trucks, DP_NORMS, TN, 150000.0).liters
+    assert fl.day_liters(vs, DP_DEPOT, trucks, DP_NORMS, TN) == liters
+
+
+def test_fleet_gate_mode_b_reverts_transfers_that_add_diesel(monkeypatch):
+    """№33 в режиме Б: полная модель говорит, что визит не «своего» менеджера (передача) добавляет дизель —
+    передачи откатываются (или режим Б остаётся без них), «стало» не больше «было»."""
+    _, _, cross = _overlap_rows()
+    snap = _overlap_snapshot(debts={c: 0.0 for c in cross[1] + cross[2]})
+    bundle = _truck_bundle(penalty_transfer=500)
+    monkeypatch.setattr(opt._FullFleet, 'days', _fake_full_fleet(snap, 0.0))
+    free = opt.run_optimization(snap, bundle, None, [], {'mode': 'transfer'}).result
+    assert any(ch['type'] == 'transfer' for m in free['managers'] for ch in m['changes'])
+    monkeypatch.setattr(opt._FullFleet, 'days', _fake_full_fleet(snap, 50.0))
+    res = opt.run_optimization(snap, bundle, None, [], {'mode': 'transfer'}).result
+    g = res['fleet_gate']
+    assert g['ok'] and g['liters_after'] <= g['liters_before']
+    assert not any(ch['type'] == 'transfer' for m in res['managers'] for ch in m['changes'])
+    out = opt.run_optimization(snap, bundle, None, [], {'mode': 'transfer'})
+    # стоимость режима Б — итога после проверки (передач нет — Σ менеджеров + парк)
+    assert out.cost_after == pytest.approx(sum(o.cost_after for o in out.managers) + out.fleet_after)
+
+
+def test_fleet_gate_reports_honestly_when_diesel_cannot_be_held(monkeypatch):
+    """Полная модель «стало» всегда хуже (подмена) — проверка откатывает что может, но честно сообщает:
+    ok = False и причину; расчёт не падает."""
+    snap, bundle = _big_snapshot(n_agents=2, per_agent=60), _truck_bundle()
+
+    def days(self, plan, models):
+        return {(1, 1): 100.0 + (1000.0 if plan.cycle_weeks == 2 else 0.0)}
+    monkeypatch.setattr(opt._FullFleet, 'days', days)
+    g = opt.run_optimization(snap, bundle, None, [], {}).result['fleet_gate']
+    assert not g['ok'] and g['reason'] in (opt.GATE_NO_CANDIDATES, opt.GATE_ATTEMPTS)
+    assert g['liters_after'] > g['liters_before']
+
+
+def test_gate_target_is_closest_allowed_to_erp_days():
+    spec = opt.PairSpec(_wk(7), 1.0, 'sales', tuple(pt.allowed_patterns(_wk(7), 1.0, SIX)), False, frozenset())
+    assert opt.gate_target(spec, SIX) == _wk(6)                           # воскресенье — на субботе
+    spec = opt.PairSpec(_wk(1, 4), 1.0, 'sales', tuple(pt.allowed_patterns(_wk(1, 4), 1.0, SIX)), False, frozenset())
+    assert opt.gate_target(spec, SIX) in (_wk(1), _wk(4))                  # реже — из своих дней
 
 
 def test_optimizer_with_fleet_deterministic_and_not_worse():

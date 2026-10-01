@@ -490,6 +490,18 @@ def fleet_day(week: int, weekday: int, visits: Sequence[DeliveryVisit], depot: P
     )
 
 
+def day_liters(visits: Sequence[DeliveryVisit], depot: Point, trucks: Sequence[FleetTruck], norms: Norms,
+               tn: TruckNorms, n: int = FLEET_SAMPLES) -> float:
+    """Литры дня доставки — ровно fleet_day(...).liters (те же пробы года), без пика и прочих цифр:
+    вдвое быстрее, для проверки дизеля в оптимизаторе (№33)."""
+    visits = sorted(visits, key=lambda v: (v.customer_id, v.weekday, v.point))
+    points = sorted({v.point for v in visits})
+    node = {p: i + 1 for i, p in enumerate(points)}
+    d, m = _matrices(points, depot, norms)
+    year = [plan_trips(st, d, m, trucks, tn) for st in _samples(visits, node, 'year', n, tn)]
+    return math.fsum(t.liters for trips in year for t in trips) / n
+
+
 # --- Неделя парка ---
 
 SHORT_DAY_P = 0.5   # «машин не хватает» в день доставки: так в пик в половине проб и чаще
