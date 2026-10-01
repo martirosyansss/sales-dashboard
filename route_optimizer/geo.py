@@ -86,9 +86,25 @@ def in_city(p: Point, center: Point, radius_km: float) -> bool:
     return haversine_km(p, center) <= radius_km
 
 
+def in_polygon(p: Point, polygon: Sequence[Point]) -> bool:
+    """Точка внутри многоугольника (вершины — по порядку обхода): чётность пересечений луча по долготе.
+    Для границы в пару километров плоского приближения хватает. Меньше трёх вершин — False."""
+    if len(polygon) < 3:
+        return False
+    lat, lon = p
+    inside = False
+    prev_lat, prev_lon = polygon[-1]
+    for cur_lat, cur_lon in polygon:
+        if (cur_lat > lat) != (prev_lat > lat) \
+                and lon < (prev_lon - cur_lon) * (lat - cur_lat) / (prev_lat - cur_lat) + cur_lon:
+            inside = not inside
+        prev_lat, prev_lon = cur_lat, cur_lon
+    return inside
+
+
 @dataclass(frozen=True)
 class Coord:
-    """Координата визита и её источник: manual | erp | gps | none."""
+    """Координата визита и её источник: manual | driver | erp | gps | none."""
     lat: float | None
     lon: float | None
     source: str
@@ -102,15 +118,18 @@ NO_COORD = Coord(None, None, 'none')
 
 
 def resolve_coord(manual: Point | None, erp: Point | None, gps: Point | None,
-                  max_gap_km: float = ERP_GPS_MAX_GAP_KM) -> Coord:
-    """Координата визита по приоритету: ручная → ERP → медиана GPS → нет.
+                  max_gap_km: float = ERP_GPS_MAX_GAP_KM, *, driver: Point | None = None) -> Coord:
+    """Координата визита по приоритету: ручная → точка водителей → ERP → медиана GPS → нет.
 
     erp — уже проверенная ERP-точка (валидна, не «дефолтная») или None; gps — медиана GPS
     визитов клиента (≥ 3 визита) или None. ERP проигрывает GPS, если дальше max_gap_km.
-    Ручная координата (этап 2) перекрывает всё.
+    Ручная координата (этап 2) перекрывает всё; driver — медиана отметок водителей при доставке
+    (driver-geo-plan.md §2, правило — courier.geo) — всё, кроме ручной. Без driver — как раньше.
     """
     if manual is not None:
         return Coord(manual[0], manual[1], 'manual')
+    if driver is not None:
+        return Coord(driver[0], driver[1], 'driver')
     if erp is not None:
         if gps is not None and haversine_km(erp, gps) > max_gap_km:
             return Coord(gps[0], gps[1], 'gps')

@@ -17,13 +17,17 @@
      раньше всех, день помечается;
   4. литры = Σ км рейса × расход машины, которая его везёт.
 Быстрая оценка для поиска — search.FleetEstimate (гигантский тур дня, нарезанный по тоннажу).
+
+Окна приёма магазинов и малый центр (windows-center-plan.md, ответы владельца №34–41) — только в плане
+развоза: у точки есть окно или она в центре — plan_trips идёт путём _plan_timed; без них — прежним путём,
+рейсы те же (модель парка и проверка дизеля №33 окон не знают).
 """
 from __future__ import annotations
 
 import math
 from collections import Counter
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from .geo import Point, in_city
 
@@ -45,6 +49,7 @@ class FleetTruck:
     name: str | None
     capacity_kg: float
     l100: float
+    center_ok: bool = False    # можно въезжать в малый центр (№39–41; store.Bundle.truck_center_ok)
 
 
 @dataclass(frozen=True)
@@ -105,6 +110,11 @@ class _Stop:
     kg: float
     revenue: float
     unload: float
+    # окно приёма — прибытие (начало разгрузки) в минутах от начала рабочего дня машины: раньше early — машина
+    # ждёт, позже late — нарушение; center — точка в малом центре: везёт только машина с правом въезда
+    early: float = 0.0
+    late: float = math.inf
+    center: bool = False
 
 
 def _closed(seq: Sequence[int], stops: Sequence[_Stop], d: Matrix) -> float:
@@ -117,8 +127,32 @@ def _closed(seq: Sequence[int], stops: Sequence[_Stop], d: Matrix) -> float:
     return total + d[prev][0]
 
 
-def _two_opt(seq: list[int], stops: Sequence[_Stop], d: Matrix) -> list[int]:
-    """2-opt рейса «склад → seq → склад» (склад на месте); длина не растёт."""
+def _schedule(seq: Sequence[int], stops: Sequence[_Stop], m: Matrix, start: float,
+              arrivals: list[float] | None = None) -> tuple[float, bool]:
+    """Рейс «склад → seq → склад» с выезда start (минуты от начала дня машины), с ожиданием у окон:
+    (минуты от выезда до возвращения на склад — езда + разгрузка + ожидание, все окна соблюдены).
+    Без ожидания минуты — ровно езда + разгрузка, как в остальном модуле. arrivals — сюда дописываются
+    прибытия к точкам (начало разгрузки)."""
+    t, prev, wait, ok = start, 0, 0.0, True
+    for v in seq:
+        s = stops[v]
+        t += m[prev][s.node]
+        if t < s.early:
+            wait += s.early - t
+            t = s.early
+        if t > s.late + _EPS:
+            ok = False
+        if arrivals is not None:
+            arrivals.append(t)
+        t += s.unload
+        prev = s.node
+    return _closed(seq, stops, m) + math.fsum(stops[v].unload for v in seq) + wait, ok
+
+
+def _two_opt(seq: list[int], stops: Sequence[_Stop], d: Matrix,
+             ok: Callable[[list[int]], bool] | None = None) -> list[int]:
+    """2-opt рейса «склад → seq → склад» (склад на месте); длина не растёт. ok — ход принимается, только если
+    рейс после него допустим (окна приёма)."""
     t = [-1, *seq]
     node = [0, *(stops[v].node for v in seq)]
     n = len(t)
@@ -132,6 +166,8 @@ def _two_opt(seq: list[int], stops: Sequence[_Stop], d: Matrix) -> list[int]:
                 a, b, c = node[i - 1], node[i], node[j]
                 e = node[j + 1] if j + 1 < n else node[0]
                 if d[a][c] + d[b][e] - d[a][b] - d[c][e] < -_EPS:
+                    if ok is not None and not ok(t[1:i] + t[i:j + 1][::-1] + t[j + 1:]):
+                        continue
                     t[i:j + 1] = t[i:j + 1][::-1]
                     node[i:j + 1] = node[i:j + 1][::-1]
                     improved = True
@@ -139,9 +175,10 @@ def _two_opt(seq: list[int], stops: Sequence[_Stop], d: Matrix) -> list[int]:
 
 
 def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix, cap: float,
-             window: float) -> list[list[int]]:
+             window: float, fits: Callable[[list[int], list[int]], list[int] | None] | None = None) -> list[list[int]]:
     """Кларк–Райт (параллельная версия): s(i, j) = d(0,i) + d(0,j) − d(i,j), по убыванию (ничьи — по
-    номеру); маршруты сливаются через концы, пока груз ≤ cap и время рейса ≤ window."""
+    номеру); маршруты сливаются через концы, пока груз ≤ cap и время рейса ≤ window. fits(a, b) — проверка
+    слияния a + b (окна приёма, тоннаж центра): допустимый порядок объезда слитого рейса или None."""
     route = {v: v for v in light}
     members = {v: [v] for v in light}
     load = {v: stops[v].kg for v in light}
@@ -166,13 +203,19 @@ def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix,
             continue
         a, b = stops[i].node, stops[j].node
         t = time[ri] + time[rj] - m[a][0] - m0[b] + m[a][b]
-        if t > window + _EPS:
+        if t > window + _EPS:   # езда + разгрузка — нижняя граница времени рейса и с ожиданием у окон
             continue
-        if A[-1] != i:
-            A.reverse()
-        if B[0] != j:
-            B.reverse()
-        A.extend(B)
+        if fits is not None:
+            merged = fits(A if A[-1] == i else A[::-1], B if B[0] == j else B[::-1])
+            if merged is None:
+                continue
+            A[:] = merged
+        else:
+            if A[-1] != i:
+                A.reverse()
+            if B[0] != j:
+                B.reverse()
+            A.extend(B)
         for v in B:
             route[v] = ri
         load[ri] += load.pop(rj)
@@ -217,7 +260,10 @@ def _time_head(seq: Sequence[int], stops: Sequence[_Stop], m: Matrix, trucks: Se
 
 def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[FleetTruck],
                tn: TruckNorms, used: Mapping[str, float] | None = None, overflow: bool = True,
-               earliest: bool = False) -> list[Trip]:
+               earliest: bool = False, reasons: dict[int, str] | None = None,
+               busy: Mapping[str, Sequence[tuple[float, float]]] | None = None,
+               departs: list[float] | None = None,
+               fixed: Sequence[tuple[str, Sequence[int], float]] | None = None) -> list[Trip]:
     """Рейсы дня доставки одной пробы (шаги 1–4 из шапки модуля). stops — заказы пробы.
     used — минуты, которые машины уже заняты (закреплённые логистом рейсы плана развоза).
     overflow — рейс, который ни одна машина не успевает до конца рабочего дня, всё равно везёт машина,
@@ -225,9 +271,18 @@ def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[Fl
     планируем (план развоза): от такого рейса берётся начало по ходу объезда, которое машина ещё
     успевает, остальное — снова в очередь; что не успевает никто — не назначается. Целостность
     тяжёлых заказов при overflow=False — в route_day. earliest — рейс достаётся машине, которая раньше
-    всех его закончит (переработка: часы сверх дня — короче), а не самой экономичной."""
+    всех его закончит (переработка: часы сверх дня — короче), а не самой экономичной.
+    Точка с окном приёма или в малом центре — расчёт _plan_timed; reasons — туда пишутся причины
+    неназначенных заказов (номер в stops → window | center | time). busy — занятые отрезки машин [выезд,
+    возвращение] вместо used, когда между ними есть промежутки (закреплённый рейс выезжает позже — под окно
+    первой точки): тоже _plan_timed, рейсы встают и в промежутки. departs — туда пишутся выезды рейсов (только
+    _plan_timed; рейсы машины надо везти в порядке выезда). fixed — готовые рейсы (машина, номера заказов по
+    порядку объезда, выезд в прежнем плане: закреплённые логистом): машина, состав и, если можно, время не
+    меняются, остальные рейсы раскладываются вокруг (_plan_timed). Без окон, центра, busy и fixed — прежний путь."""
     if not stops or not trucks:
         return []
+    if busy is not None or fixed is not None or any(s.early > 0 or s.late < math.inf or s.center for s in stops):
+        return _plan_timed(stops, d, m, trucks, tn, used, overflow, earliest, reasons, busy, departs, fixed)
     cap = max(t.capacity_kg for t in trucks)
     window = tn.work_minutes
     # заказ тяжелее самой большой машины — отдельными рейсами «склад → клиент → склад» поровну
@@ -302,50 +357,375 @@ def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[Fl
     return trips
 
 
+WAIT_MERGE_SLACK = 15.0     # слияние рейсов может добавить ожидания внутри рейса не больше, мин
+
+
+def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[FleetTruck], tn: TruckNorms,
+                used: Mapping[str, float] | None, overflow: bool, earliest: bool,
+                reasons: dict[int, str] | None, busy: Mapping[str, Sequence[tuple[float, float]]] | None = None,
+                departs: list[float] | None = None,
+                fixed: Sequence[tuple[str, Sequence[int], float]] | None = None) -> list[Trip]:
+    """plan_trips с окнами приёма и малым центром (windows-center-plan.md §5). Отличия от прежнего пути:
+      - время рейса — _schedule с ожиданием у окон (ожидание — время машины);
+      - Кларк–Райт сливает рейсы, только если слитый допустим при выезде в начале дня и ожидание внутри рейса
+        (после первой точки — его не убрать поздним выездом) растёт не больше WAIT_MERGE_SLACK; рейс с точкой
+        центра («центровой») — не тяжелее самой большой машины с правом въезда; 2-opt окон не нарушает;
+      - очередь: рейсы с крайним сроком (минимальный late) первыми, по возрастанию срока (EDF); затем
+        центровые — раньше остальных; затем по времени, раньше которого рейс не начать (release); дальше — как
+        прежде: тяжёлые и длинные первыми;
+      - день машины — занятые отрезки, а не одно «занята до»: рейс встаёт в самый ранний промежуток, где
+        укладывается с окнами; выезд — так, чтобы не ждать у первой точки (рейс «после 14:00» уходит к
+        14:00, утро остаётся другим рейсам); подходит машина, которая поднимет рейс, имеет право на центр (для
+        центрового) и где рейс встаёт; из подходящих — как прежде, самая экономичная, но пока в очереди есть
+        центровые рейсы, нецентровому достаётся машина без права въезда (иначе JAC заберёт чужие рейсы и центр
+        останется без машины);
+      - никто не берёт (overflow=False): нарезка по тоннажу среди допустимых машин; иначе, если без окон
+        машина рейс взяла бы, — точки с нарушенным окном выносятся одиночными рейсами; иначе — голова рейса,
+        которую машина успевает, и хвост; одиночный рейс, который не берёт никто, не планируется
+        (reasons: window — мешает окно, time — не успевают до конца дня); точка центра без машины с правом
+        въезда среди машин дня — сразу center.
+    Каждый шаг без назначения либо снимает рейс из очереди, либо заменяет его кусками строго короче —
+    цикл конечен. overflow=True (без предела переработки) — рейс, который никто не берёт, везёт допустимая
+    машина, что освободится раньше всех, окна при этом могут нарушаться (видно в плане).
+    Рейсы — по времени выезда: машина везёт их подряд (dispatch._timeline), ранний выезд только раньше
+    привозит, а у окна машина ждёт — окна и конец дня соблюдаются.
+    fixed — закреплённые рейсы: не режутся и не сливаются, их машина — заданная (тоннаж и центр — выбор логиста);
+    ставятся раньше остальных — со своего прежнего выезда, если там свободно и окна соблюдаются (закрепили — значит,
+    рейс и его время устраивают), иначе в самый ранний промежуток, где укладываются, иначе в конец дня своей машины
+    (extra); причины у них нет. Остальные рейсы встают вокруг."""
+    window = tn.work_minutes
+    why = reasons if reasons is not None else {}
+    cap = max(t.capacity_kg for t in trucks)
+    central = [t for t in trucks if t.center_ok]
+    cap_c = max((t.capacity_kg for t in central), default=0.0)
+    vs: list[_Stop] = []
+    origin: list[int] = []
+    singles: list[int] = []
+    pinned = {i for _, idx, _ in (fixed or ()) for i in idx}
+    at: dict[int, int] = {}                        # заказ закреплённого рейса → номер в vs
+    for i, s in enumerate(stops):
+        if i in pinned:
+            at[i] = len(vs)
+            origin.append(i)
+            vs.append(s)
+            continue
+        if s.center and not central:
+            why[i] = 'center'
+            continue
+        c = cap_c if s.center else cap
+        if s.kg > c + _EPS:
+            n = math.ceil(s.kg / c)
+            for _ in range(n):
+                singles.append(len(vs))
+                origin.append(i)
+                vs.append(_Stop(s.node, s.kg / n, s.revenue / n, tn.unload(s.kg / n), s.early, s.late, s.center))
+        else:
+            origin.append(i)
+            vs.append(s)
+
+    def timed(seq: Sequence[int]) -> bool:
+        return any(vs[v].early > 0 or vs[v].late < math.inf for v in seq)
+
+    def is_central(seq: Sequence[int]) -> bool:
+        return any(vs[v].center for v in seq)
+
+    def ok_at_start(seq: list[int]) -> bool:
+        minutes, ok = _schedule(seq, vs, m, 0.0)
+        return ok and minutes <= window + _EPS
+
+    def first_wait(seq: Sequence[int], start: float) -> float:
+        """Ожидание у первой точки: его убирает поздний выезд."""
+        return max(0.0, vs[seq[0]].early - start - m[0][vs[seq[0]].node])
+
+    def idle(seq: Sequence[int]) -> float:
+        """Ожидание внутри рейса — после первой точки (поздним выездом его не убрать)."""
+        t, prev, wait = 0.0, 0, 0.0
+        for k, v in enumerate(seq):
+            s = vs[v]
+            t += m[prev][s.node]
+            if t < s.early:
+                if k:
+                    wait += s.early - t
+                t = s.early
+            t += s.unload
+            prev = s.node
+        return wait
+
+    def guard(seq: list[int]) -> Callable[[list[int]], bool] | None:
+        """2-opt с окнами: ход — только при допустимом расписании с выезда в начале дня (рейс потом встаёт в
+        промежуток машины со своим выездом) и если ожидание внутри рейса растёт не больше WAIT_MERGE_SLACK (короче
+        по км, но с простоем у окна — не лучше); рейс и так недопустим — без проверки."""
+        if not (timed(seq) and ok_at_start(seq)):
+            return None
+        limit = idle(seq) + WAIT_MERGE_SLACK
+        return lambda s2: ok_at_start(s2) and idle(s2) <= limit
+
+    def fits(a: list[int], b: list[int]) -> list[int] | None:
+        seq = a + b
+        if is_central(seq) and math.fsum(vs[v].kg for v in seq) > cap_c + _EPS:
+            return None
+        if not timed(seq):
+            return seq
+        limit = idle(a) + idle(b) + WAIT_MERGE_SLACK
+        ok = [s2 for s2 in (seq, seq[::-1]) if ok_at_start(s2) and idle(s2) <= limit]
+        return min(ok, key=idle) if ok else None
+
+    single_set = set(singles) | set(at.values())
+    light = [v for v in range(len(vs)) if v not in single_set]
+    routes = [_two_opt(r, vs, d, guard(r)) for r in _savings(light, vs, d, m, cap, window, fits)]
+    routes += [[v] for v in singles]
+
+    def item(seq: list[int]) -> tuple:
+        minutes, _ = _schedule(seq, vs, m, 0.0)
+        kg = math.fsum(vs[v].kg for v in seq)
+        deadline = min(vs[v].late for v in seq)
+        release = max(0.0, max(vs[v].early for v in seq))
+        # EDF; центровые — раньше; рейс, который раньше release не начать, — позже; дальше тяжёлые и длинные
+        # первыми; ничьи — по точкам рейса
+        return (deadline, not is_central(seq), release, -kg, -minutes, tuple(vs[v].node for v in seq), seq,
+                _closed(seq, vs, d), minutes, kg)
+
+    def shortest(seq: list[int]) -> tuple:
+        """Рейс в порядке 2-opt или как есть — что быстрее по минутам (см. plan_trips)."""
+        a, b = item(seq), item(_two_opt(seq, vs, d, guard(seq)))
+        return b if b[8] <= a[8] + _EPS else a
+
+    # день машины: занятые отрезки [выезд, возвращение]; закреплённые логистом рейсы — их отрезки (busy) или
+    # одним куском с начала дня (used)
+    slots: dict[str, list[tuple[float, float]]] = {}
+    for t in trucks:
+        if busy is not None:
+            slots[t.car_code] = sorted((float(a), float(b)) for a, b in busy.get(t.car_code, ()))
+            continue
+        busy0 = float((used or {}).get(t.car_code, 0.0))
+        slots[t.car_code] = [(0.0, busy0)] if busy0 > 0 else []
+
+    def gaps(code: str) -> list[tuple[float, float]]:
+        """Свободные промежутки машины по порядку; последний — до конца рабочего дня."""
+        out, end = [], 0.0
+        for a, b in slots[code]:
+            if a > end + _EPS:
+                out.append((end, a))
+            end = max(end, b)
+        out.append((end, max(end, window)))
+        return out
+
+    def place(seq: Sequence[int], code: str) -> tuple[float, float, float] | None:
+        """Самый ранний промежуток машины, где рейс укладывается с окнами: (начало промежутка, ожидание у первой
+        точки — на столько позже выезд, минуты от начала промежутка до возвращения)."""
+        for g0, g1 in gaps(code):
+            minutes, ok = _schedule(seq, vs, m, g0)
+            if ok and g0 + minutes <= g1 + _EPS:
+                return g0, first_wait(seq, g0), minutes
+        return None
+
+    def last_end(code: str) -> float:
+        return max((b for _, b in slots[code]), default=0.0)
+
+    def misses(seq: Sequence[int], start: float) -> tuple[int, ...]:
+        """Точки рейса, к которым машина с выезда start приезжает позже окна."""
+        arr: list[float] = []
+        _schedule(seq, vs, m, start, arr)
+        return tuple(v for v, t in zip(seq, arr) if t > vs[v].late + _EPS)
+
+    def plain_gap(seq: Sequence[int], kg: float, t: FleetTruck) -> float | None:
+        """Начало первого промежутка, куда рейс встал бы без окон (тоннаж и время), или None."""
+        if t.capacity_kg < kg - _EPS:
+            return None
+        plain = _closed(seq, vs, m) + math.fsum(vs[v].unload for v in seq)
+        return next((g0 for g0, g1 in gaps(t.car_code) if g0 + plain <= g1 + _EPS), None)
+
+    def head(seq: Sequence[int], allowed: Sequence[FleetTruck]) -> int:
+        """Сколько первых точек рейса успевает хоть одна допустимая машина: тоннаж, окна, конец дня."""
+        best = 0
+        for t in allowed:
+            k, kg = 0, 0.0
+            while k < len(seq):
+                kg += vs[seq[k]].kg
+                if kg > t.capacity_kg + _EPS or place(seq[:k + 1], t.car_code) is None:
+                    break
+                k += 1
+            best = max(best, k)
+        return best
+
+    planned: list[tuple[float, int, Trip]] = []     # (выезд, номер назначения, рейс)
+
+    def assign(truck: FleetTruck, seq: list[int], km: float, kg: float, spot: tuple[float, float, float],
+               extra: bool) -> None:
+        g0, wait, minutes = spot
+        depart = g0 + wait                         # не ждать у первой точки: машина выезжает позже
+        slots[truck.car_code] = sorted(slots[truck.car_code] + [(depart, g0 + minutes)])
+        planned.append((depart, len(planned), Trip(
+            truck.car_code, len(seq), kg, math.fsum(vs[v].revenue for v in seq), km, minutes - wait,
+            truck.capacity_kg, km * truck.l100 / 100.0, extra, tuple(origin[v] for v in seq))))
+
+    def free_at(a: float, b: float, code: str) -> bool:
+        return any(g0 <= a + _EPS and b <= g1 + _EPS for g0, g1 in gaps(code))
+
+    by_code = {t.car_code: t for t in trucks}
+    for code, idx, start in sorted((f for f in (fixed or ()) if f[1] and f[0] in by_code), key=lambda f: f[2]):
+        seq = [at[i] for i in idx]
+        minutes, ok = _schedule(seq, vs, m, start)
+        spot = (start, first_wait(seq, start), minutes)
+        if not (ok and start + minutes <= window + _EPS and free_at(start + spot[1], start + minutes, code)):
+            spot = place(seq, code)
+        extra = spot is None
+        if extra:   # не помещается — всё равно везёт его машина: в конец её дня (нарушение видно в плане)
+            g0 = last_end(code)
+            spot = (g0, first_wait(seq, g0), _schedule(seq, vs, m, g0)[0])
+        assign(by_code[code], seq, _closed(seq, vs, d), math.fsum(vs[v].kg for v in seq), spot, extra)
+
+    queue = sorted(item(r) for r in routes)
+    while queue:
+        _, plain_order, _, _, _, _, seq, km, _, kg = queue.pop(0)
+        allowed = central if not plain_order else list(trucks)
+        spots = {t.car_code: place(seq, t.car_code) for t in allowed if t.capacity_kg >= kg - _EPS}
+        fit = [t for t in allowed if spots.get(t.car_code) is not None]
+        extra = not fit
+        if extra:
+            spare = [t for t in allowed if t.capacity_kg < kg - _EPS and gaps(t.car_code)[-1][0] < window - _EPS]
+            if spare and len(seq) > 1:
+                pieces = _cut(seq, vs, max(t.capacity_kg for t in spare))
+                if len(pieces) > 1:
+                    queue = sorted(queue + [item(_two_opt(p, vs, d, guard(p))) for p in pieces])
+                    continue
+            if not overflow:
+                free = [(g0, t) for t in allowed if (g0 := plain_gap(seq, kg, t)) is not None]
+                if len(seq) == 1:
+                    why[origin[seq[0]]] = 'window' if free else 'time'
+                    continue
+                bad = min((misses(seq, g0) for g0, _ in free), key=lambda b: (len(b), b), default=())
+                if bad:
+                    # без окон машина рейс взяла бы — мешают окна: такие точки — одиночными рейсами
+                    rest = [v for v in seq if v not in bad]
+                    queue = sorted(queue + [shortest([v]) for v in bad] + ([shortest(rest)] if rest else []))
+                    continue
+                fwd, back = head(seq, allowed), head(seq[::-1], allowed)
+                s2, cut = (seq, fwd) if fwd >= back else (seq[::-1], back)
+                cut = min(max(cut, 1), len(seq) - 1)
+                queue = sorted(queue + [shortest(s2[:cut]), shortest(s2[cut:])])
+                continue
+            # рейс за пределами дня: допустимая машина, что поднимет груз и освободится раньше всех, — в конец дня
+            fit = [t for t in allowed if t.capacity_kg >= kg - _EPS]
+            truck = min(fit, key=lambda t: (last_end(t.car_code), t.l100, t.car_code))
+            g0 = last_end(truck.car_code)
+            spots[truck.car_code] = (g0, first_wait(seq, g0), _schedule(seq, vs, m, g0)[0])
+        else:
+            # машину с правом въезда бережём для центровых рейсов, пока они есть в очереди
+            spare_center = plain_order and any(not q[1] for q in queue)
+            if earliest:
+                truck = min(fit, key=lambda t: (spare_center and t.center_ok, spots[t.car_code][0] + spots[t.car_code][2],
+                                                t.l100, t.car_code))
+            else:
+                truck = min(fit, key=lambda t: (spare_center and t.center_ok, t.l100, -t.capacity_kg, t.car_code))
+        assign(truck, seq, km, kg, spots[truck.car_code], extra)
+    planned.sort(key=lambda x: (x[0], x[1]))
+    if departs is not None:
+        departs.extend(dep for dep, *_ in planned)
+    return [t for *_, t in planned]
+
+
 # --- День с известными заказами (план развоза, dispatch.py) ---
+
+Window = tuple[float, float]   # окно приёма: прибыть не раньше и не позже, минуты от начала дня машины
+
 
 def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[float], depot: Point,
               trucks: Sequence[FleetTruck], norms: Norms, tn: TruckNorms,
               used: Mapping[str, float] | None = None, overflow: bool = True,
-              earliest: bool = False) -> list[Trip]:
+              earliest: bool = False, windows: Sequence[Window] | None = None,
+              center: Sequence[bool] | None = None, reasons: dict[int, str] | None = None,
+              busy: Mapping[str, Sequence[tuple[float, float]]] | None = None,
+              departs: list[float] | None = None,
+              fixed: Sequence[tuple[str, Sequence[int], float]] | None = None) -> list[Trip]:
     """Рейсы дня по известным заказам — тот же расчёт, что у пробы Монте-Карло (plan_trips):
     заказ i — точка points[i], kgs[i] кг; Trip.items — номера заказов по порядку объезда.
     Тяжелее самой большой машины — несколько поездок к одному заказу поровну. overflow=False (план
     развоза) — за конец рабочего дня не планируем; тяжёлый заказ, у которого влезли не все поездки,
     снимается целиком (полдоставки не бывает), и рейсы собираются заново без него — его время
-    достаётся другим заказам."""
+    достаётся другим заказам. windows[i] — окно приёма заказа i, center[i] — он в малом центре
+    (только план развоза); reasons — причины неназначенных заказов: window | center | time; busy, departs, fixed
+    (номера заказов закреплённых рейсов — в points) — как у plan_trips."""
     uniq = sorted(set(points))
     node = {p: i + 1 for i, p in enumerate(uniq)}
     d, m = _matrices(uniq, depot, norms)
-    stops = [_Stop(node[p], float(kg), float(rev), tn.unload(float(kg)))
-             for p, kg, rev in zip(points, kgs, revenues)]
+    stops = [_Stop(node[p], float(kg), float(rev), tn.unload(float(kg)),
+                   *(windows[i] if windows is not None else (0.0, math.inf)), center is not None and bool(center[i]))
+             for i, (p, kg, rev) in enumerate(zip(points, kgs, revenues))]
     if overflow or not trucks:
-        return plan_trips(stops, d, m, trucks, tn, used, overflow, earliest)
+        return plan_trips(stops, d, m, trucks, tn, used, overflow, earliest, reasons, busy, departs, fixed)
     cap = max(t.capacity_kg for t in trucks)
+    pinned = {i for _, idx, _ in (fixed or ()) for i in idx}
+    # тяжёлый заказ в центре делится по тоннажу машин с правом въезда (_plan_timed)
+    cap_c = max((t.capacity_kg for t in trucks if t.center_ok), default=cap)
+
+    def cap_of(i: int) -> float:
+        return cap_c if stops[i].center else cap
+
     keep = list(range(len(stops)))
+    why: dict[int, str] = {}
     while True:
+        got: dict[int, str] = {}
+        when: list[float] = []
+        pos = {i: k for k, i in enumerate(keep)}
+        here = None if fixed is None else [(code, [pos[i] for i in idx], start) for code, idx, start in fixed]
         trips = [replace(t, items=tuple(keep[i] for i in t.items))
-                 for t in plan_trips([stops[i] for i in keep], d, m, trucks, tn, used, overflow, earliest)]
-        pieces = Counter(i for t in trips for i in t.items if stops[i].kg > cap + _EPS)
-        partial = {i for i, n in pieces.items() if n < math.ceil(stops[i].kg / cap)}
+                 for t in plan_trips([stops[i] for i in keep], d, m, trucks, tn, used, overflow, earliest, got, busy,
+                                     when, here)]
+        why.update({keep[i]: r for i, r in got.items()})
+        # закреплённые рейсы — уже куски тяжёлых заказов, их не проверяем
+        pieces = Counter(i for t in trips for i in t.items if i not in pinned and stops[i].kg > cap_of(i) + _EPS)
+        partial = {i for i, n in pieces.items() if n < math.ceil(stops[i].kg / cap_of(i))}
         if not partial:
-            return trips
+            break
         keep = [i for i in keep if i not in partial]
+    if reasons is not None:
+        placed = {i for t in trips for i in t.items}
+        reasons.update({i: why.get(i, 'time') for i in range(len(stops)) if i not in placed})
+    if departs is not None:
+        departs.extend(when)
+    return trips
 
 
 def route_trip(points: Sequence[Point], kgs: Sequence[float], depot: Point, norms: Norms,
-               tn: TruckNorms, reorder: bool = True) -> tuple[list[int], float, float]:
+               tn: TruckNorms, reorder: bool = True, windows: Sequence[Window] | None = None,
+               start: float = 0.0) -> tuple[list[int], float, float]:
     """Рейс «склад → points → склад»: (порядок объезда — номера points, км, минуты: езда + разгрузка).
-    reorder — улучшить порядок 2-opt (от заданного; длина не растёт), иначе — как задан."""
+    reorder — улучшить порядок 2-opt (от заданного; длина не растёт), иначе — как задан. windows — окна
+    приёма точек: если с выезда start (минуты от начала дня машины) заданный порядок их соблюдает, 2-opt
+    их не нарушит."""
     if not points:
         return [], 0.0, 0.0
     d, m = _matrices(points, depot, norms)
     stops = [_Stop(i + 1, float(kg), 0.0, tn.unload(float(kg))) for i, kg in enumerate(kgs)]
+    if windows is not None:
+        for s, (early, late) in zip(stops, windows):
+            s.early, s.late = early, late
     seq = list(range(len(points)))
     if reorder:
-        seq = _two_opt(seq, stops, d)
+        ok = None
+        if windows is not None and _schedule(seq, stops, m, start)[1]:
+            ok = lambda s2: _schedule(s2, stops, m, start)[1]   # noqa: E731
+        seq = _two_opt(seq, stops, d, ok)
     minutes = _closed(seq, stops, m) + math.fsum(s.unload for s in stops)
     return seq, _closed(seq, stops, d), minutes
+
+
+def trip_schedule(points: Sequence[Point], kgs: Sequence[float], depot: Point, norms: Norms, tn: TruckNorms,
+                  start: float = 0.0, windows: Sequence[Window] | None = None) -> tuple[float, list[float], float]:
+    """Рейс «склад → points → склад» в заданном порядке, машина свободна с start (минуты от начала дня машины):
+    (выезд, прибытия к точкам, минуты рейса от выезда — езда + разгрузка + ожидание у окон). Окно первой точки
+    позже, чем машина туда доедет, — выезд позже, чтобы не ждать у неё (как ставит рейсы _plan_timed); выезд не
+    позже, чем в плане, — прибытия не позже. Без окон выезд — start, минуты — те же, что у route_trip."""
+    if not points:
+        return start, [], 0.0
+    _, m = _matrices(points, depot, norms)
+    stops = [_Stop(i + 1, float(kg), 0.0, tn.unload(float(kg)), *(windows[i] if windows is not None else (0.0, math.inf)))
+             for i, kg in enumerate(kgs)]
+    depart = max(start, stops[0].early - m[0][1])
+    arrivals: list[float] = []
+    minutes, _ = _schedule(range(len(points)), stops, m, depart, arrivals)
+    return depart, arrivals, minutes
 
 
 # --- День доставки: Монте-Карло ---

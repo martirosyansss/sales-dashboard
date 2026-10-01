@@ -14,10 +14,10 @@ import threading
 import time
 import uuid
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from functools import wraps
-from typing import Any, Callable, Collection, Sequence
+from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
 
 from flask import Blueprint, Response, current_app, jsonify, render_template, request, session
 
@@ -25,10 +25,11 @@ from . import dispatch as dp
 from . import evaluate, optimize
 from . import fleet as fl
 from .erp import ErpError
-from .geo import is_valid_point
+from .geo import Point, haversine_km, is_valid_point
 from .roads import RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
-from .store import DEFAULT_MANAGER_FUEL, Bundle, Decision, Store, StoreError, validate_payload
+from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, Bundle, Decision, Store, StoreError, center_auto,
+                    check_window, validate_payload)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,28 @@ class OptimizeJobs:
             return self.running.id if self.running is not None else None
 
 
+class DriverGeo(Protocol):
+    """Точки и предложения водителей (courier.db, driver-geo-plan.md §4). Подключает app_v2
+    (route_optimizer.attach_driver_geo): пакет route_optimizer не импортирует courier."""
+
+    def points(self) -> Mapping[int, tuple[float, float, int]]:
+        """Клиент → (широта, долгота, дней с отметками) по правилу §2."""
+        ...
+
+    def suggestions(self) -> list[dict[str, Any]]:
+        """Предложения водителей без решения, новые первыми: event_id, customer_id, code, name, lat, lon,
+        accuracy, note, driver_name, date, at."""
+        ...
+
+    def decide(self, event_id: str, decision: str, user: str | None,
+               apply: Callable[[dict[str, Any]], None]) -> dict[str, Any] | None:
+        """Решение по открытому предложению; apply(предложение) вызывается до фиксации решения: исключение в apply —
+        решения нет. apply пишет в другую базу и фиксирует её сам — это не одна атомарная транзакция (см.
+        courier.store.Store.decide_suggestion). accepted закрывает остальные предложения того же клиента (superseded).
+        None — предложения нет или оно уже решено."""
+        ...
+
+
 @dataclass
 class RoutesState:
     store: Store
@@ -109,6 +132,8 @@ class RoutesState:
     fact_loader: Callable[[date], dp.FactData] | None = None
     dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
+    driver_geo: DriverGeo | None = None   # None — раздела «Առաքիչ» нет: точек водителей нет, всё как раньше
+    driver_cache: tuple[float, dict[int, Point]] | None = None   # (time.monotonic(), точки) — DRIVER_TTL_SECONDS
 
 
 def _now() -> str:
@@ -122,6 +147,44 @@ def _clock() -> datetime:
 
 def _state() -> RoutesState:
     return current_app.extensions[EXTENSION_KEY]
+
+
+DRIVER_TTL_SECONDS = 300   # точки водителей: courier.db перечитывается не чаще раза в 5 минут
+DRIVER_DECIMALS = 5        # точка водителей — до ~1 м: стабильный отпечаток настроек и ключ точки в кэше дорог
+DRIVER_KEEP_M = 15.0       # медиана сдвинулась не больше — остаётся прежняя точка (кэш оценки и дорог не сбрасывается)
+
+
+def _stable_points(fresh: Mapping[int, Point], prev: Mapping[int, Point]) -> dict[int, Point]:
+    """Гистерезис: у клиента остаётся прежняя опубликованная точка, пока новая медиана не дальше DRIVER_KEEP_M —
+    иначе каждая новая отметка доставки сбрасывала бы кэш оценки и расширяла таблицу точек дорог."""
+    return {cid: prev[cid] if cid in prev and haversine_km(prev[cid], p) * 1000 <= DRIVER_KEEP_M else p
+            for cid, p in fresh.items()}
+
+
+def _driver_points(state: RoutesState) -> dict[int, Point]:
+    """Точки водителей из DriverGeo (кэш DRIVER_TTL_SECONDS, округление DRIVER_DECIMALS, гистерезис _stable_points).
+    Источника нет или чтение не удалось — пусто: раздел считает как раньше (ERP и GPS менеджеров), сбой — в журнал."""
+    if state.driver_geo is None:
+        return {}
+    hit = state.driver_cache
+    if hit is not None and time.monotonic() - hit[0] < DRIVER_TTL_SECONDS:
+        return hit[1]
+    try:
+        fresh = {int(cid): (round(float(p[0]), DRIVER_DECIMALS), round(float(p[1]), DRIVER_DECIMALS))
+                 for cid, p in state.driver_geo.points().items() if is_valid_point(p[0], p[1])}
+        points = _stable_points(fresh, hit[1] if hit is not None else {})
+    except Exception:
+        logger.warning('[Routes] Точки водителей не прочитаны — считаем без них', exc_info=True)
+        points = {}
+    state.driver_cache = (time.monotonic(), points)
+    return points
+
+
+def _bundle(state: RoutesState) -> Bundle:
+    """Настройки раздела + точки водителей (Bundle.driver_points): ими считают обзор, оптимизация и развоз."""
+    bundle = state.store.load()
+    points = _driver_points(state)
+    return replace(bundle, driver_points=points) if points else bundle
 
 
 def _api(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -186,7 +249,7 @@ def api_overview() -> Any:
     """
     state = _state()
     snap, stale = state.snapshots.get(refresh=request.args.get('refresh') == '1', allow_stale=True)
-    bundle = state.store.load()
+    bundle = _bundle(state)
     # калибровку и расстояния по дорогам — до кэша оценки: get_or_compute держит lock (вложенный
     # вызов бы завис, а первый расчёт матрицы дорог — минуты — задержал бы остальные запросы)
     calib = _calibration(state, snap, bundle.settings)
@@ -249,6 +312,7 @@ def api_settings_get() -> Any:
     return jsonify({
         'success': True,
         'settings': s,
+        'center_zone_default': DEFAULT_SETTINGS['center_zone'],
         'depot': {'lat': bundle.depot[0], 'lon': bundle.depot[1]} if bundle.depot else None,
         'trucks': _trucks_json(snap, bundle),
         'expeditors': _expeditors_json(snap, bundle),
@@ -349,7 +413,8 @@ def _trucks_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
     """Машины CARS и их настройки, затем ручные машины (их нет в ERP). Машина закреплена за водителем, а не
     за менеджером (ответ владельца №29) — вместо менеджера подсказка из ERP: сколько машина возит в день
     (90 дней) и когда последний раз была в накладных. «Активна» — действующее значение; active_source:
-    manual — выбор владельца, auto — решают накладные (auto_active: возила за CAR_IDLE_DAYS дней)."""
+    manual — выбор владельца, auto — решают накладные (auto_active: возила за CAR_IDLE_DAYS дней).
+    «Можно в центр» (center_ok) — так же: center_ok_source, auto_center_ok — по названию (машины JAC)."""
     out = []
     active_cars = snap.active_cars
     for code, car in sorted(snap.cars.items()):
@@ -368,6 +433,9 @@ def _trucks_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
             'active': bundle.truck_active(code, active_cars),
             'active_source': 'auto' if t is None or t.active is None else 'manual',
             'auto_active': code in active_cars,
+            'center_ok': bundle.truck_center_ok(code, car.name),
+            'center_ok_source': 'auto' if t is None or t.center_ok is None else 'manual',
+            'auto_center_ok': center_auto(car.name),
             'last_used': last.isoformat() if last else None,
             'erp_days': days,
             'erp_kg_day': round(avg) if avg is not None else None,
@@ -379,6 +447,8 @@ def _trucks_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
                 'car_code': code, 'name': t.name, 'manual': True, 'erp_closed': False,
                 'capacity_kg': t.capacity_kg, 'fuel_l_per_100km': t.fuel_l_per_100km,
                 'active': bool(t.active), 'active_source': 'manual', 'auto_active': None, 'last_used': None,
+                'center_ok': bundle.truck_center_ok(code, t.name),
+                'center_ok_source': 'auto' if t.center_ok is None else 'manual', 'auto_center_ok': center_auto(t.name),
                 'van_agent_id': t.van_agent_id, 'van': _agent_json(snap, t.van_agent_id),
                 'erp_days': 0, 'erp_kg_day': None, 'erp_kg_day_max': None,
             })
@@ -483,7 +553,7 @@ def api_optimize_start() -> Any:
     if running is not None:
         return _busy(running)
     snap, stale = state.snapshots.get(allow_stale=True)
-    bundle = state.store.load()
+    bundle = _bundle(state)
     run_ids, problem = optimize.resolve_agents(snap, bundle, params['agent_ids'])
     if problem:
         return _bad_request({'agent_ids': problem})
@@ -624,7 +694,7 @@ def api_decisions_list() -> Any:
     план для ERP. Снимок — из кэша, ERP не перечитывается."""
     state = _state()
     snap, _ = state.snapshots.cached()
-    bundle = state.store.load()
+    bundle = _bundle(state)
     decisions = _live_decisions(state, snap)
     body = optimize.decisions_view(snap, bundle, decisions, optimize.proposals_of(_last_result(state)))
     return jsonify({'success': True, **body})
@@ -672,7 +742,7 @@ def api_plan_export() -> Any:
     ERP не перечитывается; устаревшие решения не применяются и перечислены в stale_decisions."""
     state = _state()
     snap, _ = state.snapshots.cached()
-    bundle = state.store.load()
+    bundle = _bundle(state)
     # порядок внутри дня — той же функцией расстояния, что и в оценке (по дорогам, если есть карта)
     roads = _roads(state, snap, bundle)
     distance = None
@@ -723,12 +793,14 @@ def _dispatch_data(state: RoutesState, since: date, until: date, day: date, refr
 
 
 def _ready_trucks(snap: Snapshot, bundle: Bundle, active_only: bool = True) -> dict[str, fl.FleetTruck]:
-    """Машины, готовые к расчёту: тоннаж и расход заданы (и активны — для плана)."""
+    """Машины, готовые к расчёту: тоннаж и расход заданы (и активны — для плана); с правом въезда в центр."""
     names = {code: car.name for code, car in snap.cars.items()}
     if active_only:
         ready, _ = fl.fleet_trucks(bundle.resolved_trucks(snap.active_cars), names)
-        return {t.car_code: t for t in ready}
-    return {code: fl.FleetTruck(code, names.get(code) or t.name, float(t.capacity_kg), float(t.fuel_l_per_100km))
+        return {t.car_code: replace(t, center_ok=bundle.truck_center_ok(t.car_code, names.get(t.car_code)))
+                for t in ready}
+    return {code: fl.FleetTruck(code, names.get(code) or t.name, float(t.capacity_kg), float(t.fuel_l_per_100km),
+                                bundle.truck_center_ok(code, names.get(code)))
             for code, t in sorted(bundle.trucks.items())
             if t.capacity_kg is not None and t.fuel_l_per_100km is not None}
 
@@ -747,7 +819,9 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
     h, m = map(int, s['truck_work_start'].split(':'))
     h2, m2 = map(int, s['truck_overtime_end'].split(':'))
     return dp.DayContext(day, bundle.depot, trucks, norms, fl.TruckNorms.from_settings(s), h * 60 + m,
-                         float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']))
+                         float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']),
+                         {cid: w.span() for cid, w in bundle.windows.items()},
+                         tuple((lat, lon) for lat, lon in s['center_zone']))
 
 
 @dataclass
@@ -868,7 +942,7 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
 
     def coord(cid: int) -> Any:
         if cid not in coords:
-            coords[cid] = evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides)
+            coords[cid] = evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides, bundle.driver_points)
         return coords[cid]
 
     stops = dp.build_stops(_active_orders(deliver, backlog, draft, carried), coord)
@@ -881,11 +955,13 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
 def _day_stops(dd: _DispatchDay, draft: dp.Draft) -> list[dp.Stop]:
     """Точки развоза дня для черновика draft (его «не везём сегодня» и добавленные заказы)."""
     return dp.build_stops(_active_orders(dd.deliver, dd.backlog, draft, dd.carried),
-                          lambda cid: evaluate.visit_coord(dd.snap, cid, 0, dd.bundle.geo_overrides))
+                          lambda cid: evaluate.visit_coord(dd.snap, cid, 0, dd.bundle.geo_overrides,
+                                                           dd.bundle.driver_points))
 
 
 def _stop_info(dd: _DispatchDay) -> Callable[[dp.Stop], dict[str, Any]]:
     agents = dd.snap.agents
+    windows = dd.bundle.windows
 
     def info(s: dp.Stop) -> dict[str, Any]:
         code, name = dd.data.customers.get(s.customer_id) or (
@@ -900,6 +976,7 @@ def _stop_info(dd: _DispatchDay) -> Callable[[dp.Stop], dict[str, Any]]:
             'agent_id': s.agent_id, 'agent_code': agent.code if agent else '', 'agent_name': agent.name if agent else '',
             'orders': [{'isn': o.isn, 'doc_num': o.doc_num, 'kg': round(o.kg), 'revenue': round(o.revenue),
                         'order_date': o.order_date.isoformat()} for o in s.orders],
+            'window': windows[s.customer_id].to_json() if s.customer_id in windows else None,
         }
     return info
 
@@ -928,7 +1005,7 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
             continue
         trucks.append({'car_code': code, 'name': names[code], 'manual': code in manual,
                        'capacity_kg': ready.capacity_kg if ready else None,
-                       'l100': ready.l100 if ready else None,
+                       'l100': ready.l100 if ready else None, 'center_ok': ready.center_ok if ready else None,
                        'ready': ready is not None, 'selected': ready is not None and code in selected})
     added = _backlog_in(draft, dd.carried)
     no_coords = [s for s in dd.stops if s.point is None]
@@ -968,6 +1045,7 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         'min_trip_revenue': s['min_trip_revenue'],
         'defer_to': _defer_target(dd.day, s['workdays'])[0].isoformat(),
         'overtime_days_month': _overtime_days(_state().store, dd.day),
+        'geo_suggestions': _geo_suggestions(_state(), dd),
         **_freshness(dd.day, dd.bundle, dd.data, dd.deliver, dd.backlog, draft, dd.carried),
     }
     if draft is not None and dd.ctx is not None:
@@ -980,6 +1058,51 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
 
 
 SETTINGS_TRUCKS_URL = '/routes/settings#trucks'
+GEO_SUGGESTIONS_MAX = 50   # предложений водителей в ответе «Развоза»
+
+
+def _geo_suggestions(state: RoutesState, dd: _DispatchDay) -> dict[str, Any]:
+    """Открытые предложения водителей «точка неверная» (driver-geo-plan.md §4) — по магазинам: у магазина последнее
+    предложение и сколько их всего (suggestions), логист решает один раз. Сначала магазины дня, затем остальные,
+    внутри — по свежести; count / day_count — магазины, в списке не больше GEO_SUGGESTIONS_MAX. У каждого — текущая
+    точка магазина (с её источником) и на сколько метров предложенная от неё. Источника нет или сбой — пусто."""
+    out: dict[str, Any] = {'count': 0, 'day_count': 0, 'items': []}
+    if state.driver_geo is None:
+        return out
+    try:
+        found = state.driver_geo.suggestions()
+    except Exception:
+        logger.warning('[Routes] Предложения водителей не прочитаны', exc_info=True)
+        return out
+    day = {s.customer_id for s in dd.stops}
+    per_customer: Counter[int] = Counter()
+    latest: list[dict[str, Any]] = []
+    for x in found:   # новые первыми: первое по клиенту — его последнее предложение
+        if isinstance(x.get('customer_id'), int) and is_valid_point(x.get('lat'), x.get('lon')):
+            per_customer[x['customer_id']] += 1
+            if per_customer[x['customer_id']] == 1:
+                latest.append(x)
+    found = sorted(latest, key=lambda x: x['customer_id'] not in day)   # sorted устойчив: свежие первыми остаются
+
+    def item(x: dict[str, Any]) -> dict[str, Any]:
+        cid = x['customer_id']
+        cur = evaluate.visit_coord(dd.snap, cid, 0, dd.bundle.geo_overrides, dd.bundle.driver_points)
+        code, name = dd.data.customers.get(cid) or (
+            (dd.snap.customers[cid].code, dd.snap.customers[cid].name) if cid in dd.snap.customers
+            else (x.get('code') or str(cid), x.get('name') or ''))
+        point = (float(x['lat']), float(x['lon']))
+        return {
+            'event_id': x['event_id'], 'customer_id': cid, 'code': code, 'name': name,
+            'address': dd.data.addresses.get(cid, ''),
+            'lat': round(point[0], 6), 'lon': round(point[1], 6), 'accuracy': x.get('accuracy'),
+            'note': x.get('note'), 'driver_name': x.get('driver_name'), 'date': x.get('date'), 'at': x.get('at'),
+            'in_day': cid in day, 'suggestions': per_customer[cid],
+            'current': ({'lat': round(cur.lat, 6), 'lon': round(cur.lon, 6), 'source': cur.source}
+                        if cur.point is not None else None),
+            'distance_m': round(haversine_km(cur.point, point) * 1000) if cur.point is not None else None,
+        }
+    return {'count': len(found), 'day_count': sum(1 for x in found if x['customer_id'] in day),
+            'items': [item(x) for x in found[:GEO_SUGGESTIONS_MAX]]}
 
 
 def _overtime_days(store: Store, day: date) -> int:
@@ -996,7 +1119,7 @@ def api_dispatch() -> Any:
     """День развоза (?date=YYYY-MM-DD, по умолчанию — следующий рабочий день): машины, заказы,
     черновик рейсов с цифрами, сравнение «по менеджерам». ?refresh=1 — перечитать заказы ERP."""
     state = _state()
-    bundle = state.store.load()
+    bundle = _bundle(state)
     raw = request.args.get('date')
     day = _parse_day(raw) if raw else dp.next_workday(date.today(), bundle.settings['workdays'])
     if day is None:
@@ -1055,7 +1178,7 @@ def api_dispatch_build() -> Any:
     if not isinstance(codes, list) or len(codes) > _MAX_TRUCKS or not all(isinstance(c, str) for c in codes):
         return _bad_request({'trucks': 'ожидался список машин'})
     state = _state()
-    bundle = state.store.load()
+    bundle = _bundle(state)
     dd = _load_day(state, bundle, day)
     if dd.ctx is None:
         return _bad_request({'_': 'Сначала укажите склад и тоннаж с расходом машин в настройках'})
@@ -1088,7 +1211,7 @@ def api_dispatch_edit() -> Any:
     if error is not None:
         return error
     state = _state()
-    bundle = state.store.load()
+    bundle = _bundle(state)
     dd = _load_day(state, bundle, day)
     if dd.draft is None or dd.ctx is None:
         return _conflict('Сначала соберите рейсы')
@@ -1128,7 +1251,7 @@ def api_dispatch_overtime() -> Any:
     if error is not None:
         return error
     state = _state()
-    bundle = state.store.load()
+    bundle = _bundle(state)
     dd = _load_day(state, bundle, day)
     if dd.draft is None or dd.ctx is None:
         return _conflict('Сначала соберите рейсы')
@@ -1154,7 +1277,7 @@ def api_dispatch_reset() -> Any:
         return error
     state = _state()
     state.store.delete_dispatch(day.isoformat())
-    dd = _load_day(state, state.store.load(), day)
+    dd = _load_day(state, _bundle(state), day)
     return jsonify({'success': True, **_dispatch_body(dd)})
 
 
@@ -1165,7 +1288,7 @@ def api_dispatch_fact() -> Any:
     маршрутом) против рейсов программы на тех же машинах и тех же доставках. Накладные экспедитора без
     машины — рейсы закреплённой за ним ручной машины."""
     state = _state()
-    bundle = state.store.load()
+    bundle = _bundle(state)
     day = _parse_day(request.args.get('date'))
     if day is None or day >= date.today():
         return _bad_request({'date': 'прошедшая дата в формате ГГГГ-ММ-ДД'})
@@ -1176,7 +1299,7 @@ def api_dispatch_fact() -> Any:
     data = state.fact_loader(day)
 
     def coord(cid: int) -> Any:
-        return evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides)
+        return evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides, bundle.driver_points)
 
     ctx = _dispatch_ctx(state, snap, bundle, day, trucks,
                         [p for d in data.docs if (p := coord(d.customer_id).point) is not None])
@@ -1188,7 +1311,8 @@ def api_dispatch_fact() -> Any:
 @bp.post('/api/routes/geo-override')
 @_api
 def api_geo_override() -> Any:
-    """Ручная точка клиента: {"customer_id", "lat", "lon"}; lat и lon = null — убрать (снова ERP/GPS).
+    """Ручная точка клиента: {"customer_id", "lat", "lon"}; lat и lon = null — убрать (снова «авто»: точка
+    водителей, ERP, GPS).
     Точка действует во всём разделе: обзор, оптимизация, развоз."""
     payload, error = _json_body()
     if error is not None:
@@ -1208,6 +1332,82 @@ def api_geo_override() -> Any:
     state = _state()
     state.store.save_geo_override(cid, point, session.get('username'))
     logger.info('[Routes] Точка клиента %d %s (%s)', cid, 'поставлена' if point else 'убрана', session.get('username'))
+    return jsonify({'success': True})
+
+
+_EVENT_ID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+GEO_DECISIONS = ('accepted', 'rejected')
+GEO_GONE = 'Предложение не найдено или уже решено — обновите страницу'
+
+
+@bp.post('/api/routes/geo-suggest/decide')
+@_api
+def api_geo_suggest_decide() -> Any:
+    """Решение логиста по предложению водителя: {"event_id", "decision": "accepted" | "rejected"}.
+    accepted — предложенная точка становится ручной точкой магазина (save_geo_override, как «Փոխել տեղը»);
+    rejected — только решение, точка магазина не меняется: если ручная точка магазина уже совпадает с предложенной
+    (например, такую же приняли раньше), в ответе manual_same: true — интерфейс подсказывает, что её меняют кнопкой
+    «Փոխել տեղը». accepted закрывает остальные открытые предложения того же магазина (superseded — их id). Ручная
+    точка сохраняется до фиксации решения (DriverGeo.decide): точка не сохранилась — решения нет; обратное не
+    атомарно — точка сохранена, а решение не записалось: предложение остаётся открытым, повторное «принять»
+    безопасно. Предложения нет или оно уже решено — 404. Рейсы не пересобираются."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    if not isinstance(payload, dict) or set(payload) != {'event_id', 'decision'}:
+        return _bad_request({'_': 'ожидалось {"event_id", "decision"}'})
+    event_id = payload['event_id']
+    if not isinstance(event_id, str) or not _EVENT_ID_RE.match(event_id):
+        return _bad_request({'event_id': 'ожидался id предложения'})
+    decision = payload['decision']
+    if decision not in GEO_DECISIONS:
+        return _bad_request({'decision': 'решение: accepted или rejected'})
+    state = _state()
+    if state.driver_geo is None:
+        return jsonify({'success': False, 'error': GEO_GONE}), 404
+    user = session.get('username')
+
+    def apply(sug: dict[str, Any]) -> None:
+        if decision == 'accepted':
+            state.store.save_geo_override(int(sug['customer_id']), (float(sug['lat']), float(sug['lon'])), user)
+
+    done = state.driver_geo.decide(event_id.lower(), decision, user, apply)
+    if done is None:
+        return jsonify({'success': False, 'error': GEO_GONE}), 404
+    cid = done['customer_id']
+    superseded = list(done.get('superseded') or ())
+    logger.info('[Routes] Предложение водителя %s по клиенту %s: %s (%s), закрыто вместе с ним: %d', event_id, cid,
+                decision, user, len(superseded))
+    body: dict[str, Any] = {'success': True, 'customer_id': cid, 'superseded': superseded}
+    if decision == 'rejected':
+        manual = state.store.load().geo_overrides.get(cid)
+        body['manual_same'] = (manual is not None
+                               and haversine_km(manual, (float(done['lat']), float(done['lon']))) * 1000 < 1.0)
+    return jsonify(body)
+
+
+@bp.post('/api/routes/customer-window')
+@_api
+def api_customer_window() -> Any:
+    """Окно приёма клиента: {"customer_id", "window": {"kind", "t1", "t2", "tol"} | null} — время в минутах от
+    полуночи (store.check_window); null — убрать. Действует только в «Развозе»: сборка, «Везти после конца дня»,
+    вид рейсов."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    if not isinstance(payload, dict) or set(payload) != {'customer_id', 'window'}:
+        return _bad_request({'_': 'ожидалось {"customer_id", "window"}'})
+    cid = payload['customer_id']
+    if isinstance(cid, bool) or not isinstance(cid, int) or not 0 < cid < 2 ** 31:
+        return _bad_request({'customer_id': 'ожидался код клиента'})
+    window = None
+    if payload['window'] is not None:
+        window, err = check_window(payload['window'])
+        if err:
+            return _bad_request({'window': err})
+    state = _state()
+    state.store.save_customer_window(cid, window, session.get('username'))
+    logger.info('[Routes] Окно приёма клиента %d: %s (%s)', cid, window or 'убрано', session.get('username'))
     return jsonify({'success': True})
 
 

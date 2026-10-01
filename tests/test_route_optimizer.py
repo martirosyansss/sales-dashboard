@@ -5286,9 +5286,10 @@ def _dispatch_setup(client, orders, docs=()):
 
     state.dispatch_loader = loader
     state.fact_loader = lambda day: dp.FactData(tuple(docs), {})
+    # магазины 101–104 — в центре Еревана (стартовая граница малого центра): CAR1 туда въезжает
     r = client.post('/api/routes/settings', json={
         'depot': {'lat': DP_DEPOT[0], 'lon': DP_DEPOT[1]},
-        'trucks': [{'car_code': 'CAR1', 'capacity_kg': 10000, 'fuel_l_per_100km': 30, 'active': True},
+        'trucks': [{'car_code': 'CAR1', 'capacity_kg': 10000, 'fuel_l_per_100km': 30, 'active': True, 'center_ok': True},
                    {'car_code': 'CAR2', 'capacity_kg': 3500, 'fuel_l_per_100km': 16, 'active': True}]})
     assert r.status_code == 200, r.get_json()
     return calls
@@ -5844,8 +5845,9 @@ def test_store_migrates_schema_7_to_8_truck_active_and_manual(tmp_path):
     assert b.trucks['CAR2'] == st.Truck('CAR2', 100, None, None, False, 'x', 'owner')
     assert b.truck_active('CAR1', frozenset()) is True and b.truck_active('NEW', {'NEW'}) is True   # «авто» — без записи
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('8',)
-        indexes = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(st.SCHEMA_VERSION),)                                       # 7 → 8 → … → текущая
+        indexes ={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
         assert 'trucks_one_van' in indexes
         with pytest.raises(sqlite3.IntegrityError):                      # один экспедитор — одна машина
             conn.executemany("INSERT INTO trucks(car_code, manual, van_agent_id, active, updated_at) "

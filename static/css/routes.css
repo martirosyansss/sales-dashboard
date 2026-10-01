@@ -703,6 +703,10 @@
 .rs-idle { display: block; margin-top: 6px; font-size: .8125rem; line-height: 1.4; color: var(--rt-warn); }
 .rs-idle[hidden] { display: none; }
 .rs-idle.is-soft { color: var(--rt-fg-dim); font-style: italic; }
+/* «В центр» у машины и граница малого центра на карте (окна приёма и малый центр, №39–41) */
+.rs-center-sel { min-width: 112px; }
+.rs-center-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-top: 10px; }
+.rs-zone-pt { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 3px solid #397be9; box-shadow: 0 0 0 2px rgba(0,0,0,.35); cursor: grab; }
 /* Ручные машины: подсказка, кнопки в строке, форма добавления */
 .rs-mt-hint .rt-btn { flex: 0 0 auto; }
 .rs-mt-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }

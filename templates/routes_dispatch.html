@@ -10,7 +10,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=14">
 <!-- Страница на армянском (ответ владельца №31), интерфейс «для чайников» — свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=4">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=7">
 {% endblock %}
 
 {% block content %}
@@ -129,6 +129,24 @@
                     </div>
                 </details>
 
+                <!-- Предложения водителей «точка неверная» (driver-geo-plan.md §5): слева список, справа старая и новая точка -->
+                <details class="rt-fold" id="dpGeoSug" hidden>
+                    <summary><span class="rt-fold-t"><i class="fas fa-location-crosshairs" aria-hidden="true"></i>Վարորդներն առաջարկում են նոր տեղ</span>
+                        <span class="rt-fold-note" id="dpGeoSugNote"></span></summary>
+                    <div class="rt-fold-body">
+                        <p class="rt-fold-lead">Վարորդը նշել է, որ խանութի կետը քարտեզում սխալ է, և ուղարկել է այն տեղը, որտեղ իրականում բեռնաթափում է։
+                            Ընտրեք առաջարկը՝ քարտեզում կտեսնեք հին (մոխրագույն) և նոր (կանաչ) կետը։ «Ընդունել»՝ նոր կետը կդառնա խանութի կետը,
+                            «Մերժել»՝ ամեն ինչ կմնա ինչպես կա։</p>
+                        <div class="dp-pick">
+                            <ul class="dp-picklist" id="dpGeoSugList"></ul>
+                            <div class="dp-pickside">
+                                <div id="dpGeoSugMap" class="dp-pickmap" role="region" aria-label="Քարտեզ՝ խանութի հին և նոր կետը"></div>
+                                <p class="dp-note" id="dpGeoSugMore"></p>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
                 <details class="rt-fold" id="dpBacklog" hidden>
                     <summary><span class="rt-fold-t"><i class="fas fa-clock-rotate-left" aria-hidden="true"></i>Նախորդ օրերից չառաքված պատվերներ</span>
                         <span class="rt-fold-note" id="dpBacklogNote"></span></summary>
@@ -178,10 +196,11 @@
 
                 <details class="rt-fold" id="dpMapBox" open>
                     <summary><span class="rt-fold-t"><i class="fas fa-map" aria-hidden="true"></i>Քարտեզ</span>
-                        <span class="rt-fold-note">յուրաքանչյուր մեքենա՝ իր գույնով</span></summary>
+                        <span class="rt-fold-note">յուրաքանչյուր մեքենա՝ իր գույնով, ընտրեք մեքենա կամ երթ՝ միայն այն տեսնելու համար</span></summary>
                     <div>
+                        <div class="rt-maplegend dp-mapfilter" id="dpLegend" role="group" aria-label="Ինչ ցույց տալ քարտեզում"></div>
+                        <p class="dp-mapfocus" id="dpMapFocus" hidden></p>
                         <div id="dpMap" class="rt-map dp-map" role="region" aria-label="Երթերի քարտեզ"></div>
-                        <div class="rt-maplegend" id="dpLegend"></div>
                     </div>
                 </details>
             </div>
@@ -214,11 +233,27 @@
             </section>
         </section>
     </div>
+
+    <!-- «Փոխել տեղը»: точка любого магазина — перетащить или вставить координаты; «авто» убирает ручную точку -->
+    <dialog id="dpGeoDlg" class="dp-dlg" aria-labelledby="dpGeoTitle" aria-describedby="dpGeoLead">
+        <h2 class="dp-dlg-t" id="dpGeoTitle">Խանութի տեղը</h2>
+        <p class="dp-dlg-lead" id="dpGeoLead"></p>
+        <div id="dpGeoMap" class="dp-pickmap" role="region" aria-label="Քարտեզ՝ քաշեք կետը կամ սեղմեք նոր տեղի վրա"></div>
+        <label for="dpGeoCoord" class="dp-picklabel">Կոորդինատներ՝ լայնություն, երկայնություն</label>
+        <input id="dpGeoCoord" class="rt-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
+               placeholder="40.17920, 44.49910" aria-describedby="dpGeoErr">
+        <div class="rt-ferr" id="dpGeoErr" role="alert"></div>
+        <div class="dp-dlg-btns">
+            <button type="button" id="dpGeoSave" class="rt-btn rt-btn-primary"><i class="fas fa-check" aria-hidden="true"></i><span>Պահպանել</span></button>
+            <button type="button" id="dpGeoAuto" class="rt-btn rt-btn-ghost"><i class="fas fa-rotate-left" aria-hidden="true"></i><span>Վերադարձնել ավտոմատ</span></button>
+            <button type="button" id="dpGeoCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
+        </div>
+    </dialog>
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=10"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=17"></script>
 {% endblock %}

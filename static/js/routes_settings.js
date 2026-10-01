@@ -1,4 +1,4 @@
-/* Настройки маршрутов /routes/settings: склад, машины, менеджеры, нормы, сезон, калибровка.
+/* Настройки маршрутов /routes/settings: склад, машины, менеджеры, малый центр, нормы, сезон, калибровка.
    Контракт: GET/POST /api/routes/settings (docs/plans/stage-1-plan.md §10.2–10.3).
    Сохранение — одним запросом (сервер пишет всё или ничего), ошибки сервера — у полей.
    Строки из ERP (машины, менеджеры, группы клиентов) выводятся только через textContent. */
@@ -14,7 +14,8 @@
     const MONTHS_FULL = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
     const FUEL = [['petrol', 'бензин'], ['diesel', 'дизель'], ['lpg', 'газ']];
     const HOME_METHOD = { night: 'по ночёвкам', morning: 'по первым точкам дня', first_point: 'по первым точкам дня' };
-    const SECTIONS = ['depot', 'trucks', 'fuel', 'managers', 'norms', 'season', 'calibration'];
+    const SECTIONS = ['depot', 'trucks', 'fuel', 'managers', 'center', 'norms', 'season', 'calibration'];
+    const ZONE_MAX = 200;   // точек границы малого центра — как store.CENTER_ZONE_VERTICES
     const RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     // Нормы: ключ настроек → подпись простыми словами и пояснение в одну строку. min/max — подсказка браузеру,
@@ -104,6 +105,7 @@
     const state = {
         data: null, initial: '', dirty: false, saving: false,
         map: null, marker: null,
+        zone: [], zoneMap: null, zoneLayer: null,   // граница малого центра: [[широта, долгота], …] по обходу
         fields: new Map(),              // ключ ошибки сервера → {el, errEl, label}
         manual: [],                     // ручные машины формы: {key, car_code, name, van_agent_id, …}
         season: { mode: 'auto', low: new Set(), peak: new Set() },
@@ -293,6 +295,7 @@
             updateDirty();
             renderProgress();
             if (state.map) state.map.invalidateSize();
+            if (state.zoneMap) { state.zoneMap.invalidateSize(); drawZone(true); }   // карта рисовалась в скрытой форме
             if (!afterSave) jumpToHash();
         } catch (e) {
             if (afterSave) {
@@ -333,6 +336,7 @@
         renderDepot();
         renderTrucks();
         renderManagers();
+        renderZone();
         renderNorms();
         renderSeason();
         renderCalib();
@@ -529,6 +533,15 @@
         // галочку вернули к авто-значению у машины, которая была «авто», — она и остаётся «авто»
         active.addEventListener('change', () => setMode(manual || wasManual || active.checked !== autoOn ? 'manual' : 'auto'));
 
+        // «В центр» (№39–41): авто — по названию (машины JAC), ручной выбор — «да»/«нет»
+        const autoCenter = manual ? /JAC/i.test(t.name || '') : t.auto_center_ok === true;
+        const centerMode = t.center_mode || (t.center_ok_source === 'manual' ? (t.center_ok ? 'yes' : 'no') : 'auto');
+        const centerE = errNode();
+        const center = h('select', { class: 'rt-select rs-center-sel', 'aria-label': 'Можно в малый центр — ' + who,
+            title: 'Авто: в малый центр въезжают машины JAC (по названию машины)', dataset: { f: 'center', auto: autoCenter ? '1' : '0' } },
+            h('option', { value: 'auto', text: 'авто: ' + (autoCenter ? 'да' : 'нет'), selected: centerMode === 'auto' }),
+            h('option', { value: 'yes', text: 'да', selected: centerMode === 'yes' }),
+            h('option', { value: 'no', text: 'нет', selected: centerMode === 'no' }));
         const nameCell = h('td', { class: 'rt-cell-name' },
             h('span', { class: 'n', text: code || '—' }),
             h('span', { class: 'c', text: t.name || '' }),
@@ -539,6 +552,7 @@
             h('td', { class: 'w-num w-half', dataset: { label: 'Тоннаж, т' } }, cap, capE),
             h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л на 100 км' } }, fuel, fuelE),
             h('td', { class: 'rs-erp-cell', dataset: { label: manual ? 'Экспедитор' : 'По накладным ERP' } }, manual ? vanHint(t) : erpHint(t), idle),
+            h('td', { class: 'w-sel', dataset: { label: 'В центр' } }, center, centerE),
             h('td', { class: 'w-chk w-inc', dataset: { label: 'Работает' } }, active, actSrc, actE));
         if (manual) {
             const edit = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Изменить — ' + who },
@@ -552,12 +566,14 @@
             reg(keys('capacity_kg'), cap, capE, 'Машина ' + code + ', тоннаж');
             reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Машина ' + code + ', расход');
             reg(keys('active'), active, actE, 'Машина ' + code);
+            reg(keys('center_ok'), center, centerE, 'Машина ' + code + ', в центр');
             reg(keys('car_code').concat(keys('name'), keys('van_agent_id'), ['manual_trucks.' + code]), edit, actE, 'Машина ' + code);
         } else {
             const keys = (f) => ['trucks.' + i + '.' + f, 'trucks.' + code + '.' + f];
             reg(keys('capacity_kg').concat(['trucks.' + i, 'trucks.' + code]), cap, capE, 'Машина ' + code + ', тоннаж');
             reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Машина ' + code + ', расход');
             reg(keys('active').concat(keys('car_code')), active, actE, 'Машина ' + code);
+            reg(keys('center_ok'), center, centerE, 'Машина ' + code + ', в центр');
         }
         return tr;
     }
@@ -576,6 +592,7 @@
                 h('th', { scope: 'col', text: 'Тоннаж, т' }),
                 h('th', { scope: 'col', text: 'Расход, л на 100 км' }),
                 h('th', { scope: 'col', text: 'По накладным ERP' }),
+                h('th', { scope: 'col', text: 'В центр', title: 'Можно въезжать в малый центр' }),
                 h('th', { scope: 'col', class: 'w-chk w-inc', text: 'Работает' }))),
             tbody);
         const addBtn = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', id: 'rsMtAdd', 'aria-expanded': 'false', 'aria-controls': 'rsMtForm' },
@@ -706,6 +723,7 @@
             m = state.manual.find(x => x.key === key);
             Object.assign(m, data);
             const old = $('rsTrucksBody').querySelector('tr[data-mk="' + key + '"]');
+            m.center_mode = old.querySelector('[data-f="center"]').value;
             old.replaceWith(truckRow(m));
         } else {
             m = Object.assign({ car_code: code, manual: true, active_source: 'manual', key: 'm' + (++manualSeq) }, data);
@@ -870,6 +888,95 @@
         if (!bad && !p.empty) inp.value = fmtCoord(p.lat, p.lon);
     }
 
+    // ---------- Малый центр: граница на карте (№39–41) ----------
+    // Вершины тянутся мышью; щелчок по карте добавляет вершину на ближайшую сторону; двойной щелчок по вершине —
+    // убирает её (меньше трёх нельзя). Сохраняется общей кнопкой вместе с остальными настройками (settings.center_zone).
+    function renderZone() {
+        const z = state.data.settings.center_zone;
+        state.zone = Array.isArray(z) ? z.filter(p => Array.isArray(p) && p.length === 2).map(p => [Number(p[0]), Number(p[1])]) : [];
+        reg(['settings.center_zone'], $('rsCenterMap'), $('rsCenterErr'), 'Граница малого центра');
+        initZoneMap();
+        drawZone(true);
+    }
+
+    function initZoneMap() {
+        if (state.zoneMap) return;
+        const el = $('rsCenterMap');
+        if (typeof window.L === 'undefined') {
+            el.classList.add('rt-map-fallback');
+            el.textContent = 'Карта не загрузилась (нет доступа к cdn.jsdelivr.net) — граница центра остаётся прежней.';
+            return;
+        }
+        const map = L.map(el, { zoomSnap: 0.5, scrollWheelZoom: false, doubleClickZoom: false });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            subdomains: 'abc', maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+        }).addTo(map);
+        map.setView(YEREVAN, 14);
+        map.on('click', (e) => addZonePoint(e.latlng.lat, e.latlng.lng));
+        map.on('click focus', () => map.scrollWheelZoom.enable());
+        map.on('mouseout blur', () => map.scrollWheelZoom.disable());
+        state.zoneMap = map;
+        state.zoneLayer = L.layerGroup().addTo(map);
+    }
+
+    function drawZone(fit) {
+        const n = state.zone.length;
+        $('rsCenterNote').textContent = 'Точек границы: ' + n + (n <= 3 ? ' — меньше трёх быть не может' : '') + '.';
+        if (!state.zoneMap) return;
+        state.zoneLayer.clearLayers();
+        const poly = L.polygon(state.zone, { color: '#397be9', weight: 3, fillOpacity: 0.12, interactive: false }).addTo(state.zoneLayer);
+        const icon = L.divIcon({ className: '', html: '<span class="rs-zone-pt"></span>', iconSize: [14, 14], iconAnchor: [7, 7] });
+        state.zone.forEach((p, i) => {
+            const mk = L.marker(p, { icon, draggable: true, keyboard: false, title: 'Точка ' + (i + 1) + ': потяните, чтобы сдвинуть; двойной щелчок — убрать' })
+                .addTo(state.zoneLayer);
+            mk.on('drag', (e) => { const ll = e.target.getLatLng(); state.zone[i] = [ll.lat, ll.lng]; poly.setLatLngs(state.zone); });
+            mk.on('dragend', (e) => {
+                const ll = e.target.getLatLng();
+                state.zone[i] = inArmenia(ll.lat, ll.lng) ? [round(ll.lat, 6), round(ll.lng, 6)] : p;
+                drawZone(false);
+                zoneChanged('Точка ' + (i + 1) + ' сдвинута');
+            });
+            mk.on('dblclick', () => {
+                if (state.zone.length <= 3) { announce('У границы не меньше трёх точек'); return; }
+                state.zone.splice(i, 1);
+                drawZone(false);
+                zoneChanged('Точка ' + (i + 1) + ' убрана');
+            });
+        });
+        if (fit && n) state.zoneMap.fitBounds(state.zone, { padding: [24, 24], animate: false });
+    }
+
+    // Щелчок по карте — новая вершина на ближайшей стороне (расстояние до отрезка на плоскости, долгота × cos широты)
+    function addZonePoint(lat, lon) {
+        const n = state.zone.length;
+        if (!inArmenia(lat, lon)) return;
+        if (n >= ZONE_MAX) { announce('У границы не больше ' + ZONE_MAX + ' точек'); return; }
+        const k = Math.cos(lat * Math.PI / 180);
+        const xy = (p) => [p[1] * k, p[0]];
+        const c = xy([lat, lon]);
+        const dist = (a, b) => {
+            const dx = b[0] - a[0], dy = b[1] - a[1], len = dx * dx + dy * dy;
+            const t = len ? Math.max(0, Math.min(1, ((c[0] - a[0]) * dx + (c[1] - a[1]) * dy) / len)) : 0;
+            return Math.hypot(c[0] - a[0] - t * dx, c[1] - a[1] - t * dy);
+        };
+        let best = n - 1, bestD = Infinity;
+        for (let i = 0; i < n; i++) {
+            const d = dist(xy(state.zone[i]), xy(state.zone[(i + 1) % n]));
+            if (d < bestD) { bestD = d; best = i; }
+        }
+        state.zone.splice(best + 1, 0, [round(lat, 6), round(lon, 6)]);
+        drawZone(false);
+        zoneChanged('Точка добавлена');
+    }
+
+    function zoneChanged(msg) {
+        $('rsCenterErr').textContent = '';
+        $('rsCenterMap').classList.remove('is-invalid');
+        updateDirty();
+        if (msg) announce(msg + ' — нажмите «Сохранить»');
+    }
+
     // ---------- 04 · Нормы ----------
     function renderNorms() {
         const box = $('rsNorms'), fuel = $('rsFuel');
@@ -968,6 +1075,14 @@
         const miss = [...need].filter(k => { const i = document.querySelector('[data-norm="fuel_price_' + k + '"]'); return !i || String(i.value).trim() === ''; });
         const fuelOk = !miss.length;
         set('rsStFuel', fuelOk ? 'ok' : 'todo', fuelOk ? 'заполнено' : 'не указано: ' + miss.map(k => names[k] || k).join(', '));
+
+        // малый центр: работающие машины, которым можно в центр (авто — JAC)
+        const toCenter = [...$('rsTrucks').querySelectorAll('tbody tr')].filter(tr => {
+            const sel = tr.querySelector('[data-f="center"]');
+            return tr.querySelector('[data-f="active"]').checked && (sel.value === 'yes' || (sel.value === 'auto' && sel.dataset.auto === '1'));
+        }).length;
+        set('rsStCenter', toCenter ? 'ok' : 'part', toCenter ? 'в центр: ' + toCenter + ' ' + plural(toCenter, 'машина', 'машины', 'машин')
+            : 'нет машины, которой можно в центр');
 
         // дома менеджеров в расчёте
         const noHome = inCalc.filter(tr => tr.querySelector('.rs-home .b-warn')).length;
@@ -1264,6 +1379,7 @@
         else if (cc.error) errors['settings.city_center_lat'] = cc.error;
         else { s.city_center_lat = cc.lat; s.city_center_lon = cc.lon; }
         s.chain_groups = [...document.querySelectorAll('#rsForm [data-chain]:checked')].map(i => i.value);
+        s.center_zone = state.zone.map(([a, b]) => [round(a, 6), round(b, 6)]);
         const manual = state.season.mode === 'manual';
         s.low_months = manual ? [...state.season.low].sort((a, b) => a - b) : null;
         s.peak_months = manual ? [...state.season.peak].sort((a, b) => a - b) : null;
@@ -1290,8 +1406,11 @@
                 fuel_l_per_100km: fuel.value === undefined ? null : fuel.value,
             };
             const act = q('active');
+            // «В центр»: авто — null (решает название машины), иначе выбор владельца
+            const cm = q('center').value;
+            item.center_ok = cm === 'auto' ? null : cm === 'yes';
             if (m) {
-                ['capacity_kg', 'fuel_l_per_100km', 'active', 'car_code', 'name', 'van_agent_id']
+                ['capacity_kg', 'fuel_l_per_100km', 'active', 'car_code', 'name', 'van_agent_id', 'center_ok']
                     .forEach(f => alias('manual_trucks.' + m.car_code + '.' + f, p + f));
                 alias('manual_trucks.' + m.car_code, p.slice(0, -1));
                 manualTrucks.push(Object.assign(item, { name: m.name || null, active: act.checked,
@@ -1338,7 +1457,8 @@
         const incModes = [...document.querySelectorAll('#rsManagers [data-f="inc"], #rsTrucks [data-f="active"]')].map(el => el.dataset.mode || '');
         // ручные машины: номер, название и экспедитор живут не в полях строки
         const manual = (state.manual || []).map(m => [m.car_code, m.name || null, m.van_agent_id === undefined ? null : m.van_agent_id]);
-        return JSON.stringify([vals, incModes, manual, state.season.mode, [...state.season.low].sort(), [...state.season.peak].sort()]);
+        return JSON.stringify([vals, incModes, manual, state.season.mode, [...state.season.low].sort(), [...state.season.peak].sort(),
+            state.zone.map(([a, b]) => [round(a, 6), round(b, 6)])]);
     }
 
     function updateDirty() {
@@ -1424,6 +1544,13 @@
             syncDepot({ pan: false, strict: true });
             updateDirty();
             depot.focus();
+        });
+        $('rsCenterReset').addEventListener('click', () => {
+            const z = state.data && state.data.center_zone_default;
+            if (!Array.isArray(z)) return;
+            state.zone = z.map(p => [Number(p[0]), Number(p[1])]);
+            drawZone(true);
+            zoneChanged('Граница центра — стартовая');
         });
         $('rsRetryBtn').addEventListener('click', () => load(false));
         window.addEventListener('beforeunload', (e) => {

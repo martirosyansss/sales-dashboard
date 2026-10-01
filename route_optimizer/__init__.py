@@ -20,7 +20,7 @@ from . import erp
 from .roads import RoadProvider, osm_path
 from .snapshot import ResultCache, SnapshotCache, load_snapshot
 from .store import Store
-from .views import EXTENSION_KEY, RoutesState, bp
+from .views import EXTENSION_KEY, DriverGeo, RoutesState, bp
 
 logger = logging.getLogger(__name__)
 
@@ -49,3 +49,9 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
     app.register_blueprint(bp)
     logger.info('[Routes] Раздел «Маршруты» подключён; база настроек: %s; карта дорог: %s%s', path,
                 roads.path, '' if os.path.exists(roads.path) else ' (нет — км по прямой)')
+
+
+def attach_driver_geo(app: Flask, source: DriverGeo) -> None:
+    """Точки и предложения водителей (раздел «Առաքիչ», driver-geo-plan.md §4) — в «Маршруты». Вызывает app_v2
+    после init_app обоих разделов: пакет route_optimizer не импортирует courier. Не вызван — без точек водителей."""
+    app.extensions[EXTENSION_KEY].driver_geo = source

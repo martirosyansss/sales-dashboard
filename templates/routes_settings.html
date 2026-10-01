@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=14">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=15">
 {% endblock %}
 
 {% block content %}
@@ -119,6 +119,22 @@
                         8 недель — не в расчёте. Галочку можно поставить или снять вручную, «вернуть авто» — отдать решение программе.</p>
                     <div id="rsManagers"></div>
                 </section>
+
+                <section class="rt-card" id="center" aria-labelledby="rsHCenter">
+                    <div class="rt-card-head">
+                        <h3 class="rt-card-title" id="rsHCenter"><i class="fas fa-city" aria-hidden="true"></i>Малый центр</h3>
+                        <span class="rt-card-state" id="rsStCenter"></span>
+                    </div>
+                    <p class="rt-card-lead">В малый центр «Развоз» отправляет только машины с отметкой «В центр» в таблице машин
+                        (по умолчанию — JAC). Граница — синяя линия: потяните точку, чтобы сдвинуть; щелчок по карте добавляет точку
+                        на ближайшую сторону; двойной щелчок по точке убирает её. Записать — кнопкой «Сохранить» внизу страницы.</p>
+                    <div id="rsCenterMap" class="rt-depotmap rs-centermap" role="region" aria-label="Карта: граница малого центра"></div>
+                    <div class="rs-center-bar">
+                        <span id="rsCenterNote" class="rt-field-hint" aria-live="polite"></span>
+                        <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rsCenterReset"><i class="fas fa-rotate-left" aria-hidden="true"></i>Вернуть стартовую границу</button>
+                    </div>
+                    <div class="rt-ferr" id="rsCenterErr"></div>
+                </section>
             </div>
         </section>
 
@@ -169,5 +185,5 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=10"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=11"></script>
 {% endblock %}

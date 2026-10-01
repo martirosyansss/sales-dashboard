@@ -19,6 +19,10 @@
 - Свежесть заказов: до dispatch_ready_time в последний день приёма заказов на D они ещё поступают
   (orders_still_coming); черновик помнит заказы последней сборки (Draft.built_orders) — новые и
   отменённые/отгруженные с тех пор считает since_build.
+- Окна приёма магазинов и малый центр (windows-center-plan.md): окно — прибытие к магазину (раньше — машина
+  ждёт, ожидание — её время), центр — только машины с правом въезда. Сборка и «Везти после конца дня» их
+  соблюдают (fleet._plan_timed); что не помещается в окно или без машины для центра — no_window / no_center.
+  Правки логиста не запрещаются: нарушение видно в плане (window_miss, center_miss).
 """
 from __future__ import annotations
 
@@ -29,7 +33,7 @@ from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
 
 from . import fleet as fl
-from .geo import Coord, Point
+from .geo import Coord, Point, in_polygon
 
 if TYPE_CHECKING:
     from .evaluate import Norms
@@ -259,6 +263,10 @@ class Draft:
     deferred: set[str] = field(default_factory=set)
     # перенесённые сюда из прошлого дня (carried), которые логист этого дня убрал из развоза
     dropped: set[str] = field(default_factory=set)
+    # клиенты, которых сборка не поставила в рейс: не успеваем в окно приёма / в центре, а машины с правом
+    # въезда сегодня нет (no_room — только «не успели до конца дня»); перенос в рейс убирает из всех трёх
+    no_window: set[int] = field(default_factory=set)
+    no_center: set[int] = field(default_factory=set)
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -268,7 +276,8 @@ class Draft:
                           for t in self.trips],
                 'next_id': self.next_id, 'built_at': self.built_at, 'built_orders': built,
                 'no_room': sorted(self.no_room), 'overtime': self.overtime, 'overtime_ok': self.overtime_ok,
-                'deferred': sorted(self.deferred), 'dropped': sorted(self.dropped)}
+                'deferred': sorted(self.deferred), 'dropped': sorted(self.dropped),
+                'no_window': sorted(self.no_window), 'no_center': sorted(self.no_center)}
 
     @classmethod
     def from_json(cls, raw: Any) -> Draft:
@@ -291,11 +300,14 @@ class Draft:
         next_id = raw.get('next_id')
         next_id = max([next_id if _is_int(next_id) else 1, *(t.id + 1 for t in trips)])
         built = raw.get('built_at') if isinstance(raw.get('built_at'), str) else None
-        no_room = {c for c in (raw.get('no_room') or [])[:MAX_BUILT_ORDERS] if _is_int(c)}
+        def cids(key: str) -> set[int]:
+            return {c for c in (raw.get(key) or [])[:MAX_BUILT_ORDERS] if _is_int(c)}
+
         def isns(key: str) -> set[str]:
             return {x for x in (raw.get(key) or [])[:MAX_BUILT_ORDERS] if isinstance(x, str) and ISN_RE.match(x)}
-        return cls(trucks, excluded, added, trips, next_id, built, _built_orders(raw.get('built_orders')), no_room,
-                   raw.get('overtime') is True, raw.get('overtime_ok') is True, isns('deferred'), isns('dropped'))
+        return cls(trucks, excluded, added, trips, next_id, built, _built_orders(raw.get('built_orders')), cids('no_room'),
+                   raw.get('overtime') is True, raw.get('overtime_ok') is True, isns('deferred'), isns('dropped'),
+                   cids('no_window'), cids('no_center'))
 
 
 def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
@@ -330,6 +342,9 @@ class DayContext:
     work_start_min: int                  # начало рабочего дня машины, минут от полуночи
     overtime_minutes: float | None = None   # форс-мажор: длина дня машины до truck_overtime_end; None — без предела
     min_trip_revenue: float = 0.0        # рейс дешевле — «бедный» (ответ владельца №25: везти сейчас или завтра)
+    # окна приёма: клиент → (прибыть не раньше, не позже), минуты от полуночи (store.CustomerWindow.span)
+    windows: Mapping[int, tuple[float, float]] = field(default_factory=dict)
+    center_zone: tuple[Point, ...] = ()  # граница малого центра; пусто — центра нет
 
 
 def _hhmm(minutes: float) -> str:
@@ -362,16 +377,111 @@ def _clean(draft: Draft, routable: Mapping[int, Stop]) -> None:
     draft.trips = [t for t in draft.trips if t.stops]
 
 
+def _span(ctx: DayContext, cid: int) -> fl.Window:
+    """Окно приёма клиента в минутах от начала дня машины; без окна — (−∞, +∞)."""
+    lo, hi = ctx.windows.get(cid, (-math.inf, math.inf))
+    return lo - ctx.work_start_min, hi - ctx.work_start_min
+
+
+def _central(ctx: DayContext, s: Stop) -> bool:
+    """Точка в малом центре (везёт только машина с правом въезда)."""
+    return bool(ctx.center_zone) and s.point is not None and in_polygon(s.point, ctx.center_zone)
+
+
 def _route(ctx: DayContext, cids: Sequence[int], stops: Mapping[int, Stop], shares: Mapping[int, int],
-           reorder: bool) -> tuple[list[int], float, float, float]:
-    """(порядок клиентов, км, минуты, кг) рейса."""
+           reorder: bool, start: float = 0.0) -> tuple[list[int], float, float, float]:
+    """(порядок клиентов, км, минуты, кг) рейса. reorder с выезда start: если порядок соблюдает окна приёма,
+    2-opt их не нарушит."""
     kgs = [stops[c].kg / shares.get(c, 1) for c in cids]
+    windows = [_span(ctx, c) for c in cids] if reorder and any(c in ctx.windows for c in cids) else None
     seq, km, minutes = fl.route_trip([stops[c].point for c in cids], kgs, ctx.depot, ctx.norms, ctx.tn,
-                                     reorder=reorder)
+                                     reorder=reorder, windows=windows, start=start)
     return [cids[i] for i in seq], km, minutes, math.fsum(kgs)
 
 
+def _timeline(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, Stop],
+              shares: Mapping[int, int]) -> dict[int, tuple[float, float, list[float]]]:
+    """Рейсы машин подряд, с ожиданием у окон приёма: рейс → (выезд, минуты рейса от выезда, прибытия к точкам),
+    время — минуты от начала дня машины. Рейс выезжает, как только машина вернулась, но не раньше, чем нужно к
+    окну первой точки (fl.trip_schedule) — как его поставил fleet._plan_timed. Без окон — подряд, минуты те же,
+    что у _route."""
+    used: dict[str, float] = {}
+    out: dict[int, tuple[float, float, list[float]]] = {}
+    for t in trips:
+        cids = [c for c in t.stops if c in stops]
+        if not cids:
+            continue
+        depart, arrivals, minutes = fl.trip_schedule(
+            [stops[c].point for c in cids], [stops[c].kg / shares.get(c, 1) for c in cids], ctx.depot, ctx.norms,
+            ctx.tn, used.get(t.truck, 0.0), [_span(ctx, c) for c in cids])
+        used[t.truck] = depart + minutes
+        out[t.id] = (depart, minutes, arrivals)
+    return out
+
+
+def _occupied(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, Stop], shares: Mapping[int, int]
+              ) -> tuple[dict[str, float], dict[str, list[tuple[float, float]]] | None, dict[int, float]]:
+    """Чем машины уже заняты (рейсы trips по _timeline): (конец последнего рейса машины; занятые отрезки
+    [выезд, возвращение] — только если между ними есть промежуток (рейс выезжает позже под окно первой точки),
+    иначе None — день занят одним куском, как раньше; выезд каждого рейса)."""
+    tl = _timeline(ctx, trips, stops, shares)
+    used: dict[str, float] = {}
+    spans: dict[str, list[tuple[float, float]]] = {}
+    gap = False
+    for t in trips:
+        if t.id in tl:
+            depart, minutes, _ = tl[t.id]
+            gap = gap or depart > used.get(t.truck, 0.0) + _EPS
+            used[t.truck] = depart + minutes
+            spans.setdefault(t.truck, []).append((depart, depart + minutes))
+    return used, (spans if gap else None), {tid: v[0] for tid, v in tl.items()}
+
+
+def _by_departure(old: list[DraftTrip], old_departs: Mapping[int, float], new: list[DraftTrip],
+                  new_departs: Sequence[float]) -> list[DraftTrip]:
+    """Рейсы черновика: прежние + новые. Расчёт с окнами (new_departs есть) мог поставить новый рейс в промежуток
+    до прежнего — рейсы машины идут по времени выезда, иначе _timeline повёз бы их не в том порядке."""
+    if not new_departs:
+        return old + new
+    when = {**{t.id: old_departs[t.id] for t in old}, **{t.id: dep for t, dep in zip(new, new_departs)}}
+    return sorted(old + new, key=lambda t: when[t.id])
+
+
 # --- Сборка рейсов ---
+
+def _plan_around(ctx: DayContext, sel: Sequence[fl.FleetTruck], routable: Mapping[int, Stop], keep: list[DraftTrip],
+                 was: Mapping[int, tuple[float, float, list[float]]], next_id: int
+                 ) -> tuple[list[DraftTrip], list[Stop], dict[int, str], int]:
+    """Раскладка с окнами и центром вокруг готовых рейсов keep (fleet.route_day, fixed): их машина и состав не
+    меняются, время — их выезд в прежнем плане (was), если там свободно; остальные магазины раскладываются вокруг.
+    (рейсы по времени выезда, магазины вне keep, причины неназначенных — номер в них, следующий id)."""
+    shares = _shares(keep)
+    rest = [routable[c] for c in sorted(routable) if c not in shares]
+    pts, kgs, revs = [s.point for s in rest], [s.kg for s in rest], [s.revenue for s in rest]
+    wins, cen = [_span(ctx, s.customer_id) for s in rest], [_central(ctx, s) for s in rest]
+    fixed: list[tuple[str, list[int], float]] = []
+    for t in keep:
+        fixed.append((t.truck, list(range(len(pts), len(pts) + len(t.stops))), was[t.id][0] if t.id in was else 0.0))
+        for c in t.stops:
+            s = routable[c]
+            pts.append(s.point)
+            kgs.append(s.kg / shares[c])
+            revs.append(s.revenue / shares[c])
+            wins.append(_span(ctx, c))
+            cen.append(_central(ctx, s))
+    reasons: dict[int, str] = {}
+    trips = fl.route_day(pts, kgs, revs, ctx.depot, sel, ctx.norms, ctx.tn, overflow=False, windows=wins, center=cen,
+                         reasons=reasons, fixed=fixed)
+    own = {tuple(idx): t for t, (_, idx, _) in zip(keep, fixed)}
+    out: list[DraftTrip] = []
+    for t in trips:
+        if t.items in own:
+            out.append(own[t.items])
+        else:
+            out.append(DraftTrip(next_id, t.truck, [rest[i].customer_id for i in t.items]))
+            next_id += 1
+    return out, rest, reasons, next_id
+
 
 def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Sequence[str],
           now: str) -> Draft:
@@ -379,7 +489,12 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     Закреплённые логистом рейсы прежнего черновика остаются как есть (если их машина работает), их время
     машина уже занята; остальное раскладывается заново. За конец рабочего дня машин рейсы не планируются:
     что не успевают выбранные машины, остаётся вне рейсов (no_room) — логист добавляет машину или
-    решает сам."""
+    решает сам. Окна приёма и малый центр соблюдаются: не помещается в окно — no_window, в центре без
+    машины с правом въезда — no_center. С окнами или центром закреплённые рейсы остаются и на своём прежнем
+    времени, если там свободно и окна соблюдаются («после 15:00» — в конце дня, утро — другим рейсам), иначе — в
+    самый ранний промежуток, где укладываются; остальное раскладывается заново вокруг них.
+    Как и раньше: закреплён один рейс тяжёлого заказа на несколько поездок — в его рейсе заказ показывается
+    целиком (доля считается по рейсам черновика, остальные поездки при пересборке не закреплены)."""
     old = old or Draft()
     routable = {s.customer_id: s for s in stops if s.point is not None}
     sel = _selected(ctx, trucks)
@@ -390,21 +505,28 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     tmp = Draft(trips=pinned)
     _clean(tmp, routable)
     pinned = tmp.trips
-    shares = _shares(pinned)
-    used: dict[str, float] = {}
-    for t in pinned:
-        _, _, minutes, _ = _route(ctx, t.stops, routable, shares, reorder=False)
-        used[t.truck] = used.get(t.truck, 0.0) + minutes
-    taken = set(shares)
-    rest = [routable[c] for c in sorted(routable) if c not in taken]
-    trips = fl.route_day([s.point for s in rest], [s.kg for s in rest], [s.revenue for s in rest],
-                         ctx.depot, sel, ctx.norms, ctx.tn, used, overflow=False) if rest and sel else []
-    draft.trips = list(pinned)
-    for t in trips:
-        draft.trips.append(DraftTrip(draft.next_id, t.truck, [rest[i].customer_id for i in t.items]))
-        draft.next_id += 1
+    timed = any(c in ctx.windows or _central(ctx, s) for c, s in routable.items())
+    if timed and pinned and sel:
+        was = _timeline(ctx, old.trips, routable, _shares(old.trips))
+        draft.trips, rest, reasons, draft.next_id = _plan_around(ctx, sel, routable, pinned, was, draft.next_id)
+    else:
+        shares = _shares(pinned)
+        rest = [routable[c] for c in sorted(routable) if c not in shares]
+        reasons = {}
+        used, _, _ = _occupied(ctx, pinned, routable, shares)
+        trips = fl.route_day([s.point for s in rest], [s.kg for s in rest], [s.revenue for s in rest],
+                             ctx.depot, sel, ctx.norms, ctx.tn, used, overflow=False,
+                             windows=[_span(ctx, s.customer_id) for s in rest], center=[_central(ctx, s) for s in rest],
+                             reasons=reasons) if rest and sel else []
+        draft.trips = list(pinned)
+        for t in trips:
+            draft.trips.append(DraftTrip(draft.next_id, t.truck, [rest[i].customer_id for i in t.items]))
+            draft.next_id += 1
     placed = {c for t in draft.trips for c in t.stops}
-    draft.no_room = {s.customer_id for s in rest if s.customer_id not in placed} if sel else set()
+    if sel:
+        for i, s in enumerate(rest):
+            if s.customer_id not in placed:
+                {'window': draft.no_window, 'center': draft.no_center}.get(reasons.get(i), draft.no_room).add(s.customer_id)
     return draft
 
 
@@ -412,41 +534,44 @@ def overtime(ctx: DayContext, stops: Sequence[Stop], draft: Draft) -> Draft:
     """«Везти после конца дня» (форс-мажор, ответ владельца №32): магазины, не поместившиеся до конца
     рабочего дня (no_room) и всё ещё вне рейсов, раскладываются по машинам дня поверх их рейсов — с
     переработкой, но не позже предела (ctx.overtime_minutes, настройка truck_overtime_end); что не
-    успевает и к пределу — остаётся «не поместились». Рейсы дня не меняются."""
+    успевает и к пределу — остаётся «не поместились». Рейсы дня не меняются. Окна приёма и центр — как при
+    сборке; не помещавшиеся в окно тоже пробуются: «после 17:30» могло не поместиться только до конца дня."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
     shares = _shares(draft.trips)
     sel = _selected(ctx, draft.trucks)
-    rest = [routable[c] for c in sorted(draft.no_room) if c in routable and c not in shares]
+    rest = [routable[c] for c in sorted(draft.no_room | draft.no_window) if c in routable and c not in shares]
     draft.overtime_ok = True
     if not rest or not sel:
         return draft
-    used: dict[str, float] = {}
-    for t in draft.trips:
-        _, _, minutes, _ = _route(ctx, t.stops, routable, shares, reorder=False)
-        used[t.truck] = used.get(t.truck, 0.0) + minutes
+    used, busy, day_departs = _occupied(ctx, draft.trips, routable, shares)
     limit = replace(ctx.tn, work_minutes=ctx.overtime_minutes) if ctx.overtime_minutes is not None else ctx.tn
+    reasons: dict[int, str] = {}
+    departs: list[float] = []
     trips = fl.route_day([s.point for s in rest], [s.kg for s in rest], [s.revenue for s in rest],
                          ctx.depot, sel, ctx.norms, limit, used, overflow=ctx.overtime_minutes is None,
-                         earliest=True)
+                         earliest=True, windows=[_span(ctx, s.customer_id) for s in rest],
+                         center=[_central(ctx, s) for s in rest], reasons=reasons, busy=busy, departs=departs)
+    new = []
     for t in trips:
-        draft.trips.append(DraftTrip(draft.next_id, t.truck, [rest[i].customer_id for i in t.items]))
+        new.append(DraftTrip(draft.next_id, t.truck, [rest[i].customer_id for i in t.items]))
         draft.next_id += 1
-        used[t.truck] = used.get(t.truck, 0.0) + t.minutes
-    draft.no_room -= {c for t in draft.trips for c in t.stops}
+    draft.trips = _by_departure(draft.trips, day_departs, new, departs)
+    placed = {c for t in draft.trips for c in t.stops}
+    # что не поместилось и с переработкой — по причине этой раскладки: окно, центр или время
+    for i, s in enumerate(rest):
+        cid = s.customer_id
+        for left in (draft.no_room, draft.no_window, draft.no_center):
+            left.discard(cid)
+        if cid not in placed:
+            {'window': draft.no_window, 'center': draft.no_center}.get(reasons.get(i), draft.no_room).add(cid)
     return draft
 
 
 def runs_late(ctx: DayContext, stops: Sequence[Stop], draft: Draft) -> bool:
-    """Хоть одна машина плана работает дольше рабочего дня (рейсы подряд, как в plan_view)."""
+    """Хоть одна машина плана работает дольше рабочего дня (рейсы подряд с ожиданием у окон, как в plan_view)."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
-    shares = _shares(draft.trips)
-    used: dict[str, float] = {}
-    for t in draft.trips:
-        cids = [c for c in t.stops if c in routable]
-        if cids:
-            _, _, minutes, _ = _route(ctx, cids, routable, shares, reorder=False)
-            used[t.truck] = used.get(t.truck, 0.0) + minutes
+    used, _, _ = _occupied(ctx, draft.trips, routable, _shares(draft.trips))
     return any(v > ctx.tn.work_minutes + _EPS for v in used.values())
 
 
@@ -562,12 +687,15 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
         draft.trips.append(dst)
     if dst is not None and cid not in dst.stops:
         dst.stops = _insert_cheapest(ctx, dst.stops, cid, routable)
-        draft.no_room.discard(cid)
+        for left in (draft.no_room, draft.no_window, draft.no_center):
+            left.discard(cid)
     draft.trips = [t for t in draft.trips if t.stops]
     shares = _shares(draft.trips)
     for t in (src, dst):
         if t is not None and t.stops:
-            t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True)
+            # выезд рейса — для окон приёма при 2-opt; заново после перестановки src (та же машина — другой выезд)
+            start = _timeline(ctx, draft.trips, routable, shares)[t.id][0]
+            t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True, start=start)
     return draft
 
 
@@ -580,24 +708,32 @@ def _r(x: float, nd: int = 1) -> float:
 def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
               info: Callable[[Stop], dict[str, Any]]) -> dict[str, Any]:
     """Рейсы черновика с цифрами по текущим заказам: машины → рейсы по порядку (выезд, возвращение,
-    км, литры, загрузка), точки по порядку; «ещё не в рейсах»; «не помещается»."""
+    км, литры, загрузка), точки по порядку; «ещё не в рейсах»; «не помещается». Время — рейсы машины
+    подряд с ожиданием у окон приёма; у точки — прибытие (eta), вне окна (window_miss — бывает после правки
+    логиста), в центре (center) и в центре на машине без права въезда (center_miss)."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
     shares = _shares(draft.trips)
     window = ctx.tn.work_minutes
     # принятая переработка: «опаздывает» — только позже предела; позже конца дня — пометка late
     limit = ctx.overtime_minutes if draft.overtime_ok and ctx.overtime_minutes is not None else window
+    times = _timeline(ctx, draft.trips, routable, shares)
     per_truck: dict[str, dict[str, Any]] = {}
     trips_json = []
     for t in draft.trips:
-        cids, km, minutes, kg = _route(ctx, t.stops, routable, shares, reorder=False)
+        cids, km, _, kg = _route(ctx, t.stops, routable, shares, reorder=False)
         truck = ctx.trucks.get(t.truck)
         cap = truck.capacity_kg if truck else None
         l100 = truck.l100 if truck else None
         slot = per_truck.setdefault(t.truck, {'used': 0.0, 'trips': []})
-        depart = slot['used']
-        slot['used'] += minutes
+        depart, minutes, arrivals = times[t.id]
+        slot['used'] = depart + minutes
         revenue = math.fsum(routable[c].revenue / shares[c] for c in cids)
+        marks = []
+        for c, at in zip(cids, arrivals):
+            central = _central(ctx, routable[c])
+            marks.append({'eta': _hhmm(ctx.work_start_min + at), 'window_miss': at > _span(ctx, c)[1] + _EPS,
+                          'center': central, 'center_miss': central and not (truck is not None and truck.center_ok)})
         tj = {
             'id': t.id, 'truck': t.truck, 'pinned': t.pinned,
             'km': _r(km), 'minutes': round(minutes), 'kg': round(kg),
@@ -612,7 +748,9 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
             'over_capacity': cap is not None and kg > cap + 0.5,
             'no_truck': truck is None,
             'stops': [{**info(routable[c]), 'kg': round(routable[c].kg / shares[c]),
-                       'share': shares[c]} for c in cids],
+                       'share': shares[c], **mark} for c, mark in zip(cids, marks)],
+            'window_miss': sum(1 for x in marks if x['window_miss']),
+            'center_miss': sum(1 for x in marks if x['center_miss']),
         }
         slot['trips'].append(tj)
         trips_json.append(tj)
@@ -624,6 +762,7 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
         trucks_json.append({
             'car_code': code, 'name': truck.name if truck else None,
             'capacity_kg': truck.capacity_kg if truck else None, 'l100': truck.l100 if truck else None,
+            'center_ok': truck.center_ok if truck else None,
             'trips': ts, 'km': _r(math.fsum(t['km'] for t in ts)),
             'liters': _r(math.fsum(t['liters'] or 0.0 for t in ts)), 'kg': sum(t['kg'] for t in ts),
             'stops': sum(len(t['stops']) for t in ts), 'minutes': round(slot['used']),
@@ -631,7 +770,9 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
             'late': slot['used'] > window + _EPS,
         })
     in_trips = set(shares)
-    unassigned = [info(s) | {'kg': round(s.kg), 'no_room': s.customer_id in draft.no_room}
+    unassigned = [info(s) | {'kg': round(s.kg), 'no_room': s.customer_id in draft.no_room,
+                             'no_window': s.customer_id in draft.no_window,
+                             'no_center': s.customer_id in draft.no_center, 'center': _central(ctx, s)}
                   for s in stops if s.point is not None and s.customer_id not in in_trips]
     over = [t for t in trips_json if t['over_time'] or t['over_capacity'] or t['no_truck']]
     km_total = math.fsum(t['km'] for t in trips_json)
@@ -643,7 +784,9 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
         'summary': {'trips': len(trips_json), 'trucks': len(trucks_json), 'km': _r(km_total),
                     'poor_trips': sum(1 for t in trips_json if t['poor']),
                     'liters': _r(math.fsum(t['liters'] or 0.0 for t in trips_json)),
-                    'kg': sum(t['kg'] for t in trips_json), 'stops': len(in_trips)},
+                    'kg': sum(t['kg'] for t in trips_json), 'stops': len(in_trips),
+                    'window_miss': sum(t['window_miss'] for t in trips_json),
+                    'center_miss': sum(t['center_miss'] for t in trips_json)},
     }
 
 

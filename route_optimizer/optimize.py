@@ -749,7 +749,8 @@ class _Ctx:
         return hit
 
     def coord(self, cid: int, address_id: int) -> Coord:
-        return self.before.coords.get((cid, address_id)) or ev.visit_coord(self.snap, cid, address_id, self.bundle.geo_overrides)
+        return self.before.coords.get((cid, address_id)) or ev.visit_coord(
+            self.snap, cid, address_id, self.bundle.geo_overrides, self.bundle.driver_points)
 
 
 def run_optimization(snap: Snapshot, bundle: Bundle, calib: ev.Calibration | None,
@@ -985,7 +986,7 @@ class _FullFleet:
             if day.agent_id not in included:
                 continue
             for v in ev._day_visits(ctx.snap, day, models, ctx.before.visit_minutes, self.coords,
-                                    ctx.bundle.geo_overrides):
+                                    ctx.bundle.geo_overrides, ctx.bundle.driver_points):
                 if v.point is not None:
                     key = fl.delivery_key(day.week, day.weekday, plan.cycle_weeks)
                     groups.setdefault(key, []).append(fl.DeliveryVisit(v.customer_id, day.weekday, v.point,
@@ -1414,7 +1415,8 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
     for a in run_ids:
         for c, info in ctx.pairs.get(a, {}).items():
             key = (c, info.address_id)
-            point[(a, c)] = (before.coords.get(key) or ev.visit_coord(snap, *key, bundle.geo_overrides)).point
+            point[(a, c)] = (before.coords.get(key) or ev.visit_coord(snap, *key, bundle.geo_overrides,
+                                                                    bundle.driver_points)).point
     owners = Counter(c for a in before.included_ids for c in ctx.pairs.get(a, {}))
 
     def eligible(a: int, c: int) -> bool:
@@ -1839,7 +1841,8 @@ def _result(ctx: _Ctx, run_ids: Sequence[int], parts: Mapping[int, Mapping[str, 
         for v in d.visits:
             if v.customer_id not in first:
                 key = (v.customer_id, v.address_id)
-                first[v.customer_id] = before.coords.get(key) or ev.visit_coord(snap, *key, bundle.geo_overrides)
+                first[v.customer_id] = before.coords.get(key) or ev.visit_coord(snap, *key, bundle.geo_overrides,
+                                                                                        bundle.driver_points)
     run_customers = sorted({c for a in run_ids for c in ctx.pairs.get(a, {})})
     customers = {}
     for c in run_customers:
@@ -1986,7 +1989,7 @@ def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
 
     def coord(c: int, addr: int) -> Coord:
         if (c, addr) not in coords:
-            coords[(c, addr)] = ev.visit_coord(snap, c, addr, bundle.geo_overrides)
+            coords[(c, addr)] = ev.visit_coord(snap, c, addr, bundle.geo_overrides, bundle.driver_points)
         return coords[(c, addr)]
 
     rows: list[dict[str, Any]] = []
