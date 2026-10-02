@@ -309,9 +309,21 @@ class PinUnverifiable(ValueError):
     схемы 2 (нет pin_tag) — сравнить PIN, не зная его, невозможно; нужен новый PIN."""
 
 
+class PinPepperMissing(PinConflict):
+    """Новый PIN (или включение водителя со старым) не проверить на повтор: у других активных водителей PIN с перцем,
+    которого нет в среде, — их PIN неизвестен и может совпасть (вернут перец — у двух водителей один PIN, вход обоих
+    отклоняется). Офис восстанавливает перец или явно сбрасывает PIN этих водителей (save_driver(reset_unverifiable=
+    True)). drivers — [(id, имя)] таких водителей."""
+
+    def __init__(self, drivers: Sequence[tuple[int, str]]):
+        super().__init__('PIN не проверить на повтор: нет перца PIN других водителей')
+        self.drivers = list(drivers)
+
+
 class PinReset(Exception):
-    """PIN не узнан, а у активного водителя хеш PIN с перцем, которого нет в среде (COURIER_PIN_PEPPER и
-    COURIER_PIN_PEPPER_OLD): его PIN не проверить — офис задаёт новый PIN."""
+    """PIN не узнан, а у активного водителя PIN не проверить — tag (или хеш, если tag нет) с перцем, которого нет в
+    среде (COURIER_PIN_PEPPER и COURIER_PIN_PEPPER_OLD): это может быть и опечатка, и его PIN — вход отвечает «неверный
+    PIN или PIN задать заново в офисе»."""
 
 
 class PhotoLimit(Exception):
@@ -360,6 +372,27 @@ class PinKeys:
             if p is not None and scheme == p.scheme:
                 return True, p
         return False, None
+
+    def tag_known(self, tag: str | None) -> bool:
+        """tag сравним с tags(pin): без перца или перца среды (tag перца, которого нет в среде, или битый — нет)."""
+        if tag is None:
+            return False
+        pid = tag_pepper_id(tag)
+        return pid is None or pid in {p.id for p in (self.current, self.old) if p is not None}
+
+    def verifiable(self, tag: str | None, scheme: str | None) -> bool:
+        """PIN водителя проверяется в этой среде: по tag, а если tag нет или его перца нет в среде — по хешу своей
+        схемы (например, хеш без перца после миграции v4 → v5, а tag — с перцем, которого больше нет)."""
+        return self.tag_known(tag) or self.pepper(scheme)[0]
+
+    def missing(self, tag: str | None, scheme: str | None) -> set[str]:
+        """Отпечатки перцев, на которые ссылаются tag и схема хеша водителя, но которых нет в среде."""
+        out = set()
+        if tag is not None and not self.tag_known(tag):
+            out.add(tag_pepper_id(tag) or '?')
+        if not self.pepper(scheme)[0]:
+            out.add(str(scheme).split(':', 1)[-1])
+        return out
 
     def tags(self, pin: str) -> tuple[str, set[str]]:
         """(tag текущей схемы, все tag, по которым узнаётся PIN: без перца, текущего и прежнего перца) — один pbkdf2."""
@@ -437,8 +470,9 @@ _TERMINAL_COLS = 'id, name, car_code, created_at, revoked_at, failed_pin_count, 
 
 
 def _driver(r: Sequence[Any], keys: PinKeys) -> Driver:
-    """Строка (id, name, active, has_pin, updated_at, pin_scheme) → Driver."""
-    return Driver(int(r[0]), r[1], bool(r[2]), bool(r[3]), r[4], pin_reset=bool(r[3]) and not keys.pepper(r[5])[0])
+    """Строка (id, name, active, has_pin, updated_at, pin_scheme, pin_tag) → Driver."""
+    return Driver(int(r[0]), r[1], bool(r[2]), bool(r[3]), r[4],
+                  pin_reset=bool(r[3]) and not keys.verifiable(r[6], r[5]))
 
 
 class Store:
@@ -582,22 +616,23 @@ class Store:
     def list_drivers(self) -> list[Driver]:
         keys = self._pin_keys()
         rows = self._read(lambda c: c.execute(
-            'SELECT id, name, active, pin_hash IS NOT NULL, updated_at, pin_scheme FROM drivers '
+            'SELECT id, name, active, pin_hash IS NOT NULL, updated_at, pin_scheme, pin_tag FROM drivers '
             'ORDER BY active DESC, name, id').fetchall())
         return [_driver(r, keys) for r in rows]
 
     def driver(self, driver_id: int) -> Driver | None:
         keys = self._pin_keys()
         r = self._read(lambda c: c.execute(
-            'SELECT id, name, active, pin_hash IS NOT NULL, updated_at, pin_scheme FROM drivers WHERE id = ?',
+            'SELECT id, name, active, pin_hash IS NOT NULL, updated_at, pin_scheme, pin_tag FROM drivers WHERE id = ?',
             (driver_id,)).fetchone())
         return _driver(r, keys) if r else None
 
     def _pin_keys(self) -> PinKeys:
-        """Соль pin_tag базы и перцы среды (COURIER_PIN_PEPPER, COURIER_PIN_PEPPER_OLD). Первый вызов приводит tag
-        в соответствие со средой: tag без перца при заданном перце переводятся сразу (HMAC от tag, PIN не нужен);
-        tag перца, которого нет в среде, сбрасываются (NULL) — такой водитель узнаётся по хешу, если перец его хеша
-        есть, иначе вход отвечает «PIN задать заново» (match_pin)."""
+        """Соль pin_tag базы и перцы среды (COURIER_PIN_PEPPER, COURIER_PIN_PEPPER_OLD). Первый вызов (после запуска)
+        приводит tag в соответствие со средой: tag без перца при заданном перце переводятся сразу (HMAC от tag, PIN не
+        нужен). tag перца, которого нет в среде, НЕ сбрасываются: перец могли не загрузить по ошибке (сервер запущен
+        без .env) — вернут перец, и водители входят как раньше; пока его нет, их PIN не проверить (вход — PinReset,
+        новый PIN другому водителю — PinPepperMissing). Такие активные водители — WARNING в лог."""
         keys = getattr(self, '_keys', None)
         if keys is not None:
             return keys
@@ -605,27 +640,37 @@ class Store:
         if row is None or not row[0]:
             raise StoreError(f'{self._name()}: нет соли PIN{_FIX_HINT}')
         keys = PinKeys(str(row[0]), pepper_from_env(PEPPER_ENV), pepper_from_env(PEPPER_OLD_ENV))
-        known = {p.id for p in (keys.current, keys.old) if p is not None}
 
-        def sync(conn: sqlite3.Connection) -> None:
-            for did, tag in conn.execute('SELECT id, pin_tag FROM drivers WHERE pin_tag IS NOT NULL').fetchall():
-                pid = tag_pepper_id(tag)
-                if pid is None and keys.current is not None:
-                    conn.execute('UPDATE drivers SET pin_tag = ? WHERE id = ?', (tag_for(tag, keys.current), did))
-                elif pid is not None and pid not in known:
-                    conn.execute('UPDATE drivers SET pin_tag = NULL WHERE id = ?', (did,))
+        def sync(conn: sqlite3.Connection) -> list[tuple[int, str | None, str | None]]:
+            if keys.current is not None:
+                for did, tag in conn.execute('SELECT id, pin_tag FROM drivers WHERE pin_tag IS NOT NULL').fetchall():
+                    if tag_pepper_id(tag) is None:
+                        conn.execute('UPDATE drivers SET pin_tag = ? WHERE id = ?', (tag_for(tag, keys.current), did))
+            return conn.execute('SELECT id, pin_tag, pin_scheme FROM drivers WHERE active = 1 '
+                                'AND pin_hash IS NOT NULL ORDER BY id').fetchall()
 
-        self._transaction(sync, 'не удалось обновить pin_tag')
+        active = self._transaction(sync, 'не удалось обновить pin_tag')
+        refs = {int(did): keys.missing(tag, scheme) for did, tag, scheme in active}
+        refs = {did: m for did, m in refs.items() if m}
+        if refs:
+            lost = [int(did) for did, tag, scheme in active if not keys.verifiable(tag, scheme)]
+            note = (f'PIN не проверить у {lost} (вход — «PIN задать заново», новый PIN другим водителям — только после '
+                    'явного сброса их PIN) — восстановите перец' if lost else
+                    'их PIN пока проверяется по хешу без этого перца')
+            logger.warning('[Courier] Перца %s нет в среде (%s / %s), а на него ссылаются PIN активных водителей '
+                           '%s; %s', sorted(set().union(*refs.values())), PEPPER_ENV, PEPPER_OLD_ENV, sorted(refs), note)
         self._keys = keys
         return keys
 
     def save_driver(self, driver_id: int | None, name: Any, active: bool, pin: str | None,
-                    user: str | None) -> int:
+                    user: str | None, reset_unverifiable: bool = False) -> int:
         """Создать (driver_id None) или изменить водителя. pin None — не менять PIN.
         PIN определяет водителя при входе, поэтому у активных водителей он уникален (PinConflict) — проверка
         и при новом PIN, и при повторном включении водителя со старым PIN (по pin_tag; PinUnverifiable, если
-        сравнить нечем). Водитель, чей хеш — с перцем, которого нет в среде, старым PIN войти не может: его PIN не
-        мешает. Новый PIN — хеш и tag текущей схемы. Новый PIN или выключение отменяют сессии водителя."""
+        сравнить нечем). PIN другого активного водителя не проверить (перца его tag или хеша нет в среде) — он может
+        совпасть: PinPepperMissing, пока офис не восстановит перец или явно не сбросит PIN таких водителей
+        (reset_unverifiable: их PIN и сессии удаляются в той же транзакции, офис задаёт им новый PIN). Новый PIN — хеш
+        и tag текущей схемы. Новый PIN или выключение отменяют сессии водителя."""
         name = _clean_name(name, 'Имя водителя')
         if pin is not None and not valid_pin(pin):
             raise ValueError('PIN — 4–6 цифр')
@@ -636,15 +681,26 @@ class Store:
 
         def conflict(conn: sqlite3.Connection, own_tag: str | None) -> None:
             """own_tag — сохранённый tag включаемого водителя (без нового PIN)."""
-            for oid, h, other_tag, other_scheme in conn.execute(
-                    'SELECT id, pin_hash, pin_tag, pin_scheme FROM drivers WHERE active = 1 AND pin_hash IS NOT NULL'):
-                if oid == driver_id:
+            others = [r for r in conn.execute('SELECT id, name, pin_hash, pin_tag, pin_scheme FROM drivers '
+                                              'WHERE active = 1 AND pin_hash IS NOT NULL ORDER BY id').fetchall()
+                      if r[0] != driver_id]
+            lost = [(int(r[0]), r[1]) for r in others if not keys.verifiable(r[3], r[4])]
+            if lost and not reset_unverifiable:
+                raise PinPepperMissing(lost)
+            for oid, _ in lost:                  # явный сброс офиса: PIN не проверить — задаётся заново
+                conn.execute('UPDATE drivers SET pin_hash = NULL, pin_tag = NULL, pin_scheme = NULL, updated_at = ?, '
+                             'updated_by = ? WHERE id = ?', (now, user, oid))
+                conn.execute('DELETE FROM sessions WHERE driver_id = ?', (oid,))
+            if lost:
+                logger.warning('[Courier] PIN водителей %s сброшен офисом (%s): перца их PIN нет в среде',
+                               [d for d, _ in lost], user)
+            gone = {d for d, _ in lost}
+            for oid, _, h, other_tag, other_scheme in others:
+                if oid in gone:
                     continue
-                verifiable, pepper = keys.pepper(other_scheme)
-                if other_tag is None and not verifiable:
-                    continue                     # старый PIN этого водителя не работает (нет перца его хеша)
-                if tags is not None:             # новый PIN: tag всех схем известен
-                    same = other_tag in tags if other_tag is not None else check_pin(h, pin, pepper)
+                if tags is not None:             # новый PIN: tag всех схем среды известен, иначе — по хешу
+                    same = (other_tag in tags if keys.tag_known(other_tag)
+                            else check_pin(h, pin, keys.pepper(other_scheme)[1]))
                 elif other_tag is not None and own_tag is not None \
                         and tag_pepper_id(other_tag) == tag_pepper_id(own_tag):
                     same = other_tag == own_tag
@@ -683,21 +739,24 @@ class Store:
     def match_pin(self, pin: str) -> list[Driver]:
         """Активные водители с этим PIN (ожидается один; несколько — конфликт старых данных).
         Один pbkdf2 на вход: водитель узнаётся по pin_tag (без перца, текущего или прежнего перца); водитель без tag
-        (PIN до схемы 2, tag сброшен сменой перца) — по хешу своей схемы. Узнанный водитель с хешем или tag не текущей
-        схемы (другой перец, хеш с прежним числом итераций) сразу получает новые — один раз. Никто не узнан, а у
-        активного водителя хеш перца, которого нет в среде, — PinReset (его PIN задаёт офис)."""
+        (PIN до схемы 2 или tag, сброшенный прежней версией при смене перца) или с tag перца, которого нет в среде, —
+        по хешу своей схемы. Узнанный водитель с хешем или tag не текущей схемы (другой перец, хеш с прежним числом
+        итераций) сразу получает новые — один раз.
+        Никто не узнан, а у активного водителя PIN не проверить (tag или хеш перца, которого нет в среде) — PinReset:
+        неверный PIN или PIN этого водителя (его задаёт офис) — не различить."""
         if not valid_pin(pin):
             return []
         keys = self._pin_keys()
         tag, tags = keys.tags(pin)
-        marks = ','.join('?' * len(tags))
         rows = self._read(lambda c: c.execute(
             'SELECT id, name, pin_hash, updated_at, pin_tag, pin_scheme FROM drivers WHERE active = 1 '
-            f'AND pin_hash IS NOT NULL AND (pin_tag IN ({marks}) OR pin_tag IS NULL) ORDER BY id',
-            tuple(sorted(tags))).fetchall())
+            'AND pin_hash IS NOT NULL ORDER BY id').fetchall())
         out, stale, lost = [], [], False
         for did, name, h, updated, row_tag, scheme in rows:
-            if row_tag is None:
+            if keys.tag_known(row_tag):
+                if row_tag not in tags:
+                    continue
+            else:                                # tag нет или его перца нет в среде — по хешу своей схемы
                 verifiable, pepper = keys.pepper(scheme)
                 if not verifiable:
                     lost = True
@@ -1328,17 +1387,19 @@ class EventTx:
             (event_id, terminal_id, driver_id, day, etype, _now(), error, message, body[:4000]))
 
     def stop_rows(self, stop_id: str) -> list[dict[str, Any]]:
-        """Все версии точки в выдачах /day: [{snapshot_id, date, car_code, data}] по возрастанию снимка."""
-        rows = self.conn.execute('SELECT s.snapshot_id, s.date, s.car_code, d.data FROM snapshot_stops s '
-                                 'JOIN stop_data d ON d.hash = s.data_hash WHERE s.stop_id = ? '
+        """Все версии точки в выдачах /day: [{snapshot_id, date, car_code, version, data}] по возрастанию снимка
+        (version — версия /day снимка, §5 п. 16)."""
+        rows = self.conn.execute('SELECT s.snapshot_id, s.date, s.car_code, d.data, x.version FROM snapshot_stops s '
+                                 'JOIN stop_data d ON d.hash = s.data_hash '
+                                 'LEFT JOIN day_snapshots x ON x.id = s.snapshot_id WHERE s.stop_id = ? '
                                  'ORDER BY s.snapshot_id', (stop_id,)).fetchall()
         out = []
-        for sid, d, car, raw in rows:
+        for sid, d, car, raw, version in rows:
             try:
                 data = json.loads(raw)
             except (TypeError, ValueError):
                 data = {}
-            out.append({'snapshot_id': int(sid), 'date': d, 'car_code': car,
+            out.append({'snapshot_id': int(sid), 'date': d, 'car_code': car, 'version': version,
                         'data': data if isinstance(data, dict) else {}})
         return out
 

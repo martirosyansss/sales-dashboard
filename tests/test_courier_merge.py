@@ -55,9 +55,9 @@ def payment(eid, sid, when, amount, kind='invoice', cancel_of=None):
 # --- контрольные примеры ---
 
 def test_vectors_fixture():
-    assert VECTORS['version'] == '1.2.2'
-    assert len(CASES) == 26
-    assert len(BY_NAME) == 26
+    assert VECTORS['version'] == '1.2.3'
+    assert len(CASES) == 28
+    assert len(BY_NAME) == 28
 
 
 @pytest.mark.parametrize('case', CASES, ids=[c['name'] for c in CASES])
@@ -93,6 +93,31 @@ def test_vectors_attribution_and_absorbed():
     c = BY_NAME['18_vanished_stop_without_successor_removed']
     r = mg.merge(c['stops'], c['events'])
     assert r.absorbed_by == {} and r.stops['S:9'].statement == 'e1'
+    assert r.paid_to == {}
+    c = BY_NAME['27_split_invoices_appear_in_different_versions_payment_on_covered']
+    r = mg.merge(c['stops'], c['events'])
+    assert r.absorbed_by == {'O:1': 'S:a'} and r.paid_to == {'S:b': 'S:a'}   # оплата covered-сестры — у владельца
+    c = BY_NAME['28_replaces_pointing_to_invoice_ignored']
+    r = mg.merge(c['stops'], c['events'])
+    assert r.absorbed_by == {} and r.groups == {'S:x': ('S:x',), 'S:y': ('S:y',)}
+
+
+def test_v123_covered_sibling_payments_go_to_owner_only_while_covered():
+    """v1.2.3: оплата covered-сестры засчитывается владельцу (сестра — paid 0); у сестры появилось своё заявление —
+    конфликт (а), оплата снова своя; без заявлений поглощённых сестра pending — оплата своя."""
+    stops = [stop('O:1', 'order', [('o1', 100, 20, 100)], current=False),
+             stop('S:a', 'invoice', [('a1', 100, 10, 100)], replaces=['O:1']),
+             stop('S:b', 'invoice', [('b1', 100, 10, 100)], replaces=['O:1'])]
+    d1 = delivery('d1', 'O:1', at('09:00'), [('o1', 20)])
+    pa, pb = payment('pa', 'S:a', at('09:20'), 500), payment('pb', 'S:b', at('09:30'), 1500)
+    r = mg.merge(stops, [d1, pa, pb])
+    assert (r.stops['S:a'].paid, r.stops['S:b'].paid, r.stops['S:b'].status) == (Decimal(2000), 0, 'covered')
+    assert r.paid_to == {'S:b': 'S:a'} and r.stops['S:a'].instruction.kind == 'paid'
+    r = mg.merge(stops, [d1, pa, pb, delivery('db', 'S:b', at('10:00'), [('b1', 10)])])
+    assert (r.stops['S:a'].paid, r.stops['S:b'].paid, r.paid_to) == (Decimal(500), Decimal(1500), {})
+    r = mg.merge(stops, [pa, pb])
+    assert (r.stops['S:a'].paid, r.stops['S:b'].paid, r.stops['S:b'].status, r.paid_to) == \
+        (Decimal(500), Decimal(1500), 'pending', {})
 
 
 # --- свойства ---

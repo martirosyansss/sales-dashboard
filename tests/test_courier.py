@@ -2010,14 +2010,16 @@ def test_m3_pepper_protects_pin_hash_set_rotate_unset(tmp_path, monkeypatch, now
 
 
 def test_m3_lost_pepper_login_says_reset_in_office(st, client, monkeypatch):
-    """Перца хеша нет ни в COURIER_PIN_PEPPER, ни в COURIER_PIN_PEPPER_OLD: вход — 403 «PIN-ը պետք է նորից
-    սահմանել գրասենյակում» (попытка в счёт блокировки), офис видит pin_reset и задаёт новый PIN."""
+    """Перца хеша нет ни в COURIER_PIN_PEPPER, ни в COURIER_PIN_PEPPER_OLD: вход — 403 «Սխալ PIN կամ PIN-ը պետք է
+    նորից սահմանել գրասենյակում» (опечатку и такой PIN не различить; попытка в счёт блокировки), офис видит pin_reset
+    и задаёт новый PIN."""
     monkeypatch.setenv('COURIER_PIN_PEPPER', 'lost-pepper')
     did, terminal, h = make_terminal(st)
     monkeypatch.setenv('COURIER_PIN_PEPPER', 'new-pepper')            # перец заменили, прежний не сохранили
     st.store = Store(st.store.path)                                   # перезапуск сервера
     r = client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=h)
-    assert r.status_code == 403 and r.get_json() == {'error': 'pin', 'message': 'PIN-ը պետք է նորից սահմանել գրասենյակում'}
+    assert r.status_code == 403 and r.get_json() == {'error': 'pin',
+                                                     'message': 'Սխալ PIN կամ PIN-ը պետք է նորից սահմանել գրասենյակում'}
     assert st.store.terminal(terminal.id).failed_pin_count == 1
     assert [(d['id'], d['pin_reset']) for d in client.get('/api/courier/admin/drivers').get_json()['drivers']] == [(did, True)]
     assert client.post('/api/courier/admin/drivers', json={'id': did, 'name': 'Արամ', 'pin': '2468'}).get_json()['success']
@@ -2318,3 +2320,236 @@ def test_at_2099_accepted_with_date_suspicious(term, client, st):
     assert r['accepted'] == [far['id']] and [x['id'] for x in r['rejected']] == [beyond['id']]
     assert 'at' in r['rejected'][0]['message']
     assert {e['id']: e['flags'] for e in st.store.events_for_day(DEMO)}[far['id']] == ['date_suspicious']
+
+
+# ============================== четвёртая проверка: правило v1.2.3, day_version, тара, циклы, перец, сканы ==============================
+
+def test_v123_payment_on_covered_sibling_counts_at_owner(st, client):
+    """§5 п. 12 v1.2.3 (пример 27): заказ доставлен до разделения, накладные S:a и S:b появились в РАЗНЫХ версиях
+    /day, оплату записали на covered-сестру S:b. «Առաքում այսօր»: S:a — full, оплачено 2000; S:b — covered, 0.
+    «Գումար»: оплата — в строке владельца S:a (ждать 2000, недостачи нет), отдельной строки S:b нет. Оплату взял
+    другой водитель — у него строка S:a без ожидания, у водителя заявления — «Վերցրել է այլ վարորդ», не недостача."""
+    ids = {}
+    for car, payer_is_b, base, pins in (('CAR1', False, 400, ('1111', '2222')), ('CAR2', True, 410, ('3333', '4444'))):
+        sfx = '' if car == 'CAR1' else '2'
+        a, b = _who(st, 'A' + sfx, pins[0], car), _who(st, 'B' + sfx, pins[1], car)
+        o, sa, sb = 'O:' + _uid(base), 'S:' + _uid(base + 1), 'S:' + _uid(base + 2)
+        ids[car] = (sa, sb)
+        st.store.save_day(PAST, car, [_stopp(o, [('o1', 20, 100, 100)])], 'v1', PAST + 'T08:00:00+04:00')
+        _ingest(st, a, _deliver(o, [('o1', 20)], '09:00:00'))
+        inv_a = _stopp(sa, [('a1', 10, 100, 100)], replaces=[o])
+        st.store.save_day(PAST, car, [inv_a], 'v2', PAST + 'T09:10:00+04:00')
+        st.store.save_day(PAST, car, [inv_a, _stopp(sb, [('b1', 10, 100, 100)], replaces=[o], seq=2)], 'v3',
+                          PAST + 'T09:20:00+04:00')
+        _ingest(st, b if payer_is_b else a, _ev('payment', sb, {'amount': 2000, 'kind': 'invoice'}, '09:30:00'))
+    stops = _today_stops(client)
+    for sa, sb in ids.values():
+        assert (stops[sa]['status'], stops[sa]['due'], stops[sa]['paid'], stops[sa]['flags']) == \
+            ('full', 2000.0, 2000.0, ['split_order'])
+        assert (stops[sb]['status'], stops[sb]['due'], stops[sb]['paid']) == ('covered', 0.0, 0.0)
+    m = _money(client)
+    sa, _ = ids['CAR1']
+    (row,) = m['A']['rows']
+    assert (row['stop_id'], row['expected'], row['invoice'], row['invoice_all'], row['short']) == (sa, 2000.0, 2000.0, 2000.0, 0.0)
+    assert 'no_payment' not in row['flags'] and (m['A']['expected_short'], m['A']['collected']) == (0.0, 2000.0)
+    assert 'B' not in m
+    sa, _ = ids['CAR2']
+    (ra,), (rb,) = m['A2']['rows'], m['B2']['rows']
+    assert (ra['stop_id'], ra['expected'], ra['invoice'], ra['invoice_all'], ra['short']) == (sa, 2000.0, 0.0, 2000.0, 0.0)
+    assert 'collected_by_other' in ra['flags'] and 'no_payment' not in ra['flags']
+    assert (rb['stop_id'], rb['expected'], rb['invoice'], rb['short'], m['B2']['collected']) == (sa, None, 2000.0, None, 2000.0)
+
+
+def test_day_version_statement_priced_by_version_driver_saw(st, client, now):
+    """§5 п. 16 (замечания L-C, M-A): водитель без связи доставил по версии v1 (10 × 100, collect cash), а офис тем
+    временем изменил накладную: v2 — 8 × 120, collect none. Доставка с day_version=v1 — строки, цены и collect
+    заявления из v1: офис видит ровно то, что посчитал терминал по правилу на строках v1 (full, 1000, ждать 1000).
+    Без day_version и с неизвестной версией — по версии на момент получения (partial, 1200). Проверка qty — по
+    line_max (принято с qty_over_invoice); «нет причины» — по версии водителя (full — флага нет). Снимок v1 хранится
+    и после чистки снимков (на него ссылается событие)."""
+    a = _who(st, 'A', '1111')
+    x, y, z = 'S:' + _uid(301), 'S:' + _uid(302), 'S:' + _uid(303)
+    v1 = [_stop(x, [('x:1', 10, 100)]), _stop(y, [('y:1', 10, 100)], seq=2), _stop(z, [('z:1', 10, 100)], seq=3)]
+    v2 = [_stop(s['stop_id'], [(s['lines'][0]['line_id'], 8, 120)], collect='none', seq=s['seq']) for s in v1]
+    snap1 = st.store.save_day(PAST, 'CAR1', v1, 'v1', PAST + 'T08:00:00+04:00')
+    snap2 = st.store.save_day(PAST, 'CAR1', v2, 'v2', PAST + 'T09:00:00+04:00')
+    dx = _ev('delivery', x, {'lines': [{'line_id': 'x:1', 'qty': 10}], 'day_version': 'v1'}, '10:00:00')
+    px = _ev('payment', x, {'amount': 1000, 'kind': 'invoice'}, '10:01:00')
+    dy = _ev('delivery', y, {'lines': [{'line_id': 'y:1', 'qty': 10}]}, '10:05:00')
+    dz = _ev('delivery', z, {'lines': [{'line_id': 'z:1', 'qty': 10}], 'day_version': 'v-unknown'}, '10:10:00')
+    tare = _ev('tare', x, {'items': [{'tare_id': 'erp:5', 'qty': 1}], 'day_version': 'v1'}, '10:02:00')
+    _ingest(st, a, dx, px, dy, dz, tare)
+    terminal = mg.merge([{'stop_id': x, 'source': 'invoice', 'collect': 'cash', 'current': True,
+                          'lines': v1[0]['lines']}], [dx, px]).stops[x]
+    stops = _today_stops(client)
+    assert (stops[x]['status'], stops[x]['due'], stops[x]['paid']) == \
+        (terminal.status, float(terminal.due), float(terminal.paid)) == ('full', 1000.0, 1000.0)
+    assert [(stops[s]['status'], stops[s]['due']) for s in (y, z)] == [('partial', 1200.0)] * 2
+    (row,) = _money(client)['A']['rows']                                 # y, z — collect none (v2): ждать нечего
+    assert (row['stop_id'], row['collect'], row['expected'], row['short']) == (x, 'cash', 1000.0, 0.0)
+    stored = {e['id']: e for e in st.store.events_for_day(PAST)}
+    assert [stored[e['id']]['snapshot_id'] for e in (dx, tare, dy, dz)] == [snap1, snap1, snap2, snap2]
+    assert 'qty_over_invoice' in stored[dx['id']]['flags'] and 'no_reason' not in stored[dx['id']]['flags']
+    assert {'qty_over_invoice', 'no_reason'} <= set(stored[dy['id']]['flags'])
+    now['t'] = NOW + timedelta(days=8)
+    st.store.save_day('2026-10-10', 'CAR1', [], 'w', '2026-10-10T08:00:00+04:00')     # чистка снимков
+    assert _today_stops(client)[x]['due'] == 1000.0
+    bad = [_ev('delivery', x, {'lines': [{'line_id': 'x:1', 'qty': 1}], 'day_version': 'v' * 65}, '11:00:00'),
+           _ev('tare', x, {'items': [], 'day_version': 5}, '11:01:00')]
+    r = ev.ingest(st.store, a, bad).json()
+    assert r['accepted'] == [] and [x_['message'] for x_ in r['rejected']] == \
+        ['day_version՝ չափազանց երկար', 'day_version՝ սխալ արժեք']
+
+
+def test_tare_of_merged_stop_is_sum_per_stop_in_owner_scope(st, client):
+    """§5 п. 17: тара объединённой точки — сумма по tare_id последних (не вытесненных) отметок тары каждой точки зоны
+    владельца: O:1 — 5, O:2 — 3 (и 2 другой тары), слиты в S:A → 8 и 2; исправление O:1 (supersedes) 5 → 4 → 7.
+    У сестры разделённого заказа — только своя тара, тара поглощённого заказа — у владельца."""
+    a = _who(st, 'A', '1111')
+    o1, o2, sa = 'O:' + _uid(331), 'O:' + _uid(332), 'S:' + _uid(333)
+    o3, s10, s20 = 'O:' + _uid(334), 'S:' + _uid(335), 'S:' + _uid(336)
+    st.store.save_day(PAST, 'CAR1', [_stop(o1, [('o1', 10, 100)]), _stop(o2, [('o2', 10, 100)], seq=2),
+                                     _stop(o3, [('o3', 20, 100)], seq=3)], 'v1', PAST + 'T08:00:00+04:00')
+    t1 = _ev('tare', o1, {'items': [{'tare_id': 'erp:5', 'qty': 5}]}, '09:00:00')
+    _ingest(st, a, t1, _ev('tare', o2, {'items': [{'tare_id': 'erp:5', 'qty': 3}, {'tare_id': 'custom:1', 'qty': 2}]},
+                           '09:05:00'),
+            _ev('tare', o3, {'items': [{'tare_id': 'erp:5', 'qty': 2}]}, '09:10:00'))
+    st.store.save_day(PAST, 'CAR1', [_stop(sa, [('s1', 10, 100), ('s2', 10, 100)], replaces=[o1, o2]),
+                                     _stop(s10, [('t1', 10, 100)], replaces=[o3], seq=2),
+                                     _stop(s20, [('u1', 10, 100)], replaces=[o3], seq=3)], 'v2', PAST + 'T09:30:00+04:00')
+    _ingest(st, a, _ev('tare', s20, {'items': [{'tare_id': 'erp:5', 'qty': 1}]}, '10:00:00'))
+    stops = _today_stops(client)
+    assert stops[sa]['tare'] == [{'tare_id': 'custom:1', 'qty': 2}, {'tare_id': 'erp:5', 'qty': 8}]
+    assert (stops[s10]['tare'], stops[s20]['tare']) == ([{'tare_id': 'erp:5', 'qty': 2}], [{'tare_id': 'erp:5', 'qty': 1}])
+    _ingest(st, a, _ev('tare', o1, {'items': [{'tare_id': 'erp:5', 'qty': 4}], 'supersedes': t1['id']}, '08:00:00'))
+    assert _today_stops(client)[sa]['tare'] == [{'tare_id': 'custom:1', 'qty': 2}, {'tare_id': 'erp:5', 'qty': 7}]
+
+
+def test_supersedes_cycle_rejected_at_ingest(st):
+    """§5 п. 18: цикл supersedes отклоняется при приёме — прямой (a ↔ b, ссылка в любом регистре) и через цепочку
+    (x → y → z → x, все в одной пачке); ссылка на ещё не полученное событие, на событие другой точки или другого
+    типа — не цикл."""
+    a = _who(st, 'A', '1111')
+    s1, s2 = 'S:' + _uid(341), 'S:' + _uid(342)
+    st.store.save_day(PAST, 'CAR1', [_stop(s1, [('a:1', 10, 100)]), _stop(s2, [('b:1', 10, 100)], seq=2)], 'v1',
+                      PAST + 'T08:00:00+04:00')
+    cycle = 'supersedes-ը շրջան է կազմում'
+
+    def d(sid, line, qty, sup, at, id_=None):
+        e = _ev('delivery', sid, {'lines': [{'line_id': line, 'qty': qty}], 'reason_id': 'x', 'supersedes': sup}, at)
+        e['id'] = id_ or e['id']
+        return e
+    ida, idb = eid(), eid()
+    assert ev.ingest(st.store, a, [d(s1, 'a:1', 10, idb, '10:00:00', ida)]).json()['accepted'] == [ida]  # b ещё нет
+    for ref in (ida, ida.upper()):
+        r = ev.ingest(st.store, a, [d(s1, 'a:1', 6, ref, '10:05:00', idb)]).json()
+        assert r['accepted'] == [] and r['rejected'] == [{'id': idb, 'error': 'bad_request', 'message': cycle}]
+    x, y, z = eid(), eid(), eid()
+    r = ev.ingest(st.store, a, [d(s1, 'a:1', 5, y, '11:00:00', x), d(s1, 'a:1', 4, z, '11:01:00', y),
+                                d(s1, 'a:1', 3, x, '11:02:00', z)]).json()
+    assert r['accepted'] == [x, y] and [(e['id'], e['message']) for e in r['rejected']] == [(z, cycle)]
+    other_stop = d(s2, 'b:1', 1, ida, '12:00:00')                       # ссылка на доставку другой точки
+    other_type = _ev('tare', s1, {'items': [], 'supersedes': x}, '12:01:00')
+    back = _ev('tare', s1, {'items': [], 'supersedes': other_type['id']}, '12:02:00')   # tare → tare → delivery
+    assert ev.ingest(st.store, a, [other_stop, other_type, back]).json()['accepted'] == \
+        [other_stop['id'], other_type['id'], back['id']]
+    assert {e['id'] for e in st.store.events_for_day(PAST)} & {idb, z} == set()
+
+
+def test_pepper_missing_tags_kept_new_pin_refused_until_restored_or_reset(st, client, monkeypatch, caplog):
+    """Перец M-A / L-B: сервер запустили без перца (не загрузился .env). tag водителей НЕ сбрасываются, WARNING в
+    лог; вход — 403 «Սխալ PIN կամ PIN-ը պետք է նորից սահմանել գրասենյակում» и на опечатку, и на их PIN. Новый PIN
+    другому водителю не задаётся (409 «Չի հաջողվում ստուգել PIN-ի կրկնությունը…» и список таких водителей): он мог
+    совпасть, и после возврата перца двое с одним PIN не вошли бы. Перец вернули — входят как раньше, быстро (по
+    tag). Офис явно сбросил PIN таких водителей — новый PIN задан, у сброшенных PIN нет, их сессии отменены."""
+    monkeypatch.setenv('COURIER_PIN_PEPPER', 'pepper-P')
+    a, _, h = make_terminal(st, pin='1234', name='A')
+    b = st.store.save_driver(None, 'B', True, '5678', 'admin')
+    login(client, h, '5678')
+    tags = {d: _pin_row(st.store.path, d)[1] for d in (a, b)}
+    assert all(t.startswith('p2:') for t in tags.values())
+
+    def restart(pepper):
+        if pepper:
+            monkeypatch.setenv('COURIER_PIN_PEPPER', pepper)
+        else:
+            monkeypatch.delenv('COURIER_PIN_PEPPER', raising=False)
+        st.store = Store(st.store.path)
+
+    def drivers():
+        return {d['name']: d for d in client.get('/api/courier/admin/drivers').get_json()['drivers']}
+    restart(None)
+    with caplog.at_level('WARNING', logger='courier.store'):
+        assert {n: d['pin_reset'] for n, d in drivers().items()} == {'A': True, 'B': True}
+    assert any('нет в среде' in r.getMessage() and str(sorted((a, b))) in r.getMessage() for r in caplog.records)
+    assert {d: _pin_row(st.store.path, d)[1] for d in (a, b)} == tags                     # tag не сброшены
+    for pin in ('1234', '0000'):
+        r = client.post('/api/courier/v1/login', json={'pin': pin}, headers=h)
+        assert (r.status_code, r.get_json()['message']) == (403, 'Սխալ PIN կամ PIN-ը պետք է նորից սահմանել գրասենյակում')
+    r = client.post('/api/courier/admin/drivers', json={'name': 'C', 'pin': '1234'})
+    assert r.status_code == 409 and r.get_json()['error'] == \
+        'Չի հաջողվում ստուգել PIN-ի կրկնությունը. վերականգնեք COURIER_PIN_PEPPER-ը'
+    assert [d['name'] for d in r.get_json()['unverifiable']] == ['A', 'B']
+    r = client.post('/api/courier/admin/drivers', json={'id': a, 'name': 'A', 'pin': '2468'})   # новому PIN A мешает B
+    assert r.status_code == 409 and [d['name'] for d in r.get_json()['unverifiable']] == ['B']
+    restart('pepper-P')                                                                   # перец вернули
+    assert login(client, h, '1234') and login(client, h, '5678')
+    assert {n: (d['has_pin'], d['pin_reset']) for n, d in drivers().items()} == {'A': (True, False), 'B': (True, False)}
+    restart(None)                                                                         # перец потерян насовсем
+    r = client.post('/api/courier/admin/drivers', json={'id': a, 'name': 'A', 'pin': '2468', 'reset_unverifiable': True})
+    assert r.get_json() == {'success': True, 'id': a}
+    assert {n: (d['has_pin'], d['pin_reset']) for n, d in drivers().items()} == {'A': (True, False), 'B': (False, False)}
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM sessions WHERE driver_id = ?', (b,)).fetchone()[0] == 0
+    assert login(client, h, '2468')
+    r = client.post('/api/courier/v1/login', json={'pin': '5678'}, headers=h)
+    assert (r.status_code, r.get_json()['message']) == (403, 'Սխալ PIN')
+    assert client.post('/api/courier/admin/drivers', json={'id': b, 'name': 'B', 'pin': '5678'}).get_json()['success']
+
+
+def test_marks_scan_on_replaced_invoice_shown_under_new_invoice(st, client):
+    """M-B (пример 14): скан по накладной S:1 (сделана из заказа O:1); S:1 отменили, по тому же заказу выписали S:2.
+    «Մակնշում» показывает скан у S:2, как «Առաքում այսօր»: номер A-2, прежний номер A-1 — в своей колонке (и в CSV);
+    модель дня строится для каждой даты строк, а не только для дат со сканами по заказам."""
+    a = _who(st, 'A', '1111')
+    o, s1, s2 = 'O:' + _uid(351), 'S:' + _uid(352), 'S:' + _uid(353)
+
+    def doc(stop, number):
+        stop['doc_number'] = number
+        return stop
+    st.store.save_day(PAST, 'CAR1', [doc(_stop(o, [('o:1', 3, 100)], marked=True, product=5), 'Z-1')], 'v0',
+                      PAST + 'T07:00:00+04:00')
+    st.store.save_day(PAST, 'CAR1', [doc(_stop(s1, [('a:1', 3, 100)], replaces=[o], marked=True, product=5), 'A-1')],
+                      'v1', PAST + 'T08:00:00+04:00')
+    _ingest(st, a, *[_ev('scan', s1, {'raw': f'MB-{i}', 'line_id': 'a:1', 'kind': 'sale', 'gtin': None, 'serial': None,
+                                      'is_group': False, 'units': 1}, '09:00:00') for i in range(3)],
+            _deliver(s1, [('a:1', 3)], '09:05:00'))
+    st.store.save_day(PAST, 'CAR1', [doc(_stop(s2, [('b:1', 3, 100)], replaces=[o], marked=True, product=5), 'A-2')],
+                      'v2', PAST + 'T10:00:00+04:00')
+    assert _today_stops(client)[s2]['status'] == 'full'
+    rows = client.get('/api/courier/admin/marks?q=MB-').get_json()['rows']
+    assert {(r['stop_id'], r['doc_number'], r['old_invoice_number'], r['order_number'], tuple(r['invoice_numbers']),
+             r['split']) for r in rows} == {(s2, 'A-2', 'A-1', None, ('A-2',), False)} and len(rows) == 3
+    text = client.get(f'/api/courier/admin/marks.csv?q=MB-0&from={PAST}').data.decode('utf-8')
+    head, line = text.lstrip('﻿').split('\r\n')[:2]
+    cells = dict(zip(head.split(';'), line.split(';')))
+    assert (cells['Ապրանքագիր'], cells['Նախկին ապրանքագիր'], cells['Պատվեր']) == ('A-2', 'A-1', '')
+
+
+def test_pepper_missing_tag_falls_back_to_plain_hash(tmp_path, monkeypatch, now):
+    """Хеш PIN без перца (как после миграции v4 → v5), а tag — с перцем, которого нет в среде: водитель входит по
+    хешу (tag пересчитывается), не считается «PIN задать заново», и его PIN проверяется на повтор по хешу."""
+    path = str(tmp_path / 'c.db')
+    a = Store(path).save_driver(None, 'A', True, '1234', 'x')
+    monkeypatch.setenv('COURIER_PIN_PEPPER', 'gone')
+    Store(path).list_drivers()                                          # tag без перца → p2:<gone>, хеш — при входе
+    assert _pin_row(path, a)[1].startswith('p2:') and _pin_row(path, a)[2] == 'plain'
+    monkeypatch.delenv('COURIER_PIN_PEPPER')
+    s = Store(path)
+    assert [d.pin_reset for d in s.list_drivers()] == [False]
+    with pytest.raises(PinConflict) as e:
+        s.save_driver(None, 'B', True, '1234', 'x')
+    assert type(e.value) is PinConflict                                 # повтор найден по хешу, а не «нет перца»
+    s.save_driver(None, 'B', True, '5678', 'x')
+    assert [d.id for d in s.match_pin('1234')] == [a]
+    assert len(_pin_row(path, a)[1]) == 64                              # tag — без перца, как в среде

@@ -4,7 +4,7 @@
 Чистая функция без I/O: на входе — все известные точки одной (машина, дата) и принятые события, на выходе — что
 показать по каждой точке (статус, к оплате, оплачено, флаги, подсказка водителю), какие точки поглощены и какое
 заявление (событие delivery) определило статус. Одно правило на сервере и в приложении: обе стороны обязаны давать
-РОВНО ответы контрольных примеров courier-merge-vectors.json (версия 1.2.2; копия —
+РОВНО ответы контрольных примеров courier-merge-vectors.json (версия 1.2.3; копия —
 tests/fixtures/courier_merge_vectors.json; менять только синхронно с приложением).
 
 Обозначения:
@@ -19,7 +19,8 @@ tests/fixtures/courier_merge_vectors.json; менять только синхр�
   (поэтому отмена отмены ничего не восстанавливает); долг (kind=debt) — отдельно, здесь не считается.
 
 Компоненты. Точки связаны рёбрами S:–O: по `replaces` каждой накладной, которая есть в текущем /day или имеет свои
-события; ссылки replaces на неизвестные точки игнорируются. «Свои события» — любые принятые события точки (доставка,
+события; учитываются только ссылки на известные точки-ЗАКАЗЫ (ссылки на накладные и неизвестные точки игнорируются,
+v1.2.3). «Свои события» — любые принятые события точки (доставка,
 оплата, тара, скан, возврат…), КРОМЕ событий GPS arrived и geo_suggest (§6): они не держат пропавшую точку в списке
 и не связывают её; в расчёте денег и статуса участвуют только delivery и payment. current — точки
 текущего /day. Владелец — среди current сначала накладные, затем наименьший stop_id. Владелец поглощает все
@@ -39,11 +40,12 @@ tests/fixtures/courier_merge_vectors.json; менять только синхр�
 строки владельца с кол-вом > 0, чей товар не покрыт; due = Σ amount заявлений заказов + Σ кол-во × цена строк
 остатка; есть остаток → in_progress; нет — все заявления full → full, все refused → refused, иначе partial.
 (Остаток — по строкам владельца, а не по списку заказов: сервер и терминал получают одно и то же, даже если
-какой-то заказ из replaces терминал никогда не видел.) paid = оплаты владельца и поглощённых точек.
+какой-то заказ из replaces терминал никогда не видел.) paid = оплаты владельца, поглощённых точек и covered-сестёр.
 
 Сестра. Конфликт по (а) → merge_conflict, статус и due от своего заявления. Своё заявление без конфликта — как у
-обычной точки. Нет своего заявления, но у поглощённых точек есть → covered, due = 0 (товар уже отдан по заказу).
-Иначе pending, due = total. paid — только свои оплаты.
+обычной точки. Нет своего заявления, но у поглощённых точек есть → covered, due = 0, paid = 0 (товар уже отдан по
+заказу; оплаты такой сестры засчитываются ВЛАДЕЛЬЦУ, v1.2.3 — иначе водителю предложили бы взять деньги второй раз,
+если вторая накладная заказа появилась позже первой). Иначе pending, due = total, paid — свои оплаты.
 
 Подсказка водителю (instruction): removed → none; конфликт → check («Ստուգել գրասենյակի հետ», никаких «взять/
 вернуть»); covered → covered; collect=none → none; ask и любое неизвестное значение → ask; cash/cash_ecr:
@@ -130,10 +132,12 @@ class StopView:
 class MergeResult:
     """stops — ровно показываемые точки (по stop_id); absorbed_by — поглощённая точка → её владелец
     (события поглощённой точки показываются у владельца); groups — владелец → все текущие точки его компоненты
-    (владелец и сёстры, по stop_id): больше одной — заказ разделён на несколько накладных."""
+    (владелец и сёстры, по stop_id): больше одной — заказ разделён на несколько накладных; paid_to — covered-сестра →
+    владелец: её оплаты входят в paid владельца (v1.2.3), сама сестра показывается с paid = 0."""
     stops: Mapping[str, StopView] = field(default_factory=dict)
     absorbed_by: Mapping[str, str] = field(default_factory=dict)
     groups: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    paid_to: Mapping[str, str] = field(default_factory=dict)
 
     def json(self) -> dict[str, dict[str, Any]]:
         return {sid: v.json() for sid, v in self.stops.items()}
@@ -469,6 +473,7 @@ def merge(stops: Iterable[Mapping[str, Any]], events: Iterable[Mapping[str, Any]
     views: dict[str, StopView] = {}
     absorbed_by: dict[str, str] = {}
     groups: dict[str, tuple[str, ...]] = {}
+    paid_to: dict[str, str] = {}
     for members in _components(known, active):
         cur = [x for x in members if known[x].current]
         if not cur:   # точки нет в текущем /day: каждая со своими событиями — отдельно, «убрана»
@@ -490,13 +495,15 @@ def merge(stops: Iterable[Mapping[str, Any]], events: Iterable[Mapping[str, Any]
         split = (SPLIT_ORDER,) if len(cur) >= 2 else ()
         absorbed_stmts = [latest[x] for x in absorbed if x in latest]
         sib_conflict = {x for x in siblings if x in latest and absorbed_stmts}   # (а)
+        covered = [x for x in siblings if x not in latest and absorbed_stmts]     # их оплаты — у владельца
+        paid_to.update((x, owner.stop_id) for x in covered)
 
         # владелец
         scope = [owner.stop_id, *absorbed]
         stmts = [latest[x] for x in scope if x in latest]
         flags = list(split)
         if not stmts:
-            views[owner.stop_id] = _view(owner, 'pending', owner.total(), paid(scope), flags, ())
+            views[owner.stop_id] = _view(owner, 'pending', owner.total(), paid(scope + covered), flags, ())
         else:
             last = max(stmts, key=lambda s: _key(s.event))
             invoice_stmts = [s for s in stmts if s.source == 'invoice']
@@ -518,7 +525,7 @@ def merge(stops: Iterable[Mapping[str, Any]], events: Iterable[Mapping[str, Any]
                 status, due, used = last.status(), last.amount(), [last]
             else:
                 status, due, used = _sum_of_orders(owner, stmts)
-            views[owner.stop_id] = _view(owner, status, due, paid(scope), flags, used)
+            views[owner.stop_id] = _view(owner, status, due, paid(scope + covered), flags, used)
 
         # сёстры
         for x in siblings:
@@ -526,9 +533,10 @@ def merge(stops: Iterable[Mapping[str, Any]], events: Iterable[Mapping[str, Any]
             sflags = [*split, *([MERGE_CONFLICT] if x in sib_conflict else [])]
             if own_stmt is not None:   # с конфликтом (а) или без — статус и due от своего заявления
                 views[x] = _view(stop, own_stmt.status(), own_stmt.amount(), paid([x]), sflags, (own_stmt,))
-            elif absorbed_stmts:
-                views[x] = _view(stop, 'covered', ZERO, paid([x]), sflags, ())
+            elif absorbed_stmts:   # covered: оплаты — у владельца (paid_to)
+                views[x] = _view(stop, 'covered', ZERO, ZERO, sflags, ())
             else:
                 views[x] = _view(stop, 'pending', stop.total(), paid([x]), sflags, ())
 
-    return MergeResult(dict(sorted(views.items())), dict(sorted(absorbed_by.items())), dict(sorted(groups.items())))
+    return MergeResult(dict(sorted(views.items())), dict(sorted(absorbed_by.items())), dict(sorted(groups.items())),
+                       dict(sorted(paid_to.items())))

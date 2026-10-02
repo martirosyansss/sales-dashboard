@@ -19,10 +19,15 @@
 - правила §3 (обязательный скан маркировки, номер чека ՀԴՄ, фото) сервер НЕ блокирует — событие
   принимается с флагом (данные терминала важнее), флаги видны в офисе;
 - `foreign` — точка в выдаче /day другой машины или даты; `unknown_stop` — точку /day не выдавал никому
-  (проверить qty нечем — принимается как есть); snapshot_id события — снимок действующей версии точки, по
-  которой оно проверено (такой снимок хранится всегда, store._purge_snapshots);
+  (проверить qty нечем — принимается как есть); snapshot_id события — снимок версии точки, по которой событие
+  оценивается: версия /day, которую видел водитель (`day_version` delivery и tare, §5 п. 16: снимок той же машины и
+  даты с этой версией, где есть точка), иначе действующая при получении. Такой снимок хранится всегда
+  (store._purge_snapshots), офис берёт из него строки, цены и collect заявления (views.day_model). Проверка qty —
+  по line_max, как раньше; флаг `qty_over_invoice` — от действующей версии (офис изменил накладную), статус для
+  `no_reason` и `lines_incomplete` — от версии водителя;
 - `supersedes` (§5 п. 14, delivery и tare): строка id прежнего события, до SUPERSEDES_MAX символов; может ссылаться
-  на ещё не полученное событие; хранится в нижнем регистре, как id событий;
+  на ещё не полученное событие; хранится в нижнем регистре, как id событий. Цикл (цепочка по уже принятым
+  событиям того же типа той же точки возвращается к самому событию, §5 п. 18) — отказ;
 - повторная delivery/tare по точке не удаляет прежние — «действующая» считается при чтении по правилу §5 п. 12
   (merge: последняя по at, затем по id, без вытесненных `supersedes`).
 """
@@ -54,6 +59,7 @@ DATE_SUSPICIOUS_DAYS = 2
 SUGGEST_MAX_ACCURACY_M = 100.0   # geo_suggest: точность обязательна и не хуже 100 м
 SUGGEST_NOTE_MAX = 200
 SUPERSEDES_MAX = 64
+DAY_VERSION_MAX = 64
 EPS = 1e-9
 
 UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
@@ -135,9 +141,10 @@ def stop_lines(data: Mapping[str, Any] | None) -> dict[str, Mapping[str, Any]]:
 class StopCtx:
     data: Mapping[str, Any] | None   # действующая версия точки из выдачи /day (своя или чужая); None — неизвестна
     foreign: bool
-    snapshot_id: int | None = None
+    snapshot_id: int | None = None   # снимок версии, по которой событие оценивается (seen, иначе действующей)
     versions: tuple[Mapping[str, Any], ...] = ()   # сохранённые версии точки, от старой к новой
     line_max: Mapping[str, tuple[float, int | None]] = field(default_factory=dict)   # строки всех версий (§5 п. 13)
+    seen: Mapping[str, Any] | None = None   # версия, которую видел водитель (day_version, §5 п. 16); None — не пришла
 
     @property
     def known(self) -> bool:
@@ -156,10 +163,13 @@ class StopCtx:
         return out
 
 
-def _stop_ctx(tx: EventTx, stop_id: str | None, day: str, car_code: str) -> tuple[StopCtx, list[str]]:
+def _stop_ctx(tx: EventTx, stop_id: str | None, day: str, car_code: str,
+              day_version: str | None = None) -> tuple[StopCtx, list[str]]:
     """Действующая версия — последняя версия точки в снимках своей машины и даты (точка убрана из нового
     снимка — её последняя версия); своих нет — последняя чужая (`foreign`). Версий не осталось (удалены вместе со
-    старыми снимками), а строки известны (line_max) — точка известна, проверка qty та же."""
+    старыми снимками), а строки известны (line_max) — точка известна, проверка qty та же. day_version — версия /day,
+    которую видел водитель (§5 п. 16): самый новый снимок своей машины и даты с этой версией, где есть точка (нет
+    такого — seen None, событие оценивается по действующей версии)."""
     if stop_id is None:
         return StopCtx(None, False), []
     rows, lmax = tx.stop_rows(stop_id), tx.line_max(stop_id)
@@ -167,11 +177,30 @@ def _stop_ctx(tx: EventTx, stop_id: str | None, day: str, car_code: str) -> tupl
         return StopCtx(None, False, line_max=lmax), ([] if lmax else ['unknown_stop'])
     own = [r for r in rows if r['date'] == day and r['car_code'] == car_code]
     cur = (own or rows)[-1]
-    return (StopCtx(cur['data'], not own, cur['snapshot_id'], tuple(r['data'] for r in rows), lmax),
+    seen = next((r for r in reversed(own) if r['version'] == day_version), None) if day_version is not None else None
+    return (StopCtx(cur['data'], not own, (seen or cur)['snapshot_id'], tuple(r['data'] for r in rows), lmax,
+                    seen['data'] if seen is not None else None),
             [] if own else ['foreign'])
 
 
 # --- правила по типам: нарушение формы или таблицы контракта — Reject, нарушение §3 — флаг ---
+
+def _supersedes_cycle(tx: EventTx, event_id: str, etype: str, stop_id: str | None, target: str) -> bool:
+    """§5 п. 18: цепочка `supersedes` от target по уже принятым событиям (и событиям этой же пачки) того же типа той
+    же точки возвращается к event_id. Неизвестное событие (ещё не получено) или событие другого типа или точки —
+    конец цепочки: вытеснение действует только внутри (тип, точка), там же и цикл."""
+    seen: set[str] = set()
+    while target not in seen:
+        if target == event_id:
+            return True
+        seen.add(target)
+        e = tx.event(target)
+        nxt = e['payload'].get('supersedes') if e is not None else None
+        if e is None or e['type'] != etype or e['stop_id'] != stop_id or not isinstance(nxt, str):
+            return False
+        target = nxt.lower()
+    return False
+
 
 def _supersedes(p: Mapping[str, Any], event_id: str) -> str | None:
     """§5 п. 14: id прежнего события того же типа той же точки (может быть ещё не получено) — строка до
@@ -191,6 +220,7 @@ def _delivery(p: Mapping[str, Any], stop: StopCtx) -> list[str]:
     if not isinstance(raw, list) or not raw or len(raw) > 500:
         raise Reject('lines՝ պետք է լինի ոչ դատարկ ցուցակ')
     invoice = stop.lines()
+    basis = stop_lines(stop.seen) if stop.seen is not None else invoice   # что видел водитель (§5 п. 16)
     seen: dict[str, float] = {}
     flags = []
     for item in raw:
@@ -212,10 +242,10 @@ def _delivery(p: Mapping[str, Any], stop: StopCtx) -> list[str]:
                 flags.append('qty_over_invoice')   # больше действующей версии, но не больше прежней (§5 п. 4)
         seen[lid] = q
     if stop.data is not None:
-        status = statement_status(seen, {lid: _num(ln.get('qty')) or 0.0 for lid, ln in invoice.items()})
+        status = statement_status(seen, {lid: _num(ln.get('qty')) or 0.0 for lid, ln in basis.items()})
     else:
         status = 'refused' if not any(seen.values()) else None
-    if stop.data is not None and set(invoice) - set(seen):
+    if stop.data is not None and set(basis) - set(seen):
         flags.append('lines_incomplete')
     if status in ('partial', 'refused') and not _text(p.get('reason_id'), 40, 'reason_id'):
         flags.append('no_reason')   # v1.1 §5 п. 5: принимается, офис видит
@@ -424,12 +454,17 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who) -> tupl
     elif etype not in STOPLESS_TYPES:
         raise Reject('stop_id՝ պարտադիր է')
     ev = {'id': event_id, 'date': day.isoformat(), 'at': raw['at']}
-    stop, flags = _stop_ctx(tx, stop_id, ev['date'], who.car_code)
+    # версия /day, по которой водитель записал доставку или тару (§5 п. 16) — необязательна
+    day_version = _text(payload.get('day_version'), DAY_VERSION_MAX, 'day_version') \
+        if etype in ('delivery', 'tare') else None
+    stop, flags = _stop_ctx(tx, stop_id, ev['date'], who.car_code, day_version)
     if abs((day - at.astimezone(clock.YEREVAN).date()).days) > DATE_SUSPICIOUS_DAYS:
         flags.append('date_suspicious')
     stored = dict(payload)
     scan_row = None
     if etype in ('delivery', 'tare') and (supersedes := _supersedes(payload, event_id)) is not None:
+        if _supersedes_cycle(tx, event_id, etype, stop_id, supersedes):
+            raise Reject('supersedes-ը շրջան է կազմում')
         stored['supersedes'] = supersedes
     if etype == 'delivery':
         flags += _delivery(payload, stop)

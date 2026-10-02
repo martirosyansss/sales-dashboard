@@ -35,7 +35,7 @@ from route_optimizer.erp import ErpError
 from . import clock, events as ev, merge as mg
 from .routes_link import routes_view
 from .state import state
-from .store import MarkSetting, PinConflict, PinUnverifiable, Release, StoreError
+from .store import MarkSetting, PinConflict, PinPepperMissing, PinUnverifiable, Release, StoreError
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ PHOTO_REQUIRED = ('return', 'unreadable')   # + delivery «частично»/«
 MARKS_LIMIT = 20000
 CASH_COLLECT = ('cash', 'cash_ecr')         # деньги берёт водитель — «Գումար» ждёт оплату
 STATUSES = ('pending', 'in_progress', 'full', 'partial', 'refused', 'covered')   # контракт §5 п. 12
+PEPPER_MISSING_HY = 'Չի հաջողվում ստուգել PIN-ի կրկնությունը. վերականգնեք COURIER_PIN_PEPPER-ը'
 
 
 def _api(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -145,8 +146,15 @@ def drivers_save() -> Any:
         pin = None
     elif not isinstance(pin, str):
         return _bad('PIN-ը 4–6 թվանշան է')
+    reset = body.get('reset_unverifiable', False)   # офис явно сбрасывает PIN водителей, чей перец потерян
+    if not isinstance(reset, bool):
+        return _bad('Սխալ հարցում')
     try:
-        new_id = state().store.save_driver(did, body.get('name'), body.get('active', True) is not False, pin, _user())
+        new_id = state().store.save_driver(did, body.get('name'), body.get('active', True) is not False, pin, _user(),
+                                           reset_unverifiable=reset)
+    except PinPepperMissing as e:   # PIN других водителей не проверить: восстановить перец или сбросить их PIN
+        return jsonify({'success': False, 'error': PEPPER_MISSING_HY,
+                        'unverifiable': [{'id': i, 'name': n} for i, n in e.drivers]}), 409
     except PinConflict:
         return _bad('Այս PIN-ն արդեն ունի մեկ այլ վարորդ — ընտրեք ուրիշը')
     except PinUnverifiable:
@@ -227,10 +235,12 @@ class DayModel:
       заказа завтра, день не меняет); точка — у одной машины: где она в последнем снимке (у нескольких — самый новый
       снимок), иначе где она была в самом новом снимке. Текущая — есть в последнем снимке своей машины;
     - data — версия точки для показа и правила: текущей — из последнего снимка, прочей — самая новая за дату;
-      строки правила — версии, по которой записана действующая доставка точки (snapshot_id события), если она этой
-      даты; collect и replaces — из data;
+      строки, цены и collect правила — версии, по которой записана действующая доставка точки (snapshot_id
+      события: версия /day, которую видел водитель, `day_version` §5 п. 16, иначе действующая при получении), если
+      она этой даты; иначе и replaces — из data;
     - события — все принятые события даты; в правило — события известных точек (любого терминала).
-    views / absorbed_by / groups — ответ правила по всем машинам даты (stop_id не повторяются между машинами)."""
+    views / absorbed_by / groups / paid_to — ответ правила по всем машинам даты (stop_id не повторяются между
+    машинами); collect — collect точки, по которому считало правило."""
     current: dict[str, list[dict[str, Any]]]          # машина → точки последнего снимка (её точки, по seq)
     data: dict[str, dict[str, Any]]                   # точка → версия для показа (car_code — машина точки)
     versions: dict[str, dict[int, dict[str, Any]]]    # точка → снимок даты → версия
@@ -238,10 +248,17 @@ class DayModel:
     views: dict[str, mg.StopView]
     absorbed_by: dict[str, str]
     groups: dict[str, tuple[str, ...]]
+    paid_to: dict[str, str]                           # covered-сестра → владелец: её оплаты у владельца (v1.2.3)
+    collect: dict[str, Any]                           # точка → collect правила
 
     def office(self, stop_id: str | None) -> str | None:
         """Точка, у которой показывается событие точки stop_id (поглощённая — у владельца)."""
         return self.absorbed_by.get(stop_id or '', stop_id)
+
+    def payee(self, stop_id: str | None) -> str | None:
+        """Точка, в paid которой правило считает оплату точки stop_id: поглощённой и covered-сестры — владелец."""
+        sid = self.office(stop_id)
+        return self.paid_to.get(sid or '', sid)
 
 
 def _moment(e: Mapping[str, Any]) -> datetime | None:
@@ -293,12 +310,14 @@ def day_model(ds: str, events: list[dict[str, Any]]) -> DayModel:
     known = [e for e in inputs if e['stop_id'] in data]
     stated = mg.latest_by_stop(known, 'delivery')   # строки правила — версии действующей доставки точки
     by_car: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {}
+    collect: dict[str, Any] = {}
     for x, d in data.items():
         stmt = stated.get(x)
-        lines_of = versions[x].get(stmt['snapshot_id']) if stmt is not None else None
+        basis = (versions[x].get(stmt['snapshot_id']) if stmt is not None else None) or d   # версия заявления
         source = 'order' if x.startswith('O:') else 'invoice'
-        stop = {'stop_id': x, 'source': source, 'collect': d.get('collect'), 'current': x in in_latest,
-                'lines': _rule_lines(lines_of or d)}
+        collect[x] = basis.get('collect')
+        stop = {'stop_id': x, 'source': source, 'collect': collect[x], 'current': x in in_latest,
+                'lines': _rule_lines(basis)}
         if source == 'invoice':
             stop['replaces'] = [o for o in d.get('replaces') or () if isinstance(o, str)]
         by_car.setdefault(home[x], ([], []))[0].append(stop)
@@ -307,12 +326,14 @@ def day_model(ds: str, events: list[dict[str, Any]]) -> DayModel:
     views: dict[str, mg.StopView] = {}
     absorbed: dict[str, str] = {}
     groups: dict[str, tuple[str, ...]] = {}
+    paid_to: dict[str, str] = {}
     for car in sorted(by_car):
         result = mg.merge(*by_car[car])
         views.update(result.stops)
         absorbed.update(result.absorbed_by)
         groups.update(result.groups)
-    return DayModel(current, data, versions, inputs, views, absorbed, groups)
+        paid_to.update(result.paid_to)
+    return DayModel(current, data, versions, inputs, views, absorbed, groups, paid_to, collect)
 
 
 def _money(d: Decimal) -> float:
@@ -344,15 +365,22 @@ def _needs_photo(e: Mapping[str, Any], version: Mapping[str, Any] | None) -> boo
 
 
 def _tare(model: DayModel) -> dict[str, list[dict[str, Any]]]:
-    """Действующая тара показываемой точки: последнее событие tare (без вытесненных `supersedes`) по самой точке и
-    поглощённым ею."""
-    best: dict[str, Mapping[str, Any]] = {}
-    for x, e in mg.latest_by_stop(model.inputs, 'tare').items():
+    """Действующая тара показываемой точки (§5 п. 17, как на терминале): по каждой точке зоны владельца — самой
+    точке и поглощённым ею — последняя отметка tare (без вытесненных `supersedes`), их количества — сумма по tare_id;
+    у сестры — только своя. Количество — точная сумма (Decimal), в JSON — число."""
+    total: dict[str, dict[str, Decimal]] = {}
+    for x, e in sorted(mg.latest_by_stop(model.inputs, 'tare').items()):
         sid = model.office(x)
-        if sid is not None and (sid not in best or (e['at'], e['id']) > (best[sid]['at'], best[sid]['id'])):
-            best[sid] = e
-    return {sid: [{'tare_id': i.get('tare_id'), 'qty': i.get('qty')} for i in e['payload'].get('items') or []
-                  if isinstance(i, dict)] for sid, e in best.items()}
+        if sid is None:
+            continue
+        acc = total.setdefault(sid, {})
+        for i in e['payload'].get('items') or []:
+            if not isinstance(i, dict) or not isinstance(i.get('tare_id'), str):
+                continue
+            q = i.get('qty')   # проверено при приёме (events._tare): число ≥ 0
+            if isinstance(q, (int, float)) and not isinstance(q, bool):
+                acc[i['tare_id']] = acc.get(i['tare_id'], Decimal(0)) + Decimal(str(q))
+    return {sid: [{'tare_id': t, 'qty': float(q)} for t, q in sorted(acc.items())] for sid, acc in total.items()}
 
 
 def _stop_row(stop: Mapping[str, Any], v: mg.StopView, tare: list[dict[str, Any]] | None) -> dict[str, Any]:
@@ -483,9 +511,10 @@ def today_view() -> Any:
 # --- «Գումար»: деньги водителей ---
 
 def money_view(day: date) -> dict[str, Any]:
-    """«Գումար» по водителю: строка — точка, как её показывает правило §5 п. 12 (оплаты поглощённых заказов — у
-    накладной): статус, `due` (сколько стоит по правилу), сколько надо взять (`expected`), сколько взял по накладной
-    он сам (`invoice`) и все водители (`invoice_all` = paid правила), в счёт долга, чеки ՀԴՄ (без отменённых).
+    """«Գումար» по водителю: строка — точка, как её показывает правило §5 п. 12 (оплаты поглощённых заказов и
+    covered-сестёр разделённого заказа — у владельца, v1.2.3): статус, `due` (сколько стоит по правилу), сколько надо
+    взять (`expected`), сколько взял по накладной он сам (`invoice`) и все водители (`invoice_all` = paid правила), в
+    счёт долга, чеки ՀԴՄ (без отменённых). collect — тот, по которому считало правило (версия заявления, §5 п. 16).
     Инварианты:
     - `expected` — только cash / cash_ecr и один раз за день: у водителя «заявления» точки (StopView.statement —
       доставка, от которой статус и due); full / partial / refused — due; in_progress — due на сейчас (статус
@@ -509,13 +538,13 @@ def money_view(day: date) -> dict[str, Any]:
     by_stop: dict[str, list[dict[str, Any]]] = {}            # точка офиса → платежи всех водителей
     for e in events:
         if e['type'] == 'payment':
-            sid = model.office(e['stop_id']) or ''
+            sid = model.payee(e['stop_id']) or ''
             rows.setdefault(e['driver_id'], {}).setdefault(sid, []).append(e)
             payments.setdefault(e['driver_id'], []).append(e)
             by_stop.setdefault(sid, []).append(e)
     for sid, v in model.views.items():   # надо взять, а оплат нет — строка у водителя заявления («վճարում չկա»)
         author = by_id.get(v.statement or '')
-        if author is not None and model.data[sid].get('collect') in CASH_COLLECT:
+        if author is not None and model.collect.get(sid) in CASH_COLLECT:
             rows.setdefault(author['driver_id'], {}).setdefault(sid, [])
     other = sorted({sid for drv in rows.values() for sid in drv if sid and sid not in model.data})
     extra = st.store.stop_versions(other) if other else {}
@@ -534,6 +563,7 @@ def money_view(day: date) -> dict[str, Any]:
         for sid, mine in sorted(rows.get(did, {}).items(), key=lambda kv: order(kv[0])):
             s = model.data.get(sid) or (extra.get(sid) or [{}])[-1].get('data') or {}
             v = model.views.get(sid)
+            collect = model.collect.get(sid, s.get('collect'))
             money = ev.payments_total(mine)
             receipts = sorted({str(e['payload'].get('ecr_receipt')) for e in mine
                                if e['payload'].get('ecr_receipt') and not e['payload'].get('cancel_of')
@@ -548,7 +578,7 @@ def money_view(day: date) -> dict[str, Any]:
                 author = (by_id.get(v.statement or '') or {}).get('driver_id')
                 if v.statement is not None or v.status == 'covered':
                     due = _money(v.due)
-                if s.get('collect') in CASH_COLLECT:
+                if collect in CASH_COLLECT:
                     if v.status == 'covered':
                         expected = 0.0
                     elif v.statement is not None and author == did:
@@ -562,7 +592,7 @@ def money_view(day: date) -> dict[str, Any]:
             expected_total += expected or 0.0
             short_total += short or 0.0
             lines.append({'stop_id': sid, 'doc_number': s.get('doc_number'), 'car_code': s.get('car_code'),
-                          'customer': (s.get('customer') or {}).get('name'), 'collect': s.get('collect'),
+                          'customer': (s.get('customer') or {}).get('name'), 'collect': collect,
                           'status': status, 'removed': removed, 'due': due, 'invoice_amount': s.get('amount_due'),
                           'expected': expected, 'short': short, 'invoice': money['invoice'], 'invoice_all': paid_all,
                           'debt': money['debt'], 'receipts': receipts, 'flags': sorted(flags)})
@@ -613,7 +643,8 @@ def money_handover() -> Any:
 MARK_COLUMNS = (
     ('raw', 'Կոդ'), ('gtin', 'GTIN'), ('serial', 'Սերիական համար'), ('product_code', 'Ապրանքի կոդ'),
     ('product_name', 'Ապրանք'), ('customer_code', 'Հաճախորդի կոդ'), ('customer_name', 'Հաճախորդ'),
-    ('tax_id', 'ՀՎՀՀ'), ('doc_number', 'Ապրանքագիր'), ('order_number', 'Պատվեր'), ('split', 'Բաժանված պատվեր'),
+    ('tax_id', 'ՀՎՀՀ'), ('doc_number', 'Ապրանքագիր'), ('order_number', 'Պատվեր'),
+    ('old_invoice_number', 'Նախկին ապրանքագիր'), ('split', 'Բաժանված պատվեր'),
     ('date', 'Ամսաթիվ'), ('at', 'Ժամանակ'),
     ('driver_name', 'Վարորդ'), ('car_code', 'Մեքենա'), ('kind', 'Տեսակ'), ('is_group', 'Խմբային'),
     ('units', 'Հատ'), ('duplicate_elsewhere', 'Կրկնված այլ տեղ'), ('cancelled', 'Չեղարկված'),
@@ -630,23 +661,25 @@ def _marks_args() -> tuple[str, str | None, str | None] | None:
 
 
 def _scan_rows(q: str, date_from: str | None, date_to: str | None) -> list[dict[str, Any]]:
-    """Сканы для «Մակնշում». Скан по заказу O:, из которого сделана накладная, — у неё (правило §5 п. 12 по снимкам
-    той же даты, day_model): `order_number` — номер заказа (как было при скане), `invoice_numbers` — номера ВСЕХ
-    накладных заказа (`doc_number` — они через запятую); заказ разделён на несколько накладных — `split`.
-    Накладной ещё нет — номер заказа в `doc_number`, накладных нет."""
+    """Сканы для «Մակնշում» — по правилу §5 п. 12 на снимках той же даты (day_model по каждой дате строк). Скан по
+    точке, поглощённой другой, — у владельца: и по заказу O:, из которого сделана накладная, и по прежней накладной
+    S:, вместо которой по тому же заказу выписана новая (пример 14). `doc_number` — номера ВСЕХ накладных владельца
+    (`invoice_numbers`, через запятую), заказ разделён на несколько накладных — `split`; номер, под которым сделан
+    скан, — в своей колонке: заказа — `order_number`, прежней накладной — `old_invoice_number`. Точка не поглощена —
+    номер как при скане (заказ без накладной — номер заказа в `doc_number`, накладных нет)."""
     st = state()
     rows = st.store.search_scans(q, date_from, date_to, limit=MARKS_LIMIT)
-    models = {d: day_model(d, st.store.events_for_day(d))
-              for d in sorted({r['date'] for r in rows if (r['stop_id'] or '').startswith('O:')})}
+    models = {d: day_model(d, st.store.events_for_day(d)) for d in sorted({r['date'] for r in rows if r['stop_id']})}
     for r in rows:
-        r['order_number'], r['split'] = None, False
+        r['order_number'], r['old_invoice_number'], r['split'] = None, None, False
         r['invoice_numbers'] = [r['doc_number']] if (r['stop_id'] or '').startswith('S:') and r['doc_number'] else []
         model = models.get(r['date'])
         owner = model.absorbed_by.get(r['stop_id']) if model is not None and r['stop_id'] else None
         if model is None or owner is None:
             continue
         members = model.groups.get(owner) or (owner,)
-        r['order_number'], r['stop_id'] = r['doc_number'], owner
+        r['order_number' if r['stop_id'].startswith('O:') else 'old_invoice_number'] = r['doc_number']
+        r['stop_id'] = owner
         r['invoice_numbers'] = [model.data[m].get('doc_number') or m for m in members]
         r['doc_number'] = ', '.join(r['invoice_numbers'])
         r['split'] = len(members) > 1

@@ -71,7 +71,9 @@
         if (!resp.ok || !body || body.success === false) {
             const msg = body && body.error ? body.error
                 : resp.status === 401 ? 'Անհրաժեշտ է մուտք գործել' : resp.status === 403 ? 'Միայն ադմինիստրատորի համար' : 'Սերվերի սխալ (' + resp.status + ')';
-            throw new Error(msg);
+            const err = new Error(msg);
+            err.body = body;   // լրացուցիչ դաշտեր (օր.՝ unverifiable)
+            throw err;
         }
         return body;
     }
@@ -138,18 +140,27 @@
         $('crDriverNew').hidden = true;
         $('crDriverErr').textContent = '';
     }
-    async function saveDriver(ev) {
-        ev.preventDefault();
+    async function saveDriver(ev, reset) {
+        if (ev) ev.preventDefault();
         const id = $('crDriverId').value ? Number($('crDriverId').value) : null;
         const pin = $('crDriverPin').value.trim();
         if (pin && !/^\d{4,6}$/.test(pin)) { $('crDriverErr').textContent = 'PIN-ը 4–6 թվանշան է'; return; }
         if (id === null && !pin) { $('crDriverErr').textContent = 'Նոր վարորդի համար գրեք PIN'; return; }
         try {
-            await api('/api/courier/admin/drivers', { json: { id, name: $('crDriverName').value, pin: pin || null, active: $('crDriverActive').checked } });
+            await api('/api/courier/admin/drivers', { json: { id, name: $('crDriverName').value, pin: pin || null, active: $('crDriverActive').checked,
+                reset_unverifiable: reset === true } });
             resetDriverForm();
             announce('Վարորդը պահպանված է');
             await loadDrivers();
-        } catch (e) { $('crDriverErr').textContent = e.message; }
+        } catch (e) {
+            // PIN-ի կրկնությունը չի ստուգվում (COURIER_PIN_PEPPER-ը չկա)՝ կամ վերականգնել այն, կամ բացահայտ զրոյացնել այդ վարորդների PIN-ը
+            const lost = e.body && e.body.unverifiable;
+            if (reset !== true && lost && lost.length && window.confirm(e.message + '\n\nԿամ զրոյացրեք այս վարորդների PIN-ը՝ '
+                    + lost.map(x => x.name).join(', ') + '։ Նրանք կկարողանան մտնել միայն նոր PIN-ով, որը կսահմանեք այստեղ։ Զրոյացնե՞լ։')) {
+                return saveDriver(null, true);
+            }
+            $('crDriverErr').textContent = e.message;
+        }
     }
     async function createTerminal(ev) {
         ev.preventDefault();
@@ -303,17 +314,18 @@
                 + '<td class="cr-mono">' + esc((r.raw || '').replace(/\u001d/g, '<GS>')) + (r.duplicate_elsewhere ? ' ' + badge('կրկնված', 'b-danger') : '') + (r.cancelled ? ' ' + badge('չեղարկված', 'b-none') : '') + '</td>'
                 + '<td class="cr-mono">' + esc(r.gtin || '') + '<br>' + esc(r.serial || '') + '</td><td>' + esc(r.product_name || '') + '</td>'
                 + '<td>' + esc(r.customer_name || '') + (r.tax_id ? '<br><span class="cr-muted">ՀՎՀՀ ' + esc(r.tax_id) + '</span>' : '') + '</td>'
-                + '<td>' + esc(r.doc_number || '') + (r.split ? ' ' + badge('բաժանված', 'b-warn') : '') + (r.order_number ? '<br><span class="cr-muted">պատվեր ' + esc(r.order_number) + '</span>' : '') + '</td><td>' + esc(r.driver_name || '') + '<br><span class="cr-muted">' + esc(r.car_code) + '</span></td>'
+                + '<td>' + esc(r.doc_number || '') + (r.split ? ' ' + badge('բաժանված', 'b-warn') : '') + (r.order_number ? '<br><span class="cr-muted">պատվեր ' + esc(r.order_number) + '</span>' : '')
+                    + (r.old_invoice_number ? '<br><span class="cr-muted">նախկին ապրանքագիր ' + esc(r.old_invoice_number) + '</span>' : '') + '</td><td>' + esc(r.driver_name || '') + '<br><span class="cr-muted">' + esc(r.car_code) + '</span></td>'
                 + '<td>' + (r.kind === 'return' ? 'վերադարձ' : 'վաճառք') + (r.is_group ? ', տուփ (' + fmt(r.units) + ')' : '') + '</td></tr>').join('');
         } catch (e) { showError(e.message); }
     }
     function exportMarksExcel() {
         if (typeof window.XLSX === 'undefined') { showError('Excel-ի գրադարանը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ) — օգտագործեք CSV'); return; }
         // սյուները՝ ինչպես CSV-ում (views.MARK_COLUMNS); «Ապրանքագիր»՝ պատվերի բոլոր ապրանքագրերը
-        const head = ['Կոդ', 'GTIN', 'Սերիական համար', 'Ապրանքի կոդ', 'Ապրանք', 'Հաճախորդի կոդ', 'Հաճախորդ', 'ՀՎՀՀ', 'Ապրանքագիր', 'Պատվեր', 'Բաժանված պատվեր',
+        const head = ['Կոդ', 'GTIN', 'Սերիական համար', 'Ապրանքի կոդ', 'Ապրանք', 'Հաճախորդի կոդ', 'Հաճախորդ', 'ՀՎՀՀ', 'Ապրանքագիր', 'Պատվեր', 'Նախկին ապրանքագիր', 'Բաժանված պատվեր',
             'Ամսաթիվ', 'Ժամանակ', 'Վարորդ', 'Մեքենա', 'Տեսակ', 'Խմբային', 'Հատ', 'Կրկնված այլ տեղ', 'Չեղարկված'];
         const rows = marks.rows.map(r => [(r.raw || '').replace(/\u001d/g, '<GS>'), r.gtin, r.serial, r.product_code, r.product_name, r.customer_code, r.customer_name,
-            r.tax_id, r.doc_number, r.order_number, r.split ? 'այո' : '', r.date, r.at, r.driver_name, r.car_code, r.kind === 'return' ? 'վերադարձ' : 'վաճառք',
+            r.tax_id, r.doc_number, r.order_number, r.old_invoice_number, r.split ? 'այո' : '', r.date, r.at, r.driver_name, r.car_code, r.kind === 'return' ? 'վերադարձ' : 'վաճառք',
             r.is_group ? 'այո' : '', r.units, r.duplicate_elsewhere ? 'այո' : '', r.cancelled ? 'այո' : '']);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([head, ...rows]), 'Մակնշում');
