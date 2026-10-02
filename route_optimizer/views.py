@@ -983,7 +983,7 @@ def _stop_info(dd: _DispatchDay) -> Callable[[dp.Stop], dict[str, Any]]:
 
 def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     s = dd.bundle.settings
-    today = date.today()
+    today = _clock().date()
     info = _stop_info(dd)
     draft = dd.draft
     excluded = draft.excluded if draft is not None else set()
@@ -1121,7 +1121,7 @@ def api_dispatch() -> Any:
     state = _state()
     bundle = _bundle(state)
     raw = request.args.get('date')
-    day = _parse_day(raw) if raw else dp.next_workday(date.today(), bundle.settings['workdays'])
+    day = _parse_day(raw) if raw else dp.next_workday(_clock().date(), bundle.settings['workdays'])
     if day is None:
         return _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
     dd = _load_day(state, bundle, day, refresh=request.args.get('refresh') == '1')
@@ -1227,7 +1227,7 @@ def api_dispatch_edit() -> Any:
                               carried=dd.carried)
     except dp.DispatchError as e:
         return _bad_request({'_': str(e)})
-    if day < date.today() and draft.deferred != deferred_before:
+    if day < _clock().date() and draft.deferred != deferred_before:
         # перенос с прошедшего дня меняет развоз уже другого дня — задним числом нельзя
         return _bad_request({'_': 'Прошедший день — перенос на другой день не меняется'})
     # заказы после правки («не везём сегодня» / вернуть меняют точки и вес) — отметка дня по ним
@@ -1290,7 +1290,7 @@ def api_dispatch_fact() -> Any:
     state = _state()
     bundle = _bundle(state)
     day = _parse_day(request.args.get('date'))
-    if day is None or day >= date.today():
+    if day is None or day >= _clock().date():
         return _bad_request({'date': 'прошедшая дата в формате ГГГГ-ММ-ДД'})
     if state.fact_loader is None:
         raise ErpError('Загрузчик факта не подключён')

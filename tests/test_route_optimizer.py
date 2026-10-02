@@ -5385,9 +5385,11 @@ def test_api_dispatch_overtime_button(client):
     assert client.get('/api/routes/dispatch?date=2026-10-02').get_json()['overtime_days_month'] == 0
 
 
-def test_api_dispatch_defer_trip_goes_to_next_day(client):
+def test_api_dispatch_defer_trip_goes_to_next_day(client, monkeypatch):
     """«Везти завтра» на 01.10 — заказы сразу в развозе 02.10 (до первой сборки и в ней), без ручного
     «добавить» среди заказов прошлых дней."""
+    from route_optimizer import views
+    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 10, 1, 10, 0))   # 01.10 — сегодня, 02.10 — завтра
     _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2)])
     assert client.post('/api/routes/settings', json={'settings': {'min_trip_revenue': 150000}}).status_code == 200
     d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
@@ -5408,11 +5410,13 @@ def test_api_dispatch_defer_trip_goes_to_next_day(client):
     assert moved <= {x['customer_id'] for tr in b['plan']['trucks'] for t in tr['trips'] for x in t['stops']}
 
 
-def test_api_dispatch_defer_when_next_day_already_built_and_undo(client):
+def test_api_dispatch_defer_when_next_day_already_built_and_undo(client, monkeypatch):
     """План следующего дня уже собран: перенос он видит сам при загрузке (его черновик не меняется) —
     заказы в развозе и подсказка «новые с последней сборки»; отмена («вернуть») — убираются оттуда,
     чтобы не повезли дважды. Логист следующего дня может убрать перенесённый заказ — это запоминается.
     Слишком давний заказ на завтра не переносится; прошедший день перенос не меняет."""
+    from route_optimizer import views
+    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 10, 1, 10, 0))   # 01.10 — сегодня, 02.10 — завтра
     _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2),
                              _dorder(6, 104, 70.0, agent=2, day=date(2026, 9, 28))])
     assert client.post('/api/routes/settings', json={'settings': {'min_trip_revenue': 150000}}).status_code == 200
