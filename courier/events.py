@@ -29,7 +29,17 @@
   на ещё не полученное событие; хранится в нижнем регистре, как id событий. Цикл (цепочка по уже принятым
   событиям того же типа той же точки возвращается к самому событию, §5 п. 18) — отказ;
 - повторная delivery/tare по точке не удаляет прежние — «действующая» считается при чтении по правилу §5 п. 12
-  (merge: последняя по at, затем по id, без вытесненных `supersedes`).
+  (merge: последняя по at, затем по id, без вытесненных `supersedes`);
+- `track` (v1.3 §7 п. 1, без stop_id): 1–TRACK_MAX_POINTS точек; точка с ошибкой (поля, вне Армении, не по
+  возрастанию at, at позже «сейчас + сутки» или старше срока хранения) отбрасывается, остальные принимаются; число
+  отброшенных по причинам — в payload события и в журнале; ни одной годной точки — отказ. Точки — в track_points
+  (повтор того же at той же машины не пишется); в events — только счётчики (points, kept, new, dropped). Payload трека —
+  до MAX_TRACK_PAYLOAD_BYTES (100 точек с полной точностью double ≈ 19 КБ: у обычного предела нет запаса). Приём трека
+  раз в день удаляет трек старше store.TRACK_KEEP_DAYS;
+- `refuel` (§7 п. 2, без stop_id): литры, одометр (целое), «до полного бака», сумма, место; исправление — `supersedes`
+  (как у delivery; цикл — отказ). Одометр меньше предыдущей действующей заправки машины (по at) или прирост больше
+  REFUEL_KM_PER_DAY км за сутки — флаг `odometer_suspicious` (принимается; обучение само пересчитывает это правило по
+  всем заправкам машины — опоздавшее событие не меняет результат).
 """
 from __future__ import annotations
 
@@ -37,22 +47,26 @@ import json
 import logging
 import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
 from route_optimizer.geo import is_valid_point
 
 from . import clock
 from .merge import statement_status
-from .store import REJECTED_PER_DAY, EventTx, Store
+from .store import REJECTED_PER_DAY, TRACK_KEEP_DAYS, EventTx, Store
 
 logger = logging.getLogger(__name__)
 
 MAX_BATCH = 200
 MAX_PAYLOAD_BYTES = 20_000
+MAX_TRACK_PAYLOAD_BYTES = 40_000   # track: 100 точек с полной точностью double ≈ 19 КБ — запас вдвое (§7 п. 1)
 EVENT_TYPES = ('delivery', 'payment', 'tare', 'return', 'scan', 'scan_cancel', 'unreadable', 'arrived', 'day_closed',
-               'geo_suggest')
-STOPLESS_TYPES = ('day_closed', 'scan_cancel')   # stop_id не обязателен
+               'geo_suggest', 'track', 'refuel')
+STOPLESS_TYPES = ('day_closed', 'scan_cancel', 'track', 'refuel')   # stop_id не обязателен
+SUPERSEDABLE = ('delivery', 'tare', 'refuel')   # `supersedes` — исправление прежнего события того же типа
 MONEY_MAX = 1e9
 QTY_MAX = 1e6
 DATE_SUSPICIOUS_DAYS = 2
@@ -61,6 +75,13 @@ SUGGEST_NOTE_MAX = 200
 SUPERSEDES_MAX = 64
 DAY_VERSION_MAX = 64
 EPS = 1e-9
+TRACK_MAX_POINTS = 100
+TRACK_MAX_ACC_M = 200.0        # acc точки трека: 0 < acc ≤ 200 м
+TRACK_MAX_SPEED_MS = 60.0      # spd: 0…60 м/с или null
+TRACK_FUTURE = timedelta(days=1)   # точка позже «сейчас + сутки» — часы терминала сбиты
+REFUEL_MAX_LITERS = 400.0
+REFUEL_MAX_ODOMETER = 2_000_000
+REFUEL_KM_PER_DAY = 1500.0     # прирост одометра больше — odometer_suspicious
 
 UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
 STOP_RE = re.compile(r'^[SO]:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$')
@@ -435,10 +456,94 @@ def _geo_suggest(p: Mapping[str, Any]) -> None:
     _text(p.get('note'), SUGGEST_NOTE_MAX, 'note')
 
 
+TrackPoint = tuple[int, float, float, float, 'float | None', 'float | None']   # (at_ms, lat, lon, acc, spd, brg)
+
+
+def _track_point(raw: Any, now: datetime) -> tuple[TrackPoint | None, str | None]:
+    """Точка трека → ((at_ms, lat, lon, acc, spd, brg), None) или (None, причина отказа точки)."""
+    if not isinstance(raw, dict):
+        return None, 'bad'
+    at = clock.parse_moment(raw.get('at'))
+    if at is None:
+        return None, 'at'
+    lat, lon = _num(raw.get('lat')), _num(raw.get('lon'))
+    if lat is None or lon is None or not is_valid_point(lat, lon):
+        return None, 'place'
+    acc = _num(raw.get('acc'))
+    if acc is None or not 0 < acc <= TRACK_MAX_ACC_M:
+        return None, 'acc'
+    spd, brg = raw.get('spd'), raw.get('brg')
+    if spd is not None and ((spd := _num(spd)) is None or not 0 <= spd <= TRACK_MAX_SPEED_MS):
+        return None, 'spd'
+    if brg is not None and ((brg := _num(brg)) is None or not 0 <= brg <= 360):
+        return None, 'brg'
+    if at > now + TRACK_FUTURE:
+        return None, 'future'
+    if at < now - timedelta(days=TRACK_KEEP_DAYS):
+        return None, 'old'
+    return (round(at.timestamp() * 1000), lat, lon, acc, spd, brg), None
+
+
+def track_points(p: Mapping[str, Any], now: datetime) -> tuple[list[TrackPoint], dict[str, int]]:
+    """§7 п. 1: точки события track → (годные точки по возрастанию at, {причина: отброшено}). Точка не позже
+    предыдущей годной отбрасывается ('duplicate' — тот же at, 'order' — раньше). Нет списка из 1–TRACK_MAX_POINTS
+    точек или ни одной годной — Reject."""
+    raw = p.get('points')
+    if not isinstance(raw, list) or not 1 <= len(raw) <= TRACK_MAX_POINTS:
+        raise Reject(f'points՝ 1-ից {TRACK_MAX_POINTS} կետ')
+    keep: list[TrackPoint] = []
+    dropped: Counter[str] = Counter()
+    for item in raw:
+        point, why = _track_point(item, now)
+        if point is not None and keep and point[0] <= keep[-1][0]:
+            point, why = None, 'duplicate' if point[0] == keep[-1][0] else 'order'
+        if point is None:
+            dropped[why or 'bad'] += 1
+        else:
+            keep.append(point)
+    if not keep:
+        raise Reject('Ոչ մի ճիշտ GPS կետ')
+    return keep, dict(sorted(dropped.items()))
+
+
+def _refuel(tx: EventTx, p: Mapping[str, Any], at: datetime, car_code: str, supersedes: str | None) -> list[str]:
+    """§7 п. 2: заправка. Нарушение формы — Reject; подозрительный одометр — флаг (сравнение с последней действующей
+    заправкой машины раньше этой по at: без вытесненных, без исправляемой этим событием и без подозрительных — одна
+    опечатка не делает подозрительными все следующие заправки)."""
+    liters = _num(p.get('liters'))
+    if liters is None or not 0 < liters <= REFUEL_MAX_LITERS:
+        raise Reject(f'liters՝ 0-ից մինչև {REFUEL_MAX_LITERS:g}')
+    odo = _num(p.get('odometer_km'))
+    if odo is None or odo != int(odo) or not 0 <= odo <= REFUEL_MAX_ODOMETER:
+        raise Reject('odometer_km՝ ամբողջ թիվ 0-ից մինչև 2 000 000')
+    if 'full_tank' in p and not isinstance(p.get('full_tank'), bool):
+        raise Reject('full_tank՝ true կամ false')
+    amount = p.get('amount_amd')
+    if amount is not None and ((amount := _num(amount)) is None or not 0 <= amount <= MONEY_MAX):
+        raise Reject('amount_amd՝ սխալ գումար')
+    lat, lon = p.get('lat'), p.get('lon')
+    if (lat is None) != (lon is None):
+        raise Reject('lat/lon՝ երկուսն էլ կամ ոչ մեկը')
+    if lat is not None:
+        _arrived({'lat': lat, 'lon': lon})
+    own = tx.car_refuels(car_code)
+    gone = {r['payload'].get('supersedes') for r in own} | {supersedes}
+    key = clock.utc_key(at)
+    prev = [r for r in own if r['id'] not in gone and r['at_utc'] < key and 'odometer_suspicious' not in r['flags']
+            and _num(r['payload'].get('odometer_km')) is not None]
+    if not prev:
+        return []
+    last = prev[-1]
+    last_odo = float(last['payload']['odometer_km'])
+    days = max(1.0, (at - datetime.fromisoformat(last['at_utc'])).total_seconds() / 86400.0)
+    return ['odometer_suspicious'] if odo < last_odo or odo - last_odo > REFUEL_KM_PER_DAY * days else []
+
+
 # --- одна запись ---
 
-def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Проверить событие: (строка events, строка scans или None) или Reject."""
+def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who
+           ) -> tuple[dict[str, Any], dict[str, Any] | None, list[TrackPoint] | None]:
+    """Проверить событие: (строка events, строка scans или None, точки трека или None) или Reject."""
     etype = raw.get('type')
     if etype not in EVENT_TYPES:
         raise Reject('Անհայտ իրադարձության տեսակ')
@@ -451,7 +556,8 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who) -> tupl
     payload = raw.get('payload')
     if not isinstance(payload, dict):
         raise Reject('payload՝ պետք է լինի օբյեկտ')
-    if len(json.dumps(payload, ensure_ascii=False)) > MAX_PAYLOAD_BYTES:
+    if len(json.dumps(payload, ensure_ascii=False)) > (MAX_TRACK_PAYLOAD_BYTES if etype == 'track'
+                                                        else MAX_PAYLOAD_BYTES):
         raise Reject('payload՝ չափազանց մեծ')
     stop_id = raw.get('stop_id')
     if stop_id is not None:
@@ -469,7 +575,9 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who) -> tupl
         flags.append('date_suspicious')
     stored = dict(payload)
     scan_row = None
-    if etype in ('delivery', 'tare') and (supersedes := _supersedes(payload, event_id)) is not None:
+    track = None
+    supersedes = None
+    if etype in SUPERSEDABLE and (supersedes := _supersedes(payload, event_id)) is not None:
         if _supersedes_cycle(tx, event_id, etype, stop_id, supersedes):
             raise Reject('supersedes-ը շրջան է կազմում')
         stored['supersedes'] = supersedes
@@ -507,10 +615,16 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who) -> tupl
     elif etype == 'day_closed':
         if not isinstance(payload.get('summary'), dict):
             raise Reject('summary՝ պետք է լինի օբյեկտ')
+    elif etype == 'track':
+        track, dropped = track_points(payload, clock.now())
+        stored = {'points': len(payload['points']), 'kept': len(track), 'dropped': dropped}   # точки — в track_points
+    elif etype == 'refuel':
+        flags += _refuel(tx, payload, at, who.car_code, supersedes)
+        stored.setdefault('full_tank', True)   # §7 п. 2: по умолчанию «до полного бака»
     row = {'id': event_id, 'terminal_id': who.terminal_id, 'driver_id': who.driver_id, 'car_code': who.car_code,
            'date': ev['date'], 'stop_id': stop_id, 'type': etype, 'at_device': raw['at'], 'at_utc': clock.utc_key(at),
            'received_at': clock.iso(clock.now()), 'payload': stored, 'flags': flags, 'snapshot_id': stop.snapshot_id}
-    return row, scan_row
+    return row, scan_row, track
 
 
 def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
@@ -531,7 +645,7 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
                 continue
             try:
                 try:
-                    row, scan_row = _check(tx, raw, event_id, who)
+                    row, scan_row, track = _check(tx, raw, event_id, who)
                 except (TypeError, ValueError, OverflowError, KeyError) as e:   # странное значение — отказ
                     raise Reject('Սխալ տվյալներ') from e                         # события, а не 500 на всю пачку
             except Reject as e:
@@ -549,6 +663,12 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
                                    who.terminal_id, REJECTED_PER_DAY)
                 result.rejected.append({'id': raw_id, 'error': 'bad_request', 'message': str(e)})
                 continue
+            if track is not None:   # точки — до события: в нём число новых (пачка — одна транзакция)
+                row['payload']['new'] = tx.insert_track(who.car_code, row['date'], track)
+                tx.purge_track(clock.today().isoformat())
+                if row['payload']['dropped']:
+                    logger.info('[Courier] Трек %s машины %s: отброшено точек %s', event_id, who.car_code,
+                                row['payload']['dropped'])
             if not tx.insert_event(row):
                 result.duplicates.append(raw_id)
                 continue

@@ -26,6 +26,7 @@ from flask import Flask, Request, Response
 
 from . import api, erp_day, views
 from .day import DayService
+from .facts import FactsSource
 from .geo import DriverSource
 from .routes_link import routes_view
 from .state import API_PREFIX, EXTENSION_KEY, CourierState
@@ -37,7 +38,7 @@ DB_FILENAME = 'courier.db'
 DEFAULT_PUBLIC_HOST = 'araqich.orix.am'
 ROUTES_EXTENSION = 'route_optimizer'
 
-__all__ = ['API_PREFIX', 'driver_geo', 'init_app', 'public_guard']
+__all__ = ['API_PREFIX', 'driver_geo', 'fleet_facts', 'init_app', 'public_guard']
 
 
 def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
@@ -69,6 +70,12 @@ def driver_geo(app: Flask) -> DriverSource:
     """Точки и предложения водителей для «Маршрутов» (driver-geo-plan.md §4) — после init_app:
     route_optimizer.attach_driver_geo(app, courier.driver_geo(app))."""
     return DriverSource(app.extensions[EXTENSION_KEY].store)
+
+
+def fleet_facts(app: Flask) -> FactsSource:
+    """Трек, точки дня и заправки машин для обучения «Развоза» (контракт v1.3 §7) — после init_app:
+    route_optimizer.attach_fleet_facts(app, courier.fleet_facts(app))."""
+    return FactsSource(app.extensions[EXTENSION_KEY].store)
 
 
 def is_public(request: Request, public_host: str) -> bool:

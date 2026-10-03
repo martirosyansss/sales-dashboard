@@ -33,6 +33,7 @@ from werkzeug.exceptions import HTTPException
 from route_optimizer.erp import ErpError
 
 from . import clock, events as ev, merge as mg
+from .facts import gps_summary
 from .routes_link import routes_view
 from .state import state
 from .store import MarkSetting, PinConflict, PinPepperMissing, PinUnverifiable, Release, StoreError
@@ -417,7 +418,8 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
     def car_row(code: str) -> dict[str, Any]:
         return by_car.setdefault(code, {'car_code': code, 'stops': [], 'removed': [], 'total': 0,
                                         **{x: 0 for x in STATUSES}, 'unreadable': 0, 'foreign': 0, 'flagged': 0,
-                                        'drivers': set(), 'last_contact': None, 'error': errors.get(code)})
+                                        'drivers': set(), 'last_contact': None, 'error': errors.get(code),
+                                        'gps': None, 'refuels': []})
 
     for code in errors:
         car_row(code)
@@ -444,6 +446,16 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
             row['foreign'] += 1
         if e['flags']:
             row['flagged'] += 1
+    # трек и заправки (контракт v1.3 §7): км по GPS за рабочий день; заправки даты — и исправленные (superseded)
+    for code in sorted({e['car_code'] for e in events if e['type'] == 'track'}):
+        car_row(code)['gps'] = gps_summary(st.store.track(code, ds))
+    for r in st.store.refuels():
+        if r['date'] == ds:
+            p = r['payload']
+            car_row(r['car_code'])['refuels'].append({
+                'id': r['id'], 'at': r['at'], 'driver_name': r['driver_name'], 'liters': p.get('liters'),
+                'odometer_km': p.get('odometer_km'), 'full_tank': p.get('full_tank'), 'amount_amd': p.get('amount_amd'),
+                'flags': r['flags'], 'superseded': r['superseded'], 'photos': photos.get(r['id'], [])})
     for t in terminals:
         if t.car_code in by_car and t.last_seen_at and (by_car[t.car_code]['last_contact'] is None
                                                          or t.last_seen_at > by_car[t.car_code]['last_contact']):

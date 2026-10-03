@@ -41,7 +41,7 @@ from .security import (PEPPER_ENV, PEPPER_OLD_ENV, SCHEME_PLAIN, Pepper, check_p
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 PIN_MAX_FAILS = 5
 PIN_LOCK = timedelta(minutes=15)
@@ -54,6 +54,8 @@ SNAPSHOT_KEEP_DAYS = 7    # промежуточные снимки /day без 
 PHOTOS_PER_DAY = 300
 PHOTO_BYTES_PER_DAY = 300 * 1024 * 1024
 REJECTED_PER_DAY = 1000
+
+TRACK_KEEP_DAYS = 400     # трек машины хранится 400 дней (сезонность), затем удаляется — контракт §7 п. 1
 
 SUPERSEDED_BY = 'auto: superseded'   # decided_by предложений водителя, закрытых принятием другого по тому же клиенту
 
@@ -74,6 +76,17 @@ DEFAULT_REASONS: dict[str, tuple[tuple[str, str], ...]] = {
     ),
 }
 REASON_KINDS = tuple(DEFAULT_REASONS)
+
+# Трек машины (контракт §7 п. 1): точка — одна на (машина, момент at в мс UTC) — повтор с тем же at той же машины
+# не дублируется (первая принятая остаётся). date — рабочий день события track. Без rowid: ключ и есть порядок трека
+# машины; индекс (машина, день, момент) — чтение дня машины. Событие track в events хранит только счётчики точек.
+_TRACK_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS track_points(car_code TEXT NOT NULL, at_ms INTEGER NOT NULL, date TEXT NOT NULL, "
+    "lat REAL NOT NULL, lon REAL NOT NULL, acc REAL NOT NULL, spd REAL, brg REAL, PRIMARY KEY (car_code, at_ms)) "
+    "WITHOUT ROWID",
+    "CREATE INDEX IF NOT EXISTS track_points_day ON track_points(car_code, date, at_ms)",
+    "CREATE INDEX IF NOT EXISTS events_car_type ON events(car_code, type, at_utc)",
+)
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -153,6 +166,7 @@ _SCHEMA = (
     "PRIMARY KEY (kind, id))",
     "CREATE TABLE IF NOT EXISTS app_release(version_code INTEGER PRIMARY KEY, version_name TEXT NOT NULL, "
     "sha256 TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL, uploaded_at TEXT NOT NULL, uploaded_by TEXT)",
+    *_TRACK_SCHEMA,
 )
 
 _SEED = (
@@ -226,6 +240,9 @@ _MIGRATIONS: dict[int, tuple[str | Callable[[sqlite3.Connection], None], ...]] =
         lambda conn: _fill_line_max(conn),
         "DROP TABLE IF EXISTS stop_replaces",
     ),
+    # v5 → v6 (только добавляет, контракт v1.3 §7): трек машины и индекс событий по машине и типу (заправки машины
+    # по порядку — проверка одометра, обучение расхода).
+    5: _TRACK_SCHEMA,
 }
 
 
@@ -1000,13 +1017,51 @@ class Store:
 
     # --- события (чтение для офиса и /status) ---
 
-    def events_for_day(self, day: str) -> list[dict[str, Any]]:
+    def events_for_day(self, day: str, etype: str | None = None) -> list[dict[str, Any]]:
+        """События даты (etype — только этого типа, по индексу events_type)."""
         rows = self._read(lambda c: c.execute(
             'SELECT e.id, e.terminal_id, e.driver_id, d.name, e.car_code, e.date, e.stop_id, e.type, e.at_device, '
             'e.at_utc, e.received_at, e.payload, e.flags, e.snapshot_id FROM events e '
             'LEFT JOIN drivers d ON d.id = e.driver_id '
-            'WHERE e.date = ? ORDER BY e.at_utc, e.received_at, e.id', (day,)).fetchall())
+            'WHERE e.date = ?' + (' AND e.type = ?' if etype else '') + ' ORDER BY e.at_utc, e.received_at, e.id',
+            (day, etype) if etype else (day,)).fetchall())
         return [_event_json(r, self._name()) for r in rows]
+
+    # --- трек и заправки машин (контракт v1.3 §7): офис и обучение «Развоза» ---
+
+    def track(self, car_code: str, day: str) -> list[tuple[int, float, float, float, float | None, float | None]]:
+        """Точки трека машины за рабочий день: (at_ms, lat, lon, acc, spd, brg) по возрастанию момента."""
+        return [tuple(r) for r in self._read(lambda c: c.execute(
+            'SELECT at_ms, lat, lon, acc, spd, brg FROM track_points WHERE car_code = ? AND date = ? ORDER BY at_ms',
+            (car_code, day)).fetchall())]
+
+    def track_days(self, since: str, until: str) -> list[tuple[str, str]]:
+        """(день, машина) с принятым треком за даты since…until включительно — по событиям track (индекс по типу)."""
+        return [(r[0], r[1]) for r in self._read(lambda c: c.execute(
+            "SELECT DISTINCT date, car_code FROM events WHERE type = 'track' AND date >= ? AND date <= ? "
+            'ORDER BY date, car_code', (since, until)).fetchall())]
+
+    def refuels(self) -> list[dict[str, Any]]:
+        """Все принятые заправки: [{id, car_code, date, at, at_utc, driver_name, payload, flags, superseded}] по машине и
+        моменту. superseded — на событие ссылается `supersedes` другой заправки той же машины (исправлено водителем):
+        в расчёты не идёт. Заправок немного (единицы в день) — читаются целиком."""
+        rows = self._read(lambda c: c.execute(
+            "SELECT e.id, e.car_code, e.date, e.at_device, e.at_utc, d.name, e.payload, e.flags FROM events e "
+            "LEFT JOIN drivers d ON d.id = e.driver_id WHERE e.type = 'refuel' ORDER BY e.car_code, e.at_utc, e.id"
+        ).fetchall())
+        out = []
+        for eid, car, day, at, at_utc, name, raw, flags in rows:
+            try:
+                payload, fl = json.loads(raw), json.loads(flags)
+            except (TypeError, ValueError) as e:
+                raise StoreError(f'{self._name()}: повреждено событие {eid!r}{_FIX_HINT}') from e
+            out.append({'id': eid, 'car_code': car, 'date': day, 'at': at, 'at_utc': at_utc, 'driver_name': name,
+                        'payload': payload if isinstance(payload, dict) else {},
+                        'flags': fl if isinstance(fl, list) else []})
+        targets = {(r['car_code'], r['payload'].get('supersedes')) for r in out}
+        for r in out:
+            r['superseded'] = (r['car_code'], r['id']) in targets
+        return out
 
     # --- точки и предложения водителей (driver-geo-plan.md §4): клиент точки — по самой новой версии в снимках /day ---
 
@@ -1467,3 +1522,48 @@ class EventTx:
     def driver_name(self, driver_id: int) -> str | None:
         r = self.conn.execute('SELECT name FROM drivers WHERE id = ?', (driver_id,)).fetchone()
         return r[0] if r else None
+
+    # --- трек и заправки (контракт v1.3 §7) ---
+
+    def insert_track(self, car_code: str, day: str,
+                     points: Sequence[tuple[int, float, float, float, float | None, float | None]]) -> int:
+        """Точки трека (at_ms, lat, lon, acc, spd, brg) машины за рабочий день day. Точка с тем же at_ms этой машины уже
+        есть (из этого или другого события, любой даты) — не пишется. Возвращает число новых точек."""
+        before = self.conn.total_changes
+        self.conn.executemany('INSERT OR IGNORE INTO track_points(car_code, at_ms, date, lat, lon, acc, spd, brg) '
+                              'VALUES(?, ?, ?, ?, ?, ?, ?, ?)', [(car_code, p[0], day, *p[1:]) for p in points])
+        return self.conn.total_changes - before
+
+    def purge_track(self, today: str) -> int:
+        """Хранение трека — TRACK_KEEP_DAYS (контракт §7 п. 1): точки с моментом раньше полуночи (Ереван) дня
+        today − TRACK_KEEP_DAYS и события track рабочих дней раньше него удаляются. Не чаще раза в день (meta
+        track_purged_on): вызывается при приёме трека. Возвращает число удалённых точек."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = 'track_purged_on'").fetchone()
+        if row is not None and row[0] == today:
+            return 0
+        cutoff = (datetime.fromisoformat(today) - timedelta(days=TRACK_KEEP_DAYS)).date()
+        cutoff_ms = int(datetime.combine(cutoff, datetime.min.time(), clock.YEREVAN).timestamp() * 1000)
+        cars = {r[0] for r in self.conn.execute(
+            "SELECT car_code FROM terminals UNION SELECT DISTINCT car_code FROM events WHERE type = 'track' AND date < ?",
+            (cutoff.isoformat(),))}
+        n = 0
+        for car in sorted(cars):   # по ключу (машина, момент) — без полного перебора точек
+            n += self.conn.execute('DELETE FROM track_points WHERE car_code = ? AND at_ms < ?', (car, cutoff_ms)).rowcount
+        self.conn.execute("DELETE FROM events WHERE type = 'track' AND date < ?", (cutoff.isoformat(),))
+        self.conn.execute("INSERT INTO meta(key, value) VALUES('track_purged_on', ?) "
+                          'ON CONFLICT(key) DO UPDATE SET value = excluded.value', (today,))
+        return n
+
+    def car_refuels(self, car_code: str) -> list[dict[str, Any]]:
+        """Принятые заправки машины (и этой пачки): [{id, at_utc, payload, flags}] по моменту, затем id."""
+        out = []
+        for eid, at_utc, raw, flags in self.conn.execute(
+                "SELECT id, at_utc, payload, flags FROM events WHERE car_code = ? AND type = 'refuel' "
+                'ORDER BY at_utc, id', (car_code,)).fetchall():
+            try:
+                payload, fl = json.loads(raw), json.loads(flags)
+            except (TypeError, ValueError):
+                continue
+            out.append({'id': eid, 'at_utc': at_utc, 'payload': payload if isinstance(payload, dict) else {},
+                        'flags': fl if isinstance(fl, list) else []})
+        return out
