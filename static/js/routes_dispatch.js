@@ -189,6 +189,7 @@
     }
     function showActionError(err) {
         $('dpActionErrorText').textContent = err.message || String(err);
+        if (state.data && /1-ին քայլում/.test(err.message || '')) unfoldStep('dpStep1');   // «…1-ին քայլում» — раскрыть шаг 1, чтобы было где отметить
         $('dpActionReload').classList.toggle('d-none', !(err.status === 409));
         $('dpActionError').classList.remove('d-none');
         $('dpActionError').focus();
@@ -350,6 +351,7 @@
             title = 'Երթերում ոչ մի խանութ չկա';
             lines.push('Բոլոր պատվերները հանված են առաքումից կամ դրանց տեղը քարտեզում նշված չէ։ Ստուգեք 2-րդ քայլը և վերակազմեք երթերը։');
             btns.push({ act: build, text: 'Վերակազմել երթերը', ico: 'fa-rotate' });
+            btns.push({ act: () => stepButton('dpStep2', '').click(), text: 'Բացել 2-րդ քայլը', ico: 'fa-arrow-up' });
         } else if (n && n.count) {
             tone = 'is-warn'; ico = 'fa-bell';
             title = 'Եկել է ' + pl(n.count, 'նոր պատվեր') + ' — վերակազմեք երթերը';
@@ -544,13 +546,30 @@
     function toggleStep(id) {
         if (state.stepsOpen.has(id)) state.stepsOpen.delete(id); else state.stepsOpen.add(id);
         renderSteps();
-        if (state.stepsOpen.has('dpStep2') && $('dpNoCoords').open) ensurePickMap();
+        // карты внутри шага, нарисованные пока он был свёрнут (0×0), — перерисовать по настоящему размеру
+        if (id === 'dpStep2' && state.stepsOpen.has(id)) { if ($('dpNoCoords').open) ensurePickMap(); if ($('dpGeoSug').open) renderGeoSug(); }
     }
     // Открыть свёрнутый шаг (кнопка внутри него или «тут нужно поправить»)
     function unfoldStep(id) {
         if (!state.data.plan || state.stepsOpen.has(id)) return;
         state.stepsOpen.add(id);
         renderSteps();
+        if (id === 'dpStep2') { if ($('dpNoCoords').open) ensurePickMap(); if ($('dpGeoSug').open) renderGeoSug(); }
+    }
+    // Кнопка в подсказке «…в 1-ին քայլ…»: раскрыть шаг и перейти к нему
+    function stepButton(id, text) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-stepbtn';
+        b.innerHTML = '<i class="fas fa-arrow-up" aria-hidden="true"></i><span></span>';
+        b.lastChild.textContent = text;
+        b.addEventListener('click', () => {
+            unfoldStep(id);
+            $(id).scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
+            $(id + 'Title').setAttribute('tabindex', '-1');
+            $(id + 'Title').focus({ preventScroll: true });
+        });
+        return b;
     }
 
     // Крупные цифры: [значение, подпись]
@@ -1003,12 +1022,15 @@
     }
 
     // ---------- Шкала дня: строка на машину, рейсы — полосы по часам ----------
-    const toMin = (s) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+    const toMin = (s) => clockMin(s);     // «HH:MM» и «HH:MM (+1)» после полуночи
     const calm = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     const tripBad = (tr) => !!(tr.over_time || tr.over_capacity || tr.no_truck || tr.window_miss || tr.center_miss || tr.vehicle_miss);
     function renderBoard(plan) {
         const box = $('dpBoard'), d = state.data;
         box.textContent = '';
+        const key = d.day + '|' + (d.built_at || '');
+        box.classList.toggle('is-static', state.boardKey === key);
+        state.boardKey = key;
         box.hidden = !plan.trucks.length;
         if (!plan.trucks.length) return;
         const ws = toMin(d.work_start) ?? 540, we = toMin(d.work_end) ?? 1080;
@@ -1089,7 +1111,7 @@
                 const full = truckLabel(t) + ' · երթ ' + (i + 1) + ' · ' + tr.depart + ' → ' + tr.return + ' · ' + pl(tr.stops.length, 'կետ')
                     + ' · ' + kgText(tr.kg) + ' · ≈ ' + fmt(tr.km) + NB + 'կմ';
                 bar.title = full;
-                bar.setAttribute('aria-label', 'Ցույց տալ քարտեզում՝ ' + full);
+                bar.setAttribute('aria-label', info + ' — ' + full + ' — ցույց տալ քարտեզում');
                 const bt = document.createElement('span');
                 bt.className = 'dp-bar-t';
                 bt.textContent = info;
@@ -1179,6 +1201,7 @@
             p.textContent = 'Ինչ անել՝ ' + t;
             div.querySelector('.rt-alert-text').appendChild(p);
         });
+        if (notFit || cenMiss) div.querySelector('.rt-alert-text').appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
         box.appendChild(div);
     }
 
@@ -1215,9 +1238,8 @@
         li.className = 'dp-stop';
         const eta = document.createElement('span');
         eta.className = 'dp-stop-eta' + (stop.eta ? '' : ' is-none');
-        eta.textContent = stop.eta || '—';
-        if (stop.eta) eta.setAttribute('aria-label', 'ժամանում ≈ ' + stop.eta);
-        else eta.setAttribute('aria-hidden', 'true');
+        if (stop.eta) eta.innerHTML = '<span class="rt-sr-only">ժամանում ≈ </span>' + esc(stop.eta);
+        else { eta.textContent = '—'; eta.setAttribute('aria-hidden', 'true'); }
         const no = document.createElement('span');
         no.className = 'dp-num';
         no.setAttribute('aria-hidden', 'true');
@@ -1306,6 +1328,7 @@
             card.querySelector('.rt-card-title span').textContent = title;
             card.querySelector('.rt-card-state').textContent = pl(list.length, 'խանութ') + ', ' + kgText(kgOf(list));
             leads.filter(Boolean).forEach(t => { const p = document.createElement('p'); p.className = 'rt-card-lead'; p.textContent = t; card.appendChild(p); });
+            if (leads.some(t => t && t.includes('1-ին քայլում'))) card.appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
             card.appendChild(stopList(list, null, true));
             box.appendChild(card);
             return card;
@@ -1369,6 +1392,7 @@
             }
             card.append(lead, ...overtimeBlock('Եթե այս պատվերները պետք է տանել այսօր, մեքենաները կաշխատեն ' + state.data.work_end
                 + '-ից հետո՝ մինչև ' + state.data.overtime_end + '-ը։'));
+            if (unpicked) card.appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
             card.appendChild(stopList(noRoom, null, true));
             box.appendChild(card);
         }
@@ -1377,7 +1401,7 @@
         card.className = 'rt-card dp-unassigned';
         card.innerHTML = '<div class="rt-card-head"><h3 class="rt-card-title"><i class="fas fa-inbox" aria-hidden="true"></i>Դեռ ոչ մի երթում չեն</h3><span class="rt-card-state is-todo"></span></div>'
             + '<p class="rt-card-lead">Նոր կամ վերադարձված պատվերներ, կամ խանութներ, որոնց տեղը նոր եք նշել։ Յուրաքանչյուրի համար ընտրեք՝ որ երթին ավելացնել, '
-            + 'կամ պարզապես սեղմեք «Վերակազմել երթերը» 2-րդ քայլում։</p>';
+            + 'կամ պարզապես սեղմեք «Վերակազմել երթերը»։</p>';
         card.querySelector('.rt-card-state').textContent = pl(other.length, 'խանութ') + ', ' + kgText(kgOf(other));
         card.appendChild(stopList(other, null, true));
         box.appendChild(card);
@@ -1434,7 +1458,9 @@
         syncFocus();
     }
     function toggleTruck(code) {
-        if (state.open.has(code)) state.open.delete(code); else state.open.add(code);
+        const t = state.data.plan.trucks.find(x => x.car_code === code);
+        const shown = state.open.has(code) || (!!t && t.trips.some(tr => state.editing.has(tr.id)));
+        if (shown) { state.open.delete(code); if (t) t.trips.forEach(tr => state.editing.delete(tr.id)); } else state.open.add(code);
         renderTruckCards(state.data.plan);
         const card = [...$('dpTruckCards').querySelectorAll('.dp-tcard')].find(c => c.dataset.truck === code);
         if (card) card.querySelector('.dp-thead').focus();
@@ -1566,6 +1592,8 @@
 
     function toggleEdit(tripId) {
         if (state.editing.has(tripId)) state.editing.delete(tripId); else state.editing.add(tripId);
+        const t = state.data.plan.trucks.find(x => x.trips.some(tr => tr.id === tripId));
+        if (t) state.open.add(t.car_code);      // правка — внутри раскрытой карточки; «Պատրաստ է» её не сворачивает
         renderTruckCards(state.data.plan);
         const b = $('dpTruckCards').querySelector('.dp-editbtn[data-trip="' + tripId + '"]');
         if (b) b.focus();

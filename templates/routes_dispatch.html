@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=18">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=21">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=22">
 {% endblock %}
 
 {% block content %}
@@ -101,7 +101,7 @@
                         <p class="dp-step-sum" id="dpStep1Sum"></p>
                     </div>
                     <span class="dp-chip" id="dpTrucksCount"></span>
-                    <button type="button" class="dp-step-tog" id="dpStep1Tog" aria-expanded="true" aria-controls="dpStep1Body" hidden>
+                    <button type="button" class="dp-step-tog" id="dpStep1Tog" aria-expanded="true" aria-controls="dpStep1Body" aria-describedby="dpStep1Title" hidden>
                         <span>Բացել</span><i class="fas fa-chevron-down" aria-hidden="true"></i></button>
                 </div>
                 <div class="dp-step-body" id="dpStep1Body">
@@ -120,7 +120,7 @@
                         <h2 class="dp-step-title" id="dpStep2Title"><span class="rt-sr-only">Քայլ 2. </span>Պատվերներ</h2>
                         <p class="dp-step-sum" id="dpStep2Sum"></p>
                     </div>
-                    <button type="button" class="dp-step-tog" id="dpStep2Tog" aria-expanded="true" aria-controls="dpStep2Body" hidden>
+                    <button type="button" class="dp-step-tog" id="dpStep2Tog" aria-expanded="true" aria-controls="dpStep2Body" aria-describedby="dpStep2Title" hidden>
                         <span>Բացել</span><i class="fas fa-chevron-down" aria-hidden="true"></i></button>
                 </div>
                 <div class="dp-step-body" id="dpStep2Body">
@@ -297,5 +297,5 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=41"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=42"></script>
 {% endblock %}
