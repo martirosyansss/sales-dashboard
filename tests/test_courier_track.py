@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 from courier import clock, events as ev  # noqa: E402
 from courier.facts import FactsSource, delivered_share, gps_summary  # noqa: E402
 from courier.store import SCHEMA_VERSION, TRACK_KEEP_DAYS, Store  # noqa: E402
-from test_courier import (_fresh_ref_cache, _pin_env, app, client, login, make_terminal, now, st,  # noqa: E402,F401
+from test_courier import (_fresh_ref_cache, _pin_env, _stop, app, client, login, make_terminal, now, st,  # noqa: E402,F401
                           term)
 
 NOW = datetime(2026, 10, 2, 9, 0, tzinfo=clock.YEREVAN)
@@ -456,3 +456,33 @@ def test_m3_office_gps_km_ignores_jitter_at_stops():
     plain = gps_summary(pts)
     with_stop = gps_summary(pts, [{'stop_id': 'S:1', 'lat': shop[0], 'lon': shop[1]}])
     assert plain['km'] > path * 1.3 and with_stop['km'] == pytest.approx(path, abs=0.15)
+
+
+def test_m3_office_today_km_ignores_jitter_at_day_stop(st, client, now):
+    """Сценарий проверяющего (test_verify_office): офис «Առաքում այսօր» считает км без дрожания у точки дня."""
+    import random
+    from route_optimizer.geo import haversine_km
+    now['t'] = datetime(2026, 10, 2, 20, 0, tzinfo=clock.YEREVAN)
+    did = st.store.save_driver(None, 'D', True, '7777', 'admin')
+    term_, _ = st.store.create_terminal('U', 'CAR1', 'admin')
+    who = ev.Who(term_.id, 'CAR1', did, 'D')
+    shop = (40.20, 44.52)
+    sid = 'S:%08d-2222-4222-8222-222222222222' % 9
+    st.store.save_day(DAY, 'CAR1', [{**_stop(sid, [('a:1', 10, 100.0)]), 'lat': shop[0], 'lon': shop[1], 'weight_kg': 300.0}],
+                      'v1', DAY + 'T08:00:00+04:00')
+    rnd = random.Random(1)
+    t = datetime(2026, 10, 2, 9, 0, tzinfo=clock.YEREVAN)
+    pts = []
+    for i in range(41):                                                 # 4,4 км к магазину, 5 м/с
+        pts.append({'at': clock.iso(t), 'lat': 40.16 + i * 0.001, 'lon': 44.52, 'acc': 5.0, 'spd': 5.0, 'brg': 0.0})
+        t += timedelta(seconds=22)
+    for _ in range(30):                                                 # 30 мин у магазина, ±60 м, скорости нет
+        t += timedelta(seconds=60)
+        pts.append({'at': clock.iso(t), 'lat': shop[0] + rnd.uniform(-6e-4, 6e-4), 'lon': shop[1] + rnd.uniform(-6e-4, 6e-4),
+                    'acc': 8.0, 'spd': None, 'brg': None})
+    evs = [{'id': _id(), 'type': 'track', 'stop_id': None, 'date': DAY, 'at': pts[min(k * 100 + 99, len(pts) - 1)]['at'],
+            'payload': {'points': pts[k * 100:(k + 1) * 100]}} for k in range((len(pts) + 99) // 100)]
+    assert ev.ingest(st.store, who, evs).json()['rejected'] == []
+    car = next(c for c in client.get(f'/api/courier/admin/today?date={DAY}').get_json()['cars'] if c['car_code'] == 'CAR1')
+    path = haversine_km((40.16, 44.52), shop)
+    assert abs(car['gps']['km'] - path) < 0.15 and gps_summary(st.store.track('CAR1', DAY))['km'] > path * 1.3

@@ -22,7 +22,7 @@ import os
 import secrets
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from functools import wraps
 from typing import Any, Callable, Iterable, Mapping
@@ -31,6 +31,7 @@ from flask import Blueprint, Response, jsonify, render_template, request, send_f
 from werkzeug.exceptions import HTTPException
 
 from route_optimizer.erp import ErpError
+from route_optimizer.learning import REFUEL_WINDOW_DAYS
 
 from . import clock, events as ev, merge as mg
 from .facts import gps_summary, refuel_flags
@@ -422,7 +423,9 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
                                         'gps': None, 'refuels': []})
 
     refuels = st.store.refuels()
-    rflags = refuel_flags(refuels)   # odometer_suspicious — пересчитан по всем заправкам машины, не сохранённый
+    # odometer_suspicious — пересчитан по заправкам машины в окне вокруг дня (не сохранённый при приёме)
+    rflags = refuel_flags(refuels, datetime.combine(day, datetime.max.time(), clock.YEREVAN)
+                          + timedelta(days=REFUEL_WINDOW_DAYS // 2))
     for e in events:
         if e['type'] == 'refuel':
             e['flags'] = rflags.get(e['id'], e['flags'])

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from typing import Any, Mapping, Sequence
 
 from route_optimizer import actuals as ac
@@ -39,12 +40,13 @@ def gps_summary(points: Sequence[Sequence[Any]], stops: Sequence[Mapping[str, An
             'last': clock.iso(fixes[-1].at)}
 
 
-def refuel_flags(refuels: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
+def refuel_flags(refuels: Sequence[Mapping[str, Any]], until: datetime | None = None) -> dict[str, list[str]]:
     """id заправки → флаги: сохранённые при приёме без odometer_suspicious + odometer_suspicious, если одометр не входит
     в самую длинную согласованную цепочку действующих заправок машины (route_optimizer.learning.odometer_plausible;
-    момент исправления — момент исходной заправки). У вытесненных заправок флага нет."""
+    момент исправления — момент исходной заправки). Цепочка — по окну заправок до until (effective_refuels: последние
+    REFUEL_WINDOW_DAYS дней, не больше REFUEL_WINDOW_MAX); вне окна флаг не пересчитывается. У вытесненных флага нет."""
     out = {r['id']: [f for f in r.get('flags') or () if f != SUSPICIOUS] for r in refuels}
-    for items in effective_refuels(refuels).values():
+    for items in effective_refuels(refuels, until).values():
         for (_, eid, _), ok in zip(items, odometer_plausible([(at, p.get('odometer_km')) for at, _, p in items])):
             if not ok:
                 out[eid] = sorted({*out[eid], SUSPICIOUS})

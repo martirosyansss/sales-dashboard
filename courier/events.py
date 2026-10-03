@@ -56,7 +56,7 @@ from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
 from route_optimizer.geo import is_valid_point
-from route_optimizer.learning import odometer_plausible
+from route_optimizer.learning import REFUEL_WINDOW_DAYS, REFUEL_WINDOW_MAX, odometer_plausible
 
 from . import clock
 from .merge import statement_status
@@ -512,7 +512,8 @@ def track_points(p: Mapping[str, Any], now: datetime) -> tuple[list[TrackPoint],
 def _refuel(tx: EventTx, p: Mapping[str, Any], at: datetime, car_code: str, supersedes: str | None,
             event_id: str) -> list[str]:
     """§7 п. 2: заправка. Нарушение формы — Reject; одометр вне самой длинной согласованной цепочки действующих заправок
-    машины вместе с этой (odometer_plausible; момент исправления — момент исходной заправки) — флаг."""
+    машины вместе с этой (odometer_plausible; момент исправления — момент исходной заправки) — флаг. Цепочка — по
+    заправкам машины в окне ± REFUEL_WINDOW_DAYS от этой и не больше REFUEL_WINDOW_MAX (время приёма ограничено)."""
     liters = _num(p.get('liters'))
     if liters is None or not 0 < liters <= REFUEL_MAX_LITERS:
         raise Reject(f'liters՝ 0-ից մինչև {REFUEL_MAX_LITERS:g}')
@@ -529,7 +530,7 @@ def _refuel(tx: EventTx, p: Mapping[str, Any], at: datetime, car_code: str, supe
         raise Reject('lat/lon՝ երկուսն էլ կամ ոչ մեկը')
     if lat is not None:
         _arrived({'lat': lat, 'lon': lon})
-    own = tx.car_refuels(car_code)
+    own = tx.car_refuels(car_code, clock.utc_key(at - timedelta(days=REFUEL_WINDOW_DAYS + 30)))
     by_id = {r['id']: r for r in own}
 
     def moment(at_utc: str, target: Any) -> datetime:
@@ -544,6 +545,11 @@ def _refuel(tx: EventTx, p: Mapping[str, Any], at: datetime, car_code: str, supe
     items = sorted([(moment(r['at_utc'], r['payload'].get('supersedes')), r['id'], r['payload'].get('odometer_km'))
                     for r in own if r['id'] not in gone]
                    + [(moment(clock.utc_key(at), supersedes), event_id, odo)], key=lambda x: (x[0], x[1]))
+    me = next(t for t, eid, _ in items if eid == event_id)
+    items = [x for x in items if abs(x[0] - me) <= timedelta(days=REFUEL_WINDOW_DAYS)]
+    k = next(i for i, x in enumerate(items) if x[1] == event_id)
+    start = max(0, min(k - REFUEL_WINDOW_MAX // 2, len(items) - REFUEL_WINDOW_MAX))
+    items = items[start:start + REFUEL_WINDOW_MAX]
     plausible = odometer_plausible([(t, o) for t, _, o in items])
     return [] if next(ok for (_, eid, _), ok in zip(items, plausible) if eid == event_id) else ['odometer_suspicious']
 

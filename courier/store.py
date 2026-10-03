@@ -1579,12 +1579,13 @@ class EventTx:
                           'ON CONFLICT(key) DO UPDATE SET value = excluded.value', (today,))
         return n
 
-    def car_refuels(self, car_code: str) -> list[dict[str, Any]]:
-        """Принятые заправки машины (и этой пачки): [{id, at_utc, payload, flags}] по моменту, затем id."""
+    def car_refuels(self, car_code: str, since: str = '') -> list[dict[str, Any]]:
+        """Принятые заправки машины (и этой пачки) с моментом не раньше since (ключ clock.utc_key; индекс машины и
+        типа): [{id, at_utc, payload, flags}] по моменту, затем id."""
         out = []
         for eid, at_utc, raw, flags in self.conn.execute(
-                "SELECT id, at_utc, payload, flags FROM events WHERE car_code = ? AND type = 'refuel' "
-                'ORDER BY at_utc, id', (car_code,)).fetchall():
+                "SELECT id, at_utc, payload, flags FROM events WHERE car_code = ? AND type = 'refuel' AND at_utc >= ? "
+                'ORDER BY at_utc, id', (car_code, since)).fetchall():
             try:
                 payload, fl = json.loads(raw), json.loads(flags)
             except (TypeError, ValueError):
