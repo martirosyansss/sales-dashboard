@@ -983,8 +983,14 @@ def main(argv: Sequence[str]) -> int:
         print(f'Граф: узлов {graph.n_nodes}, рёбер {len(graph.src)} → {_cache_path(path, "graph")}')
     elif command == 'warm':
         if '--if-stale' in argv:
-            zone = _load_bundle_readonly(_db_path()).settings['center_zone']   # копия базы: сама не меняется
-            if not _dist_cache_stale(path, [(lat, lon) for lat, lon in zone]):
+            zone: list[Point] = []
+            if map_signature(path) is not None and roads_supported():   # греть нечего — базу и не читаем
+                try:   # граница малого центра — из копии базы: сама не меняется
+                    zone = [(lat, lon) for lat, lon in _load_bundle_readonly(_db_path()).settings['center_zone']]
+                except Exception:   # копия не читается (битая база) — проверка без объезда, как до него
+                    logger.warning('[Routes] Граница малого центра не прочитана из базы маршрутов — проверяется только '
+                                   'кэш расстояний', exc_info=True)
+            if not _dist_cache_stale(path, zone):
                 print('Кэш расстояний годится — пересчёт не нужен' if map_signature(path) else f'Карты нет: {path}')
                 return 0
         _warm(path)

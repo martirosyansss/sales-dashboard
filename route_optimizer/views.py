@@ -1855,12 +1855,14 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     no_valhalla = 0
     profiles: dict[str, list[tuple[datetime, float, float]]] = {}
     osm = plain.roads.fallback if isinstance(plain.roads, ValhallaRoads) else plain.roads
+    # право въезда — у каждой машины с треком (выбор владельца или «JAC» в названии), а не только у готовой к расчёту
+    names = {code: c.name for code, c in snap.cars.items()}
     for car, day, stops, actual, draft, *_ in days:
         prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
         unload += learning.unload_obs(day, actual, stops)
         loads += learning.load_obs(day, actual, stops, learning.plan_trips(prediction, day))
         driven = actual
-        if isinstance(osm, CenterBypassRoads) and car in trucks and trucks[car].center_ok:
+        if isinstance(osm, CenterBypassRoads) and bundle.truck_center_ok(car, names.get(car)):
             # машине с правом въезда центр открыт: где расчёт объезжает центр (detour > 1), её путь неизвестен —
             # напрямую или в объезд; км и минуты модели (объезд) с её фактом не сравниваются, иначе поправка времени
             # в пути всех машин занизится

@@ -32,6 +32,7 @@ from test_route_optimizer import (DP_DAY, DP_NORMS, TN, _dp_stops, _info, _no_ro
 from test_route_valhalla import _view, fake  # noqa: E402,F401
 from test_learning_loop import S101, S102, _learning_client  # noqa: E402
 from test_learning_loop import TODAY as LEARNING_DAY  # noqa: E402
+from test_truck_time_select import FakeProvider  # noqa: E402
 
 KM_LAT = geo.haversine_km((40.0, 44.3), (41.0, 44.3))
 KM_LON = geo.haversine_km((40.3, 44.3), (40.3, 45.3))
@@ -441,25 +442,53 @@ def _area_graph(lat0, lon0, rows, cols, step=0.25):
     return rd.RoadGraph.from_ways(nodes, ways, source='area')
 
 
-@pytest.mark.parametrize('center_ok', [True, False])
-def test_learning_skips_center_truck_legs_on_bypass(client, monkeypatch, tmp_path, center_ok):
+@pytest.mark.parametrize('center_ok, ready', [(True, True), (False, True), (True, False)])
+def test_learning_skips_center_truck_legs_on_bypass(client, fake, monkeypatch, tmp_path, center_ok, ready):
     """Обучение времени в пути: у машины с правом въезда (CAR1) участок 101 → 102, который расчёт объезжает (полоса
     центра между ними), с фактом не сравнивается — она могла ехать напрямую; у машины без права въезда — сравнивается
-    (она объезжает, как и расчёт). Остальные участки — у обеих."""
+    (она объезжает, как и расчёт). Остальные участки — у обеих. Так и в участках выбора модели времени (Valhalla готов
+    — обе модели сравниваются), и у машины с треком без тоннажа и расхода в настройках (не готова к расчёту)."""
     state = _learning_client(client, monkeypatch, days=10)
     band = [[40.2005, 44.540], [40.2005, 44.575], [40.2035, 44.575], [40.2035, 44.540]]
-    r = client.post('/api/routes/settings', json={'settings': {'center_zone': band},
-                                                  'trucks': [{'car_code': 'CAR1', 'center_ok': center_ok}]})
+    car1 = {'car_code': 'CAR1', 'center_ok': center_ok}
+    if not ready:
+        car1.update(capacity_kg=None, fuel_l_per_100km=None)
+    r = client.post('/api/routes/settings', json={'settings': {'center_zone': band}, 'trucks': [car1]})
     assert r.status_code == 200, r.get_json()
+    snap, _ = state.snapshots.cached()
+    assert ('CAR1' in views._ready_trucks(snap, views._bundle(state), active_only=False)) is ready
     state.roads = rd.RoadProvider(_map(tmp_path, _area_graph(40.185, 44.535, 17, 27)))
-    seen = []
-    real = views.learning.leg_obs
-    monkeypatch.setattr(views.learning, 'leg_obs', lambda day, actual, norms: seen.append(actual.legs) or
-                        real(day, actual, norms))
+    state.valhalla = FakeProvider(tmp_path / 'valhalla')
+    seen = {'leg_obs': [], 'truck_time_obs': []}
+    for name in seen:
+        real = getattr(views.learning, name)
+        monkeypatch.setattr(views.learning, name, lambda day, actual, norms, name=name, real=real:
+                            seen[name].append(actual.legs) or real(day, actual, norms))
     views.run_learning(state, LEARNING_DAY)
-    legs = {(rd.point_key(g.pa), rd.point_key(g.pb)) for day in seen for g in day}
     crossing = (rd.point_key(S101), rd.point_key(S102))
-    assert len(legs) >= 4 and (crossing in legs) is not center_ok
+    for name, days in seen.items():
+        legs = {(rd.point_key(g.pa), rd.point_key(g.pb)) for day in days for g in day}
+        assert len(legs) >= 4 and (crossing in legs) is not center_ok, name
+
+
+def test_roads_warm_if_stale_survives_unreadable_routes_db(tmp_path, monkeypatch, caplog):
+    """--if-stale (задача обновления) при битой базе маршрутов не падает: карты нет — база и не читается; карта есть —
+    в журнал, и проверяется только кэш расстояний (без объезда центра), как до него."""
+    db = tmp_path / 'broken.db'
+    db.write_bytes(b'not a routes database')
+    monkeypatch.setattr(rd, 'REPO_ROOT', str(tmp_path))                 # без .env
+    monkeypatch.setenv('ROUTES_DB_PATH', str(db))
+    monkeypatch.setenv('ROUTES_OSM_PATH', str(tmp_path / 'none.osm.pbf'))
+    warmed = []
+    monkeypatch.setattr(rd, '_warm', warmed.append)
+    assert rd.main(['warm', '--if-stale']) == 0 and warmed == []         # карты нет
+    assert 'не прочитана' not in caplog.text
+    path = _map(tmp_path)
+    monkeypatch.setenv('ROUTES_OSM_PATH', path)
+    assert rd.main(['warm', '--if-stale']) == 0 and warmed == [path]     # кэша расстояний нет — греть
+    rd.RoadProvider(path).get().ensure([WEST, EAST])
+    assert rd.main(['warm', '--if-stale']) == 0 and warmed == [path]     # кэш расстояний годится, объезд не проверить
+    assert 'Граница малого центра не прочитана из базы маршрутов' in caplog.text
 
 
 def test_roads_warm_precomputes_bypass_for_plan_points(tmp_path, monkeypatch):
