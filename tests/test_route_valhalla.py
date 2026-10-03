@@ -801,8 +801,10 @@ def test_build_command_reports_expected_failures_in_one_line(tmp_path, monkeypat
 
 
 def test_roads_warm_if_stale_only_when_cache_does_not_fit(tmp_path, monkeypatch):
-    """roads warm --if-stale (задача обновления): кэш расстояний подходит к графу и формату — ничего (ERP не нужен);
-    нет графа, кэша или сменился формат (как DIST_FORMAT 2 → 3) — прогрев; карты нет — греть нечего."""
+    """roads warm --if-stale (задача обновления): кэш расстояний и кэш объезда малого центра подходят к графу, формату
+    и границе центра — ничего (ERP не нужен); нет графа, кэша, объезда или сменились формат (как DIST_FORMAT 2 → 3),
+    граница — прогрев; карты нет — греть нечего."""
+    from route_optimizer import store as st
     pbf = tmp_path / 'map.osm.pbf'
     monkeypatch.setenv('ROUTES_OSM_PATH', str(pbf))
     monkeypatch.setattr(rd, 'REPO_ROOT', str(tmp_path))     # без .env
@@ -817,12 +819,18 @@ def test_roads_warm_if_stale_only_when_cache_does_not_fit(tmp_path, monkeypatch)
     assert rd._dist_cache_stale(str(pbf))                   # граф есть, кэша расстояний нет
     roads = rd.RoadDistances.for_map(str(pbf), version)
     roads.ensure(P[:3])
-    assert not roads.failed and not rd._dist_cache_stale(str(pbf))
-    assert rd.main(['warm', '--if-stale']) == 0 and warmed == []   # годится
+    zone = [tuple(p) for p in st.DEFAULT_SETTINGS['center_zone']]   # базы маршрутов нет — граница по умолчанию
+    assert not roads.failed and not rd._dist_cache_stale(str(pbf))  # без границы — только кэш расстояний
+    assert rd._dist_cache_stale(str(pbf), zone)                     # объезда центра ещё нет
+    assert rd.main(['warm', '--if-stale']) == 0 and warmed == [str(pbf)]
+    rd.RoadProvider(str(pbf)).bypass(roads, zone).ensure(P[:3])
+    assert not rd._dist_cache_stale(str(pbf), zone)
+    assert rd.main(['warm', '--if-stale']) == 0 and warmed == [str(pbf)]   # оба годятся
+    assert rd._dist_cache_stale(str(pbf), [(lat + 0.001, lon) for lat, lon in zone])   # граница сдвинулась
     monkeypatch.setattr(rd, 'DIST_FORMAT', rd.DIST_FORMAT + 1)     # формат сменился
     assert rd._dist_cache_stale(str(pbf))
-    assert rd.main(['warm', '--if-stale']) == 0 and warmed == [str(pbf)]
-    assert rd.main(['warm']) == 0 and len(warmed) == 2      # без флага — всегда
+    assert rd.main(['warm', '--if-stale']) == 0 and len(warmed) == 2
+    assert rd.main(['warm']) == 0 and len(warmed) == 3      # без флага — всегда
 
 
 def test_roads_command_reads_env_file_first(tmp_path, monkeypatch):

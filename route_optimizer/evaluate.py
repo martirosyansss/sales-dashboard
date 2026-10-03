@@ -26,7 +26,7 @@ from .plan import WEEKDAY_LABELS, CurrentPlan, PlanDay, delivery_weekday
 from .tsp import Distance, route_order
 
 if TYPE_CHECKING:
-    from .roads import RoadDistances
+    from .roads import CenterBypassRoads, RoadDistances
     from .snapshot import Snapshot
     from .store import Bundle
     from .valhalla_engine import ValhallaRoads
@@ -448,7 +448,7 @@ class Norms:
     min_day_revenue: float
     min_trip_revenue: float
     # None — по прямой; ValhallaRoads — направленные км и минуты Valhalla (запасной путь — граф OSM)
-    roads: RoadDistances | ValhallaRoads | None = field(default=None, compare=False, repr=False)
+    roads: RoadDistances | CenterBypassRoads | ValhallaRoads | None = field(default=None, compare=False, repr=False)
     traffic: Any = field(default=None, compare=False, repr=False)
     traffic_weekday: int = 0
     traffic_start_min: float = 540.0
@@ -457,7 +457,7 @@ class Norms:
 
     @classmethod
     def from_settings(cls, s: Mapping[str, Any], calib: Calibration | None = None,
-                      roads: RoadDistances | ValhallaRoads | None = None) -> Norms:
+                      roads: RoadDistances | CenterBypassRoads | ValhallaRoads | None = None) -> Norms:
         """Нормы расчёта; извилистость и скорости — действующие (road_norms), а не «как в поле»."""
         h1, m1 = map(int, s['work_start'].split(':'))
         h2, m2 = map(int, s['work_end'].split(':'))

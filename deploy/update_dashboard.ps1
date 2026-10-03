@@ -62,11 +62,12 @@ try {
         Write-Log ('Valhalla tiles skipped: {0}' -f $_)
     }
 
-    # Optional: OSM road distance cache. When an update changes its format (or the map), the first request after the
-    # restart would rebuild it for about 2 minutes; do it here, before the restart, and once more after it if this run
-    # could not finish. 'warm --if-stale' exits at once when the cache is current (no ERP access then); otherwise it
-    # reads an ERP snapshot (read-only) and the route settings from a temporary copy of the routes DB: the DB itself is
-    # never changed here (the old server keeps using it until the restart). At most 240 s.
+    # Optional: OSM road distance cache and its small-center bypass cache (dispatch). When an update changes their
+    # format, the map or the center boundary, the first request after the restart would rebuild them for about 2 minutes
+    # each; do it here, before the restart, and once more after it if this run could not finish. 'warm --if-stale' exits
+    # at once when both caches are current (no ERP access then; the center boundary comes from a temporary copy of the
+    # routes DB); otherwise it reads an ERP snapshot (read-only) and the route settings from a temporary copy of the
+    # routes DB: the DB itself is never changed here (the old server keeps using it until the restart). At most 240 s.
     $warmRoads = {
         param([string]$Log, [int]$KeepS)
         try {

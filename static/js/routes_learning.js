@@ -2,7 +2,7 @@
    API: GET /api/routes/learning?from=&to= (план и факт по дням, что выучено), GET /api/routes/learning/status (лёгкий
    опрос во время пересчёта), GET /api/routes/learning/day?date=&car= (карта дня), POST /api/routes/learning/run
    (пересчитать в фоне), POST /api/routes/learning/auto {kind, auto}, POST /api/routes/road-lines (плановые рейсы по
-   дорогам). «Время в пути грузовиков: модель» — строка вида truck_time в status (source: какая модель действует и
+   дорогам, avoid_center — в объезд малого центра, как их считает «Развоз»). «Время в пути грузовиков: модель» — строка вида truck_time в status (source: какая модель действует и
    почему; last.params.candidates — сравнение моделей). Всё, что пришло с сервера, выводится только через esc() или
    textContent. Карта — Leaflet, как в «Развозе». */
 (function () {
@@ -295,11 +295,12 @@
         if (bounds.length) map.obj.fitBounds(bounds, { padding: [24, 24], maxZoom: 15, animate: false });
         roadLines(planned, gen);
     }
-    // Плановые рейсы сначала по прямой, затем — по дорогам (тот же сервер, что у «Развоза»); нет карты дорог — прямые
+    // Плановые рейсы сначала по прямой, затем — по дорогам, как у «Развоза» (в объезд малого центра, как считаются км
+    // плана); нет карты дорог — прямые
     async function roadLines(planned, gen) {
         if (!planned.length) return;
         let data;
-        try { data = await api('/api/routes/road-lines', { lines: planned.map(([, line]) => line) }); } catch (e) { return; }
+        try { data = await api('/api/routes/road-lines', { lines: planned.map(([, line]) => line), avoid_center: true }); } catch (e) { return; }
         if (gen !== map.gen || !Array.isArray(data.lines)) return;
         planned.forEach(([pl], i) => { const road = data.lines[i]; if (Array.isArray(road) && road.length > 1) pl.setLatLngs(road); });
     }

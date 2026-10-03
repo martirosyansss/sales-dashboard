@@ -712,8 +712,7 @@ class CenterBypassRoads:
         self.base = base
         self.bypass = bypass
         self.zone = tuple((float(lat), float(lon)) for lat, lon in zone)
-        self.zone_key = zone_key(self.zone)
-        self._inside: dict[Point, bool] = {}   # точка → в центре (geo.in_polygon), заполняется по ходу расчёта
+        self._inside: dict[Point, bool] = {}   # точка расчёта (ensure) → в центре: km спрашивает их тысячи раз
 
     @property
     def version(self) -> str:
@@ -736,11 +735,11 @@ class CenterBypassRoads:
         return self.base.size
 
     def _inside_zone(self, p: Point) -> bool:
+        """Точка в центре (geo.in_polygon — как у точек развоза, dispatch._central). Запомнены только точки ensure:
+        точки запросов линий карты память не растят."""
         key = (p[0], p[1])
         hit = self._inside.get(key)
-        if hit is None:
-            hit = self._inside[key] = in_polygon(key, self.zone)
-        return hit
+        return in_polygon(key, self.zone) if hit is None else hit
 
     def around(self, a: Point, b: Point) -> bool:
         """Участок A → B — в объезд центра: обе точки вне него."""
@@ -750,7 +749,13 @@ class CenterBypassRoads:
         """Обычный граф — для всех точек, объезд — для точек вне центра (первый раз — ~10 с на сотню точек, дальше —
         кэш на диске)."""
         points = [p for p in points if p is not None]
+        for p in points:
+            key = (p[0], p[1])
+            if key not in self._inside:
+                self._inside[key] = in_polygon(key, self.zone)
         self.base.ensure(points)
+        if self.base.failed:   # карта не загрузилась — граф без центра из неё же: второй ошибки в журнале не нужно
+            return
         before = self.bypass.size
         started = time.perf_counter()
         self.bypass.ensure([p for p in points if not self._inside_zone(p)])
@@ -789,15 +794,19 @@ class CenterBypassRoads:
     def lines(self, lines: Sequence[Sequence[Point]]) -> list[list[Point]] | None:
         """Линии рейсов для карты по тому же правилу, что км: участок между точками вне центра — путь в объезд (нет
         его — по обычному графу), остальные — по обычному графу. Дороги сломаны — None; объезд сломан — как
-        RoadDistances.lines. Графы — по одному за раз (каждый ~100 МБ): сначала объезд, затем обычный."""
+        RoadDistances.lines (все участки — по обычному графу). Графы — по одному за раз (каждый ~100 МБ): сначала
+        объезд, затем обычный."""
         if self.base.failed:
             return None
-        if self.bypass.failed:
-            return self.base.lines(lines)
+        legs = [(a, b) for line in lines for a, b in zip(line, line[1:])]
+        around = [leg for leg in legs if self.around(*leg)]
+        paths: dict[tuple[Point, Point], tuple[Any, Any]] = {}
+        if around and not self.bypass.failed:
+            try:
+                paths = self.bypass._load_network().paths(around)
+            except Exception:
+                logger.exception('[Routes] Объезд малого центра для линий не построен — линии по обычному графу')
         try:
-            legs = [(a, b) for line in lines for a, b in zip(line, line[1:])]
-            around = [leg for leg in legs if self.around(*leg)]
-            paths = self.bypass._load_network().paths(around) if around else {}
             direct = self.base._load_network()
             paths.update(direct.paths([(a, b) for a, b in legs if (point_key(a), point_key(b)) not in paths]))
             return direct.draw(lines, paths)
@@ -833,10 +842,10 @@ class RoadProvider:
         нет и в dispatch._central) — сами base, расчёт как без объезда."""
         if len(zone) < 3:
             return base
-        key = zone_key(zone)
+        zone = tuple((float(lat), float(lon)) for lat, lon in zone)   # сравнение — по вершинам, не по отпечатку
         with self._lock:
             cur = self._bypass
-            if cur is None or cur.base is not base or cur.zone_key != key:
+            if cur is None or cur.base is not base or cur.zone != zone:
                 bypass = RoadDistances.around_zone(lambda: load_graph(self.path, base.version), zone, base.version,
                                                    _cache_path(self.path, 'dist-center'), self.path)
                 cur = self._bypass = CenterBypassRoads(base, bypass, zone)
@@ -852,7 +861,7 @@ def open_roads(path: str | None = None, cache_name: str = 'dist') -> RoadDistanc
     return RoadDistances.for_map(path, version, cache_name)
 
 
-def roads_version(roads: RoadDistances | None) -> str:
+def roads_version(roads: RoadDistances | CenterBypassRoads | None) -> str:
     """Для ключа кэша оценки: версия карты ('…:failed' — карта не загрузилась) или 'off'."""
     if roads is None:
         return 'off'
@@ -873,21 +882,37 @@ def _download(path: str, url: str) -> None:
     print(f'Готово: {os.path.getsize(path) / 1e6:.1f} МБ за {time.perf_counter() - started:.0f} с')
 
 
-def _dist_cache_stale(path: str) -> bool:
-    """Кэш расстояний карты path не подходит к нынешнему графу и формату (сменился DIST_FORMAT, как 2 → 3, или карта):
-    первый расчёт после обновления пересчитал бы его целиком (~2 мин под блокировкой дорог). Проверка — без ERP и без
-    загрузки графа; карты или numpy/scipy нет — греть нечего (False)."""
+def _dist_cache_stale(path: str, zone: Sequence[Point] = ()) -> bool:
+    """Кэш расстояний карты path не подходит к нынешнему графу и формату (сменился DIST_FORMAT, как 2 → 3, или карта),
+    а с границей малого центра zone — и кэш объезда (<карта>.dist-center.npz: нет его, сменились карта или граница):
+    первый расчёт после обновления пересчитал бы его целиком (~2 мин под блокировкой дорог). Проверка — без ERP; граф
+    с диска (доли секунды) — только для отпечатка графа без центра; карты или numpy/scipy нет — греть нечего (False)."""
     version = map_signature(path)
     if version is None or not roads_supported():
         return False
-    identity = RoadGraph.stored_identity(_cache_path(path, 'graph'), version)
+    graph_path = _cache_path(path, 'graph')
+    identity = RoadGraph.stored_identity(graph_path, version)
     if identity is None:
         return True   # графа в кэше нет или он от другой карты — warm соберёт и его
+    if _cache_key_stale(_cache_path(path, 'dist'), identity):
+        return True
+    if len(zone) < 3:
+        return False
+    graph = RoadGraph.load(graph_path, version)
+    return graph is None or _cache_key_stale(_cache_path(path, 'dist-center'), without_zone(graph, zone).identity)
+
+
+def _cache_key_stale(cache: str, identity: str) -> bool:
+    """Файл кэша расстояний cache посчитан не на графе с отпечатком identity (нет файла, битый, другой граф)."""
     try:
-        with open(_cache_path(path, 'dist'), 'rb') as f, np.load(f, allow_pickle=False) as z:
+        with open(cache, 'rb') as f, np.load(f, allow_pickle=False) as z:
             return 'key' not in z.files or str(z['key']) != _dist_key(identity)
     except Exception:   # файла нет или он битый
         return True
+
+
+def _db_path() -> str:
+    return os.environ.get('ROUTES_DB_PATH') or os.path.join(REPO_ROOT, 'route_optimizer.db')
 
 
 def _load_bundle_readonly(db_path: str) -> Bundle:
@@ -905,7 +930,9 @@ def _load_bundle_readonly(db_path: str) -> Bundle:
 
 
 def _warm(path: str) -> None:
-    """Матрица для всех точек текущего плана: снимок ERP (только чтение) + настройки маршрутов (из копии базы)."""
+    """Матрица для всех точек текущего плана: снимок ERP (только чтение) + настройки маршрутов (из копии базы); затем
+    объезд малого центра («Развоз») для тех же точек — заказы развоза почти все у клиентов плана, и первому расчёту
+    дня после обновления не придётся считать его (~2 мин на точки плана)."""
     from .valhalla_engine import ENGINE_ENV, ENGINE_OSM
 
     sys.path.insert(0, REPO_ROOT)
@@ -915,18 +942,24 @@ def _warm(path: str) -> None:
     from . import evaluate
     from .snapshot import load_snapshot
 
-    roads = open_roads(path)
+    provider = RoadProvider(path)
+    roads = provider.get()
     if roads is None:
         raise SystemExit('Карты нет — сначала: python -m route_optimizer.roads download')
-    db_path = os.environ.get('ROUTES_DB_PATH') or os.path.join(REPO_ROOT, 'route_optimizer.db')
     snap = load_snapshot(app_v2.db.connection_string)
-    bundle = _load_bundle_readonly(db_path)
-    points = evaluate.plan_points(snap, bundle, {})
+    bundle = _load_bundle_readonly(_db_path())
+    points = evaluate.plan_points(snap, bundle, {})   # и склад
     started = time.perf_counter()
     roads.ensure(points)
     n_points, n_nodes = roads.size
     print(f'Точек плана {len(set(map(point_key, points)))}, не привязано {roads.unsnapped(points)}; '
           f'в кэше точек {n_points}, узлов {n_nodes}; {time.perf_counter() - started:.0f} с')
+    around = provider.bypass(roads, [(lat, lon) for lat, lon in bundle.settings['center_zone']])
+    if isinstance(around, CenterBypassRoads) and not roads.failed:
+        started = time.perf_counter()
+        around.ensure(points)
+        n_points, n_nodes = around.bypass.size
+        print(f'Объезд малого центра: в кэше точек {n_points}, узлов {n_nodes}; {time.perf_counter() - started:.0f} с')
 
 
 def main(argv: Sequence[str]) -> int:
@@ -949,9 +982,11 @@ def main(argv: Sequence[str]) -> int:
         RoadNetwork(graph)   # проверка: связность и KD-дерево строятся
         print(f'Граф: узлов {graph.n_nodes}, рёбер {len(graph.src)} → {_cache_path(path, "graph")}')
     elif command == 'warm':
-        if '--if-stale' in argv and not _dist_cache_stale(path):
-            print('Кэш расстояний годится — пересчёт не нужен' if map_signature(path) else f'Карты нет: {path}')
-            return 0
+        if '--if-stale' in argv:
+            zone = _load_bundle_readonly(_db_path()).settings['center_zone']   # копия базы: сама не меняется
+            if not _dist_cache_stale(path, [(lat, lon) for lat, lon in zone]):
+                print('Кэш расстояний годится — пересчёт не нужен' if map_signature(path) else f'Карты нет: {path}')
+                return 0
         _warm(path)
     else:
         print('Команды: download [url] | build | warm [--if-stale]')

@@ -1854,13 +1854,20 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     pairs: list[tuple[learning.LegObs, learning.LegObs]] = []
     no_valhalla = 0
     profiles: dict[str, list[tuple[datetime, float, float]]] = {}
+    osm = plain.roads.fallback if isinstance(plain.roads, ValhallaRoads) else plain.roads
     for car, day, stops, actual, draft, *_ in days:
         prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
         unload += learning.unload_obs(day, actual, stops)
         loads += learning.load_obs(day, actual, stops, learning.plan_trips(prediction, day))
-        legs += learning.leg_obs(day, actual, norms)
+        driven = actual
+        if isinstance(osm, CenterBypassRoads) and car in trucks and trucks[car].center_ok:
+            # машине с правом въезда центр открыт: где расчёт объезжает центр (detour > 1), её путь неизвестен —
+            # напрямую или в объезд; км и минуты модели (объезд) с её фактом не сравниваются, иначе поправка времени
+            # в пути всех машин занизится
+            driven = replace(actual, legs=tuple(g for g in actual.legs if osm.detour(g.pa, g.pb) <= 1.0))
+        legs += learning.leg_obs(day, driven, norms)
         if compare:
-            got, missing = learning.truck_time_obs(day, actual, variants[TRUCK_TIME_MODEL])
+            got, missing = learning.truck_time_obs(day, driven, variants[TRUCK_TIME_MODEL])
             pairs += got
             no_valhalla += missing
         profiles.setdefault(car, []).extend(ac.load_profile(actual, stops))

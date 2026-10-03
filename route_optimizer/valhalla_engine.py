@@ -934,7 +934,7 @@ def _osm_id(roads: RoadDistances | CenterBypassRoads) -> str:
     return f'osm-dijkstra:{fingerprint or roads.version}|r{RULES_VERSION}|d{DIST_FORMAT}'
 
 
-def road_model_id(roads: RoadDistances | ValhallaRoads | None) -> str:
+def road_model_id(roads: RoadDistances | CenterBypassRoads | ValhallaRoads | None) -> str:
     """Стабильный id модели дорог расчёта (Norms.roads; грузовики — Norms.for_trucks().roads) — для выученных
     поправок времени (этап 4): поправка применяется, только если id тот же, что при обучении.
 
@@ -1022,7 +1022,7 @@ class ValhallaProvider:
             with self._lock:
                 self._kick()
 
-    def get(self, fallback: RoadDistances | None, points: Iterable[Point | None],
+    def get(self, fallback: RoadDistances | CenterBypassRoads | None, points: Iterable[Point | None],
             truck_capacity_kg: float | None = None, truck_time: bool | None = None) -> ValhallaRoads | None:
         """Срез Valhalla для расчёта по точкам points (truck_capacity_kg — тоннаж самой большой машины парка), если
         его матрицы для этих точек готовы; иначе фон получает точки, а расчёт — None (граф OSM). truck_time — минуты
@@ -1131,8 +1131,9 @@ class ValhallaProvider:
                     self._thread = None
 
 
-def open_valhalla(fallback: RoadDistances | None = None, base: str | None = None, *, time_only: bool = False,
-                  truck_time: bool = False, truck_capacity_kg: float | None = None) -> ValhallaRoads | None:
+def open_valhalla(fallback: RoadDistances | CenterBypassRoads | None = None, base: str | None = None, *,
+                  time_only: bool = False, truck_time: bool = False,
+                  truck_capacity_kg: float | None = None) -> ValhallaRoads | None:
     """ValhallaRoads по действующей сборке, считающий сам (ensure) — для команд и скриптов; режима
     ROUTES_ROAD_ENGINE не требует. Тайлов нет — None."""
     if not valhalla_supported():
