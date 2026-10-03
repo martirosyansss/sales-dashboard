@@ -191,11 +191,14 @@ def test_m6_map_endpoint_edges_and_payload(client, facts):
 
 
 @pytest.fixture
-def dashboard(monkeypatch):
+def dashboard(tmp_path, monkeypatch):
+    """Настоящий app_v2 (гейт входа); база «Маршрутов» — временная (как база «Առաքիչ» в test_courier.dashboard)."""
     import app_v2
+    from route_optimizer.store import Store as RoutesStore
     users = {'u': {'role': 'user', 'areas': ['01'], 'password_hash': 'x'},
              'boss': {'role': 'admin', 'areas': [], 'password_hash': 'x'}}
     monkeypatch.setattr(app_v2, 'load_users', lambda: users)
+    monkeypatch.setattr(app_v2.app.extensions['route_optimizer'], 'store', RoutesStore(str(tmp_path / 'routes.db')))
     return app_v2.app.test_client()
 
 
