@@ -1841,14 +1841,14 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
                                     'времени грузовиков не выбирается')
     else:
         prev = eff.travel if eff.travel is not None and eff.travel.get('model_id') == model_id else None
-        outcomes.append(learning.fit_travel(legs, today, model_id or 'straight', learning.model_ref(plain), plain,
-                                            prev))
+        regular = learning.fit_travel(legs, today, model_id or 'straight', learning.model_ref(plain), plain, prev)
+        outcomes.append(regular)
         rows, auto = journal if journal is not None else ([], {})
         incumbent = learning.truck_time_learned(rows) or TRUCK_TIME_MODEL
         prevs = {m: learning.in_effect(rows, auto, learning.road_model_id(n), learning.travel_scope(n)).travel
                  for m, n in variants.items()}
         decision, fitted = learning.fit_truck_time(pairs, today, incumbent, variants, prevs, no_valhalla,
-                                                   learning.auto_on(auto, 'travel'))
+                                                   learning.auto_on(auto, 'travel'), {base_run: regular})
         chosen = decision.params['source'] if decision.accepted else incumbent
         if chosen != base_run and chosen in fitted:
             # выбранная модель — не та, которой этот прогон учил «Развоз» (только что переключились, env, галочка):

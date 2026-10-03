@@ -258,6 +258,30 @@ def test_correction_stored_with_a_switch_is_checked_against_the_one_in_effect(ba
     assert not with_prev[MODEL].accepted and with_prev[MODEL].mae_before == pytest.approx(0.0, abs=1e-6)
 
 
+def test_incumbent_is_scored_with_the_correction_the_run_keeps(bases):
+    """У модели, которой учился прогон, применится обычная строка travel (учится на всех участках, не только на общих) —
+    с ней она и сравнивается: на общих участках её поправка не прошла бы, а настоящая точна — переключения нет."""
+    legs = []
+    for i in range(40):
+        d = TODAY - timedelta(days=40 - i)
+        for j in range(10):
+            if d < TEST_FROM:
+                legs.append(_pair(d, 9 + j % 4, 10.0, 4.0, 10.0, 10.0))
+            else:                                             # прежней модели нужно × 1,1; Valhalla — ± 0,5 мин
+                legs.append(_pair(d, 9 + j % 4, 11.0, 4.0, 10.0, 11.0 + (0.5 if j % 2 else -0.5)))
+    shared, _ = lr.fit_truck_time(legs, TODAY, MODEL, bases, {})
+    assert shared.accepted                                    # по общим участкам прежняя модель — «как есть»
+    regular = lr.Outcome('travel', '', True, 'да', {'factors': [[1, w, h, 1.1] for w in (0, 1) for h in range(9, 13)],
+                                                    'ref': lr.model_ref(bases[MODEL])},
+                         ve.road_model_id(bases[MODEL].roads))
+    o, fitted = lr.fit_truck_time(legs, TODAY, MODEL, bases, {}, kept={MODEL: regular})
+    assert o.params['candidates'][MODEL]['learned']['mae'] == pytest.approx(0.0, abs=1e-9)
+    assert not o.accepted and o.params['source'] == MODEL and set(fitted) == {VALHALLA}
+    rejected = replace(regular, accepted=False)               # не принята — у модели остаётся действующая (её нет)
+    again, _ = lr.fit_truck_time(legs, TODAY, MODEL, bases, {}, kept={MODEL: rejected})
+    assert again.accepted and again.params['candidates'][MODEL]['learned'] == again.params['candidates'][MODEL]['raw']
+
+
 def test_valhalla_unavailable_or_no_common_legs(bases):
     o, fitted = lr.fit_truck_time([], TODAY, VALHALLA, {MODEL: bases[MODEL]}, {})
     assert not o.accepted and o.params is None and fitted == {}
@@ -663,6 +687,20 @@ def test_nightly_choice_not_in_effect_keeps_its_correction(client, fake, tmp_pat
         state.store.save_learning_auto('truck_time', True, 'qa')
     ctx = _ctx(state, date(2026, 10, 4))
     assert '+valhalla-time:' in ve.road_model_id(ctx.norms.roads) and ctx.norms.traffic.report['trucks'] == 'learned'
+
+
+def test_nightly_scores_its_model_with_the_regular_correction(client, fake, tmp_path, monkeypatch):
+    """Модель, которой учился прогон, сравнивается с обычной строкой travel этого прогона (её и применят)."""
+    state = _facts_client(client, tmp_path, monkeypatch)
+    seen = {}
+    real = lr.fit_truck_time
+
+    def spy(*args, **kwargs):
+        seen['kept'] = kwargs.get('kept', args[7] if len(args) > 7 else None)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(lr, 'fit_truck_time', spy)
+    out = views.run_learning(state, TODAY)
+    assert seen['kept'] == {MODEL: _travels(out)['']}
 
 
 def test_nightly_travel_learning_off_compares_as_is(client, fake, tmp_path, monkeypatch):

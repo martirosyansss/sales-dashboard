@@ -455,25 +455,28 @@ def _forecast(base: Any, params: Mapping[str, Any] | None, legs: Sequence[LegObs
 
 
 def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumbent: str, bases: Mapping[str, Any],
-                   prev: Mapping[str, Mapping[str, Any] | None], no_valhalla: int = 0, correct: bool = True
-                   ) -> tuple[Outcome, dict[str, Outcome]]:
+                   prev: Mapping[str, Mapping[str, Any] | None], no_valhalla: int = 0, correct: bool = True,
+                   kept: Mapping[str, Outcome] | None = None) -> tuple[Outcome, dict[str, Outcome]]:
     """Выбор модели времени грузовиков (вид truck_time) по парам truck_time_obs — (прежняя модель, Valhalla) одного и
     того же участка: сравнение — только на общих участках. Каждая модель проверяется на одних и тех же участках
     отложенной недели с той поправкой по часам, которая у неё применится: своя, выученная на днях обучения ровно по
     правилу travel (fit_travel; «действующий прогноз» — с поправкой, что сейчас действует у её дорожной модели,
-    prev[модель]), если та принята, иначе действующая prev (её нет — «как есть»). correct=False — поправки по часам не
-    применяются (автообучение travel выключено): модели сравниваются «как есть», поправки не учатся. bases — нормы
-    грузовиков каждой модели без выученного профиля (Norms.for_trucks(truck_time=…)); Valhalla недоступен — без
-    'valhalla'. Выбранная модель incumbent меняется на другую, только если ошибка той меньше хотя бы на MIN_GAIN
-    (_verdict) и общих участков не меньше TRUCK_TIME_MIN; иначе остаётся — в обе стороны (гистерезис). no_valhalla —
-    участков без минут Valhalla (отчёт). Итог — (строка truck_time: params — выбор после прогона, ошибка и смещение
-    обеих моделей «как есть» и с поправкой, участки и дни; строки travel обеих моделей (fit_travel) — чтобы поправка
-    выбранной модели была в журнале и тогда, когда «Развоз» перейдёт на неё позже: env, галочка, Valhalla готов)."""
+    prev[модель]), если та принята, иначе действующая prev (её нет — «как есть»). kept — модель → обычная строка
+    travel этого прогона (учится на всех участках, а не только на общих): у этой модели применится она (принята) или
+    prev — с ней модель и сравнивается. correct=False — поправки по часам не применяются (автообучение travel
+    выключено): модели сравниваются «как есть», поправки не учатся. bases — нормы грузовиков каждой модели без
+    выученного профиля (Norms.for_trucks(truck_time=…)); Valhalla недоступен — без 'valhalla'. Выбранная модель
+    incumbent меняется на другую, только если ошибка той меньше хотя бы на MIN_GAIN (_verdict) и общих участков не
+    меньше TRUCK_TIME_MIN; иначе остаётся — в обе стороны (гистерезис). no_valhalla — участков без минут Valhalla
+    (отчёт). Итог — (строка truck_time: params — выбор после прогона, ошибка и смещение обеих моделей «как есть» и с
+    поправкой, участки и дни; строки travel моделей не из kept (fit_travel) — чтобы поправка выбранной модели была в
+    журнале и тогда, когда «Развоз» перейдёт на неё позже: env, галочка, Valhalla готов)."""
     other = TRUCK_TIME_SOURCES[1] if incumbent == TRUCK_TIME_SOURCES[0] else TRUCK_TIME_SOURCES[0]
     stays = f'остаётся {TRUCK_TIME_TITLES[incumbent]}'
     if bases.get(valhalla_engine.TRUCK_TIME_VALHALLA) is None:
         return Outcome('truck_time', '', False, 'Valhalla недоступен (выключен, нет пакета или тайлов, либо матрица '
                        f'грузовика для точек факта ещё считается) — {stays}'), {}
+    kept = kept or {}
     obs = {src: [p[k] for p in pairs] for k, src in enumerate(TRUCK_TIME_SOURCES)}
     train, test = _split(obs[incumbent], today)              # участки — одни и те же у обеих моделей
     errors: dict[str, float] = {}                             # модель → ошибка на проверке с её поправкой
@@ -481,7 +484,9 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
     fitted: dict[str, Outcome] = {}
     for src in TRUCK_TIME_SOURCES if test else ():
         base, old, applied = bases[src], prev.get(src) if correct else None, None
-        if correct:
+        if correct and src in kept:                          # поправку этой модели прогон уже учил на всех участках
+            applied = kept[src].params if kept[src].accepted else old
+        elif correct:
             now = _forecast(base, old, obs[src])             # «действующий прогноз» модели — с её поправкой
             fitted[src] = fit_travel([replace(o, current=p) for o, (p, _) in zip(obs[src], now)], today,
                                      road_model_id(base) or 'straight', model_ref(base), base, old)
