@@ -265,9 +265,10 @@ def test_fit_unload_store_offset_with_shrinkage_only_from_5_visits():
 def test_fit_loading():
     rnd = random.Random(2)
     obs = [lr.LoadObs(d, t, 10 + 8 * t + rnd.uniform(-1, 1)) for d in _days(40) for t in (1.0, 3.5)]
-    ok = lr.fit_loading(obs, lambda x: 0.0, TODAY)                     # загрузка не задана — 0 мин
+    cur = (10.0, 6.0)                                                  # действующая норма ниже факта при 3,5 т
+    ok = lr.fit_loading(obs, TODAY, cur)
     assert ok.accepted and ok.params == {'fixed_min': pytest.approx(10, abs=1), 'per_tonne_min': pytest.approx(8, abs=0.5)}
-    assert not lr.fit_loading(obs[:10], lambda x: 0.0, TODAY).accepted
+    assert not lr.fit_loading(obs[:10], TODAY, cur).accepted
 
 
 BASE = evm.Norms.from_settings(rst.DEFAULT_SETTINGS)     # без карты дорог: 25 / 45 км/ч, извилистость 1,3

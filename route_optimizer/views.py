@@ -1761,7 +1761,7 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     outcomes = [
         learning.fit_unload(unload, lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes
                             + math.fsum(offsets.get(c, 0.0) for c in o.customers), today),
-        learning.fit_loading(loads, lambda o: tn.load(o.tonnes * 1000.0), today, loading_now),
+        learning.fit_loading(loads, today, loading_now),
     ]
     model_id = learning.road_model_id(norms)
     if mode == 'yandex':

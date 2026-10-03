@@ -7,10 +7,12 @@
   стоянка дольше UNLOAD_MAX_MIN или больше UNLOAD_CAP_REL × действующей нормы — не разгрузка;
 - loading — загрузка на складе = a + b·тонн рейса → TruckNorms.warehouse_load_fixed_min / warehouse_load_min_per_tonne.
   Стоянка на складе — не только загрузка (обед, бумаги, ожидание выезда под окно первой точки), поэтому: из неё
-  вычитается плановое ожидание (план «Развоза»: начало загрузки рейса позже прибытия машины), стоянки длиннее
-  actuals.MAX_LOAD_MIN или 2 × действующей нормы не учитываются, свободный член — нижний квантиль LOAD_QUANTILE (не
-  среднее), шаг за прогон — не больше ±LOAD_STEP от действующей нормы. Автообучение загрузки по умолчанию ВЫКЛЮЧЕНО:
-  владелец включает его, проверив выученное на странице;
+  вычитается только собственное ожидание плана — пересечение стоянки с [плановое возвращение предыдущего рейса,
+  плановое начало загрузки] (planned_wait; раннее возвращение машины планом не задумано и не вычитается), стоянки
+  длиннее actuals.MAX_LOAD_MIN или 2 × опоры не учитываются, свободный член — нижний квантиль LOAD_QUANTILE (не
+  среднее), выученное — в пределах LOAD_BOUNDS, шаг за прогон — не больше ±LOAD_STEP от опоры. Опора — действующая
+  норма, в настройках пусто — медиана стоянок обучения (с ней же сравнивается ошибка). Автообучение загрузки по
+  умолчанию ВЫКЛЮЧЕНО: владелец включает его, проверив выученное на странице;
 - travel — время в пути грузовиков: множитель «факт / модель» по (город|область, будни|выходные, час) → поверх
   norms.traffic (TrafficProfile); модель — дорожная модель расчёта (road_model_id), сменилась модель — профиль не
   действует. Проверяется ровно тот профиль, который применится (travel_profile → TrafficProfile.travel по участку,
@@ -72,12 +74,17 @@ UNLOAD_CAP_REL = 3.0                 # …или дольше 3 × действ�
 LOAD_CAP_REL = 2.0                   # стоянка на складе дольше 2 × действующей нормы загрузки — не загрузка
 LOAD_QUANTILE = 0.35                 # загрузка — нижний квантиль: в стоянке есть ожидание, которого план не знает
 LOAD_STEP = 0.30                     # норма загрузки за прогон меняется не больше чем на ±30%
+LOAD_BOUNDS = ((0.0, 45.0), (0.0, 20.0))   # правдоподобная загрузка: мин на рейс и мин на тонну — выученная норма вне
+                                           # этих пределов прижимается к ним (и такая строка журнала не действует)
 FUEL_TEST = 4                        # отложенные интервалы заправок
 FUEL_MIN_INTERVALS = 16              # 12 на выбор формы (measurements._fit со своей проверкой) + 4 отложенных
 FUEL_MIN_KM = 50.0                   # интервал заправок короче — не считается
 FUEL_L100 = (3.0, 80.0)
 FUEL_TRACK_COVER = 0.6               # участки трека покрывают не меньше 60% км одометра интервала
 REFUEL_KM_PER_DAY = 1500.0           # как courier.events: прирост одометра больше — несогласован
+REFUEL_WINDOW_DAYS = 400             # проверка одометра — по заправкам машины за последние 400 дней…
+REFUEL_WINDOW_MAX = 300              # …и не больше 300 последних (ограниченное время на приёме и в офисе)
+REFUEL_LOOKBACK = 50                 # в цепочке соседние заправки — не дальше 50 позиций (пропущено подряд ≤ 49 сомнительных)
 NIGHTLY_AT = (3, 0)                  # ночной прогон — 03:00 Еревана
 
 
@@ -227,11 +234,18 @@ CAP_MIN_KEEP = 0.5                   # отсечение «дольше k × н
                                      # действующая норма: тогда без отсечения (шаг всё равно ограничен / квантиль)
 
 
-def _capped(obs: Sequence[Any], current: Callable[[Any], float], rel: float) -> list[Any]:
-    """Наблюдения не дольше rel × прогноз действующей нормы (норма 0 — не задана, без отсечения). Отсечение убрало бы
-    больше CAP_MIN_KEEP наблюдений — действующая норма сама неверна, отсекать нечем: наблюдения как есть."""
-    kept = [o for o in obs if (p := current(o)) <= 0 or o.minutes <= rel * p]
-    return kept if len(kept) >= CAP_MIN_KEEP * len(obs) else list(obs)
+def _capped(obs: Sequence[Any], today: date, current: Callable[[Any], float], rel: float
+            ) -> tuple[list[Any], list[Any]]:
+    """(обучение, проверка) без стоянок дольше rel × прогноз действующей нормы (норма 0 — не задана, без отсечения).
+    Отсекать или нет — решается только по обучению: отсечение убрало бы больше CAP_MIN_KEEP обучающих наблюдений —
+    действующая норма сама неверна, отсекать нечем (ни в обучении, ни в проверке)."""
+    train, test = _split(obs, today)
+
+    def keep(o: Any) -> bool:
+        return (p := current(o)) <= 0 or o.minutes <= rel * p
+    if sum(map(keep, train)) < CAP_MIN_KEEP * len(train):
+        return train, test
+    return [o for o in train if keep(o)], [o for o in test if keep(o)]
 
 
 # --- обучение по видам ---
@@ -240,7 +254,7 @@ def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], 
     """Разгрузка = a·точек + b·тонн (+ поправка магазина, только при ≥ STORE_MIN_OBS одиночных визитах, со стягиванием
     к 0). current — прогноз действующей нормы для наблюдения; стоянки дольше UNLOAD_CAP_REL × current не учитываются ни
     в обучении, ни в проверке (отсечение не зависит от проверяемой нормы)."""
-    train, test = _split(_capped(obs, current, UNLOAD_CAP_REL), today)
+    train, test = _capped(obs, today, current, UNLOAD_CAP_REL)
     short = _enough(train, test, UNLOAD_MIN)
     if short:
         return Outcome('unload', '', False, short, n_obs=len(train), n_test=len(test), **_spans(train, test))
@@ -282,25 +296,37 @@ def limit_step(cur: tuple[float, float], new: tuple[float, float], tonnes: Seque
     return cur[0] + lam * (new[0] - cur[0]), cur[1] + lam * (new[1] - cur[1])
 
 
-def fit_loading(obs: Sequence[LoadObs], current: Callable[[LoadObs], float], today: date,
-                cur: tuple[float, float] | None = None) -> Outcome:
+def _bounded(a: float, b: float) -> tuple[float, float]:
+    (a_lo, a_hi), (b_lo, b_hi) = LOAD_BOUNDS
+    return min(a_hi, max(a_lo, a)), min(b_hi, max(b_lo, b))
+
+
+def fit_loading(obs: Sequence[LoadObs], today: date, cur: tuple[float, float] | None = None) -> Outcome:
     """Загрузка рейса на складе = a + b·тонн: наклон — устойчивый (Хьюбер), свободный член — нижний квантиль
-    LOAD_QUANTILE остатков (стоянка — загрузка плюс ожидание, которого план не знает); cur — действующая норма (a, b),
-    если задана: стоянки дольше LOAD_CAP_REL × её прогноза не учитываются, шаг за прогон — limit_step."""
+    LOAD_QUANTILE остатков (стоянка — загрузка плюс ожидание, которого план не знает), обе величины — в пределах
+    LOAD_BOUNDS. Опора — действующая норма cur (a, b); не задана (в настройках пусто) — постоянная: медиана стоянок
+    обучения. Относительно опоры: стоянки дольше LOAD_CAP_REL × её прогноза не учитываются (_capped), шаг за прогон —
+    limit_step (и при первом принятии), проверка — ошибка опоры против выученной нормы на отложенной неделе."""
     if cur is not None and cur[0] + cur[1] <= 0:
         cur = None
-    train, test = _split(_capped(obs, current, LOAD_CAP_REL) if cur is not None else list(obs), today)
+    train0, _ = _split(obs, today)
+    ref = cur if cur is not None else ((median(o.minutes for o in train0), 0.0) if train0 else (0.0, 0.0))
+
+    def baseline(o: LoadObs) -> float:
+        return ref[0] + ref[1] * o.tonnes
+    train, test = _capped(obs, today, baseline, LOAD_CAP_REL)
     short = _enough(train, test, LOADING_MIN)
     if short:
         return Outcome('loading', '', False, short, n_obs=len(train), n_test=len(test), **_spans(train, test))
     _, b = huber_fit([(1.0, o.tonnes, o.minutes) for o in train])
-    a = max(0.0, quantile([o.minutes - b * o.tonnes for o in train], LOAD_QUANTILE))
-    if cur is not None:
-        a, b = limit_step(cur, (a, b), [o.tonnes for o in train])
-    a, b = round(min(a, 240.0), 2), round(min(b, 120.0), 2)
-    before = _mae((current(o), o.minutes) for o in test)
+    a, b = _bounded(quantile([o.minutes - b * o.tonnes for o in train], LOAD_QUANTILE), b)
+    a, b = _bounded(*limit_step(ref, (a, b), [o.tonnes for o in train]))
+    a, b = round(a, 2), round(b, 2)
+    before = _mae((baseline(o), o.minutes) for o in test)
     after = _mae((a + b * o.tonnes, o.minutes) for o in test)
     ok, why = _verdict(before, after)
+    if cur is None:
+        why += f' (опора — медиана стоянок {ref[0]:.1f} мин: в настройках загрузки нет)'
     return Outcome('loading', '', ok, why, {'fixed_min': a, 'per_tonne_min': b}, n_obs=len(train), n_test=len(test),
                    mae_before=round(before, 3), mae_after=round(after, 3), **_spans(train, test))
 
@@ -412,7 +438,7 @@ def valid_params(kind: str, p: Any) -> bool:
                 and isinstance(offsets, Mapping)
                 and all(isinstance(c, str) and c.isdigit() and _num(v, -120, STORE_OFFSET_MAX) for c, v in offsets.items()))
     if kind == 'loading':
-        return _num(p.get('fixed_min'), 0, 240) and _num(p.get('per_tonne_min'), 0, 120)
+        return _num(p.get('fixed_min'), *LOAD_BOUNDS[0]) and _num(p.get('per_tonne_min'), *LOAD_BOUNDS[1])
     if kind == 'travel':
         ref, factors = p.get('ref'), p.get('factors')
         return (isinstance(ref, Mapping) and _num(ref.get('speed_city_kmh'), 1, 200)
@@ -587,29 +613,58 @@ def draft_ranks(draft: Mapping[str, Any] | None, truck: str) -> tuple[dict[int, 
     return ranks, trips
 
 
-PlanTrip = tuple['datetime | None', frozenset]   # (плановое начало загрузки, клиенты рейса)
+@dataclass(frozen=True)
+class PlanTrip:
+    """Плановый рейс машины (прогноз сборки): начало загрузки, плановое возвращение предыдущего рейса (None — первый
+    рейс дня), плановый выезд, клиенты."""
+    loading_start: datetime | None
+    prev_return: datetime | None
+    depart: datetime | None
+    customers: frozenset[int]
+
+    @property
+    def wait(self) -> tuple[datetime, datetime] | None:
+        """Собственное ожидание плана на складе: [возвращение предыдущего рейса, начало загрузки], если план нарочно
+        держит машину (выезд позже под окно первой точки); иначе None."""
+        if self.prev_return is None or self.loading_start is None or self.loading_start <= self.prev_return:
+            return None
+        return self.prev_return, self.loading_start
 
 
 def plan_trips(prediction: Mapping[str, Any] | None, day: date) -> list[PlanTrip]:
-    """Прогноз сборки машины (views._capture_prediction: trips — loading_start «HH:MM», stops — [[клиент, ETA]]) →
-    [(начало загрузки рейса, клиенты рейса)] по порядку рейсов. Прогноз старый (без рейсов) — пусто."""
-    out: list[PlanTrip] = []
+    """Прогноз сборки машины (views._capture_prediction: trips — loading_start, depart, return «HH:MM», stops —
+    [[клиент, ETA]]) → плановые рейсы по порядку. Прогноз старый (без рейсов) — пусто."""
     midnight = datetime(day.year, day.month, day.day, tzinfo=ac.YEREVAN)
-    for t in (prediction or {}).get('trips') or ():
-        if not isinstance(t, Mapping):
-            continue
-        m = _hhmm(t.get('loading_start'))
-        cids = frozenset(c[0] for c in t.get('stops') or () if isinstance(c, list) and c and isinstance(c[0], int))
-        out.append((midnight + timedelta(minutes=m) if m is not None else None, cids))
-    return out
+
+    def at(text: Any) -> datetime | None:
+        m = _hhmm(text)
+        return midnight + timedelta(minutes=m) if m is not None else None
+    trips = [t for t in (prediction or {}).get('trips') or () if isinstance(t, Mapping)]
+    return [PlanTrip(at(t.get('loading_start')), at(trips[j - 1].get('return')) if j else None, at(t.get('depart')),
+                     frozenset(c[0] for c in t.get('stops') or () if isinstance(c, list) and c and isinstance(c[0], int)))
+            for j, t in enumerate(trips)]
 
 
-def _planned_start(plan: Sequence[PlanTrip], n: int, cids: set[int]) -> datetime | None:
-    """Плановое начало загрузки фактического рейса n: плановый рейс с наибольшим числом общих клиентов, иначе n-й."""
-    best = max(range(len(plan)), key=lambda j: (len(plan[j][1] & cids), -j), default=None)
-    if best is not None and plan[best][1] & cids:
-        return plan[best][0]
-    return plan[n][0] if n < len(plan) else None
+def _planned_trip(plan: Sequence[PlanTrip], n: int, cids: set[int], depart: datetime) -> PlanTrip | None:
+    """Плановый рейс фактического рейса n: с наибольшим числом общих клиентов; несколько таких (тяжёлый заказ на
+    несколько поездок) — с плановым выездом ближе всего к фактическому; общих нет — n-й по порядку."""
+    best = max((len(t.customers & cids) for t in plan), default=0)
+    if best > 0:
+        same = [j for j, t in enumerate(plan) if len(t.customers & cids) == best]
+        return plan[min(same, key=lambda j: (abs((plan[j].depart - depart).total_seconds())
+                                             if plan[j].depart is not None else math.inf, abs(j - n), j))]
+    return plan[n] if n < len(plan) else None
+
+
+def planned_wait(trip: PlanTrip | None, arrive: datetime, depart: datetime) -> float:
+    """Минуты собственного ожидания плана, пришедшиеся на фактическую стоянку [arrive, depart]: пересечение стоянки с
+    плановым ожиданием [плановое возвращение предыдущего рейса, плановое начало загрузки]. Машина вернулась раньше
+    плана — её лишнее время не вычитается (план его не задумывал); позже — вычитается только остаток планового
+    ожидания; уехала раньше планового начала загрузки — ждать не стала, вычитать нечего. Не больше стоянки."""
+    w = trip.wait if trip is not None else None
+    if w is None or depart <= w[1]:
+        return 0.0
+    return max(0.0, (min(depart, w[1]) - max(arrive, w[0])).total_seconds() / 60.0)
 
 
 def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop]) -> list[UnloadObs]:
@@ -634,9 +689,8 @@ def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop]) ->
 
 def load_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop] = (),
              plan: Sequence[PlanTrip] = ()) -> list[LoadObs]:
-    """Стоянка на складе перед рейсом (видно прибытие, не дольше actuals.MAX_LOAD_MIN) без планового ожидания: план
-    начинает загрузку рейса позже, чем машина приехала (выезд под окно первой точки), — время от прибытия до планового
-    начала не загрузка (если машина уехала раньше планового начала — ждать не стала, вычитать нечего)."""
+    """Стоянка на складе перед рейсом (видно прибытие, не дольше actuals.MAX_LOAD_MIN) без собственного ожидания плана
+    (planned_wait по плановому рейсу _planned_trip)."""
     by_key = {s.key: s for s in stops}
     served = dict(actual.served)
     out = []
@@ -646,9 +700,7 @@ def load_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop] = (),
             continue
         cids = {by_key[k].customer_id for k, i in served.items() if i in t.visits and k in by_key
                 and by_key[k].customer_id is not None}
-        start = _planned_start(plan, n, cids)   # type: ignore[arg-type]
-        wait = (start - arrive).total_seconds() / 60.0 if start is not None and arrive < start < t.depart else 0.0
-        minutes = t.load_min - wait   # type: ignore[operator]
+        minutes = t.load_min - planned_wait(_planned_trip(plan, n, cids, t.depart), arrive, t.depart)   # type: ignore[operator]
         if minutes >= 1.0:
             out.append(LoadObs(day, t.loaded_kg / 1000.0, minutes))
     return out
@@ -698,7 +750,8 @@ def odometer_plausible(items: Sequence[tuple[datetime, Any]]) -> list[bool]:
     убывает и прирастает не больше REFUEL_KM_PER_DAY × суток (не меньше 1) между соседними в цепочке; согласован —
     одометр, входящий во ВСЕ самые длинные цепочки (неоднозначная пара — оба сомнительны, пока следующие заправки не
     разрешат). Опечатка вверх или вниз — вне цепочки; опечатка в первой заправке не портит остальные. Не число —
-    сомнителен."""
+    сомнителен. Соседние в цепочке — не дальше REFUEL_LOOKBACK позиций (O(n·k)); вызывающие дают заправки за
+    ограниченное окно (effective_refuels: REFUEL_WINDOW_DAYS, REFUEL_WINDOW_MAX)."""
     ok = [isinstance(o, (int, float)) and not isinstance(o, bool) and math.isfinite(o) for _, o in items]
     idx = [i for i, good in enumerate(ok) if good]
 
@@ -707,9 +760,10 @@ def odometer_plausible(items: Sequence[tuple[datetime, Any]]) -> list[bool]:
         days = max(1.0, (tj - ti).total_seconds() / 86400.0)
         return oi <= oj <= oi + REFUEL_KM_PER_DAY * days
 
+    k = REFUEL_LOOKBACK                        # соседние в цепочке — не дальше k позиций: O(n·k), а не O(n²)
     fwd = {i: (1, 1) for i in idx}             # (длина лучшей цепочки, оканчивающейся на i; их число)
     for n, j in enumerate(idx):
-        for i in idx[:n]:
+        for i in idx[max(0, n - k):n]:
             if fits(i, j):
                 ln, cnt = fwd[i][0] + 1, fwd[i][1]
                 if ln > fwd[j][0]:
@@ -719,7 +773,7 @@ def odometer_plausible(items: Sequence[tuple[datetime, Any]]) -> list[bool]:
     bwd = {i: (1, 1) for i in idx}             # то же, начинающейся на i
     for n in range(len(idx) - 1, -1, -1):
         i = idx[n]
-        for j in idx[n + 1:]:
+        for j in idx[n + 1:n + 1 + k]:
             if fits(i, j):
                 ln, cnt = bwd[j][0] + 1, bwd[j][1]
                 if ln > bwd[i][0]:
@@ -732,9 +786,11 @@ def odometer_plausible(items: Sequence[tuple[datetime, Any]]) -> list[bool]:
             for i, good in enumerate(ok)]
 
 
-def effective_refuels(refuels: Sequence[Mapping[str, Any]]) -> dict[str, list[tuple[datetime, str, Mapping[str, Any]]]]:
+def effective_refuels(refuels: Sequence[Mapping[str, Any]], until: datetime | None = None
+                      ) -> dict[str, list[tuple[datetime, str, Mapping[str, Any]]]]:
     """Действующие (не вытесненные) заправки по машине: [(момент, id, payload)] по моменту. Момент — исходной заправки
-    цепочки исправлений (eff_at_utc от courier.store.Store.refuels), без него — свой."""
+    цепочки исправлений (eff_at_utc от courier.store.Store.refuels), без него — свой. Окно: до until (по умолчанию —
+    до последней заправки машины) не дальше REFUEL_WINDOW_DAYS и не больше REFUEL_WINDOW_MAX последних заправок."""
     by_car: dict[str, list[tuple[datetime, str, Mapping[str, Any]]]] = {}
     for r in refuels:
         if r.get('superseded'):
@@ -743,8 +799,15 @@ def effective_refuels(refuels: Sequence[Mapping[str, Any]]) -> dict[str, list[tu
             at = datetime.fromisoformat(r.get('eff_at_utc') or r['at_utc'])
         except (TypeError, ValueError, KeyError):
             continue
+        if until is not None and at > until:
+            continue
         by_car.setdefault(r['car_code'], []).append((at, r['id'], r.get('payload') or {}))
-    return {car: sorted(items, key=lambda x: (x[0], x[1])) for car, items in by_car.items()}
+    out = {}
+    for car, items in by_car.items():
+        items.sort(key=lambda x: (x[0], x[1]))
+        last = until if until is not None else items[-1][0]
+        out[car] = [x for x in items if x[0] >= last - timedelta(days=REFUEL_WINDOW_DAYS)][-REFUEL_WINDOW_MAX:]
+    return out
 
 
 def fuel_intervals(refuels: Sequence[Mapping[str, Any]]) -> list[Interval]:

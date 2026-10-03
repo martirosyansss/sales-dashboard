@@ -33,22 +33,90 @@ D = date(2026, 9, 29)
 
 # ============================== H1: загрузка на складе ==============================
 
-def test_h1_load_obs_subtracts_planned_wait_and_drops_lunch():
-    tr = Track(DEPOT, _t(8)).stay(20).drive(A, 30).stay(10).drive(DEPOT, 30)
-    arrive = tr.t
-    tr.stay(50).drive(C, 30).stay(10).drive(DEPOT, 30).stay(5)
-    day = ac.reconstruct(tr.fixes, _stops(), DEPOT)
-    stay = day.trips[1].load_min
-    assert stay == pytest.approx(50, abs=1.5)
-    seen = day.trips[1].arrive_depot                                                 # прибытие на склад по треку
-    plan = [(_t(8, 20), frozenset({101, 102})), (seen + timedelta(minutes=30), frozenset({103}))]
-    assert [o.minutes for o in lr.load_obs(D, day, _stops(), plan)] == [pytest.approx(stay - 30)]   # без ожидания
-    assert [o.minutes for o in lr.load_obs(D, day, _stops())] == [pytest.approx(stay)]           # плана нет
-    left_early = [plan[0], (arrive + timedelta(minutes=80), frozenset({103}))]        # уехал раньше планового начала
-    assert [o.minutes for o in lr.load_obs(D, day, _stops(), left_early)] == [pytest.approx(stay)]
-    swapped = [plan[1], plan[0]]                                                     # плановый рейс — по клиентам
-    assert [o.minutes for o in lr.load_obs(D, day, _stops(), swapped)] == [pytest.approx(stay - 30)]
-    # обед на складе: 25 мин загрузки + 60 мин — стоянка длиннее MAX_LOAD_MIN, загрузкой не считается
+def _reload_day(ret, stay, kg=2000.0, d=D):
+    """Два рейса: первый (клиент 101) возвращается в ret (минуты дня), второй (клиент 103) выезжает после стоянки stay."""
+    at = lambda m: datetime(d.year, d.month, d.day, tzinfo=TZ) + timedelta(minutes=m)   # noqa: E731
+    v0 = ac.Visit(('A',), at(9 * 60 + 40), at(9 * 60 + 55), 0, False)
+    v1 = ac.Visit(('C',), at(ret + stay + 30), at(ret + stay + 45), 1, False)
+    t1 = ac.Trip(at(9 * 60 + 20), at(ret), None, (0,), 1000.0, 20.0)
+    t2 = ac.Trip(at(ret + stay), at(ret + stay + 75), stay, (1,), kg, 20.0)
+    return ac.DayActual(100, 40.0, at(9 * 60), at(18 * 60), (), (v0, v1), (t1, t2), (), 0, (), (('A', 0), ('C', 1)))
+
+
+RELOAD_STOPS = [ac.PlanStop('A', 101, (40.18, 44.5), 1000.0, 1000.0), ac.PlanStop('C', 103, (40.20, 44.55), 2000.0, 2000.0)]
+
+
+def _plan(ret_plan, wait, load=20.0, d=D):
+    at = lambda m: datetime(d.year, d.month, d.day, tzinfo=TZ) + timedelta(minutes=m)   # noqa: E731
+    return [lr.PlanTrip(at(9 * 60), None, at(9 * 60 + 20), frozenset({101})),
+            lr.PlanTrip(at(ret_plan + wait), at(ret_plan), at(ret_plan + wait + load), frozenset({103}))]
+
+
+@pytest.mark.parametrize('ret, stay, wait, expected', [
+    (11 * 60 - 12, 20.5, 0, 20.5),        # плана ожидания нет, машина раньше на 12 мин — стоянка как есть
+    (11 * 60 - 25, 20.5, 0, 20.5),        # …на 25 мин раньше — тоже
+    (11 * 60, 35.0, 15, 20.0),            # план ждёт 15 мин, машина вовремя — вычесть 15
+    (11 * 60 + 10, 25.0, 15, 20.0),       # план ждёт 15 мин, машина опоздала на 10 — вычесть остаток 5
+    (11 * 60 + 20, 20.0, 15, 20.0),       # опоздала на 20 — от планового ожидания ничего не осталось
+    (11 * 60 - 10, 45.0, 15, 30.0),       # раньше на 10: лишнее время план не задумывал — вычесть только 15
+    (11 * 60, 12.0, 15, 12.0),            # уехала раньше планового начала загрузки — ждать не стала, вычитать нечего
+])
+def test_h1_planned_wait_is_plan_own_wait_only(ret, stay, wait, expected):
+    day = _reload_day(ret, stay)
+    got = lr.load_obs(D, day, RELOAD_STOPS, _plan(11 * 60, wait))
+    assert [o.minutes for o in got] == [pytest.approx(expected)]
+    assert [o.minutes for o in lr.load_obs(D, day, RELOAD_STOPS)] == [pytest.approx(stay)]   # без плана — стоянка
+
+
+def test_h1_planned_wait_never_exceeds_dwell():
+    assert lr.planned_wait(_plan(11 * 60, 30)[1], datetime(2026, 9, 29, 11, 0, tzinfo=TZ),
+                           datetime(2026, 9, 29, 11, 31, tzinfo=TZ)) == pytest.approx(30)
+    assert lr.planned_wait(_plan(11 * 60, 30)[1], datetime(2026, 9, 29, 11, 25, tzinfo=TZ),
+                           datetime(2026, 9, 29, 11, 45, tzinfo=TZ)) == pytest.approx(5)
+    assert lr.planned_wait(_plan(11 * 60, 0)[1], datetime(2026, 9, 29, 10, 0, tzinfo=TZ),
+                           datetime(2026, 9, 29, 11, 45, tzinfo=TZ)) == 0.0
+    assert lr.planned_wait(None, datetime(2026, 9, 29, 10, 0, tzinfo=TZ), datetime(2026, 9, 29, 11, 0, tzinfo=TZ)) == 0.0
+
+
+def test_h1_early_returns_do_not_bias_loading():
+    """Сценарий проверяющего (probe_h1_bias_early): плана ожидания нет (окон нет), машина возвращается на 5–25 мин раньше
+    плана, склад грузит сразу: наблюдения — истинная загрузка, выученная норма — около истины (15 + 5·т)."""
+    rnd = random.Random(7)
+    obs = []
+    for i in range(60):
+        d = TODAY - timedelta(days=60 - i)
+        tonnes = rnd.choice([1.0, 2.0, 3.0])
+        true = 15 + 5 * tonnes + rnd.uniform(-1, 1)
+        ret = 11 * 60 + rnd.uniform(-25, -5)
+        obs += lr.load_obs(d, _reload_day(ret, true, tonnes * 1000, d), RELOAD_STOPS, _plan(11 * 60, 0, d=d))
+    assert len(obs) == 60
+    assert abs(sum(o.minutes - (15 + 5 * o.tonnes) for o in obs) / len(obs)) < 0.5
+    o = lr.fit_loading(obs, TODAY, (15.0, 5.0))
+    assert o.params['fixed_min'] == pytest.approx(15, abs=1.0) and o.params['per_tonne_min'] == pytest.approx(5, abs=0.5)
+
+
+def test_h1_split_order_matched_to_nearest_planned_departure():
+    """Тяжёлый заказ в двух плановых рейсах (те же клиенты): плановый рейс — с выездом ближе к фактическому."""
+    at = lambda m: datetime(2026, 9, 29, tzinfo=TZ) + timedelta(minutes=m)   # noqa: E731
+    plan = [lr.PlanTrip(at(540), None, at(560), frozenset({101})),
+            lr.PlanTrip(at(700), at(680), at(720), frozenset({101})),     # ждёт 20 мин
+            lr.PlanTrip(at(860), at(800), at(880), frozenset({101}))]     # ждёт 60 мин
+    assert lr._planned_trip(plan, 1, {101}, at(722)) is plan[1]
+    assert lr._planned_trip(plan, 1, {101}, at(875)) is plan[2]
+    assert lr._planned_trip(plan, 1, {999}, at(875)) is plan[1]          # общих клиентов нет — по номеру рейса
+    assert lr._planned_trip(plan, 5, {999}, at(875)) is None
+
+
+def test_h1_plan_trips_from_prediction():
+    pred = {'trips': [{'loading_start': '09:00', 'depart': '09:20', 'return': '11:00', 'stops': [[101, '09:40']]},
+                      {'loading_start': '11:30', 'depart': '11:50', 'return': '13:10', 'stops': [[103, '12:20']]}]}
+    trips = lr.plan_trips(pred, D)
+    assert [t.prev_return for t in trips] == [None, datetime(2026, 9, 29, 11, 0, tzinfo=TZ)]
+    assert trips[1].wait == (datetime(2026, 9, 29, 11, 0, tzinfo=TZ), datetime(2026, 9, 29, 11, 30, tzinfo=TZ))
+    assert trips[0].wait is None and trips[1].customers == frozenset({103}) and lr.plan_trips(None, D) == []
+
+
+def test_h1_lunch_at_depot_is_not_loading():
     tr = Track(DEPOT, _t(8)).stay(20).drive(A, 30).stay(10).drive(DEPOT, 30).stay(25 + 60)
     tr.drive(C, 30).stay(10).drive(DEPOT, 30).stay(5)
     lunch = ac.reconstruct(tr.fixes, _stops(), DEPOT)
@@ -69,7 +137,7 @@ def _loads(cur_noise=12.0, lunch=True, seed=8):
 
 def test_h1_fit_loading_low_quantile_and_cap():
     cur = (10.0, 5.0)
-    o = lr.fit_loading(_loads(), lambda x: cur[0] + cur[1] * x.tonnes, TODAY, cur)
+    o = lr.fit_loading(_loads(), TODAY, cur)
     a, b = o.params['fixed_min'], o.params['per_tonne_min']
     train_days = len([d for d in _days(40) if d < TODAY - timedelta(days=lr.HOLDOUT_DAYS)])
     assert o.n_obs == 2 * train_days                         # обед (55 > 2 × 20) не учтён
@@ -81,13 +149,31 @@ def test_h1_fit_loading_low_quantile_and_cap():
 
 def test_h1_fit_loading_step_limited_to_30_percent():
     cur = (4.0, 2.0)          # действующая норма сильно занижена: отсечение «2 × нормы» убрало бы всё — не применяется
-    o = lr.fit_loading(_loads(lunch=False), lambda x: cur[0] + cur[1] * x.tonnes, TODAY, cur)
+    o = lr.fit_loading(_loads(lunch=False), TODAY, cur)
     a, b = o.params['fixed_min'], o.params['per_tonne_min']
     tonnes = [1.0, 3.0]
     preds = [(a + b * t) / (cur[0] + cur[1] * t) for t in tonnes]
     assert max(preds) == pytest.approx(1.3, abs=0.01) and all(p <= 1.3 + 1e-3 for p in preds)
-    free = lr.fit_loading(_loads(lunch=False), lambda x: 0.0, TODAY, None)   # нормы нет — без предела шага
-    assert free.params['fixed_min'] > a
+
+
+def test_h1_empty_manual_norm_uses_median_baseline_bounds_and_step():
+    """В настройках загрузки нет (как в базе владельца): опора — медиана стоянок обучения; первое принятие — тоже не
+    дальше ±30% от неё; выученное — в пределах LOAD_BOUNDS."""
+    obs = _loads(lunch=False)
+    train = [x for x in obs if x.day < TODAY - timedelta(days=lr.HOLDOUT_DAYS)]
+    med = sorted(x.minutes for x in train)[len(train) // 2 - 1: len(train) // 2 + 1]
+    o = lr.fit_loading(obs, TODAY, None)
+    a, b = o.params['fixed_min'], o.params['per_tonne_min']
+    base = sum(med) / 2
+    assert all(0.7 * base - 1e-3 <= a + b * t <= 1.3 * base + 1e-3 for t in (1.0, 3.0))
+    assert 'медиана' in o.reason
+    test = [x for x in obs if x.day >= TODAY - timedelta(days=lr.HOLDOUT_DAYS)]
+    assert o.mae_before == pytest.approx(sum(abs(base - x.minutes) for x in test) / len(test), abs=1e-3)
+    huge = [lr.LoadObs(x.day, x.tonnes, 60 + 25 * x.tonnes) for x in obs]     # неправдоподобно: 60 мин + 25 мин/т
+    h = lr.fit_loading(huge, TODAY, (40.0, 15.0))
+    lo, hi = lr.LOAD_BOUNDS
+    assert lo[0] <= h.params['fixed_min'] <= lo[1] and hi[0] <= h.params['per_tonne_min'] <= hi[1]
+    assert lr.valid_params('loading', h.params) and not lr.valid_params('loading', {'fixed_min': 50, 'per_tonne_min': 4})
 
 
 def test_h1_loading_auto_learning_off_by_default(client, monkeypatch):
@@ -476,10 +562,12 @@ def test_leakage_holdout_never_changes_learned_params():
     assert with_test.params == lr.fit_unload(train_u + [replace(o, minutes=10.0) for o in test_u], cur, TODAY).params
     assert with_test.params['per_stop_min'] == pytest.approx(4, abs=0.5)
     train_l = [lr.LoadObs(d, t, 10 + 5 * t) for d in _days(40) if d < test_from for t in (1.0, 3.0)]
-    test_l = [lr.LoadObs(d, t, 60.0) for d in _days(7, start=test_from) for t in (1.0, 3.0)]
-    a = lr.fit_loading(train_l + test_l, lambda x: 0.0, TODAY)
-    b = lr.fit_loading(train_l + [replace(o, minutes=1.0) for o in test_l], lambda x: 0.0, TODAY)
+    test_l = [lr.LoadObs(d, t, 25.0) for d in _days(7, start=test_from) for t in (1.0, 3.0)]   # другой процесс
+    a = lr.fit_loading(train_l + test_l, TODAY, (10.0, 5.0))
+    b = lr.fit_loading(train_l + [replace(o, minutes=1.0) for o in test_l], TODAY, (10.0, 5.0))
     assert a.params == b.params and a.params['fixed_min'] == pytest.approx(10, abs=0.5)
+    c = lr.fit_loading(train_l + test_l, TODAY)                            # опора-медиана — тоже только по обучению
+    assert c.params == lr.fit_loading(train_l + [replace(o, minutes=1.0) for o in test_l], TODAY).params
     legs = _hour_legs({9: 1.3}, days=40)
     other = [replace(o, minutes=o.model * 2.5) if o.day >= test_from else o for o in legs]
     assert lr.fit_travel(legs, TODAY, 'straight', REF, BASE).params == lr.fit_travel(other, TODAY, 'straight', REF,

@@ -419,26 +419,32 @@ def reconstruct(track: Iterable[Fix], stops: Sequence[PlanStop], depot: Point | 
                      tuple(legs), len(others), no_point, tuple(sorted(served.items())))
 
 
+def _in_trip(t: Trip, visits: Sequence[Visit], at: datetime) -> bool:
+    """Момент в пределах рейса (выезд − DELIVERY_SLACK … возвращение + DELIVERY_SLACK; выезд не виден — первый визит)."""
+    start = t.depart or visits[t.visits[0]].arrive
+    return start - DELIVERY_SLACK <= at and (t.ret is None or at <= t.ret + DELIVERY_SLACK)
+
+
 def _unseen(trips: list[Trip], visits: Sequence[Visit], stops: Sequence[PlanStop],
             served: dict[str, int]) -> list[Trip]:
     """Точки плана без обслуживающей стоянки (нет фикса, нет координаты) — в груз рейса: доставка отмечена во время
-    рейса (± DELIVERY_SLACK), иначе место точки в плане — между обслуженными точками рейса. Первый подходящий рейс."""
+    рейса (± DELIVERY_SLACK); отметки нет или она вне всех рейсов (водитель отметил всё разом после возвращения) — по
+    месту точки в плане: между обслуженными точками рейса. Первый подходящий рейс."""
     by_key = {s.key: s for s in stops}
     extra: list[list[str]] = [[] for _ in trips]
     for s in sorted(stops, key=lambda s: s.key):
         if s.key in served:
             continue
-        for n, t in enumerate(trips):
-            if s.delivered_at is not None:
-                start = t.depart or visits[t.visits[0]].arrive
-                if start - DELIVERY_SLACK <= s.delivered_at and (t.ret is None or s.delivered_at <= t.ret + DELIVERY_SLACK):
-                    extra[n].append(s.key)
+        n = next((n for n, t in enumerate(trips) if s.delivered_at is not None and _in_trip(t, visits, s.delivered_at)),
+                 None)
+        if n is None and s.rank is not None:
+            for m, t in enumerate(trips):
+                ranks = [by_key[k].rank for k, j in served.items() if j in t.visits and by_key[k].rank is not None]
+                if ranks and min(ranks) < s.rank < max(ranks):   # type: ignore[type-var]
+                    n = m
                     break
-                continue
-            ranks = [by_key[k].rank for i in t.visits for k, j in served.items() if j == i and by_key[k].rank is not None]
-            if s.rank is not None and ranks and min(ranks) < s.rank < max(ranks):
-                extra[n].append(s.key)
-                break
+        if n is not None:
+            extra[n].append(s.key)
     return [replace(t, loaded_kg=t.loaded_kg + math.fsum(by_key[k].kg for k in ks), unseen=tuple(ks)) if ks else t
             for t, ks in zip(trips, extra)]
 
@@ -482,7 +488,8 @@ class VisitMetrics:
 def stop_marks(actual: DayActual, stops: Sequence[PlanStop], day: date) -> dict[str, dict]:
     """Точка плана → {arrive, leave, late_min, early, window} обслуживающего визита. Минуты — от полуночи рабочего дня
     day (прибытие после полуночи — 24:xx, позже окна). Окно жёсткое (№36): раньше начала окна — момент отметки
-    доставки (машина могла ждать у магазина), без отметки — прибытие."""
+    доставки, если она в пределах визита [прибытие, отъезд + DELIVERY_SLACK] (машина могла ждать у магазина); отметки
+    нет или она сделана позже (отметил все доставки вечером) — прибытие по GPS."""
     by_key = {s.key: s for s in stops}
     out: dict[str, dict] = {}
     for key, vi in actual.served:
@@ -490,7 +497,9 @@ def stop_marks(actual: DayActual, stops: Sequence[PlanStop], day: date) -> dict[
         mark = {'arrive': v.arrive, 'leave': v.leave, 'late_min': 0.0, 'early': False, 'window': False}
         if s is not None and s.window is not None:
             lo, hi = s.window
-            service = day_minutes(day, s.delivered_at if s.delivered_at is not None else v.arrive)
+            tap = s.delivered_at
+            during = tap is not None and v.arrive <= tap <= v.leave + DELIVERY_SLACK
+            service = day_minutes(day, tap if during else v.arrive)   # type: ignore[arg-type]
             mark.update(window=True, late_min=round(max(0.0, day_minutes(day, v.arrive) - hi), 1),
                         early=math.isfinite(lo) and service < lo)
         out[key] = mark
@@ -538,7 +547,8 @@ def load_profile(actual: DayActual, stops: Sequence[PlanStop]) -> list[tuple[dat
         for k in trip.unseen:
             s = by_key[k]
             after = [at for r, at in ranked if s.rank is not None and r > s.rank]
-            when = s.delivered_at or (min(after) if after else end)
+            tap = s.delivered_at if s.delivered_at is not None and _in_trip(trip, actual.visits, s.delivered_at) else None
+            when = tap or (min(after) if after else end)
             events.append((when, s.delivered_kg if s.delivered_kg is not None else s.kg))
         events.sort(key=lambda e: e[0])
         on_board, done = trip.loaded_kg, 0
