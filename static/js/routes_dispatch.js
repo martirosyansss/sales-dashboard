@@ -83,6 +83,7 @@
         geoMap: null, geoMarker: null, geoStop: null,   // «Փոխել տեղը»: карта диалога и магазин
         sugMap: null, sugLayer: null, sugSel: null,     // предложения водителей: карта и выбранное (event_id)
         geoChanged: null,                   // день, в котором после сборки меняли точку магазина — подсказать пересборку
+        unloadStop: null, unloadInfo: null, unloadSeq: 0,   // «Ժամանակ խանութում»: магазин диалога, его данные с сервера, номер запроса
         stepsOpen: new Set(),               // шаги 1–2, раскрытые логистом после сборки (иначе свёрнуты в строку)
         open: new Set(),                    // раскрытые карточки машин (код машины)
         ai: { chats: new Map(), busy: false, shownDay: null },   // «Հարցրու AI-ին»: разговор по каждому дню [{role, text}]
@@ -147,6 +148,10 @@
         'AI не дал ответа — повторите вопрос': 'AI-ն պատասխան չտվեց — կրկնեք հարցը',
         'AI недоступен: на счёте Anthropic закончились средства — пополните баланс': 'AI-ն հասանելի չէ՝ Anthropic-ի հաշվին միջոցները վերջացել են — լիցքավորեք հաշիվը',
         'AI не успел ответить — спросите короче или повторите': 'AI-ն չհասցրեց պատասխանել — հարցրեք ավելի կարճ կամ կրկնեք',
+        // «Ժամանակ խանութում» — POST /api/routes/customer-vehicles {customer_id, unload_min} (store.check_unload_min)
+        'ожидалось {"customer_id", "access"} с необязательными "window" и "unload_min" или {"customer_id", "unload_min"}': BAD_REQUEST,
+        'магазин не найден — обновите страницу': 'Խանութը չի գտնվել — թարմացրեք էջը',
+        'время у магазина — целое число минут от 1 до 120': 'Ժամանակ խանութում՝ ամբողջ թիվ 1-ից մինչև 120 րոպե',
     };
     const SERVER_HY_PREFIX = [['машина не готова к расчёту: ', 'Մեքենան պատրաստ չէ հաշվարկի համար՝ ']];
     // StoreError «База настроек маршрутов <файл>: не удалось сохранить …» — по окончанию текста
@@ -154,6 +159,7 @@
         [': не удалось сохранить окно приёма клиента', 'Չհաջողվեց պահպանել ընդունման ժամը — կարգավորումների բազան հասանելի չէ'],
         [': не удалось сохранить точку клиента', 'Չհաջողվեց պահպանել խանութի կետը — կարգավորումների բազան հասանելի չէ'],
         [': не удалось сохранить план развоза', 'Չհաջողվեց պահպանել առաքման պլանը — կարգավորումների բազան հասանելի չէ'],
+        [': не удалось сохранить время у магазина', 'Չհաջողվեց պահպանել ժամանակը խանութում — կարգավորումների բազան հասանելի չէ'],
     ];
     function serverText(s) {
         const t = String(s).trim();
@@ -443,7 +449,7 @@
     // тогда обновляются только подсказки, а страница — при следующей проверке.
     const interacting = () => {
         const a = document.activeElement;
-        return state.pickCid !== null || $('dpGeoDlg').open
+        return state.pickCid !== null || $('dpGeoDlg').open || $('dpUnloadDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
     async function poll() {
@@ -941,6 +947,110 @@
         } finally { state.busy = false; }
     }
 
+    // ---------- Время у магазина «Ժամանակ խանութում» (ответ владельца №50) ----------
+    // Своё время магазина — постоянная часть разгрузки (парковка, приёмка, документы) вместо общей нормы на точку; время на
+    // груз программа добавляет сама. Данные диалога — GET /api/routes/customer-vehicles?customer_id=… (свежие: значение,
+    // нормы, время по факту); сохраняется только время — POST /api/routes/customer-vehicles {customer_id, unload_min}:
+    // допуск и окно приёма не пересылаются. Рейсы сами не пересобираются — подсказка в уведомлении, как после смены точки.
+    const UNLOAD_REBUILD = 'Վերակազմեք երթերը, որ հաշվի առնվի։';
+    const UNLOAD_BAD = 'Գրեք ամբողջ թիվ՝ 1-ից մինչև 120 րոպե, կամ թողեք դաշտը դատարկ։';
+    const minutesText = (v) => fmt(v, 1) + NB + 'րոպե';
+    // своё время магазина из ответа дня (store_unload: клиент → мин); не задано — null (общая норма)
+    const ownUnload = (stop) => (isObj(state.data.store_unload) ? num(state.data.store_unload[stop.customer_id]) : null);
+    // Подсказка — как посчитает «Развоз» (та же логика, что в «Условиях магазина» /routes/settings): пустое поле — обычное
+    // время или своё время магазина по факту (unload_auto_min); есть разгрузки по GPS (unload_visits) — введённое смешается с фактом.
+    // «По факту» — только если отличается от нормы на 0,05 мин и больше: сервер округляет unload_auto_min до 0,1, а норму
+    // строки обучения — до 0,01 (8,4 и 8,37 — одно и то же «обычное» время)
+    function unloadHint(x, norms) {
+        const auto = num(x.unload_auto_min), perStop = num(norms.per_stop_min);
+        const empty = auto !== null && perStop !== null && Math.abs(auto - perStop) >= 0.05
+            ? minutesText(auto) + ' (ըստ փաստի)' : 'սովորական ' + minutesText(perStop);
+        const fact = num(x.unload_visits) ? ' Ըստ վարորդների GPS-ի՝ այս խանութում արդեն եղել է ' + pl(x.unload_visits, 'բեռնաթափում')
+            + '։ Ձեր գրած ժամանակը ծրագիրը կհամադրի փաստի հետ՝ որքան շատ բեռնաթափում, այնքան ավելի մոտ փաստին։' : '';
+        return 'Քանի րոպե է մեքենան կանգնում այս խանութի մոտ՝ կայանում, ընդունում, փաստաթղթեր։ Բեռի ժամանակը ('
+            + minutesText(norms.per_tonne_min) + ' տոննայի համար) ծրագիրը կավելացնի ինքը։' + fact + ' Դատարկ՝ ' + empty + '։';
+    }
+    const lockUnload = (on) => ['dpUnloadMin', 'dpUnloadSave', 'dpUnloadClear'].forEach(id => { $(id).disabled = on; });
+    function markUnload(bad) {
+        $('dpUnloadMin').classList.toggle('is-invalid', bad);
+        if (bad) $('dpUnloadMin').setAttribute('aria-invalid', 'true'); else $('dpUnloadMin').removeAttribute('aria-invalid');
+    }
+    async function openUnload(stop) {
+        if (state.busy) return;
+        const seq = ++state.unloadSeq;
+        state.unloadStop = stop;
+        state.unloadInfo = null;
+        $('dpUnloadLead').textContent = '«' + (stop.name || stop.code) + '»' + (stop.address ? '՝ ' + stop.address : '');
+        $('dpUnloadMin').value = ownUnload(stop) !== null ? String(ownUnload(stop)) : '';
+        markUnload(false);
+        $('dpUnloadHint').textContent = 'Բեռնում եմ խանութի տվյալները…';
+        $('dpUnloadErr').textContent = '';
+        $('dpUnloadClear').hidden = true;
+        lockUnload(true);           // пока не пришли свежие данные магазина — сохранять нечего
+        $('dpUnloadDlg').showModal();
+        try {
+            const r = await api('GET', '/api/routes/customer-vehicles?customer_id=' + encodeURIComponent(stop.customer_id));
+            if (seq !== state.unloadSeq || !$('dpUnloadDlg').open) return;
+            const x = Array.isArray(r.customers) ? r.customers[0] : null;
+            // магазина нет в данных ERP раздела (новый) — сервер не сохранит и время
+            if (!isObj(x) || !isObj(r.unload_norms)) throw new Error('Խանութը չի գտնվել — թարմացրեք էջը');
+            state.unloadInfo = x;
+            const own = num(x.unload_min);
+            $('dpUnloadMin').value = own !== null ? String(own) : '';
+            $('dpUnloadHint').textContent = unloadHint(x, r.unload_norms);
+            $('dpUnloadClear').hidden = own === null;
+            lockUnload(false);
+            $('dpUnloadMin').focus();
+        } catch (e) {
+            if (seq !== state.unloadSeq) return;
+            $('dpUnloadHint').textContent = '';
+            $('dpUnloadErr').textContent = e.message;
+        }
+    }
+    function readUnload() {
+        const input = $('dpUnloadMin');
+        // нечисло в поле type=number браузер отдаёт как '' — это не «пусто»: иначе сохранённое время стёрлось бы молча
+        if (input.validity && input.validity.badInput) throw new Error(UNLOAD_BAD);
+        const raw = input.value.trim();
+        if (raw === '') return null;
+        const value = Number(raw);
+        if (!Number.isInteger(value) || value < 1 || value > 120) throw new Error(UNLOAD_BAD);
+        return value;
+    }
+    // clear — «Հեռացնել»: снова обычное время; пустое поле при «Պահպանել» — то же. Значение не изменилось (например,
+    // пустое поле у магазина без своего времени) — сохранять нечего: диалог закрывается без запроса и уведомления
+    async function saveUnload(clear) {
+        const stop = state.unloadStop, x = state.unloadInfo;
+        if (!stop || !x || state.busy) return;
+        let value = null;
+        if (!clear) {
+            try { value = readUnload(); } catch (e) {
+                $('dpUnloadErr').textContent = e.message;
+                markUnload(true);
+                $('dpUnloadMin').focus();
+                return;
+            }
+        }
+        if (value === num(x.unload_min)) { $('dpUnloadDlg').close(); return; }
+        state.busy = true;
+        lockUnload(true);
+        $('dpUnloadErr').textContent = '';
+        try {
+            await api('POST', '/api/routes/customer-vehicles', { customer_id: stop.customer_id, unload_min: value });
+        } catch (e) {
+            $('dpUnloadErr').textContent = e.message;
+            return;
+        } finally {
+            state.busy = false;
+            lockUnload(false);
+        }
+        $('dpUnloadDlg').close();
+        // время изменилось, а рейсы уже есть — подсказать пересборку, как после смены точки
+        toast('«' + (stop.name || stop.code) + '»՝ ' + (value === null ? 'ժամանակը խանութում նորից սովորական է։'
+            : 'ժամանակը խանութում պահպանված է (' + minutesText(value) + ')։') + (state.data.plan ? ' ' + UNLOAD_REBUILD : ''));
+        try { await reloadQuiet(); } catch (e) { showActionError(e); }
+    }
+
     // ---------- Заказы прошлых дней и исключённые ----------
     function orderLine(o, btnText, onClick) {
         const li = document.createElement('li');
@@ -1302,6 +1412,12 @@
         };
         const win = windowText(stop.window);
         if (win) tag(stop.window_miss ? 'b-danger' : 'b-gps', (stop.window_miss ? 'չի հասցնում՝ ' : 'ընդունում է՝ ') + win, 'fa-door-open');
+        // своё время у магазина (№50) — только у магазинов, где оно задано; у остальных — общая норма
+        const own = ownUnload(stop);
+        if (own !== null) {
+            tag('dp-b-unload', 'Բեռնաթափում՝ ' + fmt(own) + NB + 'ր', 'fa-stopwatch');
+            tags.lastChild.title = 'խանութի հաստատուն մասը՝ առանց բեռի ժամանակի';
+        }
         if (stop.center) tag(stop.center_miss ? 'b-danger' : 'b-warn', stop.center_miss ? 'Կենտրոն — մեքենան չի կարող մտնել' : 'Կենտրոն', 'fa-city');
         if (stop.vehicle_access) tag(stop.vehicle_miss ? 'b-danger' : 'b-warn',
             (stop.vehicle_miss ? 'Մեքենան չի կարող սպասարկել · ' : '') + vehicleText(stop.vehicle_access, true), 'fa-truck');
@@ -1332,7 +1448,13 @@
             vb.innerHTML = '<i class="fas fa-truck" aria-hidden="true"></i><span>Առաքման պայմաններ</span>';
             vb.setAttribute('aria-label', 'Առաքման պայմաններ՝ ' + (stop.name || stop.code));
             vb.href = '/routes/settings?customer=' + stop.customer_id + '#rsCustomerSettings';
-            acts.append(moveSelect(stop, tripId), ex, vb, gb);
+            const ub = document.createElement('button');
+            ub.type = 'button';
+            ub.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-unloadbtn';
+            ub.innerHTML = '<i class="fas fa-stopwatch" aria-hidden="true"></i><span>Ժամանակ խանութում</span>';
+            ub.setAttribute('aria-label', 'Ժամանակ խանութում՝ ' + (stop.name || stop.code));
+            ub.addEventListener('click', () => openUnload(stop));
+            acts.append(moveSelect(stop, tripId), ex, vb, ub, gb);
             li.appendChild(acts);
         }
         return li;
@@ -2577,6 +2699,13 @@
             $('dpGeoSave').disabled = !p;
             if (p) setGeo(p[0], p[1], false);
         });
+        $('dpUnloadSave').addEventListener('click', () => saveUnload(false));
+        $('dpUnloadClear').addEventListener('click', () => saveUnload(true));
+        $('dpUnloadCancel').addEventListener('click', () => $('dpUnloadDlg').close());
+        $('dpUnloadDlg').addEventListener('close', () => { state.unloadStop = null; state.unloadInfo = null; });
+        $('dpUnloadDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
+        $('dpUnloadMin').addEventListener('input', () => { $('dpUnloadErr').textContent = ''; markUnload(false); });
+        $('dpUnloadMin').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveUnload(false); } });
         $('dpMapBox').addEventListener('toggle', () => { if ($('dpMapBox').open && state.data && state.data.plan) drawMap(); });
         $('dpStep1Tog').addEventListener('click', () => toggleStep('dpStep1'));
         $('dpStep2Tog').addEventListener('click', () => toggleStep('dpStep2'));
