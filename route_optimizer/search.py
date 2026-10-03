@@ -7,6 +7,7 @@
 Состояние дня обновляется при каждом ходе инкрементально:
 - тур менеджера «дом → клиенты дня → дом»: удаление — выигрыш d(prev,c) + d(c,next) − d(prev,next),
   вставка — самая дешёвая позиция; без дома вершина 0 фиктивная (нулевые расстояния) — открытый путь;
+  матрицы по дорогам направленные (d[a][b] — от a до b): вставка и 2-opt считают рёбра по ходу тура;
 - выручка дня (низкий сезон) — нормальное приближение: μ = Σ p·m, σ² = Σ (p·E[V²] − (p·m)²);
 - грузовики — общий для всех менеджеров парк (FleetEstimate, план fleet-plan §3): S сценариев с
   общими случайными числами — у каждого визита клиента (порядковый номер k в цикле) заранее вытянуто
@@ -26,6 +27,8 @@ import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Sequence
+
+from .tsp import is_symmetric
 
 W = 2                     # недель в цикле
 SLOTS = 14                # слот = (неделя − 1) × 7 + (день недели − 1)
@@ -170,22 +173,33 @@ def tour_length(t: Sequence[int], d: Matrix) -> float:
 
 
 def two_opt(t: list[int], d: Matrix) -> list[int]:
-    """2-opt замкнутого тура на месте; t[0] (дом, склад) остаётся первым. Длина не растёт."""
+    """2-opt замкнутого тура на месте; t[0] (дом, склад) остаётся первым. Длина не растёт.
+    Направленная матрица — с внутренними рёбрами развёрнутого куска (как tsp.two_opt); симметричная — прежний
+    расчёт."""
     n = len(t)
     if n < 4:
         return t
+    directed = not is_symmetric(d, t)
     improved = True
     while improved:
         improved = False
         for i in range(1, n - 1):
             a = t[i - 1]
             da = d[a]
+            fwd = back = 0.0   # ход куска t[i..j] вперёд и назад
             for j in range(i + 1, n):
                 b = t[i]
                 c = t[j]
                 e = t[j + 1] if j + 1 < n else t[0]
-                if da[c] + d[b][e] - da[b] - d[c][e] < -_TWO_OPT_EPS:
+                delta = da[c] + d[b][e] - da[b] - d[c][e]
+                if directed:
+                    p = t[j - 1]
+                    fwd += d[p][c]
+                    back += d[c][p]
+                    delta += back - fwd
+                if delta < -_TWO_OPT_EPS:
                     t[i:j + 1] = t[i:j + 1][::-1]
+                    fwd, back = back, fwd
                     improved = True
     return t
 
@@ -213,19 +227,22 @@ def _removal(t: list[int], x: int, d: Matrix) -> tuple[int, float, int, int]:
 
 
 def _insertion(t: Sequence[int], x: int, d: Matrix) -> tuple[int, float, int, int]:
-    """Самая дешёвая вставка x: (позиция в списке, Δ длины, сосед слева, сосед справа)."""
+    """Самая дешёвая вставка x между a и b: Δ = d(a, x) + d(x, b) − d(a, b) — (позиция в списке, Δ длины, сосед
+    слева, сосед справа)."""
     row = d[x]
     n = len(t)
     a = t[0]
     best, best_pos, best_a, best_b = math.inf, n, a, a
     for pos in range(1, n):
         b = t[pos]
-        delta = row[a] + row[b] - d[a][b]
+        da = d[a]
+        delta = da[x] + row[b] - da[b]
         if delta < best:
             best, best_pos, best_a, best_b = delta, pos, a, b
         a = b
     b = t[0]
-    delta = row[a] + row[b] - d[a][b]
+    da = d[a]
+    delta = da[x] + row[b] - da[b]
     if delta < best:
         best, best_pos, best_a, best_b = delta, n, a, b
     return best_pos, best, best_a, best_b
@@ -357,7 +374,7 @@ class FleetEstimate:
             if prev:
                 cx = city[x]
                 go = d[prev][x] * (fc if city[prev] and cx else fr) + un[x]
-                if heavy or load + w > cap or trip + go + d0[x] * (fc if c0 and cx else fr) > window:
+                if heavy or load + w > cap or trip + go + d[x][0] * (fc if c0 and cx else fr) > window:
                     e = d[prev][0]                          # закрыть текущий рейс
                     km += e
                     mins += e * (fc if city[prev] and c0 else fr)
@@ -368,7 +385,7 @@ class FleetEstimate:
                     mins += self.load_fixed
                     trip += self.load_fixed
             if heavy:                                       # тяжелее машины — отдельными рейсами
-                e = d0[x] * 2.0 * math.ceil(w / cap)
+                e = (d0[x] + d[x][0]) * math.ceil(w / cap)
                 km += e
                 mins += e * (fc if c0 and city[x] else fr) + un[x] + self.load_fixed * math.ceil(w / cap)
                 continue
@@ -406,7 +423,7 @@ class FleetEstimate:
             if prev:
                 cx = city[x]
                 go = d[prev][x] * (fc if city[prev] and cx else fr) + un[x]
-                if heavy or load + w > cap or trip + go + d0[x] * (fc if c0 and cx else fr) > window:
+                if heavy or load + w > cap or trip + go + d[x][0] * (fc if c0 and cx else fr) > window:
                     e = d[prev][0]
                     km += e
                     mins += e * (fc if city[prev] and c0 else fr)
@@ -417,7 +434,7 @@ class FleetEstimate:
                 if sk is not None:                          # рейс начинается там же — дальше всё как было
                     return km + (TK - sk), mins + (TM - SM[q])
             if heavy:
-                e = d0[x] * 2.0 * math.ceil(w / cap)
+                e = (d0[x] + d[x][0]) * math.ceil(w / cap)
                 km += e
                 mins += e * (fc if c0 and city[x] else fr) + un[x]
                 continue

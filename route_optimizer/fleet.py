@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
 from . import vrp
 from .geo import Point, in_city
 from .running_costs import RunningCost, configured, profile_fields, route_cost
+from .tsp import is_symmetric
 
 logger = logging.getLogger(__name__)
 
@@ -198,28 +199,34 @@ def _schedule(seq: Sequence[int], stops: Sequence[_Stop], m: Matrix, start: floa
 def _two_opt(seq: list[int], stops: Sequence[_Stop], d: Matrix,
              ok: Callable[[list[int]], bool] | None = None) -> list[int]:
     """2-opt рейса «склад → seq → склад» (склад на месте); длина не растёт. ok — ход принимается, только если
-    рейс после него допустим (окна приёма)."""
+    рейс после него допустим (окна приёма). Направленная матрица — с внутренними рёбрами развёрнутого куска
+    (как tsp.two_opt): ход, который короче только «в одну сторону», не принимается и не пропускается."""
     t = [-1, *seq]
     node = [0, *(stops[v].node for v in seq)]
-    directed = any(d[a][b] != d[b][a] for a in node for b in node)
     n = len(t)
     if n < 4:
         return seq
+    directed = not is_symmetric(d, node)
     improved = True
     while improved:
         improved = False
         for i in range(1, n - 1):
+            fwd = back = 0.0   # ход куска node[i..j] вперёд и назад
             for j in range(i + 1, n):
                 a, b, c = node[i - 1], node[i], node[j]
                 e = node[j + 1] if j + 1 < n else node[0]
-                if d[a][c] + d[b][e] - d[a][b] - d[c][e] < -_EPS:
-                    candidate = t[1:i] + t[i:j + 1][::-1] + t[j + 1:]
-                    if directed and _closed(candidate, stops, d) >= _closed(t[1:], stops, d) - _EPS:
-                        continue
+                delta = d[a][c] + d[b][e] - d[a][b] - d[c][e]
+                if directed:
+                    p = node[j - 1]
+                    fwd += d[p][c]
+                    back += d[c][p]
+                    delta += back - fwd
+                if delta < -_EPS:
                     if ok is not None and not ok(t[1:i] + t[i:j + 1][::-1] + t[j + 1:]):
                         continue
                     t[i:j + 1] = t[i:j + 1][::-1]
                     node[i:j + 1] = node[i:j + 1][::-1]
+                    fwd, back = back, fwd
                     improved = True
     return t[1:]
 
@@ -260,7 +267,14 @@ def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix,
              window: float, fits: Callable[[list[int], list[int]], list[int] | None] | None = None) -> list[list[int]]:
     """Кларк–Райт (параллельная версия): s(i, j) = d(0,i) + d(0,j) − d(i,j), по убыванию (ничьи — по
     номеру); маршруты сливаются через концы, пока груз ≤ cap и время рейса ≤ window. fits(a, b) — проверка
-    слияния a + b (окна приёма, тоннаж центра): допустимый порядок объезда слитого рейса или None."""
+    слияния a + b (окна приёма, тоннаж центра): допустимый порядок объезда слитого рейса или None.
+    Направленная матрица минут: время слитого рейса — точно по его порядку объезда (у развёрнутого куска своё
+    время); симметричная — прежняя формула из времён двух рейсов."""
+    directed = not is_symmetric(m, [0, *(stops[v].node for v in light)])
+
+    def exact(seq: Sequence[int]) -> float:
+        return _closed(seq, stops, m) + math.fsum(stops[v].unload for v in seq)
+
     route = {v: v for v in light}
     members = {v: [v] for v in light}
     load = {v: stops[v].kg for v in light}
@@ -284,7 +298,10 @@ def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix,
         if (A[-1] != i and A[0] != i) or (B[0] != j and B[-1] != j):
             continue
         a, b = stops[i].node, stops[j].node
-        t = time[ri] + time[rj] - m[a][0] - m0[b] + m[a][b]
+        if directed:
+            t = exact((A if A[-1] == i else A[::-1]) + (B if B[0] == j else B[::-1]))
+        else:
+            t = time[ri] + time[rj] - m[a][0] - m0[b] + m[a][b]
         if t > window + _EPS:   # езда + разгрузка — нижняя граница времени рейса и с ожиданием у окон
             continue
         if fits is not None:
@@ -301,7 +318,7 @@ def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix,
         for v in B:
             route[v] = ri
         load[ri] += load.pop(rj)
-        time[ri] = t
+        time[ri] = exact(A) if directed else t
         del members[rj], time[rj]
     return sorted(members.values(), key=min)
 
@@ -360,6 +377,7 @@ def _sequence_cost(seq: Sequence[int], stops: Sequence[_Stop], d: Matrix, truck:
 
 def trip_running_cost(points: Sequence[Point], kgs: Sequence[float], depot: Point,
                       norms: Norms, truck: FleetTruck) -> RunningCost:
+    norms = norms.for_trucks()
     nodes = [depot, *points, depot]
     return route_cost([norms.km(a, b) for a, b in zip(nodes, nodes[1:])], kgs, truck)
 
@@ -1405,32 +1423,39 @@ class FleetDay:
 
 
 def _matrices(points: Sequence[Point], depot: Point, norms: Norms, tn: TruckNorms | None = None) -> tuple[Matrix, Matrix]:
-    """Км (norms.km — по дорогам или по прямой × извилистость) и минуты езды (скорость города, если
-    оба конца в городе) между складом (0) и точками дня."""
+    """Км (norms.km — по дорогам или по прямой × извилистость) и минуты езды между складом (0) и точками дня —
+    направленно: d[a][b] — от a до b (одностороннее движение, Valhalla). Дороги — профиль грузовика
+    (Norms.for_trucks); скорость участка — Norms.leg_speed (время Valhalla; иначе скорость города, если оба конца в
+    городе, или области)."""
+    norms = norms.for_trucks()
     if norms.traffic is not None and tn is not None and tn.work_start_minute is not None:
         norms = replace(norms, traffic_start_min=tn.work_start_minute)
     pts = [depot, *points]
+    if norms.roads is not None:
+        norms.roads.ensure(pts)
     n = len(pts)
     city = [in_city(p, norms.city_center, norms.city_radius_km) for p in pts]
     d = [[0.0] * n for _ in range(n)]
     m = [[0.0] * n for _ in range(n)]
+    v = [[0.0] * n for _ in range(n)]   # скорость участка, км/ч (до часового профиля)
     for a in range(n):
         pa = pts[a]
-        for b in range(a + 1, n):
+        for b in range(n):
+            if a == b:
+                continue
             pb = pts[b]
             km = norms.km(pa, pb)
-            speed = norms.speed_city_kmh if city[a] and city[b] else norms.speed_region_kmh
+            both = city[a] and city[b]
+            speed = v[a][b] = norms.leg_speed(pa, pb, km, both)
             if norms.traffic is not None:
-                speed *= norms.traffic.minimum(city[a] and city[b])
-            d[a][b] = d[b][a] = km
-            m[a][b] = m[b][a] = km / speed * 60.0
+                speed *= norms.traffic.minimum(both)
+            d[a][b] = km
+            m[a][b] = km / speed * 60.0
             if norms.provider is not None:
-                d[b][a] = norms.km(pts[b], pa)
                 m[a][b] = norms.provider.minutes(pa, pb)
-                m[b][a] = norms.provider.minutes(pb, pa)
     if norms.provider is not None or norms.traffic is not None or (tn is not None and tn.load(1000) > 0):
         from .traffic_validation import TravelMatrix
-        m = TravelMatrix(m, d, city, norms, tn, pts)
+        m = TravelMatrix(m, d, city, norms, tn, pts, v)
     return d, m
 
 

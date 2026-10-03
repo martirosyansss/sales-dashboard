@@ -11,7 +11,7 @@ import math
 import random
 import zlib
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from statistics import fmean, median
 from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, Sequence
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from .roads import RoadDistances
     from .snapshot import Snapshot
     from .store import Bundle
+    from .valhalla_engine import ValhallaRoads
 
 BASE_SEED = 42
 MC_REVENUE_SAMPLES = 500   # низкий сезон: выручка дня и рейса
@@ -446,7 +447,8 @@ class Norms:
     city_radius_km: float
     min_day_revenue: float
     min_trip_revenue: float
-    roads: RoadDistances | None = field(default=None, compare=False, repr=False)   # None — по прямой
+    # None — по прямой; ValhallaRoads — направленные км и минуты Valhalla (запасной путь — граф OSM)
+    roads: RoadDistances | ValhallaRoads | None = field(default=None, compare=False, repr=False)
     traffic: Any = field(default=None, compare=False, repr=False)
     traffic_weekday: int = 0
     traffic_start_min: float = 540.0
@@ -455,7 +457,7 @@ class Norms:
 
     @classmethod
     def from_settings(cls, s: Mapping[str, Any], calib: Calibration | None = None,
-                      roads: RoadDistances | None = None) -> Norms:
+                      roads: RoadDistances | ValhallaRoads | None = None) -> Norms:
         """Нормы расчёта; извилистость и скорости — действующие (road_norms), а не «как в поле»."""
         h1, m1 = map(int, s['work_start'].split(':'))
         h2, m2 = map(int, s['work_end'].split(':'))
@@ -476,8 +478,8 @@ class Norms:
         )
 
     def km(self, a: Point, b: Point) -> float:
-        """Км участка — единая функция расстояния расчёта: по дорогам; карты нет, точка дальше
-        0,5 км от дороги или пути нет — по прямой × извилистость."""
+        """Км участка A → B — единая функция расстояния расчёта: по дорогам (направленно); карты нет, точка
+        дальше 0,5 км от дороги или пути нет — по прямой × извилистость."""
         if self.provider is not None:
             d = self.provider.km(a, b)
             if d is not None:
@@ -487,6 +489,20 @@ class Norms:
             if d is not None:
                 return d
         return haversine_km(a, b) * self.detour
+
+    def leg_speed(self, a: Point, b: Point, km: float, city: bool) -> float:
+        """Скорость участка A → B, км/ч (city — оба конца в городе): дороги знают время участка (Valhalla) —
+        км / это время; иначе скорость зоны из GPS-калибровки. Часовой профиль пробок (traffic) применяется
+        поверх этой скорости, как и раньше."""
+        if self.roads is not None and km > 0:
+            minutes = self.roads.minutes(a, b, city)
+            if minutes is not None and minutes > 0:
+                return km / minutes * 60.0
+        return self.speed_city_kmh if city else self.speed_region_kmh
+
+    def for_trucks(self) -> Norms:
+        """Нормы для грузовиков развоза: у Valhalla — профиль truck; у графа OSM и по прямой — те же."""
+        return self if self.roads is None else replace(self, roads=self.roads.truck())
 
     @property
     def distance(self) -> Distance | None:
@@ -519,7 +535,8 @@ def route_metrics(points: Sequence[Point], home: Point | None, norms: Norms,
     """(км, минуты в пути) маршрута менеджера: дом → точки → дом; без дома — от первой до последней.
 
     km участка — norms.km (по дорогам, иначе по прямой × извилистость); время участка =
-    км / скорость × 60, скорость городская, если оба конца в городе, иначе областная.
+    км / скорость × 60, скорость — norms.leg_speed (Valhalla; иначе городская, если оба конца в городе, иначе
+    областная).
     """
     if norms.traffic is not None:
         from .traffic_metrics import route_metrics as timed_metrics
@@ -530,7 +547,7 @@ def route_metrics(points: Sequence[Point], home: Point | None, norms: Norms,
         leg = norms.km(a, b)
         both_city = (in_city(a, norms.city_center, norms.city_radius_km)
                      and in_city(b, norms.city_center, norms.city_radius_km))
-        speed = norms.speed_city_kmh if both_city else norms.speed_region_kmh
+        speed = norms.leg_speed(a, b, leg, both_city)
         km += leg
         minutes += leg / speed * 60.0
     return km, minutes
@@ -1024,7 +1041,9 @@ def evaluate_plan(snap: Snapshot, bundle: Bundle, calib: Calibration | None = No
     road = road_norms(s, calib)
     coords: dict[tuple[int, int], Coord] = {}
     if roads is not None:
-        roads.ensure(plan_points(snap, bundle, coords))
+        points = plan_points(snap, bundle, coords)
+        roads.ensure(points)
+        roads.truck().ensure(points)   # парк: у Valhalla свой профиль грузовика
         if roads.failed:   # граф не собрался — считаем по прямой (в журнале — причина)
             roads = None
     norms = Norms.from_settings(s, calib, roads)

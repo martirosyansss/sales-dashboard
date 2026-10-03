@@ -20,6 +20,7 @@ from . import erp
 from .roads import RoadProvider, osm_path
 from .snapshot import ResultCache, SnapshotCache, load_snapshot
 from .store import Store
+from .valhalla_engine import ValhallaProvider
 from .views import EXTENSION_KEY, DriverGeo, RoutesState, bp
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,9 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
     db_path — файл SQLite; по умолчанию env ROUTES_DB_PATH или route_optimizer.db рядом с app_v2.py.
     Карта дорог — env ROUTES_OSM_PATH или data/roads/armenia-latest.osm.pbf (этап 5); файла нет —
     км по прямой × извилистость. Граф и матрица строятся при первом расчёте, а не здесь.
+    Valhalla (план learning-loop, этап 2) — env ROUTES_ROAD_ENGINE: valhalla_time (по умолчанию: минуты Valhalla,
+    км графа OSM) | valhalla | osm; тайлы — в ROUTES_VALHALLA_DIR (valhalla_engine). Без pyvalhalla или карты —
+    граф OSM, как раньше.
     """
     path = db_path or os.environ.get('ROUTES_DB_PATH') or os.path.join(app.root_path, DB_FILENAME)
     connection_string: str = db.connection_string
@@ -43,6 +47,7 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         snapshots=SnapshotCache(lambda: load_snapshot(connection_string)),
         results=ResultCache(),
         roads=roads,
+        valhalla=ValhallaProvider(),
         dispatch_loader=lambda since, until, day: erp.load_dispatch_data(connection_string, since, until, day),
         fact_loader=lambda day: erp.load_fact_data(connection_string, day),
     )

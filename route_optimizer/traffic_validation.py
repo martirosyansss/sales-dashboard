@@ -110,10 +110,13 @@ def learn(visits, fixes_by_agent, center, radius, today):
 
 
 class TravelMatrix(list):
-    def __init__(self, values, distances, cities, norms, tn, points):
+    """Минуты участков по часу выезда. speeds[a][b] — скорость участка до часового профиля (Norms.leg_speed:
+    время Valhalla или скорость зоны); None — скорость зоны."""
+
+    def __init__(self, values, distances, cities, norms, tn, points, speeds=None):
         super().__init__(values)
         self.distances, self.cities, self.norms, self.tn = distances, cities, norms, tn
-        self.points = points
+        self.points, self.speeds = points, speeds
 
     def load(self, kg):
         return self.tn.load(kg) if self.tn is not None else 0.
@@ -122,7 +125,8 @@ class TravelMatrix(list):
         if self.norms.provider is not None:
             return self.norms.provider.minutes(self.points[a], self.points[b])
         city = self.cities[a] and self.cities[b]
-        speed = self.norms.speed_city_kmh if city else self.norms.speed_region_kmh
+        speed = (self.speeds[a][b] if self.speeds is not None and a != b else
+                 self.norms.speed_city_kmh if city else self.norms.speed_region_kmh)
         if self.norms.traffic is None:
             return self.distances[a][b] / speed * 60
         return self.norms.traffic.travel(self.distances[a][b], speed, city,

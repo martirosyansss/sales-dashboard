@@ -3660,7 +3660,7 @@ def test_roads_way_direction_for_car():
     assert rd.way_direction({'highway': 'residential', 'motorcar': 'yes'}) == 0
 
 
-def test_roads_oneway_respected_then_symmetrized():
+def test_roads_oneway_respected_directed():
     net = rd.RoadNetwork(_road_graph())
     h = geo.haversine_km
     d01, d10 = h(RN[0], RN[1]), h(RN[1], RN[2]) + h(RN[2], RN[0])
@@ -3673,7 +3673,9 @@ def test_roads_oneway_respected_then_symmetrized():
     assert net.distances(rd.np.array([n0]), rd.np.array([n1]), reverse=True)[0, 0] == pytest.approx(d10)
     r = _roads()
     r.ensure([RN[0], RN[1]])
-    assert r.km(RN[0], RN[1]) == r.km(RN[1], RN[0]) == pytest.approx((d01 + d10) / 2, rel=1e-6)
+    # матрица направленная (план learning-loop, этап 2): туда — по одностороннему, обратно — объездом
+    assert r.km(RN[0], RN[1]) == pytest.approx(d01, rel=1e-6)
+    assert r.km(RN[1], RN[0]) == pytest.approx(d10, rel=1e-6)
 
 
 def test_roads_snap_offset_and_fallback_beyond_half_km():

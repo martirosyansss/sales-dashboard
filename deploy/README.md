@@ -67,6 +67,29 @@ powershell -ExecutionPolicy Bypass -File install_server.ps1 -Token "github_pat_�
   для локальной сети: `New-NetFirewallRule -DisplayName "Sales Dashboard" -Direction Inbound -LocalPort 5000 -Protocol TCP -Action Allow`)
 - Логи: `C:\Sales Dashboard\logs\`
 
+## Дороги: Valhalla (время в пути)
+
+«Маршруты» берут время в пути из локального движка Valhalla (`pyvalhalla` ставится из `requirements.txt`),
+км — из графа OSM, как раньше. Нет пакета или карты `data/roads/armenia-latest.osm.pbf` — всё как раньше.
+Тайлы и кэш матриц — вне git. В `.env`:
+
+```
+ROUTES_VALHALLA_DIR=C:\RoutesData\valhalla
+ROUTES_ROAD_ENGINE=valhalla_time
+```
+
+`ROUTES_VALHALLA_DIR` — папка тайлов и кэша, ~110 МБ. `ROUTES_ROAD_ENGINE`: `valhalla_time` — по умолчанию,
+`valhalla` — км тоже из Valhalla, `osm` — откат на прежний расчёт.
+
+Один раз после обновления, из `C:\Sales Dashboard`, ~5 мин. Без этого первый расчёт «Маршрутов» ждёт столько же:
+
+```powershell
+python -m route_optimizer.valhalla_engine build    # тайлы из карты, 15–70 с
+python -m route_optimizer.roads warm               # матрица графа OSM (формат сменился — пересчёт)
+python -m route_optimizer.valhalla_engine warm     # матрицы машин менеджеров и грузовиков
+python -m route_optimizer.valhalla_engine status
+```
+
 ## Управление
 
 ```powershell
