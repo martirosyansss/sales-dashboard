@@ -25,7 +25,14 @@ E ИИ-панель: кнопка открытия → панель с подс�
   двух реплик; Esc закрывает панель, фокус возвращается на кнопку открытия;
 F «Տպել» открывает страницу с листами `.sheet` — по одному на машину плана;
 G «Վերակազմել/Ջնջել» (сброс, диалог принимается) → шаг 3 снова скрыт;
-H телефон 390×860: на построенном плане нет горизонтальной прокрутки, открытая ИИ-панель помещается по ширине.
+H телефон 390×860: на построенном плане нет горизонтальной прокрутки, открытая ИИ-панель помещается по ширине;
+V совет «какую машину добавить» (№54; отдельный день 2026-10-02: три заказа по 3,4 т, отмечена только малая машина
+  CAR2 без права въезда в центр — магазин центра остался без рейса, CAR1 свободна): карточка называет CAR1 и даёт кнопку «Ավելացնել և վերակազմել»;
+  клик отмечает CAR1 в шаге 1 и пересобирает (POST build с CAR1), после чего совет и карточка пропадают;
+W устаревший чат (views._seen_stale): план на сервере изменён за спиной страницы (закрепление рейса) → вопрос ИИ
+  даёт 409 stale, клиент модели не вызван, в пузыре ошибки «Թարմացնել» и заметка о новом разговоре, вопрос вернулся
+  в #dpAiInput; «Թարմացնել» перечитывает день и очищает разговор (снова подсказки); следующий вопрос доходит до
+  клиента модели с новым rev.
 
 Ошибки страницы (pageerror) и ошибки консоли — провал, кроме сетевых «Failed to load resource» для внешних
 ресурсов (CDN, шрифты, плитки Яндекса/OSM) и /api/routes/road-lines (без карты дорог страница рисует прямые).
@@ -39,6 +46,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from datetime import date, datetime
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +61,7 @@ from werkzeug.serving import make_server  # noqa: E402
 
 import route_optimizer  # noqa: E402
 from route_optimizer import ai_chat  # noqa: E402
+from route_optimizer import dispatch as dp  # noqa: E402
 from route_optimizer import learning as lr  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
 from route_optimizer.snapshot import SnapshotCache  # noqa: E402
@@ -337,6 +346,94 @@ def main() -> int:
             page.wait_for_function("() => document.getElementById('dpStep3').hidden || "
                                    "getComputedStyle(document.getElementById('dpStep3')).display === 'none'", timeout=20000)
             check(not vis('#dpStep3'), 'G reset → step 3 hidden again')
+
+            # V: совет «Չի տեղավորվել». Отдельный день 10-02 (развозим заказы четверга 10-01): три магазина по 3,4 т,
+            # CAR2 (3,5 т) берёт два рейса, третий не помещается; CAR1 (10 т) готова, но не отмечена
+            heavy = [_dorder(i + 1, cid, 3400.0, day=date(2026, 10, 1)) for i, cid in enumerate((101, 102, 104))]
+            names = {101: ('C101', 'Клиент <101>'), 102: ('C102', 'Клиент 102'), 104: ('C104', 'Клиент 104')}
+            app.extensions['route_optimizer'].dispatch_loader = lambda since, until, d: dp.DispatchData(
+                tuple(heavy), names, {}, {1: ('CAR1',), 2: ('CAR2',)}, datetime(2026, 10, 1, 18, 0))
+            DAY2 = '2026-10-02'
+            builds, asks = [], []
+            page.on('request', lambda r: builds.append(r.post_data_json) if r.method == 'POST' and r.url.endswith('/dispatch/build') else None)
+            page.on('request', lambda r: asks.append(r.post_data_json) if r.method == 'POST' and r.url.endswith('/dispatch/ask') else None)
+            page.goto(f'{BASE}/routes/dispatch?date={DAY2}')
+            page.wait_for_selector('#dpBody', state='visible', timeout=30000)
+            page.wait_for_function("() => !document.getElementById('dpBuild').disabled", timeout=15000)
+            cb1 = page.locator('#dpTrucks input[type="checkbox"][value="CAR1"]')
+            cb2 = page.locator('#dpTrucks input[type="checkbox"][value="CAR2"]')
+            check(cb1.is_checked() and cb2.is_checked(), 'V day 10-02: both trucks ticked by default')
+            cb1.uncheck()
+            page.click('#dpBuild')
+            page.wait_for_selector('#dpUnassigned .dp-unassigned', timeout=30000)
+            check(len(builds) == 1 and builds[0]['trucks'] == ['CAR2'], f'V first build with CAR2 only: {builds}')
+            adv_card = page.locator('#dpUnassigned .dp-unassigned')
+            adv_btn = adv_card.locator('button', has_text='Ավելացնել և վերակազմել')
+            card_text = adv_card.inner_text()
+            check(adv_btn.count() == 1 and 'HOWO · CAR1' in card_text
+                  and 'Սեղմեք «Ավելացնել և վերակազմել»' in card_text
+                  and page.locator('#dpOverflow button', has_text='Վերակազմել երթերը').count() == 0,
+                  f'V advice card (store in the center → center card) names HOWO · CAR1 and has the «Ավելացնել և վերակազմել» button: {card_text!r}')
+            api_day = page.request.get(f'{BASE}/api/routes/dispatch?date={DAY2}').json()
+            adv = api_day['plan']['advice']
+            check(adv and adv['add'] and adv['add']['car_code'] == 'CAR1' and adv['rebuild'] == [],
+                  f'V server plan.advice.add = CAR1: {adv}')
+            adv_btn.click()
+            page.wait_for_function("() => document.querySelector('#dpUnassigned .dp-unassigned') === null", timeout=30000)
+            check(len(builds) == 2 and sorted(builds[1]['trucks']) == ['CAR1', 'CAR2'] and cb1.is_checked(),
+                  f'V button ticked CAR1 in step 1 and rebuilt: POST build trucks={builds[-1]["trucks"]}')
+            api_day = page.request.get(f'{BASE}/api/routes/dispatch?date={DAY2}').json()
+            check(api_day['plan']['advice'] is None and api_day['plan']['unassigned'] == []
+                  and page.locator('#dpOverflow button, #dpUnassigned button', has_text='Ավելացնել').count() == 0,
+                  f'V after rebuild: advice gone, nothing unassigned, no advice buttons ({api_day["plan"]["advice"]})')
+
+            # W: на странице план после пересборки (rev1); за её спиной закрепляем рейс — rev2
+            page.click('#dpAiOpen')
+            page.wait_for_selector('#dpAi', state='visible', timeout=5000)
+            page.locator('#dpAi .dp-ai-sug').first.click()
+            page.wait_for_selector('#dpAiLog .dp-ai-msg.is-bot li', timeout=20000)
+            n_calls = len(fake.calls)
+            trip0 = api_day['plan']['trucks'][0]['trips'][0]
+            truck0 = api_day['plan']['trucks'][0]['car_code']
+            rev1 = api_day['rev']
+            pin_resp = page.request.post(f'{BASE}/api/routes/dispatch/edit', data={
+                'date': DAY2, 'rev': rev1, 'action': 'pin', 'trip': trip0['id'], 'truck': truck0})
+            rev2 = pin_resp.json().get('rev')
+            check(pin_resp.status == 200 and isinstance(rev2, int) and rev2 != rev1,
+                  f'W plan changed behind the page: rev {rev1} -> {rev2} (status {pin_resp.status})')
+            page.fill('#dpAiInput', 'Հին պլանի հարց')
+            with page.expect_response(lambda r: r.url.endswith('/dispatch/ask'), timeout=20000) as resp_info:
+                page.press('#dpAiInput', 'Enter')
+            resp = resp_info.value
+            body = resp.json()
+            expected_409 = [e for e in errors if '409' in e]          # браузер пишет 409 в консоль — это ожидаемый ответ
+            for e in expected_409[:1]:
+                errors.remove(e)
+            check(resp.status == 409 and body.get('stale') is True and body.get('success') is False
+                  and asks and asks[-1].get('rev') == rev1, f'W ask → 409 stale, page sent the old rev: {resp.status} {body}')
+            page.wait_for_selector('#dpAiLog .dp-ai-msg.is-err', timeout=5000)
+            err = page.locator('#dpAiLog .dp-ai-msg.is-err')
+            refresh_btn = err.locator('button', has_text='Թարմացնել')
+            check(len(fake.calls) == n_calls, f'W model client got no new call ({len(fake.calls)} vs {n_calls})')
+            check(refresh_btn.count() == 1 and 'նոր զրույց' in err.inner_text()
+                  and err.locator('button', has_text='Կրկնել').count() == 0,
+                  f'W error bubble: «Թարմացնել» button and the new-conversation note: {err.inner_text()!r}')
+            check(page.input_value('#dpAiInput') == 'Հին պլանի հարց', 'W question is back in #dpAiInput')
+            with page.expect_response(lambda r: r.request.method == 'GET' and '/api/routes/dispatch?' in r.url, timeout=20000):
+                refresh_btn.click()
+            page.wait_for_function("() => document.querySelectorAll('#dpAiLog .dp-ai-msg').length === 0"
+                                   " && document.querySelectorAll('#dpAiLog .dp-ai-sug').length > 0", timeout=10000)
+            check(page.locator('#dpAiLog .dp-ai-msg').count() == 0 and page.locator('#dpAiLog .dp-ai-sug').count() > 0
+                  and page.input_value('#dpAiInput') == 'Հին պլանի հարց',
+                  'W «Թարմացնել» reloads the day and clears the chat (suggestions again, question kept in the field)')
+            page.press('#dpAiInput', 'Enter')
+            page.wait_for_selector('#dpAiLog .dp-ai-msg.is-bot li', timeout=20000)
+            sent = fake.calls[-1]['messages'][0]['content'][0]['text'] if len(fake.calls) > n_calls else ''
+            check(len(fake.calls) == n_calls + 1 and asks[-1].get('rev') == rev2 and len(expected_409) == 1
+                  and sent.startswith('<day_data') and '"pinned":true' in sent,
+                  f'W next question reaches the model: page sent the new rev {rev2} (sent {asks[-1].get("rev")}), '
+                  f'day_data shows the pinned trip, calls {len(fake.calls)}')
+            page.keyboard.press('Escape')
 
             check(not errors, 'no pageerror / console errors' + ('' if not errors else ': ' + ' | '.join(errors[:5])))
             browser.close()
