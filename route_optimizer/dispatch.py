@@ -855,13 +855,52 @@ def _day_explain(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft, se
     }
 
 
+def _advice(ctx: DayContext, draft: Draft, trips_json: Sequence[Mapping[str, Any]],
+            unassigned: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Совет, когда не всё поместилось (ответ владельца №54): рейсы позже конца дня (over_time; с принятой переработкой —
+    позже её предела) или магазины вне рейсов «не успели» / «центр без машины» (no_room, no_center). Ничего такого — None.
+    Сама сборка машин не добавляет (№32): совет — логисту, решает он одной кнопкой на странице.
+    - rebuild — отмеченные машины дня без рейсов. Свежая сборка за конец дня не планирует, пока отмеченные машины
+      свободны: опаздывающие рейсы рядом со свободными машинами — план собран при других настройках или правлен
+      вручную, обычная пересборка загрузит и их;
+    - add — иначе одна готовая, но не отмеченная машина. Нужен центр (магазин no_center или опаздывающий рейс машины с
+      правом въезда, в котором есть точки центра) — из машин с правом въезда (таких нет — из всех, for_center: false).
+      Груз need_kg — самый тяжёлый опаздывающий рейс или все магазины вне рейсов вместе: из машин, что его берут, —
+      с меньшим расходом (затем вместительнее, затем код), иначе самая вместительная. Свободной машины нет — None.
+    Это оценка без расчёта рейсов (дёшево и детерминированно): что на самом деле поместится, покажет пересборка."""
+    late = [t for t in trips_json if t['over_time']]
+    left = [u for u in unassigned if u['no_room'] or u['no_center']]
+    if not late and not left:
+        return None
+    busy = {t['truck'] for t in trips_json}
+    idle = [c for c in sorted(set(draft.trucks)) if c in ctx.trucks and c not in busy]
+    if late and idle:
+        return {'rebuild': idle, 'add': None}
+    free = [t for c, t in sorted(ctx.trucks.items()) if c not in draft.trucks]
+    center_ok = {c for c, t in ctx.trucks.items() if t.center_ok}
+    need_center = any(u['no_center'] for u in left) or any(
+        t['truck'] in center_ok and any(s['center'] for s in t['stops']) for t in late)
+    pool = [t for t in free if t.center_ok] if need_center else []
+    for_center = bool(pool)
+    pool = pool or free
+    if not pool:
+        return {'rebuild': [], 'add': None}
+    need_kg = max([t['kg'] for t in late] + [sum(u['kg'] for u in left)])
+    fits = [t for t in pool if t.capacity_kg >= need_kg]
+    pick = (min(fits, key=lambda t: (t.l100, -t.capacity_kg, t.car_code)) if fits
+            else min(pool, key=lambda t: (-t.capacity_kg, t.l100, t.car_code)))
+    return {'rebuild': [], 'add': {'car_code': pick.car_code, 'name': pick.name, 'capacity_kg': pick.capacity_kg,
+                                   'l100': pick.l100, 'center_ok': pick.center_ok, 'for_center': for_center}}
+
+
 def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
               info: Callable[[Stop], dict[str, Any]]) -> dict[str, Any]:
     """Рейсы черновика с цифрами по текущим заказам: машины → рейсы по порядку (выезд, возвращение,
-    км, литры, загрузка), точки по порядку; «ещё не в рейсах»; «не помещается». Время — рейсы машины
-    подряд с ожиданием у окон приёма; у точки — прибытие (eta), вне окна (window_miss — бывает после правки
-    логиста), в центре (center) и в центре на машине без права въезда (center_miss). Пояснение «почему так» — у рейса
-    explain (_trip_explain), у дня — explain (_day_explain): только цифры того же расчёта, текст строит страница."""
+    км, литры, загрузка), точки по порядку; «ещё не в рейсах»; «не помещается» и совет, что с этим делать (advice —
+    _advice). Время — рейсы машины подряд с ожиданием у окон приёма; у точки — прибытие (eta), вне окна (window_miss —
+    бывает после правки логиста), в центре (center) и в центре на машине без права въезда (center_miss). Пояснение
+    «почему так» — у рейса explain (_trip_explain), у дня — explain (_day_explain): только цифры того же расчёта, текст
+    строит страница."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
     shares = _shares(draft.trips)
@@ -960,6 +999,7 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
         'unassigned': unassigned,
         'overflow': {'trips': len(over), 'kg': sum(t['kg'] for t in over),
                      'unassigned_kg': sum(u['kg'] for u in unassigned)},
+        'advice': _advice(ctx, draft, trips_json, unassigned),
         'summary': {'trips': len(trips_json), 'trucks': len(trucks_json), 'km': _r(km_total),
                     'poor_trips': sum(1 for t in trips_json if t['poor']),
                     'liters': _r(math.fsum(t['liters'] or 0.0 for t in trips_json)),

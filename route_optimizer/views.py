@@ -1418,20 +1418,82 @@ def api_dispatch_reset() -> Any:
     return jsonify({'success': True, **_dispatch_body(dd)})
 
 
+AI_SEEN_MAX = 500           # рейсов плана страницы в вопросе AI — как рейсов в черновике (dispatch.MAX_TRIPS)
+AI_RETURN_SLACK_MIN = 5     # возвращение рейса на странице и сейчас расходится больше — на экране уже другой план
+AI_STALE = 'План или настройки изменились после открытия страницы — обновите страницу'
+_RETURN_RE = re.compile(r'^(\d{2}):(\d{2})(?: \(\+(\d+)\))?$')   # возвращение рейса: «17:32», «04:06 (+1)» (dp._hhmm)
+
+
+def _return_min(text: str | None) -> int | None:
+    """Возвращение рейса (dispatch._hhmm) → минуты от полуночи дня доставки; None — None."""
+    if text is None:
+        return None
+    h, m, days = _RETURN_RE.match(text).groups()
+    return (int(days or 0) * 24 + int(h)) * 60 + int(m)
+
+
+def _seen_error(payload: Mapping[str, Any]) -> dict[str, str] | None:
+    """Проверка плана, который логист видит на странице (вопрос AI): rev — номер черновика; seen — рейсы плана
+    [[id, возвращение «ЧЧ:ММ» | null, over_time], …] не больше AI_SEEN_MAX или null (плана нет). Ключа нет — он не
+    проверяется (страница прежней версии)."""
+    rev = payload.get('rev')
+    if 'rev' in payload and (not isinstance(rev, int) or isinstance(rev, bool)):
+        return {'rev': 'номер плана: ожидалось целое число'}
+    seen = payload.get('seen')
+    if seen is not None and not (isinstance(seen, list) and len(seen) <= AI_SEEN_MAX and all(
+            isinstance(x, list) and len(x) == 3 and isinstance(x[0], int) and not isinstance(x[0], bool)
+            and (x[1] is None or isinstance(x[1], str) and _RETURN_RE.match(x[1]) is not None)
+            and isinstance(x[2], bool) for x in seen)):
+        return {'seen': 'рейсы плана на странице: ожидался список [id, возвращение, опаздывает]'}
+    return None
+
+
+def _seen_stale(payload: Mapping[str, Any], body: Mapping[str, Any]) -> bool:
+    """План на странице — не тот, что сейчас в ответе дня (body): другой номер черновика, другие рейсы, другая пометка
+    «опаздывает» или возвращение рейса расходится больше AI_RETURN_SLACK_MIN минут (рейсы пересчитываются по текущим
+    настройкам, заказам и дорогам — план мог «уехать» и без новой сборки). Проверка — только по пришедшим ключам."""
+    if 'rev' in payload and payload['rev'] != body['rev']:
+        return True
+    if 'seen' not in payload:
+        return False
+    plan, seen = body['plan'], payload['seen']
+    if plan is None or seen is None:
+        return (plan is None) != (seen is None)
+    now = {t['id']: (_return_min(t['return']), t['over_time']) for truck in plan['trucks'] for t in truck['trips']}
+    page = {x[0]: (_return_min(x[1]), x[2]) for x in seen}
+    if len(page) != len(seen) or page.keys() != now.keys():
+        return True
+    for tid, (ret, late) in page.items():
+        ret_now, late_now = now[tid]
+        if late != late_now or (ret is None) != (ret_now is None) or (
+                ret is not None and abs(ret - ret_now) > AI_RETURN_SLACK_MIN):
+            return True
+    return False
+
+
 @bp.post('/api/routes/dispatch/ask')
 @_api
 def api_dispatch_ask() -> Any:
-    """«Հարցրու AI-ին» (ответ владельца №52): {"date", "question", "history": [{"role", "text"}], "focus"?} →
-    {"answer"}. Модель видит тот же ответ дня, что и страница, и ничего не меняет; история — у страницы."""
+    """«Հարցրու AI-ին» (ответ владельца №52): {"date", "question", "history": [{"role", "text"}], "focus"?, "rev"?,
+    "seen"?} → {"answer"}. Модель видит тот же ответ дня, что и страница, и ничего не меняет; история — у страницы.
+    rev и seen — план на экране (_seen_error): с открытия страницы план или настройки изменились (_seen_stale) — 409
+    stale без вызова модели, иначе AI ответил бы не о том плане, что видит логист."""
     payload, day, error = _dispatch_request()
     if error is not None:
         return error
+    bad = _seen_error(payload)
+    if bad is not None:
+        return _bad_request(bad)
     try:
         question, history, focus = ai_chat.parse_request(payload)
         ai_chat.ensure_available()          # без ключа — не читать день зря
         state = _state()
         dd = _load_day(state, _bundle(state), day)
-        result = ai_chat.ask(_dispatch_body(dd), question, history, focus)
+        body = _dispatch_body(dd)
+        if _seen_stale(payload, body):
+            logger.info('[Routes] AI-вопрос по развозу на %s (%s): план на странице устарел', day, session.get('username'))
+            return jsonify({'success': False, 'error': AI_STALE, 'stale': True}), 409
+        result = ai_chat.ask(body, question, history, focus)
     except ai_chat.AiError as e:
         return jsonify({'success': False, 'error': str(e)}), e.status
     logger.info('[Routes] AI-вопрос по развозу на %s (%s)', day, session.get('username'))
