@@ -35,9 +35,12 @@ except ImportError:   # pragma: no cover — сервер без pyvrp
 
 logger = logging.getLogger(__name__)
 
-ITERATIONS = 2000      # итераций поиска на день: число, а не время — план воспроизводим
+# Итераций поиска на день: число, а не время — план воспроизводим. Замер 03.10.2026 на 5 загруженных днях
+# (docs/research/solver-budget): 2000 → 20 000 итераций — дизель −4,85% за ~10 с на день вместо ~1,5 с.
+ITERATIONS = 20000
 SEED = 1
-MIN_ITERATIONS = 200   # маленький день — меньше итераций (50 на заказ), но не меньше этого
+MIN_ITERATIONS = 2000  # маленький день — меньше итераций (PER_ORDER на заказ), но не меньше этого
+PER_ORDER = 500
 FORBIDDEN_M = 10 ** 9  # ребро «машина без права въезда → точка центра», метров
 MAX_DISTANCE_M = 10 ** 8   # max_distance каждого промежутка: запрещённое ребро недопустимо
 PRIZE = 10 ** 13       # приз необязательного заказа: не везти его — дороже любого объезда
@@ -175,7 +178,7 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
         if acts:
             routes.append(Route(data, acts, k))
     initial = Solution(data, routes) if routes else None
-    n = max(MIN_ITERATIONS, min(iterations, 50 * len(pieces)))
+    n = max(MIN_ITERATIONS, min(iterations, PER_ORDER * len(pieces)))
     res = model.solve(MaxIterations(n), seed=seed, display=False, collect_stats=False, initial_solution=initial)
     best = res.best
     if not best.is_feasible():
