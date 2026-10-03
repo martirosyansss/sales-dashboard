@@ -33,7 +33,7 @@ from .roads import RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, Bundle, Decision, Store, StoreError, center_auto,
                     check_window, validate_payload)
-from .valhalla_engine import ValhallaProvider, ValhallaRoads
+from .valhalla_engine import TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider, ValhallaRoads, truck_time_source
 from .vehicle_access import check_access
 
 logger = logging.getLogger(__name__)
@@ -289,12 +289,14 @@ def _compute_overview(snap: Snapshot, bundle: Bundle, calib: evaluate.Calibratio
     return payload
 
 
-def _roads(state: RoutesState, snap: Snapshot, bundle: Bundle,
-           extra: Sequence[Point] = ()) -> RoadDistances | ValhallaRoads | None:
+def _roads(state: RoutesState, snap: Snapshot, bundle: Bundle, extra: Sequence[Point] = (),
+           truck_time: bool | None = None) -> RoadDistances | ValhallaRoads | None:
     """Расстояния по дорогам для расчёта по плану снимка (и точкам extra — заказы развоза) — до кэша оценки:
     граф OSM для всех точек — одним расчётом (первый раз — минуты, дальше кэш на диске). Valhalla — только если его
     матрицы для этих точек (у машин менеджеров и, когда грузовикам нужен Valhalla, у грузовиков) уже готовы: тайлы и
     матрицы считает фоновый поток (ValhallaProvider), а пока — граф OSM; запрос тяжёлой работы Valhalla не ждёт.
+    truck_time — минуты грузовиков из Valhalla («Развоз»: _truck_time_choice); None — ROUTES_TRUCK_TIME (обзор и
+    календарь менеджеров: выбор обучения действует только в «Развозе»).
     Карты нет — None; граф не собрался — roads.failed (оценка считает по прямой и предупреждает roads_failed)."""
     points = [*evaluate.plan_points(snap, bundle, {}), *extra]
     roads = state.roads.get() if state.roads is not None else None
@@ -302,7 +304,7 @@ def _roads(state: RoutesState, snap: Snapshot, bundle: Bundle,
         roads.ensure(points)
     if state.valhalla is not None:
         capacity = max((t.capacity_kg for t in _ready_trucks(snap, bundle).values()), default=None)
-        roads = state.valhalla.get(roads, points, capacity) or roads
+        roads = state.valhalla.get(roads, points, capacity, truck_time=truck_time) or roads
     return roads
 
 
@@ -839,17 +841,24 @@ def _ready_trucks(snap: Snapshot, bundle: Bundle, active_only: bool = True) -> d
 
 def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
                   trucks: dict[str, fl.FleetTruck], points: list[Any], customers: Mapping[int, Point] | None = None,
-                  learned_before: str | None = None, learned: bool = True) -> dp.DayContext | None:
+                  learned_before: str | None = None, learned: bool = True,
+                  truck_time: bool | None = None) -> dp.DayContext | None:
     """Контекст расчёта рейсов; склада или машин нет — None (страница объясняет, что заполнить). Действующие
     выученные нормы (_with_learned; learned_before — только прогоны раньше этого дня; learned=False — без них) — поверх
-    настроек; customers — клиент → точка дня (поправка разгрузки магазина)."""
+    настроек; customers — клиент → точка дня (поправка разгрузки магазина). Минуты грузовиков — truck_time (True —
+    Valhalla, False — прежняя модель); None — _truck_time_choice по тому же чтению журнала (learned=False — без выбора
+    обучения). Срез дорог — один на расчёт: км, минуты, road_model_id и поправка по часам — из одной модели; Valhalla
+    для этих точек не готов — прежняя модель (граф OSM)."""
     if bundle.depot is None or not trucks:
         return None
     s = bundle.settings
+    journal = _learned_journal(state, learned_before) if learned else None
+    if truck_time is None:
+        truck_time = _truck_time_choice(journal)[0] == TRUCK_TIME_VALHALLA
     calib = _calibration(state, snap, s)
-    roads = _roads(state, snap, bundle, [*points, bundle.depot])
+    roads = _roads(state, snap, bundle, [*points, bundle.depot], truck_time=truck_time)
     norms = evaluate.Norms.from_settings(s, calib, roads if roads is not None and not roads.failed else None)
-    norms = norms.for_trucks()   # развоз — профиль грузовика (км Valhalla — в режиме valhalla, минуты — ROUTES_TRUCK_TIME)
+    norms = norms.for_trucks()   # развоз — профиль грузовика (км Valhalla — в режиме valhalla, минуты — truck_time)
     h, m = map(int, s['truck_work_start'].split(':'))
     norms = replace(norms, traffic_weekday=day.weekday(), traffic_start_min=float(h * 60 + m))
     if s.get('traffic_mode') == 'yandex':
@@ -859,7 +868,7 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
     h2, m2 = map(int, s['truck_overtime_end'].split(':'))
     tn = fl.TruckNorms.from_settings(s)
     if learned:
-        norms, tn, trucks, _ = _with_learned(state, norms, tn, trucks, customers or {}, learned_before)
+        norms, tn, trucks, _ = _with_learned(state, norms, tn, trucks, customers or {}, journal)
     return dp.DayContext(day, bundle.depot, trucks, norms, tn, h * 60 + m,
                          float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']),
                          {cid: w.span() for cid, w in bundle.windows.items()},
@@ -1705,24 +1714,53 @@ def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date
     return out
 
 
-def _with_learned(state: RoutesState, norms: Any, tn: fl.TruckNorms, trucks: dict[str, fl.FleetTruck],
-                  customers: Mapping[int, Point], before: str | None = None
-                  ) -> tuple[Any, fl.TruckNorms, dict[str, fl.FleetTruck], learning.InEffect]:
-    """Действующие выученные нормы поверх настроек (прогоны раньше before). Сбой (битая строка журнала, база) — расчёт
-    на нормах из настроек: «Развоз» не падает; причина — в журнал и предупреждение на странице «Обучение и факт»
-    (снимается, как только нормы снова применились)."""
+_Journal = tuple[list[dict[str, Any]], dict[str, bool]]   # принятые строки learned_norms и переключатели автообучения
+
+
+def _learning_failed(state: RoutesState) -> None:
+    """Выученные нормы не применились (битая строка журнала, база): в журнал сервера и предупреждение на странице
+    «Обучение и факт» (снимается, как только нормы снова применились). Вызывать из обработчика исключения."""
+    logger.exception('[Routes] Выученные нормы не применены — расчёт по нормам из настроек')
+    state.learning_warning = {'at': _yerevan_now().isoformat(timespec='seconds'),
+                              'text': 'Выученные нормы не применились (ошибка журнала обучения) — «Развоз» считает '
+                                      'по нормам из настроек. Нажмите «Пересчитать сейчас».'}
+
+
+def _learned_journal(state: RoutesState, before: str | None) -> _Journal | None:
+    """Принятые строки журнала обучения (прогоны раньше before) и переключатели — одним чтением на расчёт: модель
+    времени грузовиков и выученные нормы — из одного состояния журнала. Сбой чтения — None (_learning_failed)."""
     try:
-        eff = learning.in_effect(state.store.learned(before, accepted_only=True), state.store.learning_auto(),
-                                 learning.road_model_id(norms))
+        return state.store.learned(before, accepted_only=True), state.store.learning_auto()
+    except Exception:
+        _learning_failed(state)
+        return None
+
+
+def _truck_time_choice(journal: _Journal | None) -> tuple[str, str]:
+    """(минуты грузовиков «Развоза» — model | valhalla, почему — env | learned | default): переменная окружения
+    ROUTES_TRUCK_TIME, если задана, > выбор обучения (вид truck_time, автообучение вида включено) > прежняя модель."""
+    learned = None
+    if journal is not None and learning.auto_on(journal[1], 'truck_time'):
+        learned = learning.truck_time_learned(journal[0])
+    return truck_time_source(learned)
+
+
+def _with_learned(state: RoutesState, norms: Any, tn: fl.TruckNorms, trucks: dict[str, fl.FleetTruck],
+                  customers: Mapping[int, Point], journal: _Journal | None
+                  ) -> tuple[Any, fl.TruckNorms, dict[str, fl.FleetTruck], learning.InEffect]:
+    """Действующие выученные нормы журнала journal (_learned_journal) поверх настроек; поправка по часам — только той
+    дорожной модели, что у norms (road_model_id). Сбой (битая строка журнала, база) — расчёт на нормах из настроек:
+    «Развоз» не падает (_learning_failed)."""
+    if journal is None:
+        return norms, tn, trucks, learning.InEffect()
+    try:
+        eff = learning.in_effect(*journal, learning.road_model_id(norms))
         if eff:
             norms, tn, trucks = learning.apply_learned(norms, tn, trucks, eff, customers)
         state.learning_warning = None
         return norms, tn, trucks, eff
     except Exception:
-        logger.exception('[Routes] Выученные нормы не применены — расчёт по нормам из настроек')
-        state.learning_warning = {'at': _yerevan_now().isoformat(timespec='seconds'),
-                                  'text': 'Выученные нормы не применились (ошибка журнала обучения) — «Развоз» считает '
-                                          'по нормам из настроек. Нажмите «Пересчитать сейчас».'}
+        _learning_failed(state)
         return norms, tn, trucks, learning.InEffect()
 
 
@@ -1730,7 +1768,13 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     """Прогон обучения за день today (Ереван; ночью — за наступивший день): наблюдения из факта до вчера включительно,
     проверка на последней неделе, итог — в learned_norms (повтор того же дня заменяет). «Действующая норма» для
     сравнения — по прогонам раньше today: повторный прогон даёт тот же итог. Внешние пробки (Яндекс) не запрашиваются;
-    трека и заправок ещё нет — ERP не читается, ничего не пишется."""
+    трека и заправок ещё нет — ERP не читается, ничего не пишется.
+
+    Время в пути: участки и поправка по часам (travel) — в модели, которой «Развоз» считает грузовики сейчас
+    (_truck_time_choice; Valhalla для точек факта не готов — прежняя модель). Выбор модели (truck_time) — обе модели
+    на одних и тех же участках, срез дорог с матрицей грузовика (learning.fit_truck_time). Выбор сменил модель, которой
+    «Развоз» будет считать (env не задана, автообучение вида включено), — строка travel дня — поправка новой модели:
+    дня без поправки нет."""
     if state.fleet_facts is None:
         return []
     bundle = _bundle(state)
@@ -1750,21 +1794,36 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     points = sorted({s.point for _, _, stops, *_ in days for s in stops if s.point is not None})
     customers = {s.customer_id: s.point for _, _, stops, *_ in days for s in stops
                  if s.point is not None and s.customer_id is not None}
-    before = today.isoformat()
-    base = _dispatch_ctx(state, snap, calc, today, ready, points, customers, learned=False) if ready else None
+    journal = _learned_journal(state, today.isoformat())
+    source = _truck_time_choice(journal)[0]
+    # нормы без выученного; срез Valhalla — с матрицей грузовика (её минуты нужны обеим моделям сравнения)
+    base = (_dispatch_ctx(state, snap, calc, today, ready, points, customers, learned=False, truck_time=True)
+            if ready else None)
     if base is None:
         raise dp.DispatchError('Сначала укажите тоннаж и расход машин в настройках')
-    norms, tn, trucks, eff = _with_learned(state, base.norms, base.tn, dict(base.trucks), customers, before)
+    variants = {TRUCK_TIME_MODEL: base.norms}   # модель → нормы грузовиков из одного среза дорог
+    if isinstance(base.norms.roads, ValhallaRoads) and base.norms.roads.active:
+        variants = {m: base.norms.for_trucks(truck_time=m == TRUCK_TIME_VALHALLA) for m in learning.TRUCK_TIME_SOURCES}
+    base_run = source if source in variants else TRUCK_TIME_MODEL   # как считает «Развоз» (Valhalla не готов — прежняя)
+    plain = variants[base_run]
+    norms, tn, trucks, eff = _with_learned(state, plain, base.tn, dict(base.trucks), customers, journal)
+    compare = mode != 'yandex' and TRUCK_TIME_VALHALLA in variants
     offsets = {int(c): float(v) for c, v in ((eff.unload or {}).get('store_offsets') or {}).items()}
     unload: list[learning.UnloadObs] = []
     loads: list[learning.LoadObs] = []
     legs: list[learning.LegObs] = []
+    pairs: list[tuple[learning.LegObs, learning.LegObs]] = []
+    no_valhalla = 0
     profiles: dict[str, list[tuple[datetime, float, float]]] = {}
     for car, day, stops, actual, draft, *_ in days:
         prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
         unload += learning.unload_obs(day, actual, stops)
         loads += learning.load_obs(day, actual, stops, learning.plan_trips(prediction, day))
         legs += learning.leg_obs(day, actual, norms)
+        if compare:
+            got, missing = learning.truck_time_obs(day, actual, variants[TRUCK_TIME_MODEL])
+            pairs += got
+            no_valhalla += missing
         profiles.setdefault(car, []).extend(ac.load_profile(actual, stops))
     loading_now = ((tn.warehouse_load_fixed_min, tn.warehouse_load_min_per_tonne)
                    if tn.loading_configured and tn.load(1000) > 0 else None)
@@ -1775,12 +1834,22 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     ]
     model_id = learning.road_model_id(norms)
     if mode == 'yandex':
-        outcomes.append(learning.Outcome('travel', '', False, 'время в пути считает Яндекс с пробками — поправка '
-                                         'по часам не нужна'))
+        outcomes += [learning.Outcome('travel', '', False, 'время в пути считает Яндекс с пробками — поправка '
+                                      'по часам не нужна'),
+                     learning.Outcome('truck_time', '', False, 'время в пути считает Яндекс с пробками — модель '
+                                      'времени грузовиков не выбирается')]
     else:
         prev = eff.travel if eff.travel is not None and eff.travel.get('model_id') == model_id else None
-        outcomes.append(learning.fit_travel(legs, today, model_id or 'straight', learning.model_ref(base.norms),
-                                            base.norms, prev))
+        travel = learning.fit_travel(legs, today, model_id or 'straight', learning.model_ref(plain), plain, prev)
+        rows, auto = journal if journal is not None else ([], {})
+        incumbent = learning.truck_time_learned(rows) or TRUCK_TIME_MODEL
+        prevs = {m: learning.in_effect(rows, auto, learning.road_model_id(n)).travel for m, n in variants.items()}
+        decision, fitted = learning.fit_truck_time(pairs, today, incumbent, variants, prevs, no_valhalla)
+        chosen = decision.params['source'] if decision.accepted else incumbent
+        after = truck_time_source(chosen if learning.auto_on(auto, 'truck_time') else None)[0]
+        if decision.accepted and after != base_run and after in fitted:
+            travel = fitted[after]   # «Развоз» переходит на другую модель — сразу с её поправкой по часам
+        outcomes += [travel, decision]
     capacity = {code: t.capacity_kg for code, t in trucks.items()}
     intervals = learning.fuel_intervals(refuels)
     by_car = learning.fuel_obs(intervals, profiles, capacity)
@@ -1834,7 +1903,8 @@ def run_learning_job(state: RoutesState, today: date, user: str | None) -> bool:
 def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]:
     """Что выучено по каждому виду (расход — по машине): последний прогон, действующая норма (строка журнала или None —
     ручная из настроек), ручная норма, переключатель автообучения (нет выбора — learning.DEFAULT_AUTO, у загрузки —
-    выключено). Дорожная модель — последнего прогона travel."""
+    выключено). Дорожная модель — последнего прогона travel. У модели времени грузовиков ещё source: какой моделью
+    «Развоз» считает сейчас и почему (_truck_time_choice: env, выбор обучения или по умолчанию) и выбор обучения."""
     rows = state.store.learned()
     auto = state.store.learning_auto()
     latest: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1847,8 +1917,9 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
         'loading': {'fixed_min': s.get('warehouse_load_fixed_min'),
                     'per_tonne_min': s.get('warehouse_load_min_per_tonne')},
         'travel': None,
+        'truck_time': None,
     }
-    keys = [(k, '') for k in learning.KINDS[:3]] + sorted(k for k in latest if k[0] == 'fuel')
+    keys = [(k, '') for k in learning.KINDS if k != 'fuel'] + sorted(k for k in latest if k[0] == 'fuel')
     out = []
     for kind, scope in keys:
         on = learning.auto_on(auto, kind)
@@ -1863,9 +1934,13 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
                    'full_l100': t.fuel_full_l_per_100km} if t is not None else None
         else:
             man = manual[kind]
-        out.append({'kind': kind, 'scope': scope, 'title': learning.KIND_TITLES[kind], 'auto': on,
-                    'auto_chosen': kind in auto, 'default_auto': learning.DEFAULT_AUTO[kind],
-                    'last': latest.get((kind, scope)), 'in_effect': effect, 'manual': man})
+        item = {'kind': kind, 'scope': scope, 'title': learning.KIND_TITLES[kind], 'auto': on,
+                'auto_chosen': kind in auto, 'default_auto': learning.DEFAULT_AUTO[kind],
+                'last': latest.get((kind, scope)), 'in_effect': effect, 'manual': man}
+        if kind == 'truck_time':
+            value, why = _truck_time_choice(([r for r in rows if r['accepted']], auto))
+            item['source'] = {'value': value, 'why': why, 'learned': learning.truck_time_learned(rows)}
+        out.append(item)
     return out
 
 
@@ -1912,6 +1987,7 @@ def api_learning() -> Any:
                     'rules': {'holdout_days': learning.HOLDOUT_DAYS, 'train_days': learning.TRAIN_DAYS,
                               'min_gain_pct': round(learning.MIN_GAIN * 100), 'unload_min': learning.UNLOAD_MIN,
                               'loading_min': learning.LOADING_MIN, 'travel_min_test': learning.TRAVEL_MIN_TEST,
+                              'truck_time_min': learning.TRUCK_TIME_MIN,
                               'fuel_min_intervals': learning.FUEL_MIN_INTERVALS,
                               'nightly_at': '%02d:%02d' % learning.NIGHTLY_AT}})
 

@@ -2,7 +2,9 @@
    API: GET /api/routes/learning?from=&to= (план и факт по дням, что выучено), GET /api/routes/learning/status (лёгкий
    опрос во время пересчёта), GET /api/routes/learning/day?date=&car= (карта дня), POST /api/routes/learning/run
    (пересчитать в фоне), POST /api/routes/learning/auto {kind, auto}, POST /api/routes/road-lines (плановые рейсы по
-   дорогам). Всё, что пришло с сервера, выводится только через esc() или textContent. Карта — Leaflet, как в «Развозе». */
+   дорогам). «Время в пути грузовиков: модель» — строка вида truck_time в status (source: какая модель действует и
+   почему; last.params.candidates — сравнение моделей). Всё, что пришло с сервера, выводится только через esc() или
+   textContent. Карта — Leaflet, как в «Развозе». */
 (function () {
     'use strict';
 
@@ -16,6 +18,8 @@
     const clock = (m) => { const n = num(m); if (n === null) return ''; const h = Math.floor(n / 60) % 24, mm = Math.round(n % 60); return String(h).padStart(2, '0') + ':' + String(mm).padStart(2, '0'); };
     const isoDay = (d) => { const x = new Date(d); x.setMinutes(x.getMinutes() - x.getTimezoneOffset()); return x.toISOString().slice(0, 10); };
     const badge = (text, cls) => '<span class="rt-badge ' + cls + '">' + esc(text) + '</span>';
+    const signed = (v) => { const n = num(v); return n === null ? '—' : (n > 0 ? '+' : '') + fmt(n, 2); };
+    const modelName = (src) => (src === 'valhalla' ? 'Valhalla' : 'прежняя модель');
     const YEREVAN = [40.1792, 44.4991];
     let poll = null;
 
@@ -52,23 +56,35 @@
             return 'поправка по ' + fmt(f.length) + ' часам: от ×' + fmt(Math.min(...f), 2) + ' до ×' + fmt(Math.max(...f), 2) + ' ко времени по карте';
         }
         if (kind === 'fuel') return 'пустая ' + fmt(p.empty_l100, 1) + ', полная ' + fmt(p.full_l100, 1) + ' л/100 км';
+        if (kind === 'truck_time') return modelName(p.source);
         return '';
     }
     function manualText(kind, m) {
         if (kind === 'unload' && m) return fmt(m.per_stop_min, 1) + ' мин на точку + ' + fmt(m.per_tonne_min, 1) + ' мин на тонну';
         if (kind === 'loading') return m && num(m.fixed_min) !== null ? fmt(m.fixed_min, 1) + ' мин на рейс + ' + fmt(m.per_tonne_min, 1) + ' мин на тонну' : 'не задана';
         if (kind === 'travel') return 'скорости из настроек и пробки по GPS менеджеров';
+        if (kind === 'truck_time') return modelName('model');
         if (kind === 'fuel' && m) return num(m.empty_l100) !== null ? 'пустая ' + fmt(m.empty_l100, 1) + ', полная ' + fmt(m.full_l100, 1) + ' л/100 км' : fmt(m.l100, 1) + ' л/100 км';
         return '—';
+    }
+    // Модель времени грузовиков: какая действует и почему (s.source от сервера: value, why — env | learned | default)
+    function truckTimeWhy(s) {
+        const src = s.source || {};
+        if (src.why === 'env') return 'задано на сервере переменной ROUTES_TRUCK_TIME — выбор программы не действует';
+        if (src.why === 'learned') return 'выбрано программой' + (s.in_effect ? ' ' + day(s.in_effect.run_day) : '');
+        if (src.learned && !s.auto) return 'учёба выключена галочкой — по умолчанию прежняя модель (программа выбрала: ' + modelName(src.learned) + ')';
+        return 'по умолчанию: программа ещё не выбирала';
     }
     let firstFuel = null;
     function learnRow(s) {
         const title = esc(s.title) + (s.scope ? ' · ' + esc(s.scope) : '');
         const eff = s.in_effect;
-        const now = eff ? badge('выучено ' + day(eff.run_day), 'b-ok') + '<br>' + esc(normText(s.kind, eff.params))
-            : badge('из настроек', 'b-none') + '<br>' + esc(manualText(s.kind, s.manual));
+        const now = s.kind === 'truck_time'
+            ? badge(modelName((s.source || {}).value), (s.source || {}).why === 'learned' ? 'b-ok' : 'b-none') + '<br><span class="lr-why">' + esc(truckTimeWhy(s)) + '</span>'
+            : eff ? badge('выучено ' + day(eff.run_day), 'b-ok') + '<br>' + esc(normText(s.kind, eff.params))
+                : badge('из настроек', 'b-none') + '<br>' + esc(manualText(s.kind, s.manual));
         const last = s.last;
-        const learned = last && last.params ? '<br>Выучено: ' + esc(normText(s.kind, last.params)) : '';
+        const learned = last && last.params && s.kind !== 'truck_time' ? '<br>Выучено: ' + esc(normText(s.kind, last.params)) : '';
         const lastText = last ? (last.accepted ? badge('принято', 'b-ok') : badge('не принято', 'b-warn')) + ' <span class="lr-why">'
             + esc(day(last.run_day)) + ' · данных ' + fmt(last.n_obs) + ' + проверка ' + fmt(last.n_test) + '<br>' + esc(last.reason) + learned + '</span>'
             : '<span class="lr-why">ещё не пересчитывалось</span>';
@@ -79,9 +95,26 @@
             : '<label class="lr-why"><input type="checkbox" data-kind="' + esc(s.kind) + '"' + (s.auto ? ' checked' : '') + '> учиться</label>' + off;
         return '<tr><th scope="row">' + title + '</th><td>' + now + '</td><td>' + lastText + '</td><td>' + esc(err) + '</td><td>' + toggle + '</td></tr>';
     }
+    // Сравнение моделей времени грузовиков последнего пересчёта (params.candidates: ошибка и смещение без поправки и с ней)
+    function renderTruckTime(s) {
+        const last = s && s.last, p = last && last.params, c = p && p.candidates;
+        $('lrTtNow').innerHTML = s ? 'Сейчас «Развоз» считает грузовики: <b>' + esc(modelName((s.source || {}).value)) + '</b> — ' + esc(truckTimeWhy(s)) + '.' : '';
+        const line = (name, e) => '<tr><td>' + esc(name) + '</td><td data-label="Ошибка, мин на участок">' + fmt(e && e.mae, 2)
+            + '</td><td data-label="Смещение, мин">' + signed(e && e.bias) + '</td></tr>';   // подписи — в узкой вёрстке (routes.css)
+        $('lrTtRows').innerHTML = c && c.model && c.valhalla
+            ? line('Прежняя модель (км / скорость зоны)', c.model.raw) + line('Прежняя модель + поправка по часам', c.model.learned)
+                + line('Valhalla', c.valhalla.raw) + line('Valhalla + поправка по часам', c.valhalla.learned)
+            : '<tr><td colspan="3" class="rt-empty">' + esc(last ? 'Сравнения пока нет: ' + last.reason + '.' : 'Ещё не пересчитывалось.') + '</td></tr>';
+        $('lrTtLegs').textContent = p && p.legs && p.days
+            ? 'Пересчёт ' + day(last.run_day) + ': участков на обучении ' + fmt(p.legs.train) + ' (дней ' + fmt(p.days.train) + '), на проверке '
+                + fmt(p.legs.test) + ' (дней ' + fmt(p.days.test) + ')' + (num(p.legs.no_valhalla) ? '; без времени Valhalla — ' + fmt(p.legs.no_valhalla) : '')
+                + '. ' + (last.accepted ? 'Модель сменилась: ' : '') + last.reason + '.'
+            : '';
+    }
     function renderStatus(d) {
         const status = d.status || [];
         firstFuel = status.find(s => s.kind === 'fuel') || null;
+        renderTruckTime(status.find(s => s.kind === 'truck_time') || null);
         $('lrLearnRows').innerHTML = status.length ? status.map(learnRow).join('')
             : '<tr><td colspan="5" class="rt-empty">Пока нечего показать.</td></tr>';
         const w = d.warning;
@@ -133,7 +166,12 @@
         $('lrNightly').textContent = d.rules.nightly_at;
         $('lrHoldout').textContent = d.rules.holdout_days;
         $('lrGain').textContent = d.rules.min_gain_pct;
+        $('lrTtGain').textContent = d.rules.min_gain_pct;
         $('lrFuelMin').textContent = d.rules.fuel_min_intervals;
+        const tt = d.rules.truck_time_min || [];   // [участков обучения, дней обучения, участков проверки, дней проверки]
+        [['lrTtTrain', 0], ['lrTtTrainDays', 1], ['lrTtTest', 2], ['lrTtTestDays', 3]].forEach(([id, i]) => {
+            if (num(tt[i]) !== null) $(id).textContent = tt[i];
+        });
         renderStatus(d);
         renderKpis(d.days);
         $('lrDayRows').innerHTML = d.days.length ? d.days.map(dayRow).join('')

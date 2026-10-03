@@ -15,10 +15,11 @@ Java и WSL) необязателен: нет пакета, карты или т
     osm           — Valhalla не используется вовсе (ни сборки, ни фоновых потоков): км — граф OSM, минуты — км /
                     скорость зоны, как до этапа 2. Граф OSM при этом остаётся направленным (одностороннее движение,
                     roads.DIST_FORMAT 3) — к среднему «туда-обратно» откат не возвращает;
-- ROUTES_TRUCK_TIME (по умолчанию model): минуты грузовиков развоза — model: прежняя модель (км / скорость зоны,
-  часовой профиль пробок); valhalla: время Valhalla-грузовика × поправка зоны. Поправка подобрана по машинам
-  менеджеров, по грузовикам не проверена (треков водителей ещё нет) — поэтому по умолчанию model; сравнить обе модели
-  на треках водителей — truck_leg_minutes;
+- ROUTES_TRUCK_TIME: минуты грузовиков развоза — model: прежняя модель (км / скорость зоны, часовой профиль пробок);
+  valhalla: время Valhalla-грузовика × поправка зоны. Обычно не задаётся: «Развоз» берёт модель, которую выбрало
+  обучение по трекам водителей (learning.fit_truck_time — обе модели на одних и тех же участках, truck_leg_minutes; до
+  выбора — model). Задана — главнее выбора обучения (truck_time_source: env > выбор обучения > model). Обзор и календарь
+  менеджеров выбора обучения не получают, как и других выученных норм: у них ROUTES_TRUCK_TIME или model;
 - ROUTES_VALHALLA_DIR — папка тайлов и кэша; по умолчанию %PROGRAMDATA%/route_optimizer/valhalla (её видят и служба
   SYSTEM, и пользователи), вне Windows — ~/.cache/route_optimizer/valhalla.
 
@@ -55,6 +56,7 @@ CostMatrix, пути не длиннее, памяти мало). Блоки —
 from __future__ import annotations
 
 import atexit
+import copy
 import hashlib
 import json
 import logging
@@ -104,8 +106,9 @@ TRUCK_DIMS_M = {'height': 3.2, 'width': 2.4, 'length': 7.0}   # лёгкий г�
 DEFAULT_TRUCK_PAYLOAD_KG = 5000.0             # машин с тоннажем нет — как у самой большой машины парка
 # Поправка ко времени Valhalla (свободный поток) по зоне участка: True — оба конца в городе. Σ минут движения по
 # GPS / Σ минут Valhalla на переездах менеджеров между визитами, обучающие недели 21.08–24.09.2026 (1 773
-# переезда; проверка на 25.09–01.10 — отчёт 07, скрипты — docs/research/valhalla). Грузовикам — только при
-# ROUTES_TRUCK_TIME=valhalla (треков водителей пока нет: этап 3 плана).
+# переезда; проверка на 25.09–01.10 — отчёт 07, скрипты — docs/research/valhalla). Грузовикам — когда их минуты из
+# Valhalla (ROUTES_TRUCK_TIME=valhalla или выбор обучения); поправку по часам к ним обучение подбирает по трекам
+# водителей отдельно (learning, вид travel той же дорожной модели).
 TIME_FACTOR: dict[bool, float] = {True: 1.32, False: 1.18}
 
 BUILD_FORMAT = 2          # правила сборки (config, метка): поменялись — тайлы пересобираются
@@ -160,6 +163,17 @@ def engine_enabled() -> bool:
 def truck_time_mode() -> str:
     """Минуты грузовиков: env ROUTES_TRUCK_TIME — model (по умолчанию; неизвестное значение — тоже) | valhalla."""
     return _env_choice(TRUCK_TIME_ENV, (TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA), DEFAULT_TRUCK_TIME)
+
+
+def truck_time_source(learned: str | None = None) -> tuple[str, str]:
+    """Минуты грузовиков «Развоза» и почему — первое, что задано: env ROUTES_TRUCK_TIME не пуста — она ('env';
+    неизвестное значение — model, как truck_time_mode); выбор обучения learned — model | valhalla ('learned'; вызывающий
+    передаёт его, только если автообучение вида включено); иначе DEFAULT_TRUCK_TIME ('default')."""
+    if (os.environ.get(TRUCK_TIME_ENV) or '').strip():
+        return truck_time_mode(), 'env'
+    if learned in (TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA):
+        return learned, 'learned'
+    return DEFAULT_TRUCK_TIME, 'default'
 
 
 def base_dir() -> str:
@@ -740,7 +754,8 @@ class ValhallaRoads:
     км — граф OSM (fallback), его нет — None (по прямой × извилистость, Norms.km); минуты — None (скорость зоны).
 
     time_only (режим valhalla_time) — км сначала по графу OSM, Valhalla — минуты (и км, где графа нет). Минуты
-    грузовика (профиль truck) — только при truck_time (ROUTES_TRUCK_TIME=valhalla), иначе прежняя модель.
+    грузовика (профиль truck) — только при truck_time (выбор вызывающего: ValhallaProvider.get, truck(truck_time=…);
+    по умолчанию — ROUTES_TRUCK_TIME), иначе прежняя модель.
     compute — ensure считает недостающие точки сам (команды и скрипты); у сервера (False) — нет: считает фон."""
 
     def __init__(self, registry: _Registry, profile: str, fallback: RoadDistances | None = None, *,
@@ -768,7 +783,7 @@ class ValhallaRoads:
 
     @property
     def serves_minutes(self) -> bool:
-        """Минуты расчёта — из Valhalla (машины менеджеров; грузовики — при ROUTES_TRUCK_TIME=valhalla)."""
+        """Минуты расчёта — из Valhalla (машины менеджеров; грузовики — при truck_time)."""
         return self.active and (self.profile == PROFILE_CAR or self.truck_time)
 
     @property
@@ -797,9 +812,17 @@ class ValhallaRoads:
         n = len(self._table.index)
         return n, n
 
-    def truck(self) -> ValhallaRoads:
-        """Срез профиля грузовика, снятый вместе с этим."""
-        return self._truck
+    def truck(self, truck_time: bool | None = None) -> ValhallaRoads:
+        """Срез профиля грузовика, снятый вместе с этим. truck_time — минуты грузовика (True — Valhalla, False — прежняя
+        модель) вместо выбранных при срезе: новый объект на тот же срез матриц (км, минуты и road_model_id расчёта —
+        из одного состояния), общее состояние не меняется — безопасно из разных потоков."""
+        truck = self._truck
+        if truck_time is None or bool(truck_time) == truck.truck_time:
+            return truck
+        other = copy.copy(truck)
+        other.truck_time = bool(truck_time)
+        other._truck = other
+        return other
 
     def ensure(self, points: Iterable[Point | None]) -> None:
         """compute — досчитать точки (первый раз — минуты, дальше кэш), иначе Valhalla не трогается. Граф OSM —
@@ -916,9 +939,10 @@ class TruckLegMinutes:
 def truck_leg_minutes(norms: Norms, a: Point, b: Point, depart_minute: float,
                       weekday: int | None = None) -> TruckLegMinutes:
     """Минуты участка грузовика a → b с выездом в depart_minute (минуты от полуночи; weekday — 0 = пн, по умолчанию
-    norms.traffic_weekday) обеими моделями — сколько дал бы расчёт при ROUTES_TRUCK_TIME=model и =valhalla (те же
-    км и часовой профиль пробок, что в fleet._matrices / TravelMatrix). valhalla — None, если Valhalla нет или пара не
-    посчитана: точки готовит фоновый поток сервера (ValhallaProvider.get) или ensure открытой open_valhalla."""
+    norms.traffic_weekday) обеими моделями — сколько дал бы расчёт с минутами грузовиков model и valhalla (те же
+    км и часовой профиль пробок norms.traffic, что в fleet._matrices / TravelMatrix; выбор минут в срезе не важен).
+    valhalla — None, если Valhalla нет или пара не посчитана: точки готовит фоновый поток сервера (ValhallaProvider.get)
+    или ensure открытой open_valhalla."""
     tn = norms.for_trucks()
     km = tn.km(a, b)
     city = in_city(a, tn.city_center, tn.city_radius_km) and in_city(b, tn.city_center, tn.city_radius_km)
@@ -965,13 +989,15 @@ class ValhallaProvider:
                 self._kick()
 
     def get(self, fallback: RoadDistances | None, points: Iterable[Point | None],
-            truck_capacity_kg: float | None = None) -> ValhallaRoads | None:
+            truck_capacity_kg: float | None = None, truck_time: bool | None = None) -> ValhallaRoads | None:
         """Срез Valhalla для расчёта по точкам points (truck_capacity_kg — тоннаж самой большой машины парка), если
-        его матрицы для этих точек готовы; иначе фон получает точки, а расчёт — None (граф OSM)."""
+        его матрицы для этих точек готовы; иначе фон получает точки, а расчёт — None (граф OSM). truck_time — минуты
+        грузовиков из Valhalla (выбор вызывающего: «Развоз» — truck_time_source), None — ROUTES_TRUCK_TIME; с ними нужна
+        готовая и матрица грузовика."""
         if not self._usable():
             return None
         time_only = engine_mode() == ENGINE_VALHALLA_TIME
-        truck_time = truck_time_mode() == TRUCK_TIME_VALHALLA
+        truck_time = truck_time_mode() == TRUCK_TIME_VALHALLA if truck_time is None else bool(truck_time)
         truck_cost = truck_costing(truck_capacity_kg)
         keys = {point_key(p) for p in points if p is not None}
         fingerprint = map_fingerprint(self.pbf, compute=False)   # считает фон: здесь — только уже известный

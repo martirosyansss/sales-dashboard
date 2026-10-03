@@ -40,8 +40,9 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
     Карта дорог — env ROUTES_OSM_PATH или data/roads/armenia-latest.osm.pbf (этап 5); файла нет —
     км по прямой × извилистость. Граф и матрица строятся при первом расчёте, а не здесь.
     Valhalla (план learning-loop, этап 2) — env ROUTES_ROAD_ENGINE: valhalla_time (по умолчанию: минуты машин
-    менеджеров — Valhalla, км — граф OSM) | valhalla | osm; минуты грузовиков — ROUTES_TRUCK_TIME (model по умолчанию
-    | valhalla); тайлы — в ROUTES_VALHALLA_DIR (valhalla_engine). Тайлы собирает фоновый поток, запущенный здесь (ERP
+    менеджеров — Valhalla, км — граф OSM) | valhalla | osm; минуты грузовиков «Развоза» — модель, выбранная обучением по
+    трекам водителей (до выбора — прежняя), ROUTES_TRUCK_TIME (model | valhalla), если задана, — главнее; тайлы — в
+    ROUTES_VALHALLA_DIR (valhalla_engine). Тайлы собирает фоновый поток, запущенный здесь (ERP
     и SQLite он не трогает); пока не готово — граф OSM. Без pyvalhalla или карты — граф OSM, как раньше.
     """
     path = db_path or os.environ.get('ROUTES_DB_PATH') or os.path.join(app.root_path, DB_FILENAME)

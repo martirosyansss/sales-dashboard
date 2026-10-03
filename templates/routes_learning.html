@@ -16,6 +16,7 @@
     .lr-period { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: end; margin-bottom: 12px; }
     .lr-period .rt-field { margin: 0; }
     .lr-why { font-size: .8125rem; color: var(--rt-fg-dim); max-width: 46ch; }
+    .lr-why.is-wide { max-width: 110ch; }
     .lr-run { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 10px 0 4px; }
     .lr-off { font-size: .8125rem; color: var(--rt-warn); }
     .lr-map { height: 440px; border-radius: 12px; margin: 10px 0 12px; }
@@ -68,6 +69,24 @@
         </div>
     </section>
 
+    <section class="rt-card" aria-labelledby="lrTtTitle">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="lrTtTitle"><i class="fas fa-stopwatch" aria-hidden="true"></i>Время в пути грузовиков: модель</h2>
+        </div>
+        <p class="rt-card-lead">Время в пути грузовиков можно считать двумя способами: <b>прежней моделью</b> (км по карте / скорость города или области из настроек)
+            или по <b>Valhalla</b> (время по дорогам для грузовика). Каждую ночь программа сравнивает их на одних и тех же участках — переездах водителей
+            от точки до точки за последнюю неделю. Сначала каждой модели она подбирает свою поправку по часам на более ранних днях — так сравнение честное.
+            Модель меняется, только если другая ошибается меньше хотя бы на <span id="lrTtGain">2</span>% и участков достаточно; обратно — по тому же правилу,
+            поэтому модель не переключается туда-сюда.</p>
+        <p id="lrTtNow"></p>
+        <div class="rt-table-scroll"><table class="rt-table">
+            <thead><tr><th scope="col">Модель</th><th scope="col">Ошибка, мин на участок</th>
+                <th scope="col">Смещение, мин <span class="lr-why">(плюс — модель считает дольше, чем ехали)</span></th></tr></thead>
+            <tbody id="lrTtRows"><tr><td colspan="3" class="rt-empty">Загружаю…</td></tr></tbody>
+        </table></div>
+        <p class="lr-why is-wide" id="lrTtLegs"></p>
+    </section>
+
     <section class="rt-card" aria-labelledby="lrFactTitle">
         <div class="rt-card-head">
             <h2 class="rt-card-title" id="lrFactTitle"><i class="fas fa-truck" aria-hidden="true"></i>План и факт по дням</h2>
@@ -118,6 +137,11 @@
                     Когда появятся окна приёма: если водитель загрузился, пока по плану ждал выезда под окно, и сразу уехал, часть настоящей загрузки посчитается ожиданием — норма выйдет чуть ниже.</li>
                 <li><b>Скорость машин</b> — во сколько раз дольше или быстрее, чем считает карта дорог, по часам, отдельно город/область и будни/выходные.
                     Если карта дорог сменилась — старая поправка не действует, пока программа не выучит новую.</li>
+                <li><b>Время в пути грузовиков: модель</b> — прежняя (км / скорость зоны) или Valhalla. Обе проверяются на одних и тех же участках (переездах водителей
+                    от точки до точки) последней недели, у каждой — своя поправка по часам. Участок, для которого у Valhalla нет времени, не идёт ни в одну.
+                    Нужно не меньше <span id="lrTtTest">60</span> участков за <span id="lrTtTestDays">3</span> дня на проверке и <span id="lrTtTrain">200</span>
+                    за <span id="lrTtTrainDays">7</span> дней на обучении.
+                    Когда модель меняется, вместе с ней сразу включается её поправка по часам. Если на сервере задана переменная ROUTES_TRUCK_TIME, действует она, а не выбор программы.</li>
                 <li><b>Расход</b> — по заправкам «до полного бака»: литры между двумя полными баками / км по одометру; нужно не меньше <span id="lrFuelMin">12</span> таких промежутков.
                     Одиночные ошибки в одометре программа находит сама; но если неверных показаний 50 и больше подряд (например, сломался счётчик), заправки до и после такой серии считаются отдельно.</li>
                 <li><b>Проверка.</b> Учится на днях до последней недели, проверяет на последних <span id="lrHoldout">7</span> днях. Норма включается, только если ошибка на проверке
@@ -131,5 +155,5 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_learning.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/routes_learning.js') }}?v=3"></script>
 {% endblock %}

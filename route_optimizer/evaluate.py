@@ -500,9 +500,15 @@ class Norms:
                 return km / minutes * 60.0
         return self.speed_city_kmh if city else self.speed_region_kmh
 
-    def for_trucks(self) -> Norms:
-        """Нормы для грузовиков развоза: у Valhalla — профиль truck; у графа OSM и по прямой — те же."""
-        return self if self.roads is None else replace(self, roads=self.roads.truck())
+    def for_trucks(self, *, truck_time: bool | None = None) -> Norms:
+        """Нормы для грузовиков развоза: у Valhalla — профиль truck (срез, снятый вместе со срезом машин); у графа OSM и
+        по прямой — те же. truck_time — минуты грузовиков: True — Valhalla, False — прежняя модель (км / скорость
+        зоны), None — как выбрано при срезе дорог; срез матриц тот же (ValhallaRoads.truck)."""
+        if self.roads is None:
+            return self
+        if truck_time is None:
+            return replace(self, roads=self.roads.truck())
+        return replace(self, roads=self.roads.truck(truck_time=truck_time))
 
     @property
     def distance(self) -> Distance | None:
