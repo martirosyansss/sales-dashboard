@@ -2,11 +2,13 @@
 """Дороги Valhalla и направленные матрицы (план learning-loop, этап 2; замечания проверки ветки valhalla-roads).
 
 - valhalla_engine: матрицы км и минут, кэш (повторное чтение, дозаполнение = полный расчёт, чужая сборка и стоимость),
-  блоки по меньшей стороне и пул Actor, предел точек; пары без пути и непривязанные точки — запасной путь; сбой движка
-  не кэшируется и не плодит запросов; режим valhalla_time; грузовик — стоимость по тоннажу, минуты по ROUTES_TRUCK_TIME,
-  обе модели для сравнения (truck_leg_minutes); road_model_id; сборка тайлов (отпечаток содержимого, метка, повтор,
-  блокировка, уборка только своего, тайм-аут); сервер не ждёт тяжёлой работы (фоновый поток, срез матриц); нет
-  pyvalhalla — граф OSM. Движок — подделка FakeActor с направленной метрикой: ни pyvalhalla, ни карта не нужны;
+  блоки по меньшей стороне и пул Actor, предел точек (новая таблица — в стороне); пары без пути и непривязанные точки —
+  запасной путь; сбой движка не кэшируется и не плодит запросов; режим valhalla_time (км грузовика — только граф OSM);
+  грузовик — стоимость по тоннажу (в реестре — одна на профиль), минуты по ROUTES_TRUCK_TIME, обе модели для сравнения
+  (truck_leg_minutes); road_model_id; сборка тайлов (отпечаток содержимого, метка, повтор, блокировка ОС, уборка только
+  своего, тайм-аут); команды build и warm (ожидаемые сбои — одной строкой, warm --if-stale, без фона сервера, база
+  маршрутов не меняется, .env сервера); сервер не ждёт тяжёлой работы (фоновый поток, срез матриц); нет pyvalhalla —
+  граф OSM. Движок — подделка FakeActor с направленной метрикой: ни pyvalhalla, ни карта не нужны;
 - направленные матрицы: 2-opt (tsp, search, fleet) не удлиняет тур, даёт локальный оптимум по полному перебору
   разворотов, разворачивает и тур из трёх вершин, кончается на ошибке округления (повтор из проверки); у симметричной
   матрицы — те же туры, что прежний расчёт; вставка и удаление — как полный пересчёт; Кларк–Райт по направленным
@@ -18,10 +20,13 @@ import json
 import math
 import os
 import random
+import sqlite3
+import subprocess
 import sys
 import threading
 import time
 import types
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -309,6 +314,40 @@ def test_point_cap_rebuilds_matrix_for_needed_points(tmp_path, fake, monkeypatch
     assert r.size == (2, 2) and r.km(P[3], P[4]) is not None and r.km(P[0], P[3]) is None
 
 
+def test_point_cap_keeps_previous_table_until_new_one_is_ready(tmp_path, fake, monkeypatch):
+    """Матрица заново (точек больше MAX_POINTS) считается в стороне: пока она считается, читатели видят прежнюю, а не
+    пустую таблицу; готова — подменяет её целиком."""
+    monkeypatch.setattr(ve, 'MAX_POINTS', 4)
+    m = _registry(tmp_path).matrix(ve.PROFILE_CAR, ve.CAR_COSTING)
+    m.ensure(P[:3])
+    old = m.table
+    FakeActor.log, FakeActor.gate = [], threading.Event()
+    worker = threading.Thread(target=m.ensure, args=(P[3:5],))
+    worker.start()
+    try:
+        assert _wait(lambda: FakeActor.log)                 # новая таблица считается
+        assert m.table is old and set(m.table.index) == set(P[:3])
+    finally:
+        FakeActor.gate.set()
+        worker.join(10)
+    assert set(m.table.index) == set(P[3:5]) and not m.failed
+
+
+def test_registry_keeps_one_costing_per_profile(tmp_path, fake):
+    """Сменился парк — матрица прежней стоимости грузовика уходит из реестра (память не копится); срез, снятый до
+    этого, дочитывает свою."""
+    reg = _registry(tmp_path)
+    before = ve.ValhallaRoads(reg, ve.PROFILE_TRUCK, compute=True, truck_cost=ve.truck_costing(2000))
+    before.ensure(P)
+    car = reg.matrix(ve.PROFILE_CAR, ve.CAR_COSTING)
+    big = reg.matrix(ve.PROFILE_TRUCK, ve.truck_costing(5000))
+    assert set(reg._matrices) == {(ve.PROFILE_CAR, ve.costing_key(ve.CAR_COSTING)),
+                                  (ve.PROFILE_TRUCK, ve.costing_key(ve.truck_costing(5000)))}
+    assert reg.matrix(ve.PROFILE_TRUCK, ve.truck_costing(5000)) is big
+    assert reg.matrix(ve.PROFILE_CAR, ve.CAR_COSTING) is car
+    assert before.km(P[0], P[1]) is not None                # прежний срез — своя матрица
+
+
 def test_rows_chunk_by_small_side_and_actor_pool_is_bounded(tmp_path, fake, monkeypatch):
     rng = random.Random(3)
     pts = [(40.15 + rng.random() * 0.1, 44.45 + rng.random() * 0.1) for _ in range(30)]
@@ -340,6 +379,34 @@ def test_time_only_takes_osm_km_and_valhalla_minutes(tmp_path, fake):
     assert km == pytest.approx(sum(osm.km(x, y) for x, y in zip(P[:4], P[1:4])))
     assert minutes == pytest.approx(want)                   # время — Valhalla × поправка, не км / скорость
     assert 'valhalla_time' in hybrid.version and hybrid.truck().time_only
+
+
+def test_time_only_truck_km_only_from_graph_whatever_truck_matrix(tmp_path, fake):
+    """valhalla_time: км грузовика — только граф OSM, точки вне графа — по прямой × извилистость, как до этапа 2. Готова
+    ли матрица грузовика (её готовность не входит ни в срез, ни в ключи кэша), км не меняет. У машин менеджеров вне
+    графа — км Valhalla, как прежде."""
+    gap = P[5]                                              # точки нет в графе OSM
+    osm = FakeOsm(missing=(gap,))
+    reg, cost = _registry(tmp_path), ve.truck_costing(3000)
+    reg.matrix(ve.PROFILE_CAR, ve.CAR_COSTING).ensure(P)
+    cold = ve.ValhallaRoads(reg, ve.PROFILE_CAR, osm, time_only=True, truck_cost=cost)
+    reg.matrix(ve.PROFILE_TRUCK, cost).ensure(P)            # фон досчитал матрицу грузовика
+    warm = ve.ValhallaRoads(reg, ve.PROFILE_CAR, osm, time_only=True, truck_cost=cost)
+    assert warm.truck()._valhalla_km(gap, P[0]) is not None and cold.truck()._valhalla_km(gap, P[0]) is None
+    for view in (cold, warm):
+        truck = view.truck()
+        assert truck.km(gap, P[0]) is None and truck.km(P[0], P[1]) == pytest.approx(osm.km(P[0], P[1]))
+        tn = replace(NORMS, roads=view).for_trucks()
+        assert tn.km(gap, P[0]) == pytest.approx(geo.haversine_km(gap, P[0]) * 1.3)   # по прямой × извилистость
+        assert truck.km_source == 'osm' and ve.road_model_id(truck) == ve.road_model_id(osm)
+        assert view.km(gap, P[0]) == pytest.approx(_metric(gap, P[0])[0] + _snap(gap) + _snap(P[0]), abs=2e-3)
+    assert cold.version == warm.version
+    blind = ve.ValhallaRoads(reg, ve.PROFILE_CAR, None, time_only=True, truck_cost=cost)   # графа нет
+    assert blind.truck().km_source == 'straight' and blind.truck().km(P[0], P[1]) is None
+    assert ve.road_model_id(blind.truck()) == 'straight' and blind.truck().unsnapped(P) == len(P)
+    assert blind.km(P[0], P[1]) is not None                 # машины менеджеров — км Valhalla
+    timed = ve.ValhallaRoads(reg, ve.PROFILE_CAR, None, time_only=True, truck_time=True, truck_cost=cost)
+    assert ve.road_model_id(timed.truck()).startswith('straight+valhalla-time:test:truck:')
 
 
 # --- Грузовик: стоимость, минуты, две модели ---
@@ -562,7 +629,7 @@ def test_build_tiles_idempotent_by_content_retried_with_marker(tmp_path, monkeyp
     info = json.loads(Path(base, 'current.json').read_text(encoding='utf-8'))
     assert info['map_sha256'] == ve.map_fingerprint(str(pbf)) and info['valhalla'] == '9.9.9-test'
     assert json.loads(Path(base, first.name, ve.MARKER).read_text(encoding='utf-8'))['id'] == first.id
-    assert ve.current_build(base).name == first.name and not Path(base, ve.LOCK_NAME).exists()
+    assert ve.current_build(base).name == first.name and _lock_free(base)
     copy = tmp_path / 'copy.osm.pbf'                      # та же карта в другом файле, с другим временем
     copy.write_bytes(b'map-1')
     os.utime(copy, (time.time() - 7200, time.time() - 7200))
@@ -604,18 +671,57 @@ def test_current_build_requires_completion_marker(tmp_path, monkeypatch, fake):
     assert ve.current_build(base) is None
 
 
-def test_build_lock_busy_stale_and_cleanup_only_owned(tmp_path, monkeypatch, fake):
+def _lock_free(base):
+    """Блокировку сборки можно взять сразу — её никто не держит."""
+    try:
+        with ve._build_lock(str(base), wait_s=0):
+            return True
+    except ve.BuildBusy:
+        return False
+
+
+def _hold_lock(base):
+    """Держать блокировку сборки в другом потоке, пока не отпустят: (событие «отпустить», поток)."""
+    taken, release = threading.Event(), threading.Event()
+
+    def hold():
+        with ve._build_lock(str(base), wait_s=0):
+            taken.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert taken.wait(5)
+    return release, holder
+
+
+def test_build_lock_is_an_os_lock_and_cleanup_only_owned(tmp_path, monkeypatch, fake):
+    """Блокировка сборки — средствами ОС: занята — BuildBusy; владелец умер, не отпустив, — ОС сняла её сама (нечего
+    «взламывать» по возрасту); файл блокировки сам по себе не мешает и не удаляется. Уборка — только своё."""
     monkeypatch.setattr(ve, '_run', _builder())
     pbf, base = tmp_path / 'map.osm.pbf', tmp_path / 'v'
     pbf.write_bytes(b'map')
     base.mkdir()
-    lock = base / ve.LOCK_NAME
-    lock.write_text('{"pid": 1}', encoding='utf-8')        # другой процесс собирает
-    with pytest.raises(ve.BuildBusy):
-        ve.build_tiles(str(pbf), str(base), max_seconds=0.5)
-    assert lock.exists() and ve.current_build(str(base)) is None
+    release, holder = _hold_lock(base)                      # другой сборщик
+    try:
+        with pytest.raises(ve.BuildBusy):
+            ve.build_tiles(str(pbf), str(base), max_seconds=0.5)
+    finally:
+        release.set()
+        holder.join(5)
+    assert ve.current_build(str(base)) is None and _lock_free(base)
+    code = ('import sys, time\nsys.path.insert(0, sys.argv[1])\nfrom route_optimizer import valhalla_engine as ve\n'
+            'with ve._build_lock(sys.argv[2], 0):\n    print("held", flush=True)\n    time.sleep(60)\n')
+    proc = subprocess.Popen([sys.executable, '-c', code, str(ROOT), str(base)], stdout=subprocess.PIPE, text=True)
+    try:
+        assert proc.stdout.readline().strip() == 'held'    # держит другой процесс
+        assert not _lock_free(base)
+    finally:
+        proc.kill()                                         # и умирает, не отпустив
+        proc.wait(10)
+        proc.stdout.close()
+    assert _wait(lambda: _lock_free(base), 5)               # ОС сняла блокировку
     old = time.time() - ve.LOCK_STALE_S - 60
-    os.utime(lock, (old, old))                             # его владелец умер
     foreign = base / 'notes'
     foreign.mkdir()
     building = base / 'tiles-0123456789ab-20261003120000-build_no'   # недостроенная, свежая — чужая сборка идёт
@@ -629,9 +735,32 @@ def test_build_lock_busy_stale_and_cleanup_only_owned(tmp_path, monkeypatch, fak
     stale_cache = base / f'matrix-{finished.name}-auto-{ve.costing_key({})}.npz'
     stale_cache.write_bytes(b'old')
     build = ve.build_tiles(str(pbf), str(base))
-    assert build.name and not lock.exists()
+    assert build.name and (base / ve.LOCK_NAME).exists() and _lock_free(base)   # файл остаётся, блокировки нет
     assert foreign.exists() and building.exists()           # чужое и недостроенное в работе — не трогаем
     assert not dead.exists() and not finished.exists() and not stale_cache.exists()
+
+
+def test_build_lock_mutual_exclusion_under_race(tmp_path):
+    """Гонка за блокировку (повтор проверки ветки): держит всегда один."""
+    holders, peak, guard = [0], [0], threading.Lock()
+    start = threading.Barrier(4)
+
+    def worker():
+        start.wait()
+        with ve._build_lock(str(tmp_path), wait_s=10):
+            with guard:
+                holders[0] += 1
+                peak[0] = max(peak[0], holders[0])
+            time.sleep(0.05)
+            with guard:
+                holders[0] -= 1
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(15)
+    assert peak[0] == 1 and not any(t.is_alive() for t in threads)
 
 
 def test_run_timeout_is_a_clean_failure(tmp_path, monkeypatch, fake):
@@ -641,6 +770,137 @@ def test_run_timeout_is_a_clean_failure(tmp_path, monkeypatch, fake):
     monkeypatch.setattr(ve.subprocess, 'run', slow)
     with pytest.raises(RuntimeError, match='остановлен'):
         ve._run('valhalla_build_tiles', 'cfg.json', 'map.osm.pbf', timeout=5)
+
+
+# --- Команды и обновление сервера ---
+
+def test_build_command_reports_expected_failures_in_one_line(tmp_path, monkeypatch, fake, capsys):
+    """Команда build (задача обновления пишет её вывод в журнал): нет карты, сборка занята, нет pyvalhalla — одна
+    строка в stderr и свой код выхода, без трассировки; собрано — сведения о сборке."""
+    monkeypatch.setattr(ve, '_run', _builder())
+    monkeypatch.setattr(ve, 'REPO_ROOT', str(tmp_path))     # без .env
+    assert ve.main(['build']) == 4                          # карты нет
+    pbf = tmp_path / 'map.osm.pbf'
+    pbf.write_bytes(b'map')
+    monkeypatch.setenv('ROUTES_OSM_PATH', str(pbf))
+    base = Path(ve.base_dir())
+    base.mkdir(parents=True)
+    release, holder = _hold_lock(base)
+    try:
+        assert ve.main(['build', '--max-seconds', '0.5']) == 3   # тайлы собирает другой процесс
+    finally:
+        release.set()
+        holder.join(5)
+    assert ve.main(['build']) == 0
+    monkeypatch.setattr(ve, 'valhalla_module', lambda: None)
+    assert ve.main(['build']) == 4                          # pyvalhalla нет
+    out = capsys.readouterr()
+    assert json.loads(out.out)['map_sha256'] == ve.map_fingerprint(str(pbf))
+    assert len([line for line in out.err.splitlines() if line.startswith('Тайлы не собраны: ')]) == 3
+    assert 'Traceback' not in out.err
+
+
+def test_roads_warm_if_stale_only_when_cache_does_not_fit(tmp_path, monkeypatch):
+    """roads warm --if-stale (задача обновления): кэш расстояний подходит к графу и формату — ничего (ERP не нужен);
+    нет графа, кэша или сменился формат (как DIST_FORMAT 2 → 3) — прогрев; карты нет — греть нечего."""
+    pbf = tmp_path / 'map.osm.pbf'
+    monkeypatch.setenv('ROUTES_OSM_PATH', str(pbf))
+    monkeypatch.setattr(rd, 'REPO_ROOT', str(tmp_path))     # без .env
+    warmed = []
+    monkeypatch.setattr(rd, '_warm', warmed.append)         # прогрев читает ERP — здесь только отметка
+    assert rd.main(['warm', '--if-stale']) == 0 and warmed == []   # карты нет
+    pbf.write_bytes(b'map')
+    version = rd.map_signature(str(pbf))
+    assert rd._dist_cache_stale(str(pbf))                   # ни графа, ни кэша
+    graph = rd.RoadGraph.from_ways({0: P[0], 1: P[1], 2: P[2]}, [([0, 1, 2, 0], 0)], source=version)
+    graph.save(rd._cache_path(str(pbf), 'graph'))
+    assert rd._dist_cache_stale(str(pbf))                   # граф есть, кэша расстояний нет
+    roads = rd.RoadDistances.for_map(str(pbf), version)
+    roads.ensure(P[:3])
+    assert not roads.failed and not rd._dist_cache_stale(str(pbf))
+    assert rd.main(['warm', '--if-stale']) == 0 and warmed == []   # годится
+    monkeypatch.setattr(rd, 'DIST_FORMAT', rd.DIST_FORMAT + 1)     # формат сменился
+    assert rd._dist_cache_stale(str(pbf))
+    assert rd.main(['warm', '--if-stale']) == 0 and warmed == [str(pbf)]
+    assert rd.main(['warm']) == 0 and len(warmed) == 2      # без флага — всегда
+
+
+def test_roads_command_reads_env_file_first(tmp_path, monkeypatch):
+    """Команды roads берут карту (и базу) из .env сервера, как app_v2 и команды valhalla_engine: задача обновления
+    греет кэш той карты, с которой работает сервер."""
+    pbf = tmp_path / 'from-env.osm.pbf'
+    pbf.write_bytes(b'map')
+    (tmp_path / '.env').write_text(f'ROUTES_OSM_PATH={pbf.as_posix()}\n', encoding='utf-8')
+    monkeypatch.setattr(rd, 'REPO_ROOT', str(tmp_path))
+    monkeypatch.delenv('ROUTES_OSM_PATH')                   # значение фикстуры вернётся после теста
+    warmed = []
+    monkeypatch.setattr(rd, '_warm', warmed.append)
+    assert rd.main(['warm', '--if-stale']) == 0 and warmed == [pbf.as_posix()]
+
+
+def test_roads_warm_never_changes_the_routes_db(tmp_path, monkeypatch, capsys):
+    """warm до перезапуска сервера (задача обновления): база маршрутов не меняется ни байтом, даже когда новой версии
+    нужна миграция схемы — иначе ещё работающий сервер прежней версии не открыл бы её («создана более новой версией»).
+    Настройки — из временной копии, приведённой к схеме программы; базы нет — настройки по умолчанию, файл не
+    создаётся."""
+    from route_optimizer import store as st
+    from test_route_optimizer import _SCHEMA_V1
+
+    db = tmp_path / 'routes-v1.db'
+    with closing(sqlite3.connect(db)) as conn:              # схема 1: программе нужна миграция
+        for sql in _SCHEMA_V1:
+            conn.execute(sql)
+        conn.execute("INSERT INTO settings VALUES('min_day_revenue', '120000')")
+        conn.commit()
+    before = db.read_bytes()
+    pbf = tmp_path / 'map.osm.pbf'
+    pbf.write_bytes(b'map')                                 # кэша нет — прогрев нужен
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    monkeypatch.setattr(rd, 'REPO_ROOT', str(tmp_path))
+    monkeypatch.setenv('ROUTES_OSM_PATH', str(pbf))
+    monkeypatch.setenv('ROUTES_DB_PATH', str(db))
+    monkeypatch.setenv('ROUTES_ROAD_ENGINE', 'valhalla_time')
+    monkeypatch.setitem(sys.modules, 'app_v2', NS(db=NS(connection_string='dummy')))
+    monkeypatch.setattr('route_optimizer.snapshot.load_snapshot', lambda connection_string: 'snapshot')
+    seen = []
+    monkeypatch.setattr(ev, 'plan_points', lambda snap, bundle, coords: seen.append(bundle) or [P[0]])
+    monkeypatch.setattr(rd.RoadDistances, 'ensure', lambda self, points: None)   # сам расчёт здесь не нужен
+    assert rd.main(['warm', '--if-stale']) == 0
+    assert seen and seen[0].settings['min_day_revenue'] == 120000
+    assert db.read_bytes() == before                        # ни миграции, ни записи
+    assert 'схема 1, у программы' in capsys.readouterr().out
+    current = tmp_path / 'routes.db'                        # схема программы: те же настройки, что у Store
+    st.Store(str(current)).load()
+    data = current.read_bytes()
+    assert rd._load_bundle_readonly(str(current)).settings == st.Store(str(current)).load().settings
+    assert current.read_bytes() == data
+    missing = tmp_path / 'none.db'
+    assert rd._load_bundle_readonly(str(missing)).settings == st.Store(str(tmp_path / 'fresh.db')).load().settings
+    assert not missing.exists()
+
+
+@pytest.mark.parametrize('command', ['roads', 'valhalla'])
+def test_warm_commands_do_not_start_server_background(tmp_path, monkeypatch, command):
+    """warm импортирует app_v2 ради строки подключения к ERP, а тот вызывает init_app: фоновая подготовка Valhalla
+    сервера в команде не нужна (считала бы те же матрицы ещё раз) — до импорта режим osm."""
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    def snapshot(connection_string):
+        seen.append(os.environ.get('ROUTES_ROAD_ENGINE'))
+        raise Stop   # дальше — ERP: не идём
+
+    monkeypatch.setenv('ROUTES_ROAD_ENGINE', 'valhalla_time')
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    monkeypatch.setitem(sys.modules, 'app_v2', NS(db=NS(connection_string='dummy')))
+    monkeypatch.setattr('route_optimizer.snapshot.load_snapshot', snapshot)
+    pbf = tmp_path / 'map.osm.pbf'
+    pbf.write_bytes(b'map')
+    with pytest.raises(Stop):
+        rd._warm(str(pbf)) if command == 'roads' else ve._warm()
+    assert seen == ['osm']
 
 
 # --- Направленные матрицы: 2-opt ---

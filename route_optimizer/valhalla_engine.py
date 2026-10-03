@@ -10,7 +10,8 @@ Java и WSL) необязателен: нет пакета, карты или т
 - ROUTES_ROAD_ENGINE (по умолчанию DEFAULT_ENGINE — по сверке с GPS менеджеров, отчёт
   docs/research/07-valhalla-vs-roads.md):
     valhalla_time — минуты машин менеджеров — Valhalla × поправка зоны, км — граф OSM (по GPS он точнее: Valhalla
-                    ищет самый быстрый путь, а менеджеры ездят ближе к кратчайшему); пары без км графа — км Valhalla;
+                    ищет самый быстрый путь, а менеджеры ездят ближе к кратчайшему); пары без км графа — у машин
+                    менеджеров км Valhalla, у грузовиков — по прямой × извилистость, как до этапа 2;
     valhalla      — км и минуты из Valhalla (пары без пути Valhalla — граф OSM);
     osm           — Valhalla не используется вовсе (ни сборки, ни фоновых потоков): км — граф OSM, минуты — км /
                     скорость зоны, как до этапа 2. Граф OSM при этом остаётся направленным (одностороннее движение,
@@ -27,7 +28,8 @@ Java и WSL) необязателен: нет пакета, карты или т
 сборки — содержимое карты (sha256, а не время изменения: та же карта на сервере — та же сборка), версия pyvalhalla и
 BUILD_FORMAT: такая сборка уже есть — ничего не делается. Сборка, публикация и уборка — под файлом-блокировкой
 build.lock (процессы сервера и команды build не мешают друг другу); убираются только папки и кэши по шаблону имени —
-завершённые прежние сборки и брошенные недостроенные (старше LOCK_STALE_S).
+завершённые прежние сборки и брошенные недостроенные (старше LOCK_STALE_S). Блокировка — средствами ОС: умер
+процесс — она снята сама.
 
 Матрицы: Actor.locate (точка дальше SNAP_MAX_KM от дороги профиля — не привязана: её пары считает запасной путь),
 Actor.matrix (sources_to_targets, timedistancematrix — Дейкстра от источника: на наших 1 500 точках в ~15 раз быстрее
@@ -51,6 +53,7 @@ CostMatrix, пути не длиннее, памяти мало). Блоки —
   (осторожно: дороги, куда нельзя ей, объезжают все).
 
 Команды:  python -m route_optimizer.valhalla_engine build [--force] [--max-seconds N] | warm | status
+(код выхода build: 3 — тайлы собирает другой процесс, 4 — нет pyvalhalla или карты)
 """
 from __future__ import annotations
 
@@ -112,7 +115,7 @@ BUILD_FORMAT = 2          # правила сборки (config, метка): п
 BUILD_ATTEMPTS = 3        # valhalla_build_tiles 3.9 под Windows изредка падает (0xC0000005) — повтор
 BUILD_TIMEOUT_S = 900.0   # на один исполняемый файл сборки (Армения — 10–60 с)
 LOCK_NAME = 'build.lock'
-LOCK_STALE_S = BUILD_TIMEOUT_S + 300.0   # блокировку не обновляли дольше — её владелец умер
+LOCK_STALE_S = BUILD_TIMEOUT_S + 300.0   # недостроенную папку тайлов не меняли дольше — её сборщик умер
 MARKER = 'build.ok'       # метка завершённой сборки в папке тайлов
 MATRIX_FORMAT = 2
 BATCH = 25                # точек меньшей стороны в одном запросе матрицы (другая сторона — вся)
@@ -308,38 +311,38 @@ class BuildBusy(RuntimeError):
 
 @contextmanager
 def _build_lock(base: str, wait_s: float) -> Iterator[str]:
-    """Файл-блокировка сборки (создание с O_EXCL атомарно и под Windows). Занята — ждём до wait_s; файл не
-    обновлялся дольше LOCK_STALE_S (сборщик пишет его перед каждым шагом) — владелец умер, блокировка снимается."""
+    """Блокировка сборки — блокировка ОС на файле build.lock (msvcrt.locking под Windows, flock — вне её). ОС снимает
+    её сама, когда владелец отпускает её, завершается или падает, поэтому «протухших» блокировок нет — нечего
+    взламывать, а файл никто не удаляет (и чужую блокировку не снять). Занята — ждём до wait_s, затем BuildBusy."""
     path = os.path.join(base, LOCK_NAME)
-    deadline = time.monotonic() + wait_s
-    while True:
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            break
-        except FileExistsError:
-            try:
-                age = time.time() - os.path.getmtime(path)
-            except OSError:
-                continue   # освободили между попытками
-            if age > LOCK_STALE_S:
-                logger.warning('[Routes] Valhalla: блокировка сборки %s не обновлялась %.0f с — снята', path, age)
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-                continue
-            if time.monotonic() >= deadline:
-                raise BuildBusy(f'тайлы собирает другой процесс ({path})') from None
-            time.sleep(1.0)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT)
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            f.write(json.dumps({'pid': os.getpid(), 'at': datetime.now().isoformat(timespec='seconds')}))
-        yield path
-    finally:
+        deadline = time.monotonic() + wait_s
+        while not _lock_file(fd, True):
+            if time.monotonic() >= deadline:
+                raise BuildBusy(f'тайлы собирает другой процесс ({path})')
+            time.sleep(0.5)
         try:
-            os.remove(path)
-        except OSError:
-            pass
+            yield path
+        finally:
+            _lock_file(fd, False)
+    finally:
+        os.close(fd)   # закрытие отпускает блокировку и само
+
+
+def _lock_file(fd: int, lock: bool) -> bool:
+    """Взять (lock) или отпустить блокировку ОС на первый байт файла fd; занята — False."""
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK if lock else msvcrt.LK_UNLCK, 1)
+        else:   # pragma: no cover — сервер под Windows
+            import fcntl
+            fcntl.flock(fd, (fcntl.LOCK_EX | fcntl.LOCK_NB) if lock else fcntl.LOCK_UN)
+    except OSError:
+        return False
+    return True
 
 
 def build_tiles(pbf: str | None = None, base: str | None = None, force: bool = False,
@@ -366,7 +369,7 @@ def build_tiles(pbf: str | None = None, base: str | None = None, force: bool = F
     def left() -> float:
         return budget - (time.monotonic() - started)
 
-    with _build_lock(base, wait_s=max(0.0, left())) as lock:
+    with _build_lock(base, wait_s=max(0.0, left())):
         current = current_build(base)   # пока ждали блокировку, другой процесс мог собрать то же
         if current is not None and current.id == bid and not force:
             return current
@@ -378,7 +381,6 @@ def build_tiles(pbf: str | None = None, base: str | None = None, force: bool = F
                 for tool in ('valhalla_build_admins', 'valhalla_build_tiles'):
                     if left() <= 0:
                         raise TimeoutError(f'сборка тайлов не уложилась в {budget:.0f} с')
-                    os.utime(lock)   # блокировка жива
                     _run(tool, config_path, pbf, timeout=min(BUILD_TIMEOUT_S, left()))
                 break
             except RuntimeError:
@@ -541,13 +543,13 @@ class _ProfileMatrix:
             new = sorted(k for k in keys if k not in self.table.index)
             if not new:
                 return
-            if len(self.table.index) + len(new) > MAX_POINTS:
+            base = self.table
+            if len(base.index) + len(new) > MAX_POINTS:   # новая таблица считается в стороне, прежняя — до конца
                 logger.info('[Routes] Valhalla %s: точек больше %d — матрица заново только для нужных %d',
                             self.profile, MAX_POINTS, len(keys))
-                self.table = _empty_table()
-                new = sorted(keys)
+                base, new = _empty_table(), sorted(keys)
             try:
-                self._extend(new)
+                self._extend(new, base)
             except Exception:
                 logger.exception('[Routes] Valhalla %s: матрица не посчитана — профиль выключен до перезапуска, '
                                   'дороги по графу OSM', self.profile)
@@ -632,11 +634,12 @@ class _ProfileMatrix:
         stack = np.vstack if by_src else np.hstack
         return stack([p[0] for p in parts]), stack([p[1] for p in parts])
 
-    def _extend(self, new: Sequence[Point]) -> None:
-        """Новые точки: привязка, затем пути новые → все и прежние → новые (только привязанные точки). Ошибка
-        движка или слишком много пар без пути — исключение: таблица и кэш не меняются."""
+    def _extend(self, new: Sequence[Point], base: _Table) -> None:
+        """Таблица base + новые точки: привязка, затем пути новые → все и прежние → новые (только привязанные точки);
+        готовая таблица заменяет действующую целиком. Ошибка движка или слишком много пар без пути — исключение:
+        таблица и кэш не меняются."""
         started = time.perf_counter()
-        t = self.table
+        t = base
         old = sorted(t.index, key=t.index.get)
         k_old, k = len(old), len(old) + len(new)
         snap = np.concatenate([t.snap, self._locate(new)])
@@ -711,7 +714,8 @@ class _ProfileMatrix:
 
 
 class _Registry:
-    """Матрицы одной сборки: (профиль, стоимость) → _ProfileMatrix; общий пул Actor."""
+    """Матрицы одной сборки: (профиль, стоимость) → _ProfileMatrix; общий пул Actor. У профиля — одна стоимость:
+    матрица прежней (сменился парк) уходит из реестра — память не копится, а срезы, что её держат, дочитают свою."""
 
     def __init__(self, build: Build, base: str | None):
         self.build = build
@@ -725,6 +729,8 @@ class _Registry:
         with self._lock:
             m = self._matrices.get(key)
             if m is None:
+                for other in [k for k in self._matrices if k[0] == profile]:
+                    del self._matrices[other]
                 path = (os.path.join(self._base, f'matrix-{self.build.name}-{profile}-{key[1]}.npz')
                         if self._base is not None else None)
                 m = self._matrices[key] = _ProfileMatrix(self.engine, profile, costing, path)
@@ -739,8 +745,9 @@ class ValhallaRoads:
     фоновый поток. Пара, которой в срезе нет (точка не привязана, пути нет, точку не готовили), — запасной путь:
     км — граф OSM (fallback), его нет — None (по прямой × извилистость, Norms.km); минуты — None (скорость зоны).
 
-    time_only (режим valhalla_time) — км сначала по графу OSM, Valhalla — минуты (и км, где графа нет). Минуты
-    грузовика (профиль truck) — только при truck_time (ROUTES_TRUCK_TIME=valhalla), иначе прежняя модель.
+    time_only (режим valhalla_time) — км сначала по графу OSM, Valhalla — минуты (у машин менеджеров — и км, где графа
+    нет; у грузовиков — нет: по прямой × извилистость, как до этапа 2). Минуты грузовика (профиль truck) — только при
+    truck_time (ROUTES_TRUCK_TIME=valhalla), иначе прежняя модель.
     compute — ensure считает недостающие точки сам (команды и скрипты); у сервера (False) — нет: считает фон."""
 
     def __init__(self, registry: _Registry, profile: str, fallback: RoadDistances | None = None, *,
@@ -772,11 +779,20 @@ class ValhallaRoads:
         return self.active and (self.profile == PROFILE_CAR or self.truck_time)
 
     @property
+    def _graph_km_only(self) -> bool:
+        """Грузовик в режиме valhalla_time: км — только граф OSM, точки вне графа — по прямой × извилистость, как до
+        этапа 2. Матрица грузовика в этом режиме не входит в готовность среза: км Valhalla молча меняли бы расчёт,
+        когда её досчитает фон."""
+        return self.time_only and self.profile == PROFILE_TRUCK
+
+    @property
     def km_source(self) -> str:
-        """Откуда км: 'osm' — граф OSM (режим valhalla_time или Valhalla выключен сбоем), иначе
-        'valhalla:<профиль>:<стоимость>'."""
+        """Откуда км: 'osm' — граф OSM (режим valhalla_time или Valhalla выключен сбоем); 'straight' — грузовик в
+        режиме valhalla_time без графа (по прямой × извилистость); иначе 'valhalla:<профиль>:<стоимость>'."""
         if self.fallback is not None and not self.fallback.failed and (self.time_only or not self.active):
             return 'osm'
+        if self._graph_km_only:
+            return 'straight'
         return f'valhalla:{self.profile}:{costing_key(self.costing)}'
 
     @property
@@ -835,10 +851,14 @@ class ValhallaRoads:
         return sa + d + sb if math.isfinite(d) else None
 
     def km(self, a: Point, b: Point) -> float | None:
-        """Км A → B по дорогам: Valhalla, у кого пути нет — граф OSM (км из графа — наоборот); нет обоих — None."""
-        if self.km_source == 'osm':
+        """Км A → B по дорогам: Valhalla, у кого пути нет — граф OSM (км из графа — наоборот; грузовик в режиме
+        valhalla_time — только граф); нет — None (по прямой × извилистость, Norms.km)."""
+        source = self.km_source
+        if source == 'straight':
+            return None
+        if source == 'osm':
             d = self.fallback.km(a, b)
-            return d if d is not None else self._valhalla_km(a, b)
+            return d if d is not None or self._graph_km_only else self._valhalla_km(a, b)
         d = self._valhalla_km(a, b)
         if d is not None or self.fallback is None:
             return d
@@ -862,10 +882,13 @@ class ValhallaRoads:
 
     def unsnapped(self, points: Iterable[Point | None]) -> int:
         """Сколько точек без км по дорогам (км из графа OSM — считает он)."""
-        if self.km_source == 'osm':
+        source = self.km_source
+        if source == 'osm':
             return self.fallback.unsnapped(points)
-        t = self._table
         keys = {point_key(p) for p in points if p is not None}
+        if source == 'straight':
+            return len(keys)
+        t = self._table
         return sum(1 for k in keys if k in t.index and not t.snap[t.index[k]] <= SNAP_MAX_KM)
 
     def lines(self, lines: Sequence[Sequence[Point]]) -> list[list[Point]] | None:
@@ -895,8 +918,11 @@ def road_model_id(roads: RoadDistances | ValhallaRoads | None) -> str:
         return 'straight'
     if not isinstance(roads, ValhallaRoads):
         return _osm_id(roads)
-    if roads.km_source == 'osm':
+    source = roads.km_source
+    if source == 'osm':
         km = _osm_id(roads.fallback)
+    elif source == 'straight':
+        km = 'straight'
     else:
         km = f'valhalla:{roads.build_id}:{roads.profile}:{costing_key(roads.costing)}'
     if not roads.serves_minutes:
@@ -1088,18 +1114,20 @@ def open_valhalla(fallback: RoadDistances | None = None, base: str | None = None
 # --- Команды ---
 
 def _warm() -> None:
-    """Матрицы обоих профилей для всех точек текущего плана: снимок ERP (только чтение) + настройки маршрутов."""
+    """Матрицы обоих профилей для всех точек текущего плана: снимок ERP (только чтение) + настройки маршрутов (из копии
+    базы: roads._load_bundle_readonly)."""
     sys.path.insert(0, REPO_ROOT)
+    os.environ[ENGINE_ENV] = ENGINE_OSM   # import app_v2 вызывает init_app: фон сервера считал бы те же матрицы
     import app_v2  # noqa: F401 — только строка подключения к ERP; сервер не запускается
 
     from . import evaluate
+    from .roads import _load_bundle_readonly
     from .snapshot import load_snapshot
-    from .store import Store
     from .views import _ready_trucks
 
     db_path = os.environ.get('ROUTES_DB_PATH') or os.path.join(REPO_ROOT, 'route_optimizer.db')
     snap = load_snapshot(app_v2.db.connection_string)
-    bundle = Store(db_path).load()
+    bundle = _load_bundle_readonly(db_path)
     capacity = max((t.capacity_kg for t in _ready_trucks(snap, bundle).values()), default=None)
     roads = open_valhalla(truck_capacity_kg=capacity)
     if roads is None:
@@ -1124,7 +1152,18 @@ def main(argv: Sequence[str]) -> int:
         limit = None
         if '--max-seconds' in argv:
             limit = float(argv[argv.index('--max-seconds') + 1])
-        build = build_tiles(force='--force' in argv, max_seconds=limit)
+        # ожидаемое (нет пакета или карты, сборка занята) — одной строкой без трассировки: журнал задачи обновления
+        if valhalla_module() is None:
+            print('Тайлы не собраны: pyvalhalla не установлен — дороги по графу OSM', file=sys.stderr)
+            return 4
+        if map_signature(osm_path()) is None:
+            print(f'Тайлы не собраны: карты нет ({osm_path()}) — дороги по графу OSM', file=sys.stderr)
+            return 4
+        try:
+            build = build_tiles(force='--force' in argv, max_seconds=limit)
+        except BuildBusy as exc:
+            print(f'Тайлы не собраны: {exc}', file=sys.stderr)
+            return 3
         print(json.dumps(build.info, ensure_ascii=False, indent=1))
     elif command == 'warm':
         _warm()

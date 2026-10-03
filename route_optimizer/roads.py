@@ -17,7 +17,8 @@
   и по обратному графу. Точка не привязана или пути нет — km() → None: участок считает вызывающий
   (по прямой × извилистость).
 
-Команды:  python -m route_optimizer.roads download | build | warm
+Команды:  python -m route_optimizer.roads download | build | warm [--if-stale]
+(warm --if-stale — только если кэш расстояний не годится нынешнему графу и формату: задача обновления сервера)
 """
 from __future__ import annotations
 
@@ -31,9 +32,12 @@ import time
 import zlib
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
 from .geo import EARTH_RADIUS_KM, Point, haversine_km
+
+if TYPE_CHECKING:
+    from .store import Bundle
 
 try:   # необязательные зависимости: без них дорог нет, всё считается по прямой
     import numpy as np
@@ -678,21 +682,54 @@ def _download(path: str, url: str) -> None:
     print(f'Готово: {os.path.getsize(path) / 1e6:.1f} МБ за {time.perf_counter() - started:.0f} с')
 
 
+def _dist_cache_stale(path: str) -> bool:
+    """Кэш расстояний карты path не подходит к нынешнему графу и формату (сменился DIST_FORMAT, как 2 → 3, или карта):
+    первый расчёт после обновления пересчитал бы его целиком (~2 мин под блокировкой дорог). Проверка — без ERP и без
+    загрузки графа; карты или numpy/scipy нет — греть нечего (False)."""
+    version = map_signature(path)
+    if version is None or not roads_supported():
+        return False
+    identity = RoadGraph.stored_identity(_cache_path(path, 'graph'), version)
+    if identity is None:
+        return True   # графа в кэше нет или он от другой карты — warm соберёт и его
+    try:
+        with open(_cache_path(path, 'dist'), 'rb') as f, np.load(f, allow_pickle=False) as z:
+            return 'key' not in z.files or str(z['key']) != _dist_key(identity)
+    except Exception:   # файла нет или он битый
+        return True
+
+
+def _load_bundle_readonly(db_path: str) -> Bundle:
+    """Настройки маршрутов для команд warm — из копии базы (Store.load_copy), сама база не меняется: задача обновления
+    запускает warm до перезапуска сервера, и миграция базы сломала бы каждое обращение к ней ещё работающему серверу
+    прежней версии («База маршрутов создана более новой версией программы»). Базы нет — настройки по умолчанию, как у
+    сервера при первом запуске."""
+    from .store import SCHEMA_VERSION, Store
+
+    bundle, version = Store(db_path).load_copy()
+    if version is not None and version != SCHEMA_VERSION:
+        print(f'База маршрутов: схема {version}, у программы — {SCHEMA_VERSION}. Настройки — из временной копии, '
+              f'приведённой к схеме программы; сама база не меняется')
+    return bundle
+
+
 def _warm(path: str) -> None:
-    """Матрица для всех точек текущего плана: снимок ERP (только чтение) + настройки маршрутов."""
+    """Матрица для всех точек текущего плана: снимок ERP (только чтение) + настройки маршрутов (из копии базы)."""
+    from .valhalla_engine import ENGINE_ENV, ENGINE_OSM
+
     sys.path.insert(0, REPO_ROOT)
+    os.environ[ENGINE_ENV] = ENGINE_OSM   # import app_v2 вызывает init_app: фон Valhalla этой команде не нужен
     import app_v2  # noqa: F401 — только строка подключения к ERP; сервер не запускается
 
     from . import evaluate
     from .snapshot import load_snapshot
-    from .store import Store
 
     roads = open_roads(path)
     if roads is None:
         raise SystemExit('Карты нет — сначала: python -m route_optimizer.roads download')
     db_path = os.environ.get('ROUTES_DB_PATH') or os.path.join(REPO_ROOT, 'route_optimizer.db')
     snap = load_snapshot(app_v2.db.connection_string)
-    bundle = Store(db_path).load()
+    bundle = _load_bundle_readonly(db_path)
     points = evaluate.plan_points(snap, bundle, {})
     started = time.perf_counter()
     roads.ensure(points)
@@ -703,6 +740,11 @@ def _warm(path: str) -> None:
 
 def main(argv: Sequence[str]) -> int:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
+    try:   # ROUTES_OSM_PATH, ROUTES_DB_PATH — из .env сервера, как у app_v2: карта и база те же, что у сервера
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(REPO_ROOT, '.env'))
+    except ImportError:
+        pass
     command = argv[0] if argv else ''
     path = osm_path()
     if command == 'download':
@@ -716,9 +758,12 @@ def main(argv: Sequence[str]) -> int:
         RoadNetwork(graph)   # проверка: связность и KD-дерево строятся
         print(f'Граф: узлов {graph.n_nodes}, рёбер {len(graph.src)} → {_cache_path(path, "graph")}')
     elif command == 'warm':
+        if '--if-stale' in argv and not _dist_cache_stale(path):
+            print('Кэш расстояний годится — пересчёт не нужен' if map_signature(path) else f'Карты нет: {path}')
+            return 0
         _warm(path)
     else:
-        print('Команды: download [url] | build | warm')
+        print('Команды: download [url] | build | warm [--if-stale]')
         return 2
     return 0
 
