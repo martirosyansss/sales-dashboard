@@ -515,8 +515,8 @@
 }
 .dp-npin span.is-long { font-size: 10px; letter-spacing: -.3px; }
 
-/* «Почему так» под строкой выбранного на карте (ответ владельца №49): разделы «заголовок — фразы», время по точкам */
-.dp-why { padding: 10px 14px 12px; border-bottom: 1px solid var(--rt-line); font-size: .9375rem; line-height: 1.5; }
+/* «Почему так» под картой (ответ владельца №49): разделы «заголовок — фразы», время по точкам */
+.dp-why { padding: 10px 14px 12px; border-top: 1px solid var(--rt-line); font-size: .9375rem; line-height: 1.5; }
 #rtDispatch .dp-why-t { margin: 0 0 6px; font-size: 1rem; font-weight: 700; }
 .dp-why-list { margin: 0; }
 .dp-why-row { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); gap: 2px 14px; padding: 7px 0; border-top: 1px solid var(--rt-line-soft); }

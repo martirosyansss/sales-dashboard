@@ -69,6 +69,21 @@
         </div>
     </section>
 
+    <section class="rt-card" aria-labelledby="lrStoresTitle">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="lrStoresTitle"><i class="fas fa-store" aria-hidden="true"></i>Разгрузка по магазинам</h2>
+        </div>
+        <p class="rt-card-lead">Сколько минут машина стоит у магазина, не считая самого груза: парковка, приёмка, документы.
+            <b>Введено</b> — что указали в «Настройки → Магазины: время и машины». <b>По факту</b> — сколько выходит по GPS водителей
+            (считается от <span id="lrStoresMin">5</span> разгрузок у магазина). <b>В расчёте</b> — что «Развоз» берёт сейчас.
+            Время на груз (<span id="lrStoresTonne">6</span> мин на тонну) добавляется сверху.</p>
+        <div class="rt-table-scroll"><table class="rt-table">
+            <thead><tr><th scope="col">Магазин</th><th scope="col">Введено</th><th scope="col">По факту</th><th scope="col">В расчёте</th></tr></thead>
+            <tbody id="lrStoreRows"><tr><td colspan="4" class="rt-empty">Загружаю…</td></tr></tbody>
+        </table></div>
+        <p class="lr-why is-wide" id="lrStoresNote"></p>
+    </section>
+
     <section class="rt-card" aria-labelledby="lrTtTitle">
         <div class="rt-card-head">
             <h2 class="rt-card-title" id="lrTtTitle"><i class="fas fa-stopwatch" aria-hidden="true"></i>Время в пути грузовиков: модель</h2>
@@ -129,7 +144,9 @@
             <ul>
                 <li><b>Откуда факт.</b> Терминал водителя записывает маршрут, пока открыт рабочий день. Программа находит выезды со склада и возвращения
                     (зона 150 м вокруг склада), стоянки у магазинов (не меньше 2 минут в 100 м от точки магазина), время в пути между ними и км.</li>
-                <li><b>Разгрузка</b> = минуты на точку + минуты на тонну; у магазина, где разгружались не меньше 5 раз, — своя поправка.</li>
+                <li><b>Разгрузка</b> = минуты на точку + минуты на тонну. Время у магазина, введённое в настройках, «Развоз» берёт сразу вместо минут на точку.
+                    Где разгружались не меньше 5 раз, программа уточняет время магазина по факту: чем больше разгрузок, тем ближе к факту, а пока их мало — ближе к введённому
+                    (нет введённого — к обычным минутам на точку).</li>
                 <li><b>Загрузка на складе</b> = минуты на рейс + минуты на тонну (видна, если машина приезжала на склад при включённом терминале).
                     Из стоянки на складе вычитается ожидание, которое заложил план (выезд позже под окно первой точки); долгие стоянки (обед) не учитываются;
                     за одну ночь норма меняется не больше чем на 30%; стоянка на складе короче 5 минут — проезд, а не загрузка, и норма не бывает меньше 5 минут на рейс.
@@ -157,5 +174,5 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_learning.js') }}?v=5"></script>
+<script src="{{ url_for('static', filename='js/routes_learning.js') }}?v=6"></script>
 {% endblock %}

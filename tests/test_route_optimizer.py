@@ -4656,6 +4656,7 @@ def test_store_fleet_settings_defaults_and_validation(store):
     assert (tn.work_minutes, tn.unload(1000.0)) == (720.0, 11.0)
 
 
+@pytest.mark.skipif(not OWNER_DB.exists(), reason='нет базы маршрутов владельца')
 def test_store_fleet_keeps_owner_trucks_on_copy(tmp_path):
     """Новые нормы машин — значения по умолчанию, машины владельца (тоннаж, расход, «чей менеджер» для
     справки, «активна») на КОПИИ базы — как были; тестовые машины пишутся только в копию."""
@@ -5241,6 +5242,7 @@ def test_store_migrates_schema_6_to_7_keeps_values(tmp_path):
     assert s.save_dispatch('2026-10-01', {'x': 1}, 'qa') == 1
 
 
+@pytest.mark.skipif(not OWNER_DB.exists(), reason='нет базы маршрутов владельца')
 def test_store_owner_copy_gets_dispatch_tables(tmp_path):
     """КОПИЯ базы владельца: новые таблицы появляются, сохранённое — как было; запись — только в копию."""
     def dump(conn):
@@ -5621,6 +5623,7 @@ def test_api_dispatch_freshness_hint_and_new_since_build(client, monkeypatch):
     assert d['new_since_build'] is None and d['built_at'] is None
 
 
+@pytest.mark.skipif(not OWNER_DB.exists(), reason='нет базы маршрутов владельца')
 def test_store_owner_copy_ready_time_default_and_legacy_draft(tmp_path):
     """КОПИЯ базы владельца: dispatch_ready_time — по умолчанию (настройка без миграции), черновик прежнего
     формата (без отметки сборки) читается, сравнения «с последней сборки» нет; запись — только в копию."""

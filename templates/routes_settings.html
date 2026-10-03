@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=18">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_customer_settings.css') }}?v=1">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_customer_settings.css') }}?v=2">
 {% endblock %}
 
 {% block content %}
@@ -36,7 +36,7 @@
         <div class="rt-card-head">
             <h2 class="rt-card-title" id="rcsTitle"><i class="fas fa-store" aria-hidden="true"></i>Магазины: время и машины</h2>
         </div>
-        <p class="rt-card-lead">Найдите магазин и задайте время доставки и машины, которые могут его обслуживать.
+        <p class="rt-card-lead">Найдите магазин и задайте время доставки, сколько машина стоит у магазина и какие машины могут его обслуживать.
             Условия действуют для всех дней, в том числе когда у магазина пока нет заказа.</p>
         <div class="rt-field">
             <label for="rcsSearch">Название или код магазина</label>
@@ -67,6 +67,11 @@
                 <label id="rcsTimeTolerance" hidden><span>Допустимое отклонение, ± минут</span><input id="rcsTimeTol" class="rt-input" type="number" min="0" max="120" step="1" inputmode="numeric" value="0"></label>
             </div>
             <p id="rcsTimeHint" class="rt-field-hint">Время прибытия и начала разгрузки у магазина.</p>
+        </div>
+        <div class="rt-field rcs-unload">
+            <label for="rcsUnload">Время у магазина, мин</label>
+            <input id="rcsUnload" class="rt-input" type="number" min="1" max="120" step="1" inputmode="numeric" placeholder="Обычное" aria-describedby="rcsUnloadHint">
+            <p id="rcsUnloadHint" class="rt-field-hint">Сколько минут машина стоит у этого магазина: парковка, приёмка, документы. Время на сам груз программа добавит сама. Пусто — обычное время.</p>
         </div>
         <div class="rt-field">
             <label for="rcsVehicleMode">Какие машины могут обслуживать</label>
@@ -272,6 +277,6 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=14"></script>
-<script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=3"></script>
 <script src="{{ url_for('static', filename='js/routes_measurements.js') }}?v=2"></script>
 {% endblock %}

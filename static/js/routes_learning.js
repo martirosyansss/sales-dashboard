@@ -3,7 +3,8 @@
    опрос во время пересчёта), GET /api/routes/learning/day?date=&car= (карта дня), POST /api/routes/learning/run
    (пересчитать в фоне), POST /api/routes/learning/auto {kind, auto}, POST /api/routes/road-lines (плановые рейсы по
    дорогам, avoid_center — в объезд малого центра, как их считает «Развоз»). «Время в пути грузовиков: модель» — строка вида truck_time в status (source: какая модель действует и
-   почему; last.params.candidates — сравнение моделей). Всё, что пришло с сервера, выводится только через esc() или
+   почему; last.params.candidates — сравнение моделей). «Разгрузка по магазинам» (№50) — stores строки вида unload в status.
+   Всё, что пришло с сервера, выводится только через esc() или
    textContent. Карта — Leaflet, как в «Развозе». */
 (function () {
     'use strict';
@@ -47,7 +48,7 @@
         if (!p) return null;
         if (kind === 'unload') {
             const n = Object.keys(p.store_offsets || {}).length;
-            return fmt(p.per_stop_min, 1) + ' мин на точку + ' + fmt(p.per_tonne_min, 1) + ' мин на тонну' + (n ? ' (свои поправки у ' + fmt(n) + ' магазинов)' : '');
+            return fmt(p.per_stop_min, 1) + ' мин на точку + ' + fmt(p.per_tonne_min, 1) + ' мин на тонну' + (n ? ' (своё время у ' + fmt(n) + ' магазинов)' : '');
         }
         if (kind === 'loading') return fmt(p.fixed_min, 1) + ' мин на рейс + ' + fmt(p.per_tonne_min, 1) + ' мин на тонну';
         if (kind === 'travel') {
@@ -115,10 +116,36 @@
                 + changed + last.reason + '.'
             : '';
     }
+    // Разгрузка по магазинам (№50): введено / по факту (визитов) / в расчёте — stores строки unload
+    const STORE_SOURCE = { learned: 'уточнено по факту', manual: 'как введено', norm: 'обычное время' };
+    const unloads = (n) => fmt(n) + ' ' + (n % 10 === 1 && n % 100 !== 11 ? 'разгрузка'
+        : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'разгрузки' : 'разгрузок');
+    function storeRow(r, minVisits) {
+        const name = r.name ? esc(r.name) + (r.code ? ' · ' + esc(r.code) : '') : 'клиент ' + esc(r.customer_id);
+        const manual = num(r.manual_min) === null ? '—' : fmt(r.manual_min) + ' мин';
+        const visits = num(r.visits);
+        const fact = visits === null ? '<span class="lr-why">разгрузок пока нет</span>'
+            : fmt(r.fact_min, 1) + ' мин <span class="lr-why">(' + unloads(visits) + (visits < minVisits ? ' — пока мало, в расчёт не идёт' : '') + ')</span>';
+        return '<tr><th scope="row">' + name + '</th><td>' + manual + '</td><td>' + fact + '</td><td><b>' + fmt(r.in_calc_min, 1)
+            + ' мин</b><br><span class="lr-why">' + esc(STORE_SOURCE[r.source] || '') + '</span></td></tr>';
+    }
+    function renderStores(s) {
+        const st = s && s.stores;
+        if (!st) { $('lrStoreRows').innerHTML = '<tr><td colspan="4" class="rt-empty">Пока нечего показать.</td></tr>'; $('lrStoresNote').textContent = ''; return; }
+        $('lrStoresMin').textContent = st.min_visits;
+        $('lrStoresTonne').textContent = fmt(st.per_tonne_min, 1);
+        $('lrStoreRows').innerHTML = st.rows.length ? st.rows.map(r => storeRow(r, st.min_visits)).join('')
+            : '<tr><td colspan="4" class="rt-empty">Своего времени пока нет ни у одного магазина. Его можно ввести в «Настройки → Магазины: время и машины»; '
+                + 'по факту оно появится, когда у магазина наберётся ' + esc(unloads(st.min_visits)) + '.</td></tr>';
+        $('lrStoresNote').textContent = 'У остальных магазинов — обычные ' + fmt(st.per_stop_min, 1) + ' мин.'
+            + (st.run_day ? ' По факту — пересчёт ' + day(st.run_day) + '.' : '')
+            + (st.total > st.shown ? ' Показаны ' + fmt(st.shown) + ' из ' + fmt(st.total) + ' магазинов — с наибольшим числом разгрузок.' : '');
+    }
     function renderStatus(d) {
         const status = d.status || [];
         firstFuel = status.find(s => s.kind === 'fuel') || null;
         renderTruckTime(status.find(s => s.kind === 'truck_time') || null);
+        renderStores(status.find(s => s.kind === 'unload') || null);
         $('lrLearnRows').innerHTML = status.length ? status.map(learnRow).join('')
             : '<tr><td colspan="5" class="rt-empty">Пока нечего показать.</td></tr>';
         const w = d.warning;

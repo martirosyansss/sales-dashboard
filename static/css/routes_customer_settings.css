@@ -23,3 +23,4 @@
 .rcs-actions { display: flex; flex-wrap: wrap; gap: 10px; position: sticky; bottom: -20px; margin-bottom: -12px; padding: 12px 0; background: var(--rt-panel); }
 .rcs-actions .rt-btn { white-space: normal; }
 @media (max-width: 480px) { .rcs-choices, .rcs-time-fields { grid-template-columns: 1fr; } }
+.rcs-unload { margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--rt-line); }

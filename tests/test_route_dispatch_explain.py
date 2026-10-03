@@ -85,8 +85,10 @@ def test_trip_time_parts_add_up_to_trip_minutes(tn, norms):
         assert e['end_slack_min'] == pytest.approx(TN.work_minutes - depart - minutes, abs=0.06)
         for s, at in zip(trip['stops'], arrivals):
             assert s['eta'] == dp._hhmm(START + at)
-    # первый рейс: у 102 «после 10:30» — машина ждёт там; выезжает в 09:00 — без простоя
+    # первый рейс: у 102 «после 10:30» — машина ждёт там (приехала раньше начала разгрузки); выезжает в 09:00 — без простоя
     assert first['stops'][1]['eta'] == '10:30' and first['stops'][1]['wait_min'] > 0 and first['explain']['wait_min'] > 0
+    w = first['stops'][1]
+    assert abs(_hm(w['eta']) - _hm(w['arrive']) - w['wait_min']) <= 1 and first['stops'][0]['arrive'] == first['stops'][0]['eta']
     assert first['stops'][0]['wait_min'] == 0 and first['explain']['idle_before_min'] == 0
     # второй рейс: 103 «после 13:00» — выезд позже, чтобы не ждать у неё; ожидания в рейсе нет
     assert second['stops'][0]['eta'] == '13:00' and second['explain']['wait_min'] == 0
@@ -231,7 +233,8 @@ def test_api_dispatch_explain_fields(client):
     d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
     e = d['plan']['explain']
     assert {'trucks', 'zone', 'center_stores', 'window_stores', 'access_stores', 'load_cap_pct', 'pinned_trips',
-            'solver', 'solver_iterations', 'model', 'carried', 'deferred'} <= set(e)
+            'solver', 'solver_iterations', 'model', 'carried', 'deferred', 'erp_gps_gap_km', 'loading_fixed_min',
+            'loading_min_per_tonne', 'balance_load_aware'} <= set(e)
     assert (e['carried'], e['deferred']) == (0, 0)
     m = e['model']
     assert (m['km'], m['bypass'], m['unsnapped'], m['minutes']) == ('straight', False, None, 'zones')   # карты в тестах нет
@@ -241,7 +244,68 @@ def test_api_dispatch_explain_fields(client):
     assert trips and all({'loading_min', 'drive_min', 'unload_min', 'wait_min', 'back_min', 'idle_before_min',
                           'end_slack_min', 'load_limit_kg', 'over_limit', 'heavy_alone', 'l100', 'bypass_km',
                           'bypass_legs', 'others'} <= set(tr['explain']) for tr in trips)
-    assert all({'drive_min', 'wait_min', 'unload_min', 'margin_min'} <= set(s) for tr in trips for s in tr['stops'])
+    assert all({'arrive', 'drive_min', 'wait_min', 'unload_min', 'margin_min'} <= set(s) for tr in trips for s in tr['stops'])
     for tr in trips:
         x = tr['explain']
         assert x['loading_min'] + x['drive_min'] + x['unload_min'] + x['wait_min'] == pytest.approx(tr['minutes'], abs=0.6)
+
+
+def test_plan_view_without_explain_same_numbers():
+    """explain=False (км до правки, прогноз «план — факт»): без пояснений, остальное — то же."""
+    stops, _ = _dp_stops(EAST)
+    ctx = _ctx([FORD, HOWO], {102: st.CustomerWindow('after', _hm('10:30')).span()}, tn=LOADING, norms=SLOW)
+    draft, full = _view(ctx, stops, [(FORD.car_code, [101, 102], False), (HOWO.car_code, [103], False)])
+    bare = dp.plan_view(ctx, stops, draft, _info, explain=False)
+    assert 'explain' not in bare and all('explain' not in tr for t in bare['trucks'] for tr in t['trips'])
+    full.pop('explain')
+    for t in full['trucks']:
+        for tr in t['trips']:
+            tr.pop('explain')
+    assert bare == full
+
+
+# ============================== что учтено: дороги и выученное (views._model_note) ==============================
+
+def test_model_note_yandex_km_and_learned_fuel_of_day_trucks():
+    """Яндекс: Norms.km берёт его км первыми — страница не должна говорить «по карте OSM» и «по прямой»; выученный расход —
+    только у машин расчёта."""
+    from route_optimizer import learning, views
+    eff = learning.InEffect(fuel={FORD.car_code: {'empty_l100': 10.0, 'full_l100': 15.0},
+                                  'GONE': {'empty_l100': 9.0, 'full_l100': 12.0}}, unload={'per_stop_min': 7})
+    m = views._model_note(st.DEFAULT_SETTINGS, None, replace(DP_NORMS, provider=object()), eff, [DP_DEPOT],
+                          {FORD.car_code: FORD})
+    assert (m['km'], m['unsnapped'], m['minutes'], m['bypass']) == ('yandex', None, 'yandex', False)
+    assert m['learned'] == {'travel': False, 'unload': True, 'loading': False, 'fuel': [FORD.car_code]}
+    plain = views._model_note(st.DEFAULT_SETTINGS, None, DP_NORMS, learning.InEffect(), [DP_DEPOT], {})
+    assert (plain['km'], plain['unsnapped'], plain['minutes']) == ('straight', None, 'zones')
+    assert plain['speed_city_source'] == plain['speed_region_source'] == 'default'
+
+
+def test_straight_points_valhalla_falls_back_to_osm_graph():
+    """Valhalla не привязал точку — её км даёт граф OSM; по прямой — только точка, не привязанная и к нему."""
+    from route_optimizer import views
+    from route_optimizer.valhalla_engine import ValhallaRoads
+    a, b, c = (40.20, 44.60), (40.21, 44.61), (40.22, 44.62)
+
+    class Graph:
+        failed = False
+
+        def __init__(self, far):
+            self.far = set(far)
+
+        def unsnapped(self, points):
+            return sum(1 for p in set(points) if p in self.far)
+
+    class Valhalla(ValhallaRoads):
+        def __init__(self, far, fallback):   # без движка: нужны только привязка и запасной путь
+            self.far, self.fallback = set(far), fallback
+
+        def unsnapped(self, points):
+            return sum(1 for p in set(points) if p in self.far)
+
+    assert views._straight_points(Valhalla([a, b], Graph([b, c])), [a, b, c, b]) == 1     # только b — ни там, ни там
+    assert views._straight_points(Valhalla([a, b], None), [a, b, c]) == 2                  # запасного пути нет
+    broken = Graph([])
+    broken.failed = True
+    assert views._straight_points(Valhalla([a], broken), [a, b]) == 1
+    assert views._straight_points(Graph([c]), [a, c]) == 1                                  # граф OSM — как есть

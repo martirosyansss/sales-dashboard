@@ -79,7 +79,8 @@ class TruckNorms:
     warehouse_load_min_per_tonne: float = 0.0
     work_start_minute: float | None = None
     loading_configured: bool = True
-    # выученная поправка разгрузки магазина, мин на визит (learning.apply_learned): точка дня → минуты; нет — 0
+    # своё время магазина — поправка разгрузки, мин на визит (learning.apply_learned: выученное или введённое, №50):
+    # точка дня → минуты; нет — 0
     unload_extra: Mapping[Point, float] = field(default_factory=dict, compare=False)
 
     @classmethod
@@ -100,7 +101,7 @@ class TruckNorms:
         return self.unload_min_per_stop + self.unload_min_per_tonne * kg / 1000.0
 
     def unload_at(self, kg: float, point: Point) -> float:
-        """Разгрузка у точки: норма + выученная поправка магазина (unload_extra; нет — норма, тот же float)."""
+        """Разгрузка у точки: норма + поправка магазина (unload_extra; нет — норма, тот же float)."""
         extra = self.unload_extra.get(point)
         return self.unload(kg) if extra is None else self.unload(kg) + extra
 

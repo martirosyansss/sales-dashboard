@@ -1,8 +1,9 @@
-/* Условия магазина в /routes/settings; время и машины сохраняются одной транзакцией. */
+/* Условия магазина в /routes/settings; время доставки, время у магазина (№50) и машины сохраняются одной транзакцией. */
 (function () {
     'use strict';
     const $ = id => document.getElementById(id);
-    let shop = null, vehicles = [], busy = false, searchTimer = null, searchGen = 0;
+    let shop = null, vehicles = [], norms = null, busy = false, searchTimer = null, searchGen = 0;
+    const minutes = v => Number(v).toLocaleString('ru-RU', { maximumFractionDigits: 1 });
     const hhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
     const nameOf = item => item.name || item.code || String(item.customer_id);
     const truckLabel = t => [t.name, t.car_code].filter(Boolean).join(' · ');
@@ -29,6 +30,20 @@
         if (w.kind === 'between') return hhmm(w.t1) + '–' + hhmm(w.t2);
         return 'В ' + hhmm(w.t1) + (w.tol ? ' ±' + w.tol + ' мин' : '');
     }
+    const unloads = n => n + ' ' + (n % 10 === 1 && n % 100 !== 11 ? 'разгрузка'
+        : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'разгрузки' : 'разгрузок');
+    // Подсказка — как посчитает «Развоз»: пустое поле — обычное время или своё время магазина по факту
+    // (unload_auto_min); есть разгрузки по GPS (unload_visits) — введённое смешается с фактом.
+    function unloadHint(item) {
+        const perTonne = norms ? minutes(norms.per_tonne_min) + ' мин на тонну' : 'минуты на тонну';
+        const auto = item && item.unload_auto_min != null ? Number(item.unload_auto_min) : null;
+        const empty = auto !== null && norms && auto !== Number(norms.per_stop_min) ? minutes(auto) + ' мин — по факту'
+            : norms ? 'обычные ' + minutes(norms.per_stop_min) + ' мин' : 'обычное время';
+        const fact = item && item.unload_visits ? ' По GPS водителей у этого магазина уже ' + unloads(item.unload_visits)
+            + ': введённое время программа смешает с фактом — чем больше разгрузок, тем ближе к факту.' : '';
+        return 'Сколько минут машина стоит у этого магазина: парковка, приёмка, документы. Время на сам груз ('
+            + perTonne + ') программа добавит сама.' + fact + ' Пусто — ' + empty + '.';
+    }
     function vehicleText(rule) {
         if (!rule || (rule.mode === 'deny' && !rule.trucks.length)) return 'Все машины';
         if (rule.mode === 'allow' && !rule.trucks.length) return 'Нет разрешённых машин';
@@ -46,13 +61,15 @@
                 + (customerId ? '&customer_id=' + customerId : ''));
             if (gen !== searchGen) return;
             vehicles = data.vehicles || [];
+            norms = data.unload_norms || null;
             list.textContent = '';
             data.customers.forEach(item => {
                 const li = document.createElement('li'), button = document.createElement('button');
                 button.type = 'button'; button.className = 'rcs-shop';
                 const title = document.createElement('b'), note = document.createElement('span');
                 title.textContent = nameOf(item) + ' · ' + (item.code || item.customer_id);
-                note.textContent = windowText(item.window) + ' · ' + vehicleText(item.vehicle_access);
+                note.textContent = windowText(item.window) + ' · ' + vehicleText(item.vehicle_access)
+                    + (item.unload_min ? ' · У магазина ' + minutes(item.unload_min) + ' мин' : '');
                 button.append(title, note); button.addEventListener('click', () => open(item));
                 li.append(button); list.append(li);
             });
@@ -72,6 +89,8 @@
         $('rcsTimeT1').value = w ? hhmm(w.t1) : '';
         $('rcsTimeT2').value = w && Number.isInteger(w.t2) ? hhmm(w.t2) : '';
         $('rcsTimeTol').value = String(w && Number.isInteger(w.tol) ? w.tol : 0);
+        $('rcsUnload').value = item.unload_min ? String(item.unload_min) : '';
+        $('rcsUnloadHint').textContent = unloadHint(item);
         $('rcsVehicleMode').value = item.vehicle_access ? item.vehicle_access.mode : '';
         const checked = new Set(item.vehicle_access ? item.vehicle_access.trucks : []);
         const choices = [...vehicles];
@@ -120,10 +139,20 @@
         if (kind === 'at' && (!Number.isInteger(tol) || tol < 0 || tol > 120)) throw new Error('Допустимое отклонение — от 0 до 120 минут.');
         return { kind, t1, t2: kind === 'between' ? t2 : null, tol: kind === 'at' ? tol : null };
     }
+    function readUnload() {
+        const input = $('rcsUnload'), error = 'Время у магазина — целое число минут от 1 до 120. Или оставьте поле пустым.';
+        // нечисло в поле type=number браузер отдаёт как '' — это не «пусто»: иначе сохранённое время стёрлось бы молча
+        if (input.validity && input.validity.badInput) throw new Error(error);
+        const raw = input.value.trim();
+        if (raw === '') return null;
+        const value = Number(raw);
+        if (!Number.isInteger(value) || value < 1 || value > 120) throw new Error(error);
+        return value;
+    }
     async function save() {
         if (busy || !shop) return;
-        let window;
-        try { window = readWindow(); } catch (e) { $('rcsError').textContent = e.message; return; }
+        let window, unloadMin;
+        try { window = readWindow(); unloadMin = readUnload(); } catch (e) { $('rcsError').textContent = e.message; return; }
         const mode = $('rcsVehicleMode').value;
         const access = mode ? { mode, trucks: [...$('rcsVehicles').querySelectorAll('input:checked')].map(i => i.value) } : null;
         const customerId = shop.customer_id, name = nameOf(shop);
@@ -131,7 +160,7 @@
         $('rcsDialog').querySelectorAll('input, select, button').forEach(control => { control.disabled = true; });
         $('rcsError').textContent = '';
         try {
-            await api('POST', '/api/routes/customer-vehicles', { customer_id: customerId, access, window });
+            await api('POST', '/api/routes/customer-vehicles', { customer_id: customerId, access, window, unload_min: unloadMin });
             $('rcsDialog').close();
             $('rcsSaved').textContent = name + ': условия сохранены для всех дней. Пересоберите рейсы в развозе.';
             await search();
@@ -144,7 +173,7 @@
     function init() {
         if (!$('rsCustomerSettings')) return;
         $('rcsTimeKind').addEventListener('change', syncTime); $('rcsVehicleMode').addEventListener('change', syncVehicles);
-        ['rcsTimeT1', 'rcsTimeT2', 'rcsTimeTol'].forEach(id => $(id).addEventListener('input', () => { $('rcsError').textContent = ''; }));
+        ['rcsTimeT1', 'rcsTimeT2', 'rcsTimeTol', 'rcsUnload'].forEach(id => $(id).addEventListener('input', () => { $('rcsError').textContent = ''; }));
         $('rcsSave').addEventListener('click', save); $('rcsCancel').addEventListener('click', () => $('rcsDialog').close());
         $('rcsDialog').addEventListener('close', () => { shop = null; });
         $('rcsDialog').addEventListener('cancel', e => { if (busy) e.preventDefault(); });
