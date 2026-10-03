@@ -140,6 +140,7 @@ class Problem:
     base: tuple[bool, ...]      # рабочие слоты, где менеджер работает сейчас: пустой — слабый день
     neighbors: list[tuple[int, ...]]
     seed: int
+    hard_time: bool = False     # рабочая смена — ограничение, а не покупаемый штраф
 
 
 def make_u(rng: random.Random) -> tuple[tuple[float, ...], ...]:
@@ -267,13 +268,18 @@ class FleetEstimate:
 
     def __init__(self, km: Matrix, city: Sequence[bool], kg: Sequence[float], *, capacity_kg: float,
                  per_km: float, overtime_per_min: float, capacity_min: float, unload_stop: float,
-                 unload_tonne: float, speed_city_kmh: float, speed_region_kmh: float, trip_minutes: float):
+                 unload_tonne: float, speed_city_kmh: float, speed_region_kmh: float, trip_minutes: float,
+                 per_load_km: float = 0.0, wear_load_per_km: float = 0.0,
+                 load_fixed: float = 0.0, load_tonne: float = 0.0):
         self.d = km
         self.city = list(city)
         self.kg = list(kg)
-        self.unload = [0.0] + [unload_stop + unload_tonne * w / 1000.0 for w in self.kg[1:]]
+        self.unload = [0.0] + [unload_stop + (unload_tonne + load_tonne) * w / 1000.0 for w in self.kg[1:]]
+        self.load_fixed = load_fixed
         self.cap = capacity_kg
         self.per_km = per_km
+        self.per_load_km = per_load_km
+        self.wear_load_per_km = wear_load_per_km
         self.ot = overtime_per_min
         self.capacity_min = capacity_min
         self.trip_minutes = trip_minutes   # рейс не длиннее рабочего дня машины
@@ -358,10 +364,13 @@ class FleetEstimate:
                     prev, load, trip = 0, 0.0, 0.0
             if not prev:                                    # здесь начинается рейс
                 SK[k], SM[k] = km, mins
+                if not heavy:
+                    mins += self.load_fixed
+                    trip += self.load_fixed
             if heavy:                                       # тяжелее машины — отдельными рейсами
                 e = d0[x] * 2.0 * math.ceil(w / cap)
                 km += e
-                mins += e * (fc if c0 and city[x] else fr) + un[x]
+                mins += e * (fc if c0 and city[x] else fr) + un[x] + self.load_fixed * math.ceil(w / cap)
                 continue
             e = d[prev][x]
             go = e * (fc if city[prev] and city[x] else fr) + un[x]
@@ -425,17 +434,53 @@ class FleetEstimate:
             mins += e * (fc if city[prev] and c0 else fr)
         return km, mins
 
-    def cost_of(self, km: Sequence[float], mins: Sequence[float]) -> float:
+    def _load_charge(self, tour: Sequence[int]) -> float:
+        """Нагрузочная часть приближённого поиска: те же границы рейсов, что у _walk.
+
+        Профиль усреднён по парку; итог всегда проверяется полной моделью конкретных машин.
+        """
+        starts = self._walk(tour)[5]
+        cost, seq = 0.0, []
+
+        def charge(items: Sequence[int]) -> float:
+            remaining = math.fsum(self.kg[x] for x in items)
+            prev, value = 0, 0.0
+            for x in items:
+                u = remaining / self.cap
+                value += self.d[prev][x] * (self.per_load_km * u + self.wear_load_per_km * u * u)
+                remaining = max(0.0, remaining - self.kg[x])
+                prev = x
+            return value  # пустой возврат уже учтён в базовой цене километра
+
+        for k, x in enumerate(tour[1:], 1):
+            if starts[k] is not None:
+                cost += charge(seq)
+                seq = []
+            if self.kg[x] > self.cap:
+                count = math.ceil(self.kg[x] / self.cap)
+                u = self.kg[x] / count / self.cap
+                cost += count * self.d[0][x] * (self.per_load_km * u + self.wear_load_per_km * u * u)
+            else:
+                seq.append(x)
+        return cost + charge(seq)
+
+    def cost_of(self, km: Sequence[float], mins: Sequence[float],
+                tours: Sequence[Sequence[int]] | None = None) -> float:
         """Стоимость дня парка, драм в неделю: дизель + машино-минуты сверх рабочего дня всех машин."""
         over = sum(max(0.0, m - self.capacity_min) for m in mins)
-        return (self.per_km * sum(km) + self.ot * over) / TRUCK_SCENARIOS / W
+        load_cost = 0.0
+        if self.per_load_km or self.wear_load_per_km:
+            if tours is None:
+                raise ValueError('для оценки нагрузки нужны туры')
+            load_cost = math.fsum(self._load_charge(t) for t in tours)
+        return (self.per_km * sum(km) + load_cost + self.ot * over) / TRUCK_SCENARIOS / W
 
     def _refresh(self, j: int) -> None:
         for s in range(TRUCK_SCENARIOS):
             pre = self.pre[j][s] = self._walk(self.tours[j][s])
             self.km[j][s], self.mins[j][s] = pre[7], pre[8]
             self.memo[j][s].clear()
-        self.cost[j] = self.cost_of(self.km[j], self.mins[j])
+        self.cost[j] = self.cost_of(self.km[j], self.mins[j], self.tours[j])
 
     # -- оценка и применение --
 
@@ -463,7 +508,11 @@ class FleetEstimate:
         pre = self.pre[j][s]
         if pre is None:
             pre = self.pre[j][s] = self._walk(t)
-        km, mins = self._resume(new, k0, pre, limit, (1 if rem else 0) - (1 if ins else 0))
+        if self.load_fixed:
+            walk = self._walk(new)
+            km, mins = walk[7], walk[8]
+        else:
+            km, mins = self._resume(new, k0, pre, limit, (1 if rem else 0) - (1 if ins else 0))
         hit = memo[(rem, ins)] = (r_pos, i_pos, km, mins)
         return hit
 
@@ -555,7 +604,7 @@ class FleetEstimate:
                 km, mins = self.split(t)
                 worst = max(worst, abs(km - self.km[j][s]) / max(1.0, km),
                             abs(mins - self.mins[j][s]) / max(1.0, mins))
-            want = self.cost_of(self.km[j], self.mins[j])
+            want = self.cost_of(self.km[j], self.mins[j], self.tours[j])
             worst = max(worst, abs(want - self.cost[j]) / max(1.0, abs(want)))
         return max(worst, abs(sum(self.cost) - self.total) / max(1.0, abs(self.total)))
 
@@ -592,6 +641,7 @@ class State:
                  params: Sequence[VisitParams], *, change_penalty: float,
                  fleet: FleetEstimate | None = None):
         self.prob = prob
+        self._shift_minutes: dict[tuple[int, ...], float] = {}
         self.w = prob.weights
         self.lines = prob.lines
         self.params = list(params)
@@ -765,7 +815,13 @@ class State:
                     fops = []
                 fops.append((s, r_pos, i_pos, rem, ins, kms[s], mins[s]))
             if fops:
-                fcost = fleet.cost_of(kms, mins)
+                candidate_tours = [list(t) for t in fleet.tours[fj]]
+                for s, r_pos, i_pos, rem, ins, _, _ in fops:
+                    if r_pos >= 0:
+                        del candidate_tours[s][r_pos]
+                    if i_pos >= 0:
+                        candidate_tours[s].insert(i_pos, ins)
+                fcost = fleet.cost_of(kms, mins, candidate_tours)
                 delta += fcost - fleet.cost[fj]
         plan = (j, out_i, in_i, m_rem, m_ins, (km, drv, vm, mu, var, sure, logq, n, cost), fops, fcost, fj)
         return delta, plan
@@ -797,7 +853,42 @@ class State:
                 records.append(fleet.apply(hit[1][8], hit[1][6], hit[1][7]))
         for record in reversed(records):
             fleet.revert(record)
+        if self.prob.hard_time:
+            before = self.shift_excess(days=(p[0] for p in plans))
+            after = self.shift_excess(plans)
+            if math.fsum(after.values()) > math.fsum(before.values()) + 1e-6:
+                delta = math.inf
         return delta, plans
+
+    def shift_excess(self, plans: Sequence[tuple] = (), *, days: Iterable[int] | None = None) -> dict[int, float]:
+        """Переработка по тому же NN + 2-opt, что в полной оценке; минуты не округляются.
+
+        Проверяем конечный состав дня, а не инкрементальный тур: после доводки он может
+        отличаться от тура полной модели. Для обычных ходов считаются только затронутые дни.
+        """
+        by_day = {p[0]: p for p in plans}
+        days = sorted(by_day) if plans else (range(SLOTS) if days is None else sorted(set(days)))
+        out = {}
+        for j in days:
+            if not self.prob.workday[j]:
+                continue
+            members = set(self.members[j])
+            if j in by_day:
+                _, gone, added, *_ = by_day[j]
+                if gone >= 0:
+                    members.discard(gone)
+                if added >= 0:
+                    members.add(added)
+            key = tuple(sorted(members))
+            minutes = self._shift_minutes.get(key)
+            if minutes is None:
+                tour = nn_tour((self.lines[i].node for i in key if self.lines[i].node), self.prob.km)
+                minutes = math.fsum(self.lines[i].minutes for i in key) + tour_length(tour, self.prob.mins)
+                if len(self._shift_minutes) >= 20000:
+                    self._shift_minutes.clear()
+                self._shift_minutes[key] = minutes
+            out[j] = max(0.0, minutes - self.prob.weights.window_min)
+        return out
 
     def _apply_day(self, plan: tuple) -> None:
         j, out_i, in_i, m_rem, m_ins, vals, fops, fcost, fj = plan
@@ -1040,6 +1131,55 @@ def greedy_fill(state: State, order: Sequence[int]) -> None:
 
 
 # --- Поиск ---
+
+def repair_shift(state: State, max_steps: int = 64) -> bool:
+    """Уменьшить переработку допустимыми переносами/обменами, сохранив частоты и закрепления.
+
+    Выполняется до экономического поиска: уменьшение длительности имеет приоритет перед
+    стоимостью. Неразрешимая смена возвращает False и показывается в результате расчёта.
+    """
+    for _ in range(max_steps):
+        excess = state.shift_excess()
+        total = math.fsum(excess.values())
+        if total <= 1e-6:
+            return True
+        best = None
+        active = {j for j, minutes in excess.items() if minutes > 1e-6}
+        for i, line in enumerate(state.lines):
+            if line.locked or not active.intersection(state.pattern[i]):
+                continue
+            for pattern in line.allowed:
+                if pattern == state.pattern[i]:
+                    continue
+                delta, move = state.eval_relocate(i, pattern)
+                after = dict(excess)
+                after.update(state.shift_excess(move[1]))
+                new_total = math.fsum(after.values())
+                if new_total < total - 1e-6:
+                    key = (new_total, max(after.values(), default=0.0), delta, i, pattern)
+                    if best is None or key < best[0]:
+                        best = (key, move)
+        if best is None:
+            for i, line in enumerate(state.lines):
+                if line.locked or not active.intersection(state.pattern[i]):
+                    continue
+                for b in state.prob.neighbors[i]:
+                    other = state.lines[b]
+                    if other.locked or state.pattern[b] not in line.allowed or state.pattern[i] not in other.allowed:
+                        continue
+                    delta, move = state.eval_swap(i, b)
+                    after = dict(excess)
+                    after.update(state.shift_excess(move[1]))
+                    new_total = math.fsum(after.values())
+                    if new_total < total - 1e-6:
+                        key = (new_total, max(after.values(), default=0.0), delta, i, state.pattern[b])
+                        if best is None or key < best[0]:
+                            best = (key, move)
+        if best is None:
+            return False
+        state.apply(best[1])
+        state.polish()
+    return math.fsum(state.shift_excess().values()) <= 1e-6
 
 @dataclass
 class SearchStats:

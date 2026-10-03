@@ -373,17 +373,24 @@ def _scan(tx: EventTx, ev: Mapping[str, Any], p: Mapping[str, Any], stop: StopCt
     line = invoice.get(line_id) if line_id else None
     if stop.known and line_id and line is None and line_id not in stop.line_max:
         flags.append('unknown_line')
-    # /day отдаёт штучные GTIN; упаковка (индикатор 1–8) сверяется по GTIN своей штуки — как в терминале
+    # Конкретный GTIN из справочника или базовый GTIN структурной упаковки — как в терминале.
     gtin_keys = {gtin, unit_gtin(gtin)} - {None} if gtin else set()
+    def identifiers(ln: Mapping[str, Any]) -> set[str]:
+        return set(ln.get('gtins') or []) | set(ln.get('gtin_units') or {})
     if line is None and gtin_keys:
-        line = next((ln for ln in stop.lines().values() if gtin_keys & set(ln.get('gtins') or [])), None) \
-            or next((ln for ln in invoice.values() if gtin_keys & set(ln.get('gtins') or [])), None)
+        line = next((ln for ln in stop.lines().values() if gtin_keys & identifiers(ln)), None) \
+            or next((ln for ln in invoice.values() if gtin_keys & identifiers(ln)), None)
         if line is not None and not line_id:
             line_id = str(line.get('line_id'))   # найдена по GTIN — скан засчитывается строке и её товару
-    if stop.data is not None and gtin_keys and not any(gtin_keys & set(ln.get('gtins') or [])
+    if stop.data is not None and gtin_keys and not any(gtin_keys & identifiers(ln)
                                                        for ln in invoice.values()):
         flags.append('gtin_not_in_invoice')
-    if p['is_group'] and line is not None:
+    quantities = (line or {}).get('gtin_units') or {}
+    if gtin in quantities:
+        expected = _num(quantities[gtin])
+        if expected is None or expected <= 0 or abs(expected - units) > EPS:
+            flags.append('units_mismatch')
+    elif p['is_group'] and line is not None:
         pack = _num(line.get('pack_qty'))
         if pack is None:
             flags.append('group_no_pack')

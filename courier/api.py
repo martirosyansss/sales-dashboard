@@ -2,7 +2,7 @@
 """API терминала «Առաքիչ» /api/courier/v1/* (docs/plans/courier-api-contract.md).
 
 Доступ: сессия дашборда НЕ нужна (app_v2 пропускает префикс мимо входа), вместо неё —
-- `Authorization: Bearer <device_token>` во всех запросах: нет/неизвестен/отозван → 401 `unauthorized`;
+- `Authorization: Bearer <device_token>` во всех запросах, кроме download/apk: нет/неизвестен/отозван → 401 `unauthorized`;
 - `X-Courier-Session` во всех, кроме ping, login, app-version, app/apk: нет/просрочена/чужого терминала → 401 `session`.
 Ошибка — {"error": код, "message": текст по-армянски}; подробности исключений — только в лог с [Courier].
 """
@@ -88,13 +88,15 @@ def _no_store(resp: Response) -> Response:
 
 @bp.before_request
 def _authenticate() -> Any:
-    """Размер тела, токен терминала, сессия водителя — до любого обработчика."""
+    """Размер тела, токен терминала, сессия водителя; установка APK доступна до регистрации."""
     if request.content_length is not None and request.content_length > MAX_BODY_BYTES:
         return error(413, 'too_large')
     try:
         request.max_content_length = MAX_BODY_BYTES   # Flask ≥ 3.1: предел и для тела без Content-Length
     except AttributeError:
         pass
+    if request.endpoint == 'courier_api.download_apk':
+        return None
     try:
         st = state()
         auth = request.headers.get('Authorization', '')
@@ -325,6 +327,7 @@ def app_version() -> Any:
                     'size': rel.size, 'url': '/api/courier/v1/app/apk'})
 
 
+@bp.get('/download/apk', endpoint='download_apk')
 @bp.get('/app/apk')
 @_api
 def app_apk() -> Any:

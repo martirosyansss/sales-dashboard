@@ -8,7 +8,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=15">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=17">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_customer_settings.css') }}?v=1">
 {% endblock %}
 
 {% block content %}
@@ -24,11 +25,66 @@
                 <a href="/routes/settings" aria-current="page">Настройки</a>
             </nav>
         </div>
-        <p class="rt-head-lead">Здесь указывают то, что программа не может узнать сама: где склад, какие машины и сколько стоит топливо.
+        <p class="rt-head-lead">Здесь указывают то, что программа не может узнать сама: где склад, какие машины, когда магазины принимают доставку и сколько стоит топливо.
             Остальное она подобрала по ERP и GPS — это можно не трогать.</p>
     </header>
 
     <div id="rsStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+
+    <section class="rt-card rcs-card" id="rsCustomerSettings" aria-labelledby="rcsTitle">
+        <div class="rt-card-head">
+            <h2 class="rt-card-title" id="rcsTitle"><i class="fas fa-store" aria-hidden="true"></i>Магазины: время и машины</h2>
+        </div>
+        <p class="rt-card-lead">Найдите магазин и задайте время доставки и машины, которые могут его обслуживать.
+            Условия действуют для всех дней, в том числе когда у магазина пока нет заказа.</p>
+        <div class="rt-field">
+            <label for="rcsSearch">Название или код магазина</label>
+            <input id="rcsSearch" class="rt-input" type="search" maxlength="100" autocomplete="off" placeholder="Найти магазин" aria-describedby="rcsSearchStatus">
+        </div>
+        <p id="rcsSearchStatus" class="rt-field-hint" role="status" aria-live="polite"></p>
+        <ul id="rcsMatches" class="rcs-matches"></ul>
+        <p id="rcsSaved" class="rcs-saved" role="status" aria-live="polite"></p>
+    </section>
+
+    <dialog id="rcsDialog" class="rcs-dialog" aria-labelledby="rcsDialogTitle" aria-describedby="rcsShop">
+        <h2 id="rcsDialogTitle" class="rcs-dialog-title">Условия доставки магазина</h2>
+        <p id="rcsShop" class="rt-card-lead"></p>
+        <div class="rcs-time">
+            <div class="rt-field">
+                <label for="rcsTimeKind">Время доставки</label>
+                <select id="rcsTimeKind" class="rt-select">
+                    <option value="">Без ограничения</option>
+                    <option value="at">В конкретное время</option>
+                    <option value="between">В интервале</option>
+                    <option value="before">До указанного времени</option>
+                    <option value="after">После указанного времени</option>
+                </select>
+            </div>
+            <div class="rcs-time-fields">
+                <label id="rcsTimeFirst" hidden><span id="rcsTimeFirstLabel">Время</span><input id="rcsTimeT1" class="rt-input" type="time" step="60"></label>
+                <label id="rcsTimeLast" hidden><span>До</span><input id="rcsTimeT2" class="rt-input" type="time" step="60"></label>
+                <label id="rcsTimeTolerance" hidden><span>Допустимое отклонение, ± минут</span><input id="rcsTimeTol" class="rt-input" type="number" min="0" max="120" step="1" inputmode="numeric" value="0"></label>
+            </div>
+            <p id="rcsTimeHint" class="rt-field-hint">Время прибытия и начала разгрузки у магазина.</p>
+        </div>
+        <div class="rt-field">
+            <label for="rcsVehicleMode">Какие машины могут обслуживать</label>
+            <select id="rcsVehicleMode" class="rt-select">
+                <option value="">Все машины</option>
+                <option value="allow">Только выбранные машины</option>
+                <option value="deny">Все, кроме выбранных</option>
+            </select>
+        </div>
+        <p id="rcsChoicesTitle" class="rcs-label" hidden></p>
+        <div id="rcsVehicles" class="rcs-choices" role="group" aria-labelledby="rcsChoicesTitle" hidden></div>
+        <p id="rcsVehicleHint" class="rt-field-hint"></p>
+        <p class="rt-field-hint">Сохраните условия здесь, затем нажмите «Վերակազմել երթերը» в развозе, чтобы пересчитать рейсы.</p>
+        <p id="rcsError" class="rt-ferr" role="alert"></p>
+        <div class="rcs-actions">
+            <button id="rcsSave" type="button" class="rt-btn rt-btn-primary">Сохранить условия магазина</button>
+            <button id="rcsCancel" type="button" class="rt-btn rt-btn-ghost">Отмена</button>
+        </div>
+    </dialog>
 
     <div id="rsLoading" class="rt-loading" role="status" aria-live="polite">
         <div class="rt-spinner" aria-hidden="true"></div>Загружаю настройки…
@@ -89,8 +145,12 @@
                     <p class="rt-card-lead">Список машин — из ERP; машину, которой там нет, можно добавить вручную. Укажите, сколько тонн возит машина и сколько литров тратит на 100 км.
                         Машина закреплена за водителем: заказы всех менеджеров за день программа сама разложит по машинам и рейсам.
                         Подсказка «по накладным» — сколько машина обычно возила в день за 3 месяца и когда возила последний раз:
-                        машина, которая не возила больше 60 дней, по умолчанию выключена.</p>
+                        машина, которая не возила больше 60 дней, по умолчанию выключена.
+                        В «Загрузка и износ» задайте расход пустой и полной машины и стоимость износа — тогда выбор машины и порядок точек учитывают остаточный груз на каждом участке.
+                        Пустые нормы означают, что влияние загрузки ещё не настроено.</p>
                     <div id="rsTrucks"></div>
+                    <p class="rt-field-hint"><a href="{{ url_for('route_optimizer.api_missing_coordinates') }}">Скачать актуальный список клиентов без координат</a>.
+                        Проверяются ERP, GPS визитов, подтверждённые точки водителей и ручные точки. Новую точку можно указать в «Развозе».</p>
                 </section>
 
                 <section class="rt-card" id="fuel" aria-labelledby="rsHFuel">
@@ -151,6 +211,15 @@
                             <h3 class="rt-h3" id="rsHNorms">Нормы и правила</h3>
                             <p class="rt-h3-note">У полей с пометкой «авто по GPS» пусто — значит, программа берёт цифру из GPS-треков сама.</p>
                             <div id="rsNorms" class="rt-form-grid mt-3"></div>
+                            <div class="rt-field mt-3">
+                                <label for="rsTrafficMode">Скорость по времени суток</label>
+                                <select id="rsTrafficMode" class="rt-input">
+                                    <option value="gps">Проверенный часовой профиль GPS</option>
+                                    <option value="static">Постоянная средняя скорость</option>
+                                    <option value="yandex">Яндекс: прогноз трафика на начало смены</option>
+                                </select>
+                                <p id="rsTrafficStatus" class="rt-field-hint" aria-live="polite"></p>
+                            </div>
                         </section>
                         <section class="rs-sub" id="season" aria-labelledby="rsHSeason">
                             <h3 class="rt-h3" id="rsHSeason">Сезоны</h3>
@@ -171,6 +240,21 @@
         </div>
     </form>
 
+    <details class="rt-fold mt-4" id="measurements">
+        <summary><span class="rt-fold-t">Фактические замеры и проверка прогноза</span></summary>
+        <div class="rt-fold-body">
+            <p>Внесите показания за завершённый день. Дизель — израсходованные литры по замеру, объём заправки сам по себе не подходит.
+                Прогноз сохраняется при сборке рейсов. Расчёт, сделанный после начала дня, отмечается как ретроспективный.</p>
+            <form id="rmForm">
+                <div class="rt-form-grid" id="rmFields"></div>
+                <button class="rt-btn rt-btn-primary mt-3" type="submit">Сохранить замер</button>
+                <p id="rmStatus" role="status" aria-live="polite"></p>
+            </form>
+            <div id="rmSuggestions"></div>
+            <div class="rt-table-scroll"><table class="rt-table"><thead><tr><th>Дата / машина</th><th>Км</th><th>Минуты</th><th>Дизель, л</th><th>Ошибка прогноза</th></tr></thead><tbody id="rmHistory"></tbody></table></div>
+        </div>
+    </details>
+
     <div class="position-fixed bottom-0 end-0 p-3" style="z-index:1080">
         <div id="rsToast" class="toast rt-toast align-items-center border-0" role="status" aria-live="polite" aria-atomic="true">
             <div class="d-flex">
@@ -185,5 +269,7 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=11"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=13"></script>
+<script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/routes_measurements.js') }}?v=2"></script>
 {% endblock %}

@@ -267,7 +267,7 @@ class FakeErp:
                     (200, '2901', 'Գառնի 19լ', 'հատ', 19.5, True, False, 1, 1, False),
                     (54, '4001', 'Ապակե շիշ', 'հատ', 0.4, False, False, 1, 1, True)]
         if sql.startswith(ed.SQL_BARCODES.split('{')[0]):
-            return [(135, '4850002370146'), (200, 'BAD')]
+            return [(135, '4850002370146', 1, 1), (200, 'BAD', 1, 1)]
         if sql == ed.SQL_DEFAULT_POINTS:
             return [(40.1, 44.5)]
         if sql.startswith(ed.SQL_CUSTOMER_INFO.split('{')[0]):
@@ -358,7 +358,7 @@ def test_day_payload_from_erp(fake_erp, tmp_path, now):
 
 STOP_KEYS = {'stop_id', 'seq', 'source', 'doc_number', 'customer', 'lat', 'lon', 'agent_name', 'pay_type', 'collect',
              'amount_due', 'debt', 'weight_kg', 'lines', 'tare_expected'}
-LINE_KEYS = {'line_id', 'product_id', 'code', 'name', 'qty', 'unit', 'price', 'sum', 'marked', 'pack_qty', 'gtins'}
+LINE_KEYS = {'line_id', 'product_id', 'code', 'name', 'qty', 'unit', 'price', 'sum', 'marked', 'pack_qty', 'gtins', 'gtin_units'}
 
 
 def test_demo_day_matches_contract(term):
@@ -783,6 +783,29 @@ def test_app_version_and_apk(term, client):
     r = client.get('/api/courier/v1/app/apk', headers=term['h'])
     assert r.status_code == 200 and r.data == apk
     assert client.get('/api/courier/v1/app/apk').status_code == 401
+
+
+def test_public_apk_download(client, st):
+    """Первичная установка без токена; ссылка отдаёт последний APK и не открывает остальные API."""
+    url = '/api/courier/v1/download/apk'
+    assert client.get(url).status_code == 404
+    for code in (3, 4):
+        apk = b'PK\x03\x04' + bytes([code]) * 100
+        uploaded = client.post('/api/courier/admin/apk', headers={'X-Requested-With': 'fetch'},
+                               data={'file': (io.BytesIO(apk), 'a.apk'), 'version_code': str(code),
+                                     'version_name': f'1.0.{code}'}, content_type='multipart/form-data')
+        assert uploaded.status_code == 200
+        with client.get(url, headers={'Host': 'araqich.orix.am'}) as r:
+            assert r.status_code == 200 and r.data == apk
+            assert r.mimetype == 'application/vnd.android.package-archive'
+            assert r.headers['Cache-Control'] == 'no-store'
+            assert f'attachment; filename=araqich-1.0.{code}.apk' == r.headers['Content-Disposition']
+        assert client.head(url).headers['Content-Length'] == str(len(apk))
+    for path in ('ping', 'day', 'app-version', 'app/apk'):
+        assert client.get(f'/api/courier/v1/{path}').status_code == 401
+    release = st.store.latest_release()
+    (Path(st.store.apk_dir) / release.path).unlink()
+    assert client.get(url).status_code == 404
 
 
 # ============================== офис ==============================

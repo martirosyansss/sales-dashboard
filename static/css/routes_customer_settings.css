@@ -1,0 +1,25 @@
+/* Постоянные условия магазинов на странице настроек маршрутов. */
+.rcs-card { margin: 20px 0; scroll-margin-top: calc(var(--rt-nav-h, 64px) + 12px); }
+.rcs-matches { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
+.rcs-shop { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; width: 100%; padding: 10px 12px; border: 1px solid var(--rt-line); border-radius: 8px; background: transparent; color: var(--rt-fg); text-align: left; overflow-wrap: anywhere; }
+.rcs-shop span { color: var(--rt-fg-dim); font-size: .875rem; }
+.rcs-shop:hover, .rcs-shop:focus-visible { border-color: var(--rt-acc); }
+.rcs-saved { color: var(--rt-ok); font-size: .875rem; line-height: 1.5; }
+.rcs-saved:empty { display: none; }
+.rcs-dialog { width: min(720px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 20px; color: var(--rt-fg); background: var(--rt-panel); border: 1px solid var(--rt-line); border-radius: var(--rt-radius); box-shadow: var(--rt-shadow); font-family: var(--rt-font); }
+.rcs-dialog::backdrop { background: rgba(0, 0, 0, .6); }
+.rcs-dialog-title { margin: 0 0 6px; font-size: 1.25rem; font-weight: 800; overflow-wrap: anywhere; }
+.rcs-dialog .rt-select, .rcs-dialog .rt-input { width: 100%; min-width: 0; }
+.rcs-dialog input[type=time] { color-scheme: dark; }
+.rcs-time { margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--rt-line); }
+.rcs-time-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.rcs-time-fields label { display: grid; gap: 6px; min-width: 0; font-size: .875rem; }
+.rcs-label { font-size: .875rem; font-weight: 600; }
+.rcs-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 260px; overflow-y: auto; padding: 4px; }
+.rcs-choice { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--rt-line); border-radius: 8px; cursor: pointer; font-size: .9375rem; overflow-wrap: anywhere; }
+.rcs-choice input { flex: 0 0 auto; width: 18px; height: 18px; accent-color: var(--rt-acc); }
+.rcs-choice:has(input:checked) { border-color: var(--rt-acc); }
+.rcs-dialog [hidden] { display: none; }
+.rcs-actions { display: flex; flex-wrap: wrap; gap: 10px; position: sticky; bottom: -20px; margin-bottom: -12px; padding: 12px 0; background: var(--rt-panel); }
+.rcs-actions .rt-btn { white-space: normal; }
+@media (max-width: 480px) { .rcs-choices, .rcs-time-fields { grid-template-columns: 1fr; } }

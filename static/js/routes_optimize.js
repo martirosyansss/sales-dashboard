@@ -1143,7 +1143,7 @@
         + 'и рейсам вместе — с учётом тоннажа и рабочего дня машины. Поэтому дни визитов разных менеджеров связаны: если заказы из одного района '
         + 'приходятся на один день доставки, машина едет туда один раз. Литры — км рейса × расход машины, которая его везёт; в среднем за год. '
         + 'Рейсы, загрузка и км парка — в «Все цифры».';
-    const kmTipText = () => 'Сколько километров менеджеры проезжают за неделю: из дома к магазинам дня в самом коротком порядке и обратно домой. '
+    const kmTipText = () => 'Расчётный пробег менеджеров за неделю: из дома к магазинам дня в найденном коротком порядке и обратно домой. '
         + (state.roads ? 'Км — по дорогам на карте.' : 'Км — по прямой с поправкой на извилистость дорог.')
         + ' Литры и драмы — по расходу машин менеджеров и ценам топлива из настроек.';
     function weakTipText() {
@@ -1161,7 +1161,7 @@
         note.hidden = true;
         const items = [];
         const n = allChanges().length;
-        $('roMainLead').textContent = n ? 'Если принять все предложения:' : 'Текущий план уже близок к лучшему.';
+        $('roMainLead').textContent = n ? 'По расчёту, если принять все предложения:' : 'Расчёт не нашёл выгодных изменений.';
 
         // 0. Дизель грузовиков — первой строкой (парк: заказы всех менеджеров развозят машины вместе)
         const tlb = num(r.before.truck_liters_week), tla = num(r.after.truck_liters_week);
@@ -1258,6 +1258,22 @@
         items.forEach(it => list.append(h('li', { class: it.tone > 0 ? 'is-good' : (it.tone < 0 ? 'is-bad' : 'is-same') },
             h('span', { class: 'ico', 'aria-hidden': 'true' }, icon(it.tone > 0 ? 'fa-check' : (it.tone < 0 ? 'fa-arrow-up' : 'fa-equals'))),
             h('span', { class: 'txt' }, it.nodes, it.tip ? [' ', tip(it.tip, it.tipLabel)] : null))));
+        const quality = $('roQualityWarnings');
+        quality.textContent = '';
+        const warn = text => quality.append(h('p', { class: 'ro-warn' }, icon('fa-triangle-exclamation'), h('span', { text })));
+        if (r.time_gate && !r.time_gate.ok) {
+            warn('План не помещается в смену: ' + fmt((r.time_gate.days || []).length)
+                + ' дней с переработкой. Проверьте закреплённые дни и частоты; пересчитайте план.');
+        }
+        const validation = r.forecast_validation;
+        if (!validation || validation.status !== 'checked') {
+            warn('Точность прогноза ещё не проверена. Пересчитайте план с историей продаж.');
+        } else {
+            const poor = (validation.managers || []).filter(m => m.supported && !m.ok);
+            if (poor.length) warn('Прогноз выручки требует проверки: '
+                + poor.map(m => m.code + ' (' + signed(m.error_pct,1) + '%)').join(', ')
+                + '. Отклонения измерены на 4 завершённых неделях; выручка плана — оценка.');
+        }
     }
 
     // ---------- Три крупных показателя ----------
@@ -1309,6 +1325,9 @@
                 d: 0, lower: true, none: 'не посчитан — укажите тоннаж и расход машин' },
             { label: 'Дизель грузовиков, драм в неделю', b: num(r.before.truck_amd_week), a: num(r.after.truck_amd_week), d: 0, lower: true,
                 none: 'не посчитано — нет машин или цены дизеля' },
+            { label: 'Износ грузовиков, драм в неделю', b: num(r.before.truck_wear_amd_week), a: num(r.after.truck_wear_amd_week), d: 0, lower: true },
+            { label: 'Дизель и износ грузовиков, драм в неделю', b: num(r.before.truck_operating_amd_week), a: num(r.after.truck_operating_amd_week), d: 0, lower: true,
+                none: 'не посчитано — нет машин или цены дизеля' },
             { label: 'Км грузовиков в неделю', b: num(r.before.truck_km_week), a: num(r.after.truck_km_week), d: 0, lower: true,
                 none: 'не посчитано — нет склада или машин' },
             { label: 'Рейсов грузовиков в неделю', b: num(r.before.trips_week), a: num(r.after.trips_week), d: 1, lower: true, none: 'не посчитано' },
@@ -1359,18 +1378,31 @@
         if (g) {
             const lit = (v) => fmt(v, 1) + NB + 'л/нед';
             if (!g.ok) {
-                foot.append(h('strong', { class: 'ro-warn', text: ' Дизель грузовиков удержать не удалось: было ' + lit(g.liters_before)
+                foot.append(h('strong', { class: 'ro-warn', text: ' Ограничение расходов грузовиков удержать не удалось: дизель — было ' + lit(g.liters_before)
                     + ', стало ' + lit(g.liters_after) + '. Остаток — от обязательных изменений (каждую неделю, перенос с воскресенья, ваши решения).' }));
             } else if (g.reverted > 0) {
                 foot.append(' Дизель грузовиков не растёт: было ' + lit(g.liters_before) + ', стало ' + lit(g.liters_after) + '. '
                     + (r.params && r.params.mode === 'transfer'
-                        ? 'Передачи, которые добавили бы дизель, не предлагаются.'
-                        : fmt(g.reverted) + NB + 'переносов не предлагаются — они добавили бы дизель.'));
+                        ? 'Передачи, которые увеличили бы расходы машин, не предлагаются.'
+                        : fmt(g.reverted) + NB + 'переносов не предлагаются — они увеличили бы расходы машин.'));
             }
+            if (num(g.operating_before_amd) !== null) foot.append(' Дизель и износ по полной модели: '
+                + fmt(g.operating_before_amd) + ' → ' + fmt(g.operating_after_amd) + NB + 'драм/нед.');
         }
+        if (r.after.truck_fuel_load_unconfigured || r.after.truck_wear_unconfigured) foot.append(
+            ' У части машин не заданы нормы расхода по загрузке или стоимость износа. ',
+            h('a', { href: '/routes/settings#trucks', text: 'Заполнить нормы машин' }), '.');
         if (r.fuel_price_source === 'fallback') {
             foot.append(' Цены топлива в настройках не указаны — при выборе дней программа брала условную цену '
                 + fmt(r.fuel_price_used) + NB + 'драм за литр. ', h('a', { href: '/routes/settings#fuel', text: 'Указать цены' }), '.');
+        }
+        const validation = r.forecast_validation;
+        if (validation) {
+            if (validation.status === 'checked') {
+                foot.append(' Проверка выручки на 4 завершённых неделях: в пределах ±'
+                    + fmt(validation.tolerance_pct) + '% у ' + fmt(validation.passed) + ' из '
+                    + fmt(validation.total) + ' менеджеров.');
+            }
         }
     }
 

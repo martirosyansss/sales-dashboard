@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 DEMAND_WINDOW_DAYS = 365   # окно спроса [today − 365, today)
 DOCS_LOOKBACK_DAYS = 14    # документы берём с запасом: заказ у границы окна мог отгружаться позже
+VALIDATION_LOOKBACK_DAYS = 126   # независимая проверка: 12 нед. обучения + 4 теста и прошлый год
 TRACK_WINDOW_DAYS = 45     # трек — дом менеджера и калибровка
 CAR_USAGE_DAYS = 90        # подсказка «сколько машина возит в день»; экспедиторы без машины — за тот же срок
 CAR_IDLE_DAYS = 60         # машина ERP без накладных дольше — «активна» по умолчанию выключена
@@ -65,6 +66,7 @@ class Snapshot:
     car_last_used: dict[str, date] = field(default_factory=dict)       # машина → последняя накладная (всё время)
     # экспедитор → (накладных без машины, последний день) за 90 дней; от EXPEDITOR_MIN_DOCS накладных
     expeditors: dict[int, tuple[int, date]] = field(default_factory=dict)
+    validation_orders: tuple[Order, ...] = ()    # история для проверки, обучение и тест не смешиваются
 
     def ref_data(self) -> RefData:
         return RefData(car_codes=frozenset(self.cars), agent_ids=frozenset(self.plan.agent_ids),
@@ -90,7 +92,7 @@ def build_snapshot(conn: Any, today: date, snapshot_id: str, as_of: datetime) ->
     customers = erp.customers(conn, plan_customers)
     groups = erp.customer_groups(conn)
     addresses = erp.addresses(conn)
-    docs = erp.sales_docs(conn, window_start - timedelta(days=DOCS_LOOKBACK_DAYS),
+    docs = erp.sales_docs(conn, window_start - timedelta(days=VALIDATION_LOOKBACK_DAYS+DOCS_LOOKBACK_DAYS),
                           today + timedelta(days=1))
     first_sale = erp.first_sale_dates(conn, plan_customers)
     cur_month = date(today.year, today.month, 1)
@@ -117,12 +119,15 @@ def build_snapshot(conn: Any, today: date, snapshot_id: str, as_of: datetime) ->
     # GPS клиента: медиана по визитам с точной точкой, если их ≥ 3.
     gps_raw: dict[int, list[Point]] = {}
     for v in visits:
-        if v.customer_id in plan_set and visit_point_ok(v):
+        # Развоз включает клиентов вне шаблонов менеджеров. Их подтверждённые GPS-визиты
+        # нужны так же, как точки клиентов плана; порог качества и числа визитов не меняется.
+        if visit_point_ok(v):
             gps_raw.setdefault(v.customer_id, []).append((v.lat, v.lon))
     gps_points = {c: median_point(ps) for c, ps in gps_raw.items() if len(ps) >= GPS_MIN_VISITS}
 
     # Заказы в окне спроса [window_start, today).
-    orders = [o for o in group_orders(docs) if window_start <= o.date < today]
+    all_orders = group_orders(docs)
+    orders = [o for o in all_orders if window_start <= o.date < today]
     company = Counter(o.date for o in orders)
     by_customer: dict[int, list[Order]] = {}
     for o in orders:
@@ -150,6 +155,7 @@ def build_snapshot(conn: Any, today: date, snapshot_id: str, as_of: datetime) ->
         recent_visits=tuple(v for v in visits if v.day >= today - timedelta(days=CALIB_WINDOW_DAYS)),
         fixes_by_agent={a: tuple(fs) for a, fs in fixes.items()},
         cars=cars, car_days=usage, debts=debts, car_last_used=last_used, expeditors=vans,
+        validation_orders=tuple(o for o in all_orders if o.date < today),
     )
     logger.info('[Routes] Снимок %s: агентов с планом %d (с работой за 8 нед. %d), клиентов плана %d, '
                 'заказов в окне %d, визитов %d, точек трека %d', snapshot_id, len(plan.agent_ids),

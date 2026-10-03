@@ -99,6 +99,7 @@
 .dp-summary-lead { margin: 0 0 14px; font-size: 1.0625rem; line-height: 1.5; color: var(--rt-ok); font-weight: 600; }
 .dp-summary-lead.is-neutral { color: var(--rt-fg-dim); font-weight: 400; }
 .dp-summary-lead:empty { display: none; }
+.dp-summary-lead .is-warn { display: block; margin-top: 8px; color: var(--rt-warn); }
 .dp-summary-cta { display: flex; flex-wrap: wrap; gap: 10px; }
 
 /* Не помещается / ещё не в рейсах */
@@ -135,22 +136,9 @@
 .dp-stop-acts { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .dp-stop-acts .rt-select { height: 36px; width: auto; min-width: 200px; max-width: 100%; font-size: .9375rem; }
 .dp-unassigned .dp-num { background: transparent; color: var(--rt-warn); box-shadow: inset 0 0 0 2px var(--rt-warn); }
-/* Прибытие, окно приёма, центр — плашки под адресом; правка «Ընդունման ժամ» — под действиями точки */
+/* Прибытие, окно приёма, центр — плашки под адресом; постоянные условия меняются в Настройках. */
 .dp-stop-tags { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 4px; }
 .dp-stop-tags .rt-badge { gap: 5px; }
-.dp-win {
-    grid-column: 2 / -1; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; margin-top: 8px; padding: 10px 12px;
-    border: 1px dashed var(--rt-line); border-radius: var(--rt-radius-sm); background: var(--rt-inset);
-}
-.dp-win-f { display: flex; flex-direction: column; gap: 4px; font-size: .875rem; color: var(--rt-fg-dim); }
-.dp-win-f[hidden] { display: none; }
-.dp-win-f .rt-select { height: 36px; width: auto; min-width: 240px; max-width: 100%; }
-.dp-win-f .rt-input { height: 36px; width: 120px; font-family: var(--rt-mono); color-scheme: dark; }
-.dp-win-btns { display: flex; gap: 8px; }
-.dp-win .rt-ferr:empty { display: none; }
-.dp-win .rt-ferr, .dp-win-note { flex: 1 1 100%; margin: 0; }
-.dp-win-note { font-size: .875rem; color: var(--rt-fg-mute); line-height: 1.45; }
-
 /* --- Для руководителя --- */
 .dp-analysis { margin-top: 34px; padding-top: 18px; border-top: 1px solid var(--rt-line); }
 #rtDispatch .dp-analysis-t { display: flex; align-items: center; gap: 10px; font-size: 1.0625rem; font-weight: 700; color: var(--rt-fg-dim); margin: 0 0 10px; }
@@ -166,12 +154,11 @@
     .dp-truck-t b { font-size: 1rem; }
     .dp-stat b { font-size: 1.25rem; white-space: normal; }
     .dp-summary { padding: 14px; }
-    .dp-summary-cta .rt-btn { flex: 1 1 100%; justify-content: center; }
+    .dp-summary-cta .rt-btn { flex: 1 1 100%; justify-content: center; white-space: normal; }
+    .dp-summary-cta .rt-btn > span { min-width: 0; overflow-wrap: anywhere; }
     .dp-stop { grid-template-columns: 32px minmax(0, 1fr); }
     .dp-stop-kg { grid-column: 2; text-align: left; }
     .dp-stop-acts .rt-select { flex: 1 1 100%; min-width: 0; }
-    .dp-win { grid-column: 1 / -1; }
-    .dp-win-f, .dp-win-f .rt-select { flex: 1 1 100%; min-width: 0; }
     .dp-trip.is-editing { margin-left: 0; margin-right: 0; }
     .dp-editbtn, .dp-mapbtn { margin-left: 0; }
 }

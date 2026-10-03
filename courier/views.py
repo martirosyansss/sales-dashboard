@@ -186,7 +186,8 @@ def qr_svg(text: str) -> str | None:
         logger.warning('[Courier] segno не установлен — QR не построен (pip install -r requirements.txt)')
         return None
     buf = io.BytesIO()
-    segno.make(text, error='m').save(buf, kind='svg', scale=6, border=2, xmldecl=False, svgns=True,
+    # viewBox масштабирует рисунок вместе с рамкой SVG; четыре модуля — белое поле QR.
+    segno.make(text, error='m').save(buf, kind='svg', scale=6, border=4, omitsize=True, xmldecl=False, svgns=True,
                                      dark='#000', light='#fff')
     return buf.getvalue().decode('utf-8')
 

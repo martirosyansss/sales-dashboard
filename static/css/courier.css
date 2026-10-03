@@ -37,8 +37,8 @@
 /* QR регистрации терминала — белый фон, чтобы камера читала */
 .cr-qr { margin-top: 16px; padding: 14px; border: 1px dashed var(--rt-warn-line); border-radius: var(--rt-radius-sm); background: var(--rt-warn-bg); }
 .cr-qr-warn { margin: 0 0 10px; font-weight: 600; color: var(--rt-warn); }
-.cr-qr-img { background: #fff; display: inline-block; padding: 8px; border-radius: 8px; }
-.cr-qr-img svg { display: block; width: min(320px, 70vw); height: auto; }
+.cr-qr-img { background: #fff; display: inline-block; width: 336px; max-width: 100%; box-sizing: border-box; padding: 8px; border-radius: 8px; }
+.cr-qr-img svg { display: block; width: 100%; height: auto; aspect-ratio: 1; }
 .cr-qr-text { margin: 10px 0; font-size: .8125rem; }
 .cr-qr-text code { display: block; margin-top: 6px; word-break: break-all; color: var(--rt-fg); }
 

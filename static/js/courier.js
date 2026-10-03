@@ -168,6 +168,12 @@
         try {
             const r = await api('/api/courier/admin/terminals', { json: { name: $('crTermName').value, car_code: $('crTermCar').value, url: $('crTermUrl').value } });
             $('crQr').innerHTML = r.qr_svg || '<p style="color:#000;padding:8px">QR-ը չստեղծվեց (segno գրադարանը չկա) — օգտագործեք տեքստը ներքևում</p>';
+            // Старый сервер может прислать SVG без viewBox: CSS иначе обрезает сам рисунок.
+            const svg = $('crQr').querySelector('svg');
+            if (svg && !svg.hasAttribute('viewBox')) {
+                const width = svg.width.baseVal.value, height = svg.height.baseVal.value;
+                if (width > 0 && height > 0) svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+            }
             $('crQrText').textContent = r.qr_text;
             $('crQrAdminPin').textContent = r.admin_pin || '—';
             $('crQrBox').hidden = false;

@@ -39,9 +39,10 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Callable, Mapping, Sequence
 
@@ -190,6 +191,7 @@ class DayData:
     tare_names: dict[int, str]           # вид тары ERP (товар-тара) → название
     gps: dict[int, Point]                # медиана GPS визитов клиента (≥ 3 точных визита за год)
     debts: dict[int, float] | None       # None — посчитать не удалось
+    gtin_units: dict[int, dict[str, float | None]] = field(default_factory=dict)
 
 
 # --- Запросы (все — SELECT с WITH (NOLOCK); {ph} — только плейсхолдеры `?`) ---
@@ -228,7 +230,7 @@ WHERE p.fID IN ({ph})
 """
 
 SQL_BARCODES = """
-SELECT b.fPRODUCTID, RTRIM(b.fBARCODE)
+SELECT b.fPRODUCTID, RTRIM(b.fBARCODE), b.fBASEUNITQUANTITY, b.fMEASUREUNITQUANTITY
 FROM BARCODES b WITH (NOLOCK)
 WHERE b.fPRODUCTID IN ({ph})
 """
@@ -377,14 +379,31 @@ def products(conn: Any, ids: Sequence[int]) -> dict[int, Product]:
     return out
 
 
-def gtins(conn: Any, ids: Sequence[int]) -> dict[int, tuple[str, ...]]:
+def barcode_data(conn: Any, ids: Sequence[int]) -> tuple[dict[int, tuple[str, ...]], dict[int, dict[str, float | None]]]:
+    """GTIN и количество базовых единиц по каждому штрихкоду ERP; неверный коэффициент — None."""
     out: dict[int, set[str]] = {}
+    units: dict[int, dict[str, float | None]] = {}
     for chunk in _chunks(sorted(set(ids))):
         for r in _select(conn, SQL_BARCODES.format(ph=_ph(len(chunk))), chunk):
             g = to_gtin14(r[1])
             if g:
-                out.setdefault(int(r[0]), set()).add(g)
-    return {k: tuple(sorted(v)) for k, v in out.items()}
+                pid = int(r[0])
+                out.setdefault(pid, set()).add(g)
+                try:
+                    base, measure = float(r[2]), float(r[3])
+                    qty = base / measure if base > 0 and measure > 0 else None
+                    if qty is not None and (not math.isfinite(qty) or qty <= 0):
+                        qty = None
+                except (TypeError, ValueError, ZeroDivisionError):
+                    qty = None
+                product = units.setdefault(pid, {})
+                # Разные коэффициенты у двух представлений одного GTIN не позволяют угадать количество.
+                product[g] = None if g in product and product[g] != qty else qty
+    return {k: tuple(sorted(v)) for k, v in out.items()}, units
+
+
+def gtins(conn: Any, ids: Sequence[int]) -> dict[int, tuple[str, ...]]:
+    return barcode_data(conn, ids)[0]
 
 
 def containers(conn: Any) -> tuple[tuple[ContainerLink, ...], dict[int, str]]:
@@ -462,7 +481,7 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
         links, tare_names = _ref(connection_string, 'containers', lambda: containers(conn))
         product_ids = {ln.product_id for ls in lines.values() for ln in ls}
         prods = products(conn, sorted(product_ids | set(tare_names))) if product_ids or tare_names else {}
-        codes = gtins(conn, sorted(product_ids)) if product_ids else {}
+        codes, code_units = barcode_data(conn, sorted(product_ids)) if product_ids else ({}, {})
         cids = sorted({d.customer_id for d in docs})
         infos = customer_info(conn, cids, _ref(connection_string, 'default_points', lambda: default_point_keys(conn))) \
             if cids else {}
@@ -477,7 +496,7 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
             debts = None
         return DayData(car_code=car_code, day=day, car_name=car.name if car else '', docs=tuple(docs), lines=lines,
                        products=prods, gtins=codes, customers=infos, agents=agents, containers=links,
-                       tare_names=tare_names, gps=gps, debts=debts)
+                       tare_names=tare_names, gps=gps, debts=debts, gtin_units=code_units)
     finally:
         erp.close_quietly(conn)
 

@@ -43,6 +43,7 @@ from . import status as cst
 from . import transfer as tr
 from .evaluate import _day_json, _i, _num, _r
 from .geo import Coord, Point, haversine_km, in_city
+from .forecast import revenue_validation
 from .plan import CurrentPlan, PlanDay, PlanVisit, WEEKDAY_LABELS
 from .store import REMOVE_VALUE, DecisionInput
 from .tsp import Distance, route_order
@@ -670,13 +671,19 @@ def _fleet_setup(ctx: _Ctx, run_ids: Sequence[int]) -> _Fleet | None:
     city = [depot_city] + [ctx.dist.city[ctx.dist.index[p]] for p in points]
     kg = [0.0] + [before.models[c].year.mean_kg if before.models[c].year.values else 0.0 for c, _ in order]
     tn = fl.TruckNorms.from_settings(s)
-    l100 = fmean(t.l100 for t in trucks)
+    empty = fmean(t.fuel_empty_l_per_100km if t.fuel_empty_l_per_100km is not None else t.l100 for t in trucks)
+    slope = fmean((t.fuel_full_l_per_100km - t.fuel_empty_l_per_100km)
+                  if t.fuel_empty_l_per_100km is not None else 0.0 for t in trucks)
+    priority, price = float(s['truck_priority']), _fuel_price(ctx, 'diesel')
     kw = dict(capacity_kg=max(t.capacity_kg for t in trucks),
-              per_km=float(s['truck_priority']) * _fuel_price(ctx, 'diesel') * l100 / 100.0,
+              per_km=priority * (price * empty / 100.0 + fmean(t.wear_amd_per_km or 0.0 for t in trucks)),
+              per_load_km=priority * price * slope / 100.0,
+              wear_load_per_km=priority * fmean(t.wear_load_amd_per_km or 0.0 for t in trucks),
               overtime_per_min=float(s['penalty_overtime_per_min']),
               capacity_min=len(trucks) * tn.work_minutes, unload_stop=tn.unload_min_per_stop,
               unload_tonne=tn.unload_min_per_tonne, speed_city_kmh=norms.speed_city_kmh,
-              speed_region_kmh=norms.speed_region_kmh, trip_minutes=tn.work_minutes)
+              speed_region_kmh=norms.speed_region_kmh, trip_minutes=tn.work_minutes,
+              load_fixed=tn.warehouse_load_fixed_min, load_tonne=tn.warehouse_load_min_per_tonne)
     run = set(run_ids)
     static = [(c, node[(c, p)], _slots(pattern)) for a, vs in sorted(visits.items()) if a not in run
               for c, p, pattern in vs if p is not None]
@@ -896,7 +903,7 @@ def _manager_task(ctx: _Ctx, agent_id: int, me: ev.ManagerEval) -> _Task:
         workday=tuple(sr.day_of_slot(j)[1] in workdays for j in range(sr.SLOTS)),
         base=tuple(j in base_slots for j in range(sr.SLOTS)),
         neighbors=sr.nearest_lines([line.node for line in lines], km),
-        seed=zlib.crc32(str(agent_id).encode('utf-8')))
+        seed=zlib.crc32(str(agent_id).encode('utf-8')), hard_time=True)
 
     before_params = [ctx.visit(c, ctx.freq_before[c]) for c in cids]
     target_params = [ctx.visit(c, ctx.freq_after[c]) for c in cids]
@@ -919,10 +926,12 @@ def _search_manager(ctx: _Ctx, task: _Task) -> tuple[ManagerOutcome, dict[str, A
     state.refresh()
     if task.fresh:
         sr.greedy_fill(state, sr.fresh_order(task.prob, task.me.home, task.points))
+    sr.repair_shift(state)
     stats = sr.search(state, seconds=float(s['optimizer_seconds_per_manager']), clock=ctx.clock)
     if state.fleet is not None:
         state.fleet.polish()
         state.refresh()
+    sr.repair_shift(state)
     final = [_pairs_of(p) for p in state.pattern]
     code = _code(ctx.snap, agent_id)
     logger.info('[Routes] Оптимизация %s: клиентов %d, C %.0f → %.0f драм/нед (старт %.0f; с парком), '
@@ -972,13 +981,15 @@ class _FullFleet:
         self.tn = fl.TruckNorms.from_settings(s)
         self.coords = dict(ctx.before.coords)
         self.cache: dict[tuple, float] = {}
+        self.cost_cache: dict[tuple, float] = {}
+        self.has_wear = any(t.wear_amd_per_km or t.wear_load_amd_per_km for t in self.trucks)
         self._before: tuple[dict[tuple[int, int], float], float] | None = None
 
     @property
     def ready(self) -> bool:
         return self.ctx.bundle.depot is not None and bool(self.trucks)
 
-    def days(self, plan: CurrentPlan, models: Mapping[int, ev.CustomerModel]) -> dict[tuple[int, int], float]:
+    def _groups(self, plan: CurrentPlan, models: Mapping[int, ev.CustomerModel]) -> dict:
         ctx = self.ctx
         included = ctx.before.included_ids
         groups: dict[tuple[int, int], list[fl.DeliveryVisit]] = {}
@@ -991,13 +1002,30 @@ class _FullFleet:
                     key = fl.delivery_key(day.week, day.weekday, plan.cycle_weeks)
                     groups.setdefault(key, []).append(fl.DeliveryVisit(v.customer_id, day.weekday, v.point,
                                                                        v.year, v.peak))
+        return groups
+
+    def days(self, plan: CurrentPlan, models: Mapping[int, ev.CustomerModel]) -> dict[tuple[int, int], float]:
+        ctx = self.ctx
         out = {}
+        groups = self._groups(plan, models)
         for key, vs in groups.items():
             sig = (key, tuple(sorted((v.customer_id, v.weekday, v.point, v.year.p) for v in vs)))
             if sig not in self.cache:
-                self.cache[sig] = fl.day_liters(vs, ctx.bundle.depot, self.trucks, ctx.before.norms, self.tn)
+                norms = replace(ctx.before.norms, traffic_weekday=key[1]-1)
+                if self.has_wear:
+                    cost = fl.day_running_cost(vs, ctx.bundle.depot, self.trucks, norms, self.tn)
+                    self.cache[sig] = cost.liters
+                    self.cost_cache[sig] = cost.total_amd(self.tn.fuel_price)
+                else:
+                    self.cache[sig] = fl.day_liters(vs, ctx.bundle.depot, self.trucks, norms, self.tn)
             out[key] = self.cache[sig]
         return out
+
+    def cost_week(self, plan: CurrentPlan, models: Mapping[int, ev.CustomerModel]) -> tuple[dict, float]:
+        self.days(plan, models)
+        out = {key: self.cost_cache[(key, tuple(sorted((v.customer_id, v.weekday, v.point, v.year.p) for v in vs)))]
+               for key, vs in self._groups(plan, models).items()}
+        return out, math.fsum(out.values()) / plan.cycle_weeks
 
     def before(self) -> tuple[dict[tuple[int, int], float], float]:
         """«Было»: литры по дням доставки и в неделю (план ERP)."""
@@ -1045,16 +1073,22 @@ class GateResult:
     reverted: list[tuple[int, int]]   # режим А — (менеджер, клиент), чьи дни возвращены; Б — (у кого был, клиент)
     reason: str
     attempts: int = 0
+    operating_before: float | None = None
+    operating_start: float | None = None
+    operating_after: float | None = None
 
     @property
     def ok(self) -> bool:
-        return self.liters_after <= self.liters_before + GATE_EPS_L
+        return (self.liters_after <= self.liters_before + GATE_EPS_L
+                and (self.operating_before is None or self.operating_after <= self.operating_before + 1e-6))
 
     def to_json(self) -> dict[str, Any]:
         """Для результата и страницы: владелец видит, удержан ли дизель, и сколько изменений снято."""
         return {'liters_before': round(self.liters_before, 1), 'liters_search': round(self.liters_start, 1),
                 'liters_after': round(self.liters_after, 1), 'reverted': len(self.reverted),
-                'ok': self.ok, 'reason': self.reason}
+                'ok': self.ok, 'reason': self.reason,
+                'operating_before_amd': self.operating_before, 'operating_search_amd': self.operating_start,
+                'operating_after_amd': self.operating_after}
 
 
 def _gate_log(mode: str, g: GateResult) -> None:
@@ -1062,6 +1096,9 @@ def _gate_log(mode: str, g: GateResult) -> None:
             'попыток %d — %s')
     args = (mode, g.liters_before, g.liters_start, g.liters_after, len(g.reverted), g.attempts, g.reason)
     (logger.info if g.ok else logger.warning)(text, *args)
+    if g.operating_before is not None:
+        (logger.info if g.ok else logger.warning)(
+            '[Routes] Дизель и износ%s: %.2f → %.2f драм/нед', mode, g.operating_before, g.operating_after)
 
 
 def _fleet_gate(ctx: _Ctx, tasks: Sequence[_Task], outcomes: Sequence[ManagerOutcome]) -> GateResult | None:
@@ -1080,26 +1117,35 @@ def _fleet_gate(ctx: _Ctx, tasks: Sequence[_Task], outcomes: Sequence[ManagerOut
     workdays = ctx.bundle.settings['workdays']
     plan = ctx.snap.plan
     by_agent = {o.agent_id: o for o in outcomes}
+    tasks_by_agent = {t.agent_id: t for t in tasks}
     bw = plan.cycle_weeks
     before_days, liters_before = full.before()
+    before_cost_days, cost_before = full.cost_week(plan, ctx.before.models) if full.has_wear else ({}, None)
     # частоты откат не меняет — модели клиентов «стало» одни на всю проверку (как в итоговой оценке)
     models = _plan_models(ctx, _after_plan(plan, by_agent, ctx.pairs, workdays))
 
-    def after() -> tuple[dict[tuple[int, int], float], float]:
-        return full.week(_after_plan(plan, by_agent, ctx.pairs, workdays), models)
+    def after() -> tuple[dict[tuple[int, int], float], float, dict, float | None]:
+        current = _after_plan(plan, by_agent, ctx.pairs, workdays)
+        costs, cost = full.cost_week(current, models) if full.has_wear else ({}, None)
+        return (*full.week(current, models), costs, cost)
 
-    days, total = after()
+    days, total, cost_days, cost = after()
+    cost_start = cost
     liters_start = total
     reverted: list[tuple[int, int]] = []
     tried: set[tuple[int, int]] = set()   # не помогли на этом этапе
     attempts = 0
     reason = GATE_OK
     gentle = True
-    while total > liters_before + GATE_EPS_L:
+    while total > liters_before + GATE_EPS_L or (cost_before is not None and cost > cost_before + 1e-6):
         if attempts >= GATE_MAX_TRIES:
             reason = GATE_ATTEMPTS
             break
         inc = {k: v - before_days.get((k[0] if bw == pt.CYCLE_WEEKS else 1, k[1]), 0.0) for k, v in days.items()}
+        if full.has_wear:
+            inc = {k: max(inc.get(k, 0.0), (v - before_cost_days.get(
+                    (k[0] if bw == pt.CYCLE_WEEKS else 1, k[1]), 0.0)) / full.tn.fuel_price)
+                   for k, v in cost_days.items()}
         pick = None
         for key in sorted(inc, key=lambda k: (-inc[k], k)):
             if inc[key] <= 0:
@@ -1113,6 +1159,9 @@ def _fleet_gate(ctx: _Ctx, tasks: Sequence[_Task], outcomes: Sequence[ManagerOut
                     lands = {fl.delivery_key(w, d, pt.CYCLE_WEEKS) for w, d in fin}
                     back = {fl.delivery_key(w, d, pt.CYCLE_WEEKS) for w, d in tgt}
                     if fin == tgt or key not in lands or key in back:
+                        continue
+                    # Откат ради дизеля не возвращает переработку в уже исправленную смену.
+                    if not math.isfinite(t.state.eval_relocate(i, _slots(tgt))[0]):
                         continue
                     vp = ctx.visit(t.cids[i], ctx.freq_after[t.cids[i]])
                     kg = vp.p_year * vp.kg
@@ -1139,20 +1188,21 @@ def _fleet_gate(ctx: _Ctx, tasks: Sequence[_Task], outcomes: Sequence[ManagerOut
         was = o.final[i]
         o.final[i] = tgt
         attempts += 1
-        new_days, new_total = after()
-        if new_total < total - 1e-9:
-            days, total = new_days, new_total
+        new_days, new_total, new_cost_days, new_cost = after()
+        cost_ok = cost is None or new_cost <= cost + 1e-6
+        improves = new_total < total - 1e-9 or (cost is not None and new_cost < cost - 1e-6)
+        if new_total <= total + GATE_EPS_L and cost_ok and improves:
+            days, total, cost_days, cost = new_days, new_total, new_cost_days, new_cost
             reverted.append((agent_id, i))
+            # Следующий откат проверяется уже вместе с принятыми откатами.
+            state = tasks_by_agent[agent_id].state
+            state.apply(state.eval_relocate(i, _slots(tgt))[1])
         else:
             o.final[i] = was
         tried.add((agent_id, i))
-    # состояния поиска — как итог (туры дней, быстрая оценка парка; с них начинает режим Б)
-    tasks_by_agent = {t.agent_id: t for t in tasks}
-    for agent_id, i in reverted:
-        state = tasks_by_agent[agent_id].state
-        state.apply(state.eval_relocate(i, _slots(by_agent[agent_id].final[i]))[1])
     g = GateResult(liters_before, liters_start, total,
-                   [(a, tasks_by_agent[a].cids[i]) for a, i in reverted], reason, attempts)
+                   [(a, tasks_by_agent[a].cids[i]) for a, i in reverted], reason, attempts,
+                   cost_before, cost_start, cost)
     _gate_log('', g)
     return g
 
@@ -1168,12 +1218,15 @@ def _transfer_gate(ctx: _Ctx, market: tr.Market, start: tuple, origin: Mapping[i
     if full is None:
         return None
     _, liters_before = full.before()
+    cost_before = full.cost_week(ctx.snap.plan, ctx.before.models)[1] if full.has_wear else None
 
-    def total_now() -> float:
+    def total_now() -> tuple[float, float | None]:
         p = plan_now()
-        return full.week(p, _plan_models(ctx, p))[1]
+        models = _plan_models(ctx, p)
+        return full.week(p, models)[1], full.cost_week(p, models)[1] if full.has_wear else None
 
-    total = start_total = total_now()
+    total, cost = total_now()
+    start_total, start_cost = total, cost
     reverted: list[tuple[int, int]] = []
 
     def load(c: int) -> float:
@@ -1184,23 +1237,24 @@ def _transfer_gate(ctx: _Ctx, market: tr.Market, start: tuple, origin: Mapping[i
                    key=lambda c: (-load(c), c))
     attempts = 0
     for c in moved:
-        if total <= liters_before + GATE_EPS_L or attempts >= GATE_MAX_TRIES:
+        if (total <= liters_before + GATE_EPS_L and (cost_before is None or cost <= cost_before + 1e-6)) or attempts >= GATE_MAX_TRIES:
             break
         snap, frm = market.snapshot(), market.owner[c]
         market.apply(market.eval_transfer(c, origin[c])[1])
         attempts += 1
-        new = total_now()
-        if new < total - 1e-9:
-            total = new
+        new, new_cost = total_now()
+        if new <= total + GATE_EPS_L and (cost is None or new_cost <= cost + 1e-6) and (
+                new < total - 1e-9 or (cost is not None and new_cost < cost - 1e-6)):
+            total, cost = new, new_cost
             reverted.append((frm, c))
         else:
             market.restore(snap)
     reason = GATE_OK
-    if total > liters_before + GATE_EPS_L:
+    if total > liters_before + GATE_EPS_L or (cost_before is not None and cost > cost_before + 1e-6):
         market.restore(start)
-        total = total_now()
+        total, cost = total_now()
         reason = GATE_NO_TRANSFERS
-    g = GateResult(liters_before, start_total, total, reverted, reason, attempts)
+    g = GateResult(liters_before, start_total, total, reverted, reason, attempts, cost_before, start_cost, cost)
     _gate_log(', режим Б', g)
     return g
 
@@ -1501,7 +1555,7 @@ def _run_transfer(ctx: _Ctx, calib: ev.Calibration | None, run_ids: Sequence[int
             workday=tuple(sr.day_of_slot(j)[1] in workdays for j in range(sr.SLOTS)),
             base=tuple(j in base_slots for j in range(sr.SLOTS)),
             neighbors=sr.nearest_lines([line.node for line in lines], km),
-            seed=zlib.crc32(str(a).encode('utf-8')))
+            seed=zlib.crc32(str(a).encode('utf-8')), hard_time=True)
         # парк «было» — тот же, что в режиме А: гости без визитов, свои — текущие дни
         before_states[a] = sr.State(prob, [line.current for line in lines],
                                     [ctx.visit(c, ctx.freq_before[c]) for c in cids],
@@ -1870,6 +1924,11 @@ def _result(ctx: _Ctx, run_ids: Sequence[int], parts: Mapping[int, Mapping[str, 
             Counter(fuel for fuel, _, _ in ctx.fuel_sources)
         fuel = sorted(common.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
         fuel_used, fuel_source = float(s[f'fuel_price_{fuel}']), 'settings'
+    overtime = [{'agent_id': me.agent_id, 'code': _code(snap, me.agent_id),
+                 'week': r.day.week, 'weekday': r.day.weekday,
+                 'minutes': round(r.plan_min, 2), 'excess_minutes': round(r.plan_min-after.norms.work_minutes, 2)}
+                for me in after.evals if me.agent_id in run_ids
+                for r in me.days if r.plan_min > after.norms.work_minutes + 1e-6]
     return {
         'cycle_weeks': pt.CYCLE_WEEKS,
         'params': {'agent_ids': list(run_ids), 'start': ctx.params['start'],
@@ -1883,6 +1942,8 @@ def _result(ctx: _Ctx, run_ids: Sequence[int], parts: Mapping[int, Mapping[str, 
         'before': _company(snap, bundle, before),
         'after': _company(after_snap, bundle, after),
         'managers': managers,
+        'time_gate': {'ok': not overtime, 'work_minutes': after.norms.work_minutes, 'days': overtime},
+        'forecast_validation': revenue_validation(snap, before.included_ids),
         'customers': customers,
         # принятые решения, которые в этом расчёте не применены: план клиента в ERP изменился
         'stale_decisions': stale_json(snap, bundle, ctx.book, ctx.pairs),
@@ -1974,7 +2035,8 @@ def export_patterns(snap: Snapshot, bundle: Bundle, book: DecisionBook,
 
 def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
                 proposals: Mapping[tuple[int, int], Proposal] | None = None,
-                distance: Distance | None = None) -> dict[str, Any]:
+                 distance: Distance | None = None,
+                 calib: ev.Calibration | None = None) -> dict[str, Any]:
     """Текущий план + только принятые изменения (export_patterns), по каждому менеджеру в расчёте,
     цикл 2 недели. Принято «убрать из маршрута» — клиента нет в строках плана, в изменениях —
     type 'remove'; принята передача — клиент в строках нового менеджера (отметка «передать», адрес —
@@ -1984,6 +2046,14 @@ def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
     pairs = plan_pairs(snap.plan)
     book = DecisionBook.from_rows(decisions, pairs)
     planned = export_patterns(snap, bundle, book, pairs, proposals or {})
+    norms = ev.Norms.from_settings(bundle.settings, calib)
+    included = {a for a in snap.plan.agent_ids if bundle.included(a, snap.active_agents)}
+    models = ev.customer_models(snap, bundle.settings, ev.resolve_season(snap.season_index, bundle.settings), included)
+    visit_norms = ev.visit_norms(bundle.settings, calib.visit_min_avg if calib is not None else None,
+                               ev.size_shares(snap.plan, {c:m.size for c,m in models.items()},
+                                              included, bundle.settings['workdays']))
+    visit_minutes = {size: visit_norms[f'visit_min_{size}'][0] for size in ev.VISIT_NORMS}
+    overtime = []
     moved_in = {(b, c): a for (a, c), (b, _) in export_transfers(snap, bundle, book, pairs).items()}
     coords: dict[tuple[int, int], Coord] = {}
 
@@ -2011,6 +2081,21 @@ def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
             located = [c for c in cs if coord(c, info[c].address_id).point is not None]
             order = route_order([coord(c, info[c].address_id).point for c in located], home, distance)
             seq = [located[k] for k in order] + [c for c in cs if coord(c, info[c].address_id).point is None]
+            points = [coord(c, info[c].address_id).point for c in seq if coord(c, info[c].address_id).point is not None]
+            path = [home, *points, home] if home is not None else points
+            drive = 0.0
+            for a0,b0 in zip(path,path[1:]):
+                leg = distance(a0,b0) if distance is not None else norms.km(a0,b0)
+                city = in_city(a0,norms.city_center,norms.city_radius_km) and in_city(b0,norms.city_center,norms.city_radius_km)
+                drive += leg/(norms.speed_city_kmh if city else norms.speed_region_kmh)*60.0
+            if norms.traffic is not None:
+                from .traffic_metrics import route_metrics as timed_metrics
+                _, drive = timed_metrics(points, home, norms, weekday,
+                    [visit_minutes[models[c].size] for c in seq], distance=distance)
+            minutes = drive + math.fsum(visit_minutes[models[c].size] for c in cs)
+            if minutes > norms.work_minutes + 1e-6:
+                overtime.append({'agent_id':a,'code':code,'week':week,'weekday':weekday,
+                                 'minutes':round(minutes,2),'excess_minutes':round(minutes-norms.work_minutes,2)})
             for no, c in enumerate(seq, 1):
                 cust = snap.customers.get(c)
                 rows.append({'agent_id': a, 'agent_code': code, 'agent_name': name, 'week': week,
@@ -2055,6 +2140,7 @@ def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
         order = {m['agent_id']: i for i, m in enumerate(managers)}
         changes.sort(key=lambda x: order.get(x['agent_id'], len(order)))
     return {'cycle_weeks': pt.CYCLE_WEEKS, 'data_as_of': snap.data_as_of.isoformat(timespec='seconds'),
+            'time_gate': {'ok':not overtime,'work_minutes':norms.work_minutes,'days':overtime},
             'managers': managers, 'rows': rows, 'changes': changes,
             'stale_decisions': stale_json(snap, bundle, book, pairs)}
 

@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=14">
 <!-- «Առաքիչ» — офис терминалов водителей (docs/plans/courier-app-plan.md §4), армянский, «для чайников» -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=3">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=4">
 {% endblock %}
 
 {% block content %}
@@ -205,7 +205,10 @@
         </div>
 
         <section class="rt-card" aria-labelledby="crApkTitle">
-            <div class="rt-card-head"><h2 class="rt-card-title" id="crApkTitle"><i class="fab fa-android" aria-hidden="true"></i>Հավելվածի թարմացում (APK)</h2></div>
+            <div class="rt-card-head">
+                <h2 class="rt-card-title" id="crApkTitle"><i class="fab fa-android" aria-hidden="true"></i>Հավելվածի թարմացում (APK)</h2>
+                <a class="rt-btn rt-btn-primary rt-btn-sm" id="crApkDownload" href="{{ url_for('courier_api.download_apk') }}" lang="ru"><i class="fas fa-download" aria-hidden="true"></i> Скачать APK</a>
+            </div>
             <p class="rt-card-lead" id="crApkCurrent"></p>
             <form id="crApkForm" class="cr-inline" autocomplete="off">
                 <label for="crApkFile" class="rt-sr-only">APK ֆայլ</label>
@@ -221,5 +224,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/courier.js') }}?v=5"></script>
+<script src="{{ url_for('static', filename='js/courier.js') }}?v=6"></script>
 {% endblock %}

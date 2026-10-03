@@ -330,14 +330,18 @@ class Calibration:
     speed_region_kmh: float | None
     days_used: int
     visit_min_avg: float | None = None   # стоянка на визит по GPS, мин (calibrate_visit_minutes)
+    traffic: Any = field(default=None, compare=False, repr=False)
 
 
 def calibrate(visits: Iterable[ActualVisit], fixes_by_agent: Mapping[int, Sequence[Fix]],
               since: date, until: date, center: Point, radius_km: float) -> Calibration:
+    visits = tuple(visits)
     days = day_tracks(visits, fixes_by_day(fixes_by_agent), since, until)
     detour, used = calibrate_detour(days)
     city, region = calibrate_speeds(days, center, radius_km)
-    return Calibration(detour, city, region, used, calibrate_visit_minutes(days))
+    from .traffic_validation import learn
+    traffic = learn(visits, fixes_by_agent, center, radius_km, until)
+    return Calibration(detour, city, region, used, calibrate_visit_minutes(days), traffic)
 
 
 # --- Модель визита и нормы ---
@@ -443,6 +447,11 @@ class Norms:
     min_day_revenue: float
     min_trip_revenue: float
     roads: RoadDistances | None = field(default=None, compare=False, repr=False)   # None — по прямой
+    traffic: Any = field(default=None, compare=False, repr=False)
+    traffic_weekday: int = 0
+    traffic_start_min: float = 540.0
+    provider: Any = field(default=None, compare=False, repr=False)
+    traffic_status: Any = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_settings(cls, s: Mapping[str, Any], calib: Calibration | None = None,
@@ -461,11 +470,18 @@ class Norms:
             min_day_revenue=float(s['min_day_revenue']),
             min_trip_revenue=float(s['min_trip_revenue']),
             roads=roads,
+            traffic=(calib.traffic if calib is not None and s.get('traffic_mode', 'gps') == 'gps'
+                     and getattr(calib, 'traffic', None) is not None and calib.traffic.factors else None),
+            traffic_start_min=float(h1 * 60 + m1),
         )
 
     def km(self, a: Point, b: Point) -> float:
         """Км участка — единая функция расстояния расчёта: по дорогам; карты нет, точка дальше
         0,5 км от дороги или пути нет — по прямой × извилистость."""
+        if self.provider is not None:
+            d = self.provider.km(a, b)
+            if d is not None:
+                return d
         if self.roads is not None:
             d = self.roads.km(a, b)
             if d is not None:
@@ -476,7 +492,7 @@ class Norms:
     def distance(self) -> Distance | None:
         """Функция расстояния для порядка объезда и рейсов (tsp): km; без дорог — None (tsp считает
         по прямой, извилистость — постоянный множитель, порядок тот же, что и раньше)."""
-        return self.km if self.roads is not None else None
+        return self.km if self.roads is not None or self.provider is not None else None
 
 
 def visit_seed(customer_id: int, weekday: int, purpose: str) -> int:
@@ -497,12 +513,17 @@ def visit_uniforms(customer_id: int, weekday: int, purpose: str,
     return orders, [rand() for _ in range(n)]
 
 
-def route_metrics(points: Sequence[Point], home: Point | None, norms: Norms) -> tuple[float, float]:
+def route_metrics(points: Sequence[Point], home: Point | None, norms: Norms,
+                  weekday: int | None = None, services: Sequence[float] | None = None,
+                  start_minute: float | None = None) -> tuple[float, float]:
     """(км, минуты в пути) маршрута менеджера: дом → точки → дом; без дома — от первой до последней.
 
     km участка — norms.km (по дорогам, иначе по прямой × извилистость); время участка =
     км / скорость × 60, скорость городская, если оба конца в городе, иначе областная.
     """
+    if norms.traffic is not None:
+        from .traffic_metrics import route_metrics as timed_metrics
+        return timed_metrics(points, home, norms, weekday, services, start_minute)
     path = [home, *points, home] if home is not None else list(points)
     km = minutes = 0.0
     for a, b in zip(path, path[1:]):
@@ -619,8 +640,14 @@ def evaluate_day(day: PlanDay, visits: Sequence[VisitModel], *, home: Point | No
     rownum_points = [v.point for v in located]
     order = route_order(rownum_points, home, norms.distance)
     points = [rownum_points[i] for i in order]
-    km, drive = route_metrics(points, home, norms)
-    _, drive_between = route_metrics(points, None, norms)   # от первого клиента до последнего
+    services = [located[i].minutes for i in order] + [v.minutes for v in visits if v.point is None]
+    km, drive = route_metrics(points, home, norms, day.weekday, services)
+    first_arrival = norms.traffic_start_min
+    if norms.traffic is not None and home is not None and points:
+        from .traffic_metrics import route_metrics as timed_metrics
+        _, first_drive = timed_metrics([home, points[0]], None, norms, day.weekday)
+        first_arrival += first_drive
+    _, drive_between = route_metrics(points, None, norms, day.weekday, services, first_arrival)
     km_rownum, _ = route_metrics(rownum_points, home, norms)
     visit_min = float(sum(v.minutes for v in visits))
     plan_min = drive + visit_min
@@ -1194,6 +1221,11 @@ def _totals(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
         'truck_km_week': _r(fw.get('km'), 1),
         'truck_liters_week': _r(truck_liters, 1),
         'truck_amd_week': _i(truck_amd),
+        'truck_wear_amd_week': _i(fw.get('wear_amd')),
+        'truck_fuel_load_unconfigured': sum(t.fuel_empty_l_per_100km is None for t in fleet.trucks) if fleet else None,
+        'truck_wear_unconfigured': sum(t.wear_amd_per_km is None and t.wear_load_amd_per_km is None
+                                     for t in fleet.trucks) if fleet else None,
+        'truck_operating_amd_week': _i(truck_amd + fw.get('wear_amd', 0.0)) if truck_amd is not None else None,
         'trips_week': _r(fw.get('trips'), 1),
         'trips_per_day': _r(fw.get('trips_per_day'), 1),
         'truck_kg_per_day': _i(fw.get('kg_per_day')),
@@ -1234,7 +1266,8 @@ def _fleet_json(fe: fl.FleetEval, bundle: Bundle) -> dict[str, Any]:
     def truck_json(t: fl.TruckLoad) -> dict[str, Any]:
         return {'car_code': t.car_code, 'name': t.name, 'capacity_kg': _num(t.capacity_kg),
                 'trips': _r(t.trips, 1), 'stops': _r(t.stops, 1), 'kg': _i(t.kg), 'km': _r(t.km, 1),
-                'liters': _r(t.liters, 1), 'hours': _r(t.minutes / 60.0, 1), 'load_pct': _r(t.load_pct, 0)}
+                'liters': _r(t.liters, 1), 'wear_amd': _i(t.wear_amd),
+                'hours': _r(t.minutes / 60.0, 1), 'load_pct': _r(t.load_pct, 0)}
 
     return {
         'trucks': [{'car_code': t.car_code, 'name': t.name, 'capacity_kg': _num(t.capacity_kg),
@@ -1245,6 +1278,7 @@ def _fleet_json(fe: fl.FleetEval, bundle: Bundle) -> dict[str, Any]:
             'week': d.week, 'weekday': d.weekday, 'label': WEEKDAY_LABELS[d.weekday],
             'visits': d.visits, 'orders': _r(d.orders, 1), 'kg': _i(d.kg), 'km': _r(d.km, 1),
             'liters': _r(d.liters, 1), 'trips': _r(d.trips, 1), 'hours': _r(d.minutes / 60.0, 1),
+            'wear_amd': _i(d.wear_amd),
             'load_pct': _r(d.load_pct, 0), 'kg_peak': _i(d.kg_peak), 'trips_peak': _r(d.trips_peak, 1),
             'load_pct_peak': _r(d.load_pct_peak, 0), 'p_short': _r(d.p_short, 2),
             'p_short_peak': _r(d.p_short_peak, 2),
@@ -1269,6 +1303,21 @@ def _warnings(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
     elif pe.fleet is None:
         out.append(_warning('no_fleet', 'Укажите тоннаж и расход машин — тогда программа посчитает '
                                         'дизель грузовиков', 'trucks'))
+    if pe.fleet is not None:
+        if s.get('warehouse_load_fixed_min') is None or s.get('warehouse_load_min_per_tonne') is None:
+            out.append(_warning('warehouse_loading_unknown', 'Время загрузки на складе не заполнено полностью; '
+                                'незаданные части пока считаются нулевыми. Внесите замеры в настройках.', 'norms'))
+        missing_fuel = [t.car_code for t in pe.fleet.trucks if t.fuel_empty_l_per_100km is None]
+        missing_wear = [t.car_code for t in pe.fleet.trucks
+                        if t.wear_amd_per_km is None and t.wear_load_amd_per_km is None]
+        if missing_fuel or missing_wear:
+            parts = []
+            if missing_fuel:
+                parts.append('расход по загрузке: ' + ', '.join(missing_fuel))
+            if missing_wear:
+                parts.append('стоимость износа: ' + ', '.join(missing_wear))
+            out.append(_warning('load_costs_incomplete', 'Не заданы нормы машин (' + '; '.join(parts)
+                                + '). Заполните «Загрузка и износ» в настройках машин.', 'trucks'))
     if pe.trucks_incomplete and pe.fleet is not None:
         codes = pe.trucks_incomplete
         out.append(_warning('truck_incomplete', f'У {len(codes)} {plural(len(codes), "машины", "машин", "машин")} '

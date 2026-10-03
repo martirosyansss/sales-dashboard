@@ -705,6 +705,12 @@
 .rs-idle.is-soft { color: var(--rt-fg-dim); font-style: italic; }
 /* «В центр» у машины и граница малого центра на карте (окна приёма и малый центр, №39–41) */
 .rs-center-sel { min-width: 112px; }
+.rs-load-costs { margin-top: 8px; min-width: 0; max-width: 220px; font-size: 12px; }
+.rs-load-costs summary { cursor: pointer; white-space: normal; }
+.rs-load-fields { display: grid; gap: 8px; margin-top: 10px; }
+.rs-load-field { display: grid; gap: 4px; white-space: normal; }
+.rs-load-field .rt-input { width: 100%; min-width: 0; }
+.rs-load-costs p { white-space: normal; max-width: 220px; margin: 8px 0 0; }
 .rs-center-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-top: 10px; }
 .rs-zone-pt { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 3px solid #397be9; box-shadow: 0 0 0 2px rgba(0,0,0,.35); cursor: grab; }
 /* Ручные машины: подсказка, кнопки в строке, форма добавления */
@@ -1485,3 +1491,6 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
     .dp-dayrow .rt-input.dp-date { flex: 1 1 100%; }
 }
 .ro-warn { color: var(--rt-danger); font-weight: 600; }
+.rt-table-scroll { max-width: 100%; overflow-x: auto; }
+#rmHistory td { white-space: normal; min-width: 6rem; vertical-align: top; }
+#rmHistory td:last-child { min-width: 13rem; }

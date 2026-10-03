@@ -1427,7 +1427,8 @@ def test_api_settings_get_and_post(client):
     assert d['season']['detected_low'] == [1, 2, 3]
     assert set(d['calibration']) == {'detour_factor', 'speed_city_kmh', 'speed_region_kmh',
                                      'visit_min_small', 'visit_min_medium', 'visit_min_large',
-                                     'visit_min_avg', 'days_used'}
+                                     'visit_min_avg', 'days_used', 'traffic'}
+    assert d['calibration']['traffic']['live'] is False
     assert all(d['settings'][k] is None for k in ev.ROAD_NORMS)          # нормы дорог — «авто»
     assert all(d['settings'][f'visit_min_{k}'] is None for k in ev.VISIT_NORMS)   # визиты — «авто»
     assert all(m['included'] is True and m['inactive'] is False and m['included_source'] == 'auto'
@@ -2462,7 +2463,7 @@ def test_store_migrates_copy_of_owner_db(tmp_path):
 
 RESULT_KEYS = {'cycle_weeks', 'fleet_gate', 'params', 'generated_at', 'seconds', 'snapshot_as_of', 'fuel_price_used',
                'fuel_price_source', 'truck_costs', 'before', 'after', 'managers', 'customers',
-               'stale_decisions'}
+               'stale_decisions', 'time_gate', 'forecast_validation'}
 MANAGER_RESULT_KEYS = {'agent_id', 'code', 'name', 'before', 'after', 'feasibility', 'time_capped',
                        'days_before', 'days_after', 'changes', 'hints'}
 # км и литры грузовиков у менеджера больше нет: парк общий (ответ №29) — они в before/after компании
@@ -4665,10 +4666,10 @@ def test_store_fleet_keeps_owner_trucks_on_copy(tmp_path):
     bundle = store.load()
     assert bundle.settings['truck_work_start'] == '09:00' and st.SCHEMA_VERSION >= 6
     assert sorted((t.car_code, t.capacity_kg, t.fuel_l_per_100km, t.agent_id, t.active)
-                  for t in bundle.trucks.values()) == [(*row[:4], bool(row[4])) for row in trucks]
+                  for t in bundle.trucks.values()) == [(*row[:4], None if row[4] is None else bool(row[4])) for row in trucks]
     if trucks:
         code = trucks[0][0]
-        ref = st.RefData(frozenset(bundle.trucks), frozenset(), frozenset())
+        ref = st.RefData(frozenset(bundle.trucks), frozenset(), frozenset(bundle.settings['chain_groups']))
         changes, errors = st.validate_payload({'trucks': [{'car_code': code, 'capacity_kg': 3500,
                                                            'fuel_l_per_100km': 16}]}, bundle, ref)
         assert errors == {}
@@ -4879,7 +4880,8 @@ def test_dispatch_build_capacity_time_all_stops_deterministic():
         assert tr['minutes'] <= TN.work_minutes and tr['trips'][0]['depart'] == '09:00'
         assert all(a['return'] == b['depart'] for a, b in zip(tr['trips'], tr['trips'][1:]))
     heavy = _trip_of(view, 200)                                         # 12 т > 10 т — две поездки по 6 т
-    assert len(heavy) == 2 and all(s['kg'] == 6000 and s['share'] == 2 for t in heavy for s in t['stops'])
+    assert len(heavy) == 2 and all(s['kg'] == 6000 and s['share'] == 2
+                                  for t in heavy for s in t['stops'] if s['customer_id'] == 200)
     kg = Counter()
     for t in trips:
         for s in t['stops']:
@@ -5901,7 +5903,8 @@ def test_store_owner_copy_migrates_to_8_and_takes_manual_truck(tmp_path):
     for code in ('124AV61', '475DD61'):
         if saved.get(code) == 1:
             assert b.truck_active(code, frozenset()) is True    # давно не возила, но выбор владельца держится
-    ref = st.RefData(frozenset(c for c, t in b.trucks.items() if not t.manual), frozenset(), frozenset(),
+    ref = st.RefData(frozenset(c for c, t in b.trucks.items() if not t.manual), frozenset(),
+                     frozenset(b.settings['chain_groups']),
                      frozenset({3191}))
     changes, errors = st.validate_payload({'manual_trucks': [_manual('B006 22', van_agent_id=3191)]}, b, ref)
     assert errors == {}

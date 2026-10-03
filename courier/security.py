@@ -105,9 +105,33 @@ def check_pin(pin_hash: str | None, pin: str, pepper: Pepper | None = None) -> b
     if not pin_hash or not valid_pin(pin):
         return False
     try:
+        if pin_hash.startswith('wrapped-pbkdf2:sha256:'):
+            if pepper is None:
+                return False
+            method, salt, mac = pin_hash.split('$')
+            iterations = int(method.rsplit(':', 1)[1])
+            if not 1 <= iterations <= 2_000_000 or len(salt) > 128:
+                return False
+            digest = hashlib.pbkdf2_hmac('sha256', pin.encode('ascii'), salt.encode('utf-8'), iterations).hex()
+            expected = wrap_pin_hash(f'pbkdf2:sha256:{iterations}${salt}${digest}', pepper)
+            return hmac.compare_digest(expected, pin_hash)
         return wz.check_password_hash(pin_hash, _secret(pin, pepper))
     except (ValueError, TypeError):   # битый хеш в базе — не совпадение, а не падение входа
         return False
+
+
+def wrap_pin_hash(pin_hash: str, pepper: Pepper) -> str:
+    """Защитить старый PBKDF2 без знания PIN: post-hashing HMAC по OWASP Password Storage.
+
+    После обычного входа Store._rehash заменяет обёртку текущим хешем. Старый открытый digest не сохраняется.
+    """
+    method, salt, digest = pin_hash.split('$')
+    if not method.startswith('pbkdf2:sha256:') or not 1 <= int(method.rsplit(':', 1)[1]) <= 2_000_000 \
+            or not salt or len(salt) > 128 or not re.fullmatch(r'[0-9a-f]{64}', digest):
+        raise ValueError('Неподдерживаемый старый хеш PIN')
+    message = ('courier-pin-wrap-v1:' + pin_hash).encode('utf-8')
+    mac = hmac.new(pepper.key, message, hashlib.sha256).hexdigest()
+    return 'wrapped-' + method + '$' + salt + '$' + mac
 
 
 def hash_outdated(pin_hash: str) -> bool:

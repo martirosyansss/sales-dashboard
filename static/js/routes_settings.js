@@ -44,6 +44,10 @@
               hint: 'кнопка «Везти после конца дня» в «Развозе» — только в исключительные дни' },
             { key: 'unload_min_per_stop', label: 'Разгрузка на точке, минут', min: 0, max: 120, step: 1 },
             { key: 'unload_min_per_tonne', label: 'И ещё на каждую тонну, минут', min: 0, max: 120, step: 1 },
+            { key: 'warehouse_load_fixed_min', label: 'Загрузка на складе: подготовка рейса, минут', min: 0, max: 240, step: 1, nullable: true,
+                hint: 'на каждый рейс, включая повторный; пусто — время пока неизвестно' },
+            { key: 'warehouse_load_min_per_tonne', label: 'Загрузка: дополнительно на тонну, минут', min: 0, max: 120, step: 0.5, nullable: true,
+                hint: 'укажите измеренное время; 0 — дополнительного времени нет' },
             { key: 'dispatch_ready_time', label: 'Рейсы на завтра собирать после', type: 'time',
                 hint: 'до этого времени менеджеры ещё принимают заказы — «Развоз» об этом напомнит' },
         ] },
@@ -76,7 +80,7 @@
             { key: 'penalty_change', label: 'Перенос магазина на другой день обходится как, драм', min: 0, max: 1000000, step: 50, hint: 'больше — меньше переносов ради мелкой экономии' },
             { key: 'penalty_transfer', label: 'Передача магазина другому менеджеру обходится как, драм в неделю', min: 0, max: 1000000, step: 100, hint: 'передача должна окупаться заметно — больше, меньше передач' },
             { key: 'transfer_radius_km', label: 'Кому можно передать: у менеджера есть магазин ближе, км', min: 0.1, max: 20, step: 0.1, hint: 'плюс 3 менеджера, чей дом ближе всего к магазину' },
-            { key: 'truck_priority', label: 'Дизель грузовиков важнее бензина менеджеров во столько раз', min: 1, max: 10, step: 0.1 },
+            { key: 'truck_priority', label: 'Расходы грузовиков важнее топлива менеджеров во столько раз', min: 1, max: 10, step: 0.1 },
             { key: 'fuel_price_fallback', label: 'Цена топлива, если в «Ценах топлива» пусто, драм за литр', min: 1, max: 10000, step: 1, hint: 'только чтобы сравнивать варианты' },
             { key: 'optimizer_seconds_per_manager', label: 'Время расчёта на менеджера — не больше, секунд', min: 1, max: 120, step: 1 },
             { key: 'abc_a_share', label: 'Крупные магазины — доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'самые крупные вместе дают эту долю' },
@@ -214,6 +218,8 @@
             const text = String(msg);
             const f = findField(key);
             if (f) {
+                const details = f.el.closest('details');
+                if (details) details.open = true;
                 f.errEl.textContent = f.errEl.textContent ? f.errEl.textContent + ' ' + text : text;
                 f.el.classList.add('is-invalid');
                 f.el.setAttribute('aria-invalid', 'true');
@@ -341,6 +347,8 @@
         renderSeason();
         renderCalib();
         updateSources();
+        if ($('rsTrafficMode')) $('rsTrafficMode').value = state.data.settings.traffic_mode || 'gps';
+        document.dispatchEvent(new CustomEvent('routes:settings', { detail: state.data }));
     }
 
     // ---------- 01 · Склад ----------
@@ -485,6 +493,13 @@
         return 'не возила с ' + dateRu(t.last_used) + tail;
     }
 
+    const LOAD_COSTS = [
+        ['fuel_empty_l_per_100km', 'Пустая, л/100 км', 1, 80],
+        ['fuel_full_l_per_100km', 'Полная, л/100 км', 1, 80],
+        ['wear_amd_per_km', 'Износ, драм/км', 0, 1000000],
+        ['wear_load_amd_per_km', 'Надбавка при полной загрузке, драм/км', 0, 1000000],
+    ];
+
     function truckRow(t, i) {
         const manual = !!t.manual;
         const code = String(t.car_code ?? '');
@@ -496,6 +511,19 @@
         const fuel = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 1, max: 80, step: 0.1,
             value: num(t.fuel_l_per_100km) === null ? '' : String(t.fuel_l_per_100km),
             placeholder: '—', 'aria-label': 'Расход, литров на 100 км — ' + who, dataset: { f: 'fuel' } });
+        const costFields = LOAD_COSTS.map(([key, label, min, max]) => {
+            const input = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min, max, step: 0.1,
+                value: num(t[key]) === null ? '' : String(t[key]), placeholder: 'не задано',
+                'aria-label': label + ' — ' + who, dataset: { f: key } });
+            const error = errNode();
+            const prefix = manual ? ['manual_trucks.' + code] : ['trucks.' + i, 'trucks.' + code];
+            reg(prefix.map(p => p + '.' + key), input, error, 'Машина ' + code + ', ' + label);
+            return h('label', { class: 'rs-load-field' }, h('span', { text: label }), input, error);
+        });
+        const costs = h('details', { class: 'rs-load-costs' },
+            h('summary', { text: 'Загрузка и износ' }),
+            h('div', { class: 'rs-load-fields' }, ...costFields),
+            h('p', { class: 'rt-muted', text: 'Пустая и полная — по замерам этой машины. Надбавка за износ растёт с квадратом доли загрузки. Пусто — влияние нагрузки не настроено.' }));
         const wasManual = manual || t.active_source === 'manual', autoOn = t.auto_active === true;
         const active = h('input', { type: 'checkbox', checked: t.active !== false, 'aria-label': 'Машина работает — ' + who,
             dataset: { f: 'active', mode: wasManual ? 'manual' : 'auto' } });
@@ -550,7 +578,7 @@
         const tr = h('tr', { class: t.erp_closed ? 'is-closed' : null, dataset: manual ? { mk: t.key } : { i: String(i) } },
             nameCell,
             h('td', { class: 'w-num w-half', dataset: { label: 'Тоннаж, т' } }, cap, capE),
-            h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л на 100 км' } }, fuel, fuelE),
+            h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л на 100 км' } }, fuel, fuelE, costs),
             h('td', { class: 'rs-erp-cell', dataset: { label: manual ? 'Экспедитор' : 'По накладным ERP' } }, manual ? vanHint(t) : erpHint(t), idle),
             h('td', { class: 'w-sel', dataset: { label: 'В центр' } }, center, centerE),
             h('td', { class: 'w-chk w-inc', dataset: { label: 'Работает' } }, active, actSrc, actE));
@@ -724,7 +752,11 @@
             Object.assign(m, data);
             const old = $('rsTrucksBody').querySelector('tr[data-mk="' + key + '"]');
             m.center_mode = old.querySelector('[data-f="center"]').value;
-            old.replaceWith(truckRow(m));
+            const costValues = LOAD_COSTS.map(([f]) => old.querySelector('[data-f="' + f + '"]').value);
+            const next = truckRow(m);
+            LOAD_COSTS.forEach(([f], i) => { next.querySelector('[data-f="' + f + '"]').value = costValues[i]; });
+            next.querySelector('details').open = old.querySelector('details').open;
+            old.replaceWith(next);
         } else {
             m = Object.assign({ car_code: code, manual: true, active_source: 'manual', key: 'm' + (++manualSeq) }, data);
             state.manual.push(m);
@@ -1359,6 +1391,7 @@
     function collect() {
         const errors = {};
         const s = Object.assign({}, state.data.settings);   // неизвестные ключи отдаём как были
+        if ($('rsTrafficMode')) s.traffic_mode = $('rsTrafficMode').value;
         document.querySelectorAll('#rsForm [data-norm]').forEach(inp => {
             const key = inp.dataset.norm;
             if (inp.dataset.time) {
@@ -1405,12 +1438,23 @@
                 capacity_kg: cap.value === null || cap.value === undefined ? null : Math.round(cap.value * 1000),
                 fuel_l_per_100km: fuel.value === undefined ? null : fuel.value,
             };
+            LOAD_COSTS.forEach(([f, , min, max]) => {
+                const value = readNum(q(f), true);
+                if (value.error) errors[p + f] = value.error;
+                else if (value.value !== null && (value.value < min || value.value > max)) errors[p + f] = 'Значение — от ' + min + ' до ' + max;
+                item[f] = value.value === undefined ? null : value.value;
+            });
+            const empty = item.fuel_empty_l_per_100km, full = item.fuel_full_l_per_100km;
+            if ((empty === null) !== (full === null)) {
+                errors[p + 'fuel_empty_l_per_100km'] = errors[p + 'fuel_full_l_per_100km'] = 'Задайте расход пустой и полной машины вместе';
+            } else if (empty !== null && full < empty) errors[p + 'fuel_full_l_per_100km'] = 'Расход полной машины не меньше расхода пустой';
             const act = q('active');
             // «В центр»: авто — null (решает название машины), иначе выбор владельца
             const cm = q('center').value;
             item.center_ok = cm === 'auto' ? null : cm === 'yes';
             if (m) {
                 ['capacity_kg', 'fuel_l_per_100km', 'active', 'car_code', 'name', 'van_agent_id', 'center_ok']
+                    .concat(LOAD_COSTS.map(([f]) => f))
                     .forEach(f => alias('manual_trucks.' + m.car_code + '.' + f, p + f));
                 alias('manual_trucks.' + m.car_code, p.slice(0, -1));
                 manualTrucks.push(Object.assign(item, { name: m.name || null, active: act.checked,

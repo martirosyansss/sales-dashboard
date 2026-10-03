@@ -22,8 +22,10 @@ from typing import Any, Callable, Collection, Mapping
 
 from .geo import ARMENIA_LAT, ARMENIA_LON, Point, is_valid_point
 from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, parse_transfer_key
+from .running_costs import LOAD_COST_FIELDS, profile_fields
+from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 12
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -98,7 +100,8 @@ _TRUCKS_COLUMNS_V8 = (
 _TRUCKS_COLUMNS = (
     "car_code TEXT PRIMARY KEY, capacity_kg REAL, fuel_l_per_100km REAL, agent_id INTEGER, active INTEGER, "
     "manual INTEGER NOT NULL DEFAULT 0, name TEXT, van_agent_id INTEGER, center_ok INTEGER, "
-    "updated_at TEXT NOT NULL, updated_by TEXT")
+    "updated_at TEXT NOT NULL, updated_by TEXT, fuel_empty_l_per_100km REAL, fuel_full_l_per_100km REAL, "
+    "wear_amd_per_km REAL, wear_load_amd_per_km REAL")
 _TRUCKS_TABLE = f"CREATE TABLE IF NOT EXISTS trucks({_TRUCKS_COLUMNS})"
 _TRUCKS_ONE_VAN = (
     "CREATE UNIQUE INDEX IF NOT EXISTS trucks_one_van ON trucks(van_agent_id) WHERE van_agent_id IS NOT NULL")
@@ -107,6 +110,15 @@ _TRUCKS_ONE_VAN = (
 _CUSTOMER_WINDOW_TABLE = (
     "CREATE TABLE IF NOT EXISTS customer_window(customer_id INTEGER PRIMARY KEY, kind TEXT NOT NULL, "
     "t1 INTEGER NOT NULL, t2 INTEGER, tol INTEGER, updated_at TEXT NOT NULL, updated_by TEXT)")
+
+_CUSTOMER_VEHICLES_TABLE = (
+    "CREATE TABLE IF NOT EXISTS customer_vehicle_access(customer_id INTEGER PRIMARY KEY, "
+    "mode TEXT NOT NULL CHECK(mode IN ('allow', 'deny')), trucks TEXT NOT NULL, "
+    "updated_at TEXT NOT NULL, updated_by TEXT)")
+
+_MEASUREMENT_TABLE = (
+    'CREATE TABLE IF NOT EXISTS route_measurement(day TEXT NOT NULL, car_code TEXT NOT NULL, '
+    'data TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY(day, car_code))')
 
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -118,6 +130,8 @@ _SCHEMA = (
     _DECISION_TABLE,
     _SCENARIO_TABLE,
     _DECISION_ONE_ACCEPTED,
+    _MEASUREMENT_TABLE,
+    _CUSTOMER_VEHICLES_TABLE,
     _CUSTOMER_WINDOW_TABLE,   # перед таблицами схемы 7: базы прежних версий в тестах — срез _SCHEMA с конца
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
@@ -194,6 +208,10 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     # 8 → 9 (окна приёма и малый центр): только добавляем — столбец «можно в центр» (у всех «авто») и таблица окон.
     # Граница центра (center_zone) миграции не требует: нет ключа — стартовая граница.
     8: ("ALTER TABLE trucks ADD COLUMN center_ok INTEGER", _CUSTOMER_WINDOW_TABLE),
+    # 9 → 10: необязательные нормы нагрузки. NULL сохраняет прежнюю модель без выдуманных коэффициентов.
+    9: tuple(f'ALTER TABLE trucks ADD COLUMN {key} REAL' for key in LOAD_COST_FIELDS),
+    10: (_MEASUREMENT_TABLE,),
+    11: (_CUSTOMER_VEHICLES_TABLE,),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -258,6 +276,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'truck_overtime_end': '20:00',
     'unload_min_per_stop': 8,
     'unload_min_per_tonne': 6,
+    'warehouse_load_fixed_min': None,
+    'warehouse_load_min_per_tonne': None,
+    'traffic_mode': 'gps',
     # «Развоз»: до этого времени менеджеры ещё принимают заказы на следующий рабочий день (заканчивают
     # ≈ 16:40) — страница подсказывает собирать рейсы позже. Нет ключа в базе — значение по умолчанию
     'dispatch_ready_time': '17:00',
@@ -307,6 +328,8 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'transfer_radius_km': (0.1, 20, False),
     'unload_min_per_stop': (0, 120, False),
     'unload_min_per_tonne': (0, 120, False),
+    'warehouse_load_fixed_min': (0, 240, True),
+    'warehouse_load_min_per_tonne': (0, 120, True),
 }
 
 TRUCK_CAPACITY_KG = (100, 30000)
@@ -344,6 +367,10 @@ class Truck:
     name: str | None = None
     van_agent_id: int | None = None
     center_ok: bool | None = None   # можно в малый центр: None — «авто» (Bundle.truck_center_ok)
+    fuel_empty_l_per_100km: float | None = None
+    fuel_full_l_per_100km: float | None = None
+    wear_amd_per_km: float | None = None
+    wear_load_amd_per_km: float | None = None
 
 
 def center_auto(name: str | None) -> bool:
@@ -430,6 +457,7 @@ class Bundle:
     # точки водителей (courier.db, driver-geo-plan.md §2): не из этой базы — их добавляет views._bundle;
     # перекрывают ERP и GPS, уступают ручной точке
     driver_points: dict[int, Point] = field(default_factory=dict)
+    vehicle_access: dict[int, VehicleAccess] = field(default_factory=dict)
 
     def profile(self, agent_id: int) -> ManagerProfile:
         return self.managers.get(agent_id) or ManagerProfile(agent_id)
@@ -604,6 +632,12 @@ def validate_settings(values: Mapping[str, Any],
     out: dict[str, Any] = {}
     errors: dict[str, str] = {}
 
+    mode = values.get('traffic_mode', 'gps')
+    if mode not in ('gps', 'static', 'yandex'):
+        errors['traffic_mode'] = 'выберите исторический GPS или постоянную скорость'
+    else:
+        out['traffic_mode'] = mode
+
     for key in ('work_start', 'work_end', 'truck_work_start', 'truck_work_end', 'truck_overtime_end',
                 'dispatch_ready_time'):
         v = values.get(key)
@@ -701,6 +735,26 @@ def _check_bool(v: Any) -> str | None:
     return None if isinstance(v, bool) else 'ожидалось true/false'
 
 
+def _validate_load_costs(item: Mapping[str, Any], base: Truck, path: str,
+                         errors: dict[str, str]) -> dict[str, float | None]:
+    values = profile_fields(base)
+    for key in LOAD_COST_FIELDS:
+        if key not in item:
+            continue
+        bounds = TRUCK_FUEL_L100 if key.startswith('fuel_') else (0, 1e6)
+        value, error = _check_number(item[key], *bounds, nullable=True)
+        if error:
+            errors[f'{path}.{key}'] = error
+        values[key] = value
+    empty, full = (values[key] for key in LOAD_COST_FIELDS[:2])
+    if (empty is None) != (full is None):
+        errors[f'{path}.{LOAD_COST_FIELDS[0]}'] = 'задайте расход пустой и полной машины вместе'
+        errors[f'{path}.{LOAD_COST_FIELDS[1]}'] = 'задайте расход пустой и полной машины вместе'
+    elif empty is not None and full is not None and full < empty:
+        errors[f'{path}.{LOAD_COST_FIELDS[1]}'] = 'расход с полной загрузкой не меньше расхода пустой машины'
+    return values
+
+
 def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
                      errors: dict[str, str]) -> list[Truck]:
     if not isinstance(raw, list) or len(raw) > _MAX_LIST:
@@ -708,7 +762,7 @@ def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
         return []
     out: list[Truck] = []
     seen: set[str] = set()
-    allowed = {'car_code', 'capacity_kg', 'fuel_l_per_100km', 'agent_id', 'active', 'center_ok'}
+    allowed = {'car_code', 'capacity_kg', 'fuel_l_per_100km', 'agent_id', 'active', 'center_ok', *LOAD_COST_FIELDS}
     for i, item in enumerate(raw):
         path = f'trucks.{i}'
         if not isinstance(item, dict):
@@ -731,6 +785,7 @@ def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
             continue
         seen.add(code)
         base = current.get(code) or Truck(code, active=None)   # новая запись — «активна» авто
+        load_costs = _validate_load_costs(item, base, path, errors)
         fields: dict[str, Any] = {}
         ok = True
         for name, (lo, hi) in (('capacity_kg', TRUCK_CAPACITY_KG),
@@ -768,6 +823,7 @@ def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
                 agent_id=fields.get('agent_id', base.agent_id),
                 active=fields.get('active', base.active),
                 center_ok=fields.get('center_ok', base.center_ok),
+                **load_costs,
             ))
     return out
 
@@ -786,7 +842,7 @@ def _validate_manual_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData
         errors['manual_trucks'] = f'ожидался список машин (не больше {MANUAL_TRUCKS_MAX})'
         return []
     taken = {code_key(c) for c in ref.car_codes} | {code_key(c) for c, t in current.items() if not t.manual}
-    allowed = {'car_code', 'name', 'capacity_kg', 'fuel_l_per_100km', 'active', 'van_agent_id', 'center_ok'}
+    allowed = {'car_code', 'name', 'capacity_kg', 'fuel_l_per_100km', 'active', 'van_agent_id', 'center_ok', *LOAD_COST_FIELDS}
     out: list[Truck] = []
     seen: set[str] = set()
     vans: dict[int, str] = {}
@@ -814,6 +870,7 @@ def _validate_manual_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData
         seen.add(key)
         base = current.get(code)
         base = base if base is not None and base.manual else Truck(code, manual=True)
+        load_costs = _validate_load_costs(item, base, path, errors)
         ok = True
         name = item.get('name', base.name)
         if name is not None and not isinstance(name, str):
@@ -851,7 +908,7 @@ def _validate_manual_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData
                 vans[van] = code
         if ok:
             out.append(Truck(code, nums['capacity_kg'], nums['fuel_l_per_100km'], None, active,
-                             manual=True, name=name, van_agent_id=van, center_ok=center_ok))
+                             manual=True, name=name, van_agent_id=van, center_ok=center_ok, **load_costs))
     return out
 
 
@@ -979,7 +1036,7 @@ def _is_int(v: Any) -> bool:
 
 def _loaded_truck(row: tuple) -> tuple[Truck, list[str]]:
     """Строка trucks из БД → Truck и список нарушений (те же правила, что при сохранении)."""
-    code, capacity, fuel, agent_id, active, manual, name, van, center_ok, updated_at, updated_by = row
+    code, capacity, fuel, agent_id, active, manual, name, van, center_ok, updated_at, updated_by, *costs = row
     problems = []
     if not isinstance(code, str) or not code.strip():
         problems.append('код машины')
@@ -999,8 +1056,12 @@ def _loaded_truck(row: tuple) -> tuple[Truck, list[str]]:
         problems.append('экспедитор')
     if center_ok not in (None, 0, 1):
         problems.append('признак «можно в центр»')
+    extra = dict(zip(LOAD_COST_FIELDS, costs))
+    cost_errors: dict[str, str] = {}
+    _validate_load_costs(extra, Truck(code), 'costs', cost_errors)
+    problems.extend(cost_errors)
     return Truck(code, capacity, fuel, agent_id, None if active is None else bool(active), updated_at,
-                 updated_by, manual == 1, name, van, None if center_ok is None else bool(center_ok)), problems
+                 updated_by, manual == 1, name, van, None if center_ok is None else bool(center_ok), **extra), problems
 
 
 def _loaded_manager(row: tuple) -> tuple[ManagerProfile, list[str]]:
@@ -1138,7 +1199,8 @@ class Store:
                     depot_row = conn.execute('SELECT lat, lon FROM depot WHERE id = 1').fetchone()
                     truck_rows = conn.execute(
                         'SELECT car_code, capacity_kg, fuel_l_per_100km, agent_id, active, manual, name, '
-                        'van_agent_id, center_ok, updated_at, updated_by FROM trucks').fetchall()
+                        'van_agent_id, center_ok, updated_at, updated_by, fuel_empty_l_per_100km, '
+                        'fuel_full_l_per_100km, wear_amd_per_km, wear_load_amd_per_km FROM trucks').fetchall()
                     manager_rows = conn.execute(
                         'SELECT agent_id, included, home_lat, home_lon, car_fuel_l_per_100km, '
                         'car_fuel_type, updated_at, updated_by FROM manager_profile').fetchall()
@@ -1146,6 +1208,8 @@ class Store:
                         'SELECT customer_id, lat, lon FROM customer_geo_override').fetchall()
                     window_rows = conn.execute(
                         'SELECT customer_id, kind, t1, t2, tol FROM customer_window').fetchall()
+                    access_rows = conn.execute(
+                        'SELECT customer_id, mode, trucks FROM customer_vehicle_access').fetchall()
                     conn.execute('COMMIT')
                 except BaseException:
                     if conn.in_transaction:
@@ -1207,7 +1271,16 @@ class Store:
             if err or not _is_int(customer_id) or (kind == 'at' and tol is None):
                 raise StoreError(f'{self._name()}: повреждено окно приёма клиента {customer_id!r}{_FIX_HINT}')
             windows[customer_id] = w
-        return Bundle(settings, depot, trucks, managers, geo, windows)
+        access: dict[int, VehicleAccess] = {}
+        for customer_id, mode, encoded in access_rows:
+            try:
+                rule, err = check_access({'mode': mode, 'trucks': json.loads(encoded)})
+            except (TypeError, ValueError):
+                rule, err = None, 'повреждён список машин'
+            if err or not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
+                raise StoreError(f'{self._name()}: повреждено ограничение машин клиента {customer_id!r}{_FIX_HINT}')
+            access[customer_id] = rule
+        return Bundle(settings, depot, trucks, managers, geo, windows, vehicle_access=access)
 
     def save(self, changes: Changes, user: str | None) -> None:
         """Записать проверенные изменения одной транзакцией (всё или ничего)."""
@@ -1271,6 +1344,11 @@ class Store:
                              'WHERE trucks.manual = 1',
                              (t.car_code, t.capacity_kg, t.fuel_l_per_100km, int(bool(t.active)), t.name,
                               t.van_agent_id, None if t.center_ok is None else int(t.center_ok), now, user))
+        # Новые нормы записываются только в собственную SQLite, в той же транзакции настроек.
+        for t in (*changes.trucks, *(changes.manual_trucks or ())):
+            conn.execute('UPDATE trucks SET fuel_empty_l_per_100km = ?, fuel_full_l_per_100km = ?, '
+                         'wear_amd_per_km = ?, wear_load_amd_per_km = ? WHERE car_code = ?',
+                         (*(getattr(t, key) for key in LOAD_COST_FIELDS), t.car_code))
         for m in changes.managers:
             conn.execute('INSERT INTO manager_profile(agent_id, included, home_lat, home_lon, '
                          'car_fuel_l_per_100km, car_fuel_type, updated_at, updated_by) '
@@ -1458,17 +1536,57 @@ class Store:
         if window is not None and check_window(window.to_json())[1]:
             raise ValueError('окно приёма не прошло проверку')
 
-        def write(conn: sqlite3.Connection) -> None:
-            if window is None:
-                conn.execute('DELETE FROM customer_window WHERE customer_id = ?', (customer_id,))
-            else:
-                conn.execute('INSERT INTO customer_window(customer_id, kind, t1, t2, tol, updated_at, updated_by) '
-                             'VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(customer_id) DO UPDATE SET kind = excluded.kind, '
-                             't1 = excluded.t1, t2 = excluded.t2, tol = excluded.tol, '
-                             'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
-                             (customer_id, window.kind, window.t1, window.t2, window.tol, _now(), user))
+        self._transaction(lambda conn: self._write_customer_window(conn, customer_id, window, user),
+                          'не удалось сохранить окно приёма клиента')
 
-        self._transaction(write, 'не удалось сохранить окно приёма клиента')
+    @staticmethod
+    def _write_customer_window(conn: sqlite3.Connection, customer_id: int,
+                               window: CustomerWindow | None, user: str | None) -> None:
+        if window is None:
+            conn.execute('DELETE FROM customer_window WHERE customer_id = ?', (customer_id,))
+        else:
+            conn.execute('INSERT INTO customer_window(customer_id, kind, t1, t2, tol, updated_at, updated_by) '
+                         'VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(customer_id) DO UPDATE SET kind = excluded.kind, '
+                         't1 = excluded.t1, t2 = excluded.t2, tol = excluded.tol, '
+                         'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                         (customer_id, window.kind, window.t1, window.t2, window.tol, _now(), user))
+
+    def save_customer_vehicles(self, customer_id: int, access: VehicleAccess | None, user: str | None) -> None:
+        """Сохраняет проверенный допуск магазина в собственной базе; None снимает ограничение."""
+        if not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
+            raise ValueError('customer_id: положительное целое')
+        if access is not None and (not isinstance(access, VehicleAccess) or check_access(access.to_json())[1]):
+            raise ValueError('ограничение машин не прошло проверку')
+
+        self._transaction(lambda conn: self._write_customer_vehicles(conn, customer_id, access, user),
+                          'не удалось сохранить машины магазина')
+
+    @staticmethod
+    def _write_customer_vehicles(conn: sqlite3.Connection, customer_id: int,
+                                 access: VehicleAccess | None, user: str | None) -> None:
+        if access is None:
+            conn.execute('DELETE FROM customer_vehicle_access WHERE customer_id = ?', (customer_id,))
+        else:
+            conn.execute('INSERT INTO customer_vehicle_access(customer_id, mode, trucks, updated_at, updated_by) '
+                         'VALUES(?, ?, ?, ?, ?) ON CONFLICT(customer_id) DO UPDATE SET mode = excluded.mode, '
+                         'trucks = excluded.trucks, updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                         (customer_id, access.mode, json.dumps(list(access.trucks), ensure_ascii=False), _now(), user))
+
+    def save_customer_constraints(self, customer_id: int, access: VehicleAccess | None,
+                                  window: CustomerWindow | None, user: str | None) -> None:
+        """Машины и время из одной карточки: единая транзакция, без частичного сохранения."""
+        if not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
+            raise ValueError('customer_id: положительное целое')
+        if access is not None and (not isinstance(access, VehicleAccess) or check_access(access.to_json())[1]):
+            raise ValueError('ограничение машин не прошло проверку')
+        if window is not None and (not isinstance(window, CustomerWindow) or check_window(window.to_json())[1]):
+            raise ValueError('окно приёма не прошло проверку')
+
+        def write(conn: sqlite3.Connection) -> None:
+            self._write_customer_vehicles(conn, customer_id, access, user)
+            self._write_customer_window(conn, customer_id, window, user)
+
+        self._transaction(write, 'не удалось сохранить условия доставки магазина')
 
     def load_dispatch(self, day: str) -> tuple[dict[str, Any], int] | None:
         """Черновик плана развоза на дату (YYYY-MM-DD): (данные, номер правки) или None."""
@@ -1520,3 +1638,15 @@ class Store:
         """«Начать заново»: черновик на дату удаляется."""
         self._transaction(lambda conn: conn.execute('DELETE FROM dispatch_plan WHERE day = ?', (day,)),
                           'не удалось удалить план развоза')
+
+    def measurements(self) -> list[dict[str, Any]]:
+        rows = self._read(lambda conn: conn.execute(
+            'SELECT day, car_code, data, updated_at FROM route_measurement ORDER BY day, car_code').fetchall())
+        return [dict(json.loads(raw), day=day, car_code=code, updated_at=at) for day, code, raw, at in rows]
+
+    def save_measurement(self, day: str, code: str, data: Mapping[str, Any], user: str | None) -> None:
+        raw = json.dumps(data, ensure_ascii=False, allow_nan=False)
+        self._transaction(lambda conn: conn.execute(
+            'INSERT INTO route_measurement(day, car_code, data, updated_at, updated_by) VALUES(?,?,?,?,?) '
+            'ON CONFLICT(day, car_code) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at, '
+            'updated_by=excluded.updated_by', (day, code, raw, _now(), user)), 'не удалось сохранить замер')

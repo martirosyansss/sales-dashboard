@@ -56,7 +56,8 @@ def _resolve_points(data: DayData, view: RoutesView) -> dict[int, Point | None]:
     return out
 
 
-def _line_json(line: Line, product: Product | None, gtins: tuple[str, ...], mark: MarkSetting | None) -> dict[str, Any]:
+def _line_json(line: Line, product: Product | None, gtins: tuple[str, ...], mark: MarkSetting | None,
+               gtin_units: Mapping[str, float | None] | None = None) -> dict[str, Any]:
     marked = mark.marked if mark is not None else bool(product and product.markable)
     pack = mark.pack_qty if mark is not None else (product.pack_qty_erp if product else None)
     return {
@@ -71,6 +72,7 @@ def _line_json(line: Line, product: Product | None, gtins: tuple[str, ...], mark
         'marked': marked,
         'pack_qty': _num(pack) if pack is not None else None,
         'gtins': list(gtins),
+        'gtin_units': {code: _num(qty) if qty is not None else None for code, qty in (gtin_units or {}).items()},
     }
 
 
@@ -105,7 +107,7 @@ def build_stops(data: DayData, order: list[int], points: Mapping[int, Point | No
                 'weight_kg': round(sum(ln.qty * (products[ln.product_id].weight if ln.product_id in products else 0)
                                        for ln in lines), 1),
                 'lines': [_line_json(ln, products.get(ln.product_id), data.gtins.get(ln.product_id, ()),
-                                     marks.get(ln.product_id)) for ln in lines],
+                                     marks.get(ln.product_id), data.gtin_units.get(ln.product_id)) for ln in lines],
                 'tare_expected': [{'tare_id': f'erp:{tid}', 'name': data.tare_names.get(tid, ''), 'qty': round(q, 2)}
                                   for tid, q in sorted(tare.items())],
             })

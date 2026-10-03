@@ -134,7 +134,8 @@ def test_no_windows_trips_identical_to_before_change():
         for overflow in (True, False):
             for earliest in (False, True):
                 trips = fl.route_day(pts, kgs, revs, DP_DEPOT, trucks, DP_NORMS, TN, used, overflow, earliest)
-                out.append((seed, overflow, earliest, [tuple(t.__dict__.values()) for t in trips]))
+                fields = ('truck', 'stops', 'kg', 'revenue', 'km', 'minutes', 'capacity_kg', 'liters', 'extra', 'items')
+                out.append((seed, overflow, earliest, [tuple(getattr(t, key) for key in fields) for t in trips]))
     assert hashlib.sha256(repr(out).encode()).hexdigest() == \
         'a0a3a6f6f018b9a7d84cdbbd337c0eb7d870a301d4c993b2955afe2a85a8887e'
 
@@ -547,9 +548,9 @@ def test_store_migrates_schema_8_to_9_additive(tmp_path):
     assert b.truck_center_ok('475DD61', 'JAC') and not b.truck_center_ok('CAR2', 'FORD')
     assert b.truck_center_ok('M1', None) and b.truck_center_ok('NEW', 'jac') and not b.truck_center_ok('NEW', None)
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('9',)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == (str(st.SCHEMA_VERSION),)
         cols = [r[1] for r in conn.execute('PRAGMA table_info(trucks)')]
-        assert cols[-1] == 'center_ok' and 'customer_window' in {
+        assert cols[10] == 'center_ok' and cols[-4:] == list(st.LOAD_COST_FIELDS) and 'customer_window' in {
             r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     s.save_customer_window(101, st.CustomerWindow('between', 600, 720), 'qa')
     s.save_customer_window(102, st.CustomerWindow('at', 660, None, 15), 'qa')

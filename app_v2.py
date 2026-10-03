@@ -98,13 +98,19 @@ class DatabaseConnection:
     def __init__(self):
         # Имя базы можно задать через переменную окружения SALES_DB
         db_name = os.environ.get('SALES_DB', 'SalesManagement')
+        # Учётная запись задаётся явно: отсутствие настройки не должно возвращать права sa.
+        db_user = os.environ.get('DB_USER', '').strip()
+        if not db_user:
+            raise RuntimeError('DB_USER не задан: укажите отдельную SQL-учётную запись только для чтения')
+        encrypt = 'yes' if os.environ.get('DB_ENCRYPT', '').lower() in ('1', 'true', 'yes') else 'no'
+        trust_certificate = 'yes' if os.environ.get('DB_TRUST_SERVER_CERTIFICATE', 'yes').lower() in ('1', 'true', 'yes') else 'no'
         self.connection_string = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
             f"SERVER={os.environ.get('DB_SERVER', '192.168.1.4')};"
             f"DATABASE={db_name};"
-            f"UID={os.environ.get('DB_USER', 'sa')};"
+            f"UID={db_user};"
             f"PWD={os.environ.get('DB_PASSWORD', '')};"
-            "TrustServerCertificate=yes;"
+            f"Encrypt={encrypt};TrustServerCertificate={trust_certificate};"
         )
     
     def get_connection(self):
@@ -500,10 +506,10 @@ def login():
     return render_template('login.html', next=next_url)
 
 
-@app.route('/logout')
+@app.route('/logout', methods=['POST'])
 def logout():
     """Выход из системы."""
-    session.pop('username', None)
+    session.clear()
     return redirect(url_for('login'))
 
 
@@ -12967,6 +12973,9 @@ courier.init_app(app, db)
 # точки и предложения водителей «Առաքիչ» — в «Маршруты» (driver-geo-plan.md §4)
 route_optimizer.attach_driver_geo(app, courier.driver_geo(app))
 
+from courier.web_security import init_web_security
+init_web_security(app, courier.API_PREFIX)
+
 
 def _serve_waitress(port: int = 5000) -> bool:
     """Продакшн-сервер по желанию (DASHBOARD_SERVER=waitress, deploy/COURIER_TUNNEL.md): многопоточный
@@ -12980,9 +12989,16 @@ def _serve_waitress(port: int = 5000) -> bool:
         logger.warning("DASHBOARD_SERVER=waitress, но waitress не установлен (pip install -r requirements.txt) — "
                        "запуск встроенным сервером Flask")
         return False
-    print(f"Server: waitress, 16 потоков, http://0.0.0.0:{port}")
-    serve(app, host='0.0.0.0', port=port, threads=16, connection_limit=200, channel_timeout=120,
-          cleanup_interval=30, ident='SalesDashboard')
+    host = os.environ.get('DASHBOARD_BIND_HOST', '0.0.0.0')
+    port = int(os.environ.get('DASHBOARD_PORT', str(port)))
+    proxy_options = {}
+    # Reverse-proxy trust is limited to a loopback listener behind our nginx.
+    if host == '127.0.0.1' and os.environ.get('FLASK_TRUSTED_PROXY_HOPS') == '1':
+        proxy_options = {'trusted_proxy': '127.0.0.1', 'trusted_proxy_count': 1,
+                         'trusted_proxy_headers': {'x-forwarded-for', 'x-forwarded-proto'}}
+    print(f"Server: waitress, 16 потоков, http://{host}:{port}")
+    serve(app, host=host, port=port, threads=16, connection_limit=200, channel_timeout=120,
+          cleanup_interval=30, ident='SalesDashboard', **proxy_options)
     return True
 
 
