@@ -396,6 +396,21 @@ def test_truck_leg_minutes_returns_both_candidates(tmp_path, fake):
         geo.haversine_km(a, b) * 1.3 / _speed(a, b) * 60.0)
 
 
+def test_view_captures_car_and_truck_state_together(tmp_path, fake):
+    """Срез грузовика снят вместе со срезом машины: сбой фона после этого расчёт и его id не меняет."""
+    reg, cost = _registry(tmp_path), ve.truck_costing(3000)
+    reg.matrix(ve.PROFILE_TRUCK, cost).ensure(P)
+    view = ve.ValhallaRoads(reg, ve.PROFILE_CAR, FakeOsm(missing=()), truck_time=True, truck_cost=cost)
+    reg.matrix(ve.PROFILE_TRUCK, cost).failed = True       # фон сломался уже после начала расчёта
+    truck = view.truck()
+    assert truck is view.truck() and replace(NORMS, roads=view).for_trucks().roads is truck
+    assert truck.active and truck.minutes(P[0], P[1], True) is not None
+    assert '+valhalla-time:' in ve.road_model_id(truck)
+    fresh = ve.ValhallaRoads(reg, ve.PROFILE_CAR, FakeOsm(missing=()), truck_time=True, truck_cost=cost)
+    assert not fresh.truck().active and fresh.truck().minutes(P[0], P[1], True) is None
+    assert ve.road_model_id(fresh.truck()) == ve.road_model_id(FakeOsm())
+
+
 def test_road_model_id_names_the_model_and_follows_content(tmp_path, fake):
     assert ve.road_model_id(None) == 'straight'
     one, two, other = tmp_path / 'a.osm.pbf', tmp_path / 'b.osm.pbf', tmp_path / 'c.osm.pbf'

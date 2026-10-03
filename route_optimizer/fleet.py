@@ -274,13 +274,10 @@ def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix,
 
     Направленные матрицы (одностороннее движение): s(i → j) = d(i, 0) + d(0, j) − d(i, j) — рейс, который кончается
     в i, + рейс, который начинается с j, в обе стороны каждой пары; рейсы не разворачиваются (у развёрнутого другие км
-    и минуты), время слитого рейса — точно по его порядку. Симметричные — прежний расчёт (те же рейсы)."""
+    и минуты), поэтому время слитого рейса time(A) + time(B) − m(i, 0) − m(0, j) + m(i, j) — точное. Симметричные —
+    прежний расчёт (те же рейсы)."""
     nodes = [0, *(stops[v].node for v in light)]
     directed = not (is_symmetric(d, nodes) and is_symmetric(m, nodes))
-
-    def exact(seq: Sequence[int]) -> float:
-        return _closed(seq, stops, m) + math.fsum(stops[v].unload for v in seq)
-
     route = {v: v for v in light}
     members = {v: [v] for v in light}
     load = {v: stops[v].kg for v in light}
@@ -309,12 +306,10 @@ def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix,
         if directed:
             if A[-1] != i or B[0] != j:
                 continue
-            t = exact(A + B)
-        else:
-            if (A[-1] != i and A[0] != i) or (B[0] != j and B[-1] != j):
-                continue
-            a, b = stops[i].node, stops[j].node
-            t = time[ri] + time[rj] - m[a][0] - m0[b] + m[a][b]
+        elif (A[-1] != i and A[0] != i) or (B[0] != j and B[-1] != j):
+            continue
+        a, b = stops[i].node, stops[j].node
+        t = time[ri] + time[rj] - m[a][0] - m0[b] + m[a][b]
         if t > window + _EPS:   # езда + разгрузка — нижняя граница времени рейса и с ожиданием у окон
             continue
         if fits is not None:
@@ -332,7 +327,7 @@ def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix,
         for v in B:
             route[v] = ri
         load[ri] += load.pop(rj)
-        time[ri] = exact(A) if directed else t
+        time[ri] = t
         del members[rj], time[rj]
     return sorted(members.values(), key=min)
 

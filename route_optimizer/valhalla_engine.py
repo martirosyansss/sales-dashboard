@@ -54,6 +54,7 @@ CostMatrix, пути не длиннее, памяти мало). Блоки —
 """
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import logging
@@ -66,6 +67,7 @@ import sys
 import tempfile
 import threading
 import time
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -435,6 +437,13 @@ class _Engine:
         self._idle: list[Any] = []
         self._created = 0
         self._cond = threading.Condition()
+        _ENGINES.add(self)
+
+    def close(self) -> None:
+        """Отпустить свободные Actor (новые создадутся при следующем запросе)."""
+        with self._cond:
+            self._idle.clear()
+            self._created = 0
 
     @contextmanager
     def actor(self) -> Iterator[Any]:
@@ -458,6 +467,16 @@ class _Engine:
             with self._cond:
                 self._idle.append(actor)
                 self._cond.notify()
+
+
+_ENGINES: weakref.WeakSet[_Engine] = weakref.WeakSet()
+
+
+@atexit.register
+def _close_engines() -> None:
+    """Actor — до выгрузки интерпретатора: иначе nanobind при выходе пишет в журнал об «утечке»."""
+    for engine in list(_ENGINES):
+        engine.close()
 
 
 @dataclass(frozen=True)
@@ -738,6 +757,10 @@ class ValhallaRoads:
         self.compute = compute
         self._table = self._m.table
         self.active = not self._m.failed
+        # срез грузовика — в тот же момент, что и свой: в одном расчёте машины и грузовики — из одного состояния
+        self._truck = (self if profile == PROFILE_TRUCK else
+                       ValhallaRoads(registry, PROFILE_TRUCK, fallback, time_only=time_only, truck_time=truck_time,
+                                     truck_cost=self.truck_costing, compute=compute))
 
     @property
     def build_id(self) -> str:
@@ -775,10 +798,8 @@ class ValhallaRoads:
         return n, n
 
     def truck(self) -> ValhallaRoads:
-        if self.profile == PROFILE_TRUCK:
-            return self
-        return ValhallaRoads(self._registry, PROFILE_TRUCK, self.fallback, time_only=self.time_only,
-                             truck_time=self.truck_time, truck_cost=self.truck_costing, compute=self.compute)
+        """Срез профиля грузовика, снятый вместе с этим."""
+        return self._truck
 
     def ensure(self, points: Iterable[Point | None]) -> None:
         """compute — досчитать точки (первый раз — минуты, дальше кэш), иначе Valhalla не трогается. Граф OSM —
@@ -972,8 +993,9 @@ class ValhallaProvider:
                 self._kick()
             if not all(m.ready(keys) for m in need):
                 return None
-        return ValhallaRoads(reg, PROFILE_CAR, fallback, time_only=time_only, truck_time=truck_time,
-                             truck_cost=truck_cost)
+            # срез — под той же блокировкой, что и проверка готовности
+            return ValhallaRoads(reg, PROFILE_CAR, fallback, time_only=time_only, truck_time=truck_time,
+                                 truck_cost=truck_cost)
 
     # -- под self._lock --
 
