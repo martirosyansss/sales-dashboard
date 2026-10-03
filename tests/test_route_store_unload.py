@@ -391,16 +391,17 @@ def test_store_time_reaches_plan_vs_fact_and_survives_broken_journal(client, mon
     assert state.learning_warning and seen and seen[-1][0] == lr.InEffect() and seen[-1][2] == {101: 40.0}
 
 
-# ============================== без введённых значений — как на 8a4cce2 ==============================
+# ============================== без введённых значений — как до №50 ==============================
 
 # 14 магазинов (ручные точки), две машины, сборка «Собрать рейсы» через API: отпечаток плана, посчитанный кодом
-# 8a4cce2 (до №50) этим же тестом. Нет введённых значений и выученных строк — план байт-в-байт тот же; с выученной
+# feature/route-optimizer 84f8bb1 (до №50; на 8a4cce2 — f508b0a0…/811e8759…, «почему так» (№49) добавило в план
+# пояснение) этим же тестом. Нет введённых значений и выученных строк — план байт-в-байт тот же; с выученной
 # строкой (поправки магазинов в разных точках) — тоже: путь выученного не изменился.
 GOLDEN_POINTS = {200 + i: (round(40.150 + 0.011 * (i % 5), 4), round(44.480 + 0.017 * (i // 5) + 0.003 * i, 4))
                  for i in range(14)}
 GOLDEN_KG = {cid: 150.0 + 97.0 * ((cid * 7) % 11) for cid in GOLDEN_POINTS}
-GOLDEN = {'plain': 'f508b0a0d8c3de549f7ce23bf29f4489a07d68ffbd96032ea1218caf82e5aa0d',
-          'learned': '811e8759d955f405fb78d72a2eac8eb313eaa6c7fd1ccfe11cf21803c1ff0244'}
+GOLDEN = {'plain': '76d4e659d316cd041e3e620c3b2aa78681af666e2a614a2c27f4bac0834c8594',
+          'learned': '8e9e79562a36566c6fc5361c77cf2c9cd8cdf29ae95abf4f4170446c2351847e'}
 
 
 def _golden_digest(client, learned, manual=None):
@@ -420,7 +421,7 @@ def _golden_digest(client, learned, manual=None):
 
 
 @pytest.mark.parametrize('learned', [False, True])
-def test_no_store_time_plans_identical_to_8a4cce2(client, learned):
+def test_no_store_time_plans_identical_to_base(client, learned):
     assert _golden_digest(client, learned) == GOLDEN['learned' if learned else 'plain']
 
 
