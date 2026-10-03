@@ -1282,6 +1282,37 @@ class Store:
             access[customer_id] = rule
         return Bundle(settings, depot, trucks, managers, geo, windows, vehicle_access=access)
 
+    def load_copy(self) -> tuple[Bundle, int | None]:
+        """Настройки, не меняя саму базу: её копия (sqlite backup из соединения только на чтение) во временной папке,
+        приведённая к схеме программы. Для команд вне сервера: warm задачи обновления идёт до перезапуска, и миграция
+        самой базы сломала бы каждое обращение к ней ещё работающему серверу прежней версии. Вторым значением — версия
+        схемы самой базы; базы нет — настройки по умолчанию и None (файл не создаётся)."""
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        folder = tempfile.mkdtemp(prefix='routes-copy-')
+        try:
+            copy = Store(os.path.join(folder, 'route_optimizer.db'))
+            version = None
+            if os.path.exists(self.path):
+                source = sqlite3.connect(Path(os.path.abspath(self.path)).as_uri() + '?mode=ro', uri=True)
+                try:
+                    target = sqlite3.connect(copy.path)
+                    try:
+                        source.backup(target)   # не читается — исключение: настройки по умолчанию молча не подставим
+                        try:
+                            version = self._schema_version(target)
+                        except (sqlite3.Error, StoreError):
+                            version = None   # не база маршрутов — это скажет load() копии
+                    finally:
+                        target.close()
+                finally:
+                    source.close()
+            return copy.load(), version
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+
     def save(self, changes: Changes, user: str | None) -> None:
         """Записать проверенные изменения одной транзакцией (всё или ничего)."""
         now = _now()

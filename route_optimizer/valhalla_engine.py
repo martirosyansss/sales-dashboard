@@ -1114,19 +1114,20 @@ def open_valhalla(fallback: RoadDistances | None = None, base: str | None = None
 # --- Команды ---
 
 def _warm() -> None:
-    """Матрицы обоих профилей для всех точек текущего плана: снимок ERP (только чтение) + настройки маршрутов."""
+    """Матрицы обоих профилей для всех точек текущего плана: снимок ERP (только чтение) + настройки маршрутов (из копии
+    базы: roads._load_bundle_readonly)."""
     sys.path.insert(0, REPO_ROOT)
     os.environ[ENGINE_ENV] = ENGINE_OSM   # import app_v2 вызывает init_app: фон сервера считал бы те же матрицы
     import app_v2  # noqa: F401 — только строка подключения к ERP; сервер не запускается
 
     from . import evaluate
+    from .roads import _load_bundle_readonly
     from .snapshot import load_snapshot
-    from .store import Store
     from .views import _ready_trucks
 
     db_path = os.environ.get('ROUTES_DB_PATH') or os.path.join(REPO_ROOT, 'route_optimizer.db')
     snap = load_snapshot(app_v2.db.connection_string)
-    bundle = Store(db_path).load()
+    bundle = _load_bundle_readonly(db_path)
     capacity = max((t.capacity_kg for t in _ready_trucks(snap, bundle).values()), default=None)
     roads = open_valhalla(truck_capacity_kg=capacity)
     if roads is None:

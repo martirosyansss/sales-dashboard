@@ -32,9 +32,12 @@ import time
 import zlib
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
 from .geo import EARTH_RADIUS_KM, Point, haversine_km
+
+if TYPE_CHECKING:
+    from .store import Bundle
 
 try:   # необязательные зависимости: без них дорог нет, всё считается по прямой
     import numpy as np
@@ -696,8 +699,22 @@ def _dist_cache_stale(path: str) -> bool:
         return True
 
 
+def _load_bundle_readonly(db_path: str) -> Bundle:
+    """Настройки маршрутов для команд warm — из копии базы (Store.load_copy), сама база не меняется: задача обновления
+    запускает warm до перезапуска сервера, и миграция базы сломала бы каждое обращение к ней ещё работающему серверу
+    прежней версии («База маршрутов создана более новой версией программы»). Базы нет — настройки по умолчанию, как у
+    сервера при первом запуске."""
+    from .store import SCHEMA_VERSION, Store
+
+    bundle, version = Store(db_path).load_copy()
+    if version is not None and version != SCHEMA_VERSION:
+        print(f'База маршрутов: схема {version}, у программы — {SCHEMA_VERSION}. Настройки — из временной копии, '
+              f'приведённой к схеме программы; сама база не меняется')
+    return bundle
+
+
 def _warm(path: str) -> None:
-    """Матрица для всех точек текущего плана: снимок ERP (только чтение) + настройки маршрутов."""
+    """Матрица для всех точек текущего плана: снимок ERP (только чтение) + настройки маршрутов (из копии базы)."""
     from .valhalla_engine import ENGINE_ENV, ENGINE_OSM
 
     sys.path.insert(0, REPO_ROOT)
@@ -706,14 +723,13 @@ def _warm(path: str) -> None:
 
     from . import evaluate
     from .snapshot import load_snapshot
-    from .store import Store
 
     roads = open_roads(path)
     if roads is None:
         raise SystemExit('Карты нет — сначала: python -m route_optimizer.roads download')
     db_path = os.environ.get('ROUTES_DB_PATH') or os.path.join(REPO_ROOT, 'route_optimizer.db')
     snap = load_snapshot(app_v2.db.connection_string)
-    bundle = Store(db_path).load()
+    bundle = _load_bundle_readonly(db_path)
     points = evaluate.plan_points(snap, bundle, {})
     started = time.perf_counter()
     roads.ensure(points)
@@ -724,6 +740,11 @@ def _warm(path: str) -> None:
 
 def main(argv: Sequence[str]) -> int:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
+    try:   # ROUTES_OSM_PATH, ROUTES_DB_PATH — из .env сервера, как у app_v2: карта и база те же, что у сервера
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(REPO_ROOT, '.env'))
+    except ImportError:
+        pass
     command = argv[0] if argv else ''
     path = osm_path()
     if command == 'download':

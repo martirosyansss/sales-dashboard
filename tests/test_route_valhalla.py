@@ -6,9 +6,9 @@
   запасной путь; сбой движка не кэшируется и не плодит запросов; режим valhalla_time (км грузовика — только граф OSM);
   грузовик — стоимость по тоннажу (в реестре — одна на профиль), минуты по ROUTES_TRUCK_TIME, обе модели для сравнения
   (truck_leg_minutes); road_model_id; сборка тайлов (отпечаток содержимого, метка, повтор, блокировка ОС, уборка только
-  своего, тайм-аут); команды build и warm (ожидаемые сбои — одной строкой, warm --if-stale, без фона сервера); сервер не
-  ждёт тяжёлой работы (фоновый поток, срез матриц); нет pyvalhalla — граф OSM. Движок — подделка FakeActor с
-  направленной метрикой: ни pyvalhalla, ни карта не нужны;
+  своего, тайм-аут); команды build и warm (ожидаемые сбои — одной строкой, warm --if-stale, без фона сервера, база
+  маршрутов не меняется, .env сервера); сервер не ждёт тяжёлой работы (фоновый поток, срез матриц); нет pyvalhalla —
+  граф OSM. Движок — подделка FakeActor с направленной метрикой: ни pyvalhalla, ни карта не нужны;
 - направленные матрицы: 2-opt (tsp, search, fleet) не удлиняет тур, даёт локальный оптимум по полному перебору
   разворотов, разворачивает и тур из трёх вершин, кончается на ошибке округления (повтор из проверки); у симметричной
   матрицы — те же туры, что прежний расчёт; вставка и удаление — как полный пересчёт; Кларк–Райт по направленным
@@ -20,11 +20,13 @@ import json
 import math
 import os
 import random
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 import types
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -776,6 +778,7 @@ def test_build_command_reports_expected_failures_in_one_line(tmp_path, monkeypat
     """Команда build (задача обновления пишет её вывод в журнал): нет карты, сборка занята, нет pyvalhalla — одна
     строка в stderr и свой код выхода, без трассировки; собрано — сведения о сборке."""
     monkeypatch.setattr(ve, '_run', _builder())
+    monkeypatch.setattr(ve, 'REPO_ROOT', str(tmp_path))     # без .env
     assert ve.main(['build']) == 4                          # карты нет
     pbf = tmp_path / 'map.osm.pbf'
     pbf.write_bytes(b'map')
@@ -802,6 +805,7 @@ def test_roads_warm_if_stale_only_when_cache_does_not_fit(tmp_path, monkeypatch)
     нет графа, кэша или сменился формат (как DIST_FORMAT 2 → 3) — прогрев; карты нет — греть нечего."""
     pbf = tmp_path / 'map.osm.pbf'
     monkeypatch.setenv('ROUTES_OSM_PATH', str(pbf))
+    monkeypatch.setattr(rd, 'REPO_ROOT', str(tmp_path))     # без .env
     warmed = []
     monkeypatch.setattr(rd, '_warm', warmed.append)         # прогрев читает ERP — здесь только отметка
     assert rd.main(['warm', '--if-stale']) == 0 and warmed == []   # карты нет
@@ -821,6 +825,60 @@ def test_roads_warm_if_stale_only_when_cache_does_not_fit(tmp_path, monkeypatch)
     assert rd.main(['warm']) == 0 and len(warmed) == 2      # без флага — всегда
 
 
+def test_roads_command_reads_env_file_first(tmp_path, monkeypatch):
+    """Команды roads берут карту (и базу) из .env сервера, как app_v2 и команды valhalla_engine: задача обновления
+    греет кэш той карты, с которой работает сервер."""
+    pbf = tmp_path / 'from-env.osm.pbf'
+    pbf.write_bytes(b'map')
+    (tmp_path / '.env').write_text(f'ROUTES_OSM_PATH={pbf.as_posix()}\n', encoding='utf-8')
+    monkeypatch.setattr(rd, 'REPO_ROOT', str(tmp_path))
+    monkeypatch.delenv('ROUTES_OSM_PATH')                   # значение фикстуры вернётся после теста
+    warmed = []
+    monkeypatch.setattr(rd, '_warm', warmed.append)
+    assert rd.main(['warm', '--if-stale']) == 0 and warmed == [pbf.as_posix()]
+
+
+def test_roads_warm_never_changes_the_routes_db(tmp_path, monkeypatch, capsys):
+    """warm до перезапуска сервера (задача обновления): база маршрутов не меняется ни байтом, даже когда новой версии
+    нужна миграция схемы — иначе ещё работающий сервер прежней версии не открыл бы её («создана более новой версией»).
+    Настройки — из временной копии, приведённой к схеме программы; базы нет — настройки по умолчанию, файл не
+    создаётся."""
+    from route_optimizer import store as st
+    from test_route_optimizer import _SCHEMA_V1
+
+    db = tmp_path / 'routes-v1.db'
+    with closing(sqlite3.connect(db)) as conn:              # схема 1: программе нужна миграция
+        for sql in _SCHEMA_V1:
+            conn.execute(sql)
+        conn.execute("INSERT INTO settings VALUES('min_day_revenue', '120000')")
+        conn.commit()
+    before = db.read_bytes()
+    pbf = tmp_path / 'map.osm.pbf'
+    pbf.write_bytes(b'map')                                 # кэша нет — прогрев нужен
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    monkeypatch.setattr(rd, 'REPO_ROOT', str(tmp_path))
+    monkeypatch.setenv('ROUTES_OSM_PATH', str(pbf))
+    monkeypatch.setenv('ROUTES_DB_PATH', str(db))
+    monkeypatch.setenv('ROUTES_ROAD_ENGINE', 'valhalla_time')
+    monkeypatch.setitem(sys.modules, 'app_v2', NS(db=NS(connection_string='dummy')))
+    monkeypatch.setattr('route_optimizer.snapshot.load_snapshot', lambda connection_string: 'snapshot')
+    seen = []
+    monkeypatch.setattr(ev, 'plan_points', lambda snap, bundle, coords: seen.append(bundle) or [P[0]])
+    monkeypatch.setattr(rd.RoadDistances, 'ensure', lambda self, points: None)   # сам расчёт здесь не нужен
+    assert rd.main(['warm', '--if-stale']) == 0
+    assert seen and seen[0].settings['min_day_revenue'] == 120000
+    assert db.read_bytes() == before                        # ни миграции, ни записи
+    assert 'схема 1, у программы' in capsys.readouterr().out
+    current = tmp_path / 'routes.db'                        # схема программы: те же настройки, что у Store
+    st.Store(str(current)).load()
+    data = current.read_bytes()
+    assert rd._load_bundle_readonly(str(current)).settings == st.Store(str(current)).load().settings
+    assert current.read_bytes() == data
+    missing = tmp_path / 'none.db'
+    assert rd._load_bundle_readonly(str(missing)).settings == st.Store(str(tmp_path / 'fresh.db')).load().settings
+    assert not missing.exists()
+
+
 @pytest.mark.parametrize('command', ['roads', 'valhalla'])
 def test_warm_commands_do_not_start_server_background(tmp_path, monkeypatch, command):
     """warm импортирует app_v2 ради строки подключения к ERP, а тот вызывает init_app: фоновая подготовка Valhalla
@@ -835,6 +893,7 @@ def test_warm_commands_do_not_start_server_background(tmp_path, monkeypatch, com
         raise Stop   # дальше — ERP: не идём
 
     monkeypatch.setenv('ROUTES_ROAD_ENGINE', 'valhalla_time')
+    monkeypatch.setattr(sys, 'path', list(sys.path))
     monkeypatch.setitem(sys.modules, 'app_v2', NS(db=NS(connection_string='dummy')))
     monkeypatch.setattr('route_optimizer.snapshot.load_snapshot', snapshot)
     pbf = tmp_path / 'map.osm.pbf'
