@@ -90,7 +90,9 @@ truck cannot take the trip (capacity, center, vehicle access...); minutes in exp
 plan.advice (present only when trips are late or stores are left out): advice.rebuild = trucks ticked in step 1 that \
 have no trips, a plain «Վերակազմել երթերը» will use them; advice.add = one suggested ready truck that is NOT ticked \
 in step 1 (an estimate; if its capacity_kg is below need_kg it takes only part of the load) - the page offers the \
-button «Ավելացնել և վերակազմել» for it; an empty advice means no suggestion.
+button «Ավելացնել և վերակազմել» for it; advice.pinned_late = ids of late trips that the logist pinned - a rebuild \
+does not change them, the logist must unpin them («Ապամրացնել» under «Փոփոխել») or move their stores; advice.no_free \
+= true when there is a problem beyond pinned trips and no free ready truck to add; an empty advice means no suggestion.
 Format: fields that are false, null or empty are left out (a missing flag means false). Lists of stores - trip stops, \
 unassigned stops, stores without coordinates, backlog and excluded orders - are tables: the first item is the column \
 header (not a store), each next item is one store (trip stops in visit order), cells separated by "|", an empty \
