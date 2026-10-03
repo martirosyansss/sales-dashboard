@@ -138,8 +138,8 @@ def test_store_migrates_14_to_15_keeps_all_rows(tmp_path):
     assert b.unload_min == {} and b.windows[101] == st.CustomerWindow('between', 600, 720)
     with closing(sqlite3.connect(path)) as conn:
         assert {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before} == before
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('15',) == \
-            (str(st.SCHEMA_VERSION),)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(st.SCHEMA_VERSION),)                                          # 14 → 15 → … → текущая
         assert conn.execute('SELECT COUNT(*) FROM customer_unload').fetchone() == (0,)
     st.Store(path).save_customer_constraints(101, None, None, 'qa', 40)
     assert st.Store(path).load().unload_min == {101: 40.0}

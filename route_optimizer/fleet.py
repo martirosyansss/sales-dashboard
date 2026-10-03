@@ -1190,7 +1190,8 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
         if i not in placed and any(v.capacity_kg >= s.kg - _EPS for v in _eligible([i], stops, free_trucks)):
             pieces.append(vrp.Piece(s.node, s.kg, s.unload, bound(s.early), bound(s.late), s.center, False, s.allowed_trucks))
             origin.append(i)
-    vehicles = [vrp.Vehicle(t.car_code, t.capacity_kg, t.l100, t.center_ok) for t in trucks]
+    vehicles = [vrp.Vehicle(t.car_code, t.capacity_kg, t.l100, t.center_ok, t.wear_amd_per_km, tn.fuel_price)
+                for t in trucks]
     begin = sorted(start.items())
     loading = ({'load_fixed_min': tn.warehouse_load_fixed_min, 'load_tonne_min': tn.warehouse_load_min_per_tonne}
                if tn.load(1000) > 0 else {})

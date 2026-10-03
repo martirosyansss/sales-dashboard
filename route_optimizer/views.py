@@ -2,7 +2,7 @@
 """Страницы и API раздела «Маршруты» (§10).
 
 Доступ обеспечивает глобальный before_request дашборда: аноним — 401/редирект на вход,
-роль user — 403 (раздела нет в allowlist), admin — полный доступ.
+роль user — 403 (раздела нет в allowlist), garage — только журнал гаража (/routes/garage и его API), admin — полный доступ.
 Клиенту не отдаём текст исключений: ERP → 503, прочее → 500, подробности — в лог с [Routes].
 """
 from __future__ import annotations
@@ -20,19 +20,19 @@ from datetime import date, datetime, timedelta
 from functools import wraps
 from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
 
-from flask import Blueprint, Response, current_app, jsonify, render_template, request, session
+from flask import Blueprint, Response, current_app, g, jsonify, render_template, request, session
 
 from . import actuals as ac
 from . import dispatch as dp
-from . import evaluate, learning, optimize
+from . import evaluate, garage, learning, optimize
 from . import fleet as fl
 from .running_costs import profile_fields
 from .erp import ErpError
 from .geo import Point, haversine_km, is_valid_point
 from .roads import CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
-from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, Store, StoreError, center_auto,
-                    check_unload_min, check_window, validate_payload)
+from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
+                    center_auto, check_garage_entry, check_unload_min, check_window, validate_payload)
 from .valhalla_engine import TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider, ValhallaRoads, truck_time_source
 from .vehicle_access import check_access
 
@@ -195,10 +195,52 @@ def _driver_points(state: RoutesState) -> dict[int, Point]:
 
 
 def _bundle(state: RoutesState) -> Bundle:
-    """Настройки раздела + точки водителей (Bundle.driver_points): ими считают обзор, оптимизация и развоз."""
+    """Настройки раздела + точки водителей (Bundle.driver_points) + ремонт ֏/км журнала гаража на сегодня
+    (Bundle.garage_wear; «Развоз» берёт его на свой день — _load_day): ими считают обзор, оптимизация и развоз."""
     bundle = state.store.load()
     points = _driver_points(state)
-    return replace(bundle, driver_points=points) if points else bundle
+    bundle = replace(bundle, driver_points=points) if points else bundle
+    return _with_garage(state, bundle, _clock().date())
+
+
+def _apk_odometers(state: RoutesState) -> dict[str, list[tuple[date, float]]]:
+    """Одометр заправок из APK (контракт §7, courier.db): машина → [(день по Еревану, км)] — только действующие
+    заправки (исправленные — нет) с согласованным одометром (learning.odometer_plausible, как у расхода топлива).
+    Источника нет или чтение не удалось — пусто: журнал гаража считается без них, сбой — в журнал."""
+    if state.fleet_facts is None:
+        return {}
+    try:
+        refuels = state.fleet_facts.refuels()
+    except Exception:
+        logger.warning('[Routes] Заправки «Առաքիչ» не прочитаны — журнал гаража без одометра APK', exc_info=True)
+        return {}
+    out: dict[str, list[tuple[date, float]]] = {}
+    for car, items in learning.effective_refuels(refuels).items():
+        plausible = learning.odometer_plausible([(at, p.get('odometer_km')) for at, _, p in items])
+        out[car] = [(at.astimezone(ac.YEREVAN).date(), float(p['odometer_km']))
+                    for (at, _, p), good in zip(items, plausible) if good]
+    return out
+
+
+def _garage_by_car(entries: Sequence[Any]) -> dict[str, list[garage.Entry]]:
+    """Живые записи журнала (store.GarageEntry) → машина → записи для расчёта (garage.Entry)."""
+    by_car: dict[str, list[garage.Entry]] = {}
+    for e in entries:
+        by_car.setdefault(e.car_code, []).append(garage.Entry(e.day, e.kind, e.amount_amd, e.odometer_km))
+    return by_car
+
+
+def _garage_prices(state: RoutesState, as_of: date) -> dict[str, garage.Price]:
+    """Ремонт ֏/км машин журнала гаража на as_of (garage.prices). Журнал пуст — пусто, заправки не читаются."""
+    by_car = _garage_by_car(state.store.garage_entries())
+    return garage.prices(by_car, as_of, _apk_odometers(state)) if by_car else {}
+
+
+def _with_garage(state: RoutesState, bundle: Bundle, as_of: date) -> Bundle:
+    """Настройки с ремонтом ֏/км журнала гаража на as_of: готовые цены перекрывают ручной износ в расчёте
+    (Bundle.resolved_trucks). Готовых нет — настройки как есть (расчёт и отпечаток — прежние)."""
+    wear = garage.effective(_garage_prices(state, as_of))
+    return bundle if wear == bundle.garage_wear else replace(bundle, garage_wear=wear)
 
 
 def _api(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -266,6 +308,11 @@ def optimize_page() -> str:
 @bp.get('/routes/dispatch')
 def dispatch_page() -> str:
     return render_template('routes_dispatch.html', yandex_tiles_key=_yandex_tiles_key())
+
+
+@bp.get('/routes/garage')
+def garage_page() -> str:
+    return render_template('routes_garage.html')
 
 
 # --- API ---
@@ -362,7 +409,7 @@ def api_settings_get() -> Any:
         'traffic_provider': {'name': 'yandex', 'configured': bool(os.environ.get('ROUTES_YANDEX_API_KEY'))},
         'center_zone_default': DEFAULT_SETTINGS['center_zone'],
         'depot': {'lat': bundle.depot[0], 'lon': bundle.depot[1]} if bundle.depot else None,
-        'trucks': _trucks_json(snap, bundle),
+        'trucks': _trucks_json(snap, bundle, _garage_prices(state, _clock().date())),
         'expeditors': _expeditors_json(snap, bundle),
         'car_idle_days': CAR_IDLE_DAYS,
         'managers': _managers_json(snap, bundle),
@@ -458,12 +505,17 @@ def _agent_order(snap: Snapshot) -> list[int]:
                   key=lambda a: (snap.agents[a].code if a in snap.agents else '', a))
 
 
-def _trucks_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
+def _trucks_json(snap: Snapshot, bundle: Bundle,
+                 prices: Mapping[str, garage.Price] | None = None) -> list[dict[str, Any]]:
     """Машины CARS и их настройки, затем ручные машины (их нет в ERP). Машина закреплена за водителем, а не
     за менеджером (ответ владельца №29) — вместо менеджера подсказка из ERP: сколько машина возит в день
     (90 дней) и когда последний раз была в накладных. «Активна» — действующее значение; active_source:
     manual — выбор владельца, auto — решают накладные (auto_active: возила за CAR_IDLE_DAYS дней).
-    «Можно в центр» (center_ok) — так же: center_ok_source, auto_center_ok — по названию (машины JAC)."""
+    «Можно в центр» (center_ok) — так же: center_ok_source, auto_center_ok — по названию (машины JAC).
+    Износ: wear_amd_per_km — ручное значение (его и сохраняет страница); garage — ремонт ֏/км журнала гаража на
+    сегодня (только чтение), wear_source — какое значение в расчёте (garage | manual | None)."""
+    prices = prices or {}
+    used = replace(bundle, garage_wear=garage.effective(prices))
     out = []
     active_cars = snap.active_cars
     for code, car in sorted(snap.cars.items()):
@@ -486,6 +538,7 @@ def _trucks_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
             'center_ok': bundle.truck_center_ok(code, car.name),
             'center_ok_source': 'auto' if t is None or t.center_ok is None else 'manual',
             'auto_center_ok': center_auto(car.name),
+            'garage': _garage_price_json(prices.get(code)), 'wear_source': used.wear_source(code),
             'last_used': last.isoformat() if last else None,
             'erp_days': days,
             'erp_kg_day': round(avg) if avg is not None else None,
@@ -500,10 +553,21 @@ def _trucks_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
                 'active': bool(t.active), 'active_source': 'manual', 'auto_active': None, 'last_used': None,
                 'center_ok': bundle.truck_center_ok(code, t.name),
                 'center_ok_source': 'auto' if t.center_ok is None else 'manual', 'auto_center_ok': center_auto(t.name),
+                'garage': _garage_price_json(prices.get(code)), 'wear_source': used.wear_source(code),
                 'van_agent_id': t.van_agent_id, 'van': _agent_json(snap, t.van_agent_id),
                 'erp_days': 0, 'erp_kg_day': None, 'erp_kg_day_max': None,
             })
     return out
+
+
+def _garage_price_json(p: garage.Price | None) -> dict[str, Any] | None:
+    """Ремонт ֏/км машины по журналу гаража (garage.Price) для страниц; нет записей журнала — None."""
+    if p is None:
+        return None
+    return {'price': p.price, 'status': p.status, 'months': p.months, 'days': p.days, 'km': round(p.km),
+            'cost_amd': p.cost_amd, 'start': p.start.isoformat() if p.start else None,
+            'end': p.end.isoformat() if p.end else None, 'repair_amd': p.repair_amd, 'accident_amd': p.accident_amd,
+            'fixed_amd': p.fixed_amd, 'ready_months': garage.MONTHS_READY}
 
 
 def _agent_json(snap: Snapshot, agent_id: int | None) -> dict[str, Any] | None:
@@ -850,15 +914,17 @@ def _dispatch_data(state: RoutesState, since: date, until: date, day: date, refr
 
 
 def _ready_trucks(snap: Snapshot, bundle: Bundle, active_only: bool = True) -> dict[str, fl.FleetTruck]:
-    """Машины, готовые к расчёту: тоннаж и расход заданы (и активны — для плана); с правом въезда в центр."""
+    """Машины, готовые к расчёту: тоннаж и расход заданы (и активны — для плана); с правом въезда в центр; износ —
+    как в расчёте (Bundle.resolved_trucks: журнал гаража или ручной)."""
     names = {code: car.name for code, car in snap.cars.items()}
+    resolved = bundle.resolved_trucks(snap.active_cars)
     if active_only:
-        ready, _ = fl.fleet_trucks(bundle.resolved_trucks(snap.active_cars), names)
+        ready, _ = fl.fleet_trucks(resolved, names)
         return {t.car_code: replace(t, center_ok=bundle.truck_center_ok(t.car_code, names.get(t.car_code)))
                 for t in ready}
     return {code: fl.FleetTruck(code, names.get(code) or t.name, float(t.capacity_kg), float(t.fuel_l_per_100km),
                                 bundle.truck_center_ok(code, names.get(code)), **profile_fields(t))
-            for code, t in sorted(bundle.trucks.items())
+            for code, t in sorted(resolved.items())
             if t.capacity_kg is not None and t.fuel_l_per_100km is not None}
 
 
@@ -1014,6 +1080,7 @@ def _freshness(day: date, bundle: Bundle, data: dp.DispatchData, deliver: list[d
 
 def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = False,
               draft: dp.Draft | None = None, rev: int | None = None) -> _DispatchDay:
+    bundle = _with_garage(state, bundle, day)   # ремонт ֏/км журнала гаража — на день развоза
     snap, _ = state.snapshots.cached()
     since, until, data, sel = _day_orders(state, bundle, day, refresh)
     deliver, backlog = sel.main, sel.backlog
@@ -1091,7 +1158,10 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         trucks.append({'car_code': code, 'name': names[code], 'manual': code in manual,
                        'capacity_kg': ready.capacity_kg if ready else None,
                        'l100': ready.l100 if ready else None, 'center_ok': ready.center_ok if ready else None,
-                       'ready': ready is not None, 'selected': ready is not None and code in selected})
+                       'ready': ready is not None, 'selected': ready is not None and code in selected,
+                       # износ в расчёте дня: garage — ремонт ֏/км журнала гаража, manual — из настроек (№53)
+                       'wear_amd_per_km': ready.wear_amd_per_km if ready else None,
+                       'wear_source': dd.bundle.wear_source(code)})
     added = _backlog_in(draft, dd.carried)
     no_coords = [s for s in dd.stops if s.point is None]
     active = _active_orders(dd.deliver, dd.backlog, draft, dd.carried)
@@ -1394,10 +1464,10 @@ def api_dispatch_fact() -> Any:
     маршрутом) против рейсов программы на тех же машинах и тех же доставках. Накладные экспедитора без
     машины — рейсы закреплённой за ним ручной машины."""
     state = _state()
-    bundle = _bundle(state)
     day = _parse_day(request.args.get('date'))
     if day is None or day >= _clock().date():
         return _bad_request({'date': 'прошедшая дата в формате ГГГГ-ММ-ДД'})
+    bundle = _with_garage(state, _bundle(state), day)   # ремонт ֏/км журнала гаража — на тот день
     if state.fact_loader is None:
         raise ErpError('Загрузчик факта не подключён')
     snap, _ = state.snapshots.cached()
@@ -2225,3 +2295,181 @@ def api_learning_auto() -> Any:
     state = _state()
     state.store.save_learning_auto(kind, auto, session.get('username'))
     return jsonify({'success': True, **_status_body(state)})
+
+
+# --- Журнал гаража «Ավտոտնակ» (№53, docs/plans/garage-journal-plan.md) ---
+# Страница начальника гаража (роль «Гараж» видит только её; доступ — app_v2._auth_and_scope_gate) и администратора.
+# Ошибки записи — по-армянски (store.check_garage_entry, GarageError). Ремонт ֏/км — garage.price на сегодня.
+
+GARAGE_STALE_DAYS = 45          # последний пробег старше — предупреждение в «Ամփոփում»
+GARAGE_ODOMETER_ROWS_MAX = 200  # строк в «Պահպանել բոլորը»
+GARAGE_MONTHS = 12              # расходы по месяцам: этот и 11 до него
+_MONTH_RE = re.compile(r'^\d{4}-\d{2}$')
+
+
+def _garage_admin() -> bool:
+    """Администратор дашборда (app_v2 кладёт роль вошедшего в g.user_role): видит удалённые записи. Нет роли — нет."""
+    return g.get('user_role') == 'admin'
+
+
+def _garage_trucks(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]:
+    """Машины раздела (таблица trucks): номер, название (ERP CARS, у ручной — своё), в работе ли — машина расчёта
+    (работает, тоннаж и расход заданы). ERP недоступна — названия только у ручных, «работает» — не выключена."""
+    try:
+        snap, _ = state.snapshots.cached()
+    except ErpError:
+        logger.warning('[Routes] Журнал гаража: ERP недоступна — машины без названий ERP', exc_info=True)
+        snap = None
+    out = []
+    for code, t in sorted(bundle.trucks.items()):
+        car = snap.cars.get(code) if snap is not None and not t.manual else None
+        active = bundle.truck_active(code, snap.active_cars) if snap is not None else t.active is not False
+        out.append({'car_code': code, 'name': (car.name if car is not None else t.name) or '',
+                    'active': bool(active and t.capacity_kg is not None and t.fuel_l_per_100km is not None)})
+    return out
+
+
+def _garage_months(entries: Sequence[Any], today: date) -> list[dict[str, Any]]:
+    """Расходы журнала по месяцам (все машины): ремонт, ДТП, страховка и налоги — GARAGE_MONTHS месяцев до этого."""
+    first = today.replace(day=1)
+    keys = []
+    for _ in range(GARAGE_MONTHS):
+        keys.append(first.isoformat()[:7])
+        first = (first - timedelta(days=1)).replace(day=1)
+    out = []
+    for key in reversed(keys):
+        sums = {k: sum(e.amount_amd for e in entries if e.kind == k and e.day.isoformat()[:7] == key)
+                for k in ('repair', 'accident', 'fixed')}
+        out.append({'month': key, **sums, 'total': sum(sums.values())})
+    return out
+
+
+@bp.get('/api/routes/garage')
+@_api
+def api_garage() -> Any:
+    """«Ավտոտնակ»: машины (последнее показание пробега — журнал и одометр APK), по машине за 12 месяцев — ремонт, ДТП,
+    страховка и налоги, км, ремонт ֏/км и статус на сегодня, расходы по месяцам. Записи — /api/routes/garage/entries."""
+    state = _state()
+    today = _clock().date()
+    bundle = state.store.load()
+    entries = state.store.garage_entries()
+    by_car = _garage_by_car(entries)
+    apk = _apk_odometers(state) if by_car else {}
+    prices = garage.prices(by_car, today, apk)
+    used = garage.effective(prices)
+    trucks, summary = [], []
+    for t in _garage_trucks(state, bundle):
+        code = t['car_code']
+        if not t['active'] and code not in by_car:
+            continue
+        last = [p for p in garage.readings(by_car.get(code, ()), apk.get(code, ())) if p[0] <= today]
+        row = {**t, 'last_day': last[-1][0].isoformat() if last else None,
+               'last_km': round(last[-1][1]) if last else None}
+        trucks.append(row)
+        ago = (today - last[-1][0]).days if last else None
+        summary.append({**row, 'garage': _garage_price_json(prices.get(code)), 'days_since_last': ago,
+                        'stale': ago is None or ago > GARAGE_STALE_DAYS, 'in_calc': code in used})
+    return jsonify({'success': True, 'today': today.isoformat(), 'admin': _garage_admin(), 'trucks': trucks,
+                    'summary': summary, 'months': _garage_months(entries, today),
+                    'rules': {'ready_months': garage.MONTHS_READY, 'ready_km': garage.READY_KM,
+                              'stale_days': GARAGE_STALE_DAYS}})
+
+
+@bp.get('/api/routes/garage/entries')
+@_api
+def api_garage_entries() -> Any:
+    """Записи журнала, новые первыми: ?car= — машина, ?month=YYYY-MM — месяц, ?deleted=1 — и удалённые (только
+    администратору). total_amd — сумма живых записей отбора."""
+    state = _state()
+    car, month = request.args.get('car') or '', request.args.get('month') or ''
+    if month and not _MONTH_RE.match(month):
+        return _bad_request({'month': 'Ամիսը՝ ՏՏՏՏ-ԱԱ'})
+    found = [e for e in state.store.garage_entries(deleted=_garage_admin() and request.args.get('deleted') == '1')
+             if (not car or e.car_code == car) and (not month or e.day.isoformat()[:7] == month)]
+    found.sort(key=lambda e: (e.day, e.id), reverse=True)
+    return jsonify({'success': True, 'entries': [e.to_json() for e in found],
+                    'total_amd': sum(e.amount_amd for e in found if e.deleted_at is None)})
+
+
+def _entry_id(raw: Any) -> int | None:
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and 0 < raw < 2 ** 63 else None
+
+
+@bp.post('/api/routes/garage/entries')
+@_api
+def api_garage_save() -> Any:
+    """Новая запись или правка ({"id": …, поля записи}). «Только пробег» в день, где он уже есть, — обновляет его.
+    Ошибки — по полям, по-армянски; спидометр не убывает во времени (ошибка называет конфликтующую запись)."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    if not isinstance(payload, dict):
+        return _bad_request({'_': 'Սպասվում էր JSON օբյեկտ'})
+    payload = dict(payload)
+    raw_id = payload.pop('id', None)
+    entry_id = _entry_id(raw_id)
+    if raw_id is not None and entry_id is None:
+        return _bad_request({'_': 'Գրառման համարը սխալ է'})
+    state = _state()
+    item, errors = check_garage_entry(payload, state.store.load().trucks, _clock().date())
+    if errors:
+        return _bad_request(errors)
+    try:
+        saved = state.store.save_garage_entry(item, session.get('username'), entry_id)
+    except GarageError as e:
+        return _bad_request(e.errors)
+    logger.info('[Routes] Журнал гаража (%s): запись %d — %s %s %s', session.get('username'), saved, item.car_code,
+                item.day, item.kind)
+    return jsonify({'success': True, 'id': saved})
+
+
+@bp.post('/api/routes/garage/entries/delete')
+@_api
+def api_garage_delete() -> Any:
+    """Удалить запись ({"id"}): мягко — администратор видит её среди удалённых, в расчётах её нет."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    entry_id = _entry_id(payload.get('id') if isinstance(payload, dict) else None)
+    if entry_id is None:
+        return _bad_request({'_': 'Գրառման համարը սխալ է'})
+    if not _state().store.delete_garage_entry(entry_id, session.get('username')):
+        return jsonify({'success': False, 'error': 'Գրառումը չի գտնվել կամ արդեն ջնջված է'}), 404
+    logger.info('[Routes] Журнал гаража (%s): запись %d удалена', session.get('username'), entry_id)
+    return jsonify({'success': True})
+
+
+@bp.post('/api/routes/garage/odometers')
+@_api
+def api_garage_odometers() -> Any:
+    """Пробег машин одной таблицей: {"items": [{"car_code", "day", "odometer_km"}]} — «только пробег» каждой машины
+    (тот же день — обновляет). Записываются строки без ошибок; ошибки — построчно {номер строки: причина}."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    items = payload.get('items') if isinstance(payload, dict) else None
+    if not isinstance(items, list) or not items or len(items) > GARAGE_ODOMETER_ROWS_MAX:
+        return _bad_request({'items': 'Լրացրեք գոնե մեկ մեքենայի վազքը'})
+    state = _state()
+    cars, today = state.store.load().trucks, _clock().date()
+    errors: dict[int, str] = {}
+    valid: list[tuple[int, Any]] = []
+    seen: set[str] = set()
+    for i, row in enumerate(items):
+        if not isinstance(row, dict) or not set(row) <= {'car_code', 'day', 'odometer_km'}:
+            errors[i] = 'Տողը սխալ է'
+            continue
+        item, problems = check_garage_entry({**row, 'kind': 'odometer'}, cars, today)
+        if problems:
+            errors[i] = next(iter(problems.values()))
+        elif item.car_code in seen:
+            errors[i] = 'Մեքենան կրկնվում է'
+        else:
+            seen.add(item.car_code)
+            valid.append((i, item))
+    conflicts = state.store.save_garage_odometers([item for _, item in valid], session.get('username')) if valid else {}
+    errors.update({valid[k][0]: text for k, text in conflicts.items()})
+    saved = sorted(i for i, _ in valid if i not in errors)
+    logger.info('[Routes] Журнал гаража (%s): пробег — записано %d, ошибок %d', session.get('username'), len(saved),
+                len(errors))
+    return jsonify({'success': True, 'saved': saved, 'errors': {str(i): t for i, t in sorted(errors.items())}})

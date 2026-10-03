@@ -1,0 +1,70 @@
+/* «Ավտոտնակ» /routes/garage — журнал ремонтов и пробега машин (ответ владельца №53).
+   Поверх routes.css: те же токены (--rt-*), только классы этой страницы (.gj-*). Телефон 390 px — поля крупные,
+   таблицы — карточками (routes.css, ≤ 575 px). */
+
+/* В Golos Text нет армянских букв — берём их из Noto Sans Armenian (как «Развоз») */
+#gjPage {
+    --rt-font: 'Golos Text', 'Noto Sans Armenian', 'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    max-width: 1280px; margin: 0 auto;
+}
+#gjPage .rt-title { font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.125rem); }
+
+/* Вкладки страницы: Ծախսեր · Վազք · Ամփոփում */
+.gj-tabs {
+    display: flex; gap: 4px; padding: 4px; margin: 16px 0 14px; max-width: 560px;
+    background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: 12px;
+}
+.gj-tabs button {
+    flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px;
+    padding: 0 12px; border: 0; border-radius: 9px; background: transparent; color: var(--rt-fg-dim);
+    font: 600 1rem var(--rt-font); cursor: pointer; transition: background .15s, color .15s;
+}
+.gj-tabs button:hover { color: var(--rt-fg); background: var(--rt-panel-2); }
+.gj-tabs button[aria-selected="true"] { background: var(--rt-acc); color: #06201d; }
+.gj-tabs button i { font-size: .9em; }
+
+/* Форма записи: крупные поля, на ПК — две колонки */
+.gj-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; margin-top: 10px; }
+.gj-grid .gj-wide { grid-column: 1 / -1; }
+.gj-form .rt-select, .gj-form .rt-input, .gj-filters .rt-select, .gj-filters .rt-input, .gj-odo-day .rt-input { height: 46px; font-size: 1rem; width: 100%; }
+.gj-date { color-scheme: dark; font-family: var(--rt-mono); }
+.gj-opt { color: var(--rt-fg-mute); font-weight: 400; }
+.gj-form [hidden] { display: none; }
+.gj-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+
+/* Список записей */
+.gj-filters { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 16px; align-items: end; }
+.gj-check { display: inline-flex; align-items: center; gap: 10px; min-height: 46px; margin-bottom: 13px; font-size: .9375rem; color: var(--rt-fg-dim); cursor: pointer; }
+.gj-total { margin: 0 0 10px; font-weight: 700; font-size: 1.0625rem; }
+.gj-total:empty { display: none; }
+.gj-table .gj-num { text-align: right; font-family: var(--rt-mono); white-space: nowrap; }
+.gj-table thead th.gj-num { text-align: right; }
+.gj-table td { vertical-align: middle; }
+.gj-day { font-family: var(--rt-mono); white-space: nowrap; }
+.gj-what { overflow-wrap: anywhere; min-width: 160px; }
+.gj-what small, .gj-sub { display: block; font-size: .8125rem; color: var(--rt-fg-mute); }
+.gj-row-acts { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.gj-gone { font-size: .8125rem; color: var(--rt-fg-mute); }
+.gj-acts { white-space: nowrap; }
+
+/* Вазք и итоги */
+.gj-odo-day { max-width: 240px; }
+.gj-odo-table .rt-input { height: 46px; font-size: 1rem; max-width: 220px; }
+.gj-km { font-family: var(--rt-mono); }
+.gj-price { font-family: var(--rt-mono); font-size: 1.0625rem; }
+.gj-stale { margin-top: 4px; }
+
+@media (max-width: 767px) {
+    .gj-grid { grid-template-columns: minmax(0, 1fr); }
+    .gj-actions .rt-btn { flex: 1 1 auto; }
+}
+@media (max-width: 575px) {
+    .gj-tabs { max-width: none; }
+    .gj-tabs button { font-size: .9375rem; padding: 0 6px; gap: 6px; }
+    .gj-table .gj-num { text-align: left; }
+    .gj-table tbody td.gj-acts { grid-column: 1 / -1; }
+    .gj-row-acts { display: flex; width: 100%; }
+    .gj-row-acts .rt-btn { flex: 1 1 0; height: 44px; }
+    .gj-odo-table .rt-input { max-width: none; }
+    .gj-what { min-width: 0; }
+}
