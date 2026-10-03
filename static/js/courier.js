@@ -22,7 +22,8 @@
         in_progress: ['Ընթացքում', 'b-warn'], covered: ['Պատվերով արված է', 'b-ok'] };
     const COLLECT = { cash: 'Կանխիկ', cash_ecr: 'Կանխիկ ՀԴՄ', none: 'Չվերցնել', ask: 'Ճշտել' };
     const TYPE = { delivery: 'Առաքում', payment: 'Գումար', tare: 'Տարա', return: 'Վերադարձ', scan: 'Սկան', scan_cancel: 'Սկանի չեղարկում',
-        unreadable: 'Կոդը չի կարդացվում', arrived: 'Ժամանում', day_closed: 'Օրվա ավարտ', geo_suggest: 'Կետի առաջարկ' };
+        unreadable: 'Կոդը չի կարդացվում', arrived: 'Ժամանում', day_closed: 'Օրվա ավարտ', geo_suggest: 'Կետի առաջարկ',
+        track: 'GPS երթուղի', refuel: 'Լիցքավորում' };
     const FLAG = {
         foreign: 'Այլ մեքենայի կամ օրվա կետ', unknown_stop: 'Անհայտ կետ', duplicate_elsewhere: 'Կոդն արդեն տրվել է այլ տեղ',
         repeat: 'Կրկնակի սկան', scan_short: 'Մակնշման սկանը պակաս է', no_ecr_receipt: 'ՀԴՄ կտրոնի համարը չկա',
@@ -33,6 +34,7 @@
         date_suspicious: 'Ամսաթիվը չի համընկնում ժամանակի հետ', no_payment: 'Վճարում չկա',
         collected_by_other: 'Վերցրել է այլ վարորդ', split_order: 'Մասնակի է՝ բաժանված պատվեր',
         merge_conflict: 'Ստուգել՝ պատվերով և ապրանքագրով նշումները չեն համընկնում',
+        odometer_suspicious: 'Օդոմետրի ցուցմունքը կասկածելի է',
     };
     const statusBadge = (s) => (s.status ? badge(...(STATUS[s.status] || [s.status, 'b-none'])) : '—') + (s.removed ? ' ' + badge('Հանված է', 'b-none') : '');
     const tareText = (t) => (t && t.length ? ' <span class="cr-muted">Տարա՝ ' + fmt(t.reduce((a, x) => a + (num(x.qty) || 0), 0), 2) + '</span>' : '');
@@ -224,6 +226,16 @@
         $('crRejectedRows').innerHTML = d.rejected.map(r => '<li><span class="grow">' + esc(r.driver_name || '') + ' · ' + esc(TYPE[r.type] || r.type || '')
             + ' — ' + esc(r.message) + '</span><span class="cr-muted">' + esc(dateTime(r.received_at)) + '</span></li>').join('');
     }
+    // Լիցքավորումներ (պայմանագիր §7)՝ ուղղվածը (supersedes) մոխրագույն, կասկածելի օդոմետրը՝ նշումով
+    function refuelsBlock(list) {
+        if (!list.length) return '';
+        return '<details class="rt-fold" style="margin-top:10px"><summary><span class="rt-fold-t"><i class="fas fa-gas-pump" aria-hidden="true"></i>Լիցքավորումներ</span><span class="rt-fold-note">' + fmt(list.length) + '</span></summary>'
+            + '<div class="rt-fold-body"><div class="rt-table-scroll"><table class="rt-table cr-small"><thead><tr><th scope="col">Ժամ</th><th scope="col">Վարորդ</th><th scope="col">Լիտր</th><th scope="col">Օդոմետր, կմ</th><th scope="col">Լրիվ բաք</th><th scope="col">Գումար</th><th scope="col">Նշում</th><th scope="col">Լուսանկար</th></tr></thead><tbody>'
+            + list.map(r => '<tr class="' + (r.superseded ? 'is-closed' : '') + '"><td>' + esc(timeOf(r.at)) + '</td><td>' + esc(r.driver_name || '') + '</td><td class="cr-num-cell">' + fmt(r.liters, 2)
+                + '</td><td class="cr-num-cell">' + fmt(r.odometer_km) + '</td><td>' + (r.full_tank ? 'Այո' : 'Ոչ') + '</td><td class="cr-num-cell">' + (r.amount_amd === null || r.amount_amd === undefined ? '—' : money(r.amount_amd))
+                + '</td><td>' + esc([r.superseded ? 'Ուղղված է' : '', flagText(r.flags)].filter(Boolean).join(', ')) + '</td><td>' + thumbs(r.photos) + '</td></tr>').join('')
+            + '</tbody></table></div></div></details>';
+    }
     function carCard(c) {
         const stat = (v, label, cls) => '<div class="cr-stat ' + (v ? cls : '') + '"><b>' + fmt(v) + '</b><span>' + esc(label) + '</span></div>';
         const done = c.full + c.partial + c.refused + c.covered;
@@ -236,7 +248,9 @@
             + stat(c.pending, 'Սպասում է', '') + stat(c.unreadable, 'Կոդը չի կարդացվում', 'is-warn') + stat(c.foreign, 'Այլ մեքենայի կետ', 'is-warn')
             + stat(c.flagged, 'Ուշադրություն', 'is-bad') + '</div>'
             + '<div class="cr-meta"><span>Վարորդ՝ ' + esc(c.drivers.join(', ') || '—') + '</span><span>Վերջին կապը՝ ' + esc(dateTime(c.last_contact)) + '</span>'
-            + (c.removed.length ? '<span>Հանված կետեր՝ ' + fmt(c.removed.length) + '</span>' : '') + '</div>'
+            + (c.removed.length ? '<span>Հանված կետեր՝ ' + fmt(c.removed.length) + '</span>' : '')
+            + (c.gps ? '<span>GPS՝ ' + fmt(c.gps.km, 1) + ' կմ (' + fmt(c.gps.points) + ' կետ, ' + esc(timeOf(c.gps.first)) + '–' + esc(timeOf(c.gps.last)) + ')</span>' : '') + '</div>'
+            + refuelsBlock(c.refuels || [])
             + (rows.length ? '<details class="rt-fold" style="margin-top:10px"><summary><span class="rt-fold-t">Կետերը</span></summary><div class="rt-fold-body"><div class="rt-table-scroll"><table class="rt-table cr-small">'
               + '<thead><tr><th scope="col">№</th><th scope="col">Հաճախորդ</th><th scope="col">Ապրանքագիր</th><th scope="col">Վճարում</th><th scope="col">Վճարելու է</th><th scope="col">Վճարված է</th><th scope="col">Վիճակ</th></tr></thead><tbody>'
               + rows.map(s => '<tr class="' + ((s.flags || []).includes('merge_conflict') ? 'cr-row-warn' : s.removed ? 'is-closed' : '') + '"><td>' + (s.removed ? '—' : fmt(s.seq)) + '</td><td>' + esc(s.customer) + '</td><td>' + esc(s.doc_number) + '</td><td>' + esc(COLLECT[s.collect] || '')

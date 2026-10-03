@@ -25,7 +25,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -120,6 +120,20 @@ _MEASUREMENT_TABLE = (
     'CREATE TABLE IF NOT EXISTS route_measurement(day TEXT NOT NULL, car_code TEXT NOT NULL, '
     'data TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY(day, car_code))')
 
+# Схема 13 (learning-loop-plan.md, этап 4): журнал выученных норм — строка на (вид, машина, день прогона); повторный
+# прогон того же дня заменяет её (идемпотентно). Действует последняя принятая (learning.in_effect). Переключатель
+# автообучения по виду: нет строки — включено.
+_LEARNED_TABLE = (
+    "CREATE TABLE IF NOT EXISTS learned_norms(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+    "kind TEXT NOT NULL CHECK (kind IN ('unload', 'loading', 'travel', 'fuel')), scope TEXT NOT NULL DEFAULT '', "
+    "run_day TEXT NOT NULL, params TEXT, model_id TEXT, n_obs INTEGER NOT NULL, n_test INTEGER NOT NULL, "
+    "train_from TEXT, train_to TEXT, test_from TEXT, test_to TEXT, mae_before REAL, mae_after REAL, "
+    "accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)), reason TEXT NOT NULL, created_at TEXT NOT NULL, "
+    "UNIQUE (kind, scope, run_day))")
+_LEARNING_SWITCH_TABLE = (
+    "CREATE TABLE IF NOT EXISTS learning_switch(kind TEXT PRIMARY KEY, auto INTEGER NOT NULL CHECK (auto IN (0, 1)), "
+    "updated_at TEXT NOT NULL, updated_by TEXT)")
+
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -132,6 +146,8 @@ _SCHEMA = (
     _DECISION_ONE_ACCEPTED,
     _MEASUREMENT_TABLE,
     _CUSTOMER_VEHICLES_TABLE,
+    _LEARNED_TABLE,
+    _LEARNING_SWITCH_TABLE,
     _CUSTOMER_WINDOW_TABLE,   # перед таблицами схемы 7: базы прежних версий в тестах — срез _SCHEMA с конца
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
@@ -212,6 +228,8 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     9: tuple(f'ALTER TABLE trucks ADD COLUMN {key} REAL' for key in LOAD_COST_FIELDS),
     10: (_MEASUREMENT_TABLE,),
     11: (_CUSTOMER_VEHICLES_TABLE,),
+    # 12 → 13: только добавляем — журнал выученных норм и переключатели автообучения.
+    12: (_LEARNED_TABLE, _LEARNING_SWITCH_TABLE),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -1638,6 +1656,74 @@ class Store:
         """«Начать заново»: черновик на дату удаляется."""
         self._transaction(lambda conn: conn.execute('DELETE FROM dispatch_plan WHERE day = ?', (day,)),
                           'не удалось удалить план развоза')
+
+    # --- обучение по факту машин (learning-loop-plan.md, этап 4) ---
+
+    def save_learned(self, run_day: str, outcomes: Collection[Any]) -> None:
+        """Итоги прогона обучения (learning.Outcome) за день run_day — одной транзакцией; повторный прогон того же дня
+        заменяет строки своих (вид, машина)."""
+        now = _now()
+
+        def write(conn: sqlite3.Connection) -> None:
+            for o in outcomes:
+                conn.execute(
+                    'INSERT INTO learned_norms(kind, scope, run_day, params, model_id, n_obs, n_test, train_from, '
+                    'train_to, test_from, test_to, mae_before, mae_after, accepted, reason, created_at) '
+                    'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(kind, scope, run_day) DO UPDATE '
+                    'SET params = excluded.params, model_id = excluded.model_id, n_obs = excluded.n_obs, '
+                    'n_test = excluded.n_test, train_from = excluded.train_from, train_to = excluded.train_to, '
+                    'test_from = excluded.test_from, test_to = excluded.test_to, mae_before = excluded.mae_before, '
+                    'mae_after = excluded.mae_after, accepted = excluded.accepted, reason = excluded.reason, '
+                    'created_at = excluded.created_at',
+                    (o.kind, o.scope, run_day,
+                     json.dumps(o.params, ensure_ascii=False, sort_keys=True, allow_nan=False)
+                     if o.params is not None else None, o.model_id, o.n_obs, o.n_test, o.train_from, o.train_to,
+                     o.test_from, o.test_to, o.mae_before, o.mae_after, int(o.accepted), o.reason, now))
+
+        self._transaction(write, 'не удалось сохранить выученные нормы')
+
+    def learned(self, before: str | None = None, accepted_only: bool = False) -> list[dict[str, Any]]:
+        """Журнал выученных норм по возрастанию дня прогона (before — только прогоны раньше этого дня; accepted_only —
+        только принятые: из них learning.in_effect выбирает действующие)."""
+        where = [w for w, on in (('run_day < ?', before is not None), ('accepted = 1', accepted_only)) if on]
+        rows = self._read(lambda conn: conn.execute(
+            'SELECT id, kind, scope, run_day, params, model_id, n_obs, n_test, train_from, train_to, test_from, '
+            'test_to, mae_before, mae_after, accepted, reason, created_at FROM learned_norms '
+            + (f'WHERE {" AND ".join(where)} ' if where else '') + 'ORDER BY run_day, kind, scope',
+            (before,) if before is not None else ()).fetchall())
+        keys = ('id', 'kind', 'scope', 'run_day', 'params', 'model_id', 'n_obs', 'n_test', 'train_from', 'train_to',
+                'test_from', 'test_to', 'mae_before', 'mae_after', 'accepted', 'reason', 'created_at')
+        out = []
+        for r in rows:
+            d = dict(zip(keys, r))
+            try:
+                d['params'] = json.loads(d['params']) if d['params'] is not None else None
+            except (TypeError, ValueError, RecursionError) as e:
+                raise StoreError(f'{self._name()}: повреждена выученная норма {d["id"]}{_FIX_HINT}') from e
+            d['accepted'] = bool(d['accepted'])
+            out.append(d)
+        return out
+
+    def learning_last_run(self) -> str | None:
+        """День последнего удачного прогона обучения (meta learning_last_run) — ночной поток догоняет пропущенный."""
+        row = self._read(lambda conn: conn.execute("SELECT value FROM meta WHERE key = 'learning_last_run'").fetchone())
+        return row[0] if row else None
+
+    def save_learning_last_run(self, day: str) -> None:
+        self._transaction(lambda conn: conn.execute(
+            "INSERT INTO meta(key, value) VALUES('learning_last_run', ?) ON CONFLICT(key) DO UPDATE SET value = "
+            'excluded.value', (day,)), 'не удалось записать день прогона обучения')
+
+    def learning_auto(self) -> dict[str, bool]:
+        """Автообучение по виду, выбранное владельцем; нет строки — learning.DEFAULT_AUTO."""
+        rows = self._read(lambda conn: conn.execute('SELECT kind, auto FROM learning_switch').fetchall())
+        return {k: bool(v) for k, v in rows}
+
+    def save_learning_auto(self, kind: str, auto: bool, user: str | None) -> None:
+        self._transaction(lambda conn: conn.execute(
+            'INSERT INTO learning_switch(kind, auto, updated_at, updated_by) VALUES(?, ?, ?, ?) '
+            'ON CONFLICT(kind) DO UPDATE SET auto = excluded.auto, updated_at = excluded.updated_at, '
+            'updated_by = excluded.updated_by', (kind, int(auto), _now(), user)), 'не удалось сохранить переключатель')
 
     def measurements(self) -> list[dict[str, Any]]:
         rows = self._read(lambda conn: conn.execute(

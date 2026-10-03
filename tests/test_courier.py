@@ -2195,7 +2195,7 @@ def test_l1_migration_v4_to_v5_with_data(st, client, monkeypatch, now):
     assert [x['stop_id'] for x in s.day_stops(PAST, 'CAR1')] == [s1, s2]
     assert [e['id'] for e in s.events_for_day(PAST)] == ['e1', 'e2', 'e3']
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION) == '5'
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION)   # 4 → 5 → … → текущая
         assert conn.execute("SELECT value FROM meta WHERE key = 'pin_pepper_id'").fetchone() is None
         assert conn.execute('SELECT stop_id, line_id, max_qty, product_id FROM line_max ORDER BY stop_id, line_id'
                             ).fetchall() == [(o, 'o:1', 5.0, 1), (s1, 's:1', 5.0, 1), (s2, 't:1', 9.0, 7)]

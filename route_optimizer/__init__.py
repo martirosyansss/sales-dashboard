@@ -12,15 +12,19 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
+from datetime import datetime
 from typing import Any
 
 from flask import Flask
 
-from . import erp
+from . import erp, learning
+from .actuals import YEREVAN
 from .roads import RoadProvider, osm_path
 from .snapshot import ResultCache, SnapshotCache, load_snapshot
 from .store import Store
-from .views import EXTENSION_KEY, DriverGeo, RoutesState, bp
+from .views import EXTENSION_KEY, DriverGeo, RoutesState, bp, run_learning_job
 
 logger = logging.getLogger(__name__)
 
@@ -55,3 +59,52 @@ def attach_driver_geo(app: Flask, source: DriverGeo) -> None:
     """Точки и предложения водителей (раздел «Առաքիչ», driver-geo-plan.md §4) — в «Маршруты». Вызывает app_v2
     после init_app обоих разделов: пакет route_optimizer не импортирует courier. Не вызван — без точек водителей."""
     app.extensions[EXTENSION_KEY].driver_geo = source
+
+
+def attach_fleet_facts(app: Flask, source: learning.FleetFacts) -> None:
+    """Трек, точки дня и заправки машин (раздел «Առաքիչ», контракт v1.3 §7) — для обучения «Развоза» и отчёта «план —
+    факт». Вызывает app_v2 после init_app обоих разделов. Не вызван — обучения нет, расчёты как раньше."""
+    app.extensions[EXTENSION_KEY].fleet_facts = source
+
+
+CATCHUP_DELAY_S = 120   # догнать пропущенный ночной прогон — через 2 мин после запуска (сервер успеет подняться)
+
+
+def start_learning_scheduler(app: Flask) -> threading.Thread | None:
+    """Ночное обучение (learning.NIGHTLY_AT по Еревану) — фоновый поток процесса сервера. Запускает app_v2 только при
+    запуске сервера (не при импорте: тесты его не запускают); env ROUTES_LEARNING_NIGHTLY=0 — выключить. Сервер
+    перезапускается при каждом автообновлении: при запуске, если прогон последнего наступившего 03:00 пропущен
+    (learning.missed_run по дню последнего удачного прогона), он выполняется через CATCHUP_DELAY_S. Сбой прогона — в
+    журнал, поток работает дальше; прогон идёт под тем же замком, что и кнопка «Пересчитать»."""
+    if os.environ.get('ROUTES_LEARNING_NIGHTLY', '1').strip() == '0':
+        logger.info('[Routes] Ночное обучение выключено (ROUTES_LEARNING_NIGHTLY=0)')
+        return None
+    state = app.extensions[EXTENSION_KEY]
+
+    def run() -> None:
+        try:
+            with app.app_context():
+                if not run_learning_job(state, datetime.now(YEREVAN).date(), 'nightly'):
+                    logger.warning('[Routes] Ночное обучение пропущено: идёт другой прогон')
+        except Exception:   # поток не должен умереть: следующая ночь — новая попытка
+            logger.exception('[Routes] Ночное обучение: сбой')
+
+    def loop() -> None:
+        try:
+            missed = learning.missed_run(datetime.now(YEREVAN), state.store.learning_last_run())
+        except Exception:
+            logger.exception('[Routes] Ночное обучение: не прочитан день последнего прогона')
+            missed = False
+        if missed:
+            time.sleep(CATCHUP_DELAY_S)
+            logger.info('[Routes] Ночной прогон обучения пропущен — выполняю сейчас')
+            run()
+        while True:
+            now = datetime.now(YEREVAN)
+            time.sleep(max(1.0, (learning.next_run(now) - now).total_seconds()))
+            run()
+
+    thread = threading.Thread(target=loop, name='routes-learning-nightly', daemon=True)
+    thread.start()
+    logger.info('[Routes] Ночное обучение «Развоза» — каждый день в %02d:%02d (Ереван)', *learning.NIGHTLY_AT)
+    return thread

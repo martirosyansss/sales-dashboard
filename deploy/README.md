@@ -81,6 +81,31 @@ schtasks /Run /TN SalesDashboard-AutoUpdate
 schtasks /Change /TN SalesDashboard-AutoUpdate /DISABLE   # включить: /ENABLE
 ```
 
+## Базы SQLite: резервная копия перед обновлением со сменой схемы
+
+`courier.db` («Առաքիչ») и `route_optimizer.db` («Маршруты») лежат рядом с `app_v2.py`, в git не входят и
+автообновлением не затираются. Программа при первом обращении сама переводит базу на новую схему
+(одной транзакцией: сбой — база остаётся прежней). Старая программа базу новой схемы **не открывает**
+(«создана более новой версией программы»).
+
+Обучение «Развоза» по факту машин (learning-loop) меняет схемы: `courier.db` 5 → 6 (трек машины
+`track_points`, индексы), `route_optimizer.db` 12 → 13 (журнал выученных норм `learned_norms`,
+переключатели `learning_switch`). Обе миграции **только добавляют** таблицы и индексы — данные не меняются.
+
+**До слияния таких изменений в `main`** (сервер подтянет их в течение 5 минут):
+
+```powershell
+schtasks /End /TN SalesDashboard-Server          # остановить, чтобы копия была целой (WAL)
+$d = Get-Date -Format yyyyMMdd-HHmm
+Copy-Item "C:\Sales Dashboard\courier.db" "C:\Sales Dashboard\courier.db.bak-$d"
+Copy-Item "C:\Sales Dashboard\route_optimizer.db" "C:\Sales Dashboard\route_optimizer.db.bak-$d"
+schtasks /Run /TN SalesDashboard-Server
+```
+
+Откат: остановить дашборд, вернуть прежний код (`git reset --hard <прежний коммит>` и приостановить
+автообновление) и **восстановить обе базы из этих копий** — старая программа новые схемы не откроет.
+Данные, принятые после обновления (трек, заправки, выученные нормы), при откате теряются.
+
 ## Безопасность
 
 - Токен хранится в открытом виде в `C:\Sales Dashboard\.git\config` —
