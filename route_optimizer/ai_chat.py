@@ -3,7 +3,7 @@
 
 Данные дня — первым блоком первого сообщения пользователя (не в system: текст из ERP и от водителей — данные,
 а не указания), JSON с отсортированными ключами, без координат, служебных и пустых полей, списки магазинов —
-таблицей (ответ владельца №53: так день — ~16 тыс. токенов вместо ~29 тыс.); на блоке — точка кэша, поэтому
+таблицей (ответ владельца №55: так день — ~16 тыс. токенов вместо ~29 тыс.); на блоке — точка кэша, поэтому
 следующие вопросы того же дня читают его из кэша. История диалога хранится на странице, сервер без состояния:
 каждый запрос — день заново из базы + история + новый вопрос.
 
@@ -25,7 +25,7 @@ try:   # AI — необязательная часть: без пакета р�
 except ImportError:  # pragma: no cover - зависит от окружения
     anthropic = None
 
-MODEL = 'claude-sonnet-5-5'       # ответ владельца №53: вдвое дешевле Opus, для вопросов по готовым цифрам хватает
+MODEL = 'claude-sonnet-5-5'       # ответ владельца №55: вдвое дешевле Opus, для вопросов по готовым цифрам хватает
 EFFORTS = ('low', 'medium', 'high')
 DEFAULT_EFFORT = 'low'            # чат по готовым цифрам: глубокое рассуждение не нужно, ответ быстрее и дешевле
 MAX_TOKENS = 16000
@@ -69,6 +69,9 @@ How to answer:
 - Answer in the language of the question; the page is Armenian, so by default write Eastern Armenian.
 - Use only numbers and names present in the data. Never invent stores, times or amounts. If the data has no answer, \
 say so plainly and tell where on the page or in the settings it can be seen or set.
+- The person asking has full rights in this section (it is the owner or his logist). Never send them to «an \
+administrator» or anyone else - name the control on this page or the settings page (/routes/settings) they can use \
+themselves.
 - You cannot change anything. If asked to change the plan, say which control on the page does it: «Փոփոխել» on a trip \
 (move a store to another trip, «Այսօր չենք տանում», lock the trip, change its truck), step 1 checkboxes + \
 «Վերակազմել երթերը» (trucks of the day), «Փոխել տեղը» (store point on the map), settings (capacity, windows, center zone).

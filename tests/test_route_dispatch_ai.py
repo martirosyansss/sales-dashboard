@@ -175,8 +175,9 @@ def test_ask_request_shape_and_text_only_answer(monkeypatch):
     r = ai_chat.ask(BODY, 'Ո՞ր մեքենան', [], client=fake)
     assert r == {'answer': 'Առաջին տող\n• պունկտ', 'model': 'claude-opus-5-5', 'refused': False, 'truncated': False}   # модель — из ответа API
     kw = fake.calls[0]
-    assert kw['model'] == 'claude-sonnet-5-5' and kw['max_tokens'] == ai_chat.MAX_TOKENS     # ответ владельца №53
+    assert kw['model'] == 'claude-sonnet-5-5' and kw['max_tokens'] == ai_chat.MAX_TOKENS     # ответ владельца №55
     assert kw['system'] == ai_chat.SYSTEM and 'Armenian' in kw['system']
+    assert 'Never send them to «an administrator»' in kw['system']          # владелец сам себе администратор
     assert kw['output_config'] == {'effort': 'low'}
     assert kw['betas'] == [ai_chat.FALLBACK_BETA] and kw['fallbacks'] == 'default'
     assert 'tools' not in kw                                        # модель ничего не может менять
