@@ -45,9 +45,20 @@ FORBIDDEN = [
 
 
 def norm(text: str) -> str:
-    """Пробелы-разделители разрядов («3 872») убрать, неразрывные — в обычные: числа сравниваются целиком."""
-    text = text.replace(' ', ' ').replace(' ', ' ')
-    return re.sub(r'(?<=\d) (?=\d{3}(?!\d))', '', text)
+    """Пробелы-разделители разрядов («3 872», «1 130 859») убрать, неразрывные — в обычные; число после времени
+    («17:30 120») не приклеивается."""
+    text = text.replace(chr(0xa0), ' ').replace(chr(0x202f), ' ')
+    return re.sub(r'(?<![\d:.,])\d{1,3}(?: \d{3})+(?!\d)', lambda m: m.group(0).replace(' ', ''), text)
+
+
+def has_time(answer: str, hhmm: str) -> bool:
+    h, m = hhmm.split(':')
+    return re.search(r'(?<!\d)0?%d:%s(?!\d)' % (int(h), m), answer) is not None
+
+
+def has_count(answer: str, n: int, unit: str) -> bool:
+    """Счёт рядом со своей единицей: «3 երթ», «17 կետ», «41%» — а не любое «3» в ответе («5 երթ, որից 3-ը»)."""
+    return re.search(r'(?<![\d:.,])%d(?![\d:]|[.,]\d)[^\d\n]{0,14}?(?:%s)' % (n, unit), answer, re.I) is not None
 
 
 def has_number(answer: str, n: int | float) -> bool:
@@ -86,34 +97,37 @@ def questions(body: dict) -> list[dict]:
     sm = plan['summary']
     out: list[dict] = []
 
-    def q(qid, text, must=(), numbers=(), times=(), previews=False, lang='hy', must_not=()):
+    def q(qid, text, must=(), numbers=(), times=(), previews=False, lang='hy', must_not=(), counts=(), kg=None):
         out.append({'id': qid, 'q': text, 'must': [list(g) for g in must], 'numbers': [list(g) for g in numbers],
-                    'times': list(times), 'previews': previews, 'lang': lang, 'must_not': list(must_not)})
+                    'times': list(times), 'previews': previews, 'lang': lang, 'must_not': list(must_not),
+                    'counts': [list(c) for c in counts], 'kg': kg})
 
     last = max(pt, key=lambda t: clock(t['return']))
     q('last_return', 'Ո՞ր մեքենան է ամենաուշը վերադառնում պահեստ, և ժամը քանիսի՞ն։', must=[[last['car_code']]],
       times=[last['return'].split(' ')[0]])
-    q('trips_total', 'Ընդհանուր քանի՞ երթ կա այս օրը։', numbers=[[sm['trips']]])
-    q('stops_total', 'Քանի՞ խանութ է մտել երթերի մեջ։', numbers=[[sm['stops']]])
+    q('trips_total', 'Ընդհանուր քանի՞ երթ կա այս օրը։', counts=[(sm['trips'], 'երթ')])
+    q('stops_total', 'Քանի՞ խանութ է մտել երթերի մեջ։', counts=[(sm['stops'], 'խանութ|կետ|կանգառ')])
     q('km_total', 'Ընդհանուր քանի՞ կիլոմետր են անցնելու մեքենաները։', numbers=[around(sm['km'])])
     if sm.get('liters'):
         q('liters_total', 'Որքա՞ն դիզել կծախսվի ընդհանուր։', numbers=[around(sm['liters'])])
-    free = max(pt, key=lambda t: (next((x['capacity_kg'] for x in body['trucks'] if x['car_code'] == t['car_code']), 0) or 0) - t['kg'])
-    q('most_free', 'Երթ ունեցող մեքենաներից որի՞ մոտ է ամենաշատ ազատ տեղը։', must=[[free['car_code']]])
+    cap = {x['car_code']: x.get('capacity_kg') or 0 for x in body['trucks']}
+    trip_free = sorted(((cap.get(t['car_code'], 0) - tr['kg'], t['car_code']) for t in pt for tr in t['trips']), reverse=True)
+    if len(trip_free) == 1 or trip_free[0][0] - trip_free[1][0] >= 50:      # спорные почти равные — не спрашиваем
+        q('most_free', 'Ո՞ր երթում է ամենաշատ ազատ տեղը (բեռնատարողությունից հանած երթի բեռը)։', must=[[trip_free[0][1]]])
     big = max(pt, key=lambda t: (len(t['trips']), t['stops']))
     t1 = big['trips'][0]
-    q('trip_stops', 'Քանի՞ կետ ունի %s-ի երթ 1-ը։' % label(big['car_code']), numbers=[[len(t1['stops'])]])
+    q('trip_stops', 'Քանի՞ կետ ունի %s-ի երթ 1-ը։' % label(big['car_code']), counts=[(len(t1['stops']), 'կետ|խանութ|կանգառ')])
     q('depart', 'Ժամը քանիսի՞ն է առաջին անգամ մեկնում %s-ը։' % label(big['car_code']), times=[t1['depart']])
-    q('truck_kg', 'Քանի՞ կգ է տանում %s-ը ընդհանուր։' % label(big['car_code']), numbers=[around(big['kg'])])
+    q('truck_kg', 'Քանի՞ կգ է տանում %s-ը ընդհանուր։' % label(big['car_code']), kg=big['kg'])
     if t1.get('load_pct') is not None:
-        q('load_pct', 'Քանի՞ տոկոսով է լցված %s-ի երթ 1-ը։' % label(big['car_code']), numbers=[[t1['load_pct']]])
+        q('load_pct', 'Քանի՞ տոկոսով է լցված %s-ի երթ 1-ը։' % label(big['car_code']), counts=[(t1['load_pct'], '%|տոկոս')])
     lt = big['trips'][-1]
     q('last_stop', 'Ո՞րն է %s-ի վերջին երթի վերջին կանգառը։' % label(big['car_code']), must=[[word(lt['stops'][-1]['name'])]])
     if len(t1['stops']) >= 3 and t1['stops'][2].get('eta'):
         s3 = t1['stops'][2]
         q('stop_eta', 'Ժամը քանիսի՞ն է %s-ը հասնում «%s» խանութ։' % (label(big['car_code']), s3['name']), times=[s3['eta']])
     if body['orders'].get('no_coords'):
-        q('no_coords', 'Քանի՞ խանութի տեղն է բացակայում քարտեզում։', numbers=[[body['orders']['no_coords']]])
+        q('no_coords', 'Քանի՞ խանութի տեղն է բացակայում քարտեզում։', counts=[(body['orders']['no_coords'], 'խանութ')])
     base = plan.get('baseline')
     if base and base.get('km') is not None and base['km'] - sm['km'] >= 1:
         q('vs_managers', 'Քանի՞ կմ-ով է այս պլանը կարճ, քան եթե տանեին ըստ մենեջերների։', numbers=[around(base['km'] - sm['km'])])
@@ -150,8 +164,16 @@ def grade(item: dict, result: dict | None, error: str | None) -> list[str]:
         exact = len(group) == 1          # счёт (рейсы, точки, проценты) — ровно; around() — с допуском округления
         if not any(has_number(answer, n) for n in group) and (exact or not has_close(answer, group)):
             bad.append('нет числа: ' + ' / '.join(map(str, group)))
+    for n, unit in item.get('counts', []):
+        if not has_count(answer, n, unit):
+            bad.append('нет счёта: %s %s' % (n, unit))
+    if item.get('kg') is not None:
+        kg = item['kg']                      # «3872 կգ» или «3,9 տ»
+        tonnes = re.findall(r'(?<![\d:])(\d+(?:[.,]\d+)?)\s*տ(?![ա-ֆ])', answer)
+        if not has_close(answer, around(kg)) and not any(abs(float(x.replace(',', '.')) * 1000 - kg) <= 60 for x in tonnes):
+            bad.append('нет веса: %s кг' % kg)
     for t in item['times']:
-        if t not in answer and t.lstrip('0') not in answer:
+        if not has_time(answer, t):
             bad.append('нет времени: ' + t)
     if item['previews'] and not result.get('previews'):
         bad.append('не пересчитал «что если»')
@@ -177,13 +199,17 @@ def main() -> int:
     args = ap.parse_args()
 
     tmp = Path(tempfile.mkdtemp(prefix='ai_eval_'))
+    if not Path(args.db).is_file():
+        sys.exit('нет базы настроек: %s' % args.db)
+    # обе базы — только временные копии (courier.db нет — пустая временная): настоящие файлы не открываются
     for src, env in ((Path(args.db), 'ROUTES_DB_PATH'), (Path(args.db).with_name('courier.db'), 'COURIER_DB_PATH')):
-        if src.exists():
-            a, b = sqlite3.connect('file:%s?mode=ro' % src.as_posix(), uri=True), sqlite3.connect(str(tmp / src.name))
+        dst = tmp / src.name
+        if src.is_file():
+            a, b = sqlite3.connect('file:%s?mode=ro' % src.as_posix(), uri=True), sqlite3.connect(str(dst))
             a.backup(b)
             a.close()
             b.close()
-            os.environ[env] = str(tmp / src.name)
+        os.environ[env] = str(dst)
     os.chdir(ROOT)
     sys.path.insert(0, str(ROOT))
     from dotenv import load_dotenv

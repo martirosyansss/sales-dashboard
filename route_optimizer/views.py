@@ -1429,17 +1429,32 @@ def api_dispatch_reset() -> Any:
     return jsonify({'success': True, **_dispatch_body(dd)})
 
 
-def _ai_preview(dd: _DispatchDay, codes: list[str]) -> dict[str, Any]:
+def _ai_preview(dd: _DispatchDay, codes: list[str], memo: dict[str, Any]) -> dict[str, Any]:
     """«Что если» для чата: рейсы дня с другим набором машин — та же сборка, что «Վերակազմել երթերը»
-    (закреплённые рейсы остаются, исключённые заказы — вне), но только в памяти: ничего не сохраняется."""
+    (закреплённые рейсы остаются, исключённые заказы — вне), но только в памяти: ничего не сохраняется.
+    Рядом — такая же пересборка с нынешними машинами (раз на вопрос, memo): сохранённый план может содержать ручные
+    правки и принятую переработку, сравнивать смену машин честно только с пересборкой."""
     if dd.ctx is None:
         raise ai_chat.SimulationError('settings are incomplete: no depot or no trucks with capacity and fuel')
     unknown = sorted(set(codes) - set(dd.ready))
     if unknown:
         raise ai_chat.SimulationError('not ready or unknown trucks: %s; ready trucks: %s'
                                       % (', '.join(unknown), ', '.join(sorted(dd.ready))))
-    draft = dp.build(dd.ctx, dd.stops, copy.deepcopy(dd.draft), codes, _now())
-    return ai_chat.simulation_summary(dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd), explain=False), codes)
+
+    def rebuild(trucks: list[str]) -> dict[str, Any]:
+        try:
+            draft = dp.build(dd.ctx, dd.stops, copy.deepcopy(dd.draft), trucks, _now())
+        except dp.DispatchError as e:          # закреплённый рейс машине больше нельзя и т. п.
+            raise ai_chat.SimulationError('the planner refused: %s' % e) from None
+        return dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd), explain=False)
+
+    now = sorted(t for t in (dd.draft.trucks if dd.draft is not None else []) if t in dd.ready)
+    same = None
+    if now and now != codes:
+        if 'same' not in memo:
+            memo['same'] = ai_chat.simulation_brief(rebuild(now))
+        same = memo['same']
+    return ai_chat.simulation_summary(rebuild(codes), codes, same)
 
 
 @bp.post('/api/routes/dispatch/ask')
@@ -1455,7 +1470,9 @@ def api_dispatch_ask() -> Any:
         ai_chat.ensure_available()          # без ключа — не читать день зря
         state = _state()
         dd = _load_day(state, _bundle(state), day)
-        result = ai_chat.ask(_dispatch_body(dd), question, history, focus, simulate=lambda codes: _ai_preview(dd, codes))
+        memo: dict[str, Any] = {}
+        result = ai_chat.ask(_dispatch_body(dd), question, history, focus,
+                             simulate=lambda codes: _ai_preview(dd, codes, memo))
     except ai_chat.AiError as e:
         return jsonify({'success': False, 'error': str(e)}), e.status
     logger.info('[Routes] AI-вопрос по развозу на %s (%s)', day, session.get('username'))

@@ -146,6 +146,7 @@
         'Нет связи с AI — повторите позже': 'AI-ի հետ կապ չկա — կրկնեք ավելի ուշ',
         'AI не дал ответа — повторите вопрос': 'AI-ն պատասխան չտվեց — կրկնեք հարցը',
         'AI недоступен: на счёте Anthropic закончились средства — пополните баланс': 'AI-ն հասանելի չէ՝ Anthropic-ի հաշվին միջոցները վերջացել են — լիցքավորեք հաշիվը',
+        'AI не успел ответить — спросите короче или повторите': 'AI-ն չհասցրեց պատասխանել — հարցրեք ավելի կարճ կամ կրկնեք',
     };
     const SERVER_HY_PREFIX = [['машина не готова к расчёту: ', 'Մեքենան պատրաստ չէ հաշվարկի համար՝ ']];
     // StoreError «База настроек маршрутов <файл>: не удалось сохранить …» — по окончанию текста
@@ -162,16 +163,24 @@
         const p = SERVER_HY_PREFIX.find(([ru]) => t.startsWith(ru));
         return p ? p[1] + t.slice(p[0].length) : t;
     }
-    async function api(method, url, body) {
+    // timeoutMs — оборвать ожидание (вопрос AI: сервер укладывается в 100 с, страница ждёт 150 с)
+    async function api(method, url, body, timeoutMs) {
         const opts = { method, credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } };
+        let timer = null;
+        if (timeoutMs && typeof AbortController !== 'undefined') {
+            const ctl = new AbortController();
+            opts.signal = ctl.signal;
+            timer = setTimeout(() => ctl.abort(), timeoutMs);
+        }
         if (body !== undefined) {
             opts.headers['Content-Type'] = 'application/json';
             opts.body = JSON.stringify(body);
         }
         let resp;
         try { resp = await fetch(url, opts); } catch (e) {
+            if (e && e.name === 'AbortError') throw Object.assign(new Error('Պատասխանը շատ երկար է սպասվում — կրկնեք ավելի ուշ։'), { status: 0, data: null });
             throw Object.assign(new Error('Սերվերի հետ կապ չկա։'), { status: 0, data: null });
-        }
+        } finally { if (timer) clearTimeout(timer); }
         let data = null;
         try { data = await resp.json(); } catch (e) { data = null; }
         if (resp.ok && isObj(data) && data.success === true) return data;
@@ -1181,9 +1190,9 @@
         renderTruckCards(state.data.plan);
         if (!$('dpMapBox').open) { state.mapFocus = { truck: t.car_code, trip: tr ? tr.id : null }; $('dpMapBox').open = true; syncFocus(); }
         else setMapFocus({ truck: t.car_code, trip: tr ? tr.id : null });
-        const sideBySide = getComputedStyle(document.querySelector('.dp-mapcol')).position === 'sticky';
+        // к карточке (и рейсу): рядом закреплена карта, а на узком экране карта ниже рейсов — к ней ведёт «Քարտեզում»
         const card = [...$('dpTruckCards').querySelectorAll('.dp-tcard')].find(c => c.dataset.truck === t.car_code);
-        const target = sideBySide ? (tr && card ? card.querySelector('.dp-trip[data-trip="' + tr.id + '"]') || card : card) : $('dpMapBox');
+        const target = tr && card ? card.querySelector('.dp-trip[data-trip="' + tr.id + '"]') || card : card;
         if (target) target.scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
     }
 
@@ -1759,7 +1768,7 @@
         const box = $('dpMapBox');
         if (box.open) drawMap(); else box.open = true;   // открытие само перерисует карту (toggle)
         syncFocus();
-        // карта закреплена рядом с рейсами и видна — не прокручивать; иначе (телефон, карта выше) — к карте
+        // карта закреплена рядом с рейсами и видна — не прокручивать; иначе (узкий экран, карта ниже рейсов) — к карте
         const r = $('dpMap').getBoundingClientRect();
         if (!box.open || r.top < 0 || r.top > window.innerHeight - 160) box.scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
     }
@@ -2486,7 +2495,7 @@
         if (fromInput) { $('dpAiInput').value = ''; aiResize(); }
         $('dpAiInput').focus();         // нажатая подсказка или «Կրկնել» исчезли — фокус в поле ввода
         try {
-            const r = await api('POST', '/api/routes/dispatch/ask', { date: day, question: q, history, focus });
+            const r = await api('POST', '/api/routes/dispatch/ask', { date: day, question: q, history, focus }, 150000);
             const note = r.truncated ? 'Պատասխանը կտրվել է՝ շատ երկար էր։ Հարցրեք ավելի նեղ։' : '';
             chat.push({ role: 'user', text: q }, { role: 'assistant', text: r.answer, note });
             if (wait.isConnected) wait.replaceWith(aiMsg('assistant', r.answer, note));

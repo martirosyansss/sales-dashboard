@@ -349,7 +349,8 @@ def test_what_if_runs_preview_and_answers_from_it():
     assert r['answer'] == 'Առանց CAR3-ի բոլորը տեղավորվում են։' and r['previews'] == 1
     assert got == [['CAR1', 'CAR2']]                                   # без повторов, по порядку
     first, second = fake.calls
-    assert first['tools'] == ai_chat.TOOLS and first['tool_choice'] == {'type': 'auto'}
+    assert first['tools'] == ai_chat.TOOLS and first['tool_choice'] == {'type': 'auto', 'disable_parallel_tool_use': True}
+    assert second['tool_choice'] == first['tool_choice']                # тот же — данные дня остаются в кэше
     assert ai_chat.TOOLS[0]['strict'] is True and ai_chat.TOOLS[0]['input_schema']['additionalProperties'] is False
     msgs = second['messages']
     assert msgs[-2]['role'] == 'assistant' and msgs[-2]['content'][0].type == 'thinking'   # ответ модели целиком
@@ -365,19 +366,49 @@ def test_what_if_bad_input_and_simulation_errors_go_back_to_the_model():
         raise ai_chat.SimulationError('not ready or unknown trucks: X9')
     fake = ScriptedClient(('tool', {'trucks': []}), ('tool', {'trucks': ['X9']}), ('text', 'Չի ստացվում։'))
     r = ai_chat.ask(BODY, 'q', [], client=fake, simulate=simulate)
-    assert r['answer'] == 'Չի ստացվում։' and r['previews'] == 2
+    assert r['answer'] == 'Չի ստացվում։' and r['previews'] == 0          # неудачные пересборки не считаются
     bad = fake.calls[1]['messages'][-1]['content'][0]
     assert bad['is_error'] is True and 'non-empty list' in bad['content']
     err = fake.calls[2]['messages'][-1]['content'][0]
     assert err['is_error'] is True and 'X9' in err['content']
 
 
-def test_what_if_stops_after_max_steps_with_text_only_call():
+def test_what_if_limit_counts_successful_rebuilds_and_ends_with_text():
+    """Не больше MAX_PREVIEWS пересборок: дальше модель получает «лимит» и отвечает тем, что уже посчитано."""
     calls = []
-    fake = ScriptedClient(*[('tool', {'trucks': ['A']})] * ai_chat.MAX_TOOL_STEPS, ('text', 'Վերջ։'))
-    r = ai_chat.ask(BODY, 'q', [], client=fake, simulate=lambda codes: calls.append(codes) or {'saved': False})
-    assert r['answer'] == 'Վերջ։' and len(calls) == ai_chat.MAX_TOOL_STEPS
-    assert [c['tool_choice'] for c in fake.calls] == [{'type': 'auto'}] * ai_chat.MAX_TOOL_STEPS + [{'type': 'none'}]
+    fake = ScriptedClient(*[('tool', {'trucks': ['A']})] * (ai_chat.MAX_PREVIEWS + 1), ('text', 'Վերջ։'))
+    r = ai_chat.ask(BODY, 'q', [], client=fake, simulate=lambda codes: calls.append(codes) or {'ok': 1})
+    assert r['answer'] == 'Վերջ։' and r['previews'] == ai_chat.MAX_PREVIEWS == len(calls)
+    assert len(fake.calls) == ai_chat.MAX_PREVIEWS + 2 == ai_chat.MAX_CALLS
+    limit = fake.calls[-1]['messages'][-1]['content'][0]
+    assert limit['is_error'] is True and limit['content'].startswith('limit reached')
+    assert all(c['tool_choice'] == {'type': 'auto', 'disable_parallel_tool_use': True} for c in fake.calls)
+
+
+def test_what_if_model_that_never_stops_gets_an_error_not_a_hang():
+    fake = ScriptedClient(*[('tool', {'trucks': ['A']})] * ai_chat.MAX_CALLS)
+    with pytest.raises(ai_chat.AiError) as e:
+        ai_chat.ask(BODY, 'q', [], client=fake, simulate=lambda codes: {'ok': 1})
+    assert e.value.status == 502 and len(fake.calls) == ai_chat.MAX_CALLS
+
+
+def test_what_if_crash_in_rebuild_becomes_tool_error():
+    def simulate(codes):
+        raise RuntimeError('solver died')
+    fake = ScriptedClient(('tool', {'trucks': ['A']}), ('text', 'Չհաջողվեց հաշվել։'))
+    r = ai_chat.ask(BODY, 'q', [], client=fake, simulate=simulate)
+    err = fake.calls[1]['messages'][-1]['content'][0]
+    assert r['answer'] == 'Չհաջողվեց հաշվել։' and r['previews'] == 0
+    assert err['is_error'] is True and 'internal error' in err['content'] and 'solver' not in err['content']
+
+
+def test_ask_stops_when_time_budget_is_spent(monkeypatch):
+    ticks = [0.0, 0.0, 0.0]               # старт, перед 1-м запросом, перед пересборкой; дальше — бюджет исчерпан
+    monkeypatch.setattr(ai_chat.time, 'monotonic', lambda: ticks.pop(0) if ticks else ai_chat.BUDGET_S)
+    fake = ScriptedClient(('tool', {'trucks': ['A']}), ('text', 'никогда'))
+    with pytest.raises(ai_chat.AiError) as e:
+        ai_chat.ask(BODY, 'q', [], client=fake, simulate=lambda codes: {'ok': 1})
+    assert e.value.status == 504 and len(fake.calls) == 1
 
 
 def test_simulation_summary_is_compact_and_says_nothing_saved():
@@ -389,6 +420,7 @@ def test_simulation_summary_is_compact_and_says_nothing_saved():
             'summary': {'trucks': 1, 'trips': 1, 'stops': 2, 'kg': 900, 'km': 50.0, 'liters': 6.1, 'operating_cost_amd': 4270}}
     s = ai_chat.simulation_summary(view, ['A', 'B'])
     assert s['idle_trucks'] == ['B'] and s['working_trucks'] == ['A', 'B'] and 'nothing was saved' in s['note']
+    assert 'Flags that are false are left out' in s['note'] and 'same_trucks_rebuild' not in s
     assert s['trucks_with_trips'][0]['trips'] == [{'trip_no': 1, 'depart': '09:00', 'return': '17:10', 'kg': 900,
                                                   'load_pct': 41, 'km': 50.0, 'liters': 6.1, 'stops_count': 2}]
     assert s['unassigned_count'] == 1 and s['unassigned'] == ['name|code|kg|no_room', 'Խանութ|C1|300|yes']
@@ -402,12 +434,32 @@ def test_api_what_if_rebuilds_in_memory_and_saves_nothing(client, monkeypatch):
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'test-key')
     monkeypatch.setattr(ai_chat, '_get_client', lambda: fake)
     r = client.post('/api/routes/dispatch/ask', json={'date': '2026-10-01', 'question': 'Ի՞նչ կլինի առանց CAR1-ի'})
-    assert r.status_code == 200 and r.get_json()['previews'] == 2
+    assert r.status_code == 200 and r.get_json()['previews'] == 1         # вторая — ошибка «нет такой машины»
     import json as _json
     preview = _json.loads(fake.calls[1]['messages'][-1]['content'][0]['content'])
     assert preview['working_trucks'] == ['CAR2'] and 'CAR1' not in _json.dumps(preview['trucks_with_trips'])
     assert 'nothing was saved' in preview['note']
+    same = preview['same_trucks_rebuild']                                   # нынешние машины CAR1+CAR2, пересобранные так же
+    assert {t['car_code'] for t in same['trucks']} <= {'CAR1', 'CAR2'} and 'summary' in same
     err = fake.calls[2]['messages'][-1]['content'][0]
     assert err['is_error'] is True and 'NOPE' in err['content'] and 'CAR1' in err['content']   # подсказка, какие есть
     after = client.get('/api/routes/dispatch?date=2026-10-01').get_json()
     assert after['rev'] == before['rev'] and after['plan'] == before['plan']          # план не тронут
+
+
+def test_api_what_if_planner_refusal_is_a_tool_error_not_a_400(client, monkeypatch):
+    """Сборка отказала (например, закреплённый рейс больше нельзя этой машине) — модель узнаёт об этом, вопрос не падает."""
+    from route_optimizer import dispatch as dp_mod
+    _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2)])
+    assert client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).status_code == 200
+
+    def refuse(*a, **k):
+        raise dp_mod.DispatchError('Эта машина не может обслужить магазин')
+    monkeypatch.setattr(dp_mod, 'build', refuse)
+    fake = ScriptedClient(('tool', {'trucks': ['CAR2']}), ('text', 'Չի ստացվում։'))
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'test-key')
+    monkeypatch.setattr(ai_chat, '_get_client', lambda: fake)
+    r = client.post('/api/routes/dispatch/ask', json={'date': '2026-10-01', 'question': 'q'})
+    assert r.status_code == 200 and r.get_json()['answer'] == 'Չի ստացվում։'
+    err = fake.calls[1]['messages'][-1]['content'][0]
+    assert err['is_error'] is True and err['content'].startswith('the planner refused')
