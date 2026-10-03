@@ -216,10 +216,13 @@ def _http_error(cls, status):
     (lambda: _http_error(anthropic.NotFoundError, 404), 'AI недоступен: модель не найдена — проверьте ROUTES_AI_MODEL'),
     (lambda: _http_error(anthropic.RateLimitError, 429), 'AI сейчас перегружен — повторите через минуту'),
     (lambda: _http_error(anthropic.BadRequestError, 400), 'AI не принял запрос — начните новый разговор'),
+    (lambda: anthropic.BadRequestError('Your credit balance is too low to access the Anthropic API.',
+                                       response=httpx.Response(400, request=httpx.Request('POST', 'https://api.anthropic.com')),
+                                       body=None), 'AI недоступен: на счёте Anthropic закончились средства — пополните баланс'),
     (lambda: _http_error(anthropic.InternalServerError, 500), 'AI временно недоступен — повторите позже'),
     (lambda: anthropic.APIConnectionError(request=httpx.Request('POST', 'https://api.anthropic.com')), 'Нет связи с AI — повторите позже'),
     (lambda: anthropic.APITimeoutError(request=httpx.Request('POST', 'https://api.anthropic.com')), 'Нет связи с AI — повторите позже'),
-], ids=['auth', 'permission', 'model', 'rate', 'bad', 'server', 'connection', 'timeout'])
+], ids=['auth', 'permission', 'model', 'rate', 'bad', 'credits', 'server', 'connection', 'timeout'])
 def test_ask_maps_api_errors(error, text):
     with pytest.raises(ai_chat.AiError) as e:
         ai_chat.ask(BODY, 'q', [], client=FakeClient(error=error()))

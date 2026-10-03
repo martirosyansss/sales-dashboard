@@ -413,6 +413,8 @@ def _create(client: Any, model: str, messages: list[dict[str, Any]], kw: dict[st
         raise AiError('AI сейчас перегружен — повторите через минуту') from None
     except anthropic.BadRequestError as e:
         logger.error('[Routes AI] запрос отклонён: %s', e.message)
+        if 'credit balance' in str(e.message).lower():      # API отвечает 400, когда на счёте закончились средства
+            raise AiError('AI недоступен: на счёте Anthropic закончились средства — пополните баланс') from None
         raise AiError('AI не принял запрос — начните новый разговор', 502) from None
     except anthropic.APIStatusError as e:
         logger.warning('[Routes AI] ошибка API %s', e.status_code)
