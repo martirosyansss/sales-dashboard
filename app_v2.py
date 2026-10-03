@@ -3,7 +3,7 @@ Sales Dashboard v2.0 - READ-ONLY Analytics Platform
 Работает с реальной БД AS-Sales Management
 """
 
-from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response, stream_with_context, session, redirect, url_for
+from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response, stream_with_context, session, redirect, url_for, g
 import pyodbc
 from datetime import datetime, timedelta
 import os
@@ -163,7 +163,11 @@ db = DatabaseConnection()
 #   - 'user'  — доступ ограничен назначенными территориями (sales_area). Ограничение
 #               ПРИНУДИТЕЛЬНОЕ на стороне сервера (см. _enforce_restricted): чужие
 #               территории недоступны даже прямым запросом к API.
+#   - 'garage' — начальник гаража (ответ владельца №53): только журнал ремонтов и пробега
+#               «Ավտոտնակ» /routes/garage и его API (см. _enforce_garage); территорий нет.
 USERS_FILE = 'users.json'
+USER_ROLES = ('admin', 'user', 'garage')
+GARAGE_ROLE = 'garage'
 
 
 def save_users(users: dict) -> bool:
@@ -255,6 +259,7 @@ def _inject_auth_context():
         'current_user': u,
         'current_username': current_username(),
         'is_admin': bool(u) and u.get('role') == 'admin',
+        'is_garage': bool(u) and u.get('role') == GARAGE_ROLE,
     }
 
 
@@ -327,6 +332,28 @@ def _restricted_path_allowed(path: str, method: str) -> bool:
     if _CUSTOMER_PURCHASES_RE.match(path):
         return True
     return False
+
+
+# ---- Роль 'garage': только журнал гаража (default-deny) ---------------------------
+# Страница (GET) и её API (GET и POST); статика и выход пропускаются раньше. Всё прочее — 403 JSON или
+# переход на страницу гаража. Границы пути — по сегменту: '/api/routes/garage-x' не совпадает.
+_GARAGE_PAGE = '/routes/garage'
+_GARAGE_API = '/api/routes/garage'
+
+
+def _garage_path_allowed(path: str, method: str) -> bool:
+    if method in ('GET', 'HEAD') and path == _GARAGE_PAGE:
+        return True
+    return method in ('GET', 'HEAD', 'POST') and (path == _GARAGE_API or path.startswith(_GARAGE_API + '/'))
+
+
+def _enforce_garage():
+    """Запрос роли 'garage': разрешённое — дальше, остальное — 403 (API) или на страницу гаража."""
+    if _garage_path_allowed(request.path, request.method):
+        return None
+    if _wants_json():
+        return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
+    return redirect(_GARAGE_PAGE)
 
 
 def _customer_in_scope(customer_id, scope) -> bool:
@@ -414,8 +441,12 @@ def _auth_and_scope_gate():
     if not user:
         return _reject_unauthenticated()
 
-    if user.get('role') == 'admin':
+    role = user.get('role')
+    g.user_role = role   # роль вошедшего — разделам (route_optimizer: удалённые записи журнала гаража — администратору)
+    if role == 'admin':
         return None  # полный доступ
+    if role == GARAGE_ROLE:
+        return _enforce_garage()
 
     return _enforce_restricted(user)
 
@@ -491,7 +522,9 @@ def login():
             session.clear()          # регенерация сессии — против фиксации
             session['username'] = username
             session.permanent = True
-            if user.get('role') != 'admin':
+            if user.get('role') == GARAGE_ROLE:
+                target = _GARAGE_PAGE   # начальник гаража видит только журнал гаража
+            elif user.get('role') != 'admin':
                 # Ограниченного пользователя всегда ведём на его территориальную страницу.
                 target = '/areas'
             else:
@@ -8525,7 +8558,7 @@ def api_users_list():
 def api_users_save():
     """Создать или обновить пользователя.
 
-    Тело: {username, password?, role, areas[], display_name}.
+    Тело: {username, password?, role, areas[], display_name}. Роль: admin | user | garage (у гаража территорий нет).
     Для нового пользователя пароль обязателен; при обновлении — только если задан.
     """
     if not is_admin():
@@ -8535,8 +8568,8 @@ def api_users_save():
     if not username:
         return jsonify({'success': False, 'error': 'Не указан логин'}), 400
 
-    role = data.get('role') if data.get('role') in ('admin', 'user') else 'user'
-    raw_areas = data.get('areas') or []
+    role = data.get('role') if data.get('role') in USER_ROLES else 'user'
+    raw_areas = [] if role == GARAGE_ROLE else (data.get('areas') or [])   # у гаража территорий нет
     if not isinstance(raw_areas, list):
         raw_areas = []
     areas = []

@@ -770,7 +770,8 @@
                         <p class="text-muted small mb-0 mt-2">
                             <i class="fas fa-info-circle"></i>
                             Администратор видит все данные. Пользователь видит только назначенные территории
-                            (страницы «Территории» и «Клиенты Grid»). Ограничение действует на стороне сервера.
+                            (страницы «Территории» и «Клиенты Grid»). Гараж — только журнал ремонтов и пробега машин
+                            (страница «Ավտոտնակ»). Ограничение действует на стороне сервера.
                         </p>
                     </div>
                     <button class="btn btn-warning" @click="newUser()">
@@ -796,14 +797,17 @@
                                         <td x-text="u.display_name || '—'"></td>
                                         <td>
                                             <span class="badge"
-                                                  :class="u.role === 'admin' ? 'bg-primary' : 'bg-secondary'"
-                                                  x-text="u.role === 'admin' ? 'Администратор' : 'Пользователь'"></span>
+                                                  :class="u.role === 'admin' ? 'bg-primary' : (u.role === 'garage' ? 'bg-info' : 'bg-secondary')"
+                                                  x-text="u.role === 'admin' ? 'Администратор' : (u.role === 'garage' ? 'Гараж' : 'Пользователь')"></span>
                                         </td>
                                         <td>
                                             <template x-if="u.role === 'admin'">
                                                 <span class="text-muted">все</span>
                                             </template>
-                                            <template x-if="u.role !== 'admin'">
+                                            <template x-if="u.role === 'garage'">
+                                                <span class="text-muted">— (только журнал гаража)</span>
+                                            </template>
+                                            <template x-if="u.role !== 'admin' && u.role !== 'garage'">
                                                 <span>
                                                     <template x-for="code in u.areas" :key="code">
                                                         <span class="badge bg-info bg-opacity-75 me-1" x-text="code"></span>
@@ -863,6 +867,7 @@
                             <label class="form-label">Роль</label>
                             <select class="form-select" x-model="userForm.role">
                                 <option value="user">Пользователь (по территориям)</option>
+                                <option value="garage">Гараж (только журнал ремонтов и пробега)</option>
                                 <option value="admin">Администратор (полный доступ)</option>
                             </select>
                         </div>
@@ -875,7 +880,7 @@
                             <input type="password" class="form-control" x-model="userForm.password"
                                    autocomplete="new-password" placeholder="Пароль">
                         </div>
-                        <div class="col-12" x-show="userForm.role !== 'admin'">
+                        <div class="col-12" x-show="userForm.role === 'user'">
                             <label class="form-label d-flex justify-content-between align-items-center">
                                 <span>Территории <span class="text-danger">*</span></span>
                                 <span>
