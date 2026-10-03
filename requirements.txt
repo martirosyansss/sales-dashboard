@@ -6,6 +6,6 @@ numpy>=1.26
 scipy>=1.11
 pyvrp==0.14.0
 osmium>=3.7
-pyvalhalla==3.9.0; python_version >= "3.12" and platform_machine == "AMD64"
+pyvalhalla==3.9.0; python_version >= "3.12" and (platform_machine == "AMD64" or platform_machine == "x86_64")
 segno>=1.6
 waitress>=3.0

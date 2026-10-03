@@ -84,8 +84,10 @@ powershell -ExecutionPolicy Bypass -File install_server.ps1 -Token "github_pat_�
 
 **Нужен 64-битный Python 3.12 или новее.** На PyPI у `pyvalhalla` 3.9.0 — wheel под Windows только для x86-64
 (`cp312-abi3-win_amd64`), wheel под Linux и macOS и исходники (sdist, 36,5 МБ). Строка в `requirements.txt` — с
-маркером `python_version >= "3.12" and platform_machine == "AMD64"`: на Python ниже 3.12 и не на Windows x86-64
-(Linux, macOS, Windows на ARM) pip её пропускает, и всё работает как раньше — без Valhalla, по графу OSM.
+маркером `python_version >= "3.12" and (platform_machine == "AMD64" or platform_machine == "x86_64")`: ставится на
+Windows x86-64 и Linux x86-64 (сервер терминалов CT115, wheel `manylinux_2_28_x86_64`); на Python ниже 3.12 и на других
+платформах (macOS, ARM) pip её пропускает, и всё работает как раньше — без Valhalla, по графу OSM. На Linux каталог
+тайлов задаётся явно (`ROUTES_VALHALLA_DIR`, например `/var/lib/araqich/valhalla` — служба пишет только в свой каталог).
 32-битный Python на 64-битной Windows маркер не отличит (`platform_machine` — архитектура Windows, а не Python): wheel
 для него нет, pip возьмёт исходники, сборка упадёт — и `pip install -r requirements.txt` не поставит ничего. Поэтому
 на сервере — только 64-битный Python 3.12+. Проверка: `python -c "import struct; print(struct.calcsize('P')*8)"` —
