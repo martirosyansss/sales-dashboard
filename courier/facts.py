@@ -13,12 +13,12 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
 from route_optimizer import actuals as ac
 from route_optimizer.geo import Point
-from route_optimizer.learning import effective_refuels, odometer_plausible, track_fixes
+from route_optimizer.learning import REFUEL_WINDOW_DAYS, effective_refuels, odometer_plausible, track_fixes
 
 from . import clock, merge as mg
 from .store import Store
@@ -40,13 +40,22 @@ def gps_summary(points: Sequence[Sequence[Any]], stops: Sequence[Mapping[str, An
             'last': clock.iso(fixes[-1].at)}
 
 
-def refuel_flags(refuels: Sequence[Mapping[str, Any]], until: datetime | None = None) -> dict[str, list[str]]:
+def office_window(day: date) -> tuple[datetime, datetime]:
+    """Окно пересчёта флага одометра для офиса: ± REFUEL_WINDOW_DAYS / 2 вокруг показываемого дня (Ереван) — и более
+    поздние заправки, которые разрешают неоднозначность, и ограниченное время."""
+    half = timedelta(days=REFUEL_WINDOW_DAYS // 2)
+    return (datetime.combine(day, datetime.min.time(), clock.YEREVAN) - half,
+            datetime.combine(day, datetime.max.time(), clock.YEREVAN) + half)
+
+
+def refuel_flags(refuels: Sequence[Mapping[str, Any]], since: datetime | None = None,
+                 until: datetime | None = None) -> dict[str, list[str]]:
     """id заправки → флаги: сохранённые при приёме без odometer_suspicious + odometer_suspicious, если одометр не входит
     в самую длинную согласованную цепочку действующих заправок машины (route_optimizer.learning.odometer_plausible;
-    момент исправления — момент исходной заправки). Цепочка — по окну заправок до until (effective_refuels: последние
-    REFUEL_WINDOW_DAYS дней, не больше REFUEL_WINDOW_MAX); вне окна флаг не пересчитывается. У вытесненных флага нет."""
+    момент исправления — момент исходной заправки). Цепочка — по заправкам с моментом в [since, until] (офис — вокруг
+    показываемого дня); вне окна флаг не пересчитывается. У вытесненных флага нет."""
     out = {r['id']: [f for f in r.get('flags') or () if f != SUSPICIOUS] for r in refuels}
-    for items in effective_refuels(refuels, until).values():
+    for items in effective_refuels(refuels, since, until).values():
         for (_, eid, _), ok in zip(items, odometer_plausible([(at, p.get('odometer_km')) for at, _, p in items])):
             if not ok:
                 out[eid] = sorted({*out[eid], SUSPICIOUS})

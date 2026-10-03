@@ -21,7 +21,8 @@
   участкам трека) → FleetTruck.fuel_empty_l_per_100km / fuel_full_l_per_100km, а l100 машины (стоимость PyVRP,
   сравнения «Развоза») — расход при половинной загрузке. Момент заправки — момент исходной заправки цепочки
   исправлений (supersedes); одометр — по самой длинной согласованной цепочке заправок машины (флаг при приёме не
-  учитывается: опечатка в первой заправке не портит остальные).
+  учитывается: опечатка в первой заправке не портит остальные). Ограничение: соседние заправки цепочки — не дальше
+  REFUEL_LOOKBACK позиций: серия из ≥ 50 сомнительных одометров подряд (например, сломанный счётчик) разрывает цепочку.
 
 Правило принятия (одно для всех): обучение — на днях до отложенной недели (TRAIN_DAYS дней), проверка — на последних
 HOLDOUT_DAYS днях (до вчера включительно; у расхода — последние FUEL_TEST интервала заправок, а форма модели
@@ -82,8 +83,8 @@ FUEL_MIN_KM = 50.0                   # интервал заправок кор�
 FUEL_L100 = (3.0, 80.0)
 FUEL_TRACK_COVER = 0.6               # участки трека покрывают не меньше 60% км одометра интервала
 REFUEL_KM_PER_DAY = 1500.0           # как courier.events: прирост одометра больше — несогласован
-REFUEL_WINDOW_DAYS = 400             # проверка одометра — по заправкам машины за последние 400 дней…
-REFUEL_WINDOW_MAX = 300              # …и не больше 300 последних (ограниченное время на приёме и в офисе)
+REFUEL_WINDOW_DAYS = 400             # приём заправки: цепочка одометра — по заправкам ± 400 дней от неё…
+REFUEL_WINDOW_MAX = 300              # …и не больше 300 (время приёма ограничено); офис — ± 200 дней вокруг дня
 REFUEL_LOOKBACK = 50                 # в цепочке соседние заправки — не дальше 50 позиций (пропущено подряд ≤ 49 сомнительных)
 NIGHTLY_AT = (3, 0)                  # ночной прогон — 03:00 Еревана
 
@@ -750,8 +751,10 @@ def odometer_plausible(items: Sequence[tuple[datetime, Any]]) -> list[bool]:
     убывает и прирастает не больше REFUEL_KM_PER_DAY × суток (не меньше 1) между соседними в цепочке; согласован —
     одометр, входящий во ВСЕ самые длинные цепочки (неоднозначная пара — оба сомнительны, пока следующие заправки не
     разрешат). Опечатка вверх или вниз — вне цепочки; опечатка в первой заправке не портит остальные. Не число —
-    сомнителен. Соседние в цепочке — не дальше REFUEL_LOOKBACK позиций (O(n·k)); вызывающие дают заправки за
-    ограниченное окно (effective_refuels: REFUEL_WINDOW_DAYS, REFUEL_WINDOW_MAX)."""
+    сомнителен. Соседние в цепочке — не дальше REFUEL_LOOKBACK позиций (O(n·k)): ≥ REFUEL_LOOKBACK сомнительных
+    одометров подряд цепочка не перешагнёт — хорошие заправки по разные стороны такой серии считаются раздельно (меньшая
+    часть — сомнительной). Вызывающие дают заправки за окно по времени (effective_refuels); приём заправки — окно ±
+    REFUEL_WINDOW_DAYS и не больше REFUEL_WINDOW_MAX (courier.events)."""
     ok = [isinstance(o, (int, float)) and not isinstance(o, bool) and math.isfinite(o) for _, o in items]
     idx = [i for i, good in enumerate(ok) if good]
 
@@ -786,11 +789,12 @@ def odometer_plausible(items: Sequence[tuple[datetime, Any]]) -> list[bool]:
             for i, good in enumerate(ok)]
 
 
-def effective_refuels(refuels: Sequence[Mapping[str, Any]], until: datetime | None = None
-                      ) -> dict[str, list[tuple[datetime, str, Mapping[str, Any]]]]:
+def effective_refuels(refuels: Sequence[Mapping[str, Any]], since: datetime | None = None,
+                      until: datetime | None = None) -> dict[str, list[tuple[datetime, str, Mapping[str, Any]]]]:
     """Действующие (не вытесненные) заправки по машине: [(момент, id, payload)] по моменту. Момент — исходной заправки
-    цепочки исправлений (eff_at_utc от courier.store.Store.refuels), без него — свой. Окно: до until (по умолчанию —
-    до последней заправки машины) не дальше REFUEL_WINDOW_DAYS и не больше REFUEL_WINDOW_MAX последних заправок."""
+    цепочки исправлений (eff_at_utc от courier.store.Store.refuels), без него — свой. since/until — окно по моменту,
+    которое задаёт вызывающий (отчёт и обучение — свой период с запасом, офис — вокруг показываемого дня); без числового
+    предела: время проверки одометра ограничивает REFUEL_LOOKBACK (O(n·k))."""
     by_car: dict[str, list[tuple[datetime, str, Mapping[str, Any]]]] = {}
     for r in refuels:
         if r.get('superseded'):
@@ -799,15 +803,10 @@ def effective_refuels(refuels: Sequence[Mapping[str, Any]], until: datetime | No
             at = datetime.fromisoformat(r.get('eff_at_utc') or r['at_utc'])
         except (TypeError, ValueError, KeyError):
             continue
-        if until is not None and at > until:
+        if (since is not None and at < since) or (until is not None and at > until):
             continue
         by_car.setdefault(r['car_code'], []).append((at, r['id'], r.get('payload') or {}))
-    out = {}
-    for car, items in by_car.items():
-        items.sort(key=lambda x: (x[0], x[1]))
-        last = until if until is not None else items[-1][0]
-        out[car] = [x for x in items if x[0] >= last - timedelta(days=REFUEL_WINDOW_DAYS)][-REFUEL_WINDOW_MAX:]
-    return out
+    return {car: sorted(items, key=lambda x: (x[0], x[1])) for car, items in by_car.items()}
 
 
 def fuel_intervals(refuels: Sequence[Mapping[str, Any]]) -> list[Interval]:

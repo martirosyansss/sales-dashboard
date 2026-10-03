@@ -10,7 +10,7 @@ import random
 import sys
 import threading
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -19,10 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from courier import clock, events as ev  # noqa: E402
-from courier.facts import FactsSource, refuel_flags  # noqa: E402
+from courier.facts import FactsSource, office_window, refuel_flags  # noqa: E402
 from courier.store import Store as CourierStore  # noqa: E402
 from route_optimizer import actuals as ac, learning as lr, views  # noqa: E402
-from test_learning_loop import DEPOT, TODAY, Track, _learning_client, _stops, _t  # noqa: E402
+from test_learning_loop import DEPOT, TODAY, FakeFacts, Track, _learning_client, _stops, _t  # noqa: E402
 from test_route_optimizer import DP_DEPOT, _dispatch_setup, _dorder, _no_road_map, client  # noqa: E402,F401
 
 TZ = ac.YEREVAN
@@ -346,13 +346,11 @@ def test_odometer_lookback_matches_full_chain_and_is_fast():
 def test_refuel_window_bounds_chain_and_ingest(tmp_path, monkeypatch):
     rows = [{'id': f'r{i:04d}', 'car_code': 'CAR1', 'at_utc': (datetime(2024, 1, 1, tzinfo=TZ) + timedelta(days=i)).isoformat(),
              'payload': {'odometer_km': 1000 + 100 * i, 'liters': 20.0}, 'superseded': False} for i in range(700)]
-    win = lr.effective_refuels(rows)['CAR1']
-    assert len(win) <= lr.REFUEL_WINDOW_MAX and win[-1][1] == 'r0699'
-    assert win[0][0] >= win[-1][0] - timedelta(days=lr.REFUEL_WINDOW_DAYS)
+    assert len(lr.effective_refuels(rows)['CAR1']) == 700                       # окно задаёт вызывающий, по времени
     mid = datetime(2024, 1, 1, tzinfo=TZ) + timedelta(days=100)
-    around = lr.effective_refuels(rows, mid)['CAR1']
-    assert around[-1][1] == 'r0100' and len(around) == 101
-    assert set(refuel_flags(rows, mid)) == {r['id'] for r in rows}             # флаги есть у всех, пересчёт — в окне
+    around = lr.effective_refuels(rows, mid - timedelta(days=10), mid)['CAR1']
+    assert (around[0][1], around[-1][1], len(around)) == ('r0090', 'r0100', 11)
+    assert set(refuel_flags(rows, mid, mid)) == {r['id'] for r in rows}        # флаги есть у всех, пересчёт — в окне
     monkeypatch.setattr(clock, 'now', lambda: datetime(2026, 10, 2, 12, 0, tzinfo=TZ))
     cs = CourierStore(str(tmp_path / 'c.db'))
     did = cs.save_driver(None, 'D', True, '5656', 'admin')
@@ -368,3 +366,104 @@ def test_refuel_window_bounds_chain_and_ingest(tmp_path, monkeypatch):
     flags = {r['id']: r['flags'] for r in cs.refuels()}
     assert all(flags[e['id']] == [] for e in good)                                 # старая опечатка вне окна не мешает
     assert json.dumps(flags)                                                       # и сохранённые флаги читаются
+
+
+# ============================== раунд 2: окно заправок — по периоду вызывающего ==============================
+
+def _daily_refuels(per_day, days, typo=None):
+    """Строки Store.refuels машины CAR1 до вчера: per_day заправок в день «до полного бака»; typo — номер с опечаткой."""
+    rnd = random.Random(3)
+    out, odo, i = [], 100000, 0
+    t = datetime(TODAY.year, TODAY.month, TODAY.day, 7, 0, tzinfo=TZ) - timedelta(days=days)
+    while t.date() < TODAY:
+        odo += rnd.randint(60, 300) / per_day
+        o = round(odo) * 10 if i == typo else round(odo)
+        u = t.astimezone(timezone.utc).isoformat()
+        out.append({'id': f'r{i:05d}', 'car_code': 'CAR1', 'date': t.date().isoformat(), 'at': t.isoformat(), 'at_utc': u,
+                    'eff_at_utc': u, 'eff_at': t.isoformat(), 'eff_date': t.date().isoformat(),
+                    'payload': {'liters': 30.0, 'odometer_km': o, 'full_tank': True}, 'flags': [], 'superseded': False})
+        t += timedelta(days=1) / per_day
+        i += 1
+    return out
+
+
+def _full_history(fn, *args):
+    """Как в 6cf2781: вся история заправок — без окна (REFUEL_WINDOW_*) и без ограничения соседей в цепочке."""
+    saved = lr.REFUEL_LOOKBACK, lr.REFUEL_WINDOW_DAYS, lr.REFUEL_WINDOW_MAX
+    lr.REFUEL_LOOKBACK, lr.REFUEL_WINDOW_DAYS, lr.REFUEL_WINDOW_MAX = 10 ** 6, 36500, 10 ** 6   # дни: 100 лет
+    try:
+        return fn(*args)
+    finally:
+        lr.REFUEL_LOOKBACK, lr.REFUEL_WINDOW_DAYS, lr.REFUEL_WINDOW_MAX = saved
+
+
+def test_round2_report_far_back_keeps_refuel_liters(client, monkeypatch):
+    """Отчёт за дни 320 дней назад при ежедневных заправках: литры есть и те же, что по всей истории (6cf2781)."""
+    state = _learning_client(client, monkeypatch, days=3)
+    refs = _daily_refuels(1.0, 800)
+    ref_ivs = _full_history(lr.fuel_intervals, refs)
+    for back in (30, 200, 320):
+        days = [TODAY - timedelta(days=back - k) for k in range(5)]
+        state.fleet_facts = FakeFacts(days)
+        state.fleet_facts.refuels = lambda refs=refs: refs
+        got = client.get(f'/api/routes/learning?from={days[0].isoformat()}&to={days[-1].isoformat()}').get_json()
+        liters = {x['day']: x['fact']['liters'] for x in got['days']}
+        assert all(v is not None for v in liters.values()), (back, liters)
+        for x in got['days']:
+            l100 = lr.daily_l100(ref_ivs, 'CAR1', date.fromisoformat(x['day']))
+            # в ответе км округлены до 0,1, литры считаются от неокруглённых: допуск — два округления
+            assert x['fact']['liters'] == pytest.approx(x['fact']['km'] * l100 / 100, abs=0.05 + 0.05 * l100 / 100 + 1e-9)
+
+
+@pytest.mark.parametrize('per_day', [0.5, 1.0, 2.0, 3.0])
+def test_round2_learning_refuel_intervals_unchanged(per_day):
+    """Обучение: интервалы заправок за период обучения — все (и в первую неделю), как по всей истории (6cf2781)."""
+    refs = _daily_refuels(per_day, 800)
+    train_from, _ = lr.windows(TODAY)
+    sel = [r for r in refs if r['eff_date'] >= (train_from - timedelta(days=30)).isoformat()]   # как run_learning
+    got = lr.fuel_intervals(sel)
+    assert got == _full_history(lr.fuel_intervals, sel) == _full_history(lr.fuel_intervals, refs)[-len(got):]
+    odo = [r['payload']['odometer_km'] for r in sel]
+    assert len(got) == sum(1 for a, b in zip(odo, odo[1:]) if b - a >= lr.FUEL_MIN_KM)      # каждая пара соседних
+
+    def first_week(ivs):
+        return sum(1 for iv in ivs if train_from <= iv.end.astimezone(TZ).date() < train_from + timedelta(days=7))
+    assert first_week(got) == first_week(_full_history(lr.fuel_intervals, refs)) >= 3
+
+
+@pytest.mark.parametrize('per_day, back', [(1.0, 60), (1.0, 250), (2.0, 120), (2.0, 250)])
+def test_round2_office_flags_typo_far_back(per_day, back):
+    refs = _daily_refuels(per_day, 800)
+    day = TODAY - timedelta(days=back)
+    target = next(i for i, r in enumerate(refs) if r['eff_date'] == day.isoformat())
+    refs = _daily_refuels(per_day, 800, typo=target)
+    flags = refuel_flags(refs, *office_window(day))
+    assert flags[refs[target]['id']] == ['odometer_suspicious']
+    assert all(flags[r['id']] == [] for r in refs if r['eff_date'] == day.isoformat() and r is not refs[target])
+
+
+def test_round2_ingest_flag_matches_full_history(tmp_path, monkeypatch):
+    """Флаг при приёме (окно ± 400 дней, не больше 300) — как по всей истории, известной серверу в момент приёма."""
+    monkeypatch.setattr(clock, 'now', lambda: datetime(2026, 10, 2, 23, 0, tzinfo=TZ))
+    cs = CourierStore(str(tmp_path / 'edges.db'))
+    did = cs.save_driver(None, 'D', True, '8181', 'admin')
+    term, _ = cs.create_terminal('T', 'CAR1', 'admin')
+    who = ev.Who(term.id, 'CAR1', did, 'D')
+    rnd = random.Random(21)
+    start = datetime(2026, 3, 1, tzinfo=TZ)
+    odo, mism = 100000, []
+    for i in range(150):
+        odo += rnd.randint(100, 400)
+        o = (odo * 10 if rnd.random() < 0.6 else odo // 10) if rnd.random() < 0.03 else odo
+        d = (start + timedelta(days=i)).date().isoformat()
+        e = {'id': uid(), 'type': 'refuel', 'stop_id': None, 'date': d, 'at': f'{d}T08:00:00+04:00',
+             'payload': {'liters': 40.0, 'odometer_km': o, 'full_tank': True}}
+        assert ev.ingest(cs, who, [e]).json()['rejected'] == []
+        rows = cs.refuels()
+        items = sorted((datetime.fromisoformat(r['eff_at_utc']), r['id'], r['payload'].get('odometer_km'))
+                       for r in rows if not r['superseded'])
+        ok = dict(zip((x[1] for x in items), _full_history(lr.odometer_plausible, [(t, v) for t, _, v in items])))
+        stored = 'odometer_suspicious' not in next(r['flags'] for r in rows if r['id'] == e['id'].lower())
+        if stored != ok[e['id'].lower()]:
+            mism.append(i)
+    assert mism == []

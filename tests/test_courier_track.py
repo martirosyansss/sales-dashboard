@@ -486,3 +486,37 @@ def test_m3_office_today_km_ignores_jitter_at_day_stop(st, client, now):
     car = next(c for c in client.get(f'/api/courier/admin/today?date={DAY}').get_json()['cars'] if c['car_code'] == 'CAR1')
     path = haversine_km((40.16, 44.52), shop)
     assert abs(car['gps']['km'] - path) < 0.15 and gps_summary(st.store.track('CAR1', DAY))['km'] > path * 1.3
+
+
+# ============================== верификация, раунд 2: окно флага одометра в офисе ==============================
+
+def test_round2_office_recomputes_refuel_flags_far_back(st, client, now, monkeypatch):
+    """Офис за день 250 дней назад, две заправки в день: флаг одометра пересчитан по заправкам вокруг дня (± 200 дней) —
+    опечатка помечена, устаревший флаг приёма снят. Прежнее окно («последние 300 до дня + 200 дней») такой день не
+    захватывало, и офис показывал флаги приёма. История — синтетические строки Store.refuels (сотни событий через приём
+    заняли бы много времени); опечатка — настоящее событие, при приёме других заправок не было — флага нет."""
+    day = NOW.date() - timedelta(days=250)
+    ds = day.isoformat()
+    did = st.store.save_driver(None, 'D', True, '7878', 'admin')
+    term_, _ = st.store.create_terminal('U', 'CAR1', 'admin')
+    who = ev.Who(term_.id, 'CAR1', did, 'D')
+    history, odo = [], 50000
+    t = datetime.combine(day, datetime.min.time(), clock.YEREVAN) - timedelta(days=300) + timedelta(hours=7)
+    while t < NOW:                                                             # 07:00 и 19:00, +150 км
+        odo += 150
+        history.append({'id': f'h{len(history):05d}', 'car_code': 'CAR1', 'date': t.date().isoformat(),
+                        'at': clock.iso(t), 'at_utc': clock.utc_key(t), 'driver_name': 'D',
+                        'payload': {'liters': 30.0, 'odometer_km': odo, 'full_tank': True}, 'flags': [],
+                        'superseded': False, 'eff_at_utc': clock.utc_key(t), 'eff_at': clock.iso(t),
+                        'eff_date': t.date().isoformat()})
+        t += timedelta(hours=12)
+    morning, evening = [r for r in history if r['eff_date'] == ds]
+    evening['flags'] = ['odometer_suspicious']                                 # устаревший флаг приёма: одометр в порядке
+    typo = _refuel(odo=(morning['payload']['odometer_km'] + 75) * 10, at='12:00', day=ds)
+    assert ev.ingest(st.store, who, [typo]).json()['rejected'] == []
+    assert _event_row(st.store, typo['id'])[3] == []
+    real = st.store.refuels
+    monkeypatch.setattr(st.store, 'refuels', lambda: real() + history)
+    car = next(c for c in client.get(f'/api/courier/admin/today?date={ds}').get_json()['cars'] if c['car_code'] == 'CAR1')
+    assert {r['id']: r['flags'] for r in car['refuels']} == {
+        morning['id']: [], typo['id']: ['odometer_suspicious'], evening['id']: []}
