@@ -9,10 +9,13 @@
   Стоянка на складе — не только загрузка (обед, бумаги, ожидание выезда под окно первой точки), поэтому: из неё
   вычитается только собственное ожидание плана — пересечение стоянки с [плановое возвращение предыдущего рейса,
   плановое начало загрузки] (planned_wait; раннее возвращение машины планом не задумано и не вычитается), стоянки
-  длиннее actuals.MAX_LOAD_MIN или 2 × опоры не учитываются, свободный член — нижний квантиль LOAD_QUANTILE (не
-  среднее), выученное — в пределах LOAD_BOUNDS, шаг за прогон — не больше ±LOAD_STEP от опоры. Опора — действующая
-  норма, в настройках пусто — медиана стоянок обучения (с ней же сравнивается ошибка). Автообучение загрузки по
-  умолчанию ВЫКЛЮЧЕНО: владелец включает его, проверив выученное на странице;
+  длиннее actuals.MAX_LOAD_MIN или 2 × опоры и короче LOAD_MIN_STAY (проезд через склад) не учитываются, свободный
+  член — нижний квантиль LOAD_QUANTILE (не среднее), выученное — в пределах LOAD_BOUNDS (не меньше LOAD_MIN_STAY на
+  рейс), шаг за прогон — не больше ±LOAD_STEP от опоры. Опора — действующая норма, в настройках пусто — медиана стоянок
+  обучения (с ней же сравнивается ошибка). Автообучение загрузки по умолчанию ВЫКЛЮЧЕНО: владелец включает его,
+  проверив выученное на странице. Ограничение: плановое ожидание бывает только при окнах приёма (сейчас окон нет);
+  если водитель загрузился во время планового ожидания и уехал без простоя, вычтется и настоящая загрузка — до
+  длины планового ожидания (наблюдение занижено; нижний предел LOAD_MIN_STAY и шаг ±30% это сдерживают);
 - travel — время в пути грузовиков: множитель «факт / модель» по (город|область, будни|выходные, час) → поверх
   norms.traffic (TrafficProfile); модель — дорожная модель расчёта (road_model_id), сменилась модель — профиль не
   действует. Проверяется ровно тот профиль, который применится (travel_profile → TrafficProfile.travel по участку,
@@ -75,8 +78,10 @@ UNLOAD_CAP_REL = 3.0                 # …или дольше 3 × действ�
 LOAD_CAP_REL = 2.0                   # стоянка на складе дольше 2 × действующей нормы загрузки — не загрузка
 LOAD_QUANTILE = 0.35                 # загрузка — нижний квантиль: в стоянке есть ожидание, которого план не знает
 LOAD_STEP = 0.30                     # норма загрузки за прогон меняется не больше чем на ±30%
-LOAD_BOUNDS = ((0.0, 45.0), (0.0, 20.0))   # правдоподобная загрузка: мин на рейс и мин на тонну — выученная норма вне
-                                           # этих пределов прижимается к ним (и такая строка журнала не действует)
+LOAD_MIN_STAY = 5.0                  # стоянка на складе короче 5 мин — проезд (развернулся, отметился), а не загрузка
+LOAD_BOUNDS = ((LOAD_MIN_STAY, 45.0), (0.0, 20.0))   # правдоподобная загрузка: мин на рейс (не меньше LOAD_MIN_STAY) и
+                                           # мин на тонну — выученная норма вне пределов прижимается к ним (и такая строка
+                                           # журнала не действует)
 FUEL_TEST = 4                        # отложенные интервалы заправок
 FUEL_MIN_INTERVALS = 16              # 12 на выбор формы (measurements._fit со своей проверкой) + 4 отложенных
 FUEL_MIN_KM = 50.0                   # интервал заправок короче — не считается
@@ -310,6 +315,7 @@ def fit_loading(obs: Sequence[LoadObs], today: date, cur: tuple[float, float] | 
     limit_step (и при первом принятии), проверка — ошибка опоры против выученной нормы на отложенной неделе."""
     if cur is not None and cur[0] + cur[1] <= 0:
         cur = None
+    obs = [o for o in obs if o.minutes >= LOAD_MIN_STAY]   # проезд через склад — не загрузка (load_obs уже отсеял)
     train0, _ = _split(obs, today)
     ref = cur if cur is not None else ((median(o.minutes for o in train0), 0.0) if train0 else (0.0, 0.0))
 
@@ -690,19 +696,20 @@ def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop]) ->
 
 def load_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop] = (),
              plan: Sequence[PlanTrip] = ()) -> list[LoadObs]:
-    """Стоянка на складе перед рейсом (видно прибытие, не дольше actuals.MAX_LOAD_MIN) без собственного ожидания плана
-    (planned_wait по плановому рейсу _planned_trip)."""
+    """Стоянка на складе перед рейсом (видно прибытие, не дольше actuals.MAX_LOAD_MIN и не короче LOAD_MIN_STAY — проезд
+    через склад) без собственного ожидания плана (planned_wait по плановому рейсу _planned_trip); после вычета — тоже
+    не короче LOAD_MIN_STAY."""
     by_key = {s.key: s for s in stops}
     served = dict(actual.served)
     out = []
     for n, t in enumerate(actual.trips):
         arrive = t.arrive_depot
-        if arrive is None or t.depart is None or t.loaded_kg <= 0:
+        if arrive is None or t.depart is None or t.loaded_kg <= 0 or t.load_min < LOAD_MIN_STAY:   # type: ignore[operator]
             continue
         cids = {by_key[k].customer_id for k, i in served.items() if i in t.visits and k in by_key
                 and by_key[k].customer_id is not None}
         minutes = t.load_min - planned_wait(_planned_trip(plan, n, cids, t.depart), arrive, t.depart)   # type: ignore[operator]
-        if minutes >= 1.0:
+        if minutes >= LOAD_MIN_STAY:
             out.append(LoadObs(day, t.loaded_kg / 1000.0, minutes))
     return out
 

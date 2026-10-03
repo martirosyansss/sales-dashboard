@@ -564,10 +564,10 @@ def test_leakage_holdout_never_changes_learned_params():
     train_l = [lr.LoadObs(d, t, 10 + 5 * t) for d in _days(40) if d < test_from for t in (1.0, 3.0)]
     test_l = [lr.LoadObs(d, t, 25.0) for d in _days(7, start=test_from) for t in (1.0, 3.0)]   # другой процесс
     a = lr.fit_loading(train_l + test_l, TODAY, (10.0, 5.0))
-    b = lr.fit_loading(train_l + [replace(o, minutes=1.0) for o in test_l], TODAY, (10.0, 5.0))
+    b = lr.fit_loading(train_l + [replace(o, minutes=6.0) for o in test_l], TODAY, (10.0, 5.0))
     assert a.params == b.params and a.params['fixed_min'] == pytest.approx(10, abs=0.5)
     c = lr.fit_loading(train_l + test_l, TODAY)                            # опора-медиана — тоже только по обучению
-    assert c.params == lr.fit_loading(train_l + [replace(o, minutes=1.0) for o in test_l], TODAY).params
+    assert c.params == lr.fit_loading(train_l + [replace(o, minutes=6.0) for o in test_l], TODAY).params
     legs = _hour_legs({9: 1.3}, days=40)
     other = [replace(o, minutes=o.model * 2.5) if o.day >= test_from else o for o in legs]
     assert lr.fit_travel(legs, TODAY, 'straight', REF, BASE).params == lr.fit_travel(other, TODAY, 'straight', REF,

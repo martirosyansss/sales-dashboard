@@ -467,3 +467,33 @@ def test_round2_ingest_flag_matches_full_history(tmp_path, monkeypatch):
         if stored != ok[e['id'].lower()]:
             mism.append(i)
     assert mism == []
+
+
+# ============================== раунд 2: проезд через склад ==============================
+
+def test_round2_depot_pass_bys_are_not_loading():
+    """Сценарий проверяющего (probe_h1_empty, drive_through): половина «стоянок» на складе — проезд 1–3 мин, нормы в
+    настройках нет. Проезды не учитываются, норма — около истины (15 + 5·т), не меньше LOAD_MIN_STAY на рейс."""
+    rnd = random.Random(11)
+    obs = []
+    for d in [TODAY - timedelta(days=130 - i) for i in range(130)]:
+        for _ in range(2):
+            t = rnd.choice([1.0, 2.0, 3.0, 4.0])
+            true = 15 + 5 * t + rnd.uniform(-2, 2)
+            m = true if rnd.random() < 0.5 else rnd.uniform(1, 3)
+            obs.append(lr.LoadObs(d, t, m))
+    o = lr.fit_loading(obs, TODAY, None)
+    a, b = o.params['fixed_min'], o.params['per_tonne_min']
+    train_from, test_from = lr.windows(TODAY)
+    in_train = [x for x in obs if train_from <= x.day < test_from]
+    assert o.n_obs == sum(1 for x in in_train if x.minutes >= lr.LOAD_MIN_STAY) < len(in_train) * 0.6
+    assert a >= lr.LOAD_MIN_STAY and a + b * 2.5 == pytest.approx(27.5, abs=3)
+    floor = lr.fit_loading([lr.LoadObs(x.day, x.tonnes, 2.0 + 6.0 * x.tonnes) for x in obs], TODAY, (2.0, 6.0))
+    assert floor.params == {'fixed_min': lr.LOAD_MIN_STAY, 'per_tonne_min': 6.0}   # подгонка дала бы 2 мин на рейс
+    assert not lr.valid_params('loading', {'fixed_min': 2.0, 'per_tonne_min': 4.0})
+
+
+def test_round2_load_obs_skips_depot_pass_by():
+    from test_learning_review import RELOAD_STOPS, _reload_day
+    assert lr.load_obs(date(2026, 9, 29), _reload_day(11 * 60, 3.0), RELOAD_STOPS) == []      # проезд 3 мин
+    assert [o.minutes for o in lr.load_obs(date(2026, 9, 29), _reload_day(11 * 60, 6.0), RELOAD_STOPS)] == [6.0]
