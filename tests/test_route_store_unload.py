@@ -286,6 +286,18 @@ def test_unload_never_negative_and_shared_point_takes_mean():
     assert lr.unload_extra(8.0, {101: 40.0}, None, {102: A}) == {}
 
 
+def test_shared_point_split_across_trips_gets_mean_documented_undercount():
+    """Принятое ограничение (unload_extra, store-unload-plan.md): магазины одной точки в разных рейсах — у каждого рейса
+    среднее. 101 (40 мин) один в рейсе — 8 + 16 = 24, а не 40; 102 (без своего времени) — тоже 24, а не 8; за день —
+    те же 48 (как у каждого своё)."""
+    tn = replace(TN, unload_extra=lr.unload_extra(8.0, {101: 40.0}, None, {101: A, 102: A}))
+    base = fl.route_trip([A], [0.0], DEPOT, NORMS, TN, reorder=False)[2]
+    trip_101 = fl.route_trip([A], [0.0], DEPOT, NORMS, tn, reorder=False)[2]
+    trip_102 = fl.route_trip([A], [0.0], DEPOT, NORMS, tn, reorder=False)[2]
+    assert trip_101 == pytest.approx(base + 16.0) and trip_102 == pytest.approx(base + 16.0)   # не +32 и не +0
+    assert (trip_101 - base) + (trip_102 - base) == pytest.approx(32.0)                        # день — как у каждого своё
+
+
 def test_shared_point_fleet_equals_learning_prediction():
     """101 (40 мин) и 102 (без своего времени) в одной точке: разгрузка в точке по fleet — ровно прогноз обучения для
     стоянки с обоими (Σ по клиентам), и с выученной строкой тоже."""
