@@ -46,7 +46,7 @@ def _minutes(ctx, stops, draft):
 def _add(t, for_center, need_kg):
     return {'rebuild': [], 'add': {'car_code': t.car_code, 'name': t.name, 'capacity_kg': t.capacity_kg, 'l100': t.l100,
                                    'center_ok': t.center_ok, 'for_center': for_center, 'need_kg': need_kg},
-            'pinned_late': []}
+            'pinned_late': [], 'no_free': False}
 
 
 # ============================== совет по плану (plan_view) ==============================
@@ -69,7 +69,7 @@ def test_advice_rebuild_when_selected_truck_idle_next_to_late_trip():
     ctx = _ctx((FORD, HOWO, GAZ), tn=replace(TN, work_minutes=m - 1.0))      # конец дня стал раньше — рейс опаздывает
     view = dp.plan_view(ctx, stops, old, _info)
     assert [t['over_time'] for tr in view['trucks'] for t in tr['trips']] == [True]
-    assert view['advice'] == {'rebuild': [HOWO.car_code], 'add': None, 'pinned_late': []}
+    assert view['advice'] == {'rebuild': [HOWO.car_code], 'add': None, 'pinned_late': [], 'no_free': False}
     fresh = dp.build(ctx, stops, old, old.trucks, 'now')
     after = dp.plan_view(ctx, stops, fresh, _info)
     assert after['unassigned'] == [] and after['advice'] is None, after['advice']
@@ -165,7 +165,7 @@ def test_advice_center_need_and_fallback():
     ctx = _ctx((sel, cen, cheap))
     assert dp._advice(ctx, draft, [], [_left(800, no_room=False, no_center=True)]) == {
         'rebuild': [], 'add': {'car_code': 'C1', 'name': None, 'capacity_kg': 2000.0, 'l100': 14.0, 'center_ok': True,
-                               'for_center': True, 'need_kg': 800}, 'pinned_late': []}   # магазин центра без машины
+                               'for_center': True, 'need_kg': 800}, 'pinned_late': [], 'no_free': False}
     assert dp._advice(ctx, draft, [_late('S', 800, center=True)], [])['add']['car_code'] == 'C1'
     assert dp._advice(ctx, draft, [_late('S', 800)], [])['add']['car_code'] == 'G1'   # рейс без точек центра
     plain = dp.Draft(trucks=['G1'])                                                   # опаздывает машина без права въезда
@@ -182,16 +182,16 @@ def test_advice_rebuild_and_no_free_trucks():
     # отмеченные без рейсов — по коду; отмеченная, но не готовая к расчёту машина — не «свободна»
     draft = dp.Draft(trucks=[HOWO.car_code, 'GHOST', GAZ.car_code, FORD.car_code])
     assert dp._advice(ctx, draft, [_late(FORD.car_code, 900)], []) == {'rebuild': [GAZ.car_code, HOWO.car_code],
-                                                                         'add': None, 'pinned_late': []}
+                                                                         'add': None, 'pinned_late': [], 'no_free': False}
     # магазины вне рейсов без опаздывающих рейсов — не пересборка (свежая сборка их уже не поместила)
-    assert dp._advice(ctx, draft, [], [_left(500)]) == {'rebuild': [], 'add': None, 'pinned_late': []}
+    assert dp._advice(ctx, draft, [], [_left(500)]) == {'rebuild': [], 'add': None, 'pinned_late': [], 'no_free': True}
     lone = dp.Draft(trucks=[FORD.car_code, 'GHOST'])
     assert dp._advice(ctx, lone, [_late(FORD.car_code, 900)], [])['add']['car_code'] == GAZ.car_code
     # все готовые машины отмечены и заняты — предложить нечего
     busy = dp.Draft(trucks=[FORD.car_code, HOWO.car_code, GAZ.car_code])
     trips = [_late(FORD.car_code, 900), {**_late(HOWO.car_code, 300), 'over_time': False},
              {**_late(GAZ.car_code, 300), 'over_time': False}]
-    assert dp._advice(ctx, busy, trips, [_left(400)]) == {'rebuild': [], 'add': None, 'pinned_late': []}
+    assert dp._advice(ctx, busy, trips, [_left(400)]) == {'rebuild': [], 'add': None, 'pinned_late': [], 'no_free': True}
     assert dp._advice(ctx, busy, [{**t, 'over_time': False} for t in trips], []) is None
 
 
@@ -205,9 +205,9 @@ def test_advice_pinned_late_trip_is_not_rebuild():
     ctx = _ctx((FORD, HOWO, GAZ), tn=replace(TN, work_minutes=m - 1.0))
     view = dp.plan_view(ctx, stops, old, _info)
     assert view['trucks'][0]['trips'][0]['over_time'] and view['trucks'][0]['trips'][0]['pinned']
-    assert view['advice'] == {'rebuild': [], 'add': None, 'pinned_late': [1]}
+    assert view['advice'] == {'rebuild': [], 'add': None, 'pinned_late': [1], 'no_free': False}
     again = dp.plan_view(ctx, stops, dp.build(ctx, stops, old, old.trucks, 'now'), _info)
-    assert again['advice'] == {'rebuild': [], 'add': None, 'pinned_late': [1]}
+    assert again['advice'] == {'rebuild': [], 'add': None, 'pinned_late': [1], 'no_free': False}
 
 
 def test_advice_pinned_late_with_other_problems():
@@ -216,10 +216,38 @@ def test_advice_pinned_late_with_other_problems():
     draft = dp.Draft(trucks=[FORD.car_code, HOWO.car_code])
     pinned = _late(FORD.car_code, 3000, pinned=True, tid=7)
     assert dp._advice(ctx, draft, [pinned, _late(FORD.car_code, 900, tid=8)], []) == {
-        'rebuild': [HOWO.car_code], 'add': None, 'pinned_late': [7]}
+        'rebuild': [HOWO.car_code], 'add': None, 'pinned_late': [7], 'no_free': False}
     busy = [pinned, {**_late(HOWO.car_code, 100, tid=9), 'over_time': False}]
     got = dp._advice(ctx, draft, busy, [_left(400)])
     assert got['pinned_late'] == [7] and got['add']['car_code'] == GAZ.car_code and got['add']['need_kg'] == 400
+
+
+def test_advice_no_free_only_beyond_pinned_trips():
+    """no_free («все машины уже отмечены») — только когда беда есть сверх закреплённых рейсов и свободной машины нет;
+    опаздывают одни закреплённые — False, есть ли свободные машины или нет (страница пишет прежние тексты)."""
+    ctx = _ctx((FORD, HOWO, GAZ))
+    pinned = _late(FORD.car_code, 900, pinned=True, tid=7)
+    other = [{**_late(HOWO.car_code, 300, tid=8), 'over_time': False}, {**_late(GAZ.car_code, 300, tid=9), 'over_time': False}]
+    assert dp._advice(ctx, dp.Draft(trucks=[FORD.car_code]), [pinned], []) == {
+        'rebuild': [], 'add': None, 'pinned_late': [7], 'no_free': False}                    # свободные есть
+    everyone = dp.Draft(trucks=[FORD.car_code, HOWO.car_code, GAZ.car_code])
+    assert dp._advice(ctx, everyone, [pinned, *other], []) == {
+        'rebuild': [], 'add': None, 'pinned_late': [7], 'no_free': False}                    # свободных нет, но беда — только закреплённый
+    assert dp._advice(ctx, everyone, [pinned, *other], [_left(300)]) == {
+        'rebuild': [], 'add': None, 'pinned_late': [7], 'no_free': True}                     # и магазин вне рейсов — добавить нечего
+    late = [pinned, {**other[0], 'over_time': True}, other[1]]
+    assert dp._advice(ctx, everyone, late, [])['no_free'] is True
+
+
+def test_advice_truck_must_be_allowed_at_every_problem_store():
+    """Две проблемные точки, свободная A (дешевле) допущена только в одну — выбирается B, допущенная в обе."""
+    a, b = fl.FleetTruck('A', None, 3000.0, 9.0), fl.FleetTruck('B', None, 3000.0, 14.0)
+    sel = fl.FleetTruck('S', None, 3500.0, 16.0)
+    ctx = _ctx((sel, a, b), access={501: VehicleAccess('allow', ('A', 'B', 'S')), 502: VehicleAccess('deny', ('A',))})
+    draft = dp.Draft(trucks=['S'])
+    assert dp._advice(ctx, draft, [], [_left(400, cid=501), _left(400, cid=502)])['add']['car_code'] == 'B'
+    assert dp._advice(ctx, draft, [_late('S', 400, cid=501)], [_left(400, cid=502)])['add']['car_code'] == 'B'
+    assert dp._advice(ctx, draft, [], [_left(400, cid=501)])['add']['car_code'] == 'A'      # одна точка — A допущена
 
 
 def test_advice_prefers_truck_allowed_at_problem_stores():

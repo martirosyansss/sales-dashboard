@@ -1190,7 +1190,8 @@
     // неотмеченная готовая машина — одной кнопкой отметить её в шаге 1 и пересобрать; добавить нечего — «все машины уже
     // отмечены»; опаздывающие закреплённые рейсы (pinned_late) пересборка не меняет — снять закрепление или перенести
     // магазины. Сама сборка машин не добавляет (№32).
-    // { kind: rebuild | add | none, text — со строчной буквы (после «Ինչ անել՝ »), button() — новая кнопка (rebuild, add),
+    // { kind: rebuild | add | none (no_free) | pinned (только закреплённые), text — со строчной буквы (после «Ինչ անել՝ »),
+    //   button() — новая кнопка (rebuild, add),
     //   forCenter, pinned — совет про закреплённые рейсы или '' }; совета нет — null: карточки пишут прежние тексты
     const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
     function adviceButton(ico, text, act) {
@@ -1232,8 +1233,8 @@
             };
         }
         const t = a.add;
-        // добавить нечего: все готовые машины уже отмечены (или опаздывают только закреплённые рейсы)
-        if (!isObj(t) || typeof t.car_code !== 'string') return { kind: 'none', forCenter: false, pinned, text: '' };
+        // добавить нечего: все готовые машины уже отмечены (no_free) или опаздывают только закреплённые рейсы
+        if (!isObj(t) || typeof t.car_code !== 'string') return { kind: a.no_free === true ? 'none' : 'pinned', forCenter: false, pinned, text: '' };
         // тоннаж меньше груза, что не поместился (need_kg), — возьмёт только часть; остальное покажет пересборка
         const part = num(t.need_kg) !== null && num(t.capacity_kg) !== null && t.capacity_kg < t.need_kg;
         return {
@@ -1275,10 +1276,10 @@
         // что делать — по виду беды: не поместилось / не успевает к окну / центр на машине без права въезда;
         // не поместилось и есть совет сервера (plan.advice) — какую машину загрузить, кнопкой; добавить нечего — «все
         // машины уже отмечены» (без шага 1); опаздывает закреплённый рейс — снять закрепление или перенести магазины
-        const adv = notFit ? planAdvice(plan) : null, act = adv && adv.button ? adv : null;
+        const adv = notFit ? planAdvice(plan) : null, act = adv && adv.button ? adv : null, noFree = !!adv && adv.kind === 'none';
         const advice = [];
         if (stuck) advice.push(act ? act.text + (act.kind === 'add' ? ' Կամ սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութներն այլ երթ։' : '')
-            : adv ? 'բոլոր մեքենաներն արդեն նշված են, բայց չեն հասցնում մինչև ' + endOfDay() + '-ը։ Սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութներն այլ երթ։'
+            : noFree ? 'բոլոր մեքենաներն արդեն նշված են, բայց չեն հասցնում մինչև ' + endOfDay() + '-ը։ Սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութներն այլ երթ։'
             : '1-ին քայլում նշեք ևս մեկ մեքենա և սեղմեք «Վերակազմել երթերը», կամ սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութներն այլ երթ։');
         if (adv && adv.pinned) advice.push(adv.pinned);
         if (winMiss) advice.push('ընդունման ժամին չհասցնող խանութի մոտ սեղմեք «Փոփոխել» և տեղափոխեք այն այլ երթ կամ մեքենա, որը կհասցնի, '
@@ -1296,7 +1297,7 @@
             div.querySelector('.rt-alert-text').appendChild(p);
             if (i === 0 && stuck && act) div.querySelector('.rt-alert-text').appendChild(act.button());   // кнопка — под своим советом
         });
-        if ((stuck && !adv) || cenMiss) div.querySelector('.rt-alert-text').appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
+        if ((stuck && !act && !noFree) || cenMiss) div.querySelector('.rt-alert-text').appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
         box.appendChild(div);
     }
 

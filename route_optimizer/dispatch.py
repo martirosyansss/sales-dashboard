@@ -871,7 +871,9 @@ def _advice(ctx: DayContext, draft: Draft, trips_json: Sequence[Mapping[str, Any
       из них — допущенные ко всем этим магазинам (допуск магазина, VehicleAccess), если такие есть.
       Груз need_kg — самый тяжёлый опаздывающий рейс или все магазины вне рейсов вместе: из машин, что его берут, —
       с меньшим расходом (затем вместительнее, затем код), иначе самая вместительная — need_kg в совете: тоннаж меньше —
-      страница пишет «возьмёт часть груза». Свободной машины нет (или опаздывают только закреплённые) — None.
+      страница пишет «возьмёт часть груза». Свободной машины нет (или опаздывают только закреплённые) — None;
+    - no_free — беда есть и сверх закреплённых рейсов, а свободной машины нет: страница пишет «все машины уже отмечены»
+      (только закреплённые — False: прежние тексты страницы).
     Это оценка без расчёта рейсов (дёшево и детерминированно): что на самом деле поместится, покажет пересборка."""
     late = [t for t in trips_json if t['over_time']]
     pinned_late = [t['id'] for t in late if t['pinned']]
@@ -882,9 +884,9 @@ def _advice(ctx: DayContext, draft: Draft, trips_json: Sequence[Mapping[str, Any
     busy = {t['truck'] for t in trips_json}
     idle = [c for c in sorted(set(draft.trucks)) if c in ctx.trucks and c not in busy]
     if late and idle:
-        return {'rebuild': idle, 'add': None, 'pinned_late': pinned_late}
+        return {'rebuild': idle, 'add': None, 'pinned_late': pinned_late, 'no_free': False}
     if not late and not left:                   # опаздывают только закреплённые рейсы
-        return {'rebuild': [], 'add': None, 'pinned_late': pinned_late}
+        return {'rebuild': [], 'add': None, 'pinned_late': pinned_late, 'no_free': False}
     free = [t for c, t in sorted(ctx.trucks.items()) if c not in draft.trucks]
     center_ok = {c for c, t in ctx.trucks.items() if t.center_ok}
     need_center = any(u['no_center'] for u in left) or any(
@@ -895,12 +897,12 @@ def _advice(ctx: DayContext, draft: Draft, trips_json: Sequence[Mapping[str, Any
     cids = [u['customer_id'] for u in left] + [s['customer_id'] for t in late for s in t['stops']]
     pool = [t for t in pool if all(_vehicle_ok(ctx, c, t.car_code) for c in cids)] or pool
     if not pool:
-        return {'rebuild': [], 'add': None, 'pinned_late': pinned_late}
+        return {'rebuild': [], 'add': None, 'pinned_late': pinned_late, 'no_free': True}
     need_kg = max([t['kg'] for t in late] + [sum(u['kg'] for u in left)])
     fits = [t for t in pool if t.capacity_kg >= need_kg]
     pick = (min(fits, key=lambda t: (t.l100, -t.capacity_kg, t.car_code)) if fits
             else min(pool, key=lambda t: (-t.capacity_kg, t.l100, t.car_code)))
-    return {'rebuild': [], 'pinned_late': pinned_late,
+    return {'rebuild': [], 'pinned_late': pinned_late, 'no_free': False,
             'add': {'car_code': pick.car_code, 'name': pick.name, 'capacity_kg': pick.capacity_kg, 'l100': pick.l100,
                     'center_ok': pick.center_ok, 'for_center': for_center, 'need_kg': int(need_kg)}}
 
