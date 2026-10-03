@@ -23,7 +23,7 @@ SERVER_FILES = {'ROUTES_DB_PATH': ROOT / 'route_optimizer.db', 'COURIER_DB_PATH'
 
 
 def same_path(a: os.PathLike | str, b: os.PathLike | str) -> bool:
-    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
 
 
 ISOLATED: set[str] = set()   # переменные, которые задал этот conftest (остальные — вызывающий, и не на данные сервера)
@@ -40,3 +40,6 @@ _isolate('ROUTES_DB_PATH', SESSION_TMP / 'route_optimizer.db')
 _isolate('COURIER_DB_PATH', SESSION_TMP / 'courier.db')
 _isolate('ROUTES_OSM_PATH', SESSION_TMP / 'no-map.osm.pbf')
 _isolate('ROUTES_VALHALLA_DIR', SESSION_TMP / 'valhalla')
+
+# ручной скрипт против боевой ERP (запуск: python tests/test_qty_consistency.py) — pytest его не собирает
+collect_ignore = ["test_qty_consistency.py"]
