@@ -26,7 +26,9 @@
 ## Требования на сервере
 
 - Windows 10/11 или Windows Server
-- Python 3.10+ в PATH (`python --version`)
+- 64-битный Python 3.12+ в PATH (`python --version`; разрядность —
+  `python -c "import struct; print(struct.calcsize('P')*8)"` → 64). Минимум для раздела «Маршруты» — 3.11
+  (`pyvrp==0.14.0`: колёса под Windows только для 3.11–3.14; на 3.10 весь `pip install -r` падает), для Valhalla — 3.12 x64
 - Git (`winget install --id Git.Git -e`)
 - ODBC Driver 17 for SQL Server (уже стоит, раз дашборд работал)
 - Сетевой доступ к SQL Server и к github.com
@@ -160,23 +162,30 @@ schtasks /Change /TN SalesDashboard-AutoUpdate /DISABLE   # включить: /E
 (одной транзакцией: сбой — база остаётся прежней). Старая программа базу новой схемы **не открывает**
 («создана более новой версией программы»).
 
-Обучение «Развоза» по факту машин (learning-loop) меняет схемы: `courier.db` 5 → 6 (трек машины
-`track_points`, индексы), `route_optimizer.db` 12 → 13 (журнал выученных норм `learned_norms`,
-переключатели `learning_switch`). Обе миграции **только добавляют** таблицы и индексы — данные не меняются.
+Обучение «Развоза» по факту машин меняет схемы: `courier.db` 5 → 6 (трек машины `track_points`, индексы —
+только добавляет), `route_optimizer.db` 12 → 13 → 14: 13 добавляет журнал выученных норм `learned_norms` и
+переключатели `learning_switch`, 14 **пересобирает** `learned_norms` ради нового вида нормы «модель времени
+грузовиков» (строки, их id и счётчик AUTOINCREMENT сохраняются). Остальные таблицы не меняются.
 
-**До слияния таких изменений в `main`** (сервер подтянет их в течение 5 минут):
+**До слияния таких изменений в `main`** (сервер подтянет их в течение 5 минут). База в режиме WAL: копируйте
+её вместе с файлом `-wal`, если он остался после остановки:
 
 ```powershell
 schtasks /End /TN SalesDashboard-Server          # остановить, чтобы копия была целой (WAL)
 $d = Get-Date -Format yyyyMMdd-HHmm
-Copy-Item "C:\Sales Dashboard\courier.db" "C:\Sales Dashboard\courier.db.bak-$d"
-Copy-Item "C:\Sales Dashboard\route_optimizer.db" "C:\Sales Dashboard\route_optimizer.db.bak-$d"
+foreach ($db in 'courier.db', 'route_optimizer.db') {
+    foreach ($suffix in '', '-wal') {
+        $src = "C:\Sales Dashboard\$db$suffix"
+        if (Test-Path $src) { Copy-Item $src "C:\Sales Dashboard\$db.bak-$d$suffix" }
+    }
+}
 schtasks /Run /TN SalesDashboard-Server
 ```
 
 Откат: остановить дашборд, вернуть прежний код (`git reset --hard <прежний коммит>` и приостановить
-автообновление) и **восстановить обе базы из этих копий** — старая программа новые схемы не откроет.
-Данные, принятые после обновления (трек, заправки, выученные нормы), при откате теряются.
+автообновление), **удалить** `courier.db-wal/-shm` и `route_optimizer.db-wal/-shm` новой программы и
+**восстановить обе базы из этих копий** (с их `-wal`, если он был) — старая программа новые схемы не откроет.
+Данные, принятые после обновления (трек, заправки, выученные нормы, черновики «Развоза»), при откате теряются.
 
 ## Безопасность
 
