@@ -29,7 +29,7 @@ from . import fleet as fl
 from .running_costs import profile_fields
 from .erp import ErpError
 from .geo import Point, haversine_km, is_valid_point
-from .roads import RoadDistances, RoadProvider, roads_version
+from .roads import CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, Bundle, Decision, Store, StoreError, center_auto,
                     check_window, validate_payload)
@@ -306,18 +306,25 @@ def _compute_overview(snap: Snapshot, bundle: Bundle, calib: evaluate.Calibratio
 
 
 def _roads(state: RoutesState, snap: Snapshot, bundle: Bundle, extra: Sequence[Point] = (),
-           truck_time: bool | None = None) -> RoadDistances | ValhallaRoads | None:
+           truck_time: bool | None = None,
+           center_zone: Sequence[Point] = ()) -> RoadDistances | CenterBypassRoads | ValhallaRoads | None:
     """Расстояния по дорогам для расчёта по плану снимка (и точкам extra — заказы развоза) — до кэша оценки:
     граф OSM для всех точек — одним расчётом (первый раз — минуты, дальше кэш на диске). Valhalla — только если его
     матрицы для этих точек (у машин менеджеров и, когда грузовикам нужен Valhalla, у грузовиков) уже готовы: тайлы и
     матрицы считает фоновый поток (ValhallaProvider), а пока — граф OSM; запрос тяжёлой работы Valhalla не ждёт.
     truck_time — минуты грузовиков из Valhalla («Развоз»: _truck_time_choice); None — ROUTES_TRUCK_TIME (обзор и
     календарь менеджеров: выбор обучения действует только в «Развозе»).
+    center_zone — граница малого центра («Развоз»): граф OSM — с объездом центра (roads.CenterBypassRoads; объезд
+    считается только для точек extra — заказов и склада), и он же — запасной путь Valhalla; пусто — без объезда
+    (обзор и календарь менеджеров).
     Карты нет — None; граф не собрался — roads.failed (оценка считает по прямой и предупреждает roads_failed)."""
     points = [*evaluate.plan_points(snap, bundle, {}), *extra]
     roads = state.roads.get() if state.roads is not None else None
     if roads is not None:
         roads.ensure(points)
+        if center_zone and not roads.failed:
+            roads = state.roads.bypass(roads, center_zone)
+            roads.ensure(extra)
     if state.valhalla is not None:
         capacity = max((t.capacity_kg for t in _ready_trucks(snap, bundle).values()), default=None)
         roads = state.valhalla.get(roads, points, capacity, truck_time=truck_time) or roads
@@ -872,7 +879,9 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
     if truck_time is None:
         truck_time = _truck_time_choice(journal)[0] == TRUCK_TIME_VALHALLA
     calib = _calibration(state, snap, s)
-    roads = _roads(state, snap, bundle, [*points, bundle.depot], truck_time=truck_time)
+    zone = tuple((lat, lon) for lat, lon in s['center_zone'])
+    # участки между точками вне малого центра — в объезд него: машинам без права въезда центр закрыт и в пути
+    roads = _roads(state, snap, bundle, [*points, bundle.depot], truck_time=truck_time, center_zone=zone)
     norms = evaluate.Norms.from_settings(s, calib, roads if roads is not None and not roads.failed else None)
     norms = norms.for_trucks()   # развоз — профиль грузовика (км Valhalla — в режиме valhalla, минуты — truck_time)
     h, m = map(int, s['truck_work_start'].split(':'))
@@ -880,6 +889,12 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
     if s.get('traffic_mode') == 'yandex':
         from .traffic_provider import load
         provider, status = load([bundle.depot, *points], day, s['truck_work_start'])
+        osm = roads.fallback if isinstance(roads, ValhallaRoads) else roads
+        if provider is not None and isinstance(osm, CenterBypassRoads):
+            # путь Яндекса — кратчайший: на участках в объезд центра его км и минуты × объезд (как у ValhallaRoads)
+            k = {pair: osm.detour(*pair) for pair in provider.distances}
+            provider = replace(provider, distances={p: v * k[p] for p, v in provider.distances.items()},
+                               durations={p: v * k[p] for p, v in provider.durations.items()})
         norms = replace(norms, provider=provider, traffic_status=status)
     h2, m2 = map(int, s['truck_overtime_end'].split(':'))
     tn = fl.TruckNorms.from_settings(s)
@@ -887,8 +902,8 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
         norms, tn, trucks, _ = _with_learned(state, norms, tn, trucks, customers or {}, journal)
     return dp.DayContext(day, bundle.depot, trucks, norms, tn, h * 60 + m,
                          float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']),
-                         {cid: w.span() for cid, w in bundle.windows.items()},
-                         tuple((lat, lon) for lat, lon in s['center_zone']), vehicle_access=bundle.vehicle_access)
+                         {cid: w.span() for cid, w in bundle.windows.items()}, zone,
+                         vehicle_access=bundle.vehicle_access)
 
 
 @dataclass
@@ -1652,14 +1667,18 @@ ROAD_LINES_MAX_POINTS = 3000   # точек во всех линиях одно�
 @_api
 def api_road_lines() -> Any:
     """Линии рейсов для карты вдоль дорог: {"lines": [[[широта, долгота], …], …]} — точки каждой линии
-    по порядку объезда. Ответ: те же линии по дорогам; "lines": null — карты дорог нет или она не
-    загрузилась: карта рисует по прямой."""
+    по порядку объезда; "avoid_center": true («Развоз») — участки между точками вне малого центра в объезд него, как
+    считаются км рейсов (граница — из настроек). Ответ: те же линии по дорогам; "lines": null — карты дорог нет или
+    она не загрузилась: карта рисует по прямой."""
     payload, error = _json_body()
     if error is not None:
         return error
     lines = payload.get('lines') if isinstance(payload, dict) else None
     if not isinstance(lines, list) or not all(isinstance(line, list) for line in lines):
         return _bad_request({'lines': 'ожидался список линий из точек [широта, долгота]'})
+    avoid_center = payload.get('avoid_center', False)
+    if not isinstance(avoid_center, bool):
+        return _bad_request({'avoid_center': 'ожидалось true или false'})
     parsed: list[list[tuple[float, float]]] = []
     for line in lines:
         points = []
@@ -1674,6 +1693,9 @@ def api_road_lines() -> Any:
         return _bad_request({'lines': f'не больше {ROAD_LINES_MAX_POINTS} точек за запрос'})
     state = _state()
     roads = state.roads.get() if state.roads is not None else None
+    if roads is not None and avoid_center and not roads.failed:
+        zone = tuple((lat, lon) for lat, lon in state.store.load().settings['center_zone'])
+        roads = state.roads.bypass(roads, zone)
     out = roads.lines(parsed) if roads is not None else None
     return jsonify({'success': True, 'lines': out})
 

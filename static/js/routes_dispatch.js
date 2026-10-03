@@ -1500,15 +1500,16 @@
         roadLines(routes);
     }
 
-    // Рейсы сначала рисуются по прямой, затем линии заменяются ответом сервера — по дорогам. Нет связи
-    // или карты дорог на сервере — остаются прямые. Ответ устарел (карту перерисовали) — не применяется.
+    // Рейсы сначала рисуются по прямой, затем линии заменяются ответом сервера — по дорогам (участки между точками вне
+    // малого центра — в объезд него, как считаются км рейсов). Нет связи или карты дорог на сервере — остаются прямые.
+    // Ответ устарел (карту перерисовали) — не применяется.
     async function roadLines(routes) {
         const gen = ++state.roadGen;
         const key = line => line.map(p => p[0].toFixed(5) + ',' + p[1].toFixed(5)).join(';');
         const missing = routes.filter(([, line]) => !state.roadCache.has(key(line)));
         if (missing.length) {
             let data;
-            try { data = await api('POST', '/api/routes/road-lines', { lines: missing.map(([, line]) => line) }); } catch (e) { return; }
+            try { data = await api('POST', '/api/routes/road-lines', { lines: missing.map(([, line]) => line), avoid_center: true }); } catch (e) { return; }
             if (!Array.isArray(data.lines)) return;
             missing.forEach(([, line], i) => state.roadCache.set(key(line), data.lines[i]));
         }

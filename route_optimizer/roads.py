@@ -15,7 +15,11 @@
 - кэш расстояний — <карта>.dist.npz: точки (округление до 6 знаков) → узел и км привязки,
   направленная матрица км между узлами. Новые точки дозаполняются: Dijkstra от их узлов по графу
   и по обратному графу. Точка не привязана или пути нет — km() → None: участок считает вызывающий
-  (по прямой × извилистость).
+  (по прямой × извилистость);
+- объезд малого центра («Развоз», CenterBypassRoads): участок между точками вне центра — по графу без центра
+  (without_zone: без рёбер, у которых конец или середина в центре), остальные — по обычному графу. Кэш объезда —
+  <карта>.dist-center.npz (отпечаток графа без центра — карта и граница центра; сменились — пересчёт), точки — только
+  точки развоза и склад.
 
 Команды:  python -m route_optimizer.roads download | build | warm [--if-stale]
 (warm --if-stale — только если кэш расстояний не годится нынешнему графу и формату: задача обновления сервера)
@@ -34,7 +38,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
-from .geo import EARTH_RADIUS_KM, Point, haversine_km
+from .geo import EARTH_RADIUS_KM, Point, haversine_km, in_polygon
 
 if TYPE_CHECKING:
     from .store import Bundle
@@ -146,6 +150,27 @@ def _haversine_np(lat1: Any, lon1: Any, lat2: Any, lon2: Any) -> Any:
     la1, lo1, la2, lo2 = (np.radians(x) for x in (lat1, lon1, lat2, lon2))
     h = np.sin((la2 - la1) / 2) ** 2 + np.cos(la1) * np.cos(la2) * np.sin((lo2 - lo1) / 2) ** 2
     return 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(np.minimum(1.0, h)))
+
+
+def _in_polygon_np(lat: Any, lon: Any, polygon: Sequence[Point]) -> Any:
+    """geo.in_polygon для массивов точек — то же правило чётности и та же арифметика (граница — так же, как у точек
+    развоза в dispatch._central). Меньше трёх вершин — все False."""
+    inside = np.zeros(len(lat), dtype=bool)
+    if len(polygon) < 3:
+        return inside
+    prev_lat, prev_lon = polygon[-1]
+    for cur_lat, cur_lon in polygon:
+        if cur_lat != prev_lat:   # горизонтальное ребро луч не пересекает (в geo.in_polygon — то же без деления)
+            inside ^= (((cur_lat > lat) != (prev_lat > lat))
+                       & (lon < (prev_lon - cur_lon) * (lat - cur_lat) / (prev_lat - cur_lat) + cur_lon))
+        prev_lat, prev_lon = cur_lat, cur_lon
+    return inside
+
+
+def zone_key(zone: Sequence[Point]) -> str:
+    """Отпечаток границы малого центра (вершины с точностью ключа точки) — в версии и отпечатке графа объезда."""
+    raw = ';'.join(f'{lat:.{KEY_DECIMALS}f},{lon:.{KEY_DECIMALS}f}' for lat, lon in zone)
+    return f'{zlib.crc32(raw.encode()):08x}'
 
 
 # --- Граф ---
@@ -306,6 +331,17 @@ def load_graph(path: str, source: str, rebuild: bool = False) -> RoadGraph:
     return graph
 
 
+def without_zone(graph: RoadGraph, zone: Sequence[Point]) -> RoadGraph:
+    """Граф в объезд зоны (малого центра): без рёбер, у которых начало, конец или середина в зоне. Узлы и их индексы —
+    те же; узлы в зоне остаются без рёбер, и RoadNetwork к ним не привязывает (они не в наибольшей сильно связной
+    компоненте). Отпечаток — свой: версия карты, граница зоны и оставшиеся рёбра."""
+    lat, lon, src, dst = graph.lat, graph.lon, graph.src, graph.dst
+    inside = _in_polygon_np(lat, lon, zone)
+    drop = inside[src] | inside[dst] | _in_polygon_np((lat[src] + lat[dst]) / 2, (lon[src] + lon[dst]) / 2, zone)
+    keep = ~drop
+    return RoadGraph(lat, lon, src[keep], dst[keep], graph.km[keep], f'{graph.source}|center:{zone_key(zone)}')
+
+
 class RoadNetwork:
     """Граф в матричном виде, обратный граф и KD-дерево привязки (по наибольшей сильно связной
     компоненте: из любой привязанной точки есть путь в любую другую)."""
@@ -350,27 +386,45 @@ class RoadNetwork:
 
     def lines(self, lines: Sequence[Sequence[Point]]) -> list[list[Point]]:
         """Ломаные вдоль дорог для карты: каждая линия (точки по порядку объезда) → точки по кратчайшему
-        пути A → B между соседними точками, упрощённые до PATH_SIMPLIFY_KM. Участок, где точка не
-        привязана или пути нет, — по прямой. Поиск — Dijkstra от каждого узла-начала с пределом
-        PATH_LIMIT_FACTOR × по прямой (не нашёлся — без предела)."""
-        points = list({point_key(p) for line in lines for p in line})
+        пути A → B между соседними точками (paths), упрощённые до PATH_SIMPLIFY_KM (draw). Участок, где точка не
+        привязана или пути нет, — по прямой."""
+        return self.draw(lines, self.paths([(a, b) for line in lines for a, b in zip(line, line[1:])]))
+
+    def paths(self, legs: Sequence[tuple[Point, Point]]) -> dict[tuple[Point, Point], tuple[Any, Any]]:
+        """Кратчайшие пути участков A → B для карты: (ключ A, ключ B) → (широты, долготы) узлов пути; обе точки у
+        одного узла — путь без узлов (по прямой, как и км). Участка, где точка не привязана или пути нет, в ответе
+        нет. Поиск — Dijkstra от каждого узла-начала с пределом PATH_LIMIT_FACTOR × по прямой (не нашёлся — без
+        предела)."""
+        points = list({point_key(p) for leg in legs for p in leg})
         snapped, _ = self.snap(points)
         node = {p: int(n) for p, n in zip(points, snapped)}
-        legs: dict[int, dict[int, float]] = {}   # узел-начало → узел-конец → км по прямой
-        for line in lines:
-            for a, b in zip(line, line[1:]):
-                na, nb = node[point_key(a)], node[point_key(b)]
-                if na >= 0 and nb >= 0 and na != nb:
-                    legs.setdefault(na, {})[nb] = haversine_km(a, b)
-        paths: dict[tuple[int, int], Any] = {}
-        for na, targets in legs.items():
+        starts: dict[int, dict[int, float]] = {}   # узел-начало → узел-конец → км по прямой
+        for a, b in legs:
+            na, nb = node[point_key(a)], node[point_key(b)]
+            if na >= 0 and nb >= 0 and na != nb:
+                starts.setdefault(na, {})[nb] = haversine_km(a, b)
+        found: dict[tuple[int, int], Any] = {}
+        for na, targets in starts.items():
             limit = PATH_LIMIT_FACTOR * max(targets.values()) + PATH_LIMIT_SLACK_KM
             dist, pred = dijkstra(self._g, directed=True, indices=na, return_predecessors=True, limit=limit)
             if not all(math.isfinite(dist[nb]) for nb in targets):
                 dist, pred = dijkstra(self._g, directed=True, indices=na, return_predecessors=True)
             for nb in targets:
                 if math.isfinite(dist[nb]):
-                    paths[na, nb] = _walk_back(pred, na, nb)
+                    found[na, nb] = _walk_back(pred, na, nb)
+        out: dict[tuple[Point, Point], tuple[Any, Any]] = {}
+        for a, b in legs:
+            ka, kb = point_key(a), point_key(b)
+            na, nb = node[ka], node[kb]
+            path = np.zeros(0, dtype=np.int64) if na >= 0 and na == nb else found.get((na, nb))
+            if path is not None:
+                out[ka, kb] = (self.graph.lat[path], self.graph.lon[path])
+        return out
+
+    def draw(self, lines: Sequence[Sequence[Point]],
+             paths: Mapping[tuple[Point, Point], tuple[Any, Any]]) -> list[list[Point]]:
+        """Линии для карты: точки линии, между соседними — путь участка из paths (RoadNetwork.paths; участка нет —
+        по прямой), упрощённые до PATH_SIMPLIFY_KM."""
         out: list[list[Point]] = []
         for line in lines:
             if not line:
@@ -379,10 +433,10 @@ class RoadNetwork:
             lat: list[Any] = [np.array([line[0][0]])]
             lon: list[Any] = [np.array([line[0][1]])]
             for a, b in zip(line, line[1:]):
-                path = paths.get((node[point_key(a)], node[point_key(b)]))
+                path = paths.get((point_key(a), point_key(b)))
                 if path is not None:
-                    lat.append(self.graph.lat[path])
-                    lon.append(self.graph.lon[path])
+                    lat.append(path[0])
+                    lon.append(path[1])
                 lat.append(np.array([b[0]]))
                 lon.append(np.array([b[1]]))
             la, lo = np.concatenate(lat), np.concatenate(lon)
@@ -478,6 +532,15 @@ class RoadDistances:
                   cache_path: str | None = None) -> RoadDistances:
         """Готовый граф (тесты и разовые расчёты); cache_path=None — без файла кэша."""
         return cls(version, lambda: RoadNetwork(graph), cache_path, lambda: graph.identity)
+
+    @classmethod
+    def around_zone(cls, load: Callable[[], RoadGraph], zone: Sequence[Point], version: str,
+                    cache_path: str | None = None, map_path: str | None = None) -> RoadDistances:
+        """Км в объезд зоны: граф load() без зоны (without_zone). Отпечаток графа без зоны — только после загрузки
+        обычного графа (из кэша на диске — доли секунды), один раз на объект: при первом чтении файла кэша."""
+        zone = tuple(zone)
+        return cls(f'{version}|center:{zone_key(zone)}', lambda: RoadNetwork(without_zone(load(), zone)),
+                   cache_path, lambda: without_zone(load(), zone).identity, map_path)
 
     @property
     def size(self) -> tuple[int, int]:
@@ -633,15 +696,127 @@ class RoadDistances:
             logger.exception('[Routes] Кэш расстояний %s не записан', path)
 
 
+class CenterBypassRoads:
+    """Дороги «Развоза» с объездом малого центра (№39–41: в центр въезжают только машины с правом въезда) — тот же
+    интерфейс, что у RoadDistances (ensure, km, minutes, truck, lines, unsnapped, version, failed, km_source, map_path,
+    size) и detour. Правило одно для всех машин (у расчёта рейсов одна функция расстояния — Norms.km):
+    - участок между точками вне центра — по графу без центра (bypass, without_zone); у объезда нет км (точка не
+      привязана, пути нет, объезд не посчитался) — по обычному графу (base);
+    - участок, где хоть одна точка в центре, — по обычному графу: точки в центре возит только машина с правом въезда.
+    Машина без права въезда ездит только между точками вне центра (склад — тоже вне), значит, её участки центр
+    объезжают. У машины с правом въезда участки между точками вне центра — тоже в объезд (принятое упрощение: км чуть
+    осторожнее). Объезд считается только для точек, которые приходят в ensure (точки развоза и склад), а не для всего
+    плана. Создаёт RoadProvider.bypass (границы нет — объезда нет)."""
+
+    def __init__(self, base: RoadDistances, bypass: RoadDistances, zone: Sequence[Point]):
+        self.base = base
+        self.bypass = bypass
+        self.zone = tuple((float(lat), float(lon)) for lat, lon in zone)
+        self.zone_key = zone_key(self.zone)
+        self._inside: dict[Point, bool] = {}   # точка → в центре (geo.in_polygon), заполняется по ходу расчёта
+
+    @property
+    def version(self) -> str:
+        return self.bypass.version   # версия карты и граница центра
+
+    @property
+    def failed(self) -> bool:
+        return self.base.failed
+
+    @property
+    def km_source(self) -> str:
+        return self.base.km_source
+
+    @property
+    def map_path(self) -> str | None:
+        return self.base.map_path
+
+    @property
+    def size(self) -> tuple[int, int]:
+        return self.base.size
+
+    def _inside_zone(self, p: Point) -> bool:
+        key = (p[0], p[1])
+        hit = self._inside.get(key)
+        if hit is None:
+            hit = self._inside[key] = in_polygon(key, self.zone)
+        return hit
+
+    def around(self, a: Point, b: Point) -> bool:
+        """Участок A → B — в объезд центра: обе точки вне него."""
+        return not (self._inside_zone(a) or self._inside_zone(b))
+
+    def ensure(self, points: Iterable[Point | None]) -> None:
+        """Обычный граф — для всех точек, объезд — для точек вне центра (первый раз — ~10 с на сотню точек, дальше —
+        кэш на диске)."""
+        points = [p for p in points if p is not None]
+        self.base.ensure(points)
+        before = self.bypass.size
+        started = time.perf_counter()
+        self.bypass.ensure([p for p in points if not self._inside_zone(p)])
+        if self.bypass.size != before:   # прочитан кэш или досчитаны точки
+            logger.info('[Routes] Объезд малого центра: точек %d, %.1f с', self.bypass.size[0],
+                        time.perf_counter() - started)
+
+    def km(self, a: Point, b: Point) -> float | None:
+        if self.around(a, b):
+            d = self.bypass.km(a, b)
+            if d is not None:
+                return d
+        return self.base.km(a, b)
+
+    def detour(self, a: Point, b: Point) -> float:
+        """Во сколько раз объезд длиннее кратчайшего пути по дорогам (≥ 1; не в объезд или км нет — 1). Им
+        ValhallaRoads растягивает свои км и минуты (путь Valhalla — кратчайший): км и минуты участка — про один путь."""
+        if not self.around(a, b):
+            return 1.0
+        d, direct = self.bypass.km(a, b), self.base.km(a, b)
+        if d is None or direct is None or not d > direct > 0:
+            return 1.0
+        return d / direct
+
+    def minutes(self, a: Point, b: Point, city: bool) -> float | None:
+        """Времени граф не знает (как RoadDistances.minutes)."""
+        return None
+
+    def truck(self, truck_time: bool | None = None) -> CenterBypassRoads:
+        return self
+
+    def unsnapped(self, points: Iterable[Point | None]) -> int:
+        """Точки без км по дорогам — по обычному графу (где объезд точку не привязал, км — по обычному)."""
+        return self.base.unsnapped(points)
+
+    def lines(self, lines: Sequence[Sequence[Point]]) -> list[list[Point]] | None:
+        """Линии рейсов для карты по тому же правилу, что км: участок между точками вне центра — путь в объезд (нет
+        его — по обычному графу), остальные — по обычному графу. Дороги сломаны — None; объезд сломан — как
+        RoadDistances.lines. Графы — по одному за раз (каждый ~100 МБ): сначала объезд, затем обычный."""
+        if self.base.failed:
+            return None
+        if self.bypass.failed:
+            return self.base.lines(lines)
+        try:
+            legs = [(a, b) for line in lines for a, b in zip(line, line[1:])]
+            around = [leg for leg in legs if self.around(*leg)]
+            paths = self.bypass._load_network().paths(around) if around else {}
+            direct = self.base._load_network()
+            paths.update(direct.paths([(a, b) for a, b in legs if (point_key(a), point_key(b)) not in paths]))
+            return direct.draw(lines, paths)
+        except Exception:
+            logger.exception('[Routes] Линии по дорогам не построены — на карте по прямой')
+            return None
+
+
 class RoadProvider:
     """Дороги для расчёта: карта есть — RoadDistances (пересоздаётся при смене файла карты; не
     собралась — с failed = True: по прямой с предупреждением roads_failed), нет — None.
-    Проверка карты — os.stat на каждый вызов: подложенная карта подхватывается без перезапуска."""
+    Проверка карты — os.stat на каждый вызов: подложенная карта подхватывается без перезапуска.
+    «Развозу» — объезд малого центра поверх тех же дорог (bypass): один на карту и границу центра."""
 
     def __init__(self, path: str | None = None):
         self.path = path or osm_path()
         self._lock = threading.Lock()
         self._current: RoadDistances | None = None
+        self._bypass: CenterBypassRoads | None = None
 
     def get(self) -> RoadDistances | None:
         version = map_signature(self.path)
@@ -651,6 +826,21 @@ class RoadProvider:
             if self._current is None or self._current.version != version:
                 self._current = RoadDistances.for_map(self.path, version)
             return self._current
+
+    def bypass(self, base: RoadDistances, zone: Sequence[Point]) -> CenterBypassRoads | RoadDistances:
+        """Дороги с объездом центра zone поверх base (то, что вернул get): сменились карта или граница — новый объезд
+        (кэш на диске — <карта>.dist-center.npz, один на нынешнюю границу). Границы нет (меньше трёх вершин: центра
+        нет и в dispatch._central) — сами base, расчёт как без объезда."""
+        if len(zone) < 3:
+            return base
+        key = zone_key(zone)
+        with self._lock:
+            cur = self._bypass
+            if cur is None or cur.base is not base or cur.zone_key != key:
+                bypass = RoadDistances.around_zone(lambda: load_graph(self.path, base.version), zone, base.version,
+                                                   _cache_path(self.path, 'dist-center'), self.path)
+                cur = self._bypass = CenterBypassRoads(base, bypass, zone)
+            return cur
 
 
 def open_roads(path: str | None = None, cache_name: str = 'dist') -> RoadDistances | None:

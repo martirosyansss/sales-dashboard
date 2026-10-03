@@ -80,7 +80,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Iterable, Iterator, Sequence
 
 from .geo import Point, haversine_km, in_city
-from .roads import KEY_DECIMALS, REPO_ROOT, SNAP_MAX_KM, map_signature, np, osm_path, point_key
+from .roads import KEY_DECIMALS, REPO_ROOT, SNAP_MAX_KM, CenterBypassRoads, map_signature, np, osm_path, point_key
 
 if TYPE_CHECKING:
     from .evaluate import Norms
@@ -763,9 +763,11 @@ class ValhallaRoads:
     нет; у грузовиков — нет: по прямой × извилистость, как до этапа 2). Минуты грузовика (профиль truck) — только при
     truck_time (выбор вызывающего: ValhallaProvider.get, truck(truck_time=…); по умолчанию — ROUTES_TRUCK_TIME), иначе
     прежняя модель.
+    Объезд малого центра («Развоз»: fallback — roads.CenterBypassRoads): путь Valhalla — кратчайший, поэтому его км и
+    минуты на участках в объезд растягиваются во столько же раз, во сколько объезд по графу OSM длиннее (detour).
     compute — ensure считает недостающие точки сам (команды и скрипты); у сервера (False) — нет: считает фон."""
 
-    def __init__(self, registry: _Registry, profile: str, fallback: RoadDistances | None = None, *,
+    def __init__(self, registry: _Registry, profile: str, fallback: RoadDistances | CenterBypassRoads | None = None, *,
                  time_only: bool = False, truck_time: bool = False, truck_cost: dict[str, float] | None = None,
                  compute: bool = False):
         self._registry = registry
@@ -871,7 +873,11 @@ class ValhallaRoads:
         if ia == ib:
             return haversine_km(a, b)
         d = t.km.item(ia, ib)
-        return sa + d + sb if math.isfinite(d) else None
+        return (sa + d + sb) * self._detour(a, b) if math.isfinite(d) else None
+
+    def _detour(self, a: Point, b: Point) -> float:
+        """Объезд малого центра на участке (roads.CenterBypassRoads.detour); без объезда — 1."""
+        return self.fallback.detour(a, b) if isinstance(self.fallback, CenterBypassRoads) else 1.0
 
     def km(self, a: Point, b: Point) -> float | None:
         """Км A → B по дорогам: Valhalla, у кого пути нет — граф OSM (км из графа — наоборот; грузовик в режиме
@@ -888,8 +894,8 @@ class ValhallaRoads:
         return self.fallback.km(a, b)
 
     def valhalla_minutes(self, a: Point, b: Point, city: bool) -> float | None:
-        """Минуты Valhalla A → B × поправка зоны (city — оба конца в городе) — независимо от переключателей; нет —
-        None."""
+        """Минуты Valhalla A → B × поправка зоны (city — оба конца в городе; объезд центра — × detour) — независимо от
+        переключателей; нет — None."""
         hit = self._pair(a, b)
         if hit is None:
             return None
@@ -897,7 +903,7 @@ class ValhallaRoads:
         if ia == ib:
             return None
         m = t.minutes.item(ia, ib)
-        return m * TIME_FACTOR[city] if math.isfinite(m) else None
+        return m * TIME_FACTOR[city] * self._detour(a, b) if math.isfinite(m) else None
 
     def minutes(self, a: Point, b: Point, city: bool) -> float | None:
         """Минуты езды A → B для расчёта; None — скорость зоны (прежняя модель)."""
@@ -919,8 +925,10 @@ class ValhallaRoads:
         return self.fallback.lines(lines) if self.fallback is not None else None
 
 
-def _osm_id(roads: RoadDistances) -> str:
+def _osm_id(roads: RoadDistances | CenterBypassRoads) -> str:
     from .roads import DIST_FORMAT, RULES_VERSION
+    if isinstance(roads, CenterBypassRoads):   # объезд центра — правило расчёта на тех же дорогах: id тот же
+        roads = roads.base
     path = roads.map_path
     fingerprint = map_fingerprint(path) if path else None
     return f'osm-dijkstra:{fingerprint or roads.version}|r{RULES_VERSION}|d{DIST_FORMAT}'
