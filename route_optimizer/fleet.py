@@ -184,29 +184,43 @@ def _closed(seq: Sequence[int], stops: Sequence[_Stop], d: Matrix) -> float:
 
 
 def _schedule(seq: Sequence[int], stops: Sequence[_Stop], m: Matrix, start: float,
-              arrivals: list[float] | None = None) -> tuple[float, bool]:
+              arrivals: list[float] | None = None, parts: dict[str, Any] | None = None) -> tuple[float, bool]:
     """Рейс «склад → seq → склад» с выезда start (минуты от начала дня машины), с ожиданием у окон:
     (минуты от выезда до возвращения на склад — езда + разгрузка + ожидание, все окна соблюдены).
     Без ожидания минуты — ровно езда + разгрузка, как в остальном модуле. arrivals — сюда дописываются
-    прибытия к точкам (начало разгрузки)."""
+    прибытия к точкам (начало разгрузки). parts — слагаемые этих минут из того же расчёта (пояснение на странице
+    «Развоза»): 'loading' — загрузка на складе (без часовой модели — 0), 'legs' — (езда, ожидание, разгрузка) к каждой
+    точке и последним — (езда на склад, 0, 0)."""
     dynamic = hasattr(m, 'travel')
     t, prev, wait, ok = start, 0, 0.0, True
+    legs: list[tuple[float, float, float]] = []
+    loading = 0.0
     if dynamic:
-        t += m.load(math.fsum(stops[v].kg for v in seq))
+        loading = m.load(math.fsum(stops[v].kg for v in seq))
+        t += loading
     for v in seq:
         s = stops[v]
-        t += m.travel(prev, s.node, t) if dynamic else m[prev][s.node]
+        drive = m.travel(prev, s.node, t) if dynamic else m[prev][s.node]
+        t += drive
+        early = 0.0
         if t < s.early:
-            wait += s.early - t
+            early = s.early - t
+            wait += early
             t = s.early
         if t > s.late + _EPS:
             ok = False
         if arrivals is not None:
             arrivals.append(t)
+        if parts is not None:
+            legs.append((drive, early, s.unload))
         t += s.unload
         prev = s.node
+    back = m.travel(prev, 0, t) if dynamic else m[prev][0]
+    if parts is not None:
+        parts['loading'] = loading
+        parts['legs'] = [*legs, (back, 0.0, 0.0)]
     if dynamic:
-        return t + m.travel(prev, 0, t) - start, ok
+        return t + back - start, ok
     return _closed(seq, stops, m) + math.fsum(stops[v].unload for v in seq) + wait, ok
 
 
@@ -1370,11 +1384,13 @@ def route_trip(points: Sequence[Point], kgs: Sequence[float], depot: Point, norm
 
 
 def trip_schedule(points: Sequence[Point], kgs: Sequence[float], depot: Point, norms: Norms, tn: TruckNorms,
-                  start: float = 0.0, windows: Sequence[Window] | None = None) -> tuple[float, list[float], float]:
+                  start: float = 0.0, windows: Sequence[Window] | None = None,
+                  parts: dict[str, Any] | None = None) -> tuple[float, list[float], float]:
     """Рейс «склад → points → склад» в заданном порядке, машина свободна с start (минуты от начала дня машины):
     (выезд, прибытия к точкам, минуты рейса от выезда — езда + разгрузка + ожидание у окон). Окно первой точки
     позже, чем машина туда доедет, — выезд позже, чтобы не ждать у неё (как ставит рейсы _plan_timed); выезд не
-    позже, чем в плане, — прибытия не позже. Без окон выезд — start, минуты — те же, что у route_trip."""
+    позже, чем в плане, — прибытия не позже. Без окон выезд — start, минуты — те же, что у route_trip.
+    parts — слагаемые минут рейса из этого же расчёта (_schedule): загрузка, езда, ожидание и разгрузка."""
     if not points:
         return start, [], 0.0
     _, m = _matrices(points, depot, norms, tn)
@@ -1383,8 +1399,18 @@ def trip_schedule(points: Sequence[Point], kgs: Sequence[float], depot: Point, n
              for i, kg in enumerate(kgs)]
     depart = _departure(range(len(points)), stops, m, start)
     arrivals: list[float] = []
-    minutes, _ = _schedule(range(len(points)), stops, m, depart, arrivals)
+    minutes, _ = _schedule(range(len(points)), stops, m, depart, arrivals, parts)
     return depart, arrivals, minutes
+
+
+def load_limit(kgs: Sequence[float], center: Sequence[bool], allowed: Sequence[Collection[str] | None],
+               truck: FleetTruck, trucks: Sequence[FleetTruck]) -> float:
+    """Предел груза рейса из заказов kgs (в центре, допустимые машины) для машины truck по правилу сборки LOAD_CAP
+    (_load_limit): 90% тоннажа; рейс из одного заказа тяжелее 90% самой большой подходящей ему машины из trucks — весь
+    тоннаж (такой заказ иначе не увезти)."""
+    stops = [_Stop(0, float(kg), 0.0, 0.0, center=c, allowed_trucks=None if a is None else frozenset(a))
+             for kg, c, a in zip(kgs, center, allowed)]
+    return _load_limit(range(len(stops)), stops, truck, trucks, LOAD_CAP)
 
 
 # --- День доставки: Монте-Карло ---

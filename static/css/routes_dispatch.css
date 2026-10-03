@@ -176,6 +176,40 @@
 }
 .dp-npin span.is-long { font-size: 10px; letter-spacing: -.3px; }
 
+/* «Почему так» под картой (ответ владельца №49): разделы «заголовок — фразы», время по точкам */
+.dp-why { padding: 10px 14px 12px; border-top: 1px solid var(--rt-line); font-size: .9375rem; line-height: 1.5; }
+#rtDispatch .dp-why-t { margin: 0 0 6px; font-size: 1rem; font-weight: 700; }
+.dp-why-list { margin: 0; }
+.dp-why-row { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); gap: 2px 14px; padding: 7px 0; border-top: 1px solid var(--rt-line-soft); }
+.dp-why-row:first-child { border-top: 0; }
+.dp-why-row dt { font-weight: 700; color: var(--rt-fg-dim); }
+.dp-why-row dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.dp-why-row dd p { margin: 0 0 3px; }
+.dp-why-row dd p:last-child { margin-bottom: 0; }
+.dp-why-fold { margin-top: 6px; }
+.dp-why-fold > summary { cursor: pointer; width: fit-content; padding: 4px 0; font-weight: 600; color: var(--rt-acc); }
+.dp-why-body { padding-top: 6px; }
+.dp-why-body > p { margin: 0 0 8px; color: var(--rt-fg-dim); }
+.dp-why-scroll { max-width: 100%; overflow-x: auto; border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); }
+.dp-why-table { width: 100%; min-width: 600px; border-collapse: separate; border-spacing: 0; }
+.dp-why-table th {
+    background: var(--rt-panel-2); font-size: .8125rem; font-weight: 600; color: var(--rt-fg-dim);
+    text-align: left; padding: 7px 8px; white-space: nowrap; border-bottom: 1px solid var(--rt-line);
+}
+.dp-why-table td { padding: 6px 8px; border-bottom: 1px solid var(--rt-line-soft); font-size: .875rem; vertical-align: top; }
+.dp-why-table tr:last-child td { border-bottom: 0; }
+.dp-why-table td:first-child { min-width: 170px; overflow-wrap: anywhere; }
+.dp-why-table td.num { text-align: right; white-space: nowrap; font-family: var(--rt-mono); }
+@media (max-width: 640px) {
+    .dp-why { padding: 10px 12px; }
+    .dp-why-row { grid-template-columns: minmax(0, 1fr); }
+    /* телефон: заголовки в несколько строк, узкая колонка магазина — цифры видны без прокрутки, если влезают */
+    .dp-why-table { min-width: 0; }
+    .dp-why-table th { white-space: normal; padding: 6px; }
+    .dp-why-table td { padding: 6px; }
+    .dp-why-table td:first-child { min-width: 104px; }
+}
+
 /* Точка магазина (driver-geo-plan.md §5): предложения водителей — под карточкой «Ընդունել» / «Մերժել»;
    «Փոխել տեղը» — модальное окно с картой */
 .dp-sug { display: grid; gap: 6px; }

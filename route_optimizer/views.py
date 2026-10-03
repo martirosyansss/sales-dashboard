@@ -29,7 +29,7 @@ from . import fleet as fl
 from .running_costs import profile_fields
 from .erp import ErpError
 from .geo import Point, haversine_km, is_valid_point
-from .roads import CenterBypassRoads, RoadDistances, RoadProvider, roads_version
+from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
                     center_auto, check_garage_entry, check_unload_min, check_window, validate_payload)
@@ -964,12 +964,50 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
         norms = replace(norms, provider=provider, traffic_status=status)
     h2, m2 = map(int, s['truck_overtime_end'].split(':'))
     tn = fl.TruckNorms.from_settings(s)
-    # learned=False — журнала нет: только введённое время магазинов
-    norms, tn, trucks, _ = _with_learned(state, norms, tn, trucks, customers or {}, journal, bundle.unload_min)
+    # learned=False — журнала нет: выученных норм нет (eff пуст), только введённое время магазинов
+    norms, tn, trucks, eff = _with_learned(state, norms, tn, trucks, customers or {}, journal, bundle.unload_min)
     return dp.DayContext(day, bundle.depot, trucks, norms, tn, h * 60 + m,
                          float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']),
                          {cid: w.span() for cid, w in bundle.windows.items()}, zone,
-                         vehicle_access=bundle.vehicle_access)
+                         vehicle_access=bundle.vehicle_access,
+                         model=_model_note(s, calib, norms, eff, [p for p in points if p is not None], trucks))
+
+
+def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, eff: learning.InEffect,
+                points: Sequence[Point], trucks: Mapping[str, fl.FleetTruck]) -> dict[str, Any]:
+    """Что учитывает расчёт «Развоза» — для пояснения на странице («Ի՞նչ է հաշվի առնված հաշվարկում»), в расчёте не
+    участвует: км участков — как их берёт Norms.km (Яндекс, Valhalla, граф OSM или по прямой × извилистость), сколько точек
+    считается по прямой (_straight_points), объезд малого центра, минуты (скорость зоны, Valhalla или Яндекс), скорости
+    зон и их источник, часовой профиль по GPS менеджеров и действующие выученные нормы (_with_learned; расход — только
+    у машин расчёта)."""
+    roads = norms.roads
+    osm = roads.fallback if isinstance(roads, ValhallaRoads) else roads
+    source = 'straight' if roads is None or roads.failed else roads.km_source
+    # Norms.km сначала спрашивает поставщика (Яндекс): его км, у кого их нет — дороги
+    km = 'yandex' if norms.provider is not None else source if source in ('osm', 'straight') else 'valhalla'
+    road = evaluate.road_norms(s, calib)
+    report = norms.traffic.report if norms.traffic is not None else {}
+    return {
+        'km': km, 'detour': norms.detour,
+        'unsnapped': _straight_points(roads, points) if km in ('osm', 'valhalla') else None, 'snap_km': SNAP_MAX_KM,
+        'bypass': isinstance(osm, CenterBypassRoads) and not osm.failed and not osm.bypass.failed,
+        'minutes': ('yandex' if norms.provider is not None else
+                    'valhalla' if isinstance(roads, ValhallaRoads) and roads.serves_minutes else 'zones'),
+        'speed_city_kmh': norms.speed_city_kmh, 'speed_city_source': road['speed_city_kmh'][1],
+        'speed_region_kmh': norms.speed_region_kmh, 'speed_region_source': road['speed_region_kmh'][1],
+        'hourly_gps': report.get('source') == 'historical_gps',
+        'learned': {'travel': bool(eff.travel), 'unload': bool(eff.unload), 'loading': bool(eff.loading),
+                    'fuel': sorted(c for c in (eff.fuel or ()) if c in trucks)},
+    }
+
+
+def _straight_points(roads: RoadDistances | CenterBypassRoads | ValhallaRoads, points: Sequence[Point]) -> int:
+    """Точки дня дальше SNAP_MAX_KM от дороги — их участки Norms.km считает по прямой × извилистость. У Valhalla точка без
+    своей привязки берёт км графа OSM (запасной путь) — по прямой, только если не привязана и к нему."""
+    fallback = roads.fallback if isinstance(roads, ValhallaRoads) else None
+    if fallback is None or fallback.failed:
+        return roads.unsnapped(points)
+    return sum(1 for p in {p for p in points if p is not None} if roads.unsnapped([p]) and fallback.unsnapped([p]))
 
 
 @dataclass
@@ -1206,6 +1244,8 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     }
     if draft is not None and dd.ctx is not None:
         plan = dp.plan_view(dd.ctx, dd.stops, draft, info)
+        # пояснение дня: заказы, перенесённые сюда «Везти завтра» прошлого дня, и отсюда — на следующий день
+        plan['explain'].update(carried=len(dd.carried & {o.isn for o in active}), deferred=len(draft.deferred))
         plan['built_at'] = draft.built_at
         plan['baseline'] = dp.baseline(dd.ctx, dd.stops, draft,
                                        dp.history_cars(dd.data.agent_cars, dd.bundle.van_trucks()))
@@ -1319,7 +1359,7 @@ def _dispatch_request() -> tuple[Any, Any, Any]:
 
 
 def _capture_prediction(dd, draft):
-    view = dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd))
+    view = dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd), explain=False)
     now = _clock()
     start = datetime.combine(dd.day, datetime.strptime(dd.bundle.settings['truck_work_start'], '%H:%M').time())
     # depart/return — выезд первого рейса и возвращение последнего (HH:MM): «время работы» отчёта «план — факт»;
@@ -1392,7 +1432,7 @@ def api_dispatch_edit() -> Any:
     if payload.get('rev') != dd.rev:
         return _conflict('План изменили в другой вкладке — обновите страницу')
     info = _stop_info(dd)
-    km_before = dp.plan_view(dd.ctx, dd.stops, dd.draft, info)['summary']['km']
+    km_before = dp.plan_view(dd.ctx, dd.stops, dd.draft, info, explain=False)['summary']['km']
     workdays = bundle.settings['workdays']
     deferred_before = set(dd.draft.deferred)
     try:
