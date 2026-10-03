@@ -745,7 +745,8 @@ def test_store_migrates_13_to_14_keeps_rows_and_ids(tmp_path):
     s2 = rst.Store(path)
     s2.save_learned('2026-10-02', [lr.Outcome('truck_time', '', True, 'да', {'source': VALHALLA})])
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('14',)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(rst.SCHEMA_VERSION),)                                          # 13 → 14 → … → текущая
         rows = conn.execute('SELECT * FROM learned_norms ORDER BY id').fetchall()
         assert rows[:len(before)] == before and rows[-1][1] == 'truck_time' and rows[-1][0] == 51   # id не повторяются
         assert conn.execute("SELECT name FROM sqlite_sequence WHERE name LIKE 'learned_norms%'").fetchall() == \
@@ -779,6 +780,6 @@ def test_learning_page_shows_truck_time_model(client, fake, tmp_path, monkeypatc
     from flask import render_template
     with app_v2.app.test_request_context('/routes/learning'):
         html = render_template('routes_learning.html')
-    assert 'Время в пути грузовиков: модель' in html and 'id="lrTtRows"' in html and 'routes_learning.js?v=5' in html
+    assert 'Время в пути грузовиков: модель' in html and 'id="lrTtRows"' in html and 'routes_learning.js?v=6' in html
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
     assert 'renderTruckTime' in js and "esc(last ? 'Сравнения пока нет: ' + last.reason" in js

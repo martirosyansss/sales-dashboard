@@ -18,14 +18,15 @@ import re
 import sqlite3
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
-from typing import Any, Callable, Collection, Mapping
+from enum import Enum
+from typing import Any, Callable, Collection, Literal, Mapping
 
 from .geo import ARMENIA_LAT, ARMENIA_LON, Point, is_valid_point
 from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, parse_transfer_key
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -111,6 +112,13 @@ _CUSTOMER_WINDOW_TABLE = (
     "CREATE TABLE IF NOT EXISTS customer_window(customer_id INTEGER PRIMARY KEY, kind TEXT NOT NULL, "
     "t1 INTEGER NOT NULL, t2 INTEGER, tol INTEGER, updated_at TEXT NOT NULL, updated_by TEXT)")
 
+# Схема 15 (ответ владельца №50): время у магазина — постоянная часть разгрузки этого магазина (парковка, приёмка,
+# документы) вместо общей нормы unload_min_per_stop, мин; время на груз (unload_min_per_tonne) — как у всех. Хранится
+# абсолютным значением, не поправкой: сменилась общая норма — значение магазина то же. Действует только в «Развозе».
+_CUSTOMER_UNLOAD_TABLE = (
+    "CREATE TABLE IF NOT EXISTS customer_unload(customer_id INTEGER PRIMARY KEY, "
+    "fixed_min REAL NOT NULL CHECK (fixed_min BETWEEN 1 AND 120), updated_at TEXT NOT NULL, updated_by TEXT)")
+
 _CUSTOMER_VEHICLES_TABLE = (
     "CREATE TABLE IF NOT EXISTS customer_vehicle_access(customer_id INTEGER PRIMARY KEY, "
     "mode TEXT NOT NULL CHECK(mode IN ('allow', 'deny')), trucks TEXT NOT NULL, "
@@ -163,6 +171,7 @@ _SCHEMA = (
     _LEARNED_TABLE,
     _LEARNING_SWITCH_TABLE,
     _CUSTOMER_WINDOW_TABLE,   # перед таблицами схемы 7: базы прежних версий в тестах — срез _SCHEMA с конца
+    _CUSTOMER_UNLOAD_TABLE,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -256,6 +265,8 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "DROP TABLE learned_norms",
         "ALTER TABLE learned_norms_v14 RENAME TO learned_norms",
     ),
+    # 14 → 15 (№50): только добавляем — таблица времени у магазина; прежние таблицы и значения не меняются.
+    14: (_CUSTOMER_UNLOAD_TABLE,),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -387,6 +398,7 @@ CENTER_ZONE_VERTICES = (3, 200)
 WINDOW_KINDS = ('before', 'after', 'between', 'at')
 WINDOW_TOL_MAX = 120
 DEFAULT_WINDOW_TOL = 15     # «в 11:00 ± 15 мин» — допуск по умолчанию (№37)
+UNLOAD_MIN_RANGE = (1, 120)  # время у магазина (№50), целые минуты
 _DAY_MINUTES = 24 * 60
 
 _HHMM_RE = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
@@ -469,6 +481,24 @@ def check_window(raw: Any) -> tuple[CustomerWindow | None, str | None]:
     return CustomerWindow(kind, t1, t2, tol), None
 
 
+def check_unload_min(raw: Any) -> tuple[float | None, str | None]:
+    """Время у магазина (№50) из запроса или из базы → (минуты, None) или (None, ошибка). Целое число минут от 1 до
+    120: логист вводит минуты, дробные не нужны; 40.0 (REAL из базы) — то же, что 40. Логическое — не число."""
+    lo, hi = UNLOAD_MIN_RANGE
+    if (isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw)
+            or not float(raw).is_integer() or not lo <= raw <= hi):
+        return None, f'время у магазина — целое число минут от {lo} до {hi}'
+    return float(raw), None
+
+
+class _Keep(Enum):
+    KEEP = 'keep'
+
+
+# сохранение без этого поля — значение в базе не меняется (None — убрать)
+KEEP: Literal[_Keep.KEEP] = _Keep.KEEP
+
+
 @dataclass(frozen=True)
 class ManagerProfile:
     agent_id: int
@@ -502,6 +532,9 @@ class Bundle:
     # перекрывают ERP и GPS, уступают ручной точке
     driver_points: dict[int, Point] = field(default_factory=dict)
     vehicle_access: dict[int, VehicleAccess] = field(default_factory=dict)
+    # время у магазина (customer_unload, №50): клиент → постоянная часть разгрузки, мин — только «Развоз»; в отпечаток
+    # не входит, как и окна: модель парка менеджеров его не знает
+    unload_min: dict[int, float] = field(default_factory=dict)
 
     def profile(self, agent_id: int) -> ManagerProfile:
         return self.managers.get(agent_id) or ManagerProfile(agent_id)
@@ -1254,6 +1287,7 @@ class Store:
                         'SELECT customer_id, kind, t1, t2, tol FROM customer_window').fetchall()
                     access_rows = conn.execute(
                         'SELECT customer_id, mode, trucks FROM customer_vehicle_access').fetchall()
+                    unload_rows = conn.execute('SELECT customer_id, fixed_min FROM customer_unload').fetchall()
                     conn.execute('COMMIT')
                 except BaseException:
                     if conn.in_transaction:
@@ -1324,7 +1358,13 @@ class Store:
             if err or not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
                 raise StoreError(f'{self._name()}: повреждено ограничение машин клиента {customer_id!r}{_FIX_HINT}')
             access[customer_id] = rule
-        return Bundle(settings, depot, trucks, managers, geo, windows, vehicle_access=access)
+        unload: dict[int, float] = {}
+        for customer_id, fixed in unload_rows:
+            minutes, _ = check_unload_min(fixed)
+            if minutes is None or not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
+                raise StoreError(f'{self._name()}: повреждено время у магазина {customer_id!r}{_FIX_HINT}')
+            unload[customer_id] = minutes
+        return Bundle(settings, depot, trucks, managers, geo, windows, vehicle_access=access, unload_min=unload)
 
     def load_copy(self) -> tuple[Bundle, int | None]:
         """Настройки, не меняя саму базу: её копия (sqlite backup из соединения только на чтение) во временной папке,
@@ -1648,18 +1688,31 @@ class Store:
                          (customer_id, access.mode, json.dumps(list(access.trucks), ensure_ascii=False), _now(), user))
 
     def save_customer_constraints(self, customer_id: int, access: VehicleAccess | None,
-                                  window: CustomerWindow | None, user: str | None) -> None:
-        """Машины и время из одной карточки: единая транзакция, без частичного сохранения."""
+                                  window: CustomerWindow | None, user: str | None,
+                                  unload_min: float | None | Literal[_Keep.KEEP] = KEEP) -> None:
+        """Машины, время доставки и время у магазина (unload_min, №50; KEEP — не менять, None — убрать) из одной
+        карточки: единая транзакция, без частичного сохранения."""
         if not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
             raise ValueError('customer_id: положительное целое')
         if access is not None and (not isinstance(access, VehicleAccess) or check_access(access.to_json())[1]):
             raise ValueError('ограничение машин не прошло проверку')
         if window is not None and (not isinstance(window, CustomerWindow) or check_window(window.to_json())[1]):
             raise ValueError('окно приёма не прошло проверку')
+        if unload_min is not KEEP and unload_min is not None and check_unload_min(unload_min)[1]:
+            raise ValueError('время у магазина не прошло проверку')
 
         def write(conn: sqlite3.Connection) -> None:
             self._write_customer_vehicles(conn, customer_id, access, user)
             self._write_customer_window(conn, customer_id, window, user)
+            if unload_min is KEEP:
+                return
+            if unload_min is None:
+                conn.execute('DELETE FROM customer_unload WHERE customer_id = ?', (customer_id,))
+            else:
+                conn.execute('INSERT INTO customer_unload(customer_id, fixed_min, updated_at, updated_by) '
+                             'VALUES(?, ?, ?, ?) ON CONFLICT(customer_id) DO UPDATE SET fixed_min = excluded.fixed_min, '
+                             'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                             (customer_id, float(unload_min), _now(), user))
 
         self._transaction(write, 'не удалось сохранить условия доставки магазина')
 

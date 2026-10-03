@@ -31,8 +31,8 @@ from .erp import ErpError
 from .geo import Point, haversine_km, is_valid_point
 from .roads import CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
-from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, Bundle, Decision, Store, StoreError, center_auto,
-                    check_window, validate_payload)
+from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, Store, StoreError, center_auto,
+                    check_unload_min, check_window, validate_payload)
 from .valhalla_engine import TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider, ValhallaRoads, truck_time_source
 from .vehicle_access import check_access
 
@@ -868,10 +868,10 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
                   truck_time: bool | None = None) -> dp.DayContext | None:
     """Контекст расчёта рейсов; склада или машин нет — None (страница объясняет, что заполнить). Действующие
     выученные нормы (_with_learned; learned_before — только прогоны раньше этого дня; learned=False — без них) — поверх
-    настроек; customers — клиент → точка дня (поправка разгрузки магазина). Минуты грузовиков — truck_time (True —
-    Valhalla, False — прежняя модель); None — _truck_time_choice по тому же чтению журнала (learned=False — без выбора
-    обучения). Срез дорог — один на расчёт: км, минуты, road_model_id и поправка по часам — из одной модели; Valhalla
-    для этих точек не готов — прежняя модель (граф OSM)."""
+    настроек, введённое время магазинов (№50) — всегда; customers — клиент → точка дня (своё время магазина — по точке).
+    Минуты грузовиков — truck_time (True — Valhalla, False — прежняя модель); None — _truck_time_choice по тому же
+    чтению журнала (learned=False — без выбора обучения). Срез дорог — один на расчёт: км, минуты, road_model_id и
+    поправка по часам — из одной модели; Valhalla для этих точек не готов — прежняя модель (граф OSM)."""
     if bundle.depot is None or not trucks:
         return None
     s = bundle.settings
@@ -898,8 +898,8 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
         norms = replace(norms, provider=provider, traffic_status=status)
     h2, m2 = map(int, s['truck_overtime_end'].split(':'))
     tn = fl.TruckNorms.from_settings(s)
-    if learned:
-        norms, tn, trucks, _ = _with_learned(state, norms, tn, trucks, customers or {}, journal)
+    # learned=False — журнала нет: только введённое время магазинов
+    norms, tn, trucks, _ = _with_learned(state, norms, tn, trucks, customers or {}, journal, bundle.unload_min)
     return dp.DayContext(day, bundle.depot, trucks, norms, tn, h * 60 + m,
                          float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']),
                          {cid: w.span() for cid, w in bundle.windows.items()}, zone,
@@ -1599,12 +1599,15 @@ def api_customer_window() -> Any:
 @bp.post('/api/routes/customer-vehicles')
 @_api
 def api_customer_vehicles() -> Any:
-    """Допуск магазина и необязательное окно приёма: оба поля сохраняются атомарно."""
+    """Допуск магазина, необязательное окно приёма и время у магазина ("unload_min": целые минуты 1–120 или null —
+    по норме; №50; только вместе с "window"): всё сохраняется одной транзакцией. Без "unload_min" время у магазина не
+    меняется."""
     payload, error = _json_body()
     if error is not None:
         return error
-    if not isinstance(payload, dict) or set(payload) not in ({'customer_id', 'access'}, {'customer_id', 'access', 'window'}):
-        return _bad_request({'_': 'ожидалось {"customer_id", "access"} с необязательным "window"'})
+    if not isinstance(payload, dict) or set(payload) not in ({'customer_id', 'access'}, {'customer_id', 'access', 'window'},
+                                                             {'customer_id', 'access', 'window', 'unload_min'}):
+        return _bad_request({'_': 'ожидалось {"customer_id", "access"} с необязательными "window" и "unload_min"'})
     cid = payload['customer_id']
     if isinstance(cid, bool) or not isinstance(cid, int) or not 0 < cid < 2 ** 31:
         return _bad_request({'customer_id': 'ожидался код клиента'})
@@ -1623,8 +1626,18 @@ def api_customer_vehicles() -> Any:
             window, err = check_window(payload['window'])
             if err:
                 return _bad_request({'window': err})
-        state.store.save_customer_constraints(cid, access, window, session.get('username'))
+        unload: Any = KEEP
+        if 'unload_min' in payload:
+            unload = None
+            if payload['unload_min'] is not None:
+                unload, err = check_unload_min(payload['unload_min'])
+                if err:
+                    return _bad_request({'unload_min': err})
+        state.store.save_customer_constraints(cid, access, window, session.get('username'), unload)
         logger.info('[Routes] Окно приёма клиента %d: %s (%s)', cid, window or 'убрано', session.get('username'))
+        if unload is not KEEP:
+            logger.info('[Routes] Время у магазина %d: %s (%s)', cid, f'{unload:g} мин' if unload else 'по норме',
+                        session.get('username'))
     else:
         state.store.save_customer_vehicles(cid, access, session.get('username'))
     logger.info('[Routes] Допуск машин магазина %d: %s (%s)', cid, access or 'без ограничений', session.get('username'))
@@ -1648,15 +1661,18 @@ def api_customer_vehicles_search() -> Any:
     bundle = _bundle(state)
     customers = [c for cid, c in snap.customers.items() if
                  (cid == customer_id if customer_id is not None else
-                  (not query and (cid in bundle.vehicle_access or cid in bundle.windows)) or
+                  (not query and (cid in bundle.vehicle_access or cid in bundle.windows or cid in bundle.unload_min)) or
                   (query and query in f'{c.code} {c.name} {cid}'.casefold()))]
     customers.sort(key=lambda c: (c.name or '', c.id))
+    per_stop, per_tonne, _ = _unload_now(state, bundle)
     return jsonify({'success': True, 'total': len(customers),
                     'vehicles': [{'car_code': t['car_code'], 'name': t['name']} for t in _trucks_json(snap, bundle)],
+                    'unload_norms': {'per_stop_min': per_stop, 'per_tonne_min': per_tonne},
                     'customers': [
         {'customer_id': c.id, 'code': c.code, 'name': c.name,
          'vehicle_access': bundle.vehicle_access[c.id].to_json() if c.id in bundle.vehicle_access else None,
-         'window': bundle.windows[c.id].to_json() if c.id in bundle.windows else None}
+         'window': bundle.windows[c.id].to_json() if c.id in bundle.windows else None,
+         'unload_min': bundle.unload_min.get(c.id)}
         for c in customers[:30]]})
 
 
@@ -1784,22 +1800,35 @@ def _truck_time_choice(journal: _Journal | None) -> tuple[str, str]:
 
 
 def _with_learned(state: RoutesState, norms: Any, tn: fl.TruckNorms, trucks: dict[str, fl.FleetTruck],
-                  customers: Mapping[int, Point], journal: _Journal | None
+                  customers: Mapping[int, Point], journal: _Journal | None, manual: Mapping[int, float] | None = None
                   ) -> tuple[Any, fl.TruckNorms, dict[str, fl.FleetTruck], learning.InEffect]:
     """Действующие выученные нормы журнала journal (_learned_journal) поверх настроек; поправка по часам — только той
-    дорожной модели, что у norms (road_model_id). Сбой (битая строка журнала, база) — расчёт на нормах из настроек:
+    дорожной модели, что у norms (road_model_id). Введённое время магазинов (manual, №50) — всегда: и без журнала, и
+    при выключенном автообучении, и при сбое журнала. Сбой (битая строка журнала, база) — расчёт на нормах из настроек:
     «Развоз» не падает (_learning_failed)."""
-    if journal is None:
-        return norms, tn, trucks, learning.InEffect()
-    try:
-        eff = learning.in_effect(*journal, learning.road_model_id(norms), learning.travel_scope(norms))
-        if eff:
-            norms, tn, trucks = learning.apply_learned(norms, tn, trucks, eff, customers)
-        state.learning_warning = None
-        return norms, tn, trucks, eff
-    except Exception:
-        _learning_failed(state)
-        return norms, tn, trucks, learning.InEffect()
+    if journal is not None:
+        try:
+            eff = learning.in_effect(*journal, learning.road_model_id(norms), learning.travel_scope(norms))
+            if eff or manual:
+                norms, tn, trucks = learning.apply_learned(norms, tn, trucks, eff, customers, manual)
+            state.learning_warning = None
+            return norms, tn, trucks, eff
+        except Exception:
+            _learning_failed(state)
+    if manual:
+        norms, tn, trucks = learning.apply_learned(norms, tn, trucks, learning.InEffect(), customers, manual)
+    return norms, tn, trucks, learning.InEffect()
+
+
+def _unload_now(state: RoutesState, bundle: Bundle) -> tuple[float, float, Mapping[str, Any] | None]:
+    """Разгрузка, которой «Развоз» считает сейчас: (мин на точку, мин на тонну, действующая строка unload) — выученные,
+    если строка действует (автообучение включено), иначе из настроек и None. Сбой журнала — из настроек."""
+    journal = _learned_journal(state, None)
+    unload = learning.in_effect(*journal, None).unload if journal is not None else None
+    if unload:
+        return float(unload['per_stop_min']), float(unload['per_tonne_min']), unload
+    s = bundle.settings
+    return float(s['unload_min_per_stop']), float(s['unload_min_per_tonne']), None
 
 
 def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
@@ -1845,9 +1874,12 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         variants = {m: base.norms.for_trucks(truck_time=m == TRUCK_TIME_VALHALLA) for m in learning.TRUCK_TIME_SOURCES}
     base_run = source if source in variants else TRUCK_TIME_MODEL   # как считает «Развоз» (Valhalla не готов — прежняя)
     plain = variants[base_run]
-    norms, tn, trucks, eff = _with_learned(state, plain, base.tn, dict(base.trucks), customers, journal)
+    norms, tn, trucks, eff = _with_learned(state, plain, base.tn, dict(base.trucks), customers, journal,
+                                           bundle.unload_min)
     compare = mode != 'yandex' and TRUCK_TIME_VALHALLA in variants
-    offsets = {int(c): float(v) for c, v in ((eff.unload or {}).get('store_offsets') or {}).items()}
+    # своё время магазинов в «действующей норме» — ровно как в расчёте: выученное, у остальных введённое (№50)
+    extras = learning.store_extras(tn.unload_min_per_stop, bundle.unload_min,
+                                   (eff.unload or {}).get('store_offsets'))
     unload: list[learning.UnloadObs] = []
     loads: list[learning.LoadObs] = []
     legs: list[learning.LegObs] = []
@@ -1877,7 +1909,7 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
                    if tn.loading_configured and tn.load(1000) > 0 else None)
     outcomes = [
         learning.fit_unload(unload, lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes
-                            + math.fsum(offsets.get(c, 0.0) for c in o.customers), today),
+                            + math.fsum(extras.get(c, 0.0) for c in o.customers), today, bundle.unload_min),
         learning.fit_loading(loads, today, loading_now),
     ]
     model_id = learning.road_model_id(norms)
@@ -1962,7 +1994,8 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
     ручная из настроек), ручная норма, переключатель автообучения (нет выбора — learning.DEFAULT_AUTO, у загрузки —
     выключено). Скорость по часам — поправка модели времени, которой «Развоз» считает грузовики (scope travel),
     дорожная модель — последнего её прогона. У модели времени грузовиков ещё source: какой моделью «Развоз» считает
-    сейчас и почему (_truck_time_choice: env, выбор обучения или по умолчанию) и выбор обучения."""
+    сейчас и почему (_truck_time_choice: env, выбор обучения или по умолчанию) и выбор обучения; у разгрузки —
+    stores: разгрузка по магазинам (_store_unload)."""
     rows = state.store.learned()
     auto = state.store.learning_auto()
     latest: dict[tuple[str, str], dict[str, Any]] = {}
@@ -2000,8 +2033,46 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
                 'last': latest.get((kind, scope)), 'in_effect': effect, 'manual': man}
         if kind == 'truck_time':
             item['source'] = {'value': source, 'why': why, 'learned': learning.truck_time_learned(rows)}
+        if kind == 'unload':
+            item['stores'] = _store_unload(state, bundle, rows, effect['params'] if effect else None)
         out.append(item)
     return out
+
+
+STORES_SHOWN = 100   # строк в таблице «Разгрузка по магазинам»
+
+
+def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str, Any]],
+                  unload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """«Разгрузка по магазинам» (№50) для страницы обучения: магазины с введённым временем или со своим временем по
+    факту (store_stats последнего пересчёта с корректными параметрами), по числу визитов: введено, по факту (визитов,
+    мин), в расчёте — постоянная часть, которой «Развоз» считает сейчас (unload — действующая строка: выученное у её
+    магазинов, у остальных введённое, иначе норма на точку; learning.store_extras, как в расчёте; время на груз —
+    сверху). Не больше STORES_SHOWN строк. Названия — из снимка ERP в памяти; ERP недоступна — без названий."""
+    s = bundle.settings
+    per_stop = float(unload['per_stop_min']) if unload else float(s['unload_min_per_stop'])
+    per_tonne = float(unload['per_tonne_min']) if unload else float(s['unload_min_per_tonne'])
+    offsets = (unload or {}).get('store_offsets') or {}
+    extras = learning.store_extras(per_stop, bundle.unload_min, offsets)
+    last = next((r for r in reversed(rows) if r['kind'] == 'unload' and r['params'] is not None
+                 and learning.valid_params('unload', r['params'])), None)
+    stats = {int(c): v for c, v in ((last['params'].get('store_stats') or {}) if last else {}).items()}
+    cids = sorted(set(bundle.unload_min) | set(stats), key=lambda c: (-stats[c][0] if c in stats else 0, c))
+    try:
+        customers = state.snapshots.cached()[0].customers
+    except ErpError:
+        customers = {}
+    out = []
+    for cid in cids[:STORES_SHOWN]:
+        c = customers.get(cid)
+        visits, fact = stats.get(cid, (None, None))
+        out.append({'customer_id': cid, 'code': c.code if c else None, 'name': c.name if c else None,
+                    'manual_min': bundle.unload_min.get(cid), 'visits': visits, 'fact_min': fact,
+                    'in_calc_min': round(per_stop + extras.get(cid, 0.0), 1),
+                    'source': ('learned' if str(cid) in offsets else 'manual' if cid in bundle.unload_min
+                               else 'norm')})
+    return {'per_stop_min': per_stop, 'per_tonne_min': per_tonne, 'min_visits': learning.STORE_MIN_OBS,
+            'run_day': last['run_day'] if last else None, 'total': len(cids), 'shown': len(out), 'rows': out}
 
 
 def _report_range() -> tuple[date, date] | None:

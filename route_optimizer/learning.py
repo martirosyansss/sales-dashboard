@@ -4,7 +4,14 @@
 Что учится (каждую ночь и по кнопке «Пересчитать»), из факта actuals.reconstruct по треку APK:
 - unload — разгрузка на точке = a·точек + b·тонн доставлено (+ поправка магазина) → TruckNorms.unload_min_per_stop /
   unload_min_per_tonne (+ unload_extra по точке магазина). Из стоянки вычитается ожидание открытия окна приёма;
-  стоянка дольше UNLOAD_MAX_MIN или больше UNLOAD_CAP_REL × действующей нормы — не разгрузка;
+  стоянка дольше UNLOAD_MAX_MIN или больше UNLOAD_CAP_REL × действующей нормы — не разгрузка. Своё время магазина
+  (ответ владельца №50: постоянная часть его разгрузки — парковка, приёмка, документы — вместо a; время на груз b·т —
+  как у всех): введённое логистом (store.Bundle.unload_min, абсолютные минуты) действует в «Развозе» всегда — и без
+  выученных строк, и с выключенным автообучением; по факту — a + медиана остатков одиночных визитов магазина, от
+  STORE_MIN_OBS визитов в строку идёт смесь (n·факт + STORE_SHRINK·опора) / (n + STORE_SHRINK), опора — введённое
+  (нет — a: поправка стягивается к 0). Хранится поправкой к a (store_offsets) и перекрывает введённое у своих
+  магазинов; у остальных введённое считается от a действующей строки (store_extras). Меньше визитов — в строке нет,
+  действует введённое (и в проверке, и в «действующей норме» для сравнения — ровно то, что применится);
 - loading — загрузка на складе = a + b·тонн рейса → TruckNorms.warehouse_load_fixed_min / warehouse_load_min_per_tonne.
   Стоянка на складе — не только загрузка (обед, бумаги, ожидание выезда под окно первой точки), поэтому: из неё
   вычитается только собственное ожидание плана — пересечение стоянки с [плановое возвращение предыдущего рейса,
@@ -91,9 +98,9 @@ LEG_MIN_KM = 0.2
 TRUCK_TIME_MIN = (200, 7, 60, 3)
 TRUCK_TIME_SOURCES = (valhalla_engine.TRUCK_TIME_MODEL, valhalla_engine.TRUCK_TIME_VALHALLA)   # model, valhalla
 TRUCK_TIME_TITLES = {'model': 'прежняя модель', 'valhalla': 'Valhalla'}
-STORE_MIN_OBS = 5                    # поправка магазина — от 5 визитов
-STORE_SHRINK = 5.0                   # и стягивается к 0: × n / (n + 5)
-STORE_OFFSET_MAX = 60.0
+STORE_MIN_OBS = 5                    # своё время магазина по факту — от 5 одиночных визитов
+STORE_SHRINK = 5.0                   # и стягивается к опоре: (n·факт + 5·опора) / (n + 5)
+STORE_OFFSET_MAX = 120.0             # время магазина a + поправка — не больше 120 мин (как введённое, store.UNLOAD_MIN_RANGE)
 UNLOAD_MAX_MIN = 90.0                # стоянка у магазина дольше (после вычета ожидания окна) — не разгрузка
 UNLOAD_CAP_REL = 3.0                 # …или дольше 3 × действующей нормы
 LOAD_CAP_REL = 2.0                   # стоянка на складе дольше 2 × действующей нормы загрузки — не загрузка
@@ -277,10 +284,18 @@ def _capped(obs: Sequence[Any], today: date, current: Callable[[Any], float], re
 
 # --- обучение по видам ---
 
-def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], today: date) -> Outcome:
-    """Разгрузка = a·точек + b·тонн (+ поправка магазина, только при ≥ STORE_MIN_OBS одиночных визитах, со стягиванием
-    к 0). current — прогноз действующей нормы для наблюдения; стоянки дольше UNLOAD_CAP_REL × current не учитываются ни
-    в обучении, ни в проверке (отсечение не зависит от проверяемой нормы)."""
+def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], today: date,
+               manual: Mapping[int, float] | None = None) -> Outcome:
+    """Разгрузка = a·точек + b·тонн (+ своё время магазина). current — прогноз действующей нормы для наблюдения (с
+    введённым временем магазинов); стоянки дольше UNLOAD_CAP_REL × current не учитываются ни в обучении, ни в проверке
+    (отсечение не зависит от проверяемой нормы). Своё время магазина при ≥ STORE_MIN_OBS одиночных визитах: по факту —
+    a + медиана остатков его визитов, в строку — смесь с опорой (n·факт + STORE_SHRINK·опора) / (n + STORE_SHRINK),
+    опора — введённое manual (клиент → мин, №50), нет — a (поправка стягивается к 0, как до №50); в store_offsets —
+    поправкой к a, время магазина — в пределах [0, STORE_OFFSET_MAX]; поправка меньше 0,5 мин у магазина без введённого
+    не хранится. Проверка — ровно то, что применится (store_extras: у магазинов без строки — введённое). store_stats —
+    для страницы: визитов и время по факту (в пределах [0, UNLOAD_MAX_MIN]) у магазинов с поправкой по визитам или с
+    введённым временем."""
+    manual = manual or {}
     train, test = _capped(obs, today, current, UNLOAD_CAP_REL)
     short = _enough(train, test, UNLOAD_MIN)
     if short:
@@ -292,18 +307,26 @@ def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], 
         if o.n == 1 and len(o.customers) == 1:
             residuals.setdefault(o.customers[0], []).append(o.minutes - a - b * o.tonnes)
     offsets: dict[int, float] = {}
+    stats: dict[int, list[Any]] = {}
     for cid, rs in sorted(residuals.items()):
-        if len(rs) >= STORE_MIN_OBS:
-            off = round(max(-a, min(STORE_OFFSET_MAX, median(rs) * len(rs) / (len(rs) + STORE_SHRINK))), 1)
-            if abs(off) >= 0.5:
+        n, med = len(rs), median(rs)
+        if n >= STORE_MIN_OBS or cid in manual:
+            stats[cid] = [n, round(min(UNLOAD_MAX_MIN, max(0.0, a + med)), 1)]
+        if n >= STORE_MIN_OBS:
+            # (n·(a + med) + k·опора) / (n + k) − a; опора a — ровно прежнее med·n / (n + k)
+            shift = manual[cid] - a if cid in manual else 0.0
+            off = round(max(-a, min(STORE_OFFSET_MAX - a, (n * med + STORE_SHRINK * shift) / (n + STORE_SHRINK))), 1)
+            if abs(off) >= 0.5 or cid in manual:
                 offsets[cid] = off
+    extras = store_extras(a, manual, offsets)
 
     def predict(o: UnloadObs) -> float:
-        return a * o.n + b * o.tonnes + math.fsum(offsets.get(c, 0.0) for c in o.customers)
+        return a * o.n + b * o.tonnes + math.fsum(extras.get(c, 0.0) for c in o.customers)
     before, after = _mae((current(o), o.minutes) for o in test), _mae((predict(o), o.minutes) for o in test)
     ok, why = _verdict(before, after)
     return Outcome('unload', '', ok, why, {'per_stop_min': a, 'per_tonne_min': b,
-                                           'store_offsets': {str(c): v for c, v in offsets.items()}},
+                                           'store_offsets': {str(c): v for c, v in offsets.items()},
+                                           'store_stats': {str(c): v for c, v in stats.items()}},
                    n_obs=len(train), n_test=len(test), mae_before=round(before, 3), mae_after=round(after, 3),
                    **_spans(train, test))
 
@@ -565,11 +588,15 @@ def valid_params(kind: str, p: Any) -> bool:
     """Параметры строки журнала годятся для расчёта (битая строка — не действует, «Развоз» — на прежней норме)."""
     if not isinstance(p, Mapping):
         return False
-    if kind == 'unload':
-        offsets = p.get('store_offsets', {})
+    if kind == 'unload':   # store_stats — только для страницы, у строк до №50 их нет
+        offsets, stats = p.get('store_offsets', {}), p.get('store_stats', {})
         return (_num(p.get('per_stop_min'), 0, 120) and _num(p.get('per_tonne_min'), 0, 120)
                 and isinstance(offsets, Mapping)
-                and all(isinstance(c, str) and c.isdigit() and _num(v, -120, STORE_OFFSET_MAX) for c, v in offsets.items()))
+                and all(isinstance(c, str) and c.isdigit() and _num(v, -120, STORE_OFFSET_MAX) for c, v in offsets.items())
+                and isinstance(stats, Mapping)
+                and all(isinstance(c, str) and c.isdigit() and isinstance(v, list) and len(v) == 2
+                        and isinstance(v[0], int) and not isinstance(v[0], bool) and v[0] >= 1
+                        and _num(v[1], 0, UNLOAD_MAX_MIN) for c, v in stats.items()))
     if kind == 'loading':
         return _num(p.get('fixed_min'), *LOAD_BOUNDS[0]) and _num(p.get('per_tonne_min'), *LOAD_BOUNDS[1])
     if kind == 'travel':
@@ -671,20 +698,49 @@ def travel_profile(norms: Any, travel: Mapping[str, Any]) -> TrafficProfile:
     return TrafficProfile(factors, report)
 
 
+def store_extras(per_stop: float, manual: Mapping[int, float],
+                 offsets: Mapping[Any, float] | None) -> dict[int, float]:
+    """Своё время магазинов → поправка к норме на точку per_stop, мин на визит, по клиенту (у кого её нет — норма):
+    выученная (offsets — store_offsets строки, поправка к её per_stop_min) перекрывает введённую (manual: клиент →
+    абсолютные минуты, поправка — manual − per_stop: введённое считается от действующей нормы на точку). Разгрузка не
+    бывает отрицательной: поправка не меньше −per_stop."""
+    out = {int(c): float(v) for c, v in (offsets or {}).items()}
+    for c, minutes in manual.items():
+        out.setdefault(c, float(minutes) - per_stop)
+    return {c: max(-per_stop, v) for c, v in sorted(out.items())}
+
+
+def unload_extra(per_stop: float, manual: Mapping[int, float], offsets: Mapping[Any, float] | None,
+                 customer_points: Mapping[int, Point]) -> dict[Point, float]:
+    """store_extras → по точке дня (TruckNorms.unload_extra: fleet видит точки, а не клиентов). Несколько клиентов дня
+    в одной точке (одни координаты): fleet считает их отдельными стоянками, у каждой своя разгрузка, а поправка у
+    точки одна — наибольшая из поправок этих клиентов (план скорее не опоздает); клиент без своего времени в такой
+    точке получает её же. Не зависит от порядка клиентов."""
+    out: dict[Point, float] = {}
+    for c, v in store_extras(per_stop, manual, offsets).items():
+        point = customer_points.get(c)
+        if point is not None:
+            out[point] = max(v, out.get(point, -math.inf))
+    return out
+
+
 def apply_learned(norms: Any, tn: Any, trucks: Mapping[str, Any], eff: InEffect,
-                  customer_points: Mapping[int, Point]) -> tuple[Any, Any, dict[str, Any]]:
-    """Действующие выученные нормы → (norms, нормы машин, машины) расчёта «Развоза». Без выученных — те же объекты.
-    customer_points — клиент → точка дня (поправка разгрузки магазина — по точке, как её видит fleet). Расход машины:
-    пустой/полный — в расчёт по остаточному грузу (running_costs.route_cost), а единый l100 машины (стоимость км в
-    PyVRP, выбор машины и проверка «км × л/100» при выравнивании) — расход при половинной загрузке: рейс выезжает
-    загруженным и возвращается пустым, средний груз на борту — около половины загрузки выезда."""
+                  customer_points: Mapping[int, Point],
+                  manual: Mapping[int, float] | None = None) -> tuple[Any, Any, dict[str, Any]]:
+    """Действующие выученные нормы и введённое время магазинов (manual: клиент → мин, №50 — действует и без выученных)
+    → (norms, нормы машин, машины) расчёта «Развоза». Без выученных и без введённого — те же объекты. customer_points —
+    клиент → точка дня (своё время магазина — по точке, как её видит fleet: unload_extra; считается заново, от нормы на
+    точку после выученного). Расход машины: пустой/полный — в расчёт по остаточному грузу
+    (running_costs.route_cost), а единый l100 машины (стоимость км в PyVRP, выбор машины и проверка «км × л/100» при
+    выравнивании) — расход при половинной загрузке: рейс выезжает загруженным и возвращается пустым, средний груз на
+    борту — около половины загрузки выезда."""
     trucks = dict(trucks)
     if eff.unload:
         p = eff.unload
-        extra = {customer_points[int(c)]: float(v) for c, v in sorted((p.get('store_offsets') or {}).items())
-                 if int(c) in customer_points}
-        tn = replace(tn, unload_min_per_stop=float(p['per_stop_min']), unload_min_per_tonne=float(p['per_tonne_min']),
-                     unload_extra=extra)
+        tn = replace(tn, unload_min_per_stop=float(p['per_stop_min']), unload_min_per_tonne=float(p['per_tonne_min']))
+    if eff.unload or manual:
+        tn = replace(tn, unload_extra=unload_extra(tn.unload_min_per_stop, manual or {},
+                                                   (eff.unload or {}).get('store_offsets'), customer_points))
     if eff.loading:
         tn = replace(tn, warehouse_load_fixed_min=float(eff.loading['fixed_min']),
                      warehouse_load_min_per_tonne=float(eff.loading['per_tonne_min']), loading_configured=True)
