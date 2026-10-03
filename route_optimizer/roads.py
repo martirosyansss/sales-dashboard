@@ -17,7 +17,8 @@
   и по обратному графу. Точка не привязана или пути нет — km() → None: участок считает вызывающий
   (по прямой × извилистость).
 
-Команды:  python -m route_optimizer.roads download | build | warm
+Команды:  python -m route_optimizer.roads download | build | warm [--if-stale]
+(warm --if-stale — только если кэш расстояний не годится нынешнему графу и формату: задача обновления сервера)
 """
 from __future__ import annotations
 
@@ -678,9 +679,29 @@ def _download(path: str, url: str) -> None:
     print(f'Готово: {os.path.getsize(path) / 1e6:.1f} МБ за {time.perf_counter() - started:.0f} с')
 
 
+def _dist_cache_stale(path: str) -> bool:
+    """Кэш расстояний карты path не подходит к нынешнему графу и формату (сменился DIST_FORMAT, как 2 → 3, или карта):
+    первый расчёт после обновления пересчитал бы его целиком (~2 мин под блокировкой дорог). Проверка — без ERP и без
+    загрузки графа; карты или numpy/scipy нет — греть нечего (False)."""
+    version = map_signature(path)
+    if version is None or not roads_supported():
+        return False
+    identity = RoadGraph.stored_identity(_cache_path(path, 'graph'), version)
+    if identity is None:
+        return True   # графа в кэше нет или он от другой карты — warm соберёт и его
+    try:
+        with open(_cache_path(path, 'dist'), 'rb') as f, np.load(f, allow_pickle=False) as z:
+            return 'key' not in z.files or str(z['key']) != _dist_key(identity)
+    except Exception:   # файла нет или он битый
+        return True
+
+
 def _warm(path: str) -> None:
     """Матрица для всех точек текущего плана: снимок ERP (только чтение) + настройки маршрутов."""
+    from .valhalla_engine import ENGINE_ENV, ENGINE_OSM
+
     sys.path.insert(0, REPO_ROOT)
+    os.environ[ENGINE_ENV] = ENGINE_OSM   # import app_v2 вызывает init_app: фон Valhalla этой команде не нужен
     import app_v2  # noqa: F401 — только строка подключения к ERP; сервер не запускается
 
     from . import evaluate
@@ -716,9 +737,12 @@ def main(argv: Sequence[str]) -> int:
         RoadNetwork(graph)   # проверка: связность и KD-дерево строятся
         print(f'Граф: узлов {graph.n_nodes}, рёбер {len(graph.src)} → {_cache_path(path, "graph")}')
     elif command == 'warm':
+        if '--if-stale' in argv and not _dist_cache_stale(path):
+            print('Кэш расстояний годится — пересчёт не нужен' if map_signature(path) else f'Карты нет: {path}')
+            return 0
         _warm(path)
     else:
-        print('Команды: download [url] | build | warm')
+        print('Команды: download [url] | build | warm [--if-stale]')
         return 2
     return 0
 
