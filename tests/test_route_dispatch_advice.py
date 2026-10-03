@@ -42,9 +42,9 @@ def _minutes(ctx, stops, draft):
     return dp.plan_view(ctx, stops, draft, _info)['trucks'][0]['minutes']
 
 
-def _add(t, for_center):
+def _add(t, for_center, need_kg):
     return {'rebuild': [], 'add': {'car_code': t.car_code, 'name': t.name, 'capacity_kg': t.capacity_kg, 'l100': t.l100,
-                                   'center_ok': t.center_ok, 'for_center': for_center}}
+                                   'center_ok': t.center_ok, 'for_center': for_center, 'need_kg': need_kg}}
 
 
 # ============================== совет по плану (plan_view) ==============================
@@ -83,14 +83,14 @@ def test_advice_add_center_truck_for_late_central_trip():
     view = dp.plan_view(ctx, stops, draft, _info)
     trip = view['trucks'][0]['trips'][0]
     assert trip['over_time'] and all(s['center'] for s in trip['stops']) and trip['kg'] == 900
-    assert view['advice'] == _add(ISUZU, True)
+    assert view['advice'] == _add(ISUZU, True, 900)
 
     stops, _ = _dp_stops(EAST)
     draft = _one_trip(JAC.car_code, [101, 102, 103])
     m = _minutes(_ctx((JAC,), zone=ZONE), stops, draft)
     ctx = _ctx((JAC, ISUZU, GAZ), tn=replace(TN, work_minutes=m - 1.0), zone=ZONE)
     view = dp.plan_view(ctx, stops, draft, _info)
-    assert view['trucks'][0]['trips'][0]['over_time'] and view['advice'] == _add(GAZ, False)
+    assert view['trucks'][0]['trips'][0]['over_time'] and view['advice'] == _add(GAZ, False, 600)
 
 
 def test_advice_accepted_overtime_is_not_a_problem():
@@ -105,7 +105,7 @@ def test_advice_accepted_overtime_is_not_a_problem():
     assert trip['late'] and not trip['over_time'] and view['unassigned'] == []
     assert view['advice'] is None
     view = dp.plan_view(ctx, stops, replace(draft, overtime_ok=False), _info)
-    assert view['trucks'][0]['trips'][0]['over_time'] and view['advice'] == _add(HOWO, False)
+    assert view['trucks'][0]['trips'][0]['over_time'] and view['advice'] == _add(HOWO, False, 600)
 
 
 # ============================== выбор машины (_advice) ==============================
@@ -140,6 +140,20 @@ def test_advice_pick_by_capacity_then_fuel():
     assert pick([_late('S', 9000)], c=big) == 'Y'          # не берёт никто: самые вместительные — меньший расход
 
 
+def test_advice_need_kg_tells_whole_or_part():
+    """need_kg — груз, под который выбрана машина (самый тяжёлый опаздывающий рейс или все магазины вне рейсов вместе):
+    тоннаж не меньше — страница пишет «возьмёт этот груз», меньше — «возьмёт часть груза»."""
+    sel = fl.FleetTruck('S', None, 3500.0, 16.0)
+    small = fl.FleetTruck('M', None, 2500.0, 12.0)
+    ctx = _ctx((sel, small))
+    draft = dp.Draft(trucks=['S'])
+    whole = dp._advice(ctx, draft, [_late('S', 900), _late('S', 2400)], [_left(1000)])['add']
+    assert whole['need_kg'] == 2400 and isinstance(whole['need_kg'], int) and whole['capacity_kg'] >= whole['need_kg']
+    assert dp._advice(ctx, draft, [_late('S', 2500)], [])['add']['need_kg'] == 2500          # ровно тоннаж — целиком
+    part = dp._advice(ctx, draft, [_late('S', 900)], [_left(1500), _left(1200)])['add']
+    assert part['need_kg'] == 2700 and part['capacity_kg'] < part['need_kg']                  # возьмёт часть
+
+
 def test_advice_center_need_and_fallback():
     cen = fl.FleetTruck('C1', None, 2000.0, 14.0, center_ok=True)
     cheap = fl.FleetTruck('G1', None, 3500.0, 9.0)
@@ -148,7 +162,7 @@ def test_advice_center_need_and_fallback():
     ctx = _ctx((sel, cen, cheap))
     assert dp._advice(ctx, draft, [], [_left(800, no_room=False, no_center=True)]) == {
         'rebuild': [], 'add': {'car_code': 'C1', 'name': None, 'capacity_kg': 2000.0, 'l100': 14.0, 'center_ok': True,
-                               'for_center': True}}                               # магазин центра без машины
+                               'for_center': True, 'need_kg': 800}}               # магазин центра без машины
     assert dp._advice(ctx, draft, [_late('S', 800, center=True)], [])['add']['car_code'] == 'C1'
     assert dp._advice(ctx, draft, [_late('S', 800)], [])['add']['car_code'] == 'G1'   # рейс без точек центра
     plain = dp.Draft(trucks=['G1'])                                                   # опаздывает машина без права въезда
@@ -156,7 +170,8 @@ def test_advice_center_need_and_fallback():
                       [_late('G1', 800, center=True)], [])['add']['car_code'] == 'G2'
     only_plain = _ctx((sel, cheap))                                                   # с правом въезда свободных нет
     assert dp._advice(only_plain, draft, [], [_left(800, no_room=False, no_center=True)])['add'] == {
-        'car_code': 'G1', 'name': None, 'capacity_kg': 3500.0, 'l100': 9.0, 'center_ok': False, 'for_center': False}
+        'car_code': 'G1', 'name': None, 'capacity_kg': 3500.0, 'l100': 9.0, 'center_ok': False, 'for_center': False,
+        'need_kg': 800}
 
 
 def test_advice_rebuild_and_no_free_trucks():

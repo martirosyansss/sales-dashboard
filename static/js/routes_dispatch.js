@@ -216,6 +216,7 @@
     const hideActionError = () => $('dpActionError').classList.add('d-none');
 
     // ---------- Загрузка ----------
+    // true — день загружен и показан; ошибка (видна в dpLoadError) или ответ на прежний запрос — false
     async function load(day, refresh) {
         const seq = ++state.loadSeq;
         $('dpLoading').hidden = false;
@@ -226,13 +227,15 @@
             if (day) q.set('date', day);
             if (refresh) q.set('refresh', '1');
             const data = await api('GET', '/api/routes/dispatch' + (q.toString() ? '?' + q : ''));
-            if (seq !== state.loadSeq) return;
+            if (seq !== state.loadSeq) return false;
             $('dpBody').hidden = false;     // до отрисовки: карте Leaflet нужен настоящий размер блока, у скрытого он 0×0
             setData(data);
+            return true;
         } catch (e) {
-            if (seq !== state.loadSeq) return;
+            if (seq !== state.loadSeq) return false;
             $('dpLoadErrorText').textContent = e.message;
             $('dpLoadError').classList.remove('d-none');
+            return false;
         } finally {
             if (seq === state.loadSeq) $('dpLoading').classList.add('d-none');
         }
@@ -1218,13 +1221,19 @@
         }
         const t = a.add;
         if (!isObj(t) || typeof t.car_code !== 'string') return null;
+        // тоннаж меньше груза, что не поместился (need_kg), — возьмёт только часть; остальное покажет пересборка
+        const part = num(t.need_kg) !== null && num(t.capacity_kg) !== null && t.capacity_kg < t.need_kg;
         return {
             rebuild: false, forCenter: !!t.for_center,
             text: 'սեղմեք «Ավելացնել և վերակազմել»։ Ազատ մեքենան՝ ' + truckLabel(truckBy(t.car_code)) + ' (տանում է մինչև ' + kgText(t.capacity_kg)
-                + (t.for_center ? ', կարող է մտնել կենտրոն' : '') + '), կարող է վերցնել այս բեռը։',
+                + (t.for_center ? ', կարող է մտնել կենտրոն' : '') + '), կարող է վերցնել ' + (part ? 'բեռի մի մասը։' : 'այս բեռը։'),
             button: () => adviceButton('fa-plus', 'Ավելացնել և վերակազմել', () => addTruckAndBuild(t.car_code)),
         };
     }
+
+    // Рейс не поместился (позже конца дня, тяжелее тоннажа, машина не работает) — карточка «Չի տեղավորվել» с советом;
+    // её кнопку совета карточки ниже (dpUnassigned) не повторяют
+    const notFitOf = (plan) => plan.trucks.some(t => t.trips.some(tr => tr.over_time || tr.over_capacity || tr.no_truck));
 
     // Не помещается: что именно и что делать — простыми словами
     function renderOverflow(plan) {
@@ -1244,7 +1253,7 @@
         if (!bad.length) return;
         const div = document.createElement('div');
         div.className = 'rt-alert is-warn dp-problem';
-        const notFit = plan.trucks.some(t => t.trips.some(tr => tr.over_time || tr.over_capacity || tr.no_truck));
+        const notFit = notFitOf(plan);
         const winMiss = plan.trucks.some(t => t.trips.some(tr => tr.window_miss));
         const cenMiss = plan.trucks.some(t => t.trips.some(tr => tr.center_miss));
         const vehicleMiss = plan.trucks.some(t => t.trips.some(tr => tr.vehicle_miss));
@@ -1430,8 +1439,11 @@
                     + '-ից հետո՝ մինչև ' + state.data.overtime_end + '-ը։').forEach(x => card.insertBefore(x, list));
             }
         }
-        // совет сервера (ответ владельца №54): какую свободную машину отметить и пересобрать — кнопкой
+        // совет сервера (ответ владельца №54): какую свободную машину отметить и пересобрать — кнопкой; кнопка одна на
+        // страницу — в первой карточке с советом («Չի տեղավորվել» выше или первая из карточек ниже), текст — во всех
         const adv = planAdvice(plan);
+        let advShown = notFitOf(plan);
+        const advButton = () => { if (advShown) return []; advShown = true; return [adv.button()]; };
         if (noCenter.length) {
             const can = state.data.trucks.filter(t => t.ready && t.center_ok && !t.selected).map(truckLabel);
             const forCenter = adv && adv.forCenter;
@@ -1441,7 +1453,7 @@
                     : can.length ? 'Կենտրոն մտնում է՝ ' + can.join(', ') + '։ Նշեք այն 1-ին քայլում և սեղմեք «Վերակազմել երթերը»։'
                     : 'Որ մեքենաները կարող են մտնել կենտրոն, նշվում է կարգավորումներում։',
                 'Կամ որոշեք ձեռքով՝ «Այսօր չենք տանում» կամ ավելացրեք որևէ երթի։']);
-            if (forCenter) card.insertBefore(adv.button(), card.querySelector('.dp-stoplist'));
+            if (forCenter) advButton().forEach(b => card.insertBefore(b, card.querySelector('.dp-stoplist')));
         }
         if (noRoom.length) {
             const card = document.createElement('section');
@@ -1465,7 +1477,7 @@
             } else {
                 lead.textContent = 'Բոլոր մեքենաներն արդեն նշված են, բայց չեն հասցնում մինչև ' + state.data.work_end + '-ը։';
             }
-            card.append(lead, ...(adv ? [adv.button()] : []), ...overtimeBlock('Եթե այս պատվերները պետք է տանել այսօր, մեքենաները կաշխատեն '
+            card.append(lead, ...(adv ? advButton() : []), ...overtimeBlock('Եթե այս պատվերները պետք է տանել այսօր, մեքենաները կաշխատեն '
                 + state.data.work_end + '-ից հետո՝ մինչև ' + state.data.overtime_end + '-ը։'));
             if (unpicked && !adv) card.appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
             card.appendChild(stopList(noRoom, null, true));
@@ -2545,9 +2557,11 @@
                 again.innerHTML = '<i class="fas fa-rotate" aria-hidden="true"></i><span>Թարմացնել</span>';
                 again.addEventListener('click', async () => {
                     if (state.ai.busy || state.busy) return;
-                    state.ai.chats.set(day, []);
-                    await load(day);
-                    if (state.day === day && !$('dpAi').hidden) aiRender();
+                    // разговор очищается, только если день перечитан; ошибка загрузки — на странице, разговор остаётся
+                    if (await load(day) && state.day === day) {
+                        state.ai.chats.set(day, []);
+                        if (!$('dpAi').hidden) aiRender();
+                    }
                     $('dpAiInput').focus();
                 });
             } else {

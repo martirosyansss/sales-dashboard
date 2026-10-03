@@ -866,7 +866,8 @@ def _advice(ctx: DayContext, draft: Draft, trips_json: Sequence[Mapping[str, Any
     - add — иначе одна готовая, но не отмеченная машина. Нужен центр (магазин no_center или опаздывающий рейс машины с
       правом въезда, в котором есть точки центра) — из машин с правом въезда (таких нет — из всех, for_center: false).
       Груз need_kg — самый тяжёлый опаздывающий рейс или все магазины вне рейсов вместе: из машин, что его берут, —
-      с меньшим расходом (затем вместительнее, затем код), иначе самая вместительная. Свободной машины нет — None.
+      с меньшим расходом (затем вместительнее, затем код), иначе самая вместительная — need_kg в совете: тоннаж меньше —
+      страница пишет «возьмёт часть груза». Свободной машины нет — None.
     Это оценка без расчёта рейсов (дёшево и детерминированно): что на самом деле поместится, покажет пересборка."""
     late = [t for t in trips_json if t['over_time']]
     left = [u for u in unassigned if u['no_room'] or u['no_center']]
@@ -890,7 +891,8 @@ def _advice(ctx: DayContext, draft: Draft, trips_json: Sequence[Mapping[str, Any
     pick = (min(fits, key=lambda t: (t.l100, -t.capacity_kg, t.car_code)) if fits
             else min(pool, key=lambda t: (-t.capacity_kg, t.l100, t.car_code)))
     return {'rebuild': [], 'add': {'car_code': pick.car_code, 'name': pick.name, 'capacity_kg': pick.capacity_kg,
-                                   'l100': pick.l100, 'center_ok': pick.center_ok, 'for_center': for_center}}
+                                   'l100': pick.l100, 'center_ok': pick.center_ok, 'for_center': for_center,
+                                   'need_kg': int(need_kg)}}
 
 
 def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
