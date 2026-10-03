@@ -310,8 +310,7 @@ def test_every_ai_error_is_translated_on_the_page():
 
 def test_page_ai_answer_rendered_as_text_only():
     """Ответ AI и вопрос выводятся без HTML: в блоке «Հարցրու AI-ին» innerHTML — только постоянные строки."""
-    js = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
-    block = js[js.index('// ---------- «Հարցրու AI-ին»'):js.index('// ---------- Старт ----------')]
+    block = (ROOT / 'static' / 'js' / 'routes_dispatch_ai.js').read_text(encoding='utf-8')   # панель чата целиком
     sets = re.findall(r'innerHTML\s*=\s*(.+)$', block, re.M)
     assert sets and all(re.fullmatch(r"'[^'+]*';", s.strip()) for s in sets), sets
     assert 'insertAdjacentHTML' not in block and 'outerHTML' not in block and 'document.write' not in block
