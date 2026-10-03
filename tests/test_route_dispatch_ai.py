@@ -99,8 +99,28 @@ def test_day_context_drops_coordinates_and_service_fields():
     assert text.startswith('<day_data date="2026-10-01">') and text.endswith('</day_data>')
     for key in ('"lat"', '"lon"', '"isn"', '"customer_id"', '"rev"', '"orders_sig"', '"depot"', '"success"', '"items"'):
         assert key not in text, key
-    assert '"orders_count":1' in text and 'Խանութ «Ա»' in text and '"eta":"09:25"' in text
+    assert '"stops":["eta|name|kg|orders_count","09:25|Խանութ «Ա»|642|1"],"stops_count":1' in text      # точки — таблицей
     assert '"geo_suggestions":{"count":2,"day_count":1}' in text
+
+
+def test_day_context_compact_keeps_zeros_and_every_field():
+    """Пустые поля уходят, нули остаются; в таблице магазинов — все поля строк, «|» и переводы строк не ломают её."""
+    body = {'day': '2026-10-01', 'is_past': False, 'problems': [], 'note': '', 'orders': {'excluded': 0, 'kg': 0.0},
+            'plan': {'trucks': [{'car_code': 'A', 'late': True, 'trips': [{'id': 1, 'over_time': False, 'stops': [
+                {'eta': '09:10', 'name': 'Ա|Բ', 'kg': 0, 'window': None, 'center': True, 'drive_min': 12.345},
+                {'eta': '09:40', 'name': 'Գ', 'address': 'տող 1\nտող 2', 'kg': 50, 'vehicle_access': {'mode': 'allow', 'trucks': ['A']}},
+            ]}]}], 'unassigned': [{'name': 'Դ', 'no_room': True, 'kg': 10}]}}
+    data = __import__('json').loads(ai_chat.day_context(body).split('\n')[1])
+    assert 'is_past' not in data and 'problems' not in data and 'note' not in data
+    assert data['orders'] == {'excluded': 0, 'kg': 0.0}
+    truck = data['plan']['trucks'][0]
+    assert truck['late'] is True and 'over_time' not in truck['trips'][0]
+    assert truck['trips'][0]['stops'] == [
+        'eta|name|address|kg|center|drive_min|vehicle_access',
+        '09:10|Ա/Բ||0|yes|12.3|',
+        '09:40|Գ|տող 1 տող 2|50|||{"mode":"allow","trucks":["A"]}']
+    assert data['plan']['unassigned'] == ['name|kg|no_room', 'Դ|10|yes']
+    assert truck['trips'][0]['stops_count'] == 2 and data['plan']['unassigned_count'] == 1   # заголовок — не магазин
 
 
 def test_day_context_ignores_read_timestamps():
@@ -153,21 +173,22 @@ def test_ask_request_shape_and_text_only_answer(monkeypatch):
     monkeypatch.delenv('ROUTES_AI_EFFORT', raising=False)
     fake = FakeClient(text='Առաջին տող\n• պունկտ')
     r = ai_chat.ask(BODY, 'Ո՞ր մեքենան', [], client=fake)
-    assert r == {'answer': 'Առաջին տող\n• պունկտ', 'model': 'claude-opus-5-5', 'refused': False, 'truncated': False}
+    assert r == {'answer': 'Առաջին տող\n• պունկտ', 'model': 'claude-opus-5-5', 'refused': False, 'truncated': False}   # модель — из ответа API
     kw = fake.calls[0]
-    assert kw['model'] == 'claude-opus-5-5' and kw['max_tokens'] == ai_chat.MAX_TOKENS
+    assert kw['model'] == 'claude-sonnet-5-5' and kw['max_tokens'] == ai_chat.MAX_TOKENS     # ответ владельца №55
     assert kw['system'] == ai_chat.SYSTEM and 'Armenian' in kw['system']
+    assert 'Never send them to «an administrator»' in kw['system']          # владелец сам себе администратор
     assert kw['output_config'] == {'effort': 'low'}
     assert kw['betas'] == [ai_chat.FALLBACK_BETA] and kw['fallbacks'] == 'default'
     assert 'tools' not in kw                                        # модель ничего не может менять
 
 
 def test_ask_env_overrides(monkeypatch):
-    monkeypatch.setenv('ROUTES_AI_MODEL', 'claude-sonnet-5-5')
+    monkeypatch.setenv('ROUTES_AI_MODEL', 'claude-opus-5-5')
     monkeypatch.setenv('ROUTES_AI_EFFORT', 'MEDIUM')
     fake = FakeClient()
     ai_chat.ask(BODY, 'q', [], client=fake)
-    assert fake.calls[0]['model'] == 'claude-sonnet-5-5' and fake.calls[0]['output_config'] == {'effort': 'medium'}
+    assert fake.calls[0]['model'] == 'claude-opus-5-5' and fake.calls[0]['output_config'] == {'effort': 'medium'}
     monkeypatch.setenv('ROUTES_AI_EFFORT', 'max')                   # не из списка — по умолчанию
     ai_chat.ask(BODY, 'q', [], client=fake)
     assert fake.calls[1]['output_config'] == {'effort': 'low'}
