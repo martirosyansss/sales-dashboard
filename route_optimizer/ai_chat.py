@@ -1,5 +1,7 @@
 """«Հարցրու AI-ին» на странице «Развоз» (ответ владельца №52): логист спрашивает про план дня, Claude отвечает
-по цифрам того же ответа дня (/api/routes/dispatch) и сам ничего не меняет — инструментов у модели нет.
+по цифрам того же ответа дня (/api/routes/dispatch) и сам ничего не меняет. Единственный инструмент —
+rebuild_preview («что если работают такие машины»): сервер собирает рейсы в памяти так же, как «Վերակազմել
+երթերը», и отдаёт итог; ничего не сохраняется, страница и план не меняются.
 
 Данные дня — первым блоком первого сообщения пользователя (не в system: текст из ERP и от водителей — данные,
 а не указания), JSON с отсортированными ключами, без координат, служебных и пустых полей, списки магазинов —
@@ -16,7 +18,7 @@ import json
 import logging
 import os
 import threading
-from typing import Any
+from typing import Any, Callable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,27 @@ MAX_QUESTION = 1000               # символов в вопросе
 MAX_FOCUS = 200                   # «что выбрано на карте» — короткая подпись
 MAX_HISTORY = 12                  # реплик истории (6 вопросов с ответами); старше — отбрасываются
 MAX_TURN_TEXT = 8000              # символов реплики истории в запросе; длиннее — обрезается (ответ AI бывает длинным)
+MAX_TOOL_STEPS = 2                # пересборок «что если» на один вопрос; затем модель отвечает без инструмента
+MAX_SIM_TRUCKS = 40
+
+# Инструмент «что если»: какие машины работают → рейсы пересобираются в памяти (ничего не сохраняется)
+TOOLS = [{
+    'name': 'rebuild_preview',
+    'description': ('Rebuild the day\'s trips in memory with a different set of working trucks and return the result '
+                    '(trips per truck with depart/return times, km, liters, load; stores left out and why; idle trucks). '
+                    'Works exactly like the page button «Վերակազմել երթերը»: pinned trips stay, excluded orders stay out. '
+                    'Nothing is saved - the plan and the page do not change. Use it for "what if" questions about '
+                    'removing or adding trucks.'),
+    'strict': True,
+    'input_schema': {
+        'type': 'object',
+        'properties': {'trucks': {'type': 'array', 'items': {'type': 'string'},
+                                  'description': 'car_code of EVERY truck that should work in the rebuilt plan '
+                                                 '(codes of trucks with ready=true from trucks[])'}},
+        'required': ['trucks'],
+        'additionalProperties': False,
+    },
+}]
 
 # Поля ответа дня, которые модели не нужны: координаты, внутренние id, подписи для синхронизации страницы и метки
 # времени чтения (data_as_of — каждое перечитывание ERP, fetched_at — пробки): они меняли бы текст дня между
@@ -75,8 +98,12 @@ themselves.
 - You cannot change anything. If asked to change the plan, say which control on the page does it: «Փոփոխել» on a trip \
 (move a store to another trip, «Այսօր չենք տանում», lock the trip, change its truck), step 1 checkboxes + \
 «Վերակազմել երթերը» (trucks of the day), «Փոխել տեղը» (store point on the map), settings (capacity, windows, center zone).
-- For "what if" questions reason from the data (free capacity = capacity_kg minus kg, return times against work_end and \
-overtime_end, explain.others) and say clearly that it is an estimate; the exact answer comes from rebuilding the trips.
+- "What if" about which trucks work (a truck does not go out, one more truck is added): call rebuild_preview with the \
+full list of car_codes that should work (selected trucks from trucks[] minus/plus the asked ones) and answer from its \
+result: what changes in return times, km, liters, stores left out. Say it is a preview - nothing was saved; to apply it, \
+tick the trucks in step 1 and press «Վերակազմել երթերը». At most two calls per question.
+- Other "what if" questions (moving one store, another window): reason from the data (free capacity = capacity_kg \
+minus kg, return times against work_end and overtime_end, explain.others) and say clearly that it is an estimate.
 - Name trucks as the page does ("HOWO SIN0TRUK · 123AV61") and trips by their number within the truck, trip_no \
 («երթ 1», «երթ 2»), never by id. Stores by name. Times HH:MM; dates in words («5 հոկտեմբերի»); minutes and \
 kilometres rounded to whole numbers; a space as thousands separator and a comma for decimals; units կգ, տ, կմ, լ, դրամ.
@@ -281,20 +308,97 @@ def build_messages(body: dict[str, Any], question: str, history: list[dict[str, 
 
 # --- Вызов модели ---
 
+class SimulationError(Exception):
+    """«Что если» не посчитать (машина не готова, нет настроек) — текст уходит модели как ошибка инструмента."""
+
+
+def simulation_summary(view: dict[str, Any], codes: Sequence[str]) -> dict[str, Any]:
+    """Итог пересборки для модели: рейсы машин (время, км, литры, загрузка), не поместившиеся и почему, простаивающие."""
+    trucks, busy = [], set()
+    for t in view.get('trucks') or []:
+        busy.add(t.get('car_code'))
+        trucks.append({
+            'car_code': t.get('car_code'), 'name': t.get('name'), 'return': t.get('return'), 'km': t.get('km'),
+            'liters': t.get('liters'), 'stops': t.get('stops'), 'kg': t.get('kg'),
+            'over_time': t.get('over_time'), 'late': t.get('late'),
+            'trips': [{'trip_no': i + 1, 'depart': tr.get('depart'), 'return': tr.get('return'), 'kg': tr.get('kg'),
+                       'load_pct': tr.get('load_pct'), 'km': tr.get('km'), 'liters': tr.get('liters'),
+                       'stops_count': len(tr.get('stops') or []), 'over_time': tr.get('over_time'),
+                       'late': tr.get('late'), 'poor': tr.get('poor')}
+                      for i, tr in enumerate(t.get('trips') or [])]})
+    left = [{'name': s.get('name'), 'code': s.get('code'), 'kg': s.get('kg'), 'no_room': s.get('no_room'),
+             'no_window': s.get('no_window'), 'no_center': s.get('no_center'), 'no_vehicle': s.get('no_vehicle')}
+            for s in view.get('unassigned') or []]
+    sm = view.get('summary') or {}
+    return _compact({
+        'note': 'preview only - nothing was saved, the plan and the page did not change',
+        'working_trucks': sorted(codes), 'idle_trucks': sorted(set(codes) - busy),
+        'summary': {k: sm.get(k) for k in ('trucks', 'trips', 'stops', 'kg', 'km', 'liters', 'operating_cost_amd')},
+        'trucks_with_trips': trucks, 'unassigned_count': len(left), 'unassigned': _table(_compact(left)),
+    })
+
+
+def _tool_result(block: Any, simulate: Callable[[list[str]], dict[str, Any]] | None) -> dict[str, Any]:
+    """Выполнить rebuild_preview: проверить вход (строгая схема — но проверяем сами), посчитать или вернуть ошибку."""
+    def error(text: str) -> dict[str, Any]:
+        return {'type': 'tool_result', 'tool_use_id': block.id, 'content': text, 'is_error': True}
+    if block.name != 'rebuild_preview' or simulate is None:
+        return error('unknown tool')
+    data = block.input if isinstance(block.input, dict) else {}
+    codes = data.get('trucks')
+    if (not isinstance(codes, list) or not codes or len(codes) > MAX_SIM_TRUCKS
+            or not all(isinstance(c, str) and c.strip() for c in codes)):
+        return error('trucks: expected a non-empty list of car_code strings')
+    codes = sorted({c.strip() for c in codes})
+    try:
+        result = simulate(codes)
+    except SimulationError as e:
+        return error(str(e))
+    logger.info('[Routes AI] пересборка «что если» для чата: машин %d', len(codes))
+    return {'type': 'tool_result', 'tool_use_id': block.id,
+            'content': json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str)}
+
+
 def ask(body: dict[str, Any], question: str, history: list[dict[str, str]], focus: str | None = None,
-        client: Any = None) -> dict[str, Any]:
-    """Ответ модели на вопрос по дню: {"answer", "model", "refused", "truncated"}. Сбой — AiError."""
+        client: Any = None, simulate: Callable[[list[str]], dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Ответ модели на вопрос по дню: {"answer", "model", "refused", "truncated", "previews"}. Сбой — AiError.
+    simulate(коды машин) — пересборка «что если» в памяти (views); без неё у модели нет инструмента."""
     if client is None:
         ensure_available()
         client = _get_client()
     model = _model()
+    messages = build_messages(body, question, history, focus)
+    previews = 0
+    for step in range(MAX_TOOL_STEPS + 1):
+        kw: dict[str, Any] = {}
+        if simulate is not None:
+            # последний шаг — без новых вызовов: модель отвечает по уже посчитанному
+            kw = {'tools': TOOLS, 'tool_choice': {'type': 'none' if step == MAX_TOOL_STEPS else 'auto'}}
+        response = _create(client, model, messages, kw)
+        uses = [b for b in response.content if getattr(b, 'type', None) == 'tool_use']
+        if response.stop_reason != 'tool_use' or not uses or step == MAX_TOOL_STEPS:
+            break
+        messages.append({'role': 'assistant', 'content': response.content})   # вместе с блоками размышлений
+        messages.append({'role': 'user', 'content': [_tool_result(b, simulate) for b in uses]})
+        previews += len(uses)
+    refused = response.stop_reason == 'refusal'
+    text = '\n'.join(b.text for b in response.content if getattr(b, 'type', None) == 'text').strip()
+    if refused:
+        text = 'Այս հարցին չեմ կարող պատասխանել։ Փորձեք հարցնել այլ կերպ՝ երթերի, մեքենաների կամ խանութների մասին։'
+    elif not text:
+        raise AiError('AI не дал ответа — повторите вопрос', 502)
+    return {'answer': text, 'model': getattr(response, 'model', model), 'refused': refused,
+            'truncated': response.stop_reason == 'max_tokens', 'previews': previews}
+
+
+def _create(client: Any, model: str, messages: list[dict[str, Any]], kw: dict[str, Any]) -> Any:
+    """Один запрос к API; ошибки — AiError с текстом для пользователя, в журнал — токены и request-id."""
     try:
         # fallbacks="default": если модель откажется по правилам безопасности, сервер повторит запрос на запасной
         response = client.beta.messages.create(
-            model=model, max_tokens=MAX_TOKENS, system=SYSTEM,
-            messages=build_messages(body, question, history, focus),
+            model=model, max_tokens=MAX_TOKENS, system=SYSTEM, messages=messages,
             output_config={'effort': _effort()},
-            betas=[FALLBACK_BETA], fallbacks='default')
+            betas=[FALLBACK_BETA], fallbacks='default', **kw)
     except anthropic.AuthenticationError:
         logger.error('[Routes AI] ключ ANTHROPIC_API_KEY не принят')
         raise AiError('AI недоступен: ключ ANTHROPIC_API_KEY не принят') from None
@@ -322,11 +426,4 @@ def ask(body: dict[str, Any], question: str, history: list[dict[str, str]], focu
                 getattr(usage, 'input_tokens', None), getattr(usage, 'cache_read_input_tokens', None),
                 getattr(usage, 'cache_creation_input_tokens', None), getattr(usage, 'output_tokens', None),
                 response.stop_reason)
-    refused = response.stop_reason == 'refusal'
-    text = '\n'.join(b.text for b in response.content if getattr(b, 'type', None) == 'text').strip()
-    if refused:
-        text = 'Այս հարցին չեմ կարող պատասխանել։ Փորձեք հարցնել այլ կերպ՝ երթերի, մեքենաների կամ խանութների մասին։'
-    elif not text:
-        raise AiError('AI не дал ответа — повторите вопрос', 502)
-    return {'answer': text, 'model': getattr(response, 'model', model), 'refused': refused,
-            'truncated': response.stop_reason == 'max_tokens'}
+    return response

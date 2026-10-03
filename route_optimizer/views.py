@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import math
@@ -1428,6 +1429,19 @@ def api_dispatch_reset() -> Any:
     return jsonify({'success': True, **_dispatch_body(dd)})
 
 
+def _ai_preview(dd: _DispatchDay, codes: list[str]) -> dict[str, Any]:
+    """«Что если» для чата: рейсы дня с другим набором машин — та же сборка, что «Վերակազմել երթերը»
+    (закреплённые рейсы остаются, исключённые заказы — вне), но только в памяти: ничего не сохраняется."""
+    if dd.ctx is None:
+        raise ai_chat.SimulationError('settings are incomplete: no depot or no trucks with capacity and fuel')
+    unknown = sorted(set(codes) - set(dd.ready))
+    if unknown:
+        raise ai_chat.SimulationError('not ready or unknown trucks: %s; ready trucks: %s'
+                                      % (', '.join(unknown), ', '.join(sorted(dd.ready))))
+    draft = dp.build(dd.ctx, dd.stops, copy.deepcopy(dd.draft), codes, _now())
+    return ai_chat.simulation_summary(dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd), explain=False), codes)
+
+
 @bp.post('/api/routes/dispatch/ask')
 @_api
 def api_dispatch_ask() -> Any:
@@ -1441,7 +1455,7 @@ def api_dispatch_ask() -> Any:
         ai_chat.ensure_available()          # без ключа — не читать день зря
         state = _state()
         dd = _load_day(state, _bundle(state), day)
-        result = ai_chat.ask(_dispatch_body(dd), question, history, focus)
+        result = ai_chat.ask(_dispatch_body(dd), question, history, focus, simulate=lambda codes: _ai_preview(dd, codes))
     except ai_chat.AiError as e:
         return jsonify({'success': False, 'error': str(e)}), e.status
     logger.info('[Routes] AI-вопрос по развозу на %s (%s)', day, session.get('username'))

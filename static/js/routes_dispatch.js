@@ -244,8 +244,11 @@
         if (data.plan) data.plan.trucks.forEach(t => t.trips.forEach(tr => trips.add(tr.id)));
         const hadPlan = !!(state.data && state.data.day === data.day && state.data.plan);
         if (data.day !== state.day) { state.mapFocus = null; state.stepsOpen.clear(); }
-        // рейсы дня появились: одна-две машины — сразу раскрыты, больше — свёрнуты, чтобы видеть день целиком
-        if (data.plan && !hadPlan) state.open = new Set(data.plan.trucks.length <= 2 ? data.plan.trucks.map(t => t.car_code) : []);
+        // рейсы дня появились: до трёх машин — все раскрыты, больше — первая (остальные по нажатию, день виден целиком)
+        if (data.plan && !hadPlan) {
+            const codes = data.plan.trucks.map(t => t.car_code);
+            state.open = new Set(codes.length <= 3 ? codes : codes.slice(0, 1));
+        }
         if (data.day !== state.day || !data.plan) state.editing.clear();
         else [...state.editing].forEach(id => { if (!trips.has(id)) state.editing.delete(id); });
         state.data = data;
@@ -1155,7 +1158,11 @@
             end.lastChild.textContent = 'վերադարձ · ≈ ' + fmt(t.km) + NB + 'կմ';
             grid.append(lab, track, end);
         });
-        box.appendChild(grid);
+        // на узком экране шкала не сжимается, а прокручивается вбок
+        const scroll = document.createElement('div');
+        scroll.className = 'dp-board-scroll';
+        scroll.appendChild(grid);
+        box.appendChild(scroll);
         syncFocus();
     }
 
