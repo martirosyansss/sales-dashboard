@@ -186,10 +186,7 @@
             return;
         }
         map.obj = L.map(el, { preferCanvas: true, zoomSnap: 0.5, scrollWheelZoom: false });
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            subdomains: 'abc', maxZoom: 19,
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
-        }).addTo(map.obj);
+        RoutesBasemap.add(map.obj);
         map.obj.setView(YEREVAN, 11);
         map.obj.on('click focus', () => map.obj.scrollWheelZoom.enable());
         map.obj.on('mouseout blur', () => map.obj.scrollWheelZoom.disable());

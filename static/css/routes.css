@@ -514,9 +514,10 @@
 .rt-side-empty .facts { margin-top: 14px; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: .9rem; }
 .rt-side-empty .facts b { color: var(--rt-fg); text-align: right; }
 
-/* Leaflet под тёмную тему: затемняем ТОЛЬКО подложку, маркеры сохраняют цвета */
+/* Leaflet под тёмную тему: затемняем ТОЛЬКО подложку OpenStreetMap, маркеры сохраняют цвета.
+   Плитки Яндекса показываем как есть — условия Tiles API запрещают их изменять (№47, routes_basemap.js) */
 .rt-page .leaflet-container { font-family: var(--rt-font); background: #0b0e13; outline-offset: -2px; }
-.rt-page .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9) saturate(.35); }
+.rt-page .rt-tiles-osm { filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9) saturate(.35); }
 /* base.css ограничивает высоту любых canvas на телефонах — холст Leaflet сплющивать нельзя */
 .rt-page .leaflet-container canvas { max-height: none !important; }
 .rt-page .leaflet-bar { border: 1px solid var(--rt-line); box-shadow: 0 4px 14px rgba(0,0,0,.35); }

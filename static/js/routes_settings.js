@@ -370,10 +370,7 @@
             return;
         }
         const map = L.map(el, { zoomSnap: 0.5, scrollWheelZoom: false });
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            subdomains: 'abc', maxZoom: 19,
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
-        }).addTo(map);
+        RoutesBasemap.add(map);
         map.setView(YEREVAN, 11);
         map.on('click', (e) => placeDepot(e.latlng.lat, e.latlng.lng));
         map.on('click focus', () => map.scrollWheelZoom.enable());
@@ -940,10 +937,7 @@
             return;
         }
         const map = L.map(el, { zoomSnap: 0.5, scrollWheelZoom: false, doubleClickZoom: false });
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            subdomains: 'abc', maxZoom: 19,
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
-        }).addTo(map);
+        RoutesBasemap.add(map);
         map.setView(YEREVAN, 14);
         map.on('click', (e) => addZonePoint(e.latlng.lat, e.latlng.lng));
         map.on('click focus', () => map.scrollWheelZoom.enable());

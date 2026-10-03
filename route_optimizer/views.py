@@ -232,24 +232,40 @@ def _no_store(resp: Response) -> Response:
 
 # --- Страницы ---
 
+_YANDEX_KEY_RE = re.compile(r'[0-9A-Za-z-]{16,64}')
+_yandex_key_warned: set[str] = set()
+
+
+def _yandex_tiles_key() -> str:
+    """Ключ Yandex Tiles API для подложки карт (№47) или '' — тогда карты на OpenStreetMap."""
+    import os
+    key = os.environ.get('ROUTES_YANDEX_TILES_KEY', '').strip()
+    if key and not _YANDEX_KEY_RE.fullmatch(key):
+        if key not in _yandex_key_warned:       # один раз на значение, а не на каждый показ страницы
+            _yandex_key_warned.add(key)
+            logger.warning('ROUTES_YANDEX_TILES_KEY не похож на ключ Яндекса — карты на OpenStreetMap')
+        return ''
+    return key
+
+
 @bp.get('/routes')
 def overview_page() -> str:
-    return render_template('routes_overview.html')
+    return render_template('routes_overview.html', yandex_tiles_key=_yandex_tiles_key())
 
 
 @bp.get('/routes/settings')
 def settings_page() -> str:
-    return render_template('routes_settings.html')
+    return render_template('routes_settings.html', yandex_tiles_key=_yandex_tiles_key())
 
 
 @bp.get('/routes/optimize')
 def optimize_page() -> str:
-    return render_template('routes_optimize.html')
+    return render_template('routes_optimize.html', yandex_tiles_key=_yandex_tiles_key())
 
 
 @bp.get('/routes/dispatch')
 def dispatch_page() -> str:
-    return render_template('routes_dispatch.html')
+    return render_template('routes_dispatch.html', yandex_tiles_key=_yandex_tiles_key())
 
 
 # --- API ---
@@ -1668,7 +1684,7 @@ def _yerevan_now() -> datetime:
 
 @bp.get('/routes/learning')
 def learning_page() -> str:
-    return render_template('routes_learning.html')
+    return render_template('routes_learning.html', yandex_tiles_key=_yandex_tiles_key())
 
 
 def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date
