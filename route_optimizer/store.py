@@ -131,7 +131,8 @@ _LEARNED_TABLE_V13 = (
     "accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)), reason TEXT NOT NULL, created_at TEXT NOT NULL, "
     "UNIQUE (kind, scope, run_day))")
 # Схема 14: вид truck_time — выбор модели времени в пути грузовиков (learning.fit_truck_time). Столбцы те же; SQLite не
-# меняет CHECK столбца — таблица пересобирается, строки переносятся как есть (с id).
+# меняет CHECK столбца — таблица пересобирается, строки переносятся как есть (с id). scope у travel — к каким минутам
+# выучена поправка (learning.travel_scope): '' — прежняя модель, 'valhalla' — время Valhalla.
 _LEARNED_COLUMNS = (
     "id INTEGER PRIMARY KEY AUTOINCREMENT, "
     "kind TEXT NOT NULL CHECK (kind IN ('unload', 'loading', 'travel', 'truck_time', 'fuel')), "
@@ -244,10 +245,14 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     # 12 → 13: только добавляем — журнал выученных норм и переключатели автообучения.
     12: (_LEARNED_TABLE_V13, _LEARNING_SWITCH_TABLE),
     # 13 → 14: вид выученной нормы truck_time — журнал пересобирается с новым CHECK, строки (и id) переносятся как
-    # есть; переключатели автообучения (без CHECK вида) не меняются.
+    # есть, счётчик AUTOINCREMENT — прежний (повторный прогон дня расходует номера: id не повторяются);
+    # переключатели автообучения (без CHECK вида) не меняются.
     13: (
         f"CREATE TABLE learned_norms_v14({_LEARNED_COLUMNS})",
         f"INSERT INTO learned_norms_v14({_LEARNED_COPY}) SELECT {_LEARNED_COPY} FROM learned_norms",
+        "DELETE FROM sqlite_sequence WHERE name = 'learned_norms_v14'",
+        "INSERT INTO sqlite_sequence(name, seq) SELECT 'learned_norms_v14', seq FROM sqlite_sequence "
+        "WHERE name = 'learned_norms'",
         "DROP TABLE learned_norms",
         "ALTER TABLE learned_norms_v14 RENAME TO learned_norms",
     ),

@@ -1754,7 +1754,7 @@ def _with_learned(state: RoutesState, norms: Any, tn: fl.TruckNorms, trucks: dic
     if journal is None:
         return norms, tn, trucks, learning.InEffect()
     try:
-        eff = learning.in_effect(*journal, learning.road_model_id(norms))
+        eff = learning.in_effect(*journal, learning.road_model_id(norms), learning.travel_scope(norms))
         if eff:
             norms, tn, trucks = learning.apply_learned(norms, tn, trucks, eff, customers)
         state.learning_warning = None
@@ -1772,9 +1772,10 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
 
     Время в пути: участки и поправка по часам (travel) — в модели, которой «Развоз» считает грузовики сейчас
     (_truck_time_choice; Valhalla для точек факта не готов — прежняя модель). Выбор модели (truck_time) — обе модели
-    на одних и тех же участках, срез дорог с матрицей грузовика (learning.fit_truck_time). Выбор сменил модель, которой
-    «Развоз» будет считать (env не задана, автообучение вида включено), — строка travel дня — поправка новой модели:
-    дня без поправки нет."""
+    на одних и тех же участках, срез дорог с матрицей грузовика (learning.fit_truck_time; автообучение travel
+    выключено — «как есть»). Выбранная модель — не та, которой учился этот прогон (только что переключились, env,
+    галочка), — рядом пишется и её поправка по часам (travel её scope): перейдёт на неё «Развоз» — поправка уже есть.
+    Сравнения нет (Valhalla не готов, Яндекс) — решение этого дня из прежнего прогона не затирается."""
     if state.fleet_facts is None:
         return []
     bundle = _bundle(state)
@@ -1834,22 +1835,31 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     ]
     model_id = learning.road_model_id(norms)
     if mode == 'yandex':
-        outcomes += [learning.Outcome('travel', '', False, 'время в пути считает Яндекс с пробками — поправка '
-                                      'по часам не нужна'),
-                     learning.Outcome('truck_time', '', False, 'время в пути считает Яндекс с пробками — модель '
-                                      'времени грузовиков не выбирается')]
+        outcomes.append(learning.Outcome('travel', '', False, 'время в пути считает Яндекс с пробками — поправка '
+                                         'по часам не нужна'))
+        decision = learning.Outcome('truck_time', '', False, 'время в пути считает Яндекс с пробками — модель '
+                                    'времени грузовиков не выбирается')
     else:
         prev = eff.travel if eff.travel is not None and eff.travel.get('model_id') == model_id else None
-        travel = learning.fit_travel(legs, today, model_id or 'straight', learning.model_ref(plain), plain, prev)
+        outcomes.append(learning.fit_travel(legs, today, model_id or 'straight', learning.model_ref(plain), plain,
+                                            prev))
         rows, auto = journal if journal is not None else ([], {})
         incumbent = learning.truck_time_learned(rows) or TRUCK_TIME_MODEL
-        prevs = {m: learning.in_effect(rows, auto, learning.road_model_id(n)).travel for m, n in variants.items()}
-        decision, fitted = learning.fit_truck_time(pairs, today, incumbent, variants, prevs, no_valhalla)
+        prevs = {m: learning.in_effect(rows, auto, learning.road_model_id(n), learning.travel_scope(n)).travel
+                 for m, n in variants.items()}
+        decision, fitted = learning.fit_truck_time(pairs, today, incumbent, variants, prevs, no_valhalla,
+                                                   learning.auto_on(auto, 'travel'))
         chosen = decision.params['source'] if decision.accepted else incumbent
-        after = truck_time_source(chosen if learning.auto_on(auto, 'truck_time') else None)[0]
-        if decision.accepted and after != base_run and after in fitted:
-            travel = fitted[after]   # «Развоз» переходит на другую модель — сразу с её поправкой по часам
-        outcomes += [travel, decision]
+        if chosen != base_run and chosen in fitted:
+            # выбранная модель — не та, которой этот прогон учил «Развоз» (только что переключились, env, галочка):
+            # её поправка по часам — в журнал рядом (свой scope), перейдёт на неё «Развоз» — поправка уже есть
+            o = fitted[chosen]
+            outcomes.append(replace(o, reason=f'для выбранной модели «{learning.TRUCK_TIME_TITLES[chosen]}»: '
+                                              f'{o.reason}'))
+    # сравнения не было (Valhalla ещё не готов, Яндекс) — сравнение этого дня из прежнего прогона не затирается
+    if decision.params is not None or not any(r['kind'] == 'truck_time' and r['run_day'] == today.isoformat()
+                                              and r['params'] is not None for r in state.store.learned()):
+        outcomes.append(decision)
     capacity = {code: t.capacity_kg for code, t in trucks.items()}
     intervals = learning.fuel_intervals(refuels)
     by_car = learning.fuel_obs(intervals, profiles, capacity)
@@ -1903,14 +1913,17 @@ def run_learning_job(state: RoutesState, today: date, user: str | None) -> bool:
 def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]:
     """Что выучено по каждому виду (расход — по машине): последний прогон, действующая норма (строка журнала или None —
     ручная из настроек), ручная норма, переключатель автообучения (нет выбора — learning.DEFAULT_AUTO, у загрузки —
-    выключено). Дорожная модель — последнего прогона travel. У модели времени грузовиков ещё source: какой моделью
-    «Развоз» считает сейчас и почему (_truck_time_choice: env, выбор обучения или по умолчанию) и выбор обучения."""
+    выключено). Скорость по часам — поправка модели времени, которой «Развоз» считает грузовики (scope travel),
+    дорожная модель — последнего её прогона. У модели времени грузовиков ещё source: какой моделью «Развоз» считает
+    сейчас и почему (_truck_time_choice: env, выбор обучения или по умолчанию) и выбор обучения."""
     rows = state.store.learned()
     auto = state.store.learning_auto()
     latest: dict[tuple[str, str], dict[str, Any]] = {}
     for r in rows:
         latest[(r['kind'], r['scope'])] = r
-    model = latest.get(('travel', ''), {}).get('model_id')
+    source, why = _truck_time_choice(([r for r in rows if r['accepted']], auto))
+    scope_travel = TRUCK_TIME_VALHALLA if source == TRUCK_TIME_VALHALLA else ''   # learning.travel_scope
+    model = latest.get(('travel', scope_travel), {}).get('model_id')
     s = bundle.settings
     manual: dict[str, Any] = {
         'unload': {'per_stop_min': s.get('unload_min_per_stop'), 'per_tonne_min': s.get('unload_min_per_tonne')},
@@ -1919,7 +1932,8 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
         'travel': None,
         'truck_time': None,
     }
-    keys = [(k, '') for k in learning.KINDS if k != 'fuel'] + sorted(k for k in latest if k[0] == 'fuel')
+    keys = [(k, scope_travel if k == 'travel' else '') for k in learning.KINDS if k != 'fuel'] + \
+        sorted(k for k in latest if k[0] == 'fuel')
     out = []
     for kind, scope in keys:
         on = learning.auto_on(auto, kind)
@@ -1938,8 +1952,7 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
                 'auto_chosen': kind in auto, 'default_auto': learning.DEFAULT_AUTO[kind],
                 'last': latest.get((kind, scope)), 'in_effect': effect, 'manual': man}
         if kind == 'truck_time':
-            value, why = _truck_time_choice(([r for r in rows if r['accepted']], auto))
-            item['source'] = {'value': value, 'why': why, 'learned': learning.truck_time_learned(rows)}
+            item['source'] = {'value': source, 'why': why, 'learned': learning.truck_time_learned(rows)}
         out.append(item)
     return out
 

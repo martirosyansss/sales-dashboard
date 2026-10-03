@@ -21,16 +21,18 @@
   действует. Проверяется ровно тот профиль, который применится (travel_profile → TrafficProfile.travel по участку,
   через границы часов); часы прежнего выученного профиля, которых нет в новом, переносятся в него. Минуты модели —
   как в расчёте «Развоза» (Norms.leg_speed): км / скорость зоны или, когда грузовики считаются по Valhalla, его время
-  (тогда множитель от скоростей зон в настройках не зависит — _own_minutes);
+  (тогда множитель от скоростей зон в настройках не зависит — _own_minutes; scope строки — travel_scope: '' или
+  'valhalla', поправки обеих моделей хранятся рядом и не путаются);
 - truck_time — какой моделью считать время в пути грузовиков: прежней (км / скорость зоны) или Valhalla-грузовиком
   (× поправка зоны). Обе — на одних и тех же чистых участках факта (truck_time_obs через
   valhalla_engine.truck_leg_minutes; участок без минут Valhalla не идёт ни в одну), у каждой — своя поправка по часам,
-  выученная на днях обучения ровно как travel (_travel_ratio, _travel_params), обе проверяются на одних и тех же
-  участках отложенной недели тем профилем, который применится. Выбранная модель (сначала — прежняя) меняется на
+  выученная на днях обучения ровно по правилу travel (fit_travel), обе проверяются на одних и тех же участках
+  отложенной недели той поправкой, которая применится. Выбранная модель (сначала — прежняя) меняется на
   другую, только если та точнее хотя бы на MIN_GAIN и общих участков не меньше TRUCK_TIME_MIN — в обе стороны
   (гистерезис: от шума модель не переключается туда-сюда). Применяет выбор views: env ROUTES_TRUCK_TIME, если задана,
-  > выбор обучения (автообучение вида включено) > прежняя модель; при переключении сохраняется и поправка по часам
-  новой модели (travel с её road_model_id) — дня без поправки нет;
+  > выбор обучения (автообучение вида включено) > прежняя модель. Пока выбранная модель — не та, которой считает
+  «Развоз» (только что переключились, env, галочка), её поправка по часам (travel её scope) пишется каждую
+  ночь — перейдёт на неё «Развоз», поправка уже есть. Автообучение travel выключено — модели сравниваются «как есть»;
 - fuel — расход машины л/100 км пустой/полной по заправкам «до полного бака» (литры / км одометра, загрузка — по
   участкам трека) → FleetTruck.fuel_empty_l_per_100km / fuel_full_l_per_100km, а l100 машины (стоимость PyVRP,
   сравнения «Развоза») — расход при половинной загрузке. Момент заправки — момент исходной заправки цепочки
@@ -44,7 +46,7 @@ HOLDOUT_DAYS днях (до вчера включительно; у расход
 проверке меньше, чем у действующей нормы, не меньше чем на MIN_GAIN (2%), и данных не меньше порогов (константы ниже).
 Иначе действует прежняя (выученная раньше или ручная из настроек). Применяется норма, обученная на днях до отложенной
 недели, — ровно та, что прошла проверку. Результат каждого прогона — строка learned_norms (store.save_learned).
-Действующая норма вида — последняя принятая с корректными параметрами (travel — ещё и той же дорожной модели;
+Действующая норма вида — последняя принятая с корректными параметрами (travel — ещё и той же дорожной модели и scope;
 truck_time — truck_time_learned); автообучение вида выключено (DEFAULT_AUTO — по умолчанию) — действуют ручные
 настройки (у truck_time — прежняя модель или ROUTES_TRUCK_TIME).
 
@@ -373,6 +375,14 @@ def _own_minutes(norms: Any) -> bool:
     return bool(getattr(getattr(norms, 'roads', None), 'serves_minutes', False))
 
 
+def travel_scope(norms: Any) -> str:
+    """scope строки travel — к каким минутам выучена поправка: '' — прежняя модель (км / скорость зоны), 'valhalla' —
+    время Valhalla (_own_minutes). Поправки обеих моделей одного дня хранятся рядом (журнал уникален по виду, scope и
+    дню), а действует только своя: строки travel с id минут Valhalla и scope '' (до выбора модели учились по скорости
+    зоны) к Valhalla не применяются."""
+    return valhalla_engine.TRUCK_TIME_VALHALLA if _own_minutes(norms) else ''
+
+
 def _travel_ratio(train: Sequence[LegObs]) -> dict[tuple[bool, int, int], float]:
     """Множитель «факт / модель» по ячейкам (город|область, будни|выходные, час) обучения: Σ факта / Σ модели ячейки
     при ≥ TRAVEL_BUCKET[0] днях и ≥ TRAVEL_BUCKET[1] модельных минутах, в пределах TRAVEL_RATIO."""
@@ -411,12 +421,13 @@ def fit_travel(obs: Sequence[LegObs], today: date, model_id: str, ref: Mapping[s
     считалась модель; base_norms — нормы без выученного профиля (как их увидит apply_learned); prev — действующий
     выученный профиль той же дорожной модели: его часы, которых нет в новом, переносятся (_travel_params). Проверка —
     участки отложенной недели, выехавшие в часы нового профиля: действующий прогноз против travel_profile(base_norms,
-    новый профиль).travel — ровно то, что применится (через границы часов)."""
+    новый профиль).travel — ровно то, что применится (через границы часов). Строка журнала — scope travel_scope."""
     train, test = _split(obs, today)
     ratio = _travel_ratio(train)
     held = [o for o in test if _bucket(o) in ratio]
+    scope = travel_scope(base_norms)
     if not ratio or len(held) < TRAVEL_MIN_TEST[0] or len({o.day for o in held}) < TRAVEL_MIN_TEST[1]:
-        return Outcome('travel', '', False,
+        return Outcome('travel', scope, False,
                        f'мало данных: ячеек профиля {len(ratio)}, участков проверки в них {len(held)} из '
                        f'{TRAVEL_MIN_TEST[0]} (дней {len({o.day for o in held})} из {TRAVEL_MIN_TEST[1]})',
                        model_id=model_id, n_obs=len(train), n_test=len(held), **_spans(train, test))
@@ -425,7 +436,7 @@ def fit_travel(obs: Sequence[LegObs], today: date, model_id: str, ref: Mapping[s
     before = _mae((o.current, o.minutes) for o in held)
     after = _mae((profile.travel(o.km, o.speed, o.city, o.weekday, o.start), o.minutes) for o in held)
     ok, why = _verdict(before, after)
-    return Outcome('travel', '', ok, why, params, model_id, len(train), len(held), mae_before=round(before, 3),
+    return Outcome('travel', scope, ok, why, params, model_id, len(train), len(held), mae_before=round(before, 3),
                    mae_after=round(after, 3), **_spans(train, test))
 
 
@@ -444,19 +455,20 @@ def _forecast(base: Any, params: Mapping[str, Any] | None, legs: Sequence[LegObs
 
 
 def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumbent: str, bases: Mapping[str, Any],
-                   prev: Mapping[str, Mapping[str, Any] | None], no_valhalla: int = 0
+                   prev: Mapping[str, Mapping[str, Any] | None], no_valhalla: int = 0, correct: bool = True
                    ) -> tuple[Outcome, dict[str, Outcome]]:
     """Выбор модели времени грузовиков (вид truck_time) по парам truck_time_obs — (прежняя модель, Valhalla) одного и
-    того же участка: сравнение — только на общих участках. У каждой модели — своя поправка по часам, выученная на
-    обучении ровно как travel (_travel_ratio; _travel_params с prev[модель] — действующим профилем её дорожной модели;
-    ячеек нет — действует prev), и обе проверяются на одних и тех же участках отложенной недели тем профилем, который
-    применится (travel_profile(bases[модель], …).travel). bases — нормы грузовиков каждой модели без выученного профиля
-    (Norms.for_trucks(truck_time=…)); Valhalla недоступен — без 'valhalla'. Выбранная модель incumbent меняется на
-    другую, только если ошибка той (с её поправкой) меньше хотя бы на MIN_GAIN (_verdict) и общих участков не меньше
-    TRUCK_TIME_MIN; иначе остаётся — в обе стороны (гистерезис). no_valhalla — участков без минут Valhalla (отчёт).
-    Итог — (строка truck_time: params — выбор после прогона, ошибка и смещение четырёх вариантов, участки и дни;
-    поправки travel моделей, у которых на обучении есть ячейки, — сохранить вместе с переключением: принята, если на
-    проверке точнее поправки, что действует у этой модели, а её нет — модели «как есть», как в fit_travel)."""
+    того же участка: сравнение — только на общих участках. Каждая модель проверяется на одних и тех же участках
+    отложенной недели с той поправкой по часам, которая у неё применится: своя, выученная на днях обучения ровно по
+    правилу travel (fit_travel; «действующий прогноз» — с поправкой, что сейчас действует у её дорожной модели,
+    prev[модель]), если та принята, иначе действующая prev (её нет — «как есть»). correct=False — поправки по часам не
+    применяются (автообучение travel выключено): модели сравниваются «как есть», поправки не учатся. bases — нормы
+    грузовиков каждой модели без выученного профиля (Norms.for_trucks(truck_time=…)); Valhalla недоступен — без
+    'valhalla'. Выбранная модель incumbent меняется на другую, только если ошибка той меньше хотя бы на MIN_GAIN
+    (_verdict) и общих участков не меньше TRUCK_TIME_MIN; иначе остаётся — в обе стороны (гистерезис). no_valhalla —
+    участков без минут Valhalla (отчёт). Итог — (строка truck_time: params — выбор после прогона, ошибка и смещение
+    обеих моделей «как есть» и с поправкой, участки и дни; строки travel обеих моделей (fit_travel) — чтобы поправка
+    выбранной модели была в журнале и тогда, когда «Развоз» перейдёт на неё позже: env, галочка, Valhalla готов)."""
     other = TRUCK_TIME_SOURCES[1] if incumbent == TRUCK_TIME_SOURCES[0] else TRUCK_TIME_SOURCES[0]
     stays = f'остаётся {TRUCK_TIME_TITLES[incumbent]}'
     if bases.get(valhalla_engine.TRUCK_TIME_VALHALLA) is None:
@@ -464,25 +476,23 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
                        f'грузовика для точек факта ещё считается) — {stays}'), {}
     obs = {src: [p[k] for p in pairs] for k, src in enumerate(TRUCK_TIME_SOURCES)}
     train, test = _split(obs[incumbent], today)              # участки — одни и те же у обеих моделей
-    errors: dict[str, float] = {}                             # модель → ошибка с поправкой на проверке
+    errors: dict[str, float] = {}                             # модель → ошибка на проверке с её поправкой
     candidates: dict[str, dict[str, dict[str, float]]] = {}
     fitted: dict[str, Outcome] = {}
     for src in TRUCK_TIME_SOURCES if test else ():
-        tr, te = _split(obs[src], today)
-        base, old = bases[src], prev.get(src)
-        ratio = _travel_ratio(tr)
-        params = _travel_params(ratio, model_ref(base), old, _own_minutes(base)) if ratio else old
-        raw, learned = _forecast(base, None, te), _forecast(base, params, te)
+        base, old, applied = bases[src], prev.get(src) if correct else None, None
+        if correct:
+            now = _forecast(base, old, obs[src])             # «действующий прогноз» модели — с её поправкой
+            fitted[src] = fit_travel([replace(o, current=p) for o, (p, _) in zip(obs[src], now)], today,
+                                     road_model_id(base) or 'straight', model_ref(base), base, old)
+            applied = fitted[src].params if fitted[src].accepted else old
+        _, te = _split(obs[src], today)
+        raw, learned = _forecast(base, None, te), _forecast(base, applied, te)
         errors[src] = _mae(learned)
         candidates[src] = {'raw': _errors(raw), 'learned': _errors(learned)}
-        if ratio:   # как fit_travel: против поправки, что действует у этой модели (её нет — против «как есть»)
-            now = _mae(_forecast(base, old, te))
-            ok, why = _verdict(now, errors[src])
-            fitted[src] = Outcome('travel', '', ok, f'вместе с выбором модели «{TRUCK_TIME_TITLES[src]}»: {why}',
-                                  params, road_model_id(base) or 'straight', len(tr), len(te),
-                                  mae_before=round(now, 3), mae_after=round(errors[src], 3), **_spans(tr, te))
     counts = {'legs': {'train': len(train), 'test': len(test), 'no_valhalla': no_valhalla},
-              'days': {'train': len({o.day for o in train}), 'test': len({o.day for o in test})}}
+              'days': {'train': len({o.day for o in train}), 'test': len({o.day for o in test})},
+              'corrected': correct}
     before, after = errors.get(incumbent), errors.get(other)   # None — проверки нет
     short = _enough(train, test, TRUCK_TIME_MIN)
     ok = short is None and before is not None and after is not None and _verdict(before, after)[0]
@@ -574,20 +584,22 @@ def valid_params(kind: str, p: Any) -> bool:
     return False
 
 
-def in_effect(rows: Sequence[Mapping[str, Any]], auto: Mapping[str, bool], model_id: str | None) -> InEffect:
+def in_effect(rows: Sequence[Mapping[str, Any]], auto: Mapping[str, bool], model_id: str | None,
+              scope: str = '') -> InEffect:
     """Строки learned_norms (по возрастанию run_day) → действующие нормы: по (вид, машина) — последняя принятая с
     корректными параметрами (valid_params); travel — последняя принятая той же дорожной модели (model_id; None —
-    дорожная модель не поддерживается); вид с выключенным автообучением (auto_on) — не действует. Модель времени
-    грузовиков (truck_time) выбирается до среза дорог — truck_time_learned, здесь её нет."""
+    дорожная модель не поддерживается) и тех же минут (scope — travel_scope норм); вид с выключенным автообучением
+    (auto_on) — не действует. Модель времени грузовиков (truck_time) выбирается до среза дорог — truck_time_learned,
+    здесь её нет."""
     last: dict[tuple[str, str], Mapping[str, Any]] = {}
     for r in rows:
         if not r['accepted'] or not auto_on(auto, r['kind']) or not valid_params(r['kind'], r['params']):
             continue
         if r['kind'] == 'travel' and (model_id is None or r['model_id'] != model_id):
             continue
-        last[(r['kind'], r['scope'])] = r
-    fuel = {scope: r['params'] for (kind, scope), r in sorted(last.items()) if kind == 'fuel'}
-    travel = last.get(('travel', ''))
+        last[(r['kind'], r['scope'])] = r   # travel — по scope: действует строка тех же минут (ниже)
+    fuel = {car: r['params'] for (kind, car), r in sorted(last.items()) if kind == 'fuel'}
+    travel = last.get(('travel', scope))
     return InEffect(last[('unload', '')]['params'] if ('unload', '') in last else None,
                     last[('loading', '')]['params'] if ('loading', '') in last else None,
                     {**travel['params'], 'model_id': travel['model_id']} if travel is not None else None,

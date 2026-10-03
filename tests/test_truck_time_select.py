@@ -146,20 +146,37 @@ def test_accepts_valhalla_when_truly_better_scored_with_applied_profile(bases):
     test = [p for p in pairs if p[0].day >= TEST_FROM]
     assert (o.n_test, o.params['legs']['test'], o.params['days']['test']) == (len(test), len(test), lr.HOLDOUT_DAYS)
     assert (o.test_from, o.test_to) == ('2026-09-26', '2026-10-02')
-    # ошибка — ровно того профиля, который применится (travel_profile → .travel), на всех общих участках проверки
+    # ошибка — ровно той поправки, которая применится (принята по правилу travel — она, нет — без поправки), через
+    # travel_profile → .travel, на всех общих участках проверки
     for k, src in enumerate(lr.TRUCK_TIME_SOURCES):
-        prof = lr.travel_profile(bases[src], fitted[src].params)
-        mae = sum(abs(prof.travel(x[k].km, x[k].speed, x[k].city, x[k].weekday, x[k].start) - x[k].minutes)
-                  for x in test) / len(test)
+        f = fitted[src]
+        prof = lr.travel_profile(bases[src], f.params) if f.accepted else None
+        mae = sum(abs((prof.travel(x[k].km, x[k].speed, x[k].city, x[k].weekday, x[k].start) if prof else x[k].current)
+                      - x[k].minutes) for x in test) / len(test)
         assert c[src]['learned']['mae'] == pytest.approx(mae, abs=1e-3)
         raw = sum(abs(x[k].current - x[k].minutes) for x in test) / len(test)
         assert c[src]['raw']['mae'] == pytest.approx(raw, abs=1e-3)
-    # поправка новой модели — для её дорожной модели: время Valhalla × 1,3
+        assert f == lr.fit_travel([x[k] for x in pairs], TODAY, f.model_id, lr.model_ref(bases[src]), bases[src])
+    # поправка Valhalla — для его минут: своя дорожная модель и scope, время Valhalla × 1,3
     v = fitted[VALHALLA]
-    assert v.kind == 'travel' and v.accepted and '+valhalla-time:' in v.model_id
+    assert v.kind == 'travel' and v.accepted and v.scope == VALHALLA and '+valhalla-time:' in v.model_id
     assert v.model_id == ve.road_model_id(bases[VALHALLA].roads) and lr.valid_params('travel', v.params)
     assert {f[3] for f in v.params['factors']} == {1.3}
-    assert '+valhalla-time:' not in fitted[MODEL].model_id
+    assert '+valhalla-time:' not in fitted[MODEL].model_id and fitted[MODEL].scope == ''
+    assert o.params['corrected'] is True
+
+
+def test_travel_learning_off_compares_models_as_is(bases):
+    """Автообучение «Скорость машин по часам» выключено — поправки в «Развозе» не применятся: модели сравниваются «как
+    есть» и поправки не учатся. Valhalla вдвое быстрее факта — «как есть» он хуже, переключения нет."""
+    pairs = _pairs(scale_off)
+    o, fitted = lr.fit_truck_time(pairs, TODAY, MODEL, bases, {}, correct=False)
+    c = o.params['candidates']
+    assert not o.accepted and o.params['source'] == MODEL and fitted == {} and o.params['corrected'] is False
+    assert all(c[src]['learned'] == c[src]['raw'] for src in lr.TRUCK_TIME_SOURCES)
+    assert c[VALHALLA]['raw']['mae'] > c[MODEL]['raw']['mae']
+    on, _ = lr.fit_truck_time(pairs, TODAY, MODEL, bases, {})              # с поправками Valhalla выигрывает
+    assert on.accepted
 
 
 def test_each_model_gets_its_own_correction_before_comparison(bases):
@@ -502,17 +519,24 @@ def test_travel_correction_applies_only_to_its_model(client, fake, tmp_path):
     plain = _ctx(state).norms
     model_id, valhalla_id = (ve.road_model_id(plain.for_trucks(truck_time=t).roads) for t in (False, True))
     ref = lr.model_ref(plain)
-    travel = lambda r, mid: [lr.Outcome('travel', '', True, 'да', {'factors': [[1, 0, 9, r]], 'ref': ref},  # noqa: E731
-                                        mid)]
+
+    def travel(r, mid, scope=''):
+        return [lr.Outcome('travel', scope, True, 'да', {'factors': [[1, 0, 9, r]], 'ref': ref}, mid)]
     state.store.save_learned('2026-09-20', travel(2.0, model_id))
     assert _ctx(state).norms.traffic.factor(True, 3, 9 * 60) == pytest.approx(1 / 2.0)
     state.store.save_learned(*_decision(VALHALLA, '2026-09-21'))
     assert _ctx(state).norms.traffic is None                                     # поправка прежней модели — не Valhalla
-    state.store.save_learned('2026-09-22', travel(0.5, valhalla_id))
+    # строка с id минут Valhalla, но scope '' — выучена по скорости зоны (ROUTES_TRUCK_TIME=valhalla до выбора
+    # модели): к минутам Valhalla не применяется
+    state.store.save_learned('2026-09-22', travel(0.7, valhalla_id))
+    assert _ctx(state).norms.traffic is None
+    state.store.save_learned('2026-09-22', travel(0.5, valhalla_id, VALHALLA))   # тот же день — рядом, свой scope
     v = _ctx(state).norms
     assert v.traffic.factor(True, 3, 9 * 60) == pytest.approx(1 / 0.5) and v.traffic.report['trucks'] == 'learned'
     state.store.save_learned(*_decision(MODEL, '2026-09-23'))
     assert _ctx(state).norms.traffic.factor(True, 3, 9 * 60) == pytest.approx(1 / 2.0)   # и наоборот
+    assert [(r['scope'], r['model_id']) for r in state.store.learned() if r['run_day'] == '2026-09-22'] == \
+        [('', valhalla_id), (VALHALLA, valhalla_id)]
 
 
 # ============================== ночной прогон ==============================
@@ -567,41 +591,88 @@ def _facts_client(client, tmp_path, monkeypatch):
     return state
 
 
+def _travels(outcomes):
+    """Строки travel прогона по scope: '' — поправка прежней модели, 'valhalla' — минут Valhalla."""
+    return {o.scope: o for o in outcomes if o.kind == 'travel'}
+
+
 def test_nightly_switches_to_valhalla_with_its_correction_idempotent_no_flapping(client, fake, tmp_path, monkeypatch):
     state = _facts_client(client, tmp_path, monkeypatch)
     out = views.run_learning(state, TODAY)
-    by = {o.kind: o for o in out}
-    tt, travel = by['truck_time'], by['travel']
+    tt, travels = next(o for o in out if o.kind == 'truck_time'), _travels(out)
     assert tt.accepted and tt.params['source'] == VALHALLA, tt.reason
     legs, c = tt.params['legs'], tt.params['candidates']
     assert legs['train'] >= 200 and legs['test'] >= 60 and legs['no_valhalla'] == 0
     assert c[VALHALLA]['learned']['mae'] <= 0.98 * c[MODEL]['learned']['mae']
-    # строка travel дня — поправка Valhalla (дня без поправки нет), прежней модели в этот день — нет
-    assert '+valhalla-time:' in travel.model_id and travel.accepted and travel.reason.startswith('вместе с выбором')
-    assert all(0.8 < f[3] < 1.3 for f in travel.params['factors'])             # факт ≈ 1,1 × Valhalla
+    # обе строки travel дня: обычная — прежней модели (ею учился прогон) и поправка выбранной Valhalla — дня без
+    # поправки нет
+    assert set(travels) == {'', VALHALLA} and '+valhalla-time:' not in travels[''].model_id
+    v = travels[VALHALLA]
+    assert '+valhalla-time:' in v.model_id and v.accepted and v.reason.startswith('для выбранной модели «Valhalla»')
+    assert all(0.8 < f[3] < 1.3 for f in v.params['factors'])                 # факт ≈ 1,1 × Valhalla
     assert views.run_learning(state, TODAY) == out                               # повтор дня — тот же итог
     ctx = _ctx(state, date(2026, 10, 4))
     assert '+valhalla-time:' in ve.road_model_id(ctx.norms.roads) and ctx.norms.traffic.report['trucks'] == 'learned'
     st = {s['kind']: s for s in client.get('/api/routes/learning/status').get_json()['status']}
     assert st['truck_time']['source'] == {'value': VALHALLA, 'why': 'learned', 'learned': VALHALLA}
-    assert st['travel']['in_effect']['model_id'] == travel.model_id
-    nxt = {o.kind: o for o in views.run_learning(state, TODAY + timedelta(days=1))}
-    assert not nxt['truck_time'].accepted and nxt['truck_time'].params['source'] == VALHALLA   # без «туда-сюда»
-    assert nxt['truck_time'].params['challenger'] == MODEL
-    assert '+valhalla-time:' in nxt['travel'].model_id                         # обычная поправка — уже для Valhalla
+    assert st['travel']['scope'] == VALHALLA and st['travel']['in_effect']['model_id'] == v.model_id
+    nxt = views.run_learning(state, TODAY + timedelta(days=1))
+    ntt = next(o for o in nxt if o.kind == 'truck_time')
+    assert not ntt.accepted and ntt.params['source'] == VALHALLA and ntt.params['challenger'] == MODEL   # гистерезис
+    assert set(_travels(nxt)) == {VALHALLA}                                      # обычная поправка — уже для Valhalla
 
 
-def test_nightly_env_wins_choice_is_kept_but_not_applied(client, fake, tmp_path, monkeypatch):
+def test_nightly_same_day_rerun_without_valhalla_keeps_the_switch(client, fake, tmp_path, monkeypatch):
+    """Утром модель сменилась; сервер перезапустили — Valhalla ещё не готов, а владелец нажал «Пересчитать»:
+    решение и поправка Valhalla этого дня не затираются (сбой инфраструктуры — не повод переключаться обратно)."""
     state = _facts_client(client, tmp_path, monkeypatch)
-    monkeypatch.setenv('ROUTES_TRUCK_TIME', 'model')
-    by = {o.kind: o for o in views.run_learning(state, TODAY)}
-    assert by['truck_time'].accepted and by['truck_time'].params['source'] == VALHALLA
-    assert '+valhalla-time:' not in by['travel'].model_id              # «Развоз» — по переменной: прежняя модель
+    views.run_learning(state, TODAY)
+    provider, state.valhalla = state.valhalla, None
+    again = views.run_learning(state, TODAY)
+    assert not any(o.kind == 'truck_time' for o in again) and set(_travels(again)) == {''}
+    rows = state.store.learned()
+    assert lr.truck_time_learned(rows) == VALHALLA
+    assert any(r['scope'] == VALHALLA and r['accepted'] for r in rows if r['kind'] == 'travel')
+    state.valhalla = provider                                                    # Valhalla снова готов
+    ctx = _ctx(state, date(2026, 10, 4))
+    assert '+valhalla-time:' in ve.road_model_id(ctx.norms.roads) and ctx.norms.traffic.report['trucks'] == 'learned'
+
+
+@pytest.mark.parametrize('pin', ['env', 'auto'])
+def test_nightly_choice_not_in_effect_keeps_its_correction(client, fake, tmp_path, monkeypatch, pin):
+    """Выбор обучения сейчас не действует (переменная ROUTES_TRUCK_TIME=model или снята галочка) — поправка выбранной
+    Valhalla всё равно в журнале: убрали переменную / вернули галочку — «Развоз» сразу считает с ней."""
+    state = _facts_client(client, tmp_path, monkeypatch)
+    if pin == 'env':
+        monkeypatch.setenv('ROUTES_TRUCK_TIME', 'model')
+    else:
+        state.store.save_learning_auto('truck_time', False, 'qa')
+    out = views.run_learning(state, TODAY)
+    tt, travels = next(o for o in out if o.kind == 'truck_time'), _travels(out)
+    assert tt.accepted and tt.params['source'] == VALHALLA
+    assert '+valhalla-time:' not in travels[''].model_id                       # «Развоз» — прежняя модель
+    assert travels[VALHALLA].accepted and '+valhalla-time:' in travels[VALHALLA].model_id
     assert '+valhalla-time:' not in ve.road_model_id(_ctx(state).norms.roads)
     st = {s['kind']: s for s in client.get('/api/routes/learning/status').get_json()['status']}
-    assert st['truck_time']['source'] == {'value': MODEL, 'why': 'env', 'learned': VALHALLA}
-    monkeypatch.delenv('ROUTES_TRUCK_TIME')
-    assert '+valhalla-time:' in ve.road_model_id(_ctx(state).norms.roads)       # переменную убрали — выбор обучения
+    assert st['truck_time']['source'] == {'value': MODEL, 'why': 'env' if pin == 'env' else 'default',
+                                          'learned': VALHALLA}
+    assert st['travel']['scope'] == ''
+    if pin == 'env':
+        monkeypatch.delenv('ROUTES_TRUCK_TIME')
+    else:
+        state.store.save_learning_auto('truck_time', True, 'qa')
+    ctx = _ctx(state, date(2026, 10, 4))
+    assert '+valhalla-time:' in ve.road_model_id(ctx.norms.roads) and ctx.norms.traffic.report['trucks'] == 'learned'
+
+
+def test_nightly_travel_learning_off_compares_as_is(client, fake, tmp_path, monkeypatch):
+    state = _facts_client(client, tmp_path, monkeypatch)
+    state.store.save_learning_auto('travel', False, 'qa')
+    out = views.run_learning(state, TODAY)
+    tt = next(o for o in out if o.kind == 'truck_time')
+    assert tt.params['corrected'] is False and set(_travels(out)) == {''}     # поправки не учатся для выбора
+    c = tt.params['candidates']
+    assert all(c[m]['learned'] == c[m]['raw'] for m in lr.TRUCK_TIME_SOURCES)
 
 
 def test_nightly_without_valhalla_explains_and_keeps_model(client, monkeypatch, tmp_path):
@@ -626,6 +697,7 @@ def test_store_migrates_13_to_14_keeps_rows_and_ids(tmp_path):
         conn.execute(rst._LEARNED_TABLE_V13)
         conn.execute(f'INSERT INTO learned_norms({rst._LEARNED_COPY}) SELECT {rst._LEARNED_COPY} FROM learned_old')
         conn.execute('DROP TABLE learned_old')
+        conn.execute("UPDATE sqlite_sequence SET seq = 50 WHERE name = 'learned_norms'")   # повторы дня расходуют id
         conn.execute("UPDATE meta SET value = '13' WHERE key = 'schema_version'")
         conn.commit()
         before = conn.execute('SELECT * FROM learned_norms ORDER BY id').fetchall()
@@ -637,7 +709,9 @@ def test_store_migrates_13_to_14_keeps_rows_and_ids(tmp_path):
     with closing(sqlite3.connect(path)) as conn:
         assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('14',)
         rows = conn.execute('SELECT * FROM learned_norms ORDER BY id').fetchall()
-        assert rows[:len(before)] == before and rows[-1][1] == 'truck_time' and rows[-1][0] > before[-1][0]
+        assert rows[:len(before)] == before and rows[-1][1] == 'truck_time' and rows[-1][0] == 51   # id не повторяются
+        assert conn.execute("SELECT name FROM sqlite_sequence WHERE name LIKE 'learned_norms%'").fetchall() == \
+            [('learned_norms',)]
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute("INSERT INTO learned_norms(kind, scope, run_day, n_obs, n_test, accepted, reason, created_at) "
                          "VALUES('other', '', '2026-10-02', 0, 0, 0, 'x', 'now')")

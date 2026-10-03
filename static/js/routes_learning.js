@@ -77,7 +77,7 @@
     }
     let firstFuel = null;
     function learnRow(s) {
-        const title = esc(s.title) + (s.scope ? ' · ' + esc(s.scope) : '');
+        const title = esc(s.title) + (s.kind === 'travel' && s.scope ? ' · к времени Valhalla' : s.scope ? ' · ' + esc(s.scope) : '');
         const eff = s.in_effect;
         const now = s.kind === 'truck_time'
             ? badge(modelName((s.source || {}).value), (s.source || {}).why === 'learned' ? 'b-ok' : 'b-none') + '<br><span class="lr-why">' + esc(truckTimeWhy(s)) + '</span>'
@@ -105,10 +105,14 @@
             ? line('Прежняя модель (км / скорость зоны)', c.model.raw) + line('Прежняя модель + поправка по часам', c.model.learned)
                 + line('Valhalla', c.valhalla.raw) + line('Valhalla + поправка по часам', c.valhalla.learned)
             : '<tr><td colspan="3" class="rt-empty">' + esc(last ? 'Сравнения пока нет: ' + last.reason + '.' : 'Ещё не пересчитывалось.') + '</td></tr>';
+        const src = (s && s.source) || {};
+        const changed = !last || !last.accepted ? ''
+            : src.why === 'learned' ? 'Модель сменилась: ' : 'Выбор программы сменился, но сейчас не действует: ';
         $('lrTtLegs').textContent = p && p.legs && p.days
             ? 'Пересчёт ' + day(last.run_day) + ': участков на обучении ' + fmt(p.legs.train) + ' (дней ' + fmt(p.days.train) + '), на проверке '
                 + fmt(p.legs.test) + ' (дней ' + fmt(p.days.test) + ')' + (num(p.legs.no_valhalla) ? '; без времени Valhalla — ' + fmt(p.legs.no_valhalla) : '')
-                + '. ' + (last.accepted ? 'Модель сменилась: ' : '') + last.reason + '.'
+                + '. ' + (p.corrected === false ? 'Учёба скорости по часам выключена — модели сравниваются без поправки. ' : '')
+                + changed + last.reason + '.'
             : '';
     }
     function renderStatus(d) {
