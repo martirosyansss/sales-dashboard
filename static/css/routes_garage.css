@@ -45,6 +45,7 @@
 .gj-what small, .gj-sub { display: block; font-size: .8125rem; color: var(--rt-fg-mute); }
 .gj-row-acts { display: inline-flex; gap: 6px; }
 .gj-gone { font-size: .8125rem; color: var(--rt-fg-mute); }
+.gj-gone.is-changed { color: var(--rt-warn); }
 .gj-acts { white-space: nowrap; }
 
 /* Пробег и итоги */

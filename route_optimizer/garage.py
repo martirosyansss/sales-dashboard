@@ -10,11 +10,12 @@
   - есть показание не позже начала окна — start = as_of − 365, км в start — линейная интерполяция по дням между
     последним показанием до и первым после; иначе start — день самого раннего показания в окне;
   - km = km_end − km_start; cost — ремонты с днём в (start, end] (первое показание — точка отсчёта);
-  - готово, если end − start ≥ READY_DAYS (≈ 6 мес.) и km ≥ READY_KM: price = cost / km (֏/км, до 0,1); иначе —
-    «накапливается: N из 6 мес.» или «мало км».
+  - готово, если end − start ≥ READY_DAYS (≈ 6 мес.), km ≥ READY_KM и в (start, end] есть хоть один ремонт: price =
+    cost / km (֏/км, до 0,1); иначе — «накапливается: N из 6 мес.», «мало км» или «ремонтов в журнале нет».
 ДТП (accident) и страховка / техосмотр / налог (fixed) — только итоги окна, в цену не входят: от того, куда поедет
-машина, они не зависят. Без записей журнала о машине в окне цены нет (status none, «нет пробега»): одометр APK только
-дополняет показания журнала, сам по себе цену не начинает — иначе машина без ремонтов в журнале получила бы 0 ֏/км.
+машина, они не зависят. Ноль ремонтов за полгода и больше — это не «0 ֏/км», а нет данных (журнал ведут только для
+пробега или ремонты не вносят): цены нет (status no_repairs), в расчёте — ручное «Износ, драм/км». Без записей журнала
+о машине в окне цены нет тем более (status none, «нет пробега»): одометр APK только дополняет показания журнала.
 """
 from __future__ import annotations
 
@@ -42,7 +43,8 @@ class Entry:
 class Price:
     """Ремонт ֏/км машины на дату. price — только у status ready; cost_amd / km — ровно то, что делится."""
     price: float | None
-    status: str                 # ready | accumulating (мало месяцев) | low_km (мало км) | none (нет пробега)
+    status: str                 # ready | accumulating (мало месяцев) | low_km (мало км) | no_repairs (ремонтов нет)
+    #                             | none (нет пробега)
     cost_amd: int               # ремонт в (start, end]
     km: float                   # пробег (start, end]
     start: date | None
@@ -88,13 +90,16 @@ def price(entries: Sequence[Entry], as_of: date, apk: Iterable[tuple[date, float
     else:
         start, km_start = pts[0]
     km = km_end - km_start
-    cost = sum(e.amount_amd for e in live if e.kind == 'repair' and start < e.day <= end)
+    repairs = [e.amount_amd for e in live if e.kind == 'repair' and start < e.day <= end]
+    cost = sum(repairs)
     days = (end - start).days
     months = days * MONTHS_READY // READY_DAYS
     if days < READY_DAYS:
         status = 'accumulating'
     elif km < READY_KM:
         status = 'low_km'
+    elif not repairs:
+        status = 'no_repairs'
     else:
         status = 'ready'
     return Price(round(cost / km, 1) if status == 'ready' else None, status, cost, km, start, end, days, months,

@@ -65,7 +65,8 @@ def test_garage_role_allowed_paths(dashboard):
     assert c.get('/api/routes/garage').status_code == 200
     r = c.post('/api/routes/garage/entries', json=GARAGE_ENTRY, headers=h)
     assert r.status_code == 200, r.get_json()
-    assert c.get('/api/routes/garage/entries').get_json()['total_amd'] == 85_000
+    listed = c.get('/api/routes/garage/entries').get_json()
+    assert listed['total_amd'] == 85_000 and 'created_by' not in listed['entries'][0]     # логины — не гаражу
     assert c.post('/api/routes/garage/odometers', json={'items': [{'car_code': 'CAR1', 'day': '2026-10-01',
                                                                      'odometer_km': 121_000}]}, headers=h).status_code == 200
     assert c.post('/api/routes/garage/entries/delete', json={'id': r.get_json()['id']}, headers=h).status_code == 200
@@ -125,6 +126,9 @@ def test_admin_and_territory_roles_unchanged(dashboard):
     page = c.get('/routes/garage').get_data(as_text=True)
     assert 'href="/routes/settings"' in page and 'href="/routes/dispatch"' in page        # навигация раздела
     assert c.get('/api/routes/garage').get_json()['admin'] is True
+    h = _login_as(c, 'boss')
+    assert c.post('/api/routes/garage/entries', json=GARAGE_ENTRY, headers=h).status_code == 200
+    assert c.get('/api/routes/garage/entries').get_json()['entries'][0]['created_by'] == 'boss'
     assert c.get('/api/routes/settings').status_code == 200
     for name in ('u', 'odd'):                                                  # «по территориям» и неизвестная роль
         _login_as(c, name)

@@ -22,6 +22,7 @@ from enum import Enum
 from typing import Any, Callable, Collection, Literal, Mapping, Sequence
 
 from .geo import ARMENIA_LAT, ARMENIA_LON, Point, is_valid_point
+from .learning import REFUEL_KM_PER_DAY
 from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, parse_transfer_key
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
@@ -121,15 +122,17 @@ _CUSTOMER_UNLOAD_TABLE = (
 
 # Схема 16 (ответ владельца №53): журнал гаража — строка на запись: repair (ремонт / запчасть / ТО — в «ремонт ֏/км»),
 # accident (ДТП) и fixed (страховка / техосмотр / налог) — только итоги, odometer — только показание пробега (сумма 0).
-# Спидометр — в каждой записи. Удаление мягкое (deleted_at): запись денег не теряется, в расчётах не участвует. Живое
-# показание «только пробег» у машины на день — одно (повторное сохранение дня обновляет его).
+# Спидометр — в каждой записи. Удаление мягкое (deleted_at): запись денег не теряется, в расчётах не участвует. Правка
+# не теряет прежних значений: прежняя версия остаётся удалённой строкой с replaced_by — номером живой записи (её номер не
+# меняется). Живое показание «только пробег» у машины на день — одно (повторное сохранение дня обновляет его).
 _GARAGE_TABLE = (
     "CREATE TABLE IF NOT EXISTS garage_entry(id INTEGER PRIMARY KEY, car_code TEXT NOT NULL, day TEXT NOT NULL, "
     "kind TEXT NOT NULL CHECK (kind IN ('repair', 'accident', 'fixed', 'odometer')), what TEXT, "
     "amount_amd INTEGER NOT NULL CHECK (amount_amd BETWEEN 0 AND 100000000), "
     "odometer_km INTEGER NOT NULL CHECK (odometer_km BETWEEN 0 AND 2000000), note TEXT, "
     "created_at TEXT NOT NULL, created_by TEXT, updated_at TEXT, updated_by TEXT, deleted_at TEXT, deleted_by TEXT, "
-    "CHECK ((kind = 'odometer') = (amount_amd = 0)), CHECK (kind = 'odometer' OR what IS NOT NULL))")
+    "replaced_by INTEGER, CHECK ((kind = 'odometer') = (amount_amd = 0)), CHECK (kind = 'odometer' OR what IS NOT NULL), "
+    "CHECK (replaced_by IS NULL OR deleted_at IS NOT NULL))")
 _GARAGE_ONE_ODOMETER = (
     "CREATE UNIQUE INDEX IF NOT EXISTS garage_one_odometer ON garage_entry(car_code, day) "
     "WHERE kind = 'odometer' AND deleted_at IS NULL")
@@ -423,6 +426,7 @@ GARAGE_TEXT_MAX = 300
 GARAGE_AMOUNT_MAX = 100_000_000
 GARAGE_ODOMETER_MAX = 2_000_000
 GARAGE_PAST_YEARS = 3
+GARAGE_KM_PER_DAY = REFUEL_KM_PER_DAY   # спидометр не прирастает быстрее (как одометр заправок APK, odometer_plausible)
 _DAY_MINUTES = 24 * 60
 
 _HHMM_RE = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
@@ -540,7 +544,8 @@ class GarageInput:
 
 @dataclass(frozen=True)
 class GarageEntry:
-    """Запись журнала гаража из базы; deleted_at — удалена (мягко): в расчётах не участвует."""
+    """Запись журнала гаража из базы; deleted_at — удалена (мягко): в расчётах не участвует; replaced_by — это прежняя
+    версия записи с этим номером (изменена)."""
     id: int
     car_code: str
     day: date
@@ -555,6 +560,7 @@ class GarageEntry:
     updated_by: str | None
     deleted_at: str | None
     deleted_by: str | None
+    replaced_by: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {**asdict(self), 'day': self.day.isoformat()}
@@ -660,6 +666,8 @@ def _loaded_garage(row: tuple) -> tuple[GarageEntry | None, list[str]]:
         problems.append('сумма')
     if not _is_int(km) or _whole(km, 0, GARAGE_ODOMETER_MAX) is None:
         problems.append('спидометр')
+    if stamps[-1] is not None and not _is_int(stamps[-1]):
+        problems.append('замена')
     if problems:
         return None, problems
     return GarageEntry(entry_id, code, parsed, kind, what, amount, km, note, *stamps), []
@@ -2053,7 +2061,7 @@ class Store:
     # --- журнал гаража (№53): ремонты, ДТП, страховка и налоги, пробег ---
 
     _GARAGE_COLUMNS = ('id, car_code, day, kind, what, amount_amd, odometer_km, note, created_at, created_by, '
-                       'updated_at, updated_by, deleted_at, deleted_by')
+                       'updated_at, updated_by, deleted_at, deleted_by, replaced_by')
 
     def garage_entries(self, deleted: bool = False) -> list[GarageEntry]:
         """Записи журнала по дню и номеру: живые; deleted — и удалённые («показать удалённые» администратора). Битая
@@ -2073,7 +2081,9 @@ class Store:
     @staticmethod
     def _garage_conflict(conn: sqlite3.Connection, item: GarageInput, exclude: int | None) -> str | None:
         """Спидометр машины не убывает во времени: показание не меньше любого живого показания более раннего дня и не
-        больше любого более позднего (в один день — любые). Нарушение — причина с конфликтующей записью (день, км)."""
+        больше любого более позднего. И правдоподобен: от ближайшего показания раньше, позже и того же дня прирост не
+        больше GARAGE_KM_PER_DAY × max(1, дней) — опечатка в разряде (1 305 000 вместо 130 500) не принимается и не
+        запирает следующие верные показания. Нарушение — причина с соседней записью (день, км; у темпа — км в сутки)."""
         day = item.day.isoformat()
         base = 'SELECT day, odometer_km FROM garage_entry WHERE car_code = ? AND deleted_at IS NULL AND id IS NOT ? AND '
         row = conn.execute(base + 'day < ? AND odometer_km > ? ORDER BY odometer_km DESC, day DESC LIMIT 1',
@@ -2085,6 +2095,16 @@ class Store:
         if row is not None:
             return (f'Սպիդոմետրը չի կարող նվազել. ավելի ուշ՝ {_ru_day(row[0])}-ին, գրանցված է '
                     f'{_km_text(row[1])} կմ')
+        for where, args in (('day = ? ORDER BY abs(odometer_km - ?) DESC LIMIT 1', (day, item.odometer_km)),
+                            ('day < ? ORDER BY day DESC, odometer_km DESC LIMIT 1', (day,)),
+                            ('day > ? ORDER BY day, odometer_km LIMIT 1', (day,))):
+            row = conn.execute(base + where, (item.car_code, exclude, *args)).fetchone()
+            if row is None:
+                continue
+            rate = abs(item.odometer_km - row[1]) / max(1, abs((item.day - date.fromisoformat(row[0])).days))
+            if rate > GARAGE_KM_PER_DAY:
+                return (f'Ստուգեք սպիդոմետրը. {_ru_day(row[0])}-ի {_km_text(row[1])} կմ-ի համեմատ սա օրական '
+                        f'{_km_text(round(rate))} կմ է (առավելագույնը՝ {_km_text(round(GARAGE_KM_PER_DAY))} կմ)')
         return None
 
     @staticmethod
@@ -2095,20 +2115,31 @@ class Store:
 
     @staticmethod
     def _garage_write(conn: sqlite3.Connection, item: GarageInput, target: int | None, user: str | None) -> int:
+        """Новая запись или правка живой target. У правки прежние значения не теряются: если что-то изменилось, прежняя
+        версия копируется удалённой строкой с replaced_by = target (номер живой записи тот же)."""
+        now = _now()
         values = (item.car_code, item.day.isoformat(), item.kind, item.what, item.amount_amd, item.odometer_km,
-                  item.note, _now(), user)
+                  item.note)
         if target is None:
             return conn.execute('INSERT INTO garage_entry(car_code, day, kind, what, amount_amd, odometer_km, note, '
-                                'created_at, created_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)', values).lastrowid
+                                'created_at, created_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                                (*values, now, user)).lastrowid
+        old = conn.execute('SELECT car_code, day, kind, what, amount_amd, odometer_km, note FROM garage_entry '
+                           'WHERE id = ?', (target,)).fetchone()
+        if tuple(old) != values:
+            conn.execute('INSERT INTO garage_entry(car_code, day, kind, what, amount_amd, odometer_km, note, created_at, '
+                         'created_by, updated_at, updated_by, deleted_at, deleted_by, replaced_by) SELECT car_code, day, '
+                         'kind, what, amount_amd, odometer_km, note, created_at, created_by, updated_at, updated_by, ?, ?, '
+                         'id FROM garage_entry WHERE id = ?', (now, user, target))
         conn.execute('UPDATE garage_entry SET car_code = ?, day = ?, kind = ?, what = ?, amount_amd = ?, '
-                     'odometer_km = ?, note = ?, updated_at = ?, updated_by = ? WHERE id = ?', (*values, target))
+                     'odometer_km = ?, note = ?, updated_at = ?, updated_by = ? WHERE id = ?', (*values, now, user, target))
         return target
 
     def save_garage_entry(self, item: GarageInput, user: str | None, entry_id: int | None = None) -> int:
         """Новая запись (entry_id None) или правка живой; возвращает номер записи. «Только пробег» у машины на день —
         одна: новая на тот же день обновляет прежнюю, правка в день, где она уже есть, — ошибка. Спидометр не убывает
-        во времени (_garage_conflict). Всё — в одной транзакции: проверка и запись не разойдутся с параллельной записью.
-        GarageError — не принято (ничего не записано)."""
+        во времени и правдоподобен (_garage_conflict). Правка хранит прежнюю версию (_garage_write). Всё — в одной
+        транзакции: проверка и запись не разойдутся с параллельной записью. GarageError — не принято (ничего не записано)."""
         def write(conn: sqlite3.Connection) -> int:
             target = self._garage_odometer_id(conn, item) if item.kind == 'odometer' else None
             if entry_id is not None:
@@ -2127,8 +2158,8 @@ class Store:
 
     def save_garage_odometers(self, items: Sequence[GarageInput], user: str | None) -> dict[int, str]:
         """Пробег машин одной таблицей (раз в месяц): каждая строка — «только пробег» своей машины на свой день (тот же
-        день — обновляет). Одна транзакция; строка, у которой спидометр убывает во времени, не пишется — {номер строки:
-        причина}, остальные записываются."""
+        день — обновляет). Одна транзакция; строка, у которой спидометр убывает во времени или неправдоподобен
+        (_garage_conflict), не пишется — {номер строки: причина}, остальные записываются."""
         if any(item.kind != 'odometer' for item in items):
             raise ValueError('в таблице пробега — только показания пробега')
 

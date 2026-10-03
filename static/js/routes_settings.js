@@ -501,6 +501,8 @@
         else if (g.status === 'ready') text = 'По журналу гаража: ' + fmt(g.price, 1) + ' ֏/км (' + fmt(g.months) + ' мес.) — ' + inCalc;
         else if (g.status === 'accumulating') text = 'Журнал гаража: накапливается ' + fmt(g.months) + ' из ' + fmt(g.ready_months) + ' мес. — ' + inCalc;
         else if (g.status === 'low_km') text = 'Журнал гаража: мало км (' + fmt(g.km) + ' км) — ' + inCalc;
+        else if (g.status === 'no_repairs') text = 'Журнал гаража: ремонтов в журнале нет — '
+            + (used === 'manual' ? 'в расчёте ручное значение' : inCalc);
         else text = 'Журнал гаража: нет пробега за 12 мес. — ' + inCalc;
         return h('span', { class: 'rs-garage' + (used === 'garage' ? ' is-used' : ''), text });
     }

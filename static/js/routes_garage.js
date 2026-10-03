@@ -45,15 +45,32 @@
     class ApiError extends Error {
         constructor(message, errors) { super(message); this.errors = errors || {}; }
     }
+    // Ответы сервера — по-армянски: проверки журнала уже армянские (их и показываем, по полям); прочее (вход, доступ,
+    // CSRF, не JSON, сбой сервера — тексты дашборда по-русски) — своим армянским текстом по коду ответа.
+    const HY = /[\u0531-\u058F]/;
+    function httpError(status, body) {
+        const text = body && typeof body.error === 'string' ? body.error : '';
+        if (status === 403) return text === 'csrf' ? 'Էջը հնացել է՝ թարմացրեք այն և կրկնեք։' : 'Այս գործողությունը ձեզ թույլատրված չէ։';
+        if ((status === 400 || status === 404) && HY.test(text)) return text;
+        if (status === 400 || status === 415) return 'Հարցումը չընդունվեց։ Թարմացրեք էջը և կրկնեք։';
+        if (status === 404) return 'Չի գտնվել։ Թարմացրեք էջը։';
+        if (status === 503) return 'Տվյալների բազան ժամանակավորապես հասանելի չէ։ Կրկնեք մի փոքր ուշ։';
+        return 'Սերվերի սխալ (' + status + ')։ Կրկնեք մի փոքր ուշ։';
+    }
     async function api(url, json) {
         const init = { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } };
         if (json !== undefined) { init.method = 'POST'; init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(json); }
         let resp, body = null;
         try { resp = await fetch(url, init); } catch (e) { throw new ApiError('Սերվերը հասանելի չէ։ Ստուգեք կապը և կրկնեք։'); }
+        if (resp.status === 401) {   // сессия кончилась — на вход, потом обратно сюда
+            window.location.assign('/login?next=' + encodeURIComponent('/routes/garage'));
+            throw new ApiError('Մուտք գործեք նորից։');
+        }
         try { body = await resp.json(); } catch (e) { /* не JSON */ }
         if (!resp.ok || !body || body.success === false) {
-            const text = body && (body.error === 'csrf' ? 'Էջը հնացել է՝ թարմացրեք այն և կրկնեք։' : body.error);
-            throw new ApiError(text || 'Սերվերի սխալ (' + resp.status + ')', body && body.errors);
+            const errors = Object.fromEntries(Object.entries((body && body.errors) || {})
+                .filter(([, v]) => typeof v === 'string' && HY.test(v)));
+            throw new ApiError(httpError(resp.status, body), errors);
         }
         return body;
     }
@@ -175,6 +192,10 @@
         };
         if (kind !== 'odometer') body.amount_amd = intOrRaw($('gjAmount').value);
         if (state.editing !== null) body.id = state.editing;
+        const badNum = {};   // нечисло в числовом поле — своя ошибка, а не «пусто»
+        if ($('gjOdoKm').validity.badInput) badNum.odometer_km = 'Գրեք ամբողջ թիվ՝ կիլոմետր';
+        if (kind !== 'odometer' && $('gjAmount').validity.badInput) badNum.amount_amd = 'Գրեք ամբողջ թիվ՝ դրամ';
+        if (Object.keys(badNum).length) { fieldErrors(badNum); return; }
         state.busy = true;
         $('gjSave').disabled = true;
         fieldErrors(null);
@@ -234,8 +255,10 @@
         }
         $('gjRows').replaceChildren(...rows.map(e => {
             const gone = !!e.deleted_at;
+            // удалённая — «Ջնջված»; прежняя версия изменённой записи (replaced_by) — «Փոփոխված»: новые значения — в живой строке
             const acts = gone
-                ? h('span', { class: 'gj-gone', text: 'Ջնջված ' + dayHy(e.deleted_at) + (e.deleted_by ? ' · ' + e.deleted_by : '') })
+                ? h('span', { class: 'gj-gone' + (e.replaced_by ? ' is-changed' : ''), text: (e.replaced_by ? 'Փոփոխված ' : 'Ջնջված ')
+                    + dayHy(e.deleted_at) + (e.deleted_by ? ' · ' + e.deleted_by : '') })
                 : h('span', { class: 'gj-row-acts' },
                     h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Փոխել գրառումը ' + dayHy(e.day), dataset: { act: 'edit', id: e.id } }, icon('fa-pen'), 'Փոխել'),
                     h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Ջնջել գրառումը ' + dayHy(e.day), dataset: { act: 'del', id: e.id } }, icon('fa-trash-can'), 'Ջնջել'));
@@ -286,6 +309,18 @@
         const inputs = [...$('gjOdoRows').querySelectorAll('input[data-car]')];
         inputs.forEach(inp => { inp.classList.remove('is-invalid'); inp.removeAttribute('aria-invalid'); $(inp.id + '-err').textContent = ''; });
         $('gjOdoErr').textContent = '';
+        // нечисло в поле (badInput: value пустое) — ошибка строки, а не молчаливый пропуск
+        const bad = inputs.filter(inp => inp.validity && inp.validity.badInput);
+        if (bad.length) {
+            bad.forEach(inp => {
+                inp.classList.add('is-invalid');
+                inp.setAttribute('aria-invalid', 'true');
+                $(inp.id + '-err').textContent = 'Գրեք ամբողջ թիվ՝ կիլոմետր';
+            });
+            $('gjOdoErr').textContent = 'Ուղղեք նշված տողերը՝ ոչինչ չի պահպանվել։';
+            bad[0].focus();
+            return;
+        }
         const filled = inputs.filter(inp => inp.value.trim() !== '');
         if (!filled.length) { $('gjOdoErr').textContent = 'Լրացրեք գոնե մեկ մեքենայի վազքը'; return; }
         state.busy = true;
@@ -322,13 +357,16 @@
         if (!g || g.status === 'none') return h('span', { class: 'rt-badge b-none', text: 'Վազք չկա' });
         if (g.status === 'ready') return h('span', { class: 'rt-badge b-ok', text: 'Հաշվարկում է' });
         if (g.status === 'low_km') return h('span', { class: 'rt-badge b-warn', text: 'Քիչ կմ' });
+        if (g.status === 'no_repairs') return h('span', { class: 'rt-badge b-warn', text: 'Վերանորոգում չի գրանցված',
+            title: 'Վերանորոգում չկա՝ հաշվարկում է կարգավորումների «մաշվածությունը»' });
         return h('span', { class: 'rt-badge b-warn', text: 'Կուտակվում է՝ ' + g.months + ' / ' + g.ready_months + ' ամիս' });
     }
 
     function renderSummary() {
         const d = state.data, rules = d.rules;
         $('gjSumLead').textContent = 'Վերանորոգում ֏/կմ = վերանորոգման ծախսը ÷ վազքը նույն ժամանակահատվածում։ Առաքման հաշվարկում է, երբ վազքը ծածկում է '
-            + rules.ready_months + ' ամիս և առնվազն ' + fmt(rules.ready_km) + ' կմ։ Մինչ այդ հաշվարկում է կարգավորումների «մաշվածությունը»։';
+            + rules.ready_months + ' ամիս և առնվազն ' + fmt(rules.ready_km) + ' կմ, և այդ ընթացքում գրանցված է գոնե մեկ վերանորոգում։ '
+            + 'Մինչ այդ հաշվարկում է կարգավորումների «մաշվածությունը»։';
         if (!d.summary.length) {
             $('gjSumRows').replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'rt-empty', text: 'Մեքենաներ չկան' })));
         } else {

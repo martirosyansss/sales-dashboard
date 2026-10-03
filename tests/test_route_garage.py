@@ -132,10 +132,24 @@ def test_price_same_day_readings():
 
 def test_apk_readings_extend_journal():
     """Одометр заправок дополняет показания: последнее показание — заправка, покрытие больше 6 месяцев."""
-    journal = [E(_d('2026-03-01'), 'repair', 40_000, 50_000)]
+    journal = [E(_d('2026-03-01'), 'odometer', 0, 50_000), E(_d('2026-04-01'), 'repair', 40_000, 51_000)]
     assert gr.price(journal, AS_OF).status == 'accumulating'
     p = gr.price(journal, AS_OF, [(_d('2026-06-01'), 55_000), (_d('2026-09-30'), 58_000)])
-    assert (p.status, p.end, p.km, p.price, p.cost_amd) == ('ready', _d('2026-09-30'), 8_000.0, 0.0, 0)
+    assert (p.status, p.end, p.km, p.price, p.cost_amd) == ('ready', _d('2026-09-30'), 8_000.0, 5.0, 40_000)
+
+
+def test_no_repairs_is_missing_data_not_zero():
+    """Полгода и больше без ремонтов в (start, end] — не 0 ֏/км, а нет данных: только пробег, только страховка и
+    заправки, ремонт лишь в день первого показания (точка отсчёта) — цены нет, в расчёте ручное значение."""
+    odo = [E(_d('2026-02-01'), 'odometer', 0, 10_000), E(_d('2026-09-01'), 'odometer', 0, 20_000)]
+    fixed = [E(_d('2026-02-01'), 'fixed', 90_000, 10_000)]
+    first_day = [E(_d('2026-02-01'), 'repair', 70_000, 10_000), E(_d('2026-09-01'), 'accident', 50_000, 20_000)]
+    for entries, apk in ((odo, ()), (fixed, [(_d('2026-09-01'), 20_000.0)]), (first_day, ())):
+        p = gr.price(entries, AS_OF, apk)
+        assert (p.status, p.price, p.cost_amd, p.days >= gr.READY_DAYS, p.km) == ('no_repairs', None, 0, True, 10_000.0)
+        assert gr.effective({'CAR1': p}) == {}
+    one = gr.price(odo + [E(_d('2026-05-01'), 'repair', 1_000, 15_000)], AS_OF)
+    assert (one.status, one.price) == ('ready', 0.1)
 
 
 def test_apk_conflicting_with_journal_dropped():
@@ -213,7 +227,7 @@ def test_store_odometer_never_decreases_and_names_the_record(tmp_path):
     with pytest.raises(st.GarageError) as e:
         s.save_garage_entry(_item(day='2026-02-01', odometer_km=100_001), 'qa')
     assert '01.03.2026' in e.value.errors['odometer_km'] and '100 000' in e.value.errors['odometer_km']
-    s.save_garage_entry(_item(day='2026-06-01', odometer_km=105_000), 'qa')        # в тот же день — любое
+    s.save_garage_entry(_item(day='2026-06-01', odometer_km=109_000), 'qa')        # в тот же день — и меньше
     s.save_garage_entry(_item(day='2026-04-01', odometer_km=100_000), 'qa')        # равное раннему — можно
     s.save_garage_entry(_item(day='2026-07-01', odometer_km=50, car_code='CAR2'), 'qa')   # другая машина
     assert len(s.garage_entries()) == 5
@@ -223,18 +237,74 @@ def test_store_edit_excludes_itself_and_soft_delete_frees(tmp_path):
     s = st.Store(str(tmp_path / 'r.db'))
     a = s.save_garage_entry(_item(day='2026-03-01', odometer_km=100_000), 'qa')
     b = s.save_garage_entry(_item(day='2026-06-01', odometer_km=110_000), 'qa')
-    assert s.save_garage_entry(_item(day='2026-06-01', odometer_km=99_000, what='Ուղղված'), 'boss', a) == a  # правка a
+    assert s.save_garage_entry(_item(day='2026-06-01', odometer_km=109_000, what='Ուղղված'), 'boss', a) == a  # правка a
     with pytest.raises(st.GarageError):
         s.save_garage_entry(_item(day='2026-07-01', odometer_km=1), 'qa', b)
     assert s.delete_garage_entry(b, 'boss') is True and s.delete_garage_entry(b, 'boss') is False
     with pytest.raises(st.GarageError, match='չի գտնվել'):
         s.save_garage_entry(_item(), 'qa', b)                                     # удалённую не правят
-    s.save_garage_entry(_item(day='2026-07-01', odometer_km=100_500), 'qa')        # удалённая не мешает
+    s.save_garage_entry(_item(day='2026-07-01', odometer_km=109_500), 'qa')        # удалённая (110 000) не мешает
     live = s.garage_entries()
-    assert [(e.id, e.what, e.odometer_km, e.updated_by) for e in live if e.id == a] == [(a, 'Ուղղված', 99_000, 'boss')]
+    assert [(e.id, e.what, e.odometer_km, e.updated_by) for e in live if e.id == a] == [(a, 'Ուղղված', 109_000, 'boss')]
     assert b not in {e.id for e in live}
     gone = [e for e in s.garage_entries(deleted=True) if e.id == b]
     assert gone and gone[0].deleted_by == 'boss' and gone[0].deleted_at
+
+
+def test_store_odometer_rate_rejects_typos_and_names_neighbour(tmp_path):
+    """Спидометр правдоподобен: от ближайшего показания раньше, позже и того же дня — не больше 1 500 км в сутки (как
+    одометр APK; в один день — как за сутки). Лишний и потерянный разряд не принимаются и не запирают верные показания;
+    ошибка называет соседнюю запись и темп."""
+    s = st.Store(str(tmp_path / 'r.db'))
+    s.save_garage_entry(_item(day='2026-01-10', odometer_km=120_500), 'qa')
+    for day, km, rate in (('2026-09-10', 1_305_000, '4 874'), ('2026-01-10', 12_050, '108 450'),
+                          ('2026-01-09', 100_000, '20 500')):
+        with pytest.raises(st.GarageError) as e:
+            s.save_garage_entry(_item(day=day, odometer_km=km), 'qa')
+        assert e.value.errors == {'odometer_km': 'Ստուգեք սպիդոմետրը. 10.01.2026-ի 120 500 կմ-ի համեմատ սա օրական '
+                                                 f'{rate} կմ է (առավելագույնը՝ 1 500 կմ)'}, day
+    s.save_garage_entry(_item(day='2026-09-10', odometer_km=130_500), 'qa')            # верное — принято
+    s.save_garage_entry(_item(day='2026-09-20', odometer_km=131_000), 'qa')
+    s.save_garage_entry(_item(day='2026-09-22', odometer_km=134_000), 'qa')            # ровно 1 500 в сутки — можно
+    with pytest.raises(st.GarageError, match='օրական 1 501 կմ'):
+        s.save_garage_entry(_item(day='2026-09-23', odometer_km=135_501), 'qa')
+    with pytest.raises(st.GarageError, match='22.09.2026-ի 134 000'):
+        s.save_garage_entry(_item(day='2026-09-22', odometer_km=132_499), 'qa')        # в тот же день — 1 501
+    s.save_garage_entry(_item(day='2026-09-22', odometer_km=132_500), 'qa')
+    x = s.save_garage_entry(_item(day='2026-09-25', odometer_km=138_000), 'qa')
+    assert s.save_garage_entry(_item(day='2026-09-25', odometer_km=135_000), 'qa', x) == x   # правка — без себя
+    errors = s.save_garage_odometers([replace(_item(day='2026-09-30', odometer_km=1_350_000), kind='odometer',
+                                              what=None, amount_amd=0)], 'qa')
+    assert list(errors) == [0] and '25.09.2026-ի 135 000' in errors[0]               # и в таблице пробега
+
+
+def test_store_edit_keeps_previous_version(tmp_path):
+    """Правка не теряет денег: прежняя версия — удалённая строка с replaced_by (номер живой записи тот же); без изменений —
+    новой версии нет. Прежние версии не участвуют ни в расчёте, ни в проверке спидометра."""
+    s = st.Store(str(tmp_path / 'r.db'))
+    a = s.save_garage_entry(_item(day='2026-03-01', odometer_km=100_000, amount_amd=50_000), 'qa')
+    b = s.save_garage_entry(_item(day='2026-06-01', odometer_km=110_000), 'qa')
+    edited = _item(day='2026-03-02', odometer_km=100_100, amount_amd=55_000, what='Կոճղակներ')
+    assert s.save_garage_entry(edited, 'boss', a) == a and s.save_garage_entry(edited, 'boss', a) == a
+    old = [e for e in s.garage_entries(deleted=True) if e.replaced_by == a]
+    assert [(e.day, e.amount_amd, e.odometer_km, e.what, e.created_by, e.deleted_by, e.id != a) for e in old] == \
+        [(date(2026, 3, 1), 50_000, 100_000, 'Արգելակներ', 'qa', 'boss', True)] and old[0].deleted_at
+    live = {e.id: e for e in s.garage_entries()}
+    assert (live[a].amount_amd, live[a].day, live[a].replaced_by, set(live)) == (55_000, date(2026, 3, 2), None, {a, b})
+    s.save_garage_entry(_item(day='2026-06-01', odometer_km=105_000), 'boss', b)   # правка вниз: 110 000 — в истории
+    s.save_garage_entry(_item(day='2026-07-01', odometer_km=106_000), 'qa')        # прежняя версия не мешает
+    by_car = views._garage_by_car(s.garage_entries())
+    assert [e.odometer_km for e in by_car['CAR1']] == [100_100, 105_000, 106_000]
+    first = s.save_garage_odometers([replace(_item(day='2026-08-01', odometer_km=107_000), kind='odometer', what=None,
+                                             amount_amd=0)], 'qa')
+    again = s.save_garage_odometers([replace(_item(day='2026-08-01', odometer_km=107_500), kind='odometer', what=None,
+                                             amount_amd=0)], 'qa')
+    assert first == again == {}
+    hist = [e for e in s.garage_entries(deleted=True) if e.replaced_by is not None and e.kind == 'odometer']
+    assert [e.odometer_km for e in hist] == [107_000]                              # и у пробега того же дня
+    with closing(sqlite3.connect(s.path)) as conn, pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO garage_entry(car_code, day, kind, amount_amd, odometer_km, created_at, replaced_by) "
+                     "VALUES('CAR1', '2026-01-01', 'odometer', 0, 5, 'x', 1)")             # замена — только удалённой
 
 
 def test_store_one_odometer_per_car_day(tmp_path):
@@ -490,12 +560,13 @@ def test_overview_fleet_model_picks_garage_wear(client, monkeypatch):
 
 class _Facts:
     def __init__(self, refuels=None, fail=False):
-        self._refuels, self._fail = refuels or [], fail
+        self._refuels, self._fail, self.calls = refuels or [], fail, []
 
-    def refuels(self):
+    def refuels(self, since=''):
+        self.calls.append(since)
         if self._fail:
             raise RuntimeError('courier.db')
-        return self._refuels
+        return [r for r in self._refuels if r['at_utc'][:10] >= since]
 
 
 def _refuel(eid, car, at, km, superseded=False, eff=None):
@@ -505,9 +576,10 @@ def _refuel(eid, car, at, km, superseded=False, eff=None):
 
 def test_apk_odometers_reader(client):
     state = client.application.extensions['route_optimizer']
-    assert views._apk_odometers(state) == {}                                   # «Առաքիչ» не подключён
+    since = date(2024, 1, 1)
+    assert views._apk_odometers(state, since) == {}                            # «Առաքիչ» не подключён
     state.fleet_facts = _Facts(fail=True)
-    assert views._apk_odometers(state) == {}                                   # сбой чтения — без APK
+    assert views._apk_odometers(state, since) == {}                            # сбой чтения — без APK
     state.fleet_facts = _Facts([
         _refuel('a', 'CAR1', '2026-09-01T21:30:00+00:00', 10_000),            # 02.09 по Еревану
         _refuel('b', 'CAR1', '2026-09-05T08:00:00+00:00', 99_999, superseded=True),
@@ -516,9 +588,10 @@ def test_apk_odometers_reader(client):
         _refuel('e', 'CAR1', '2026-09-13T08:00:00+00:00', 900_000),           # опечатка — вне цепочки
         _refuel('f', 'CAR1', '2026-09-14T08:00:00+00:00', 11_100),
         _refuel('g', 'CAR2', '2026-09-14T08:00:00+00:00', 5_000)])
-    assert views._apk_odometers(state) == {'CAR1': [(date(2026, 9, 2), 10_000.0), (date(2026, 9, 12), 10_900.0),
-                                                    (date(2026, 9, 14), 11_100.0)],
-                                           'CAR2': [(date(2026, 9, 14), 5_000.0)]}
+    assert views._apk_odometers(state, since) == {'CAR1': [(date(2026, 9, 2), 10_000.0), (date(2026, 9, 12), 10_900.0),
+                                                           (date(2026, 9, 14), 11_100.0)],
+                                                  'CAR2': [(date(2026, 9, 14), 5_000.0)]}
+    assert state.fleet_facts.calls[-1] == '2024-01-01'                        # заправки — с дня since, а не все
 
 
 def test_apk_odometer_completes_garage_price(client, monkeypatch):
@@ -534,6 +607,25 @@ def test_apk_odometer_completes_garage_price(client, monkeypatch):
     prices = views._garage_prices(state, AS_OF)
     assert (prices['CAR1'].status, prices['CAR1'].price) == ('ready', 5.0) and 'CAR2' not in prices
     assert views._bundle(state).garage_wear == {'CAR1': 5.0}
+
+
+def test_dispatch_reads_journal_once_per_request(client, monkeypatch):
+    """«Развоз» берёт цену журнала на сегодня и на свой день — журнал и заправки читаются один раз на запрос;
+    следующий запрос читает заново (правка журнала видна сразу)."""
+    monkeypatch.setattr(views, '_clock', lambda: NOW)
+    _dispatch_setup(client, [_dorder(1, 101, 400.0)])
+    state = client.application.extensions['route_optimizer']
+    _ready_journal(state.store)
+    state.fleet_facts = _Facts([])
+    calls = []
+    real = state.store.garage_entries
+    monkeypatch.setattr(state.store, 'garage_entries', lambda deleted=False: calls.append(deleted) or real(deleted))
+    for _ in range(2):
+        calls.clear()
+        state.fleet_facts.calls.clear()
+        body = client.get(f'/api/routes/dispatch?date={DAY}').get_json()
+        assert calls == [False] and state.fleet_facts.calls == ['2024-01-01']
+        assert {t['car_code']: t['wear_source'] for t in body['trucks']}['CAR1'] == 'garage'
 
 
 # ============================== API журнала ==============================
@@ -586,6 +678,23 @@ def test_api_add_edit_delete_and_list(gclient):
     gone = [e for e in body['entries'] if e['id'] == first]
     assert gone and gone[0]['amount_amd'] == 95_000 and gone[0]['deleted_at'] and body['total_amd'] == 40_000
     assert c.get('/api/routes/garage').get_json()['admin'] is True
+
+
+def test_api_edit_history_and_login_names(gclient):
+    """Администратор в «удалённых» видит прежнюю версию изменённой записи (replaced_by); логины — только ему."""
+    c = gclient
+    first = _post(c, {'car_code': 'CAR1', 'day': '2026-09-01', 'kind': 'repair', 'what': 'Կոճղակներ', 'amount_amd': 85_000,
+                      'odometer_km': 120_500}).get_json()['id']
+    assert _post(c, {'id': first, 'car_code': 'CAR1', 'day': '2026-09-01', 'kind': 'repair', 'what': 'Կոճղակներ',
+                     'amount_amd': 95_000, 'odometer_km': 120_500}).status_code == 200
+    plain = c.get('/api/routes/garage/entries?deleted=1').get_json()['entries']
+    assert [(e['id'], e['amount_amd']) for e in plain] == [(first, 95_000)]
+    assert not {'created_by', 'updated_by', 'deleted_by'} & set(plain[0])
+    c.role['value'] = 'admin'
+    rows = c.get('/api/routes/garage/entries?deleted=1').get_json()
+    old = [e for e in rows['entries'] if e['replaced_by'] == first]
+    assert len(old) == 1 and old[0]['amount_amd'] == 85_000 and old[0]['deleted_at'] and rows['total_amd'] == 95_000
+    assert {'created_by', 'updated_by', 'deleted_by'} <= set(old[0])
 
 
 @pytest.mark.parametrize('body,field', [

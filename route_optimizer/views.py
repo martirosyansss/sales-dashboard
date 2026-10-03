@@ -20,7 +20,7 @@ from datetime import date, datetime, timedelta
 from functools import wraps
 from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
 
-from flask import Blueprint, Response, current_app, g, jsonify, render_template, request, session
+from flask import Blueprint, Response, current_app, g, has_app_context, jsonify, render_template, request, session
 
 from . import actuals as ac
 from . import dispatch as dp
@@ -203,14 +203,17 @@ def _bundle(state: RoutesState) -> Bundle:
     return _with_garage(state, bundle, _clock().date())
 
 
-def _apk_odometers(state: RoutesState) -> dict[str, list[tuple[date, float]]]:
-    """Одометр заправок из APK (контракт §7, courier.db): машина → [(день по Еревану, км)] — только действующие
-    заправки (исправленные — нет) с согласованным одометром (learning.odometer_plausible, как у расхода топлива).
-    Источника нет или чтение не удалось — пусто: журнал гаража считается без них, сбой — в журнал."""
+GARAGE_APK_YEARS = 2   # одометр APK для журнала гаража — с 1 января позапрошлого года: окно 365 дней + опора до него
+
+
+def _apk_odometers(state: RoutesState, since: date) -> dict[str, list[tuple[date, float]]]:
+    """Одометр заправок из APK (контракт §7, courier.db) с дня since: машина → [(день по Еревану, км)] — только
+    действующие заправки (исправленные — нет) с согласованным одометром (learning.odometer_plausible, как у расхода
+    топлива). Источника нет или чтение не удалось — пусто: журнал гаража считается без них, сбой — в журнал."""
     if state.fleet_facts is None:
         return {}
     try:
-        refuels = state.fleet_facts.refuels()
+        refuels = state.fleet_facts.refuels(since.isoformat())
     except Exception:
         logger.warning('[Routes] Заправки «Առաքիչ» не прочитаны — журнал гаража без одометра APK', exc_info=True)
         return {}
@@ -230,10 +233,25 @@ def _garage_by_car(entries: Sequence[Any]) -> dict[str, list[garage.Entry]]:
     return by_car
 
 
+def _garage_memo(key: Any, compute: Callable[[], Any]) -> Any:
+    """Один раз на запрос (g): «Развоз» берёт цену журнала и на сегодня (_bundle), и на свой день (_load_day) — журнал и
+    заправки читаются один раз. Вне контекста приложения — без запоминания."""
+    if not has_app_context():
+        return compute()
+    memo = g.setdefault('_garage_memo', {})
+    if key not in memo:
+        memo[key] = compute()
+    return memo[key]
+
+
 def _garage_prices(state: RoutesState, as_of: date) -> dict[str, garage.Price]:
-    """Ремонт ֏/км машин журнала гаража на as_of (garage.prices). Журнал пуст — пусто, заправки не читаются."""
-    by_car = _garage_by_car(state.store.garage_entries())
-    return garage.prices(by_car, as_of, _apk_odometers(state)) if by_car else {}
+    """Ремонт ֏/км машин журнала гаража на as_of (garage.prices). Журнал пуст — пусто, заправки не читаются; иначе —
+    заправки с 1 января (as_of, но не позже сегодня) − GARAGE_APK_YEARS лет, а не все."""
+    by_car = _garage_memo('entries', lambda: _garage_by_car(state.store.garage_entries()))
+    if not by_car:
+        return {}
+    since = date(min(as_of, _clock().date()).year - GARAGE_APK_YEARS, 1, 1)
+    return garage.prices(by_car, as_of, _garage_memo(('apk', since), lambda: _apk_odometers(state, since)))
 
 
 def _with_garage(state: RoutesState, bundle: Bundle, as_of: date) -> Bundle:
@@ -2394,7 +2412,7 @@ def api_garage() -> Any:
     bundle = state.store.load()
     entries = state.store.garage_entries()
     by_car = _garage_by_car(entries)
-    apk = _apk_odometers(state) if by_car else {}
+    apk = _apk_odometers(state, date(today.year - GARAGE_APK_YEARS, 1, 1)) if by_car else {}
     prices = garage.prices(by_car, today, apk)
     used = garage.effective(prices)
     trucks, summary = [], []
@@ -2419,7 +2437,8 @@ def api_garage() -> Any:
 @_api
 def api_garage_entries() -> Any:
     """Записи журнала, новые первыми: ?car= — машина, ?month=YYYY-MM — месяц, ?deleted=1 — и удалённые (только
-    администратору). total_amd — сумма живых записей отбора."""
+    администратору; прежние версии изменённых записей — с replaced_by). total_amd — сумма живых записей отбора. Кто
+    внёс, изменил, удалил (логины) — только администратору."""
     state = _state()
     car, month = request.args.get('car') or '', request.args.get('month') or ''
     if month and not _MONTH_RE.match(month):
@@ -2427,7 +2446,10 @@ def api_garage_entries() -> Any:
     found = [e for e in state.store.garage_entries(deleted=_garage_admin() and request.args.get('deleted') == '1')
              if (not car or e.car_code == car) and (not month or e.day.isoformat()[:7] == month)]
     found.sort(key=lambda e: (e.day, e.id), reverse=True)
-    return jsonify({'success': True, 'entries': [e.to_json() for e in found],
+    rows = [e.to_json() for e in found]
+    if not _garage_admin():   # логины пользователей — только администратору
+        rows = [{k: v for k, v in r.items() if k not in ('created_by', 'updated_by', 'deleted_by')} for r in rows]
+    return jsonify({'success': True, 'entries': rows,
                     'total_amd': sum(e.amount_amd for e in found if e.deleted_at is None)})
 
 
