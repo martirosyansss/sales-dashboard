@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
 
 from . import fleet as fl
 from . import vrp
-from .geo import Coord, Point, in_polygon
+from .geo import ERP_GPS_MAX_GAP_KM, Coord, Point, in_polygon
 from .running_costs import configured
 from .vehicle_access import VehicleAccess
 
@@ -810,8 +810,8 @@ def _trip_explain(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, truc
     limit = (fl.load_limit(kgs, [_central(ctx, routable[c]) for c in cids], [_allowed_trucks(ctx, c) for c in cids],
                            truck, sel) if truck is not None else None)
     bypass_km, bypass_legs = _bypass_km(ctx, [routable[c].point for c in cids])
-    heavy = (truck is not None and len(cids) == 1 and limit > fl.LOAD_CAP * truck.capacity_kg + _EPS
-             and kg > fl.LOAD_CAP * truck.capacity_kg + _EPS)
+    heavy = (truck is not None and limit is not None and len(cids) == 1
+             and limit > fl.LOAD_CAP * truck.capacity_kg + _EPS and kg > fl.LOAD_CAP * truck.capacity_kg + _EPS)
     return {
         'loading_min': _r(parts['loading']), 'drive_min': _r(math.fsum(x for x, _, _ in legs)),
         'unload_min': _r(math.fsum(x for _, _, x in legs)), 'wait_min': _r(math.fsum(x for _, x, _ in legs)),
@@ -831,7 +831,8 @@ def _day_explain(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft, se
                  trips_of: Mapping[str, int]) -> dict[str, Any]:
     """Что учитывает расчёт дня («Ինչ է հաշվի առել հաշվարկը» на странице): машины дня (с действующим расходом),
     магазины в центре, с окном приёма и с допуском машин, предел загрузки и выравнивание загрузки (fleet._balance),
-    закреплённые рейсы, нормы загрузки и разгрузки, решатель и ctx.model (дороги, минуты, выученные нормы — views._dispatch_ctx)."""
+    закреплённые рейсы, нормы загрузки и разгрузки (загрузка — те же числа, что у tn.load), правило точки магазина
+    (ERP дальше ERP_GPS_MAX_GAP_KM от GPS менеджера — GPS), решатель и ctx.model (дороги, минуты, выученные нормы — views._dispatch_ctx)."""
     tn = ctx.tn
     return {
         'trucks': [{'car_code': x.car_code, 'name': x.name, 'capacity_kg': x.capacity_kg, 'l100': _r(x.l100),
@@ -849,19 +850,20 @@ def _day_explain(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft, se
         'unload_min_per_stop': tn.unload_min_per_stop, 'unload_min_per_tonne': tn.unload_min_per_tonne,
         'unload_stores': sum(1 for s in routable.values() if s.point in tn.unload_extra),
         'loading_fixed_min': tn.warehouse_load_fixed_min, 'loading_min_per_tonne': tn.warehouse_load_min_per_tonne,
-        'loading_configured': tn.loading_configured,
+        'erp_gps_gap_km': ERP_GPS_MAX_GAP_KM,
         'solver': vrp.available(), 'solver_iterations': vrp.ITERATIONS,
         'model': dict(ctx.model),
     }
 
 
 def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
-              info: Callable[[Stop], dict[str, Any]]) -> dict[str, Any]:
+              info: Callable[[Stop], dict[str, Any]], explain: bool = True) -> dict[str, Any]:
     """Рейсы черновика с цифрами по текущим заказам: машины → рейсы по порядку (выезд, возвращение,
     км, литры, загрузка), точки по порядку; «ещё не в рейсах»; «не помещается». Время — рейсы машины
     подряд с ожиданием у окон приёма; у точки — прибытие (eta), вне окна (window_miss — бывает после правки
     логиста), в центре (center) и в центре на машине без права въезда (center_miss). Пояснение «почему так» — у рейса
-    explain (_trip_explain), у дня — explain (_day_explain): только цифры того же расчёта, текст строит страница."""
+    explain (_trip_explain), у дня — explain (_day_explain): только цифры того же расчёта, текст строит страница;
+    explain=False — без них (км до правки, прогноз для «план — факт»: литры других машин и объезд не нужны)."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
     shares = _shares(draft.trips)
@@ -885,13 +887,15 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
         slot['used'] = depart + minutes
         revenue = math.fsum(routable[c].revenue / shares[c] for c in cids)
         marks = []
-        # у точки — и слагаемые её времени (езда от предыдущей точки, ожидание окна, разгрузка), запас до конца окна
+        # у точки — и слагаемые её времени (езда от предыдущей точки, ожидание окна, разгрузка), приезд (eta минус
+        # ожидание окна) и запас до конца окна
         for c, at, (drive, wait, unload) in zip(cids, arrivals, parts[t.id]['legs']):
             central = _central(ctx, routable[c])
             late = _span(ctx, c)[1]
             marks.append({'eta': _hhmm(ctx.work_start_min + at), 'window_miss': at > late + _EPS,
                           'center': central, 'center_miss': central and not (truck is not None and truck.center_ok),
                           'vehicle_miss': not _vehicle_ok(ctx, c, t.truck),
+                          'arrive': _hhmm(ctx.work_start_min + at - wait),   # приехал; eta — начало разгрузки
                           'drive_min': _r(drive), 'wait_min': _r(wait), 'unload_min': _r(unload),
                           'margin_min': _r(late - at) if math.isfinite(late) else None})
         tj = {
@@ -919,8 +923,9 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
             'window_miss': sum(1 for x in marks if x['window_miss']),
             'center_miss': sum(1 for x in marks if x['center_miss']),
             'vehicle_miss': sum(1 for x in marks if x['vehicle_miss']),
-            'explain': _trip_explain(ctx, sel, t.truck, truck, cids, routable, kgs, parts[t.id], free, depart, minutes),
         }
+        if explain:
+            tj['explain'] = _trip_explain(ctx, sel, t.truck, truck, cids, routable, kgs, parts[t.id], free, depart, minutes)
         slot['trips'].append(tj)
         trips_json.append(tj)
     trucks_json = []
@@ -983,7 +988,8 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
                      'kg_no_coords': round(math.fsum(s.kg for s in missing_coords)),
                      'revenue_no_coords': round(math.fsum(s.revenue for s in missing_coords)),
                      'complete': not missing_coords and not unassigned},
-        'explain': _day_explain(ctx, routable, draft, sel, {c: len(s['trips']) for c, s in per_truck.items()}),
+        **({'explain': _day_explain(ctx, routable, draft, sel, {c: len(s['trips']) for c, s in per_truck.items()})}
+           if explain else {}),
     }
 
 

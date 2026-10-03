@@ -905,24 +905,26 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
                          float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']),
                          {cid: w.span() for cid, w in bundle.windows.items()}, zone,
                          vehicle_access=bundle.vehicle_access,
-                         model=_model_note(s, calib, norms, eff, [p for p in points if p is not None]))
+                         model=_model_note(s, calib, norms, eff, [p for p in points if p is not None], trucks))
 
 
 def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, eff: learning.InEffect,
-                points: Sequence[Point]) -> dict[str, Any]:
-    """Что учитывает расчёт «Развоза» — для пояснения на странице («Ինչ է հաշվի առել հաշվարկը»), в расчёте не участвует:
-    км участков (граф OSM, Valhalla или по прямой × извилистость; точек дальше 0,5 км от дороги), объезд малого центра,
-    минуты (скорость зоны, Valhalla или Яндекс), скорости зон и их источник, часовой профиль по GPS менеджеров и
-    действующие выученные нормы (_with_learned)."""
+                points: Sequence[Point], trucks: Mapping[str, fl.FleetTruck]) -> dict[str, Any]:
+    """Что учитывает расчёт «Развоза» — для пояснения на странице («Ի՞նչ է հաշվի առնված հաշվարկում»), в расчёте не
+    участвует: км участков — как их берёт Norms.km (Яндекс, Valhalla, граф OSM или по прямой × извилистость), сколько точек
+    считается по прямой (_straight_points), объезд малого центра, минуты (скорость зоны, Valhalla или Яндекс), скорости
+    зон и их источник, часовой профиль по GPS менеджеров и действующие выученные нормы (_with_learned; расход — только
+    у машин расчёта)."""
     roads = norms.roads
     osm = roads.fallback if isinstance(roads, ValhallaRoads) else roads
     source = 'straight' if roads is None or roads.failed else roads.km_source
-    km = source if source in ('osm', 'straight') else 'valhalla'
+    # Norms.km сначала спрашивает поставщика (Яндекс): его км, у кого их нет — дороги
+    km = 'yandex' if norms.provider is not None else source if source in ('osm', 'straight') else 'valhalla'
     road = evaluate.road_norms(s, calib)
     report = norms.traffic.report if norms.traffic is not None else {}
     return {
         'km': km, 'detour': norms.detour,
-        'unsnapped': roads.unsnapped(points) if km != 'straight' else None, 'snap_km': SNAP_MAX_KM,
+        'unsnapped': _straight_points(roads, points) if km in ('osm', 'valhalla') else None, 'snap_km': SNAP_MAX_KM,
         'bypass': isinstance(osm, CenterBypassRoads) and not osm.failed and not osm.bypass.failed,
         'minutes': ('yandex' if norms.provider is not None else
                     'valhalla' if isinstance(roads, ValhallaRoads) and roads.serves_minutes else 'zones'),
@@ -930,8 +932,17 @@ def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, e
         'speed_region_kmh': norms.speed_region_kmh, 'speed_region_source': road['speed_region_kmh'][1],
         'hourly_gps': report.get('source') == 'historical_gps',
         'learned': {'travel': bool(eff.travel), 'unload': bool(eff.unload), 'loading': bool(eff.loading),
-                    'fuel': sorted(eff.fuel or ())},
+                    'fuel': sorted(c for c in (eff.fuel or ()) if c in trucks)},
     }
+
+
+def _straight_points(roads: RoadDistances | CenterBypassRoads | ValhallaRoads, points: Sequence[Point]) -> int:
+    """Точки дня дальше SNAP_MAX_KM от дороги — их участки Norms.km считает по прямой × извилистость. У Valhalla точка без
+    своей привязки берёт км графа OSM (запасной путь) — по прямой, только если не привязана и к нему."""
+    fallback = roads.fallback if isinstance(roads, ValhallaRoads) else None
+    if fallback is None or fallback.failed:
+        return roads.unsnapped(points)
+    return sum(1 for p in {p for p in points if p is not None} if roads.unsnapped([p]) and fallback.unsnapped([p]))
 
 
 @dataclass
@@ -1279,7 +1290,7 @@ def _dispatch_request() -> tuple[Any, Any, Any]:
 
 
 def _capture_prediction(dd, draft):
-    view = dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd))
+    view = dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd), explain=False)
     now = _clock()
     start = datetime.combine(dd.day, datetime.strptime(dd.bundle.settings['truck_work_start'], '%H:%M').time())
     # depart/return — выезд первого рейса и возвращение последнего (HH:MM): «время работы» отчёта «план — факт»;
@@ -1352,7 +1363,7 @@ def api_dispatch_edit() -> Any:
     if payload.get('rev') != dd.rev:
         return _conflict('План изменили в другой вкладке — обновите страницу')
     info = _stop_info(dd)
-    km_before = dp.plan_view(dd.ctx, dd.stops, dd.draft, info)['summary']['km']
+    km_before = dp.plan_view(dd.ctx, dd.stops, dd.draft, info, explain=False)['summary']['km']
     workdays = bundle.settings['workdays']
     deferred_before = set(dd.draft.deferred)
     try:

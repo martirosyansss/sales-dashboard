@@ -14,7 +14,7 @@
    словарём SERVER_HY; незнакомый текст показывается как есть.
    Интерфейс «для чайников»: вверху «Ի՞նչ անել հիմա» — одна подсказка и главная кнопка по состоянию дня;
    рейсы — простой список, как лист водителя; правки — по кнопке «Փոփոխել» у рейса.
-   Под строкой выбранного на карте — «почему так» (ответ владельца №49): рейс, машина или весь день — по цифрам
+   Под картой — «почему так» про выбранное над ней (ответ владельца №49): рейс, машина или весь день — по цифрам
    explain из ответа дня (dispatch.plan_view), без утверждений, которых расчёт не делает. */
 (function () {
     'use strict';
@@ -1416,7 +1416,7 @@
             lg.lastChild.textContent = 'դեռ երթում չէ՝ ' + plan.unassigned.length;
             box.appendChild(lg);
         }
-        // что выбрано — одной строкой: время, точки, кг, км; под ней — «почему так» (renderWhy)
+        // что выбрано — одной строкой: время, точки, кг, км; под картой — «почему так» (renderWhy)
         const note = $('dpMapFocus');
         const t = f && plan.trucks.find(x => x.car_code === f.truck);
         note.hidden = !t;
@@ -1445,17 +1445,19 @@
         box.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' });
     }
 
-    // ---------- «Почему так» под строкой выбранного на карте (ответ владельца №49) ----------
-    // Сервер даёт только цифры того же расчёта (plan_view: explain у рейса и у дня; у точки — минуты езды от предыдущей,
-    // разгрузки, ожидания и запас до конца окна); слова — здесь, короткими фразами. Чего расчёт не знает — не пишем.
+    // ---------- «Почему так» под картой выбранного (ответ владельца №49) ----------
+    // Сервер даёт только цифры того же расчёта (plan_view: explain у рейса и у дня; у точки — приезд, минуты езды от
+    // предыдущей, ожидания окна, разгрузки и запас до конца окна); слова — здесь, короткими фразами. Чего расчёт не знает —
+    // не пишем.
     const KM_SRC = {
-        osm: 'ըստ ճանապարհային քարտեզի (OpenStreetMap)՝ միակողմանի փողոցները հաշվի առնելով',
+        osm: 'ըստ ճանապարհային քարտեզի (OpenStreetMap)՝ հաշվի առնելով միակողմանի երթևեկությունը',
         valhalla: 'ըստ Valhalla-ի ճանապարհների՝ բեռնատարի համար',
+        yandex: 'ըստ Յանդեքսի ճանապարհների',
     };
-    const SPEED_SRC = { gps: 'մենեջերների GPS-ից', manual: 'կարգավորումներից', default: 'ստանդարտ արժեք' };
+    const SPEED_SRC = { gps: 'մենեջերների GPS-ից', manual: 'կարգավորումներից', default: 'լռելյայն արժեք' };
     const REASON_HY = {
-        capacity: (o) => 'փոքր է՝ տանում է մինչև ' + kgText(o.capacity_kg),
-        load_cap: (o, cap) => 'բեռը կլինի ' + o.load_pct + '%, իսկ կանոնը՝ մինչև ' + cap + '%',
+        capacity: (o) => 'փոքր է, տանում է մինչև ' + kgText(o.capacity_kg),
+        load_cap: (o, cap) => 'բեռնվածությունը կլիներ ' + o.load_pct + '%, իսկ կանոնը՝ առավելագույնը ' + cap + '%',
         center: () => 'կենտրոն չի մտնում',
         vehicle: (o) => pl(o.vehicle_denied, 'խանութ') + ' այն չի ընդունում',
     };
@@ -1481,8 +1483,17 @@
         for (let n = order.length - 1; left < 0 && n >= 0; n--) if (out[order[n]] > 0) { out[order[n]]--; left++; }
         return out;
     }
+    // Минуты рейса: загрузка, в пути, разгрузка, ожидание окон — целыми, в сумме ровно «загрузка → возвращение» по часам
+    function tripTime(tr) {
+        const x = tr.explain, begin = clockMin(tr.loading_start), back = clockMin(tr.return);
+        const total = begin !== null && back !== null ? back - begin : Math.round(x.loading_min + x.drive_min + x.unload_min + x.wait_min);
+        const [loading, drive, unload, wait] = roundParts([x.loading_min, x.drive_min, x.unload_min, x.wait_min], total);
+        return { total, loading, drive, unload, wait };
+    }
+    // Км по прямой бывают и с картой: карта не загрузилась — пишем, что её нет; иначе — что объезд не посчитан
+    const noBypass = (model) => (model.km === 'straight' ? 'ճանապարհային քարտեզը հասանելի չէ' : 'շրջանցման հաշվարկը հասանելի չէ');
     function kmSource(model) {
-        if (model.km === 'straight') return 'ուղիղ գծով × ' + fmt(model.detour, 2) + '՝ ճանապարհային քարտեզ չկա';
+        if (model.km === 'straight') return 'ուղիղ գծով × ' + fmt(model.detour, 2) + '՝ ճանապարհային քարտեզը հասանելի չէ';
         return KM_SRC[model.km] || '';
     }
     function whyFold(key, title, openByDefault) {
@@ -1530,13 +1541,13 @@
     }
     // Другая машина дня на этот же рейс: может ли (тоннаж, 90%, центр, допуск магазина) и сколько литров вышло бы
     function otherText(plan, tr, o, cap) {
-        if (o.reasons.length) return truckLabel(o) + '՝ չի կարող՝ ' + o.reasons.map(r => (REASON_HY[r] ? REASON_HY[r](o, cap) : r)).join('; ') + '։';
+        if (o.reasons.length) return truckLabel(o) + ' — չի կարող (' + o.reasons.map(r => (REASON_HY[r] ? REASON_HY[r](o, cap) : r)).join('; ') + ')։';
         const d = num(o.liters) !== null && num(tr.liters) !== null ? o.liters - tr.liters : null;
-        const diff = d === null ? '' : Math.abs(d) < 0.05 ? ' (նույնքան)' : ' (' + fmt(Math.abs(d), 1) + NB + 'լ-ով ' + (d < 0 ? 'քիչ' : 'շատ') + ')';
+        const diff = d === null ? '' : Math.abs(d) < 0.05 ? ' (նույնքան)' : ' (' + fmt(Math.abs(d), 1) + NB + 'լ-ով ' + (d < 0 ? 'պակաս' : 'ավելի') + ')';
         const own = plan.trucks.find(p => p.car_code === o.car_code);
         const n = own ? own.trips.length : 0;
-        return truckLabel(o) + '՝ կարող էր տանել՝ ≈ ' + fmt(o.liters, 1) + NB + 'լ դիզել' + diff + '։ '
-            + (n ? 'Այդ օրը այն ունի իր ' + pl(n, 'երթ') + 'ը։' : 'Այդ օրը այն երթ չունի։');
+        return truckLabel(o) + ' — կարող էր տանել ≈ ' + fmt(o.liters, 1) + NB + 'լ դիզելով' + diff + '։ '
+            + (n ? 'Այս օրն այն արդեն ունի ' + pl(n, 'երթ') + '։' : 'Այս օրն այն երթ չունի։');
     }
     function whyTrip(plan, t, tr, i) {
         const x = tr.explain, day = plan.explain, model = day.model || {}, d = state.data;
@@ -1554,35 +1565,31 @@
         else {
             truck.push('Մյուս նշված մեքենաները՝ նույն կետերով, նույն հերթականությամբ՝');
             x.others.forEach(o => truck.push('• ' + otherText(plan, tr, o, x.load_cap_pct)));
-            truck.push('Ծրագիրը կազմում է ամբողջ օրվա երթերը միասին, ոչ թե յուրաքանչյուր երթը առանձին․ մյուս մեքենան կարող է զբաղված լինել իր երթերով։');
+            truck.push('Ծրագիրը կազմում է ամբողջ օրվա երթերը միասին, ոչ թե յուրաքանչյուր երթն առանձին․ մյուս մեքենան կարող է զբաղված լինել իր երթերով։');
         }
-        const load = [kgText(tr.kg) + (tr.load_pct !== null ? '՝ մեքենան լցված է ' + tr.load_pct + '%-ով' : '') + ' (կանոնը՝ մինչև ' + x.load_cap_pct + '%)։'];
+        const load = [kgText(tr.kg) + (tr.load_pct !== null ? '՝ մեքենան լցված է ' + tr.load_pct + '%-ով' : '') + ' (կանոնը՝ առավելագույնը ' + x.load_cap_pct + '%)։'];
         if (tr.over_capacity) load.push('Բեռը մեքենայի տոննաժից ավելի է։');
-        else if (x.heavy_alone) load.push('Մեկ պատվերն ինքնին ' + x.load_cap_pct + '%-ից ծանր է, ուստի գնում է առանձին երթով՝ կանոնը դա թույլ է տալիս։');
+        else if (x.heavy_alone) load.push('Պատվերն ինքնին ծանր է ամենամեծ հարմար մեքենայի տոննաժի ' + x.load_cap_pct + '%-ից, ուստի գնում է առանձին երթով՝ կանոնը դա թույլ է տալիս։');
         else if (x.over_limit) load.push('Բեռը ' + x.load_cap_pct + '%-ից ավելի է։');
         tr.stops.filter(s => s.share > 1).forEach(s => load.push(storeName(s) + '-ի պատվերը մեծ է և տարվում է ' + s.share + ' երթով, այստեղ՝ 1/' + s.share + ' մասը։'));
         const src = kmSource(model);
         const road = ['≈ ' + fmt(tr.km, 1) + NB + 'կմ' + (src ? '՝ ' + src : '') + '։ Կետերի հերթականությունը՝ ինչպես քարտեզի թվերը։'];
-        // время: слагаемые в сумме — ровно «загрузка → возвращение» по часам
-        const begin = clockMin(tr.loading_start), back = clockMin(tr.return);
-        const total = begin !== null && back !== null ? back - begin : Math.round(x.loading_min + x.drive_min + x.unload_min + x.wait_min);
-        const [a, b, c, w] = roundParts([x.loading_min, x.drive_min, x.unload_min, x.wait_min], total);
-        const bits = [];
-        if (a) bits.push('բեռնում պահեստում՝ ' + minText(a));
-        bits.push('ճանապարհին՝ ' + minText(b), 'բեռնաթափում՝ ' + minText(c));
-        if (w) bits.push('սպասում ընդունման ժամերին՝ ' + minText(w));
-        const time = [capFirst(bits.join(', ')) + '։ Ընդամենը՝ ' + minText(total) + ' (' + tr.loading_start + ' → ' + tr.return + ')։'];
-        if (x.idle_before_min >= 1) time.push((a ? 'Բեռնումը սկսվում է ' + tr.loading_start : 'Մեքենան մեկնում է ' + tr.depart)
-            + '-ին, ոչ ավելի շուտ, որպեսզի առաջին խանութ հասնի նրա ընդունման ժամին և չսպասի։');
-        if (i < t.trips.length - 1) time.push('Հետո նույն մեքենան գնում է երթ ' + (i + 2) + '։');
+        const tt = tripTime(tr), bits = [];
+        if (tt.loading) bits.push('բեռնում պահեստում՝ ' + minText(tt.loading));
+        bits.push('ճանապարհին՝ ' + minText(tt.drive), 'բեռնաթափում՝ ' + minText(tt.unload));
+        if (tt.wait) bits.push('ընդունման ժամի սպասում՝ ' + minText(tt.wait));
+        const time = [capFirst(bits.join(', ')) + '։ Ընդամենը՝ ' + minText(tt.total) + ' (' + tr.loading_start + ' → ' + tr.return + ')։'];
+        if (x.idle_before_min >= 1) time.push((tt.loading ? 'Բեռնումը սկսվում է ' + tr.loading_start : 'Մեքենան մեկնում է ' + tr.depart)
+            + '-ին, ոչ ավելի շուտ, որպեսզի մեքենան առաջին խանութ հասնի դրա ընդունման ժամի սկզբին և չսպասի։');
+        if (i < t.trips.length - 1) time.push('Դրանից հետո նույն մեքենան կատարում է ' + (i + 2) + '-րդ երթը։');
         else if (x.end_slack_min >= -0.5) time.push('Մինչև աշխատանքային օրվա ավարտը (' + d.work_end + ') մնում է ' + minText(x.end_slack_min) + '։');
         else time.push('Վերադառնում է աշխատանքային օրվա ավարտից (' + d.work_end + ') ' + minText(-x.end_slack_min) + ' ուշ'
-            + (d.overtime_ok ? '՝ արտաժամյա, թույլատրված է մինչև ' + d.overtime_end + '-ը' : '') + '։');
+            + (d.overtime_ok ? '․ արտաժամյա աշխատանքը թույլատրված է մինչև ' + d.overtime_end + '-ը' : '') + '։');
         const fuel = [];
         if (tr.liters !== null) {
             fuel.push(tr.fuel_load_configured && x.fuel_empty_l100 !== null
-                ? '≈ ' + fmt(tr.liters, 1) + NB + 'լ՝ դատարկ մեքենան ծախսում է ' + fmt(x.fuel_empty_l100, 1) + NB + 'լ/100' + NB + 'կմ, լիքը՝ '
-                    + fmt(x.fuel_full_l100, 1) + NB + 'լ/100' + NB + 'կմ, հաշվված է յուրաքանչյուր հատվածում մնացած բեռով։'
+                ? '≈ ' + fmt(tr.liters, 1) + NB + 'լ՝ դատարկ մեքենան ծախսում է ' + fmt(x.fuel_empty_l100, 1) + NB + 'լ/100' + NB + 'կմ, լրիվ բեռնված՝ '
+                    + fmt(x.fuel_full_l100, 1) + NB + 'լ/100' + NB + 'կմ, հաշվարկված է ըստ յուրաքանչյուր հատվածում մնացած բեռի։'
                 : '≈ ' + fmt(tr.liters, 1) + NB + 'լ = ' + fmt(tr.km, 1) + NB + 'կմ × ' + fmt(x.l100, 1) + NB + 'լ/100' + NB + 'կմ։');
             if (model.learned && (model.learned.fuel || []).includes(t.car_code)) fuel.push('Նորմը սովորած է այս մեքենայի լիցքավորումներից։');
         }
@@ -1592,34 +1599,38 @@
             const n = tr.stops.filter(s => s.center).length;
             center.push(t.center_ok ? 'Մեքենան կարող է մտնել կենտրոն՝ ' + (n ? 'երթում կենտրոնի ' + pl(n, 'խանութ') + ' կա։' : 'երթում կենտրոնի խանութ չկա։')
                 : n ? 'Երթում կենտրոնի ' + pl(n, 'խանութ') + ' կա, իսկ այս մեքենան չի կարող մտնել կենտրոն։' : 'Մեքենան կենտրոն չի մտնում, և երթում կենտրոնի խանութ չկա։');
-            if (model.bypass === false) center.push('Ճանապարհի շրջանցումը չի հաշվվել՝ ճանապարհային քարտեզ չկա։');
+            if (model.bypass === false) center.push('Կենտրոնի շրջանցումը չի հաշվվել՝ ' + noBypass(model) + '։');
             else if (x.bypass_legs) center.push('Կենտրոնից դուրս կետերի միջև ճանապարհը շրջանցում է կենտրոնը՝ +' + fmt(x.bypass_km, 1) + NB + 'կմ ('
                 + pl(x.bypass_legs, 'հատված') + ')։ Առանց շրջանցման կլիներ ≈ ' + fmt(tr.km - x.bypass_km, 1) + NB + 'կմ։');
             else if (model.bypass) center.push('Կենտրոնից դուրս կետերի միջև ճանապարհը շրջանցում է կենտրոնը՝ այս երթում դա կիլոմետր չի ավելացրել։');
         }
         const win = tr.stops.filter(s => windowText(s.window));
         const windows = [];
-        if (!win.length) windows.push('Այս երթի խանութներից ոչ մեկը ընդունման ժամ չունի։');
+        if (!win.length) windows.push('Այս երթի խանութներից ոչ մեկն ընդունման ժամ չունի։');
         else {
             const miss = win.filter(s => s.window_miss).length;
-            windows.push(pl(win.length, 'խանութ') + ' ունի ընդունման ժամ՝ ' + (miss ? miss + '-ին չենք հասցնում։' : 'բոլորին հասնում ենք ժամանակին։'));
+            windows.push(pl(win.length, 'խանութ') + ' ունի ընդունման ժամ՝ '
+                + (miss ? 'դրանցից ' + pl(miss, 'խանութ') + ' ժամանակին չենք հասնում։' : 'բոլորին հասնում ենք ժամանակին։'));
             const tight = win.filter(s => !s.window_miss && num(s.margin_min) !== null).sort((p, q) => p.margin_min - q.margin_min)[0];
-            if (tight) windows.push('Ամենաքիչ պաշարը ' + storeName(tight) + '-ում է՝ ' + minText(tight.margin_min) + ' (' + windowText(tight.window) + ', ժամանում ≈ ' + tight.eta + ')։');
+            if (tight) windows.push('Ամենաքիչ պաշարը ' + storeName(tight) + '-ում է՝ ' + minText(tight.margin_min) + ' (' + windowText(tight.window)
+                + ', բեռնաթափումը սկսվում է ≈ ' + tight.eta + ')։');
             const waited = tr.stops.filter(s => s.wait_min >= 0.5);
-            if (waited.length) windows.push('Վաղ հասնելու դեպքում մեքենան սպասում է՝ ' + waited.map(s => storeName(s) + ' — ' + minText(s.wait_min)).join(', ') + '։');
+            if (waited.length) windows.push('Մեքենան շուտ է հասնում և սպասում է․ ' + waited.map(s => storeName(s) + ' — ' + minText(s.wait_min)).join(', ') + '։');
         }
         const cnt = {};
         tr.stops.forEach(s => { cnt[s.coord_source] = (cnt[s.coord_source] || 0) + 1; });
-        const quality = ['Խանութների կետերը՝ ' + ['manual', 'driver', 'erp', 'gps'].filter(k => cnt[k]).map(k => COORD_HY[k][1] + '՝ ' + cnt[k]).join(', ') + '։'];
+        const quality = ['Խանութների կետերի աղբյուրը․ ' + ['manual', 'driver', 'erp', 'gps'].filter(k => cnt[k]).map(k => COORD_HY[k][1] + ' — ' + cnt[k]).join(', ') + '։'];
+        const title = 'Ինչո՞ւ է այս երթն այսպիսին';
         const box = document.createElement('section');
-        box.setAttribute('aria-label', 'Ինչու է այս երթը այսպես');
-        box.append(whyTitle('Ինչու է այս երթը այսպես'), whyList([['Մեքենա', truck], ['Բեռ', load], ['Ճանապարհ', road], ['Ժամանակ', time],
+        box.setAttribute('aria-label', title);
+        box.append(whyTitle(title), whyList([['Մեքենա', truck], ['Բեռ', load], ['Ճանապարհ', road], ['Ժամանակ', time],
             ['Դիզել', fuel], ['Կենտրոն', center], ['Ընդունման ժամեր', windows], ['Տվյալների որակ', quality]]));
-        return [box, whyStops(tr, x)];
+        return [box, whyStops(tr, tr.explain)];
     }
-    // Время по точкам: прибытие, езда от предыдущей точки, разгрузка, ожидание, окно приёма; последняя строка — склад
+    // Время по точкам. «Ժամանում» — когда машина подъехала (arrive); ждёт окна — «Սպասում» до начала разгрузки, это и есть
+    // eta в листе рейса («ժամանում ≈ …» у точки — начало разгрузки, по нему проверяется окно приёма)
     function whyStops(tr, x) {
-        const fold = whyFold('stops:' + tr.id, 'Ժամանակը ըստ կետերի', false);
+        const fold = whyFold('stops:' + tr.id, 'Ժամանակն ըստ կետերի', false);
         const body = document.createElement('div');
         body.className = 'dp-why-body';
         if (x.loading_min >= 0.5) {
@@ -1627,7 +1638,7 @@
             p.textContent = 'Բեռնում պահեստում՝ ' + tr.loading_start + ' → ' + tr.depart + ' (' + minText(x.loading_min) + ')։';
             body.appendChild(p);
         }
-        const heads = ['Խանութ', 'Ժամանում', 'Ճանապարհ, րոպե', 'Բեռնաթափում, րոպե', 'Սպասում, րոպե', 'Ընդունման ժամ'];
+        const heads = ['Խանութ', 'Ժամանում', 'Ճանապարհ, րոպե', 'Սպասում, րոպե', 'Բեռնաթափում, րոպե', 'Ընդունման ժամ'];
         const table = document.createElement('table');
         table.className = 'dp-why-table';
         table.innerHTML = '<thead><tr></tr></thead><tbody></tbody>';
@@ -1642,7 +1653,8 @@
             });
             table.tBodies[0].appendChild(r);
         };
-        tr.stops.forEach((s, k) => row([(k + 1) + '. ' + (s.name || s.code), s.eta, fmt(s.drive_min), fmt(s.unload_min), fmt(s.wait_min), windowText(s.window) || '—']));
+        tr.stops.forEach((s, k) => row([(k + 1) + '. ' + (s.name || s.code), s.arrive || s.eta, fmt(s.drive_min),
+            s.wait_min >= 0.5 ? fmt(s.wait_min) + ' (մինչև ' + s.eta + ')' : '0', fmt(s.unload_min), windowText(s.window) || '—']));
         row(['Վերադարձ պահեստ', tr.return, fmt(x.back_min), '', '', '']);
         const wrap = document.createElement('div');
         wrap.className = 'dp-why-scroll';   // на телефоне таблица прокручивается в своей рамке, страница — нет
@@ -1651,14 +1663,15 @@
         fold.appendChild(body);
         return fold;
     }
-    // Машина с несколькими рейсами: строка на рейс и итог дня машины
+    // Машина с несколькими рейсами: строка на рейс (минуты — в сумме «загрузка → возвращение») и итог дня машины
     function whyTruck(t) {
         const trips = t.trips.map((tr, k) => {
-            const x = tr.explain;
+            const tt = tripTime(tr);
             return 'Երթ ' + (k + 1) + '՝ ' + tr.loading_start + ' → ' + tr.return + ' · ' + pl(tr.stops.length, 'կետ') + ' · ' + kgText(tr.kg)
                 + (tr.load_pct !== null ? ' (' + tr.load_pct + '%)' : '') + ' · ≈ ' + fmt(tr.km, 1) + NB + 'կմ'
-                + (tr.liters !== null ? ' · ≈ ' + fmt(tr.liters, 1) + NB + 'լ' : '') + ' · ճանապարհին ' + minText(x.drive_min)
-                + ', բեռնաթափում ' + minText(x.unload_min) + (x.wait_min >= 0.5 ? ', սպասում ' + minText(x.wait_min) : '') + '։';
+                + (tr.liters !== null ? ' · ≈ ' + fmt(tr.liters, 1) + NB + 'լ' : '') + ' · '
+                + (tt.loading ? 'բեռնում ' + minText(tt.loading) + ', ' : '') + 'ճանապարհին ' + minText(tt.drive)
+                + ', բեռնաթափում ' + minText(tt.unload) + (tt.wait ? ', ընդունման ժամի սպասում ' + minText(tt.wait) : '') + '։';
         });
         const last = t.trips[t.trips.length - 1].explain, end = state.data.work_end;
         const box = document.createElement('section');
@@ -1674,7 +1687,7 @@
     function whyDay(plan) {
         const e = plan.explain, m = e.model || {}, d = state.data, o = d.orders, sm = plan.summary;
         const wear = e.trucks.some(x => x.wear);
-        const fuelOf = (x) => (x.fuel_empty_l100 !== null ? 'դատարկ՝ ' + fmt(x.fuel_empty_l100, 1) + ', լիքը՝ ' + fmt(x.fuel_full_l100, 1) : fmt(x.l100, 1)) + NB + 'լ/100' + NB + 'կմ';
+        const fuelOf = (x) => (x.fuel_empty_l100 !== null ? 'դատարկ՝ ' + fmt(x.fuel_empty_l100, 1) + ', լրիվ բեռնված՝ ' + fmt(x.fuel_full_l100, 1) : fmt(x.l100, 1)) + NB + 'լ/100' + NB + 'կմ';
         const speed = m.speed_city_source === m.speed_region_source
             ? 'քաղաքում ' + fmt(m.speed_city_kmh, 1) + NB + 'կմ/ժ, մարզում ' + fmt(m.speed_region_kmh, 1) + NB + 'կմ/ժ (' + (SPEED_SRC[m.speed_city_source] || '') + ')'
             : 'քաղաքում ' + fmt(m.speed_city_kmh, 1) + NB + 'կմ/ժ (' + (SPEED_SRC[m.speed_city_source] || '') + '), մարզում ' + fmt(m.speed_region_kmh, 1) + NB + 'կմ/ժ (' + (SPEED_SRC[m.speed_region_source] || '') + ')';
@@ -1683,56 +1696,63 @@
             : m.minutes === 'zones' ? 'Ճանապարհի ժամանակը հաշվվում է արագությամբ՝ ' + speed + '։' : '';
         const learned = [];
         if (m.learned) {
-            if (m.learned.travel) learned.push('ճանապարհի ժամանակը ըստ ժամերի');
+            if (m.learned.travel) learned.push('ճանապարհին ծախսվող ժամանակն ըստ ժամերի');
             if (m.learned.unload) learned.push('բեռնաթափման ժամանակը');
             if (m.learned.loading) learned.push('բեռնման ժամանակը');
             if ((m.learned.fuel || []).length) learned.push('դիզելի ծախսը՝ ' + m.learned.fuel.map(c => truckLabel(truckBy(c))).join(', '));
         }
+        // загрузка на складе — те же числа, что прибавляет расчёт (tn.load), даже если задано только одно из двух
+        const loadingSet = num(e.loading_fixed_min) > 0 || num(e.loading_min_per_tonne) > 0;
+        const cost = 'օրվա դիզելի' + (wear ? ' (և մաշվածքի, որտեղ նշված է)' : '') + ' ծախսը';
         const rows = [
-            ['Պատվերներ', ['Առաքման մեջ՝ ' + pl(o.count, 'պատվեր') + ', ' + pl(o.customers, 'խանութ') + ', ' + kgText(o.kg) + '։ Երթերում՝ '
+            ['Պատվերներ', ['Առաքման համար՝ ' + pl(o.count, 'պատվեր') + ', ' + pl(o.customers, 'խանութ') + ', ' + kgText(o.kg) + '։ Երթերում՝ '
                     + pl(sm.stops, 'խանութ') + ', ' + kgText(sm.kg) + '։',
                 e.carried ? 'Նախորդ օրից այստեղ է տեղափոխված ' + pl(e.carried, 'պատվեր') + '։' : '',
                 e.deferred ? 'Այս օրից հաջորդ օր է տեղափոխված ' + pl(e.deferred, 'պատվեր') + '։' : '']],
             ['Մեքենաներ', e.trucks.map(x => truckLabel(x) + '՝ մինչև ' + kgText(x.capacity_kg) + ', ' + fuelOf(x) + (x.center_ok ? ', մտնում է կենտրոն' : '')
                 + (x.trips ? '' : ', այսօր երթ չունի') + '։')],
-            ['Բեռ', ['Մինչև ' + e.load_cap_pct + '% մեքենայի տոննաժի։ Ավելի ծանր կարող է լինել միայն մեկ պատվեր, որն այլ կերպ չի տեղավորվում՝ այն գնում է առանձին։',
+            ['Բեռ', ['Երթի բեռը՝ մեքենայի տոննաժի առավելագույնը ' + e.load_cap_pct + '%-ը։ Ավելի ծանր կարող է լինել միայն մեկ պատվերով երթը, '
+                    + 'եթե այդ պատվերն այլ կերպ չի տեղավորվում։',
                 'Մեքենայից ծանր պատվերը բաժանվում է մի քանի երթի՝ հավասար։',
                 e.balance_load_aware
-                    ? 'Խանութը ավելի ծանր երթից տեղափոխվում է ավելի թեթև երթ, եթե դա նվազեցնում է դիզելի' + (wear ? ' և մաշվածքի' : '') + ' ծախսը՝ հաշվի առնելով բեռը, '
-                        + 'իսկ կիլոմետրերն ու լիտրերը աճում են ոչ ավելի, քան ' + e.balance_slack_pct + '%-ով։'
-                    : e.balance_from_pct + '%-ից ծանր երթերից խանութները տեղափոխվում են ավելի թեթև երթեր, եթե կիլոմետրերն ու լիտրերը աճում են ոչ ավելի, քան '
+                    ? 'Խանութն ավելի ծանր երթից տեղափոխվում է ավելի թեթև երթ, եթե դա նվազեցնում է դիզելի' + (wear ? ' և մաշվածքի' : '') + ' ծախսը՝ հաշվի առնելով բեռը, '
+                        + 'իսկ կիլոմետրերն ու լիտրերն աճում են ոչ ավելի, քան ' + e.balance_slack_pct + '%-ով։'
+                    : e.balance_from_pct + '%-ից ծանր երթերից խանութները տեղափոխվում են ավելի թեթև երթեր, եթե կիլոմետրերն ու լիտրերն աճում են ոչ ավելի, քան '
                         + e.balance_slack_pct + '%-ով։']],
-            ['Աշխատանքային օր', ['Մեքենաները աշխատում են ' + d.work_start + '–' + d.work_end + '։ ' + (d.overtime_ok
+            ['Աշխատանքային օր', ['Մեքենաներն աշխատում են ' + d.work_start + '–' + d.work_end + '։ ' + (d.overtime_ok
                 ? 'Սեղմված է «Տանել ' + d.work_end + '-ից հետո»՝ թույլատրվում է մինչև ' + d.overtime_end + '-ը։'
                 : 'Ավելի ուշ՝ միայն «Տանել ' + d.work_end + '-ից հետո» կոճակով, մինչև ' + d.overtime_end + '-ը։')]],
             ['Կենտրոն', [e.zone ? (e.center_stores ? pl(e.center_stores, 'խանութ') + ' փոքր կենտրոնում է՝ դրանք տանում են միայն կենտրոն մտնող մեքենաները։'
                     : 'Այս օրը փոքր կենտրոնում խանութ չկա։') : 'Փոքր կենտրոնի սահմանը կարգավորումներում նշված չէ։',
                 e.zone && m.bypass ? 'Կենտրոնից դուրս կետերի միջև ճանապարհը հաշվվում է կենտրոնը շրջանցելով։'
-                    : e.zone && m.bypass === false ? 'Ճանապարհի շրջանցումը չի հաշվվում՝ ճանապարհային քարտեզ չկա։' : '']],
+                    : e.zone && m.bypass === false ? 'Կենտրոնի շրջանցումը չի հաշվվում՝ ' + noBypass(m) + '։' : '']],
             ['Ընդունման ժամեր', [e.window_stores ? pl(e.window_stores, 'խանութ') + ' ունի ընդունման ժամ՝ երթերը կազմվում են այնպես, որ հասնենք ժամանակին, իսկ վաղ հասնելու դեպքում մեքենան սպասում է։'
-                : 'Այս օրվա խանութներից ոչ մեկը ընդունման ժամ չունի։']],
+                : 'Այս օրվա խանութներից ոչ մեկն ընդունման ժամ չունի։']],
             ['Մեքենաների սահմանափակումներ', [e.access_stores ? pl(e.access_stores, 'խանութ') + ' ունի մեքենաների սահմանափակում՝ դրանք տանում են միայն թույլատրված մեքենաները։' : '']],
-            ['Փոքր երթեր', [num(d.min_trip_revenue) > 0 ? 'Երթը, որի ապրանքը ' + money(d.min_trip_revenue) + '-ից պակաս է, նշվում է՝ այն կարելի է տանել հաջորդ օրը։' : '']],
+            ['Ցածր արժեքով երթեր', [num(d.min_trip_revenue) > 0 ? 'Երթը, որի ապրանքի արժեքը ' + fmt(d.min_trip_revenue) + NB + 'դրամից պակաս է, նշվում է՝ այն կարելի է տանել հաջորդ օրը։' : '']],
             ['Ճանապարհներ', [kmSource(m) ? capFirst(kmSource(m)) + '։' : '',
-                m.unsnapped ? pl(m.unsnapped, 'խանութ') + ' ճանապարհից ' + fmt(m.snap_km, 1) + NB + 'կմ-ից հեռու է՝ նրանց հեռավորությունը ուղիղ գծով է × ' + fmt(m.detour, 2) + '։' : '']],
+                m.unsnapped ? pl(m.unsnapped, 'խանութ') + ' ճանապարհից ' + fmt(m.snap_km, 1) + NB + 'կմ-ից հեռու է՝ դրանց հեռավորությունը հաշվվում է ուղիղ գծով × ' + fmt(m.detour, 2) + '։' : '']],
             ['Ժամանակ', [minutes, m.hourly_gps ? 'Արագությունն ըստ ժամերի՝ մենեջերների GPS պատմությունից։' : '',
                 'Բեռնաթափում՝ ' + fmt(e.unload_min_per_stop, 1) + NB + 'րոպե յուրաքանչյուր խանութում + ' + fmt(e.unload_min_per_tonne, 1) + NB + 'րոպե յուրաքանչյուր տոննայի համար'
                     + (e.unload_stores ? '՝ ' + pl(e.unload_stores, 'խանութի') + ' համար՝ իր ճշգրտումով' : '') + '։',
-                e.loading_configured ? 'Բեռնում պահեստում՝ ' + fmt(e.loading_fixed_min, 1) + NB + 'րոպե + ' + fmt(e.loading_min_per_tonne, 1) + NB + 'րոպե յուրաքանչյուր տոննայի համար։'
+                loadingSet ? 'Բեռնում պահեստում՝ ' + fmt(e.loading_fixed_min, 1) + NB + 'րոպե + ' + fmt(e.loading_min_per_tonne, 1) + NB + 'րոպե յուրաքանչյուր տոննայի համար։'
                     : 'Պահեստում բեռնման ժամանակը նշված չէ։']],
             ['Վարորդների տվյալներ', [learned.length ? 'Վարորդների փաստացի տվյալներից սովորած և կիրառված՝ ' + learned.join('; ') + '։'
                 : 'Վարորդների տվյալներից սովորած ճշգրտումներ դեռ չեն կիրառվում։']],
-            ['Հաշվարկ', [e.solver ? 'Երթերը կազմում է ծրագիրը՝ սկզբում իր հաշվարկով, հետո PyVRP լուծիչով (մինչև ' + fmt(e.solver_iterations) + ' քայլ)։ '
-                    + 'Լուծիչի արդյունքը վերցվում է, միայն եթե բոլոր կանոնները պահպանված են և այն ավելի վատ չէ։'
-                    : 'Երթերը կազմում է ծրագիրը իր հաշվարկով (PyVRP լուծիչը տեղադրված չէ)։',
-                e.solver ? 'Նպատակը՝ օրվա ընդհանուր դիզելի ամենաքիչ լիտրերը' + (wear ? ' (և մաշվածքի արժեքը, որտեղ այն նշված է)' : '') + '։'
+            ['Հաշվարկ', [e.solver ? 'Երթերը կազմում է ծրագիրը՝ սկզբում իր հաշվարկով, հետո PyVRP լուծիչով (մինչև ' + fmt(e.solver_iterations)
+                    + ' քայլ․ լուծիչը դիզելը հաշվում է մեքենայի միջին ծախսով՝ լ/100 կմ)։ Լուծիչի արդյունքը վերցվում է, միայն եթե բոլոր կանոնները '
+                    + 'պահպանված են և՝ երթերում ավելի շատ պատվեր կա, կամ նույն պատվերներով ' + cost + ' ավելի չէ, կամ ' + e.load_cap_pct
+                    + '%-ից ծանր երթերն ավելի քիչ են։'
+                    : 'Երթերը կազմում է ծրագիրն իր հաշվարկով (PyVRP լուծիչը տեղադրված չէ)։',
+                e.solver ? 'Նպատակը՝ նախ տանել հնարավորինս շատ պատվեր, ապա նվազագույնի հասցնել ' + cost + '։'
                     : 'Նպատակը՝ կարճ ճանապարհ և քիչ դիզել։',
                 e.pinned_trips ? 'Ամրացված երթեր՝ ' + e.pinned_trips + '․ վերակազմելիս դրանք չեն փոխվում։' : '']],
             ['Արդյունք', [pl(sm.trips, 'երթ') + ', ≈ ' + fmt(sm.km) + NB + 'կմ, ≈ ' + fmt(sm.liters) + NB + 'լ դիզել։']],
-            ['Տվյալների որակ', ['Խանութի կետը վերցվում է այս հերթականությամբ՝ ձեռքով → վարորդի GPS → ERP հասցե → մենեջերի GPS։',
+            ['Տվյալների որակ', ['Խանութի կետը վերցվում է այս հերթականությամբ՝ ձեռքով → վարորդի GPS → ERP հասցե → մենեջերի GPS։ '
+                    + 'Եթե ERP հասցեի կետը մենեջերի GPS-ից ավելի քան ' + fmt(e.erp_gps_gap_km, 1) + NB + 'կմ հեռու է, վերցվում է մենեջերի GPS-ը։',
                 o.no_coords ? pl(o.no_coords, 'խանութ') + ' առանց կետի է՝ երթերում չկա։' : '']],
         ];
-        const fold = whyFold('day', 'Ինչ է հաշվի առել հաշվարկը', false);
+        const fold = whyFold('day', 'Ի՞նչ է հաշվի առնված հաշվարկում', false);
         const body = document.createElement('div');
         body.className = 'dp-why-body';
         body.appendChild(whyList(rows));
