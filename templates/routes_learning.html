@@ -6,6 +6,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=17">
 <style>
     /* «Обучение и факт»: план/факт в одной ячейке — факт крупнее, план под ним */
@@ -15,6 +17,8 @@
     .lr-period .rt-field { margin: 0; }
     .lr-why { font-size: .8125rem; color: var(--rt-fg-dim); max-width: 46ch; }
     .lr-run { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 10px 0 4px; }
+    .lr-off { font-size: .8125rem; color: var(--rt-warn); }
+    .lr-map { height: 440px; border-radius: 12px; margin: 10px 0 12px; }
 </style>
 {% endblock %}
 
@@ -41,6 +45,10 @@
     <div id="lrAlert" class="rt-alert d-none" role="alert">
         <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
         <span id="lrAlertText" class="rt-alert-text"></span>
+    </div>
+    <div id="lrWarn" class="rt-alert is-warn" role="alert" hidden>
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        <span id="lrWarnText" class="rt-alert-text"></span>
     </div>
 
     <section class="rt-card" aria-labelledby="lrLearnTitle">
@@ -76,8 +84,23 @@
             <thead><tr><th scope="col">День</th><th scope="col">Машина</th><th scope="col">Км</th><th scope="col">Время работы</th>
                 <th scope="col">Рейсы</th><th scope="col">Дизель, л</th><th scope="col">Точек</th><th scope="col">Вовремя к окну</th>
                 <th scope="col">Точек в час</th><th scope="col">Км на точку</th><th scope="col">Литров на точку</th>
-                <th scope="col">Загрузка по весу</th><th scope="col">Не по порядку</th></tr></thead>
+                <th scope="col">Загрузка по весу</th><th scope="col">Не по порядку</th><th scope="col"><span class="rt-sr-only">Карта</span></th></tr></thead>
             <tbody id="lrDayRows"></tbody>
+        </table></div>
+    </section>
+
+    <section class="rt-card" id="lrMapBox" aria-labelledby="lrMapTitle" hidden>
+        <div class="rt-card-head">
+            <h2 class="rt-card-title"><i class="fas fa-map-location-dot" aria-hidden="true"></i><span id="lrMapTitle">Карта дня</span></h2>
+        </div>
+        <p class="rt-card-lead">Серая пунктирная линия — рейсы по плану «Развоза» (по дорогам, если есть карта дорог). Синяя — фактический путь по GPS.
+            Точки: зелёная — вовремя, красная — опоздали или раньше окна приёма, серая — стоянки у магазина не было.</p>
+        <p class="lr-why" id="lrMapNote"></p>
+        <div id="lrMap" class="lr-map" role="region" aria-label="Карта: план и факт машины за день"></div>
+        <div class="rt-table-scroll"><table class="rt-table">
+            <thead><tr><th scope="col">№ по плану</th><th scope="col">Магазин</th><th scope="col">План (при сборке)</th>
+                <th scope="col">Окно приёма</th><th scope="col">Факт: прибытие–отъезд</th></tr></thead>
+            <tbody id="lrMapStops"></tbody>
         </table></div>
     </section>
 
@@ -88,7 +111,9 @@
                 <li><b>Откуда факт.</b> Терминал водителя записывает маршрут, пока открыт рабочий день. Программа находит выезды со склада и возвращения
                     (зона 150 м вокруг склада), стоянки у магазинов (не меньше 2 минут в 100 м от точки магазина), время в пути между ними и км.</li>
                 <li><b>Разгрузка</b> = минуты на точку + минуты на тонну; у магазина, где разгружались не меньше 5 раз, — своя поправка.</li>
-                <li><b>Загрузка на складе</b> = минуты на рейс + минуты на тонну (видна, если машина приезжала на склад при включённом терминале).</li>
+                <li><b>Загрузка на складе</b> = минуты на рейс + минуты на тонну (видна, если машина приезжала на склад при включённом терминале).
+                    Из стоянки на складе вычитается ожидание, которое заложил план (выезд позже под окно первой точки); долгие стоянки (обед) не учитываются;
+                    за одну ночь норма меняется не больше чем на 30%. <b>Учиться загрузке программа начнёт только после того, как вы включите галочку.</b></li>
                 <li><b>Скорость машин</b> — во сколько раз дольше или быстрее, чем считает карта дорог, по часам, отдельно город/область и будни/выходные.
                     Если карта дорог сменилась — старая поправка не действует, пока программа не выучит новую.</li>
                 <li><b>Расход</b> — по заправкам «до полного бака»: литры между двумя полными баками / км по одометру; нужно не меньше <span id="lrFuelMin">12</span> таких промежутков.</li>
@@ -101,5 +126,7 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/routes_learning.js') }}?v=1"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+<script src="{{ url_for('static', filename='js/routes_learning.js') }}?v=2"></script>
 {% endblock %}

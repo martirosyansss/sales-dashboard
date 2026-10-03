@@ -1704,8 +1704,18 @@ class Store:
             out.append(d)
         return out
 
+    def learning_last_run(self) -> str | None:
+        """День последнего удачного прогона обучения (meta learning_last_run) — ночной поток догоняет пропущенный."""
+        row = self._read(lambda conn: conn.execute("SELECT value FROM meta WHERE key = 'learning_last_run'").fetchone())
+        return row[0] if row else None
+
+    def save_learning_last_run(self, day: str) -> None:
+        self._transaction(lambda conn: conn.execute(
+            "INSERT INTO meta(key, value) VALUES('learning_last_run', ?) ON CONFLICT(key) DO UPDATE SET value = "
+            'excluded.value', (day,)), 'не удалось записать день прогона обучения')
+
     def learning_auto(self) -> dict[str, bool]:
-        """Автообучение по виду: нет строки — включено."""
+        """Автообучение по виду, выбранное владельцем; нет строки — learning.DEFAULT_AUTO."""
         rows = self._read(lambda conn: conn.execute('SELECT kind, auto FROM learning_switch').fetchall())
         return {k: bool(v) for k, v in rows}
 

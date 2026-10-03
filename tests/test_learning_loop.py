@@ -86,7 +86,7 @@ def _stops(**kw):
     for key, (p, cid, kg, rank) in base.items():
         extra = kw.get(key, {})
         out.append(ac.PlanStop(key, cid, extra.get('point', p), kg, extra.get('delivered', kg), extra.get('window'),
-                               extra.get('rank', rank)))
+                               extra.get('rank', rank), extra.get('delivered_at')))
     return out
 
 
@@ -167,19 +167,23 @@ def test_reconstruct_repeat_visit_unplanned_stop_and_short_pass():
 
 def test_reconstruct_two_stops_close_together_one_visit():
     a2 = (A[0] + 60 / 111195, A[1])                                   # соседний магазин в 60 м
-    stops = _stops(B={'point': a2})
     mid = (A[0] + 30 / 111195, A[1])
     tr = Track(DEPOT, _t(8)).stay(10).drive(mid, 30).stay(14, jitter_m=10).drive(DEPOT, 30).stay(5)
-    day = ac.reconstruct(tr.fixes, stops, DEPOT)
-    assert [v.keys for v in day.visits] == [('A', 'B')]
-    obs = lr.unload_obs(date(2026, 9, 29), day, stops)
+    visit = next(f.at for f in tr.fixes if haversine_km(f.point, mid) < 0.05)
+    both = _stops(A={'delivered_at': visit + timedelta(minutes=5)}, B={'point': a2, 'delivered_at': visit + timedelta(minutes=9)})
+    day = ac.reconstruct(tr.fixes, both, DEPOT)                       # обе доставки отмечены на этой стоянке
+    assert [v.keys for v in day.visits] == [('A', 'B')] and not day.visits[0].repeat
+    obs = lr.unload_obs(date(2026, 9, 29), day, both)
     assert [(o.n, o.tonnes) for o in obs] == [(2, 1.5)]
+    # без отметок: середина стоянки — ровно посередине между точками (неоднозначно) — общий визит
+    tr = Track(DEPOT, _t(8)).stay(10).drive(mid, 30).stay(14).drive(DEPOT, 30).stay(5)
+    assert [v.keys for v in ac.reconstruct(tr.fixes, _stops(B={'point': a2}), DEPOT).visits] == [('A', 'B')]
 
 
 def test_visit_metrics_windows_and_order():
     stops = _stops(A={'rank': 1, 'window': (8 * 60, 8 * 60 + 30)}, B={'rank': 0, 'window': (0, 12 * 60)})
     day = ac.reconstruct(_two_trips().fixes, stops, DEPOT)
-    m = ac.visit_metrics(day, stops)
+    m = ac.visit_metrics(day, stops, date(2026, 9, 29))
     arrive_a = ac.local_minutes(day.visits[0].arrive)
     assert (m.planned, m.visited, m.with_window, m.on_time) == (3, 3, 2, 1)
     assert m.late_minutes == pytest.approx(arrive_a - (8 * 60 + 30), abs=0.1)
@@ -266,23 +270,32 @@ def test_fit_loading():
     assert not lr.fit_loading(obs[:10], lambda x: 0.0, TODAY).accepted
 
 
-def _legs(ratio=1.3, current=None, days=40, per_day=6):
+BASE = evm.Norms.from_settings(rst.DEFAULT_SETTINGS)     # без карты дорог: 25 / 45 км/ч, извилистость 1,3
+REF = lr.model_ref(BASE)
+
+
+def _legs(ratio=1.3, current=None, days=40, per_day=6, ratio_test=None):
+    """Участки в городе: выезд в 9:00, 10:00 или 11:00 (на 5 мин раньше часа конца — без перехода через час)."""
     out = []
+    test_from = TODAY - timedelta(days=lr.HOLDOUT_DAYS)
     for d in _days(days):
+        r = ratio_test if ratio_test is not None and d >= test_from else ratio
         for i in range(per_day):
-            model = 8.0 + i
-            out.append(lr.LegObs(d, True, d.weekday() >= 5, 9 + i % 3, model * ratio, model,
-                                 model if current is None else current(model)))
+            km = 2.0 + 0.5 * i                                         # 2–4,5 км: 4,8–10,8 мин модели
+            model = km / 25.0 * 60
+            hour = 9 + i % 3
+            out.append(lr.LegObs(d, True, d.weekday() >= 5, hour, model * r, model,
+                                 model if current is None else current(model), km, 25.0, d.weekday(), hour * 60.0))
     return out
 
 
 def test_fit_travel_accepts_and_rejects():
-    o = lr.fit_travel(_legs(), TODAY, 'straight', {'speed_city_kmh': 25.0, 'speed_region_kmh': 45.0, 'detour': 1.3})
+    o = lr.fit_travel(_legs(), TODAY, 'straight', REF, BASE)
     assert o.accepted and o.model_id == 'straight'
     assert {f[3] for f in o.params['factors']} == {1.3}
-    same = lr.fit_travel(_legs(current=lambda m: m * 1.3), TODAY, 'straight', {})
+    same = lr.fit_travel(_legs(current=lambda m: m * 1.3), TODAY, 'straight', REF, BASE)
     assert not same.accepted
-    short = lr.fit_travel(_legs(days=12), TODAY, 'straight', {})
+    short = lr.fit_travel(_legs(days=12), TODAY, 'straight', REF, BASE)
     assert not short.accepted and short.reason.startswith('мало данных')
 
 
@@ -292,27 +305,28 @@ def test_fuel_intervals_and_fit():
                 'payload': {'odometer_km': odo, 'liters': liters, 'full_tank': full}, 'flags': list(flags),
                 'superseded': superseded}
     rows = [rf(1, '2026-09-01', 1000, 50), rf(2, '2026-09-02', 1100, 10, full=False), rf(3, '2026-09-03', 1300, 50),
-            rf(4, '2026-09-04', 1200, 40, flags=['odometer_suspicious']),            # опечатка — пропуск
+            rf(4, '2026-09-04', 1250, 40, flags=['odometer_suspicious']),            # опечатка (флаг при приёме)
             rf(5, '2026-09-05', 1500, 60), rf(6, '2026-09-06', 1530, 9),             # 30 км — короткий интервал
             rf(7, '2026-09-07', 1700, 99, superseded=True), rf(8, '2026-09-07', 1700, 30)]
     ivs = lr.fuel_intervals(rows)
-    # r4 с опечаткой одометра: её литры в баке (интервал r3 → r5 = 40 + 60 л), но границей она не служит
-    assert [(iv.km, iv.liters) for iv in ivs] == [(300.0, 60.0), (200.0, 100.0), (170.0, 30.0)]
-    assert ivs[0].l100 == 20.0
-    # одометр меньше прежнего — то же правило без флага (опоздавшее событие, флаг при приёме не поставлен)
-    assert lr.fuel_intervals([rf(1, '2026-09-01', 1000, 50), rf(2, '2026-09-02', 900, 50),
-                              rf(3, '2026-09-03', 1200, 40)]) == [lr.Interval('CAR1', ivs[0].start, datetime.fromisoformat(
-                                  '2026-09-03T06:00:00+00:00'), 90.0, 200.0)]
+    # r3 (1300) и r4 (1250) друг с другом несовместимы, а с остальными — оба: какая опечатка — неизвестно, обе
+    # не границы; их литры в баке — интервал r1 → r5: 500 км, 10 + 50 + 40 + 60 л
+    assert [(iv.km, iv.liters) for iv in ivs] == [(500.0, 160.0), (170.0, 30.0)]
+    assert ivs[1].l100 == pytest.approx(30 / 170 * 100)
+    # одометр меньше прежнего — флаг при приёме не нужен: цепочка r0 → r1 → r3 решает, что ошибся r2
+    got = lr.fuel_intervals([rf(0, '2026-08-31', 950, 50), rf(1, '2026-09-01', 1000, 10), rf(2, '2026-09-02', 900, 50),
+                             rf(3, '2026-09-03', 1200, 40)])
+    assert [(iv.km, iv.liters) for iv in got] == [(50.0, 10.0), (200.0, 90.0)]
     assert lr.fuel_intervals([rf(1, '2026-09-01', 1000, 50), {**rf(2, '2026-09-02', 1100, 50), 'payload': {
         'odometer_km': 1100, 'liters': None}}, rf(3, '2026-09-03', 1300, 40)]) == []   # литры неизвестны — обрыв
     rnd = random.Random(4)
-    obs = [lr.FuelObs(d, u, 20 + 12 * u + rnd.uniform(-0.3, 0.3)) for d, u in zip(_days(20), [0.1, 0.6, 0.35, 0.8] * 5)]
+    obs = [lr.FuelObs(d, u, 20 + 12 * u + rnd.uniform(-0.3, 0.3)) for d, u in zip(_days(24), [0.1, 0.6, 0.35, 0.8] * 6)]
     ok = lr.fit_fuel(obs, lambda u: 30.0, 'CAR1')
     assert ok.accepted and ok.params['empty_l100'] == pytest.approx(20, abs=1) and ok.params['full_l100'] == pytest.approx(32, abs=1)
     flat = lr.fit_fuel([replace(o, l100=25 + rnd.uniform(-0.2, 0.2)) for o in obs], lambda u: 30.0, 'CAR1')
     assert flat.accepted and flat.params['empty_l100'] == flat.params['full_l100']   # от загрузки не зависит — один расход
     assert not lr.fit_fuel(obs, lambda u: 20 + 12 * u, 'CAR1').accepted
-    assert not lr.fit_fuel(obs[:11], lambda u: 30.0, 'CAR1').accepted
+    assert not lr.fit_fuel(obs[:15], lambda u: 30.0, 'CAR1').accepted          # 12 на выбор формы + 4 проверки
 
 
 def test_fuel_obs_needs_track_coverage():
@@ -335,7 +349,7 @@ def _row(kind, run_day, accepted=True, params=None, scope='', model_id=None):
 
 def test_in_effect_rules():
     u1, u2 = {'per_stop_min': 5, 'per_tonne_min': 9}, {'per_stop_min': 6, 'per_tonne_min': 9}
-    tr = {'factors': [[1, 0, 9, 1.3]], 'ref': {}}
+    tr = {'factors': [[1, 0, 9, 1.3]], 'ref': {'speed_city_kmh': 25.0, 'speed_region_kmh': 45.0, 'detour': 1.3}}
     rows = [_row('unload', '2026-09-01', params=u1), _row('unload', '2026-09-02', params=u2),
             _row('unload', '2026-09-03', accepted=False, params={'per_stop_min': 1, 'per_tonne_min': 1}),
             _row('travel', '2026-09-01', params=tr, model_id='roads:v1'),
@@ -347,6 +361,9 @@ def test_in_effect_rules():
     off = lr.in_effect(rows, {'unload': False}, 'roads:v1')
     assert off.unload is None and off.fuel
     assert not lr.in_effect([], {}, 'straight')
+    load = [_row('loading', '2026-09-01', params={'fixed_min': 12, 'per_tonne_min': 4})]
+    assert lr.in_effect(load, {}, 'straight').loading is None                   # загрузка — по умолчанию выключена
+    assert lr.in_effect(load, {'loading': True}, 'straight').loading == {'fixed_min': 12, 'per_tonne_min': 4}
 
 
 def test_apply_learned_changes_norms_and_trip_minutes():
@@ -363,7 +380,7 @@ def test_apply_learned_changes_norms_and_trip_minutes():
     n2, t2, tr2 = lr.apply_learned(norms, tn, trucks, eff, {101: A})
     assert (t2.unload_min_per_stop, t2.unload_min_per_tonne, t2.unload_extra) == (5.0, 10.0, {A: 7.0})
     assert (t2.warehouse_load_fixed_min, t2.warehouse_load_min_per_tonne, t2.loading_configured) == (12.0, 4.0, True)
-    assert (tr2['CAR1'].fuel_empty_l_per_100km, tr2['CAR1'].fuel_full_l_per_100km) == (22.0, 35.0)
+    assert (tr2['CAR1'].fuel_empty_l_per_100km, tr2['CAR1'].fuel_full_l_per_100km, tr2['CAR1'].l100) == (22.0, 35.0, 28.5)
     # время = км / (v · f) = 1,5 × км_обуч / v_обуч: при скорости настроек 25 и обучении на 20 → f = 20 / (25 · 1,5)
     assert n2.traffic.factor(True, 1, 9 * 60) == pytest.approx(20 / (25 * 1.5))
     assert n2.traffic.factor(True, 1, 10 * 60) == 1.0 and norms.traffic is None
@@ -506,12 +523,17 @@ class FakeFacts:
     def refuels(self):
         return []
 
+    def version(self, car, ds):
+        self.versions = getattr(self, 'versions', 0) + 1
+        return (ds,)
+
 
 def _learning_client(client, monkeypatch, days=30):
     _dispatch_setup(client, [_dorder(1, 101, 400.0)])
     state = client.application.extensions['route_optimizer']
     state.fleet_facts = FakeFacts([TODAY - timedelta(days=i) for i in range(days, 0, -1)])
     monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 10, 3, 10, 0))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 3, 10, 0, tzinfo=TZ))
     return state
 
 
@@ -536,7 +558,7 @@ def test_run_learning_end_to_end_idempotent_and_applied(client, monkeypatch):
     ctx = views._dispatch_ctx(state, snap, bundle, date(2026, 10, 4), ready, [S101], {101: S101})
     assert (ctx.tn.unload_min_per_stop, ctx.tn.unload_min_per_tonne) == (by['unload'].params['per_stop_min'],
                                                                          by['unload'].params['per_tonne_min'])
-    assert ctx.tn.warehouse_load_fixed_min == by['loading'].params['fixed_min'] and ctx.tn.loading_configured
+    assert not ctx.tn.loading_configured                                       # загрузка — по умолчанию выключена
     assert ctx.norms.traffic is not None and ctx.norms.traffic.report['trucks'] == 'learned'
     # следующий день: действующая норма уже выученная — новая не лучше её, остаётся прежняя
     nxt = {o.kind: o for o in views.run_learning(state, TODAY + timedelta(days=1))}
