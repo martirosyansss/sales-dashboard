@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=18">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=22">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=23">
 {% endblock %}
 
 {% block content %}
@@ -275,6 +275,31 @@
         </section>
     </div>
 
+    {% if ai_enabled %}
+    <!-- «Հարցրու AI-ին» (ответ владельца №52): вопросы по плану дня — AI отвечает по цифрам дня и ничего не меняет -->
+    <button type="button" class="dp-ai-fab" id="dpAiOpen" aria-controls="dpAi" aria-expanded="false" hidden>
+        <i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i><span>Հարցրու AI-ին</span></button>
+    <aside class="dp-ai" id="dpAi" aria-labelledby="dpAiTitle" hidden>
+        <div class="dp-ai-head">
+            <span class="dp-ai-ico" aria-hidden="true"><i class="fas fa-wand-magic-sparkles"></i></span>
+            <div class="dp-ai-ht">
+                <h2 class="dp-ai-t" id="dpAiTitle">Հարցրու AI-ին</h2>
+                <p class="dp-ai-sub" id="dpAiSub">Պատասխանում է այս օրվա թվերով · ոչինչ չի փոխում</p>
+            </div>
+            <button type="button" class="dp-ai-iconbtn" id="dpAiNew" title="Նոր զրույց" aria-label="Նոր զրույց"><i class="fas fa-rotate-left" aria-hidden="true"></i></button>
+            <button type="button" class="dp-ai-iconbtn" id="dpAiClose" title="Փակել" aria-label="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+        </div>
+        <div class="dp-ai-log" id="dpAiLog" role="log" aria-live="polite"></div>
+        <form class="dp-ai-form" id="dpAiForm">
+            <label for="dpAiInput" class="rt-sr-only">Ձեր հարցը</label>
+            <textarea id="dpAiInput" class="dp-ai-input" rows="1" maxlength="1000"
+                      placeholder="Հարցրեք երթերի, մեքենաների կամ խանութների մասին…"></textarea>
+            <button type="submit" class="dp-ai-send" id="dpAiSend" aria-label="Ուղարկել" title="Ուղարկել (Enter)"><i class="fas fa-paper-plane" aria-hidden="true"></i></button>
+        </form>
+        <p class="dp-ai-foot">AI-ն կարող է սխալվել։ Կարևոր թվերը ստուգեք էջում։</p>
+    </aside>
+    {% endif %}
+
     <!-- «Փոխել տեղը»: точка любого магазина — перетащить или вставить координаты; «авто» убирает ручную точку -->
     <dialog id="dpGeoDlg" class="dp-dlg" aria-labelledby="dpGeoTitle" aria-describedby="dpGeoLead">
         <h2 class="dp-dlg-t" id="dpGeoTitle">Խանութի տեղը</h2>
@@ -297,5 +322,5 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=42"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=43"></script>
 {% endblock %}

@@ -18,7 +18,10 @@
    по часам; карточки машин раскрываются по нажатию; карта справа от рейсов. Нажатие на машину или рейс на шкале —
    он же на карте и раскрытая карточка.
    Под строкой выбранного на карте — «почему так» (ответ владельца №49): рейс, машина или весь день — по цифрам
-   explain из ответа дня (dispatch.plan_view), без утверждений, которых расчёт не делает. */
+   explain из ответа дня (dispatch.plan_view), без утверждений, которых расчёт не делает.
+   «Հարցրու AI-ին» (ответ владельца №52) — POST /api/routes/dispatch/ask: вопрос логиста по дню, история разговора
+   хранится здесь (по дням), сервер отвечает по тем же цифрам дня и ничего не меняет. Ответ AI выводится только
+   через textContent (абзацы и строки «• » — без разметки). */
 (function () {
     'use strict';
 
@@ -82,6 +85,7 @@
         geoChanged: null,                   // день, в котором после сборки меняли точку магазина — подсказать пересборку
         stepsOpen: new Set(),               // шаги 1–2, раскрытые логистом после сборки (иначе свёрнуты в строку)
         open: new Set(),                    // раскрытые карточки машин (код машины)
+        ai: { chats: new Map(), busy: false, shownDay: null },   // «Հարցրու AI-ին»: разговор по каждому дню [{role, text}]
     };
 
     // ---------- Сервер ----------
@@ -130,6 +134,17 @@
         'ожидался id предложения': BAD_REQUEST,
         'решение: accepted или rejected': BAD_REQUEST,
         'Предложение не найдено или уже решено — обновите страницу': 'Առաջարկը չի գտնվել կամ արդեն որոշված է — թարմացրեք էջը',
+        // «Հարցրու AI-ին» — POST /api/routes/dispatch/ask (ai_chat.py)
+        'вопрос — непустой текст до 1000 символов': 'Հարցը պետք է լինի ոչ դատարկ՝ մինչև 1000 նիշ',
+        'история диалога: ожидался список реплик': BAD_REQUEST,
+        'AI недоступен: не задан ANTHROPIC_API_KEY в .env сервера': 'AI-ն միացված չէ՝ սերվերում ANTHROPIC_API_KEY բանալին նշված չէ',
+        'AI недоступен: ключ ANTHROPIC_API_KEY не принят': 'AI-ն հասանելի չէ՝ ANTHROPIC_API_KEY բանալին չի ընդունվել',
+        'AI недоступен: модель не найдена — проверьте ROUTES_AI_MODEL': 'AI-ն հասանելի չէ՝ մոդելը չի գտնվել (ROUTES_AI_MODEL)',
+        'AI сейчас перегружен — повторите через минуту': 'AI-ն այժմ ծանրաբեռնված է — կրկնեք մեկ րոպեից',
+        'AI не принял запрос — начните новый разговор': 'AI-ն չընդունեց հարցումը — սկսեք նոր զրույց',
+        'AI временно недоступен — повторите позже': 'AI-ն ժամանակավորապես հասանելի չէ — կրկնեք ավելի ուշ',
+        'Нет связи с AI — повторите позже': 'AI-ի հետ կապ չկա — կրկնեք ավելի ուշ',
+        'AI не дал ответа — повторите вопрос': 'AI-ն պատասխան չտվեց — կրկնեք հարցը',
     };
     const SERVER_HY_PREFIX = [['машина не готова к расчёту: ', 'Մեքենան պատրաստ չէ հաշվարկի համար՝ ']];
     // StoreError «База настроек маршрутов <файл>: не удалось сохранить …» — по окончанию текста
@@ -235,6 +250,8 @@
         else [...state.editing].forEach(id => { if (!trips.has(id)) state.editing.delete(id); });
         state.data = data;
         state.day = data.day;
+        // кнопка AI — когда день загружен; открытая панель другого дня — показать разговор этого дня
+        if ($('dpAiOpen')) { $('dpAiOpen').hidden = !$('dpAi').hidden; if (!$('dpAi').hidden && state.ai.shownDay !== data.day) aiRender(); }
         state.fetchedAt = Date.now();
         const url = new URL(window.location.href);
         url.searchParams.set('date', data.day);
@@ -2340,6 +2357,151 @@
         } finally { $('dpFactBtn').disabled = false; }
     }
 
+    // ---------- «Հարցրու AI-ին» (ответ владельца №52) ----------
+    const AI_SUGGEST = [
+        'Ամփոփիր օրը երեք նախադասությամբ',
+        'Ո՞ր մեքենան ունի ամենաշատ ազատ տեղ',
+        'Ո՞ր երթն է ամենաուշը վերադառնում, և ինչու',
+        'Ինչու՞ են որոշ խանութներ դուրս մնացել երթերից',
+        'Ի՞նչ կլինի, եթե այսօր մեկ մեքենա չաշխատի',
+    ];
+    const AI_HISTORY = 12;          // реплик истории в запросе — как ai_chat.MAX_HISTORY
+    const aiChat = () => {
+        if (!state.ai.chats.has(state.day)) state.ai.chats.set(state.day, []);
+        return state.ai.chats.get(state.day);
+    };
+    // Что выбрано на карте — подсказка модели к вопросу («почему так?» о выбранном рейсе)
+    function aiFocus() {
+        const f = state.mapFocus, plan = state.data && state.data.plan;
+        const t = f && plan && plan.trucks.find(x => x.car_code === f.truck);
+        if (!t) return null;
+        const i = f.trip == null ? -1 : t.trips.findIndex(tr => tr.id === f.trip);
+        return truckLabel(t) + (i >= 0 ? ', երթ ' + (i + 1) : t.trips.length > 1 ? ', բոլոր երթերը' : ', երթ 1');
+    }
+    function aiOpen(open) {
+        $('dpAi').hidden = !open;
+        $('dpAiOpen').hidden = open;
+        $('dpAiOpen').setAttribute('aria-expanded', String(open));
+        if (open) { aiRender(); $('dpAiInput').focus(); } else $('dpAiOpen').focus();
+    }
+    // Ответ AI — абзацы и строки-пункты «• …» (без разметки: всё через textContent)
+    function aiText(box, text) {
+        let ul = null;
+        String(text).replace(/\*\*(.+?)\*\*/g, '$1').split('\n').forEach(raw => {
+            const line = raw.trim();
+            if (!line) { ul = null; return; }
+            const m = /^(?:[•\-*]|\d+[.)])\s+(.+)$/.exec(line);
+            if (m) {
+                if (!ul) { ul = document.createElement('ul'); box.appendChild(ul); }
+                const li = document.createElement('li');
+                li.textContent = m[1];
+                ul.appendChild(li);
+            } else {
+                ul = null;
+                const p = document.createElement('p');
+                p.textContent = line;
+                box.appendChild(p);
+            }
+        });
+    }
+    function aiMsg(role, text, note) {
+        const div = document.createElement('div');
+        div.className = 'dp-ai-msg ' + (role === 'user' ? 'is-user' : 'is-bot');
+        if (role === 'user') div.textContent = text; else aiText(div, text);
+        if (note) { const n = document.createElement('span'); n.className = 'dp-ai-note'; n.textContent = note; div.appendChild(n); }
+        return div;
+    }
+    function aiRender() {
+        const log = $('dpAiLog'), chat = aiChat();
+        log.textContent = '';
+        state.ai.shownDay = state.day;
+        $('dpAiSub').textContent = 'Պատասխանում է ' + dayHuman(state.day) + ' թվերով · ոչինչ չի փոխում';
+        if (!chat.length) {
+            const hello = document.createElement('p');
+            hello.className = 'dp-ai-hello';
+            hello.textContent = 'Հարցրեք այս օրվա երթերի, մեքենաների, խանութների կամ ժամերի մասին։ '
+                + 'AI-ն տեսնում է նույն թվերը, ինչ էջը, և ոչինչ չի փոխում։ Օրինակ՝';
+            const sugs = document.createElement('div');
+            sugs.className = 'dp-ai-sugs';
+            AI_SUGGEST.forEach(q => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'dp-ai-sug';
+                b.innerHTML = '<i class="fas fa-arrow-right" aria-hidden="true"></i><span></span>';
+                b.lastChild.textContent = q;
+                b.addEventListener('click', () => aiAsk(q));
+                sugs.appendChild(b);
+            });
+            log.append(hello, sugs);
+        }
+        chat.forEach(m => log.appendChild(aiMsg(m.role, m.text, m.note)));
+        log.scrollTop = log.scrollHeight;
+    }
+    async function aiAsk(question) {
+        const q = String(question || '').trim();
+        if (!q || state.ai.busy || !state.day) return;
+        const day = state.day, chat = aiChat(), log = $('dpAiLog'), focus = aiFocus();
+        // история — только удачные пары вопрос/ответ (чередование user/assistant для API)
+        const history = chat.slice(-AI_HISTORY).map(m => ({ role: m.role, text: m.text }));
+        if (!chat.length) log.textContent = '';
+        const asked = [aiMsg('user', q)];
+        if (focus) { const f = document.createElement('span'); f.className = 'dp-ai-focus'; f.textContent = 'քարտեզում՝ ' + focus; asked.push(f); }
+        log.append(...asked);
+        const wait = document.createElement('div');
+        wait.className = 'dp-ai-msg is-bot';
+        wait.innerHTML = '<span class="dp-ai-typing"><span class="dp-ai-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Նայում եմ օրվա թվերին…</span></span>';
+        log.appendChild(wait);
+        log.scrollTop = log.scrollHeight;
+        state.ai.busy = true;
+        $('dpAiSend').disabled = true;
+        $('dpAiInput').value = '';
+        aiResize();
+        try {
+            const r = await api('POST', '/api/routes/dispatch/ask', { date: day, question: q, history, focus });
+            const note = r.truncated ? 'Պատասխանը կտրվել է՝ շատ երկար էր։ Հարցրեք ավելի նեղ։' : '';
+            chat.push({ role: 'user', text: q }, { role: 'assistant', text: r.answer, note });
+            if (wait.isConnected) wait.replaceWith(aiMsg('assistant', r.answer, note));
+            else if (state.day === day && !$('dpAi').hidden) aiRender();     // панель перерисовали, пока ждали
+            announce('AI-ն պատասխանեց');
+        } catch (e) {
+            if (state.day !== day) return;
+            const err = document.createElement('div');
+            err.className = 'dp-ai-msg is-err';
+            err.setAttribute('role', 'alert');
+            err.textContent = e.message || String(e);
+            const again = document.createElement('button');
+            again.type = 'button';
+            again.className = 'rt-btn rt-btn-ghost rt-btn-sm';
+            again.innerHTML = '<i class="fas fa-rotate-right" aria-hidden="true"></i><span>Կրկնել</span>';
+            again.addEventListener('click', () => { err.remove(); asked.forEach(x => x.remove()); aiAsk(q); });
+            err.appendChild(document.createElement('br'));
+            err.appendChild(again);
+            if (wait.isConnected) wait.replaceWith(err); else { aiRender(); log.appendChild(err); }
+        } finally {
+            state.ai.busy = false;
+            $('dpAiSend').disabled = false;
+            log.scrollTop = log.scrollHeight;
+        }
+    }
+    function aiResize() {
+        const el = $('dpAiInput');
+        el.style.height = 'auto';
+        el.style.height = Math.min(el.scrollHeight + 2, 150) + 'px';
+    }
+    function aiInit() {
+        if (!$('dpAi')) return;
+        $('dpAiOpen').addEventListener('click', () => aiOpen(true));
+        $('dpAiClose').addEventListener('click', () => aiOpen(false));
+        $('dpAiNew').addEventListener('click', () => { if (state.ai.busy) return; state.ai.chats.set(state.day, []); aiRender(); $('dpAiInput').focus(); });
+        $('dpAiForm').addEventListener('submit', (e) => { e.preventDefault(); aiAsk($('dpAiInput').value); });
+        $('dpAiInput').addEventListener('input', aiResize);
+        // Enter — отправить, Shift+Enter — новая строка; Esc — закрыть панель
+        $('dpAiInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); aiAsk($('dpAiInput').value); }
+        });
+        $('dpAi').addEventListener('keydown', (e) => { if (e.key === 'Escape') aiOpen(false); });
+    }
+
     // ---------- Старт ----------
     function init() {
         const params = new URLSearchParams(window.location.search);
@@ -2382,6 +2544,7 @@
             (nav && getComputedStyle(nav).position === 'sticky' ? Math.ceil(nav.getBoundingClientRect().height) : 0) + 'px');
         navH();
         if (nav && typeof window.ResizeObserver !== 'undefined') new ResizeObserver(navH).observe(nav); else window.addEventListener('resize', navH);
+        aiInit();
         setInterval(poll, 30 * 1000);       // poll() сам проверяет, прошло ли 5 минут (и после сна компьютера тоже)
         document.addEventListener('visibilitychange', poll);
         load(day);

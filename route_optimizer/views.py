@@ -23,6 +23,7 @@ from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
 from flask import Blueprint, Response, current_app, jsonify, render_template, request, session
 
 from . import actuals as ac
+from . import ai_chat
 from . import dispatch as dp
 from . import evaluate, learning, optimize
 from . import fleet as fl
@@ -265,7 +266,7 @@ def optimize_page() -> str:
 
 @bp.get('/routes/dispatch')
 def dispatch_page() -> str:
-    return render_template('routes_dispatch.html', yandex_tiles_key=_yandex_tiles_key())
+    return render_template('routes_dispatch.html', yandex_tiles_key=_yandex_tiles_key(), ai_enabled=ai_chat.available())
 
 
 # --- API ---
@@ -1415,6 +1416,25 @@ def api_dispatch_reset() -> Any:
     state.store.delete_dispatch(day.isoformat())
     dd = _load_day(state, _bundle(state), day)
     return jsonify({'success': True, **_dispatch_body(dd)})
+
+
+@bp.post('/api/routes/dispatch/ask')
+@_api
+def api_dispatch_ask() -> Any:
+    """«Հարցրու AI-ին» (ответ владельца №52): {"date", "question", "history": [{"role", "text"}], "focus"?} →
+    {"answer"}. Модель видит тот же ответ дня, что и страница, и ничего не меняет; история — у страницы."""
+    payload, day, error = _dispatch_request()
+    if error is not None:
+        return error
+    try:
+        question, history, focus = ai_chat.parse_request(payload)
+        state = _state()
+        dd = _load_day(state, _bundle(state), day)
+        result = ai_chat.ask(_dispatch_body(dd), question, history, focus)
+    except ai_chat.AiError as e:
+        return jsonify({'success': False, 'error': str(e)}), e.status
+    logger.info('[Routes] AI-вопрос по развозу на %s (%s)', day, session.get('username'))
+    return jsonify({'success': True, **result})
 
 
 @bp.get('/api/routes/dispatch/fact')
