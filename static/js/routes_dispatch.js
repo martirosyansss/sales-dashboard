@@ -84,7 +84,6 @@
         sugMap: null, sugLayer: null, sugSel: null,     // предложения водителей: карта и выбранное (event_id)
         geoChanged: null,                   // день, в котором после сборки меняли точку магазина — подсказать пересборку
         unloadStop: null, unloadInfo: null, unloadSeq: 0,   // «Ժամանակ խանութում»: магазин диалога, его данные с сервера, номер запроса
-        unloadChanged: null,                // день, в котором после сборки меняли время у магазина — подсказать пересборку
         stepsOpen: new Set(),               // шаги 1–2, раскрытые логистом после сборки (иначе свёрнуты в строку)
         open: new Set(),                    // раскрытые карточки машин (код машины)
         ai: { chats: new Map(), busy: false, shownDay: null },   // «Հարցրու AI-ին»: разговор по каждому дню [{role, text}]
@@ -394,11 +393,6 @@
             tone = 'is-warn'; ico = 'fa-location-dot';
             title = 'Խանութի կետը փոխվել է';
             lines.push(GEO_REBUILD);
-            btns.push({ act: build, text: 'Վերակազմել երթերը', ico: 'fa-rotate' });
-        } else if (state.unloadChanged === d.day) {
-            tone = 'is-warn'; ico = 'fa-stopwatch';
-            title = 'Ժամանակը խանութում փոխվել է';
-            lines.push(UNLOAD_REBUILD);
             btns.push({ act: build, text: 'Վերակազմել երթերը', ico: 'fa-rotate' });
         } else if (planIssues(plan)) {
             tone = 'is-warn'; ico = 'fa-triangle-exclamation';
@@ -946,23 +940,30 @@
     // Своё время магазина — постоянная часть разгрузки (парковка, приёмка, документы) вместо общей нормы на точку; время на
     // груз программа добавляет сама. Данные диалога — GET /api/routes/customer-vehicles?customer_id=… (свежие: значение,
     // нормы, время по факту); сохраняется только время — POST /api/routes/customer-vehicles {customer_id, unload_min}:
-    // допуск и окно приёма не пересылаются. Рейсы сами не пересобираются — подсказка, как после смены точки.
+    // допуск и окно приёма не пересылаются. Рейсы сами не пересобираются — подсказка в уведомлении, как после смены точки.
     const UNLOAD_REBUILD = 'Վերակազմեք երթերը, որ հաշվի առնվի։';
     const UNLOAD_BAD = 'Գրեք ամբողջ թիվ՝ 1-ից մինչև 120 րոպե, կամ թողեք դաշտը դատարկ։';
-    const minShort = (v) => fmt(v, 1) + NB + 'ր';
+    const minutesText = (v) => fmt(v, 1) + NB + 'րոպե';
     // своё время магазина из ответа дня (store_unload: клиент → мин); не задано — null (общая норма)
     const ownUnload = (stop) => (isObj(state.data.store_unload) ? num(state.data.store_unload[stop.customer_id]) : null);
     // Подсказка — как посчитает «Развоз» (та же логика, что в «Условиях магазина» /routes/settings): пустое поле — обычное
-    // время или своё время магазина по факту (unload_auto_min); есть разгрузки по GPS (unload_visits) — введённое смешается с фактом
+    // время или своё время магазина по факту (unload_auto_min); есть разгрузки по GPS (unload_visits) — введённое смешается с фактом.
+    // «По факту» — только если отличается от нормы на 0,05 мин и больше: сервер округляет unload_auto_min до 0,1, а норму
+    // строки обучения — до 0,01 (8,4 и 8,37 — одно и то же «обычное» время)
     function unloadHint(x, norms) {
-        const auto = num(x.unload_auto_min);
-        const empty = auto !== null && auto !== num(norms.per_stop_min) ? minShort(auto) + ' (ըստ փաստի)' : 'սովորական ' + minShort(norms.per_stop_min);
+        const auto = num(x.unload_auto_min), perStop = num(norms.per_stop_min);
+        const empty = auto !== null && perStop !== null && Math.abs(auto - perStop) >= 0.05
+            ? minutesText(auto) + ' (ըստ փաստի)' : 'սովորական ' + minutesText(perStop);
         const fact = num(x.unload_visits) ? ' Ըստ վարորդների GPS-ի՝ այս խանութում արդեն եղել է ' + pl(x.unload_visits, 'բեռնաթափում')
             + '։ Ձեր գրած ժամանակը ծրագիրը կհամադրի փաստի հետ՝ որքան շատ բեռնաթափում, այնքան ավելի մոտ փաստին։' : '';
         return 'Քանի րոպե է մեքենան կանգնում այս խանութի մոտ՝ կայանում, ընդունում, փաստաթղթեր։ Բեռի ժամանակը ('
-            + minShort(norms.per_tonne_min) + ' տոննայի համար) ծրագիրը կավելացնի ինքը։' + fact + ' Դատարկ՝ ' + empty + '։';
+            + minutesText(norms.per_tonne_min) + ' տոննայի համար) ծրագիրը կավելացնի ինքը։' + fact + ' Դատարկ՝ ' + empty + '։';
     }
     const lockUnload = (on) => ['dpUnloadMin', 'dpUnloadSave', 'dpUnloadClear'].forEach(id => { $(id).disabled = on; });
+    function markUnload(bad) {
+        $('dpUnloadMin').classList.toggle('is-invalid', bad);
+        if (bad) $('dpUnloadMin').setAttribute('aria-invalid', 'true'); else $('dpUnloadMin').removeAttribute('aria-invalid');
+    }
     async function openUnload(stop) {
         if (state.busy) return;
         const seq = ++state.unloadSeq;
@@ -970,7 +971,7 @@
         state.unloadInfo = null;
         $('dpUnloadLead').textContent = '«' + (stop.name || stop.code) + '»' + (stop.address ? '՝ ' + stop.address : '');
         $('dpUnloadMin').value = ownUnload(stop) !== null ? String(ownUnload(stop)) : '';
-        $('dpUnloadMin').classList.remove('is-invalid');
+        markUnload(false);
         $('dpUnloadHint').textContent = 'Բեռնում եմ խանութի տվյալները…';
         $('dpUnloadErr').textContent = '';
         $('dpUnloadClear').hidden = true;
@@ -1005,7 +1006,8 @@
         if (!Number.isInteger(value) || value < 1 || value > 120) throw new Error(UNLOAD_BAD);
         return value;
     }
-    // clear — «Հեռացնել»: снова обычное время; пустое поле при «Պահպանել» — то же
+    // clear — «Հեռացնել»: снова обычное время; пустое поле при «Պահպանել» — то же. Значение не изменилось (например,
+    // пустое поле у магазина без своего времени) — сохранять нечего: диалог закрывается без запроса и уведомления
     async function saveUnload(clear) {
         const stop = state.unloadStop, x = state.unloadInfo;
         if (!stop || !x || state.busy) return;
@@ -1013,11 +1015,12 @@
         if (!clear) {
             try { value = readUnload(); } catch (e) {
                 $('dpUnloadErr').textContent = e.message;
-                $('dpUnloadMin').classList.add('is-invalid');
+                markUnload(true);
                 $('dpUnloadMin').focus();
                 return;
             }
         }
+        if (value === num(x.unload_min)) { $('dpUnloadDlg').close(); return; }
         state.busy = true;
         lockUnload(true);
         $('dpUnloadErr').textContent = '';
@@ -1031,11 +1034,9 @@
             lockUnload(false);
         }
         $('dpUnloadDlg').close();
-        // время изменилось, а рейсы уже есть — подсказать пересборку (и в «Ի՞նչ անել հիմա»), как после смены точки
-        const rebuild = value !== num(x.unload_min) && !!state.data.plan;
-        if (rebuild) state.unloadChanged = state.day;
+        // время изменилось, а рейсы уже есть — подсказать пересборку, как после смены точки
         toast('«' + (stop.name || stop.code) + '»՝ ' + (value === null ? 'ժամանակը խանութում նորից սովորական է։'
-            : 'ժամանակը խանութում պահպանված է (' + minShort(value) + ')։') + (rebuild ? ' ' + UNLOAD_REBUILD : ''));
+            : 'ժամանակը խանութում պահպանված է (' + minutesText(value) + ')։') + (state.data.plan ? ' ' + UNLOAD_REBUILD : ''));
         try { await reloadQuiet(); } catch (e) { showActionError(e); }
     }
 
@@ -1402,7 +1403,10 @@
         if (win) tag(stop.window_miss ? 'b-danger' : 'b-gps', (stop.window_miss ? 'չի հասցնում՝ ' : 'ընդունում է՝ ') + win, 'fa-door-open');
         // своё время у магазина (№50) — только у магазинов, где оно задано; у остальных — общая норма
         const own = ownUnload(stop);
-        if (own !== null) tag('dp-b-unload', 'Բեռնաթափում՝ ' + minShort(own), 'fa-stopwatch');
+        if (own !== null) {
+            tag('dp-b-unload', 'Բեռնաթափում՝ ' + fmt(own) + NB + 'ր', 'fa-stopwatch');
+            tags.lastChild.title = 'խանութի հաստատուն մասը՝ առանց բեռի ժամանակի';
+        }
         if (stop.center) tag(stop.center_miss ? 'b-danger' : 'b-warn', stop.center_miss ? 'Կենտրոն — մեքենան չի կարող մտնել' : 'Կենտրոն', 'fa-city');
         if (stop.vehicle_access) tag(stop.vehicle_miss ? 'b-danger' : 'b-warn',
             (stop.vehicle_miss ? 'Մեքենան չի կարող սպասարկել · ' : '') + vehicleText(stop.vehicle_access, true), 'fa-truck');
@@ -2301,7 +2305,6 @@
         try {
             const data = await api('POST', '/api/routes/dispatch/build', { date: state.day, trucks });
             state.geoChanged = null;
-            state.unloadChanged = null;
             setBusy(false);
             setData(data);
             toast('Երթերը կազմված են՝ ' + pl(data.plan.summary.trips, 'երթ') + ', ≈ ' + fmt(data.plan.summary.km) + NB + 'կմ');
@@ -2690,7 +2693,7 @@
         $('dpUnloadCancel').addEventListener('click', () => $('dpUnloadDlg').close());
         $('dpUnloadDlg').addEventListener('close', () => { state.unloadStop = null; state.unloadInfo = null; });
         $('dpUnloadDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
-        $('dpUnloadMin').addEventListener('input', () => { $('dpUnloadErr').textContent = ''; $('dpUnloadMin').classList.remove('is-invalid'); });
+        $('dpUnloadMin').addEventListener('input', () => { $('dpUnloadErr').textContent = ''; markUnload(false); });
         $('dpUnloadMin').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveUnload(false); } });
         $('dpMapBox').addEventListener('toggle', () => { if ($('dpMapBox').open && state.data && state.data.plan) drawMap(); });
         $('dpStep1Tog').addEventListener('click', () => toggleStep('dpStep1'));

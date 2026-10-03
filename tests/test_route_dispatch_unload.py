@@ -8,8 +8,10 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from route_optimizer import ai_chat  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
 from route_optimizer.vehicle_access import VehicleAccess  # noqa: E402
+from test_route_dispatch_ai import FakeClient  # noqa: E402
 from test_route_optimizer import _dispatch_setup, _dorder, _no_road_map, client  # noqa: E402,F401
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -120,6 +122,14 @@ def test_api_unload_only_bad_request_saves_nothing(client, body, field):
     assert client.application.extensions['route_optimizer'].store.load().unload_min == {}
 
 
+def test_api_full_shape_reports_access_before_unload(client):
+    """Форма «Условий магазина»: при неверных и допуске, и времени — ошибка допуска, как до новой формы."""
+    _dispatch_setup(client, [])
+    r = client.post('/api/routes/customer-vehicles', json={'customer_id': 103, 'access': {'mode': 'bogus'},
+                                                           'window': None, 'unload_min': 0})
+    assert r.status_code == 400 and list(r.get_json()['errors']) == ['access']
+
+
 # ============================== ответ «Развоза»: своё время у точки ==============================
 
 def test_dispatch_day_carries_own_store_times(client):
@@ -143,24 +153,57 @@ def test_dispatch_day_carries_own_store_times(client):
     assert _unload(client, 999, 30).status_code == 400                          # магазина нет в данных ERP раздела
 
 
+def test_every_page_route_carries_store_times(client):
+    """Страница перерисовывает день по ответу любой своей кнопки — store_unload в каждом (иначе плашки пропали бы)."""
+    _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2)])
+    assert _unload(client, 102, 40).status_code == 200
+    body = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1']}).get_json()
+    trip = body['plan']['trucks'][0]['trips'][0]['id']
+    body = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': body['rev'], 'action': 'unpin',
+                                                          'trip': trip}).get_json()
+    assert body['success'] and body['store_unload'] == {'102': 40.0}
+    body = client.post('/api/routes/dispatch/overtime', json={'date': DAY, 'rev': body['rev']}).get_json()
+    assert body['success'] and body['store_unload'] == {'102': 40.0}
+    body = client.post('/api/routes/dispatch/reset', json={'date': DAY}).get_json()
+    assert body['success'] and body['store_unload'] == {'102': 40.0}
+
+
+def test_ai_day_data_has_no_store_times(client, monkeypatch):
+    """«Հարցրու AI-ին» видит день без store_unload (он только у страницы): ai_chat убирает customer_id у точек — номера
+    клиентов модели ничего не скажут."""
+    _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2)])
+    assert client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1']}).status_code == 200
+    assert _unload(client, 102, 40).status_code == 200
+    assert client.get(f'/api/routes/dispatch?date={DAY}').get_json()['store_unload'] == {'102': 40.0}
+    fake = FakeClient()
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'test-key')
+    monkeypatch.setattr(ai_chat, '_get_client', lambda: fake)
+    r = client.post('/api/routes/dispatch/ask', json={'date': DAY, 'question': 'Ո՞ր մեքենան', 'history': []})
+    assert r.status_code == 200, r.get_json()
+    day = fake.calls[0]['messages'][0]['content'][0]['text']
+    assert day.startswith('<day_data') and 'Клиент 102' in day and 'store_unload' not in day
+
+
 # ============================== страница ==============================
 
-def test_page_dialog_assets_and_translations(client):
-    """Диалог рядом с «Փոխել տեղը», ассеты с новой версией; POST — только время; каждая ошибка сервера этой формы
-    переведена (страница армянская, №31); нечисло в поле — ошибка, а не «пусто» (стёрло бы время молча)."""
+def test_page_dialog_and_translations(client):
+    """Диалог «Ժամանակ խանութում» рядом с «Փոխել տեղը» (в конце #rtDispatch); страница пользуется этим API и полями
+    ответа; нечисло в поле — ошибка, а не «пусто» (стёрло бы время молча); каждая ошибка сервера этой формы переведена
+    (страница армянская, №31). Поведение диалога — в tests/routes_dispatch_browser_check.py (блок U)."""
     html = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
-    assert 'id="dpUnloadDlg"' in html and '>Ժամանակ խանութում, րոպե<' in html and '>Հեռացնել<' in html
+    for piece in ('id="dpUnloadDlg"', 'id="dpUnloadMin"', 'id="dpUnloadSave"', 'id="dpUnloadClear"', 'id="dpUnloadCancel"',
+                  'Ժամանակ խանութում', 'Հեռացնել'):
+        assert piece in html, piece
     assert html.index('id="dpGeoDlg"') < html.index('id="dpUnloadDlg"') < html.index('{% endblock %}', html.index('id="dpGeoDlg"'))
-    assert "routes_dispatch.css') }}?v=26" in html and "routes_dispatch.js') }}?v=47" in html
     js = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
-    assert "api('POST', '/api/routes/customer-vehicles', { customer_id: stop.customer_id, unload_min: value })" in js
-    assert 'input.validity.badInput' in js and 'state.data.store_unload' in js and "'Բեռնաթափում՝ '" in js
-    assert 'unload_auto_min' in js and 'unload_visits' in js and 'unload_norms' in js
+    for piece in ('/api/routes/customer-vehicles', 'unload_min', 'store_unload', 'unload_norms', 'unload_auto_min',
+                  'unload_visits', 'validity.badInput', 'Բեռնաթափում՝ '):
+        assert piece in js, piece
     _dispatch_setup(client, [])
     shape = client.post('/api/routes/customer-vehicles', json={'customer_id': 103}).get_json()['error']
     missing = client.post('/api/routes/customer-vehicles', json={'customer_id': 999, 'unload_min': 30}).get_json()['error']
     for text in (shape, missing, UNLOAD_ERROR):
-        assert "'" + text + "':" in js, text
-    assert "[': не удалось сохранить время у магазина'," in js
+        assert "'" + text + "'" in js, text
+    assert "': не удалось сохранить время у магазина'" in js
     css = (ROOT / 'static' / 'css' / 'routes_dispatch.css').read_text(encoding='utf-8')
     assert '.dp-b-unload' in css and '.dp-unload-dlg' in css
