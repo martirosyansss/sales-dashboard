@@ -18,6 +18,11 @@ Matrix = list[list[float]]
 Distance = Callable[[Point, Point], float]   # км от точки до точки (по дорогам — направленно)
 
 _EPS = 1e-12
+# 2-opt по направленной матрице: ход — при выигрыше больше TWO_OPT_REL_EPS × длины тура. Порог 1e-12 там не годится:
+# выигрыш копится разностью ходов куска, и на больших числах ошибка округления (~1e-12) выглядела выигрышем — кусок
+# разворачивался туда-обратно без конца. TWO_OPT_MAX_PASSES — жёсткий предел проходов (обе матрицы; обычно их < 20).
+TWO_OPT_REL_EPS = 1e-9
+TWO_OPT_MAX_PASSES = 200
 
 
 def distance_matrix(points: Sequence[Point], dist: Distance | None = None) -> Matrix:
@@ -62,16 +67,22 @@ def two_opt(tour: Sequence[int], dist: Matrix) -> list[int]:
     """2-opt для замкнутого тура; tour[0] (склад) остаётся первым. Длина не растёт.
 
     Ход разворачивает t[i..j]. В направленной матрице у развёрнутого куска меняются и внутренние рёбра:
-    Δ = d(a, c) + d(b, e) − d(a, b) − d(c, e) + (обратный ход куска − прямой); оба хода копятся по j за O(1).
-    Симметричная матрица — прежний расчёт (те же ходы, тот же результат)."""
+    Δ = d(a, c) + d(b, e) − d(a, b) − d(c, e) + (обратный ход куска − прямой); оба хода копятся по j за O(1), ход —
+    при Δ < −TWO_OPT_REL_EPS × длина тура, и тур из трёх вершин тоже разворачивается (в одну сторону короче).
+    Симметричная матрица — прежний расчёт (те же ходы, тот же результат). Проходов — не больше TWO_OPT_MAX_PASSES."""
     t = list(tour)
     n = len(t)
-    if n < 4:
+    if n < 3:
         return t
     directed = not is_symmetric(dist, t)
-    improved = True
-    while improved:
-        improved = False
+    if n < 4 and not directed:
+        return t
+    eps = _EPS
+    improved, passes = True, 0
+    while improved and passes < TWO_OPT_MAX_PASSES:
+        improved, passes = False, passes + 1
+        if directed:
+            eps = TWO_OPT_REL_EPS * max(1.0, closed_length(t, dist))
         for i in range(1, n - 1):
             fwd = back = 0.0   # ход куска t[i..j] вперёд и назад
             for j in range(i + 1, n):
@@ -82,7 +93,7 @@ def two_opt(tour: Sequence[int], dist: Matrix) -> list[int]:
                     fwd += dist[t[j - 1]][c]
                     back += dist[c][t[j - 1]]
                     delta += back - fwd
-                if delta < -_EPS:
+                if delta < -eps:
                     t[i:j + 1] = t[i:j + 1][::-1]
                     fwd, back = back, fwd
                     improved = True

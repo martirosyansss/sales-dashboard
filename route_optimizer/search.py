@@ -28,7 +28,7 @@ from collections import Counter, deque
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Sequence
 
-from .tsp import is_symmetric
+from .tsp import TWO_OPT_MAX_PASSES, TWO_OPT_REL_EPS, is_symmetric
 
 W = 2                     # недель в цикле
 SLOTS = 14                # слот = (неделя − 1) × 7 + (день недели − 1)
@@ -174,15 +174,20 @@ def tour_length(t: Sequence[int], d: Matrix) -> float:
 
 def two_opt(t: list[int], d: Matrix) -> list[int]:
     """2-opt замкнутого тура на месте; t[0] (дом, склад) остаётся первым. Длина не растёт.
-    Направленная матрица — с внутренними рёбрами развёрнутого куска (как tsp.two_opt); симметричная — прежний
-    расчёт."""
+    Направленная матрица — с внутренними рёбрами развёрнутого куска, порогом TWO_OPT_REL_EPS × длина тура и туром
+    из трёх вершин (как tsp.two_opt); симметричная — прежний расчёт. Проходов — не больше TWO_OPT_MAX_PASSES."""
     n = len(t)
-    if n < 4:
+    if n < 3:
         return t
     directed = not is_symmetric(d, t)
-    improved = True
-    while improved:
-        improved = False
+    if n < 4 and not directed:
+        return t
+    eps = _TWO_OPT_EPS
+    improved, passes = True, 0
+    while improved and passes < TWO_OPT_MAX_PASSES:
+        improved, passes = False, passes + 1
+        if directed:
+            eps = TWO_OPT_REL_EPS * max(1.0, tour_length(t, d))
         for i in range(1, n - 1):
             a = t[i - 1]
             da = d[a]
@@ -197,7 +202,7 @@ def two_opt(t: list[int], d: Matrix) -> list[int]:
                     fwd += d[p][c]
                     back += d[c][p]
                     delta += back - fwd
-                if delta < -_TWO_OPT_EPS:
+                if delta < -eps:
                     t[i:j + 1] = t[i:j + 1][::-1]
                     fwd, back = back, fwd
                     improved = True

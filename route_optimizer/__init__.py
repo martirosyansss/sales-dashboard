@@ -35,19 +35,22 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
     db_path — файл SQLite; по умолчанию env ROUTES_DB_PATH или route_optimizer.db рядом с app_v2.py.
     Карта дорог — env ROUTES_OSM_PATH или data/roads/armenia-latest.osm.pbf (этап 5); файла нет —
     км по прямой × извилистость. Граф и матрица строятся при первом расчёте, а не здесь.
-    Valhalla (план learning-loop, этап 2) — env ROUTES_ROAD_ENGINE: valhalla_time (по умолчанию: минуты Valhalla,
-    км графа OSM) | valhalla | osm; тайлы — в ROUTES_VALHALLA_DIR (valhalla_engine). Без pyvalhalla или карты —
-    граф OSM, как раньше.
+    Valhalla (план learning-loop, этап 2) — env ROUTES_ROAD_ENGINE: valhalla_time (по умолчанию: минуты машин
+    менеджеров — Valhalla, км — граф OSM) | valhalla | osm; минуты грузовиков — ROUTES_TRUCK_TIME (model по умолчанию
+    | valhalla); тайлы — в ROUTES_VALHALLA_DIR (valhalla_engine). Тайлы собирает фоновый поток, запущенный здесь (ERP
+    и SQLite он не трогает); пока не готово — граф OSM. Без pyvalhalla или карты — граф OSM, как раньше.
     """
     path = db_path or os.environ.get('ROUTES_DB_PATH') or os.path.join(app.root_path, DB_FILENAME)
     connection_string: str = db.connection_string
     roads = RoadProvider(osm_path())
+    valhalla = ValhallaProvider(pbf=roads.path)
+    valhalla.start()
     app.extensions[EXTENSION_KEY] = RoutesState(
         store=Store(path),
         snapshots=SnapshotCache(lambda: load_snapshot(connection_string)),
         results=ResultCache(),
         roads=roads,
-        valhalla=ValhallaProvider(),
+        valhalla=valhalla,
         dispatch_loader=lambda since, until, day: erp.load_dispatch_data(connection_string, since, until, day),
         fact_loader=lambda day: erp.load_fact_data(connection_string, day),
     )

@@ -446,10 +446,13 @@ class RoadDistances:
     Файл кэша годится, только если он посчитан на том же графе: graph_identity — отпечаток графа
     без его загрузки (None — проверить нечем, файл не читается)."""
 
+    km_source = 'osm'   # откуда км (тот же интерфейс, что у valhalla_engine.ValhallaRoads)
+
     def __init__(self, version: str, load_network: Callable[[], RoadNetwork],
                  cache_path: str | None = None,
-                 graph_identity: Callable[[], str | None] | None = None):
+                 graph_identity: Callable[[], str | None] | None = None, map_path: str | None = None):
         self.version = version
+        self.map_path = map_path   # файл карты (для отпечатка содержимого в road_model_id); None — граф в памяти
         self._load_network = load_network
         self._cache_path = cache_path
         self._graph_identity = graph_identity
@@ -464,7 +467,7 @@ class RoadDistances:
         graph_path = _cache_path(path, 'graph')
         return cls(version, lambda: RoadNetwork(load_graph(path, version)),
                    _cache_path(path, cache_name),
-                   lambda: RoadGraph.stored_identity(graph_path, version))
+                   lambda: RoadGraph.stored_identity(graph_path, version), path)
 
     @classmethod
     def for_graph(cls, graph: RoadGraph, version: str = 'memory',

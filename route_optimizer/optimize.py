@@ -670,11 +670,16 @@ def _fleet_setup(ctx: _Ctx, run_ids: Sequence[int]) -> _Fleet | None:
     order = sorted(keys)
     node = {key: n + 1 for n, key in enumerate(order)}
     points = [p for _, p in order]
-    if ctx.dist is None:
-        ctx.dist = _Distances(points, norms)
-    km = ctx.dist.rows(bundle.depot, points)
+    truck_norms = norms.for_trucks()
+    if norms.roads is None or truck_norms.roads.km_source == norms.roads.km_source:
+        if ctx.dist is None:
+            ctx.dist = _Distances(points, norms)
+        dist = ctx.dist
+    else:   # режим valhalla: км грузовиков — свой профиль (truck), не км машин менеджеров
+        dist = _Distances(points, truck_norms)
+    km = dist.rows(bundle.depot, points)
     depot_city = in_city(bundle.depot, norms.city_center, norms.city_radius_km)
-    city = [depot_city] + [ctx.dist.city[ctx.dist.index[p]] for p in points]
+    city = [depot_city] + [dist.city[dist.index[p]] for p in points]
     kg = [0.0] + [before.models[c].year.mean_kg if before.models[c].year.values else 0.0 for c, _ in order]
     tn = fl.TruckNorms.from_settings(s)
     empty = fmean(t.fuel_empty_l_per_100km if t.fuel_empty_l_per_100km is not None else t.l100 for t in trucks)

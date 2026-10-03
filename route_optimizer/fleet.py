@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
 from . import vrp
 from .geo import Point, in_city
 from .running_costs import RunningCost, configured, profile_fields, route_cost
-from .tsp import is_symmetric
+from .tsp import TWO_OPT_MAX_PASSES, is_symmetric
 
 logger = logging.getLogger(__name__)
 
@@ -200,16 +200,19 @@ def _two_opt(seq: list[int], stops: Sequence[_Stop], d: Matrix,
              ok: Callable[[list[int]], bool] | None = None) -> list[int]:
     """2-opt рейса «склад → seq → склад» (склад на месте); длина не растёт. ok — ход принимается, только если
     рейс после него допустим (окна приёма). Направленная матрица — с внутренними рёбрами развёрнутого куска
-    (как tsp.two_opt): ход, который короче только «в одну сторону», не принимается и не пропускается."""
+    (как tsp.two_opt): ход, который короче только «в одну сторону», не принимается и не пропускается; рейс из двух
+    точек тоже разворачивается. Проходов — не больше TWO_OPT_MAX_PASSES."""
     t = [-1, *seq]
     node = [0, *(stops[v].node for v in seq)]
     n = len(t)
-    if n < 4:
+    if n < 3:
         return seq
     directed = not is_symmetric(d, node)
-    improved = True
-    while improved:
-        improved = False
+    if n < 4 and not directed:
+        return seq
+    improved, passes = True, 0
+    while improved and passes < TWO_OPT_MAX_PASSES:
+        improved, passes = False, passes + 1
         for i in range(1, n - 1):
             fwd = back = 0.0   # ход куска node[i..j] вперёд и назад
             for j in range(i + 1, n):
@@ -264,13 +267,16 @@ def _waiting(seq, stops, m, start, minutes):
 
 
 def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix, cap: float,
-             window: float, fits: Callable[[list[int], list[int]], list[int] | None] | None = None) -> list[list[int]]:
+             window: float, fits: Callable[..., list[int] | None] | None = None) -> list[list[int]]:
     """Кларк–Райт (параллельная версия): s(i, j) = d(0,i) + d(0,j) − d(i,j), по убыванию (ничьи — по
-    номеру); маршруты сливаются через концы, пока груз ≤ cap и время рейса ≤ window. fits(a, b) — проверка
+    номеру); маршруты сливаются через концы, пока груз ≤ cap и время рейса ≤ window. fits(a, b, reverse) — проверка
     слияния a + b (окна приёма, тоннаж центра): допустимый порядок объезда слитого рейса или None.
-    Направленная матрица минут: время слитого рейса — точно по его порядку объезда (у развёрнутого куска своё
-    время); симметричная — прежняя формула из времён двух рейсов."""
-    directed = not is_symmetric(m, [0, *(stops[v].node for v in light)])
+
+    Направленные матрицы (одностороннее движение): s(i → j) = d(i, 0) + d(0, j) − d(i, j) — рейс, который кончается
+    в i, + рейс, который начинается с j, в обе стороны каждой пары; рейсы не разворачиваются (у развёрнутого другие км
+    и минуты), время слитого рейса — точно по его порядку. Симметричные — прежний расчёт (те же рейсы)."""
+    nodes = [0, *(stops[v].node for v in light)]
+    directed = not (is_symmetric(d, nodes) and is_symmetric(m, nodes))
 
     def exact(seq: Sequence[int]) -> float:
         return _closed(seq, stops, m) + math.fsum(stops[v].unload for v in seq)
@@ -286,6 +292,11 @@ def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix,
         da, d0a = d[a], d0[a]
         for j in light[x + 1:]:
             b = stops[j].node
+            if directed:   # конец рейса i → начало рейса j и конец j → начало i
+                for u, v, s in ((i, j, da[0] + d0[b] - da[b]), (j, i, d[b][0] + d0a - d[b][a])):
+                    if s > _EPS:
+                        pairs.append((-s, u, v))
+                continue
             s = d0a + d0[b] - da[b]
             if s > _EPS:
                 pairs.append((-s, i, j))
@@ -295,17 +306,20 @@ def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix,
         if ri == rj or load[ri] + load[rj] > cap + _EPS:
             continue
         A, B = members[ri], members[rj]
-        if (A[-1] != i and A[0] != i) or (B[0] != j and B[-1] != j):
-            continue
-        a, b = stops[i].node, stops[j].node
         if directed:
-            t = exact((A if A[-1] == i else A[::-1]) + (B if B[0] == j else B[::-1]))
+            if A[-1] != i or B[0] != j:
+                continue
+            t = exact(A + B)
         else:
+            if (A[-1] != i and A[0] != i) or (B[0] != j and B[-1] != j):
+                continue
+            a, b = stops[i].node, stops[j].node
             t = time[ri] + time[rj] - m[a][0] - m0[b] + m[a][b]
         if t > window + _EPS:   # езда + разгрузка — нижняя граница времени рейса и с ожиданием у окон
             continue
         if fits is not None:
-            merged = fits(A if A[-1] == i else A[::-1], B if B[0] == j else B[::-1])
+            merged = (fits(A, B, reverse=False) if directed else
+                      fits(A if A[-1] == i else A[::-1], B if B[0] == j else B[::-1]))
             if merged is None:
                 continue
             A[:] = merged
@@ -632,7 +646,9 @@ def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[F
         limit = idle(seq) + WAIT_MERGE_SLACK
         return lambda s2: ok_at_start(s2) and idle(s2) <= limit
 
-    def fits(a: list[int], b: list[int]) -> list[int] | None:
+    def fits(a: list[int], b: list[int], reverse: bool = True) -> list[int] | None:
+        """Слитый рейс a + b допустим: тоннаж (центр — свой предел) и окна; reverse — можно и задом наперёд (только у
+        симметричных матриц: у направленных у развёрнутого рейса другие км)."""
         seq = a + b
         if is_central(seq) and math.fsum(vs[v].kg for v in seq) > cap_c + _EPS:
             return None
@@ -642,7 +658,7 @@ def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[F
         if not timed(seq):
             return seq
         limit = idle(a) + idle(b) + WAIT_MERGE_SLACK
-        ok = [s2 for s2 in (seq, seq[::-1]) if ok_at_start(s2) and idle(s2) <= limit]
+        ok = [s2 for s2 in ((seq, seq[::-1]) if reverse else (seq,)) if ok_at_start(s2) and idle(s2) <= limit]
         return min(ok, key=idle) if ok else None
 
     single_set = set(singles) | set(at.values())

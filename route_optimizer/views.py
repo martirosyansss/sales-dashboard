@@ -279,16 +279,20 @@ def _compute_overview(snap: Snapshot, bundle: Bundle, calib: evaluate.Calibratio
     return payload
 
 
-def _roads(state: RoutesState, snap: Snapshot, bundle: Bundle) -> RoadDistances | ValhallaRoads | None:
-    """Расстояния по дорогам для плана снимка: все точки плана — одним расчётом (первый раз —
-    минуты, дальше кэш на диске). Valhalla включён и собран — его направленные минуты (и км в режиме valhalla;
-    запасной путь — граф OSM); иначе граф OSM. Карты нет — None; граф не собрался — roads.failed (оценка
-    считает по прямой и предупреждает roads_failed)."""
+def _roads(state: RoutesState, snap: Snapshot, bundle: Bundle,
+           extra: Sequence[Point] = ()) -> RoadDistances | ValhallaRoads | None:
+    """Расстояния по дорогам для расчёта по плану снимка (и точкам extra — заказы развоза) — до кэша оценки:
+    граф OSM для всех точек — одним расчётом (первый раз — минуты, дальше кэш на диске). Valhalla — только если его
+    матрицы для этих точек (у машин менеджеров и, когда грузовикам нужен Valhalla, у грузовиков) уже готовы: тайлы и
+    матрицы считает фоновый поток (ValhallaProvider), а пока — граф OSM; запрос тяжёлой работы Valhalla не ждёт.
+    Карты нет — None; граф не собрался — roads.failed (оценка считает по прямой и предупреждает roads_failed)."""
+    points = [*evaluate.plan_points(snap, bundle, {}), *extra]
     roads = state.roads.get() if state.roads is not None else None
-    if state.valhalla is not None:
-        roads = state.valhalla.get(roads) or roads
     if roads is not None:
-        roads.ensure(evaluate.plan_points(snap, bundle, {}))
+        roads.ensure(points)
+    if state.valhalla is not None:
+        capacity = max((t.capacity_kg for t in _ready_trucks(snap, bundle).values()), default=None)
+        roads = state.valhalla.get(roads, points, capacity) or roads
     return roads
 
 
@@ -830,11 +834,9 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
         return None
     s = bundle.settings
     calib = _calibration(state, snap, s)
-    roads = _roads(state, snap, bundle)
+    roads = _roads(state, snap, bundle, [*points, bundle.depot])
     norms = evaluate.Norms.from_settings(s, calib, roads if roads is not None and not roads.failed else None)
-    norms = norms.for_trucks()   # развоз — профиль грузовика (Valhalla)
-    if norms.roads is not None:
-        norms.roads.ensure([*points, bundle.depot])
+    norms = norms.for_trucks()   # развоз — профиль грузовика (км Valhalla — в режиме valhalla, минуты — ROUTES_TRUCK_TIME)
     h, m = map(int, s['truck_work_start'].split(':'))
     norms = replace(norms, traffic_weekday=day.weekday(), traffic_start_min=float(h * 60 + m))
     if s.get('traffic_mode') == 'yandex':

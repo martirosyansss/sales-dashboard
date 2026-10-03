@@ -1042,6 +1042,7 @@ def evaluate_plan(snap: Snapshot, bundle: Bundle, calib: Calibration | None = No
     coords: dict[tuple[int, int], Coord] = {}
     if roads is not None:
         points = plan_points(snap, bundle, coords)
+        # сервер готовит всё до кэша оценки (views._roads) — здесь проверка подмножества; скрипты досчитывают
         roads.ensure(points)
         roads.truck().ensure(points)   # парк: у Valhalla свой профиль грузовика
         if roads.failed:   # граф не собрался — считаем по прямой (в журнале — причина)
