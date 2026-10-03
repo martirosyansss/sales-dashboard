@@ -1428,6 +1428,7 @@ def api_dispatch_ask() -> Any:
         return error
     try:
         question, history, focus = ai_chat.parse_request(payload)
+        ai_chat.ensure_available()          # без ключа — не читать день зря
         state = _state()
         dd = _load_day(state, _bundle(state), day)
         result = ai_chat.ask(_dispatch_body(dd), question, history, focus)

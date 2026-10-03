@@ -2437,7 +2437,8 @@
         chat.forEach(m => log.appendChild(aiMsg(m.role, m.text, m.note)));
         log.scrollTop = log.scrollHeight;
     }
-    async function aiAsk(question) {
+    // fromInput — вопрос из поля ввода (его очистить); подсказка — набранный текст не трогать
+    async function aiAsk(question, fromInput) {
         const q = String(question || '').trim();
         if (!q || state.ai.busy || !state.day) return;
         const day = state.day, chat = aiChat(), log = $('dpAiLog'), focus = aiFocus();
@@ -2454,8 +2455,8 @@
         log.scrollTop = log.scrollHeight;
         state.ai.busy = true;
         $('dpAiSend').disabled = true;
-        $('dpAiInput').value = '';
-        aiResize();
+        if (fromInput) { $('dpAiInput').value = ''; aiResize(); }
+        $('dpAiInput').focus();         // нажатая подсказка или «Կրկնել» исчезли — фокус в поле ввода
         try {
             const r = await api('POST', '/api/routes/dispatch/ask', { date: day, question: q, history, focus });
             const note = r.truncated ? 'Պատասխանը կտրվել է՝ շատ երկար էր։ Հարցրեք ավելի նեղ։' : '';
@@ -2473,7 +2474,10 @@
             again.type = 'button';
             again.className = 'rt-btn rt-btn-ghost rt-btn-sm';
             again.innerHTML = '<i class="fas fa-rotate-right" aria-hidden="true"></i><span>Կրկնել</span>';
-            again.addEventListener('click', () => { err.remove(); asked.forEach(x => x.remove()); aiAsk(q); });
+            again.addEventListener('click', () => {
+                if (state.ai.busy) return;      // идёт другой вопрос — не терять этот
+                err.remove(); asked.forEach(x => x.remove()); aiAsk(q);
+            });
             err.appendChild(document.createElement('br'));
             err.appendChild(again);
             if (wait.isConnected) wait.replaceWith(err); else { aiRender(); log.appendChild(err); }
@@ -2493,11 +2497,11 @@
         $('dpAiOpen').addEventListener('click', () => aiOpen(true));
         $('dpAiClose').addEventListener('click', () => aiOpen(false));
         $('dpAiNew').addEventListener('click', () => { if (state.ai.busy) return; state.ai.chats.set(state.day, []); aiRender(); $('dpAiInput').focus(); });
-        $('dpAiForm').addEventListener('submit', (e) => { e.preventDefault(); aiAsk($('dpAiInput').value); });
+        $('dpAiForm').addEventListener('submit', (e) => { e.preventDefault(); aiAsk($('dpAiInput').value, true); });
         $('dpAiInput').addEventListener('input', aiResize);
         // Enter — отправить, Shift+Enter — новая строка; Esc — закрыть панель
         $('dpAiInput').addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); aiAsk($('dpAiInput').value); }
+            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); aiAsk($('dpAiInput').value, true); }
         });
         $('dpAi').addEventListener('keydown', (e) => { if (e.key === 'Escape') aiOpen(false); });
     }

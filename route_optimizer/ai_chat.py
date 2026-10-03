@@ -28,16 +28,19 @@ MODEL = 'claude-opus-5-5'
 EFFORTS = ('low', 'medium', 'high')
 DEFAULT_EFFORT = 'low'            # чат по готовым цифрам: глубокое рассуждение не нужно, ответ быстрее и дешевле
 MAX_TOKENS = 16000
-TIMEOUT_S = 90.0                  # waitress закрывает соединение через 120 с (channel_timeout)
+# Ответ при effort low — 10–20 с; без повторов (max_retries=0) поток waitress и окно чата ждут не дольше этого
+TIMEOUT_S = 75.0
 FALLBACK_BETA = 'server-side-fallback-2026-07-01'
 MAX_QUESTION = 1000               # символов в вопросе
 MAX_FOCUS = 200                   # «что выбрано на карте» — короткая подпись
 MAX_HISTORY = 12                  # реплик истории (6 вопросов с ответами); старше — отбрасываются
-MAX_TURN_TEXT = 8000              # символов в одной реплике истории
+MAX_TURN_TEXT = 8000              # символов реплики истории в запросе; длиннее — обрезается (ответ AI бывает длинным)
 
-# Поля ответа дня, которые модели не нужны: координаты, внутренние id, подписи для синхронизации страницы
+# Поля ответа дня, которые модели не нужны: координаты, внутренние id, подписи для синхронизации страницы и метки
+# времени чтения (data_as_of — каждое перечитывание ERP, fetched_at — пробки): они меняли бы текст дня между
+# вопросами, и данные дня не читались бы из кэша
 _DROP = frozenset({'lat', 'lon', 'isn', 'customer_id', 'agent_id', 'orders_sig', 'rev', 'success', 'vehicle_options',
-                   'depot', 'event_id', 'accuracy', 'current', 'doc_num'})
+                   'depot', 'event_id', 'accuracy', 'current', 'doc_num', 'data_as_of', 'fetched_at'})
 
 SYSTEM = """You are the dispatch assistant on the «Առաքում» (dispatch) page of a bottled-water distributor in Armenia. \
 The person asking is the logist who plans tomorrow's delivery trips for the company trucks and prints sheets for drivers.
@@ -89,6 +92,11 @@ def available() -> bool:
     return anthropic is not None and bool(os.environ.get('ANTHROPIC_API_KEY', '').strip())
 
 
+def ensure_available() -> None:
+    if not available():
+        raise AiError('AI недоступен: не задан ANTHROPIC_API_KEY в .env сервера')
+
+
 def _model() -> str:
     return os.environ.get('ROUTES_AI_MODEL', '').strip() or MODEL
 
@@ -107,7 +115,7 @@ def _get_client():
     global _client
     with _client_lock:
         if _client is None:
-            _client = anthropic.Anthropic(timeout=TIMEOUT_S, max_retries=1)
+            _client = anthropic.Anthropic(timeout=TIMEOUT_S, max_retries=0)
         return _client
 
 
@@ -115,6 +123,11 @@ def _get_client():
 
 def _text(value: Any, limit: int) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() and len(value) <= limit else None
+
+
+def _turn_text(value: Any) -> str | None:
+    """Реплика истории: непустая строка; длинный ответ AI не ломает разговор — обрезается до MAX_TURN_TEXT."""
+    return value.strip()[:MAX_TURN_TEXT] if isinstance(value, str) and value.strip() else None
 
 
 def parse_request(payload: dict[str, Any]) -> tuple[str, list[dict[str, str]], str | None]:
@@ -130,7 +143,7 @@ def parse_request(payload: dict[str, Any]) -> tuple[str, list[dict[str, str]], s
     history: list[dict[str, str]] = []
     for i, turn in enumerate(raw):
         role = turn.get('role') if isinstance(turn, dict) else None
-        text = _text(turn.get('text'), MAX_TURN_TEXT) if isinstance(turn, dict) else None
+        text = _turn_text(turn.get('text')) if isinstance(turn, dict) else None
         if role != ('user' if i % 2 == 0 else 'assistant') or text is None:
             raise AiError('история диалога: ожидался список реплик', 400)
         history.append({'role': role, 'text': text})
@@ -173,6 +186,7 @@ def day_context(body: dict[str, Any]) -> str:
         g = data['geo_suggestions']
         data['geo_suggestions'] = {'count': g.get('count', 0), 'day_count': g.get('day_count', 0)}
     text = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str)
+    text = text.replace('<', '\\u003c')   # текст из ERP не закроет обёртку </day_data> (в JSON это тот же символ)
     return '<day_data date="%s">\n%s\n</day_data>' % (body.get('day', ''), text)
 
 
@@ -199,8 +213,7 @@ def ask(body: dict[str, Any], question: str, history: list[dict[str, str]], focu
         client: Any = None) -> dict[str, Any]:
     """Ответ модели на вопрос по дню: {"answer", "model", "refused", "truncated"}. Сбой — AiError."""
     if client is None:
-        if not available():
-            raise AiError('AI недоступен: не задан ANTHROPIC_API_KEY в .env сервера')
+        ensure_available()
         client = _get_client()
     model = _model()
     try:
