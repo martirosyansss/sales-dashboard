@@ -93,6 +93,17 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       carried=frozenset(carried), dropped=frozenset(draft.dropped), roads=roads)
 
 
+def routes_depot(state: Any) -> Point | None:
+    """Склад из настроек «Маршрутов» (без карты дорог и плана); раздела нет или база битая — None."""
+    if state is None:
+        return None
+    try:
+        return state.store.load().depot
+    except RoutesStoreError:
+        logger.warning('[Courier] База «Маршрутов» недоступна — склад не учтён', exc_info=True)
+        return None
+
+
 def _carried(state: Any, day: date, workdays: Sequence[int]) -> set[str]:
     """«Везти завтра» из планов с прошлого рабочего дня по вчера (как views._carried «Маршрутов»)."""
     out: set[str] = set()

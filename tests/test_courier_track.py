@@ -346,9 +346,113 @@ def test_facts_source_day_and_refuels(cs, tmp_path):
     assert src.car_days('2026-10-01', '2026-10-03') == [('CAR1', DAY)]
     day = src.day('CAR1', DAY)
     assert len(day['track']) == 2 and len(day['track'][0]) == 5
-    assert day['stops'] == [{'stop_id': sid, 'customer_id': 101, 'lat': SHOP[0], 'lon': SHOP[1], 'weight_kg': 500.0,
-                             'seq': 1, 'delivered_share': 0.4}]
+    assert day['stops'] == [{'stop_id': sid, 'customer_id': 101, 'name': None, 'lat': SHOP[0], 'lon': SHOP[1],
+                             'weight_kg': 500.0, 'seq': 1, 'delivered_share': 0.4,
+                             'delivered_at': DAY + 'T10:30:00+04:00'}]
     assert [r['car_code'] for r in src.refuels()] == ['CAR1']
     missing = FactsSource(Store(str(tmp_path / 'nope' / 'courier.db')))
     assert (missing.car_days('a', 'b'), missing.day('CAR1', DAY), missing.refuels()) == ([], {'track': [], 'stops': []}, [])
     assert not (tmp_path / 'nope' / 'courier.db').exists()
+
+
+# ============================== ревью learning-loop: H2, L6, M3, предел 40 000 ==============================
+
+def test_h2_correction_counts_at_original_time_and_flags_recomputed(cs):
+    """Исправление заправки пришло после следующей: момент — исходной заправки; флаг пересчитывается при чтении."""
+    from courier.facts import refuel_flags
+    from route_optimizer import learning as lr
+    who = _who(cs)
+    r1 = _refuel(odo=10000, at='08:00', day='2026-09-28')
+    r2 = _refuel(odo=10900, at='08:00', day='2026-09-29')                    # опечатка: на самом деле 10400
+    r3 = _refuel(odo=10800, at='08:00', day='2026-09-30')
+    assert ev.ingest(cs, who, [r1, r2, r3]).json()['rejected'] == []
+    assert _event_row(cs, r3['id'])[3] == ['odometer_suspicious']              # при приёме: 10800 < 10900
+    fix = _refuel(odo=10400, at='09:00', day='2026-10-01', supersedes=r2['id'])
+    assert ev.ingest(cs, who, [fix]).json()['accepted'] == [fix['id']]
+    assert _event_row(cs, fix['id'])[3] == []                                  # сравнение в момент r2 — согласовано
+    rows = {r['id']: r for r in cs.refuels()}
+    assert rows[fix['id']]['eff_at_utc'] == rows[r2['id']]['at_utc'] and rows[fix['id']]['eff_date'] == '2026-09-29'
+    assert refuel_flags(cs.refuels())[r3['id']] == []                          # офис: r3 после исправления — в порядке
+    ivs = lr.fuel_intervals(cs.refuels())
+    assert [(iv.start.date().isoformat(), iv.end.date().isoformat(), iv.km, iv.liters) for iv in ivs] == [
+        ('2026-09-28', '2026-09-29', 400.0, 45.0), ('2026-09-29', '2026-09-30', 400.0, 45.0)]
+
+
+def test_h2_first_ever_typo_does_not_poison_later_refuels(cs):
+    from courier.facts import refuel_flags
+    from route_optimizer import learning as lr
+    who = _who(cs)
+    first = _refuel(odo=1234560, at='08:00', day='2026-09-20')                 # лишняя цифра (на самом деле 123456)
+    rest = [_refuel(odo=123456 + 300 * (i + 1), at='08:00', day=f'2026-09-{21 + i}') for i in range(6)]
+    assert ev.ingest(cs, who, [first] + rest).json()['rejected'] == []
+    flags = refuel_flags(cs.refuels())
+    assert flags[first['id']] == ['odometer_suspicious'] and all(flags[e['id']] == [] for e in rest)
+    assert len(lr.fuel_intervals(cs.refuels())) == 5
+    assert [_event_row(cs, e['id'])[3] for e in rest[1:]] == [[]] * 5           # и при приёме — уже со 2-й правильной
+
+
+def test_h2_odometer_plausible_chain_rule():
+    from route_optimizer.learning import odometer_plausible
+    t = [datetime(2026, 9, 1, tzinfo=clock.YEREVAN) + timedelta(days=i) for i in range(6)]
+    assert odometer_plausible(list(zip(t, [1000, 1300, 1600, 1500, 1800]))) == [True, True, False, False, True]
+    assert odometer_plausible(list(zip(t, [1000, 1300, 16000, 1600, 1800]))) == [True, True, False, True, True]
+    assert odometer_plausible(list(zip(t, [1000, 900]))) == [False, False]     # двое несовместимы — неизвестно кто
+    assert odometer_plausible(list(zip(t, [1000, 'x', None, 1100]))) == [True, False, False, True]
+    assert odometer_plausible([]) == [] and odometer_plausible([(t[0], 5)]) == [True]
+
+
+def test_l6_purge_track_only_and_by_point_moment(cs):
+    """Хранение 400 дней — только трек (по моменту точки, любой машины, и без терминала); доставки и оплаты не
+    удаляются."""
+    who = _who(cs)
+    old_day = (NOW.date() - timedelta(days=TRACK_KEEP_DAYS + 5)).isoformat()
+    old_ms = int(datetime.fromisoformat(old_day + 'T10:00:00+04:00').timestamp() * 1000)
+    with closing(sqlite3.connect(cs.path)) as conn:
+        conn.executemany('INSERT INTO track_points VALUES(?, ?, ?, 40.18, 44.5, 5, NULL, NULL)',
+                         [('NOTERM', old_ms, DAY), ('NOTERM', old_ms + 1, old_day)])   # машина без терминала
+        for i, etype in enumerate(('delivery', 'payment', 'tare', 'refuel', 'track')):
+            conn.execute("INSERT INTO events(id, terminal_id, driver_id, car_code, date, stop_id, type, at_device, at_utc, "
+                         "received_at, payload) VALUES(?, 1, 1, 'CAR1', ?, NULL, ?, 'x', 'x', 'x', '{}')",
+                         (f'old{i}', old_day, etype))
+        conn.commit()
+    assert ev.ingest(cs, who, [_track([_pt(1)])]).json()['rejected'] == []
+    with closing(sqlite3.connect(cs.path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM track_points WHERE car_code = 'NOTERM'").fetchone() == (0,)
+        assert sorted(r[0] for r in conn.execute("SELECT type FROM events WHERE id LIKE 'old%'")) == \
+            ['delivery', 'payment', 'refuel', 'tare']
+
+
+def test_track_payload_between_20k_and_40k_accepted_above_40k_rejected(cs):
+    who = _who(cs)
+    pts = [{**_pt(i // 60, sec=i % 60), 'provider': 'fused-' + 'x' * 140} for i in range(100)]
+    size = len(json.dumps({'points': pts}, ensure_ascii=False))
+    assert ev.MAX_PAYLOAD_BYTES < size < ev.MAX_TRACK_PAYLOAD_BYTES
+    ok = _track(pts)
+    assert ev.ingest(cs, who, [ok]).json()['accepted'] == [ok['id']]            # лишние поля точки — не ошибка
+    big = _track([{**p, 'provider': 'x' * 400} for p in pts])
+    assert len(json.dumps(big['payload'], ensure_ascii=False)) > ev.MAX_TRACK_PAYLOAD_BYTES
+    r = ev.ingest(cs, who, [big]).json()
+    assert r['accepted'] == [] and 'մեծ' in r['rejected'][0]['message']
+    other = {'id': _id(), 'type': 'day_closed', 'stop_id': None, 'date': DAY, 'at': f'{DAY}T18:00:00+04:00',
+             'payload': {'summary': {'note': 'x' * 25_000}}}
+    assert 'մեծ' in ev.ingest(cs, who, [other]).json()['rejected'][0]['message']   # прочим типам — прежние 20 000
+
+
+def test_m3_office_gps_km_ignores_jitter_at_stops():
+    import random
+    from route_optimizer.geo import haversine_km
+    rnd = random.Random(1)
+    base = datetime(2026, 10, 2, 9, 0, tzinfo=clock.YEREVAN)
+    shop = (40.20, 44.52)
+    pts, t = [], base
+    for i in range(41):                                                    # 40 × ≈ 111 м к магазину, 5 м/с
+        pts.append((int(t.timestamp() * 1000), 40.20 - (40 - i) * 0.001, 44.52, 5.0, 5.0))
+        t += timedelta(seconds=22)
+    for _ in range(30):                                                    # 30 мин у магазина, дрожание ±60 м
+        t += timedelta(seconds=60)
+        pts.append((int(t.timestamp() * 1000), shop[0] + rnd.uniform(-6e-4, 6e-4), shop[1] + rnd.uniform(-6e-4, 6e-4),
+                    8.0, None))
+    path = haversine_km((40.16, 44.52), shop)
+    plain = gps_summary(pts)
+    with_stop = gps_summary(pts, [{'stop_id': 'S:1', 'lat': shop[0], 'lon': shop[1]}])
+    assert plain['km'] > path * 1.3 and with_stop['km'] == pytest.approx(path, abs=0.15)

@@ -37,9 +37,12 @@
   до MAX_TRACK_PAYLOAD_BYTES (100 точек с полной точностью double ≈ 19 КБ: у обычного предела нет запаса). Приём трека
   раз в день удаляет трек старше store.TRACK_KEEP_DAYS;
 - `refuel` (§7 п. 2, без stop_id): литры, одометр (целое), «до полного бака», сумма, место; исправление — `supersedes`
-  (как у delivery; цикл — отказ). Одометр меньше предыдущей действующей заправки машины (по at) или прирост больше
-  REFUEL_KM_PER_DAY км за сутки — флаг `odometer_suspicious` (принимается; обучение само пересчитывает это правило по
-  всем заправкам машины — опоздавшее событие не меняет результат).
+  (как у delivery; цикл — отказ). Момент заправки — момент исходной заправки цепочки исправлений (исправление пришло
+  позже — заправка была тогда; исходной ещё нет — свой). Флаг `odometer_suspicious` — одометр новой заправки не входит
+  в самую длинную согласованную цепочку заправок машины (learning.odometer_plausible: не убывает, прирост не больше
+  learning.REFUEL_KM_PER_DAY км за сутки); заправка принимается. Флаг ставится один раз при приёме и потом не меняется — офис и
+  обучение пересчитывают правило сами по всем действующим заправкам машины (опоздавшее событие или исправление меняют
+  их вывод, а не сохранённый флаг).
 """
 from __future__ import annotations
 
@@ -53,6 +56,7 @@ from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
 from route_optimizer.geo import is_valid_point
+from route_optimizer.learning import odometer_plausible
 
 from . import clock
 from .merge import statement_status
@@ -81,7 +85,6 @@ TRACK_MAX_SPEED_MS = 60.0      # spd: 0…60 м/с или null
 TRACK_FUTURE = timedelta(days=1)   # точка позже «сейчас + сутки» — часы терминала сбиты
 REFUEL_MAX_LITERS = 400.0
 REFUEL_MAX_ODOMETER = 2_000_000
-REFUEL_KM_PER_DAY = 1500.0     # прирост одометра больше — odometer_suspicious
 
 UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
 STOP_RE = re.compile(r'^[SO]:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$')
@@ -506,10 +509,10 @@ def track_points(p: Mapping[str, Any], now: datetime) -> tuple[list[TrackPoint],
     return keep, dict(sorted(dropped.items()))
 
 
-def _refuel(tx: EventTx, p: Mapping[str, Any], at: datetime, car_code: str, supersedes: str | None) -> list[str]:
-    """§7 п. 2: заправка. Нарушение формы — Reject; подозрительный одометр — флаг (сравнение с последней действующей
-    заправкой машины раньше этой по at: без вытесненных, без исправляемой этим событием и без подозрительных — одна
-    опечатка не делает подозрительными все следующие заправки)."""
+def _refuel(tx: EventTx, p: Mapping[str, Any], at: datetime, car_code: str, supersedes: str | None,
+            event_id: str) -> list[str]:
+    """§7 п. 2: заправка. Нарушение формы — Reject; одометр вне самой длинной согласованной цепочки действующих заправок
+    машины вместе с этой (odometer_plausible; момент исправления — момент исходной заправки) — флаг."""
     liters = _num(p.get('liters'))
     if liters is None or not 0 < liters <= REFUEL_MAX_LITERS:
         raise Reject(f'liters՝ 0-ից մինչև {REFUEL_MAX_LITERS:g}')
@@ -527,16 +530,22 @@ def _refuel(tx: EventTx, p: Mapping[str, Any], at: datetime, car_code: str, supe
     if lat is not None:
         _arrived({'lat': lat, 'lon': lon})
     own = tx.car_refuels(car_code)
+    by_id = {r['id']: r for r in own}
+
+    def moment(at_utc: str, target: Any) -> datetime:
+        """Момент заправки: исходной в цепочке исправлений (известной серверу), иначе свой."""
+        seen: set[str] = set()
+        while isinstance(target, str) and target in by_id and target not in seen:
+            seen.add(target)
+            at_utc, target = by_id[target]['at_utc'], by_id[target]['payload'].get('supersedes')
+        return datetime.fromisoformat(at_utc)
+
     gone = {r['payload'].get('supersedes') for r in own} | {supersedes}
-    key = clock.utc_key(at)
-    prev = [r for r in own if r['id'] not in gone and r['at_utc'] < key and 'odometer_suspicious' not in r['flags']
-            and _num(r['payload'].get('odometer_km')) is not None]
-    if not prev:
-        return []
-    last = prev[-1]
-    last_odo = float(last['payload']['odometer_km'])
-    days = max(1.0, (at - datetime.fromisoformat(last['at_utc'])).total_seconds() / 86400.0)
-    return ['odometer_suspicious'] if odo < last_odo or odo - last_odo > REFUEL_KM_PER_DAY * days else []
+    items = sorted([(moment(r['at_utc'], r['payload'].get('supersedes')), r['id'], r['payload'].get('odometer_km'))
+                    for r in own if r['id'] not in gone]
+                   + [(moment(clock.utc_key(at), supersedes), event_id, odo)], key=lambda x: (x[0], x[1]))
+    plausible = odometer_plausible([(t, o) for t, _, o in items])
+    return [] if next(ok for (_, eid, _), ok in zip(items, plausible) if eid == event_id) else ['odometer_suspicious']
 
 
 # --- одна запись ---
@@ -619,7 +628,7 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who
         track, dropped = track_points(payload, clock.now())
         stored = {'points': len(payload['points']), 'kept': len(track), 'dropped': dropped}   # точки — в track_points
     elif etype == 'refuel':
-        flags += _refuel(tx, payload, at, who.car_code, supersedes)
+        flags += _refuel(tx, payload, at, who.car_code, supersedes, event_id)
         stored.setdefault('full_tank', True)   # §7 п. 2: по умолчанию «до полного бака»
     row = {'id': event_id, 'terminal_id': who.terminal_id, 'driver_id': who.driver_id, 'car_code': who.car_code,
            'date': ev['date'], 'stop_id': stop_id, 'type': etype, 'at_device': raw['at'], 'at_utc': clock.utc_key(at),

@@ -33,8 +33,8 @@ from werkzeug.exceptions import HTTPException
 from route_optimizer.erp import ErpError
 
 from . import clock, events as ev, merge as mg
-from .facts import gps_summary
-from .routes_link import routes_view
+from .facts import gps_summary, refuel_flags
+from .routes_link import routes_depot, routes_view
 from .state import state
 from .store import MarkSetting, PinConflict, PinPepperMissing, PinUnverifiable, Release, StoreError
 
@@ -421,6 +421,11 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
                                         'drivers': set(), 'last_contact': None, 'error': errors.get(code),
                                         'gps': None, 'refuels': []})
 
+    refuels = st.store.refuels()
+    rflags = refuel_flags(refuels)   # odometer_suspicious — пересчитан по всем заправкам машины, не сохранённый
+    for e in events:
+        if e['type'] == 'refuel':
+            e['flags'] = rflags.get(e['id'], e['flags'])
     for code in errors:
         car_row(code)
     for code, stops in model.current.items():
@@ -446,16 +451,20 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
             row['foreign'] += 1
         if e['flags']:
             row['flagged'] += 1
-    # трек и заправки (контракт v1.3 §7): км по GPS за рабочий день; заправки даты — и исправленные (superseded)
+    # трек и заправки (контракт v1.3 §7): км движения по GPS за рабочий день (стоянки у точек дня и склада — 0 км);
+    # заправки дня исходной заправки (исправление — у неё, а не в день исправления), и вытесненные (superseded)
+    depot = routes_depot(_routes_state()) if any(e['type'] == 'track' for e in events) else None
     for code in sorted({e['car_code'] for e in events if e['type'] == 'track'}):
-        car_row(code)['gps'] = gps_summary(st.store.track(code, ds))
-    for r in st.store.refuels():
-        if r['date'] == ds:
-            p = r['payload']
-            car_row(r['car_code'])['refuels'].append({
-                'id': r['id'], 'at': r['at'], 'driver_name': r['driver_name'], 'liters': p.get('liters'),
-                'odometer_km': p.get('odometer_km'), 'full_tank': p.get('full_tank'), 'amount_amd': p.get('amount_amd'),
-                'flags': r['flags'], 'superseded': r['superseded'], 'photos': photos.get(r['id'], [])})
+        car_row(code)['gps'] = gps_summary(st.store.track(code, ds), model.current.get(code, []), depot)
+    shown = sorted((r for r in refuels if r['eff_date'] == ds), key=lambda r: (r['car_code'], r['eff_at_utc'], r['at_utc']))
+    rphotos = st.store.photos_for_events([r['id'] for r in shown])
+    for r in shown:
+        p = r['payload']
+        car_row(r['car_code'])['refuels'].append({
+            'id': r['id'], 'at': r['eff_at'], 'sent_at': r['at'], 'driver_name': r['driver_name'],
+            'liters': p.get('liters'), 'odometer_km': p.get('odometer_km'), 'full_tank': p.get('full_tank'),
+            'amount_amd': p.get('amount_amd'), 'flags': rflags[r['id']], 'superseded': r['superseded'],
+            'photos': rphotos.get(r['id'], [])})
     for t in terminals:
         if t.car_code in by_car and t.last_seen_at and (by_car[t.car_code]['last_contact'] is None
                                                          or t.last_seen_at > by_car[t.car_code]['last_contact']):

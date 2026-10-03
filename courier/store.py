@@ -1041,10 +1041,25 @@ class Store:
             "SELECT DISTINCT date, car_code FROM events WHERE type = 'track' AND date >= ? AND date <= ? "
             'ORDER BY date, car_code', (since, until)).fetchall())]
 
+    def day_version(self, car_code: str, day: str) -> tuple[Any, ...]:
+        """Отпечаток данных машины за рабочий день для кэша факта: (точек трека, последний момент; доставок даты,
+        последнее получение; последний снимок /day машины). Не изменился — трек, точки и доставки те же."""
+        def query(c: sqlite3.Connection) -> tuple[Any, ...]:
+            track = c.execute('SELECT COUNT(*), MAX(at_ms) FROM track_points WHERE car_code = ? AND date = ?',
+                              (car_code, day)).fetchone()
+            deliv = c.execute("SELECT COUNT(*), MAX(received_at) FROM events WHERE type = 'delivery' AND date = ?",
+                              (day,)).fetchone()
+            snap = c.execute('SELECT MAX(id) FROM day_snapshots WHERE date = ? AND car_code = ?', (day, car_code)).fetchone()
+            return (*track, *deliv, snap[0])
+        return self._read(query)
+
     def refuels(self) -> list[dict[str, Any]]:
-        """Все принятые заправки: [{id, car_code, date, at, at_utc, driver_name, payload, flags, superseded}] по машине и
-        моменту. superseded — на событие ссылается `supersedes` другой заправки той же машины (исправлено водителем):
-        в расчёты не идёт. Заправок немного (единицы в день) — читаются целиком."""
+        """Все принятые заправки: [{id, car_code, date, at, at_utc, driver_name, payload, flags, superseded, eff_at_utc,
+        eff_at, eff_date}] по машине и моменту. superseded — на событие ссылается `supersedes` другой заправки той же
+        машины (исправлено водителем): в расчёты не идёт. eff_* — момент и день исходной заправки цепочки исправлений
+        (исправление пришло позже — заправка всё равно была тогда); исходной ещё нет на сервере — свои. Флаг
+        odometer_suspicious — как поставлен при приёме; читатели пересчитывают его сами (learning.odometer_plausible).
+        Заправок немного (единицы в день) — читаются целиком."""
         rows = self._read(lambda c: c.execute(
             "SELECT e.id, e.car_code, e.date, e.at_device, e.at_utc, d.name, e.payload, e.flags FROM events e "
             "LEFT JOIN drivers d ON d.id = e.driver_id WHERE e.type = 'refuel' ORDER BY e.car_code, e.at_utc, e.id"
@@ -1059,8 +1074,17 @@ class Store:
                         'payload': payload if isinstance(payload, dict) else {},
                         'flags': fl if isinstance(fl, list) else []})
         targets = {(r['car_code'], r['payload'].get('supersedes')) for r in out}
+        by_id = {r['id']: r for r in out}
         for r in out:
             r['superseded'] = (r['car_code'], r['id']) in targets
+            root, seen = r, {r['id']}
+            while True:   # к исходной заправке цепочки исправлений (циклы отклоняются при приёме — защита всё равно)
+                nxt = by_id.get(root['payload'].get('supersedes'))
+                if nxt is None or nxt['car_code'] != r['car_code'] or nxt['id'] in seen:
+                    break
+                seen.add(nxt['id'])
+                root = nxt
+            r['eff_at_utc'], r['eff_at'], r['eff_date'] = root['at_utc'], root['at'], root['date']
         return out
 
     # --- точки и предложения водителей (driver-geo-plan.md §4): клиент точки — по самой новой версии в снимках /day ---
@@ -1535,20 +1559,21 @@ class EventTx:
         return self.conn.total_changes - before
 
     def purge_track(self, today: str) -> int:
-        """Хранение трека — TRACK_KEEP_DAYS (контракт §7 п. 1): точки с моментом раньше полуночи (Ереван) дня
-        today − TRACK_KEEP_DAYS и события track рабочих дней раньше него удаляются. Не чаще раза в день (meta
-        track_purged_on): вызывается при приёме трека. Возвращает число удалённых точек."""
+        """Хранение трека — TRACK_KEEP_DAYS (контракт §7 п. 1): точки любой машины с моментом раньше полуночи (Ереван)
+        дня today − TRACK_KEEP_DAYS (по моменту точки, не по дате события) и события track рабочих дней раньше него
+        удаляются. Не чаще раза в день (meta track_purged_on): вызывается при приёме трека. Возвращает число удалённых
+        точек."""
         row = self.conn.execute("SELECT value FROM meta WHERE key = 'track_purged_on'").fetchone()
         if row is not None and row[0] == today:
             return 0
         cutoff = (datetime.fromisoformat(today) - timedelta(days=TRACK_KEEP_DAYS)).date()
         cutoff_ms = int(datetime.combine(cutoff, datetime.min.time(), clock.YEREVAN).timestamp() * 1000)
-        cars = {r[0] for r in self.conn.execute(
-            "SELECT car_code FROM terminals UNION SELECT DISTINCT car_code FROM events WHERE type = 'track' AND date < ?",
-            (cutoff.isoformat(),))}
         n = 0
-        for car in sorted(cars):   # по ключу (машина, момент) — без полного перебора точек
+        car = self.conn.execute('SELECT MIN(car_code) FROM track_points').fetchone()[0]
+        while car is not None:   # машины — из самих точек (по ключу, без перебора): и тех, чьих терминалов уже нет
             n += self.conn.execute('DELETE FROM track_points WHERE car_code = ? AND at_ms < ?', (car, cutoff_ms)).rowcount
+            car = self.conn.execute('SELECT MIN(car_code) FROM track_points WHERE car_code > ?', (car,)).fetchone()[0]
+        # только события трека (в них лишь счётчики точек); доставки, оплаты и прочее не удаляются
         self.conn.execute("DELETE FROM events WHERE type = 'track' AND date < ?", (cutoff.isoformat(),))
         self.conn.execute("INSERT INTO meta(key, value) VALUES('track_purged_on', ?) "
                           'ON CONFLICT(key) DO UPDATE SET value = excluded.value', (today,))
