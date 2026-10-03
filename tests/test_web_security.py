@@ -1,15 +1,17 @@
 """CSRF проверяется на фиктивном cookie-приложении, без SQL и рабочего состояния."""
 from flask import Flask, jsonify, render_template_string, session
 import pytest
+from courier import API_PREFIX
 from courier.web_security import init_web_security
 
 
-@pytest.fixture
-def client():
+# Реальный courier.API_PREFIX — со слэшем на конце; с ним вход терминала получал 403 csrf.
+@pytest.fixture(params=[API_PREFIX, '/api/courier/v1'])
+def client(request):
     app = Flask(__name__)
     app.secret_key = 'isolated-test-secret'
     app.config['TESTING'] = True
-    init_web_security(app, '/api/courier/v1')
+    init_web_security(app, request.param)
     @app.get('/form')
     def form():
         return render_template_string('{{ csrf_token() }}')
@@ -19,6 +21,12 @@ def client():
         return jsonify(success=True)
     @app.post('/api/courier/v1/events')
     def terminal():
+        return jsonify(success=True)
+    @app.post('/api/courier/v1/login')
+    def terminal_login():
+        return jsonify(success=True)
+    @app.post('/api/courier/v10/events')
+    def lookalike():
         return jsonify(success=True)
     return app.test_client()
 
@@ -53,6 +61,11 @@ def test_html_form_and_bearer_api_exemption(client):
     token = client.get('/form').get_data(as_text=True)
     assert client.post('/settings', data={'csrf_token': token}).status_code == 200
     assert client.post('/api/courier/v1/events', json={}).status_code == 200
+    assert client.post('/api/courier/v1/login', json={'pin': '1234'}).status_code == 200
+
+
+def test_exemption_stops_at_prefix_boundary(client):
+    assert client.post('/api/courier/v10/events', json={}).status_code == 403
 
 
 def test_security_headers(client):

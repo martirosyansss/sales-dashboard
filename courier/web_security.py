@@ -16,6 +16,8 @@ def init_web_security(app: Flask, terminal_api_prefix: str) -> None:
     if app.extensions.get('office_web_security'):
         return
     app.extensions['office_web_security'] = True
+    # courier.API_PREFIX уже со слэшем на конце: без нормализации '//' не совпадал ни с одним путём терминала.
+    terminal_prefix = terminal_api_prefix.rstrip('/') + '/'
 
     def csrf_token() -> str:
         token = session.get(CSRF_SESSION_KEY)
@@ -28,7 +30,7 @@ def init_web_security(app: Flask, terminal_api_prefix: str) -> None:
 
     @app.before_request
     def protect_office_mutations() -> Response | tuple[Response, int] | None:
-        if request.method in SAFE_METHODS or request.path.startswith(terminal_api_prefix + '/'):
+        if request.method in SAFE_METHODS or request.path.startswith(terminal_prefix):
             return None
         origin = request.headers.get('Origin')
         if origin:
