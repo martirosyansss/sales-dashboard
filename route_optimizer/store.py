@@ -1706,17 +1706,32 @@ class Store:
         def write(conn: sqlite3.Connection) -> None:
             self._write_customer_vehicles(conn, customer_id, access, user)
             self._write_customer_window(conn, customer_id, window, user)
-            if unload_min is KEEP:
-                return
-            if unload_min is None:
-                conn.execute('DELETE FROM customer_unload WHERE customer_id = ?', (customer_id,))
-            else:
-                conn.execute('INSERT INTO customer_unload(customer_id, fixed_min, updated_at, updated_by) '
-                             'VALUES(?, ?, ?, ?) ON CONFLICT(customer_id) DO UPDATE SET fixed_min = excluded.fixed_min, '
-                             'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
-                             (customer_id, float(unload_min), _now(), user))
+            if unload_min is not KEEP:
+                self._write_customer_unload(conn, customer_id, unload_min, user)
 
         self._transaction(write, 'не удалось сохранить условия доставки магазина')
+
+    def save_customer_unload(self, customer_id: int, unload_min: float | None, user: str | None) -> None:
+        """Только время у магазина (№50; проверенное check_unload_min, None — убрать: по норме) своей транзакцией —
+        для «Развоза»: допуск и окно приёма не перезаписываются, поэтому правка не затрёт параллельную правку условий."""
+        if not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
+            raise ValueError('customer_id: положительное целое')
+        if unload_min is not None and check_unload_min(unload_min)[1]:
+            raise ValueError('время у магазина не прошло проверку')
+
+        self._transaction(lambda conn: self._write_customer_unload(conn, customer_id, unload_min, user),
+                          'не удалось сохранить время у магазина')
+
+    @staticmethod
+    def _write_customer_unload(conn: sqlite3.Connection, customer_id: int,
+                               unload_min: float | None, user: str | None) -> None:
+        if unload_min is None:
+            conn.execute('DELETE FROM customer_unload WHERE customer_id = ?', (customer_id,))
+        else:
+            conn.execute('INSERT INTO customer_unload(customer_id, fixed_min, updated_at, updated_by) '
+                         'VALUES(?, ?, ?, ?) ON CONFLICT(customer_id) DO UPDATE SET fixed_min = excluded.fixed_min, '
+                         'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                         (customer_id, float(unload_min), _now(), user))
 
     def load_dispatch(self, day: str) -> tuple[dict[str, Any], int] | None:
         """Черновик плана развоза на дату (YYYY-MM-DD): (данные, номер правки) или None."""

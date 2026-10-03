@@ -1172,6 +1172,10 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         'defer_to': _defer_target(dd.day, s['workdays'])[0].isoformat(),
         'overtime_days_month': _overtime_days(_state().store, dd.day),
         'geo_suggestions': _geo_suggestions(_state(), dd),
+        # своё время у магазина (№50) у магазинов дня, где оно задано: клиент → мин (плашка у точки); у остальных — норма.
+        # Отдельно от plan: unload_min точки рейса — разгрузка, посчитанная планом
+        'store_unload': {s.customer_id: dd.bundle.unload_min[s.customer_id] for s in dd.stops
+                         if s.customer_id in dd.bundle.unload_min},
         **_freshness(dd.day, dd.bundle, dd.data, dd.deliver, dd.backlog, draft, dd.carried),
     }
     if draft is not None and dd.ctx is not None:
@@ -1676,13 +1680,16 @@ def api_customer_window() -> Any:
 def api_customer_vehicles() -> Any:
     """Допуск магазина, необязательное окно приёма и время у магазина ("unload_min": целые минуты 1–120 или null —
     по норме; №50; только вместе с "window"): всё сохраняется одной транзакцией. Без "unload_min" время у магазина не
-    меняется."""
+    меняется. {"customer_id", "unload_min"} — только время у магазина («Развоз»): допуск и окно остаются как есть, их не
+    пересылают — правка не затрёт параллельную правку условий."""
     payload, error = _json_body()
     if error is not None:
         return error
     if not isinstance(payload, dict) or set(payload) not in ({'customer_id', 'access'}, {'customer_id', 'access', 'window'},
-                                                             {'customer_id', 'access', 'window', 'unload_min'}):
-        return _bad_request({'_': 'ожидалось {"customer_id", "access"} с необязательными "window" и "unload_min"'})
+                                                             {'customer_id', 'access', 'window', 'unload_min'},
+                                                             {'customer_id', 'unload_min'}):
+        return _bad_request({'_': 'ожидалось {"customer_id", "access"} с необязательными "window" и "unload_min" '
+                                  'или {"customer_id", "unload_min"}'})
     cid = payload['customer_id']
     if isinstance(cid, bool) or not isinstance(cid, int) or not 0 < cid < 2 ** 31:
         return _bad_request({'customer_id': 'ожидался код клиента'})
@@ -1690,6 +1697,18 @@ def api_customer_vehicles() -> Any:
     snap, _ = state.snapshots.get(allow_stale=True)
     if cid not in snap.customers:
         return _bad_request({'customer_id': 'магазин не найден — обновите страницу'})
+    unload: Any = KEEP
+    if 'unload_min' in payload:
+        unload = None
+        if payload['unload_min'] is not None:
+            unload, err = check_unload_min(payload['unload_min'])
+            if err:
+                return _bad_request({'unload_min': err})
+    if 'access' not in payload:
+        state.store.save_customer_unload(cid, unload, session.get('username'))
+        logger.info('[Routes] Время у магазина %d: %s (%s)', cid, f'{unload:g} мин' if unload else 'по норме',
+                    session.get('username'))
+        return jsonify({'success': True, 'customer_id': cid, 'unload_min': unload})
     bundle = _bundle(state)
     old = bundle.vehicle_access.get(cid)
     access, err = check_access(payload['access'], set(snap.cars) | set(bundle.trucks) | set(old.trucks if old else ()))
@@ -1701,13 +1720,6 @@ def api_customer_vehicles() -> Any:
             window, err = check_window(payload['window'])
             if err:
                 return _bad_request({'window': err})
-        unload: Any = KEEP
-        if 'unload_min' in payload:
-            unload = None
-            if payload['unload_min'] is not None:
-                unload, err = check_unload_min(payload['unload_min'])
-                if err:
-                    return _bad_request({'unload_min': err})
         state.store.save_customer_constraints(cid, access, window, session.get('username'), unload)
         logger.info('[Routes] Окно приёма клиента %d: %s (%s)', cid, window or 'убрано', session.get('username'))
         if unload is not KEEP:

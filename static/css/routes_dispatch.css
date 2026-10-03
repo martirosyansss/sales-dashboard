@@ -743,3 +743,11 @@
     @keyframes dp-ai-in { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
 }
 @media (prefers-reduced-motion: reduce) { .dp-ai, .dp-ai-dots i { animation: none; } }
+
+/* «Ժամանակ խանութում» (ответ владельца №50): плашка своего времени у магазина и узкий диалог с одним полем минут */
+#rtDispatch .rt-badge.dp-b-unload { color: var(--rt-fg); border-color: var(--rt-line); background: var(--rt-panel-2); }
+.dp-unload-dlg { width: min(520px, calc(100vw - 32px)); }
+.dp-unload-dlg .rt-input { width: 160px; max-width: 100%; }
+.dp-unload-hint { margin: 10px 0 0; font-size: .875rem; color: var(--rt-fg-dim); line-height: 1.5; }
+.dp-unload-hint:empty { display: none; }
+.dp-unload-dlg .rt-ferr { margin-top: 8px; }

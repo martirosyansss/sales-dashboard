@@ -15,6 +15,10 @@ B «Կազմել երթերը» → на шкале времени появил�
 C клик по полосе рейса → нажата, подпись над картой видна, карточка машины в фокусе и раскрыта;
 D в открытой карточке «Փոփոխել» → рейс в режиме правки с выбором «перенести в…»; перенос показывает
   уведомление «տեղափոխվեց»; «Ամրացնել երթը» → значок «ամրացված»; повторный клик по кнопке правки закрывает её;
+U «Ժամանակ խանութում» (№50) у точки рейса в режиме правки → диалог с подсказкой по нормам (6 ր на тонну, обычные 8 ր);
+  нечисло в поле — ошибка, диалог открыт, ничего не сохранено; 40 → диалог закрыт, уведомление с «Վերակազմեք երթերը»,
+  у точки плашка «Բեռնաթափում՝ 40 ր», в «Ի՞նչ անել հիմա» — подсказка пересобрать, в базе — только время (окно и допуск
+  магазина целы); снова диалог → «Հեռացնել» → плашки нет, в базе пусто;
 E ИИ-панель: кнопка открытия → панель с подсказками; подсказка → сообщение пользователя и ответ с пунктом списка,
   у клиента ровно один вызов (в данных дня <day_data); вопрос из поля по Enter → второй ответ с историей из
   двух реплик; Esc закрывает панель, фокус возвращается на кнопку открытия;
@@ -48,6 +52,7 @@ from werkzeug.serving import make_server  # noqa: E402
 
 import route_optimizer  # noqa: E402
 from route_optimizer import ai_chat  # noqa: E402
+from route_optimizer import store as st  # noqa: E402
 from route_optimizer.snapshot import SnapshotCache  # noqa: E402
 from test_route_optimizer import _dispatch_setup, _dorder, make_snapshot  # noqa: E402
 
@@ -193,6 +198,52 @@ def main() -> int:
             page.locator('.dp-editbtn[aria-expanded="true"]').first.click()
             page.wait_for_function("() => !document.querySelector('.dp-trip.is-editing')", timeout=5000)
             check(page.locator('.dp-editbtn[aria-expanded="true"]').count() == 0, 'D edit button click closes editing')
+
+            # U
+            store = app.extensions['route_optimizer'].store
+            late = st.CustomerWindow('before', 23 * 60 + 59)     # окно всегда выполнено; диалог времени не должен его тронуть
+            for cid in (101, 102, 104):
+                store.save_customer_window(cid, late, 'qa')
+            page.locator('#dpTruckCards .dp-editbtn').first.click()
+            page.wait_for_selector('.dp-trip.is-editing .dp-unloadbtn', timeout=5000)
+            stop_li = page.locator('.dp-trip.is-editing .dp-stop').filter(has=page.locator('.dp-unloadbtn')).first
+            name = stop_li.locator('.dp-stop-main b').inner_text()
+            stop_li.locator('.dp-unloadbtn').click()
+            page.wait_for_selector('#dpUnloadDlg[open]', timeout=5000)
+            page.wait_for_function("() => !document.getElementById('dpUnloadMin').disabled", timeout=10000)
+            hint = page.inner_text('#dpUnloadHint').replace('\xa0', ' ')
+            check(page.inner_text('#dpUnloadTitle') == 'Ժամանակ խանութում' and '(6 ր տոննայի համար)' in hint
+                  and 'Դատարկ՝ սովորական 8 ր։' in hint, f'U dialog open, norms in the hint: {hint!r}')
+            page.locator('#dpUnloadMin').press_sequentially('e')
+            page.click('#dpUnloadSave')
+            page.wait_for_function("() => document.getElementById('dpUnloadErr').textContent.trim() !== ''", timeout=5000)
+            check(vis('#dpUnloadDlg') and store.load().unload_min == {},
+                  f'U non-numeric input → error, dialog stays open, nothing saved: {page.inner_text("#dpUnloadErr")!r}')
+            page.fill('#dpUnloadMin', '40')
+            page.click('#dpUnloadSave')
+            page.wait_for_function("() => !document.getElementById('dpUnloadDlg').open", timeout=10000)
+            page.wait_for_function("() => /Վերակազմեք երթերը/.test((document.getElementById('dpToast') || {}).textContent || '')",
+                                   timeout=10000)
+            page.wait_for_selector('.dp-stop .rt-badge.dp-b-unload', timeout=10000)
+            badges = page.locator('.dp-stop .rt-badge.dp-b-unload')
+            mine = page.locator('.dp-trip .dp-stop').filter(has_text=name).locator('.rt-badge.dp-b-unload')
+            check(badges.count() == 1 and mine.count() == 1 and mine.inner_text().replace('\xa0', ' ') == 'Բեռնաթափում՝ 40 ր',
+                  f'U saved 40 → toast asks to rebuild, badge on «{name}»: {badges.count()} badge(s)')
+            check(page.inner_text('#dpTodo .dp-todo-t') == 'Ժամանակը խանութում փոխվել է', 'U «Ի՞նչ անել հիմա» asks to rebuild')
+            saved = store.load()
+            check(list(saved.unload_min.values()) == [40.0] and all(saved.windows[c] == late for c in (101, 102, 104)),
+                  f'U only the store time is written, windows intact: {saved.unload_min}')
+            page.locator('.dp-trip.is-editing .dp-stop').filter(has_text=name).locator('.dp-unloadbtn').first.click()
+            page.wait_for_function("() => !document.getElementById('dpUnloadMin').disabled", timeout=10000)
+            check(page.input_value('#dpUnloadMin') == '40' and vis('#dpUnloadClear'), 'U reopened: field 40, «Հեռացնել» visible')
+            page.click('#dpUnloadClear')
+            page.wait_for_function("() => !document.getElementById('dpUnloadDlg').open", timeout=10000)
+            page.wait_for_function("() => !document.querySelector('.dp-stop .rt-badge.dp-b-unload')", timeout=10000)
+            saved = store.load()
+            check(saved.unload_min == {} and all(saved.windows[c] == late for c in (101, 102, 104)),
+                  'U «Հեռացնել» → badge gone, store time cleared, windows intact')
+            page.locator('.dp-editbtn[aria-expanded="true"]').first.click()
+            page.wait_for_function("() => !document.querySelector('.dp-trip.is-editing')", timeout=5000)
 
             # E
             check(vis('#dpAiOpen'), 'E AI open button visible')
