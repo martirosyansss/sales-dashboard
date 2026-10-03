@@ -29,6 +29,7 @@ from route_optimizer import evaluate as ev  # noqa: E402
 from route_optimizer import fleet as fl  # noqa: E402
 from route_optimizer import geo  # noqa: E402
 from route_optimizer import optimize as opt  # noqa: E402
+from route_optimizer import roads as rd  # noqa: E402
 from route_optimizer import search as sr  # noqa: E402
 from route_optimizer import tsp  # noqa: E402
 from route_optimizer import valhalla_engine as ve  # noqa: E402
@@ -257,6 +258,23 @@ def test_norms_for_trucks_and_fleet_matrices_use_truck_profile(tmp_path, fake):
             assert m[i][j] == pytest.approx(want)
             assert m[i][j] > car.minutes(a, b, _city(a, b))  # грузовик медленнее машины менеджера
     assert d[0][1] != d[1][0]
+
+
+def test_road_model_id_is_stable_and_names_the_model(tmp_path):
+    """Id модели дорог для выученных поправок времени: пересборка тех же тайлов его не меняет."""
+    assert ve.road_model_id(None) == 'straight'
+    osm = rd.RoadDistances.for_graph(rd.RoadGraph.from_ways({0: (40.30, 44.30), 1: (40.309, 44.30)}, [([0, 1], 0)]))
+    assert ve.road_model_id(osm) == f'osm-dijkstra:memory|r{rd.RULES_VERSION}|d{rd.DIST_FORMAT}'
+    one, two = _matrices(str(tmp_path / 'a'), 'tiles-test-1'), _matrices(str(tmp_path / 'b'), 'tiles-test-2')
+    tf = f'|tf{ve.TIME_FACTOR[True]:g}/{ve.TIME_FACTOR[False]:g}'
+    car = ve.ValhallaRoads(one, ve.PROFILE_CAR, osm, time_only=True)
+    again = ve.ValhallaRoads(two, ve.PROFILE_CAR, osm, time_only=True)   # другая папка тайлов, тот же отпечаток
+    assert ve.road_model_id(car) == ve.road_model_id(again) == 'valhalla_time:test:auto' + tf
+    assert ve.road_model_id(car.truck()) == 'valhalla_time:test:truck' + tf
+    assert ve.road_model_id(ve.ValhallaRoads(one, ve.PROFILE_TRUCK)) == 'valhalla:test:truck' + tf
+    one[ve.PROFILE_CAR].failed = True                       # движок сломался — считает граф OSM
+    assert ve.road_model_id(car) == ve.road_model_id(osm)
+    assert ve.road_model_id(ve.ValhallaRoads(one, ve.PROFILE_CAR)) == 'straight'
 
 
 # --- Valhalla: сборка тайлов, режимы, нет пакета ---

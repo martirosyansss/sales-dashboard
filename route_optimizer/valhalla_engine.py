@@ -579,6 +579,28 @@ class ValhallaProvider:
             return ValhallaRoads(self._matrices, PROFILE_CAR, fallback, engine_mode() == ENGINE_VALHALLA_TIME)
 
 
+def road_model_id(roads: RoadDistances | ValhallaRoads | None) -> str:
+    """Стабильный id действующей модели дорог — для выученных поправок времени (этап 4): поправка применяется,
+    только если id тот же, что при обучении (Norms.roads; для развоза — Norms.for_trucks().roads).
+
+    'straight' — по прямой × извилистость (дорог нет или они сломались);
+    'osm-dijkstra:<версия карты>|r<правила>|d<формат кэша>' — граф OSM (и когда Valhalla сломался);
+    '<valhalla|valhalla_time>:<отпечаток сборки>:<профиль>|tf<город>/<область>' — Valhalla. Отпечаток сборки — карта,
+    версия pyvalhalla и правила: пересборка тех же тайлов id не меняет, новая карта или поправка TIME_FACTOR — меняют."""
+    if roads is None or roads.failed:
+        return 'straight'
+    if isinstance(roads, ValhallaRoads):
+        if not roads._m.failed:
+            mode = ENGINE_VALHALLA_TIME if roads.time_only else ENGINE_VALHALLA
+            return (f'{mode}:{roads._m.engine.build.id}:{roads.profile}'
+                    f'|tf{TIME_FACTOR[True]:g}/{TIME_FACTOR[False]:g}')
+        roads = roads.fallback
+        if roads is None or roads.failed:
+            return 'straight'
+    from .roads import DIST_FORMAT, RULES_VERSION
+    return f'osm-dijkstra:{roads.version}|r{RULES_VERSION}|d{DIST_FORMAT}'
+
+
 def open_valhalla(fallback: RoadDistances | None = None, base: str | None = None,
                   time_only: bool = False) -> ValhallaRoads | None:
     """ValhallaRoads по действующей сборке (для скриптов; режима ROUTES_ROAD_ENGINE не требует)."""
