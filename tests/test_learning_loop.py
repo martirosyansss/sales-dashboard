@@ -466,8 +466,9 @@ def test_store_migrates_12_to_13_keeps_data(tmp_path):
     s2 = rst.Store(path)
     assert s2.load_dispatch('2026-10-01') == ({'x': 1}, 1)
     assert s2.learned() == [] and s2.learning_auto() == {}
-    with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('13',)
+    with closing(sqlite3.connect(path)) as conn:   # 12 → 13 → … → текущая
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(rst.SCHEMA_VERSION),)
 
 
 OWNER_ROUTES = ROOT / 'route_optimizer.db'
@@ -486,7 +487,8 @@ def test_owner_routes_copy_migrates_to_13(tmp_path):
     s.load()
     with closing(sqlite3.connect(str(copy))) as conn:
         assert {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before} == before
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('13',)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(rst.SCHEMA_VERSION),)
     assert s.learned() == []
 
 
@@ -542,7 +544,8 @@ def test_run_learning_end_to_end_idempotent_and_applied(client, monkeypatch):
     state = _learning_client(client, monkeypatch)
     out = views.run_learning(state, TODAY)
     by = {o.kind: o for o in out}
-    assert set(by) == {'unload', 'loading', 'travel'}
+    assert set(by) == {'unload', 'loading', 'travel', 'truck_time'}
+    assert not by['truck_time'].accepted and by['truck_time'].reason.startswith('Valhalla недоступен')   # нет карты
     assert by['unload'].accepted and by['unload'].params['per_stop_min'] == pytest.approx(4, abs=0.6)
     assert by['unload'].params['per_tonne_min'] == pytest.approx(12, abs=0.6)
     assert by['loading'].accepted and by['loading'].params['fixed_min'] == pytest.approx(10, abs=1.5)
@@ -583,7 +586,8 @@ def test_learning_api_report_and_errors(client, monkeypatch):
     assert row['fact']['trips'] == 2 and row['fact']['stops'] == 3 and row['plan']['trips'] is None
     assert row['kpi']['km_per_stop'] > 0 and row['kpi']['stops_per_hour'] > 0 and row['kpi']['load_pct'] is not None
     kinds = [(s['kind'], s['in_effect']) for s in d['status']]
-    assert [k for k, _ in kinds] == ['unload', 'loading', 'travel'] and kinds[0][1] is None and kinds[1][1] is None
+    assert [k for k, _ in kinds] == ['unload', 'loading', 'travel', 'truck_time'] and kinds[0][1] is None \
+        and kinds[1][1] is None
     assert d['status'][0]['last']['reason'].startswith('мало данных')
     assert client.get('/api/routes/learning?from=2026-08-01&to=2026-10-02').status_code == 400
     assert client.get('/api/routes/learning?from=2026-10-02&to=2026-10-01').status_code == 400

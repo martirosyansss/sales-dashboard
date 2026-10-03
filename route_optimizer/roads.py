@@ -543,8 +543,9 @@ class RoadDistances:
         что у valhalla_engine.ValhallaRoads."""
         return None
 
-    def truck(self) -> RoadDistances:
-        """Граф один для всех машин (у ValhallaRoads — профиль грузовика)."""
+    def truck(self, truck_time: bool | None = None) -> RoadDistances:
+        """Граф один для всех машин (у ValhallaRoads — профиль грузовика) и времени не знает: truck_time (минуты
+        грузовиков из Valhalla) здесь ничего не меняет — прежняя модель."""
         return self
 
     def lines(self, lines: Sequence[Sequence[Point]]) -> list[list[Point]] | None:

@@ -25,7 +25,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -122,14 +122,28 @@ _MEASUREMENT_TABLE = (
 
 # Схема 13 (learning-loop-plan.md, этап 4): журнал выученных норм — строка на (вид, машина, день прогона); повторный
 # прогон того же дня заменяет её (идемпотентно). Действует последняя принятая (learning.in_effect). Переключатель
-# автообучения по виду: нет строки — включено.
-_LEARNED_TABLE = (
+# автообучения по виду: нет строки — включено. Как была создана миграцией 12 → 13 (история миграций не меняется).
+_LEARNED_TABLE_V13 = (
     "CREATE TABLE IF NOT EXISTS learned_norms(id INTEGER PRIMARY KEY AUTOINCREMENT, "
     "kind TEXT NOT NULL CHECK (kind IN ('unload', 'loading', 'travel', 'fuel')), scope TEXT NOT NULL DEFAULT '', "
     "run_day TEXT NOT NULL, params TEXT, model_id TEXT, n_obs INTEGER NOT NULL, n_test INTEGER NOT NULL, "
     "train_from TEXT, train_to TEXT, test_from TEXT, test_to TEXT, mae_before REAL, mae_after REAL, "
     "accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)), reason TEXT NOT NULL, created_at TEXT NOT NULL, "
     "UNIQUE (kind, scope, run_day))")
+# Схема 14: вид truck_time — выбор модели времени в пути грузовиков (learning.fit_truck_time). Столбцы те же; SQLite не
+# меняет CHECK столбца — таблица пересобирается, строки переносятся как есть (с id). scope у travel — к каким минутам
+# выучена поправка (learning.travel_scope): '' — прежняя модель, 'valhalla' — время Valhalla.
+_LEARNED_COLUMNS = (
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+    "kind TEXT NOT NULL CHECK (kind IN ('unload', 'loading', 'travel', 'truck_time', 'fuel')), "
+    "scope TEXT NOT NULL DEFAULT '', "
+    "run_day TEXT NOT NULL, params TEXT, model_id TEXT, n_obs INTEGER NOT NULL, n_test INTEGER NOT NULL, "
+    "train_from TEXT, train_to TEXT, test_from TEXT, test_to TEXT, mae_before REAL, mae_after REAL, "
+    "accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)), reason TEXT NOT NULL, created_at TEXT NOT NULL, "
+    "UNIQUE (kind, scope, run_day)")
+_LEARNED_COPY = ('id, kind, scope, run_day, params, model_id, n_obs, n_test, train_from, train_to, test_from, test_to, '
+                 'mae_before, mae_after, accepted, reason, created_at')
+_LEARNED_TABLE = f"CREATE TABLE IF NOT EXISTS learned_norms({_LEARNED_COLUMNS})"
 _LEARNING_SWITCH_TABLE = (
     "CREATE TABLE IF NOT EXISTS learning_switch(kind TEXT PRIMARY KEY, auto INTEGER NOT NULL CHECK (auto IN (0, 1)), "
     "updated_at TEXT NOT NULL, updated_by TEXT)")
@@ -229,7 +243,19 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     10: (_MEASUREMENT_TABLE,),
     11: (_CUSTOMER_VEHICLES_TABLE,),
     # 12 → 13: только добавляем — журнал выученных норм и переключатели автообучения.
-    12: (_LEARNED_TABLE, _LEARNING_SWITCH_TABLE),
+    12: (_LEARNED_TABLE_V13, _LEARNING_SWITCH_TABLE),
+    # 13 → 14: вид выученной нормы truck_time — журнал пересобирается с новым CHECK, строки (и id) переносятся как
+    # есть, счётчик AUTOINCREMENT — прежний (повторный прогон дня расходует номера: id не повторяются);
+    # переключатели автообучения (без CHECK вида) не меняются.
+    13: (
+        f"CREATE TABLE learned_norms_v14({_LEARNED_COLUMNS})",
+        f"INSERT INTO learned_norms_v14({_LEARNED_COPY}) SELECT {_LEARNED_COPY} FROM learned_norms",
+        "DELETE FROM sqlite_sequence WHERE name = 'learned_norms_v14'",
+        "INSERT INTO sqlite_sequence(name, seq) SELECT 'learned_norms_v14', seq FROM sqlite_sequence "
+        "WHERE name = 'learned_norms'",
+        "DROP TABLE learned_norms",
+        "ALTER TABLE learned_norms_v14 RENAME TO learned_norms",
+    ),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
