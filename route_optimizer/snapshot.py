@@ -250,6 +250,11 @@ class SnapshotCache:
             return snap, False
         return self.get(allow_stale=True)
 
+    def peek(self) -> Snapshot | None:
+        """Снимок из кэша, если он есть; никогда не читает ERP (кэш пуст — None)."""
+        with self._lock:
+            return self._snap
+
 
 class ResultCache:
     """Кэш результатов расчёта по ключу (id снимка, отпечаток настроек, …); вытесняется старейший."""

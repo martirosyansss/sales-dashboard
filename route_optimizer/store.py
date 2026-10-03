@@ -483,10 +483,12 @@ def check_window(raw: Any) -> tuple[CustomerWindow | None, str | None]:
 
 def check_unload_min(raw: Any) -> tuple[float | None, str | None]:
     """Время у магазина (№50) из запроса или из базы → (минуты, None) или (None, ошибка). Целое число минут от 1 до
-    120: логист вводит минуты, дробные не нужны; 40.0 (REAL из базы) — то же, что 40. Логическое — не число."""
+    120: логист вводит минуты, дробные не нужны; 40.0 (REAL из базы) — то же, что 40. Логическое — не число. Предел
+    проверяется до перевода в float: огромное целое (10**400) — ошибка ввода, а не OverflowError; NaN и ∞ — вне
+    предела."""
     lo, hi = UNLOAD_MIN_RANGE
-    if (isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw)
-            or not float(raw).is_integer() or not lo <= raw <= hi):
+    if (isinstance(raw, bool) or not isinstance(raw, (int, float)) or not lo <= raw <= hi
+            or not float(raw).is_integer()):
         return None, f'время у магазина — целое число минут от {lo} до {hi}'
     return float(raw), None
 

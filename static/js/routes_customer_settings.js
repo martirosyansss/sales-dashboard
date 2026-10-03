@@ -30,11 +30,19 @@
         if (w.kind === 'between') return hhmm(w.t1) + '–' + hhmm(w.t2);
         return 'В ' + hhmm(w.t1) + (w.tol ? ' ±' + w.tol + ' мин' : '');
     }
-    function unloadHint() {
+    const unloads = n => n + ' ' + (n % 10 === 1 && n % 100 !== 11 ? 'разгрузка'
+        : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'разгрузки' : 'разгрузок');
+    // Подсказка — как посчитает «Развоз»: пустое поле — обычное время или своё время магазина по факту
+    // (unload_auto_min); есть разгрузки по GPS (unload_visits) — введённое смешается с фактом.
+    function unloadHint(item) {
         const perTonne = norms ? minutes(norms.per_tonne_min) + ' мин на тонну' : 'минуты на тонну';
-        const perStop = norms ? 'обычные ' + minutes(norms.per_stop_min) + ' мин' : 'обычное время';
+        const auto = item && item.unload_auto_min != null ? Number(item.unload_auto_min) : null;
+        const empty = auto !== null && norms && auto !== Number(norms.per_stop_min) ? minutes(auto) + ' мин — по факту'
+            : norms ? 'обычные ' + minutes(norms.per_stop_min) + ' мин' : 'обычное время';
+        const fact = item && item.unload_visits ? ' По GPS водителей у этого магазина уже ' + unloads(item.unload_visits)
+            + ': введённое время программа смешает с фактом — чем больше разгрузок, тем ближе к факту.' : '';
         return 'Сколько минут машина стоит у этого магазина: парковка, приёмка, документы. Время на сам груз ('
-            + perTonne + ') программа добавит сама. Пусто — ' + perStop + '.';
+            + perTonne + ') программа добавит сама.' + fact + ' Пусто — ' + empty + '.';
     }
     function vehicleText(rule) {
         if (!rule || (rule.mode === 'deny' && !rule.trucks.length)) return 'Все машины';
@@ -82,7 +90,7 @@
         $('rcsTimeT2').value = w && Number.isInteger(w.t2) ? hhmm(w.t2) : '';
         $('rcsTimeTol').value = String(w && Number.isInteger(w.tol) ? w.tol : 0);
         $('rcsUnload').value = item.unload_min ? String(item.unload_min) : '';
-        $('rcsUnloadHint').textContent = unloadHint();
+        $('rcsUnloadHint').textContent = unloadHint(item);
         $('rcsVehicleMode').value = item.vehicle_access ? item.vehicle_access.mode : '';
         const checked = new Set(item.vehicle_access ? item.vehicle_access.trucks : []);
         const choices = [...vehicles];
@@ -132,10 +140,13 @@
         return { kind, t1, t2: kind === 'between' ? t2 : null, tol: kind === 'at' ? tol : null };
     }
     function readUnload() {
-        const raw = $('rcsUnload').value.trim();
+        const input = $('rcsUnload'), error = 'Время у магазина — целое число минут от 1 до 120. Или оставьте поле пустым.';
+        // нечисло в поле type=number браузер отдаёт как '' — это не «пусто»: иначе сохранённое время стёрлось бы молча
+        if (input.validity && input.validity.badInput) throw new Error(error);
+        const raw = input.value.trim();
         if (raw === '') return null;
         const value = Number(raw);
-        if (!Number.isInteger(value) || value < 1 || value > 120) throw new Error('Время у магазина — целое число минут от 1 до 120. Или оставьте поле пустым.');
+        if (!Number.isInteger(value) || value < 1 || value > 120) throw new Error(error);
         return value;
     }
     async function save() {

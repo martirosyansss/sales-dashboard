@@ -1664,7 +1664,10 @@ def api_customer_vehicles_search() -> Any:
                   (not query and (cid in bundle.vehicle_access or cid in bundle.windows or cid in bundle.unload_min)) or
                   (query and query in f'{c.code} {c.name} {cid}'.casefold()))]
     customers.sort(key=lambda c: (c.name or '', c.id))
-    per_stop, per_tonne, _ = _unload_now(state, bundle)
+    unload = _unload_now(state)
+    per_stop, per_tonne = _unload_norms(bundle, unload)
+    empty = learning.store_extras(per_stop, {}, unload)    # поле пустое — своё время магазина только по факту
+    stats = learning.store_stats(unload)
     return jsonify({'success': True, 'total': len(customers),
                     'vehicles': [{'car_code': t['car_code'], 'name': t['name']} for t in _trucks_json(snap, bundle)],
                     'unload_norms': {'per_stop_min': per_stop, 'per_tonne_min': per_tonne},
@@ -1672,7 +1675,10 @@ def api_customer_vehicles_search() -> Any:
         {'customer_id': c.id, 'code': c.code, 'name': c.name,
          'vehicle_access': bundle.vehicle_access[c.id].to_json() if c.id in bundle.vehicle_access else None,
          'window': bundle.windows[c.id].to_json() if c.id in bundle.windows else None,
-         'unload_min': bundle.unload_min.get(c.id)}
+         'unload_min': bundle.unload_min.get(c.id),
+         # подсказка: сколько «Развоз» возьмёт с пустым полем; разгрузок по факту — введённое смешается с фактом
+         'unload_auto_min': round(per_stop + empty.get(c.id, 0.0), 1),
+         'unload_visits': stats[c.id][0] if stats.get(c.id, (0, 0.0))[0] >= learning.STORE_MIN_OBS else None}
         for c in customers[:30]]})
 
 
@@ -1820,15 +1826,25 @@ def _with_learned(state: RoutesState, norms: Any, tn: fl.TruckNorms, trucks: dic
     return norms, tn, trucks, learning.InEffect()
 
 
-def _unload_now(state: RoutesState, bundle: Bundle) -> tuple[float, float, Mapping[str, Any] | None]:
-    """Разгрузка, которой «Развоз» считает сейчас: (мин на точку, мин на тонну, действующая строка unload) — выученные,
-    если строка действует (автообучение включено), иначе из настроек и None. Сбой журнала — из настроек."""
+def _active_unload(rows: Sequence[Mapping[str, Any]], auto: Mapping[str, bool]) -> Mapping[str, Any] | None:
+    """Действующая строка разгрузки — как в расчёте «Развоза» (learning.in_effect: последняя принятая с корректными
+    параметрами, автообучение вида включено); нет — None."""
+    return learning.in_effect([r for r in rows if r['accepted']], auto, None).unload
+
+
+def _unload_now(state: RoutesState) -> Mapping[str, Any] | None:
+    """Действующая строка разгрузки сейчас (_active_unload по журналу); сбой журнала — None (нормы из настроек)."""
     journal = _learned_journal(state, None)
-    unload = learning.in_effect(*journal, None).unload if journal is not None else None
+    return _active_unload(*journal) if journal is not None else None
+
+
+def _unload_norms(bundle: Bundle, unload: Mapping[str, Any] | None) -> tuple[float, float]:
+    """(мин на точку, мин на тонну), которыми «Развоз» считает разгрузку: действующей строки unload, без неё — из
+    настроек."""
     if unload:
-        return float(unload['per_stop_min']), float(unload['per_tonne_min']), unload
+        return float(unload['per_stop_min']), float(unload['per_tonne_min'])
     s = bundle.settings
-    return float(s['unload_min_per_stop']), float(s['unload_min_per_tonne']), None
+    return float(s['unload_min_per_stop']), float(s['unload_min_per_tonne'])
 
 
 def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
@@ -1878,8 +1894,7 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
                                            bundle.unload_min)
     compare = mode != 'yandex' and TRUCK_TIME_VALHALLA in variants
     # своё время магазинов в «действующей норме» — ровно как в расчёте: выученное, у остальных введённое (№50)
-    extras = learning.store_extras(tn.unload_min_per_stop, bundle.unload_min,
-                                   (eff.unload or {}).get('store_offsets'))
+    extras = learning.store_extras(tn.unload_min_per_stop, bundle.unload_min, eff.unload)
     unload: list[learning.UnloadObs] = []
     loads: list[learning.LoadObs] = []
     legs: list[learning.LegObs] = []
@@ -1909,7 +1924,8 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
                    if tn.loading_configured and tn.load(1000) > 0 else None)
     outcomes = [
         learning.fit_unload(unload, lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes
-                            + math.fsum(extras.get(c, 0.0) for c in o.customers), today, bundle.unload_min),
+                            + math.fsum(extras.get(c, 0.0) for c in o.customers), today, bundle.unload_min,
+                            lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes),
         learning.fit_loading(loads, today, loading_now),
     ]
     model_id = learning.road_model_id(norms)
@@ -2034,7 +2050,7 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
         if kind == 'truck_time':
             item['source'] = {'value': source, 'why': why, 'learned': learning.truck_time_learned(rows)}
         if kind == 'unload':
-            item['stores'] = _store_unload(state, bundle, rows, effect['params'] if effect else None)
+            item['stores'] = _store_unload(state, bundle, rows, _active_unload(rows, auto))
         out.append(item)
     return out
 
@@ -2044,33 +2060,30 @@ STORES_SHOWN = 100   # строк в таблице «Разгрузка по м
 
 def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str, Any]],
                   unload: Mapping[str, Any] | None) -> dict[str, Any]:
-    """«Разгрузка по магазинам» (№50) для страницы обучения: магазины с введённым временем или со своим временем по
-    факту (store_stats последнего пересчёта с корректными параметрами), по числу визитов: введено, по факту (визитов,
-    мин), в расчёте — постоянная часть, которой «Развоз» считает сейчас (unload — действующая строка: выученное у её
-    магазинов, у остальных введённое, иначе норма на точку; learning.store_extras, как в расчёте; время на груз —
-    сверху). Не больше STORES_SHOWN строк. Названия — из снимка ERP в памяти; ERP недоступна — без названий."""
-    s = bundle.settings
-    per_stop = float(unload['per_stop_min']) if unload else float(s['unload_min_per_stop'])
-    per_tonne = float(unload['per_tonne_min']) if unload else float(s['unload_min_per_tonne'])
-    offsets = (unload or {}).get('store_offsets') or {}
-    extras = learning.store_extras(per_stop, bundle.unload_min, offsets)
+    """«Разгрузка по магазинам» (№50) для страницы обучения: магазины с введённым временем, со своим временем по факту
+    (store_stats последнего пересчёта с корректными параметрами) и со своим временем в действующей строке unload (и у
+    строк до №50 без store_stats, и когда последний пересчёт не принят) — по числу визитов: введено, по факту (визитов,
+    мин), в расчёте — постоянная часть, которой «Развоз» считает сейчас (learning.store_times, как в расчёте; время на
+    груз — сверху). Не больше STORES_SHOWN строк. Названия — из снимка ERP, если он уже в памяти (ERP не читается:
+    страница опрашивает статус во время пересчёта); снимка нет — без названий."""
+    per_stop, per_tonne = _unload_norms(bundle, unload)
+    times = learning.store_times(per_stop, bundle.unload_min, unload)
     last = next((r for r in reversed(rows) if r['kind'] == 'unload' and r['params'] is not None
                  and learning.valid_params('unload', r['params'])), None)
-    stats = {int(c): v for c, v in ((last['params'].get('store_stats') or {}) if last else {}).items()}
-    cids = sorted(set(bundle.unload_min) | set(stats), key=lambda c: (-stats[c][0] if c in stats else 0, c))
-    try:
-        customers = state.snapshots.cached()[0].customers
-    except ErpError:
-        customers = {}
+    stats = learning.store_stats(last['params'] if last else None)
+    active = {int(c) for c in (unload or {}).get('store_offsets') or {}} | set(learning.store_stats(unload))
+    cids = sorted(set(bundle.unload_min) | set(stats) | active, key=lambda c: (-stats[c][0] if c in stats else 0, c))
+    snap = state.snapshots.peek()
+    customers = snap.customers if snap is not None else {}
     out = []
     for cid in cids[:STORES_SHOWN]:
         c = customers.get(cid)
         visits, fact = stats.get(cid, (None, None))
+        extra, source = times.get(cid, (0.0, 'norm'))
         out.append({'customer_id': cid, 'code': c.code if c else None, 'name': c.name if c else None,
-                    'manual_min': bundle.unload_min.get(cid), 'visits': visits, 'fact_min': fact,
-                    'in_calc_min': round(per_stop + extras.get(cid, 0.0), 1),
-                    'source': ('learned' if str(cid) in offsets else 'manual' if cid in bundle.unload_min
-                               else 'norm')})
+                    'manual_min': bundle.unload_min.get(cid), 'visits': visits,
+                    'fact_min': None if fact is None else max(0.0, fact),
+                    'in_calc_min': round(per_stop + extra, 1), 'source': source})
     return {'per_stop_min': per_stop, 'per_tonne_min': per_tonne, 'min_visits': learning.STORE_MIN_OBS,
             'run_day': last['run_day'] if last else None, 'total': len(cids), 'shown': len(out), 'rows': out}
 
