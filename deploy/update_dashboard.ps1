@@ -30,13 +30,15 @@ try {
     & $PythonExe -m pip install -r requirements.txt --quiet --disable-pip-version-check --no-warn-script-location
 
     # Optional: Valhalla road tiles, built before the restart so the server has them at once. Takes about a second
-    # when the tiles are current; fails fast (logged, update goes on) without pyvalhalla or the map. Capped at 240 s
+    # when the tiles are current; fails fast (logged, update goes on) without pyvalhalla or the map. Capped at 180 s
     # to stay within this task's 10-minute limit. Matrices are not warmed here: that needs an ERP snapshot, and the
     # server warms them itself in a background thread after the restart (serving the old road model meanwhile).
+    # '-W ignore::RuntimeWarning:runpy' only hides a harmless warning of 'python -m' for modules of the package.
     try {
         $env:PYTHONIOENCODING = 'utf-8'
         $build = Start-Process -FilePath $PythonExe -WorkingDirectory $AppDir -NoNewWindow -Wait -PassThru `
-            -ArgumentList '-m', 'route_optimizer.valhalla_engine', 'build', '--max-seconds', '240' `
+            -ArgumentList '-W', 'ignore::RuntimeWarning:runpy', '-m', 'route_optimizer.valhalla_engine', 'build', `
+                '--max-seconds', '180' `
             -RedirectStandardOutput (Join-Path $AppDir 'logs\valhalla_build.log') `
             -RedirectStandardError (Join-Path $AppDir 'logs\valhalla_build.err.log')
         if ($build.ExitCode -ne 0) {
@@ -45,6 +47,28 @@ try {
     }
     catch {
         Write-Log ('Valhalla tiles skipped: {0}' -f $_)
+    }
+
+    # Optional: OSM road distance cache. When an update changes its format (or the map), the first request after the
+    # restart would rebuild it for about 2 minutes; do it here, before the restart. 'warm --if-stale' exits at once
+    # when the cache is current (no ERP access then); otherwise it reads an ERP snapshot (read-only) and fills the
+    # cache. Stopped after 240 s (the first request then finishes the job); failures are only logged.
+    try {
+        $warm = Start-Process -FilePath $PythonExe -WorkingDirectory $AppDir -NoNewWindow -PassThru `
+            -ArgumentList '-W', 'ignore::RuntimeWarning:runpy', '-m', 'route_optimizer.roads', 'warm', '--if-stale' `
+            -RedirectStandardOutput (Join-Path $AppDir 'logs\roads_warm.log') `
+            -RedirectStandardError (Join-Path $AppDir 'logs\roads_warm.err.log')
+        $null = $warm.Handle   # PowerShell 5.1: without it ExitCode is empty after WaitForExit
+        if (-not $warm.WaitForExit(240000)) {
+            Stop-Process -Id $warm.Id -Force -ErrorAction SilentlyContinue
+            Write-Log 'OSM road cache not warmed in 240 s (stopped), the first request will finish it'
+        }
+        elseif ($warm.ExitCode -ne 0) {
+            Write-Log ('OSM road cache not warmed (exit {0}), see logs\roads_warm.err.log' -f $warm.ExitCode)
+        }
+    }
+    catch {
+        Write-Log ('OSM road cache warm skipped: {0}' -f $_)
     }
 
     # Restart the server through the task scheduler
