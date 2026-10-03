@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
 
 from . import vrp
@@ -78,6 +78,8 @@ class TruckNorms:
     warehouse_load_min_per_tonne: float = 0.0
     work_start_minute: float | None = None
     loading_configured: bool = True
+    # выученная поправка разгрузки магазина, мин на визит (learning.apply_learned): точка дня → минуты; нет — 0
+    unload_extra: Mapping[Point, float] = field(default_factory=dict, compare=False)
 
     @classmethod
     def from_settings(cls, s: Mapping[str, Any]) -> TruckNorms:
@@ -95,6 +97,11 @@ class TruckNorms:
 
     def unload(self, kg: float) -> float:
         return self.unload_min_per_stop + self.unload_min_per_tonne * kg / 1000.0
+
+    def unload_at(self, kg: float, point: Point) -> float:
+        """Разгрузка у точки: норма + выученная поправка магазина (unload_extra; нет — норма, тот же float)."""
+        extra = self.unload_extra.get(point)
+        return self.unload(kg) if extra is None else self.unload(kg) + extra
 
     def load(self, kg: float) -> float:
         return self.warehouse_load_fixed_min + self.warehouse_load_min_per_tonne * kg / 1000.0
@@ -147,6 +154,12 @@ class _Stop:
     late: float = math.inf
     center: bool = False
     allowed_trucks: frozenset[str] | None = None
+
+
+def _split_unload(s: _Stop, n: int, tn: TruckNorms) -> float:
+    """Разгрузка одной из n поездок тяжёлого заказа: норма по её кг + поправка магазина за визит (у s она уже в
+    s.unload; без поправки разность — ровно 0.0, расчёт байт-в-байт прежний)."""
+    return tn.unload(s.kg / n) + (s.unload - tn.unload(s.kg))
 
 
 def _vehicle_allowed(stop: _Stop, truck: FleetTruck) -> bool:
@@ -425,7 +438,7 @@ def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[Fl
             for _ in range(n):
                 singles.append(len(vs))
                 origin.append(i)
-                vs.append(_Stop(s.node, s.kg / n, s.revenue / n, tn.unload(s.kg / n)))
+                vs.append(_Stop(s.node, s.kg / n, s.revenue / n, _split_unload(s, n, tn)))
         else:
             if s.kg > cap + _EPS:
                 singles.append(len(vs))
@@ -570,7 +583,7 @@ def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[F
             for _ in range(n):
                 singles.append(len(vs))
                 origin.append(i)
-                vs.append(replace(s, kg=s.kg / n, revenue=s.revenue / n, unload=tn.unload(s.kg / n)))
+                vs.append(replace(s, kg=s.kg / n, revenue=s.revenue / n, unload=_split_unload(s, n, tn)))
         else:
             if s.kg > c + _EPS:
                 singles.append(len(vs))
@@ -830,7 +843,7 @@ def _balance(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tr
     by_code = {t.car_code: t for t in trucks}
     share = Counter(i for t in trips for i in t.items)
     vs = [s if share[i] <= 1 else replace(s, kg=s.kg / share[i], revenue=s.revenue / share[i],
-                                          unload=tn.unload(s.kg / share[i]))
+                                          unload=_split_unload(s, share[i], tn))
           for i, s in enumerate(stops)]
     seqs = [list(t.items) for t in trips]
     kg = [math.fsum(vs[v].kg for v in s) for s in seqs]
@@ -980,7 +993,7 @@ def _shared(trips: Sequence[Trip], stops: Sequence[_Stop], tn: TruckNorms) -> li
     """Заказы с грузом одной поездки: заказ в k рейсах (тяжёлый) — в каждом 1/k его кг (как dispatch._shares)."""
     share = Counter(i for t in trips for i in t.items)
     return [s if share[i] <= 1 else replace(s, kg=s.kg / share[i], revenue=s.revenue / share[i],
-                                            unload=tn.unload(s.kg / share[i]))
+                                            unload=_split_unload(s, share[i], tn))
             for i, s in enumerate(stops)]
 
 
@@ -1237,7 +1250,7 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
     uniq = sorted(set(points))
     node = {p: i + 1 for i, p in enumerate(uniq)}
     d, m = _matrices(uniq, depot, norms, tn)
-    stops = [_Stop(node[p], float(kg), float(rev), tn.unload(float(kg)),
+    stops = [_Stop(node[p], float(kg), float(rev), tn.unload_at(float(kg), p),
                    *(windows[i] if windows is not None else (0.0, math.inf)), center is not None and bool(center[i]),
                    None if allowed_trucks is None or allowed_trucks[i] is None else frozenset(allowed_trucks[i]))
              for i, (p, kg, rev) in enumerate(zip(points, kgs, revenues))]
@@ -1310,7 +1323,7 @@ def route_trip(points: Sequence[Point], kgs: Sequence[float], depot: Point, norm
     if not points:
         return [], 0.0, 0.0
     d, m = _matrices(points, depot, norms, tn)
-    stops = [_Stop(i + 1, float(kg), 0.0, tn.unload(float(kg))) for i, kg in enumerate(kgs)]
+    stops = [_Stop(i + 1, float(kg), 0.0, tn.unload_at(float(kg), points[i])) for i, kg in enumerate(kgs)]
     if windows is not None:
         for s, (early, late) in zip(stops, windows):
             s.early, s.late = early, late
@@ -1334,7 +1347,8 @@ def trip_schedule(points: Sequence[Point], kgs: Sequence[float], depot: Point, n
     if not points:
         return start, [], 0.0
     _, m = _matrices(points, depot, norms, tn)
-    stops = [_Stop(i + 1, float(kg), 0.0, tn.unload(float(kg)), *(windows[i] if windows is not None else (0.0, math.inf)))
+    stops = [_Stop(i + 1, float(kg), 0.0, tn.unload_at(float(kg), points[i]),
+                   *(windows[i] if windows is not None else (0.0, math.inf)))
              for i, kg in enumerate(kgs)]
     depart = _departure(range(len(points)), stops, m, start)
     arrivals: list[float] = []

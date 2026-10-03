@@ -12972,6 +12972,8 @@ import courier
 courier.init_app(app, db)
 # точки и предложения водителей «Առաքիչ» — в «Маршруты» (driver-geo-plan.md §4)
 route_optimizer.attach_driver_geo(app, courier.driver_geo(app))
+# трек и заправки машин «Առաքիչ» — обучение «Развоза» и «план — факт» (learning-loop-plan.md)
+route_optimizer.attach_fleet_facts(app, courier.fleet_facts(app))
 
 from courier.web_security import init_web_security
 init_web_security(app, courier.API_PREFIX)
@@ -13025,6 +13027,7 @@ if __name__ == '__main__':
     print()
     print("=" * 80)
     
+    route_optimizer.start_learning_scheduler(app)   # ночное обучение «Развоза» (03:00, Ереван)
     if not _serve_waitress():
         debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() in ('1', 'true', 'yes')
         app.run(debug=debug_mode, use_reloader=False, host='0.0.0.0', port=5000)

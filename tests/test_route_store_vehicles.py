@@ -57,7 +57,7 @@ def test_storage_roundtrip_and_schema11_migration(tmp_path):
     assert st.Store(str(path)).load().vehicle_access == {101: rule}
     with sqlite3.connect(path) as db:
         assert db.execute('SELECT updated_by FROM customer_vehicle_access').fetchone() == ('owner',)
-        assert db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() == ('12',)
+        assert db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() == (str(st.SCHEMA_VERSION),)
     store.save_customer_vehicles(101, None, 'owner')
     assert store.load().vehicle_access == {}
 

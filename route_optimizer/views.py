@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import re
 import threading
 import time
@@ -21,8 +22,9 @@ from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
 
 from flask import Blueprint, Response, current_app, jsonify, render_template, request, session
 
+from . import actuals as ac
 from . import dispatch as dp
-from . import evaluate, optimize
+from . import evaluate, learning, optimize
 from . import fleet as fl
 from .running_costs import profile_fields
 from .erp import ErpError
@@ -136,6 +138,10 @@ class RoutesState:
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
     driver_geo: DriverGeo | None = None   # None — раздела «Առաքիչ» нет: точек водителей нет, всё как раньше
     driver_cache: tuple[float, dict[int, Point]] | None = None   # (time.monotonic(), точки) — DRIVER_TTL_SECONDS
+    # факт машин (трек, точки дня, заправки) из «Առաքիչ» — обучение «Развоза»; None — без обучения, всё как раньше
+    fleet_facts: learning.FleetFacts | None = None
+    learning_lock: threading.Lock = field(default_factory=threading.Lock)   # прогон обучения — один за раз
+    learning_job: dict[str, Any] = field(default_factory=dict)              # последний прогон: статус, время, ошибка
 
 
 def _now() -> str:
@@ -817,8 +823,11 @@ def _ready_trucks(snap: Snapshot, bundle: Bundle, active_only: bool = True) -> d
 
 
 def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
-                  trucks: dict[str, fl.FleetTruck], points: list[Any]) -> dp.DayContext | None:
-    """Контекст расчёта рейсов; склада или машин нет — None (страница объясняет, что заполнить)."""
+                  trucks: dict[str, fl.FleetTruck], points: list[Any], customers: Mapping[int, Point] | None = None,
+                  learned_before: str | None = None) -> dp.DayContext | None:
+    """Контекст расчёта рейсов; склада или машин нет — None (страница объясняет, что заполнить). Действующие
+    выученные нормы (learning.apply_learned; learned_before — только прогоны раньше этого дня) — поверх настроек;
+    customers — клиент → точка дня (поправка разгрузки магазина)."""
     if bundle.depot is None or not trucks:
         return None
     s = bundle.settings
@@ -834,7 +843,12 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
         provider, status = load([bundle.depot, *points], day, s['truck_work_start'])
         norms = replace(norms, provider=provider, traffic_status=status)
     h2, m2 = map(int, s['truck_overtime_end'].split(':'))
-    return dp.DayContext(day, bundle.depot, trucks, norms, fl.TruckNorms.from_settings(s), h * 60 + m,
+    tn = fl.TruckNorms.from_settings(s)
+    eff = learning.in_effect(state.store.learned(learned_before, accepted_only=True), state.store.learning_auto(),
+                             learning.road_model_id(norms))
+    if eff:
+        norms, tn, trucks = learning.apply_learned(norms, tn, trucks, eff, customers or {})
+    return dp.DayContext(day, bundle.depot, trucks, norms, tn, h * 60 + m,
                          float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']),
                          {cid: w.span() for cid, w in bundle.windows.items()},
                          tuple((lat, lon) for lat, lon in s['center_zone']), vehicle_access=bundle.vehicle_access)
@@ -963,7 +977,8 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
 
     stops = dp.build_stops(_active_orders(deliver, backlog, draft, carried), coord)
     ready = _ready_trucks(snap, bundle)
-    ctx = _dispatch_ctx(state, snap, bundle, day, ready, [s.point for s in stops if s.point is not None])
+    ctx = _dispatch_ctx(state, snap, bundle, day, ready, [s.point for s in stops if s.point is not None],
+                        {s.customer_id: s.point for s in stops if s.point is not None})
     return _DispatchDay(day, since, until, data, deliver, backlog, sel.shipped_before, sel.self_delivery, draft,
                         rev or 0, stops, ctx, ready, snap, bundle, carried)
 
@@ -1185,8 +1200,10 @@ def _capture_prediction(dd, draft):
     view = dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd))
     now = _clock()
     start = datetime.combine(dd.day, datetime.strptime(dd.bundle.settings['truck_work_start'], '%H:%M').time())
+    # depart/return — выезд первого рейса и возвращение последнего (HH:MM): «время работы» отчёта «план — факт»
     draft.prediction = {'created_at': now.isoformat(), 'prospective': now < start,
-        'trucks': {t['car_code']: {key: t.get(key) for key in ('km', 'minutes', 'liters', 'loading_minutes', 'wear_amd')}
+        'trucks': {t['car_code']: {**{key: t.get(key) for key in ('km', 'minutes', 'liters', 'loading_minutes', 'wear_amd')},
+                                   'depart': t['trips'][0]['depart'] if t['trips'] else None, 'return': t.get('return')}
                    for t in view['trucks']}}
 
 
@@ -1616,3 +1633,232 @@ def api_road_lines() -> Any:
     roads = state.roads.get() if state.roads is not None else None
     out = roads.lines(parsed) if roads is not None else None
     return jsonify({'success': True, 'lines': out})
+
+
+# --- Обучение по факту машин и «план — факт» (learning-loop-plan.md, этапы 4–5) ---
+
+LEARNING_REPORT_DAYS = 14         # отчёт по умолчанию — две недели до вчера
+LEARNING_REPORT_MAX_DAYS = 62
+
+
+@bp.get('/routes/learning')
+def learning_page() -> str:
+    return render_template('routes_learning.html')
+
+
+def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date
+                   ) -> list[tuple[str, date, list[ac.PlanStop], ac.DayActual, dict[str, Any] | None, int, int]]:
+    """Машино-дни с треком за since…until: (машина, день, точки плана, факт, черновик развоза, рейсов и точек машины
+    по плану). Место точки в объезде — по черновику «Развоза» дня, без него — порядок /day терминала."""
+    if state.fleet_facts is None:
+        return []
+    windows = {cid: w.span() for cid, w in bundle.windows.items()}
+    drafts: dict[str, dict[str, Any] | None] = {}
+    out = []
+    for car, ds in state.fleet_facts.car_days(since.isoformat(), until.isoformat()):
+        if ds not in drafts:
+            got = state.store.load_dispatch(ds)
+            drafts[ds] = got[0] if got is not None else None
+        data = state.fleet_facts.day(car, ds)
+        ranks, plan_trips = learning.draft_ranks(drafts[ds], car)
+        stops = learning.plan_stops(data['stops'], ranks, windows)
+        actual = ac.reconstruct(learning.track_fixes(data['track']), stops, bundle.depot)
+        out.append((car, date.fromisoformat(ds), stops, actual, drafts[ds], plan_trips, len(ranks)))
+    return out
+
+
+def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
+    """Прогон обучения за день today (ночью — за наступивший день): наблюдения из факта до вчера включительно, проверка
+    на последней неделе, итог — в learned_norms (повтор того же дня заменяет). «Действующая норма» для сравнения — по
+    прогонам раньше today: повторный прогон даёт тот же итог. Внешние пробки (Яндекс) не запрашиваются."""
+    if state.fleet_facts is None:
+        return []
+    bundle = _bundle(state)
+    if bundle.depot is None:
+        raise dp.DispatchError('Сначала укажите склад в настройках')
+    train_from, _ = learning.windows(today)
+    days = _learning_days(state, bundle, train_from, today - timedelta(days=1))
+    if not days and not state.fleet_facts.refuels():
+        logger.info('[Routes] Обучение за %s: трека и заправок машин ещё нет — нечего учить', today)
+        return []
+    snap, _ = state.snapshots.cached()   # ERP (только чтение) — скорости и машины, как у «Развоза»
+    mode = bundle.settings.get('traffic_mode', 'gps')
+    calc = replace(bundle, settings={**bundle.settings, 'traffic_mode': 'gps' if mode == 'gps' else 'off'})
+    ready = _ready_trucks(snap, bundle, active_only=False)
+    points = sorted({s.point for _, _, stops, *_ in days for s in stops if s.point is not None})
+    customers = {s.customer_id: s.point for _, _, stops, *_ in days for s in stops
+                 if s.point is not None and s.customer_id is not None}
+    before = today.isoformat()
+    ctx = _dispatch_ctx(state, snap, calc, today, ready, points, customers, learned_before=before) if ready else None
+    if ctx is None:
+        raise dp.DispatchError('Сначала укажите тоннаж и расход машин в настройках')
+    eff = learning.in_effect(state.store.learned(before, accepted_only=True), state.store.learning_auto(),
+                             learning.road_model_id(ctx.norms))
+    offsets = {int(c): float(v) for c, v in ((eff.unload or {}).get('store_offsets') or {}).items()}
+    tn = ctx.tn
+    unload: list[learning.UnloadObs] = []
+    loads: list[learning.LoadObs] = []
+    legs: list[learning.LegObs] = []
+    profiles: dict[str, list[tuple[datetime, float, float]]] = {}
+    for car, day, stops, actual, *_ in days:
+        unload += learning.unload_obs(day, actual, stops)
+        loads += learning.load_obs(day, actual)
+        legs += learning.leg_obs(day, actual, ctx.norms)
+        profiles.setdefault(car, []).extend(ac.load_profile(actual, stops))
+    outcomes = [
+        learning.fit_unload(unload, lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes
+                            + math.fsum(offsets.get(c, 0.0) for c in o.customers), today),
+        learning.fit_loading(loads, lambda o: tn.load(o.tonnes * 1000.0), today),
+    ]
+    if mode == 'yandex':
+        outcomes.append(learning.Outcome('travel', '', False, 'время в пути считает Яндекс с пробками — поправка '
+                                         'по часам не нужна'))
+    else:
+        outcomes.append(learning.fit_travel(legs, today, learning.road_model_id(ctx.norms) or 'straight',
+                                            learning.model_ref(ctx.norms)))
+    capacity = {code: t.capacity_kg for code, t in ctx.trucks.items()}
+    intervals = learning.fuel_intervals(state.fleet_facts.refuels())
+    by_car = learning.fuel_obs(intervals, profiles, capacity)
+    for car in sorted({iv.car_code for iv in intervals}):
+        truck = ctx.trucks.get(car)
+        if truck is None:
+            outcomes.append(learning.Outcome('fuel', car, False, 'машина не настроена (тоннаж и расход)'))
+            continue
+
+        def fuel_now(load: float, t: fl.FleetTruck = truck) -> float:
+            if t.fuel_empty_l_per_100km is None or t.fuel_full_l_per_100km is None:
+                return t.l100
+            return t.fuel_empty_l_per_100km + (t.fuel_full_l_per_100km - t.fuel_empty_l_per_100km) * load
+        outcomes.append(learning.fit_fuel([o for o in by_car.get(car, []) if o.day < today], fuel_now, car))
+    state.store.save_learned(today.isoformat(), outcomes)
+    logger.info('[Routes] Обучение за %s: машино-дней %d; %s', today, len(days),
+                ', '.join(f'{o.kind}{":" + o.scope if o.scope else ""}={"да" if o.accepted else "нет"}'
+                          for o in outcomes))
+    return outcomes
+
+
+def run_learning_job(state: RoutesState, today: date, user: str | None) -> bool:
+    """Прогон обучения с отметкой статуса (для страницы); уже идёт — False. Ошибка — в журнал и статус."""
+    if not state.learning_lock.acquire(blocking=False):
+        return False
+    try:
+        state.learning_job = {'status': 'running', 'started_at': _now(), 'by': user}
+        try:
+            run_learning(state, today)
+            state.learning_job.update(status='done', finished_at=_now())
+        except ErpError:
+            logger.warning('[Routes] Обучение не выполнено: ERP недоступна', exc_info=True)
+            state.learning_job.update(status='error', finished_at=_now(), error='База данных ERP недоступна')
+        except (StoreError, dp.DispatchError) as e:
+            logger.warning('[Routes] Обучение не выполнено: %s', e)
+            state.learning_job.update(status='error', finished_at=_now(), error=str(e))
+        except Exception:
+            logger.exception('[Routes] Обучение: внутренняя ошибка')
+            state.learning_job.update(status='error', finished_at=_now(), error='Внутренняя ошибка')
+    finally:
+        state.learning_lock.release()
+    return True
+
+
+def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]:
+    """Что выучено по каждому виду (расход — по машине): последний прогон, действующая норма (строка журнала или None —
+    ручная из настроек), ручная норма, переключатель автообучения. Дорожная модель — последнего прогона travel."""
+    rows = state.store.learned()
+    auto = state.store.learning_auto()
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows:
+        latest[(r['kind'], r['scope'])] = r
+    model = latest.get(('travel', ''), {}).get('model_id')
+    s = bundle.settings
+    manual: dict[str, Any] = {
+        'unload': {'per_stop_min': s.get('unload_min_per_stop'), 'per_tonne_min': s.get('unload_min_per_tonne')},
+        'loading': {'fixed_min': s.get('warehouse_load_fixed_min'),
+                    'per_tonne_min': s.get('warehouse_load_min_per_tonne')},
+        'travel': None,
+    }
+    keys = [(k, '') for k in learning.KINDS[:3]] + sorted(k for k in latest if k[0] == 'fuel')
+    out = []
+    for kind, scope in keys:
+        effect = None
+        if auto.get(kind, True):
+            effect = next((r for r in reversed(rows) if r['kind'] == kind and r['scope'] == scope and r['accepted']
+                           and r['params'] is not None and (kind != 'travel' or r['model_id'] == model)), None)
+        if kind == 'fuel':
+            t = bundle.trucks.get(scope)
+            man = {'l100': t.fuel_l_per_100km, 'empty_l100': t.fuel_empty_l_per_100km,
+                   'full_l100': t.fuel_full_l_per_100km} if t is not None else None
+        else:
+            man = manual[kind]
+        out.append({'kind': kind, 'scope': scope, 'title': learning.KIND_TITLES[kind], 'auto': auto.get(kind, True),
+                    'last': latest.get((kind, scope)), 'in_effect': effect, 'manual': man})
+    return out
+
+
+def _report_range() -> tuple[date, date] | None:
+    today = _clock().date()
+    until = _parse_day(request.args.get('to')) if request.args.get('to') else today - timedelta(days=1)
+    since = _parse_day(request.args.get('from')) if request.args.get('from') else \
+        (until - timedelta(days=LEARNING_REPORT_DAYS - 1) if until else None)
+    if since is None or until is None or since > until or (until - since).days >= LEARNING_REPORT_MAX_DAYS:
+        return None
+    return since, until
+
+
+@bp.get('/api/routes/learning')
+@_api
+def api_learning() -> Any:
+    """«Обучение и факт»: план и факт машин по дням (from…to, до LEARNING_REPORT_MAX_DAYS дней) и что выучено.
+    ERP не читается: план — сохранённые черновики «Развоза», факт — трек и отметки терминалов."""
+    rng = _report_range()
+    if rng is None:
+        return _bad_request({'date': f'период: даты ГГГГ-ММ-ДД, не больше {LEARNING_REPORT_MAX_DAYS} дней'})
+    state = _state()
+    bundle = _bundle(state)
+    days = _learning_days(state, bundle, *rng)
+    intervals = learning.fuel_intervals(state.fleet_facts.refuels()) if state.fleet_facts is not None else []
+    rows = []
+    for car, day, stops, actual, draft, plan_trips, plan_stops in days:
+        truck = bundle.trucks.get(car)
+        prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
+        rows.append(learning.day_report(car, day, actual, stops, prediction, plan_trips, plan_stops,
+                                        truck.capacity_kg if truck is not None else None,
+                                        learning.daily_l100(intervals, car, day)))
+    rows.sort(key=lambda r: (r['day'], r['car_code']), reverse=True)
+    return jsonify({'success': True, 'from': rng[0].isoformat(), 'to': rng[1].isoformat(),
+                    'connected': state.fleet_facts is not None, 'depot': bundle.depot is not None,
+                    'days': rows, 'status': _learning_status(state, bundle), 'job': dict(state.learning_job),
+                    'rules': {'holdout_days': learning.HOLDOUT_DAYS, 'train_days': learning.TRAIN_DAYS,
+                              'min_gain_pct': round(learning.MIN_GAIN * 100), 'unload_min': learning.UNLOAD_MIN,
+                              'loading_min': learning.LOADING_MIN, 'travel_min_test': learning.TRAVEL_MIN_TEST,
+                              'fuel_min_intervals': learning.FUEL_MIN_INTERVALS,
+                              'nightly_at': '%02d:%02d' % learning.NIGHTLY_AT}})
+
+
+@bp.post('/api/routes/learning/run')
+@_api
+def api_learning_run() -> Any:
+    """«Пересчитать»: обучение в фоне (страница опрашивает статус); уже идёт — 409."""
+    state = _state()
+    if state.fleet_facts is None:
+        return _bad_request({'_': 'Раздел «Առաքիչ» не подключён — учиться не на чем'})
+    if state.learning_lock.locked():
+        return _conflict('Обучение уже идёт')
+    today, user = _clock().date(), session.get('username')
+    threading.Thread(target=run_learning_job, args=(state, today, user), name='routes-learning-run', daemon=True).start()
+    return jsonify({'success': True, 'started': True})
+
+
+@bp.post('/api/routes/learning/auto')
+@_api
+def api_learning_auto() -> Any:
+    """Автообучение вида вкл./выкл. {"kind", "auto"}: выключено — действуют ручные настройки."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    kind = payload.get('kind') if isinstance(payload, dict) else None
+    auto = payload.get('auto') if isinstance(payload, dict) else None
+    if kind not in learning.KINDS or not isinstance(auto, bool):
+        return _bad_request({'_': 'ожидалось {"kind": вид, "auto": true|false}'})
+    state = _state()
+    state.store.save_learning_auto(kind, auto, session.get('username'))
+    return jsonify({'success': True, 'status': _learning_status(state, _bundle(state))})
