@@ -858,25 +858,33 @@ def _day_explain(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft, se
 def _advice(ctx: DayContext, draft: Draft, trips_json: Sequence[Mapping[str, Any]],
             unassigned: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     """Совет, когда не всё поместилось (ответ владельца №54): рейсы позже конца дня (over_time; с принятой переработкой —
-    позже её предела) или магазины вне рейсов «не успели» / «центр без машины» (no_room, no_center). Ничего такого — None.
+    позже её предела) или магазины вне рейсов «не успели» / «центр без машины» (no_room, no_center; кроме тех, кому
+    среди отмеченных машин нет допущенной, — no_vehicle, у них своя карточка). Ничего такого — None.
     Сама сборка машин не добавляет (№32): совет — логисту, решает он одной кнопкой на странице.
+    - pinned_late — опаздывающие закреплённые рейсы (id): пересборка их не меняет, ни она, ни ещё машина им не помогут —
+      страница советует снять закрепление или перенести магазины; дальше в совете они не участвуют;
     - rebuild — отмеченные машины дня без рейсов. Свежая сборка за конец дня не планирует, пока отмеченные машины
       свободны: опаздывающие рейсы рядом со свободными машинами — план собран при других настройках или правлен
       вручную, обычная пересборка загрузит и их;
     - add — иначе одна готовая, но не отмеченная машина. Нужен центр (магазин no_center или опаздывающий рейс машины с
-      правом въезда, в котором есть точки центра) — из машин с правом въезда (таких нет — из всех, for_center: false).
+      правом въезда, в котором есть точки центра) — из машин с правом въезда (таких нет — из всех, for_center: false);
+      из них — допущенные ко всем этим магазинам (допуск магазина, VehicleAccess), если такие есть.
       Груз need_kg — самый тяжёлый опаздывающий рейс или все магазины вне рейсов вместе: из машин, что его берут, —
       с меньшим расходом (затем вместительнее, затем код), иначе самая вместительная — need_kg в совете: тоннаж меньше —
-      страница пишет «возьмёт часть груза». Свободной машины нет — None.
+      страница пишет «возьмёт часть груза». Свободной машины нет (или опаздывают только закреплённые) — None.
     Это оценка без расчёта рейсов (дёшево и детерминированно): что на самом деле поместится, покажет пересборка."""
     late = [t for t in trips_json if t['over_time']]
-    left = [u for u in unassigned if u['no_room'] or u['no_center']]
-    if not late and not left:
+    pinned_late = [t['id'] for t in late if t['pinned']]
+    late = [t for t in late if not t['pinned']]
+    left = [u for u in unassigned if (u['no_room'] or u['no_center']) and not u['no_vehicle']]
+    if not late and not left and not pinned_late:
         return None
     busy = {t['truck'] for t in trips_json}
     idle = [c for c in sorted(set(draft.trucks)) if c in ctx.trucks and c not in busy]
     if late and idle:
-        return {'rebuild': idle, 'add': None}
+        return {'rebuild': idle, 'add': None, 'pinned_late': pinned_late}
+    if not late and not left:                   # опаздывают только закреплённые рейсы
+        return {'rebuild': [], 'add': None, 'pinned_late': pinned_late}
     free = [t for c, t in sorted(ctx.trucks.items()) if c not in draft.trucks]
     center_ok = {c for c, t in ctx.trucks.items() if t.center_ok}
     need_center = any(u['no_center'] for u in left) or any(
@@ -884,15 +892,17 @@ def _advice(ctx: DayContext, draft: Draft, trips_json: Sequence[Mapping[str, Any
     pool = [t for t in free if t.center_ok] if need_center else []
     for_center = bool(pool)
     pool = pool or free
+    cids = [u['customer_id'] for u in left] + [s['customer_id'] for t in late for s in t['stops']]
+    pool = [t for t in pool if all(_vehicle_ok(ctx, c, t.car_code) for c in cids)] or pool
     if not pool:
-        return {'rebuild': [], 'add': None}
+        return {'rebuild': [], 'add': None, 'pinned_late': pinned_late}
     need_kg = max([t['kg'] for t in late] + [sum(u['kg'] for u in left)])
     fits = [t for t in pool if t.capacity_kg >= need_kg]
     pick = (min(fits, key=lambda t: (t.l100, -t.capacity_kg, t.car_code)) if fits
             else min(pool, key=lambda t: (-t.capacity_kg, t.l100, t.car_code)))
-    return {'rebuild': [], 'add': {'car_code': pick.car_code, 'name': pick.name, 'capacity_kg': pick.capacity_kg,
-                                   'l100': pick.l100, 'center_ok': pick.center_ok, 'for_center': for_center,
-                                   'need_kg': int(need_kg)}}
+    return {'rebuild': [], 'pinned_late': pinned_late,
+            'add': {'car_code': pick.car_code, 'name': pick.name, 'capacity_kg': pick.capacity_kg, 'l100': pick.l100,
+                    'center_ok': pick.center_ok, 'for_center': for_center, 'need_kg': int(need_kg)}}
 
 
 def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,

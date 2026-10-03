@@ -146,7 +146,7 @@
         'Нет связи с AI — повторите позже': 'AI-ի հետ կապ չկա — կրկնեք ավելի ուշ',
         'AI не дал ответа — повторите вопрос': 'AI-ն պատասխան չտվեց — կրկնեք հարցը',
         // план на экране устарел (views._seen_stale) и проверка rev / seen того же запроса
-        'План или настройки изменились после открытия страницы — обновите страницу': 'Էջը բացելուց հետո պլանը կամ կարգավորումները փոխվել են, և պատասխանը չէր վերաբերի էկրանին երևացող պլանին — թարմացրեք էջը',
+        'План или настройки изменились после открытия страницы — обновите страницу': 'Էջը բացելուց հետո պլանը կամ կարգավորումները փոխվել են․ պատասխանը չէր համապատասխանի էկրանի պլանին։ Թարմացրեք էջը։',
         'номер плана: ожидалось целое число': BAD_REQUEST,
         'рейсы плана на странице: ожидался список [id, возвращение, опаздывает]': BAD_REQUEST,
     };
@@ -1187,9 +1187,11 @@
     }
 
     // Совет «как поместить» (ответ владельца №54; plan.advice — dispatch._advice): отмеченные машины без рейсов — пересобрать;
-    // свободная неотмеченная машина — одной кнопкой отметить её в шаге 1 и пересобрать. Сама сборка машин не добавляет (№32).
-    // { rebuild, forCenter, text — со строчной буквы (после «Ինչ անել՝ »), button() — новая кнопка на каждую карточку };
-    // совета нет — null: карточки пишут прежние тексты
+    // неотмеченная готовая машина — одной кнопкой отметить её в шаге 1 и пересобрать; добавить нечего — «все машины уже
+    // отмечены»; опаздывающие закреплённые рейсы (pinned_late) пересборка не меняет — снять закрепление или перенести
+    // магазины. Сама сборка машин не добавляет (№32).
+    // { kind: rebuild | add | none, text — со строчной буквы (после «Ինչ անել՝ »), button() — новая кнопка (rebuild, add),
+    //   forCenter, pinned — совет про закреплённые рейсы или '' }; совета нет — null: карточки пишут прежние тексты
     const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
     function adviceButton(ico, text, act) {
         const b = document.createElement('button');
@@ -1200,40 +1202,52 @@
         b.addEventListener('click', act);
         return b;
     }
-    // «Ավելացնել և վերակազմել»: отметить машину в шаге 1 и пересобрать рейсы
+    // «Ավելացնել և վերակազմել»: отметить машину в шаге 1 и пересобрать рейсы; галочки нет (машину сняли с расчёта
+    // после загрузки страницы) — ошибка, а не сборка без неё
     function addTruckAndBuild(code) {
         if (state.busy) return;
         const cb = [...$('dpTrucks').querySelectorAll('input[type="checkbox"]')].find(x => x.value === code);
-        if (cb && !cb.disabled) { cb.checked = true; renderTruckCount(); }
+        if (!cb || cb.disabled) { showActionError(new Error('Մեքենան՝ ' + truckLabel(truckBy(code)) + ', 1-ին քայլում նշել հնարավոր չէ — թարմացրեք էջը։')); return; }
+        cb.checked = true;
+        renderTruckCount();
         build();
     }
     function planAdvice(plan) {
         const a = plan.advice;
         if (!isObj(a)) return null;
+        const ids = Array.isArray(a.pinned_late) ? a.pinned_late : [], late = [];
+        plan.trucks.forEach(t => t.trips.forEach((tr, i) => { if (ids.includes(tr.id)) late.push(truckLabel(t) + ', երթ ' + (i + 1)); }));
+        const pinned = !late.length ? ''
+            : late.length === 1 ? 'ուշացող երթը՝ ' + late[0] + ', ամրացված է, և «Վերակազմել երթերը» այն չի փոխի։ Ապամրացրեք այն կամ «Փոփոխել» կոճակով տեղափոխեք խանութներն այլ երթ։'
+            : 'ուշացող երթերը՝ ' + late.join('; ') + ', ամրացված են, և «Վերակազմել երթերը» դրանք չի փոխի։ Ապամրացրեք դրանք կամ «Փոփոխել» կոճակով տեղափոխեք խանութներն այլ երթ։';
+        // принятая переработка («Տանել … հետո»): пересборка собирает новый черновик без неё (dispatch.build)
+        const reset = state.data.overtime_ok ? ' Վերակազմելիս արտաժամյա աշխատանքը կչեղարկվի։' : '';
         if (Array.isArray(a.rebuild) && a.rebuild.length) {
             const one = a.rebuild.length === 1, names = a.rebuild.map(c => truckLabel(truckBy(c))).join(', ');
             return {
-                rebuild: true, forCenter: false,
+                kind: 'rebuild', forCenter: false, pinned,
                 text: 'սեղմեք «Վերակազմել երթերը»։ Նշված ' + (one ? 'մեքենան՝ ' + names + ', այս պլանում երթ չունի' : 'մեքենաները՝ ' + names + ', այս պլանում երթ չունեն')
-                    + ' — ծրագիրը բեռը կբաշխի նաև ' + (one ? 'դրա' : 'դրանց') + ' վրա։',
+                    + ' — ծրագիրը բեռը կբաշխի նաև ' + (one ? 'դրա' : 'դրանց') + ' վրա։' + reset,
                 button: () => adviceButton('fa-rotate', 'Վերակազմել երթերը', build),
             };
         }
         const t = a.add;
-        if (!isObj(t) || typeof t.car_code !== 'string') return null;
+        // добавить нечего: все готовые машины уже отмечены (или опаздывают только закреплённые рейсы)
+        if (!isObj(t) || typeof t.car_code !== 'string') return { kind: 'none', forCenter: false, pinned, text: '' };
         // тоннаж меньше груза, что не поместился (need_kg), — возьмёт только часть; остальное покажет пересборка
         const part = num(t.need_kg) !== null && num(t.capacity_kg) !== null && t.capacity_kg < t.need_kg;
         return {
-            rebuild: false, forCenter: !!t.for_center,
-            text: 'սեղմեք «Ավելացնել և վերակազմել»։ Ազատ մեքենան՝ ' + truckLabel(truckBy(t.car_code)) + ' (տանում է մինչև ' + kgText(t.capacity_kg)
-                + (t.for_center ? ', կարող է մտնել կենտրոն' : '') + '), կարող է վերցնել ' + (part ? 'բեռի մի մասը։' : 'այս բեռը։'),
+            kind: 'add', forCenter: !!t.for_center, pinned,
+            text: 'սեղմեք «Ավելացնել և վերակազմել»։ Չնշված մեքենան՝ ' + truckLabel(truckBy(t.car_code)) + ' (տանում է մինչև ' + kgText(t.capacity_kg)
+                + (t.for_center ? ', մտնում է կենտրոն' : '') + '), կարող է վերցնել ' + (part ? 'բեռի մի մասը։' : 'այս բեռը։') + reset,
             button: () => adviceButton('fa-plus', 'Ավելացնել և վերակազմել', () => addTruckAndBuild(t.car_code)),
         };
     }
 
-    // Рейс не поместился (позже конца дня, тяжелее тоннажа, машина не работает) — карточка «Չի տեղավորվել» с советом;
-    // её кнопку совета карточки ниже (dpUnassigned) не повторяют
-    const notFitOf = (plan) => plan.trucks.some(t => t.trips.some(tr => tr.over_time || tr.over_capacity || tr.no_truck));
+    // Рейс не поместился и ему поможет пересборка или ещё машина: позже конца дня (кроме закреплённого — пересборка его не
+    // меняет), тяжелее тоннажа, машина не работает. Тогда кнопка совета — в карточке «Չի տեղավորվել», карточки ниже
+    // (dpUnassigned) её не повторяют
+    const stuckOf = (plan) => plan.trucks.some(t => t.trips.some(tr => (tr.over_time && !tr.pinned) || tr.over_capacity || tr.no_truck));
 
     // Не помещается: что именно и что делать — простыми словами
     function renderOverflow(plan) {
@@ -1253,16 +1267,20 @@
         if (!bad.length) return;
         const div = document.createElement('div');
         div.className = 'rt-alert is-warn dp-problem';
-        const notFit = notFitOf(plan);
+        const notFit = plan.trucks.some(t => t.trips.some(tr => tr.over_time || tr.over_capacity || tr.no_truck));
+        const stuck = stuckOf(plan);
         const winMiss = plan.trucks.some(t => t.trips.some(tr => tr.window_miss));
         const cenMiss = plan.trucks.some(t => t.trips.some(tr => tr.center_miss));
         const vehicleMiss = plan.trucks.some(t => t.trips.some(tr => tr.vehicle_miss));
         // что делать — по виду беды: не поместилось / не успевает к окну / центр на машине без права въезда;
-        // не поместилось и есть совет сервера (plan.advice) — какую машину загрузить, кнопкой
-        const adv = notFit ? planAdvice(plan) : null;
+        // не поместилось и есть совет сервера (plan.advice) — какую машину загрузить, кнопкой; добавить нечего — «все
+        // машины уже отмечены» (без шага 1); опаздывает закреплённый рейс — снять закрепление или перенести магазины
+        const adv = notFit ? planAdvice(plan) : null, act = adv && adv.button ? adv : null;
         const advice = [];
-        if (notFit) advice.push(!adv ? '1-ին քայլում նշեք ևս մեկ մեքենա և սեղմեք «Վերակազմել երթերը», կամ սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութները այլ երթ։'
-            : adv.text + (adv.rebuild ? '' : ' Կամ սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութները այլ երթ։'));
+        if (stuck) advice.push(act ? act.text + (act.kind === 'add' ? ' Կամ սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութներն այլ երթ։' : '')
+            : adv ? 'բոլոր մեքենաներն արդեն նշված են, բայց չեն հասցնում մինչև ' + endOfDay() + '-ը։ Սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութներն այլ երթ։'
+            : '1-ին քայլում նշեք ևս մեկ մեքենա և սեղմեք «Վերակազմել երթերը», կամ սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութներն այլ երթ։');
+        if (adv && adv.pinned) advice.push(adv.pinned);
         if (winMiss) advice.push('ընդունման ժամին չհասցնող խանութի մոտ սեղմեք «Փոփոխել» և տեղափոխեք այն այլ երթ կամ մեքենա, որը կհասցնի, '
             + 'կամ նշեք «Այսօր չենք տանում»՝ կտանենք հաջորդ օրը։ Եթե ժամը օրվա վերջում է, կարող եք տանել ' + state.data.work_end + '-ից հետո։');
         if (cenMiss) advice.push('կենտրոնի խանութները տեղափոխեք կենտրոն մտնող մեքենայի երթ (նշեք այդ մեքենան 1-ին քայլում)։');
@@ -1276,9 +1294,9 @@
             p.className = 'dp-problem-do';
             p.textContent = 'Ինչ անել՝ ' + t;
             div.querySelector('.rt-alert-text').appendChild(p);
-            if (i === 0 && adv) div.querySelector('.rt-alert-text').appendChild(adv.button());   // кнопка — под своим советом
+            if (i === 0 && stuck && act) div.querySelector('.rt-alert-text').appendChild(act.button());   // кнопка — под своим советом
         });
-        if ((notFit && !adv) || cenMiss) div.querySelector('.rt-alert-text').appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
+        if ((stuck && !adv) || cenMiss) div.querySelector('.rt-alert-text').appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
         box.appendChild(div);
     }
 
@@ -1441,15 +1459,15 @@
         }
         // совет сервера (ответ владельца №54): какую свободную машину отметить и пересобрать — кнопкой; кнопка одна на
         // страницу — в первой карточке с советом («Չի տեղավորվել» выше или первая из карточек ниже), текст — во всех
-        const adv = planAdvice(plan);
-        let advShown = notFitOf(plan);
-        const advButton = () => { if (advShown) return []; advShown = true; return [adv.button()]; };
+        const adv = planAdvice(plan), act = adv && adv.button ? adv : null;    // совет с действием: пересобрать / добавить
+        let advShown = stuckOf(plan);
+        const advButton = () => { if (advShown) return []; advShown = true; return [act.button()]; };
         if (noCenter.length) {
             const can = state.data.trucks.filter(t => t.ready && t.center_ok && !t.selected).map(truckLabel);
-            const forCenter = adv && adv.forCenter;
+            const forCenter = act && act.forCenter;
             const card = reasonCard(noCenter, 'fa-city', 'Կենտրոն՝ այսօր չկա թույլատրված մեքենա', [
                 'Այս խանութները փոքր կենտրոնում են, իսկ այսօր նշված մեքենաներից ոչ մեկը չի կարող մտնել կենտրոն։',
-                forCenter ? cap(adv.text)
+                forCenter ? cap(act.text)
                     : can.length ? 'Կենտրոն մտնում է՝ ' + can.join(', ') + '։ Նշեք այն 1-ին քայլում և սեղմեք «Վերակազմել երթերը»։'
                     : 'Որ մեքենաները կարող են մտնել կենտրոն, նշվում է կարգավորումներում։',
                 'Կամ որոշեք ձեռքով՝ «Այսօր չենք տանում» կամ ավելացրեք որևէ երթի։']);
@@ -1467,19 +1485,19 @@
             lead.className = 'rt-card-lead';
             if (state.data.overtime_ok) {
                 lead.textContent = 'Մեքենաներն արդեն աշխատում են ' + state.data.work_end + '-ից հետո, բայց սրանք չեն հասցնում նույնիսկ մինչև '
-                    + state.data.overtime_end + '-ը։ ' + (adv ? cap(adv.text) + ' Կամ նշեք' : 'Նշեք') + ' «Այսօր չենք տանում»՝ դրանք կանցնեն հաջորդ օրվան։' + monthText;
-            } else if (adv && adv.rebuild) {
-                lead.textContent = cap(adv.text) + ' Կամ ավելացրեք խանութը որևէ երթի ձեռքով։';
+                    + state.data.overtime_end + '-ը։ ' + (act ? cap(act.text) + ' Կամ նշեք' : 'Նշեք') + ' «Այսօր չենք տանում»՝ դրանք կանցնեն հաջորդ օրվան։' + monthText;
+            } else if (act && act.kind === 'rebuild') {
+                lead.textContent = cap(act.text) + ' Կամ ավելացրեք խանութը որևէ երթի ձեռքով։';
             } else if (unpicked || changed) {
                 lead.textContent = 'Ընտրված մեքենաները չեն հասցնի այս խանութներին առաքել մինչև ' + state.data.work_end + '-ը։ '
-                    + (adv ? cap(adv.text) + ' ' : unpicked ? 'Կա ևս ' + pl(unpicked, 'մեքենա') + '՝ չնշված։ Նշեք 1-ին քայլում և սեղմեք «Վերակազմել երթերը»։ ' : '')
+                    + (act ? cap(act.text) + ' ' : unpicked ? 'Կա ևս ' + pl(unpicked, 'մեքենա') + '՝ չնշված։ Նշեք 1-ին քայլում և սեղմեք «Վերակազմել երթերը»։ ' : '')
                     + 'Կամ ավելացրեք խանութը որևէ երթի ձեռքով։';
             } else {
                 lead.textContent = 'Բոլոր մեքենաներն արդեն նշված են, բայց չեն հասցնում մինչև ' + state.data.work_end + '-ը։';
             }
-            card.append(lead, ...(adv ? advButton() : []), ...overtimeBlock('Եթե այս պատվերները պետք է տանել այսօր, մեքենաները կաշխատեն '
+            card.append(lead, ...(act ? advButton() : []), ...overtimeBlock('Եթե այս պատվերները պետք է տանել այսօր, մեքենաները կաշխատեն '
                 + state.data.work_end + '-ից հետո՝ մինչև ' + state.data.overtime_end + '-ը։'));
-            if (unpicked && !adv) card.appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
+            if (unpicked && !act) card.appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
             card.appendChild(stopList(noRoom, null, true));
             box.appendChild(card);
         }
