@@ -34,7 +34,9 @@ from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
 
 from . import fleet as fl
+from . import vrp
 from .geo import Coord, Point, in_polygon
+from .running_costs import configured
 from .vehicle_access import VehicleAccess
 
 if TYPE_CHECKING:
@@ -45,6 +47,7 @@ _EPS = 1e-6
 MAX_TRIPS = 500           # защита от битого черновика
 MAX_BUILT_ORDERS = 20000  # заказов в отметке сборки — тоже защита от битого черновика
 BACKLOG_WORKDAYS = 2      # «не отгружены с прошлых дней» — заказы ещё двух рабочих дней раньше окна
+BYPASS_MIN_KM = 0.01      # пояснение рейса: участок длиннее из-за объезда центра хотя бы на 10 м — «в объезд»
 WEEKDAY_FULL = {1: 'понедельник', 2: 'вторник', 3: 'среда', 4: 'четверг', 5: 'пятница', 6: 'суббота',
                 7: 'воскресенье'}
 
@@ -352,6 +355,8 @@ class DayContext:
     windows: Mapping[int, tuple[float, float]] = field(default_factory=dict)
     center_zone: tuple[Point, ...] = ()  # граница малого центра; пусто — центра нет
     vehicle_access: Mapping[int, VehicleAccess] = field(default_factory=dict)
+    # что учитывает расчёт (views._dispatch_ctx: откуда км и минуты, выученные нормы) — только для пояснения на странице
+    model: Mapping[str, Any] = field(default_factory=dict)
 
 
 def _hhmm(minutes: float) -> str:
@@ -423,22 +428,26 @@ def _route(ctx: DayContext, cids: Sequence[int], stops: Mapping[int, Stop], shar
 
 
 def _timeline(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, Stop],
-              shares: Mapping[int, int]) -> dict[int, tuple[float, float, list[float]]]:
+              shares: Mapping[int, int], parts: dict[int, dict[str, Any]] | None = None
+              ) -> dict[int, tuple[float, float, list[float]]]:
     """Рейсы машин подряд, с ожиданием у окон приёма: рейс → (выезд, минуты рейса от выезда, прибытия к точкам),
     время — минуты от начала дня машины. Рейс выезжает, как только машина вернулась, но не раньше, чем нужно к
     окну первой точки (fl.trip_schedule) — как его поставил fleet._plan_timed. Без окон — подряд, минуты те же,
-    что у _route."""
+    что у _route. parts — рейс → слагаемые его минут (fl.trip_schedule: загрузка, езда, ожидание, разгрузка)."""
     used: dict[str, float] = {}
     out: dict[int, tuple[float, float, list[float]]] = {}
     for t in trips:
         cids = [c for c in t.stops if c in stops]
         if not cids:
             continue
+        got: dict[str, Any] | None = {} if parts is not None else None
         depart, arrivals, minutes = fl.trip_schedule(
             [stops[c].point for c in cids], [stops[c].kg / shares.get(c, 1) for c in cids], ctx.depot, ctx.norms,
-            ctx.tn, used.get(t.truck, 0.0), [_span(ctx, c) for c in cids])
+            ctx.tn, used.get(t.truck, 0.0), [_span(ctx, c) for c in cids], got)
         used[t.truck] = depart + minutes
         out[t.id] = (depart, minutes, arrivals)
+        if parts is not None:
+            parts[t.id] = got
     return out
 
 
@@ -740,37 +749,151 @@ def _r(x: float, nd: int = 1) -> float:
     return round(x, nd)
 
 
+def _bypass_km(ctx: DayContext, points: Sequence[Point]) -> tuple[float, int]:
+    """(на сколько км объезд малого центра удлинил рейс «склад → points → склад», участков в объезд). Участок — км
+    расчёта (Norms.km грузовика, как у км рейса) против того же участка без объезда: км / во сколько раз объезд длиннее
+    (CenterBypassRoads.detour; тем же множителем Valhalla и Яндекс растягивают свой путь). Длиннее меньше чем на
+    BYPASS_MIN_KM — расхождение двух графов (привязка точки, округление км), а не объезд. Объезда нет (нет дорог или
+    границы центра) — (0, 0). Типы дорог здесь не импортируются: объезд — сами дороги или запасной путь Valhalla."""
+    norms = ctx.norms.for_trucks()
+    roads = getattr(norms.roads, 'fallback', norms.roads)
+    if not hasattr(roads, 'detour'):
+        return 0.0, 0
+    nodes = [ctx.depot, *points, ctx.depot]
+    extra: list[float] = []
+    for a, b in zip(nodes, nodes[1:]):
+        k = roads.detour(a, b)
+        if k > 1.0:
+            km = norms.km(a, b)
+            if km - km / k >= BYPASS_MIN_KM:
+                extra.append(km - km / k)
+    return math.fsum(extra), len(extra)
+
+
+def _alternatives(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, cids: Sequence[int],
+                  routable: Mapping[int, Stop], kgs: Sequence[float]) -> list[dict[str, Any]]:
+    """Другие машины дня на этот же рейс (те же точки, тот же порядок): могла бы она его везти по правилам сборки —
+    тоннаж и предел загрузки (fl.load_limit), центр, допуск магазина — и сколько литров у неё вышло бы на тех же км.
+    Занятость машины своими рейсами здесь не учитывается: сборка ищет меньше дизеля за весь день, а не за один рейс."""
+    kg = math.fsum(kgs)
+    pts = [routable[c].point for c in cids]
+    center = [_central(ctx, routable[c]) for c in cids]
+    allowed = [_allowed_trucks(ctx, c) for c in cids]
+    out = []
+    for o in sel:
+        if o.car_code == code:
+            continue
+        why = []
+        if kg > o.capacity_kg + _EPS:
+            why.append('capacity')
+        elif kg > fl.load_limit(kgs, center, allowed, o, sel) + _EPS:
+            why.append('load_cap')
+        if any(center) and not o.center_ok:
+            why.append('center')
+        denied = sum(1 for c in cids if not _vehicle_ok(ctx, c, o.car_code))
+        if denied:
+            why.append('vehicle')
+        out.append({'car_code': o.car_code, 'name': o.name, 'capacity_kg': o.capacity_kg, 'center_ok': o.center_ok,
+                    'load_pct': round(kg / o.capacity_kg * 100.0), 'reasons': why, 'vehicle_denied': denied,
+                    'liters': _r(fl.trip_running_cost(pts, kgs, ctx.depot, ctx.norms, o).liters)})
+    return out
+
+
+def _trip_explain(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, truck: fl.FleetTruck | None,
+                  cids: Sequence[int], routable: Mapping[int, Stop], kgs: Sequence[float], parts: Mapping[str, Any],
+                  free: float, depart: float, minutes: float) -> dict[str, Any]:
+    """Почему рейс такой («Ինչու է այս երթը այսպես» на странице) — только цифры этого же расчёта: слагаемые минут рейса
+    (из _timeline, в сумме — его минуты), простой на складе до выезда (выезд позже, чтобы не ждать у окна первой точки),
+    запас до конца рабочего дня, предел загрузки, расход, объезд центра и другие машины дня на этот рейс."""
+    legs = parts['legs']
+    kg = math.fsum(kgs)
+    limit = (fl.load_limit(kgs, [_central(ctx, routable[c]) for c in cids], [_allowed_trucks(ctx, c) for c in cids],
+                           truck, sel) if truck is not None else None)
+    bypass_km, bypass_legs = _bypass_km(ctx, [routable[c].point for c in cids])
+    heavy = (truck is not None and len(cids) == 1 and limit > fl.LOAD_CAP * truck.capacity_kg + _EPS
+             and kg > fl.LOAD_CAP * truck.capacity_kg + _EPS)
+    return {
+        'loading_min': _r(parts['loading']), 'drive_min': _r(math.fsum(x for x, _, _ in legs)),
+        'unload_min': _r(math.fsum(x for _, _, x in legs)), 'wait_min': _r(math.fsum(x for _, x, _ in legs)),
+        'back_min': _r(legs[-1][0]), 'idle_before_min': _r(depart - free),
+        'end_slack_min': _r(ctx.tn.work_minutes - (depart + minutes)),
+        'load_cap_pct': round(fl.LOAD_CAP * 100), 'load_limit_kg': round(limit) if limit is not None else None,
+        'over_limit': limit is not None and kg > limit + _EPS, 'heavy_alone': heavy,
+        'l100': _r(truck.l100) if truck else None,
+        'fuel_empty_l100': truck.fuel_empty_l_per_100km if truck else None,
+        'fuel_full_l100': truck.fuel_full_l_per_100km if truck else None,
+        'bypass_km': _r(bypass_km), 'bypass_legs': bypass_legs,
+        'others': _alternatives(ctx, sel, code, cids, routable, kgs),
+    }
+
+
+def _day_explain(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft, sel: Sequence[fl.FleetTruck],
+                 trips_of: Mapping[str, int]) -> dict[str, Any]:
+    """Что учитывает расчёт дня («Ինչ է հաշվի առել հաշվարկը» на странице): машины дня (с действующим расходом),
+    магазины в центре, с окном приёма и с допуском машин, предел загрузки и выравнивание загрузки (fleet._balance),
+    закреплённые рейсы, нормы загрузки и разгрузки, решатель и ctx.model (дороги, минуты, выученные нормы — views._dispatch_ctx)."""
+    tn = ctx.tn
+    return {
+        'trucks': [{'car_code': x.car_code, 'name': x.name, 'capacity_kg': x.capacity_kg, 'l100': _r(x.l100),
+                    'fuel_empty_l100': x.fuel_empty_l_per_100km, 'fuel_full_l100': x.fuel_full_l_per_100km,
+                    'wear': x.wear_amd_per_km is not None or x.wear_load_amd_per_km is not None,
+                    'center_ok': x.center_ok, 'trips': trips_of.get(x.car_code, 0)} for x in sel],
+        'zone': len(ctx.center_zone) >= 3,
+        'center_stores': sum(1 for s in routable.values() if _central(ctx, s)),
+        'window_stores': sum(1 for c in routable if c in ctx.windows),
+        'access_stores': sum(1 for c in routable if c in ctx.vehicle_access),
+        'load_cap_pct': round(fl.LOAD_CAP * 100),
+        'balance_from_pct': round(fl.BALANCE_FROM * 100), 'balance_slack_pct': round(fl.BALANCE_SLACK * 100),
+        'balance_load_aware': any(configured(x) for x in sel),
+        'pinned_trips': sum(1 for t in draft.trips if t.pinned),
+        'unload_min_per_stop': tn.unload_min_per_stop, 'unload_min_per_tonne': tn.unload_min_per_tonne,
+        'unload_stores': sum(1 for s in routable.values() if s.point in tn.unload_extra),
+        'loading_fixed_min': tn.warehouse_load_fixed_min, 'loading_min_per_tonne': tn.warehouse_load_min_per_tonne,
+        'loading_configured': tn.loading_configured,
+        'solver': vrp.available(), 'solver_iterations': vrp.ITERATIONS,
+        'model': dict(ctx.model),
+    }
+
+
 def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
               info: Callable[[Stop], dict[str, Any]]) -> dict[str, Any]:
     """Рейсы черновика с цифрами по текущим заказам: машины → рейсы по порядку (выезд, возвращение,
     км, литры, загрузка), точки по порядку; «ещё не в рейсах»; «не помещается». Время — рейсы машины
     подряд с ожиданием у окон приёма; у точки — прибытие (eta), вне окна (window_miss — бывает после правки
-    логиста), в центре (center) и в центре на машине без права въезда (center_miss)."""
+    логиста), в центре (center) и в центре на машине без права въезда (center_miss). Пояснение «почему так» — у рейса
+    explain (_trip_explain), у дня — explain (_day_explain): только цифры того же расчёта, текст строит страница."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
     shares = _shares(draft.trips)
     window = ctx.tn.work_minutes
     # принятая переработка: «опаздывает» — только позже предела; позже конца дня — пометка late
     limit = ctx.overtime_minutes if draft.overtime_ok and ctx.overtime_minutes is not None else window
-    times = _timeline(ctx, draft.trips, routable, shares)
+    parts: dict[int, dict[str, Any]] = {}
+    times = _timeline(ctx, draft.trips, routable, shares, parts)
+    sel = _selected(ctx, draft.trucks)
     per_truck: dict[str, dict[str, Any]] = {}
     trips_json = []
     for t in draft.trips:
         cids, km, _, kg = _route(ctx, t.stops, routable, shares, reorder=False)
         truck = ctx.trucks.get(t.truck)
         cap = truck.capacity_kg if truck else None
-        cost = fl.trip_running_cost([routable[c].point for c in cids],
-                                    [routable[c].kg / shares[c] for c in cids], ctx.depot, ctx.norms, truck) if truck else None
+        kgs = [routable[c].kg / shares[c] for c in cids]
+        cost = fl.trip_running_cost([routable[c].point for c in cids], kgs, ctx.depot, ctx.norms, truck) if truck else None
         slot = per_truck.setdefault(t.truck, {'used': 0.0, 'trips': []})
+        free = slot['used']
         depart, minutes, arrivals = times[t.id]
         slot['used'] = depart + minutes
         revenue = math.fsum(routable[c].revenue / shares[c] for c in cids)
         marks = []
-        for c, at in zip(cids, arrivals):
+        # у точки — и слагаемые её времени (езда от предыдущей точки, ожидание окна, разгрузка), запас до конца окна
+        for c, at, (drive, wait, unload) in zip(cids, arrivals, parts[t.id]['legs']):
             central = _central(ctx, routable[c])
-            marks.append({'eta': _hhmm(ctx.work_start_min + at), 'window_miss': at > _span(ctx, c)[1] + _EPS,
+            late = _span(ctx, c)[1]
+            marks.append({'eta': _hhmm(ctx.work_start_min + at), 'window_miss': at > late + _EPS,
                           'center': central, 'center_miss': central and not (truck is not None and truck.center_ok),
-                          'vehicle_miss': not _vehicle_ok(ctx, c, t.truck)})
+                          'vehicle_miss': not _vehicle_ok(ctx, c, t.truck),
+                          'drive_min': _r(drive), 'wait_min': _r(wait), 'unload_min': _r(unload),
+                          'margin_min': _r(late - at) if math.isfinite(late) else None})
         tj = {
             'id': t.id, 'truck': t.truck, 'pinned': t.pinned,
             'km': _r(km), 'minutes': round(minutes), 'kg': round(kg),
@@ -796,6 +919,7 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
             'window_miss': sum(1 for x in marks if x['window_miss']),
             'center_miss': sum(1 for x in marks if x['center_miss']),
             'vehicle_miss': sum(1 for x in marks if x['vehicle_miss']),
+            'explain': _trip_explain(ctx, sel, t.truck, truck, cids, routable, kgs, parts[t.id], free, depart, minutes),
         }
         slot['trips'].append(tj)
         trips_json.append(tj)
@@ -859,6 +983,7 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
                      'kg_no_coords': round(math.fsum(s.kg for s in missing_coords)),
                      'revenue_no_coords': round(math.fsum(s.revenue for s in missing_coords)),
                      'complete': not missing_coords and not unassigned},
+        'explain': _day_explain(ctx, routable, draft, sel, {c: len(s['trips']) for c, s in per_truck.items()}),
     }
 
 

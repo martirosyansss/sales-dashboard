@@ -29,7 +29,7 @@ from . import fleet as fl
 from .running_costs import profile_fields
 from .erp import ErpError
 from .geo import Point, haversine_km, is_valid_point
-from .roads import CenterBypassRoads, RoadDistances, RoadProvider, roads_version
+from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, Bundle, Decision, Store, StoreError, center_auto,
                     check_window, validate_payload)
@@ -898,12 +898,40 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
         norms = replace(norms, provider=provider, traffic_status=status)
     h2, m2 = map(int, s['truck_overtime_end'].split(':'))
     tn = fl.TruckNorms.from_settings(s)
+    eff = learning.InEffect()
     if learned:
-        norms, tn, trucks, _ = _with_learned(state, norms, tn, trucks, customers or {}, journal)
+        norms, tn, trucks, eff = _with_learned(state, norms, tn, trucks, customers or {}, journal)
     return dp.DayContext(day, bundle.depot, trucks, norms, tn, h * 60 + m,
                          float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']),
                          {cid: w.span() for cid, w in bundle.windows.items()}, zone,
-                         vehicle_access=bundle.vehicle_access)
+                         vehicle_access=bundle.vehicle_access,
+                         model=_model_note(s, calib, norms, eff, [p for p in points if p is not None]))
+
+
+def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, eff: learning.InEffect,
+                points: Sequence[Point]) -> dict[str, Any]:
+    """Что учитывает расчёт «Развоза» — для пояснения на странице («Ինչ է հաշվի առել հաշվարկը»), в расчёте не участвует:
+    км участков (граф OSM, Valhalla или по прямой × извилистость; точек дальше 0,5 км от дороги), объезд малого центра,
+    минуты (скорость зоны, Valhalla или Яндекс), скорости зон и их источник, часовой профиль по GPS менеджеров и
+    действующие выученные нормы (_with_learned)."""
+    roads = norms.roads
+    osm = roads.fallback if isinstance(roads, ValhallaRoads) else roads
+    source = 'straight' if roads is None or roads.failed else roads.km_source
+    km = source if source in ('osm', 'straight') else 'valhalla'
+    road = evaluate.road_norms(s, calib)
+    report = norms.traffic.report if norms.traffic is not None else {}
+    return {
+        'km': km, 'detour': norms.detour,
+        'unsnapped': roads.unsnapped(points) if km != 'straight' else None, 'snap_km': SNAP_MAX_KM,
+        'bypass': isinstance(osm, CenterBypassRoads) and not osm.failed and not osm.bypass.failed,
+        'minutes': ('yandex' if norms.provider is not None else
+                    'valhalla' if isinstance(roads, ValhallaRoads) and roads.serves_minutes else 'zones'),
+        'speed_city_kmh': norms.speed_city_kmh, 'speed_city_source': road['speed_city_kmh'][1],
+        'speed_region_kmh': norms.speed_region_kmh, 'speed_region_source': road['speed_region_kmh'][1],
+        'hourly_gps': report.get('source') == 'historical_gps',
+        'learned': {'travel': bool(eff.travel), 'unload': bool(eff.unload), 'loading': bool(eff.loading),
+                    'fuel': sorted(eff.fuel or ())},
+    }
 
 
 @dataclass
@@ -1136,6 +1164,8 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     }
     if draft is not None and dd.ctx is not None:
         plan = dp.plan_view(dd.ctx, dd.stops, draft, info)
+        # пояснение дня: заказы, перенесённые сюда «Везти завтра» прошлого дня, и отсюда — на следующий день
+        plan['explain'].update(carried=len(dd.carried & {o.isn for o in active}), deferred=len(draft.deferred))
         plan['built_at'] = draft.built_at
         plan['baseline'] = dp.baseline(dd.ctx, dd.stops, draft,
                                        dp.history_cars(dd.data.agent_cars, dd.bundle.van_trucks()))
