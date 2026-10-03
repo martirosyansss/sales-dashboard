@@ -4,6 +4,7 @@
 Чистая логика — без Flask и без БД. Расстояние — функция dist(a, b), км: по умолчанию по прямой
 (haversine), и тогда поправку на извилистость дорог (detour_factor) применяет вызывающий код;
 оценка передаёт Norms.km — по дорогам (этап 5), с извилистостью только у участков по прямой.
+Матрица по дорогам направленная (одностороннее движение, Valhalla): d[a][b] ≠ d[b][a]; 2-opt это учитывает.
 """
 from __future__ import annotations
 
@@ -14,19 +15,31 @@ from typing import Callable, Sequence
 from .geo import Point, haversine_km
 
 Matrix = list[list[float]]
-Distance = Callable[[Point, Point], float]   # км между точками; симметричная
+Distance = Callable[[Point, Point], float]   # км от точки до точки (по дорогам — направленно)
 
 _EPS = 1e-12
+# 2-opt по направленной матрице: ход — при выигрыше больше TWO_OPT_REL_EPS × длины тура. Постоянный порог 1e-12 там не
+# годится: выигрыш копится разностью ходов куска, и на больших числах ошибка округления (~1e-12) выглядела выигрышем —
+# кусок разворачивался туда-обратно без конца (повтор из проверки — в тестах). Ошибка суммы n чисел — до ~n × 1e-16 ×
+# длины, то есть порог 1e-12 × длины выше её в ~30 раз при n ≤ 300; больший порог (1e-9) отбрасывал настоящие ходы
+# в доли метра — у графа OSM матрица «направленная» уже из-за округления float32 — и менял путь поиска календаря
+# (замер на снимке 02.10: стоимость итога +3%). TWO_OPT_MAX_PASSES — жёсткий предел проходов (обе матрицы; на
+# турах до 300 точек их ≤ 8).
+TWO_OPT_REL_EPS = 1e-12
+TWO_OPT_MAX_PASSES = 200
 
 
 def distance_matrix(points: Sequence[Point], dist: Distance | None = None) -> Matrix:
-    """Симметричная матрица км; dist=None — по прямой."""
-    d = haversine_km if dist is None else dist
+    """Матрица км out[i][j] — от i до j; dist=None — по прямой (симметрична: считается половина)."""
     n = len(points)
     out = [[0.0] * n for _ in range(n)]
     for i in range(n):
         for j in range(i + 1, n):
-            out[i][j] = out[j][i] = d(points[i], points[j])
+            if dist is None:
+                out[i][j] = out[j][i] = haversine_km(points[i], points[j])
+            else:
+                out[i][j] = dist(points[i], points[j])
+                out[j][i] = dist(points[j], points[i])
     return out
 
 
@@ -49,21 +62,44 @@ def closed_length(tour: Sequence[int], dist: Matrix) -> float:
     return sum(dist[a][b] for a, b in zip(tour, list(tour[1:]) + [tour[0]]))
 
 
+def is_symmetric(dist: Matrix, nodes: Sequence[int]) -> bool:
+    """dist[a][b] == dist[b][a] для всех вершин nodes."""
+    return all(dist[a][b] == dist[b][a] for k, a in enumerate(nodes) for b in nodes[k + 1:])
+
+
 def two_opt(tour: Sequence[int], dist: Matrix) -> list[int]:
-    """2-opt для замкнутого тура; tour[0] (склад) остаётся первым. Длина не растёт."""
+    """2-opt для замкнутого тура; tour[0] (склад) остаётся первым. Длина не растёт.
+
+    Ход разворачивает t[i..j]. В направленной матрице у развёрнутого куска меняются и внутренние рёбра:
+    Δ = d(a, c) + d(b, e) − d(a, b) − d(c, e) + (обратный ход куска − прямой); оба хода копятся по j за O(1), ход —
+    при Δ < −TWO_OPT_REL_EPS × длина тура, и тур из трёх вершин тоже разворачивается (в одну сторону короче).
+    Симметричная матрица — прежний расчёт (те же ходы, тот же результат). Проходов — не больше TWO_OPT_MAX_PASSES."""
     t = list(tour)
     n = len(t)
-    if n < 4:
+    if n < 3:
         return t
-    improved = True
-    while improved:
-        improved = False
+    directed = not is_symmetric(dist, t)
+    if n < 4 and not directed:
+        return t
+    eps = _EPS
+    improved, passes = True, 0
+    while improved and passes < TWO_OPT_MAX_PASSES:
+        improved, passes = False, passes + 1
+        if directed:
+            eps = TWO_OPT_REL_EPS * max(1.0, closed_length(t, dist))
         for i in range(1, n - 1):
+            fwd = back = 0.0   # ход куска t[i..j] вперёд и назад
             for j in range(i + 1, n):
                 a, b = t[i - 1], t[i]
                 c, d = t[j], t[(j + 1) % n]
-                if dist[a][c] + dist[b][d] - dist[a][b] - dist[c][d] < -_EPS:
+                delta = dist[a][c] + dist[b][d] - dist[a][b] - dist[c][d]
+                if directed:
+                    fwd += dist[t[j - 1]][c]
+                    back += dist[c][t[j - 1]]
+                    delta += back - fwd
+                if delta < -eps:
                     t[i:j + 1] = t[i:j + 1][::-1]
+                    fwd, back = back, fwd
                     improved = True
     return t
 
@@ -146,5 +182,5 @@ def delivery_km(depot: Point, stops: Sequence[tuple[Point, float]],
         path = [depot, *(points[i] for i in trip), depot]
         km += sum(d(a, b) for a, b in zip(path, path[1:]))
     for i, n in heavy:
-        km += 2.0 * d(depot, points[i]) * n
+        km += (d(depot, points[i]) + d(points[i], depot)) * n
     return Delivery(km, len(trips) + sum(n for _, n in heavy))

@@ -51,6 +51,7 @@ from statistics import median
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from . import actuals as ac
+from . import valhalla_engine
 from .geo import Point, in_city
 from .measurements import _fit
 from .traffic_validation import TrafficProfile
@@ -481,12 +482,12 @@ def in_effect(rows: Sequence[Mapping[str, Any]], auto: Mapping[str, bool], model
 
 
 def road_model_id(norms: Any) -> str | None:
-    """Дорожная модель расчёта времени в пути: карта дорог (её версия) или по прямой × извилистость. Внешний поставщик
-    (Яндекс) считает время сам — поправка по часам к нему не применяется (None)."""
+    """Дорожная модель расчёта времени в пути — id из valhalla_engine.road_model_id (граф OSM, Valhalla или по прямой
+    × извилистость; грузовики — norms.for_trucks()). Внешний поставщик (Яндекс) считает время сам — поправка по часам
+    к нему не применяется (None)."""
     if getattr(norms, 'provider', None) is not None:
         return None
-    roads = getattr(norms, 'roads', None)
-    return f'roads:{roads.version}' if roads is not None else 'straight'
+    return valhalla_engine.road_model_id(getattr(norms, 'roads', None))
 
 
 def _speed(norms: Any, city: bool) -> float:

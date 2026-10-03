@@ -29,6 +29,24 @@ try {
     git reset --hard "origin/$Branch" --quiet
     & $PythonExe -m pip install -r requirements.txt --quiet --disable-pip-version-check --no-warn-script-location
 
+    # Optional: Valhalla road tiles, built before the restart so the server has them at once. Takes about a second
+    # when the tiles are current; fails fast (logged, update goes on) without pyvalhalla or the map. Capped at 240 s
+    # to stay within this task's 10-minute limit. Matrices are not warmed here: that needs an ERP snapshot, and the
+    # server warms them itself in a background thread after the restart (serving the old road model meanwhile).
+    try {
+        $env:PYTHONIOENCODING = 'utf-8'
+        $build = Start-Process -FilePath $PythonExe -WorkingDirectory $AppDir -NoNewWindow -Wait -PassThru `
+            -ArgumentList '-m', 'route_optimizer.valhalla_engine', 'build', '--max-seconds', '240' `
+            -RedirectStandardOutput (Join-Path $AppDir 'logs\valhalla_build.log') `
+            -RedirectStandardError (Join-Path $AppDir 'logs\valhalla_build.err.log')
+        if ($build.ExitCode -ne 0) {
+            Write-Log ('Valhalla tiles not built (exit {0}), see logs\valhalla_build.err.log' -f $build.ExitCode)
+        }
+    }
+    catch {
+        Write-Log ('Valhalla tiles skipped: {0}' -f $_)
+    }
+
     # Restart the server through the task scheduler
     schtasks /End /TN 'SalesDashboard-Server' | Out-Null
     Start-Sleep -Seconds 3

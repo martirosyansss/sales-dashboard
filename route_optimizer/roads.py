@@ -10,9 +10,10 @@
   между соседними узлами. Кэш — <карта>.graph.npz рядом с картой, пересборка при смене файла карты;
 - привязка: ближайший узел наибольшей сильно связной компоненты (KD-дерево в локальной
   равнопромежуточной проекции, км); дальше SNAP_MAX_KM от дороги — точка не привязана;
-- d(A, B) = привязка_A + (дорога A→B + дорога B→A) / 2 + привязка_B; один и тот же узел — haversine;
+- d(A, B) = привязка_A + дорога A→B + привязка_B (направленно: одностороннее движение — разные км туда и
+  обратно); один и тот же узел — haversine;
 - кэш расстояний — <карта>.dist.npz: точки (округление до 6 знаков) → узел и км привязки,
-  симметричная матрица км между узлами. Новые точки дозаполняются: Dijkstra от их узлов по графу
+  направленная матрица км между узлами. Новые точки дозаполняются: Dijkstra от их узлов по графу
   и по обратному графу. Точка не привязана или пути нет — km() → None: участок считает вызывающий
   (по прямой × извилистость).
 
@@ -66,7 +67,7 @@ PATH_SIMPLIFY_KM = 0.005   # линия на карте: отклонение о
 PATH_LIMIT_FACTOR = 3.0    # поиск пути для карты — в пределах 3 × по прямой + 2 км (не нашёлся — без предела)
 PATH_LIMIT_SLACK_KM = 2.0
 GRAPH_FORMAT = 2
-DIST_FORMAT = 2
+DIST_FORMAT = 3            # 3 — направленная матрица (было: среднее туда и обратно)
 RULES_VERSION = 2          # правила way_direction: поменялись — граф и кэш расстояний пересобираются
 
 Way = tuple[Sequence[int], int]   # (id узлов по ходу линии, направление: 1 вперёд, -1 назад, 0 оба)
@@ -429,7 +430,7 @@ class _Table:
     """Неизменяемое состояние кэша: чтение без блокировки, дозаполнение — заменой целиком."""
     points: dict[Point, tuple[int, float]]   # ключ точки → (строка матрицы или -1, км привязки)
     nodes: Any                               # np.ndarray int64: узел графа строки матрицы
-    sym: Any                                 # np.ndarray float32 [k × k]: (A→B + B→A) / 2 по дорогам
+    road: Any                                # np.ndarray float32 [k × k]: км по дорогам строка → столбец
 
 
 def _empty_table() -> _Table:
@@ -445,10 +446,13 @@ class RoadDistances:
     Файл кэша годится, только если он посчитан на том же графе: graph_identity — отпечаток графа
     без его загрузки (None — проверить нечем, файл не читается)."""
 
+    km_source = 'osm'   # откуда км (тот же интерфейс, что у valhalla_engine.ValhallaRoads)
+
     def __init__(self, version: str, load_network: Callable[[], RoadNetwork],
                  cache_path: str | None = None,
-                 graph_identity: Callable[[], str | None] | None = None):
+                 graph_identity: Callable[[], str | None] | None = None, map_path: str | None = None):
         self.version = version
+        self.map_path = map_path   # файл карты (для отпечатка содержимого в road_model_id); None — граф в памяти
         self._load_network = load_network
         self._cache_path = cache_path
         self._graph_identity = graph_identity
@@ -463,7 +467,7 @@ class RoadDistances:
         graph_path = _cache_path(path, 'graph')
         return cls(version, lambda: RoadNetwork(load_graph(path, version)),
                    _cache_path(path, cache_name),
-                   lambda: RoadGraph.stored_identity(graph_path, version))
+                   lambda: RoadGraph.stored_identity(graph_path, version), path)
 
     @classmethod
     def for_graph(cls, graph: RoadGraph, version: str = 'memory',
@@ -508,7 +512,7 @@ class RoadDistances:
                 self.failed = True
 
     def km(self, a: Point, b: Point) -> float | None:
-        """Км по дорогам (симметрично); None — точка не привязана, пути нет или дороги сломаны."""
+        """Км A → B по дорогам; None — точка не привязана, пути нет или дороги сломаны."""
         t = self._table
         pa, pb = t.points.get(point_key(a)), t.points.get(point_key(b))
         if pa is None or pb is None:
@@ -525,10 +529,19 @@ class RoadDistances:
             return None
         if ma == mb:
             return haversine_km(a, b)
-        road = t.sym.item(ma, mb)
+        road = t.road.item(ma, mb)
         if not math.isfinite(road):
             return None
         return sa + road + sb
+
+    def minutes(self, a: Point, b: Point, city: bool) -> float | None:
+        """Времени граф не знает: минуты участка — км / скорость зоны (Norms.leg_speed). Тот же интерфейс,
+        что у valhalla_engine.ValhallaRoads."""
+        return None
+
+    def truck(self) -> RoadDistances:
+        """Граф один для всех машин (у ValhallaRoads — профиль грузовика)."""
+        return self
 
     def lines(self, lines: Sequence[Sequence[Point]]) -> list[list[Point]] | None:
         """Линии рейсов вдоль дорог для карты (RoadNetwork.lines); дороги сломаны — None: рисовать по
@@ -557,23 +570,18 @@ class RoadDistances:
         fresh = sorted({int(n) for n in snapped if n >= 0} - node_index.keys())
         k_old, k = len(t.nodes), len(t.nodes) + len(fresh)
         nodes = np.concatenate([t.nodes, np.array(fresh, dtype=np.int64)])
-        sym = np.full((k, k), np.inf, dtype=np.float32)
-        sym[:k_old, :k_old] = t.sym
+        road = np.full((k, k), np.inf, dtype=np.float32)
+        road[:k_old, :k_old] = t.road
         if fresh:
             src = np.array(fresh, dtype=np.int64)
-            there = net.distances(src, nodes)                  # новый узел → все
-            back = net.distances(src, nodes, reverse=True)     # все → новый узел
-            avg = (there + back) / 2.0
-            block = avg[:, k_old:]
-            avg[:, k_old:] = (block + block.T) / 2.0           # новые × новые — строго симметрично
-            sym[k_old:, :] = avg
-            sym[:k_old, k_old:] = avg[:, :k_old].T
+            road[k_old:, :] = net.distances(src, nodes)                     # новый узел → все
+            road[:k_old, k_old:] = net.distances(src, nodes[:k_old], reverse=True).T   # прежние → новый
         for i, n in enumerate(fresh):
             node_index[n] = k_old + i
         points = dict(t.points)
         for p, n, d in zip(new, snapped, snap_km):
             points[p] = (node_index[int(n)], float(d)) if n >= 0 else (-1, float(d))
-        self._table = _Table(points, nodes, sym)
+        self._table = _Table(points, nodes, road)
         seconds = time.perf_counter() - started
         logger.info('[Routes] Дороги: +%d точек (новых узлов %d, не привязано %d), всего точек %d, '
                     'узлов %d; %.1f с', len(new), len(fresh), int(np.sum(snapped < 0)), len(points),
@@ -596,7 +604,7 @@ class RoadDistances:
                 lat, lon, row, snap = z['lat'], z['lon'], z['row'], z['snap']
                 points = {(float(a), float(b)): (int(r), float(s))
                           for a, b, r, s in zip(lat, lon, row, snap)}
-                table = _Table(points, z['nodes'].astype(np.int64), z['sym'].astype(np.float32))
+                table = _Table(points, z['nodes'].astype(np.int64), z['road'].astype(np.float32))
         except Exception:   # zipfile.BadZipFile, EOFError, KeyError, ValueError, OSError…
             logger.warning('[Routes] Кэш расстояний %s не прочитан — пересчёт', name, exc_info=True)
             return
@@ -615,7 +623,7 @@ class RoadDistances:
                       lon=np.array([p[1] for p in keys], dtype=np.float64),
                       row=np.array([t.points[p][0] for p in keys], dtype=np.int64),
                       snap=np.array([t.points[p][1] for p in keys], dtype=np.float64),
-                      nodes=t.nodes, sym=t.sym)
+                      nodes=t.nodes, road=t.road)
         except OSError:   # кэш в памяти остаётся — не сохранился только файл
             logger.exception('[Routes] Кэш расстояний %s не записан', path)
 

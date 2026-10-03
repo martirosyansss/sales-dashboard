@@ -33,6 +33,7 @@ from .roads import RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, Bundle, Decision, Store, StoreError, center_auto,
                     check_window, validate_payload)
+from .valhalla_engine import ValhallaProvider, ValhallaRoads
 from .vehicle_access import check_access
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ class RoutesState:
     results: ResultCache
     jobs: OptimizeJobs = field(default_factory=OptimizeJobs)
     roads: RoadProvider | None = None     # None — карты дорог нет, км по прямой
+    valhalla: ValhallaProvider | None = None   # Valhalla (ROUTES_ROAD_ENGINE); нет или выключен — граф OSM
     # план развоза: заказы ERP на дату (since, until, day) → DispatchData; факт развоза за дату → FactData
     dispatch_loader: Callable[[date, date, date], dp.DispatchData] | None = None
     fact_loader: Callable[[date], dp.FactData] | None = None
@@ -279,7 +281,7 @@ def api_overview() -> Any:
 
 
 def _compute_overview(snap: Snapshot, bundle: Bundle, calib: evaluate.Calibration,
-                      roads: RoadDistances | None) -> dict[str, Any]:
+                      roads: RoadDistances | ValhallaRoads | None) -> dict[str, Any]:
     started = time.perf_counter()
     payload = evaluate.build_overview(snap, bundle, calib, roads)
     payload['generated_at'] = datetime.now().isoformat(timespec='seconds')
@@ -287,13 +289,20 @@ def _compute_overview(snap: Snapshot, bundle: Bundle, calib: evaluate.Calibratio
     return payload
 
 
-def _roads(state: RoutesState, snap: Snapshot, bundle: Bundle) -> RoadDistances | None:
-    """Расстояния по дорогам для плана снимка: все точки плана — одним расчётом (первый раз —
-    минуты, дальше кэш на диске). Карты нет — None; граф не собрался — roads.failed (оценка
-    считает по прямой и предупреждает roads_failed)."""
+def _roads(state: RoutesState, snap: Snapshot, bundle: Bundle,
+           extra: Sequence[Point] = ()) -> RoadDistances | ValhallaRoads | None:
+    """Расстояния по дорогам для расчёта по плану снимка (и точкам extra — заказы развоза) — до кэша оценки:
+    граф OSM для всех точек — одним расчётом (первый раз — минуты, дальше кэш на диске). Valhalla — только если его
+    матрицы для этих точек (у машин менеджеров и, когда грузовикам нужен Valhalla, у грузовиков) уже готовы: тайлы и
+    матрицы считает фоновый поток (ValhallaProvider), а пока — граф OSM; запрос тяжёлой работы Valhalla не ждёт.
+    Карты нет — None; граф не собрался — roads.failed (оценка считает по прямой и предупреждает roads_failed)."""
+    points = [*evaluate.plan_points(snap, bundle, {}), *extra]
     roads = state.roads.get() if state.roads is not None else None
     if roads is not None:
-        roads.ensure(evaluate.plan_points(snap, bundle, {}))
+        roads.ensure(points)
+    if state.valhalla is not None:
+        capacity = max((t.capacity_kg for t in _ready_trucks(snap, bundle).values()), default=None)
+        roads = state.valhalla.get(roads, points, capacity) or roads
     return roads
 
 
@@ -766,9 +775,11 @@ def api_plan_export() -> Any:
     calib = _calibration(state, snap, bundle.settings)
     if roads is not None and not roads.failed:
         distance = evaluate.Norms.from_settings(bundle.settings, calib, roads).distance
+    else:
+        roads = None
     # принята только частота — в план идёт тот шаблон, что был в предложении
     body = optimize.plan_export(snap, bundle, _live_decisions(state, snap),
-                                optimize.proposals_of(_last_result(state)), distance, calib)
+                                optimize.proposals_of(_last_result(state)), distance, calib, roads)
     if not body['time_gate']['ok']:
         return jsonify({'success':False,'code':'shift_exceeded',
                         'error':'Принятый план не помещается в смену. Проверьте дни и частоты и пересчитайте план.',
@@ -836,10 +847,9 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
         return None
     s = bundle.settings
     calib = _calibration(state, snap, s)
-    roads = _roads(state, snap, bundle)
-    if roads is not None and not roads.failed:
-        roads.ensure([*points, bundle.depot])
+    roads = _roads(state, snap, bundle, [*points, bundle.depot])
     norms = evaluate.Norms.from_settings(s, calib, roads if roads is not None and not roads.failed else None)
+    norms = norms.for_trucks()   # развоз — профиль грузовика (км Valhalla — в режиме valhalla, минуты — ROUTES_TRUCK_TIME)
     h, m = map(int, s['truck_work_start'].split(':'))
     norms = replace(norms, traffic_weekday=day.weekday(), traffic_start_min=float(h * 60 + m))
     if s.get('traffic_mode') == 'yandex':

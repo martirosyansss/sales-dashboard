@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from .roads import RoadDistances
     from .snapshot import Snapshot
     from .store import Bundle, Decision
+    from .valhalla_engine import ValhallaRoads
 
 logger = logging.getLogger(__name__)
 
@@ -588,8 +589,8 @@ def _pairs_of(slots: Sequence[int]) -> pt.Pattern:
 def _matrices(home: Point | None, points: Sequence[Point],
               norms: ev.Norms) -> tuple[sr.Matrix, sr.Matrix]:
     """Матрицы менеджера: вершина 0 — дом (без дома — нули: открытый путь, как на этапе 1). Км —
-    norms.km (по дорогам, иначе по прямой × извилистость); минуты — км / скорость участка (город,
-    если оба конца в городе)."""
+    norms.km (по дорогам, иначе по прямой × извилистость), направленно: km[a][b] — от a до b; минуты —
+    км / скорость участка (Norms.leg_speed: время Valhalla, иначе город, если оба конца в городе, или область)."""
     pts: list[Point | None] = [home, *points]
     n = len(pts)
     city = [p is not None and in_city(p, norms.city_center, norms.city_radius_km) for p in pts]
@@ -599,11 +600,16 @@ def _matrices(home: Point | None, points: Sequence[Point],
         pa = pts[a]
         if pa is None:
             continue
-        for b in range(a + 1, n):
+        for b in range(1, n):
+            if b == a:
+                continue
             d = norms.km(pa, pts[b])
-            speed = norms.speed_city_kmh if city[a] and city[b] else norms.speed_region_kmh
-            km[a][b] = km[b][a] = d
-            mins[a][b] = mins[b][a] = d / speed * 60.0
+            km[a][b] = d
+            mins[a][b] = d / norms.leg_speed(pa, pts[b], d, city[a] and city[b]) * 60.0
+            if a == 0:   # к дому — обратный участок (строка дома посчитана выше, столбец — здесь)
+                back = norms.km(pts[b], pa)
+                km[b][0] = back
+                mins[b][0] = back / norms.leg_speed(pts[b], pa, back, city[a] and city[b]) * 60.0
     return km, mins
 
 
@@ -664,11 +670,16 @@ def _fleet_setup(ctx: _Ctx, run_ids: Sequence[int]) -> _Fleet | None:
     order = sorted(keys)
     node = {key: n + 1 for n, key in enumerate(order)}
     points = [p for _, p in order]
-    if ctx.dist is None:
-        ctx.dist = _Distances(points, norms)
-    km = ctx.dist.rows(bundle.depot, points)
+    truck_norms = norms.for_trucks()
+    if norms.roads is None or truck_norms.roads.km_source == norms.roads.km_source:
+        if ctx.dist is None:
+            ctx.dist = _Distances(points, norms)
+        dist = ctx.dist
+    else:   # режим valhalla: км грузовиков — свой профиль (truck), не км машин менеджеров
+        dist = _Distances(points, truck_norms)
+    km = dist.rows(bundle.depot, points)
     depot_city = in_city(bundle.depot, norms.city_center, norms.city_radius_km)
-    city = [depot_city] + [ctx.dist.city[ctx.dist.index[p]] for p in points]
+    city = [depot_city] + [dist.city[dist.index[p]] for p in points]
     kg = [0.0] + [before.models[c].year.mean_kg if before.models[c].year.values else 0.0 for c, _ in order]
     tn = fl.TruckNorms.from_settings(s)
     empty = fmean(t.fuel_empty_l_per_100km if t.fuel_empty_l_per_100km is not None else t.l100 for t in trucks)
@@ -1379,7 +1390,7 @@ class _Distances:
     """Км и минуты между всеми точками клиентов расчёта (norms.km — по дорогам или по прямой ×
     извилистость, как _matrices) — один раз; матрицы менеджеров режима Б (вершина 0 — дом) и матрица
     парка (вершина 0 — склад) собираются из них построчно. Строки — array('d'): у менеджера до тысячи
-    гостей, и списки чисел заняли бы в несколько раз больше памяти."""
+    гостей, и списки чисел заняли бы в несколько раз больше памяти. Матрицы направленные: km[a][b] — от a до b."""
 
     def __init__(self, points: Iterable[Point], norms: ev.Norms):
         self.norms = norms
@@ -1392,11 +1403,11 @@ class _Distances:
         self.mins = [array('d', zero) for _ in range(n)]
         for a in range(n):
             pa, ka, ma, ca = pts[a], self.km[a], self.mins[a], self.city[a]
-            for b in range(a + 1, n):
-                d = norms.km(pa, pts[b])
-                m = d / (norms.speed_city_kmh if ca and self.city[b] else norms.speed_region_kmh) * 60.0
-                ka[b] = self.km[b][a] = d
-                ma[b] = self.mins[b][a] = m
+            for b in range(n):
+                if b == a:
+                    continue
+                d = ka[b] = norms.km(pa, pts[b])
+                ma[b] = d / norms.leg_speed(pa, pts[b], d, ca and self.city[b]) * 60.0
 
     def _get(self, points: Sequence[Point]) -> tuple[list[int], Callable[[array], tuple[float, ...]]]:
         gi = [self.index[p] for p in points]
@@ -1407,28 +1418,32 @@ class _Distances:
         return gi, (itemgetter(*gi) if gi else (lambda row: ()))
 
     def rows(self, start: Point, points: Sequence[Point]) -> sr.Matrix:
-        """Км между start (вершина 0) и точками points (1..n) — матрица парка от склада."""
+        """Км между start (вершина 0) и точками points (1..n) — матрица парка от склада (направленная)."""
         gi, get = self._get(points)
         dk = [self.norms.km(start, p) for p in points]
-        return [array('d', [0.0, *dk])] + [array('d', (dk[r], *get(self.km[g]))) for r, g in enumerate(gi)]
+        bk = [self.norms.km(p, start) for p in points]
+        return [array('d', [0.0, *dk])] + [array('d', (bk[r], *get(self.km[g]))) for r, g in enumerate(gi)]
 
     def matrices(self, home: Point | None, points: Sequence[Point]) -> tuple[sr.Matrix, sr.Matrix]:
         """То же, что _matrices(home, points, norms), из готовых расстояний."""
         norms = self.norms
         gi = [self.index[p] for p in points]
         if home is not None:
-            hk = [norms.km(home, p) for p in points]
             home_city = in_city(home, norms.city_center, norms.city_radius_km)
-            hm = [d / (norms.speed_city_kmh if home_city and self.city[g] else norms.speed_region_kmh) * 60.0
-                  for d, g in zip(hk, gi)]
+            hk = [norms.km(home, p) for p in points]   # из дома
+            bk = [norms.km(p, home) for p in points]   # домой
+            hm = [d / norms.leg_speed(home, p, d, home_city and self.city[g]) * 60.0
+                  for d, p, g in zip(hk, points, gi)]
+            bm = [d / norms.leg_speed(p, home, d, home_city and self.city[g]) * 60.0
+                  for d, p, g in zip(bk, points, gi)]
         else:   # без дома — нули: открытый путь, как на этапе 1
-            hk = hm = [0.0] * len(gi)
+            hk = hm = bk = bm = [0.0] * len(gi)
         km = [array('d', [0.0, *hk])]
         mins = [array('d', [0.0, *hm])]
         _, get = self._get(points)
         for r, g in enumerate(gi):
-            km.append(array('d', (hk[r], *get(self.km[g]))))
-            mins.append(array('d', (hm[r], *get(self.mins[g]))))
+            km.append(array('d', (bk[r], *get(self.km[g]))))
+            mins.append(array('d', (bm[r], *get(self.mins[g]))))
         return km, mins
 
 
@@ -2036,17 +2051,19 @@ def export_patterns(snap: Snapshot, bundle: Bundle, book: DecisionBook,
 def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
                 proposals: Mapping[tuple[int, int], Proposal] | None = None,
                  distance: Distance | None = None,
-                 calib: ev.Calibration | None = None) -> dict[str, Any]:
+                 calib: ev.Calibration | None = None,
+                 roads: RoadDistances | ValhallaRoads | None = None) -> dict[str, Any]:
     """Текущий план + только принятые изменения (export_patterns), по каждому менеджеру в расчёте,
     цикл 2 недели. Принято «убрать из маршрута» — клиента нет в строках плана, в изменениях —
     type 'remove'; принята передача — клиент в строках нового менеджера (отметка «передать», адрес —
     из шаблона прежнего), в изменениях — type 'transfer' строкой прежнего менеджера. Устаревшие решения
     (приняты на другом плане клиента) не применяются — они в stale_decisions. Порядок внутри дня —
-    NN + 2-opt от дома (этап 1); distance — функция расстояния оценки (Norms.distance, None — по прямой)."""
+    NN + 2-opt от дома (этап 1); distance — функция расстояния оценки (Norms.distance, None — по прямой); roads —
+    дороги оценки: время в пути для проверки смены — то же, что в расчёте (Valhalla — его минуты)."""
     pairs = plan_pairs(snap.plan)
     book = DecisionBook.from_rows(decisions, pairs)
     planned = export_patterns(snap, bundle, book, pairs, proposals or {})
-    norms = ev.Norms.from_settings(bundle.settings, calib)
+    norms = ev.Norms.from_settings(bundle.settings, calib, roads)
     included = {a for a in snap.plan.agent_ids if bundle.included(a, snap.active_agents)}
     models = ev.customer_models(snap, bundle.settings, ev.resolve_season(snap.season_index, bundle.settings), included)
     visit_norms = ev.visit_norms(bundle.settings, calib.visit_min_avg if calib is not None else None,
@@ -2087,7 +2104,7 @@ def plan_export(snap: Snapshot, bundle: Bundle, decisions: Sequence[Decision],
             for a0,b0 in zip(path,path[1:]):
                 leg = distance(a0,b0) if distance is not None else norms.km(a0,b0)
                 city = in_city(a0,norms.city_center,norms.city_radius_km) and in_city(b0,norms.city_center,norms.city_radius_km)
-                drive += leg/(norms.speed_city_kmh if city else norms.speed_region_kmh)*60.0
+                drive += leg/norms.leg_speed(a0,b0,leg,city)*60.0
             if norms.traffic is not None:
                 from .traffic_metrics import route_metrics as timed_metrics
                 _, drive = timed_metrics(points, home, norms, weekday,

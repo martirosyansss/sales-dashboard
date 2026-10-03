@@ -22,7 +22,7 @@ def route_metrics(points: Sequence[Point], home: Point | None, norms: Norms,
     for i, (a, b) in enumerate(zip(path, path[1:])):
         leg = distance(a, b) if distance is not None else norms.km(a, b)
         city = in_city(a, norms.city_center, norms.city_radius_km) and in_city(b, norms.city_center, norms.city_radius_km)
-        speed = norms.speed_city_kmh if city else norms.speed_region_kmh
+        speed = norms.leg_speed(a, b, leg, city)
         minutes = (norms.traffic.travel(leg, speed, city, weekday0, clock)
                    if norms.traffic is not None else leg / speed * 60)
         km += leg

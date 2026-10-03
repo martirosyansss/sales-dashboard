@@ -67,6 +67,53 @@ powershell -ExecutionPolicy Bypass -File install_server.ps1 -Token "github_pat_�
   для локальной сети: `New-NetFirewallRule -DisplayName "Sales Dashboard" -Direction Inbound -LocalPort 5000 -Protocol TCP -Action Allow`)
 - Логи: `C:\Sales Dashboard\logs\`
 
+## Дороги: Valhalla (время в пути)
+
+«Маршруты» берут время в пути машин менеджеров из локального движка Valhalla, км — из графа OSM, как раньше.
+Грузовики развоза по умолчанию считаются по прежней модели времени (км / скорость зоны): поправка Valhalla
+проверена только на треках менеджеров.
+
+**Нужен 64-битный Python 3.12 или новее.** У `pyvalhalla` 3.9.0 есть только такой wheel (`cp312-abi3-win_amd64`). На
+более старом Python строка в `requirements.txt` пропускается (`python_version >= "3.12"`). На 32-битном pip не
+найдёт wheel. В обоих случаях всё работает как раньше: без Valhalla, по графу OSM. Нет карты
+`data/roads/armenia-latest.osm.pbf` — тоже как раньше.
+
+Тайлы и кэш матриц — вне git. Переменные `.env` (все необязательные):
+
+```
+ROUTES_VALHALLA_DIR=C:\ProgramData\route_optimizer\valhalla
+ROUTES_ROAD_ENGINE=valhalla_time
+ROUTES_TRUCK_TIME=model
+```
+
+- `ROUTES_VALHALLA_DIR` — папка тайлов и кэша, ~110 МБ. Без неё — `%PROGRAMDATA%\route_optimizer\valhalla`: общая
+  для службы SYSTEM и пользователей.
+- `ROUTES_ROAD_ENGINE`:
+  - `valhalla_time` — по умолчанию;
+  - `valhalla` — км тоже из Valhalla;
+  - `osm` — откат: Valhalla не используется вовсе, ни сборки, ни фоновых потоков. Минуты — км / скорость зоны, км —
+    граф OSM, как до Valhalla. Но граф остаётся направленным (одностороннее движение, другой формат кэша):
+    к прежнему среднему «туда-обратно» откат не возвращает.
+- `ROUTES_TRUCK_TIME`: `model` — по умолчанию, прежняя модель; `valhalla` — минуты грузовиков из Valhalla. Включать
+  только после сверки с треками водителей.
+
+Сервер готовит Valhalla сам, в фоновом потоке с запуска:
+- тайлы — ~20–70 с;
+- матрицы для точек плана и развоза — ~1–2 мин на профиль.
+
+Пока не готово, «Маршруты» считают по графу OSM, а запросы не ждут. Задача AutoUpdate после обновления собирает
+тайлы до перезапуска сервера (не дольше 240 с, журнал — `logs\valhalla_build*.log`). Матрицы она не считает: для
+них нужен снимок ERP, а сервер считает их сам.
+
+Вручную, из `C:\Sales Dashboard`:
+
+```powershell
+python -m route_optimizer.valhalla_engine build    # тайлы из карты, 15–70 с (та же карта — ничего не делает)
+python -m route_optimizer.roads warm               # матрица графа OSM (формат сменился — пересчёт, ~2 мин)
+python -m route_optimizer.valhalla_engine warm     # матрицы машин менеджеров и грузовиков (читает ERP)
+python -m route_optimizer.valhalla_engine status
+```
+
 ## Управление
 
 ```powershell
