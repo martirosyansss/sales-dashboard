@@ -591,10 +591,7 @@
             return;
         }
         const map = L.map($('dpPickMap'), { zoomSnap: 0.5, scrollWheelZoom: false });
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            subdomains: 'abc', maxZoom: 19,
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
-        }).addTo(map);
+        RoutesBasemap.add(map);
         map.setView(state.data.depot ? [state.data.depot.lat, state.data.depot.lon] : YEREVAN, 11);
         map.on('click focus', () => map.scrollWheelZoom.enable());
         map.on('mouseout blur', () => map.scrollWheelZoom.disable());
@@ -663,10 +660,7 @@
     }
     function smallMap(el) {
         const map = L.map(el, { zoomSnap: 0.5, scrollWheelZoom: false });
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            subdomains: 'abc', maxZoom: 19,
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
-        }).addTo(map);
+        RoutesBasemap.add(map);
         map.on('click focus', () => map.scrollWheelZoom.enable());
         map.on('mouseout blur', () => map.scrollWheelZoom.disable());
         return map;
@@ -1365,10 +1359,7 @@
         }
         const map = L.map(el, { preferCanvas: true, zoomSnap: 0.5, scrollWheelZoom: false });
         map.on('movestart zoomstart', () => { if (!state.mapFitting) state.mapUserMoved = true; });
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            subdomains: 'abc', maxZoom: 19,
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
-        }).addTo(map);
+        RoutesBasemap.add(map);
         map.setView(YEREVAN, 10);
         map.on('click focus', () => map.scrollWheelZoom.enable());
         map.on('mouseout blur', () => map.scrollWheelZoom.disable());

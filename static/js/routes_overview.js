@@ -762,10 +762,7 @@
             return;
         }
         const map = L.map('rtMap', { preferCanvas: true, zoomSnap: 0.5, scrollWheelZoom: false });
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            subdomains: 'abc', maxZoom: 19,
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
-        }).addTo(map);
+        RoutesBasemap.add(map);
         map.setView(YEREVAN, 9);
         // колесо мыши масштабирует карту только после клика по ней — страница прокручивается свободно
         map.on('click focus', () => map.scrollWheelZoom.enable());
