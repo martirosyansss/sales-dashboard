@@ -169,7 +169,7 @@ def grade(item: dict, result: dict | None, error: str | None) -> list[str]:
             bad.append('нет счёта: %s %s' % (n, unit))
     if item.get('kg') is not None:
         kg = item['kg']                      # «3872 կգ» или «3,9 տ»
-        tonnes = re.findall(r'(?<![\d:])(\d+(?:[.,]\d+)?)\s*տ(?![ա-ֆ])', answer)
+        tonnes = re.findall(r'(?<![\d:])(\d+(?:[.,]\d+)?)\s*տ(?:ոննա)?(?![ա-ֆ])', answer)
         if not has_close(answer, around(kg)) and not any(abs(float(x.replace(',', '.')) * 1000 - kg) <= 60 for x in tonnes):
             bad.append('нет веса: %s кг' % kg)
     for t in item['times']:

@@ -1449,12 +1449,15 @@ def _ai_preview(dd: _DispatchDay, codes: list[str], memo: dict[str, Any]) -> dic
         return dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd), explain=False)
 
     now = sorted(t for t in (dd.draft.trucks if dd.draft is not None else []) if t in dd.ready)
-    same = None
+    same, compare = None, 'no_plan' if not now else 'self' if now == codes else 'unavailable'
     if now and now != codes:
-        if 'same' not in memo:
-            memo['same'] = ai_chat.simulation_brief(rebuild(now))
+        if 'same' not in memo:                 # раз на вопрос; не вышло — без сравнения, но «что если» отвечаем
+            try:
+                memo['same'] = ai_chat.simulation_brief(rebuild(now))
+            except ai_chat.SimulationError:
+                memo['same'] = None
         same = memo['same']
-    return ai_chat.simulation_summary(rebuild(codes), codes, same)
+    return ai_chat.simulation_summary(rebuild(codes), codes, same, compare)
 
 
 @bp.post('/api/routes/dispatch/ask')

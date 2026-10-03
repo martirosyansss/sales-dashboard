@@ -176,13 +176,14 @@
             opts.headers['Content-Type'] = 'application/json';
             opts.body = JSON.stringify(body);
         }
-        let resp;
-        try { resp = await fetch(url, opts); } catch (e) {
-            if (e && e.name === 'AbortError') throw Object.assign(new Error('Պատասխանը շատ երկար է սպասվում — կրկնեք ավելի ուշ։'), { status: 0, data: null });
-            throw Object.assign(new Error('Սերվերի հետ կապ չկա։'), { status: 0, data: null });
+        let resp, data = null;
+        try {
+            try { resp = await fetch(url, opts); } catch (e) {
+                if (e && e.name === 'AbortError') throw Object.assign(new Error('Պատասխանը շատ երկար է սպասվում — կրկնեք ավելի ուշ։'), { status: 0, data: null });
+                throw Object.assign(new Error('Սերվերի հետ կապ չկա։'), { status: 0, data: null });
+            }
+            try { data = await resp.json(); } catch (e) { data = null; }     // и чтение тела — под тем же таймаутом
         } finally { if (timer) clearTimeout(timer); }
-        let data = null;
-        try { data = await resp.json(); } catch (e) { data = null; }
         if (resp.ok && isObj(data) && data.success === true) return data;
         const d = isObj(data) ? data : null;
         const msg = (d && typeof d.error === 'string' && d.error.trim() ? serverText(d.error) : '')

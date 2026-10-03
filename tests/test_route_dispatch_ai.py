@@ -385,11 +385,21 @@ def test_what_if_limit_counts_successful_rebuilds_and_ends_with_text():
     assert all(c['tool_choice'] == {'type': 'auto', 'disable_parallel_tool_use': True} for c in fake.calls)
 
 
-def test_what_if_model_that_never_stops_gets_an_error_not_a_hang():
+def test_what_if_model_that_never_stops_gets_a_plain_answer_not_a_hang():
     fake = ScriptedClient(*[('tool', {'trucks': ['A']})] * ai_chat.MAX_CALLS)
-    with pytest.raises(ai_chat.AiError) as e:
-        ai_chat.ask(BODY, 'q', [], client=fake, simulate=lambda codes: {'ok': 1})
-    assert e.value.status == 502 and len(fake.calls) == ai_chat.MAX_CALLS
+    r = ai_chat.ask(BODY, 'q', [], client=fake, simulate=lambda codes: {'ok': 1})
+    assert r['answer'].startswith('Չհասցրի ավարտել') and len(fake.calls) == ai_chat.MAX_CALLS
+
+
+def test_what_if_failed_rebuilds_are_capped_too():
+    calls = []
+
+    def simulate(codes):
+        calls.append(codes)
+        raise ai_chat.SimulationError('not ready')
+    fake = ScriptedClient(*[('tool', {'trucks': ['A']})] * (ai_chat.MAX_CALLS - 1), ('text', 'Ոչ։'))
+    r = ai_chat.ask(BODY, 'q', [], client=fake, simulate=simulate)
+    assert r['answer'] == 'Ոչ։' and len(calls) == min(ai_chat.MAX_ATTEMPTS, ai_chat.MAX_CALLS - 1)
 
 
 def test_what_if_crash_in_rebuild_becomes_tool_error():
@@ -402,13 +412,22 @@ def test_what_if_crash_in_rebuild_becomes_tool_error():
     assert err['is_error'] is True and 'internal error' in err['content'] and 'solver' not in err['content']
 
 
-def test_ask_stops_when_time_budget_is_spent(monkeypatch):
-    ticks = [0.0, 0.0, 0.0]               # старт, перед 1-м запросом, перед пересборкой; дальше — бюджет исчерпан
+def test_ask_stops_when_time_budget_is_spent_before_any_rebuild(monkeypatch):
+    ticks = [0.0]                         # старт; дальше — бюджет уже исчерпан
     monkeypatch.setattr(ai_chat.time, 'monotonic', lambda: ticks.pop(0) if ticks else ai_chat.BUDGET_S)
-    fake = ScriptedClient(('tool', {'trucks': ['A']}), ('text', 'никогда'))
+    fake = ScriptedClient(('text', 'никогда'))
     with pytest.raises(ai_chat.AiError) as e:
         ai_chat.ask(BODY, 'q', [], client=fake, simulate=lambda codes: {'ok': 1})
-    assert e.value.status == 504 and len(fake.calls) == 1
+    assert e.value.status == 504 and fake.calls == []
+
+
+def test_ask_answers_from_done_rebuild_even_when_budget_ran_out(monkeypatch):
+    """Пересборка уже посчитана, бюджет вышел — модель всё равно отвечает по ней (последний запрос, а не 504)."""
+    ticks = [0.0, 0.0, 0.0]               # старт, перед 1-м запросом, перед пересборкой; дальше — бюджет исчерпан
+    monkeypatch.setattr(ai_chat.time, 'monotonic', lambda: ticks.pop(0) if ticks else ai_chat.BUDGET_S)
+    fake = ScriptedClient(('tool', {'trucks': ['A']}), ('text', 'Ահա արդյունքը։'), ('text', 'չպետք է'))
+    r = ai_chat.ask(BODY, 'q', [], client=fake, simulate=lambda codes: {'ok': 1})
+    assert r['answer'] == 'Ահա արդյունքը։' and r['previews'] == 1 and len(fake.calls) == 2
 
 
 def test_simulation_summary_is_compact_and_says_nothing_saved():
@@ -421,6 +440,9 @@ def test_simulation_summary_is_compact_and_says_nothing_saved():
     s = ai_chat.simulation_summary(view, ['A', 'B'])
     assert s['idle_trucks'] == ['B'] and s['working_trucks'] == ['A', 'B'] and 'nothing was saved' in s['note']
     assert 'Flags that are false are left out' in s['note'] and 'same_trucks_rebuild' not in s
+    assert 'plain rebuild' in s['note']
+    assert 'no built plan' in ai_chat.simulation_summary(view, ['A'], None, 'no_plan')['note']
+    assert 'failed' in ai_chat.simulation_summary(view, ['A'], None, 'unavailable')['note']
     assert s['trucks_with_trips'][0]['trips'] == [{'trip_no': 1, 'depart': '09:00', 'return': '17:10', 'kg': 900,
                                                   'load_pct': 41, 'km': 50.0, 'liters': 6.1, 'stops_count': 2}]
     assert s['unassigned_count'] == 1 and s['unassigned'] == ['name|code|kg|no_room', 'Խանութ|C1|300|yes']
@@ -463,3 +485,25 @@ def test_api_what_if_planner_refusal_is_a_tool_error_not_a_400(client, monkeypat
     assert r.status_code == 200 and r.get_json()['answer'] == 'Չի ստացվում։'
     err = fake.calls[1]['messages'][-1]['content'][0]
     assert err['is_error'] is True and err['content'].startswith('the planner refused')
+
+
+def test_api_what_if_survives_failed_comparison_rebuild(client, monkeypatch):
+    """Сравнительная пересборка нынешними машинами не удалась — «что если» всё равно отвечает (без сравнения)."""
+    from route_optimizer import dispatch as dp_mod
+    _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2)])
+    assert client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).status_code == 200
+    real = dp_mod.build
+
+    def picky(ctx, stops, old, trucks, now):
+        if sorted(trucks) == ['CAR1', 'CAR2']:
+            raise dp_mod.DispatchError('нельзя')
+        return real(ctx, stops, old, trucks, now)
+    monkeypatch.setattr(dp_mod, 'build', picky)
+    fake = ScriptedClient(('tool', {'trucks': ['CAR2']}), ('text', 'Միայն CAR2։'))
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'test-key')
+    monkeypatch.setattr(ai_chat, '_get_client', lambda: fake)
+    r = client.post('/api/routes/dispatch/ask', json={'date': '2026-10-01', 'question': 'q'})
+    assert r.status_code == 200 and r.get_json()['previews'] == 1
+    import json as _json
+    preview = _json.loads(fake.calls[1]['messages'][-1]['content'][0]['content'])
+    assert 'same_trucks_rebuild' not in preview and 'comparison rebuild with the current trucks failed' in preview['note']

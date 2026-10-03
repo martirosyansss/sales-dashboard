@@ -40,7 +40,9 @@ MAX_FOCUS = 200                   # «что выбрано на карте» �
 MAX_HISTORY = 12                  # реплик истории (6 вопросов с ответами); старше — отбрасываются
 MAX_TURN_TEXT = 8000              # символов реплики истории в запросе; длиннее — обрезается (ответ AI бывает длинным)
 MAX_PREVIEWS = 2                  # удачных пересборок «что если» на один вопрос
+MAX_ATTEMPTS = 3                  # попыток пересборки на вопрос, удачных и нет (неудачная тоже стоит времени)
 MAX_CALLS = MAX_PREVIEWS + 2      # запросов к модели на вопрос: пересборки + отказ «лимит» + ответ
+LAST_CALL_S = 20.0                # последний запрос после пересборок — даже если бюджет почти исчерпан
 BUDGET_S = 100.0                  # весь вопрос; страница ждёт 150 с
 MAX_SIM_TRUCKS = 40
 
@@ -84,7 +86,11 @@ work_start/work_end = normal truck day, overtime_end = force-majeure limit; late
 cannot return even by the limit; poor = trip revenue below min_trip_revenue (could move to defer_to day); pinned = locked \
 by the logist; coord_source = where the store point comes from (erp, gps of the manager, driver, manual); unassigned flags \
 no_room / no_window / no_center / no_vehicle say why a stop is not in any trip; explain.others[].reasons say why another \
-truck cannot take the trip (capacity, center, vehicle access...); minutes in explain are parts of the trip time.
+truck cannot take the trip (capacity, center, vehicle access...); minutes in explain are parts of the trip time; \
+plan.advice (present only when trips are late or stores are left out): advice.rebuild = trucks ticked in step 1 that \
+have no trips, a plain «Վերակազմել երթերը» will use them; advice.add = one suggested ready truck that is NOT ticked \
+in step 1 (an estimate; if its capacity_kg is below need_kg it takes only part of the load) - the page offers the \
+button «Ավելացնել և վերակազմել» for it; an empty advice means no suggestion.
 Format: fields that are false, null or empty are left out (a missing flag means false). Lists of stores - trip stops, \
 unassigned stops, stores without coordinates, backlog and excluded orders - are tables: the first item is the column \
 header (not a store), each next item is one store (trip stops in visit order), cells separated by "|", an empty \
@@ -330,8 +336,18 @@ def simulation_brief(view: dict[str, Any]) -> dict[str, Any]:
     })
 
 
+COMPARE_NOTES = {
+    'same': ('same_trucks_rebuild is the same rebuild with the trucks that work now: compare with it to see the effect '
+             'of the truck change (the saved plan may contain manual edits).'),
+    'self': 'This rebuild uses the trucks that work now, so it shows what a plain rebuild gives.',
+    'no_plan': 'There is no built plan for this day yet, so there is nothing to compare with.',
+    'unavailable': ('The comparison rebuild with the current trucks failed, so compare carefully with the saved plan '
+                    '(it may contain manual edits).'),
+}
+
+
 def simulation_summary(view: dict[str, Any], codes: Sequence[str],
-                       same_trucks: dict[str, Any] | None = None) -> dict[str, Any]:
+                       same_trucks: dict[str, Any] | None = None, compare: str = 'self') -> dict[str, Any]:
     """Итог пересборки для модели: рейсы машин (время, км, литры, загрузка, пометки), не поместившиеся и почему,
     простаивающие. same_trucks — краткий итог такой же пересборки с нынешними машинами (simulation_brief):
     разница с ним — именно эффект смены машин (сохранённый план может содержать ручные правки, принятую
@@ -352,9 +368,7 @@ def simulation_summary(view: dict[str, Any], codes: Sequence[str],
             for s in view.get('unassigned') or []]
     sm = view.get('summary') or {}
     note = ('preview only - nothing was saved, the plan and the page did not change. Flags that are false are left out. '
-            + ('same_trucks_rebuild is the same rebuild with the trucks that work now: compare with it to see the '
-               'effect of the truck change (the saved plan may contain manual edits).' if same_trucks else
-               'This rebuild uses the trucks that work now, so it shows what a plain rebuild gives.'))
+            + COMPARE_NOTES['same' if same_trucks else compare])
     return _compact({
         'note': note, 'working_trucks': sorted(codes), 'idle_trucks': sorted(set(codes) - busy),
         'summary': {k: sm.get(k) for k in ('trucks', 'trips', 'stops', 'kg', 'km', 'liters', 'operating_cost_amd')},
@@ -403,25 +417,27 @@ def ask(body: dict[str, Any], question: str, history: list[dict[str, str]], focu
     model = _model()
     messages = build_messages(body, question, history, focus)
     started = time.monotonic()
-    previews = 0
+    previews = attempts = 0
     kw: dict[str, Any] = ({'tools': TOOLS, 'tool_choice': {'type': 'auto', 'disable_parallel_tool_use': True}}
                           if simulate is not None else {})
     for call in range(MAX_CALLS):
         left = BUDGET_S - (time.monotonic() - started)
-        if left < 5:
+        if left < 5 and attempts == 0:
             raise AiError('AI не успел ответить — спросите короче или повторите', 504)
-        response = _create(client, model, messages, kw, min(TIMEOUT_S, left))
+        # пересборки уже посчитаны — дать модели ответить по ним (немного сверх бюджета), а не выбросить их
+        response = _create(client, model, messages, kw, min(TIMEOUT_S, max(left, LAST_CALL_S)))
         uses = [b for b in response.content if getattr(b, 'type', None) == 'tool_use']
         if response.stop_reason != 'tool_use' or not uses or call == MAX_CALLS - 1:
             break
         messages.append({'role': 'assistant', 'content': response.content})   # вместе с блоками размышлений
         results = []
         for block in uses:
-            if previews >= MAX_PREVIEWS or BUDGET_S - (time.monotonic() - started) < 30:
+            if previews >= MAX_PREVIEWS or attempts >= MAX_ATTEMPTS or BUDGET_S - (time.monotonic() - started) < 30:
                 results.append(_tool_error(block, 'limit reached: no more rebuilds for this question - '
                                                   'answer now from the results you already have'))
                 continue
             result = _tool_result(block, simulate)
+            attempts += 1
             previews += not result.get('is_error')
             results.append(result)
         messages.append({'role': 'user', 'content': results})
@@ -429,6 +445,8 @@ def ask(body: dict[str, Any], question: str, history: list[dict[str, str]], focu
     text = '\n'.join(b.text for b in response.content if getattr(b, 'type', None) == 'text').strip()
     if refused:
         text = 'Այս հարցին չեմ կարող պատասխանել։ Փորձեք հարցնել այլ կերպ՝ երթերի, մեքենաների կամ խանութների մասին։'
+    elif not text and response.stop_reason == 'tool_use':     # запросы кончились, а модель всё пересчитывает
+        text = ('Չհասցրի ավարտել հաշվարկը։ Հարցրեք ավելի կոնկրետ՝ օրինակ, ո՞ր մեքենան հանել կամ ավելացնել։')
     elif not text:
         raise AiError('AI не дал ответа — повторите вопрос', 502)
     return {'answer': text, 'model': getattr(response, 'model', model), 'refused': refused,
