@@ -37,22 +37,23 @@
 .gj-check { display: inline-flex; align-items: center; gap: 10px; min-height: 46px; margin-bottom: 13px; font-size: .9375rem; color: var(--rt-fg-dim); cursor: pointer; }
 .gj-total { margin: 0 0 10px; font-weight: 700; font-size: 1.0625rem; }
 .gj-total:empty { display: none; }
-.gj-table .gj-num { text-align: right; font-family: var(--rt-mono); white-space: nowrap; }
-.gj-table thead th.gj-num { text-align: right; }
+.gj-table .gj-num { text-align: right; white-space: nowrap; }
+.gj-table td.gj-num { font-family: var(--rt-mono); }
 .gj-table td { vertical-align: middle; }
 .gj-day { font-family: var(--rt-mono); white-space: nowrap; }
 .gj-what { overflow-wrap: anywhere; min-width: 160px; }
 .gj-what small, .gj-sub { display: block; font-size: .8125rem; color: var(--rt-fg-mute); }
-.gj-row-acts { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.gj-row-acts { display: inline-flex; gap: 6px; }
 .gj-gone { font-size: .8125rem; color: var(--rt-fg-mute); }
 .gj-acts { white-space: nowrap; }
 
-/* Вазք и итоги */
+/* Пробег и итоги */
 .gj-odo-day { max-width: 240px; }
 .gj-odo-table .rt-input { height: 46px; font-size: 1rem; max-width: 220px; }
 .gj-km { font-family: var(--rt-mono); }
 .gj-price { font-family: var(--rt-mono); font-size: 1.0625rem; }
 .gj-stale { margin-top: 4px; }
+.gj-sub + .gj-stale { margin-top: 6px; }
 
 @media (max-width: 767px) {
     .gj-grid { grid-template-columns: minmax(0, 1fr); }
@@ -61,8 +62,10 @@
 @media (max-width: 575px) {
     .gj-tabs { max-width: none; }
     .gj-tabs button { font-size: .9375rem; padding: 0 6px; gap: 6px; }
-    .gj-table .gj-num { text-align: left; }
+    .gj-table .gj-num { text-align: left; white-space: normal; }
+    .gj-table tbody td[data-label]::before { font-family: var(--rt-font); }   /* подпись — не моноширинным цифр */
     .gj-table tbody td.gj-acts { grid-column: 1 / -1; }
+    .gj-table tbody td.gj-car { order: -2; }   /* карточка: машина, ниже дата и вид рядом */
     .gj-row-acts { display: flex; width: 100%; }
     .gj-row-acts .rt-btn { flex: 1 1 0; height: 44px; }
     .gj-odo-table .rt-input { max-width: none; }

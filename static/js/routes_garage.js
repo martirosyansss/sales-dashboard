@@ -240,9 +240,9 @@
                     h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Փոխել գրառումը ' + dayHy(e.day), dataset: { act: 'edit', id: e.id } }, icon('fa-pen'), 'Փոխել'),
                     h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Ջնջել գրառումը ' + dayHy(e.day), dataset: { act: 'del', id: e.id } }, icon('fa-trash-can'), 'Ջնջել'));
             return h('tr', { class: gone ? 'is-closed' : null },
-                h('td', { class: 'gj-day', 'data-label': 'Ամսաթիվ', text: dayHy(e.day) }),
+                h('td', { class: 'gj-day w-half', 'data-label': 'Ամսաթիվ', text: dayHy(e.day) }),
                 h('td', { class: 'gj-car', 'data-label': 'Մեքենա', text: truckName(e.car_code) }),
-                h('td', { 'data-label': 'Տեսակ' }, h('span', { class: 'rt-badge ' + (KIND_CLASS[e.kind] || ''), text: KIND[e.kind] || e.kind })),
+                h('td', { class: 'w-half', 'data-label': 'Տեսակ' }, h('span', { class: 'rt-badge ' + (KIND_CLASS[e.kind] || ''), text: KIND[e.kind] || e.kind })),
                 h('td', { class: 'gj-what', 'data-label': 'Ինչ է արվել' }, e.what || '—', e.note ? h('small', { text: e.note }) : null),
                 h('td', { class: 'gj-num w-half', 'data-label': 'Գումար, ֏', text: e.kind === 'odometer' ? '—' : fmt(e.amount_amd) }),
                 h('td', { class: 'gj-num w-half', 'data-label': 'Սպիդոմետր, կմ', text: fmt(e.odometer_km) }),
@@ -336,7 +336,7 @@
                 const g = r.garage;
                 const last = r.last_day
                     ? [h('span', { text: dayHy(r.last_day) }), h('small', { class: 'gj-sub', text: fmt(r.days_since_last) + ' օր առաջ' })]
-                    : [h('span', { text: '—' })];
+                    : [];
                 if (r.stale) last.push(h('span', { class: 'rt-badge b-warn gj-stale', text: 'Լրացրեք վազքը' }));
                 const price = g && g.price !== null
                     ? [h('b', { class: 'gj-price', text: fmt(g.price, 1) }), h('small', { class: 'gj-sub', text: fmt(g.cost_amd) + ' ֏ ÷ ' + fmt(g.km) + ' կմ' })]
