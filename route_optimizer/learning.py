@@ -941,8 +941,8 @@ def planned_wait(trip: PlanTrip | None, arrive: datetime, depart: datetime) -> f
 def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop]) -> list[UnloadObs]:
     """Обслуживающие визиты (не повторные), у всех точек которых известно доставленное. Разгрузка — по порядку:
     1) конец — начало движения, но не позже TAP_TAIL после отметки доставки водителя (№65): последней из отметок точек
-       визита, сделанных в пределах стоянки ± actuals.DELIVERY_SLACK (общая стоянка — до последнего «закончил»);
-       отметки нет, она вне стоянки или после отъезда — до движения;
+       визита, сделанных не раньше прибытия и не позже отъезда + actuals.DELIVERY_SLACK (общая стоянка — до последнего
+       «закончил»); отметки нет, она до прибытия (отметил заранее — «закончил» не здесь) или после отъезда — до движения;
     2) вычитается ожидание открытия окна приёма (начало окна позже прибытия — машина ждёт: это не разгрузка);
     3) остаток вне [0,5; UNLOAD_MAX_MIN] не учитывается (дальше fit_unload отсекает дольше UNLOAD_CAP_REL × нормы).
     Хвост — до отсечений: они судят о времени магазина, а не о стоянке с обедом после отметки (2 ч стоянки с отметкой на
@@ -956,7 +956,7 @@ def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop]) ->
         if v.repeat or any(s.delivered_kg is None for s in ss):
             continue
         taps = [s.delivered_at for s in ss if s.delivered_at is not None
-                and v.arrive - ac.DELIVERY_SLACK <= s.delivered_at <= v.leave + ac.DELIVERY_SLACK]
+                and v.arrive <= s.delivered_at <= v.leave + ac.DELIVERY_SLACK]
         end = min(v.leave, max(taps) + TAP_TAIL) if taps else v.leave
         opens = max((s.window[0] for s in ss if s.window is not None and math.isfinite(s.window[0])), default=None)
         wait = max(0.0, opens - ac.day_minutes(day, v.arrive)) if opens is not None else 0.0

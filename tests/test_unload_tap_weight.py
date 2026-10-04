@@ -58,8 +58,11 @@ def test_no_tap_or_tap_outside_stay_counts_until_motion():
     assert _minutes([_stop('A', 101, tap=-15)]) == [30.0]         # раньше прибытия больше чем на DELIVERY_SLACK
 
 
-def test_tap_just_before_arrival_within_slack_caps_from_tap():
-    assert _minutes([_stop('A', 101, tap=-2)]) == [8.0]           # отметил за 2 мин до остановки → −2 + 10
+def test_tap_before_arrival_does_not_cap():
+    # отметка до остановки у магазина — не «закончил» здесь (отметил заранее, например все магазины у предыдущего): до движения
+    assert _minutes([_stop('A', 101, tap=-2)]) == [30.0]
+    assert _minutes([_stop('A', 101, tap=-8)]) == [30.0]
+    assert _minutes([_stop('A', 101, tap=0)]) == [10.0]            # в момент остановки — уже здесь: 0 + 10
 
 
 def test_shared_stay_uses_latest_tap_within_stay():
