@@ -1041,10 +1041,11 @@ def draft_ranks(draft: Mapping[str, Any] | None, truck: str) -> tuple[dict[int, 
 @dataclass(frozen=True)
 class PlanLunch:
     """Обед по плану в рейсе (прогноз сборки, №61): где — store (после разгрузки магазина customer), depot (на складе до
-    загрузки рейса), road (в дороге); минуты обеда."""
+    загрузки рейса), road (в дороге); минуты обеда; начало по плану (None — неизвестно)."""
     where: str
     customer: int | None
     minutes: float
+    start: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -1066,15 +1067,15 @@ class PlanTrip:
         return self.prev_return, self.loading_start
 
 
-def _plan_lunch(raw: Any) -> PlanLunch | None:
-    """Обед рейса из прогноза ({where, customer, minutes}); битый — None."""
+def _plan_lunch(raw: Any, at: Callable[[Any], datetime | None] = lambda _: None) -> PlanLunch | None:
+    """Обед рейса из прогноза ({where, customer, minutes, start «HH:MM»}; at — «HH:MM» → момент дня); битый — None."""
     if not isinstance(raw, Mapping) or raw.get('where') not in ('store', 'depot', 'road') \
             or not _num(raw.get('minutes'), 0, 240):
         return None
     cid = raw.get('customer')
     if raw['where'] == 'store' and (not isinstance(cid, int) or isinstance(cid, bool)):
         return None
-    return PlanLunch(raw['where'], cid if raw['where'] == 'store' else None, float(raw['minutes']))
+    return PlanLunch(raw['where'], cid if raw['where'] == 'store' else None, float(raw['minutes']), at(raw.get('start')))
 
 
 def plan_trips(prediction: Mapping[str, Any] | None, day: date) -> list[PlanTrip]:
@@ -1088,7 +1089,7 @@ def plan_trips(prediction: Mapping[str, Any] | None, day: date) -> list[PlanTrip
     trips = [t for t in (prediction or {}).get('trips') or () if isinstance(t, Mapping)]
     return [PlanTrip(at(t.get('loading_start')), at(trips[j - 1].get('return')) if j else None, at(t.get('depart')),
                      frozenset(c[0] for c in t.get('stops') or () if isinstance(c, list) and c and isinstance(c[0], int)),
-                     _plan_lunch(t.get('lunch')))
+                     _plan_lunch(t.get('lunch'), at))
             for j, t in enumerate(trips)]
 
 
@@ -1133,7 +1134,9 @@ def lunch_obs(day: date, actual: ac.DayActual, window: tuple[float, float], stop
     где обед по плану (plan — плановые рейсы с обедом, plan_trips): у магазина — стоянка его обслуживающего визита без
     разгрузки по действующей норме (expected — прогноз нормы для визита, как в обучении разгрузки; доставлено
     неизвестно — вес накладной) и без ожидания окна приёма до начала окна обеда; на складе — стоянка перед рейсом сверх
-    плановой загрузки и планового простоя без обеда; в дороге — только стоянка не по плану. Обеда в плане нет — None
+    плановой загрузки и планового простоя после обеда, считая с планового начала обеда (утро на складе до обеда — не
+    обед; начало неизвестно — от планового возвращения прошлого рейса, нет и его — не считается); в дороге — только
+    стоянка не по плану. Обеда в плане нет — None
     (где искать, неизвестно); машина работала не дольше конца окна — None (такой день план и не кормит)."""
     meal = next(((n, t) for n, t in enumerate(plan) if t.lunch is not None), None)
     if meal is None:
@@ -1168,9 +1171,13 @@ def lunch_obs(day: date, actual: ac.DayActual, window: tuple[float, float], stop
             if stay is None:
                 break
             loading = (trip.depart - trip.loading_start).total_seconds() / 60.0
-            gap = ((trip.loading_start - trip.prev_return).total_seconds() / 60.0 if trip.prev_return is not None
-                   else lunch.minutes)   # type: ignore[union-attr]
-            place = stay.minutes - loading - max(0.0, gap - lunch.minutes)   # type: ignore[union-attr]
+            begin = lunch.start if lunch.start is not None else trip.prev_return   # type: ignore[union-attr]
+            if begin is None:
+                break
+            # на складе с планового начала обеда (приехал позже — с прибытия) до выезда, без плановой загрузки и
+            # планового простоя после обеда (ожидание окна первой точки)
+            idle = max(0.0, (trip.loading_start - begin).total_seconds() / 60.0 - lunch.minutes)   # type: ignore[union-attr]
+            place = (t.depart - max(stay.arrive, begin)).total_seconds() / 60.0 - loading - idle
             break
     return LunchObs(day, round(max(0.0, place, *stays), 1))
 
