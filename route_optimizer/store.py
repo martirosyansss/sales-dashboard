@@ -16,6 +16,7 @@ import math
 import os
 import re
 import sqlite3
+import unicodedata
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
 from enum import Enum
@@ -27,7 +28,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -137,6 +138,15 @@ _GARAGE_ONE_ODOMETER = (
     "CREATE UNIQUE INDEX IF NOT EXISTS garage_one_odometer ON garage_entry(car_code, day) "
     "WHERE kind = 'odometer' AND deleted_at IS NULL")
 
+# Схема 17 (ответ владельца №62): водитель машины — для «Բեռնագիր». Закреплён за машиной, но меняется часто. only_day = 0 —
+# постоянный водитель с from_day и до следующей такой строки (смена не переписывает прошлые дни); only_day = 1 — подмена
+# ровно на день from_day. Водитель дня: подмена этого дня, иначе постоянный с наибольшим from_day ≤ дня. Пустое имя —
+# «водителя нет» (в накладной — строка, вписать от руки). Только для печати, в расчёты не входит.
+_TRUCK_DRIVER_TABLE = (
+    "CREATE TABLE IF NOT EXISTS truck_driver(car_code TEXT NOT NULL, from_day TEXT NOT NULL, "
+    "only_day INTEGER NOT NULL DEFAULT 0 CHECK (only_day IN (0, 1)), name TEXT NOT NULL CHECK (length(name) <= 60), "
+    "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (car_code, from_day, only_day))")
+
 _CUSTOMER_VEHICLES_TABLE = (
     "CREATE TABLE IF NOT EXISTS customer_vehicle_access(customer_id INTEGER PRIMARY KEY, "
     "mode TEXT NOT NULL CHECK(mode IN ('allow', 'deny')), trucks TEXT NOT NULL, "
@@ -168,8 +178,8 @@ _LEARNED_COLUMNS_V14 = (
     "train_from TEXT, train_to TEXT, test_from TEXT, test_to TEXT, mae_before REAL, mae_after REAL, "
     "accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)), reason TEXT NOT NULL, created_at TEXT NOT NULL, "
     "UNIQUE (kind, scope, run_day)")
-# Схема 17 (№61): вид lunch — обед в пути (learning.fit_lunch) — и confidence: доля повторных выборок проверки, где новая
-# норма точнее (learning._accept; NULL — не считали, и у строк до схемы 17). Таблица пересобирается так же, как 13 → 14.
+# Схема 18 (№61): вид lunch — обед в пути (learning.fit_lunch) — и confidence: доля повторных выборок проверки, где новая
+# норма точнее (learning._accept; NULL — не считали, и у строк до схемы 18). Таблица пересобирается так же, как 13 → 14.
 _LEARNED_COLUMNS = (
     "id INTEGER PRIMARY KEY AUTOINCREMENT, "
     "kind TEXT NOT NULL CHECK (kind IN ('unload', 'loading', 'travel', 'truck_time', 'fuel', 'lunch')), "
@@ -203,6 +213,7 @@ _SCHEMA = (
     _CUSTOMER_UNLOAD_TABLE,
     _GARAGE_TABLE,
     _GARAGE_ONE_ODOMETER,
+    _TRUCK_DRIVER_TABLE,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -300,16 +311,18 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     14: (_CUSTOMER_UNLOAD_TABLE,),
     # 15 → 16 (№53): только добавляем — журнал гаража и его индекс; прежние таблицы и значения не меняются.
     15: (_GARAGE_TABLE, _GARAGE_ONE_ODOMETER),
-    # 16 → 17 (№61): вид выученной нормы lunch и столбец confidence — журнал пересобирается, как 13 → 14: строки (и id)
+    # 16 → 17 (№62): только добавляем — водители машин; прежние таблицы и значения не меняются.
+    16: (_TRUCK_DRIVER_TABLE,),
+    # 17 → 18 (№61): вид выученной нормы lunch и столбец confidence — журнал пересобирается, как 13 → 14: строки (и id)
     # переносятся как есть (confidence — NULL), счётчик AUTOINCREMENT — прежний; переключатели не меняются.
-    16: (
-        f"CREATE TABLE learned_norms_v17({_LEARNED_COLUMNS})",
-        f"INSERT INTO learned_norms_v17({_LEARNED_COPY}) SELECT {_LEARNED_COPY} FROM learned_norms",
-        "DELETE FROM sqlite_sequence WHERE name = 'learned_norms_v17'",
-        "INSERT INTO sqlite_sequence(name, seq) SELECT 'learned_norms_v17', seq FROM sqlite_sequence "
+    17: (
+        f"CREATE TABLE learned_norms_v18({_LEARNED_COLUMNS})",
+        f"INSERT INTO learned_norms_v18({_LEARNED_COPY}) SELECT {_LEARNED_COPY} FROM learned_norms",
+        "DELETE FROM sqlite_sequence WHERE name = 'learned_norms_v18'",
+        "INSERT INTO sqlite_sequence(name, seq) SELECT 'learned_norms_v18', seq FROM sqlite_sequence "
         "WHERE name = 'learned_norms'",
         "DROP TABLE learned_norms",
-        "ALTER TABLE learned_norms_v17 RENAME TO learned_norms",
+        "ALTER TABLE learned_norms_v18 RENAME TO learned_norms",
     ),
 }
 
@@ -548,6 +561,26 @@ def check_unload_min(raw: Any) -> tuple[float | None, str | None]:
             or not float(raw).is_integer()):
         return None, f'Ժամանակ խանութում՝ ամբողջ թիվ {lo}-ից մինչև {hi} րոպե'
     return float(raw), None
+
+
+DRIVER_NAME_MAX = 60
+# управляющие, форматные (направление текста, мягкий перенос, нулевой ширины), частные, несуществующие и разделители
+# строк — в печатаемом имени не нужны и могут переставить текст накладной
+_INVISIBLE_CATEGORIES = frozenset({'Cc', 'Cf', 'Co', 'Cs', 'Cn', 'Zl', 'Zp'})
+
+
+def check_driver_name(raw: Any) -> tuple[str | None, str | None]:
+    """Имя водителя машины (№62) → (имя, None) или (None, ошибка по-армянски — раздел только на армянском, №58). Пробелы
+    по краям убираются, подряд — один; пустая строка — «водителя нет»; не длиннее DRIVER_NAME_MAX; управляющие и
+    невидимые символы не принимаются (имя печатается в накладной)."""
+    if not isinstance(raw, str):
+        return None, 'Վարորդի անունը պետք է լինի տեքստ'
+    if any(unicodedata.category(c) in _INVISIBLE_CATEGORIES for c in raw):
+        return None, 'Վարորդի անվան մեջ կան անթույլատրելի նշաններ'
+    name = ' '.join(raw.split())
+    if len(name) > DRIVER_NAME_MAX:
+        return None, f'Վարորդի անունը՝ ոչ ավելի, քան {DRIVER_NAME_MAX} նիշ'
+    return name, None
 
 
 class GarageError(ValueError):
@@ -1977,6 +2010,58 @@ class Store:
                          'VALUES(?, ?, ?, ?) ON CONFLICT(customer_id) DO UPDATE SET fixed_min = excluded.fixed_min, '
                          'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
                          (customer_id, float(unload_min), _now(), user))
+
+    def truck_drivers(self, day: str) -> tuple[dict[str, str], frozenset[str]]:
+        """Водители машин на день YYYY-MM-DD (№62): (машина → имя, машины с подменой на этот день). Водитель дня — подмена
+        этого дня, если есть, иначе постоянный: запись с наибольшим from_day ≤ day. Пустое имя («водителя нет») — не в
+        словаре (подмена «водителя нет» — во втором множестве)."""
+        def query(conn: sqlite3.Connection) -> tuple[list[Any], list[Any]]:
+            permanent = conn.execute(
+                'SELECT d.car_code, d.name FROM truck_driver d WHERE d.only_day = 0 AND d.from_day = '
+                '(SELECT MAX(x.from_day) FROM truck_driver x WHERE x.car_code = d.car_code AND x.only_day = 0 '
+                'AND x.from_day <= ?)', (day,)).fetchall()
+            subs = conn.execute('SELECT car_code, name FROM truck_driver WHERE only_day = 1 AND from_day = ?',
+                                (day,)).fetchall()
+            return permanent, subs
+
+        permanent, subs = self._read(query)
+        names = dict(permanent) | dict(subs)
+        return {code: name for code, name in names.items() if name}, frozenset(code for code, _ in subs)
+
+    def driver_names(self) -> list[str]:
+        """Все имена водителей из записей — подсказка при вводе (№62)."""
+        rows = self._read(lambda conn: conn.execute(
+            "SELECT DISTINCT name FROM truck_driver WHERE name <> ''").fetchall())
+        return sorted(r[0] for r in rows)
+
+    def save_truck_driver(self, car_code: str, day: str, name: str, user: str | None, only_day: bool = False) -> None:
+        """Водитель машины (№62; name — проверенное check_driver_name). only_day=False — постоянный с day и до следующей
+        смены (подмена этого дня снимается, подмены других дней остаются); '' — с этого дня водителя нет. only_day=True —
+        подмена только на day (прошедший день — всегда так); '' («Հեռացնել») снимает подмену этого дня — снова постоянный, а
+        если подмены не было — в этот день водителя нет. Запись того же дня и вида заменяется — ошибку исправляют, вписав
+        верное имя."""
+        if not isinstance(car_code, str) or not car_code or len(car_code) > 64:
+            raise ValueError('car_code: непустая строка до 64 символов')
+        if not isinstance(day, str) or not _ISO_DAY_RE.match(day):
+            raise ValueError('day: дата YYYY-MM-DD')
+        if check_driver_name(name) != (name, None):
+            raise ValueError('имя водителя не прошло проверку')
+        kind = 1 if only_day else 0
+        drop_sub = 'DELETE FROM truck_driver WHERE car_code = ? AND from_day = ? AND only_day = 1'
+
+        def write(conn: sqlite3.Connection) -> None:
+            if only_day and name == '' and conn.execute(drop_sub.replace('DELETE', 'SELECT 1', 1),
+                                                        (car_code, day)).fetchone() is not None:
+                conn.execute(drop_sub, (car_code, day))
+                return
+            conn.execute('INSERT INTO truck_driver(car_code, from_day, only_day, name, updated_at, updated_by) '
+                         'VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(car_code, from_day, only_day) DO UPDATE SET '
+                         'name = excluded.name, updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                         (car_code, day, kind, name, _now(), user))
+            if not only_day:
+                conn.execute(drop_sub, (car_code, day))
+
+        self._transaction(write, 'не удалось сохранить водителя машины')
 
     def load_dispatch(self, day: str) -> tuple[dict[str, Any], int] | None:
         """Черновик плана развоза на дату (YYYY-MM-DD): (данные, номер правки) или None."""

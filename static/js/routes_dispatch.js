@@ -22,7 +22,8 @@
    «Հարցրու AI-ին» (ответ владельца №52) — панель чата в routes_dispatch_ai.js (подключается в init): вопрос логиста
    по дню, сервер отвечает по тем же цифрам дня и ничего не меняет; переводы её ошибок — здесь, в SERVER_HY.
    «Բեռնագիր» у каждой машины (ответ владельца №57) — GET /api/routes/dispatch/waybill?date=…&truck=…&rev=…: товары рейсов
-   машины на загрузку; печать и Excel только этой машины. */
+   машины на загрузку; печать и Excel только этой машины. Водитель машины (№62) — кнопка «Վարորդ» у карточки,
+   POST /api/routes/dispatch/driver: с выбранного дня до следующей смены; имя — в шапке карточки и в накладной. */
 (function () {
     'use strict';
 
@@ -87,6 +88,7 @@
         unloadStop: null, unloadInfo: null, unloadSeq: 0,   // «Ժամանակ խանութում»: магазин диалога, его данные с сервера, номер запроса
         stepsOpen: new Set(),               // шаги 1–2, раскрытые логистом после сборки (иначе свёрнуты в строку)
         open: new Set(),                    // раскрытые карточки машин (код машины)
+        driverCar: null,                    // «Վարորդ»: машина открытого диалога
         ai: { chats: new Map(), busy: false, shownDay: null },   // «Հարցրու AI-ին»: разговор по каждому дню [{role, text}]
     };
 
@@ -143,6 +145,7 @@
         [': не удалось сохранить точку клиента', 'Չհաջողվեց պահպանել խանութի կետը — կարգավորումների բազան հասանելի չէ'],
         [': не удалось сохранить план развоза', 'Չհաջողվեց պահպանել առաքման պլանը — կարգավորումների բազան հասանելի չէ'],
         [': не удалось сохранить время у магазина', 'Չհաջողվեց պահպանել ժամանակը խանութում — կարգավորումների բազան հասանելի չէ'],
+        [': не удалось сохранить водителя машины', 'Չհաջողվեց պահպանել վարորդին — կարգավորումների բազան հասանելի չէ'],
     ];
     function serverText(s) {
         const t = String(s).trim();
@@ -434,7 +437,7 @@
     // тогда обновляются только подсказки, а страница — при следующей проверке.
     const interacting = () => {
         const a = document.activeElement;
-        return state.pickCid !== null || $('dpGeoDlg').open || $('dpUnloadDlg').open
+        return state.pickCid !== null || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
     async function poll() {
@@ -1692,6 +1695,14 @@
                 plate.textContent = t.car_code;
                 head.querySelector('.dp-thead-name').appendChild(plate);
             }
+            const driver = driverOf(t.car_code);
+            if (driver) {
+                const dr = document.createElement('span');
+                dr.className = 'dp-tdriver';
+                dr.innerHTML = '<i class="fas fa-user" aria-hidden="true"></i><span class="rt-sr-only">վարորդ՝ </span><span></span>';
+                dr.lastChild.textContent = driver + (isSub(t.car_code) ? ' (փոխարինող)' : '');
+                head.querySelector('.dp-thead-name').appendChild(dr);
+            }
             const st = head.querySelector('.dp-tstats');
             st.textContent = pl(t.trips.length, 'երթ') + ' · ' + pl(t.stops, 'խանութ') + ' · ' + kgText(t.kg) + ' · ≈ ' + fmt(t.km) + NB + 'կմ'
                 + (num(t.liters) !== null ? ' · ≈ ' + fmt(t.liters, 1) + NB + 'լ' : '');
@@ -2598,9 +2609,90 @@
             b.addEventListener('click', () => fn(t.car_code, b));
             return b;
         };
-        box.append(mk('fa-print', 'Բեռնագիր', 'Տպել բեռնագիրը՝ ', printWaybill),
+        const drv = mk('fa-user-pen', 'Վարորդ', 'Վարորդ՝ ', openDriver);
+        drv.classList.add('dp-drvbtn');
+        box.append(drv, mk('fa-print', 'Բեռնագիր', 'Տպել բեռնագիրը՝ ', printWaybill),
             mk('fa-file-excel', 'Excel', 'Բեռնագիրը Excel-ով՝ ', excelWaybill));
         return box;
+    }
+
+    // ---------- Водитель машины (ответ владельца №62) ----------
+    // Закреплён за машиной, но меняется часто: имя действует с дня на странице и до следующей смены, прежние дни не меняются.
+    // «1 հոկտեմբերից» — с какого дня (dayHuman даёт родительный падеж «1 հոկտեմբերի»)
+    const dayFrom = (s) => dayHuman(s).replace(/ի$/, 'ից');
+    const isSub = (code) => !!(state.data && Array.isArray(state.data.substitutes) && state.data.substitutes.includes(code));
+    const driverOf = (code) => (state.data && isObj(state.data.drivers) && typeof state.data.drivers[code] === 'string'
+        ? state.data.drivers[code] : '');
+    function openDriver(code) {
+        if (state.busy) return;
+        const t = wbTruck(state.data, code);
+        if (!t) return;
+        state.driverCar = code;
+        $('dpDriverLead').textContent = truckLabel(t);
+        $('dpDriverName').value = driverOf(code);
+        const list = $('dpDriverNames');
+        list.textContent = '';
+        (Array.isArray(state.data.driver_names) ? state.data.driver_names : []).forEach(n => {
+            const o = document.createElement('option');
+            o.value = n;
+            list.appendChild(o);
+        });
+        // сегодня и дальше — выбор: только этот день (подменный водитель; по умолчанию, если водитель уже закреплён) или
+        // с этого дня до следующей смены; прошедший день — только он (выбора нет, как решит и сервер)
+        const past = !!state.data.is_past;
+        $('dpDriverScope').hidden = past;
+        $('dpDriverDayText').textContent = 'Միայն ' + dayHuman(state.day) + 'ն (փոխարինող վարորդ)';
+        $('dpDriverFromText').textContent = dayFrom(state.day) + ' սկսած՝ մինչև հաջորդ փոփոխությունը';
+        $(driverOf(code) || isSub(code) ? 'dpDriverDay' : 'dpDriverFrom').checked = true;   // у подмены «водителя нет» — тоже день
+        $('dpDriverHint').textContent = past
+            ? 'Միայն ' + dayHuman(state.day) + ' համար՝ օրն արդեն անցել է․ մյուս օրերի վարորդը չի փոխվում։'
+            : 'Նախորդ օրերի բեռնագրերը չեն փոխվում։';
+        markDriver(false);
+        $('dpDriverClear').hidden = !driverOf(code) && !isSub(code);
+        $('dpDriverDlg').showModal();
+        $('dpDriverName').focus();
+    }
+    function markDriver(bad, text) {
+        $('dpDriverErr').textContent = text || '';
+        if (bad) $('dpDriverName').setAttribute('aria-invalid', 'true'); else $('dpDriverName').removeAttribute('aria-invalid');
+    }
+    // clear — «Հեռացնել»: «только этот день» — снять подмену (снова постоянный; подмены не было — в этот день водителя нет),
+    // «с этого дня» — с этого дня водителя нет (в накладной — строка вписать от руки); пустое поле — то же. Ошибку
+    // исправляют, вписав верное имя в тот же день — запись дня заменяется
+    async function saveDriver(clear) {
+        const code = state.driverCar;
+        if (!code || state.busy) return;
+        const name = clear ? '' : $('dpDriverName').value.trim().replace(/\s+/g, ' ');
+        const onlyDay = !state.data.is_past && $('dpDriverDay').checked;
+        // ничего не меняется: то же имя и тот же вид (подмена / постоянный); «Հեռացնել» подмены — всегда запрос
+        if (!clear && name === driverOf(code) && (onlyDay || state.data.is_past) === isSub(code)) { $('dpDriverDlg').close(); return; }
+        const lock = ['dpDriverSave', 'dpDriverClear', 'dpDriverCancel', 'dpDriverName', 'dpDriverDay', 'dpDriverFrom'];
+        state.busy = true;
+        lock.forEach(id => { $(id).disabled = true; });
+        markDriver(false);
+        let r;
+        try {
+            // с таймаутом: пока идёт запрос, «Չեղարկել» и Esc не закрывают диалог
+            r = await api('POST', '/api/routes/dispatch/driver', { date: state.day, car_code: code, name, only_day: onlyDay }, 30000);
+        } catch (e) {
+            state.busy = false;
+            lock.forEach(id => { $(id).disabled = false; });
+            markDriver(!!(e.data && isObj(e.data.errors) && e.data.errors.name), e.message);
+            $('dpDriverName').focus();
+            return;
+        }
+        state.busy = false;
+        lock.forEach(id => { $(id).disabled = false; });
+        $('dpDriverDlg').close();
+        if (state.data && state.data.day === r.day) {
+            state.data.drivers = r.drivers;
+            state.data.substitutes = r.substitutes;
+            state.data.driver_names = r.driver_names;
+            if (state.data.plan) renderTruckCards(state.data.plan);
+        }
+        const t = wbTruck(state.data, code);
+        toast((t ? truckLabel(t) : code) + '՝ ' + (r.drivers[code] ? 'վարորդը՝ ' + r.drivers[code] : 'վարորդ նշված չէ')
+            + ' (' + (r.only_day ? 'միայն ' + dayHuman(r.day) + ' համար' : dayFrom(r.day) + ' սկսած') + ')։');
     }
     const wbBasis = (tr) => tr.stops.map(s => [s.customer_id, s.share, (s.orders || []).map(o => o.isn).sort()]);
     const wbStale = () => Object.assign(new Error(WB_STALE_HY), { status: 409, data: null });
@@ -2655,12 +2747,14 @@
             + 'td.kg{white-space:nowrap;text-align:right;width:80px}td.ok{width:34px}tfoot td{font-weight:700}'
             + '.notes{margin:10px 0 0;padding-left:18px;font-size:13px}.sign{display:flex;gap:40px;margin-top:28px;font-size:15px}'
             + '.sign div{flex:1}.sign span{display:block;border-bottom:1px solid #000;height:26px}.made{margin-top:14px;font-size:12px;color:#444}'
+            + '.blank{display:inline-block;width:260px;border-bottom:1px solid #000;height:15px;vertical-align:bottom}'
             + '@media screen{body{background:#fff}}'
             + '</style></head><body>';
         wb.trips.forEach(tr => {
             html += '<section class="sheet"><h1>ԲԵՌՆԱԳԻՐ</h1>'
                 + '<p class="sub"><b>' + esc(truckLabel(t)) + '</b> · ' + esc(dayText) + ' · Երթ ' + tr.no + (wb.trips.length > 1 ? ' / ' + wb.trips.length : '') + '</p>'
                 + '<p class="sub">Բեռնում՝ ' + esc(tr.loading_start) + ' · մեկնում՝ ' + esc(tr.depart) + ' · ' + esc(pl(tr.stops, 'խանութ')) + '</p>'
+                + '<p class="sub">Վարորդ՝ ' + (wb.driver ? '<b>' + esc(wb.driver) + '</b>' : '<span class="blank"></span>') + '</p>'
                 + '<table><thead><tr><th>№</th><th>Կոդ</th><th>Ապրանք</th><th>Քանակ</th><th>Փաթեթ</th><th>Քաշ, կգ</th><th>✓</th></tr></thead><tbody>';
             tr.rows.forEach((r, i) => {
                 html += '<tr><td class="n">' + (i + 1) + '</td><td class="c">' + esc(r.code) + '</td><td>' + esc(wbName(r)) + '</td>'
@@ -2671,7 +2765,8 @@
             if (!tr.rows.length) html += '<tr><td colspan="7">Ապրանքներ չկան՝ պատվերներում տողեր չեն գտնվել։</td></tr>';
             html += '</tbody><tfoot><tr><td colspan="5">Ընդամենը՝ ' + esc(pl(tr.rows.length, 'ապրանք')) + '</td><td class="kg">' + esc(fmt(tr.kg))
                 + '</td><td></td></tr></tfoot></table><ul class="notes">' + wbNotes(tr).map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>'
-                + '<div class="sign"><div>Բաց թողեց (պահեստապետ)<span></span></div><div>Ընդունեց (վարորդ)<span></span></div></div>'
+                + '<div class="sign"><div>Բաց թողեց (պահեստապետ)<span></span></div><div>Ընդունեց (վարորդ)'
+                + (wb.driver ? '՝ ' + esc(wb.driver) : '') + '<span></span></div></div>'
                 + '<p class="made">Կազմվել է՝ ' + esc(madeText) + ' · պլան № ' + esc(wb.rev) + '</p></section>';
         });
         return html + '</body></html>';
@@ -2707,7 +2802,7 @@
         const { t, d, wb } = res;
         const book = XLSX.utils.book_new();
         wb.trips.forEach(tr => {
-            const rows = [['Բեռնագիր'], ['Մեքենա', truckLabel(t)], ['Օր', (WD_NAME[d.weekday] || '') + ', ' + dateRu(d.day)],
+            const rows = [['Բեռնագիր'], ['Մեքենա', truckLabel(t)], ['Վարորդ', wb.driver || ''], ['Օր', (WD_NAME[d.weekday] || '') + ', ' + dateRu(d.day)],
                 ['Երթ', tr.no + (wb.trips.length > 1 ? ' / ' + wb.trips.length : '')], ['Բեռնում', tr.loading_start], ['Մեկնում', tr.depart],
                 ['Խանութներ', tr.stops], [],
                 ['№', 'Կոդ', 'Ապրանք', 'Միավոր', 'Քանակ', 'Փաթեթ', 'Առանձին', 'Փաթեթում', 'Քաշ, կգ']];
@@ -2807,6 +2902,17 @@
             $('dpGeoSave').disabled = !p;
             if (p) setGeo(p[0], p[1], false);
         });
+        $('dpDriverSave').addEventListener('click', () => saveDriver(false));
+        $('dpDriverClear').addEventListener('click', () => saveDriver(true));
+        $('dpDriverCancel').addEventListener('click', () => $('dpDriverDlg').close());
+        $('dpDriverDlg').addEventListener('close', () => {
+            const card = [...$('dpTruckCards').querySelectorAll('.dp-tcard')].find(c => c.dataset.truck === state.driverCar);
+            state.driverCar = null;
+            if (card) card.querySelector('.dp-drvbtn').focus();      // фокус — обратно на кнопку «Վարորդ» этой машины
+        });
+        $('dpDriverDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
+        $('dpDriverName').addEventListener('input', () => markDriver(false));
+        $('dpDriverName').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveDriver(false); } });
         $('dpUnloadSave').addEventListener('click', () => saveUnload(false));
         $('dpUnloadClear').addEventListener('click', () => saveUnload(true));
         $('dpUnloadCancel').addEventListener('click', () => $('dpUnloadDlg').close());

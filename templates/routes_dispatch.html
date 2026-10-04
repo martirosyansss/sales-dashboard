@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=20">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=29">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=31">
 {% endblock %}
 
 {% block content %}
@@ -63,7 +63,7 @@
                     <li><b>Պատվերներ։</b> Եթե կան դեղին նշումներ (օրինակ՝ խանութի տեղը քարտեզում չկա), ուղղեք դրանք։</li>
                     <li><b>Կազմել երթերը։</b> Սեղմեք կանաչ կոճակը՝ ծրագիրը կբաշխի պատվերները մեքենաներով։</li>
                     <li><b>Տպել։</b> Սեղմեք «Տպել վարորդների համար»՝ յուրաքանչյուր մեքենայի համար կտպվի առանձին թերթ։</li>
-                    <li><b>Բեռնագիր։</b> Մեքենայի քարտում սեղմեք «Բեռնագիր»՝ տպելու համար, կամ «Excel»՝ ֆայլը ներբեռնելու համար։ Յուրաքանչյուր երթի համար՝ ինչ բեռնել պահեստից։</li>
+                    <li><b>Բեռնագիր։</b> Մեքենայի քարտում սեղմեք «Բեռնագիր»՝ տպելու համար, կամ «Excel»՝ ֆայլը ներբեռնելու համար։ Յուրաքանչյուր երթի համար՝ ինչ բեռնել պահեստից։ Վարորդին նշեք «Վարորդ» կոճակով՝ նա կգրվի բեռնագրում (փոխարինող վարորդ՝ «Միայն այս օրը»)։</li>
                 </ol>
                 <p>Եթե ինչ-որ բան պետք է փոխել, երթի մոտ սեղմեք «Փոփոխել»։ Ձեր փոփոխությունները պահպանվում են։</p>
             </div>
@@ -332,6 +332,27 @@
             <button type="button" id="dpUnloadCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
         </div>
     </dialog>
+    <!-- водитель машины для «Բեռնագիր» (ответ владельца №62): с дня на странице и до следующей смены -->
+    <dialog id="dpDriverDlg" class="dp-dlg dp-unload-dlg" aria-labelledby="dpDriverTitle" aria-describedby="dpDriverLead dpDriverHint">
+        <h2 class="dp-dlg-t" id="dpDriverTitle">Վարորդ</h2>
+        <p class="dp-dlg-lead" id="dpDriverLead"></p>
+        <label for="dpDriverName" class="dp-picklabel">Անուն ազգանուն</label>
+        <input id="dpDriverName" class="rt-input dp-driver-input" type="text" maxlength="60" list="dpDriverNames"
+               autocomplete="off" aria-describedby="dpDriverHint dpDriverErr">
+        <datalist id="dpDriverNames"></datalist>
+        <fieldset class="dp-driver-scope" id="dpDriverScope">
+            <legend class="dp-picklabel">Ինչքա՞ն ժամանակով</legend>
+            <label><input type="radio" name="dpDriverScope" id="dpDriverDay" value="day"><span id="dpDriverDayText"></span></label>
+            <label><input type="radio" name="dpDriverScope" id="dpDriverFrom" value="from"><span id="dpDriverFromText"></span></label>
+        </fieldset>
+        <p class="dp-unload-hint" id="dpDriverHint"></p>
+        <div class="rt-ferr" id="dpDriverErr" role="alert"></div>
+        <div class="dp-dlg-btns">
+            <button type="button" id="dpDriverSave" class="rt-btn rt-btn-primary"><i class="fas fa-check" aria-hidden="true"></i><span>Պահպանել</span></button>
+            <button type="button" id="dpDriverClear" class="rt-btn rt-btn-ghost"><i class="fas fa-user-slash" aria-hidden="true"></i><span>Հեռացնել</span></button>
+            <button type="button" id="dpDriverCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
+        </div>
+    </dialog>
 </div>
 {% endblock %}
 
@@ -341,5 +362,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=56"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=57"></script>
 {% endblock %}

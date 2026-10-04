@@ -130,19 +130,19 @@ def test_confidence_stored_and_shown_in_status(client):
     assert st['travel']['last']['confidence'] == 1.0 and 'հուսալի է՝' in st['travel']['last']['reason']
 
 
-def test_store_migrates_16_to_17_keeps_rows_ids_and_allows_lunch(tmp_path):
-    path = str(tmp_path / 'v16.db')
+def test_store_migrates_17_to_18_keeps_rows_ids_and_allows_lunch(tmp_path):
+    path = str(tmp_path / 'v17.db')
     s = rst.Store(path)
     s.save_learned('2026-10-01', [lr.Outcome('truck_time', '', False, 'мало данных'),
                                   lr.Outcome('fuel', 'CAR1', False, 'мало данных', n_obs=3)])
     s.save_learning_auto('loading', True, 'qa')
-    with closing(sqlite3.connect(path)) as conn:                                # база схемы 16: прежний журнал
+    with closing(sqlite3.connect(path)) as conn:                                # база схемы 17: прежний журнал
         conn.execute('ALTER TABLE learned_norms RENAME TO learned_new')
         conn.execute(f'CREATE TABLE learned_norms({rst._LEARNED_COLUMNS_V14})')
         conn.execute(f'INSERT INTO learned_norms({rst._LEARNED_COPY}) SELECT {rst._LEARNED_COPY} FROM learned_new')
         conn.execute('DROP TABLE learned_new')
         conn.execute("UPDATE sqlite_sequence SET seq = 40 WHERE name = 'learned_norms'")
-        conn.execute("UPDATE meta SET value = '16' WHERE key = 'schema_version'")
+        conn.execute("UPDATE meta SET value = '17' WHERE key = 'schema_version'")
         conn.commit()
         before = conn.execute('SELECT * FROM learned_norms ORDER BY id').fetchall()
         with pytest.raises(sqlite3.IntegrityError):
@@ -151,7 +151,7 @@ def test_store_migrates_16_to_17_keeps_rows_ids_and_allows_lunch(tmp_path):
     s2 = rst.Store(path)
     s2.save_learned('2026-10-02', [lr.Outcome('lunch', '', True, 'да', {'minutes': 25.0}, confidence=0.95)])
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() ==             (str(rst.SCHEMA_VERSION),) == ('17',)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() ==             (str(rst.SCHEMA_VERSION),) == ('18',)
         rows = conn.execute('SELECT * FROM learned_norms ORDER BY id').fetchall()
         assert [r[:-1] for r in rows[:len(before)]] == before and all(r[-1] is None for r in rows[:len(before)])
         assert rows[-1][0] == 41 and rows[-1][1] == 'lunch' and rows[-1][-1] == 0.95

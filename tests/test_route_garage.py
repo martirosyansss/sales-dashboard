@@ -374,7 +374,8 @@ def test_store_migrates_15_to_16_keeps_all_rows(tmp_path):
     assert b.unload_min == {101: 40.0} and b.garage_wear == {} and st.Store(path).garage_entries() == []
     with closing(sqlite3.connect(path)) as conn:
         assert {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before} == before
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() ==             (str(st.SCHEMA_VERSION),)                                          # 15 → 16 → … → текущая
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(st.SCHEMA_VERSION),)                                          # 15 → 16 → … → текущая
         assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'garage_one_odometer'").fetchone()
 
 
