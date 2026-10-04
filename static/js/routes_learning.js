@@ -316,7 +316,7 @@
         });
         if (d.depot) {
             bounds.push(d.depot);
-            L.marker(d.depot, { icon: L.divIcon({ className: 'rt-pin rt-pin-depot', html: '<i class="fas fa-warehouse"></i>', iconSize: [28, 28] }), keyboard: false })
+            L.marker(d.depot, { icon: L.divIcon({ className: 'rt-pin rt-pin-depot', html: '<span><i class="fas fa-warehouse" aria-hidden="true"></i></span>', iconSize: [28, 28], iconAnchor: [14, 14] }), keyboard: false, zIndexOffset: 1000 })
                 .bindTooltip('Склад').addTo(map.layers);
         }
         if (bounds.length) map.obj.fitBounds(bounds, { padding: [24, 24], maxZoom: 15, animate: false });
