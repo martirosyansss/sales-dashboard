@@ -70,6 +70,10 @@
         if (kind === 'fuel') return 'դատարկ՝ ' + fmt(p.empty_l100, 1) + ', լրիվ բեռնված՝ ' + fmt(p.full_l100, 1) + ' լ/100 կմ';
         if (kind === 'truck_time') return modelName(p.source);
         if (kind === 'lunch') return 'ճաշ՝ ' + fmt(p.minutes) + ' րոպե';   // обед в пути (№61)
+        // запас на рейс (№66): c · √(минуты рейса), пример на типичном рейсе, покрытие на проверке
+        if (kind === 'buffer') return 'պաշար՝ ' + fmt(p.c, 2) + ' × √(երթի րոպեներ), ' + fmt(p.q) + '%'
+            + (num(p.typical_min) !== null ? ' (' + fmt(p.typical_min) + ' րոպե տևող երթին՝ +' + fmt(p.typical_reserve_min) + ' րոպե)' : '')
+            + (num(p.coverage) !== null ? '․ ստուգման երթերից ժամանակին՝ ' + fmt(100 * p.coverage) + '%' : '');
         return '';
     }
     function manualText(kind, m) {
@@ -79,6 +83,7 @@
         if (kind === 'truck_time') return modelName('model');
         if (kind === 'fuel' && m) return num(m.empty_l100) !== null ? 'դատարկ՝ ' + fmt(m.empty_l100, 1) + ', լրիվ բեռնված՝ ' + fmt(m.full_l100, 1) + ' լ/100 կմ' : fmt(m.l100, 1) + ' լ/100 կմ';
         if (kind === 'lunch' && m) return num(m.minutes) ? 'ճաշ՝ ' + fmt(m.minutes) + ' րոպե, սկիզբը՝ ' + m.from + '–' + m.to : 'ճաշն անջատված է';
+        if (kind === 'buffer' && m) return num(m.q) > 50 ? 'պաշարը դեռ սովորած չէ (կարգավորումներում՝ ' + fmt(m.q) + '%)' : 'առանց պաշարի (50%)';
         return '—';
     }
     // Модель времени грузовиков: какая действует и почему (s.source от сервера: value, why — env | learned | default)

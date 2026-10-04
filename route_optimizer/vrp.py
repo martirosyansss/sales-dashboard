@@ -17,7 +17,10 @@
     пускает;
   - предел загрузки (load_cap, ответ №45: 0,9) — второе измерение вместимости: в нём груз заказа считается, если
     заказ можно увезти машиной не тяжелее предела, — тяжелее предела только заказ, который иначе не увезти.
-    Такой заказ едет один: рёбра между ним и другими клиентами запрещены, допускается возврат на склад.
+    Такой заказ едет один: рёбра между ним и другими клиентами запрещены, допускается возврат на склад;
+  - запас на рейс (№66, fleet.trip_reserve) — пауз PyVRP не знает: запас типичного рейса (trip_reserve_min) — на рёбрах
+    «заказ → склад» (каждый рейс кончается таким ребром). Точный расчёт «Развоза» (fleet._days) решение всё равно
+    проверяет.
 Минуты и километры — вверх до целых секунд и метров с запасом (время — вверх, окна — внутрь): решение,
 допустимое для PyVRP, допустимо и для расчёта «Развоза» в float.
 """
@@ -103,22 +106,23 @@ def _sec_down(minutes: float) -> int:
 def solve(pieces: Sequence[Piece], km: Sequence[Sequence[float]], minutes: Sequence[Sequence[float]],
           vehicles: Sequence[Vehicle], shifts: Sequence[Shift], start: Sequence[tuple[int, list[list[int]]]],
           load_cap: float | None, iterations: int = ITERATIONS, seed: int = SEED,
-          load_fixed_min: float = 0.0, load_tonne_min: float = 0.0
+          load_fixed_min: float = 0.0, load_tonne_min: float = 0.0, trip_reserve_min: float = 0.0
           ) -> list[tuple[int, list[list[int]]]] | None:
     """Рейсы промежутков: [(номер промежутка в shifts, рейсы — номера pieces по порядку объезда)] или None —
     PyVRP нет, решение недопустимо или обязательный заказ не поставлен. start — план сборки в том же виде
-    (стартовое решение)."""
+    (стартовое решение). trip_reserve_min — запас типичного рейса (№66), минут на рейс."""
     if pyvrp is None or not pieces or not shifts:
         return None
     try:
         return _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, seed,
-                      load_fixed_min, load_tonne_min)
+                      load_fixed_min, load_tonne_min, trip_reserve_min)
     except Exception:   # noqa: BLE001 — сбой решателя не должен ломать «Развоз»: свой расчёт
         logger.exception('[Routes] PyVRP: сбой, рейсы — своим расчётом')
         return None
 
 
-def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, seed, load_fixed_min=0., load_tonne_min=0.):
+def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, seed, load_fixed_min=0., load_tonne_min=0.,
+           trip_reserve_min=0.):
     by_code = {v.code: v for v in vehicles}
     model = Model()
     loc0 = model.add_location(0.0, 0.0)
@@ -166,8 +170,10 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
             # Загрузка всего рейса до выезда перепроверяется точным расписанием fleet.
             loading = (load_fixed_min if a == 0 else 0.) + (load_tonne_min * pieces[b-1].kg/1000 if b else 0.)
             dur = _sec_up(ma[nodes[b]] + loading)
+            back = trip_reserve_min if a and not b else 0.0      # рейс кончается ребром «заказ → склад»
+            edge = _sec_up(ma[nodes[b]] + loading + back) if back else dur
             for mask, profile in profiles.items():
-                model.add_edge(la, lb, distance=FORBIDDEN_M if mask[a] or mask[b] else dist, duration=dur,
+                model.add_edge(la, lb, distance=FORBIDDEN_M if mask[a] or mask[b] else dist, duration=edge,
                                profile=profile)
     for s in shifts:
         v = by_code[s.truck]

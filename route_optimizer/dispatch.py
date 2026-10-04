@@ -436,7 +436,8 @@ def _timeline(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, S
     что у _route. parts — рейс → слагаемые его минут (fl.trip_schedule: загрузка, езда, ожидание, разгрузка; при обеде —
     и 'lunch': fl.Break или None). Обед в пути (№61, ctx.tn.lunch_minutes) — по правилу fleet (шапка модуля): один на
     день машины; open_end — за последним рейсом машины будут ещё рейсы (занятое время для раскладки вокруг: обед может
-    встать и после его последней точки)."""
+    встать и после его последней точки). Запас на рейс (№66, ctx.tn) — по правилу fleet: минуты рейса — с запасом в конце
+    (parts['buffer']), прибытия — без него."""
     used: dict[str, float] = {}
     out: dict[int, tuple[float, float, list[float]]] = {}
     lunch = ctx.tn.lunch_minutes > 0
@@ -846,6 +847,7 @@ def _trip_explain(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, truc
         'bypass_km': _r(bypass_km), 'bypass_legs': bypass_legs,
         'others': _alternatives(ctx, sel, code, cids, routable, kgs),
         **({'lunch_min': _r(brk.added if brk.stop is not None else 0.0)} if brk is not None else {}),
+        **({'buffer_min': _r(parts['buffer'])} if 'buffer' in parts else {}),   # запас на рейс (№66)
     }
 
 
@@ -942,7 +944,9 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
     Обед в пути (№61): у рейса, где он есть, — lunch: где (where: store — после разгрузки у магазина, depot — на складе
     до загрузки, road — в дороге в конце окна обеда), начало и конец (HH:MM; на складе и в дороге — весь обед, у магазина
     — сколько добавилось после разгрузки), минут обеда, добавлено к рейсу, после какой точки (номер в stops; None — до
-    первой); время рейса и машины — с ним. Без обеда план — прежний до байта."""
+    первой); время рейса и машины — с ним. Без обеда план — прежний до байта.
+    Запас на рейс (№66): у рейса с запасом — buffer: минуты и с какого времени (возвращение по медиане; return — с
+    запасом). Без выученного запаса — прежний до байта."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
     shares = _shares(draft.trips)
@@ -1010,6 +1014,9 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
             tj['lunch'] = {'start': _hhmm(ctx.work_start_min + brk.at), 'end': _hhmm(ctx.work_start_min + brk.at + meal),
                            'minutes': _r(ctx.tn.lunch_minutes), 'added_min': _r(brk.added), 'after_stop': after,
                            'where': 'road' if brk.road else 'depot' if brk.stop is None else 'store'}
+        if parts[t.id].get('buffer'):
+            tj['buffer'] = {'minutes': _r(parts[t.id]['buffer']),
+                            'start': _hhmm(ctx.work_start_min + slot['used'] - parts[t.id]['buffer'])}
         if explain:
             tj['explain'] = _trip_explain(ctx, sel, t.truck, truck, cids, routable, kgs, parts[t.id], free, depart, minutes)
         slot['trips'].append(tj)

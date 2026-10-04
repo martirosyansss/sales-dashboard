@@ -1263,6 +1263,17 @@
                 });
                 bar.addEventListener('click', () => focusFromBoard(t, tr));
                 track.appendChild(bar);
+                if (tr.buffer) {   // запас на рейс (№66) — конец полосы: с медианного возвращения до возвращения с запасом
+                    const a = toMin(tr.buffer.start);
+                    if (a !== null && ret > a) {
+                        const z = document.createElement('span');
+                        z.className = 'dp-buffer-mark';
+                        z.style.left = x(a);
+                        z.style.width = w(a, ret);
+                        z.title = 'Ժամանակի պաշար՝ ' + minText(tr.buffer.minutes) + ' (' + tr.buffer.start + ' → ' + tr.return + ')';
+                        track.appendChild(z);
+                    }
+                }
                 if (tr.lunch) {   // обед — засечка на полосе дня (№61)
                     const a = toMin(tr.lunch.start), b = toMin(tr.lunch.end);
                     if (a !== null) {
@@ -2064,9 +2075,10 @@
     // Минуты рейса: загрузка, в пути, разгрузка, ожидание окон — целыми, в сумме ровно «загрузка → возвращение» по часам
     function tripTime(tr) {
         const x = tr.explain, begin = clockMin(tr.loading_start), back = clockMin(tr.return), meal = x.lunch_min || 0;   // обед в рейсе (№61)
-        const total = begin !== null && back !== null ? back - begin : Math.round(x.loading_min + x.drive_min + x.unload_min + x.wait_min + meal);
-        const [loading, drive, unload, wait, lunch] = roundParts([x.loading_min, x.drive_min, x.unload_min, x.wait_min, meal], total);
-        return { total, loading, drive, unload, wait, lunch };
+        const spare = x.buffer_min || 0;   // запас на рейс (№66)
+        const total = begin !== null && back !== null ? back - begin : Math.round(x.loading_min + x.drive_min + x.unload_min + x.wait_min + meal + spare);
+        const [loading, drive, unload, wait, lunch, buffer] = roundParts([x.loading_min, x.drive_min, x.unload_min, x.wait_min, meal, spare], total);
+        return { total, loading, drive, unload, wait, lunch, buffer };
     }
     // Км по прямой бывают и с картой: карта не загрузилась — пишем, что её нет; иначе — что объезд не посчитан
     const noBypass = (model) => (model.km === 'straight' ? 'ճանապարհային քարտեզը հասանելի չէ' : 'շրջանցման հաշվարկը հասանելի չէ');
@@ -2157,6 +2169,7 @@
         bits.push('ճանապարհին՝ ' + minText(tt.drive), 'բեռնաթափում՝ ' + minText(tt.unload));
         if (tt.wait) bits.push('ընդունման ժամի սպասում՝ ' + minText(tt.wait));
         if (tt.lunch) bits.push('ճաշ՝ ' + minText(tt.lunch));
+        if (tt.buffer) bits.push('ժամանակի պաշար երթի վերջում՝ ' + minText(tt.buffer));
         const time = [capFirst(bits.join(', ')) + '։ Ընդամենը՝ ' + minText(tt.total) + ' (' + tr.loading_start + ' → ' + tr.return + ')։'];
         // обед на складе — своими словами: это не «выезд позже, чтобы не ждать у окна первой точки» (простой — без обеда)
         const depotLunch = tr.lunch && (tr.lunch.where || (tr.lunch.after_stop === null ? 'depot' : 'store')) === 'depot';
@@ -2291,6 +2304,8 @@
             if (m.learned.unload) learned.push('բեռնաթափման ժամանակը');
             if (m.learned.loading) learned.push('բեռնման ժամանակը');
             if (num(m.learned.lunch) !== null) learned.push('ճաշը ճանապարհին՝ ' + minText(m.learned.lunch));   // обед (№61)
+            // запас на рейс (№66)
+            if (num(m.learned.buffer_pct) !== null) learned.push('ժամանակի պաշար երթի վերջում (երթը ժամանակին է 100-ից ' + fmt(m.learned.buffer_pct) + ' դեպքում)');
             if ((m.learned.fuel || []).length) learned.push('դիզելի ծախսը՝ ' + m.learned.fuel.map(c => truckLabel(truckBy(c))).join(', '));
         }
         // загрузка на складе — те же числа, что прибавляет расчёт (tn.load), даже если задано только одно из двух

@@ -399,7 +399,7 @@ def test_dispatch_dialog_and_learning_page_describe_active_rule():
     for piece in ("st.rule === 'shrink'", "$('lrStoresShrink').hidden = !shrink", "$('lrRuleN60').hidden = shrink",
                   "shrink: 'GPS + նման խանութներ'", "shrink_manual: 'GPS + մուտքագրված'"):
         assert piece in ljs, piece
-    assert "routes_dispatch.js') }}?v=62" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    assert "routes_dispatch.js') }}?v=63" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
 
 
 def test_run_learning_passes_active_rule_chains_and_size(client, monkeypatch):

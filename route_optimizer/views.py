@@ -1078,7 +1078,11 @@ def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, e
                     'fuel': sorted(c for c in (eff.fuel or ()) if c in trucks),
                     # обед (№61) — минуты выученного, только когда он действует: без него пояснение — прежнее до байта
                     **({'lunch': float(eff.lunch['minutes'])}
-                       if eff.lunch and float(s.get('truck_lunch_min') or 0) > 0 else {})},
+                       if eff.lunch and float(s.get('truck_lunch_min') or 0) > 0 else {}),
+                    # запас на рейс (№66) — только когда действует: без него пояснение — прежнее до байта
+                    **({'buffer_pct': float(eff.buffer['q'])}
+                       if eff.buffer and float(s.get('dispatch_buffer_pct') or 0) > learning.BUFFER_Q_OFF
+                       and float(eff.buffer['q']) == float(s.get('dispatch_buffer_pct') or 0) else {})},
     }
 
 
@@ -2427,7 +2431,9 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     unload: list[learning.UnloadObs] = []
     loads: list[learning.LoadObs] = []
     lunches: list[learning.LunchObs] = []
+    trips: list[learning.TripObs] = []
     s = bundle.settings
+    work_start = float(int(s['truck_work_start'][:2]) * 60 + int(s['truck_work_start'][3:]))
     lunch_window = tuple(float(int(s[k][:2]) * 60 + int(s[k][3:])) for k in ('truck_lunch_from', 'truck_lunch_to'))
     legs: list[learning.LegObs] = []
     pairs: list[tuple[learning.LegObs, learning.LegObs]] = []
@@ -2453,6 +2459,8 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
             # в пути всех машин занизится
             driven = replace(actual, legs=tuple(g for g in actual.legs if osm.detour(g.pa, g.pb) <= 1.0))
         legs += learning.leg_obs(day, driven, norms)
+        # запас на рейс (№66): рейсы факта и их минуты по той же модели, что строит план (действующие нормы)
+        trips += learning.trip_obs(day, car, actual, stops, norms, tn, bundle.depot, work_start)
         if compare:
             got, missing = learning.truck_time_obs(day, driven, variants[TRUCK_TIME_MODEL])
             pairs += got
@@ -2474,6 +2482,10 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         learning.fit_lunch(lunches, tn.lunch_minutes, today, float(s['truck_lunch_min'])),
     ]
     model_id = learning.road_model_id(norms)
+    # запас на рейс (№66): против действующего того же процентиля q (нет — без запаса)
+    q = float(s.get('dispatch_buffer_pct') or 0)
+    outcomes.append(learning.fit_buffer(trips, today, q, float(eff.buffer['c']) if eff.buffer and float(
+        eff.buffer['q']) == q else 0.0))
     if mode == 'yandex':
         outcomes.append(learning.Outcome('travel', '', False, 'ճանապարհի ժամանակը հաշվում է Յանդեքսը՝ խցանումներով — '
                                          'ժամային ճշգրտում պետք չէ'))
@@ -2575,6 +2587,7 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
         'travel': None,
         'truck_time': None,
         'lunch': {'minutes': s.get('truck_lunch_min'), 'from': s.get('truck_lunch_from'), 'to': s.get('truck_lunch_to')},
+        'buffer': {'q': s.get('dispatch_buffer_pct')},     # запас на рейс (№66): процентиль настроек
     }
     keys = [(k, scope_travel if k == 'travel' else '') for k in learning.KINDS if k != 'fuel'] + \
         sorted(k for k in latest if k[0] == 'fuel')
@@ -2586,6 +2599,9 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
             effect = next((r for r in reversed(rows) if r['kind'] == kind and r['scope'] == scope and r['accepted']
                            and learning.valid_params(kind, r['params'])
                            and (kind != 'travel' or r['model_id'] == model)), None)
+            if kind == 'buffer' and effect is not None and float(effect['params']['q']) != float(
+                    s.get('dispatch_buffer_pct') or 0):
+                effect = None   # запас проверен при другом q — не действует (learning.apply_learned)
         if kind == 'fuel':
             t = bundle.trucks.get(scope)
             man = {'l100': t.fuel_l_per_100km, 'empty_l100': t.fuel_empty_l_per_100km,
@@ -2691,6 +2707,7 @@ def api_learning() -> Any:
                               'min_gain_pct': round(learning.MIN_GAIN * 100), 'unload_min': learning.UNLOAD_MIN,
                               'loading_min': learning.LOADING_MIN, 'travel_min_test': learning.TRAVEL_MIN_TEST,
                               'truck_time_min': learning.TRUCK_TIME_MIN, 'lunch_min': learning.LUNCH_MIN,
+                              'buffer_min': learning.BUFFER_MIN, 'buffer_cap_pct': round(fl.BUFFER_CAP_REL * 100),
                               'boot_share_pct': round(learning.BOOT_SHARE * 100),
                               'boot_resamples': learning.BOOT_RESAMPLES,
                               'fuel_min_intervals': learning.FUEL_MIN_INTERVALS,

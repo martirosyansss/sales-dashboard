@@ -671,7 +671,7 @@ def test_learning_page_lists_active_offsets_without_stats_and_never_loads_erp(cl
 
 def test_learning_page_renders_store_block():
     html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
-    assert 'Բեռնաթափումն ըստ խանութների' in html and 'id="lrStoreRows"' in html and "routes_learning.js') }}?v=13" in html
+    assert 'Բեռնաթափումն ըստ խանութների' in html and 'id="lrStoreRows"' in html and "routes_learning.js') }}?v=14" in html
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
     assert 'function renderStores' in js and "esc(r.name)" in js and "kind === 'unload'" in js
     assert "learned: 'ըստ GPS-ի'" in js and 'ճշտված' not in js                # №60: время по GPS, а не «уточнено»

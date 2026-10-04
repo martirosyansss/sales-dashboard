@@ -366,6 +366,11 @@
 .dp-bar .dp-bar-t { overflow: hidden; text-overflow: ellipsis; }
 .dp-bar i.dp-tick { position: absolute; bottom: 0; width: 1px; height: 6px; background: rgba(11, 15, 21, .55); }
 /* обед в пути (№61): засечка на полосе дня и строка в расписании рейса */
+/* запас на рейс (№66): конец полосы рейса (с медианного возвращения) — редкая штриховка */
+.dp-buffer-mark {
+    position: absolute; top: 4px; bottom: 4px; min-width: 2px; border-radius: 0 3px 3px 0; pointer-events: none; z-index: 1;
+    background: repeating-linear-gradient(45deg, rgba(11, 15, 21, .38) 0 2px, transparent 2px 6px);
+}
 .dp-lunch-mark {
     position: absolute; top: 4px; bottom: 4px; min-width: 3px; border-radius: 3px; pointer-events: none; z-index: 1;
     background: repeating-linear-gradient(135deg, rgba(232, 237, 244, .75) 0 2px, transparent 2px 5px);

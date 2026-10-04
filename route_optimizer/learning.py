@@ -71,7 +71,17 @@
   визит магазина, после которого по плану обед, не идёт в обучение разгрузки и своего времени магазинов, а стоянка на
   складе перед рейсом с обедом по плану — в обучение загрузки (unload_obs / load_obs: skip). Исключение, а не вычитание
   обеда: вычитать нечего надёжно (наблюдаемый обед — сам излишек над нормой разгрузки, вычет вернул бы норму), а какой
-  визит после обеда — решает время по плану, не длина стоянки: выборка визитов не смещена, их только меньше.
+  визит после обеда — решает время по плану, не длина стоянки: выборка визитов не смещена, их только меньше;
+- buffer — запас на рейс (№66: точки — по медиане, в конце рейса общий запас, чтобы рейс укладывался в срок в q случаях
+  из 100; q — процентиль настроек «Развоза» dispatch_buffer_pct, 50 — без запаса) → TruckNorms.buffer_c. Наблюдение —
+  фактический рейс (trip_obs): D — минуты рейса от фактического выезда до возвращения по той же модели, что строит план
+  (fleet.trip_forecast: действующие нормы, своё время магазинов, поправка по часам, темп машины, обед по правилу и
+  ожидание окон приёма; без запаса), факт — от выезда до возвращения по треку. Запас(D) = c · √D (не больше
+  fleet.BUFFER_CAP_REL · D): c — q-квантиль (факт − D) / √D на днях обучения, c ≥ 0 (нормировка по √D — между
+  «ошибки точек независимы» и «полностью связаны»; связь ошибок внутри дня учтена тем, что калибруется по целым рейсам).
+  Проверка — квантильная (pinball) потеря при q на отложенной неделе против действующего запаса (нет — 0); в причине и
+  params — ещё покрытие: доля рейсов проверки, вернувшихся не позже D + запас (цель ≈ q). Действует только при том q,
+  при котором проверен (сменили q в настройках — запас не действует до следующего пересчёта).
 
 Правило принятия (одно для всех): обучение — на днях до отложенной недели (TRAIN_DAYS дней), проверка — на последних
 HOLDOUT_DAYS днях (до вчера включительно; у расхода — последние FUEL_TEST интервала заправок, а форма модели
@@ -106,18 +116,19 @@ from . import actuals as ac
 from . import demand as dm
 from . import valhalla_engine
 from .frequency import fmt_decimal
+from .fleet import trip_forecast as fleet_trip_forecast, trip_reserve
 from .garage import KM_PER_DAY_MAX
 from .geo import Point, in_city
 from .measurements import _fit
 from .traffic_validation import TrafficProfile
 
-KINDS = ('unload', 'loading', 'travel', 'truck_time', 'lunch', 'fuel')
+KINDS = ('unload', 'loading', 'travel', 'truck_time', 'lunch', 'buffer', 'fuel')
 # Заголовки и причины журнала — по-армянски (решение владельца №58): их показывает страница «Обучение» как есть
 KIND_TITLES = {'unload': 'Բեռնաթափում խանութում', 'loading': 'Բեռնում պահեստում', 'travel': 'Մեքենաների արագությունն ըստ ժամերի',
                'truck_time': 'Բեռնատարների ճանապարհի ժամանակը՝ մոդել', 'lunch': 'Ճաշ ճանապարհին',
-               'fuel': 'Վառելիքի ծախս'}
+               'buffer': 'Ժամանակի պաշար երթի վերջում', 'fuel': 'Վառելիքի ծախս'}
 DEFAULT_AUTO = {'unload': True, 'loading': False, 'travel': True, 'truck_time': True, 'lunch': False,
-                'fuel': True}   # нет переключателя в базе
+                'buffer': True, 'fuel': True}   # нет переключателя в базе
 HOLDOUT_DAYS = 7
 TRAIN_DAYS = 120
 MIN_GAIN = 0.02
@@ -180,6 +191,12 @@ LUNCH_STEP = 0.30                    # за прогон — не больше �
 LUNCH_STEP_MIN = 5.0                 # …но хотя бы на 5 мин: до 0 дойти можно (и подняться с него)
 LUNCH_SLACK = 30.0                   # обед — стоянка не по плану, начавшаяся в окне начала обеда ± 30 мин
 NIGHTLY_AT = (3, 0)                  # ночной прогон — 03:00 Еревана
+BUFFER_MIN = (30, 5, 10, 2)          # запас на рейс (№66): рейсов и их дней в обучении, в проверке (как _enough)
+BUFFER_Q_OFF = 50.0                  # процентиль q ≤ 50 — без запаса (рейс — по медиане)
+BUFFER_Q_MAX = 95.0                  # q выше — запас не учится (настройки не дают)
+BUFFER_C_MAX = 20.0                  # c запаса, мин на √мин, — в пределах [0; 20] (запас рейса и так ≤ 40% его минут)
+BUFFER_PRED_MIN = 10.0               # рейс короче 10 мин по модели — не рейс развоза
+BUFFER_RATIO = (1 / 3, 3.0)          # факт / модель рейса вне — не рейс (дыра трека, машина ушла по своим делам)
 
 
 def auto_on(auto: Mapping[str, bool], kind: str) -> bool:
@@ -218,6 +235,15 @@ class LegObs:
     speed: float = 0.0
     weekday: int = 0
     start: float = 0.0        # выезд, минуты от полуночи (Ереван)
+
+
+@dataclass(frozen=True)
+class TripObs:
+    day: date
+    car: str
+    predicted: float          # D — минуты рейса по модели плана с фактического выезда (trip_obs), без запаса
+    minutes: float            # факт: от выезда со склада до возвращения
+
 
 
 @dataclass(frozen=True)
@@ -730,6 +756,49 @@ def fit_lunch(obs: Sequence[LunchObs], current: float, today: date, setting: flo
                    mae_before=round(before, 3), mae_after=round(after, 3), confidence=conf, **_spans(train, test))
 
 
+def pinball(y: float, pred: float, q: float) -> float:
+    """Квантильная потеря при q (0 < q < 1): недооценка (факт позже) стоит q за минуту, переоценка — 1 − q."""
+    u = y - pred
+    return q * u if u >= 0 else (q - 1.0) * u
+
+
+def fit_buffer(obs: Sequence[TripObs], today: date, q_pct: float, current: float = 0.0) -> Outcome:
+    """Запас на рейс (№66, правило — в шапке модуля): c = q-квантиль (факт − D) / √D рейсов обучения (≥ 0, ≤
+    BUFFER_C_MAX); рейсы короче BUFFER_PRED_MIN по модели и с «факт / модель» вне BUFFER_RATIO не учитываются. Проверка —
+    средняя pinball-потеря при q на рейсах отложенной недели: действующий c current (нет — 0) против нового, правило
+    принятия — _accept (по дням). q_pct — процентиль настроек; ≤ BUFFER_Q_OFF — запаса нет, не учится."""
+    if not BUFFER_Q_OFF < q_pct <= BUFFER_Q_MAX:
+        return Outcome('buffer', '', False, f'կարգավորումներում պաշարի տոկոսը {_pct(q_pct / 100)} է '
+                                            f'(50՝ առանց պաշարի)․ ծրագիրը պաշար չի սովորում')
+    q = q_pct / 100.0
+    lo, hi = BUFFER_RATIO
+    obs = [o for o in obs if o.predicted >= BUFFER_PRED_MIN and lo <= o.minutes / o.predicted <= hi]
+    train, test = _split(obs, today)
+    short = _enough(train, test, BUFFER_MIN)
+    if short:
+        return Outcome('buffer', '', False, short, n_obs=len(train), n_test=len(test), **_spans(train, test))
+    c = round(min(BUFFER_C_MAX, max(0.0, quantile([(o.minutes - o.predicted) / math.sqrt(o.predicted)
+                                                    for o in train], q))), 3)
+
+    def upper(o: TripObs, cc: float) -> float:
+        return o.predicted + trip_reserve(cc, o.predicted)
+    before = math.fsum(pinball(o.minutes, upper(o, current), q) for o in test) / len(test)
+    after = math.fsum(pinball(o.minutes, upper(o, c), q) for o in test) / len(test)
+    days: dict[date, list[float]] = {}
+    for o in test:
+        days.setdefault(o.day, []).append(pinball(o.minutes, upper(o, current), q) - pinball(o.minutes, upper(o, c), q))
+    ok, why, conf = _accept(before, after, [math.fsum(days[d]) for d in sorted(days)])
+    cover = sum(1 for o in test if o.minutes <= upper(o, c) + 1e-9) / len(test)
+    cover0 = sum(1 for o in test if o.minutes <= upper(o, current) + 1e-9) / len(test)
+    typical = median(o.predicted for o in train)
+    why += (f'․ ստուգման երթերից պլանի ժամանակին (պաշարով) վերադարձել է {_pct(cover)}%-ը '
+            f'(նպատակը՝ {_pct(q_pct / 100)}%, առանց նոր պաշարի՝ {_pct(cover0)}%)')
+    params = {'c': c, 'q': q_pct, 'coverage': round(cover, 4), 'coverage_before': round(cover0, 4),
+              'typical_min': round(typical, 1), 'typical_reserve_min': round(trip_reserve(c, typical), 1)}
+    return Outcome('buffer', '', ok, why, params, n_obs=len(train), n_test=len(test), mae_before=round(before, 3),
+                   mae_after=round(after, 3), confidence=conf, **_spans(train, test))
+
+
 def fit_fuel(obs: Sequence[FuelObs], current: Callable[[float], float], car: str) -> Outcome:
     """Расход л/100 км = пустой + (полный − пустой) × загрузка. Форма выбирается только по обучающим интервалам
     (все, кроме последних FUEL_TEST): measurements._fit (≥ 12 интервалов, разброс загрузки ≥ 20%, своя проверка на
@@ -769,9 +838,10 @@ class InEffect:
     travel: Mapping[str, Any] | None = None        # params + 'model_id'
     fuel: Mapping[str, Mapping[str, Any]] | None = None   # машина → params
     lunch: Mapping[str, Any] | None = None
+    buffer: Mapping[str, Any] | None = None        # запас на рейс (№66)
 
     def __bool__(self) -> bool:
-        return bool(self.unload or self.loading or self.travel or self.fuel or self.lunch)
+        return bool(self.unload or self.loading or self.travel or self.fuel or self.lunch or self.buffer)
 
 
 def _num(x: Any, lo: float, hi: float) -> bool:
@@ -805,6 +875,8 @@ def valid_params(kind: str, p: Any) -> bool:
         return p.get('source') in TRUCK_TIME_SOURCES
     if kind == 'lunch':
         return _num(p.get('minutes'), *LUNCH_BOUNDS)
+    if kind == 'buffer':
+        return _num(p.get('c'), 0.0, BUFFER_C_MAX) and _num(p.get('q'), BUFFER_Q_OFF, BUFFER_Q_MAX)
     return False
 
 
@@ -824,10 +896,12 @@ def in_effect(rows: Sequence[Mapping[str, Any]], auto: Mapping[str, bool], model
         last[(r['kind'], r['scope'])] = r   # travel — по scope: действует строка тех же минут (ниже)
     fuel = {car: r['params'] for (kind, car), r in sorted(last.items()) if kind == 'fuel'}
     travel = last.get(('travel', scope))
-    return InEffect(last[('unload', '')]['params'] if ('unload', '') in last else None,
-                    last[('loading', '')]['params'] if ('loading', '') in last else None,
+
+    def own(kind: str) -> Mapping[str, Any] | None:
+        return last[(kind, '')]['params'] if (kind, '') in last else None
+    return InEffect(own('unload'), own('loading'),
                     {**travel['params'], 'model_id': travel['model_id']} if travel is not None else None,
-                    fuel or None, last[('lunch', '')]['params'] if ('lunch', '') in last else None)
+                    fuel or None, own('lunch'), own('buffer'))
 
 
 def truck_time_learned(rows: Sequence[Mapping[str, Any]]) -> str | None:
@@ -1097,7 +1171,9 @@ def apply_learned(norms: Any, tn: Any, trucks: Mapping[str, Any], eff: InEffect,
     точку после выученного). Расход машины: пустой/полный — в расчёт по остаточному грузу
     (running_costs.route_cost), а единый l100 машины (стоимость км в PyVRP, выбор машины и проверка «км × л/100» при
     выравнивании) — расход при половинной загрузке: рейс выезжает загруженным и возвращается пустым, средний груз на
-    борту — около половины загрузки выезда. Обед (№61) — выученные минуты, если обед включён в настройках (tn с обедом)."""
+    борту — около половины загрузки выезда. Обед (№61) — выученные минуты, если обед включён в настройках (tn с обедом).
+    Запас на рейс (№66) — c строки buffer, если процентиль настроек (tn.buffer_pct) выше BUFFER_Q_OFF и тот же, при
+    котором запас проверен."""
     trucks = dict(trucks)
     if eff.unload:
         p = eff.unload
@@ -1111,6 +1187,8 @@ def apply_learned(norms: Any, tn: Any, trucks: Mapping[str, Any], eff: InEffect,
         norms = replace(norms, traffic=travel_profile(norms, eff.travel))
     if eff.lunch and tn.lunch_minutes > 0:
         tn = replace(tn, lunch_minutes=float(eff.lunch['minutes']))
+    if eff.buffer and tn.buffer_pct > BUFFER_Q_OFF and float(eff.buffer['q']) == tn.buffer_pct:
+        tn = replace(tn, buffer_c=float(eff.buffer['c']))
     for code, p in (eff.fuel or {}).items():
         if code in trucks:
             empty, full = float(p['empty_l100']), float(p['full_l100'])
@@ -1406,6 +1484,40 @@ def leg_obs(day: date, actual: ac.DayActual, norms: Any) -> list[LegObs]:
                    if norms.traffic is not None else model)
         out.append(LegObs(day, city, local.weekday() >= 5, local.hour, g.minutes, model, current, km, speed,
                           local.weekday(), start))
+    return out
+
+
+def trip_obs(day: date, car: str, actual: ac.DayActual, stops: Sequence[ac.PlanStop], norms: Any, tn: Any,
+             depot: Point, work_start: float) -> list[TripObs]:
+    """Фактические рейсы машины за день → наблюдения запаса на рейс (№66): D — минуты рейса по модели плана
+    (fleet.trip_forecast: нормы tn, минуты norms с профилем часов этого дня недели, окна приёма точек,
+    обед по правилу fleet) с фактического выезда по обслуженным в рейсе точкам в фактическом порядке (доставлено — по
+    отметке, нет её — вес накладной); факт — от выезда до возвращения. Рейс без выезда или возвращения в треке, с точкой
+    без стоянки по GPS или без координаты — не наблюдение. Обед машины (tn с обедом): впереди, пока не встал в рейс или
+    на склад (выезд после начала окна обеда — по правилу обед на складе до выезда, в рейс он не входит). work_start —
+    начало дня машины, минуты от полуночи."""
+    by_key = {s.key: s for s in stops}
+    served = dict(actual.served)
+    day_norms = replace(norms, traffic_weekday=day.weekday())
+    pending = tn.lunch_minutes > 0
+    out: list[TripObs] = []
+    for n, t in enumerate(actual.trips):
+        if t.depart is None or t.ret is None or t.unseen or not t.visits:
+            continue
+        rows = [by_key.get(k) for vi in t.visits for k in actual.visits[vi].keys if served.get(k) == vi]
+        if not rows or any(s is None or s.point is None for s in rows):
+            continue
+        depart = ac.day_minutes(day, t.depart) - work_start
+        meal = pending and depart < tn.lunch_from
+        pending = meal
+        minutes, brk = fleet_trip_forecast(
+            [s.point for s in rows], [s.delivered_kg if s.delivered_kg is not None else s.kg for s in rows],   # type: ignore[union-attr]
+            depot, day_norms, tn, depart,
+            [(s.window[0] - work_start, s.window[1] - work_start) if s.window is not None else (-math.inf, math.inf)   # type: ignore[union-attr]
+             for s in rows], (meal, n + 1 < len(actual.trips)))
+        if brk is not None:
+            pending = False
+        out.append(TripObs(day, car, round(minutes, 2), round((t.ret - t.depart).total_seconds() / 60.0, 2)))
     return out
 
 

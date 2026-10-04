@@ -28,7 +28,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -197,7 +197,8 @@ _LEARNED_COLUMNS_V14 = (
     "UNIQUE (kind, scope, run_day)")
 # Схема 20 (№61): вид lunch — обед в пути (learning.fit_lunch) — и confidence: доля повторных выборок проверки, где новая
 # норма точнее (learning._accept; NULL — не считали, и у строк до схемы 20). Таблица пересобирается так же, как 13 → 14.
-_LEARNED_COLUMNS = (
+# Как была создана миграцией 19 → 20 (история миграций не меняется).
+_LEARNED_COLUMNS_V20 = (
     "id INTEGER PRIMARY KEY AUTOINCREMENT, "
     "kind TEXT NOT NULL CHECK (kind IN ('unload', 'loading', 'travel', 'truck_time', 'fuel', 'lunch')), "
     "scope TEXT NOT NULL DEFAULT '', "
@@ -205,8 +206,20 @@ _LEARNED_COLUMNS = (
     "train_from TEXT, train_to TEXT, test_from TEXT, test_to TEXT, mae_before REAL, mae_after REAL, "
     "accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)), reason TEXT NOT NULL, created_at TEXT NOT NULL, "
     "confidence REAL, UNIQUE (kind, scope, run_day)")
+# Схема 21 (№66): виды buffer (запас на рейс), truck_unload и truck_travel (темп машины) — CHECK вида шире, столбцы те
+# же; таблица пересобирается так же, как 19 → 20 (строки, id, confidence и счётчик — как есть).
+_LEARNED_COLUMNS = (
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+    "kind TEXT NOT NULL CHECK (kind IN ('unload', 'loading', 'travel', 'truck_time', 'fuel', 'lunch', 'buffer', "
+    "'truck_unload', 'truck_travel')), "
+    "scope TEXT NOT NULL DEFAULT '', "
+    "run_day TEXT NOT NULL, params TEXT, model_id TEXT, n_obs INTEGER NOT NULL, n_test INTEGER NOT NULL, "
+    "train_from TEXT, train_to TEXT, test_from TEXT, test_to TEXT, mae_before REAL, mae_after REAL, "
+    "accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)), reason TEXT NOT NULL, created_at TEXT NOT NULL, "
+    "confidence REAL, UNIQUE (kind, scope, run_day)")
 _LEARNED_COPY = ('id, kind, scope, run_day, params, model_id, n_obs, n_test, train_from, train_to, test_from, test_to, '
                  'mae_before, mae_after, accepted, reason, created_at')
+_LEARNED_COPY_V20 = f'{_LEARNED_COPY}, confidence'
 _LEARNED_TABLE = f"CREATE TABLE IF NOT EXISTS learned_norms({_LEARNED_COLUMNS})"
 _LEARNING_SWITCH_TABLE = (
     "CREATE TABLE IF NOT EXISTS learning_switch(kind TEXT PRIMARY KEY, auto INTEGER NOT NULL CHECK (auto IN (0, 1)), "
@@ -346,13 +359,24 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     # 19 → 20 (№61): вид выученной нормы lunch и столбец confidence — журнал пересобирается, как 13 → 14: строки (и id)
     # переносятся как есть (confidence — NULL), счётчик AUTOINCREMENT — прежний; переключатели не меняются.
     19: (
-        f"CREATE TABLE learned_norms_v20({_LEARNED_COLUMNS})",
+        f"CREATE TABLE learned_norms_v20({_LEARNED_COLUMNS_V20})",
         f"INSERT INTO learned_norms_v20({_LEARNED_COPY}) SELECT {_LEARNED_COPY} FROM learned_norms",
         "DELETE FROM sqlite_sequence WHERE name = 'learned_norms_v20'",
         "INSERT INTO sqlite_sequence(name, seq) SELECT 'learned_norms_v20', seq FROM sqlite_sequence "
         "WHERE name = 'learned_norms'",
         "DROP TABLE learned_norms",
         "ALTER TABLE learned_norms_v20 RENAME TO learned_norms",
+    ),
+    # 20 → 21 (№66): виды buffer, truck_unload, truck_travel — журнал пересобирается, как 19 → 20: строки (и id,
+    # confidence) переносятся как есть, счётчик AUTOINCREMENT — прежний; переключатели не меняются.
+    20: (
+        f"CREATE TABLE learned_norms_v21({_LEARNED_COLUMNS})",
+        f"INSERT INTO learned_norms_v21({_LEARNED_COPY_V20}) SELECT {_LEARNED_COPY_V20} FROM learned_norms",
+        "DELETE FROM sqlite_sequence WHERE name = 'learned_norms_v21'",
+        "INSERT INTO sqlite_sequence(name, seq) SELECT 'learned_norms_v21', seq FROM sqlite_sequence "
+        "WHERE name = 'learned_norms'",
+        "DROP TABLE learned_norms",
+        "ALTER TABLE learned_norms_v21 RENAME TO learned_norms",
     ),
 }
 
@@ -421,6 +445,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'truck_lunch_min': 30,
     'truck_lunch_from': '12:30',
     'truck_lunch_to': '14:30',
+    # Запас на рейс (ответ владельца №66): «Развоз» планирует рейс так, чтобы он укладывался в срок в q случаях из 100
+    # (запас в конце рейса учит обучение, вид buffer); 50 — без запаса (по медиане). Нет ключа — значение по умолчанию
+    'dispatch_buffer_pct': 80,
     'unload_min_per_stop': 8,
     'unload_min_per_tonne': 6,
     'warehouse_load_fixed_min': None,
@@ -476,6 +503,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'unload_min_per_stop': (0, 120, False),
     'unload_min_per_tonne': (0, 120, False),
     'truck_lunch_min': (0, 120, False),
+    'dispatch_buffer_pct': (50, 95, False),
     'warehouse_load_fixed_min': (0, 240, True),
     'warehouse_load_min_per_tonne': (0, 120, True),
 }
