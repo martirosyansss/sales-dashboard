@@ -53,14 +53,35 @@
   сравнения «Развоза») — расход при половинной загрузке. Момент заправки — момент исходной заправки цепочки
   исправлений (supersedes); одометр — по самой длинной согласованной цепочке заправок машины (флаг при приёме не
   учитывается: опечатка в первой заправке не портит остальные). Ограничение: соседние заправки цепочки — не дальше
-  REFUEL_LOOKBACK позиций: серия из ≥ 50 сомнительных одометров подряд (например, сломанный счётчик) разрывает цепочку.
+  REFUEL_LOOKBACK позиций: серия из ≥ 50 сомнительных одометров подряд (например, сломанный счётчик) разрывает цепочку;
+- lunch — обед водителя в пути (№61) → TruckNorms.lunch_minutes «Развоза» (окно начала обеда — из настроек). Обед,
+  который водитель взял на самом деле (lunch_obs), — по машино-дню, где план поставил обед (прогноз сборки помнит, где:
+  после разгрузки какого магазина, на складе до загрузки какого рейса или в дороге — views._capture_prediction): больший
+  из двух — самая длинная стоянка не по плану ('other': не склад и не точка плана), начавшаяся в окне начала обеда ±
+  LUNCH_SLACK (свернул поесть в сторону), и излишек стоянки там, где обед по плану: у магазина — стоянка сверх его
+  разгрузки по действующей норме (как в расчёте, со своим временем магазина) и ожидания окна приёма до начала окна обеда
+  (ожидание после него — уже обед, как в плане), на складе — стоянка перед рейсом сверх плановой загрузки и планового
+  простоя без обеда. Водитель поел там, где план, — так и видно (а не 0: иначе обед за несколько ночей сошёл бы на нет);
+  поел в сторону — видно стоянку. Дни без обеда в плане (прогноз до №61, обед выключен, план машины кончился до окна) и
+  дни, когда машина не работала дольше конца окна, не учитываются. Выученное — медиана обучения в пределах LUNCH_BOUNDS,
+  шаг за прогон — не больше ±max(LUNCH_STEP × действующего, LUNCH_STEP_MIN) (до 0 дойти можно). Ошибка — минут на
+  машино-день: действующий обед против выученного. Обед в настройках 0 — выключен: не учится и не включается выученным.
+  Автообучение обеда по умолчанию ВЫКЛЮЧЕНО (как у загрузки): программа учит и показывает, включает владелец.
+  Обед не попадает в другие наблюдения: стоянка не по плану — ни в разгрузку, ни в чистые участки (так устроен факт);
+  визит магазина, после которого по плану обед, не идёт в обучение разгрузки и своего времени магазинов, а стоянка на
+  складе перед рейсом с обедом по плану — в обучение загрузки (unload_obs / load_obs: skip). Исключение, а не вычитание
+  обеда: вычитать нечего надёжно (наблюдаемый обед — сам излишек над нормой разгрузки, вычет вернул бы норму), а какой
+  визит после обеда — решает время по плану, не длина стоянки: выборка визитов не смещена, их только меньше.
 
 Правило принятия (одно для всех): обучение — на днях до отложенной недели (TRAIN_DAYS дней), проверка — на последних
 HOLDOUT_DAYS днях (до вчера включительно; у расхода — последние FUEL_TEST интервала заправок, а форма модели
 выбирается только по обучающим интервалам); новая норма принимается, только если средняя абсолютная ошибка на
-проверке меньше, чем у действующей нормы, не меньше чем на MIN_GAIN (2%), и данных не меньше порогов (константы ниже).
-Иначе действует прежняя (выученная раньше или ручная из настроек). Применяется норма, обученная на днях до отложенной
-недели, — ровно та, что прошла проверку. Результат каждого прогона — строка learned_norms (store.save_learned).
+проверке меньше, чем у действующей нормы, не меньше чем на MIN_GAIN (2%), выигрыш устойчив — новая норма точнее
+действующей не меньше чем в BOOT_SHARE (90%) повторных выборок дней проверки (у расхода — интервалов; парный бутстреп
+bootstrap_share: на двух днях выигрыш в 2–3% бывает и шумом), и данных не меньше порогов (константы ниже); доля —
+в причине строки и в её столбце confidence. У truck_time — так же поверх гистерезиса. Иначе действует прежняя
+(выученная раньше или ручная из настроек). Применяется норма, обученная на днях до отложенной недели, — ровно та, что
+прошла проверку. Результат каждого прогона — строка learned_norms (store.save_learned).
 Действующая норма вида — последняя принятая с корректными параметрами (travel — ещё и той же дорожной модели и scope;
 truck_time — truck_time_learned); автообучение вида выключено (DEFAULT_AUTO — по умолчанию) — действуют ручные
 настройки (у truck_time — прежняя модель или ROUTES_TRUCK_TIME).
@@ -75,10 +96,11 @@ truck_time — truck_time_learned); автообучение вида выклю
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from statistics import median
-from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Collection, Iterable, Mapping, Protocol, Sequence
 
 from . import actuals as ac
 from . import demand as dm
@@ -89,15 +111,19 @@ from .geo import Point, in_city
 from .measurements import _fit
 from .traffic_validation import TrafficProfile
 
-KINDS = ('unload', 'loading', 'travel', 'truck_time', 'fuel')
+KINDS = ('unload', 'loading', 'travel', 'truck_time', 'lunch', 'fuel')
 # Заголовки и причины журнала — по-армянски (решение владельца №58): их показывает страница «Обучение» как есть
 KIND_TITLES = {'unload': 'Բեռնաթափում խանութում', 'loading': 'Բեռնում պահեստում', 'travel': 'Մեքենաների արագությունն ըստ ժամերի',
-               'truck_time': 'Բեռնատարների ճանապարհի ժամանակը՝ մոդել', 'fuel': 'Վառելիքի ծախս'}
-DEFAULT_AUTO = {'unload': True, 'loading': False, 'travel': True, 'truck_time': True,
+               'truck_time': 'Բեռնատարների ճանապարհի ժամանակը՝ մոդել', 'lunch': 'Ճաշ ճանապարհին',
+               'fuel': 'Վառելիքի ծախս'}
+DEFAULT_AUTO = {'unload': True, 'loading': False, 'travel': True, 'truck_time': True, 'lunch': False,
                 'fuel': True}   # нет переключателя в базе
 HOLDOUT_DAYS = 7
 TRAIN_DAYS = 120
 MIN_GAIN = 0.02
+BOOT_RESAMPLES = 2000                # устойчивость выигрыша: повторных выборок групп проверки (bootstrap_share)…
+BOOT_SHARE = 0.90                    # …и в скольких из них новая норма должна быть точнее
+BOOT_SEED = 61                       # своё зерно: итог прогона воспроизводим
 # пороги данных: (наблюдений в обучении, дней в обучении, наблюдений в проверке, дней в проверке)
 UNLOAD_MIN = (30, 5, 10, 2)
 LOADING_MIN = (15, 5, 5, 2)
@@ -148,6 +174,11 @@ REFUEL_KM_PER_DAY = KM_PER_DAY_MAX   # как courier.events и журнал г�
 REFUEL_WINDOW_DAYS = 400             # приём заправки: цепочка одометра — по заправкам ± 400 дней от неё…
 REFUEL_WINDOW_MAX = 300              # …и не больше 300 (время приёма ограничено); офис — ± 200 дней вокруг дня
 REFUEL_LOOKBACK = 50                 # в цепочке соседние заправки — не дальше 50 позиций (пропущено подряд ≤ 49 сомнительных)
+LUNCH_MIN = (15, 5, 5, 2)            # обед: машино-дней и их дней в обучении, в проверке (как загрузка)
+LUNCH_BOUNDS = (0.0, 90.0)           # выученный обед, мин
+LUNCH_STEP = 0.30                    # за прогон — не больше ±30% от действующего…
+LUNCH_STEP_MIN = 5.0                 # …но хотя бы на 5 мин: до 0 дойти можно (и подняться с него)
+LUNCH_SLACK = 30.0                   # обед — стоянка не по плану, начавшаяся в окне начала обеда ± 30 мин
 NIGHTLY_AT = (3, 0)                  # ночной прогон — 03:00 Еревана
 
 
@@ -190,6 +221,12 @@ class LegObs:
 
 
 @dataclass(frozen=True)
+class LunchObs:
+    day: date
+    minutes: float            # обед машино-дня по треку (lunch_obs); 0 — стоянки не по плану в окне не было
+
+
+@dataclass(frozen=True)
 class FuelObs:
     day: date                 # дата заправки, закрывающей интервал
     load: float               # средняя загрузка по км одометра (доля тоннажа)
@@ -212,6 +249,7 @@ class Outcome:
     test_to: str | None = None
     mae_before: float | None = None
     mae_after: float | None = None
+    confidence: float | None = None   # доля повторных выборок проверки, где новая норма точнее (_accept); None — не считали
 
 
 def windows(today: date) -> tuple[date, date]:
@@ -252,6 +290,54 @@ def _verdict(before: float, after: float) -> tuple[bool, str]:
     if before > 0 and after <= before * (1 - MIN_GAIN):
         return True, f'ընդունված է․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)}'
     return False, f'գործող նորմից առնվազն {MIN_GAIN:.0%}-ով ավելի լավ չէ․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)}'
+
+
+def bootstrap_share(gains: Sequence[float], resamples: int = BOOT_RESAMPLES, seed: int = BOOT_SEED) -> float:
+    """Парный бутстреп по группам проверки (дни; у расхода — интервалы заправок). gains — выигрыш новой нормы в группе:
+    Σ |действующая − факт| − Σ |новая − факт| на одних и тех же наблюдениях. Группы выбираются с возвращением (столько
+    же, сколько их есть), одни и те же для обеих норм; итог — доля выборок, где новая норма точнее (сумма выигрышей > 0:
+    знаменатель средней ошибки у обеих один). Детерминирован (своё зерно, не общий random); групп нет — 0."""
+    if not gains:
+        return 0.0
+    rnd, n = random.Random(seed), len(gains)
+    better = sum(1 for _ in range(resamples) if math.fsum(gains[rnd.randrange(n)] for _ in range(n)) > 1e-9)
+    return better / resamples
+
+
+def _gains(rows: Iterable[tuple[Any, float, float, float]]) -> list[float]:
+    """(группа, прогноз действующей нормы, прогноз новой, факт) → выигрыш новой нормы по группам (bootstrap_share), по
+    возрастанию группы."""
+    acc: dict[Any, list[float]] = {}
+    for g, cur, new, y in rows:
+        acc.setdefault(g, []).append(abs(cur - y) - abs(new - y))
+    return [math.fsum(acc[g]) for g in sorted(acc)]
+
+
+GROUPS_HY = {'days': 'ստուգման օրերի', 'intervals': 'ստուգման միջակայքերի (լրիվ բաքերի միջև)'}
+
+
+def _pct(share: float) -> str:
+    """Доля → «93,5» (вниз до десятой: 89,96% — не «90%»)."""
+    v = math.floor(share * 1000 + 1e-9) / 10
+    return (f'{v:.0f}' if v == int(v) else f'{v:.1f}').replace('.', ',')
+
+
+def _robust(share: float, groups: str, who: str = 'նոր նորմն') -> str:
+    return f'{GROUPS_HY[groups]} {BOOT_RESAMPLES} պատահական համադրությունից {_pct(share)}%-ում {who} ավելի ճշգրիտ է'
+
+
+def _accept(before: float, after: float, gains: Sequence[float], groups: str = 'days') -> tuple[bool, str, float]:
+    """Правило принятия: _verdict (ошибка меньше хотя бы на MIN_GAIN) и устойчивость выигрыша — новая норма точнее
+    действующей не меньше чем в BOOT_SHARE повторных выборок групп проверки (bootstrap_share по gains; groups — days |
+    intervals, для текста). (принята, причина, доля выборок — Outcome.confidence)."""
+    ok, why = _verdict(before, after)
+    share = round(bootstrap_share(gains), 4)
+    if not ok:
+        return False, why, share
+    if share < BOOT_SHARE:
+        return False, (f'ոչ հուսալի․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)}, բայց միայն '
+                       f'{_robust(share, groups)} (պետք է առնվազն {_pct(BOOT_SHARE)}%)'), share
+    return True, f'{why}․ հուսալի է՝ {_robust(share, groups)}', share
 
 
 def quantile(values: Sequence[float], q: float) -> float:
@@ -368,11 +454,11 @@ def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], 
     def predict(o: UnloadObs) -> float:
         return a * o.n + b * o.tonnes + math.fsum(extras.get(c, 0.0) for c in o.customers)
     before, after = _mae((current(o), o.minutes) for o in test), _mae((predict(o), o.minutes) for o in test)
-    ok, why = _verdict(before, after)
+    ok, why, conf = _accept(before, after, _gains((o.day, current(o), predict(o), o.minutes) for o in test))
     if chosen is not None:
         why += f'․ խանութի ժամանակը՝ {chosen[1]}'
     return Outcome('unload', '', ok, why, params, n_obs=len(train), n_test=len(test), mae_before=round(before, 3),
-                   mae_after=round(after, 3), **_spans(train, test))
+                   mae_after=round(after, 3), confidence=conf, **_spans(train, test))
 
 
 def limit_step(cur: tuple[float, float], new: tuple[float, float], tonnes: Sequence[float],
@@ -419,11 +505,11 @@ def fit_loading(obs: Sequence[LoadObs], today: date, cur: tuple[float, float] | 
     a, b = round(a, 2), round(b, 2)
     before = _mae((baseline(o), o.minutes) for o in test)
     after = _mae((a + b * o.tonnes, o.minutes) for o in test)
-    ok, why = _verdict(before, after)
+    ok, why, conf = _accept(before, after, _gains((o.day, baseline(o), a + b * o.tonnes, o.minutes) for o in test))
     if cur is None:
         why += f' (հենակետը՝ կանգառների մեդիանը, {fmt_decimal(ref[0], 1)} րոպե․ կարգավորումներում բեռնում նշված չէ)'
     return Outcome('loading', '', ok, why, {'fixed_min': a, 'per_tonne_min': b}, n_obs=len(train), n_test=len(test),
-                   mae_before=round(before, 3), mae_after=round(after, 3), **_spans(train, test))
+                   mae_before=round(before, 3), mae_after=round(after, 3), confidence=conf, **_spans(train, test))
 
 
 def _bucket(o: LegObs) -> tuple[bool, int, int]:
@@ -500,11 +586,12 @@ def fit_travel(obs: Sequence[LegObs], today: date, model_id: str, ref: Mapping[s
                        model_id=model_id, n_obs=len(train), n_test=len(held), **_spans(train, test))
     params = _travel_params(ratio, ref, prev, _own_minutes(base_norms))
     profile = travel_profile(base_norms, params)
+    new = [profile.travel(o.km, o.speed, o.city, o.weekday, o.start) for o in held]
     before = _mae((o.current, o.minutes) for o in held)
-    after = _mae((profile.travel(o.km, o.speed, o.city, o.weekday, o.start), o.minutes) for o in held)
-    ok, why = _verdict(before, after)
+    after = _mae((p, o.minutes) for p, o in zip(new, held))
+    ok, why, conf = _accept(before, after, _gains((o.day, o.current, p, o.minutes) for p, o in zip(new, held)))
     return Outcome('travel', scope, ok, why, params, model_id, len(train), len(held), mae_before=round(before, 3),
-                   mae_after=round(after, 3), **_spans(train, test))
+                   mae_after=round(after, 3), confidence=conf, **_spans(train, test))
 
 
 def _errors(pairs: Sequence[tuple[float, float]]) -> dict[str, float]:
@@ -521,9 +608,22 @@ def _forecast(base: Any, params: Mapping[str, Any] | None, legs: Sequence[LegObs
     return [(profile.travel(o.km, o.speed, o.city, o.weekday, o.start), o.minutes) for o in legs]
 
 
+@dataclass(frozen=True)
+class _Dated:
+    day: date
+
+
+def truck_time_short(days: Sequence[date], today: date) -> str | None:
+    """Хватает ли чистых участков факта (по дню каждого) на выбор модели времени грузовиков — пороги TRUCK_TIME_MIN, как
+    _enough: текст «мало данных» или None."""
+    train, test = _split([_Dated(d) for d in days], today)
+    return _enough(train, test, TRUCK_TIME_MIN)
+
+
 def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumbent: str, bases: Mapping[str, Any],
                    prev: Mapping[str, Mapping[str, Any] | None], no_valhalla: int = 0, correct: bool = True,
-                   kept: Mapping[str, Outcome] | None = None) -> tuple[Outcome, dict[str, Outcome]]:
+                   kept: Mapping[str, Outcome] | None = None, fact: Sequence[Any] | None = None,
+                   preparing: bool = False) -> tuple[Outcome, dict[str, Outcome]]:
     """Выбор модели времени грузовиков (вид truck_time) по парам truck_time_obs — (прежняя модель, Valhalla) одного и
     того же участка: сравнение — только на общих участках. Каждая модель проверяется на одних и тех же участках
     отложенной недели с той поправкой по часам, которая у неё применится: своя, выученная на днях обучения ровно по
@@ -533,21 +633,37 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
     prev — с ней модель и сравнивается. correct=False — поправки по часам не применяются (автообучение travel
     выключено): модели сравниваются «как есть», поправки не учатся. bases — нормы грузовиков каждой модели без
     выученного профиля (Norms.for_trucks(truck_time=…)); Valhalla недоступен — без 'valhalla'. Выбранная модель
-    incumbent меняется на другую, только если ошибка той меньше хотя бы на MIN_GAIN (_verdict) и общих участков не
-    меньше TRUCK_TIME_MIN; иначе остаётся — в обе стороны (гистерезис). no_valhalla — участков без минут Valhalla
-    (отчёт). Итог — (строка truck_time: params — выбор после прогона, ошибка и смещение обеих моделей «как есть» и с
-    поправкой, участки и дни; строки travel моделей не из kept (fit_travel) — чтобы поправка выбранной модели была в
-    журнале и тогда, когда «Развоз» перейдёт на неё позже: env, галочка, Valhalla готов)."""
+    incumbent меняется на другую, только если ошибка той меньше хотя бы на MIN_GAIN и устойчиво (_accept: по
+    повторным выборкам дней проверки) и общих участков не меньше TRUCK_TIME_MIN; иначе остаётся — в обе стороны
+    (гистерезис). no_valhalla — участков без минут Valhalla (отчёт). Итог — (строка truck_time: params — выбор после
+    прогона, ошибка и смещение обеих моделей «как есть» и с поправкой, участки и дни; строки travel моделей не из kept
+    (fit_travel) — чтобы поправка выбранной модели была в журнале и тогда, когда «Развоз» перейдёт на неё позже: env,
+    галочка, Valhalla готов).
+    Valhalla недоступен (в bases нет 'valhalla') — причина по правде: fact (чистые участки факта прогона; None —
+    неизвестны) меньше порогов TRUCK_TIME_MIN — «мало данных» (сравнивать и с Valhalla было бы не на чем); иначе
+    preparing — Valhalla включён, но матрица грузовика для точек факта ещё считается (прогон её не дождался); иначе —
+    Valhalla недоступен."""
     other = TRUCK_TIME_SOURCES[1] if incumbent == TRUCK_TIME_SOURCES[0] else TRUCK_TIME_SOURCES[0]
     stays = f'մնում է {TRUCK_TIME_DEF[incumbent]}'
     if bases.get(valhalla_engine.TRUCK_TIME_VALHALLA) is None:
-        return Outcome('truck_time', '', False, 'Valhalla-ն հասանելի չէ (անջատված է, չկա փաթեթը կամ սալիկները, կամ '
-                       f'բեռնատարի մատրիցը փաստի կետերի համար դեռ հաշվվում է) — {stays}'), {}
+        seen, held = _split(fact or (), today)
+        short = _enough(seen, held, TRUCK_TIME_MIN) if fact is not None else None
+        if short is not None:
+            reason = short
+        elif preparing:
+            reason = ('Valhalla-ն միացված է, բայց փաստի կետերի համար բեռնատարի ժամանակները դեռ հաշվվում են․ '
+                      'համեմատությունը կլինի հաջորդ վերահաշվարկին')
+        else:
+            reason = ('Valhalla-ն հասանելի չէ (անջատված է, չկա փաթեթը կամ սալիկները, կամ բեռնատարի մատրիցը փաստի '
+                      'կետերի համար դեռ հաշվվում է)')
+        return Outcome('truck_time', '', False, f'{reason} — {stays}', n_obs=len(seen), n_test=len(held),
+                       **_spans(seen, held)), {}
     kept = kept or {}
     obs = {src: [p[k] for p in pairs] for k, src in enumerate(TRUCK_TIME_SOURCES)}
     train, test = _split(obs[incumbent], today)              # участки — одни и те же у обеих моделей
     errors: dict[str, float] = {}                             # модель → ошибка на проверке с её поправкой
     candidates: dict[str, dict[str, dict[str, float]]] = {}
+    predicted: dict[str, list[float]] = {}                    # модель → прогноз участков проверки с её поправкой
     fitted: dict[str, Outcome] = {}
     for src in TRUCK_TIME_SOURCES if test else ():
         base, old, applied = bases[src], prev.get(src) if correct else None, None
@@ -562,24 +678,56 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
         raw, learned = _forecast(base, None, te), _forecast(base, applied, te)
         errors[src] = _mae(learned)
         candidates[src] = {'raw': _errors(raw), 'learned': _errors(learned)}
+        predicted[src] = [p for p, _ in learned]
     counts = {'legs': {'train': len(train), 'test': len(test), 'no_valhalla': no_valhalla},
               'days': {'train': len({o.day for o in train}), 'test': len({o.day for o in test})},
               'corrected': correct}
     before, after = errors.get(incumbent), errors.get(other)   # None — проверки нет
     short = _enough(train, test, TRUCK_TIME_MIN)
-    ok = short is None and before is not None and after is not None and _verdict(before, after)[0]
+    better, robust, conf = False, False, None
+    if short is None and before is not None and after is not None:   # участки проверки у обеих моделей — одни и те же
+        better = _verdict(before, after)[0]
+        robust, _, conf = _accept(before, after, _gains((o.day, a, b, o.minutes) for o, a, b in
+                                                        zip(test, predicted[incumbent], predicted[other])))
+    ok = better and robust
     if short is not None:
         reason = f'{short} — {stays}'
     elif ok:
         reason = (f'{TRUCK_TIME_SUBJ[other]} ավելի ճշգրիտ է, քան {TRUCK_TIME_DEF[incumbent]}․ սխալ {fmt_decimal(before)} → '
-                  f'{fmt_decimal(after)} րոպե մեկ հատվածի համար')
+                  f'{fmt_decimal(after)} րոպե մեկ հատվածի համար․ հուսալի է՝ '
+                  f'{_robust(conf, "days", TRUCK_TIME_SUBJ[other])}')
+    elif better:
+        reason = (f'ոչ հուսալի․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)} րոպե մեկ հատվածի համար, բայց միայն '
+                  f'{_robust(conf, "days", TRUCK_TIME_SUBJ[other])} (պետք է առնվազն {_pct(BOOT_SHARE)}%) — {stays}')
     else:
         reason = (f'{TRUCK_TIME_SUBJ[other]} առնվազն {MIN_GAIN:.0%}-ով ավելի ճշգրիտ չէ, քան '
                   f'{TRUCK_TIME_DEF[incumbent]}․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)} րոպե մեկ հատվածի համար — {stays}')
     params = {'source': other if ok else incumbent, 'challenger': other, **counts, 'candidates': candidates}
     return Outcome('truck_time', '', ok, reason, params, None, len(train), len(test),
                    mae_before=round(before, 3) if before is not None else None,
-                   mae_after=round(after, 3) if after is not None else None, **_spans(train, test)), fitted
+                   mae_after=round(after, 3) if after is not None else None, confidence=conf,
+                   **_spans(train, test)), fitted
+
+
+def fit_lunch(obs: Sequence[LunchObs], current: float, today: date, setting: float) -> Outcome:
+    """Обед в пути (№61): выученное — медиана обеда машино-дней обучения (целые минуты, в пределах LUNCH_BOUNDS), шаг за
+    прогон от действующего current — не больше ±max(LUNCH_STEP × current, LUNCH_STEP_MIN): до 0 дойти можно. Проверка
+    — минут на машино-день отложенной недели: current против выученного, правило принятия — _accept. setting — обед в
+    настройках: 0 — обед выключен, не учится."""
+    if setting <= 0:
+        return Outcome('lunch', '', False, 'ճաշն անջատված է կարգավորումներում (0 րոպե)․ ծրագիրն այն չի սովորում')
+    train, test = _split(obs, today)
+    short = _enough(train, test, LUNCH_MIN)
+    if short:
+        return Outcome('lunch', '', False, short, n_obs=len(train), n_test=len(test), **_spans(train, test))
+    step = max(LUNCH_STEP * current, LUNCH_STEP_MIN)
+    value = min(current + step, max(current - step, median(o.minutes for o in train)))
+    value = float(round(min(LUNCH_BOUNDS[1], max(LUNCH_BOUNDS[0], value))))
+    before = _mae((current, o.minutes) for o in test)
+    after = _mae((value, o.minutes) for o in test)
+    ok, why, conf = _accept(before, after, _gains((o.day, current, value, o.minutes) for o in test))
+    return Outcome('lunch', '', ok, why, {'minutes': value}, n_obs=len(train), n_test=len(test),
+                   mae_before=round(before, 3), mae_after=round(after, 3), confidence=conf, **_spans(train, test))
 
 
 def fit_fuel(obs: Sequence[FuelObs], current: Callable[[float], float], car: str) -> Outcome:
@@ -587,7 +735,7 @@ def fit_fuel(obs: Sequence[FuelObs], current: Callable[[float], float], car: str
     (все, кроме последних FUEL_TEST): measurements._fit (≥ 12 интервалов, разброс загрузки ≥ 20%, своя проверка на
     последних 4 обучающих) — зависимость от загрузки; не подтвердилась — один расход (медиана обучения). Последние
     FUEL_TEST интервалов — только проверка: принимается при ошибке на ≥ 2% меньше, чем у действующей нормы машины
-    (current(загрузка) → л/100 км)."""
+    (current(загрузка) → л/100 км), и устойчиво — по повторным выборкам интервалов проверки (_accept)."""
     rows = sorted(({'day': o.day.isoformat(), 'load': o.load, 'l100': o.l100} for o in obs),
                   key=lambda r: (r['day'], r['load'], r['l100']))
     if len(rows) < FUEL_MIN_INTERVALS or len({r['day'] for r in rows}) < FUEL_MIN_INTERVALS:
@@ -604,10 +752,11 @@ def fit_fuel(obs: Sequence[FuelObs], current: Callable[[float], float], car: str
         return empty + (full - empty) * load
     before = _mae((current(r['load']), r['l100']) for r in test)
     after = _mae((predict(r['load']), r['l100']) for r in test)
-    ok, why = _verdict(before, after)
+    ok, why, conf = _accept(before, after, _gains((k, current(r['load']), predict(r['load']), r['l100'])
+                                                  for k, r in enumerate(test)), 'intervals')
     return Outcome('fuel', car, ok, why, {'empty_l100': empty, 'full_l100': full}, n_obs=len(train), n_test=len(test),
                    train_from=train[0]['day'], train_to=train[-1]['day'], test_from=test[0]['day'],
-                   test_to=test[-1]['day'], mae_before=round(before, 3), mae_after=round(after, 3))
+                   test_to=test[-1]['day'], mae_before=round(before, 3), mae_after=round(after, 3), confidence=conf)
 
 
 # --- действующие нормы и применение в расчёте ---
@@ -619,9 +768,10 @@ class InEffect:
     loading: Mapping[str, Any] | None = None
     travel: Mapping[str, Any] | None = None        # params + 'model_id'
     fuel: Mapping[str, Mapping[str, Any]] | None = None   # машина → params
+    lunch: Mapping[str, Any] | None = None
 
     def __bool__(self) -> bool:
-        return bool(self.unload or self.loading or self.travel or self.fuel)
+        return bool(self.unload or self.loading or self.travel or self.fuel or self.lunch)
 
 
 def _num(x: Any, lo: float, hi: float) -> bool:
@@ -653,6 +803,8 @@ def valid_params(kind: str, p: Any) -> bool:
                 and p['empty_l100'] <= p['full_l100'])
     if kind == 'truck_time':   # в расчёт идёт только источник; сравнение — для страницы
         return p.get('source') in TRUCK_TIME_SOURCES
+    if kind == 'lunch':
+        return _num(p.get('minutes'), *LUNCH_BOUNDS)
     return False
 
 
@@ -675,7 +827,7 @@ def in_effect(rows: Sequence[Mapping[str, Any]], auto: Mapping[str, bool], model
     return InEffect(last[('unload', '')]['params'] if ('unload', '') in last else None,
                     last[('loading', '')]['params'] if ('loading', '') in last else None,
                     {**travel['params'], 'model_id': travel['model_id']} if travel is not None else None,
-                    fuel or None)
+                    fuel or None, last[('lunch', '')]['params'] if ('lunch', '') in last else None)
 
 
 def truck_time_learned(rows: Sequence[Mapping[str, Any]]) -> str | None:
@@ -945,7 +1097,7 @@ def apply_learned(norms: Any, tn: Any, trucks: Mapping[str, Any], eff: InEffect,
     точку после выученного). Расход машины: пустой/полный — в расчёт по остаточному грузу
     (running_costs.route_cost), а единый l100 машины (стоимость км в PyVRP, выбор машины и проверка «км × л/100» при
     выравнивании) — расход при половинной загрузке: рейс выезжает загруженным и возвращается пустым, средний груз на
-    борту — около половины загрузки выезда."""
+    борту — около половины загрузки выезда. Обед (№61) — выученные минуты, если обед включён в настройках (tn с обедом)."""
     trucks = dict(trucks)
     if eff.unload:
         p = eff.unload
@@ -957,6 +1109,8 @@ def apply_learned(norms: Any, tn: Any, trucks: Mapping[str, Any], eff: InEffect,
                      warehouse_load_min_per_tonne=float(eff.loading['per_tonne_min']), loading_configured=True)
     if eff.travel and road_model_id(norms) == eff.travel.get('model_id'):
         norms = replace(norms, traffic=travel_profile(norms, eff.travel))
+    if eff.lunch and tn.lunch_minutes > 0:
+        tn = replace(tn, lunch_minutes=float(eff.lunch['minutes']))
     for code, p in (eff.fuel or {}).items():
         if code in trucks:
             empty, full = float(p['empty_l100']), float(p['full_l100'])
@@ -1037,13 +1191,23 @@ def draft_ranks(draft: Mapping[str, Any] | None, truck: str) -> tuple[dict[int, 
 
 
 @dataclass(frozen=True)
+class PlanLunch:
+    """Обед по плану в рейсе (прогноз сборки, №61): где — store (после разгрузки магазина customer), depot (на складе до
+    загрузки рейса), road (в дороге); минуты обеда."""
+    where: str
+    customer: int | None
+    minutes: float
+
+
+@dataclass(frozen=True)
 class PlanTrip:
     """Плановый рейс машины (прогноз сборки): начало загрузки, плановое возвращение предыдущего рейса (None — первый
-    рейс дня), плановый выезд, клиенты."""
+    рейс дня), плановый выезд, клиенты, обед по плану в этом рейсе (None — нет; прогноз до №61 — тоже)."""
     loading_start: datetime | None
     prev_return: datetime | None
     depart: datetime | None
     customers: frozenset[int]
+    lunch: PlanLunch | None = None
 
     @property
     def wait(self) -> tuple[datetime, datetime] | None:
@@ -1054,9 +1218,20 @@ class PlanTrip:
         return self.prev_return, self.loading_start
 
 
+def _plan_lunch(raw: Any) -> PlanLunch | None:
+    """Обед рейса из прогноза ({where, customer, minutes}); битый — None."""
+    if not isinstance(raw, Mapping) or raw.get('where') not in ('store', 'depot', 'road') \
+            or not _num(raw.get('minutes'), 0, 240):
+        return None
+    cid = raw.get('customer')
+    if raw['where'] == 'store' and (not isinstance(cid, int) or isinstance(cid, bool)):
+        return None
+    return PlanLunch(raw['where'], cid if raw['where'] == 'store' else None, float(raw['minutes']))
+
+
 def plan_trips(prediction: Mapping[str, Any] | None, day: date) -> list[PlanTrip]:
     """Прогноз сборки машины (views._capture_prediction: trips — loading_start, depart, return «HH:MM», stops —
-    [[клиент, ETA]]) → плановые рейсы по порядку. Прогноз старый (без рейсов) — пусто."""
+    [[клиент, ETA]], lunch — обед по плану) → плановые рейсы по порядку. Прогноз старый (без рейсов) — пусто."""
     midnight = datetime(day.year, day.month, day.day, tzinfo=ac.YEREVAN)
 
     def at(text: Any) -> datetime | None:
@@ -1064,8 +1239,15 @@ def plan_trips(prediction: Mapping[str, Any] | None, day: date) -> list[PlanTrip
         return midnight + timedelta(minutes=m) if m is not None else None
     trips = [t for t in (prediction or {}).get('trips') or () if isinstance(t, Mapping)]
     return [PlanTrip(at(t.get('loading_start')), at(trips[j - 1].get('return')) if j else None, at(t.get('depart')),
-                     frozenset(c[0] for c in t.get('stops') or () if isinstance(c, list) and c and isinstance(c[0], int)))
+                     frozenset(c[0] for c in t.get('stops') or () if isinstance(c, list) and c and isinstance(c[0], int)),
+                     _plan_lunch(t.get('lunch')))
             for j, t in enumerate(trips)]
+
+
+def lunch_customers(plan: Sequence[PlanTrip]) -> frozenset[int]:
+    """Магазины, после разгрузки которых по плану обед: их визит — не в обучение разгрузки (unload_obs, skip)."""
+    return frozenset(t.lunch.customer for t in plan if t.lunch is not None and t.lunch.where == 'store'
+                     and t.lunch.customer is not None)
 
 
 def _planned_trip(plan: Sequence[PlanTrip], n: int, cids: set[int], depart: datetime) -> PlanTrip | None:
@@ -1090,7 +1272,63 @@ def planned_wait(trip: PlanTrip | None, arrive: datetime, depart: datetime) -> f
     return max(0.0, (min(depart, w[1]) - max(arrive, w[0])).total_seconds() / 60.0)
 
 
-def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop]) -> list[UnloadObs]:
+def _trip_cids(actual: ac.DayActual, stops: Sequence[ac.PlanStop], t: ac.Trip) -> set[int]:
+    by_key = {s.key: s for s in stops}
+    return {by_key[k].customer_id for k, i in actual.served if i in t.visits and k in by_key   # type: ignore[misc]
+            and by_key[k].customer_id is not None}
+
+
+def lunch_obs(day: date, actual: ac.DayActual, window: tuple[float, float], stops: Sequence[ac.PlanStop] = (),
+              plan: Sequence[PlanTrip] = (), expected: Callable[[UnloadObs], float] | None = None) -> LunchObs | None:
+    """Обед, который машина взяла за день (№61, правило — в шапке модуля): больший из двух — самая длинная стоянка не по
+    плану, начавшаяся в окне начала обеда window (минуты от полуночи рабочего дня) ± LUNCH_SLACK, и излишек стоянки там,
+    где обед по плану (plan — плановые рейсы с обедом, plan_trips): у магазина — стоянка его обслуживающего визита без
+    разгрузки по действующей норме (expected — прогноз нормы для визита, как в обучении разгрузки; доставлено
+    неизвестно — вес накладной) и без ожидания окна приёма до начала окна обеда; на складе — стоянка перед рейсом сверх
+    плановой загрузки и планового простоя без обеда; в дороге — только стоянка не по плану. Обеда в плане нет — None
+    (где искать, неизвестно); машина работала не дольше конца окна — None (такой день план и не кормит)."""
+    meal = next(((n, t) for n, t in enumerate(plan) if t.lunch is not None), None)
+    if meal is None:
+        return None
+    ends = [t.ret for t in actual.trips if t.ret is not None] + [v.leave for v in actual.visits]
+    if not ends or ac.day_minutes(day, max(ends)) <= window[1]:
+        return None
+    lo, hi = window[0] - LUNCH_SLACK, window[1] + LUNCH_SLACK
+    stays = [s.minutes for s in actual.stays if s.kind == 'other' and lo <= ac.day_minutes(day, s.arrive) <= hi]
+    place = 0.0
+    _, trip = meal
+    lunch = trip.lunch
+    if lunch.where == 'store':   # type: ignore[union-attr]
+        by_key = {s.key: s for s in stops}
+        vi = next((i for k, i in actual.served if k in by_key and by_key[k].customer_id == lunch.customer), None)  # type: ignore[union-attr]
+        if vi is not None:
+            v = actual.visits[vi]
+            ss = [by_key[k] for k in v.keys if k in by_key]
+            tonnes = math.fsum(s.delivered_kg if s.delivered_kg is not None else s.kg for s in ss) / 1000.0
+            norm = expected(UnloadObs(day, len(ss), tonnes, 0.0, tuple(sorted(s.customer_id for s in ss
+                                                                                if s.customer_id is not None)))) \
+                if expected is not None else 0.0
+            arrive = ac.day_minutes(day, v.arrive)
+            opens = max((s.window[0] for s in ss if s.window is not None and math.isfinite(s.window[0])), default=None)
+            early = max(0.0, min(opens, window[0]) - arrive) if opens is not None else 0.0
+            place = v.minutes - norm - early
+    elif lunch.where == 'depot' and trip.loading_start is not None and trip.depart is not None:   # type: ignore[union-attr]
+        for n, t in enumerate(actual.trips):
+            if t.depart is None or _planned_trip(plan, n, _trip_cids(actual, stops, t), t.depart) is not trip:
+                continue
+            stay = next((s for s in actual.stays if s.kind == 'depot' and s.leave == t.depart), None)
+            if stay is None:
+                break
+            loading = (trip.depart - trip.loading_start).total_seconds() / 60.0
+            gap = ((trip.loading_start - trip.prev_return).total_seconds() / 60.0 if trip.prev_return is not None
+                   else lunch.minutes)   # type: ignore[union-attr]
+            place = stay.minutes - loading - max(0.0, gap - lunch.minutes)   # type: ignore[union-attr]
+            break
+    return LunchObs(day, round(max(0.0, place, *stays), 1))
+
+
+def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop],
+               skip: Collection[int] = ()) -> list[UnloadObs]:
     """Обслуживающие визиты (не повторные), у всех точек которых известно доставленное. Разгрузка — по порядку:
     1) конец — начало движения, но не позже TAP_TAIL после отметки доставки водителя (№65): последней из отметок точек
        визита, сделанных не раньше прибытия и не позже отъезда + actuals.DELIVERY_SLACK (общая стоянка — до последнего
@@ -1100,12 +1338,14 @@ def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop]) ->
     Хвост — до отсечений: они судят о времени магазина, а не о стоянке с обедом после отметки (2 ч стоянки с отметкой на
     12-й минуте — наблюдение 22 мин, а не «не разгрузка»). Ожидание окна — в начале стоянки, хвост — в конце; отметка
     за TAP_TAIL и раньше до открытия окна оставляет ≤ 0 — не учитывается. Факт визита (Visit.leave: участки, км, «план — факт»,
-    опоздания) не меняется — только наблюдение разгрузки."""
+    опоздания) не меняется — только наблюдение разгрузки.
+    skip — магазины, после разгрузки которых по плану обед (№61, lunch_customers): их визит не идёт вовсе (обед —
+    в его стоянке; и без отметки «закончил», и с ней)."""
     by_key = {s.key: s for s in stops}
     out = []
     for v in actual.visits:
         ss = [by_key[k] for k in v.keys]
-        if v.repeat or any(s.delivered_kg is None for s in ss):
+        if v.repeat or any(s.delivered_kg is None for s in ss) or any(s.customer_id in skip for s in ss):
             continue
         taps = [s.delivered_at for s in ss if s.delivered_at is not None
                 and v.arrive <= s.delivered_at <= v.leave + ac.DELIVERY_SLACK]
@@ -1124,7 +1364,7 @@ def load_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop] = (),
              plan: Sequence[PlanTrip] = ()) -> list[LoadObs]:
     """Стоянка на складе перед рейсом (видно прибытие, не дольше actuals.MAX_LOAD_MIN и не короче LOAD_MIN_STAY — проезд
     через склад) без собственного ожидания плана (planned_wait по плановому рейсу _planned_trip); после вычета — тоже
-    не короче LOAD_MIN_STAY."""
+    не короче LOAD_MIN_STAY. Рейс, перед загрузкой которого по плану обед на складе, не учитывается (обед — в стоянке)."""
     by_key = {s.key: s for s in stops}
     served = dict(actual.served)
     out = []
@@ -1134,7 +1374,10 @@ def load_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop] = (),
             continue
         cids = {by_key[k].customer_id for k, i in served.items() if i in t.visits and k in by_key
                 and by_key[k].customer_id is not None}
-        minutes = t.load_min - planned_wait(_planned_trip(plan, n, cids, t.depart), arrive, t.depart)   # type: ignore[operator]
+        trip = _planned_trip(plan, n, cids, t.depart)
+        if trip is not None and trip.lunch is not None and trip.lunch.where == 'depot':
+            continue
+        minutes = t.load_min - planned_wait(trip, arrive, t.depart)   # type: ignore[operator]
         if minutes >= LOAD_MIN_STAY:
             out.append(LoadObs(day, t.loaded_kg / 1000.0, minutes))
     return out

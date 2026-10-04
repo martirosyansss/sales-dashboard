@@ -748,7 +748,9 @@ def test_store_migrates_13_to_14_keeps_rows_and_ids(tmp_path):
         assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
             (str(rst.SCHEMA_VERSION),)                                          # 13 → 14 → … → текущая
         rows = conn.execute('SELECT * FROM learned_norms ORDER BY id').fetchall()
-        assert rows[:len(before)] == before and rows[-1][1] == 'truck_time' and rows[-1][0] == 51   # id не повторяются
+        # шаг журнала обучения (№61) добавил столбец confidence (у прежних строк — NULL)
+        assert [r[:-1] for r in rows[:len(before)]] == before and all(r[-1] is None for r in rows[:len(before)])
+        assert rows[-1][1] == 'truck_time' and rows[-1][0] == 51   # id не повторяются
         assert conn.execute("SELECT name FROM sqlite_sequence WHERE name LIKE 'learned_norms%'").fetchall() == \
             [('learned_norms',)]
         with pytest.raises(sqlite3.IntegrityError):
@@ -780,6 +782,6 @@ def test_learning_page_shows_truck_time_model(client, fake, tmp_path, monkeypatc
     from flask import render_template
     with app_v2.app.test_request_context('/routes/learning'):
         html = render_template('routes_learning.html')
-    assert 'Բեռնատարների ճանապարհի ժամանակը՝ մոդել' in html and 'id="lrTtRows"' in html and 'routes_learning.js?v=11' in html
+    assert 'Բեռնատարների ճանապարհի ժամանակը՝ մոդել' in html and 'id="lrTtRows"' in html and 'routes_learning.js?v=13' in html
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
     assert 'renderTruckTime' in js and "esc(last ? 'Համեմատություն դեռ չկա՝ ' + last.reason" in js

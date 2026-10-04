@@ -69,6 +69,7 @@
         }
         if (kind === 'fuel') return 'դատարկ՝ ' + fmt(p.empty_l100, 1) + ', լրիվ բեռնված՝ ' + fmt(p.full_l100, 1) + ' լ/100 կմ';
         if (kind === 'truck_time') return modelName(p.source);
+        if (kind === 'lunch') return 'ճաշ՝ ' + fmt(p.minutes) + ' րոպե';   // обед в пути (№61)
         return '';
     }
     function manualText(kind, m) {
@@ -77,6 +78,7 @@
         if (kind === 'travel') return 'արագությունները՝ կարգավորումներից, խցանումները՝ ըստ մենեջերների GPS-ի';
         if (kind === 'truck_time') return modelName('model');
         if (kind === 'fuel' && m) return num(m.empty_l100) !== null ? 'դատարկ՝ ' + fmt(m.empty_l100, 1) + ', լրիվ բեռնված՝ ' + fmt(m.full_l100, 1) + ' լ/100 կմ' : fmt(m.l100, 1) + ' լ/100 կմ';
+        if (kind === 'lunch' && m) return num(m.minutes) ? 'ճաշ՝ ' + fmt(m.minutes) + ' րոպե, սկիզբը՝ ' + m.from + '–' + m.to : 'ճաշն անջատված է';
         return '—';
     }
     // Модель времени грузовиков: какая действует и почему (s.source от сервера: value, why — env | learned | default)
@@ -221,6 +223,11 @@
         $('lrGain').textContent = d.rules.min_gain_pct;
         $('lrTtGain').textContent = d.rules.min_gain_pct;
         $('lrFuelMin').textContent = d.rules.fuel_min_intervals;
+        // устойчивость выигрыша (бутстреп) и пороги обеда — числа правил с сервера, не разбор текста причин
+        [['lrBootShare', d.rules.boot_share_pct], ['lrBootN', d.rules.boot_resamples],
+            ['lrLunchTrain', (d.rules.lunch_min || [])[0]], ['lrLunchTest', (d.rules.lunch_min || [])[2]]].forEach(([id, v]) => {
+            if (num(v) !== null && $(id)) $(id).textContent = v;
+        });
         const tt = d.rules.truck_time_min || [];   // [участков обучения, дней обучения, участков проверки, дней проверки]
         [['lrTtTrain', 0], ['lrTtTrainDays', 1], ['lrTtTest', 2], ['lrTtTestDays', 3]].forEach(([id, i]) => {
             if (num(tt[i]) !== null) $(id).textContent = tt[i];

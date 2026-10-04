@@ -28,7 +28,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -185,8 +185,9 @@ _LEARNED_TABLE_V13 = (
     "UNIQUE (kind, scope, run_day))")
 # Схема 14: вид truck_time — выбор модели времени в пути грузовиков (learning.fit_truck_time). Столбцы те же; SQLite не
 # меняет CHECK столбца — таблица пересобирается, строки переносятся как есть (с id). scope у travel — к каким минутам
-# выучена поправка (learning.travel_scope): '' — прежняя модель, 'valhalla' — время Valhalla.
-_LEARNED_COLUMNS = (
+# выучена поправка (learning.travel_scope): '' — прежняя модель, 'valhalla' — время Valhalla. Как была создана миграцией
+# 13 → 14 (история миграций не меняется).
+_LEARNED_COLUMNS_V14 = (
     "id INTEGER PRIMARY KEY AUTOINCREMENT, "
     "kind TEXT NOT NULL CHECK (kind IN ('unload', 'loading', 'travel', 'truck_time', 'fuel')), "
     "scope TEXT NOT NULL DEFAULT '', "
@@ -194,6 +195,16 @@ _LEARNED_COLUMNS = (
     "train_from TEXT, train_to TEXT, test_from TEXT, test_to TEXT, mae_before REAL, mae_after REAL, "
     "accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)), reason TEXT NOT NULL, created_at TEXT NOT NULL, "
     "UNIQUE (kind, scope, run_day)")
+# Схема 20 (№61): вид lunch — обед в пути (learning.fit_lunch) — и confidence: доля повторных выборок проверки, где новая
+# норма точнее (learning._accept; NULL — не считали, и у строк до схемы 20). Таблица пересобирается так же, как 13 → 14.
+_LEARNED_COLUMNS = (
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+    "kind TEXT NOT NULL CHECK (kind IN ('unload', 'loading', 'travel', 'truck_time', 'fuel', 'lunch')), "
+    "scope TEXT NOT NULL DEFAULT '', "
+    "run_day TEXT NOT NULL, params TEXT, model_id TEXT, n_obs INTEGER NOT NULL, n_test INTEGER NOT NULL, "
+    "train_from TEXT, train_to TEXT, test_from TEXT, test_to TEXT, mae_before REAL, mae_after REAL, "
+    "accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)), reason TEXT NOT NULL, created_at TEXT NOT NULL, "
+    "confidence REAL, UNIQUE (kind, scope, run_day)")
 _LEARNED_COPY = ('id, kind, scope, run_day, params, model_id, n_obs, n_test, train_from, train_to, test_from, test_to, '
                  'mae_before, mae_after, accepted, reason, created_at')
 _LEARNED_TABLE = f"CREATE TABLE IF NOT EXISTS learned_norms({_LEARNED_COLUMNS})"
@@ -306,7 +317,7 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     # есть, счётчик AUTOINCREMENT — прежний (повторный прогон дня расходует номера: id не повторяются);
     # переключатели автообучения (без CHECK вида) не меняются.
     13: (
-        f"CREATE TABLE learned_norms_v14({_LEARNED_COLUMNS})",
+        f"CREATE TABLE learned_norms_v14({_LEARNED_COLUMNS_V14})",
         f"INSERT INTO learned_norms_v14({_LEARNED_COPY}) SELECT {_LEARNED_COPY} FROM learned_norms",
         "DELETE FROM sqlite_sequence WHERE name = 'learned_norms_v14'",
         "INSERT INTO sqlite_sequence(name, seq) SELECT 'learned_norms_v14', seq FROM sqlite_sequence "
@@ -332,6 +343,17 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     ),
     # 18 → 19 (к №62, «Վարորդ + առաքիչ»): только добавляем — таблица առաքիչ; прежние таблицы и значения не меняются.
     18: (_TRUCK_HELPER_TABLE,),
+    # 19 → 20 (№61): вид выученной нормы lunch и столбец confidence — журнал пересобирается, как 13 → 14: строки (и id)
+    # переносятся как есть (confidence — NULL), счётчик AUTOINCREMENT — прежний; переключатели не меняются.
+    19: (
+        f"CREATE TABLE learned_norms_v20({_LEARNED_COLUMNS})",
+        f"INSERT INTO learned_norms_v20({_LEARNED_COPY}) SELECT {_LEARNED_COPY} FROM learned_norms",
+        "DELETE FROM sqlite_sequence WHERE name = 'learned_norms_v20'",
+        "INSERT INTO sqlite_sequence(name, seq) SELECT 'learned_norms_v20', seq FROM sqlite_sequence "
+        "WHERE name = 'learned_norms'",
+        "DROP TABLE learned_norms",
+        "ALTER TABLE learned_norms_v20 RENAME TO learned_norms",
+    ),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -394,6 +416,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'truck_work_end': '18:00',
     # Форс-мажор (ответ владельца №32): «Везти после конца дня» в «Развозе» — машины возвращаются не позже
     'truck_overtime_end': '20:00',
+    # Обед водителей (ответ владельца №61): в пути, гибко — «Развоз» сам вставляет паузу в рейс; truck_lunch_from …
+    # truck_lunch_to — когда обед начинается; 0 минут — без обеда. Модель парка менеджеров его не знает
+    'truck_lunch_min': 30,
+    'truck_lunch_from': '12:30',
+    'truck_lunch_to': '14:30',
     'unload_min_per_stop': 8,
     'unload_min_per_tonne': 6,
     'warehouse_load_fixed_min': None,
@@ -448,6 +475,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'transfer_radius_km': (0.1, 20, False),
     'unload_min_per_stop': (0, 120, False),
     'unload_min_per_tonne': (0, 120, False),
+    'truck_lunch_min': (0, 120, False),
     'warehouse_load_fixed_min': (0, 240, True),
     'warehouse_load_min_per_tonne': (0, 120, True),
 }
@@ -1019,7 +1047,7 @@ def validate_settings(values: Mapping[str, Any],
         out['traffic_mode'] = mode
 
     for key in ('work_start', 'work_end', 'truck_work_start', 'truck_work_end', 'truck_overtime_end',
-                'dispatch_ready_time'):
+                'dispatch_ready_time', 'truck_lunch_from', 'truck_lunch_to'):
         v = values.get(key)
         if not isinstance(v, str) or not _HHMM_RE.match(v):
             errors[key] = 'ժամը՝ ԺԺ:ՐՐ ձևաչափով'
@@ -1031,6 +1059,15 @@ def validate_settings(values: Mapping[str, Any],
     if ('truck_work_end' in out and 'truck_overtime_end' in out
             and _minutes(out['truck_overtime_end']) < _minutes(out['truck_work_end'])):
         errors['truck_overtime_end'] = 'ոչ շուտ, քան մեքենայի աշխատանքային օրվա ավարտը'
+    # окно начала обеда (№61) — конец позже начала; обед включён — внутри рабочего дня машины
+    lunch_on = bool(values.get('truck_lunch_min'))
+    if lunch_on and 'truck_lunch_from' in out and 'truck_work_start' in out             and _minutes(out['truck_lunch_from']) < _minutes(out['truck_work_start']):
+        errors['truck_lunch_from'] = 'ոչ շուտ, քան մեքենայի աշխատանքային օրվա սկիզբը'
+    if lunch_on and 'truck_lunch_to' in out and 'truck_work_end' in out             and _minutes(out['truck_lunch_to']) > _minutes(out['truck_work_end']):
+        errors['truck_lunch_to'] = 'ոչ ուշ, քան մեքենայի աշխատանքային օրվա ավարտը'
+    elif ('truck_lunch_from' in out and 'truck_lunch_to' in out
+            and _minutes(out['truck_lunch_to']) <= _minutes(out['truck_lunch_from'])):
+        errors['truck_lunch_to'] = 'Միջակայքի վերջը պետք է լինի սկզբից ուշ'
 
     days, err = _check_int_set(values.get('workdays'), 1, 7, 'շաբաթվա օրերի')
     if err:
@@ -2168,17 +2205,18 @@ class Store:
             for o in outcomes:
                 conn.execute(
                     'INSERT INTO learned_norms(kind, scope, run_day, params, model_id, n_obs, n_test, train_from, '
-                    'train_to, test_from, test_to, mae_before, mae_after, accepted, reason, created_at) '
-                    'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(kind, scope, run_day) DO UPDATE '
+                    'train_to, test_from, test_to, mae_before, mae_after, accepted, reason, created_at, confidence) '
+                    'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(kind, scope, run_day) DO UPDATE '
                     'SET params = excluded.params, model_id = excluded.model_id, n_obs = excluded.n_obs, '
                     'n_test = excluded.n_test, train_from = excluded.train_from, train_to = excluded.train_to, '
                     'test_from = excluded.test_from, test_to = excluded.test_to, mae_before = excluded.mae_before, '
                     'mae_after = excluded.mae_after, accepted = excluded.accepted, reason = excluded.reason, '
-                    'created_at = excluded.created_at',
+                    'created_at = excluded.created_at, confidence = excluded.confidence',
                     (o.kind, o.scope, run_day,
                      json.dumps(o.params, ensure_ascii=False, sort_keys=True, allow_nan=False)
                      if o.params is not None else None, o.model_id, o.n_obs, o.n_test, o.train_from, o.train_to,
-                     o.test_from, o.test_to, o.mae_before, o.mae_after, int(o.accepted), o.reason, now))
+                     o.test_from, o.test_to, o.mae_before, o.mae_after, int(o.accepted), o.reason, now,
+                     getattr(o, 'confidence', None)))
 
         self._transaction(write, 'չհաջողվեց պահպանել սովորած նորմերը')
 
@@ -2188,11 +2226,11 @@ class Store:
         where = [w for w, on in (('run_day < ?', before is not None), ('accepted = 1', accepted_only)) if on]
         rows = self._read(lambda conn: conn.execute(
             'SELECT id, kind, scope, run_day, params, model_id, n_obs, n_test, train_from, train_to, test_from, '
-            'test_to, mae_before, mae_after, accepted, reason, created_at FROM learned_norms '
+            'test_to, mae_before, mae_after, accepted, reason, created_at, confidence FROM learned_norms '
             + (f'WHERE {" AND ".join(where)} ' if where else '') + 'ORDER BY run_day, kind, scope',
             (before,) if before is not None else ()).fetchall())
         keys = ('id', 'kind', 'scope', 'run_day', 'params', 'model_id', 'n_obs', 'n_test', 'train_from', 'train_to',
-                'test_from', 'test_to', 'mae_before', 'mae_after', 'accepted', 'reason', 'created_at')
+                'test_from', 'test_to', 'mae_before', 'mae_after', 'accepted', 'reason', 'created_at', 'confidence')
         out = []
         for r in rows:
             d = dict(zip(keys, r))
