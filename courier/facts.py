@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import math
 import os
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
@@ -62,18 +63,36 @@ def refuel_flags(refuels: Sequence[Mapping[str, Any]], since: datetime | None = 
     return out
 
 
+def _number(x: Any) -> float:
+    """Число JSON (не bool) — float, иначе 0."""
+    return float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else 0.0
+
+
 def delivered_share(stop: Mapping[str, Any], delivery: Mapping[str, Any] | None) -> float | None:
-    """Доля доставленного по точке: Σ qty действующей доставки / Σ qty строк точки (0…1). Доставки нет или строк нет —
-    None (неизвестно: такая точка не идёт в обучение разгрузки)."""
+    """Доля доставленного по точке (0…1); learning.plan_stops умножает её на вес накладной — доставлено, кг.
+
+    Правило №65 — по весу товаров: Σ по строкам min(доставлено, qty строки) / qty строки × weight_kg строки, делённое на
+    Σ weight_kg строк. Строки доставки — по line_id строк точки (неизвестная строка не считается); сверх qty строки —
+    прижимается к нему по каждой строке (лишние пачки 0,5 л не покрывают недовезённые бутыли 19 л); строка без веса
+    (товара нет в ERP — null) — 0 кг, как в weight_kg точки. Полная доставка — ровно 1: доставлено = вес накладной.
+    Снимок /day до №65 (у строк нет weight_kg) или вес строк 0 — прежняя доля штук: Σ qty доставки / Σ qty строк,
+    прижатая к 0…1 в целом. Доставки нет или строк нет — None (неизвестно: такая точка не идёт в обучение разгрузки)."""
     if delivery is None:
         return None
-    total = sum(float(ln.get('qty') or 0) for ln in stop.get('lines') or () if isinstance(ln, dict)
-                and isinstance(ln.get('qty'), (int, float)) and not isinstance(ln.get('qty'), bool))
+    lines = [ln for ln in stop.get('lines') or () if isinstance(ln, dict)]
+    total = sum(_number(ln.get('qty')) for ln in lines)
     if total <= 0:
         return None
-    done = sum(float(i.get('qty') or 0) for i in (delivery.get('payload') or {}).get('lines') or ()
-               if isinstance(i, dict) and isinstance(i.get('qty'), (int, float)) and not isinstance(i.get('qty'), bool))
-    return max(0.0, min(1.0, done / total))
+    items = [i for i in (delivery.get('payload') or {}).get('lines') or () if isinstance(i, dict)]
+    if any('weight_kg' in ln for ln in lines):
+        done = {i['line_id']: _number(i.get('qty')) for i in items if isinstance(i.get('line_id'), str)}
+        weighed = [(q, w, done.get(ln.get('line_id'), 0.0)) for ln in lines
+                   if (q := _number(ln.get('qty'))) > 0 and (w := _number(ln.get('weight_kg'))) > 0]
+        kg = math.fsum(w for _, w, _ in weighed)
+        if kg > 0:
+            return max(0.0, min(1.0, math.fsum(w * max(0.0, min(d, q)) / q for q, w, d in weighed) / kg))
+    done_qty = sum(_number(i.get('qty')) for i in items)
+    return max(0.0, min(1.0, done_qty / total))
 
 
 class FactsSource:
@@ -98,7 +117,8 @@ class FactsSource:
     def day(self, car_code: str, day: str) -> dict[str, Any]:
         """Трек и точки машины за день: track — [(at_ms, lat, lon, acc, spd)]; stops — точки последнего снимка /day
         машины на эту дату: stop_id, customer_id, name, lat, lon, weight_kg, seq, delivered_share (доля доставленного по
-        действующей доставке точки, правило §5 п. 12/14; доставки нет — None), delivered_at (момент отметки)."""
+        действующей доставке точки, правило §5 п. 12/14, по весу товаров — №65; доставки нет — None), delivered_at
+        (момент отметки)."""
         if not self._exists():
             return {'track': [], 'stops': []}
         track = [tuple(p[:5]) for p in self.store.track(car_code, day)]

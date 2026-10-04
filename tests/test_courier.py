@@ -358,7 +358,8 @@ def test_day_payload_from_erp(fake_erp, tmp_path, now):
 
 STOP_KEYS = {'stop_id', 'seq', 'source', 'doc_number', 'customer', 'lat', 'lon', 'agent_name', 'pay_type', 'collect',
              'amount_due', 'debt', 'weight_kg', 'lines', 'tare_expected'}
-LINE_KEYS = {'line_id', 'product_id', 'code', 'name', 'qty', 'unit', 'price', 'sum', 'marked', 'pack_qty', 'gtins', 'gtin_units'}
+LINE_KEYS = {'line_id', 'product_id', 'code', 'name', 'qty', 'unit', 'price', 'sum', 'marked', 'pack_qty', 'gtins', 'gtin_units',
+             'weight_kg'}
 
 
 def test_demo_day_matches_contract(term):
@@ -384,6 +385,7 @@ def test_demo_day_matches_contract(term):
             assert isinstance(ln['qty'], float) and isinstance(ln['price'], float) and isinstance(ln['sum'], float)
             assert isinstance(ln['marked'], bool) and isinstance(ln['gtins'], list)
             assert ln['pack_qty'] is None or isinstance(ln['pack_qty'], int)
+            assert isinstance(ln['weight_kg'], float)   # вес строки (№65)
         for t in s['tare_expected']:
             assert set(t) == {'tare_id', 'name', 'qty'} and t['tare_id'].startswith('erp:')
     marked = [ln for s in body['stops'] for ln in s['lines'] if ln['marked']]

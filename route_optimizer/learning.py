@@ -4,7 +4,9 @@
 Что учится (каждую ночь и по кнопке «Пересчитать»), из факта actuals.reconstruct по треку APK:
 - unload — разгрузка на точке = a·точек + b·тонн доставлено (+ поправка магазина) → TruckNorms.unload_min_per_stop /
   unload_min_per_tonne (+ unload_extra по точке магазина). Стоянка — от остановки у магазина до начала движения
-  (actuals, №60); из неё вычитается ожидание открытия окна приёма; стоянка дольше UNLOAD_CAP_REL × действующей нормы (и
+  (actuals, №60), но не дольше TAP_TAIL после отметки доставки водителя (№65; unload_obs); доставлено — по весу
+  товаров (courier.facts.delivered_share, №65); из стоянки вычитается ожидание открытия окна приёма; стоянка
+  дольше UNLOAD_CAP_REL × действующей нормы (и
   её же без своего времени магазинов) — не разгрузка. Своё время магазина (ответ владельца №50: постоянная часть его
   разгрузки — парковка, приёмка, документы — вместо a; время на груз b·т — как у всех): по факту — a + медиана остатков
   одиночных визитов магазина (store_stats строки: визитов и минуты). Правило №60: пока у магазина меньше STORE_MIN_OBS
@@ -138,8 +140,10 @@ STORE_MIN_OBS = 2                    # своё время магазина по
 STORE_SPLIT_MIN = 5.0                # но ровно 2 визита, чьё время по факту разнится больше чем на 5 мин…
 STORE_SPLIT_REL = 0.30               # …и больше чем на 30% большего из двух, — ждём 3-й (ответ владельца)
 STORE_OFFSET_MAX = 120.0             # время магазина a + поправка — не больше 120 мин (как введённое)
-UNLOAD_MAX_MIN = 90.0                # стоянка у магазина дольше (после вычета ожидания окна) — не разгрузка
+UNLOAD_MAX_MIN = 90.0                # стоянка у магазина дольше (после TAP_TAIL и вычета ожидания окна) — не разгрузка
 UNLOAD_CAP_REL = 3.0                 # …или дольше 3 × действующей нормы
+TAP_TAIL = timedelta(minutes=10)     # разгрузка — не дольше 10 мин после отметки доставки «закончил» (ответ владельца
+                                     # №65): стоянка дольше — обед, отдых, не время магазина (unload_obs)
 STORE_FACT_BOUNDS = (-STORE_OFFSET_MAX, UNLOAD_MAX_MIN)   # своё время магазина по факту в store_stats, мин: выше 90 не
                                      # бывает (стоянка не дольше 90), ниже −120 прижимается (факт — медиана «стоянка −
                                      # b·т», на деле не ниже −b·т точки; время магазина в расчёте и так не меньше 0)
@@ -1005,7 +1009,8 @@ def _moment(raw: Any) -> datetime | None:
 def plan_stops(stops: Sequence[Mapping[str, Any]], ranks: Mapping[int, int],
                windows_by_customer: Mapping[int, tuple[float, float]]) -> list[ac.PlanStop]:
     """Точки /day машины → PlanStop: место в плане — по плану «Развоза» (ranks: клиент → место), без плана — seq /day;
-    окно приёма — из настроек магазина; доставлено — доля по отметке водителя × вес накладной, момент отметки."""
+    окно приёма — из настроек магазина; доставлено — доля по отметке водителя (по весу товаров, №65:
+    courier.facts.delivered_share) × вес накладной, момент отметки."""
     out = []
     for s in stops:
         lat, lon, cid = s.get('lat'), s.get('lon'), s.get('customer_id')
@@ -1172,19 +1177,30 @@ def lunch_obs(day: date, actual: ac.DayActual, window: tuple[float, float], stop
 
 def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop],
                skip: Collection[int] = ()) -> list[UnloadObs]:
-    """Обслуживающие визиты (не повторные), у всех точек которых известно доставленное. Из стоянки вычитается ожидание
-    открытия окна приёма (начало окна позже прибытия — машина ждёт: это не разгрузка); стоянка дольше UNLOAD_MAX_MIN —
-    не учитывается. skip — магазины, после разгрузки которых по плану обед (lunch_customers): их визит не идёт (обед —
-    в его стоянке)."""
+    """Обслуживающие визиты (не повторные), у всех точек которых известно доставленное. Разгрузка — по порядку:
+    1) конец — начало движения, но не позже TAP_TAIL после отметки доставки водителя (№65): последней из отметок точек
+       визита, сделанных не раньше прибытия и не позже отъезда + actuals.DELIVERY_SLACK (общая стоянка — до последнего
+       «закончил»); отметки нет, она до прибытия (отметил заранее — «закончил» не здесь) или после отъезда — до движения;
+    2) вычитается ожидание открытия окна приёма (начало окна позже прибытия — машина ждёт: это не разгрузка);
+    3) остаток вне [0,5; UNLOAD_MAX_MIN] не учитывается (дальше fit_unload отсекает дольше UNLOAD_CAP_REL × нормы).
+    Хвост — до отсечений: они судят о времени магазина, а не о стоянке с обедом после отметки (2 ч стоянки с отметкой на
+    12-й минуте — наблюдение 22 мин, а не «не разгрузка»). Ожидание окна — в начале стоянки, хвост — в конце; отметка
+    за TAP_TAIL и раньше до открытия окна оставляет ≤ 0 — не учитывается. Факт визита (Visit.leave: участки, км, «план — факт»,
+    опоздания) не меняется — только наблюдение разгрузки.
+    skip — магазины, после разгрузки которых по плану обед (№61, lunch_customers): их визит не идёт вовсе (обед —
+    в его стоянке; и без отметки «закончил», и с ней)."""
     by_key = {s.key: s for s in stops}
     out = []
     for v in actual.visits:
         ss = [by_key[k] for k in v.keys]
         if v.repeat or any(s.delivered_kg is None for s in ss) or any(s.customer_id in skip for s in ss):
             continue
+        taps = [s.delivered_at for s in ss if s.delivered_at is not None
+                and v.arrive <= s.delivered_at <= v.leave + ac.DELIVERY_SLACK]
+        end = min(v.leave, max(taps) + TAP_TAIL) if taps else v.leave
         opens = max((s.window[0] for s in ss if s.window is not None and math.isfinite(s.window[0])), default=None)
         wait = max(0.0, opens - ac.day_minutes(day, v.arrive)) if opens is not None else 0.0
-        minutes = v.minutes - wait
+        minutes = (end - v.arrive).total_seconds() / 60.0 - wait
         if not 0.5 <= minutes <= UNLOAD_MAX_MIN:
             continue
         out.append(UnloadObs(day, len(ss), math.fsum(s.delivered_kg for s in ss) / 1000.0, minutes,   # type: ignore[misc]

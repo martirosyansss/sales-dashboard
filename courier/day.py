@@ -11,7 +11,9 @@
 - каждая новая версия выдачи сохраняется в courier.db снимком (day_snapshots, append-only) — по всем версиям
   проверяются события терминала, по ним офис смотрит прошлые даты (ERP за прошлое не перечитывается);
 - точка S: может нести `replaces` — точки O: заказов, из которых сделана накладная (контракт §5 п. 2);
-  поле есть только у таких точек.
+  поле есть только у таких точек;
+- строка точки несёт `weight_kg` — вес строки (№65; добавочное поле, как `gtin_units`: приложение любой версии
+  неизвестные ключи игнорирует — Json { ignoreUnknownKeys = true }); по нему обучение «Развоза» считает доставленные кг.
 """
 from __future__ import annotations
 
@@ -73,6 +75,9 @@ def _line_json(line: Line, product: Product | None, gtins: tuple[str, ...], mark
         'pack_qty': _num(pack) if pack is not None else None,
         'gtins': list(gtins),
         'gtin_units': {code: _num(qty) if qty is not None else None for code, qty in (gtin_units or {}).items()},
+        # вес строки, кг (№65: доставлено по весу товаров — courier.facts.delivered_share); товара нет в ERP — null
+        # (в weight_kg точки такая строка — 0 кг)
+        'weight_kg': round(line.qty * product.weight, 3) if product else None,
     }
 
 

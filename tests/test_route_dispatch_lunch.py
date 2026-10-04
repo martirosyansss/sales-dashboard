@@ -366,7 +366,7 @@ def test_settings_page_has_lunch_fields():
     assert all(f"key: '{k}'" in js for k in ('truck_lunch_min', 'truck_lunch_from', 'truck_lunch_to'))
     assert "routes_settings.js') }}?v=23" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
     page = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
-    assert "routes_dispatch.js') }}?v=60" in page and "routes_dispatch.css') }}?v=33" in page
+    assert "routes_dispatch.js') }}?v=61" in page and "routes_dispatch.css') }}?v=33" in page
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     assert 'function lunchItem' in djs and 'dp-lunch-mark' in djs
 
@@ -449,6 +449,24 @@ def test_lunch_obs_where_planned_store():
     assert lr.lunch_obs(DAY, actual, WINDOW, stops, plan, _norm).minutes == 27.0    # поел в сторону: стоянка не по плану
     actual, stops, plan = _store_day(_at(12, 40), _at(12, 46))                     # быстрее нормы — не меньше 0
     assert lr.lunch_obs(DAY, actual, WINDOW, stops, plan, _norm).minutes == 0.0
+
+
+def test_lunch_place_skipped_from_unload_even_with_tap():
+    """Отметка «закончил» (№65, разгрузка — не дольше 10 мин после неё) и обед по плану у магазина вместе: визит магазина с
+    обедом по плану не идёт в разгрузку и с отметкой (её хвост в 10 мин иначе добавил бы к разгрузке часть обеда);
+    соседний магазин — по правилу отметки как есть; обед по факту у магазина виден и с отметкой."""
+    tap = _at(12, 51)                                                               # разгрузка 12:40–12:51, обед до 13:21
+    stops = [ac.PlanStop('S:1', 101, (40.2, 44.5), 500.0, 500.0, None, None, tap),
+             ac.PlanStop('S:2', 102, (40.3, 44.6), 300.0, 300.0, None, None, _at(14, 5))]
+    visits = (ac.Visit(('S:1',), _at(12, 40), _at(13, 21), 0, False), ac.Visit(('S:2',), _at(14), _at(14, 40), 0, False))
+    trips = (ac.Trip(_at(9), _at(16, 30), None, (0, 1), 800.0, 10.0),)
+    actual = ac.DayActual(100, 10.0, _at(9), _at(16, 30), (), visits, trips, served=(('S:1', 0), ('S:2', 1)))
+    plan = [lr.PlanTrip(None, None, None, frozenset({101, 102}), lr.PlanLunch('store', 101, 30.0))]
+    plain = lr.unload_obs(DAY, actual, stops)
+    assert [(o.customers, o.minutes) for o in plain] == [((101,), 21.0), ((102,), 15.0)]   # хвост отметки — как у №65
+    got = lr.unload_obs(DAY, actual, stops, lr.lunch_customers(plan))
+    assert [(o.customers, o.minutes) for o in got] == [((102,), 15.0)]               # визит с обедом — мимо и с отметкой
+    assert lr.lunch_obs(DAY, actual, WINDOW, stops, plan, _norm).minutes == 41 - 11   # обед виден по стоянке
 
 
 def test_lunch_obs_where_planned_depot_and_other_observations_skip_it():
