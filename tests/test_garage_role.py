@@ -149,7 +149,7 @@ def test_routes_pages_link_garage(dashboard):
 def test_users_api_accepts_garage_role(dashboard):
     c = dashboard
     h = _login_as(c, 'boss')
-    r = c.post('/api/users', json={'username': 'g2', 'password': 'pw', 'role': 'garage', 'areas': ['01'],
+    r = c.post('/api/users', json={'username': 'g2', 'password': 'pw-garage-10', 'role': 'garage', 'areas': ['01'],
                                    'display_name': 'Գ'}, headers=h)
     assert r.status_code == 200, r.get_json()
     assert c.users['g2']['role'] == 'garage' and c.users['g2']['areas'] == []

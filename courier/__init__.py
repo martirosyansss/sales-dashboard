@@ -12,7 +12,8 @@ courier.db (env COURIER_DB_PATH, по умолчанию рядом с app_v2.py
 
 Переменные окружения:
 - COURIER_DB_PATH — файл базы;
-- COURIER_PUBLIC_HOST — публичный хост туннеля (по умолчанию araqich.orix.am): с него открыт только API;
+- COURIER_PUBLIC_HOST — публичный хост туннеля (по умолчанию araqich.orix.am): с него открыт только API (и то, что
+  app_v2 разрешает в public_guard: журнал гаража из интернета, №53);
 - COURIER_PUBLIC_URL — базовый URL API в QR (по умолчанию https://<COURIER_PUBLIC_HOST>/api/courier/v1);
 - COURIER_DEMO=1 — тестовые данные /day для машины TEST на 2000-01-01 (контракт §4).
 """
@@ -20,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, Callable
 
 from flask import Flask, Request, Response
 
@@ -38,7 +39,7 @@ DB_FILENAME = 'courier.db'
 DEFAULT_PUBLIC_HOST = 'araqich.orix.am'
 ROUTES_EXTENSION = 'route_optimizer'
 
-__all__ = ['API_PREFIX', 'driver_geo', 'fleet_facts', 'init_app', 'public_guard']
+__all__ = ['API_PREFIX', 'driver_geo', 'fleet_facts', 'init_app', 'is_public_request', 'not_found', 'public_guard']
 
 
 def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
@@ -84,13 +85,24 @@ def is_public(request: Request, public_host: str) -> bool:
     return host == public_host or 'Cf-Connecting-Ip' in request.headers
 
 
-def public_guard(request: Request) -> Response | None:
-    """Защита за туннелем: снаружи открыт только API терминалов; остальное — 404 (дашборд не виден)."""
-    if request.path.startswith(API_PREFIX):
-        return None
+def is_public_request(request: Request) -> bool:
+    """is_public с публичным хостом раздела (до init_app — из env)."""
     from flask import current_app
     st = current_app.extensions.get(EXTENSION_KEY)
     host = st.public_host if st is not None else (os.environ.get('COURIER_PUBLIC_HOST') or DEFAULT_PUBLIC_HOST).lower()
-    if is_public(request, host):
-        return Response('Not Found', status=404, mimetype='text/plain')
+    return is_public(request, host)
+
+
+def not_found() -> Response:
+    """Ответ снаружи на закрытый путь (дашборд не виден)."""
+    return Response('Not Found', status=404, mimetype='text/plain')
+
+
+def public_guard(request: Request, allow: Callable[[str, str], bool] | None = None) -> Response | None:
+    """Защита за туннелем: снаружи открыт только API терминалов и то, что разрешает allow(path, method)
+    (app_v2: вход и журнал гаража, №53); остальное — 404 (дашборд не виден)."""
+    if request.path.startswith(API_PREFIX):
+        return None
+    if is_public_request(request) and not (allow is not None and allow(request.path, request.method)):
+        return not_found()
     return None

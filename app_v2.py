@@ -3,9 +3,11 @@ Sales Dashboard v2.0 - READ-ONLY Analytics Platform
 Работает с реальной БД AS-Sales Management
 """
 
-from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response, stream_with_context, session, redirect, url_for, g
+from flask import Flask, render_template, jsonify, request, send_file, send_from_directory, Response, stream_with_context, session, redirect, url_for, g, has_request_context
+from flask.sessions import SecureCookieSessionInterface
 import pyodbc
 from datetime import datetime, timedelta
+import ipaddress
 import os
 import re
 import json
@@ -76,6 +78,18 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=12)  # автологаут по сроку
 if os.environ.get('FLASK_SESSION_SECURE', '').lower() in ('1', 'true', 'yes'):
     app.config['SESSION_COOKIE_SECURE'] = True
+
+
+class _PublicSecureSessionInterface(SecureCookieSessionInterface):
+    """Журнал гаража из интернета (№53): на публичном хосте туннеля браузер всегда на HTTPS (Cloudflare) — cookie
+    сессии там Secure. В офисной сети — как настроено выше (FLASK_SESSION_SECURE), без изменений. Флаг решается на
+    каждый ответ (Flask спрашивает get_cookie_secure при записи и при удалении cookie) — один app, два хоста."""
+
+    def get_cookie_secure(self, app):
+        return super().get_cookie_secure(app) or (has_request_context() and courier.is_public_request(request))
+
+
+app.session_interface = _PublicSecureSessionInterface()
 
 # X-Forwarded-For доверяем ТОЛЬКО при явном opt-in оператора (за известным прокси):
 # FLASK_TRUSTED_PROXY_HOPS=N. Иначе request.remote_addr = прямой пир, и заголовок
@@ -168,6 +182,7 @@ db = DatabaseConnection()
 USERS_FILE = 'users.json'
 USER_ROLES = ('admin', 'user', 'garage')
 GARAGE_ROLE = 'garage'
+GARAGE_MIN_PASSWORD = 10   # роль «Гараж» входит из интернета (№53): пароль не короче 10 символов
 
 
 def save_users(users: dict) -> bool:
@@ -356,6 +371,32 @@ def _enforce_garage():
     return redirect(_GARAGE_PAGE)
 
 
+# ---- Журнал гаража из интернета (№53): что открыто на публичном хосте туннеля ----------------------------
+# Снаружи (courier.is_public: Host araqich.orix.am или заголовок Cloudflare) кроме API терминалов — только вход и
+# выход, страница журнала гаража, её API и ровно та статика, которую грузят routes_garage.html и base_v2.html
+# (у login.html своей нет — только CDN). Новый файл на странице журнала — сюда же и в nginx/туннель
+# (deploy/COURIER_TUNNEL.md). Всё прочее — 404 (courier.public_guard); сессия не «Гаража» снаружи — тоже 404.
+_PUBLIC_STATIC = frozenset((
+    '/favicon.ico',
+    '/static/css/tokens.css', '/static/css/base.css', '/static/js/base.js',                    # base_v2.html
+    '/static/css/routes.css', '/static/css/routes_garage.css', '/static/js/routes_garage.js',  # routes_garage.html
+))
+# API журнала снаружи — только простые сегменты (путь уже раскодирован сервером): без '..', '//', '%', '\', регистра.
+_PUBLIC_GARAGE_API_RE = re.compile(r'/api/routes/garage(?:/[a-z0-9_-]+)*')
+
+
+def _public_path_allowed(path: str, method: str) -> bool:
+    if path in _PUBLIC_STATIC:
+        return method in ('GET', 'HEAD')
+    if path == '/login':
+        return method in ('GET', 'HEAD', 'POST')
+    if path == '/logout':
+        return method == 'POST'
+    if path == _GARAGE_PAGE or _PUBLIC_GARAGE_API_RE.fullmatch(path):
+        return _garage_path_allowed(path, method)
+    return False
+
+
 def _customer_in_scope(customer_id, scope) -> bool:
     """Принадлежит ли клиент хотя бы одной из разрешённых территорий."""
     if not scope:
@@ -425,8 +466,8 @@ def _auth_and_scope_gate():
     endpoint = request.endpoint or ''
     path = request.path
 
-    # «Առաքիչ»: снаружи (Cloudflare Tunnel, araqich.orix.am) открыт только API терминалов — остальное 404.
-    blocked = courier.public_guard(request)
+    # «Առաքիչ»: снаружи (Cloudflare Tunnel, araqich.orix.am) открыт только API терминалов и журнал гаража — остальное 404.
+    blocked = courier.public_guard(request, _public_path_allowed)
     if blocked is not None:
         return blocked
     # API терминалов — без входа в дашборд: токен терминала и PIN проверяет courier/api.py.
@@ -442,6 +483,9 @@ def _auth_and_scope_gate():
         return _reject_unauthenticated()
 
     role = user.get('role')
+    # Снаружи — только сессия «Гаража»; любая другая (например, роль сменили после входа) — 404, дашборд не виден.
+    if role != GARAGE_ROLE and courier.is_public_request(request):
+        return courier.not_found()
     g.user_role = role   # роль вошедшего — разделам (route_optimizer: удалённые записи журнала гаража — администратору)
     if role == 'admin':
         return None  # полный доступ
@@ -449,6 +493,14 @@ def _auth_and_scope_gate():
         return _enforce_garage()
 
     return _enforce_restricted(user)
+
+
+@app.after_request
+def _public_hsts(response):
+    """Публичный хост туннеля — только HTTPS (Cloudflare): браузер запоминает это на год (HSTS). Офис — без изменений."""
+    if courier.is_public_request(request):
+        response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000')
+    return response
 
 
 # Защита от перебора: счётчик неудачных попыток по (логин, IP) в памяти процесса
@@ -461,10 +513,31 @@ _login_attempts = {}  # key=(username, ip) -> [timestamps неудач в пре
 _DUMMY_PWD_HASH = generate_password_hash('dummy-nonexistent-password', method='pbkdf2:sha256')
 
 
+# Узлы туннеля Cloudflare (через запятую): только от них верим заголовку Cf-Connecting-Ip — его ставит Cloudflare,
+# а все запросы из интернета приходят от узла туннеля (CT115: nginx → X-Forwarded-For = 192.168.1.11, HOPS=1).
+# Пустое значение — не верить никому (ключ — сам пир, как до №53).
+_TUNNEL_PEERS = frozenset(p.strip() for p in os.environ.get('COURIER_TUNNEL_PEERS', '192.168.1.11').split(',')
+                          if p.strip())
+
+
+def _login_client_ip():
+    """IP клиента для счётчика неудач: пир (request.remote_addr — после ProxyFix по opt-in); от узла туннеля —
+    Cf-Connecting-Ip (иначе весь интернет делил бы один ключ: чужие ошибки блокировали бы начальника гаража)."""
+    peer = request.remote_addr or '?'
+    if peer not in _TUNNEL_PEERS:
+        return peer   # заголовок от прочих пиров (офис, LAN) — подделка, не смотрим
+    try:
+        ip = ipaddress.ip_address((request.headers.get('Cf-Connecting-Ip') or '').strip())
+    except ValueError:
+        return peer
+    # IPv6: у абонента целая сеть /64 — ключ по сети, иначе смена адреса снимала бы лимит.
+    return str(ipaddress.ip_network(f'{ip}/64', strict=False)) if ip.version == 6 else str(ip)
+
+
 def _login_key(username):
-    # Только доверенный источник IP: request.remote_addr (за прокси — ProxyFix по opt-in).
-    # XFF напрямую НЕ используем, иначе клиент подделает IP и обойдёт лимит.
-    return (username.lower(), request.remote_addr or '?')
+    # Только доверенный источник IP (см. _login_client_ip). XFF напрямую НЕ используем, иначе клиент подделает IP
+    # и обойдёт лимит.
+    return (username.lower(), _login_client_ip())
 
 
 def _login_sweep():
@@ -501,6 +574,7 @@ def _login_reset(username):
 def login():
     """Страница входа."""
     next_url = request.args.get('next', '') or request.form.get('next', '')
+    public = courier.is_public_request(request)   # вход из интернета (туннель) — только роль «Гараж», №53
     if request.method == 'POST':
         username = (request.form.get('username') or '').strip()
         password = request.form.get('password') or ''
@@ -516,6 +590,10 @@ def login():
         # чтобы время ответа не выдавало существование логина.
         stored_hash = user.get('password_hash', '') if user else _DUMMY_PWD_HASH
         password_ok = check_password_hash(stored_hash, password)
+        # Снаружи входит только «Гараж» с паролем не короче GARAGE_MIN_PASSWORD; прочим — та же общая ошибка, что и
+        # при неверном пароле (хэш уже проверен — время то же), и попытка идёт в счёт блокировки.
+        if public and user and (user.get('role') != GARAGE_ROLE or len(password) < GARAGE_MIN_PASSWORD):
+            user = None
 
         if user and password_ok:
             _login_reset(username)
@@ -534,8 +612,11 @@ def login():
         _login_register_failure(username)
         return render_template('login.html', error='Неверный логин или пароль', next=next_url), 401
 
-    if current_user():
+    u = current_user()
+    if u and not public:
         return redirect('/')
+    if u and u.get('role') == GARAGE_ROLE:
+        return redirect(_GARAGE_PAGE)   # снаружи '/' закрыт; прочие сессии снаружи — просто форма входа
     return render_template('login.html', next=next_url)
 
 
@@ -8583,9 +8664,16 @@ def api_users_save():
     if role == 'user' and not areas:
         return jsonify({'success': False,
                         'error': 'Для пользователя нужно выбрать хотя бы одну территорию'}), 400
+    if role == GARAGE_ROLE and password and len(password) < GARAGE_MIN_PASSWORD:
+        return jsonify({'success': False, 'error': f'Пароль для роли «Гараж» — не короче {GARAGE_MIN_PASSWORD} '
+                                                   'символов (вход из интернета)'}), 400
 
     users = load_users()
     existing = users.get(username)
+    # Стал «Гаражом» без нового пароля — длину прежнего не проверить: нужен новый.
+    if existing is not None and role == GARAGE_ROLE and existing.get('role') != GARAGE_ROLE and not password:
+        return jsonify({'success': False, 'error': f'При смене роли на «Гараж» задайте новый пароль — не короче '
+                                                   f'{GARAGE_MIN_PASSWORD} символов (вход из интернета)'}), 400
 
     if existing is None:
         if not password:
