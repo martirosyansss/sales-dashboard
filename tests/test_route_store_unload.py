@@ -205,7 +205,7 @@ def test_api_unload_norms_follow_learned_row_in_effect(client):
 def test_settings_page_has_field_and_bumped_assets():
     html = (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
     assert 'id="rcsUnload"' in html and 'Ժամանակ խանութում, րոպե' in html
-    assert 'routes_customer_settings.js\') }}?v=9' in html and 'routes_customer_settings.css\') }}?v=3' in html
+    assert 'routes_customer_settings.js\') }}?v=11' in html and 'routes_customer_settings.css\') }}?v=3' in html
     js = (ROOT / 'static' / 'js' / 'routes_customer_settings.js').read_text(encoding='utf-8')
     assert 'unload_min: unloadMin' in js and 'Բեռի ժամանակը (' in js and 'Դատարկ՝ ' in js
     assert 'input.validity.badInput' in js                  # нечисло в поле — ошибка, а не «пусто» (стёрло бы время)
@@ -671,7 +671,7 @@ def test_learning_page_lists_active_offsets_without_stats_and_never_loads_erp(cl
 
 def test_learning_page_renders_store_block():
     html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
-    assert 'Բեռնաթափումն ըստ խանութների' in html and 'id="lrStoreRows"' in html and "routes_learning.js') }}?v=14" in html
+    assert 'Բեռնաթափումն ըստ խանութների' in html and 'id="lrStoreRows"' in html and "routes_learning.js') }}?v=15" in html
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
     assert 'function renderStores' in js and "esc(r.name)" in js and "kind === 'unload'" in js
     assert "learned: 'ըստ GPS-ի'" in js and 'ճշտված' not in js                # №60: время по GPS, а не «уточнено»

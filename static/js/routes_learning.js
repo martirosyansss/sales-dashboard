@@ -57,9 +57,11 @@
     function normText(kind, p) {
         if (!p) return null;
         if (kind === 'unload') {
-            const n = Object.keys(p.store_offsets || {}).length;
+            // №66: строка выбрала сглаживание к группе — своё время у всех магазинов с визитами (store_shrink)
+            const shrink = !!p.store_rule && p.store_rule.rule === 'shrink';
+            const n = Object.keys((shrink ? p.store_shrink : p.store_offsets) || {}).length;
             return fmt(p.per_stop_min, 1) + ' րոպե մեկ կետում + ' + fmt(p.per_tonne_min, 1) + ' րոպե յուրաքանչյուր տոննայի համար'
-                + (n ? ' (սեփական ժամանակ՝ ' + fmt(n) + ' խանութում)' : '');
+                + (n ? ' (սեփական ժամանակ՝ ' + fmt(n) + ' խանութում' + (shrink ? '՝ հարթեցում դեպի նման խանութները' : '') + ')' : '');
         }
         if (kind === 'loading') return fmt(p.fixed_min, 1) + ' րոպե մեկ երթի համար + ' + fmt(p.per_tonne_min, 1) + ' րոպե յուրաքանչյուր տոննայի համար';
         if (kind === 'travel') {
@@ -140,19 +142,21 @@
             : '';
     }
     // Разгрузка по магазинам (№50): введено / по факту (визитов; split — 2 визита расходятся, ждём 3-й) / в расчёте
-    // shrink, shrink_manual — сглаживание к группе (№66): факт GPS вместе с временем похожих магазинов или введённым
+    // shrink — сглаживание к группе (№66): факт GPS вместе с временем похожих магазинов
     const STORE_SOURCE = { learned: 'ըստ GPS-ի', manual: 'ինչպես մուտքագրված է', norm: 'սովորական ժամանակ',
-        shrink: 'GPS + նման խանութներ', shrink_manual: 'GPS + մուտքագրված' };
+        shrink: 'GPS + նման խանութներ' };
     // По-армянски существительное после числа — в единственном числе: «2 բեռնաթափում», «5 բեռնաթափում»
     const unloads = (n) => fmt(n) + ' բեռնաթափում';
-    // shrink — действует сглаживание к группе (№66): в расчёт идёт и 1-й визит, третьего не ждут
+    // shrink — действует сглаживание к группе (№66): третьего не ждут; без введённого в расчёт идёт и 1-й визит, с
+    // введённым до 2-го визита — введённое
     function storeRow(r, minVisits, shrink) {
         const name = r.name ? esc(r.name) + (r.code ? ' · ' + esc(r.code) : '') : 'հաճախորդ ' + esc(r.customer_id);
         const manual = num(r.manual_min) === null ? '—' : fmt(r.manual_min) + ' րոպե';
         const visits = num(r.visits);
         const fact = visits === null ? '<span class="lr-why">բեռնաթափումներ դեռ չկան</span>'
             : fmt(r.fact_min, 1) + ' րոպե <span class="lr-why">(' + unloads(visits)
-                + (shrink ? '' : r.split ? ' — շատ են տարբերվում, ծրագիրը սպասում է երրորդին'
+                + (shrink ? (r.source === 'manual' ? ' — դեռ քիչ է, գործում է մուտքագրվածը' : '')
+                    : r.split ? ' — շատ են տարբերվում, ծրագիրը սպասում է երրորդին'
                     : visits < minVisits ? ' — դեռ քիչ է, հաշվարկում չի մտնում' : '') + ')</span>';
         return '<tr><th scope="row">' + name + '</th><td>' + manual + '</td><td>' + fact + '</td><td><b>' + fmt(r.in_calc_min, 1)
             + ' րոպե</b><br><span class="lr-why">' + esc(STORE_SOURCE[r.source] || '') + '</span></td></tr>';
@@ -170,7 +174,7 @@
         $('lrStoresTonne').textContent = fmt(st.per_tonne_min, 1);
         $('lrStoreRows').innerHTML = st.rows.length ? st.rows.map(r => storeRow(r, st.min_visits, shrink)).join('')
             : '<tr><td colspan="4" class="rt-empty">Դեռ ոչ մի խանութ սեփական ժամանակ չունի։ Այն կարելի է մուտքագրել «Կարգավորումներ → Խանութներ՝ ժամ և մեքենաներ» բաժնում․ '
-                + 'ըստ փաստի այն կհայտնվի, երբ խանութում կկուտակվի ' + esc(unloads(st.min_visits)) + '։</td></tr>';
+                + 'ըստ փաստի այն կհայտնվի, երբ խանութում կկուտակվի ' + esc(unloads(shrink ? 1 : st.min_visits)) + '։</td></tr>';
         $('lrStoresNote').textContent = 'Մնացած խանութներում՝ սովորական ' + fmt(st.per_stop_min, 1) + ' րոպե։'
             + (st.run_day ? ' «Ըստ փաստի» սյունակը՝ ' + day(st.run_day) + '-ի վերահաշվարկից։' : '')
             + (st.total > st.shown ? ' Ցույց են տրված ' + fmt(st.shown) + ' / ' + fmt(st.total) + ' խանութ՝ ամենաշատ բեռնաթափումներով։' : '');

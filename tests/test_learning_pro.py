@@ -375,10 +375,10 @@ def test_learning_page_texts_armenian():
     assert "kind === 'buffer'" in js and "kind === 'truck_unload' || kind === 'truck_travel'" in js
     html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
     assert 'Ժամանակի պաշար երթի վերջում' in html and 'Մեքենայի գործակիցները' in html
-    assert "routes_learning.js') }}?v=14" in html
+    assert "routes_learning.js') }}?v=15" in html
     assert lr.KIND_TITLES['buffer'] == 'Ժամանակի պաշար երթի վերջում'
     assert all(lr.DEFAULT_AUTO[k] for k in ('buffer', 'truck_unload', 'truck_travel'))
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     assert 'dp-buffer-mark' in djs and 'ժամանակի պաշար երթի վերջում՝' in djs
     page = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
-    assert "routes_dispatch.js') }}?v=63" in page and "routes_dispatch.css') }}?v=34" in page
+    assert "routes_dispatch.js') }}?v=64" in page and "routes_dispatch.css') }}?v=34" in page
