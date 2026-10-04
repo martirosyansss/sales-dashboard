@@ -1,5 +1,6 @@
 """Журнал гаража — доработка после оценки (№53, «fix all»): растяжение крупного ремонта на 24/36 месяцев, сглаживание
-цены к средней модели, средняя модели или парка машинам без своей цены (пустое ручное), плашка о пробеге; схема 17."""
+цены к средней модели, средняя модели или парка машинам без своей цены (пустое ручное), плашка о пробеге; схема 18
+(шаг 17 → 18 — после шага водителей 16 → 17, №62)."""
 import ast
 import sqlite3
 import sys
@@ -186,7 +187,7 @@ def test_model_of(name, capacity, model):
     assert gr.model_of(name, capacity) == model
 
 
-# ============================== хранение: схема 17 ==============================
+# ============================== хранение: схема 18 ==============================
 
 def _input(**kw):
     raw = {'car_code': 'CAR1', 'day': '2026-09-01', 'kind': 'repair', 'what': 'Շարժիչ', 'amount_amd': 2_400_000,
@@ -230,47 +231,93 @@ def test_store_spread_roundtrip_history_and_db_check(tmp_path):
         s.garage_entries()
 
 
-def test_store_migrates_16_to_17_keeps_rows_ids_and_history(tmp_path):
-    """16 → 17: журнал пересобирается со столбцом spread_months — все строки, номера и ссылки replaced_by как были, у всех
-    «не растянут»; индекс «одно показание пробега в день» на месте; прочие таблицы не меняются."""
-    path = str(tmp_path / 'v16.db')
+GARAGE_STEP = next(v for v, ddl in st._MIGRATIONS.items() if any('garage_entry_v' in x for x in ddl))
+V16_ROWS = [(5, 'CAR1', '2026-03-01', 'repair', 'Կոճղակներ', 55_000, 100_100, None, 'x', 'qa', None, None, None),
+            (9, 'CAR1', '2026-03-01', 'repair', 'Կոճղակներ', 50_000, 100_000, 'n', 'x', 'qa', 'y', 'boss', 5),
+            (12, 'CAR1', '2026-06-01', 'odometer', None, 0, 110_000, None, 'x', 'qa', None, None, None)]
+
+
+def _old_db(tmp_path, version, drop=()):
+    """База прежней схемы version: журнал гаража — как в схемах 16 и 17 (без spread_months), с тремя строками (правка с
+    историей replaced_by и показание пробега); drop — таблицы, которых в той схеме ещё не было."""
+    path = str(tmp_path / f'v{version}.db')
     s = st.Store(path)
     s.save_customer_constraints(101, None, st.CustomerWindow('between', 600, 720), 'qa', 40)
+    s.save_truck_driver('CAR1', '2026-10-01', 'Արամ', 'qa')
     with closing(sqlite3.connect(path)) as conn:
         conn.execute('DROP TABLE garage_entry')
-        conn.execute(st._GARAGE_TABLE_V16)
-        conn.execute(st._GARAGE_ONE_ODOMETER)
-        conn.executemany('INSERT INTO garage_entry(id, car_code, day, kind, what, amount_amd, odometer_km, note, created_at, '
-                         'created_by, deleted_at, deleted_by, replaced_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                         [(5, 'CAR1', '2026-03-01', 'repair', 'Կոճղակներ', 55_000, 100_100, None, 'x', 'qa', None, None, None),
-                          (9, 'CAR1', '2026-03-01', 'repair', 'Կոճղակներ', 50_000, 100_000, 'n', 'x', 'qa', 'y', 'boss', 5),
-                          (12, 'CAR1', '2026-06-01', 'odometer', None, 0, 110_000, None, 'x', 'qa', None, None, None)])
-        conn.execute("UPDATE meta SET value = '16' WHERE key = 'schema_version'")
+        for table in set(drop) - {'garage_entry'}:
+            conn.execute(f'DROP TABLE {table}')
+        if 'garage_entry' not in drop:
+            conn.execute(st._GARAGE_TABLE_V16)
+            conn.execute(st._GARAGE_ONE_ODOMETER)
+            conn.executemany('INSERT INTO garage_entry(id, car_code, day, kind, what, amount_amd, odometer_km, note, '
+                             'created_at, created_by, deleted_at, deleted_by, replaced_by) '
+                             'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', V16_ROWS)
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(version),))
         conn.commit()
-        before = {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall()
-                  for t in ('garage_entry', 'customer_window', 'customer_unload', 'settings')}
-    s2 = st.Store(path)
-    assert s2.load().unload_min == {101: 40.0}
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+        before = {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in tables if t != 'meta'}
+    return path, before
+
+
+def _check_migrated(path, before):
+    """После миграции: схема текущая, журнал — те же строки, номера и replaced_by, у всех «не растянут», столбец и его
+    CHECK на месте; индекс «одно показание пробега в день» работает; временной таблицы нет; прочие таблицы как были."""
+    s = st.Store(path)
+    assert s.load().unload_min == {101: 40.0}
     with closing(sqlite3.connect(path)) as conn:
         assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == (str(st.SCHEMA_VERSION),)
         after = conn.execute('SELECT * FROM garage_entry ORDER BY 1').fetchall()
-        assert [r[:-1] for r in after] == before['garage_entry'] and {r[-1] for r in after} == {None}
+        assert [r[:-1] for r in after] == before.get('garage_entry', []) and {r[-1] for r in after} <= {None}
         assert {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before if t != 'garage_entry'} == \
             {t: v for t, v in before.items() if t != 'garage_entry'}
         assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'garage_one_odometer'").fetchone()
-        assert not conn.execute("SELECT name FROM sqlite_master WHERE name = 'garage_entry_v17'").fetchone()
-    assert [(e.id, e.replaced_by, e.spread_months) for e in s2.garage_entries(deleted=True)] == \
-        [(5, None, None), (9, 5, None), (12, None, None)]
-    with closing(sqlite3.connect(path)) as conn, pytest.raises(sqlite3.IntegrityError):   # индекс «одно в день» работает
-        conn.execute("INSERT INTO garage_entry(car_code, day, kind, amount_amd, odometer_km, created_at) "
-                     "VALUES('CAR1', '2026-06-01', 'odometer', 0, 110_500, 'x')")
+        assert not conn.execute("SELECT name FROM sqlite_master WHERE name LIKE 'garage_entry_v%'").fetchone()
+        with pytest.raises(sqlite3.IntegrityError):                                    # CHECK срока — новой схемы
+            conn.execute("INSERT INTO garage_entry(car_code, day, kind, what, amount_amd, odometer_km, created_at, "
+                         "spread_months) VALUES('C', '2026-01-01', 'repair', 'x', 5, 1, 'x', 12)")
+    if before.get('garage_entry'):
+        assert [(e.id, e.replaced_by, e.spread_months) for e in s.garage_entries(deleted=True)] == \
+            [(5, None, None), (9, 5, None), (12, None, None)]
+        with closing(sqlite3.connect(path)) as conn, pytest.raises(sqlite3.IntegrityError):   # индекс «одно в день»
+            conn.execute("INSERT INTO garage_entry(car_code, day, kind, amount_amd, odometer_km, created_at) "
+                         "VALUES('CAR1', '2026-06-01', 'odometer', 0, 110_500, 'x')")
+    assert s.truck_drivers('2026-10-02')[0] == ({'CAR1': 'Արամ'} if 'truck_driver' in before else {})
+
+
+def test_garage_step_is_17_to_18_after_truck_driver():
+    """Шаг журнала (spread_months) — после шага водителей (№62, уже в базе владельца): 16 → 17 — truck_driver, 17 → 18 —
+    журнал; иначе база на 17 пропустила бы пересборку и журнал остался бы без spread_months."""
+    driver = next(v for v, ddl in st._MIGRATIONS.items() if st._TRUCK_DRIVER_TABLE in ddl)
+    assert (driver, GARAGE_STEP, st.SCHEMA_VERSION) == (16, 17, 18)
+
+
+def test_store_migrates_17_to_18_keeps_rows_ids_and_history(tmp_path):
+    """17 → 18 (как база владельца — водители уже есть): журнал пересобирается со столбцом spread_months."""
+    _check_migrated(*_old_db(tmp_path, GARAGE_STEP))
+
+
+def test_store_migrates_16_to_18_through_truck_driver(tmp_path):
+    """16 → 17 → 18: сначала таблица водителей, затем пересборка журнала — строки журнала и история на месте."""
+    _check_migrated(*_old_db(tmp_path, GARAGE_STEP - 1, drop=('truck_driver',)))
+
+
+def test_store_migrates_14_to_18_chain(tmp_path):
+    """14 → 15 → 16 → 17 → 18 (база, не видевшая ни времени у магазина, ни журнала, ни водителей): всё создаётся."""
+    path, before = _old_db(tmp_path, 14, drop=('customer_unload', 'garage_entry', 'truck_driver'))
+    s = st.Store(path)
+    s.save_customer_unload(101, 40, 'qa')
+    _check_migrated(path, before)
 
 
 OWNER_DB = ROOT / 'route_optimizer.db'
 
 
 @pytest.mark.skipif(not OWNER_DB.exists(), reason='нет базы маршрутов владельца')
-def test_owner_db_copy_migrates_to_17(tmp_path):
+def test_owner_db_copy_migrates_to_current(tmp_path):
+    """Копия базы владельца (только чтение исходника; сейчас — схема 17 с водителями): все таблицы и строки те же, журнал
+    — те же строки и «не растянут», схема — текущая (18)."""
     copy = tmp_path / 'owner.db'
     with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro', uri=True)) as src, \
             closing(sqlite3.connect(str(copy))) as dst:
@@ -283,7 +330,9 @@ def test_owner_db_copy_migrates_to_17(tmp_path):
     with closing(sqlite3.connect(str(copy))) as conn:
         assert {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before} == before
         assert [r[:len(rows[0])] for r in conn.execute('SELECT * FROM garage_entry ORDER BY 1')] == rows if rows else True
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('17',)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('18',)
+        assert 'spread_months' in [r[1] for r in conn.execute('PRAGMA table_info(garage_entry)')]
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'truck_driver'").fetchone()
 
 
 # ============================== в расчёте и на странице ==============================

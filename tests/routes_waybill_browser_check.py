@@ -6,7 +6,9 @@
 Приложение — то же, что в tests/routes_dispatch_browser_check.py (настоящие шаблон, статика и blueprint, поддельная ERP,
 синтетический день), строки заказов — подделка waybill_loader. Порт 8767 на 127.0.0.1 (8766 — у общей проверки «Развоза»).
 
-A после «Կազմել երթերը» у каждой карточки машины две кнопки «Բեռնագիր» и «Excel», и у свёрнутой карточки тоже;
+A после «Կազմել երթերը» у каждой карточки машины три кнопки «Վարորդ», «Բեռնագիր» и «Excel», и у свёрнутой карточки тоже;
+R «Վարորդ» (№62): диалог с подсказкой («с этого дня» или «только этот прошедший день»), фокус в поле; имя (с разметкой — текстом) по Enter сохраняется,
+  уведомление, имя в шапке карточки, фокус обратно на кнопку; в накладной — в шапке листа и у подписи, в Excel — строка;
 B «Բեռնագիր» открывает окно с листом `.sheet` на каждый рейс машины: «ԲԵՌՆԱԳԻՐ», машина, товары подделки (имя, код,
   «N փաթեթ + M հատ»), итог кг, подписи; разметка из ERP экранирована (имя товара с <b> — текстом);
 C «Excel» скачивает bernagir_<машина>_<день>.xlsx: лист на рейс, строка заголовка таблицы и товары; фокус остаётся на кнопке;
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+from datetime import datetime
 import logging
 import sys
 import tempfile
@@ -38,6 +41,7 @@ from openpyxl import load_workbook  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
 
+from route_optimizer import views  # noqa: E402
 from route_optimizer import waybill as wb  # noqa: E402
 from test_route_optimizer import _dorder  # noqa: E402
 
@@ -65,6 +69,7 @@ def main() -> int:
 
     app = base.build_app(tempfile.mkdtemp(prefix='waybill-check-'), base.FakeClient())
     app.extensions['route_optimizer'].waybill_loader = loader
+    views._clock = lambda: datetime(2026, 9, 30, 18, 0)     # «сейчас» — накануне DAY: день не прошёл, у водителя есть выбор срока
     server = make_server('127.0.0.1', PORT, app, threaded=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     errors = []
@@ -95,21 +100,49 @@ def main() -> int:
             # A
             cards = page.locator('#dpTruckCards .dp-tcard')
             n = cards.count()
-            ok = n > 0 and all(cards.nth(i).locator('.dp-tacts .dp-wbbtn').count() == 2 for i in range(n))
-            check(ok, f'A {n} truck cards, each with 2 waybill buttons')
+            ok = n > 0 and all(cards.nth(i).locator('.dp-tacts .dp-wbbtn').count() == 3 for i in range(n))
+            check(ok, f'A {n} truck cards, each with 3 buttons (driver, waybill, Excel)')
             card = cards.first
             truck = card.get_attribute('data-truck')
             labels = card.locator('.dp-wbbtn').evaluate_all("els => els.map(b => b.textContent.trim() + '|' + b.getAttribute('aria-label'))")
-            check(labels[0].startswith('Բեռնագիր|Տպել բեռնագիրը՝') and labels[1].startswith('Excel|Բեռնագիրը Excel-ով՝')
-                  and truck in labels[0], f'A labels {labels}')
+            check(labels[0].startswith('Վարորդ|Վարորդ՝') and labels[1].startswith('Բեռնագիր|Տպել բեռնագիրը՝')
+                  and labels[2].startswith('Excel|Բեռնագիրը Excel-ով՝') and truck in labels[1], f'A labels {labels}')
             if card.locator('.dp-thead').get_attribute('aria-expanded') == 'true':
                 card.locator('.dp-thead').click()
             check(card.locator('.dp-thead').get_attribute('aria-expanded') == 'false'
-                  and card.locator('.dp-wbbtn').first.is_visible(), 'A buttons visible on a collapsed card')
+                  and card.locator('.dp-wbbtn').nth(1).is_visible(), 'A buttons visible on a collapsed card')
+
+            # R
+            DRIVER = 'Վարդանյան Գարիկ <i>x</i>'
+            card.locator('.dp-drvbtn').click()
+            page.wait_for_selector('#dpDriverDlg[open]', timeout=5000)
+            past = page.request.get(f'{BASE}/api/routes/dispatch', params={'date': DAY}).json()['is_past']
+            check(('Միայն' if past else 'Նախորդ օրերի') in page.inner_text('#dpDriverHint') and not page.locator('#dpDriverClear').is_visible()
+                  and page.evaluate("() => document.activeElement && document.activeElement.id") == 'dpDriverName',
+                  f'R dialog: hint ({"only that past day" if past else "from this day"}), focus in the field, no «Հեռացնել» yet')
+            check(page.locator('#dpDriverScope').is_visible() != past
+                  and (past or page.is_checked('#dpDriverFrom')), 'R scope choice: hidden on a past day, «from this day» when no driver yet')
+            page.fill('#dpDriverName', '  Վարդանյան   Գարիկ <i>x</i> ')
+            page.press('#dpDriverName', 'Enter')
+            page.wait_for_function("() => !document.getElementById('dpDriverDlg').open", timeout=10000)
+            page.wait_for_function("() => /վարորդը՝/.test((document.getElementById('dpToast') || {}).textContent || '')", timeout=10000)
+            head = card.locator('.dp-tdriver').inner_text()
+            check(DRIVER in head and card.locator('.dp-tdriver i:text-is("x")').count() == 0,
+                  f'R card header shows the driver as text: {head!r}')
+            check(page.evaluate("() => document.activeElement && document.activeElement.classList.contains('dp-drvbtn')"),
+                  'R focus back on «Վարորդ»')
+            card.locator('.dp-drvbtn').click()           # водитель уже есть — по умолчанию «только этот день» (подмена)
+            page.wait_for_selector('#dpDriverDlg[open]', timeout=5000)
+            check(page.is_checked('#dpDriverDay') and page.input_value('#dpDriverName') == DRIVER and page.is_visible('#dpDriverClear'),
+                  'R reopen: substitute «only this day» preselected, current name in the field, «Հեռացնել» visible')
+            page.click('#dpDriverCancel')
+            page.wait_for_function("() => !document.getElementById('dpDriverDlg').open", timeout=5000)
+            saved = page.request.get(f'{BASE}/api/routes/dispatch', params={'date': DAY}).json()
+            check(saved['drivers'].get(truck) == DRIVER and saved['driver_names'] == [DRIVER], f'R saved on the server {saved["drivers"]}')
 
             # B
             with ctx.expect_page(timeout=15000) as popup:
-                card.locator('.dp-wbbtn').first.click()
+                card.locator('.dp-wbbtn').nth(1).click()
             sheet = popup.value
             sheet.wait_for_function("() => document.querySelectorAll('.sheet').length > 0", timeout=15000)
             api = page.request.get(f'{BASE}/api/routes/dispatch/waybill', params={'date': DAY, 'truck': truck}).json()
@@ -119,6 +152,8 @@ def main() -> int:
             check('ԲԵՌՆԱԳԻՐ' in text and truck in text and 'Բաց թողեց (պահեստապետ)' in text and 'Ընդունեց (վարորդ)' in text,
                   'B title, truck, signatures')
             check('Գառնի 6լ <b>x</b>' in text and sheet.locator('.sheet b:text-is("x")').count() == 0, 'B ERP markup shown as text')
+            check(f'Վարորդ՝ {DRIVER}' in text and f'Ընդունեց (վարորդ)՝ {DRIVER}' in text
+                  and sheet.locator('.sheet i:text-is("x")').count() == 0, 'B driver in the sheet header and at the signature')
             cola = sheet.locator('.sheet').first.locator('tr', has_text='Կոլա 1.5լ').inner_text().replace(' ', ' ')
             first = api['trips'][0]
             q = next(r for r in first['rows'] if r['product_id'] == 11)
@@ -129,7 +164,7 @@ def main() -> int:
 
             # C
             with page.expect_download(timeout=15000) as dl:
-                card.locator('.dp-wbbtn').nth(1).click()
+                card.locator('.dp-wbbtn').nth(2).click()
             d = dl.value
             data = Path(d.path()).read_bytes()
             book = load_workbook(io.BytesIO(data))
@@ -138,6 +173,7 @@ def main() -> int:
             check(book.sheetnames == [f'Երթ {i + 1}' for i in range(n_trips)], f'C sheets {book.sheetnames}')
             vals = [[c for c in row] for row in book.worksheets[0].iter_rows(values_only=True)]
             head = next((i for i, r in enumerate(vals) if r[0] == '№'), None)
+            check(['Վարորդ', DRIVER] in [list(r[:2]) for r in vals], 'C driver row in the Excel sheet')
             check(head is not None and vals[head][2] == 'Ապրանք' and {vals[head + 1][2], vals[head + 2][2]} == {'Գառնի 6լ <b>x</b>', 'Կոլա 1.5լ'},
                   'C table header and products in sheet 1')
             check(page.evaluate("() => document.activeElement && document.activeElement.classList.contains('dp-wbbtn')"
@@ -153,7 +189,7 @@ def main() -> int:
             served = []
             page.on('response', lambda r: served.append(r.status) if '/api/routes/dispatch/waybill' in r.url else None)
             n_pages = len(ctx.pages)
-            card.locator('.dp-wbbtn').first.click()
+            card.locator('.dp-wbbtn').nth(1).click()
             page.wait_for_selector('#dpActionError:not(.d-none)', timeout=15000)
             page.wait_for_timeout(300)
             check('Թարմացրեք էջը' in page.inner_text('#dpActionErrorText') and served == [200] and len(ctx.pages) == n_pages,
@@ -171,7 +207,7 @@ def main() -> int:
             page.route('**/api/routes/dispatch/waybill*', newer_rev)
             got_g = []
             page.on('download', lambda x: got_g.append(x))
-            card.locator('.dp-wbbtn').nth(1).click()
+            card.locator('.dp-wbbtn').nth(2).click()
             page.wait_for_selector('#dpActionError:not(.d-none)', timeout=15000)
             page.wait_for_timeout(500)
             check(not got_g and 'Թարմացրեք էջը' in page.inner_text('#dpActionErrorText'), 'G plan changed during the request: error, no download')
@@ -185,7 +221,7 @@ def main() -> int:
                 'date': DAY, 'rev': day['rev'], 'action': 'pin', 'trip': t0['trips'][0]['id'], 'truck': truck})
             check(pin.status == 200, f'D plan changed behind the page (pin {pin.status})')
             n_pages = len(ctx.pages)
-            card.locator('.dp-wbbtn').first.click()
+            card.locator('.dp-wbbtn').nth(1).click()
             page.wait_for_selector('#dpActionError:not(.d-none)', timeout=15000)
             page.wait_for_timeout(300)
             check('Թարմացրեք էջը' in page.inner_text('#dpActionErrorText') and page.locator('#dpActionReload').is_visible()
@@ -193,7 +229,7 @@ def main() -> int:
             got = []
             page.on('download', lambda x: got.append(x))
             page.evaluate("() => document.getElementById('dpActionError').classList.add('d-none')")
-            card.locator('.dp-wbbtn').nth(1).click()
+            card.locator('.dp-wbbtn').nth(2).click()
             page.wait_for_selector('#dpActionError:not(.d-none)', timeout=15000)
             page.wait_for_timeout(500)
             check(not got and 'Թարմացրեք էջը' in page.inner_text('#dpActionErrorText'), 'D stale Excel: error, no download')
@@ -208,7 +244,7 @@ def main() -> int:
             spans = c0.locator('.dp-wbbtn span').evaluate_all("els => els.map(e => e.getBoundingClientRect().width)")
             cb, ab = c0.bounding_box(), c0.locator('.dp-tacts').bounding_box()
             check(all(w <= 1 for w in spans) and ab['x'] + ab['width'] <= cb['x'] + cb['width'] + 0.5
-                  and c0.locator('.dp-wbbtn').first.get_attribute('aria-label').startswith('Տպել բեռնագիրը՝'),
+                  and c0.locator('.dp-wbbtn').nth(1).get_attribute('aria-label').startswith('Տպել բեռնագիրը՝'),
                   f'M 1280: icon-only buttons inside the card (label widths {spans})')
 
             # E

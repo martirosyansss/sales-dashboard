@@ -353,7 +353,7 @@ def test_store_db_checks_and_broken_rows(tmp_path):
         conn.execute("INSERT INTO garage_entry(car_code, day, kind, what, amount_amd, odometer_km, created_at) "
                      "VALUES('C', '01.01.2026', 'repair', 'x', 5, 1, 'x')")
         conn.commit()
-    with pytest.raises(st.StoreError, match='ավտոտնակի գրառումներում №') as exc:
+    with pytest.raises(st.StoreError, match='վնասված է ավտոտնակի №') as exc:
         s.garage_entries()
     assert not any('Ѐ' <= ch <= 'ӿ' for ch in str(exc.value))   # доходит до любой страницы — только по-армянски (№58)
 
