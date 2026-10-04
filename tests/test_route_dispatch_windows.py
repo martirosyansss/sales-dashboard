@@ -552,7 +552,8 @@ def test_store_migrates_schema_8_to_9_additive(tmp_path):
     with closing(sqlite3.connect(path)) as conn:
         assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == (str(st.SCHEMA_VERSION),)
         cols = [r[1] for r in conn.execute('PRAGMA table_info(trucks)')]
-        assert cols[10] == 'center_ok' and cols[-4:] == list(st.LOAD_COST_FIELDS) and 'customer_window' in {
+        # схема 22 (№68) пересобрала таблицу машин: столбцы — в порядке новой базы, «большая машина» — последней
+        assert 'center_ok' in cols and cols[-5:] == [*st.LOAD_COST_FIELDS, 'big'] and 'customer_window' in {
             r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     s.save_customer_window(101, st.CustomerWindow('between', 600, 720), 'qa')
     s.save_customer_window(102, st.CustomerWindow('at', 660, None, 15), 'qa')

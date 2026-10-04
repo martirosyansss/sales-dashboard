@@ -82,6 +82,9 @@ take it and why not, what the day's calculation took into account).
 Field notes: kg and load_pct (share of truck capacity); km; liters; operating_cost_amd (diesel + wear, AMD); depart/return \
 and eta are clock times HH:MM ("HH:MM (+1)" = after midnight); window = store receiving window {kind before/after/between/at, \
 t1/t2 minutes from midnight, tol}; center = store inside the small city-center zone that only center_ok trucks may enter; \
+big = big truck (owner rule: stores inside the Yerevan zone go to small trucks first, a big truck takes them only when \
+small trucks lack capacity or time); yerevan_min on a stop = minutes added to its unload because a big truck serves a \
+store inside the Yerevan zone (parking, maneuvering); \
 work_start/work_end = normal truck day, overtime_end = force-majeure limit; late = trip runs after work_end; over_time = \
 cannot return even by the limit; poor = trip revenue below min_trip_revenue (could move to defer_to day); pinned = locked \
 by the logist; coord_source = where the store point comes from (erp, gps of the manager, driver, manual); unassigned flags \

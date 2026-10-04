@@ -20,7 +20,9 @@
   поправок на каждую стоянку точки (unload_extra). Соперник №60 (ответ владельца №66) — сглаживание к группе
   (shrink_times: t = (n·факт + k·опора) / (n + k), опора — медиана группы размера / сети, иначе a; введённое — само,
   пока визитов меньше STORE_MIN_OBS, как в №60):
-  действует, только если проверка выбрала его (_fit_store_rule, гистерезис как у truck_time; store_rule строки);
+  действует, только если проверка выбрала его (_fit_store_rule, гистерезис как у truck_time; store_rule строки).
+  Визит большой машины в зоне Еревана (№68) — без надбавки плана (big_truck_yerevan_min за магазин; вычитает
+  views.run_learning): иначе её выучили бы своё время магазина и темп машины, а план прибавил бы её ещё раз;
 - loading — загрузка на складе = a + b·тонн рейса → TruckNorms.warehouse_load_fixed_min / warehouse_load_min_per_tonne.
   Стоянка на складе — не только загрузка (обед, бумаги, ожидание выезда под окно первой точки), поэтому: из неё
   вычитается только собственное ожидание плана — пересечение стоянки с [плановое возвращение предыдущего рейса,
@@ -176,6 +178,7 @@ SHRINK_GROUP_MIN = 3                 # опора группы — медиан�
 SHRINK_MIN_TEST = (30, 3)            # смена правила: визитов проверки у магазинов с визитами в обучении и их дней
 SHRINK_K_MAX_AGE = 28                # k действующей строки (этой ночью не оценить) переносится не дольше 28 дней от оценки
 UNLOAD_MAX_MIN = 90.0                # стоянка у магазина дольше (после TAP_TAIL и вычета ожидания окна) — не разгрузка
+UNLOAD_MIN_OBS = 0.5                 # короче — не разгрузка (unload_obs; и после вычета надбавки Еревана, №68)
 UNLOAD_CAP_REL = 3.0                 # …или дольше 3 × действующей нормы
 TAP_TAIL = timedelta(minutes=10)     # разгрузка — не дольше 10 мин после отметки доставки «закончил» (ответ владельца
                                      # №65): стоянка дольше — обед, отдых, не время магазина (unload_obs)
@@ -1656,7 +1659,7 @@ def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop],
         opens = max((s.window[0] for s in ss if s.window is not None and math.isfinite(s.window[0])), default=None)
         wait = max(0.0, opens - ac.day_minutes(day, v.arrive)) if opens is not None else 0.0
         minutes = (end - v.arrive).total_seconds() / 60.0 - wait
-        if not 0.5 <= minutes <= UNLOAD_MAX_MIN:
+        if not UNLOAD_MIN_OBS <= minutes <= UNLOAD_MAX_MIN:
             continue
         out.append(UnloadObs(day, len(ss), math.fsum(s.delivered_kg for s in ss) / 1000.0, minutes,   # type: ignore[misc]
                              tuple(sorted(s.customer_id for s in ss if s.customer_id is not None)), car))

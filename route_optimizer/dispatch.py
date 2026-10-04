@@ -24,6 +24,8 @@
   ждёт, ожидание — её время), центр — только машины с правом въезда. Сборка и «Везти после конца дня» их
   соблюдают (fleet._plan_timed); что не помещается в окно или без машины для центра — no_window / no_center.
   Правки логиста не запрещаются: нарушение видно в плане (window_miss, center_miss).
+- Большая машина в Ереване (ответ владельца №68, правило — fleet): зона Еревана и надбавка — в ctx.tn (views._dispatch_ctx);
+  у точки в зоне на большой машине план показывает надбавку (yerevan_min) — она уже в её разгрузке и во времени рейса.
 """
 from __future__ import annotations
 
@@ -433,6 +435,16 @@ def _span(ctx: DayContext, cid: int) -> fl.Window:
 def _central(ctx: DayContext, s: Stop) -> bool:
     """Точка в малом центре (везёт только машина с правом въезда)."""
     return bool(ctx.center_zone) and s.point is not None and in_polygon(s.point, ctx.center_zone)
+
+
+def _yerevan(ctx: DayContext, s: Stop) -> bool:
+    """Точка в зоне Еревана (№68: большая машина везёт её после малых и дольше)."""
+    return s.point is not None and ctx.tn.in_yerevan(s.point)
+
+
+def big_shown(ctx: DayContext, truck: fl.FleetTruck | None) -> bool:
+    """Показывать ли «большая машина» (№68): машина большая и зона Еревана задана (пустая — правила нет, план прежний)."""
+    return truck is not None and truck.big and len(ctx.tn.yerevan_zone) >= 3
 
 
 def _allowed_trucks(ctx: DayContext, cid: int) -> frozenset[str] | None:
@@ -1093,6 +1105,7 @@ def _trip_explain(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, truc
     bypass_km, bypass_legs = _bypass_km(ctx, [routable[c].point for c in cids])
     heavy = (truck is not None and limit is not None and len(cids) == 1
              and limit > fl.LOAD_CAP * truck.capacity_kg + _EPS and kg > fl.LOAD_CAP * truck.capacity_kg + _EPS)
+    city = ctx.tn.yerevan_of(code) * sum(1 for c in cids if _yerevan(ctx, routable[c]))   # №68: уже в unload_min
     return {
         'loading_min': _r(parts['loading']), 'drive_min': _r(math.fsum(x for x, _, _ in legs)),
         'unload_min': _r(math.fsum(x for _, _, x in legs)), 'wait_min': _r(math.fsum(x for _, x, _ in legs)),
@@ -1110,6 +1123,7 @@ def _trip_explain(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, truc
         'others': _alternatives(ctx, sel, code, cids, routable, kgs),
         **({'lunch_min': _r(brk.added if brk.stop is not None else 0.0)} if brk is not None else {}),
         **({'buffer_min': _r(parts['buffer'])} if 'buffer' in parts else {}),   # запас на рейс (№66)
+        **({'yerevan_min': _r(city)} if city else {}),   # большая машина в Ереване (№68)
     }
 
 
@@ -1120,11 +1134,17 @@ def _day_explain(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft, se
     закреплённые рейсы, нормы загрузки и разгрузки (загрузка — те же числа, что у tn.load), правило точки магазина
     (ERP дальше ERP_GPS_MAX_GAP_KM от GPS менеджера — GPS), решатель и ctx.model (дороги, минуты, выученные нормы — views._dispatch_ctx)."""
     tn = ctx.tn
+    # большая машина в Ереване (№68) — только когда правило в деле: среди машин дня есть большая и в зоне есть магазины
+    city = sum(1 for s in routable.values() if _yerevan(ctx, s))
+    big = [x.car_code for x in sel if big_shown(ctx, x)]
     return {
         'trucks': [{'car_code': x.car_code, 'name': x.name, 'capacity_kg': x.capacity_kg, 'l100': _r(x.l100),
                     'fuel_empty_l100': x.fuel_empty_l_per_100km, 'fuel_full_l100': x.fuel_full_l_per_100km,
                     'wear': x.wear_amd_per_km is not None or x.wear_load_amd_per_km is not None,
-                    'center_ok': x.center_ok, 'trips': trips_of.get(x.car_code, 0)} for x in sel],
+                    'center_ok': x.center_ok, 'trips': trips_of.get(x.car_code, 0),
+                    **({'big': True} if big_shown(ctx, x) else {})} for x in sel],
+        **({'yerevan': {'stores': city, 'big': big, 'minutes': max(tn.yerevan_of(c) for c in big),
+                        'penalty_km': fl.BIG_YEREVAN_KM}} if city and big else {}),
         'zone': len(ctx.center_zone) >= 3,
         'center_stores': sum(1 for s in routable.values() if _central(ctx, s)),
         'window_stores': sum(1 for c in routable if c in ctx.windows),
@@ -1237,12 +1257,14 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
         for c, at, (drive, wait, unload) in zip(cids, arrivals, parts[t.id]['legs']):
             central = _central(ctx, routable[c])
             late = _span(ctx, c)[1]
+            city = ctx.tn.yerevan_of(t.truck) if _yerevan(ctx, routable[c]) else 0.0   # №68: уже в unload_min
             marks.append({'eta': _hhmm(ctx.work_start_min + at), 'window_miss': at > late + _EPS,
                           'center': central, 'center_miss': central and not (truck is not None and truck.center_ok),
                           'vehicle_miss': not _vehicle_ok(ctx, c, t.truck),
                           'arrive': _hhmm(ctx.work_start_min + at - wait),   # приехал; eta — начало разгрузки
                           'drive_min': _r(drive), 'wait_min': _r(wait), 'unload_min': _r(unload),
-                          'margin_min': _r(late - at) if math.isfinite(late) else None})
+                          'margin_min': _r(late - at) if math.isfinite(late) else None,
+                          **({'yerevan_min': _r(city)} if city else {})})
         tj = {
             'id': t.id, 'truck': t.truck, 'pinned': t.pinned,
             'km': _r(km), 'minutes': round(minutes), 'kg': round(kg),
@@ -1291,7 +1313,7 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
         trucks_json.append({
             'car_code': code, 'name': truck.name if truck else None,
             'capacity_kg': truck.capacity_kg if truck else None, 'l100': truck.l100 if truck else None,
-            'center_ok': truck.center_ok if truck else None,
+            'center_ok': truck.center_ok if truck else None, **({'big': True} if big_shown(ctx, truck) else {}),
             'trips': ts, 'km': _r(math.fsum(t['km'] for t in ts)),
             'liters': _r(math.fsum(t['liters'] or 0.0 for t in ts)), 'kg': sum(t['kg'] for t in ts),
             'wear_amd': sum(t['wear_amd'] or 0 for t in ts),

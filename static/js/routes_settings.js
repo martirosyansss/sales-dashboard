@@ -23,8 +23,9 @@
     // 403 CSRF дашборда («сессия формы устарела») — не запрет доступа (как routes_learning.js и routes_garage.js)
     const CSRF_HY = 'Էջը հնացել է՝ թարմացրեք այն և կրկնեք։';
     const authText = (resp, data) => (resp.status === 403 && data && data.error === 'csrf' ? CSRF_HY : AUTH_HY[resp.status]);
-    const SECTIONS = ['depot', 'trucks', 'fuel', 'days', 'managers', 'center', 'norms', 'season', 'calibration'];
-    const ZONE_MAX = 200;   // точек границы малого центра — как store.CENTER_ZONE_VERTICES
+    const SECTIONS = ['depot', 'trucks', 'fuel', 'days', 'managers', 'center', 'yerevan', 'norms', 'season', 'calibration'];
+    const ZONE_MAX = 200;   // точек границы малого центра и зоны Еревана — как store.CENTER_ZONE_VERTICES
+    const BIG_AUTO_T = 5;   // «большая машина» по умолчанию — тоннаж от 5 т (store.BIG_TRUCK_AUTO_KG, №68)
     const RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     // Нормы: ключ настроек → подпись простыми словами и пояснение в одну строку. min/max — подсказка браузеру,
@@ -126,7 +127,8 @@
     const state = {
         data: null, initial: '', dirty: false, saving: false,
         map: null, marker: null,
-        zone: [], zoneMap: null, zoneLayer: null,   // граница малого центра: [[широта, долгота], …] по обходу
+        // границы на карте (ZONES): малый центр и зона Еревана — [[широта, долгота], …] по обходу
+        zones: { center: { pts: [], map: null, layer: null }, yerevan: { pts: [], map: null, layer: null } },
         fields: new Map(),              // ключ ошибки сервера → {el, errEl, label}
         manual: [],                     // ручные машины формы: {key, car_code, name, van_agent_id, …}
         season: { mode: 'auto', low: new Set(), peak: new Set() },
@@ -312,7 +314,9 @@
             updateDirty();
             renderProgress();
             if (state.map) state.map.invalidateSize();
-            if (state.zoneMap) { state.zoneMap.invalidateSize(); drawZone(true); }   // карта рисовалась в скрытой форме
+            Object.keys(ZONES).forEach(z => {   // карты рисовались в скрытой форме
+                if (state.zones[z].map) { state.zones[z].map.invalidateSize(); drawZone(z, true); }
+            });
             if (!afterSave) jumpToHash();
         } catch (e) {
             if (afterSave) {
@@ -354,7 +358,8 @@
         renderTrucks();
         renderDays();
         renderManagers();
-        renderZone();
+        renderZone('center');
+        renderYerevan();
         renderNorms();
         renderSeason();
         renderCalib();
@@ -615,6 +620,23 @@
             h('option', { value: 'auto', text: 'ավտոմատ՝ ' + (autoCenter ? 'այո' : 'ոչ'), selected: centerMode === 'auto' }),
             h('option', { value: 'yes', text: 'այո', selected: centerMode === 'yes' }),
             h('option', { value: 'no', text: 'ոչ', selected: centerMode === 'no' }));
+        // «Մեծ մեքենա» (№68): авто — по тоннажу в поле (от BIG_AUTO_T т), ручной выбор — «да»/«нет»
+        const bigMode = t.big_mode || (t.big_source === 'manual' ? (t.big ? 'yes' : 'no') : 'auto');
+        const bigE = errNode();
+        const bigAutoOpt = h('option', { value: 'auto', selected: bigMode === 'auto' });
+        const big = h('select', { class: 'rt-select rs-center-sel', 'aria-label': 'Մեծ մեքենա — ' + who,
+            title: 'Մեծ մեքենան դժվար է աշխատում Երևանում՝ Երևանի գոտու խանութները նախ տանում են փոքր մեքենաները, իսկ մեծի կանգառին ավելանում են րոպեներ։ Ավտոմատ՝ ' + BIG_AUTO_T + ' տ և ավելի',
+            dataset: { f: 'big' } }, bigAutoOpt,
+            h('option', { value: 'yes', text: 'այո', selected: bigMode === 'yes' }),
+            h('option', { value: 'no', text: 'ոչ', selected: bigMode === 'no' }));
+        const syncBigAuto = () => {   // «авто» следует за тоннажем в поле, как его посчитает сервер (store.big_auto)
+            const c = readNum(cap, true).value;
+            const on = c !== null && c !== undefined && c >= BIG_AUTO_T;
+            big.dataset.auto = on ? '1' : '0';
+            bigAutoOpt.textContent = 'ավտոմատ՝ ' + (on ? 'այո' : 'ոչ');
+        };
+        syncBigAuto();
+        cap.addEventListener('input', syncBigAuto);
         const nameCell = h('td', { class: 'rt-cell-name' },
             h('span', { class: 'n', text: code || '—' }),
             h('span', { class: 'c', text: t.name || '' }),
@@ -626,6 +648,7 @@
             h('td', { class: 'w-num w-half', dataset: { label: 'Ծախս, լ/100 կմ' } }, fuel, fuelE, costs),
             h('td', { class: 'rs-erp-cell', dataset: { label: manual ? 'Առաքիչ' : 'Ըստ ERP ապրանքագրերի' } }, manual ? vanHint(t) : erpHint(t), idle),
             h('td', { class: 'w-sel', dataset: { label: 'Կենտրոն' } }, center, centerE),
+            h('td', { class: 'w-sel', dataset: { label: 'Մեծ մեքենա' } }, big, bigE),
             h('td', { class: 'w-chk w-inc', dataset: { label: 'Աշխատում է' } }, active, actSrc, actE));
         if (manual) {
             const edit = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Փոփոխել — ' + who },
@@ -640,6 +663,7 @@
             reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Մեքենա ' + code + ', ծախս');
             reg(keys('active'), active, actE, 'Մեքենա ' + code);
             reg(keys('center_ok'), center, centerE, 'Մեքենա ' + code + ', կենտրոն');
+            reg(keys('big'), big, bigE, 'Մեքենա ' + code + ', մեծ մեքենա');
             reg(keys('car_code').concat(keys('name'), keys('van_agent_id'), ['manual_trucks.' + code]), edit, actE, 'Մեքենա ' + code);
         } else {
             const keys = (f) => ['trucks.' + i + '.' + f, 'trucks.' + code + '.' + f];
@@ -647,6 +671,7 @@
             reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Մեքենա ' + code + ', ծախս');
             reg(keys('active').concat(keys('car_code')), active, actE, 'Մեքենա ' + code);
             reg(keys('center_ok'), center, centerE, 'Մեքենա ' + code + ', կենտրոն');
+            reg(keys('big'), big, bigE, 'Մեքենա ' + code + ', մեծ մեքենա');
         }
         return tr;
     }
@@ -666,6 +691,7 @@
                 h('th', { scope: 'col', text: 'Ծախս, լ/100 կմ' }),
                 h('th', { scope: 'col', text: 'Ըստ ERP ապրանքագրերի' }),
                 h('th', { scope: 'col', text: 'Կենտրոն', title: 'Կարող է մտնել փոքր կենտրոն' }),
+                h('th', { scope: 'col', text: 'Մեծ մեքենա', title: 'Դժվար է Երևանում՝ Երևանի գոտում նախ փոքր մեքենաները, մեծի կանգառին՝ լրացուցիչ րոպեներ' }),
                 h('th', { scope: 'col', class: 'w-chk w-inc', text: 'Աշխատում է' }))),
             tbody);
         const addBtn = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', id: 'rsMtAdd', 'aria-expanded': 'false', 'aria-controls': 'rsMtForm' },
@@ -797,6 +823,7 @@
             Object.assign(m, data);
             const old = $('rsTrucksBody').querySelector('tr[data-mk="' + key + '"]');
             m.center_mode = old.querySelector('[data-f="center"]').value;
+            m.big_mode = old.querySelector('[data-f="big"]').value;
             const costValues = LOAD_COSTS.map(([f]) => old.querySelector('[data-f="' + f + '"]').value);
             const next = truckRow(m);
             LOAD_COSTS.forEach(([f], i) => { next.querySelector('[data-f="' + f + '"]').value = costValues[i]; });
@@ -965,66 +992,77 @@
         if (!bad && !p.empty) inp.value = fmtCoord(p.lat, p.lon);
     }
 
-    // ---------- Малый центр: граница на карте (№39–41) ----------
+    // ---------- Границы на карте: малый центр (№39–41) и зона Еревана (№68) ----------
     // Вершины тянутся мышью; щелчок по карте добавляет вершину на ближайшую сторону; двойной щелчок по вершине —
-    // убирает её (меньше трёх нельзя). Сохраняется общей кнопкой вместе с остальными настройками (settings.center_zone).
-    function renderZone() {
-        const z = state.data.settings.center_zone;
-        state.zone = Array.isArray(z) ? z.filter(p => Array.isArray(p) && p.length === 2).map(p => [Number(p[0]), Number(p[1])]) : [];
-        reg(['settings.center_zone'], $('rsCenterMap'), $('rsCenterErr'), 'Փոքր կենտրոնի սահման');
-        initZoneMap();
-        drawZone(true);
+    // убирает её (меньше трёх нельзя). Сохраняется общей кнопкой вместе с остальными настройками (settings[key]).
+    // Зону Еревана можно и очистить (empty) — правило «большая машина в Ереване» выключено.
+    const ZONES = {
+        center: { key: 'center_zone', map: 'rsCenterMap', note: 'rsCenterNote', err: 'rsCenterErr', label: 'Փոքր կենտրոնի սահման',
+            zoom: 14, color: '#397be9', empty: false, fallback: 'կենտրոնի սահմանը մնում է նախկինը' },
+        yerevan: { key: 'yerevan_zone', map: 'rsYerevanMap', note: 'rsYerevanNote', err: 'rsYerevanErr', label: 'Երևանի գոտու սահման',
+            zoom: 11, color: '#d9480f', empty: true, fallback: 'Երևանի գոտու սահմանը մնում է նախկինը' },
+    };
+    const zoneValue = (z) => state.zones[z].pts.map(([a, b]) => [round(a, 6), round(b, 6)]);
+
+    function renderZone(z) {
+        const cfg = ZONES[z], v = state.data.settings[cfg.key];
+        state.zones[z].pts = Array.isArray(v) ? v.filter(p => Array.isArray(p) && p.length === 2).map(p => [Number(p[0]), Number(p[1])]) : [];
+        reg(['settings.' + cfg.key], $(cfg.map), $(cfg.err), cfg.label);
+        initZoneMap(z);
+        drawZone(z, true);
     }
 
-    function initZoneMap() {
-        if (state.zoneMap) return;
-        const el = $('rsCenterMap');
+    function initZoneMap(z) {
+        const cfg = ZONES[z], zs = state.zones[z];
+        if (zs.map) return;
+        const el = $(cfg.map);
         if (typeof window.L === 'undefined') {
             el.classList.add('rt-map-fallback');
-            el.textContent = 'Քարտեզը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ) — կենտրոնի սահմանը մնում է նախկինը։';
+            el.textContent = 'Քարտեզը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ) — ' + cfg.fallback + '։';
             return;
         }
         const map = L.map(el, { zoomSnap: 0.5, scrollWheelZoom: false, doubleClickZoom: false, zoomControl: false });
         L.control.zoom(ZOOM_HY).addTo(map);
         RoutesBasemap.add(map);
-        map.setView(YEREVAN, 14);
-        map.on('click', (e) => addZonePoint(e.latlng.lat, e.latlng.lng));
+        map.setView(YEREVAN, cfg.zoom);
+        map.on('click', (e) => addZonePoint(z, e.latlng.lat, e.latlng.lng));
         map.on('click focus', () => map.scrollWheelZoom.enable());
         map.on('mouseout blur', () => map.scrollWheelZoom.disable());
-        state.zoneMap = map;
-        state.zoneLayer = L.layerGroup().addTo(map);
+        zs.map = map;
+        zs.layer = L.layerGroup().addTo(map);
     }
 
-    function drawZone(fit) {
-        const n = state.zone.length;
-        $('rsCenterNote').textContent = 'Սահմանի կետեր՝ ' + n + (n <= 3 ? ' — երեքից պակաս չի կարող լինել' : '') + '։';
-        if (!state.zoneMap) return;
-        state.zoneLayer.clearLayers();
-        const poly = L.polygon(state.zone, { color: '#397be9', weight: 3, fillOpacity: 0.12, interactive: false }).addTo(state.zoneLayer);
-        const icon = L.divIcon({ className: '', html: '<span class="rs-zone-pt"></span>', iconSize: [14, 14], iconAnchor: [7, 7] });
-        state.zone.forEach((p, i) => {
+    function drawZone(z, fit) {
+        const cfg = ZONES[z], zs = state.zones[z], pts = zs.pts, n = pts.length;
+        $(cfg.note).textContent = cfg.empty && !n ? 'Գոտի չկա — կանոնն անջատված է։ Սեղմեք քարտեզի վրա՝ կետեր ավելացնելու համար (առնվազն երեք)։'
+            : 'Սահմանի կետեր՝ ' + n + (n < 3 ? ' — պետք է առնվազն երեք' : n === 3 ? ' — երեքից պակաս չի կարող լինել' : '') + '։';
+        if (!zs.map) return;
+        zs.layer.clearLayers();
+        const poly = L.polygon(pts, { color: cfg.color, weight: 3, fillOpacity: 0.12, interactive: false }).addTo(zs.layer);
+        const icon = L.divIcon({ className: '', html: '<span class="rs-zone-pt" style="border-color:' + cfg.color + '"></span>', iconSize: [14, 14], iconAnchor: [7, 7] });
+        pts.forEach((p, i) => {
             const mk = L.marker(p, { icon, draggable: true, keyboard: false, title: 'Կետ ' + (i + 1) + ' — քաշեք՝ տեղաշարժելու համար, կրկնակի սեղմեք՝ հեռացնելու համար' })
-                .addTo(state.zoneLayer);
-            mk.on('drag', (e) => { const ll = e.target.getLatLng(); state.zone[i] = [ll.lat, ll.lng]; poly.setLatLngs(state.zone); });
+                .addTo(zs.layer);
+            mk.on('drag', (e) => { const ll = e.target.getLatLng(); pts[i] = [ll.lat, ll.lng]; poly.setLatLngs(pts); });
             mk.on('dragend', (e) => {
                 const ll = e.target.getLatLng();
-                state.zone[i] = inArmenia(ll.lat, ll.lng) ? [round(ll.lat, 6), round(ll.lng, 6)] : p;
-                drawZone(false);
-                zoneChanged('Կետ ' + (i + 1) + '-ը տեղաշարժվեց');
+                pts[i] = inArmenia(ll.lat, ll.lng) ? [round(ll.lat, 6), round(ll.lng, 6)] : p;
+                drawZone(z, false);
+                zoneChanged(z, 'Կետ ' + (i + 1) + '-ը տեղաշարժվեց');
             });
             mk.on('dblclick', () => {
-                if (state.zone.length <= 3) { announce('Սահմանը պետք է ունենա առնվազն երեք կետ'); return; }
-                state.zone.splice(i, 1);
-                drawZone(false);
-                zoneChanged('Կետ ' + (i + 1) + '-ը հեռացվեց');
+                if (pts.length <= 3) { announce('Սահմանը պետք է ունենա առնվազն երեք կետ'); return; }
+                pts.splice(i, 1);
+                drawZone(z, false);
+                zoneChanged(z, 'Կետ ' + (i + 1) + '-ը հեռացվեց');
             });
         });
-        if (fit && n) state.zoneMap.fitBounds(state.zone, { padding: [24, 24], animate: false });
+        if (fit && n) zs.map.fitBounds(pts, { padding: [24, 24], animate: false });
     }
 
     // Щелчок по карте — новая вершина на ближайшей стороне (расстояние до отрезка на плоскости, долгота × cos широты)
-    function addZonePoint(lat, lon) {
-        const n = state.zone.length;
+    function addZonePoint(z, lat, lon) {
+        const pts = state.zones[z].pts, n = pts.length;
         if (!inArmenia(lat, lon)) return;
         if (n >= ZONE_MAX) { announce('Սահմանը կարող է ունենալ առավելագույնը ' + ZONE_MAX + ' կետ'); return; }
         const k = Math.cos(lat * Math.PI / 180);
@@ -1037,19 +1075,29 @@
         };
         let best = n - 1, bestD = Infinity;
         for (let i = 0; i < n; i++) {
-            const d = dist(xy(state.zone[i]), xy(state.zone[(i + 1) % n]));
+            const d = dist(xy(pts[i]), xy(pts[(i + 1) % n]));
             if (d < bestD) { bestD = d; best = i; }
         }
-        state.zone.splice(best + 1, 0, [round(lat, 6), round(lon, 6)]);
-        drawZone(false);
-        zoneChanged('Կետն ավելացվեց');
+        pts.splice(best + 1, 0, [round(lat, 6), round(lon, 6)]);
+        drawZone(z, false);
+        zoneChanged(z, 'Կետն ավելացվեց');
     }
 
-    function zoneChanged(msg) {
-        $('rsCenterErr').textContent = '';
-        $('rsCenterMap').classList.remove('is-invalid');
+    function zoneChanged(z, msg) {
+        $(ZONES[z].err).textContent = '';
+        $(ZONES[z].map).classList.remove('is-invalid');
         updateDirty();
+        renderProgress();
         if (msg) announce(msg + ' — սեղմեք «Պահպանել»');
+    }
+
+    // Зона Еревана (№68): сколько минут большая машина тратит дольше на каждом магазине в зоне
+    function renderYerevan() {
+        const box = $('rsYerevanMin');
+        box.textContent = '';
+        box.append(normField({ key: 'big_truck_yerevan_min', label: 'Մեծ մեքենան Երևանում՝ լրացուցիչ րոպե յուրաքանչյուր խանութում',
+            min: 0, max: 120, step: 1, hint: 'կայանում, մանևր, ապրանքը հեռվից տանել․ 0՝ առանց լրացուցիչ ժամանակի (հերթականությունը մնում է)' }, state.data.settings));
+        renderZone('yerevan');
     }
 
     // ---------- Рабочие и нерабочие дни (№64): дни недели и отдельные даты ----------
@@ -1231,6 +1279,15 @@
         }).length;
         set('rsStCenter', toCenter ? 'ok' : 'part', toCenter ? 'կենտրոն՝ ' + toCenter + NB + 'մեքենա'
             : 'չկա մեքենա, որը կարող է մտնել կենտրոն');
+
+        // зона Еревана (№68): правило в деле — зона задана; сколько работающих больших машин
+        const bigOn = [...$('rsTrucks').querySelectorAll('tbody tr')].filter(tr => {
+            const sel = tr.querySelector('[data-f="big"]');
+            return tr.querySelector('[data-f="active"]').checked && (sel.value === 'yes' || (sel.value === 'auto' && sel.dataset.auto === '1'));
+        }).length;
+        const zoneOn = state.zones.yerevan.pts.length >= 3;
+        set('rsStYerevan', zoneOn ? 'ok' : 'part', !zoneOn ? 'գոտի չկա՝ կանոնն անջատված է'
+            : bigOn ? 'մեծ մեքենա՝ ' + bigOn : 'մեծ մեքենա չկա');
 
         // рабочие дни недели и ближайшие нерабочие даты
         const wdOn = document.querySelectorAll('#rsForm [data-wd]:checked').length;
@@ -1529,7 +1586,8 @@
         else if (cc.error) errors['settings.city_center_lat'] = cc.error;
         else { s.city_center_lat = cc.lat; s.city_center_lon = cc.lon; }
         s.chain_groups = [...document.querySelectorAll('#rsForm [data-chain]:checked')].map(i => i.value);
-        s.center_zone = state.zone.map(([a, b]) => [round(a, 6), round(b, 6)]);
+        s.center_zone = zoneValue('center');
+        s.yerevan_zone = zoneValue('yerevan');
         const manual = state.season.mode === 'manual';
         s.low_months = manual ? [...state.season.low].sort((a, b) => a - b) : null;
         s.peak_months = manual ? [...state.season.peak].sort((a, b) => a - b) : null;
@@ -1569,8 +1627,11 @@
             // «В центр»: авто — null (решает название машины), иначе выбор владельца
             const cm = q('center').value;
             item.center_ok = cm === 'auto' ? null : cm === 'yes';
+            // «Մեծ մեքենա» (№68): авто — null (решает тоннаж), иначе выбор владельца
+            const bm = q('big').value;
+            item.big = bm === 'auto' ? null : bm === 'yes';
             if (m) {
-                ['capacity_kg', 'fuel_l_per_100km', 'active', 'car_code', 'name', 'van_agent_id', 'center_ok']
+                ['capacity_kg', 'fuel_l_per_100km', 'active', 'car_code', 'name', 'van_agent_id', 'center_ok', 'big']
                     .concat(LOAD_COSTS.map(([f]) => f))
                     .forEach(f => alias('manual_trucks.' + m.car_code + '.' + f, p + f));
                 alias('manual_trucks.' + m.car_code, p.slice(0, -1));
@@ -1619,7 +1680,7 @@
         // ручные машины: номер, название и экспедитор живут не в полях строки
         const manual = (state.manual || []).map(m => [m.car_code, m.name || null, m.van_agent_id === undefined ? null : m.van_agent_id]);
         return JSON.stringify([vals, incModes, manual, [...state.holidays].sort(), state.season.mode, [...state.season.low].sort(), [...state.season.peak].sort(),
-            state.zone.map(([a, b]) => [round(a, 6), round(b, 6)])]);
+            zoneValue('center'), zoneValue('yerevan')]);
     }
 
     function updateDirty() {
@@ -1706,12 +1767,20 @@
             updateDirty();
             depot.focus();
         });
-        $('rsCenterReset').addEventListener('click', () => {
-            const z = state.data && state.data.center_zone_default;
-            if (!Array.isArray(z)) return;
-            state.zone = z.map(p => [Number(p[0]), Number(p[1])]);
-            drawZone(true);
-            zoneChanged('Կենտրոնի սահմանը վերադարձվեց սկզբնական վիճակին');
+        const resetZone = (z, def, msg) => {
+            const v = state.data && state.data[def];
+            if (!Array.isArray(v)) return;
+            state.zones[z].pts = v.map(p => [Number(p[0]), Number(p[1])]);
+            drawZone(z, true);
+            zoneChanged(z, msg);
+        };
+        $('rsCenterReset').addEventListener('click', () => resetZone('center', 'center_zone_default', 'Կենտրոնի սահմանը վերադարձվեց սկզբնական վիճակին'));
+        $('rsYerevanReset').addEventListener('click', () => resetZone('yerevan', 'yerevan_zone_default', 'Երևանի գոտին վերադարձվեց սկզբնական վիճակին՝ Երևանի վարչական սահմանը'));
+        $('rsYerevanClear').addEventListener('click', () => {
+            if (!state.data) return;
+            state.zones.yerevan.pts = [];
+            drawZone('yerevan', false);
+            zoneChanged('yerevan', 'Երևանի գոտին մաքրվեց՝ կանոնն անջատված է');
         });
         $('rsRetryBtn').addEventListener('click', () => load(false));
         window.addEventListener('beforeunload', (e) => {

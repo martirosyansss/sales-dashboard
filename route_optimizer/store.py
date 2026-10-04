@@ -28,7 +28,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -100,12 +100,18 @@ _TRUCKS_COLUMNS_V8 = (
     "manual INTEGER NOT NULL DEFAULT 0, name TEXT, van_agent_id INTEGER, updated_at TEXT NOT NULL, updated_by TEXT")
 # Схема 9 (окна приёма и малый центр, ответы владельца №39–41): center_ok NULL — «авто» (в названии машины есть
 # «JAC»: паспорт 1,5 т, реально до 2,5 т — въезжает в центр); 1/0 — выбор владельца.
+# Схема 22 (ответ владельца №68): big — «большая машина» (в Ереване — после малых и дольше): NULL — «авто» (тоннаж от
+# BIG_TRUCK_AUTO_KG), 1/0 — выбор владельца.
 _TRUCKS_COLUMNS = (
     "car_code TEXT PRIMARY KEY, capacity_kg REAL, fuel_l_per_100km REAL, agent_id INTEGER, active INTEGER, "
     "manual INTEGER NOT NULL DEFAULT 0, name TEXT, van_agent_id INTEGER, center_ok INTEGER, "
     "updated_at TEXT NOT NULL, updated_by TEXT, fuel_empty_l_per_100km REAL, fuel_full_l_per_100km REAL, "
-    "wear_amd_per_km REAL, wear_load_amd_per_km REAL")
+    "wear_amd_per_km REAL, wear_load_amd_per_km REAL, big INTEGER")
 _TRUCKS_TABLE = f"CREATE TABLE IF NOT EXISTS trucks({_TRUCKS_COLUMNS})"
+# столбцы машин схемы 21 — что переносит пересборка 21 → 22
+_TRUCKS_COPY_V21 = ("car_code, capacity_kg, fuel_l_per_100km, agent_id, active, manual, name, van_agent_id, center_ok, "
+                    "updated_at, updated_by, fuel_empty_l_per_100km, fuel_full_l_per_100km, wear_amd_per_km, "
+                    "wear_load_amd_per_km")
 _TRUCKS_ONE_VAN = (
     "CREATE UNIQUE INDEX IF NOT EXISTS trucks_one_van ON trucks(van_agent_id) WHERE van_agent_id IS NOT NULL")
 # Схема 9: окно приёма клиента — одно на все дни (№35–38). kind: before | after | between | at; t1, t2 — минуты от
@@ -378,6 +384,17 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "DROP TABLE learned_norms",
         "ALTER TABLE learned_norms_v21 RENAME TO learned_norms",
     ),
+    # 21 → 22 (№68): столбец «большая машина» (у всех «авто») — таблица машин пересобирается, как 7 → 8: строки
+    # переносятся как есть по именам столбцов (у старых баз center_ok и нормы нагрузки — в конце), уникальный индекс
+    # экспедитора создаётся заново. Зона Еревана и надбавка (yerevan_zone, big_truck_yerevan_min) миграции не требуют:
+    # нет ключа — значение по умолчанию.
+    21: (
+        f"CREATE TABLE trucks_v22({_TRUCKS_COLUMNS})",
+        f"INSERT INTO trucks_v22({_TRUCKS_COPY_V21}) SELECT {_TRUCKS_COPY_V21} FROM trucks",
+        "DROP TABLE trucks",
+        "ALTER TABLE trucks_v22 RENAME TO trucks",
+        _TRUCKS_ONE_VAN,
+    ),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -462,6 +479,37 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # въезда. Стартовая — примерно кольцо бульваров Кентрона, владелец правит на карте. Нет ключа — она
     'center_zone': [[40.1915, 44.5070], [40.1925, 44.5170], [40.1890, 44.5245], [40.1800, 44.5265],
                     [40.1715, 44.5205], [40.1705, 44.5100], [40.1760, 44.5030], [40.1850, 44.5015]],
+    # «Развоз»: большая машина в Ереване (ответ владельца №68, «приоритет + время»): точки в зоне Еревана сначала везут
+    # малые машины, большая — когда малым не хватает тоннажа или времени; на её точке в зоне — ещё столько минут.
+    # Стартовая граница — административная граница Еревана OSM (отношение 364087, главный контур без анклава аэропорта
+    # «Звартноц», упрощён Дугласом–Пекером до 150 м), владелец правит на карте; пустая — правило выключено
+    'big_truck_yerevan_min': 10,
+    'yerevan_zone': [[40.2173, 44.3948], [40.2129, 44.4031], [40.2021, 44.4052], [40.1964, 44.4102], [40.1936, 44.4029],
+                    [40.1912, 44.4067], [40.19, 44.4042], [40.1853, 44.4078], [40.1748, 44.4063], [40.17, 44.4111],
+                    [40.1671, 44.4196], [40.1694, 44.4271], [40.1675, 44.4303], [40.1599, 44.429], [40.1578, 44.4373],
+                    [40.1597, 44.4425], [40.1552, 44.4449], [40.1448, 44.4352], [40.1367, 44.4337], [40.137, 44.4308],
+                    [40.1309, 44.4283], [40.131, 44.4251], [40.1281, 44.4268], [40.1282, 44.4354], [40.1231, 44.4304],
+                    [40.1215, 44.433], [40.1201, 44.4296], [40.1146, 44.4304], [40.1185, 44.4355], [40.1094, 44.4447],
+                    [40.1092, 44.4538], [40.1042, 44.4509], [40.1091, 44.4551], [40.1086, 44.4591], [40.1056, 44.4562],
+                    [40.1047, 44.4578], [40.1059, 44.4599], [40.1044, 44.4631], [40.1071, 44.466], [40.1049, 44.4918],
+                    [40.0963, 44.489], [40.0963, 44.4932], [40.0909, 44.4895], [40.0859, 44.4918], [40.0843, 44.4937],
+                    [40.0884, 44.507], [40.0859, 44.5083], [40.0797, 44.5037], [40.0789, 44.5063], [40.0717, 44.5029],
+                    [40.0728, 44.5077], [40.0698, 44.5099], [40.0693, 44.5155], [40.0738, 44.5242], [40.0659, 44.5303],
+                    [40.0762, 44.5459], [40.0724, 44.5491], [40.0756, 44.5534], [40.082, 44.5542], [40.0931, 44.5652],
+                    [40.0949, 44.5706], [40.1021, 44.5756], [40.1086, 44.5948], [40.1374, 44.6153], [40.1431, 44.6218],
+                    [40.1479, 44.603], [40.1579, 44.5978], [40.1531, 44.5867], [40.1532, 44.5826], [40.1557, 44.5815],
+                    [40.1524, 44.5646], [40.1563, 44.5679], [40.165, 44.569], [40.1627, 44.5702], [40.1648, 44.5748],
+                    [40.1667, 44.5734], [40.1765, 44.5867], [40.1832, 44.5819], [40.1845, 44.5773], [40.1897, 44.5892],
+                    [40.1867, 44.5908], [40.1861, 44.5946], [40.1839, 44.5937], [40.1847, 44.597], [40.1939, 44.6014],
+                    [40.1944, 44.6044], [40.1945, 44.596], [40.1902, 44.5888], [40.2058, 44.5789], [40.2089, 44.5874],
+                    [40.2126, 44.5837], [40.2171, 44.5881], [40.2213, 44.5873], [40.2205, 44.5763], [40.2268, 44.5742],
+                    [40.2272, 44.5676], [40.233, 44.5587], [40.2376, 44.5651], [40.2387, 44.5613], [40.2418, 44.5632],
+                    [40.2382, 44.5579], [40.2361, 44.5466], [40.2405, 44.5442], [40.2403, 44.5405], [40.2322, 44.5278],
+                    [40.2328, 44.5256], [40.2285, 44.5217], [40.2301, 44.5165], [40.2269, 44.5125], [40.2308, 44.5001],
+                    [40.2282, 44.4986], [40.2257, 44.5016], [40.2293, 44.491], [40.2327, 44.49], [40.2332, 44.4871],
+                    [40.2202, 44.473], [40.223, 44.4682], [40.2237, 44.4584], [40.2275, 44.4607], [40.23, 44.4578],
+                    [40.23, 44.4546], [40.2244, 44.4525], [40.234, 44.4396], [40.2294, 44.4366], [40.2271, 44.4224],
+                    [40.2288, 44.4153], [40.2267, 44.4128], [40.2214, 44.4139], [40.2248, 44.4088], [40.2252, 44.3976]],
 }
 
 # Числовые настройки: ключ -> (мин, макс, допускается null)
@@ -506,6 +554,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'unload_min_per_tonne': (0, 120, False),
     'truck_lunch_min': (0, 120, False),
     'dispatch_buffer_pct': (50, 95, False),
+    'big_truck_yerevan_min': (0, 120, False),
     'warehouse_load_fixed_min': (0, 240, True),
     'warehouse_load_min_per_tonne': (0, 120, True),
 }
@@ -518,7 +567,8 @@ MANUAL_NAME_MAX = 60
 MANAGER_FUEL_L100 = (1, 40)
 _MAX_LIST = 500
 MAX_HOLIDAYS = 400      # нерабочих дат в настройках: с запасом на год вперёд и прошлый (№64)
-CENTER_ZONE_VERTICES = (3, 200)
+CENTER_ZONE_VERTICES = (3, 200)      # и у зоны Еревана (№68; она ещё может быть пустой — правило выключено)
+BIG_TRUCK_AUTO_KG = 5000             # «большая машина» по умолчанию (№68): тоннаж от 5 т
 WINDOW_KINDS = ('before', 'after', 'between', 'at')
 WINDOW_TOL_MAX = 120
 DEFAULT_WINDOW_TOL = 15     # «в 11:00 ± 15 мин» — допуск по умолчанию (№37)
@@ -558,11 +608,17 @@ class Truck:
     fuel_full_l_per_100km: float | None = None
     wear_amd_per_km: float | None = None
     wear_load_amd_per_km: float | None = None
+    big: bool | None = None         # большая машина (№68): None — «авто» (Bundle.truck_big)
 
 
 def center_auto(name: str | None) -> bool:
     """«Можно в центр» по умолчанию: в названии машины (ERP CARS.fNAME, у ручной — её название) есть «JAC»."""
     return 'JAC' in (name or '').upper()
+
+
+def big_auto(capacity_kg: float | None) -> bool:
+    """«Большая машина» по умолчанию (№68): тоннаж задан и не меньше BIG_TRUCK_AUTO_KG."""
+    return capacity_kg is not None and capacity_kg >= BIG_TRUCK_AUTO_KG
 
 
 @dataclass(frozen=True)
@@ -929,6 +985,13 @@ class Bundle:
             return center_auto(name if name is not None or t is None else t.name)
         return t.center_ok
 
+    def truck_big(self, code: str) -> bool:
+        """Большая ли машина (№68): выбор владельца; «авто» (записи нет или big NULL) — big_auto по тоннажу записи."""
+        t = self.trucks.get(code)
+        if t is None:
+            return False
+        return big_auto(t.capacity_kg) if t.big is None else t.big
+
     def van_trucks(self) -> dict[int, str]:
         """Экспедитор → ручная машина: его накладные без машины в ERP — рейсы этой машины."""
         return {t.van_agent_id: code for code, t in sorted(self.trucks.items())
@@ -1189,6 +1252,14 @@ def validate_settings(values: Mapping[str, Any],
         errors['center_zone'] = 'կենտրոնի սահմանի կետերը՝ [լայնություն, երկայնություն] Հայաստանում'
     else:
         out['center_zone'] = [[float(p[0]), float(p[1])] for p in zone]
+    # зона Еревана (№68): как граница центра, но может быть пустой — правило «большая машина в Ереване» выключено
+    zone = values.get('yerevan_zone')
+    if not isinstance(zone, list) or not (not zone or lo <= len(zone) <= hi):
+        errors['yerevan_zone'] = f'Երևանի գոտու սահմանը՝ {lo}-ից մինչև {hi} կետ [լայնություն, երկայնություն] կամ դատարկ'
+    elif not all(isinstance(p, list) and len(p) == 2 and _check_point(p[0], p[1])[0] is not None for p in zone):
+        errors['yerevan_zone'] = 'Երևանի գոտու սահմանի կետերը՝ [լայնություն, երկայնություն] Հայաստանում'
+    else:
+        out['yerevan_zone'] = [[float(p[0]), float(p[1])] for p in zone]
     return out, errors
 
 
@@ -1238,7 +1309,7 @@ def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
         return []
     out: list[Truck] = []
     seen: set[str] = set()
-    allowed = {'car_code', 'capacity_kg', 'fuel_l_per_100km', 'agent_id', 'active', 'center_ok', *LOAD_COST_FIELDS}
+    allowed = {'car_code', 'capacity_kg', 'fuel_l_per_100km', 'agent_id', 'active', 'center_ok', 'big', *LOAD_COST_FIELDS}
     for i, item in enumerate(raw):
         path = f'trucks.{i}'
         if not isinstance(item, dict):
@@ -1291,6 +1362,12 @@ def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
                 errors[f'{path}.center_ok'] = 'սպասվում էր true/false կամ null («ավտոմատ»)'
                 ok = False
             fields['center_ok'] = item['center_ok']
+        if 'big' in item:
+            # null — вернуть «авто»: большая — от BIG_TRUCK_AUTO_KG (big_auto)
+            if item['big'] is not None and _check_bool(item['big']):
+                errors[f'{path}.big'] = 'սպասվում էր true/false կամ null («ավտոմատ»)'
+                ok = False
+            fields['big'] = item['big']
         if ok:
             out.append(Truck(
                 car_code=code,
@@ -1299,6 +1376,7 @@ def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
                 agent_id=fields.get('agent_id', base.agent_id),
                 active=fields.get('active', base.active),
                 center_ok=fields.get('center_ok', base.center_ok),
+                big=fields.get('big', base.big),
                 **load_costs,
             ))
     return out
@@ -1318,7 +1396,8 @@ def _validate_manual_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData
         errors['manual_trucks'] = f'սպասվում էր մեքենաների ցուցակ (առավելագույնը {MANUAL_TRUCKS_MAX})'
         return []
     taken = {code_key(c) for c in ref.car_codes} | {code_key(c) for c, t in current.items() if not t.manual}
-    allowed = {'car_code', 'name', 'capacity_kg', 'fuel_l_per_100km', 'active', 'van_agent_id', 'center_ok', *LOAD_COST_FIELDS}
+    allowed = {'car_code', 'name', 'capacity_kg', 'fuel_l_per_100km', 'active', 'van_agent_id', 'center_ok', 'big',
+               *LOAD_COST_FIELDS}
     out: list[Truck] = []
     seen: set[str] = set()
     vans: dict[int, str] = {}
@@ -1372,6 +1451,10 @@ def _validate_manual_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData
         if center_ok is not None and _check_bool(center_ok):
             errors[f'{path}.center_ok'] = 'սպասվում էր true/false կամ null («ավտոմատ»)'
             ok = False
+        big = item.get('big', base.big)
+        if big is not None and _check_bool(big):
+            errors[f'{path}.big'] = 'սպասվում էր true/false կամ null («ավտոմատ»)'
+            ok = False
         van = item.get('van_agent_id', base.van_agent_id)
         if van is not None:
             if not _is_int(van) or (van not in ref.van_agent_ids and van != base.van_agent_id):
@@ -1384,7 +1467,7 @@ def _validate_manual_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData
                 vans[van] = code
         if ok:
             out.append(Truck(code, nums['capacity_kg'], nums['fuel_l_per_100km'], None, active,
-                             manual=True, name=name, van_agent_id=van, center_ok=center_ok, **load_costs))
+                             manual=True, name=name, van_agent_id=van, center_ok=center_ok, big=big, **load_costs))
     return out
 
 
@@ -1512,7 +1595,7 @@ def _is_int(v: Any) -> bool:
 
 def _loaded_truck(row: tuple) -> tuple[Truck, list[str]]:
     """Строка trucks из БД → Truck и список нарушений (те же правила, что при сохранении)."""
-    code, capacity, fuel, agent_id, active, manual, name, van, center_ok, updated_at, updated_by, *costs = row
+    code, capacity, fuel, agent_id, active, manual, name, van, center_ok, updated_at, updated_by, *costs, big = row
     problems = []
     if not isinstance(code, str) or not code.strip():
         problems.append('մեքենայի կոդ')
@@ -1532,12 +1615,15 @@ def _loaded_truck(row: tuple) -> tuple[Truck, list[str]]:
         problems.append('առաքիչ')
     if center_ok not in (None, 0, 1):
         problems.append('«կարող է մտնել կենտրոն» հատկանիշ')
+    if big not in (None, 0, 1):
+        problems.append('«մեծ մեքենա» հատկանիշ')
     extra = dict(zip(LOAD_COST_FIELDS, costs))
     cost_errors: dict[str, str] = {}
     _validate_load_costs(extra, Truck(code), 'costs', cost_errors)
     problems.extend(cost_errors)
     return Truck(code, capacity, fuel, agent_id, None if active is None else bool(active), updated_at,
-                 updated_by, manual == 1, name, van, None if center_ok is None else bool(center_ok), **extra), problems
+                 updated_by, manual == 1, name, van, None if center_ok is None else bool(center_ok), **extra,
+                 big=None if big is None else bool(big)), problems
 
 
 def _loaded_manager(row: tuple) -> tuple[ManagerProfile, list[str]]:
@@ -1676,7 +1762,7 @@ class Store:
                     truck_rows = conn.execute(
                         'SELECT car_code, capacity_kg, fuel_l_per_100km, agent_id, active, manual, name, '
                         'van_agent_id, center_ok, updated_at, updated_by, fuel_empty_l_per_100km, '
-                        'fuel_full_l_per_100km, wear_amd_per_km, wear_load_amd_per_km FROM trucks').fetchall()
+                        'fuel_full_l_per_100km, wear_amd_per_km, wear_load_amd_per_km, big FROM trucks').fetchall()
                     manager_rows = conn.execute(
                         'SELECT agent_id, included, home_lat, home_lon, car_fuel_l_per_100km, '
                         'car_fuel_type, updated_at, updated_by FROM manager_profile').fetchall()
@@ -1832,14 +1918,15 @@ class Store:
                              (changes.depot[0], changes.depot[1], now, user))
         for t in changes.trucks:
             conn.execute('INSERT INTO trucks(car_code, capacity_kg, fuel_l_per_100km, agent_id, '
-                         'active, center_ok, updated_at, updated_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?) '
+                         'active, center_ok, big, updated_at, updated_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?) '
                          'ON CONFLICT(car_code) DO UPDATE SET capacity_kg = excluded.capacity_kg, '
                          'fuel_l_per_100km = excluded.fuel_l_per_100km, agent_id = excluded.agent_id, '
-                         'active = excluded.active, center_ok = excluded.center_ok, '
+                         'active = excluded.active, center_ok = excluded.center_ok, big = excluded.big, '
                          'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
                          (t.car_code, t.capacity_kg, t.fuel_l_per_100km, t.agent_id,
                           None if t.active is None else int(t.active),
-                          None if t.center_ok is None else int(t.center_ok), now, user))
+                          None if t.center_ok is None else int(t.center_ok),
+                          None if t.big is None else int(t.big), now, user))
         if changes.manual_trucks is not None:
             keep = [t.car_code for t in changes.manual_trucks]
             conn.execute(f'DELETE FROM trucks WHERE manual = 1 AND car_code NOT IN ({",".join("?" * len(keep))})'
@@ -1849,16 +1936,17 @@ class Store:
             conn.execute('UPDATE trucks SET van_agent_id = NULL WHERE manual = 1')
             for t in changes.manual_trucks:
                 conn.execute('INSERT INTO trucks(car_code, capacity_kg, fuel_l_per_100km, agent_id, active, manual, '
-                             'name, van_agent_id, center_ok, updated_at, updated_by) '
-                             'VALUES(?, ?, ?, NULL, ?, 1, ?, ?, ?, ?, ?) '
+                             'name, van_agent_id, center_ok, big, updated_at, updated_by) '
+                             'VALUES(?, ?, ?, NULL, ?, 1, ?, ?, ?, ?, ?, ?) '
                              'ON CONFLICT(car_code) DO UPDATE SET capacity_kg = excluded.capacity_kg, '
                              'fuel_l_per_100km = excluded.fuel_l_per_100km, active = excluded.active, '
                              'name = excluded.name, van_agent_id = excluded.van_agent_id, '
-                             'center_ok = excluded.center_ok, '
+                             'center_ok = excluded.center_ok, big = excluded.big, '
                              'updated_at = excluded.updated_at, updated_by = excluded.updated_by '
                              'WHERE trucks.manual = 1',
                              (t.car_code, t.capacity_kg, t.fuel_l_per_100km, int(bool(t.active)), t.name,
-                              t.van_agent_id, None if t.center_ok is None else int(t.center_ok), now, user))
+                              t.van_agent_id, None if t.center_ok is None else int(t.center_ok),
+                              None if t.big is None else int(t.big), now, user))
         # Новые нормы записываются только в собственную SQLite, в той же транзакции настроек.
         for t in (*changes.trucks, *(changes.manual_trucks or ())):
             conn.execute('UPDATE trucks SET fuel_empty_l_per_100km = ?, fuel_full_l_per_100km = ?, '

@@ -36,7 +36,7 @@ from .geo import Point, haversine_km, is_valid_point
 from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (CREW_TABLES, DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
-                    center_auto, check_driver_name, check_garage_entry, check_unload_min, check_window,
+                    big_auto, center_auto, check_driver_name, check_garage_entry, check_unload_min, check_window,
                     validate_payload)
 from .valhalla_engine import TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider, ValhallaRoads, truck_time_source
 from .vehicle_access import check_access
@@ -482,6 +482,7 @@ def api_settings_get() -> Any:
         'settings': s,
         'traffic_provider': {'name': 'yandex', 'configured': bool(os.environ.get('ROUTES_YANDEX_API_KEY'))},
         'center_zone_default': DEFAULT_SETTINGS['center_zone'],
+        'yerevan_zone_default': DEFAULT_SETTINGS['yerevan_zone'],
         'depot': {'lat': bundle.depot[0], 'lon': bundle.depot[1]} if bundle.depot else None,
         'trucks': _trucks_json(snap, bundle, prices, _garage_priors(state, prices, bundle.trucks)),
         'expeditors': _expeditors_json(snap, bundle),
@@ -585,7 +586,8 @@ def _trucks_json(snap: Snapshot, bundle: Bundle, prices: Mapping[str, garage.Pri
     за менеджером (ответ владельца №29) — вместо менеджера подсказка из ERP: сколько машина возит в день
     (90 дней) и когда последний раз была в накладных. «Активна» — действующее значение; active_source:
     manual — выбор владельца, auto — решают накладные (auto_active: возила за CAR_IDLE_DAYS дней).
-    «Можно в центр» (center_ok) — так же: center_ok_source, auto_center_ok — по названию (машины JAC).
+    «Можно в центр» (center_ok) — так же: center_ok_source, auto_center_ok — по названию (машины JAC). «Большая машина»
+    (big, №68) — так же: big_source, auto_big — по тоннажу (store.big_auto; страница пересчитывает при правке тоннажа).
     Износ: wear_amd_per_km — ручное значение (его и сохраняет страница); garage — ремонт ֏/км журнала гаража на
     сегодня (только чтение), garage_prior — средняя модели или парка машине без своей цены журнала (garage.Prior),
     wear_source — какое значение в расчёте (garage | manual | garage_avg | None)."""
@@ -613,6 +615,8 @@ def _trucks_json(snap: Snapshot, bundle: Bundle, prices: Mapping[str, garage.Pri
             'center_ok': bundle.truck_center_ok(code, car.name),
             'center_ok_source': 'auto' if t is None or t.center_ok is None else 'manual',
             'auto_center_ok': center_auto(car.name),
+            'big': bundle.truck_big(code), 'big_source': 'auto' if t is None or t.big is None else 'manual',
+            'auto_big': big_auto(t.capacity_kg if t else None),
             'garage': _garage_price_json(prices.get(code)), 'wear_source': used.wear_source(code),
             'garage_prior': _garage_prior_json(priors.get(code)),
             'last_used': last.isoformat() if last else None,
@@ -629,6 +633,8 @@ def _trucks_json(snap: Snapshot, bundle: Bundle, prices: Mapping[str, garage.Pri
                 'active': bool(t.active), 'active_source': 'manual', 'auto_active': None, 'last_used': None,
                 'center_ok': bundle.truck_center_ok(code, t.name),
                 'center_ok_source': 'auto' if t.center_ok is None else 'manual', 'auto_center_ok': center_auto(t.name),
+                'big': bundle.truck_big(code), 'big_source': 'auto' if t.big is None else 'manual',
+                'auto_big': big_auto(t.capacity_kg),
                 'garage': _garage_price_json(prices.get(code)), 'wear_source': used.wear_source(code),
                 'garage_prior': _garage_prior_json(priors.get(code)),
                 'van_agent_id': t.van_agent_id, 'van': _agent_json(snap, t.van_agent_id),
@@ -998,16 +1004,18 @@ def _dispatch_data(state: RoutesState, since: date, until: date, day: date, refr
 
 
 def _ready_trucks(snap: Snapshot, bundle: Bundle, active_only: bool = True) -> dict[str, fl.FleetTruck]:
-    """Машины, готовые к расчёту: тоннаж и расход заданы (и активны — для плана); с правом въезда в центр; износ —
-    как в расчёте (Bundle.resolved_trucks: журнал гаража или ручной)."""
+    """Машины, готовые к расчёту: тоннаж и расход заданы (и активны — для плана); с правом въезда в центр и признаком
+    «большая машина» (№68); износ — как в расчёте (Bundle.resolved_trucks: журнал гаража или ручной)."""
     names = {code: car.name for code, car in snap.cars.items()}
     resolved = bundle.resolved_trucks(snap.active_cars)
     if active_only:
         ready, _ = fl.fleet_trucks(resolved, names)
-        return {t.car_code: replace(t, center_ok=bundle.truck_center_ok(t.car_code, names.get(t.car_code)))
+        return {t.car_code: replace(t, center_ok=bundle.truck_center_ok(t.car_code, names.get(t.car_code)),
+                                    big=bundle.truck_big(t.car_code))
                 for t in ready}
     return {code: fl.FleetTruck(code, names.get(code) or t.name, float(t.capacity_kg), float(t.fuel_l_per_100km),
-                                bundle.truck_center_ok(code, names.get(code)), **profile_fields(t))
+                                bundle.truck_center_ok(code, names.get(code)), **profile_fields(t),
+                                big=bundle.truck_big(code))
             for code, t in sorted(resolved.items())
             if t.capacity_kg is not None and t.fuel_l_per_100km is not None}
 
@@ -1048,6 +1056,11 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
         norms = replace(norms, provider=provider, traffic_status=status)
     h2, m2 = map(int, s['truck_overtime_end'].split(':'))
     tn = fl.TruckNorms.from_settings(s, lunch=True)     # обед в пути (№61) — только «Развоз»
+    yerevan = tuple((lat, lon) for lat, lon in s['yerevan_zone'])
+    if len(yerevan) >= 3:   # большая машина в Ереване (№68): зона и надбавка больших машин; пустая зона — правила нет
+        extra = float(s['big_truck_yerevan_min'])
+        tn = replace(tn, yerevan_zone=yerevan,
+                     yerevan_min={code: extra for code, t in trucks.items() if t.big and extra > 0})
     # learned=False — журнала нет: выученных норм нет (eff пуст), только введённое время магазинов
     norms, tn, trucks, eff = _with_learned(state, norms, tn, trucks, customers or {}, journal, bundle.unload_min)
     return dp.DayContext(day, bundle.depot, trucks, norms, tn, h * 60 + m,
@@ -1295,6 +1308,8 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         trucks.append({'car_code': code, 'name': names[code], 'manual': code in manual,
                        'capacity_kg': ready.capacity_kg if ready else None,
                        'l100': ready.l100 if ready else None, 'center_ok': ready.center_ok if ready else None,
+                       # большая машина (№68) — только при заданной зоне Еревана
+                       **({'big': True} if dd.ctx is not None and dp.big_shown(dd.ctx, ready) else {}),
                        'ready': ready is not None, 'selected': ready is not None and code in selected,
                        # износ в расчёте дня: garage — ремонт ֏/км журнала гаража, manual — из настроек, garage_avg —
                        # средняя модели или парка по журналу (ручное пусто; №53)
@@ -2524,6 +2539,11 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     def unload_norm(o: learning.UnloadObs) -> float:
         return (tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes
                 + math.fsum(extras.get(c, 0.0) for c in o.customers))
+
+    def city_extra(car: str, cids: Sequence[int]) -> float:
+        """Надбавка большой машины car к разгрузке магазинов cids в зоне Еревана (№68, как в плане: tn того же расчёта)."""
+        extra = tn.yerevan_of(car)
+        return extra * sum(1 for c in cids if c in customers and tn.in_yerevan(customers[c])) if extra else 0.0
     unload: list[learning.UnloadObs] = []
     loads: list[learning.LoadObs] = []
     lunches: list[learning.LunchObs] = []
@@ -2543,9 +2563,18 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         plan = learning.plan_trips(prediction, day)
         # обед по плану (№61): визит магазина и стоянка на складе с обедом — не в разгрузку и загрузку; обед по факту —
         # и там, где он по плану (излишек над действующей нормой разгрузки), и в стороне
-        unload += learning.unload_obs(day, actual, stops, learning.lunch_customers(plan), car)
+        # большая машина в Ереване (№68): надбавка стоит в плане сверху — из стоянки её визитов в зоне она вычитается
+        # (меньше UNLOAD_MIN_OBS после вычета — не разгрузка, как в unload_obs): иначе своё время магазина и темп машины
+        # выучили бы её, и план прибавил бы её дважды
+        for o in learning.unload_obs(day, actual, stops, learning.lunch_customers(plan), car):
+            extra = city_extra(car, o.customers)
+            if not extra:
+                unload.append(o)
+            elif o.minutes - extra >= learning.UNLOAD_MIN_OBS:
+                unload.append(replace(o, minutes=o.minutes - extra))
         loads += learning.load_obs(day, actual, stops, plan)
-        meal = learning.lunch_obs(day, actual, lunch_window, stops, plan, unload_norm)   # type: ignore[arg-type]
+        meal = learning.lunch_obs(day, actual, lunch_window, stops, plan,   # type: ignore[arg-type]
+                                  lambda o, car=car: unload_norm(o) + city_extra(car, o.customers))
         if meal is not None:
             lunches.append(meal)
         driven = actual

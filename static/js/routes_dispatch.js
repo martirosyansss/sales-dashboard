@@ -527,7 +527,8 @@
             plate.textContent = t.name ? t.car_code : '';
             const sub = document.createElement('span');
             sub.className = 'dp-truck-sub';
-            sub.textContent = t.ready ? 'տանում է մինչև ' + kgText(t.capacity_kg) + (t.center_ok ? ' · մտնում է կենտրոն' : '') : 'լրացրեք կարգավորումներում';
+            sub.textContent = t.ready ? 'տանում է մինչև ' + kgText(t.capacity_kg) + (t.center_ok ? ' · մտնում է կենտրոն' : '')
+                + (t.big ? ' · մեծ մեքենա' : '') : 'լրացրեք կարգավորումներում';
             txt.append(nm);
             if (t.name) txt.appendChild(plate);
             txt.appendChild(sub);
@@ -1760,6 +1761,11 @@
             tags.lastChild.title = 'խանութի հաստատուն մասը՝ առանց բեռի ժամանակի';
         }
         if (stop.center) tag(stop.center_miss ? 'b-danger' : 'b-warn', stop.center_miss ? 'Կենտրոն — մեքենան չի կարող մտնել' : 'Կենտրոն', 'fa-city');
+        // большая машина в зоне Еревана (№68): к разгрузке прибавлены минуты — они уже во времени точки и рейса
+        if (num(stop.yerevan_min)) {
+            tag('b-warn', 'Մեծ մեքենա Երևանում՝ +' + fmt(stop.yerevan_min) + NB + 'ր', 'fa-truck-moving');
+            tags.lastChild.title = 'մեծ մեքենան Երևանի գոտում ավելի երկար է կանգնում՝ կայանում, մանևր';
+        }
         if (stop.vehicle_access) tag(stop.vehicle_miss ? 'b-danger' : 'b-warn',
             (stop.vehicle_miss ? 'Մեքենան չի կարող սպասարկել · ' : '') + vehicleText(stop.vehicle_access, true), 'fa-truck');
         const src = COORD_HY[stop.coord_source];
@@ -2394,7 +2400,8 @@
     function whyTrip(plan, t, tr, i) {
         const x = tr.explain, day = plan.explain, model = day.model || {}, d = state.data;
         const truck = [truckLabel(t) + (num(t.capacity_kg) === null ? '՝ այս մեքենան այսօր նշված չէ որպես աշխատող։'
-            : '՝ տանում է մինչև ' + kgText(t.capacity_kg) + ', ' + (t.center_ok ? 'մտնում է կենտրոն' : 'կենտրոն չի մտնում') + '։')];
+            : '՝ տանում է մինչև ' + kgText(t.capacity_kg) + ', ' + (t.center_ok ? 'մտնում է կենտրոն' : 'կենտրոն չի մտնում')
+                + (t.big ? ', մեծ մեքենա է' : '') + '։')];
         if (tr.pinned) truck.push('Երթն ամրացված է՝ «Վերակազմել երթերը» սեղմելիս այն չի փոխվի։');
         const ruled = tr.stops.filter(s => s.vehicle_access);
         if (ruled.length) {
@@ -2429,6 +2436,10 @@
             + (x.idle_before_min >= 1 ? '․ բացի դրանից, մեքենան սպասում է ' + minText(x.idle_before_min)
                 + ', որպեսզի առաջին խանութ հասնի դրա ընդունման ժամի սկզբին' : '') + '։');
         else if (tr.lunch) time.push(lunchText(tr.lunch) + '։');
+        // большая машина в зоне Еревана (№68): надбавка — уже в разгрузке
+        const city = tr.stops.filter(s => num(s.yerevan_min));
+        if (city.length) time.push('Բեռնաթափման մեջ է՝ +' + minText(x.yerevan_min) + '․ մեծ մեքենան Երևանի գոտում '
+            + pl(city.length, 'խանութում') + ' ավելի երկար է կանգնում (+' + fmt(city[0].yerevan_min) + NB + 'րոպե յուրաքանչյուրում)։');
         if (x.idle_before_min >= 1 && !depotLunch) time.push((tt.loading ? 'Բեռնումը սկսվում է ' + tr.loading_start : 'Մեքենան մեկնում է ' + tr.depart)
             + '-ին, ոչ ավելի շուտ, որպեսզի ' + (tt.loading ? 'մեքենան ' : '') + 'առաջին խանութ հասնի դրա ընդունման ժամի սկզբին և չսպասի։');
         if (i < t.trips.length - 1) time.push('Դրանից հետո նույն մեքենան կատարում է ' + (i + 2) + '-րդ երթը։');
@@ -2572,6 +2583,7 @@
                 e.carried ? 'Նախորդ օրից այստեղ է տեղափոխված ' + pl(e.carried, 'պատվեր') + '։' : '',
                 e.deferred ? 'Այս օրից հաջորդ օր է տեղափոխված ' + pl(e.deferred, 'պատվեր') + '։' : '']],
             ['Մեքենաներ', e.trucks.map(x => truckLabel(x) + '՝ մինչև ' + kgText(x.capacity_kg) + ', ' + fuelOf(x) + (x.center_ok ? ', մտնում է կենտրոն' : '')
+                + (x.big ? ', մեծ մեքենա' : '')
                 + (x.trips ? '' : ', այսօր երթ չունի') + '։')],
             ['Բեռ', ['Երթի բեռը՝ մեքենայի տոննաժի առավելագույնը ' + e.load_cap_pct + '%-ը։ Ավելի ծանր կարող է լինել միայն մեկ պատվերով երթը, '
                     + 'եթե այդ պատվերն այլ կերպ չի տեղավորվում։',
@@ -2588,6 +2600,11 @@
                     : 'Այս օրը փոքր կենտրոնում խանութ չկա։') : 'Փոքր կենտրոնի սահմանը կարգավորումներում նշված չէ։',
                 e.zone && m.bypass ? 'Կենտրոնից դուրս կետերի միջև ճանապարհը հաշվվում է կենտրոնը շրջանցելով։'
                     : e.zone && m.bypass === false ? 'Կենտրոնի շրջանցումը չի հաշվվում՝ ' + noBypass(m) + '։' : '']],
+            // большая машина в Ереване (№68) — только когда правило в деле (сервер: есть большая машина и магазины в зоне)
+            ['Երևանի գոտի', e.yerevan ? [pl(e.yerevan.stores, 'խանութ') + ' Երևանի գոտում է՝ դրանք նախ տանում են փոքր մեքենաները, մեծը՝ միայն երբ '
+                    + 'փոքրերին տոննաժ կամ ժամանակ չի հերիքում (մեծ մեքենայի յուրաքանչյուր այդպիսի կանգառ հաշվարկում արժե որպես +'
+                    + fmt(e.yerevan.penalty_km) + NB + 'կմ իր ճանապարհին)։',
+                num(e.yerevan.minutes) ? 'Մեծ մեքենայի կանգառին Երևանի գոտում ավելանում է ' + minText(e.yerevan.minutes) + '։' : ''] : []],
             ['Ընդունման ժամեր', [e.window_stores ? pl(e.window_stores, 'խանութ') + ' ունի ընդունման ժամ՝ երթերը կազմվում են այնպես, որ հասնենք ժամանակին, իսկ վաղ հասնելու դեպքում մեքենան սպասում է։'
                 : 'Այս օրվա խանութներից ոչ մեկն ընդունման ժամ չունի։']],
             ['Մեքենաների սահմանափակումներ', [e.access_stores ? pl(e.access_stores, 'խանութ') + ' ունի մեքենաների սահմանափակում՝ դրանք տանում են միայն թույլատրված մեքենաները։' : '']],

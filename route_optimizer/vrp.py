@@ -24,7 +24,10 @@
     складе — без), trip_reserve_min — на рёбрах «заказ → склад» (каждый рейс кончается таким ребром); темп машины (Vehicle.pace: множитель разгрузки, множитель
     пути) — её профилем: минуты рёбер × множитель пути, лишняя разгрузка (множитель − 1) × разгрузка заказа — на рёбрах
     из него (прибытие к следующему точно). Профили по темпу — только если у какой-то машины он не (1, 1). Точный расчёт
-    «Развоза» (fleet._days) решение всё равно проверяет.
+    «Развоза» (fleet._days) решение всё равно проверяет;
+  - большая машина в Ереване (№68) — тоже профилем машины: надбавка к разгрузке заказа в зоне Еревана
+    (Vehicle.yerevan_min) — на рёбрах из него, плата за такой заказ (Vehicle.yerevan_penalty_m, метры её пути) — на рёбрах
+    в него. Заказов в зоне нет — профили те же, что без неё.
 Минуты и километры — вверх до целых секунд и метров с запасом (время — вверх, окна — внутрь): решение,
 допустимое для PyVRP, допустимо и для расчёта «Развоза» в float.
 """
@@ -71,6 +74,7 @@ class Piece:
     center: bool
     required: bool
     allowed_trucks: frozenset[str] | None = None
+    yerevan: bool = False     # в зоне Еревана (№68)
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,8 @@ class Vehicle:
     wear_amd_per_km: float | None = None   # износ, ֏/км; None или 0 — стоимость метра только литры
     fuel_price: float = 500.0              # цена литра, ֏ — перевод износа в литры (fleet.TruckNorms.fuel_price)
     pace: tuple[float, float] = (1.0, 1.0)   # темп машины (№66): множитель разгрузки, множитель пути
+    yerevan_min: float = 0.0               # №68: надбавка к разгрузке заказа в зоне Еревана, мин (большая машина)
+    yerevan_penalty_m: int = 0             # №68: плата за заказ в зоне Еревана — метров её пути (большая машина)
 
 
 def unit_cost(v: Vehicle) -> int:
@@ -163,10 +169,11 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
                               (p.allowed_trucks is not None and v.code not in p.allowed_trucks)
                               for p in pieces)) for v in vehicles}
     open_mask = (False,) * (len(pieces) + 1)
-    # …и одинаковым темпом (№66; у всех (1, 1) — профили те же, что без темпа)
-    keys = {v.code: (masks[v.code], tuple(v.pace)) for v in vehicles}
+    # …одинаковым темпом (№66; у всех (1, 1) — профили те же, что без темпа) и надбавкой и платой в Ереване (№68)
+    keys = {v.code: (masks[v.code], tuple(v.pace), v.yerevan_min, v.yerevan_penalty_m) for v in vehicles}
     profiles = {key: model.add_profile(name=f'access-{i}')
-                for i, key in enumerate(dict.fromkeys([(open_mask, (1.0, 1.0)), *keys.values()]))}
+                for i, key in enumerate(dict.fromkeys([(open_mask, (1.0, 1.0), 0.0, 0), *keys.values()]))}
+    yerevan = [False, *(p.yerevan for p in pieces)]
     for a, la in enumerate(every):
         ka, ma = km[nodes[a]], minutes[nodes[a]]
         for b, lb in enumerate(every):
@@ -180,12 +187,14 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
             loading = (load_fixed_min if a == 0 else 0.) + (load_tonne_min * pieces[b-1].kg/1000 if b else 0.)
             dur = _sec_up(ma[nodes[b]] + loading)
             back = trip_reserve_min if a and not b else 0.0      # рейс кончается ребром «заказ → склад»
-            for (mask, (mu, mt)), profile in profiles.items():
+            for (mask, (mu, mt), ym, pm), profile in profiles.items():
                 edge = dur
-                if back or reserve_slope or (mu, mt) != (1.0, 1.0):
-                    extra = (mu - 1.0) * pieces[a - 1].unload if a else 0.0
+                city = ym if yerevan[a] else 0.0       # надбавка в Ереване — после разгрузки заказа a (№68)
+                if back or reserve_slope or (mu, mt) != (1.0, 1.0) or city:
+                    extra = ((mu - 1.0) * pieces[a - 1].unload if a else 0.0) + city
                     edge = _sec_up(max(0.0, (ma[nodes[b]] * mt + extra) * (1.0 + reserve_slope) + loading) + back)
-                model.add_edge(la, lb, distance=FORBIDDEN_M if mask[a] or mask[b] else dist, duration=edge,
+                far = dist + pm if pm and yerevan[b] else dist
+                model.add_edge(la, lb, distance=FORBIDDEN_M if mask[a] or mask[b] else far, duration=edge,
                                profile=profile)
     for s in shifts:
         v = by_code[s.truck]

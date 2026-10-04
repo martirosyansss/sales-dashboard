@@ -5313,8 +5313,10 @@ def _dispatch_setup(client, orders, docs=()):
 
     state.dispatch_loader = loader
     state.fact_loader = lambda day: dp.FactData(tuple(docs), {})
-    # магазины 101–104 — в центре Еревана (стартовая граница малого центра): CAR1 туда въезжает
+    # магазины 101–104 — в центре Еревана (стартовая граница малого центра): CAR1 туда въезжает. Зона Еревана (№68)
+    # пуста — правило «большая машина в Ереване» выключено: планы — как до него (его проверяет test_route_big_truck)
     r = client.post('/api/routes/settings', json={
+        'settings': {'yerevan_zone': []},
         'depot': {'lat': DP_DEPOT[0], 'lon': DP_DEPOT[1]},
         'trucks': [{'car_code': 'CAR1', 'capacity_kg': 10000, 'fuel_l_per_100km': 30, 'active': True, 'center_ok': True},
                    {'car_code': 'CAR2', 'capacity_kg': 3500, 'fuel_l_per_100km': 16, 'active': True}]})
