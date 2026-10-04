@@ -33,7 +33,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 KINDS = ('repair', 'accident', 'fixed', 'odometer')
 WINDOW_DAYS = 365
@@ -219,3 +219,69 @@ def effective(found: Mapping[str, Price]) -> dict[str, float]:
     """Машина → ремонт ֏/км в расчёте: только готовые цены. Остальные машины — с ручным «Износ, драм/км» (пусто —
     средняя, priors)."""
     return {code: p.price for code, p in found.items() if p.price is not None}
+
+
+# --- «Նորմա և փաստ» (вкладка журнала гаража, 04.10): расход и км машины за месяц против нормы и плана ---
+# Факт — из APK: заправки (learning.fuel_intervals) и трек GPS (learning.day_report через views._learning_days).
+ALERT_PCT = 10   # факт выше нормы расхода (или км выше плана) больше чем на 10% — красный флаг (просьба владельца)
+
+
+def delta_pct(fact: float | None, norm: float | None) -> float | None:
+    """(факт − норма) / норма, % до 0,1; нет факта или нормы (≤ 0) — None."""
+    if fact is None or norm is None or norm <= 0:
+        return None
+    return round((fact - norm) / norm * 100.0, 1)
+
+
+def over(fact: float | None, norm: float | None) -> bool:
+    """Факт выше нормы больше чем на ALERT_PCT %: по Δ% до 0,1, как его видит страница (ровно +10,0% — не флаг)."""
+    d = delta_pct(fact, norm)
+    return d is not None and d > ALERT_PCT
+
+
+@dataclass(frozen=True)
+class FuelMonth:
+    """Расход машины за месяц по заправкам: l100 = liters / km × 100 по интервалам «полный бак → полный бак»."""
+    l100: float | None
+    liters: float
+    km: float
+    intervals: int
+    refuels: int                # заправок с днём в месяце (исправленные водителем — не в счёт)
+    reason: str | None          # нет расхода: no_refuels | one_refuel | no_interval; есть — None
+
+
+def fuel_month(intervals: Iterable[tuple[date, float, float]], refuel_days: Iterable[date], first: date,
+               last: date) -> FuelMonth:
+    """Расход за месяц [first, last]. intervals — (день закрывающей заправки по Еревану, литры, км одометра); интервал
+    идёт в месяц закрывающей заправки целиком (как learning.fuel_obs): через границу месяца литры и км не делятся —
+    сколько км проехано по дням до границы, по одометру заправок не известно. Расход = Σ литров / Σ км. Интервалов в
+    месяце нет — почему: заправок в месяце нет (no_refuels), одна (one_refuel: расход — между двумя полными баками),
+    иначе (no_interval) нет пары полных баков с согласованным одометром не короче learning.FUEL_MIN_KM."""
+    got = [(liters, km) for day, liters, km in intervals if first <= day <= last]
+    n = sum(1 for d in refuel_days if first <= d <= last)
+    liters, km = math.fsum(x for x, _ in got), math.fsum(k for _, k in got)
+    if got and km > 0:
+        return FuelMonth(round(liters / km * 100.0, 1), round(liters, 1), round(km, 1), len(got), n, None)
+    return FuelMonth(None, 0.0, 0.0, 0, n, 'no_refuels' if n == 0 else 'one_refuel' if n == 1 else 'no_interval')
+
+
+@dataclass(frozen=True)
+class KmMonth:
+    """Км машины за месяц: план «Развоза» и GPS в дни, где есть и то и другое; отклонения — за все дни с треком."""
+    days: int                   # дней с треком GPS
+    plan_days: int              # из них с сохранённым планом «Развоза» (км плана)
+    plan_km: float
+    fact_km: float              # км по GPS в те же plan_days
+    unplanned_stays: int        # стоянки вне точек плана (все дни с треком)
+    order_changes: int          # точки не по порядку плана
+
+
+def km_month(rows: Iterable[Mapping[str, Any]]) -> KmMonth:
+    """Строки learning.day_report машины за месяц → KmMonth. План без км (старый черновик) или без факта км — день в
+    сравнение км не идёт."""
+    rows = list(rows)
+    both = [r for r in rows if r['plan']['km'] is not None and r['fact']['km'] is not None]
+    return KmMonth(len(rows), len(both), round(math.fsum(r['plan']['km'] for r in both), 1),
+                   round(math.fsum(r['fact']['km'] for r in both), 1),
+                   sum(r['fact']['unplanned_stays'] or 0 for r in rows),
+                   sum(r['kpi']['order_changes'] or 0 for r in rows))

@@ -1,7 +1,8 @@
 /* «Ավտոտնակ» /routes/garage — журнал ремонтов и пробега машин (ответ владельца №53, docs/plans/garage-journal-plan.md).
    API: GET /api/routes/garage (машины с последним показанием, итоги за 12 месяцев с ремонтом ֏/км, расходы по месяцам),
    GET /api/routes/garage/entries?car=&month=&deleted= (записи), POST /api/routes/garage/entries (новая или правка, "id"),
-   POST /api/routes/garage/entries/delete {id}, POST /api/routes/garage/odometers {items: [{car_code, day, odometer_km}]}.
+   POST /api/routes/garage/entries/delete {id}, POST /api/routes/garage/odometers {items: [{car_code, day, odometer_km}]},
+   GET /api/routes/garage/norm?month= и /api/routes/garage/day?date=&car= (вкладка «Նորմա և փաստ»).
    Ошибки сервера — по-армянски, по полям. Всё, что пришло с сервера, выводится только через textContent.
    CSRF-заголовок к fetch добавляет base_v2.html. */
 (function () {
@@ -84,7 +85,7 @@
     };
 
     // ---------- вкладки ----------
-    const TABS = [['gjTabCosts', 'gjCosts'], ['gjTabOdo', 'gjOdo'], ['gjTabSum', 'gjSum']];
+    const TABS = [['gjTabCosts', 'gjCosts'], ['gjTabOdo', 'gjOdo'], ['gjTabSum', 'gjSum'], ['gjTabNorm', 'gjNorm']];
     function selectTab(tabId, focus) {
         TABS.forEach(([t, p]) => {
             const on = t === tabId;
@@ -93,6 +94,7 @@
             $(p).hidden = !on;
         });
         if (focus) $(tabId).focus();
+        if (tabId === 'gjTabNorm' && !norm.data && !norm.gen) loadNorm();   // считается только при открытии вкладки
         try { localStorage.setItem('gjTab', tabId); } catch (e) { /* без памяти вкладки */ }
     }
     TABS.forEach(([t], i) => {
@@ -523,6 +525,198 @@
             h('td', { class: 'gj-num w-half', 'data-label': 'Ընդամենը, ֏' }, h('b', { text: fmt(m.total) })))));
     }
 
+    // ---------- норма и факт ----------
+    // GET /api/routes/garage/norm?month= — по машине: норма расхода «Развоза» и расход по заправкам, км плана и GPS,
+    // стоянки вне плана, точки не по порядку, по дням; GET /api/routes/garage/day?date=&car= — карта дня (как у
+    // «Обучения»). Считается при первом открытии вкладки и при смене месяца — не при каждой загрузке страницы.
+    const norm = { data: null, gen: 0, open: new Set() };
+    const signed = (v, d = 0) => { const n = num(v); return n === null ? '—' : (n > 0 ? '+' : '') + fmt(n, d); };
+    const FUEL_WHY = {
+        no_refuels: () => 'ամսում լիցքավորում չկա',
+        one_refuel: () => 'ամսում միայն մեկ լիցքավորում է — ծախսը հաշվվում է երկու լրիվ բաքի միջև',
+        no_interval: (f) => fmt(f.refuels) + ' լիցքավորում, բայց լրիվ բաքից լրիվ բաք միջակայք չկա (լրիվ բաք, ճիշտ օդոմետր, առնվազն '
+            + fmt(norm.data.rules.fuel_min_km) + ' կմ)',
+    };
+    const NORM_SRC = { learned: 'սովորած՝ ըստ փաստի', manual: 'կարգավորումներից' };
+
+    // pending — факт месяца сервер досчитывает в фоне (впервые после перезапуска — до минуты): спросить снова через 3 с
+    async function loadNorm(again) {
+        const gen = again || ++norm.gen;
+        const month = $('gjNormMonth').value;
+        if (!again) $('gjNormRows').replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'rt-empty', text: 'Հաշվում է…' })));
+        try {
+            const d = await api('/api/routes/garage/norm' + (month ? '?month=' + encodeURIComponent(month) : ''));
+            if (gen !== norm.gen) return;
+            if (d.pending) {
+                $('gjNormRows').replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'rt-empty',
+                    text: 'Հաշվում է ամսվա GPS հետագծերը… Առաջին անգամ սա կարող է տևել մինչև մեկ րոպե։' })));
+                setTimeout(() => { if (gen === norm.gen) loadNorm(gen); }, 3000);
+                return;
+            }
+            norm.data = d;
+            norm.open.clear();
+            $('gjNormMonth').value = d.month;
+            $('gjNormMonth').max = d.current_month;
+            renderNorm();
+        } catch (e) {
+            if (gen !== norm.gen) return;
+            showError(e.message);
+            $('gjNormRows').replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'rt-empty', text: 'Չհաջողվեց բեռնել' })));
+        }
+    }
+
+    function fuelCell(t) {
+        const f = t.fuel;
+        if (f.l100 === null) {
+            return [h('span', { class: 'gj-nodata', text: 'տվյալ չկա' }), h('small', { class: 'gj-sub', text: (FUEL_WHY[f.reason] || (() => ''))(f) })];
+        }
+        return [h('b', { class: 'gj-price' + (f.over ? ' gj-over' : ''), text: fmt(f.l100, 1) }),
+            f.delta_pct !== null ? h('small', { class: 'gj-sub' + (f.over ? ' gj-over' : ''), text: 'նորմից՝ ' + signed(f.delta_pct, 1) + '%' }) : null,
+            h('small', { class: 'gj-sub', text: fmt(f.liters, 1) + ' լ ÷ ' + fmt(f.km) + ' կմ · ' + fmt(f.intervals) + ' միջակայք' })];
+    }
+
+    function kmCell(t) {
+        const k = t.km;
+        if (!k.days) return [h('span', { class: 'gj-nodata', text: 'տվյալ չկա' }), h('small', { class: 'gj-sub', text: 'GPS հետագիծ չկա' })];
+        if (!k.plan_days) return [h('span', { text: '—' }), h('small', { class: 'gj-sub', text: '«Առաքում» էջի պլան այս օրերին չկա' })];
+        return [h('b', { class: 'gj-km' + (k.over ? ' gj-over' : ''), text: fmt(k.plan) + ' → ' + fmt(k.fact) }),
+            h('small', { class: 'gj-sub' + (k.over ? ' gj-over' : ''), text: signed(k.delta) + ' կմ (' + signed(k.delta_pct, 1) + '%)' }),
+            h('small', { class: 'gj-sub', text: 'պլանով օրեր՝ ' + fmt(k.plan_days) })];
+    }
+
+    function dayList(t) {
+        return h('ul', { class: 'gj-days' }, ...t.days.map(d => h('li', {},
+            h('b', { class: 'gj-day', text: dayHy(d.day) }),
+            h('span', { class: d.over ? 'gj-over' : null, text: 'կմ՝ ' + (d.plan_km !== null ? fmt(d.plan_km) + ' → ' : 'պլան չկա → ') + fmt(d.fact_km) }),
+            h('span', { text: 'լիտր՝ ' + fmt(d.liters, 1) }),
+            h('span', { text: 'պլանից դուրս՝ ' + fmt(d.unplanned_stays) }),
+            h('span', { text: 'ոչ հերթականությամբ՝ ' + fmt(d.order_changes) }),
+            h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Քարտեզ՝ ' + t.car_code + ', ' + dayHy(d.day),
+                dataset: { map: d.day, car: t.car_code } }, icon('fa-map-location-dot'), 'Քարտեզ'))));
+    }
+
+    function renderNorm() {
+        const d = norm.data, pct = d.rules.alert_pct;
+        $('gjNormLead').textContent = 'Նորմը՝ այն ծախսը, որով «Առաքում» էջը հաշվում է մեքենան։ Փաստը՝ վարորդների լիցքավորումներից՝ '
+            + 'լրիվ բաքից լրիվ բաք․ լիտրերը ÷ կմ ըստ օդոմետրի (միջակայքը, որն անցնում է ամսվա սահմանով, մտնում է այն ամիսը, երբ '
+            + 'ավարտվել է)։ Կմ-ը համեմատվում է միայն այն օրերին, երբ կա և «Առաքում» էջի պլանը, և GPS հետագիծը։ Կարմիրով է նշված '
+            + 'այն, ինչ նորմից կամ պլանից ավելի է ' + pct + '%-ից ավելի։' + (d.month === d.current_month ? ' Այսօրը դեռ չի մտնում։' : '');
+        $('gjNormEmpty').hidden = d.has_data;
+        $('gjNormEmptyText').textContent = !d.connected
+            ? '«Առաքիչ» բաժինը միացված չէ — GPS հետագծեր և լիցքավորումներ չկան։'
+            : 'Այս ամսում GPS հետագծեր և լիցքավորումներ դեռ չկան։ Դրանք կհայտնվեն, երբ վարորդներն աշխատեն «Առաքիչ» հավելվածի այն '
+                + 'տարբերակով, որը գրանցում է GPS հետագիծը և լիցքավորումները (լիտր, օդոմետր, լրիվ բաք)։';
+        if (!d.trucks.length) {
+            $('gjNormRows').replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'rt-empty', text: 'Մեքենաներ չկան' })));
+            return;
+        }
+        $('gjNormRows').replaceChildren(...d.trucks.flatMap(t => {
+            const id = 'gjNormDays-' + t.car_code.replace(/[^\w-]/g, '_');
+            const open = norm.open.has(t.car_code);
+            const flags = [t.fuel.over ? h('span', { class: 'rt-badge b-danger', text: 'Վառելիք ' + signed(t.fuel.delta_pct, 1) + '%' }) : null,
+                t.km.over ? h('span', { class: 'rt-badge b-danger', text: 'Կմ ' + signed(t.km.delta_pct, 1) + '%' }) : null].filter(Boolean);
+            const row = h('tr', { class: (t.fuel.over || t.km.over ? 'is-over' : '') + (t.active ? '' : ' is-closed') || null },
+                h('td', { class: 'rt-cell-name' }, h('span', { class: 'n', text: t.car_code }), h('span', { class: 'c', text: t.name || (t.active ? '' : 'չի աշխատում') }),
+                    flags.length ? h('span', { class: 'gj-flags' }, ...flags) : null),
+                h('td', { class: 'gj-num w-half', 'data-label': 'Նորմ, լ/100 կմ' }, t.norm.l100 !== null
+                    ? [h('b', { class: 'gj-price', text: fmt(t.norm.l100, 1) }), h('small', { class: 'gj-sub', text: NORM_SRC[t.norm.source] || '' })]
+                    : [h('span', { text: '—' }), h('small', { class: 'gj-sub', text: 'նշված չէ' })]),
+                h('td', { class: 'gj-num w-half', 'data-label': 'Փաստ, լ/100 կմ' }, ...fuelCell(t)),
+                h('td', { class: 'gj-num', 'data-label': 'Կմ՝ պլան → փաստ' }, ...kmCell(t)),
+                h('td', { class: 'gj-num w-half', 'data-label': 'Կանգառներ պլանից դուրս', text: t.km.days ? fmt(t.unplanned_stays) : '—' }),
+                h('td', { class: 'gj-num w-half', 'data-label': 'Ոչ հերթականությամբ', text: t.km.days ? fmt(t.order_changes) : '—' }),
+                h('td', { class: 'gj-num w-half', 'data-label': 'Օրեր GPS-ով', text: fmt(t.km.days) }),
+                h('td', { class: 'gj-acts' }, t.days.length ? h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-expanded': String(open),
+                    'aria-controls': id, dataset: { days: t.car_code } }, icon(open ? 'fa-chevron-up' : 'fa-chevron-down'), 'Ըստ օրերի') : null));
+            const more = h('tr', { id, class: 'gj-norm-days', hidden: !open }, h('td', { colspan: 8 }, open ? dayList(t) : null));
+            return [row, more];
+        }));
+    }
+
+    $('gjNormRows').addEventListener('click', (ev) => {
+        const btn = ev.target.closest('button');
+        if (!btn) return;
+        if (btn.dataset.map) { showDay(btn.dataset.map, btn.dataset.car); return; }
+        const car = btn.dataset.days;
+        if (!car) return;
+        if (norm.open.has(car)) norm.open.delete(car); else norm.open.add(car);
+        renderNorm();
+        const again = $('gjNormRows').querySelector('button[data-days="' + CSS.escape(car) + '"]');
+        if (again) again.focus();
+    });
+
+    // карта дня: трек GPS поверх точек плана; плановые рейсы — по прямой от точки к точке (линии по дорогам — API
+    // администратора); подложка — routes_basemap.js без ключа Яндекса: OpenStreetMap (страница открыта из интернета —
+    // ключ ей не выдаётся)
+    const YEREVAN = [40.1792, 44.4991];
+    const map = { obj: null, layers: null, failed: false, gen: 0 };
+    function ensureMap() {
+        if (map.obj || map.failed) return;
+        const el = $('gjMap');
+        if (typeof window.L === 'undefined' || typeof window.RoutesBasemap === 'undefined') {   // CDN или подложка не загрузились
+            map.failed = true;
+            el.classList.add('rt-map-fallback');
+            el.textContent = 'Քարտեզը չբեռնվեց։ Թարմացրեք էջը։';
+            return;
+        }
+        map.obj = L.map(el, { preferCanvas: true, zoomSnap: 0.5, scrollWheelZoom: false, zoomControl: false });
+        L.control.zoom({ zoomInTitle: 'Մեծացնել', zoomOutTitle: 'Փոքրացնել' }).addTo(map.obj);
+        RoutesBasemap.add(map.obj);
+        map.obj.setView(YEREVAN, 11);
+        map.layers = L.layerGroup().addTo(map.obj);
+    }
+    function stopColor(s) {
+        if (!s.arrive) return '#8791a3';
+        return (num(s.late_min) > 0 || s.early) ? '#ff6b79' : '#45d98f';
+    }
+    function stopTip(s) {
+        const fact = !s.arrive ? 'կանգառ չի եղել'
+            : s.arrive + '–' + (s.leave || '?') + (num(s.late_min) > 0 ? ', ուշացում՝ ' + fmt(s.late_min) + ' րոպե' : '') + (s.early ? ', ընդունման ժամից շուտ' : '');
+        return h('span', {}, h('b', { text: s.name || String(s.customer_id || s.stop_id || '') }), h('br'),
+            (num(s.rank) !== null ? '№' + fmt(s.rank + 1) + ' · ' : '') + 'պլան՝ ' + (s.planned_eta || '—') + ' · փաստ՝ ' + fact);
+    }
+    async function showDay(dayIso, car) {
+        $('gjMapBox').hidden = false;
+        $('gjMapTitle').textContent = truckName(car) + ' · ' + dayHy(dayIso);
+        $('gjMapNote').textContent = 'Բեռնվում է…';
+        $('gjMapBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        ensureMap();
+        const gen = ++map.gen;
+        let d;
+        try { d = await api('/api/routes/garage/day?date=' + encodeURIComponent(dayIso) + '&car=' + encodeURIComponent(car)); }
+        catch (e) { if (gen === map.gen) $('gjMapNote').textContent = e.message; return; }
+        if (gen !== map.gen) return;
+        const visited = d.stops.filter(s => s.arrive).length;
+        $('gjMapNote').textContent = 'Շարժման կմ (GPS)՝ ' + fmt(d.km_gps, 1) + ' · կետեր՝ ' + fmt(visited) + ' / ' + fmt(d.stops.length)
+            + (d.trips.length ? ' · երթեր՝ ' + d.trips.map((t, i) => (i + 1) + ') ' + (t.depart || '?') + '–' + (t.return || '?')).join(', ') : '')
+            + (d.track.length > 1 ? '' : ' · GPS հետագիծ այս օրը չկա');
+        if (!map.obj) return;
+        map.obj.invalidateSize();
+        map.layers.clearLayers();
+        const bounds = [];
+        d.planned.forEach(line => {
+            bounds.push(...line);
+            L.polyline(line, { color: '#8791a3', weight: 3, opacity: .85, dashArray: '6 6' }).addTo(map.layers);
+        });
+        if (d.track.length > 1) {
+            L.polyline(d.track, { color: '#3b82f6', weight: 3, opacity: .85 }).addTo(map.layers);
+            bounds.push(...d.track);
+        }
+        d.stops.forEach(s => {
+            if (s.lat === null) return;
+            bounds.push([s.lat, s.lon]);
+            L.circleMarker([s.lat, s.lon], { radius: 7, color: '#0c0f14', weight: 2, fillColor: stopColor(s), fillOpacity: 1 })
+                .bindTooltip(stopTip(s)).addTo(map.layers);
+        });
+        if (d.depot) {
+            bounds.push(d.depot);
+            L.marker(d.depot, { icon: L.divIcon({ className: 'rt-pin rt-pin-depot', html: '<span><i class="fas fa-warehouse" aria-hidden="true"></i></span>', iconSize: [28, 28], iconAnchor: [14, 14] }), keyboard: false, zIndexOffset: 1000 })
+                .bindTooltip('Պահեստ').addTo(map.layers);
+        }
+        if (bounds.length) map.obj.fitBounds(bounds, { padding: [24, 24], maxZoom: 15, animate: false });
+    }
+    $('gjMapClose').addEventListener('click', () => { $('gjMapBox').hidden = true; map.gen += 1; });
+
     // ---------- загрузка ----------
     async function reload() {
         state.data = await api('/api/routes/garage');
@@ -553,6 +747,7 @@
         $('gjFilterCar').addEventListener('change', refilter);
         $('gjFilterMonth').addEventListener('change', refilter);
         if ($('gjShowDeleted')) $('gjShowDeleted').addEventListener('change', refilter);
+        $('gjNormMonth').addEventListener('change', () => { if ($('gjNormMonth').value) loadNorm(); });
         try {
             await reload();
             resetForm();

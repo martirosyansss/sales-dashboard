@@ -211,7 +211,7 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
 | `/logout` | POST | выход |
 | `/routes/garage` | GET | страница журнала (сессия «Гаража»; без входа — на `/login`) |
 | `/api/routes/garage`, `/api/routes/garage/…` | GET, POST | API журнала (POST — с CSRF, как в офисе) |
-| `/favicon.ico`, `/static/css/tokens.css`, `/static/css/base.css`, `/static/css/routes.css`, `/static/css/routes_garage.css`, `/static/js/base.js`, `/static/js/routes_garage.js` | GET | статика страницы журнала (у страницы входа своей нет — CDN) |
+| `/favicon.ico`, `/static/css/tokens.css`, `/static/css/base.css`, `/static/css/routes.css`, `/static/css/routes_garage.css`, `/static/js/base.js`, `/static/js/routes_garage.js`, `/static/js/routes_basemap.js` | GET | статика страницы журнала (у страницы входа своей нет — CDN; Leaflet карты дня «Նորմա և փաստ» — тоже CDN) |
 | `/api/courier/v1/…` | как раньше | API терминалов |
 
 Всё остальное снаружи — 404: в приложении (`app_v2.py`: `_public_path_allowed`, `_PUBLIC_STATIC`), в nginx и в
@@ -358,6 +358,7 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
    location = /static/css/routes_garage.css { include snippets/araqich-garage-public.conf; }
    location = /static/js/base.js            { include snippets/araqich-garage-public.conf; }
    location = /static/js/routes_garage.js   { include snippets/araqich-garage-public.conf; }
+   location = /static/js/routes_basemap.js  { include snippets/araqich-garage-public.conf; }
 
    # Не от туннеля или без заголовка Cloudflare (офис по старой ссылке http://192.168.1.24:5000/login, прочие
    # процессы на 192.168.1.11, curl на CT115 без заголовка) — ровно как location /.
@@ -379,7 +380,7 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
        path: '^/api/routes/garage(/[a-z0-9_-]+)*$'
        service: <как у правила ^/api/courier/v1/>
      - hostname: araqich.orix.am
-       path: '^/static/(css/(tokens|base|routes|routes_garage)\.css|js/(base|routes_garage)\.js)$'
+       path: '^/static/(css/(tokens|base|routes|routes_garage)\.css|js/(base|routes_garage|routes_basemap)\.js)$'
        service: <как у правила ^/api/courier/v1/>
    ```
    Проверка и перезапуск: `cloudflared tunnel --config <config.yml> ingress validate`;
