@@ -12,16 +12,16 @@ FIELDS = {'km': (0, 5000), 'minutes': (0, 1440), 'liters': (0, 1000),
 def validate(raw, codes, today):
     errors, out = {}, {}
     if not isinstance(raw, dict):
-        return {}, {'_': 'ожидался объект замера'}
+        return {}, {'_': 'Սպասվում էր չափման օբյեկտ'}
     try:
         day = date.fromisoformat(raw.get('day', ''))
         if day > today:
             raise ValueError()
         out['day'] = day.isoformat()
     except (ValueError, TypeError):
-        errors['day'] = 'укажите завершённую дату, не позже сегодня'
+        errors['day'] = 'նշեք ավարտված ամսաթիվ՝ ոչ ուշ, քան այսօր'
     if raw.get('car_code') not in codes:
-        errors['car_code'] = 'выберите настроенную машину'
+        errors['car_code'] = 'ընտրեք կարգավորված մեքենա'
     else:
         out['car_code'] = raw['car_code']
     for key, (lo, hi) in FIELDS.items():
@@ -29,15 +29,15 @@ def validate(raw, codes, today):
         if value is None or value == '':
             out[key] = None
         elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not lo <= value <= hi:
-            errors[key] = f'число от {lo} до {hi}'
+            errors[key] = f'թիվ՝ {lo:,.0f}-ից մինչև {hi:,.0f}'.replace(',', ' ')   # разряды — пробелом: «100 000 000»
         elif key == 'trips' and value != int(value):
-            errors[key] = 'целое количество рейсов'
+            errors[key] = 'երթերի քանակը պետք է լինի ամբողջ թիվ'
         else:
             out[key] = float(value)
     if not any(out.get(key) is not None for key in FIELDS):
-        errors['_'] = 'внесите хотя бы один фактический замер'
+        errors['_'] = 'մուտքագրեք առնվազն մեկ փաստացի չափում'
     if out.get('liters', 0) and out.get('km') == 0:
-        errors['km'] = 'для проверки расхода нужен положительный пробег'
+        errors['km'] = 'ծախսը ստուգելու համար անհրաժեշտ է դրական վազք'
     return out, errors
 
 
@@ -107,4 +107,4 @@ def summary(rows):
     validations = [dict(day=r['day'], car_code=r['car_code'], metrics=compare(r),
                         prospective=r.get('prospective') is True, prediction_at=r.get('prediction_at')) for r in rows]
     return {'records': len(rows), 'cars': cars, 'validation': validations[-60:],
-            'scope': 'Замеренный израсходованный дизель, не объём заправки; ошибки сравниваются с сохранённым прогнозом'}
+            'scope': 'Չափված ծախսված դիզել, ոչ թե լիցքավորման ծավալ․ սխալները համեմատվում են պահպանված կանխատեսման հետ'}

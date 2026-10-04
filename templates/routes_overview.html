@@ -1,6 +1,6 @@
 {% extends "base_v2.html" %}
 
-{% block title %}Маршруты — Sales Dashboard{% endblock %}
+{% block title %}Երթուղիներ — Sales Dashboard{% endblock %}
 
 {% block extra_css %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -9,66 +9,75 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=20">
+<style>
+    /* Армянские подписи длиннее русских (№58): заголовки столбцов переносятся по словам — таблицы не шире, чем были */
+    #rtOverview .rt-risk-table thead th, #rtOverview .rt-heat thead th.rt-heat-week { white-space: normal; vertical-align: bottom; }
+    /* …а главная кнопка на узком экране переносится, а не вылезает за край */
+    @media (max-width: 575px) {
+        #rtOverview .rt-main-cta .rt-btn-lg { max-width: 100%; height: auto; min-height: 52px; padding-top: 8px; padding-bottom: 8px;
+            white-space: normal; text-align: center; line-height: 1.25; }
+    }
+</style>
 {% endblock %}
 
 {% block content %}
-<div class="rt-page" id="rtOverview">
+<div class="rt-page" id="rtOverview" lang="hy">
 
     <!-- ШАПКА -->
     <header class="rt-head">
         <div class="rt-head-row">
             <div class="rt-head-title">
-                <h1 class="rt-title">Маршруты сейчас</h1>
+                <h1 class="rt-title">Ընթացիկ երթուղիներ</h1>
                 <span id="rtFresh" class="rt-pill d-none"></span>
             </div>
             <div class="rt-head-tools">
-                <nav class="rt-tabs" aria-label="Разделы маршрутов">
-                    <a href="/routes" aria-current="page">Обзор</a>
-                    <a href="/routes/optimize">Оптимизация</a>
-                    <a href="/routes/dispatch">Развоз</a>
-                    <a href="/routes/learning">Обучение</a>
-                    <a href="/routes/settings">Настройки</a>
-                    <a href="/routes/garage">Гараж</a>
+                <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
+                    <a href="/routes" aria-current="page">Ակնարկ</a>
+                    <a href="/routes/optimize">Օպտիմալացում</a>
+                    <a href="/routes/dispatch">Առաքում</a>
+                    <a href="/routes/learning">Ուսուցում</a>
+                    <a href="/routes/settings">Կարգավորումներ</a>
+                    <a href="/routes/garage">Ավտոտնակ</a>
                 </nav>
-                <button id="rtRefreshBtn" type="button" class="rt-btn rt-btn-ghost" title="Заново прочитать данные из ERP и пересчитать">
-                    <i class="fas fa-rotate" aria-hidden="true"></i><span>Обновить</span>
+                <button id="rtRefreshBtn" type="button" class="rt-btn rt-btn-ghost" title="Կրկին կարդալ տվյալները ERP-ից և վերահաշվել">
+                    <i class="fas fa-rotate" aria-hidden="true"></i><span>Թարմացնել</span>
                 </button>
             </div>
         </div>
-        <p class="rt-head-lead">Как менеджеры ездят по текущему плану из ERP: сколько приносит каждый день, сколько километров
-            они проезжают и какие магазины перестали покупать.</p>
+        <p class="rt-head-lead">Ինչպես են մենեջերներն աշխատում ERP-ի ընթացիկ պլանով՝ որքան հասույթ է բերում յուրաքանչյուր օրը,
+            քանի կիլոմետր են նրանք անցնում և որ խանութներն են դադարել գնել։</p>
     </header>
 
     <!-- Объявления для скринридеров -->
     <div id="rtStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
 
     <div id="rtLoading" class="rt-loading" role="status" aria-live="polite">
-        <div class="rt-spinner" aria-hidden="true"></div>Считаю маршруты по текущему плану из ERP…
-        <small>Первый расчёт после запуска может занять до минуты</small>
+        <div class="rt-spinner" aria-hidden="true"></div>Հաշվում եմ երթուղիները ERP-ի ընթացիկ պլանով…
+        <small>Գործարկումից հետո առաջին հաշվարկը կարող է տևել մինչև մեկ րոպե</small>
     </div>
     <div id="rtError" class="rt-alert d-none" role="alert">
         <i class="fas fa-plug-circle-xmark" aria-hidden="true"></i>
         <span id="rtErrorText" class="rt-alert-text"></span>
-        <button id="rtRetryBtn" type="button" class="rt-btn rt-btn-ghost">Повторить</button>
-        <a id="rtLoginLink" href="/login?next=/routes" class="rt-btn rt-btn-ghost d-none">Войти</a>
+        <button id="rtRetryBtn" type="button" class="rt-btn rt-btn-ghost">Կրկնել</button>
+        <a id="rtLoginLink" href="/login?next=/routes" class="rt-btn rt-btn-ghost d-none">Մուտք գործել</a>
     </div>
 
     <div id="rtBody" class="d-none">
 
         <!-- ГЛАВНОЕ СЕЙЧАС -->
         <div class="rt-main ov-main" aria-labelledby="rtMainTitle">
-            <h2 class="rt-main-title" id="rtMainTitle"><i class="fas fa-lightbulb" aria-hidden="true"></i>Главное сейчас</h2>
+            <h2 class="rt-main-title" id="rtMainTitle"><i class="fas fa-lightbulb" aria-hidden="true"></i>Գլխավորը հիմա</h2>
             <ul class="rt-main-list" id="rtMainList"></ul>
             <p class="rt-main-note" id="rtMainNote" hidden></p>
             <div class="rt-main-cta">
-                <a href="/routes/optimize" class="rt-btn rt-btn-primary rt-btn-lg">Посмотреть, что можно улучшить<i class="fas fa-arrow-right" aria-hidden="true"></i></a>
-                <span class="rt-cta-note">Оптимизация предложит, в какие дни ездить к каким магазинам</span>
+                <a href="/routes/optimize" class="rt-btn rt-btn-primary rt-btn-lg">Տեսնել, թե ինչ կարելի է բարելավել<i class="fas fa-arrow-right" aria-hidden="true"></i></a>
+                <span class="rt-cta-note">Օպտիմալացումը կառաջարկի, թե որ օրերին որ խանութներ այցելել</span>
             </div>
         </div>
 
         <!-- ЧТО ЕЩЁ НАСТРОИТЬ: не больше трёх строк -->
         <section id="rtTodo" class="rt-todo d-none" aria-labelledby="rtTodoTitle">
-            <h2 class="rt-todo-title" id="rtTodoTitle"><i class="fas fa-list-check" aria-hidden="true"></i>Что ещё настроить</h2>
+            <h2 class="rt-todo-title" id="rtTodoTitle"><i class="fas fa-list-check" aria-hidden="true"></i>Ինչ դեռ պետք է կարգավորել</h2>
             <ul id="rtTodoList" class="rt-todo-list"></ul>
             <details id="rtTodoMore" class="rt-todo-more" hidden>
                 <summary id="rtTodoMoreSum"></summary>
@@ -77,37 +86,37 @@
         </section>
 
         <!-- ЧЕТЫРЕ ПОКАЗАТЕЛЯ -->
-        <div class="rt-kpis is-4" id="rtKpis" role="group" aria-label="Главные показатели текущего плана"></div>
+        <div class="rt-kpis is-4" id="rtKpis" role="group" aria-label="Ընթացիկ պլանի հիմնական ցուցանիշները"></div>
 
         <!-- КАРТА + ПАНЕЛЬ ДНЯ -->
         <section class="rt-section" id="rtMapSection" aria-labelledby="rtMapTitle">
             <div class="rt-shead">
-                <h2 id="rtMapTitle">Карта магазинов</h2>
+                <h2 id="rtMapTitle">Խանութների քարտեզ</h2>
                 <span class="rt-shead-note" id="rtCoordsNote"></span>
             </div>
             <div class="rt-panel">
                 <div class="rt-maptools">
-                    <label for="rtMgrFilter">Менеджер
+                    <label for="rtMgrFilter">Մենեջեր
                         <select id="rtMgrFilter" class="rt-select">
-                            <option value="">Все менеджеры</option>
+                            <option value="">Բոլոր մենեջերները</option>
                         </select>
                     </label>
-                    <div class="rt-chips" id="rtDayChips" role="group" aria-label="Дни недели на карте"></div>
+                    <div class="rt-chips" id="rtDayChips" role="group" aria-label="Շաբաթվա օրերը քարտեզում"></div>
                     <span class="rt-maptools-note" id="rtNoCoords" aria-live="polite"></span>
                     <div class="rt-routebar" id="rtRouteBar" hidden>
                         <i class="fas fa-route" aria-hidden="true"></i>
                         <span id="rtRouteBarText"></span>
                         <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rtRouteClear">
-                            <i class="fas fa-xmark" aria-hidden="true"></i>Показать все магазины
+                            <i class="fas fa-xmark" aria-hidden="true"></i>Ցույց տալ բոլոր խանութները
                         </button>
                     </div>
                 </div>
                 <div class="rt-mapgrid">
                     <div class="rt-mapcol">
-                        <div id="rtMap" class="rt-map" role="region" aria-label="Карта магазинов, домов менеджеров и склада"></div>
-                        <div id="rtMapLegend" class="rt-maplegend" aria-label="Легенда карты"></div>
+                        <div id="rtMap" class="rt-map" role="region" aria-label="Խանութների, մենեջերների տների և պահեստի քարտեզ"></div>
+                        <div id="rtMapLegend" class="rt-maplegend" aria-label="Պայմանական նշաններ"></div>
                     </div>
-                    <aside class="rt-side" aria-label="День менеджера">
+                    <aside class="rt-side" aria-label="Մենեջերի օրը">
                         <div class="rt-side-inner" id="rtSide"></div>
                     </aside>
                 </div>
@@ -117,18 +126,18 @@
         <!-- ПО ДНЯМ НЕДЕЛИ -->
         <section class="rt-section" aria-labelledby="rtHeatTitle">
             <div class="rt-shead">
-                <h2 id="rtHeatTitle">По дням недели</h2>
-                <span class="rt-shead-note" id="rtHeatNote">в клетке — сколько день принесёт зимой, сколько визитов и шанс набрать дневную норму</span>
+                <h2 id="rtHeatTitle">Ըստ շաբաթվա օրերի</h2>
+                <span class="rt-shead-note" id="rtHeatNote">վանդակում՝ որքան կբերի օրը ձմռանը, քանի այց և օրական նորմը հավաքելու հավանականությունը</span>
             </div>
             <div class="rt-panel">
                 <div class="rt-scroll">
                     <table class="rt-heat" id="rtHeat">
-                        <caption class="rt-sr-only">Менеджеры по дням недели. Нажмите на день, чтобы увидеть магазины и маршрут. Стрелки переходят между днями.</caption>
+                        <caption class="rt-sr-only">Մենեջերներն ըստ շաբաթվա օրերի։ Սեղմեք օրվա վրա՝ խանութները և երթուղին տեսնելու համար։ Սլաքներով կարելի է անցնել օրից օր։</caption>
                         <thead></thead>
                         <tbody></tbody>
                     </table>
                 </div>
-                <div id="rtHeatEmpty" class="rt-empty d-none">В ERP нет маршрутов менеджеров — считать нечего.</div>
+                <div id="rtHeatEmpty" class="rt-empty d-none">ERP-ում մենեջերների երթուղիներ չկան — հաշվելու բան չկա։</div>
                 <div class="rt-heat-legend" id="rtHeatLegend"></div>
             </div>
         </section>
@@ -136,8 +145,8 @@
         <!-- РАЗВОЗ ПО ДНЯМ: парк машин (fleet-plan §4) -->
         <section class="rt-section" id="rtFleetSection" aria-labelledby="rtFleetTitle" hidden>
             <div class="rt-shead">
-                <h2 id="rtFleetTitle">Развоз по дням</h2>
-                <span class="rt-shead-note">день доставки → рейсы, машины, точки, кг, км и загрузка</span>
+                <h2 id="rtFleetTitle">Առաքումն ըստ օրերի</h2>
+                <span class="rt-shead-note">առաքման օր → երթեր, մեքենաներ, կետեր, կգ, կմ և բեռնվածություն</span>
             </div>
             <div class="rt-panel rt-panel-pad">
                 <p class="rt-lead" id="rtFleetLead"></p>
@@ -148,45 +157,45 @@
         <!-- МАГАЗИНЫ, КОТОРЫЕ ПЕРЕСТАЛИ ПОКУПАТЬ (§15) -->
         <section class="rt-section" id="rtRiskSection" aria-labelledby="rtRiskTitle">
             <div class="rt-shead">
-                <h2 id="rtRiskTitle">Магазины под риском</h2>
-                <span class="rt-shead-note">перестали покупать — менеджеры ездят к ним впустую</span>
+                <h2 id="rtRiskTitle">Ռիսկային խանութներ</h2>
+                <span class="rt-shead-note">դադարել են գնել — մենեջերներն իզուր են այցելում դրանց</span>
             </div>
             <div class="rt-panel rt-panel-pad">
                 <p class="rt-lead" id="rtRiskLead"></p>
                 <div class="rt-risk-tools">
-                    <div class="rt-chips" id="rtRiskSort" role="group" aria-label="Порядок списка">
-                        <button type="button" class="rt-chip" data-sort="rev" aria-pressed="true">Сначала крупные</button>
-                        <button type="button" class="rt-chip" data-sort="days" aria-pressed="false">Сначала давно не покупают</button>
+                    <div class="rt-chips" id="rtRiskSort" role="group" aria-label="Ցուցակի հերթականությունը">
+                        <button type="button" class="rt-chip" data-sort="rev" aria-pressed="true">Սկզբում՝ խոշորները</button>
+                        <button type="button" class="rt-chip" data-sort="days" aria-pressed="false">Սկզբում՝ վաղուց չգնողները</button>
                     </div>
                     <span class="rt-risk-count" id="rtRiskCount" role="status" aria-live="polite"></span>
                 </div>
                 <div class="rt-table-scroll rt-risk-scroll">
                     <table class="rt-table rt-risk-table">
-                        <caption class="rt-sr-only">Магазины, которые перестали покупать: менеджер, что случилось, сколько дней без заказов, как часто заказывал, заказы и покупки за год, последний заказ</caption>
+                        <caption class="rt-sr-only">Խանութներ, որոնք դադարել են գնել՝ մենեջեր, ինչ է պատահել, քանի օր առանց պատվերի, որքան հաճախ էր պատվիրում, պատվերներ և գնումներ վերջին տարում, վերջին պատվեր</caption>
                         <thead>
                             <tr>
-                                <th scope="col">Магазин</th>
-                                <th scope="col">Менеджер</th>
-                                <th scope="col">Что случилось</th>
-                                <th scope="col" class="num">Не покупает, дней</th>
-                                <th scope="col" class="num">Обычно заказывал</th>
-                                <th scope="col" class="num">Заказов за год</th>
-                                <th scope="col" class="num">Купил за год</th>
-                                <th scope="col">Последний заказ</th>
+                                <th scope="col">Խանութ</th>
+                                <th scope="col">Մենեջեր</th>
+                                <th scope="col">Ինչ է պատահել</th>
+                                <th scope="col" class="num">Չի գնում, օր</th>
+                                <th scope="col" class="num">Սովորաբար պատվիրում էր</th>
+                                <th scope="col" class="num">Պատվեր՝ վերջին տարում</th>
+                                <th scope="col" class="num">Գնել է վերջին տարում</th>
+                                <th scope="col">Վերջին պատվեր</th>
                             </tr>
                         </thead>
                         <tbody id="rtRiskBody"></tbody>
                     </table>
                 </div>
-                <div id="rtRiskEmpty" class="rt-empty px-0 d-none">Все магазины менеджеров в расчёте покупают как обычно.</div>
+                <div id="rtRiskEmpty" class="rt-empty px-0 d-none">Հաշվարկում ներառված մենեջերների բոլոր խանութները գնում են սովորականի պես։</div>
                 <button type="button" class="rt-linkbtn" id="rtRiskMore" hidden></button>
             </div>
         </section>
 
         <!-- КАК СЧИТАЮТСЯ ЦИФРЫ: свёрнуто -->
         <details class="rt-fold" id="rtSeasonBox">
-            <summary><span class="rt-fold-t"><i class="fas fa-circle-question" aria-hidden="true"></i>Как считаются цифры</span>
-                <span class="rt-fold-note">какой сезон в какой цифре</span></summary>
+            <summary><span class="rt-fold-t"><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպես են հաշվվում թվերը</span>
+                <span class="rt-fold-note">որ սեզոնն է որ թվում</span></summary>
             <div class="rt-fold-body">
                 <div class="rt-season" id="rtSeason"></div>
                 <div class="rt-months" id="rtMonths" aria-hidden="true"></div>
@@ -201,5 +210,5 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_overview.js') }}?v=10"></script>
+<script src="{{ url_for('static', filename='js/routes_overview.js') }}?v=11"></script>
 {% endblock %}

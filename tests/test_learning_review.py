@@ -166,7 +166,7 @@ def test_h1_empty_manual_norm_uses_median_baseline_bounds_and_step():
     a, b = o.params['fixed_min'], o.params['per_tonne_min']
     base = sum(med) / 2
     assert all(0.7 * base - 1e-3 <= a + b * t <= 1.3 * base + 1e-3 for t in (1.0, 3.0))
-    assert 'медиана' in o.reason
+    assert 'մեդիան' in o.reason
     test = [x for x in obs if x.day >= TODAY - timedelta(days=lr.HOLDOUT_DAYS)]
     assert o.mae_before == pytest.approx(sum(abs(base - x.minutes) for x in test) / len(test), abs=1e-3)
     huge = [lr.LoadObs(x.day, x.tonnes, 60 + 25 * x.tonnes) for x in obs]     # неправдоподобно: 60 мин + 25 мин/т
@@ -483,9 +483,9 @@ def test_l7_bad_learned_row_does_not_break_dispatch(client):
         conn.commit()
     r = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']})
     assert r.status_code == 200
-    assert state.learning_warning and 'настроек' in state.learning_warning['text']
+    assert state.learning_warning and 'կարգավորումների նորմերով' in state.learning_warning['text']
     page = client.get('/api/routes/learning/status')                         # страница показывает, что журнал битый
-    assert page.status_code == 500 and 'повреждена' in page.get_json()['error']
+    assert page.status_code == 500 and 'վնասված է' in page.get_json()['error']
 
 
 def _offset_row(cid, minutes):

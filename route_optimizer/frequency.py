@@ -23,7 +23,7 @@ SOURCE_MANUAL = 'manual'     # частоту принял владелец
 SOURCE_SALES = 'sales'       # снижена по продажам
 SOURCE_CURRENT = 'current'   # как сейчас
 SOURCE_RULE = 'rule'         # поднята до минимума MIN_FREQ (№30)
-RULE_TEXT = 'каждый магазин — не реже раза в неделю'
+RULE_TEXT = 'յուրաքանչյուր խանութ՝ առնվազն շաբաթը մեկ անգամ'
 
 
 def abc_classes(revenue_week: Mapping[int, float], a_share: float, b_share: float) -> dict[int, str]:
@@ -79,7 +79,7 @@ def target_frequency(current: float, f_sales: float | None, mode: str, accepted:
     return current, SOURCE_CURRENT
 
 
-# --- Тексты ---
+# --- Тексты (для пользователя — по-армянски, решение владельца №58; после числа существительное в ед. ч.) ---
 
 def fmt_decimal(x: float, digits: int = 2) -> str:
     """1.6 → «1,6», 0.333 → «0,33», 2.0 → «2»."""
@@ -95,55 +95,45 @@ def plural(n: int, one: str, few: str, many: str) -> str:
     return one if last == 1 else (few if 2 <= last <= 4 else many)
 
 
-def _times(x: float) -> str:
-    """«раз» / «раза» после числа: 1 раз, 2 раза, 5 раз, 1,6 раза."""
-    if not same_freq(x, round(x)):
-        return 'раза'
-    return plural(round(x), 'раз', 'раза', 'раз')
-
-
 def order_rate_text(lam: float, lam_season: float | None = None) -> str:
-    """Причина снижения частоты: «заказывает раз в 3 недели (0,33 заказа/нед)»; lam_season —
+    """Причина снижения частоты: «պատվիրում է 3 շաբաթը մեկ (0,33 պատվեր շաբաթում)»; lam_season —
     наибольшая λ сезонов, если она выше годовой (частота подобрана по ней):
-    «…; в сезон — до 0,45 заказа/нед»."""
+    «…; սեզոնին՝ մինչև 0,45 պատվեր շաբաթում» (по «սեզոնին» его узнаёт rowReason в routes_optimize.js)."""
     if lam <= 0:
-        text = 'за год ни одного заказа'
+        text = 'վերջին տարում ոչ մի պատվեր'
     elif lam >= 1 - _EPS:
-        text = f'заказывает {fmt_decimal(lam, 1)} {_times(round(lam, 1))} в неделю'
+        text = f'պատվիրում է շաբաթը {fmt_decimal(lam, 1)} անգամ'
     else:
         weeks = round(1 / lam)
-        rate = f'{fmt_decimal(lam, 2)} заказа/нед'
-        text = (f'заказывает почти каждую неделю ({rate})' if weeks <= 1 else
-                f'заказывает раз в {weeks} {plural(weeks, "неделю", "недели", "недель")} ({rate})')
+        rate = f'{fmt_decimal(lam, 2)} պատվեր շաբաթում'
+        text = (f'պատվիրում է գրեթե ամեն շաբաթ ({rate})' if weeks <= 1 else
+                f'պատվիրում է {weeks} շաբաթը մեկ ({rate})')
     if lam_season is not None and round(lam_season, 2) > round(lam, 2):
-        text += f'; в сезон — до {fmt_decimal(lam_season, 2)} заказа/нед'
+        text += f'; սեզոնին՝ մինչև {fmt_decimal(lam_season, 2)} պատվեր շաբաթում'
     return text
 
 
 def freq_text(f: float) -> str:
-    """Частота словами: «раз в 2 недели», «раз в неделю», «2 раза в неделю», «1,5 раза в неделю»."""
+    """Частота словами: «2 շաբաթը մեկ», «շաբաթը մեկ անգամ», «շաբաթը 2 անգամ», «շաբաթը 1,5 անգամ»."""
     if same_freq(f, 0.5):
-        return 'раз в 2 недели'
+        return '2 շաբաթը մեկ'
     if same_freq(f, 1.0):
-        return 'раз в неделю'
-    return f'{fmt_decimal(f, 1)} {_times(f)} в неделю'
+        return 'շաբաթը մեկ անգամ'
+    return f'շաբաթը {fmt_decimal(f, 1)} անգամ'
 
 
 def visits_text(f: float) -> str:
-    """«при 1 визите», «при 2 визитах», «при визите раз в 2 недели»."""
+    """Сколько посещают сейчас: «իսկ այցելում ենք շաբաթը 1 անգամ», «իսկ այցելում ենք 2 շաբաթը մեկ»."""
     if same_freq(f, 0.5):
-        return 'при визите раз в 2 недели'
-    if same_freq(f, round(f)):
-        n = round(f)
-        return f'при {n} ' + plural(n, 'визите', 'визитах', 'визитах')
-    return f'при {fmt_decimal(f, 1)} визита'
+        return 'իսկ այցելում ենք 2 շաբաթը մեկ'
+    return f'իսկ այցելում ենք շաբաթը {fmt_decimal(f, 1)} անգամ'
 
 
 def can_visit_text(f: float) -> str:
-    """«можно посещать 2 раза», «можно посещать каждую неделю»."""
+    """«կարելի է այցելել շաբաթը 2 անգամ», «կարելի է այցելել ամեն շաբաթ»."""
     if same_freq(f, 1.0):
-        return 'можно посещать каждую неделю'
-    return f'можно посещать {fmt_decimal(f, 1)} {_times(f)}'
+        return 'կարելի է այցելել ամեն շաբաթ'
+    return f'կարելի է այցելել շաբաթը {fmt_decimal(f, 1)} անգամ'
 
 
 def frequency_hints(lam_year: float, freq_now: float, safety: float, freq_after: float = 0.0,
@@ -152,12 +142,12 @@ def frequency_hints(lam_year: float, freq_now: float, safety: float, freq_after:
     no_orders — за год ни одного заказа; freq_up — заказывает чаще, чем его посещают (λ > f); её нет,
     если предложение уже даёт столько визитов (freq_after) или владелец эту частоту отклонил."""
     if lam_year <= 0:
-        return [('no_orders', 'за год ни одного заказа')]
+        return [('no_orders', 'վերջին տարում ոչ մի պատվեր')]
     if lam_year <= freq_now + _EPS:
         return []
     need = lam_year * safety
     f_up = next((f for f in FREQUENCIES if f >= need - _EPS), FREQUENCIES[-1])
     if f_up <= max(freq_now, freq_after) + _EPS or any(same_freq(f_up, r) for r in rejected):
         return []
-    rate = f'{fmt_decimal(lam_year, 1)} {_times(round(lam_year, 1))} в неделю'
-    return [('freq_up', f'заказывает {rate} {visits_text(freq_now)} — {can_visit_text(f_up)}')]
+    rate = f'շաբաթը {fmt_decimal(lam_year, 1)} անգամ'
+    return [('freq_up', f'պատվիրում է {rate}, {visits_text(freq_now)} — {can_visit_text(f_up)}')]

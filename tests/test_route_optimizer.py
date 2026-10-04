@@ -870,9 +870,10 @@ def test_store_rejects_invalid_values_with_messages(store):
         'settings.fuel_price_diesel', 'settings.city_center_lat', 'settings.bogus', 'depot',
         'trucks.0.car_code', 'trucks.1.capacity_kg', 'trucks.1.agent_id',
         'managers.0.car_fuel_type', 'managers.0.home', 'managers.1.agent_id'}
-    assert errors['settings.detour_factor'] == 'допустимо от 1 до 3'
-    assert errors['depot'] == 'точка вне Армении'
-    assert all(re.search('[а-яА-Я]', msg) for msg in errors.values())
+    assert errors['settings.detour_factor'] == 'թույլատրելի է՝ 1-ից մինչև 3'
+    assert errors['depot'] == 'կետը Հայաստանից դուրս է'
+    # тексты для страницы настроек — армянские (№58), без кириллицы
+    assert all(re.search('[Ա-֏]', msg) and not re.search('[а-яА-ЯёЁ]', msg) for msg in errors.values())
 
 
 def test_store_cross_field_rules(store):
@@ -981,12 +982,12 @@ def test_store_corrupted_rows_are_explicit(store, tmp_path):
         store.load()
     with sqlite3.connect(path) as conn:
         conn.execute("UPDATE trucks SET active = 1, capacity_kg = 0 WHERE car_code = 'CAR1'")
-    with pytest.raises(st.StoreError, match='тоннаж'):
+    with pytest.raises(st.StoreError, match='տոննաժ'):
         store.load()
     with sqlite3.connect(path) as conn:
         conn.execute("UPDATE trucks SET capacity_kg = 3000 WHERE car_code = 'CAR1'")
         conn.execute("UPDATE manager_profile SET car_fuel_type = 'coal', home_lat = 40.1")
-    with pytest.raises(st.StoreError, match='вид топлива'):
+    with pytest.raises(st.StoreError, match='վառելիքի տեսակ'):
         store.load()
 
 
@@ -1027,8 +1028,8 @@ def test_store_load_is_one_read_transaction(store, tmp_path, monkeypatch):
 
 def test_huge_numbers_are_validation_errors(store):
     huge = 10 ** 400                     # JSON-целое больше предела float: float(huge) — OverflowError
-    assert st._check_number(huge, 1, 3) == (None, 'допустимо от 1 до 3')
-    assert st._check_number(-huge, 1, 10000, nullable=True)[1] == 'допустимо от 1 до 10000'
+    assert st._check_number(huge, 1, 3) == (None, 'թույլատրելի է՝ 1-ից մինչև 3')
+    assert st._check_number(-huge, 1, 10000, nullable=True)[1] == 'թույլատրելի է՝ 1-ից մինչև 10 000'
     assert not geo.is_valid_point(huge, 44.5) and not geo.is_valid_point(40.18, -huge)
     payload = {'settings': {'detour_factor': huge, 'min_day_revenue': -huge},
                'depot': {'lat': huge, 'lon': 44.46},
@@ -1400,7 +1401,7 @@ def test_api_overview_contract(client):
     assert all(set(stop) == STOP_KEYS and [x['customer_id'] for x in day['stops']] == day['customer_ids']
                for m in d['managers'] for day in m['days'] for stop in day['stops'])
     sunday = next(day for day in m1['days'] if day['weekday'] == 7)
-    assert {'off_day', 'sunday_order'} <= set(sunday['flags']) and sunday['delivery_label'] == 'Пн'
+    assert {'off_day', 'sunday_order'} <= set(sunday['flags']) and sunday['delivery_label'] == 'Երկ'
     assert set(d['customers']) == {'101', '102', '103', '104'}
     assert all(CUSTOMER_KEYS <= set(c) for c in d['customers'].values())
     assert d['customers']['103']['coord_source'] == 'gps'
@@ -1446,7 +1447,7 @@ def test_api_settings_get_and_post(client):
     assert ov['totals']['truck_km_week'] > 0 and ov['totals']['truck_amd_week'] > 0
     assert ov['totals']['trips_week'] > 0 and ov['fleet']['days']
     day = ov['fleet']['days'][0]
-    assert day['trucks'][0]['car_code'] == 'CAR1' and day['label'] in ('Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб')
+    assert day['trucks'][0]['car_code'] == 'CAR1' and day['label'] in ('Երկ', 'Երք', 'Չրք', 'Հնգ', 'Ուրբ', 'Շբթ')
 
     r = client.post('/api/routes/settings', json={'settings': {'detour_factor': 9}})
     assert r.status_code == 400 and 'settings.detour_factor' in r.get_json()['errors']
@@ -1475,7 +1476,7 @@ def test_api_errors_do_not_leak_details(client, tmp_path):
     state.snapshots = SnapshotCache(down)
     r = client.get('/api/routes/overview')
     assert r.status_code == 503 and r.get_json() == {'success': False,
-                                                       'error': 'База данных ERP недоступна'}
+                                                       'error': 'ERP տվյալների բազան հասանելի չէ'}
 
     broken = tmp_path / 'broken.db'
     broken.write_bytes(b'garbage' * 200)
@@ -1610,7 +1611,7 @@ def test_api_serves_stale_snapshot_when_erp_is_down(client):
         d = r.get_json()
         assert r.status_code == 200 and d['success'] and d['from_cache'] is True
         assert d['warnings'][0] == {'code': 'erp_stale', 'link': None,
-                                    'text': 'ERP сейчас недоступна — показаны данные на 30.09 12:00'}
+                                    'text': 'ERP-ն հիմա հասանելի չէ — ցույց են տրված տվյալները 30.09, 12:00 դրությամբ'}
         assert codes(d).count('erp_stale') == 1                   # кэш оценки не накапливает
     assert client.get('/api/routes/settings').status_code == 200
     down.clear()
@@ -1703,8 +1704,8 @@ def test_inactive_templates_excluded_by_default():
     assert ov['totals']['managers'] == 1
     w = next(w for w in ov['warnings'] if w['code'] == 'inactive_templates')
     assert w == {'code': 'inactive_templates', 'link': '/routes/settings#managers',
-                 'text': 'Шаблоны без работы 8 недель (нет заказов и визитов): A002 — не входят '
-                         'в расчёт. Включить можно в настройках.'}
+                 'text': '8 շաբաթ առանց աշխատանքի (պատվերներ և այցեր չկան)՝ A002 — հաշվարկում չեն։ '
+                         'Կարելի է միացնել կարգավորումներում։'}
     # владелец включил явно — в расчёте; отметка «без работы» остаётся, предупреждения нет
     on = ev.build_overview(snap, _bundle([st.ManagerProfile(2, included=True)]))
     assert manager(on, 2)['included'] is True and 'inactive' in manager(on, 2)['flags']
@@ -1731,7 +1732,7 @@ def test_season_empty_warning_names_months():
     ov = ev.build_overview(snap, _bundle())
     assert (ov['season']['low_months'], ov['season']['peak_months']) == ([1, 2, 3], [10, 11, 12])
     w = next(w for w in ov['warnings'] if w['code'] == 'season_empty')
-    assert 'янв, фев, мар' in w['text'] and 'окт, ноя, дек' in w['text']
+    assert 'հնվ, փտվ, մրտ' in w['text'] and 'հոկ, նոյ, դեկ' in w['text']
     assert w['link'] == '/routes/settings#season'
     plain = ev.build_overview(make_snapshot(), _bundle())
     assert 'season_empty' not in [w['code'] for w in plain['warnings']]
@@ -1885,7 +1886,7 @@ def test_api_deeply_nested_json_is_400(client):
     body = '[' * 100000 + ']' * 100000                   # парсер падает с RecursionError, не ValueError
     r = client.post('/api/routes/settings', data=body, content_type='application/json')
     assert r.status_code == 400
-    assert r.get_json() == {'success': False, 'errors': {'_': 'Некорректный JSON'}}
+    assert r.get_json() == {'success': False, 'errors': {'_': 'Սերվերը չընդունեց հարցումը'}}
 
 
 # ============================== этап 3: частоты ==============================
@@ -1974,16 +1975,16 @@ def test_weekly_rule_counts_store_total_and_adds_no_revenue():
 
 def test_frequency_hints_and_texts():
     assert fq.frequency_hints(1.6, 1.0, 1.0) == [
-        ('freq_up', 'заказывает 1,6 раза в неделю при 1 визите — можно посещать 2 раза')]
+        ('freq_up', 'պատվիրում է շաբաթը 1,6 անգամ, իսկ այցելում ենք շաբաթը 1 անգամ — կարելի է այցելել շաբաթը 2 անգամ')]
     assert fq.frequency_hints(0.8, 0.5, 1.0) == [
-        ('freq_up', 'заказывает 0,8 раза в неделю при визите раз в 2 недели — можно посещать каждую неделю')]
-    assert fq.frequency_hints(0.0, 1.0, 1.0) == [('no_orders', 'за год ни одного заказа')]
+        ('freq_up', 'պատվիրում է շաբաթը 0,8 անգամ, իսկ այցելում ենք 2 շաբաթը մեկ — կարելի է այցելել ամեն շաբաթ')]
+    assert fq.frequency_hints(0.0, 1.0, 1.0) == [('no_orders', 'վերջին տարում ոչ մի պատվեր')]
     assert fq.frequency_hints(0.33, 1.0, 1.0) == []
     assert fq.frequency_hints(4.2, 3.0, 1.0) == []            # чаще 3 раз в неделю не предлагаем
-    assert fq.order_rate_text(0.33) == 'заказывает раз в 3 недели (0,33 заказа/нед)'
-    assert fq.order_rate_text(0.2) == 'заказывает раз в 5 недель (0,2 заказа/нед)'
-    assert fq.order_rate_text(2.0) == 'заказывает 2 раза в неделю'
-    assert fq.order_rate_text(0.0) == 'за год ни одного заказа'
+    assert fq.order_rate_text(0.33) == 'պատվիրում է 3 շաբաթը մեկ (0,33 պատվեր շաբաթում)'
+    assert fq.order_rate_text(0.2) == 'պատվիրում է 5 շաբաթը մեկ (0,2 պատվեր շաբաթում)'
+    assert fq.order_rate_text(2.0) == 'պատվիրում է շաբաթը 2 անգամ'
+    assert fq.order_rate_text(0.0) == 'վերջին տարում ոչ մի պատվեր'
 
 
 # ============================== этап 3: шаблоны и решения ==============================
@@ -2018,11 +2019,13 @@ def test_allowed_patterns_current_nonstandard_and_forbidden():
     assert pt.change_type(_wk(2), ((1, 2),)) == 'frequency'
     assert pt.change_type(_wk(2), ((1, 4),)) == 'both'
     assert pt.change_type(_wk(2), _wk(2)) is None
-    assert pt.pattern_text(_wk(2)) == 'вт, каждую неделю'
-    assert pt.pattern_text(((1, 4),)) == 'чт, 1-я неделя из 2'
-    assert pt.pattern_text(((2, 4),)) == 'чт, 2-я неделя из 2'
-    assert pt.pattern_text(_wk(1, 4)) == 'пн и чт, каждую неделю'
-    assert pt.pattern_text(_wk(1, 3, 5)) == 'пн, ср и пт, каждую неделю'
+    assert pt.pattern_text(_wk(2)) == 'երք, ամեն շաբաթ'
+    assert pt.pattern_text(((1, 4),)) == 'հնգ, 2 շաբաթից 1-ինը'
+    assert pt.pattern_text(((2, 4),)) == 'հնգ, 2 շաբաթից 2-րդը'
+    assert pt.pattern_text(_wk(1, 4)) == 'երկ և հնգ, ամեն շաբաթ'
+    assert pt.pattern_text(_wk(1, 3, 5)) == 'երկ, չրք և ուրբ, ամեն շաբաթ'
+    assert pt.pattern_text(((1, 1), (2, 6))) == 'երկ — 1-ին շաբաթ, շբթ — 2-րդ շաբաթ'
+    assert pt.pattern_text(()) == 'առանց այցերի'
 
 
 def test_decision_values_are_canonical():
@@ -2059,7 +2062,7 @@ def test_pair_spec_locks_and_forbids():
 def test_plan_pairs_cycle_and_limits():
     p = pl.build_plan([_row(1, 1, 1, 1, 1, 10, 0, 5), _row(1, 1, 1, 4, 1, 10, 0, 6)])
     assert opt.plan_pairs(p) == {1: {10: opt.PairInfo(_wk(1, 4), 5)}}   # адрес первого визита
-    with pytest.raises(opt.OptimizeError, match='цикл 1 или 2'):
+    with pytest.raises(opt.OptimizeError, match='1 կամ 2 շաբաթվա ցիկլ'):
         opt.plan_pairs(pl.build_plan([_row(1, 1, 1, 1, 3, 10, 0)]))
 
 
@@ -2302,11 +2305,11 @@ def test_plan_export_frequency_only_decision():
         return [(r['week'], r['weekday'], r['mark']) for r in ex['rows'] if r['customer_id'] == 103]
 
     tue = _wk(2)                                                          # текущий шаблон 103
-    assert rows() == [(1, 2, 'частота')]                                  # тот же день, меньшая загрузка
-    assert rows(proposals={(1, 103): (tue, ((2, 2),))}) == [(2, 2, 'частота')]   # как в предложении
-    assert rows(proposals={(1, 103): (tue, _wk(3))}) == [(1, 2, 'частота')]     # другой частоты — нет
+    assert rows() == [(1, 2, 'հաճախականություն')]                                  # тот же день, меньшая загрузка
+    assert rows(proposals={(1, 103): (tue, ((2, 2),))}) == [(2, 2, 'հաճախականություն')]   # как в предложении
+    assert rows(proposals={(1, 103): (tue, _wk(3))}) == [(1, 2, 'հաճախականություն')]     # другой частоты — нет
     # предложение сделано от другого «было» (план клиента с тех пор изменился) — не берётся
-    assert rows(proposals={(1, 103): (_wk(5), ((2, 2),))}) == [(1, 2, 'частота')]
+    assert rows(proposals={(1, 103): (_wk(5), ((2, 2),))}) == [(1, 2, 'հաճախականություն')]
     result = {'managers': [{'agent_id': 1, 'changes': [
         {'customer_id': 103, 'from': {'pattern': [[1, 2], [2, 2]]}, 'to': {'pattern': [[2, 2]]}}]}]}
     assert opt.proposals_of(result) == {(1, 103): (tue, ((2, 2),))} and opt.proposals_of(None) == {}
@@ -2359,7 +2362,7 @@ def test_store_decisions_one_accepted_per_kind(store, tmp_path):
     with sqlite3.connect(str(tmp_path / 'routes.db')) as conn:
         conn.execute("INSERT INTO decision(customer_id, agent_id, kind, value, status, updated_at) "
                      "VALUES(5, 1, 'freq', '0.7', 'accepted', 'x')")
-    with pytest.raises(st.StoreError, match='решение'):
+    with pytest.raises(st.StoreError, match='որոշումը'):
         store.load_decisions()
 
 
@@ -2530,9 +2533,9 @@ def test_api_optimize_contract_and_last(client):
     m1 = _manager(res, 1)
     # 103 — ни одного заказа за год (§15): предложение «убрать из маршрута» вместо частоты
     c103 = _change(m1, 103)
-    assert c103['type'] == 'remove' and c103['from']['text'] == 'вт, каждую неделю'
-    assert c103['to'] == {'freq': 0, 'pattern': [], 'text': 'убрать из маршрута'}
-    assert c103['reason'] == 'ни одного заказа за год'
+    assert c103['type'] == 'remove' and c103['from']['text'] == 'երք, ամեն շաբաթ'
+    assert c103['to'] == {'freq': 0, 'pattern': [], 'text': 'հանել երթուղուց'}
+    assert c103['reason'] == 'վերջին տարում ոչ մի պատվեր'
     assert c103['effect']['manager_km_week'] < 0 and c103['effect']['minutes_week'] < 0
     assert not [x for x in m1['hints'] if x['customer_id'] == 103]
     assert set(res['customers']) == {'101', '102', '103', '104'}
@@ -2556,7 +2559,7 @@ def test_api_optimize_one_job_at_a_time(client, monkeypatch):
     busy = client.post('/api/routes/optimize', json={})
     # 409 несёт id идущей задачи — страница подключается к её ходу
     assert busy.status_code == 409
-    assert busy.get_json() == {'success': False, 'error': 'Расчёт уже идёт', 'job_id': job_id}
+    assert busy.get_json() == {'success': False, 'error': 'Հաշվարկն արդեն ընթանում է', 'job_id': job_id}
     running = client.get(f'/api/routes/optimize/{job_id}').get_json()
     assert running['job']['status'] == 'running' and running['result'] is None
     release.set()
@@ -2571,14 +2574,14 @@ def test_api_optimize_errors_are_russian_without_details(client, monkeypatch):
     monkeypatch.setattr(opt, 'run_optimization', boom)
     d = _wait_job(client, _start(client))
     assert d['job']['status'] == 'error' and d['result'] is None
-    assert d['job']['error'] == 'Внутренняя ошибка расчёта — подробности в журнале сервера'
+    assert d['job']['error'] == 'Հաշվարկի ներքին սխալ — մանրամասները սերվերի մատյանում են'
     assert '192.168' not in json.dumps(d)
 
     def erp_down(*args, **kwargs):
         raise erp.ErpError('Login failed for user sa at 192.168.1.4')
 
     monkeypatch.setattr(opt, 'run_optimization', erp_down)
-    assert _wait_job(client, _start(client))['job']['error'] == 'База данных ERP недоступна'
+    assert _wait_job(client, _start(client))['job']['error'] == 'ERP տվյալների բազան հասանելի չէ'
     assert client.get('/api/routes/optimize/last').status_code == 404    # успешных расчётов нет
 
 
@@ -2626,7 +2629,7 @@ def test_api_decisions_lock_forbid_and_export(client):
     assert ex['success'] and ex['cycle_weeks'] == 2
     assert [(c['agent_id'], c['customer_id'], c['type']) for c in ex['changes']] == [(1, 103, 'frequency')]
     assert [[r['week'], r['weekday']] for r in ex['rows'] if r['customer_id'] == 103] == c103['to']['pattern']
-    assert all(r['mark'] == ('частота' if r['customer_id'] == 103 else '') for r in ex['rows'])
+    assert all(r['mark'] == ('հաճախականություն' if r['customer_id'] == 103 else '') for r in ex['rows'])
     assert sorted((r['agent_id'], r['week'], r['weekday']) for r in ex['rows'] if r['customer_id'] == 104) \
         == [(1, 1, 7), (1, 2, 7), (2, 1, 1), (2, 2, 1)]                 # отклонённый перенос не выгружен
     monday = [r for r in ex['rows'] if (r['agent_id'], r['week'], r['weekday']) == (1, 1, 1)]
@@ -2637,7 +2640,7 @@ def test_api_decisions_lock_forbid_and_export(client):
     res2 = _wait_job(client, _start(client))['result']
     m1b = _manager(res2, 1)
     c103b = _change(m1b, 103)
-    assert c103b['to']['pattern'] == c103['to']['pattern'] and c103b['reason'] == 'шаблон принят владельцем'
+    assert c103b['to']['pattern'] == c103['to']['pattern'] and c103b['reason'] == 'օրերն ընդունված են ձեր որոշմամբ'
     assert c103b['decision'] == {'pattern': 'accepted', 'freq': 'accepted'}
     c104b = _change(m1b, 104)
     assert c104b is None or c104b['to']['pattern'] != c104['to']['pattern']
@@ -2775,8 +2778,8 @@ def test_sales_frequency_is_season_safe():
     assert opt.season_lam(model) == 0.99
     assert fq.sales_frequency(0.25, 1.0) == 1.0 and fq.sales_frequency(1.01, 1.0) == 2.0
     assert fq.order_rate_text(0.25, 0.99) == \
-        'заказывает раз в 4 недели (0,25 заказа/нед); в сезон — до 0,99 заказа/нед'
-    assert fq.order_rate_text(0.33, 0.33) == 'заказывает раз в 3 недели (0,33 заказа/нед)'
+        'պատվիրում է 4 շաբաթը մեկ (0,25 պատվեր շաբաթում); սեզոնին՝ մինչև 0,99 պատվեր շաբաթում'
+    assert fq.order_rate_text(0.33, 0.33) == 'պատվիրում է 3 շաբաթը մեկ (0,33 պատվեր շաբաթում)'
     # 102 заказывает только летом (июнь–август), 2 раза в неделю: по году — раз в 2 недели;
     # посещают 2 раза в неделю (пн + чт)
     base = make_snapshot()
@@ -2866,8 +2869,8 @@ def test_non_workday_pattern_is_never_allowed():
     assert _wk(5, 6) in pt.allowed_patterns(_wk(6, 7), 2.0, six)
     assert _wk(2, 4, 6) in pt.allowed_patterns(_wk(2, 4, 7), 3.0, six)
     assert _wk(1, 2) in pt.allowed_patterns(_wk(1, 2), 2.0, six)          # нестандартный рабочий — как раньше
-    assert pt.off_days_text(_wk(1, 7), six) == 'воскресенье — нерабочий день'
-    assert pt.off_days_text(_wk(6, 7), five) == 'суббота и воскресенье — нерабочие дни'
+    assert pt.off_days_text(_wk(1, 7), six) == 'կիրակի՝ ոչ աշխատանքային օր'
+    assert pt.off_days_text(_wk(6, 7), five) == 'շաբաթ և կիրակի՝ ոչ աշխատանքային օրեր'
     assert pt.off_days_text(_wk(1, 6), six) is None
 
 
@@ -2901,7 +2904,7 @@ def test_optimization_starts_sunday_customer_on_saturday(monkeypatch):
     assert dict(zip(o.customers, starts[1]))[104] == _slots(_wk(6))
     c104 = _change(_manager(out.result, 1), 104)
     assert (c104['type'], c104['from']['text'], c104['to']['text'], c104['reason']) == \
-        ('move', 'вс, каждую неделю', 'сб, каждую неделю', 'воскресенье — нерабочий день')
+        ('move', 'կիր, ամեն շաբաթ', 'շբթ, ամեն շաբաթ', 'կիրակի՝ ոչ աշխատանքային օր')
 
 
 def test_sunday_move_is_mandatory_even_if_change_penalty_exceeds_saving():
@@ -2910,8 +2913,8 @@ def test_sunday_move_is_mandatory_even_if_change_penalty_exceeds_saving():
     out = opt.run_optimization(make_snapshot(), _bundle(penalty_change=1_000_000), None, [], {})
     m1 = _manager(out.result, 1)
     c104 = _change(m1, 104)
-    assert c104['type'] == 'move' and c104['reason'] == 'воскресенье — нерабочий день'
-    assert c104['from']['text'] == 'вс, каждую неделю' and all(1 <= d <= 6 for _, d in c104['to']['pattern'])
+    assert c104['type'] == 'move' and c104['reason'] == 'կիրակի՝ ոչ աշխատանքային օր'
+    assert c104['from']['text'] == 'կիր, ամեն շաբաթ' and all(1 <= d <= 6 for _, d in c104['to']['pattern'])
     # прочие — только частота или «убрать из маршрута» (103 без заказов, §15), дни не меняются
     assert all(ch['type'] in ('frequency', 'remove') for ch in m1['changes'] if ch['customer_id'] != 104)
     o = next(o for o in out.managers if o.agent_id == 1)
@@ -2933,7 +2936,7 @@ def test_manager_with_whole_template_on_sunday_ends_on_workdays():
     m1 = _manager(out.result, 1)
     assert sorted(ch['customer_id'] for ch in m1['changes']) == [101, 102, 103, 104]
     assert _change(m1, 103)['type'] == 'remove'
-    assert all(ch['reason'].startswith('воскресенье — нерабочий день') for ch in m1['changes']
+    assert all(ch['reason'].startswith('կիրակի՝ ոչ աշխատանքային օր') for ch in m1['changes']
                if ch['type'] != 'remove')
     assert m1['days_after'] and all(day['weekday'] in six for day in m1['days_after'])
 
@@ -3041,11 +3044,11 @@ def test_customer_status_as_of_has_no_future_leakage():
 
 
 def test_status_texts_and_risk_summary():
-    assert cst.silence_text(_status(())) == 'ни одного заказа за год'
-    assert cst.silence_text(_status(_weekly_until(1, 60))) == 'не покупает 60 дн (обычно раз в 7 дн)'
-    assert cst.silence_text(_status(_dates(1, 130))) == 'не покупает 130 дн'
+    assert cst.silence_text(_status(())) == 'վերջին տարում ոչ մի պատվեր'
+    assert cst.silence_text(_status(_weekly_until(1, 60))) == 'չի գնում 60 օր (սովորաբար՝ 7 օրը մեկ)'
+    assert cst.silence_text(_status(_dates(1, 130))) == 'չի գնում 130 օր'
     assert cst.win_back_text(_status(_weekly_until(1, 60))) == \
-        'не покупает 60 дн (обычно раз в 7 дн) — визит каждую неделю, попробовать вернуть'
+        'չի գնում 60 օր (սովորաբար՝ 7 օրը մեկ) — այց ամեն շաբաթ՝ փորձել վերադարձնել'
     summary = cst.risk_summary([_status(_weekly_until(1, 60)), _status(_weekly_until(1, 130)),
                                 _status(()), _status(_weekly_until(1, 2))])
     assert summary == {'dormant': 1, 'dormant_rev_year': 44 * 30000, 'lost': 1, 'lost_rev_year': 34 * 30000,
@@ -3196,10 +3199,10 @@ def test_optimizer_dormant_weekly_and_lost_removed():
     c101, c102, c103 = _change(m1, 101), _change(m1, 102), _change(m1, 103)
     assert (c102['type'], c102['from']['freq'], c102['to']['freq']) == ('frequency', 2, 1)
     assert c102['reason'] == \
-        'не покупает 60 дн (обычно раз в 7 дн) — визит каждую неделю, попробовать вернуть'
+        'չի գնում 60 օր (սովորաբար՝ 7 օրը մեկ) — այց ամեն շաբաթ՝ փորձել վերադարձնել'
     assert (c101['type'], c101['reason'], c101['to']['text']) == \
-        ('remove', 'не покупает 150 дн (обычно раз в 7 дн)', 'убрать из маршрута')
-    assert (c103['type'], c103['reason']) == ('remove', 'ни одного заказа за год')
+        ('remove', 'չի գնում 150 օր (սովորաբար՝ 7 օրը մեկ)', 'հանել երթուղուց')
+    assert (c103['type'], c103['reason']) == ('remove', 'վերջին տարում ոչ մի պատվեր')
     assert _change(m2, 101)['type'] == 'remove'
     for ch in (c101, c103, _change(m2, 101)):
         e = ch['effect']
@@ -3250,24 +3253,24 @@ def test_api_remove_decisions_export_and_keep(client):
     assert set(x) == DECISION_ITEM_KEYS
     assert (x['kind'], x['status'], x['stale'], x['value'], x['from']) == \
         ('remove', 'accepted', False, [], [[1, 2], [2, 2]])
-    assert (x['to_text'], x['from_text'], x['current_text']) == ('убрать из маршрута', 'вт, каждую неделю',
-                                                                  'вт, каждую неделю')
+    assert (x['to_text'], x['from_text'], x['current_text']) == ('հանել երթուղուց', 'երք, ամեն շաբաթ',
+                                                                  'երք, ամեն շաբաթ')
     assert d['summary'] == {'accepted': 1, 'rejected': 0, 'stale': 0, 'export_changes': 1}
     ex = client.get('/api/routes/plan-export').get_json()
     assert [(c['agent_id'], c['customer_id'], c['type'], c['to']) for c in ex['changes']] == \
-        [(1, 103, 'remove', {'freq': 0, 'pattern': [], 'text': 'убрать из маршрута'})]
+        [(1, 103, 'remove', {'freq': 0, 'pattern': [], 'text': 'հանել երթուղուց'})]
     assert not [r for r in ex['rows'] if r['customer_id'] == 103] and {r['mark'] for r in ex['rows']} == {''}
     assert {m['agent_id']: m['changes'] for m in ex['managers']} == {1: 1, 2: 0}
     res2 = _wait_job(client, _start(client, {'frequencies': 'current'}))['result']   # «как сейчас» — тоже
     c = _change(_manager(res2, 1), 103)
     assert (c['type'], c['reason'], c['decision']) == \
-        ('remove', 'удаление принято владельцем', {'remove': 'accepted'})
+        ('remove', 'հեռացումն ընդունված է ձեր որոշմամբ', {'remove': 'accepted'})
     assert all(s['customer_id'] != 103 for day in _manager(res2, 1)['days_after'] for s in day['stops'])
     # «Оставить»: то же решение — отклонено
     assert client.post('/api/routes/decisions', json={**item, 'action': 'reject'}).status_code == 200
     res3 = _wait_job(client, _start(client))['result']
     assert _change(_manager(res3, 1), 103) is None                # был раз в неделю — так и остаётся
-    assert {'customer_id': 103, 'kind': 'no_orders', 'text': 'за год ни одного заказа'} in \
+    assert {'customer_id': 103, 'kind': 'no_orders', 'text': 'վերջին տարում ոչ մի պատվեր'} in \
         _manager(res3, 1)['hints']
     ex = client.get('/api/routes/plan-export').get_json()
     assert ex['changes'] == [] and len([r for r in ex['rows'] if r['customer_id'] == 103]) == 2
@@ -3282,7 +3285,7 @@ def test_api_remove_decision_retired_or_stale_with_erp(client, tmp_path):
     _use_snapshot(client, 'syn-thu', plan=_plan_rows(day_103=4))           # 103 теперь в четверг
     d = client.get('/api/routes/decisions').get_json()
     [x] = d['decisions']
-    assert x['stale'] and x['current_text'] == 'чт, каждую неделю' and d['summary']['export_changes'] == 0
+    assert x['stale'] and x['current_text'] == 'հնգ, ամեն շաբաթ' and d['summary']['export_changes'] == 0
     ex = client.get('/api/routes/plan-export').get_json()
     assert ex['changes'] == [] and [s['customer_id'] for s in ex['stale_decisions']] == [103]
     assert [(r['week'], r['weekday']) for r in ex['rows'] if r['customer_id'] == 103] == [(1, 4), (2, 4)]
@@ -3346,7 +3349,7 @@ def test_store_remove_decisions_and_migration_4_to_5(tmp_path):
     with closing(sqlite3.connect(path)) as conn:                             # битое значение — явная ошибка
         insert(conn, 7, 'remove', '[[1,2]]', 'rejected')
         conn.commit()
-    with pytest.raises(st.StoreError, match='решение'):
+    with pytest.raises(st.StoreError, match='որոշումը'):
         s.load_decisions()
 
 
@@ -3410,10 +3413,10 @@ def test_stale_decisions_are_not_applied():
     assert {k: s[k] for k in ('customer_id', 'agent_id', 'kind', 'stale', 'from_text', 'to_text',
                               'current_text')} == \
         {'customer_id': 104, 'agent_id': 1, 'kind': 'pattern', 'stale': True,
-         'from_text': 'пт, каждую неделю', 'to_text': 'ср, каждую неделю', 'current_text': 'вс, каждую неделю'}
+         'from_text': 'ուրբ, ամեն շաբաթ', 'to_text': 'չրք, ամեն շաբաթ', 'current_text': 'կիր, ամեն շաբաթ'}
     ex = opt.plan_export(snap, _bundle(), [stale, both])
     assert [(c['customer_id'], c['type']) for c in ex['changes']] == [(103, 'both')]
-    assert [r['mark'] for r in ex['rows'] if r['customer_id'] == 103] == ['перенос, частота']
+    assert [r['mark'] for r in ex['rows'] if r['customer_id'] == 103] == ['տեղափոխում, հաճախականություն']
     assert [s['customer_id'] for s in ex['stale_decisions']] == [104]
 
 
@@ -3502,9 +3505,9 @@ def test_api_decisions_batch_list_and_stale(client):
     assert (x['agent_code'], x['customer_name'], x['status'], x['stale']) == \
         ('A001', 'Клиент 104', 'accepted', False)
     assert (x['from_text'], x['to_text'], x['current_text']) == \
-        ('вс, каждую неделю', c104['to']['text'], 'вс, каждую неделю')
+        ('կիր, ամեն շաբաթ', c104['to']['text'], 'կիր, ամեն շաբաթ')
     f = next(x for x in d['decisions'] if (x['customer_id'], x['kind']) == (103, 'freq'))
-    assert (f['from_text'], f['to_text'], f['value'], f['from']) == ('2 раза в неделю', 'раз в неделю', 1, 2)
+    assert (f['from_text'], f['to_text'], f['value'], f['from']) == ('շաբաթը 2 անգամ', 'շաբաթը մեկ անգամ', 1, 2)
     ex = client.get('/api/routes/plan-export').get_json()
     assert sorted(c['customer_id'] for c in ex['changes']) == [103, 104] and ex['stale_decisions'] == []
 
@@ -3512,7 +3515,7 @@ def test_api_decisions_batch_list_and_stale(client):
     ex = client.get('/api/routes/plan-export').get_json()
     assert [c['customer_id'] for c in ex['changes']] == [103]
     assert [(s['customer_id'], s['current_text']) for s in ex['stale_decisions']] == \
-        [(104, 'ср, каждую неделю')]
+        [(104, 'չրք, ամեն շաբաթ')]
     d = client.get('/api/routes/decisions').get_json()
     assert d['summary'] == {'accepted': 2, 'rejected': 1, 'stale': 1, 'export_changes': 1}
     assert [x['customer_id'] for x in d['decisions'] if x['stale']] == [104]
@@ -3553,7 +3556,7 @@ def test_api_decisions_retire_reset_and_reset_all(client, tmp_path):
     assert client.post('/api/routes/decisions', json=one).status_code == 200
     _use_snapshot(client, 'syn-5', plan=_plan_rows(with_104=False, twice_103=True))
     [x] = client.get('/api/routes/decisions').get_json()['decisions']
-    assert x['stale'] and x['current_text'] == 'клиента нет в плане менеджера'
+    assert x['stale'] and x['current_text'] == 'հաճախորդը մենեջերի պլանում չէ'
     assert client.post('/api/routes/decisions', json={**one, 'action': 'accept'}).status_code == 400
     r = client.post('/api/routes/decisions', json={**one, 'action': 'reset'})
     assert r.status_code == 200 and client.get('/api/routes/decisions').get_json()['decisions'] == []
@@ -3863,14 +3866,14 @@ def test_overview_without_roads_unchanged_and_warns():
     assert ov['distance_source'] == 'straight'
     assert [w for w in ov['warnings'] if w['code'].startswith('roads')] == [
         {'code': 'roads_off', 'link': '/routes/settings#norms',
-         'text': 'Карта дорог не подключена — км считаются по прямой с поправкой на извилистость'}]
+         'text': 'Ճանապարհային քարտեզը միացված չէ — կմ-ները հաշվվում են ուղիղ գծով՝ ոլորունության ճշգրտումով։'}]
     # все точки плана дальше 0,5 км от дорог — те же км, что по прямой × извилистость
     far = ev.build_overview(snap, bundle, roads=_roads())
     assert far['distance_source'] == 'roads'
     n = len({rd.point_key(p) for p in ev.plan_points(snap, bundle, {})})
     assert [w['text'] for w in far['warnings'] if w['code'] == 'roads_unsnapped'] == [
-        f'{n} точек плана дальше 0,5 км от дорог на карте — км до них считаются по прямой с '
-        f'поправкой на извилистость']
+        f'Պլանի {n} կետ քարտեզի ճանապարհներից 0,5 կմ-ից ավելի հեռու է — մինչև դրանք կմ-ները հաշվվում են '
+        f'ուղիղ գծով՝ ոլորունության ճշգրտումով։']
     assert far['totals'] == ov['totals'] and far['managers'] == ov['managers']
 
 
@@ -3929,7 +3932,7 @@ def test_road_provider_missing_or_broken_map(tmp_path, client):
     ov = ev.build_overview(make_snapshot(), _bundle(), roads=roads)
     codes = {w['code']: w['text'] for w in ov['warnings']}
     assert ov['distance_source'] == 'straight' and 'roads_off' not in codes
-    assert codes['roads_failed'].startswith('Карту дорог не удалось загрузить')
+    assert codes['roads_failed'].startswith('Ճանապարհային քարտեզը չհաջողվեց բեռնել')
     client.application.extensions['route_optimizer'].roads = provider
     d = client.get('/api/routes/overview').get_json()
     assert d['success'] and d['distance_source'] == 'straight'
@@ -4252,7 +4255,7 @@ def test_transfers_remove_overlap_of_districts():
         ch['effect_from']['manager_km_week'] + ch['effect_to']['manager_km_week'], abs=0.11)
     assert ch['debt'] == round(debts[ch['customer_id']])
     assert ch['revenue_month'] == round(opt.revenue_month(out.before.models[ch['customer_id']]))
-    assert ch['reason'].startswith('в этот район уже ездит Гор')
+    assert ch['reason'].startswith('այս տարածք արդեն այցելում է Гор')
     # баланс: у каждого «отдаёт» = сумма его передач, по компании «отдано» = «получено»
     for m in res['managers']:
         mine = [c for c in m['changes'] if c['type'] == 'transfer']
@@ -4332,7 +4335,7 @@ def test_api_transfer_decision_export_and_stale(client):
     # план для ERP: клиент — у нового менеджера с отметкой «передать», в изменениях — «передать: от → кому»
     ex = client.get('/api/routes/plan-export').get_json()
     mine = [r for r in ex['rows'] if r['customer_id'] == c]
-    assert {r['agent_id'] for r in mine} == {2} and {r['mark'] for r in mine} == {'передать'}
+    assert {r['agent_id'] for r in mine} == {2} and {r['mark'] for r in mine} == {'փոխանցել'}
     assert sorted([r['week'], r['weekday']] for r in mine) == ch['to']['pattern']
     assert mine[0]['address_id'] == c + 50000                               # адрес — из шаблона прежнего
     tch = [x for x in ex['changes'] if x['customer_id'] == c]
@@ -4344,7 +4347,7 @@ def test_api_transfer_decision_export_and_stale(client):
     assert view['summary']['export_changes'] == 1 and view['summary']['accepted'] == 1
     item = view['decisions'][0]
     assert item['kind'] == 'transfer' and item['value']['agent_code'] == 'A002'
-    assert item['to_text'].startswith('передать A002: ') and item['stale'] is False
+    assert item['to_text'].startswith('փոխանցել A002-ին՝ ') and item['stale'] is False
 
     # отклонённая передача в следующем расчёте этому менеджеру не предлагается; принятая — закреплена
     assert decide(ch2, 'reject').get_json() == {'success': True}
@@ -4414,7 +4417,7 @@ def test_store_migrates_schema_5_to_6_keeps_values(tmp_path):
     with closing(sqlite3.connect(path)) as conn:                             # передача самому себе — битая
         conn.execute(transfer_row, (7, 'transfer', pt.transfer_key(1, _wk(1)), 'rejected', 'x'))
         conn.commit()
-    with pytest.raises(st.StoreError, match='решение'):
+    with pytest.raises(st.StoreError, match='որոշումը'):
         s.load_decisions()
 
 
@@ -4464,7 +4467,7 @@ def test_overview_fleet_block_and_warnings():
     assert 'truck_incomplete' in codes and 'no_fleet' not in codes and 'no_depot' not in codes
     f = ov['fleet']
     assert f['trucks'][0]['car_code'] == 'CAR1' and (f['work_start'], f['work_end']) == ('09:00', '18:00')
-    assert [d['label'] for d in f['days']] == ['Пн', 'Вт', 'Ср']      # вс → пн, пн → вт, вт → ср
+    assert [d['label'] for d in f['days']] == ['Երկ', 'Երք', 'Չրք']      # вс → пн, пн → вт, вт → ср
     assert all(d['trips'] >= 0 and set(d) >= {'kg', 'km', 'liters', 'load_pct', 'trucks', 'p_short_peak'}
                for d in f['days'])
     none = ev.build_overview(snap, replace(bundle, trucks={}))
@@ -5503,7 +5506,7 @@ def test_api_dispatch_erp_down_is_503(client):
 
     state.dispatch_loader = down
     r = client.get('/api/routes/dispatch?date=2026-10-01')
-    assert r.status_code == 503 and r.get_json()['error'] == 'База данных ERP недоступна'
+    assert r.status_code == 503 and r.get_json()['error'] == 'ERP տվյալների բազան հասանելի չէ'
 
 
 # ============================== развоз: свежесть заказов ==============================
@@ -5685,7 +5688,8 @@ def test_manual_trucks_crud_and_validation(store):
                            'manual_trucks.7.van_agent_id', 'manual_trucks.9.van_agent_id',
                            'manual_trucks.10.capacity_kg', 'manual_trucks.11.active', 'manual_trucks.12',
                            'manual_trucks.13'}
-    assert 'уже есть в ERP' in errors['manual_trucks.1.car_code'] and 'дважды' in errors['manual_trucks.5.car_code']
+    assert 'արդեն կա ERP-ում' in errors['manual_trucks.1.car_code']
+    assert 'երկու անգամ' in errors['manual_trucks.5.car_code']
     assert 'A4' in errors['manual_trucks.9.van_agent_id']                   # экспедитор у двух машин
     assert st.validate_payload({'manual_trucks': [_manual()] * 51}, b, MANUAL_REF)[1].keys() == {'manual_trucks'}
     # ручную машину нельзя прислать как машину ERP
@@ -5876,10 +5880,10 @@ def test_store_rejects_broken_truck_rows(tmp_path):
     path = str(tmp_path / 'r.db')
     s = st.Store(path)
     s.load()
-    for row in (("'A', NULL, NULL, NULL, NULL, 1, 'x', NULL", '«активна»'),        # «авто» у ручной машины
-                ("'A', NULL, NULL, NULL, 1, 0, 'x', NULL", 'название'),            # название у машины ERP
-                ("'A', NULL, NULL, NULL, 1, 0, NULL, 7", 'экспедитор'),
-                ("'A', NULL, NULL, NULL, 1, 2, NULL, NULL", 'вручную')):
+    for row in (("'A', NULL, NULL, NULL, NULL, 1, 'x', NULL", '«աշխատում է»'),     # «авто» у ручной машины
+                ("'A', NULL, NULL, NULL, 1, 0, 'x', NULL", 'անվանում'),            # название у машины ERP
+                ("'A', NULL, NULL, NULL, 1, 0, NULL, 7", 'առաքիչ'),
+                ("'A', NULL, NULL, NULL, 1, 2, NULL, NULL", 'ձեռքով')):
         with closing(sqlite3.connect(path)) as conn:
             conn.execute('DELETE FROM trucks')
             conn.execute(f"INSERT INTO trucks(car_code, capacity_kg, fuel_l_per_100km, agent_id, active, manual, name, "

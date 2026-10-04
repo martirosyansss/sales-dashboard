@@ -19,7 +19,7 @@ DAY = '2026-10-01'
 ACCESS = {'mode': 'deny', 'trucks': ['CAR1']}
 WINDOW = {'kind': 'before', 't1': 720}
 WINDOW_JSON = {'kind': 'before', 't1': 720, 't2': None, 'tol': None}
-UNLOAD_ERROR = 'время у магазина — целое число минут от 1 до 120'
+UNLOAD_ERROR = 'Ժամանակ խանութում՝ ամբողջ թիվ 1-ից մինչև 120 րոպե'
 
 
 def _unload(client, cid, value):
@@ -202,8 +202,8 @@ def test_page_dialog_and_translations(client):
     _dispatch_setup(client, [])
     shape = client.post('/api/routes/customer-vehicles', json={'customer_id': 103}).get_json()['error']
     missing = client.post('/api/routes/customer-vehicles', json={'customer_id': 999, 'unload_min': 30}).get_json()['error']
-    for text in (shape, missing, UNLOAD_ERROR):
-        assert "'" + text + "'" in js, text
+    for text in (shape, missing, UNLOAD_ERROR):   # сервер отвечает по-армянски (№58) — страница показывает как есть
+        assert any('Ա' <= ch <= '֏' for ch in text) and not any('Ѐ' <= ch <= 'ӿ' for ch in text), text
     assert "': не удалось сохранить время у магазина'" in js
     css = (ROOT / 'static' / 'css' / 'routes_dispatch.css').read_text(encoding='utf-8')
     assert '.dp-b-unload' in css and '.dp-unload-dlg' in css

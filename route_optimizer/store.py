@@ -491,22 +491,22 @@ def check_window(raw: Any) -> tuple[CustomerWindow | None, str | None]:
     """Окно приёма из запроса или из базы: {"kind", "t1", "t2", "tol"} → (окно, None) или (None, ошибка).
     У at без допуска — DEFAULT_WINDOW_TOL; поля, которых у вида нет, — null или нет ключа."""
     if not isinstance(raw, dict) or not set(raw) <= {'kind', 't1', 't2', 'tol'}:
-        return None, 'ожидалось {"kind", "t1", "t2", "tol"}'
+        return None, 'Սերվերը չընդունեց հարցումը'
     kind = raw.get('kind')
     if kind not in WINDOW_KINDS:
-        return None, 'вид окна: before, after, between или at'
+        return None, 'Ընդունման ժամի տեսակը սխալ է'
     t1, t2, tol = raw.get('t1'), raw.get('t2'), raw.get('tol')
     if kind == 'at' and tol is None:
         tol = DEFAULT_WINDOW_TOL
     for v in (t1, t2) if kind == 'between' else (t1,):
         if not _is_int(v) or not 0 <= v < _DAY_MINUTES:
-            return None, 'время окна — минуты от 0 до 1439'
+            return None, 'Ժամը պետք է լինի 00:00-ից մինչև 23:59'
     if (kind != 'between' and t2 is not None) or (kind != 'at' and tol is not None):
-        return None, 'лишнее поле у этого вида окна'
+        return None, 'Սերվերը չընդունեց հարցումը'
     if kind == 'between' and t2 <= t1:
-        return None, 'конец интервала должен быть позже начала'
+        return None, 'Միջակայքի վերջը պետք է լինի սկզբից ուշ'
     if kind == 'at' and (not _is_int(tol) or not 0 <= tol <= WINDOW_TOL_MAX):
-        return None, f'допуск — от 0 до {WINDOW_TOL_MAX} минут'
+        return None, f'Թույլատրելի շեղումը՝ 0-ից մինչև {WINDOW_TOL_MAX} րոպե'
     return CustomerWindow(kind, t1, t2, tol), None
 
 
@@ -518,7 +518,7 @@ def check_unload_min(raw: Any) -> tuple[float | None, str | None]:
     lo, hi = UNLOAD_MIN_RANGE
     if (isinstance(raw, bool) or not isinstance(raw, (int, float)) or not lo <= raw <= hi
             or not float(raw).is_integer()):
-        return None, f'время у магазина — целое число минут от {lo} до {hi}'
+        return None, f'Ժամանակ խանութում՝ ամբողջ թիվ {lo}-ից մինչև {hi} րոպե'
     return float(raw), None
 
 
@@ -873,35 +873,36 @@ class Scenario:
 # --- Проверка значений ---
 
 def _fmt(x: float) -> str:
-    return f'{x:g}'
+    """Число для сообщения: разряды — пробел, дробь — запятая (1 000 000, 0,1), без «1e+06»."""
+    return f'{x:,.10g}'.replace(',', ' ').replace('.', ',')
 
 
 def _check_number(value: Any, lo: float, hi: float, nullable: bool = False,
                   lo_exclusive: bool = False) -> tuple[Any, str | None]:
     if value is None:
-        return (None, None) if nullable else (None, 'обязательное число')
+        return (None, None) if nullable else (None, 'պարտադիր թիվ')
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None, 'ожидалось число'
+        return None, 'սպասվում էր թիվ'
     try:
         if not math.isfinite(value):
-            return None, 'ожидалось конечное число'
+            return None, 'սպասվում էր վերջավոր թիվ'
     except OverflowError:
         pass   # целое больше предела float (10**400 из JSON) — конечное; отсечёт диапазон ниже
     if value < lo or value > hi or (lo_exclusive and value == lo):
-        low = f'больше {_fmt(lo)}' if lo_exclusive else f'от {_fmt(lo)}'
-        return None, f'допустимо {low} до {_fmt(hi)}'
+        low = f'{_fmt(lo)}-ից մեծ և' if lo_exclusive else f'{_fmt(lo)}-ից'
+        return None, f'թույլատրելի է՝ {low} մինչև {_fmt(hi)}'
     return value, None
 
 
 def _check_int_set(value: Any, lo: int, hi: int, what: str) -> tuple[list[int] | None, str | None]:
     if not isinstance(value, list) or not value:
-        return None, f'непустой список {what}'
+        return None, f'սպասվում էր {what} ոչ դատարկ ցուցակ'
     out = []
     for x in value:
         if isinstance(x, bool) or not isinstance(x, int) or not lo <= x <= hi:
-            return None, f'{what}: числа от {lo} до {hi}'
+            return None, f'{what} համարները՝ {lo}-ից մինչև {hi}'
         if x in out:
-            return None, f'{what}: повтор {x}'
+            return None, f'{what} ցուցակում {x}-ը կրկնվում է'
         out.append(x)
     return sorted(out), None
 
@@ -922,7 +923,7 @@ def validate_settings(values: Mapping[str, Any],
 
     mode = values.get('traffic_mode', 'gps')
     if mode not in ('gps', 'static', 'yandex'):
-        errors['traffic_mode'] = 'выберите исторический GPS или постоянную скорость'
+        errors['traffic_mode'] = 'ընտրեք պատմական GPS-ը կամ մշտական արագությունը'
     else:
         out['traffic_mode'] = mode
 
@@ -930,17 +931,17 @@ def validate_settings(values: Mapping[str, Any],
                 'dispatch_ready_time'):
         v = values.get(key)
         if not isinstance(v, str) or not _HHMM_RE.match(v):
-            errors[key] = 'время в формате ЧЧ:ММ'
+            errors[key] = 'ժամը՝ ԺԺ:ՐՐ ձևաչափով'
         else:
             out[key] = v
     for start, end in (('work_start', 'work_end'), ('truck_work_start', 'truck_work_end')):
         if start in out and end in out and _minutes(out[end]) <= _minutes(out[start]):
-            errors[end] = 'конец рабочего дня должен быть позже начала'
+            errors[end] = 'աշխատանքային օրվա ավարտը պետք է լինի սկզբից ուշ'
     if ('truck_work_end' in out and 'truck_overtime_end' in out
             and _minutes(out['truck_overtime_end']) < _minutes(out['truck_work_end'])):
-        errors['truck_overtime_end'] = 'не раньше конца рабочего дня машины'
+        errors['truck_overtime_end'] = 'ոչ շուտ, քան մեքենայի աշխատանքային օրվա ավարտը'
 
-    days, err = _check_int_set(values.get('workdays'), 1, 7, 'дней недели')
+    days, err = _check_int_set(values.get('workdays'), 1, 7, 'շաբաթվա օրերի')
     if err:
         errors['workdays'] = err
     else:
@@ -955,26 +956,26 @@ def validate_settings(values: Mapping[str, Any],
             out[key] = v
     if 'size_small_max_kg' in out and 'size_medium_max_kg' in out \
             and out['size_small_max_kg'] >= out['size_medium_max_kg']:
-        errors['size_medium_max_kg'] = 'порог средних должен быть больше порога мелких'
+        errors['size_medium_max_kg'] = 'միջին խանութների շեմը պետք է մեծ լինի փոքր խանութների շեմից'
     if 'abc_a_share' in out and 'abc_b_share' in out \
             and out['abc_a_share'] + out['abc_b_share'] >= 1:
-        errors['abc_b_share'] = 'доли классов A и B вместе должны быть меньше 1'
+        errors['abc_b_share'] = 'A և B դասերի բաժինները միասին պետք է 1-ից պակաս լինեն'
     # «потерян» проверяется раньше «затих» — его порог не может быть мягче
     if 'dormant_min_days' in out and 'lost_min_days' in out \
             and out['lost_min_days'] < out['dormant_min_days']:
-        errors['lost_min_days'] = 'порог «потерян» не может быть меньше порога «затих»'
+        errors['lost_min_days'] = '«վաղուց չի գնում» շեմը չի կարող պակաս լինել «դադարել է գնել» շեմից'
     if 'dormant_mult' in out and 'lost_mult' in out and out['lost_mult'] < out['dormant_mult']:
-        errors['lost_mult'] = 'множитель «потерян» не может быть меньше множителя «затих»'
+        errors['lost_mult'] = '«վաղուց չի գնում» գործակիցը չի կարող պակաս լինել «դադարել է գնել» գործակցից'
 
     groups = values.get('chain_groups')
     if not isinstance(groups, list) or len(groups) > _MAX_LIST \
             or not all(isinstance(g, str) and g.strip() for g in groups):
-        errors['chain_groups'] = 'ожидался список кодов групп клиентов'
+        errors['chain_groups'] = 'սպասվում էր հաճախորդների խմբերի կոդերի ցուցակ'
     else:
         codes = sorted({g.strip() for g in groups})
         unknown = [g for g in codes if known_groups is not None and g not in known_groups]
         if unknown:
-            errors['chain_groups'] = 'неизвестные группы клиентов: ' + ', '.join(unknown)
+            errors['chain_groups'] = 'հաճախորդների անհայտ խմբեր՝ ' + ', '.join(unknown)
         else:
             out['chain_groups'] = codes
 
@@ -983,23 +984,23 @@ def validate_settings(values: Mapping[str, Any],
         if v is None:
             out[key] = None
             continue
-        months, err = _check_int_set(v, 1, 12, 'месяцев')
+        months, err = _check_int_set(v, 1, 12, 'ամիսների')
         if err:
-            errors[key] = err + ' (или null — определять автоматически)'
+            errors[key] = err + ' (կամ null՝ որոշել ավտոմատ)'
         else:
             out[key] = months
     if out.get('low_months') and out.get('peak_months'):
         both = sorted(set(out['low_months']) & set(out['peak_months']))
         if both:
-            errors['peak_months'] = 'месяцы не могут быть одновременно низкими и пиковыми: ' \
+            errors['peak_months'] = 'ամիսները չեն կարող միաժամանակ լինել և՛ ցածր, և՛ բարձր սեզոնում՝ ' \
                                     + ', '.join(map(str, both))
 
     zone = values.get('center_zone')
     lo, hi = CENTER_ZONE_VERTICES
     if not isinstance(zone, list) or not lo <= len(zone) <= hi:
-        errors['center_zone'] = f'граница центра — от {lo} до {hi} точек [широта, долгота]'
+        errors['center_zone'] = f'կենտրոնի սահմանը՝ {lo}-ից մինչև {hi} կետ [լայնություն, երկայնություն]'
     elif not all(isinstance(p, list) and len(p) == 2 and _check_point(p[0], p[1])[0] is not None for p in zone):
-        errors['center_zone'] = 'точки границы центра — [широта, долгота] в Армении'
+        errors['center_zone'] = 'կենտրոնի սահմանի կետերը՝ [լայնություն, երկայնություն] Հայաստանում'
     else:
         out['center_zone'] = [[float(p[0]), float(p[1])] for p in zone]
     return out, errors
@@ -1011,16 +1012,16 @@ def _check_point(lat: Any, lon: Any) -> tuple[Point | None, str | None]:
         return None, None
     for v in (lat, lon):
         if v is None:
-            return None, 'укажите и широту, и долготу'
+            return None, 'նշեք և՛ լայնությունը, և՛ երկայնությունը'
         if isinstance(v, bool) or not isinstance(v, (int, float)):
-            return None, 'ожидались числа'
+            return None, 'սպասվում էին թվեր'
     if not is_valid_point(lat, lon):
-        return None, 'точка вне Армении'
+        return None, 'կետը Հայաստանից դուրս է'
     return (float(lat), float(lon)), None
 
 
 def _check_bool(v: Any) -> str | None:
-    return None if isinstance(v, bool) else 'ожидалось true/false'
+    return None if isinstance(v, bool) else 'սպասվում էր true/false'
 
 
 def _validate_load_costs(item: Mapping[str, Any], base: Truck, path: str,
@@ -1036,17 +1037,18 @@ def _validate_load_costs(item: Mapping[str, Any], base: Truck, path: str,
         values[key] = value
     empty, full = (values[key] for key in LOAD_COST_FIELDS[:2])
     if (empty is None) != (full is None):
-        errors[f'{path}.{LOAD_COST_FIELDS[0]}'] = 'задайте расход пустой и полной машины вместе'
-        errors[f'{path}.{LOAD_COST_FIELDS[1]}'] = 'задайте расход пустой и полной машины вместе'
+        errors[f'{path}.{LOAD_COST_FIELDS[0]}'] = 'նշեք դատարկ և լրիվ բեռնված մեքենայի ծախսը միասին'
+        errors[f'{path}.{LOAD_COST_FIELDS[1]}'] = 'նշեք դատարկ և լրիվ բեռնված մեքենայի ծախսը միասին'
     elif empty is not None and full is not None and full < empty:
-        errors[f'{path}.{LOAD_COST_FIELDS[1]}'] = 'расход с полной загрузкой не меньше расхода пустой машины'
+        errors[f'{path}.{LOAD_COST_FIELDS[1]}'] = ('լրիվ բեռնված մեքենայի ծախսը չի կարող պակաս լինել '
+                                                    'դատարկ մեքենայի ծախսից')
     return values
 
 
 def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
                      errors: dict[str, str]) -> list[Truck]:
     if not isinstance(raw, list) or len(raw) > _MAX_LIST:
-        errors['trucks'] = 'ожидался список машин'
+        errors['trucks'] = 'սպասվում էր մեքենաների ցուցակ'
         return []
     out: list[Truck] = []
     seen: set[str] = set()
@@ -1054,22 +1056,22 @@ def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
     for i, item in enumerate(raw):
         path = f'trucks.{i}'
         if not isinstance(item, dict):
-            errors[path] = 'ожидался объект'
+            errors[path] = 'սպասվում էր օբյեկտ'
             continue
         extra = sorted(set(item) - allowed)
         if extra:
-            errors[path] = 'неизвестные поля: ' + ', '.join(extra)
+            errors[path] = 'անհայտ դաշտեր՝ ' + ', '.join(extra)
             continue
         code = item.get('car_code')
         if not isinstance(code, str) or not code.strip():
-            errors[f'{path}.car_code'] = 'не указан код машины'
+            errors[f'{path}.car_code'] = 'մեքենայի կոդը նշված չէ'
             continue
         code = code.strip()
         if code not in ref.car_codes:
-            errors[f'{path}.car_code'] = 'машины нет в ERP'
+            errors[f'{path}.car_code'] = 'մեքենան ERP-ում չկա'
             continue
         if code in seen:
-            errors[f'{path}.car_code'] = 'машина указана дважды'
+            errors[f'{path}.car_code'] = 'մեքենան նշված է երկու անգամ'
             continue
         seen.add(code)
         base = current.get(code) or Truck(code, active=None)   # новая запись — «активна» авто
@@ -1088,19 +1090,19 @@ def _validate_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData,
             a = item['agent_id']
             if a is not None and (isinstance(a, bool) or not isinstance(a, int)
                                   or a not in ref.agent_ids):
-                errors[f'{path}.agent_id'] = 'менеджер без маршрутов в ERP'
+                errors[f'{path}.agent_id'] = 'մենեջերը ERP-ում երթուղիներ չունի'
                 ok = False
             fields['agent_id'] = a
         if 'active' in item:
             # null — вернуть «авто»: решают накладные ERP (машина возила за CAR_IDLE_DAYS дней)
             if item['active'] is not None and _check_bool(item['active']):
-                errors[f'{path}.active'] = 'ожидалось true/false или null («авто»)'
+                errors[f'{path}.active'] = 'սպասվում էր true/false կամ null («ավտոմատ»)'
                 ok = False
             fields['active'] = item['active']
         if 'center_ok' in item:
             # null — вернуть «авто»: в центр — машины JAC (center_auto)
             if item['center_ok'] is not None and _check_bool(item['center_ok']):
-                errors[f'{path}.center_ok'] = 'ожидалось true/false или null («авто»)'
+                errors[f'{path}.center_ok'] = 'սպասվում էր true/false կամ null («ավտոմատ»)'
                 ok = False
             fields['center_ok'] = item['center_ok']
         if ok:
@@ -1127,7 +1129,7 @@ def _validate_manual_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData
     записями машин ERP в базе) и не повторяется; экспедитор — из возивших без машины за 90 дней (или уже
     закреплённый за этой машиной), у одного экспедитора — одна машина."""
     if not isinstance(raw, list) or len(raw) > MANUAL_TRUCKS_MAX:
-        errors['manual_trucks'] = f'ожидался список машин (не больше {MANUAL_TRUCKS_MAX})'
+        errors['manual_trucks'] = f'սպասվում էր մեքենաների ցուցակ (առավելագույնը {MANUAL_TRUCKS_MAX})'
         return []
     taken = {code_key(c) for c in ref.car_codes} | {code_key(c) for c, t in current.items() if not t.manual}
     allowed = {'car_code', 'name', 'capacity_kg', 'fuel_l_per_100km', 'active', 'van_agent_id', 'center_ok', *LOAD_COST_FIELDS}
@@ -1137,23 +1139,23 @@ def _validate_manual_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData
     for i, item in enumerate(raw):
         path = f'manual_trucks.{i}'
         if not isinstance(item, dict):
-            errors[path] = 'ожидался объект'
+            errors[path] = 'սպասվում էր օբյեկտ'
             continue
         extra = sorted(set(item) - allowed)
         if extra:
-            errors[path] = 'неизвестные поля: ' + ', '.join(extra)
+            errors[path] = 'անհայտ դաշտեր՝ ' + ', '.join(extra)
             continue
         code = item.get('car_code')
         code = ' '.join(code.split()) if isinstance(code, str) else ''
         if not MANUAL_CODE_RE.match(code):
-            errors[f'{path}.car_code'] = 'номер машины: до 20 букв и цифр (можно пробел и дефис)'
+            errors[f'{path}.car_code'] = 'համարանիշը՝ մինչև 20 տառ և թվանշան (կարելի է բացատ և գծիկ)'
             continue
         key = code_key(code)
         if key in taken:
-            errors[f'{path}.car_code'] = 'машина с таким номером уже есть в ERP — она в списке выше'
+            errors[f'{path}.car_code'] = 'այս համարանիշով մեքենան արդեն կա ERP-ում — այն վերևի ցուցակում է'
             continue
         if key in seen:
-            errors[f'{path}.car_code'] = 'машина с таким номером указана дважды'
+            errors[f'{path}.car_code'] = 'այս համարանիշով մեքենան նշված է երկու անգամ'
             continue
         seen.add(key)
         base = current.get(code)
@@ -1162,12 +1164,12 @@ def _validate_manual_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData
         ok = True
         name = item.get('name', base.name)
         if name is not None and not isinstance(name, str):
-            errors[f'{path}.name'] = 'ожидался текст'
+            errors[f'{path}.name'] = 'սպասվում էր տեքստ'
             ok = False
             name = None
         name = ' '.join(name.split()) or None if name else None
         if name and len(name) > MANUAL_NAME_MAX:
-            errors[f'{path}.name'] = f'название — не длиннее {MANUAL_NAME_MAX} символов'
+            errors[f'{path}.name'] = f'անվանումը՝ առավելագույնը {MANUAL_NAME_MAX} նիշ'
             ok = False
         nums: dict[str, Any] = {}
         for key_name, (lo, hi) in (('capacity_kg', TRUCK_CAPACITY_KG), ('fuel_l_per_100km', TRUCK_FUEL_L100)):
@@ -1178,19 +1180,19 @@ def _validate_manual_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData
             nums[key_name] = v
         active = item.get('active', True if base.active is None else base.active)
         if _check_bool(active):
-            errors[f'{path}.active'] = 'ожидалось true/false'
+            errors[f'{path}.active'] = 'սպասվում էր true/false'
             ok = False
         center_ok = item.get('center_ok', base.center_ok)
         if center_ok is not None and _check_bool(center_ok):
-            errors[f'{path}.center_ok'] = 'ожидалось true/false или null («авто»)'
+            errors[f'{path}.center_ok'] = 'սպասվում էր true/false կամ null («ավտոմատ»)'
             ok = False
         van = item.get('van_agent_id', base.van_agent_id)
         if van is not None:
             if not _is_int(van) or (van not in ref.van_agent_ids and van != base.van_agent_id):
-                errors[f'{path}.van_agent_id'] = 'этот агент не возил заказы без машины за 3 месяца'
+                errors[f'{path}.van_agent_id'] = 'այս առաքիչը վերջին 3 ամսում առանց մեքենայի պատվերներ չի տարել'
                 ok = False
             elif van in vans:
-                errors[f'{path}.van_agent_id'] = f'этот экспедитор уже закреплён за машиной {vans[van]}'
+                errors[f'{path}.van_agent_id'] = f'այս առաքիչն արդեն ամրացված է {vans[van]} մեքենային'
                 ok = False
             else:
                 vans[van] = code
@@ -1203,7 +1205,7 @@ def _validate_manual_trucks(raw: Any, current: Mapping[str, Truck], ref: RefData
 def _validate_managers(raw: Any, current: Mapping[int, ManagerProfile], ref: RefData,
                        errors: dict[str, str]) -> list[ManagerProfile]:
     if not isinstance(raw, list) or len(raw) > _MAX_LIST:
-        errors['managers'] = 'ожидался список менеджеров'
+        errors['managers'] = 'սպասվում էր մենեջերների ցուցակ'
         return []
     out: list[ManagerProfile] = []
     seen: set[int] = set()
@@ -1212,19 +1214,19 @@ def _validate_managers(raw: Any, current: Mapping[int, ManagerProfile], ref: Ref
     for i, item in enumerate(raw):
         path = f'managers.{i}'
         if not isinstance(item, dict):
-            errors[path] = 'ожидался объект'
+            errors[path] = 'սպասվում էր օբյեկտ'
             continue
         extra = sorted(set(item) - allowed)
         if extra:
-            errors[path] = 'неизвестные поля: ' + ', '.join(extra)
+            errors[path] = 'անհայտ դաշտեր՝ ' + ', '.join(extra)
             continue
         agent_id = item.get('agent_id')
         if isinstance(agent_id, bool) or not isinstance(agent_id, int) \
                 or agent_id not in ref.agent_ids:
-            errors[f'{path}.agent_id'] = 'менеджер без маршрутов в ERP'
+            errors[f'{path}.agent_id'] = 'մենեջերը ERP-ում երթուղիներ չունի'
             continue
         if agent_id in seen:
-            errors[f'{path}.agent_id'] = 'менеджер указан дважды'
+            errors[f'{path}.agent_id'] = 'մենեջերը նշված է երկու անգամ'
             continue
         seen.add(agent_id)
         base = current.get(agent_id) or ManagerProfile(agent_id)   # новая запись — included «авто»
@@ -1232,7 +1234,7 @@ def _validate_managers(raw: Any, current: Mapping[int, ManagerProfile], ref: Ref
         # нет ключа — прежнее значение; null — вернуть «авто» (решает работа за 8 недель)
         included = item.get('included', base.included)
         if included is not None and _check_bool(included):
-            errors[f'{path}.included'] = 'ожидалось true/false или null («авто»)'
+            errors[f'{path}.included'] = 'սպասվում էր true/false կամ null («ավտոմատ»)'
             ok = False
         home: Point | None = base.home
         if 'home_lat' in item or 'home_lon' in item:
@@ -1248,7 +1250,7 @@ def _validate_managers(raw: Any, current: Mapping[int, ManagerProfile], ref: Ref
                 ok = False
         fuel = item.get('car_fuel_type', base.car_fuel_type)
         if fuel is not None and fuel not in FUEL_TYPES:
-            errors[f'{path}.car_fuel_type'] = 'вид топлива: diesel, petrol или lpg'
+            errors[f'{path}.car_fuel_type'] = 'վառելիքի տեսակը՝ diesel, petrol կամ lpg'
             ok = False
         if ok:
             out.append(ManagerProfile(
@@ -1270,19 +1272,19 @@ def validate_payload(payload: Any, current: Bundle,
     Ошибки — {"путь.поля": "сообщение"}; при любой ошибке изменения не возвращаются.
     """
     if not isinstance(payload, dict):
-        return None, {'_': 'ожидался JSON-объект'}
+        return None, {'_': 'սպասվում էր JSON օբյեկտ'}
     errors: dict[str, str] = {}
     unknown = sorted(set(payload) - {'settings', 'depot', 'trucks', 'managers', 'manual_trucks'})
     if unknown:
-        errors['_'] = 'неизвестные разделы: ' + ', '.join(unknown)
+        errors['_'] = 'անհայտ բաժիններ՝ ' + ', '.join(unknown)
 
     merged = dict(current.settings)
     raw_settings = payload.get('settings', {})
     if not isinstance(raw_settings, dict):
-        errors['settings'] = 'ожидался объект настроек'
+        errors['settings'] = 'սպասվում էր կարգավորումների օբյեկտ'
     else:
         for key in sorted(set(raw_settings) - set(DEFAULT_SETTINGS)):
-            errors[f'settings.{key}'] = 'неизвестная настройка'
+            errors[f'settings.{key}'] = 'անհայտ կարգավորում'
         merged.update({k: v for k, v in raw_settings.items() if k in DEFAULT_SETTINGS})
     settings, setting_errors = validate_settings(merged, ref.group_codes)
     errors.update({f'settings.{k}': v for k, v in setting_errors.items()})
@@ -1294,11 +1296,11 @@ def validate_payload(payload: Any, current: Bundle,
         if raw_depot is None:
             depot = None
         elif not isinstance(raw_depot, dict) or set(raw_depot) != {'lat', 'lon'}:
-            errors['depot'] = 'ожидалось {"lat": …, "lon": …} или null'
+            errors['depot'] = 'սպասվում էր {"lat": …, "lon": …} կամ null'
         else:
             depot, err = _check_point(raw_depot['lat'], raw_depot['lon'])
             if err or depot is None:
-                errors['depot'] = err or 'укажите широту и долготу'
+                errors['depot'] = err or 'նշեք լայնությունը և երկայնությունը'
 
     trucks = _validate_trucks(payload['trucks'], current.trucks, ref, errors) \
         if 'trucks' in payload else []
@@ -1327,23 +1329,23 @@ def _loaded_truck(row: tuple) -> tuple[Truck, list[str]]:
     code, capacity, fuel, agent_id, active, manual, name, van, center_ok, updated_at, updated_by, *costs = row
     problems = []
     if not isinstance(code, str) or not code.strip():
-        problems.append('код машины')
+        problems.append('մեքենայի կոդ')
     if _check_number(capacity, *TRUCK_CAPACITY_KG, nullable=True)[1]:
-        problems.append('тоннаж')
+        problems.append('տոննաժ')
     if _check_number(fuel, *TRUCK_FUEL_L100, nullable=True)[1]:
-        problems.append('расход')
+        problems.append('ծախս')
     if agent_id is not None and not _is_int(agent_id):
-        problems.append('менеджер')
+        problems.append('մենեջեր')
     if manual not in (0, 1):
-        problems.append('признак «вручную»')
+        problems.append('«ձեռքով» հատկանիշ')
     if active not in (0, 1) and not (active is None and manual == 0):   # «авто» — только у машин ERP
-        problems.append('признак «активна»')
+        problems.append('«աշխատում է» հատկանիշ')
     if name is not None and (manual != 1 or not isinstance(name, str) or len(name) > MANUAL_NAME_MAX):
-        problems.append('название')
+        problems.append('անվանում')
     if van is not None and (manual != 1 or not _is_int(van)):
-        problems.append('экспедитор')
+        problems.append('առաքիչ')
     if center_ok not in (None, 0, 1):
-        problems.append('признак «можно в центр»')
+        problems.append('«կարող է մտնել կենտրոն» հատկանիշ')
     extra = dict(zip(LOAD_COST_FIELDS, costs))
     cost_errors: dict[str, str] = {}
     _validate_load_costs(extra, Truck(code), 'costs', cost_errors)
@@ -1357,15 +1359,15 @@ def _loaded_manager(row: tuple) -> tuple[ManagerProfile, list[str]]:
     agent_id, included, home_lat, home_lon, l100, fuel, updated_at, updated_by = row
     problems = []
     if not _is_int(agent_id):
-        problems.append('id менеджера')
+        problems.append('մենեջերի id')
     if included is not None and included not in (0, 1):
-        problems.append('признак «в расчёте»')
+        problems.append('«հաշվարկում» հատկանիշ')
     if _check_point(home_lat, home_lon)[1]:
-        problems.append('дом')
+        problems.append('տուն')
     if _check_number(l100, *MANAGER_FUEL_L100, nullable=True)[1]:
-        problems.append('расход')
+        problems.append('ծախս')
     if fuel is not None and fuel not in FUEL_TYPES:
-        problems.append('вид топлива')
+        problems.append('վառելիքի տեսակ')
     return ManagerProfile(agent_id, None if included is None else bool(included), home_lat, home_lon,
                           l100, fuel, updated_at, updated_by), problems
 
@@ -1375,9 +1377,9 @@ def _loaded_decision(row: tuple) -> tuple[Decision, list[str]]:
     customer_id, agent_id, kind, value, status, updated_at, updated_by, from_value = row
     problems = []
     if not _is_int(customer_id) or not _is_int(agent_id):
-        problems.append('id клиента или менеджера')
+        problems.append('հաճախորդի կամ մենեջերի id')
     if kind not in DECISION_KINDS:
-        problems.append('вид решения')
+        problems.append('որոշման տեսակ')
     else:
         if kind == 'remove':
             value_ok = value == REMOVE_VALUE
@@ -1387,17 +1389,17 @@ def _loaded_decision(row: tuple) -> tuple[Decision, list[str]]:
         else:
             value_ok = (parse_pattern_key(value) if kind == 'pattern' else parse_freq_key(value)) is not None
         if not value_ok:
-            problems.append('значение')
+            problems.append('արժեք')
         if from_value is not None and (parse_plan_freq_key(from_value) if kind == 'freq'
                                        else parse_pattern_key(from_value)) is None:
-            problems.append('исходное значение')
+            problems.append('սկզբնական արժեք')
     if status not in ('accepted', 'rejected'):
-        problems.append('статус')
+        problems.append('կարգավիճակ')
     return Decision(customer_id, agent_id, kind, value, status, updated_at, updated_by,
                     from_value), problems
 
 
-_FIX_HINT = ' — исправьте или удалите файл; значения по умолчанию молча не подставляются'
+_FIX_HINT = ' — ուղղեք կամ ջնջեք ֆայլը։ Ծրագիրը լռելյայն արժեքներ ինքնուրույն չի դնում'
 
 
 class Store:
@@ -1407,7 +1409,7 @@ class Store:
         self.path = path
 
     def _name(self) -> str:
-        return f'База настроек маршрутов {os.path.basename(self.path)}'
+        return f'Երթուղիների կարգավորումների բազա {os.path.basename(self.path)}'
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
@@ -1424,7 +1426,7 @@ class Store:
     def _schema_version(conn: sqlite3.Connection) -> int:
         row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         if row is None or not str(row[0]).isdigit():
-            raise StoreError('В базе маршрутов нет версии схемы')
+            raise StoreError('Երթուղիների բազայում սխեմայի տարբերակը նշված չէ')
         return int(row[0])
 
     @staticmethod
@@ -1434,13 +1436,13 @@ class Store:
         if 'meta' in tables:
             version = Store._schema_version(conn)
             if version > SCHEMA_VERSION:
-                raise StoreError(f'База маршрутов создана более новой версией программы '
-                                 f'(схема {version}, поддерживается {SCHEMA_VERSION})')
+                raise StoreError(f'Երթուղիների բազան ստեղծվել է ծրագրի ավելի նոր տարբերակով '
+                                 f'(սխեմա {version}, աջակցվում է {SCHEMA_VERSION})')
             if version < SCHEMA_VERSION:
                 Store._migrate(conn)
             return
         if tables:
-            raise StoreError('Файл не является базой маршрутов (есть чужие таблицы)')
+            raise StoreError('Ֆայլը երթուղիների բազա չէ (կան օտար աղյուսակներ)')
         conn.execute('BEGIN IMMEDIATE')
         try:
             for ddl in _SCHEMA:
@@ -1462,7 +1464,7 @@ class Store:
             while version < SCHEMA_VERSION:
                 steps = _MIGRATIONS.get(version)
                 if steps is None:
-                    raise StoreError(f'Нет миграции схемы базы маршрутов с версии {version}')
+                    raise StoreError(f'Երթուղիների բազայի սխեման հնարավոր չէ թարմացնել {version} տարբերակից')
                 for ddl in steps:
                     conn.execute(ddl)
                 version += 1
@@ -1507,7 +1509,7 @@ class Store:
             finally:
                 conn.close()
         except sqlite3.Error as e:
-            raise StoreError(f'{self._name()} повреждена или недоступна{_FIX_HINT}') from e
+            raise StoreError(f'{self._name()}: վնասված է կամ հասանելի չէ{_FIX_HINT}') from e
 
         raw = dict(DEFAULT_SETTINGS)
         for key, value in setting_rows:
@@ -1516,7 +1518,7 @@ class Store:
             try:
                 raw[key] = json.loads(value)
             except (TypeError, ValueError) as e:
-                raise StoreError(f'{self._name()}: повреждена настройка «{key}»{_FIX_HINT}') from e
+                raise StoreError(f'{self._name()}: վնասված է «{key}» կարգավորումը{_FIX_HINT}') from e
         # предела форс-мажора в базе ещё нет (база до этой настройки), а день машин кончается позже 20:00 —
         # предел = конец дня: значение по умолчанию не должно делать базу «повреждённой»
         work_end = raw.get('truck_work_end')
@@ -1525,40 +1527,40 @@ class Store:
             raw['truck_overtime_end'] = work_end
         settings, errors = validate_settings(raw, known_groups=None)
         if errors:
-            raise StoreError(f'{self._name()}: повреждены настройки ('
+            raise StoreError(f'{self._name()}: վնասված են կարգավորումները ('
                              + '; '.join(f'{k}: {v}' for k, v in sorted(errors.items()))
                              + f'){_FIX_HINT}')
 
         depot = None
         if depot_row is not None:
             if not is_valid_point(depot_row[0], depot_row[1]):
-                raise StoreError(f'{self._name()}: повреждены координаты склада{_FIX_HINT}')
+                raise StoreError(f'{self._name()}: վնասված են պահեստի կոորդինատները{_FIX_HINT}')
             depot = (float(depot_row[0]), float(depot_row[1]))
         trucks: dict[str, Truck] = {}
         for row in truck_rows:
             truck, problems = _loaded_truck(row)
             if problems:
-                raise StoreError(f'{self._name()}: повреждена запись машины {row[0]!r} '
+                raise StoreError(f'{self._name()}: վնասված է {row[0]!r} մեքենայի գրառումը '
                                  f'({", ".join(problems)}){_FIX_HINT}')
             trucks[truck.car_code] = truck
         managers: dict[int, ManagerProfile] = {}
         for row in manager_rows:
             profile, problems = _loaded_manager(row)
             if problems:
-                raise StoreError(f'{self._name()}: повреждена запись менеджера {row[0]!r} '
+                raise StoreError(f'{self._name()}: վնասված է {row[0]!r} մենեջերի գրառումը '
                                  f'({", ".join(problems)}){_FIX_HINT}')
             managers[profile.agent_id] = profile
         geo: dict[int, Point] = {}
         for customer_id, lat, lon in geo_rows:
             if not _is_int(customer_id) or not is_valid_point(lat, lon):
-                raise StoreError(f'{self._name()}: повреждена ручная точка клиента {customer_id!r}{_FIX_HINT}')
+                raise StoreError(f'{self._name()}: վնասված է {customer_id!r} հաճախորդի ձեռքով նշված կետը{_FIX_HINT}')
             geo[customer_id] = (float(lat), float(lon))
         windows: dict[int, CustomerWindow] = {}
         for customer_id, kind, t1, t2, tol in window_rows:
             # в базе допуск у at записан всегда: пустой — битая строка, а не «по умолчанию»
             w, err = check_window({'kind': kind, 't1': t1, 't2': t2, 'tol': tol})
             if err or not _is_int(customer_id) or (kind == 'at' and tol is None):
-                raise StoreError(f'{self._name()}: повреждено окно приёма клиента {customer_id!r}{_FIX_HINT}')
+                raise StoreError(f'{self._name()}: վնասված է {customer_id!r} հաճախորդի ընդունման ժամը{_FIX_HINT}')
             windows[customer_id] = w
         access: dict[int, VehicleAccess] = {}
         for customer_id, mode, encoded in access_rows:
@@ -1567,13 +1569,14 @@ class Store:
             except (TypeError, ValueError):
                 rule, err = None, 'повреждён список машин'
             if err or not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
-                raise StoreError(f'{self._name()}: повреждено ограничение машин клиента {customer_id!r}{_FIX_HINT}')
+                raise StoreError(f'{self._name()}: վնասված է {customer_id!r} հաճախորդի մեքենաների '
+                                 f'սահմանափակումը{_FIX_HINT}')
             access[customer_id] = rule
         unload: dict[int, float] = {}
         for customer_id, fixed in unload_rows:
             minutes, _ = check_unload_min(fixed)
             if minutes is None or not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
-                raise StoreError(f'{self._name()}: повреждено время у магазина {customer_id!r}{_FIX_HINT}')
+                raise StoreError(f'{self._name()}: վնասված է {customer_id!r} խանութում ժամանակի արժեքը{_FIX_HINT}')
             unload[customer_id] = minutes
         return Bundle(settings, depot, trucks, managers, geo, windows, vehicle_access=access, unload_min=unload)
 
@@ -1624,7 +1627,7 @@ class Store:
             finally:
                 conn.close()
         except sqlite3.Error as e:
-            raise StoreError(f'{self._name()}: не удалось сохранить настройки') from e
+            raise StoreError(f'{self._name()}: չհաջողվեց պահպանել կարգավորումները') from e
 
     @staticmethod
     def _write(conn: sqlite3.Connection, changes: Changes, now: str, user: str | None) -> None:
@@ -1697,7 +1700,7 @@ class Store:
             finally:
                 conn.close()
         except sqlite3.Error as e:
-            raise StoreError(f'{self._name()} повреждена или недоступна{_FIX_HINT}') from e
+            raise StoreError(f'{self._name()}: վնասված է կամ հասանելի չէ{_FIX_HINT}') from e
 
     def _transaction(self, write: Callable[[sqlite3.Connection], Any], failure: str) -> Any:
         """Запись одной транзакцией: всё или ничего. Возвращает то, что вернула write."""
@@ -1727,7 +1730,7 @@ class Store:
         for row in rows:
             decision, problems = _loaded_decision(row)
             if problems:
-                raise StoreError(f'{self._name()}: повреждено решение по клиенту {row[0]!r} '
+                raise StoreError(f'{self._name()}: վնասված է {row[0]!r} հաճախորդի որոշումը '
                                  f'({", ".join(problems)}){_FIX_HINT}')
             out.append(decision)
         return out
@@ -1766,7 +1769,7 @@ class Store:
                              'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
                              (*key, d.value, d.from_value, status, now, user))
 
-        self._transaction(write, 'не удалось сохранить решения')
+        self._transaction(write, 'չհաջողվեց պահպանել որոշումները')
 
     def reset_decisions(self) -> int:
         """«Сбросить все»: удалить все решения (и отработавшие). Возвращает, сколько было действующих."""
@@ -1775,7 +1778,7 @@ class Store:
             conn.execute('DELETE FROM decision')
             return active
 
-        return self._transaction(write, 'не удалось сбросить решения')
+        return self._transaction(write, 'չհաջողվեց չեղարկել որոշումները')
 
     def retire_decisions(self, decisions: Collection[Decision]) -> int:
         """Отметить решения отработавшими (retired): больше не закрепляют и не запрещают.
@@ -1793,7 +1796,7 @@ class Store:
                                             d.from_value, d.updated_at)).rowcount
             return n
 
-        return self._transaction(write, 'не удалось обновить решения')
+        return self._transaction(write, 'չհաջողվեց թարմացնել որոշումները')
 
     def save_scenario(self, scenario_id: str, created_by: str | None, params: Mapping[str, Any],
                       result: Mapping[str, Any]) -> None:
@@ -1817,7 +1820,7 @@ class Store:
         try:
             return Scenario(scenario_id, created_at, created_by, json.loads(params), json.loads(result))
         except (TypeError, ValueError, RecursionError) as e:
-            raise StoreError(f'{self._name()}: повреждён сохранённый расчёт {scenario_id!r}'
+            raise StoreError(f'{self._name()}: վնասված է {scenario_id!r} պահպանված հաշվարկը'
                              f'{_FIX_HINT}') from e
 
     def last_scenario(self) -> Scenario | None:
@@ -1885,7 +1888,7 @@ class Store:
             raise ValueError('ограничение машин не прошло проверку')
 
         self._transaction(lambda conn: self._write_customer_vehicles(conn, customer_id, access, user),
-                          'не удалось сохранить машины магазина')
+                          'չհաջողվեց պահպանել խանութի մեքենաները')
 
     @staticmethod
     def _write_customer_vehicles(conn: sqlite3.Connection, customer_id: int,
@@ -1918,7 +1921,7 @@ class Store:
             if unload_min is not KEEP:
                 self._write_customer_unload(conn, customer_id, unload_min, user)
 
-        self._transaction(write, 'не удалось сохранить условия доставки магазина')
+        self._transaction(write, 'չհաջողվեց պահպանել խանութի առաքման պայմանները')
 
     def save_customer_unload(self, customer_id: int, unload_min: float | None, user: str | None) -> None:
         """Только время у магазина (№50; проверенное check_unload_min, None — убрать: по норме) своей транзакцией —
@@ -1951,9 +1954,9 @@ class Store:
         try:
             data = json.loads(row[0])
         except (TypeError, ValueError, RecursionError) as e:
-            raise StoreError(f'{self._name()}: повреждён план развоза на {day}{_FIX_HINT}') from e
+            raise StoreError(f'{self._name()}: վնասված է {day} օրվա առաքման պլանը{_FIX_HINT}') from e
         if not isinstance(data, dict) or not _is_int(row[1]):
-            raise StoreError(f'{self._name()}: повреждён план развоза на {day}{_FIX_HINT}')
+            raise StoreError(f'{self._name()}: վնասված է {day} օրվա առաքման պլանը{_FIX_HINT}')
         return data, row[1]
 
     def save_dispatch(self, day: str, data: Mapping[str, Any], user: str | None,
@@ -2016,7 +2019,7 @@ class Store:
                      if o.params is not None else None, o.model_id, o.n_obs, o.n_test, o.train_from, o.train_to,
                      o.test_from, o.test_to, o.mae_before, o.mae_after, int(o.accepted), o.reason, now))
 
-        self._transaction(write, 'не удалось сохранить выученные нормы')
+        self._transaction(write, 'չհաջողվեց պահպանել սովորած նորմերը')
 
     def learned(self, before: str | None = None, accepted_only: bool = False) -> list[dict[str, Any]]:
         """Журнал выученных норм по возрастанию дня прогона (before — только прогоны раньше этого дня; accepted_only —
@@ -2035,7 +2038,7 @@ class Store:
             try:
                 d['params'] = json.loads(d['params']) if d['params'] is not None else None
             except (TypeError, ValueError, RecursionError) as e:
-                raise StoreError(f'{self._name()}: повреждена выученная норма {d["id"]}{_FIX_HINT}') from e
+                raise StoreError(f'{self._name()}: վնասված է սովորած նորմի {d["id"]} գրառումը{_FIX_HINT}') from e
             d['accepted'] = bool(d['accepted'])
             out.append(d)
         return out
@@ -2048,7 +2051,7 @@ class Store:
     def save_learning_last_run(self, day: str) -> None:
         self._transaction(lambda conn: conn.execute(
             "INSERT INTO meta(key, value) VALUES('learning_last_run', ?) ON CONFLICT(key) DO UPDATE SET value = "
-            'excluded.value', (day,)), 'не удалось записать день прогона обучения')
+            'excluded.value', (day,)), 'չհաջողվեց գրանցել ուսուցման վերահաշվարկի օրը')
 
     def learning_auto(self) -> dict[str, bool]:
         """Автообучение по виду, выбранное владельцем; нет строки — learning.DEFAULT_AUTO."""
@@ -2059,7 +2062,8 @@ class Store:
         self._transaction(lambda conn: conn.execute(
             'INSERT INTO learning_switch(kind, auto, updated_at, updated_by) VALUES(?, ?, ?, ?) '
             'ON CONFLICT(kind) DO UPDATE SET auto = excluded.auto, updated_at = excluded.updated_at, '
-            'updated_by = excluded.updated_by', (kind, int(auto), _now(), user)), 'не удалось сохранить переключатель')
+            'updated_by = excluded.updated_by', (kind, int(auto), _now(), user)),
+            'չհաջողվեց պահպանել ավտոմատ ուսուցման փոխանջատիչը')
 
     def measurements(self) -> list[dict[str, Any]]:
         rows = self._read(lambda conn: conn.execute(
@@ -2071,7 +2075,7 @@ class Store:
         self._transaction(lambda conn: conn.execute(
             'INSERT INTO route_measurement(day, car_code, data, updated_at, updated_by) VALUES(?,?,?,?,?) '
             'ON CONFLICT(day, car_code) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at, '
-            'updated_by=excluded.updated_by', (day, code, raw, _now(), user)), 'не удалось сохранить замер')
+            'updated_by=excluded.updated_by', (day, code, raw, _now(), user)), 'չհաջողվեց պահպանել չափումը')
 
     # --- журнал гаража (№53): ремонты, ДТП, страховка и налоги, пробег ---
 

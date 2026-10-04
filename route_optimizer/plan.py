@@ -13,7 +13,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Collection, Iterable
 
-WEEKDAY_LABELS = {1: 'Пн', 2: 'Вт', 3: 'Ср', 4: 'Чт', 5: 'Пт', 6: 'Сб', 7: 'Вс'}
+WEEKDAY_LABELS = {1: 'Երկ', 2: 'Երք', 3: 'Չրք', 4: 'Հնգ', 5: 'Ուրբ', 6: 'Շբթ', 7: 'Կիր'}
 
 
 @dataclass(frozen=True)

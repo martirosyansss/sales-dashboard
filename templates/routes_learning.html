@@ -1,6 +1,6 @@
 {% extends "base_v2.html" %}
 
-{% block title %}Обучение и факт — Sales Dashboard{% endblock %}
+{% block title %}Ուսուցում և փաստ — Sales Dashboard{% endblock %}
 
 {% block extra_css %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -20,27 +20,30 @@
     .lr-run { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 10px 0 4px; }
     .lr-off { font-size: .8125rem; color: var(--rt-warn); }
     .lr-map { height: 440px; border-radius: 12px; margin: 10px 0 12px; }
+    /* Армянские заголовки столбцов длиннее русских (№58): переносятся по словам, таблица «План и факт» не шире экрана */
+    #lrPage .rt-table thead th { white-space: normal; vertical-align: bottom; }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="rt-page" id="lrPage">
+<div class="rt-page" id="lrPage" lang="hy">
 
     <header class="rt-head">
         <div class="rt-head-row">
-            <h1 class="rt-title">Обучение и факт</h1>
-            <nav class="rt-tabs" aria-label="Разделы маршрутов">
-                <a href="/routes">Обзор</a>
-                <a href="/routes/optimize">Оптимизация</a>
-                <a href="/routes/dispatch">Развоз</a>
-                <a href="/routes/learning" aria-current="page">Обучение</a>
-                <a href="/routes/settings">Настройки</a>
-                <a href="/routes/garage">Гараж</a>
+            <h1 class="rt-title">Ուսուցում և փաստ</h1>
+            <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
+                <a href="/routes">Ակնարկ</a>
+                <a href="/routes/optimize">Օպտիմալացում</a>
+                <a href="/routes/dispatch">Առաքում</a>
+                <a href="/routes/learning" aria-current="page">Ուսուցում</a>
+                <a href="/routes/settings">Կարգավորումներ</a>
+                <a href="/routes/garage">Ավտոտնակ</a>
             </nav>
         </div>
-        <p class="rt-head-lead">Программа сравнивает план «Развоза» с тем, как машины ездили на самом деле (GPS терминалов водителей),
-            и сама уточняет нормы: сколько длится разгрузка и загрузка, как быстро едут машины в разные часы и сколько тратят топлива.
-            Новая норма включается, только если на последней неделе она ошибается меньше прежней. В ERP ничего не меняется.</p>
+        <p class="rt-head-lead">Ծրագիրը համեմատում է «Առաքում» էջի պլանը այն բանի հետ, թե ինչպես են մեքենաներն իրականում շրջել (վարորդների
+            տերմինալների GPS), և ինքն է ճշտում նորմերը՝ որքան է տևում բեռնաթափումը և բեռնումը, որքան արագ են մեքենաները գնում տարբեր ժամերի
+            և որքան վառելիք են ծախսում։ Նոր նորմը միանում է միայն այն դեպքում, եթե վերջին շաբաթում այն ավելի քիչ է սխալվում, քան նախկինը։
+            ERP-ում ոչինչ չի փոխվում։</p>
     </header>
 
     <div id="lrStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
@@ -55,117 +58,126 @@
 
     <section class="rt-card" aria-labelledby="lrLearnTitle">
         <div class="rt-card-head">
-            <h2 class="rt-card-title" id="lrLearnTitle"><i class="fas fa-graduation-cap" aria-hidden="true"></i>Что программа выучила</h2>
+            <h2 class="rt-card-title" id="lrLearnTitle"><i class="fas fa-graduation-cap" aria-hidden="true"></i>Ինչ է սովորել ծրագիրը</h2>
         </div>
-        <p class="rt-card-lead">Пересчитывается каждую ночь в <span id="lrNightly">03:00</span>. Если выученная норма не лучше прежней или данных мало —
-            действует прежняя (то, что вы указали в настройках). Галочку «Учиться» можно снять — тогда всегда действуют настройки.</p>
+        <p class="rt-card-lead">Վերահաշվվում է ամեն գիշեր՝ ժամը <span id="lrNightly">03:00</span>-ին։ Եթե սովորած նորմը նախկինից լավը չէ կամ
+            տվյալները քիչ են, գործում է նախկինը (այն, ինչ նշել եք կարգավորումներում)։ «Սովորել» նշումը կարելի է հանել — այդ դեպքում միշտ
+            գործում են կարգավորումները։</p>
         <div class="rt-table-scroll"><table class="rt-table">
-            <thead><tr><th scope="col">Что</th><th scope="col">Действует сейчас</th><th scope="col">Последний пересчёт</th>
-                <th scope="col">Ошибка: было → стало</th><th scope="col">Учиться</th></tr></thead>
-            <tbody id="lrLearnRows"><tr><td colspan="5" class="rt-empty">Загружаю…</td></tr></tbody>
+            <thead><tr><th scope="col">Ինչ</th><th scope="col">Գործում է հիմա</th><th scope="col">Վերջին վերահաշվարկը</th>
+                <th scope="col">Սխալ՝ էր → դարձավ</th><th scope="col">Սովորել</th></tr></thead>
+            <tbody id="lrLearnRows"><tr><td colspan="5" class="rt-empty">Բեռնվում է…</td></tr></tbody>
         </table></div>
         <div class="lr-run">
-            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="lrRun"><i class="fas fa-rotate" aria-hidden="true"></i>Пересчитать сейчас</button>
+            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="lrRun"><i class="fas fa-rotate" aria-hidden="true"></i>Վերահաշվել հիմա</button>
             <span id="lrJob" class="lr-why"></span>
         </div>
     </section>
 
     <section class="rt-card" aria-labelledby="lrStoresTitle">
         <div class="rt-card-head">
-            <h2 class="rt-card-title" id="lrStoresTitle"><i class="fas fa-store" aria-hidden="true"></i>Разгрузка по магазинам</h2>
+            <h2 class="rt-card-title" id="lrStoresTitle"><i class="fas fa-store" aria-hidden="true"></i>Բեռնաթափումն ըստ խանութների</h2>
         </div>
-        <p class="rt-card-lead">Сколько минут машина стоит у магазина, не считая самого груза: парковка, приёмка, документы.
-            <b>Введено</b> — что указали в «Настройки → Магазины: время и машины». <b>По факту</b> — сколько выходит по GPS водителей
-            («Развоз» учитывает его от <span id="lrStoresMin">2</span> разгрузок у магазина: сначала понемногу, с каждой новой разгрузкой — сильнее).
-            <b>В расчёте</b> — что «Развоз» берёт сейчас.
-            Время на груз (<span id="lrStoresTonne">6</span> мин на тонну) добавляется сверху.</p>
+        <p class="rt-card-lead">Քանի րոպե է մեքենան կանգնում խանութի մոտ՝ առանց բեռի ժամանակ․ կայանում, ընդունում, փաստաթղթեր։
+            <b>Մուտքագրված</b>՝ այն, ինչ նշված է «Կարգավորումներ → Խանութներ՝ ժամ և մեքենաներ» բաժնում։ <b>Ըստ փաստի</b>՝ որքան է ստացվում ըստ
+            վարորդների GPS-ի («Առաքում» էջն այն հաշվի է առնում խանութում <span id="lrStoresMin">2</span> բեռնաթափումից սկսա․ սկզբում քիչ-քիչ,
+            յուրաքանչյուր նոր բեռնաթափման հետ՝ ավելի ուժեղ)։ <b>Հաշվարկում</b>՝ այն, ինչ «Առաքում» էջը վերցնում է հիմա։
+            Բեռի ժամանակը (<span id="lrStoresTonne">6</span> րոպե յուրաքանչյուր տոննայի համար) ավելանում է դրա վրա։</p>
         <div class="rt-table-scroll"><table class="rt-table">
-            <thead><tr><th scope="col">Магазин</th><th scope="col">Введено</th><th scope="col">По факту</th><th scope="col">В расчёте</th></tr></thead>
-            <tbody id="lrStoreRows"><tr><td colspan="4" class="rt-empty">Загружаю…</td></tr></tbody>
+            <thead><tr><th scope="col">Խանութ</th><th scope="col">Մուտքագրված</th><th scope="col">Ըստ փաստի</th><th scope="col">Հաշվարկում</th></tr></thead>
+            <tbody id="lrStoreRows"><tr><td colspan="4" class="rt-empty">Բեռնվում է…</td></tr></tbody>
         </table></div>
         <p class="lr-why is-wide" id="lrStoresNote"></p>
     </section>
 
     <section class="rt-card" aria-labelledby="lrTtTitle">
         <div class="rt-card-head">
-            <h2 class="rt-card-title" id="lrTtTitle"><i class="fas fa-stopwatch" aria-hidden="true"></i>Время в пути грузовиков: модель</h2>
+            <h2 class="rt-card-title" id="lrTtTitle"><i class="fas fa-stopwatch" aria-hidden="true"></i>Բեռնատարների ճանապարհի ժամանակը՝ մոդել</h2>
         </div>
-        <p class="rt-card-lead">Время в пути грузовиков можно считать двумя способами: <b>прежней моделью</b> (км по карте / скорость города или области из настроек)
-            или по <b>Valhalla</b> (время по дорогам для грузовика). Каждую ночь программа сравнивает их на одних и тех же участках — переездах водителей
-            от точки до точки за последнюю неделю. Сначала каждой модели она подбирает свою поправку по часам на более ранних днях — так сравнение честное.
-            Модель меняется, только если другая ошибается меньше хотя бы на <span id="lrTtGain">2</span>% и участков достаточно; обратно — по тому же правилу,
-            поэтому модель не переключается туда-сюда.</p>
+        <p class="rt-card-lead">Բեռնատարների ճանապարհի ժամանակը կարելի է հաշվել երկու եղանակով՝ <b>նախկին մոդելով</b> (կմ ըստ քարտեզի / քաղաքի կամ մարզի
+            արագությունը կարգավորումներից) կամ <b>Valhalla</b>-ով (ժամանակն ըստ ճանապարհների՝ բեռնատարի համար)։ Ամեն գիշեր ծրագիրը դրանք համեմատում է
+            նույն հատվածների վրա՝ վերջին շաբաթվա ընթացքում վարորդների կետից կետ անցումների։ Սկզբում յուրաքանչյուր մոդելի համար այն ավելի վաղ օրերի
+            տվյալներով ընտրում է իր ժամային ճշգրտումը, որպեսզի համեմատությունն արդար լինի։ Մոդելը փոխվում է միայն այն դեպքում, եթե մյուսն առնվազն
+            <span id="lrTtGain">2</span>%-ով ավելի քիչ է սխալվում, և հատվածները բավարար ե․ հետ փոխվում է նույն կանոնով, այդ պատճառով մոդելը
+            հետ ու առաջ չի փոխվում։</p>
         <p id="lrTtNow"></p>
         <div class="rt-table-scroll"><table class="rt-table">
-            <thead><tr><th scope="col">Модель</th><th scope="col">Ошибка, мин на участок</th>
-                <th scope="col">Смещение, мин <span class="lr-why">(плюс — модель считает дольше, чем ехали)</span></th></tr></thead>
-            <tbody id="lrTtRows"><tr><td colspan="3" class="rt-empty">Загружаю…</td></tr></tbody>
+            <thead><tr><th scope="col">Մոդել</th><th scope="col">Սխալ, րոպե մեկ հատվածի համար</th>
+                <th scope="col">Համակարգային շեղում, րոպե <span class="lr-why">(դրականը՝ մոդելն ավելի երկար է հաշվում, քան իրականում գնացել են)</span></th></tr></thead>
+            <tbody id="lrTtRows"><tr><td colspan="3" class="rt-empty">Բեռնվում է…</td></tr></tbody>
         </table></div>
         <p class="lr-why is-wide" id="lrTtLegs"></p>
     </section>
 
     <section class="rt-card" aria-labelledby="lrFactTitle">
         <div class="rt-card-head">
-            <h2 class="rt-card-title" id="lrFactTitle"><i class="fas fa-truck" aria-hidden="true"></i>План и факт по дням</h2>
+            <h2 class="rt-card-title" id="lrFactTitle"><i class="fas fa-truck" aria-hidden="true"></i>Պլան և փաստ ըստ օրերի</h2>
         </div>
-        <p class="rt-card-lead">Крупно — как было на самом деле, мелко под ним — сколько планировал «Развоз». Факт есть только у машин,
-            где водитель работал с терминалом (запись маршрута включена). Литры — по заправкам «до полного бака».</p>
+        <p class="rt-card-lead">Խոշոր՝ ինչպես է եղել իրականում, տակը՝ մանր, որքան էր պլանավորել «Առաքում» էջը։ Փաստը կա միայն այն մեքենաների
+            համար, որոնց վարորդն աշխատել է տերմինալով (երթուղու գրանցումը միացված է)։ Լիտրերը՝ ըստ «մինչև լրիվ բաք» լիցքավորումների։</p>
         <form class="lr-period" id="lrPeriod">
-            <div class="rt-field"><label for="lrFrom">С</label><input type="date" id="lrFrom" class="rt-input"></div>
-            <div class="rt-field"><label for="lrTo">По</label><input type="date" id="lrTo" class="rt-input"></div>
-            <button type="submit" class="rt-btn rt-btn-primary rt-btn-sm">Показать</button>
+            <div class="rt-field"><label for="lrFrom">Սկսած</label><input type="date" id="lrFrom" class="rt-input"></div>
+            <div class="rt-field"><label for="lrTo">Մինչև</label><input type="date" id="lrTo" class="rt-input"></div>
+            <button type="submit" class="rt-btn rt-btn-primary rt-btn-sm">Ցույց տալ</button>
         </form>
         <div class="rt-kpis is-4" id="lrKpis"></div>
         <div class="rt-table-scroll"><table class="rt-table">
-            <thead><tr><th scope="col">День</th><th scope="col">Машина</th><th scope="col">Км</th><th scope="col">Время работы</th>
-                <th scope="col">Рейсы</th><th scope="col">Дизель, л</th><th scope="col">Точек</th><th scope="col">Вовремя к окну</th>
-                <th scope="col">Точек в час</th><th scope="col">Км на точку</th><th scope="col">Литров на точку</th>
-                <th scope="col">Загрузка по весу</th><th scope="col">Не по порядку</th><th scope="col"><span class="rt-sr-only">Карта</span></th></tr></thead>
+            <thead><tr><th scope="col">Օր</th><th scope="col">Մեքենա</th><th scope="col">Կմ</th><th scope="col">Աշխատանքի տևողություն</th>
+                <th scope="col">Երթեր</th><th scope="col">Դիզել, լ</th><th scope="col">Կետ</th><th scope="col">Ժամանակին՝ ընդունման ժամին</th>
+                <th scope="col">Կետ ժամում</th><th scope="col">Կմ մեկ կետի համար</th><th scope="col">Լ մեկ կետի համար</th>
+                <th scope="col">Բեռնվածություն ըստ քաշի</th><th scope="col">Ոչ հերթականությամբ</th><th scope="col"><span class="rt-sr-only">Քարտեզ</span></th></tr></thead>
             <tbody id="lrDayRows"></tbody>
         </table></div>
     </section>
 
     <section class="rt-card" id="lrMapBox" aria-labelledby="lrMapTitle" hidden>
         <div class="rt-card-head">
-            <h2 class="rt-card-title"><i class="fas fa-map-location-dot" aria-hidden="true"></i><span id="lrMapTitle">Карта дня</span></h2>
+            <h2 class="rt-card-title"><i class="fas fa-map-location-dot" aria-hidden="true"></i><span id="lrMapTitle">Օրվա քարտեզ</span></h2>
         </div>
-        <p class="rt-card-lead">Серая пунктирная линия — рейсы по плану «Развоза» (по дорогам, если есть карта дорог). Синяя — фактический путь по GPS.
-            Точки: зелёная — вовремя, красная — опоздали или раньше окна приёма, серая — стоянки у магазина не было.</p>
+        <p class="rt-card-lead">Մոխրագույն կետագիծը՝ երթերն ըստ «Առաքում» էջի պլանի (ըստ ճանապարհների, եթե կա ճանապարհային քարտեզ)։ Կապույտը՝
+            փաստացի ճանապարհն ըստ GPS-ի։ Կետերի գույնը․ կանաչ — ժամանակին, կարմիր — ուշացում կամ ընդունման ժամից շուտ, մոխրագույն — խանութի
+            մոտ կանգառ չի եղել։</p>
         <p class="lr-why" id="lrMapNote"></p>
-        <div id="lrMap" class="lr-map" role="region" aria-label="Карта: план и факт машины за день"></div>
+        <div id="lrMap" class="lr-map" role="region" aria-label="Քարտեզ՝ մեքենայի օրվա պլանը և փաստը"></div>
         <div class="rt-table-scroll"><table class="rt-table">
-            <thead><tr><th scope="col">№ по плану</th><th scope="col">Магазин</th><th scope="col">План (при сборке)</th>
-                <th scope="col">Окно приёма</th><th scope="col">Факт: прибытие–отъезд</th></tr></thead>
+            <thead><tr><th scope="col">№ ըստ պլանի</th><th scope="col">Խանութ</th><th scope="col">Պլան (կազմելիս)</th>
+                <th scope="col">Ընդունման ժամ</th><th scope="col">Փաստ՝ ժամանում–մեկնում</th></tr></thead>
             <tbody id="lrMapStops"></tbody>
         </table></div>
     </section>
 
     <details class="rt-fold">
-        <summary><span class="rt-fold-t">Как программа учится</span></summary>
+        <summary><span class="rt-fold-t">Ինչպես է սովորում ծրագիրը</span></summary>
         <div class="rt-fold-body" id="lrRules">
             <ul>
-                <li><b>Откуда факт.</b> Терминал водителя записывает маршрут, пока открыт рабочий день. Программа находит выезды со склада и возвращения
-                    (зона 150 м вокруг склада), стоянки у магазинов (не меньше 2 минут в 100 м от точки магазина), время в пути между ними и км.</li>
-                <li><b>Разгрузка</b> = минуты на точку + минуты на тонну. Время у магазина, введённое в настройках, «Развоз» берёт сразу вместо минут на точку.
-                    Со второй разгрузки у магазина программа начинает сдвигать его время к факту: сначала понемногу, с каждой новой разгрузкой — сильнее,
-                    а пока разгрузок мало, время ближе к введённому (нет введённого — к обычным минутам на точку). По одной разгрузке время не меняется: она может быть случайной.</li>
-                <li><b>Загрузка на складе</b> = минуты на рейс + минуты на тонну (видна, если машина приезжала на склад при включённом терминале).
-                    Из стоянки на складе вычитается ожидание, которое заложил план (выезд позже под окно первой точки); долгие стоянки (обед) не учитываются;
-                    за одну ночь норма меняется не больше чем на 30%; стоянка на складе короче 5 минут — проезд, а не загрузка, и норма не бывает меньше 5 минут на рейс.
-                    <b>Учиться загрузке программа начнёт только после того, как вы включите галочку.</b>
-                    Когда появятся окна приёма: если водитель загрузился, пока по плану ждал выезда под окно, и сразу уехал, часть настоящей загрузки посчитается ожиданием — норма выйдет чуть ниже.</li>
-                <li><b>Скорость машин</b> — во сколько раз дольше или быстрее, чем считает карта дорог, по часам, отдельно город/область и будни/выходные.
-                    Если карта дорог сменилась — старая поправка не действует, пока программа не выучит новую.</li>
-                <li><b>Время в пути грузовиков: модель</b> — прежняя (км / скорость зоны) или Valhalla. Обе проверяются на одних и тех же участках (переездах водителей
-                    от точки до точки) последней недели, у каждой — своя поправка по часам. Участок, для которого у Valhalla нет времени, не идёт ни в одну.
-                    Нужно не меньше <span id="lrTtTest">60</span> участков за <span id="lrTtTestDays">3</span> дня на проверке и <span id="lrTtTrain">200</span>
-                    за <span id="lrTtTrainDays">7</span> дней на обучении.
-                    Когда модель меняется, вместе с ней сразу включается её поправка по часам; если учёба скорости по часам выключена — модели сравниваются без поправки.
-                    Если на сервере задана переменная ROUTES_TRUCK_TIME, действует она, а не выбор программы.</li>
-                <li><b>Расход</b> — по заправкам «до полного бака»: литры между двумя полными баками / км по одометру; нужно не меньше <span id="lrFuelMin">12</span> таких промежутков.
-                    Одиночные ошибки в одометре программа находит сама; но если неверных показаний 50 и больше подряд (например, сломался счётчик), заправки до и после такой серии считаются отдельно.</li>
-                <li><b>Проверка.</b> Учится на днях до последней недели, проверяет на последних <span id="lrHoldout">7</span> днях. Норма включается, только если ошибка на проверке
-                    меньше прежней хотя бы на <span id="lrGain">2</span>%. Иначе действует прежняя.</li>
+                <li><b>Որտեղից է փաստը։</b> Վարորդի տերմինալը գրանցում է երթուղին, քանի դեռ աշխատանքային օրը բաց է։ Ծրագիրը գտնում է պահեստից մեկնումները
+                    և վերադարձները (պահեստի շուրջ 150 մ գոտի), կանգառները խանութների մոտ (առնվազն 2 րոպե՝ խանութի կետից 100 մ շառավղում), դրանց միջև
+                    ճանապարհի ժամանակը և կմ-ները։</li>
+                <li><b>Բեռնաթափում</b> = րոպե մեկ կետում + րոպե յուրաքանչյուր տոննայի համար։ Կարգավորումներում մուտքագրված ժամանակը խանութում «Առաքում» էջն
+                    անմիջապես վերցնում է մեկ կետի րոպեների փոխարեն։ Խանութում երկրորդ բեռնաթափումից սկսած՝ ծրագիրը սկսում է նրա ժամանակը մոտեցնել փաստի․
+                    սկզբում քիչ-քիչ, յուրաքանչյուր նոր բեռնաթափման հետ՝ ավելի ուժեղ, իսկ քանի դեռ բեռնաթափումները քիչ են, ժամանակն ավելի մոտ է մուտքագրվածին
+                    (եթե մուտքագրված չկա՝ մեկ կետի սովորական րոպեներին)։ Մեկ բեռնաթափումով ժամանակը չի փոխվու․ այն կարող է պատահական լինել։</li>
+                <li><b>Բեռնում պահեստում</b> = րոպե մեկ երթի համար + րոպե յուրաքանչյուր տոննայի համար (երևում է, եթե մեքենան եկել է պահեստ միացված տերմինալով)։
+                    Պահեստում կանգառից հանվում է պլանով նախատեսված սպասումը (ավելի ուշ մեկնում՝ առաջին կետի ընդունման ժամին հասնելու համար), երկար
+                    կանգառները (ճաշ) հաշվի չեն առնվում, մեկ գիշերում նորմը փոխվում է ոչ ավելի, քան 30%-ով, պահեստում 5 րոպեից կարճ կանգառը անցում է,
+                    ոչ թե բեռնում, և նորմը չի կարող լինել 5 րոպեից պակաս մեկ երթի համար։
+                    <b>Բեռնում սովորել ծրագիրը կսկսի միայն այն բանից հետո, երբ միացնեք նշումը։</b>
+                    Երբ հայտնվեն ընդունման ժամերը՝ եթե վարորդը բեռնվել է, քանի դեռ պլանով սպասում էր մեկնելուն, և անմիջապես մեկնել է, իրական բեռնման
+                    մի մասը կհաշվվի որպես սպասում — նորմը կստացվի մի փոքր ցածր։</li>
+                <li><b>Մեքենաների արագությունը</b> — քանի անգամ ավելի երկար կամ արագ, քան հաշվում է ճանապարհային քարտեզը, ըստ ժամերի, առանձին՝
+                    քաղաք/մարզ և աշխատանքային/հանգստյան օրեր։ Եթե ճանապարհային քարտեզը փոխվել է, հին ճշգրտումը չի գործում, մինչև ծրագիրը չսովորի նորը։</li>
+                <li><b>Բեռնատարների ճանապարհի ժամանակի մոդելը</b> — նախկինը (կմ / գոտու արագություն) կամ Valhalla։ Երկուսն էլ ստուգվում են վերջին շաբաթվա
+                    նույն հատվածների վրա (վարորդների կետից կետ անցումներ), յուրաքանչյուրը՝ իր ժամային ճշգրտումով։ Հատվածը, որի համար Valhalla-ն ժամանակ
+                    չունի, չի մտնում ոչ մեկի մեջ։
+                    Անհրաժեշտ է առնվազն <span id="lrTtTest">60</span> հատված <span id="lrTtTestDays">3</span> օրում՝ ստուգման համար, և <span id="lrTtTrain">200</span>
+                    հատված <span id="lrTtTrainDays">7</span> օրում՝ ուսուցման համար։
+                    Երբ մոդելը փոխվում է, դրա հետ անմիջապես միանում է նրա ժամային ճշգրտում․ եթե արագության ժամային ուսուցումն անջատված է, մոդելները
+                    համեմատվում են առանց ճշգրտման։ Եթե սերվերում սահմանված է ROUTES_TRUCK_TIME փոփոխականը, գործում է այն, ոչ թե ծրագրի ընտրությունը։</li>
+                <li><b>Ծախս</b> — ըստ «մինչև լրիվ բաք» լիցքավորումների՝ լիտրերը երկու լրիվ բաքի միջև / կմ ըստ օդոմետր․ անհրաժեշտ է առնվազն
+                    <span id="lrFuelMin">12</span> այդպիսի միջակայք։ Օդոմետրի եզակի սխալները ծրագիրն ինքն է գտնում, բայց եթե անընդմեջ 50 և ավելի սխալ
+                    ցուցմունք կա (օրինակ՝ հաշվիչը փչացել է), այդպիսի շարքից առաջ և հետո լիցքավորումները հաշվվում են առանձին։</li>
+                <li><b>Ստուգում։</b> Ծրագիրը սովորում է մինչև վերջին շաբաթն ընկած օրերի վրա, ստուգում է վերջին <span id="lrHoldout">7</span> օրերի վրա։ Նորմը
+                    միանում է միայն այն դեպքում, եթե ստուգման սխալը նախկինից փոքր է առնվազն <span id="lrGain">2</span>%-ով։ Հակառակ դեպքում գործում է նախկինը։</li>
             </ul>
         </div>
     </details>
@@ -176,5 +188,5 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_learning.js') }}?v=7"></script>
+<script src="{{ url_for('static', filename='js/routes_learning.js') }}?v=8"></script>
 {% endblock %}
