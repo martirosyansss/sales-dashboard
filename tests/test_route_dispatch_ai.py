@@ -5,6 +5,7 @@
 
 Запуск из корня проекта:  python -m pytest tests/test_route_dispatch_ai.py -q
 """
+import json
 import re
 import sys
 from pathlib import Path
@@ -146,6 +147,25 @@ def test_day_context_numbers_trips_within_truck():
     text = ai_chat.day_context(body)
     assert '{"id":1,"trip_no":1}' in text and '{"id":2,"trip_no":1}' in text and '{"id":3,"trip_no":2}' in text
     assert 'trip_no' in ai_chat.SYSTEM
+
+
+def test_day_context_lunch_names_the_store():
+    """Обед (№61): индекс остановки (с нуля) модели не показываем — вместо него название магазина; обед на складе
+    и в дороге до первого магазина — без магазина; SYSTEM объясняет поля и армянское «ճաշ»."""
+    stops = [{'name': 'Store A', 'kg': 100}, {'name': 'Store B', 'kg': 50}]
+    lunch = {'start': '13:10', 'end': '13:40', 'minutes': 30.0, 'added_min': 30.0}
+    body = {'day': '2026-10-04', 'plan': {'trucks': [{'car_code': 'A', 'trips': [
+        {'id': 1, 'stops': stops, 'lunch': {**lunch, 'after_stop': 1, 'where': 'store'}},
+        {'id': 2, 'stops': stops, 'lunch': {**lunch, 'after_stop': None, 'where': 'depot'}},
+        {'id': 3, 'stops': stops, 'lunch': {**lunch, 'after_stop': 0, 'where': 'road'}}]}]}}
+    data = json.loads(ai_chat.day_context(body).split('\n')[1])
+    got = [t['lunch'] for t in data['plan']['trucks'][0]['trips']]
+    assert got[0]['after_store'] == 'Store B' and got[2]['after_store'] == 'Store A'
+    assert 'after_store' not in got[1] and all('after_stop' not in g for g in got)
+    assert got[1]['where'] == 'depot' and got[0]['start'] == '13:10'
+    assert 'trips[].lunch' in ai_chat.SYSTEM and 'after_store' in ai_chat.SYSTEM and 'ճաշ' in ai_chat.SYSTEM
+    # входной ответ дня не меняется: страница и сравнение «что если» читают тот же body
+    assert body['plan']['trucks'][0]['trips'][0]['lunch']['after_stop'] == 1
 
 
 def test_day_context_same_day_same_text():

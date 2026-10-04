@@ -92,7 +92,7 @@ have no trips, a plain «Վերակազմել երթերը» will use them; advi
 in step 1 (an estimate; if its capacity_kg is below need_kg it takes only part of the load) - the page offers the \
 button «Ավելացնել և վերակազմել» for it; advice.pinned_late = ids of late trips that the logist pinned - a rebuild \
 does not change them, the logist must unpin them («Ապամրացնել» under «Փոփոխել») or move their stores; advice.no_free \
-= true when there is a problem beyond pinned trips and no free ready truck to add; an empty advice means no suggestion.
+= true when there is a problem beyond pinned trips and no free ready truck to add; an empty advice means no suggestion. trips[].lunch = the driver's lunch break on that trip (one per truck per day, inside the lunch window from the settings): start/end HH:MM, minutes = break length, added_min = minutes it adds to the trip; where = store (after unloading at after_store), depot (at the warehouse before this trip - the departure waits for it), road (the driver pulls over on the way, after after_store or, without it, soon after leaving the warehouse); explain minutes lunch_min = the same break as a part of the trip time.
 Format: fields that are false, null or empty are left out (a missing flag means false). Lists of stores - trip stops, \
 unassigned stops, stores without coordinates, backlog and excluded orders - are tables: the first item is the column \
 header (not a store), each next item is one store (trip stops in visit order), cells separated by "|", an empty \
@@ -125,7 +125,7 @@ of one truck with the plate of another.
 something happened, say what the numbers show and do not guess a reason.
 - Armenian wording: work_end - «աշխատանքային օրվա ավարտ»; overtime_end - «արտաժամյա աշխատանքի սահման»; loading at \
 the warehouse - «բեռնում պահեստում»; unloading at a store - «բեռնաթափում»; capacity - «բեռնատարողություն»; trip \
-revenue below min_trip_revenue - «երթի ապրանքը նվազագույնից պակաս է»; the planner - «ծրագիրը». Money always \
+revenue below min_trip_revenue - «երթի ապրանքը նվազագույնից պակաս է»; the planner - «ծրագիրը»; the driver's lunch break - «ճաշ» («ճաշ 13:10–13:40»). Money always \
 with the word «դրամ» («125 004 դրամ»), never a currency sign. No English words in the answer.
 - Plain text only: first a direct answer in one or two sentences, then at most five short lines starting with "• " if \
 details help; keep the whole answer under about 120 words unless asked for details. No markdown headings, tables, \
@@ -266,6 +266,17 @@ def _prune(value: Any) -> Any:
     return value
 
 
+def _lunch_store(trip: dict[str, Any]) -> None:
+    """Обед (№61): after_stop — индекс остановки с нуля; модели — название магазина, после которого обед
+    (с индексом она ошибается на один)."""
+    lunch, stops = trip.get('lunch'), trip.get('stops')
+    if not isinstance(lunch, dict) or 'after_stop' not in lunch:
+        return
+    k = lunch.pop('after_stop')
+    if isinstance(k, int) and not isinstance(k, bool) and isinstance(stops, list) and 0 <= k < len(stops)             and isinstance(stops[k], dict):
+        lunch['after_store'] = stops[k].get('name')
+
+
 def day_context(body: dict[str, Any]) -> str:
     """Данные дня одним текстом: тот же ответ дня без координат и служебных полей, ключи отсортированы —
     одинаковый день даёт одинаковый текст (иначе кэш не сработает)."""
@@ -275,6 +286,7 @@ def day_context(body: dict[str, Any]) -> str:
         for i, trip in enumerate(truck.get('trips') or []):   # номер рейса у машины — как «Երթ 2» на странице
             if isinstance(trip, dict):
                 trip['trip_no'] = i + 1
+                _lunch_store(trip)
     if isinstance(data.get('geo_suggestions'), dict):          # предложения водителей — только сколько их
         g = data['geo_suggestions']
         data['geo_suggestions'] = {'count': g.get('count', 0), 'day_count': g.get('day_count', 0)}
