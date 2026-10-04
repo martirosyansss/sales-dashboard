@@ -128,16 +128,19 @@
             : '';
     }
     // Разгрузка по магазинам (№50): введено / по факту (визитов; split — 2 визита расходятся, ждём 3-й) / в расчёте
-    const STORE_SOURCE = { learned: 'ըստ GPS-ի', manual: 'ինչպես մուտքագրված է', norm: 'սովորական ժամանակ' };
+    // shrink, shrink_manual — сглаживание к группе (№66): факт GPS вместе с временем похожих магазинов или введённым
+    const STORE_SOURCE = { learned: 'ըստ GPS-ի', manual: 'ինչպես մուտքագրված է', norm: 'սովորական ժամանակ',
+        shrink: 'GPS + նման խանութներ', shrink_manual: 'GPS + մուտքագրված' };
     // По-армянски существительное после числа — в единственном числе: «2 բեռնաթափում», «5 բեռնաթափում»
     const unloads = (n) => fmt(n) + ' բեռնաթափում';
-    function storeRow(r, minVisits) {
+    // shrink — действует сглаживание к группе (№66): в расчёт идёт и 1-й визит, третьего не ждут
+    function storeRow(r, minVisits, shrink) {
         const name = r.name ? esc(r.name) + (r.code ? ' · ' + esc(r.code) : '') : 'հաճախորդ ' + esc(r.customer_id);
         const manual = num(r.manual_min) === null ? '—' : fmt(r.manual_min) + ' րոպե';
         const visits = num(r.visits);
         const fact = visits === null ? '<span class="lr-why">բեռնաթափումներ դեռ չկան</span>'
             : fmt(r.fact_min, 1) + ' րոպե <span class="lr-why">(' + unloads(visits)
-                + (r.split ? ' — շատ են տարբերվում, ծրագիրը սպասում է երրորդին'
+                + (shrink ? '' : r.split ? ' — շատ են տարբերվում, ծրագիրը սպասում է երրորդին'
                     : visits < minVisits ? ' — դեռ քիչ է, հաշվարկում չի մտնում' : '') + ')</span>';
         return '<tr><th scope="row">' + name + '</th><td>' + manual + '</td><td>' + fact + '</td><td><b>' + fmt(r.in_calc_min, 1)
             + ' րոպե</b><br><span class="lr-why">' + esc(STORE_SOURCE[r.source] || '') + '</span></td></tr>';
@@ -146,8 +149,14 @@
         const st = s && s.stores;
         if (!st) { $('lrStoreRows').innerHTML = '<tr><td colspan="4" class="rt-empty">Դեռ ցույց տալու բան չկա։</td></tr>'; $('lrStoresNote').textContent = ''; return; }
         $('lrStoresMin').textContent = st.min_visits;
+        const shrink = st.rule === 'shrink';   // №66: текст правила — того, что действует
+        $('lrStoresRule').hidden = shrink;
+        $('lrStoresShrink').hidden = !shrink;
+        $('lrRuleN60').hidden = shrink;
+        $('lrRuleShrink').hidden = !shrink;
+        $('lrStoresK').textContent = shrink ? fmt(st.k, 1) : '—';
         $('lrStoresTonne').textContent = fmt(st.per_tonne_min, 1);
-        $('lrStoreRows').innerHTML = st.rows.length ? st.rows.map(r => storeRow(r, st.min_visits)).join('')
+        $('lrStoreRows').innerHTML = st.rows.length ? st.rows.map(r => storeRow(r, st.min_visits, shrink)).join('')
             : '<tr><td colspan="4" class="rt-empty">Դեռ ոչ մի խանութ սեփական ժամանակ չունի։ Այն կարելի է մուտքագրել «Կարգավորումներ → Խանութներ՝ ժամ և մեքենաներ» բաժնում․ '
                 + 'ըստ փաստի այն կհայտնվի, երբ խանութում կկուտակվի ' + esc(unloads(st.min_visits)) + '։</td></tr>';
         $('lrStoresNote').textContent = 'Մնացած խանութներում՝ սովորական ' + fmt(st.per_stop_min, 1) + ' րոպե։'

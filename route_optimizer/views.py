@@ -2146,9 +2146,14 @@ def api_customer_vehicles_search() -> Any:
     per_stop, per_tonne = _unload_norms(bundle, unload)
     empty = learning.store_extras(per_stop, {}, unload)    # поле пустое — своё время магазина только по факту
     stats = learning.store_stats(unload)
+    norms = {'per_stop_min': per_stop, 'per_tonne_min': per_tonne}
+    if learning.store_rule(unload) == 'shrink':   # №66: проверка выбрала сглаживание к группе — подсказка о нём
+        norms['store_rule'] = 'shrink'
+        stats = {c: (n, fact) for c, (n, fact, _) in learning.store_shrink(unload).items()}
+    least = 1 if 'store_rule' in norms else learning.STORE_MIN_OBS   # со сглаживанием в расчёт идёт и 1-й визит
     return jsonify({'success': True, 'total': len(customers),
                     'vehicles': [{'car_code': t['car_code'], 'name': t['name']} for t in _trucks_json(snap, bundle)],
-                    'unload_norms': {'per_stop_min': per_stop, 'per_tonne_min': per_tonne},
+                    'unload_norms': norms,
                     'customers': [
         {'customer_id': c.id, 'code': c.code, 'name': c.name,
          'vehicle_access': bundle.vehicle_access[c.id].to_json() if c.id in bundle.vehicle_access else None,
@@ -2156,7 +2161,7 @@ def api_customer_vehicles_search() -> Any:
          'unload_min': bundle.unload_min.get(c.id),
          # подсказка: сколько «Развоз» возьмёт с пустым полем; разгрузок по GPS — время по ним, введённое не участвует
          'unload_auto_min': round(per_stop + empty.get(c.id, 0.0), 1),
-         'unload_visits': stats[c.id][0] if stats.get(c.id, (0, 0.0))[0] >= learning.STORE_MIN_OBS else None}
+         'unload_visits': stats[c.id][0] if stats.get(c.id, (0, 0.0))[0] >= least else None}
         for c in customers[:30]]})
 
 
@@ -2401,10 +2406,16 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         profiles.setdefault(car, []).extend(ac.load_profile(actual, stops))
     loading_now = ((tn.warehouse_load_fixed_min, tn.warehouse_load_min_per_tonne)
                    if tn.loading_configured and tn.load(1000) > 0 else None)
+    # правило времени магазина (№66): группа — размер по среднему доставленному весу, сети (chain_groups) — своей
+    # группой (сеть известна у клиентов плана менеджеров — снимок ERP); выбор — от действующего правила (гистерезис)
+    chain_set = set(bundle.settings.get('chain_groups') or ())
+    chains = {cid: c.group for cid, c in snap.customers.items() if c.group in chain_set}
+    size_kg = (float(bundle.settings['size_small_max_kg']), float(bundle.settings['size_medium_max_kg']))
     outcomes = [
         learning.fit_unload(unload, lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes
                             + math.fsum(extras.get(c, 0.0) for c in o.customers), today, bundle.unload_min,
-                            lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes),
+                            lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes,
+                            learning.store_rule(eff.unload), chains, size_kg),
         learning.fit_loading(loads, today, loading_now),
     ]
     model_id = learning.road_model_id(norms)
@@ -2544,6 +2555,8 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
     строк до №50 без store_stats, и когда последний пересчёт не принят) — по числу визитов: введено, по факту (визитов,
     мин; split — два визита сильно расходятся, ждём третий: learning.store_waits), в расчёте — постоянная часть, которой
     «Развоз» считает сейчас (learning.store_times, как в расчёте; время на груз — сверху). Не больше STORES_SHOWN строк.
+    Действует сглаживание к группе (№66, learning.store_rule) — rule 'shrink' и k, магазины и визиты — и из store_shrink
+    (в расчёт идёт и 1-й визит).
     Названия — из снимка ERP, если он уже в памяти (ERP не читается: страница опрашивает статус во время пересчёта);
     снимка нет — без названий."""
     per_stop, per_tonne = _unload_norms(bundle, unload)
@@ -2553,6 +2566,11 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
     stats = learning.store_stats(last['params'] if last else None)
     waits = learning.store_waits(last['params'] if last else None)
     active = {int(c) for c in (unload or {}).get('store_offsets') or {}} | set(learning.store_stats(unload))
+    rule = learning.store_rule(unload)
+    if rule == 'shrink':
+        shrunk = learning.store_shrink(last['params'] if last else None) or learning.store_shrink(unload)
+        stats = {**{c: (n, fact) for c, (n, fact, _) in shrunk.items()}, **stats}
+        active |= set(learning.store_shrink(unload))
     cids = sorted(set(bundle.unload_min) | set(stats) | active, key=lambda c: (-stats[c][0] if c in stats else 0, c))
     snap = state.snapshots.peek()
     customers = snap.customers if snap is not None else {}
@@ -2565,7 +2583,8 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
                     'manual_min': bundle.unload_min.get(cid), 'visits': visits,
                     'fact_min': None if fact is None else max(0.0, fact), 'split': cid in waits,
                     'in_calc_min': round(per_stop + extra, 1), 'source': source})
-    return {'per_stop_min': per_stop, 'per_tonne_min': per_tonne, 'min_visits': learning.STORE_MIN_OBS,
+    return {'per_stop_min': per_stop, 'per_tonne_min': per_tonne, 'min_visits': learning.STORE_MIN_OBS, 'rule': rule,
+            'k': unload['store_rule']['k'] if rule == 'shrink' else None,   # type: ignore[index]
             'run_day': last['run_day'] if last else None, 'total': len(cids), 'shown': len(out), 'rows': out}
 
 
