@@ -210,9 +210,9 @@ def test_settings_page_has_field_and_bumped_assets():
     assert 'unload_min: unloadMin' in js and 'Բեռի ժամանակը (' in js and 'Դատարկ՝ ' in js
     assert 'input.validity.badInput' in js                  # нечисло в поле — ошибка, а не «пусто» (стёрло бы время)
     assert 'unload_auto_min' in js and 'unload_visits' in js and 'կհամադրի' not in js      # №60: без смеси с фактом
-    assert ('Քանի դեռ այս խանութում GPS-ով 2 կանգառ չկա, հաշվվում է ձեր գրած ժամանակը․ 2-րդ կանգառից ծրագիրը'
+    assert ('Քանի դեռ այս խանութում GPS-ով 2 բեռնաթափում չկա, օգտագործվում է ձեր գրած ժամանակը․ 2-րդ բեռնաթափումից սկսած՝'
             in js)
-    assert 'ժամանակը վերցնում է GPS-ից։ Եթե առաջին երկու կանգառները շատ են տարբերվում, ծրագիրը սպասում է երրորդին։' in js
+    assert 'ծրագիրը ժամանակը վերցնում է GPS-ից։ Եթե առաջին երկու բեռնաթափումները տևողությամբ շատ են տարբերվում,' in js
 
 
 def test_api_huge_unload_number_is_400(client):
@@ -599,7 +599,7 @@ def test_settings_hint_is_truthful_with_learned_row(client):
 def _js_hints(norms, items):
     """unloadHint из routes_customer_settings.js — в node, на ответе сервера (unload_norms и строки магазинов)."""
     js = (ROOT / 'static' / 'js' / 'routes_customer_settings.js').read_text(encoding='utf-8').replace('\r\n', '\n')
-    parts = [re.search(p, js, re.S).group(0) for p in (r'    const minutes = .*?;\n', r'    const stays = .*?;\n',
+    parts = [re.search(p, js, re.S).group(0) for p in (r'    const minutes = .*?;\n', r'    const unloads = .*?;\n',
                                                          r'    function unloadHint\(item\) \{\n.*?\n    \}\n')]
     script = f'const norms = {json.dumps(norms)};\n' + ''.join(parts) + \
         f'console.log(JSON.stringify({json.dumps(items)}.map(unloadHint)));\n'
@@ -875,7 +875,7 @@ def test_page_and_hint_follow_second_visit_threshold(client, monkeypatch):
     html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
     assert f'id="lrStoresMin">{lr.STORE_MIN_OBS}</span>' in html and 'Երկրորդ բեռնաթափումից սկսած' in html
     # №60: от остановки до начала движения; введённое — пока нет 2 стоянок по GPS; две расходящиеся — ждём третью
-    assert 'մեքենայի կանգնելուց մինչև շարժվել սկսելը' in html and 'մուտքագրվածն այլևս հաշվի չի առնվում' in html
+    assert 'մեքենայի կանգնելուց մինչև նորից շարժվելը' in html and 'մուտքագրվածն այլևս հաշվի չի առնվում' in html
     assert 'ծրագիրը սպասում է երրորդին' in html and 'քիչ-քիչ' not in html
     # одна разгрузка время не меняет (STORE_MIN_OBS = 2), прежнего правила «не меньше 5 раз» нет ни на одном языке;
     # в тексте нет управляющих символов (U+0001 съедал последнюю букву слова)

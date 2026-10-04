@@ -286,7 +286,7 @@ def main() -> int:
             store.save_learned('2026-09-02', [lr.Outcome('unload', '', True, 'да', row)])
             hint = open_unload()
             check('Դատարկ՝ սովորական 8,4 րոպե։' in hint and 'ըստ փաստի' not in hint and '(6,1 րոպե տոննայի համար)' in hint
-                  and 'արդեն եղել է' not in hint and '2-րդ կանգառից ծրագիրը ժամանակը վերցնում է GPS-ից։' in hint,
+                  and 'արդեն եղել է' not in hint and '2-րդ բեռնաթափումից սկսած՝ ծրագիրը ժամանակը վերցնում է GPS-ից։' in hint,
                   f'U learned norm 8.37, no GPS visits → «սովորական», not «ըստ փաստի», rule №60 shown: {hint!r}')
             page.click('#dpUnloadCancel')
             # 8,75 → сервер шлёт 8,8, а в JS 8,8 − 8,75 = 0,05000000000000071: сравнение «≥ 0,05» дало бы «ըստ փաստի»
@@ -297,9 +297,9 @@ def main() -> int:
             page.click('#dpUnloadCancel')
             store.save_learned('2026-09-03', [lr.Outcome('unload', '', True, 'да', {**row, 'store_stats': {str(cid): [10, 20.0]}})])
             hint = open_unload()
-            check('(ըստ փաստի)' in hint and 'արդեն եղել է 10 կանգառ։' in hint and 'կհամադրի' not in hint
-                  and 'Քանի դեռ այս խանութում GPS-ով 2 կանգառ չկա, հաշվվում է ձեր գրած ժամանակը' in hint
-                  and 'Եթե առաջին երկու կանգառները շատ են տարբերվում, ծրագիրը սպասում է երրորդին։' in hint
+            check('(ըստ փաստի)' in hint and 'արդեն եղել է 10 բեռնաթափում։' in hint and 'կհամադրի' not in hint
+                  and 'Քանի դեռ այս խանութում GPS-ով 2 բեռնաթափում չկա, օգտագործվում է ձեր գրած ժամանակը' in hint
+                  and 'Եթե առաջին երկու բեռնաթափումները տևողությամբ շատ են տարբերվում, ծրագիրը սպասում է երրորդին։' in hint
                   and 'սովորական' not in hint, f'U learned norm + 10 GPS stays → time from GPS (№60): {hint!r}')
             page.click('#dpUnloadCancel')
             store.save_learning_auto('unload', False, 'qa')      # дальше — нормы настроек, как до блока U
