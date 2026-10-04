@@ -7,11 +7,15 @@
 синтетический день), строки заказов — подделка waybill_loader. Порт 8767 на 127.0.0.1 (8766 — у общей проверки «Развоза»).
 
 A после «Կազմել երթերը» у каждой карточки машины три кнопки «Վարորդ», «Բեռնագիր» и «Excel», и у свёрнутой карточки тоже;
-R «Վարորդ» (№62): диалог с подсказкой («с этого дня» или «только этот прошедший день»), фокус в поле; имя (с разметкой — текстом) по Enter сохраняется,
+R «Վարորդ» (№62): диалог «Վարորդ և առաքիչ» с подсказкой («с этого дня» или «только этот прошедший день»), фокус в
+  списке водителя; списки водителя и առաքիչ — ERP + «+ Նոր …»; ничего не выбрано — закрывается без записи; один человек на
+  обе роли — ошибка; «+ Նոր վարորդ» — поле имени; имя (с разметкой — текстом) по Enter сохраняется,
   уведомление, имя в шапке карточки, фокус обратно на кнопку; в накладной — в шапке листа и у подписи, в Excel — строка;
 B «Բեռնագիր» открывает окно с листом `.sheet` на каждый рейс машины: «ԲԵՌՆԱԳԻՐ», машина, товары подделки (имя, код,
   «N փաթեթ + M հատ»), итог кг, подписи; разметка из ERP экранирована (имя товара с <b> — текстом);
 C «Excel» скачивает bernagir_<машина>_<день>.xlsx: лист на рейс, строка заголовка таблицы и товары; фокус остаётся на кнопке;
+R2 у каждого свой срок: подмена водителя на день и առաքիչ «с этого дня» никого — подмена остаётся подменой, назавтра
+  прежний водитель, առաքիչ нет; в шапке карточки «(փոխարինող)»;
 F тот же номер плана, но на сервере у магазина рейса появился заказ (ERP перечитана) → страница сама видит другой состав
   рейса (basis): ошибка «Թարմացրեք էջը», окно закрыто, сервер ответил 200;
 G пока шёл запрос, план на экране сменился (ответ с другим rev) → ошибка, файл не скачан;
@@ -69,6 +73,7 @@ def main() -> int:
 
     app = base.build_app(tempfile.mkdtemp(prefix='waybill-check-'), base.FakeClient())
     app.extensions['route_optimizer'].waybill_loader = loader
+    app.extensions['route_optimizer'].driver_list_loader = lambda since, until: ['Ավակիմյան Արթուր', 'Վարդանյան Գարիկ']
     views._clock = lambda: datetime(2026, 9, 30, 18, 0)     # «сейчас» — накануне DAY: день не прошёл, у водителя есть выбор срока
     server = make_server('127.0.0.1', PORT, app, threaded=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -105,7 +110,7 @@ def main() -> int:
             card = cards.first
             truck = card.get_attribute('data-truck')
             labels = card.locator('.dp-wbbtn').evaluate_all("els => els.map(b => b.textContent.trim() + '|' + b.getAttribute('aria-label'))")
-            check(labels[0].startswith('Վարորդ|Վարորդ՝') and labels[1].startswith('Բեռնագիր|Տպել բեռնագիրը՝')
+            check(labels[0].startswith('Վարորդ|Վարորդ և առաքիչ՝') and labels[1].startswith('Բեռնագիր|Տպել բեռնագիրը՝')
                   and labels[2].startswith('Excel|Բեռնագիրը Excel-ով՝') and truck in labels[1], f'A labels {labels}')
             if card.locator('.dp-thead').get_attribute('aria-expanded') == 'true':
                 card.locator('.dp-thead').click()
@@ -114,31 +119,57 @@ def main() -> int:
 
             # R
             DRIVER = 'Վարդանյան Գարիկ <i>x</i>'
+            HELPER = 'Ավակիմյան Արթուր'
             card.locator('.dp-drvbtn').click()
             page.wait_for_selector('#dpDriverDlg[open]', timeout=5000)
             past = page.request.get(f'{BASE}/api/routes/dispatch', params={'date': DAY}).json()['is_past']
-            check(('Միայն' if past else 'Նախորդ օրերի') in page.inner_text('#dpDriverHint') and not page.locator('#dpDriverClear').is_visible()
-                  and page.evaluate("() => document.activeElement && document.activeElement.id") == 'dpDriverName',
-                  f'R dialog: hint ({"only that past day" if past else "from this day"}), focus in the field, no «Հեռացնել» yet')
-            check(page.locator('#dpDriverScope').is_visible() != past
-                  and (past or page.is_checked('#dpDriverFrom')), 'R scope choice: hidden on a past day, «from this day» when no driver yet')
+            check(('Միայն' if past else 'Նախորդ օրերի') in page.inner_text('#dpDriverHint')
+                  and page.evaluate("() => document.activeElement && document.activeElement.id") == 'dpDriverPick',
+                  f'R dialog: hint ({"only that past day" if past else "from this day"}), focus in the driver list')
+            boxes = [page.locator(f'#{b}').is_visible() for b in ('dpDriverOnlyDay', 'dpHelperOnlyDay')]
+            check(boxes == [not past, not past] and (past or not (page.is_checked('#dpDriverOnlyDay') or page.is_checked('#dpHelperOnlyDay'))),
+                  'R per-role «only this day» boxes: hidden on a past day, unchecked when nobody yet')
+            want = ['', 'Ավակիմյան Արթուր', 'Վարդանյան Գարիկ', '__new__']
+            opts = page.locator('#dpDriverPick option').evaluate_all("els => els.map(o => o.value)")
+            hopts = page.locator('#dpHelperPick option').evaluate_all("els => els.map(o => o.value)")
+            groups = page.locator('#dpDriverPick optgroup').evaluate_all("els => els.map(g => g.label)")
+            check(opts == want and hopts == want and groups == ['ERP-ի առաքիչներ'] and not page.is_visible('#dpDriverNewBox'),
+                  f'R driver and helper lists from ERP + «new»: {opts} {hopts} {groups}')
+            page.click('#dpDriverSave')                                    # ничего не выбрано — нечего сохранять
+            page.wait_for_function("() => !document.getElementById('dpDriverDlg').open", timeout=5000)
+            none = page.request.get(f'{BASE}/api/routes/dispatch', params={'date': DAY}).json()
+            check(none['drivers'] == {} and none['helpers'] == {}, 'R nothing chosen: dialog closes, nothing saved')
+            card.locator('.dp-drvbtn').click()
+            page.wait_for_selector('#dpDriverDlg[open]', timeout=5000)
+            page.select_option('#dpDriverPick', '__new__')
+            check(page.is_visible('#dpDriverNewBox') and not page.is_visible('#dpHelperNewBox')
+                  and page.evaluate("() => document.activeElement.id") == 'dpDriverPick',
+                  'R «+ Նոր վարորդ» shows the name field (focus stays in the list)')
+            page.fill('#dpDriverName', 'Ավակիմյան Արթուր')
+            page.select_option('#dpHelperPick', HELPER)
+            page.click('#dpDriverSave')                                    # один человек на обе роли — нельзя
+            check(page.inner_text('#dpDriverErr') == 'Վարորդն ու առաքիչը նույն մարդն են'
+                  and page.get_attribute('#dpHelperPick', 'aria-invalid') == 'true', 'R same person for both: error, nothing sent')
             page.fill('#dpDriverName', '  Վարդանյան   Գարիկ <i>x</i> ')
             page.press('#dpDriverName', 'Enter')
             page.wait_for_function("() => !document.getElementById('dpDriverDlg').open", timeout=10000)
-            page.wait_for_function("() => /վարորդը՝/.test((document.getElementById('dpToast') || {}).textContent || '')", timeout=10000)
+            page.wait_for_function("() => /վարորդ՝/.test((document.getElementById('dpToast') || {}).textContent || '')", timeout=10000)
             head = card.locator('.dp-tdriver').inner_text()
-            check(DRIVER in head and card.locator('.dp-tdriver i:text-is("x")').count() == 0,
-                  f'R card header shows the driver as text: {head!r}')
+            check(DRIVER in head and HELPER in head and card.locator('.dp-tdriver i:text-is("x")').count() == 0,
+                  f'R card header shows driver and helper as text: {head!r}')
             check(page.evaluate("() => document.activeElement && document.activeElement.classList.contains('dp-drvbtn')"),
                   'R focus back on «Վարորդ»')
-            card.locator('.dp-drvbtn').click()           # водитель уже есть — по умолчанию «только этот день» (подмена)
+            card.locator('.dp-drvbtn').click()           # в машине уже есть люди — по умолчанию «только этот день» (подмена)
             page.wait_for_selector('#dpDriverDlg[open]', timeout=5000)
-            check(page.is_checked('#dpDriverDay') and page.input_value('#dpDriverName') == DRIVER and page.is_visible('#dpDriverClear'),
-                  'R reopen: substitute «only this day» preselected, current name in the field, «Հեռացնել» visible')
+            groups = page.locator('#dpDriverPick optgroup').evaluate_all("els => els.map(g => g.label)")
+            check(page.is_checked('#dpDriverOnlyDay') and page.is_checked('#dpHelperOnlyDay') and page.input_value('#dpDriverPick') == DRIVER
+                  and page.input_value('#dpHelperPick') == HELPER and groups == ['ERP-ի առաքիչներ', 'Ավելացված ծրագրում'],
+                  'R reopen: substitute preselected, current driver (own group) and helper selected')
             page.click('#dpDriverCancel')
             page.wait_for_function("() => !document.getElementById('dpDriverDlg').open", timeout=5000)
             saved = page.request.get(f'{BASE}/api/routes/dispatch', params={'date': DAY}).json()
-            check(saved['drivers'].get(truck) == DRIVER and saved['driver_names'] == [DRIVER], f'R saved on the server {saved["drivers"]}')
+            check(saved['drivers'].get(truck) == DRIVER and saved['helpers'].get(truck) == HELPER
+                  and saved['driver_list'][-1] == {'name': DRIVER, 'erp': False}, f'R saved on the server {saved["drivers"]} {saved["helpers"]}')
 
             # B
             with ctx.expect_page(timeout=15000) as popup:
@@ -154,6 +185,8 @@ def main() -> int:
             check('Գառնի 6լ <b>x</b>' in text and sheet.locator('.sheet b:text-is("x")').count() == 0, 'B ERP markup shown as text')
             check(f'Վարորդ՝ {DRIVER}' in text and f'Ընդունեց (վարորդ)՝ {DRIVER}' in text
                   and sheet.locator('.sheet i:text-is("x")').count() == 0, 'B driver in the sheet header and at the signature')
+            check(f'Առաքիչ՝ {HELPER}' in text and f'Ընդունեց (առաքիչ)՝ {HELPER}' in text
+                  and sheet.locator('.sheet .sign > div').count() == 3, 'B helper in the header, third signature')
             cola = sheet.locator('.sheet').first.locator('tr', has_text='Կոլա 1.5լ').inner_text().replace(' ', ' ')
             first = api['trips'][0]
             q = next(r for r in first['rows'] if r['product_id'] == 11)
@@ -173,11 +206,35 @@ def main() -> int:
             check(book.sheetnames == [f'Երթ {i + 1}' for i in range(n_trips)], f'C sheets {book.sheetnames}')
             vals = [[c for c in row] for row in book.worksheets[0].iter_rows(values_only=True)]
             head = next((i for i, r in enumerate(vals) if r[0] == '№'), None)
-            check(['Վարորդ', DRIVER] in [list(r[:2]) for r in vals], 'C driver row in the Excel sheet')
+            check(['Վարորդ', DRIVER] in [list(r[:2]) for r in vals] and ['Առաքիչ', HELPER] in [list(r[:2]) for r in vals],
+                  'C driver and helper rows in the Excel sheet')
             check(head is not None and vals[head][2] == 'Ապրանք' and {vals[head + 1][2], vals[head + 2][2]} == {'Գառնի 6լ <b>x</b>', 'Կոլա 1.5լ'},
                   'C table header and products in sheet 1')
             check(page.evaluate("() => document.activeElement && document.activeElement.classList.contains('dp-wbbtn')"
                                 " && document.activeElement.textContent.trim() === 'Excel'"), 'C focus stays on the Excel button')
+
+            # R2 (ревью: у каждого свой срок) — подмена водителя на день, затем առաքիչ «с этого дня» никого: подмена водителя
+            # остаётся подменой, назавтра снова прежний водитель, առաքիչ с этого дня нет
+            nxt = '2026-10-02'
+            card.locator('.dp-drvbtn').click()
+            page.wait_for_selector('#dpDriverDlg[open]', timeout=5000)
+            page.select_option('#dpDriverPick', '__new__')
+            page.fill('#dpDriverName', 'Սամվել Փոխարինող')
+            page.click('#dpDriverSave')
+            page.wait_for_function("() => !document.getElementById('dpDriverDlg').open", timeout=10000)
+            card.locator('.dp-drvbtn').click()
+            page.wait_for_selector('#dpDriverDlg[open]', timeout=5000)
+            page.select_option('#dpHelperPick', '')
+            page.uncheck('#dpHelperOnlyDay')
+            page.click('#dpDriverSave')
+            page.wait_for_function("() => !document.getElementById('dpDriverDlg').open", timeout=10000)
+            d1 = page.request.get(f'{BASE}/api/routes/dispatch', params={'date': DAY}).json()
+            d2 = page.request.get(f'{BASE}/api/routes/dispatch', params={'date': nxt}).json()
+            check(d1['drivers'].get(truck) == 'Սամվել Փոխարինող' and truck in d1['substitutes'] and truck not in d1['helpers']
+                  and d2['drivers'].get(truck) == DRIVER and truck not in d2['helpers'],
+                  f'R2 per-role scope: driver substitute kept, helper none from this day ({d1["drivers"]}, {d2["drivers"]})')
+            card.locator('.dp-tdriver').wait_for(timeout=5000)
+            check('(փոխարինող)' in card.locator('.dp-tdriver').inner_text(), 'R2 card header marks the substitute')
 
             # F
             state = app.extensions['route_optimizer']
