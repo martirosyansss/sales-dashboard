@@ -41,9 +41,9 @@ def dashboard(tmp_path, monkeypatch):
 
 
 def _login_as(c, name):
+    import app_v2
     with c.session_transaction() as s:
-        s.clear()
-        s['username'] = name
+        app_v2._stamp_session(s, name, c.users[name])     # как после входа: отпечаток пароля и время входа
         s['_office_csrf'] = 'x' * 40
     return {'X-CSRF-Token': 'x' * 40}
 
@@ -149,7 +149,7 @@ def test_routes_pages_link_garage(dashboard):
 def test_users_api_accepts_garage_role(dashboard):
     c = dashboard
     h = _login_as(c, 'boss')
-    r = c.post('/api/users', json={'username': 'g2', 'password': 'pw', 'role': 'garage', 'areas': ['01'],
+    r = c.post('/api/users', json={'username': 'g2', 'password': 'pw-garage-10', 'role': 'garage', 'areas': ['01'],
                                    'display_name': 'Գ'}, headers=h)
     assert r.status_code == 200, r.get_json()
     assert c.users['g2']['role'] == 'garage' and c.users['g2']['areas'] == []

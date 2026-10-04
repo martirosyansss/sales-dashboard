@@ -203,15 +203,16 @@ def dashboard(tmp_path, monkeypatch):
 
 
 def test_m6_new_learning_endpoints_are_admin_only(dashboard):
+    import app_v2
     c = dashboard
     paths = [f'/api/routes/learning/day?date={DS}&car=CAR1', '/api/routes/learning/status', '/api/routes/learning']
     anon = {p: c.get(p).status_code for p in paths}
     with c.session_transaction() as s:
-        s['username'] = 'u'
+        app_v2._stamp_session(s, 'u', app_v2.load_users()['u'])
     user = {p: c.get(p).status_code for p in paths}
     user_post = c.post('/api/routes/learning/run', json={}).status_code
     with c.session_transaction() as s:
-        s['username'] = 'boss'
+        app_v2._stamp_session(s, 'boss', app_v2.load_users()['boss'])
     admin = {p: c.get(p).status_code for p in paths}
     assert all(v in (401, 302) for v in anon.values())
     assert all(v == 403 for v in user.values()) and user_post == 403
