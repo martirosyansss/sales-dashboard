@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=21">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=22">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_customer_settings.css') }}?v=3">
 {% endblock %}
 
@@ -180,6 +180,16 @@
             <div class="rt-step-mark" aria-hidden="true"><span>2</span></div>
             <div class="rt-step-body">
                 <h2 class="rt-step-title" id="rsStep2Title"><span class="rt-sr-only">Քայլ 2. </span>Ստուգեք</h2>
+                <section class="rt-card" id="days" aria-labelledby="rsHDays">
+                    <div class="rt-card-head">
+                        <h3 class="rt-card-title" id="rsHDays"><i class="fas fa-calendar-days" aria-hidden="true"></i>Աշխատանքային և ոչ աշխատանքային օրեր</h3>
+                        <span class="rt-card-state" id="rsStDays"></span>
+                    </div>
+                    <p class="rt-card-lead">Ոչ աշխատանքային օրը (օրինակ՝ կիրակի կամ տոն) առաքում չկա․ «Առաքում» էջը այդ օրը բաց է թողնում,
+                        իսկ այդ օրվա պատվերները տանում է հաջորդ աշխատանքային օրը։ Պահպանելու համար սեղմեք «Պահպանել» կոճակը էջի ներքևում։</p>
+                    <div id="rsDays"></div>
+                </section>
+
                 <section class="rt-card" id="managers" aria-labelledby="rsHManagers">
                     <div class="rt-card-head">
                         <h3 class="rt-card-title" id="rsHManagers"><i class="fas fa-user-check" aria-hidden="true"></i>Մենեջերներ՝ տուն և մասնակցություն հաշվարկին</h3>
@@ -281,7 +291,7 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=25"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=26"></script>
 <script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=11"></script>
 <script src="{{ url_for('static', filename='js/routes_measurements.js') }}?v=4"></script>
 {% endblock %}

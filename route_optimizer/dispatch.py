@@ -119,34 +119,44 @@ class FactData:
 
 # --- Дни ---
 
-def previous_workday(day: date, workdays: Sequence[int]) -> date:
-    """Последний рабочий день строго раньше day (дни недели 1 = пн … 7 = вс)."""
-    wd = set(workdays) or set(range(1, 8))
+def holidays_of(settings: Mapping[str, Any]) -> frozenset[date]:
+    """Нерабочие даты из настроек (праздники и прочие выходные компании, №64): ISO-строки → даты."""
+    return frozenset(date.fromisoformat(d) for d in settings.get('holidays') or ())
+
+
+def is_workday(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> bool:
+    """Рабочий день: день недели (1 = пн … 7 = вс) отмечен рабочим и даты нет среди нерабочих (№64)."""
+    return day.isoweekday() in (set(workdays) or set(range(1, 8))) and day not in holidays
+
+
+def previous_workday(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> date:
+    """Последний рабочий день строго раньше day. Цикл конечен: нерабочих дат не больше
+    store.MAX_HOLIDAYS, а хотя бы один день недели рабочий."""
     d = day - timedelta(days=1)
-    while d.isoweekday() not in wd:
+    while not is_workday(d, workdays, holidays):
         d -= timedelta(days=1)
     return d
 
 
-def next_workday(day: date, workdays: Sequence[int]) -> date:
+def next_workday(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> date:
     """Первый рабочий день строго позже day — «завтра» для логиста (в субботу — понедельник)."""
-    wd = set(workdays) or set(range(1, 8))
     d = day + timedelta(days=1)
-    while d.isoweekday() not in wd:
+    while not is_workday(d, workdays, holidays):
         d += timedelta(days=1)
     return d
 
 
-def order_window(day: date, workdays: Sequence[int]) -> tuple[date, date]:
+def order_window(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> tuple[date, date]:
     """Даты заказов, которые везут в day: [предыдущий рабочий день, day). В понедельник — заказы
-    субботы и воскресенья."""
-    return previous_workday(day, workdays), day
+    субботы и воскресенья; после праздника — и заказы праздника."""
+    return previous_workday(day, workdays, holidays), day
 
 
-def backlog_since(since: date, workdays: Sequence[int], n: int = BACKLOG_WORKDAYS) -> date:
+def backlog_since(since: date, workdays: Sequence[int], n: int = BACKLOG_WORKDAYS,
+                  holidays: Collection[date] = ()) -> date:
     """Начало окна «не отгружены с прошлых дней»: n рабочих дней раньше окна заказов дня."""
     for _ in range(n):
-        since = previous_workday(since, workdays)
+        since = previous_workday(since, workdays, holidays)
     return since
 
 
@@ -174,11 +184,12 @@ def to_deliver(orders: Sequence[DispatchOrder], day: date, since: date) -> Selec
 
 # --- Свежесть заказов ---
 
-def orders_still_coming(day: date, workdays: Sequence[int], now: datetime, ready_time: str) -> bool:
+def orders_still_coming(day: date, workdays: Sequence[int], now: datetime, ready_time: str,
+                        holidays: Collection[date] = ()) -> bool:
     """Заказы на day ещё поступают: сегодня — последний день приёма заказов на day (предыдущий рабочий
     день, для понедельника — суббота) и сейчас раньше ready_time (ЧЧ:ММ). Прошедшая дата, выходной
     перед днём развоза или дата через несколько дней — False."""
-    if now.date() != previous_workday(day, workdays):
+    if now.date() != previous_workday(day, workdays, holidays):
         return False
     h, m = map(int, ready_time.split(':'))
     return now.time() < time(h, m)

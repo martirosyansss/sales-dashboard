@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from route_optimizer import dispatch as dp
 from route_optimizer.dispatch import DispatchOrder
@@ -29,6 +29,7 @@ class RoutesView:
     depot: Point | None = None
     geo_overrides: Mapping[int, Point] = field(default_factory=dict)
     workdays: tuple[int, ...] = DEFAULT_WORKDAYS
+    holidays: frozenset[date] = frozenset()                # нерабочие даты настроек (№64)
     plan_exists: bool = False                              # логист собрал план «Развоза» на дату
     trips: tuple[tuple[str, tuple[int, ...]], ...] = ()    # (машина, клиенты по порядку) в порядке черновика
     excluded: frozenset[str] = frozenset()                 # заказы «не везём сегодня»
@@ -71,23 +72,25 @@ def routes_view(state: Any, day: date) -> RoutesView:
         logger.warning('[Courier] База «Маршрутов» недоступна — склад, ручные точки и план не учтены', exc_info=True)
         return RoutesView()
     workdays = tuple(bundle.settings.get('workdays') or DEFAULT_WORKDAYS)
+    holidays = dp.holidays_of(bundle.settings)
     roads = None
     try:
         roads = state.roads.get() if getattr(state, 'roads', None) is not None else None
     except Exception:   # карта дорог — необязательна: сбой → по прямой
         logger.warning('[Courier] Карта дорог недоступна — порядок по прямой', exc_info=True)
-    base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays, roads=roads)
+    base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
+                      holidays=holidays, roads=roads)
     try:
         stored = state.store.load_dispatch(day.isoformat())
-        carried = _carried(state, day, workdays)
+        carried = _carried(state, day, workdays, holidays)
     except RoutesStoreError:
         logger.warning('[Courier] План «Развоза» на %s не прочитан', day, exc_info=True)
         return base
     if stored is None:
-        return RoutesView(depot=base.depot, geo_overrides=base.geo_overrides, workdays=workdays,
+        return RoutesView(depot=base.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                           carried=frozenset(carried), roads=roads)
     draft = dp.Draft.from_json(stored[0])
-    return RoutesView(depot=bundle.depot, geo_overrides=base.geo_overrides, workdays=workdays,
+    return RoutesView(depot=bundle.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                       plan_exists=bool(draft.trips),
                       trips=tuple((t.truck, tuple(t.stops)) for t in draft.trips),
                       excluded=frozenset(draft.excluded), added=frozenset(draft.added),
@@ -106,10 +109,10 @@ def routes_depot(state: Any) -> Point | None:
         return None
 
 
-def _carried(state: Any, day: date, workdays: Sequence[int]) -> set[str]:
+def _carried(state: Any, day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> set[str]:
     """«Везти завтра» из планов с прошлого рабочего дня по вчера (как views._carried «Маршрутов»)."""
     out: set[str] = set()
-    d = dp.previous_workday(day, workdays)
+    d = dp.previous_workday(day, workdays, holidays)
     while d < day:
         stored = state.store.load_dispatch(d.isoformat())
         if stored is not None:
@@ -120,15 +123,15 @@ def _carried(state: Any, day: date, workdays: Sequence[int]) -> set[str]:
 
 def orders_window(day: date, view: RoutesView) -> tuple[date, date]:
     """Даты заказов, которые смотрит «Развоз» для дня (с «не отгружены с прошлых дней»)."""
-    since, until = dp.order_window(day, view.workdays)
-    return dp.backlog_since(since, view.workdays), until
+    since, until = dp.order_window(day, view.workdays, view.holidays)
+    return dp.backlog_since(since, view.workdays, holidays=view.holidays), until
 
 
 def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, car_code: str) -> list[DispatchOrder]:
     """Заказы, которые «Развоз» отдал машине: отбор как на странице «Развоз» (заказы дня без «не везём
     сегодня» + добавленные и перенесённые прошлых дней, без заказов менеджеров, снятых фильтром); план на
     дату есть — клиенты рейсов машины, нет — машина в самом заказе (ORDERS.fDELIVERYCAR)."""
-    since, _ = dp.order_window(day, view.workdays)
+    since, _ = dp.order_window(day, view.workdays, view.holidays)
     sel = dp.to_deliver(orders, day, since)
     inside = set(view.added) | (set(view.carried) - set(view.dropped))
     active = [o for o in sel.main if o.isn not in view.excluded] + [o for o in sel.backlog if o.isn in inside]

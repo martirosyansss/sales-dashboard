@@ -1126,8 +1126,9 @@ class _DispatchDay:
 def _day_orders(state: RoutesState, bundle: Bundle, day: date,
                 refresh: bool) -> tuple[date, date, dp.DispatchData, dp.Selection]:
     """Окно заказов дня, заказы ERP (кэш _dispatch_data) и отбор к доставке."""
-    since, until = dp.order_window(day, bundle.settings['workdays'])
-    data = _dispatch_data(state, dp.backlog_since(since, bundle.settings['workdays']), until, day, refresh)
+    workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
+    since, until = dp.order_window(day, workdays, off)
+    data = _dispatch_data(state, dp.backlog_since(since, workdays, holidays=off), until, day, refresh)
     return since, until, data, dp.to_deliver(data.orders, day, since)
 
 
@@ -1154,11 +1155,12 @@ def _active_orders(deliver: list[dp.DispatchOrder], backlog: list[dp.DispatchOrd
     return [o for o in deliver if o.isn not in excluded and o.agent_id not in off]         + [o for o in backlog if o.isn in inside and o.agent_id not in off]
 
 
-def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: list[dp.DispatchOrder]) -> set[str]:
+def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: list[dp.DispatchOrder],
+             holidays: Collection[date] = ()) -> set[str]:
     """Заказы, которые логист перенёс на этот день («Везти завтра», №25) в планах с прошлого рабочего дня
     по вчера (и из нерабочего дня между ними) и которые ещё не отгружены. Битый черновик — без переносов."""
     out: set[str] = set()
-    d = dp.previous_workday(day, workdays)
+    d = dp.previous_workday(day, workdays, holidays)
     while d < day:
         try:
             stored = state.store.load_dispatch(d.isoformat())
@@ -1170,11 +1172,11 @@ def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: li
     return out & {o.isn for o in backlog}
 
 
-def _defer_target(day: date, workdays: Sequence[int]) -> tuple[date, date]:
+def _defer_target(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> tuple[date, date]:
     """(день доставки, куда «Везти завтра», самая ранняя дата заказа, которую он ещё видит)."""
-    target = dp.next_workday(day, workdays)
-    since, _ = dp.order_window(target, workdays)
-    return target, dp.backlog_since(since, workdays)
+    target = dp.next_workday(day, workdays, holidays)
+    since, _ = dp.order_window(target, workdays, holidays)
+    return target, dp.backlog_since(since, workdays, holidays=holidays)
 
 
 
@@ -1201,7 +1203,8 @@ def _freshness(day: date, bundle: Bundle, data: dp.DispatchData, deliver: list[d
         changes = dp.since_build(draft.built_orders, [o for o in (*deliver, *moved_in) if o.agent_id not in draft.agents_off],
                                  [*deliver, *(o for o in backlog if o.isn in inside)], draft.excluded)
     return {
-        'orders_still_coming': dp.orders_still_coming(day, s['workdays'], _clock(), s['dispatch_ready_time']),
+        'orders_still_coming': dp.orders_still_coming(day, s['workdays'], _clock(), s['dispatch_ready_time'],
+                                                      dp.holidays_of(s)),
         'ready_time': s['dispatch_ready_time'],
         'built_at': draft.built_at if draft is not None else None,
         'new_since_build': changes['new'] if changes else None,
@@ -1219,7 +1222,7 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
     deliver, backlog = sel.main, sel.backlog
     if draft is None:
         draft, rev = _stored_draft(state, day)
-    carried = _carried(state, day, bundle.settings['workdays'], backlog)
+    carried = _carried(state, day, bundle.settings['workdays'], backlog, dp.holidays_of(bundle.settings))
     coords: dict[int, Any] = {}
 
     def coord(cid: int) -> Any:
@@ -1268,6 +1271,7 @@ def _stop_info(dd: _DispatchDay) -> Callable[[dp.Stop], dict[str, Any]]:
 
 def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     s = dd.bundle.settings
+    holidays = dp.holidays_of(s)
     today = _clock().date()
     info = _stop_info(dd)
     draft = dd.draft
@@ -1326,7 +1330,8 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     body: dict[str, Any] = {
         'day': dd.day.isoformat(), 'weekday': dd.day.isoweekday(),
         'today': today.isoformat(), 'is_past': dd.day < today,
-        'default_day': dp.next_workday(today, s['workdays']).isoformat(),
+        'default_day': dp.next_workday(today, s['workdays'], holidays).isoformat(),
+        'day_off': not dp.is_workday(dd.day, s['workdays'], holidays),
         'order_dates': {'since': dd.since.isoformat(), 'until': (dd.until - timedelta(days=1)).isoformat()},
         'work_start': s['truck_work_start'], 'work_end': s['truck_work_end'],
         'overtime_end': s['truck_overtime_end'],
@@ -1345,12 +1350,12 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         'agents': agents_json, 'agents_off': sorted(off),
         # не отгружены с прошлых дней: в план — только добавленные логистом (added)
         'backlog': [order_json(o) for o in dd.backlog],
-        'backlog_since': dp.backlog_since(dd.since, s['workdays']).isoformat(),
+        'backlog_since': dp.backlog_since(dd.since, s['workdays'], holidays=holidays).isoformat(),
         'plan': None,
         'overtime': draft.overtime if draft is not None else False,
         'overtime_ok': draft.overtime_ok if draft is not None else False,
         'min_trip_revenue': s['min_trip_revenue'],
-        'defer_to': _defer_target(dd.day, s['workdays'])[0].isoformat(),
+        'defer_to': _defer_target(dd.day, s['workdays'], holidays)[0].isoformat(),
         'overtime_days_month': _overtime_days(_state().store, dd.day),
         'geo_suggestions': _geo_suggestions(_state(), dd),
         **_freshness(dd.day, dd.bundle, dd.data, dd.deliver, dd.backlog, draft, dd.carried),
@@ -1487,7 +1492,8 @@ def api_dispatch() -> Any:
     state = _state()
     bundle = _bundle(state)
     raw = request.args.get('date')
-    day = _parse_day(raw) if raw else dp.next_workday(_clock().date(), bundle.settings['workdays'])
+    day = _parse_day(raw) if raw else dp.next_workday(_clock().date(), bundle.settings['workdays'],
+                                                      dp.holidays_of(bundle.settings))
     if day is None:
         return _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
     dd = _load_day(state, bundle, day, refresh=request.args.get('refresh') == '1')
@@ -1507,7 +1513,7 @@ def api_dispatch_status() -> Any:
         return _bad_request({'date': 'дата в формате ГГГГ-ММ-ДД'})
     _, _, data, sel = _day_orders(state, bundle, day, refresh=False)
     draft, rev = _stored_draft(state, day)
-    carried = _carried(state, day, bundle.settings['workdays'], sel.backlog)
+    carried = _carried(state, day, bundle.settings['workdays'], sel.backlog, dp.holidays_of(bundle.settings))
     active = _active_orders(sel.main, sel.backlog, draft, carried)
     return jsonify({'success': True, 'day': day.isoformat(), 'rev': rev,
                     'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
@@ -1639,7 +1645,8 @@ def api_dispatch_edit() -> Any:
     deferred_before = set(dd.draft.deferred)
     try:
         draft = dp.apply_edit(dd.ctx, dd.stops, dd.draft, payload, {o.isn for o in dd.deliver},
-                              {o.isn for o in dd.backlog}, defer_since=_defer_target(day, workdays)[1],
+                              {o.isn for o in dd.backlog},
+                              defer_since=_defer_target(day, workdays, dp.holidays_of(bundle.settings))[1],
                               carried=dd.carried)
     except dp.DispatchError as e:
         return _bad_request({'_': str(e)})
@@ -1981,10 +1988,11 @@ def _missing_coordinates(state, snap, bundle):
     data = _dispatch_data(state, since - timedelta(days=10), snap.today + timedelta(days=1), snap.today, False)
     ids = set(snap.plan.customer_ids)
     day = since
-    last_day = dp.next_workday(snap.today, bundle.settings['workdays'])
+    workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
+    last_day = dp.next_workday(snap.today, workdays, off)
     while day <= last_day:
-        if day.isoweekday() in bundle.settings['workdays']:
-            lo, hi = dp.order_window(day, bundle.settings['workdays'])
+        if dp.is_workday(day, workdays, off):
+            lo, hi = dp.order_window(day, workdays, off)
             selected = dp.to_deliver([o for o in data.orders if lo <= o.order_date < hi], day, lo)
             ids.update(o.customer_id for o in selected.main)
         day += timedelta(days=1)

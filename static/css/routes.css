@@ -842,6 +842,19 @@
     border: 1px solid var(--rt-line); background: var(--rt-panel); font-size: .875rem; cursor: pointer; color: var(--rt-fg-dim);
 }
 .rt-wd label:has(input:checked) { color: var(--rt-fg); border-color: var(--rt-acc-dim); background: var(--rt-acc-glow); }
+/* Нерабочие даты (№64): поле даты + «Добавить», даты — чипы с крестиком */
+.rs-holiday-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rs-holiday-add .rt-input { width: auto; min-width: 0; max-width: 100%; }
+.rs-holidays { margin-top: 8px; }
+.rs-holiday { cursor: default; color: var(--rt-fg); padding-right: 4px; }
+.rs-holiday:hover { color: var(--rt-fg); border-color: var(--rt-line); }
+.rs-holiday.is-past { color: var(--rt-fg-dim); border-style: dashed; }
+.rs-holiday-del {
+    display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 999px;
+    border: 0; background: transparent; color: var(--rt-fg-dim); cursor: pointer;
+}
+.rs-holiday-del:hover { color: var(--rt-danger); background: var(--rt-panel); }
+.rs-holiday-del:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 1px; }
 
 /* Склад: карта + поле координат */
 .rt-depot { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; }

@@ -387,6 +387,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'work_start': '09:00',
     'work_end': '18:00',
     'workdays': [1, 2, 3, 4, 5, 6],
+    # Нерабочие даты (праздники и прочие выходные компании, №64): ISO-строки ГГГГ-ММ-ДД по возрастанию
+    'holidays': [],
     # Длительность визита, мин: None — «авто» по GPS-стоянкам, без калибровки — 7 / 10 / 20
     # (evaluate.visit_norms); число перекрывает только свой класс
     'visit_min_small': None,
@@ -515,6 +517,7 @@ MANUAL_CODE_RE = re.compile(r'^[\w\- ]{1,20}$')   # номер машины: б�
 MANUAL_NAME_MAX = 60
 MANAGER_FUEL_L100 = (1, 40)
 _MAX_LIST = 500
+MAX_HOLIDAYS = 400      # нерабочих дат в настройках: с запасом на год вперёд и прошлый (№64)
 CENTER_ZONE_VERTICES = (3, 200)
 WINDOW_KINDS = ('before', 'after', 'between', 'at')
 WINDOW_TOL_MAX = 120
@@ -1054,6 +1057,24 @@ def _check_int_set(value: Any, lo: int, hi: int, what: str) -> tuple[list[int] |
     return sorted(out), None
 
 
+def _check_dates(value: Any) -> tuple[list[str] | None, str | None]:
+    """Список дат ГГГГ-ММ-ДД без повторов → по возрастанию (нерабочие дни, №64)."""
+    if not isinstance(value, list) or len(value) > MAX_HOLIDAYS:
+        return None, f'սպասվում էր ամսաթվերի ցուցակ (ոչ ավելի, քան {MAX_HOLIDAYS})'
+    out: set[str] = set()
+    for x in value:
+        try:
+            if not isinstance(x, str) or not _ISO_DAY_RE.match(x):
+                raise ValueError
+            date.fromisoformat(x)
+        except ValueError:
+            return None, f'սխալ ամսաթիվ՝ {str(x)[:20]} (սպասվում էր ՏՏՏՏ-ԱԱ-ՕՕ)'
+        if x in out:
+            return None, f'{x} ամսաթիվը կրկնվում է'
+        out.add(x)
+    return sorted(out), None
+
+
 def _minutes(hhmm: str) -> int:
     h, m = hhmm.split(':')
     return int(h) * 60 + int(m)
@@ -1104,6 +1125,12 @@ def validate_settings(values: Mapping[str, Any],
         errors['workdays'] = err
     else:
         out['workdays'] = days
+
+    holidays, err = _check_dates(values.get('holidays', []))
+    if err:
+        errors['holidays'] = err
+    else:
+        out['holidays'] = holidays
 
     for key, (lo, hi, nullable) in _NUMERIC.items():
         v, err = _check_number(values.get(key), lo, hi, nullable,

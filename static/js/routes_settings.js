@@ -23,7 +23,7 @@
     // 403 CSRF дашборда («сессия формы устарела») — не запрет доступа (как routes_learning.js и routes_garage.js)
     const CSRF_HY = 'Էջը հնացել է՝ թարմացրեք այն և կրկնեք։';
     const authText = (resp, data) => (resp.status === 403 && data && data.error === 'csrf' ? CSRF_HY : AUTH_HY[resp.status]);
-    const SECTIONS = ['depot', 'trucks', 'fuel', 'managers', 'center', 'norms', 'season', 'calibration'];
+    const SECTIONS = ['depot', 'trucks', 'fuel', 'days', 'managers', 'center', 'norms', 'season', 'calibration'];
     const ZONE_MAX = 200;   // точек границы малого центра — как store.CENTER_ZONE_VERTICES
     const RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -43,7 +43,6 @@
         { title: 'Աշխատանքային օր', items: [
             { key: 'work_start', label: 'Սկիզբ', type: 'time' },
             { key: 'work_end', label: 'Ավարտ', type: 'time' },
-            { key: 'workdays', kind: 'workdays', label: 'Աշխատանքային օրեր' },
         ] },
         // Парк машин (fleet-plan §2): рабочий день машины и разгрузка — для рейсов и «хватает ли машин»
         { title: 'Առաքման մեքենաներ', items: [
@@ -131,6 +130,7 @@
         fields: new Map(),              // ключ ошибки сервера → {el, errEl, label}
         manual: [],                     // ручные машины формы: {key, car_code, name, van_agent_id, …}
         season: { mode: 'auto', low: new Set(), peak: new Set() },
+        holidays: new Set(),            // нерабочие даты ГГГГ-ММ-ДД (№64)
     };
 
     // ---------- Утилиты ----------
@@ -352,6 +352,7 @@
         state.fields = new Map();
         renderDepot();
         renderTrucks();
+        renderDays();
         renderManagers();
         renderZone();
         renderNorms();
@@ -1051,6 +1052,87 @@
         if (msg) announce(msg + ' — սեղմեք «Պահպանել»');
     }
 
+    // ---------- Рабочие и нерабочие дни (№64): дни недели и отдельные даты ----------
+    const todayIso = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+    const wdOfIso = (iso) => { const d = new Date(iso + 'T12:00:00'); return Number.isNaN(d.getTime()) ? null : (d.getDay() || 7); };
+
+    function renderDays() {
+        const box = $('rsDays'), s = state.data.settings;
+        box.textContent = '';
+        state.holidays = new Set((Array.isArray(s.holidays) ? s.holidays : []).map(String));
+
+        const wdErr = errNode();
+        const sel = new Set((Array.isArray(s.workdays) ? s.workdays : []).map(Number));
+        const wd = h('div', { class: 'rt-wd', role: 'group', 'aria-labelledby': 'rsWdLabel', id: 'rsN_workdays' });
+        WD.forEach(([n, short, full]) => wd.append(h('label', { title: full },
+            h('input', { type: 'checkbox', value: String(n), checked: sel.has(n), 'aria-label': full, dataset: { wd: '1' } }), short)));
+        reg(['settings.workdays'], wd, wdErr, 'Աշխատանքային օրեր');
+
+        const hErr = errNode();
+        // выбранная, но не добавленная дата — тоже изменение: «Պահպանել» добавит её сама (collect)
+        const inp = h('input', { class: 'rt-input rt-num', type: 'date', id: 'rsHolidayNew', min: '2020-01-01', max: '2099-12-31' });
+        const add = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm' }, icon('fa-plus'), 'Ավելացնել');
+        const list = h('div', { class: 'rt-chips rs-holidays', id: 'rsHolidays', role: 'list' });
+        reg(['settings.holidays'], inp, hErr, 'Ոչ աշխատանքային ամսաթվեր');
+        const addDate = () => {
+            hErr.textContent = '';
+            inp.classList.remove('is-invalid');
+            inp.removeAttribute('aria-invalid');
+            const v = inp.value;
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+                hErr.textContent = 'Ընտրեք ամսաթիվը';
+                inp.classList.add('is-invalid');
+                inp.setAttribute('aria-invalid', 'true');
+                inp.focus();
+                return;
+            }
+            if (state.holidays.has(v)) { announce('Այս ամսաթիվն արդեն ցուցակում է՝ ' + dateRu(v)); return; }
+            state.holidays.add(v);
+            inp.value = '';
+            drawHolidays();
+            updateDirty();
+            renderProgress();
+            announce('Ոչ աշխատանքային օր է նշված՝ ' + dateRu(v) + ' — սեղմեք «Պահպանել»');
+        };
+        add.addEventListener('click', addDate);
+        inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addDate(); } });
+
+        box.append(
+            h('div', { class: 'rt-field' }, h('span', { class: 'rt-field-label', id: 'rsWdLabel', text: 'Շաբաթվա աշխատանքային օրերը' }), wd,
+                h('p', { class: 'rt-field-hint', text: 'Հանեք նշումն այն օրից, երբ ընկերությունը չի աշխատում (օրինակ՝ կիրակի)։' }), wdErr),
+            h('div', { class: 'rt-field mt-3' },
+                h('label', { for: 'rsHolidayNew', text: 'Ոչ աշխատանքային ամսաթվեր (տոներ և այլ հանգստյան օրեր)' }),
+                h('div', { class: 'rs-holiday-add' }, inp, add),
+                h('p', { class: 'rt-field-hint', text: 'Օրինակ՝ Ամանոր, Սուրբ Ծնունդ։ Յուրաքանչյուր օրն ավելացրեք առանձին։' }),
+                hErr, list));
+        drawHolidays();
+    }
+
+    // Даты списком: сначала ближайшие, затем прошедшие (свежие первыми, приглушены)
+    function drawHolidays() {
+        const list = $('rsHolidays'), today = todayIso();
+        list.textContent = '';
+        const all = [...state.holidays].sort();
+        const next = all.filter(d => d >= today), past = all.filter(d => d < today).reverse();
+        if (!all.length) list.append(h('span', { class: 'rt-field-hint', text: 'Ամսաթվեր նշված չեն։' }));
+        [...next, ...past].forEach(d => {
+            const wd = WD.find(x => x[0] === wdOfIso(d));
+            const text = dateRu(d) + (wd ? ', ' + wd[2] : '');
+            const del = h('button', { type: 'button', class: 'rs-holiday-del', 'aria-label': 'Հանել ցուցակից՝ ' + dateRu(d), title: 'Հանել ցուցակից' },
+                icon('fa-xmark'));
+            del.addEventListener('click', () => {
+                state.holidays.delete(d);
+                drawHolidays();
+                updateDirty();
+                renderProgress();
+                announce('Ցուցակից հանված է՝ ' + dateRu(d) + ' — սեղմեք «Պահպանել»');
+                $('rsHolidayNew').focus();
+            });
+            list.append(h('span', { class: 'rt-chip rs-holiday' + (d < today ? ' is-past' : ''), role: 'listitem',
+                title: d < today ? 'անցած օր' : null }, text, del));
+        });
+    }
+
     // ---------- 04 · Нормы ----------
     function renderNorms() {
         const box = $('rsNorms'), fuel = $('rsFuel');
@@ -1068,14 +1150,6 @@
     function normField(it, s) {
         const id = 'rsN_' + it.key;
         const err = errNode();
-        if (it.kind === 'workdays') {
-            const sel = new Set((Array.isArray(s.workdays) ? s.workdays : []).map(Number));
-            const wrap = h('div', { class: 'rt-wd', role: 'group', 'aria-labelledby': id + '_l', id: id });
-            WD.forEach(([n, short, full]) => wrap.append(h('label', { title: full },
-                h('input', { type: 'checkbox', value: String(n), checked: sel.has(n), 'aria-label': full, dataset: { wd: '1' } }), short)));
-            reg(['settings.workdays'], wrap, err, 'Աշխատանքային օրեր');
-            return h('div', { class: 'rt-field' }, h('span', { class: 'rt-field-label', id: id + '_l', text: it.label }), wrap, err);
-        }
         if (it.kind === 'coord') {
             const inp = h('input', { class: 'rt-input rt-num', type: 'text', id, inputmode: 'decimal', autocomplete: 'off', spellcheck: 'false',
                 value: fmtCoord(s[it.lat], s[it.lon]), placeholder: '40.17920, 44.49910' });
@@ -1157,6 +1231,12 @@
         }).length;
         set('rsStCenter', toCenter ? 'ok' : 'part', toCenter ? 'կենտրոն՝ ' + toCenter + NB + 'մեքենա'
             : 'չկա մեքենա, որը կարող է մտնել կենտրոն');
+
+        // рабочие дни недели и ближайшие нерабочие даты
+        const wdOn = document.querySelectorAll('#rsForm [data-wd]:checked').length;
+        const soon = [...state.holidays].filter(d => d >= todayIso()).length;
+        set('rsStDays', wdOn ? 'ok' : 'todo', wdOn ? 'շաբաթական՝ ' + wdOn + NB + 'օր' + (soon ? ' · առաջիկա տոներ՝ ' + soon : '')
+            : 'նշեք գոնե մեկ աշխատանքային օր');
 
         // дома менеджеров в расчёте
         const noHome = inCalc.filter(tr => tr.querySelector('.rs-home .b-warn')).length;
@@ -1442,6 +1522,8 @@
         });
         s.workdays = [...document.querySelectorAll('#rsForm [data-wd]:checked')].map(i => Number(i.value));
         if (!s.workdays.length) errors['settings.workdays'] = 'Նշեք գոնե մեկ աշխատանքային օր';
+        const picked = $('rsHolidayNew').value;   // выбрали дату и сразу «Պահպանել», не нажав «Ավելացնել»
+        s.holidays = [...new Set([...state.holidays, ...(/^\d{4}-\d{2}-\d{2}$/.test(picked) ? [picked] : [])])].sort();
         const cc = parseCoord($('rsN_city_center').value);
         if (cc.empty) errors['settings.city_center_lat'] = 'Նշեք քաղաքի կենտրոնը';
         else if (cc.error) errors['settings.city_center_lat'] = cc.error;
@@ -1536,7 +1618,7 @@
         const incModes = [...document.querySelectorAll('#rsManagers [data-f="inc"], #rsTrucks [data-f="active"]')].map(el => el.dataset.mode || '');
         // ручные машины: номер, название и экспедитор живут не в полях строки
         const manual = (state.manual || []).map(m => [m.car_code, m.name || null, m.van_agent_id === undefined ? null : m.van_agent_id]);
-        return JSON.stringify([vals, incModes, manual, state.season.mode, [...state.season.low].sort(), [...state.season.peak].sort(),
+        return JSON.stringify([vals, incModes, manual, [...state.holidays].sort(), state.season.mode, [...state.season.low].sort(), [...state.season.peak].sort(),
             state.zone.map(([a, b]) => [round(a, 6), round(b, 6)])]);
     }
 

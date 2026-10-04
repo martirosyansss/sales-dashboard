@@ -427,6 +427,7 @@
         // магазины без точки на карте в рейсы не попадают — напоминаем, пока они есть
         if (plan && d.orders.no_coords && !problems.length) lines.push('Ուշադրություն՝ ' + pl(d.orders.no_coords, 'խանութի') + ' տեղը քարտեզում նշված չէ, դրանք երթերում չեն (տես 2-րդ քայլը)։');
         if (d.is_past) lines.unshift('Սա անցած օր է՝ դիտելու և համեմատելու համար։');
+        if (d.day_off) lines.unshift('Կարգավորումներում այս օրը նշված է որպես ոչ աշխատանքային․ սովորաբար այս օրը առաքում չկա։');
         box.className = 'dp-todo ' + tone;
         box.innerHTML = '<div class="dp-todo-ico" aria-hidden="true"><i class="fas ' + ico + '"></i></div>'
             + '<div class="dp-todo-body"><p class="dp-todo-k">Ի՞նչ անել հիմա</p><h2 class="dp-todo-t"></h2>'
