@@ -368,7 +368,8 @@
 /* обед в пути (№61): засечка на полосе дня и строка в расписании рейса */
 .dp-lunch-mark {
     position: absolute; top: 4px; bottom: 4px; min-width: 3px; border-radius: 3px; pointer-events: none; z-index: 1;
-    background: repeating-linear-gradient(135deg, rgba(232, 237, 244, .85) 0 2px, rgba(11, 15, 21, .55) 2px 4px);
+    background: repeating-linear-gradient(135deg, rgba(232, 237, 244, .75) 0 2px, transparent 2px 5px);
+    box-shadow: 0 0 0 1px rgba(11, 15, 21, .35) inset;
 }
 #rtDispatch .dp-lunch .dp-num { background: var(--rt-panel-2, var(--rt-line)); color: var(--rt-fg-dim); font-size: .75rem; }
 .dp-lunch .dp-stop-main b { font-weight: 600; color: var(--rt-fg-dim); }
