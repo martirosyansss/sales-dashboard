@@ -35,6 +35,7 @@ def test_delta_and_flag_boundary():
     assert garage.ALERT_PCT == 10
     assert garage.delta_pct(33.0, 30.0) == pytest.approx(10.0) and not garage.over(33.0, 30.0)   # ровно +10% — не флаг
     assert not garage.over(11.0, 10.0) and not garage.over(32.9999, 30.0)
+    assert not garage.over(30.8, 28.0) and not garage.over(15.4, 14.0)   # ровно +10% и с ошибкой float
     # флаг — по неокруглённым числам: +10,03% показывается как 10,0, но это уже больше 10% (было: по округлённому — нет)
     assert round(garage.delta_pct(33.01, 30.0), 1) == 10.0 and garage.over(33.01, 30.0)
     assert round(garage.delta_pct(33.04, 30.0), 1) == 10.1 and garage.over(33.04, 30.0)
@@ -149,7 +150,7 @@ def test_norm_month_fuel_km_and_boundaries(client, monkeypatch):
     assert sep['success'] and (sep['month'], sep['from'], sep['to'], sep['gps_to']) == \
         ('2026-09', '2026-09-01', '2026-09-30', '2026-09-30')
     assert sep['rules'] == {'alert_pct': 10, 'fuel_min_km': lr.FUEL_MIN_KM, 'fuel_l100': list(lr.FUEL_L100)}
-    assert sep['has_data'] and sep['connected'] and not sep['too_old'] and sep['oldest_month'] == '2025-10'
+    assert sep['has_data'] and sep['connected'] and not sep['too_old'] and sep['oldest_month'] == '2025-11'
     assert state.fleet_facts.since[-1] == '2026-07-03'                  # заправки — с месяца − 60 дней, не все
     car1 = _truck(sep, 'CAR1')
     assert car1['norm'] == {'l100': 30.0, 'source': 'manual', 'learned': None}
@@ -305,7 +306,8 @@ def test_norm_old_or_trackless_month_starts_no_thread(client, monkeypatch):
     assert old['too_old'] and not old['has_data'] and not old['pending'] and calls == []
     assert _truck(old, 'CAR1')['fuel']['reason'] == 'no_refuels' and _truck(old, 'CAR1')['norm']['l100'] == 30.0
     # месяц без трека — дешёвая проверка car_days, поток не нужен
-    body = client.get('/api/routes/garage/norm?month=2025-10').get_json()
+    assert client.get('/api/routes/garage/norm?month=2025-10').get_json()['too_old']   # 13-й месяц назад — уже нет
+    body = client.get('/api/routes/garage/norm?month=2025-11').get_json()
     assert not body['too_old'] and not body['pending'] and calls == ['car_days'] and not state.garage_warm
 
 

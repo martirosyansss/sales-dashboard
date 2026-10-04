@@ -3078,7 +3078,7 @@ def api_garage_norm() -> Any:
         return _bad_request({'month': 'Ամիսը՝ ՏՏՏՏ-ԱԱ, ոչ ուշ, քան ընթացիկ ամիսը'})
     last = _add_months(first, 1) - timedelta(days=1)
     gps_to = min(last, today - timedelta(days=1))
-    oldest = _add_months(today.replace(day=1), -GARAGE_NORM_MONTHS)
+    oldest = _add_months(today.replace(day=1), -(GARAGE_NORM_MONTHS - 1))   # 12 месяцев вместе с текущим
     too_old = first < oldest
     state = _state()
     bundle = state.store.load()

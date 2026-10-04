@@ -238,7 +238,7 @@ def over(fact: float | None, norm: float | None) -> bool:
     """Факт выше нормы больше чем на ALERT_PCT % (ровно +10% — не флаг)."""
     if fact is None or norm is None or norm <= 0:
         return False
-    return (fact - norm) * 100.0 > ALERT_PCT * norm
+    return round((fact - norm) / norm * 100.0, 6) > ALERT_PCT   # без шума float: 30.8 к 28.0 — ровно +10%, не флаг
 
 
 @dataclass(frozen=True)
