@@ -495,19 +495,35 @@
 
     // Износ по журналу гаража (№53) — только чтение: ремонт ֏/км на сегодня и какое значение идёт в расчёт. Поле
     // «Износ, драм/км» остаётся ручным: страница сохраняет только его, значение журнала в настройки не попадает.
+    // Текст — по-армянски (раздел «Маршруты» — только армянский, №58).
     function garageNote(t) {
         const g = t.garage, used = t.wear_source;
-        const inCalc = used === 'garage' ? 'в расчёте: значение журнала'
-            : used === 'manual' ? 'в расчёте: значение из поля выше' : 'износ в расчёте не учитывается';
+        // ручное задано, а по журналу у машины есть средняя — видна и она (в расчёт не идёт)
+        const unused = used === 'manual' && t.garage_prior
+            ? '; ' + priorText(t.garage_prior) + ' (չի կիրառվում, քանի որ վերևում արժեք կա)' : '';
+        // своей цены журнала нет, поле выше пусто — в расчёте средняя модели (или парка) по журналу
+        const inCalc = used === 'garage' ? 'հաշվարկում է այս արժեքը'
+            : used === 'garage_avg' ? 'հաշվարկում է ' + priorText(t.garage_prior) + ', քանի որ վերևի դաշտը դատարկ է'
+            : used === 'manual' ? 'հաշվարկում է վերևի դաշտի արժեքը' + unused : 'մաշվածքը հաշվարկում չի մասնակցում';
         let text;
-        if (!g) text = 'Журнал гаража: записей нет — ' + inCalc;
-        else if (g.status === 'ready') text = 'По журналу гаража: ' + fmt(g.price, 1) + ' ֏/км (' + fmt(g.months) + ' мес.) — ' + inCalc;
-        else if (g.status === 'accumulating') text = 'Журнал гаража: накапливается ' + fmt(g.months) + ' из ' + fmt(g.ready_months) + ' мес. — ' + inCalc;
-        else if (g.status === 'low_km') text = 'Журнал гаража: мало км (' + fmt(g.km) + ' км) — ' + inCalc;
-        else if (g.status === 'no_repairs') text = 'Журнал гаража: ремонтов в журнале нет — '
-            + (used === 'manual' ? 'в расчёте ручное значение' : inCalc);
-        else text = 'Журнал гаража: нет пробега за 12 мес. — ' + inCalc;
-        return h('span', { class: 'rs-garage' + (used === 'garage' ? ' is-used' : ''), text });
+        if (!g) text = 'Ավտոտնակի գրառումներ չկան — ' + inCalc;
+        else if (g.status === 'ready' && g.blend) {
+            // своя цена, сглаженная к средней модели (или парка): видно все три числа
+            text = 'Ըստ ավտոտնակի գրառումների՝ ' + fmt(g.price, 1) + ' ֏/կմ (սեփականը՝ ' + fmt(g.own, 1) + ', '
+                + (g.blend === 'model' ? g.model + '-ի միջինը՝ ' : 'ավտոպարկի միջինը՝ ') + fmt(g.model_price, 1) + '; '
+                + fmt(g.months) + ' ամիս) — ' + inCalc;
+        } else if (g.status === 'ready') text = 'Ըստ ավտոտնակի գրառումների՝ ' + fmt(g.price, 1) + ' ֏/կմ (' + fmt(g.months) + ' ամիս) — ' + inCalc;
+        else if (g.status === 'accumulating') text = 'Ավտոտնակի գրառումներ․ կուտակվում է՝ ' + fmt(g.months) + ' / ' + fmt(g.ready_months) + ' ամիս — ' + inCalc;
+        else if (g.status === 'low_km') text = 'Ավտոտնակի գրառումներ․ քիչ կմ (' + fmt(g.km) + ' կմ) — ' + inCalc;
+        else if (g.status === 'no_repairs') text = 'Ավտոտնակի գրառումներ․ վերանորոգումներ գրանցված չեն — '
+            + (used === 'manual' ? 'հաշվարկում է ձեռքով արժեքը' + unused : inCalc);
+        else text = 'Ավտոտնակի գրառումներ․ վերջին 12 ամսում վազք չկա — ' + inCalc;
+        return h('span', { class: 'rs-garage' + (used === 'garage' || used === 'garage_avg' ? ' is-used' : ''), text });
+    }
+
+    function priorText(p) {
+        return (p.scope === 'model' ? 'մոդելի միջինը' + (p.model ? ' (' + p.model + ')' : '') : 'ավտոպարկի միջինը')
+            + '՝ ' + fmt(p.price, 1) + ' ֏/կմ';
     }
 
     const LOAD_COSTS = [
@@ -539,7 +555,8 @@
                 key === 'wear_amd_per_km' ? garageNote(t) : null);
         });
         const costs = h('details', { class: 'rs-load-costs' },
-            h('summary', { text: 'Բեռնվածություն և մաշվածք' + (t.wear_source === 'garage' ? ' · износ по журналу гаража' : '') }),
+            h('summary', { text: 'Բեռնվածություն և մաշվածք' + (t.wear_source === 'garage' ? ' · մաշվածքը՝ ըստ ավտոտնակի գրառումների'
+                : t.wear_source === 'garage_avg' ? ' · մաշվածքը՝ ' + (t.garage_prior.scope === 'model' ? 'մոդելի' : 'ավտոպարկի') + ' միջինից' : '') }),
             h('div', { class: 'rs-load-fields' }, ...costFields),
             h('p', { class: 'rt-muted', text: 'Դատարկ և լրիվ բեռնված՝ ըստ այս մեքենայի չափումների։ Մաշվածքի հավելումը համեմատական է բեռնվածության բաժնի քառակուսուն։ Եթե դաշտերը լրացված չեն՝ բեռի ազդեցությունը կարգավորված չէ։' }));
         const wasManual = manual || t.active_source === 'manual', autoOn = t.auto_active === true;

@@ -1,9 +1,10 @@
 <!DOCTYPE html>
-<html lang="ru" data-bs-theme="dark">
+<html lang="{{ 'hy' if public else 'ru' }}" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Вход — Sales Dashboard v2.0</title>
+    {# снаружи (araqich.orix.am, журнал гаража №53) — нейтрально, по-армянски, без названия программы #}
+    <title>{% if public %}Ավտոտնակ — մուտք{% else %}Вход — Sales Dashboard v2.0{% endif %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0" crossorigin="anonymous">
     <style>
@@ -33,9 +34,9 @@
     <div class="login-card p-4 p-md-5">
         <div class="text-center mb-4">
             <div class="login-brand fs-4 mb-1">
-                <i class="fas fa-chart-line me-2"></i>Sales Dashboard
+                {% if public %}<i class="fas fa-wrench me-2"></i>Ավտոտնակ{% else %}<i class="fas fa-chart-line me-2"></i>Sales Dashboard{% endif %}
             </div>
-            <div class="text-muted small">Вход в систему</div>
+            <div class="text-muted small">{{ 'Մուտք' if public else 'Вход в систему' }}</div>
         </div>
 
         {% if error %}
@@ -48,29 +49,31 @@
             <input type="hidden" name="next" value="{{ next or '' }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="mb-3">
-                <label class="form-label">Логин</label>
+                <label class="form-label">{{ 'Մուտքանուն' if public else 'Логин' }}</label>
                 <div class="input-group">
                     <span class="input-group-text"><i class="fas fa-user"></i></span>
                     <input type="text" name="username" class="form-control" required autofocus
-                           placeholder="Логин">
+                           placeholder="{{ 'Մուտքանուն' if public else 'Логин' }}">
                 </div>
             </div>
             <div class="mb-4">
-                <label class="form-label">Пароль</label>
+                <label class="form-label">{{ 'Գաղտնաբառ' if public else 'Пароль' }}</label>
                 <div class="input-group">
                     <span class="input-group-text"><i class="fas fa-lock"></i></span>
                     <input type="password" name="password" class="form-control" required
-                           placeholder="Пароль">
+                           placeholder="{{ 'Գաղտնաբառ' if public else 'Пароль' }}">
                 </div>
             </div>
             <button type="submit" class="btn btn-primary w-100">
-                <i class="fas fa-right-to-bracket me-1"></i> Войти
+                <i class="fas fa-right-to-bracket me-1"></i> {{ 'Մուտք' if public else 'Войти' }}
             </button>
         </form>
 
+        {% if not public %}
         <div class="text-center text-muted small mt-4">
             <i class="fas fa-lock"></i> READ-ONLY аналитика · AS-Sales Management 7
         </div>
+        {% endif %}
     </div>
 </body>
 </html>

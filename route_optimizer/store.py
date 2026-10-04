@@ -23,12 +23,12 @@ from enum import Enum
 from typing import Any, Callable, Collection, Literal, Mapping, Sequence
 
 from .geo import ARMENIA_LAT, ARMENIA_LON, Point, is_valid_point
-from .learning import REFUEL_KM_PER_DAY
+from .garage import KM_PER_DAY_MAX, SPREAD_MONTHS
 from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, parse_transfer_key
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -126,14 +126,27 @@ _CUSTOMER_UNLOAD_TABLE = (
 # Спидометр — в каждой записи. Удаление мягкое (deleted_at): запись денег не теряется, в расчётах не участвует. Правка
 # не теряет прежних значений: прежняя версия остаётся удалённой строкой с replaced_by — номером живой записи (её номер не
 # меняется). Живое показание «только пробег» у машины на день — одно (повторное сохранение дня обновляет его).
-_GARAGE_TABLE = (
-    "CREATE TABLE IF NOT EXISTS garage_entry(id INTEGER PRIMARY KEY, car_code TEXT NOT NULL, day TEXT NOT NULL, "
+# Как была создана миграцией 15 → 16 (история миграций не меняется); в схеме 17 — та же.
+_GARAGE_FIELDS_V16 = (
+    "id INTEGER PRIMARY KEY, car_code TEXT NOT NULL, day TEXT NOT NULL, "
     "kind TEXT NOT NULL CHECK (kind IN ('repair', 'accident', 'fixed', 'odometer')), what TEXT, "
     "amount_amd INTEGER NOT NULL CHECK (amount_amd BETWEEN 0 AND 100000000), "
     "odometer_km INTEGER NOT NULL CHECK (odometer_km BETWEEN 0 AND 2000000), note TEXT, "
     "created_at TEXT NOT NULL, created_by TEXT, updated_at TEXT, updated_by TEXT, deleted_at TEXT, deleted_by TEXT, "
-    "replaced_by INTEGER, CHECK ((kind = 'odometer') = (amount_amd = 0)), CHECK (kind = 'odometer' OR what IS NOT NULL), "
-    "CHECK (replaced_by IS NULL OR deleted_at IS NOT NULL))")
+    "replaced_by INTEGER")
+_GARAGE_CHECKS_V16 = (
+    "CHECK ((kind = 'odometer') = (amount_amd = 0)), CHECK (kind = 'odometer' OR what IS NOT NULL), "
+    "CHECK (replaced_by IS NULL OR deleted_at IS NOT NULL)")
+_GARAGE_COLUMNS_V16 = f"{_GARAGE_FIELDS_V16}, {_GARAGE_CHECKS_V16}"
+_GARAGE_TABLE_V16 = f"CREATE TABLE IF NOT EXISTS garage_entry({_GARAGE_COLUMNS_V16})"
+_GARAGE_COPY_V16 = ('id, car_code, day, kind, what, amount_amd, odometer_km, note, created_at, created_by, updated_at, '
+                    'updated_by, deleted_at, deleted_by, replaced_by')
+# Схема 18 (доработка №53): крупный ремонт растягивается на 24 или 36 месяцев (spread_months; NULL — обычный, у других
+# видов — всегда NULL).
+_GARAGE_COLUMNS = (
+    f"{_GARAGE_FIELDS_V16}, spread_months INTEGER, {_GARAGE_CHECKS_V16}, "
+    "CHECK (spread_months IS NULL OR (spread_months IN (24, 36) AND kind = 'repair'))")
+_GARAGE_TABLE = f"CREATE TABLE IF NOT EXISTS garage_entry({_GARAGE_COLUMNS})"
 _GARAGE_ONE_ODOMETER = (
     "CREATE UNIQUE INDEX IF NOT EXISTS garage_one_odometer ON garage_entry(car_code, day) "
     "WHERE kind = 'odometer' AND deleted_at IS NULL")
@@ -299,9 +312,19 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     # 14 → 15 (№50): только добавляем — таблица времени у магазина; прежние таблицы и значения не меняются.
     14: (_CUSTOMER_UNLOAD_TABLE,),
     # 15 → 16 (№53): только добавляем — журнал гаража и его индекс; прежние таблицы и значения не меняются.
-    15: (_GARAGE_TABLE, _GARAGE_ONE_ODOMETER),
+    15: (_GARAGE_TABLE_V16, _GARAGE_ONE_ODOMETER),
     # 16 → 17 (№62): только добавляем — водители машин; прежние таблицы и значения не меняются.
     16: (_TRUCK_DRIVER_TABLE,),
+    # 17 → 18 (доработка №53): срок растяжения крупного ремонта. Журнал пересобирается с новым столбцом и его CHECK —
+    # строки (и номера: на них ссылается replaced_by) переносятся как есть, у всех «не растянут»; частичный уникальный
+    # индекс уходит вместе со старой таблицей и создаётся заново. Журнал в схемах 16 и 17 одинаков (_GARAGE_TABLE_V16).
+    17: (
+        f"CREATE TABLE garage_entry_v18({_GARAGE_COLUMNS})",
+        f"INSERT INTO garage_entry_v18({_GARAGE_COPY_V16}) SELECT {_GARAGE_COPY_V16} FROM garage_entry",
+        "DROP TABLE garage_entry",
+        "ALTER TABLE garage_entry_v18 RENAME TO garage_entry",
+        _GARAGE_ONE_ODOMETER,
+    ),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -439,7 +462,7 @@ GARAGE_TEXT_MAX = 300
 GARAGE_AMOUNT_MAX = 100_000_000
 GARAGE_ODOMETER_MAX = 2_000_000
 GARAGE_PAST_YEARS = 3
-GARAGE_KM_PER_DAY = REFUEL_KM_PER_DAY   # спидометр не прирастает быстрее (как одометр заправок APK, odometer_plausible)
+GARAGE_KM_PER_DAY = KM_PER_DAY_MAX   # спидометр не прирастает быстрее (как одометр заправок APK, odometer_plausible)
 _DAY_MINUTES = 24 * 60
 
 _HHMM_RE = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
@@ -573,6 +596,7 @@ class GarageInput:
     amount_amd: int
     odometer_km: int
     note: str | None = None
+    spread_months: int | None = None   # ремонт растянут на столько месяцев (garage.SPREAD_MONTHS); None — обычный
 
 
 @dataclass(frozen=True)
@@ -594,6 +618,7 @@ class GarageEntry:
     deleted_at: str | None
     deleted_by: str | None
     replaced_by: int | None = None
+    spread_months: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {**asdict(self), 'day': self.day.isoformat()}
@@ -641,7 +666,7 @@ def check_garage_entry(raw: Any, cars: Collection[str], today: date) -> tuple[Ga
     if not isinstance(raw, dict):
         return None, {'_': 'Սպասվում էր JSON օբյեկտ'}
     errors: dict[str, str] = {}
-    extra = sorted(set(raw) - {'car_code', 'day', 'kind', 'what', 'amount_amd', 'odometer_km', 'note'})
+    extra = sorted(set(raw) - {'car_code', 'day', 'kind', 'what', 'amount_amd', 'odometer_km', 'note', 'spread_months'})
     if extra:
         errors['_'] = 'Անհայտ դաշտեր՝ ' + ', '.join(map(str, extra))
     code = raw.get('car_code')
@@ -679,31 +704,38 @@ def check_garage_entry(raw: Any, cars: Collection[str], today: date) -> tuple[Ga
     km = _whole(raw.get('odometer_km'), 0, GARAGE_ODOMETER_MAX)
     if km is None:
         errors['odometer_km'] = f'Սպիդոմետրը՝ ամբողջ թիվ 0-ից {_km_text(GARAGE_ODOMETER_MAX)} կմ'
+    spread = raw.get('spread_months')
+    if spread is not None and kind != 'repair':
+        errors['spread_months'] = 'Բաշխում լինում է միայն վերանորոգման համար'
+    elif spread is not None and (isinstance(spread, bool) or spread not in SPREAD_MONTHS):
+        errors['spread_months'] = 'Բաշխումը՝ 24 կամ 36 ամիս'
     if errors:
         return None, errors
-    return GarageInput(code, day, kind, what, amount, km, note), {}
+    return GarageInput(code, day, kind, what, amount, km, note, None if spread is None else int(spread)), {}
 
 
 def _loaded_garage(row: tuple) -> tuple[GarageEntry | None, list[str]]:
     """Строка garage_entry из базы → GarageEntry и нарушения (те же правила, что при записи, кроме дат «сегодня»)."""
-    entry_id, code, day, kind, what, amount, km, note, *stamps = row
+    entry_id, code, day, kind, what, amount, km, note, *stamps, replaced_by, spread = row
     problems = []
     parsed = _iso_day(day)
     if not _is_int(entry_id) or not isinstance(code, str) or not code:
-        problems.append('номер или машина')
+        problems.append('համար կամ մեքենա')
     if parsed is None:
-        problems.append('дата')
+        problems.append('ամսաթիվ')
     if kind not in GARAGE_KINDS:
-        problems.append('вид')
+        problems.append('տեսակ')
     elif _whole(amount, *((0, 0) if kind == 'odometer' else (1, GARAGE_AMOUNT_MAX))) is None or not _is_int(amount):
-        problems.append('сумма')
+        problems.append('գումար')
     if not _is_int(km) or _whole(km, 0, GARAGE_ODOMETER_MAX) is None:
-        problems.append('спидометр')
-    if stamps[-1] is not None and not _is_int(stamps[-1]):
-        problems.append('замена')
+        problems.append('սպիդոմետր')
+    if replaced_by is not None and not _is_int(replaced_by):
+        problems.append('փոփոխության հղում')
+    if spread is not None and (not _is_int(spread) or spread not in SPREAD_MONTHS or kind != 'repair'):
+        problems.append('բաշխում')
     if problems:
         return None, problems
-    return GarageEntry(entry_id, code, parsed, kind, what, amount, km, note, *stamps), []
+    return GarageEntry(entry_id, code, parsed, kind, what, amount, km, note, *stamps, replaced_by, spread), []
 
 
 def _ru_day(iso: str) -> str:
@@ -762,6 +794,9 @@ class Bundle:
     # добавляет views._bundle (на сегодня; «Развоз» — на свой день). В расчёте перекрывает ручное «Износ, драм/км»
     # (resolved_trucks); в trucks и в настройки не попадает. В отпечатке — только когда есть: без журнала он прежний
     garage_wear: dict[str, float] = field(default_factory=dict)
+    # средняя модели или парка (garage.priors) машинам без своей готовой цены: в расчёте — только при пустом ручном
+    # «Износ, драм/км» (resolved_trucks; 0 — задано). Добавляет views._bundle вместе с garage_wear; в отпечатке — так же
+    garage_prior: dict[str, float] = field(default_factory=dict)
 
     def profile(self, agent_id: int) -> ManagerProfile:
         return self.managers.get(agent_id) or ManagerProfile(agent_id)
@@ -790,22 +825,27 @@ class Bundle:
     def resolved_trucks(self, active_cars: Collection[str]) -> dict[str, Truck]:
         """Машины расчёта парка и развоза — единственная точка, где запись машины становится нормами расчёта:
         действующее «активна» (bool) и «Износ, драм/км» — по журналу гаража, если его цена готова (garage_wear), иначе
-        ручной из настроек."""
+        ручной из настроек, а пустой ручной (None; 0 — задано) — средняя модели или парка (garage_prior)."""
         out = {}
         for code, t in self.trucks.items():
             if t.active is None:
                 t = replace(t, active=code in active_cars)
             if code in self.garage_wear:
                 t = replace(t, wear_amd_per_km=self.garage_wear[code])
+            elif t.wear_amd_per_km is None and code in self.garage_prior:
+                t = replace(t, wear_amd_per_km=self.garage_prior[code])
             out[code] = t
         return out
 
     def wear_source(self, code: str) -> str | None:
-        """Откуда «Износ, драм/км» машины в расчёте: garage — журнал гаража, manual — настройки, None — не задан."""
+        """Откуда «Износ, драм/км» машины в расчёте: garage — своя цена журнала гаража, manual — настройки, garage_avg —
+        средняя модели или парка по журналу (ручное пусто), None — не задан."""
         if code in self.garage_wear:
             return 'garage'
         t = self.trucks.get(code)
-        return 'manual' if t is not None and t.wear_amd_per_km is not None else None
+        if t is not None and t.wear_amd_per_km is not None:
+            return 'manual'
+        return 'garage_avg' if code in self.garage_prior else None
 
     def truck_center_ok(self, code: str, name: str | None) -> bool:
         """Можно ли машине в малый центр: выбор владельца; «авто» (записи нет или center_ok NULL) — center_auto
@@ -833,6 +873,8 @@ class Bundle:
             data['driver'] = sorted(self.driver_points.items())
         if self.garage_wear:     # без готовых цен журнала гаража — тоже
             data['garage'] = sorted(self.garage_wear.items())
+        if self.garage_prior:    # без средних журнала (готовых машин меньше двух) — тоже
+            data['garage_prior'] = sorted(self.garage_prior.items())
         raw = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
         return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
 
@@ -2168,7 +2210,7 @@ class Store:
     # --- журнал гаража (№53): ремонты, ДТП, страховка и налоги, пробег ---
 
     _GARAGE_COLUMNS = ('id, car_code, day, kind, what, amount_amd, odometer_km, note, created_at, created_by, '
-                       'updated_at, updated_by, deleted_at, deleted_by, replaced_by')
+                       'updated_at, updated_by, deleted_at, deleted_by, replaced_by, spread_months')
 
     def garage_entries(self, deleted: bool = False) -> list[GarageEntry]:
         """Записи журнала по дню и номеру: живые; deleted — и удалённые («показать удалённые» администратора). Битая
@@ -2180,7 +2222,8 @@ class Store:
         for row in rows:
             entry, problems = _loaded_garage(row)
             if problems:
-                raise StoreError(f'{self._name()}: повреждена запись журнала гаража {row[0]!r} '
+                # текст доходит до любой страницы раздела (журнал читают все расчёты) — по-армянски, как у прочих (№58)
+                raise StoreError(f'{self._name()}: վնասված է ավտոտնակի №{row[0]} գրառումը '
                                  f'({", ".join(problems)}){_FIX_HINT}')
             out.append(entry)
         return out
@@ -2226,20 +2269,21 @@ class Store:
         версия копируется удалённой строкой с replaced_by = target (номер живой записи тот же)."""
         now = _now()
         values = (item.car_code, item.day.isoformat(), item.kind, item.what, item.amount_amd, item.odometer_km,
-                  item.note)
+                  item.note, item.spread_months)
         if target is None:
             return conn.execute('INSERT INTO garage_entry(car_code, day, kind, what, amount_amd, odometer_km, note, '
-                                'created_at, created_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                                'spread_months, created_at, created_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                                 (*values, now, user)).lastrowid
-        old = conn.execute('SELECT car_code, day, kind, what, amount_amd, odometer_km, note FROM garage_entry '
-                           'WHERE id = ?', (target,)).fetchone()
+        old = conn.execute('SELECT car_code, day, kind, what, amount_amd, odometer_km, note, spread_months '
+                           'FROM garage_entry WHERE id = ?', (target,)).fetchone()
         if tuple(old) != values:
-            conn.execute('INSERT INTO garage_entry(car_code, day, kind, what, amount_amd, odometer_km, note, created_at, '
-                         'created_by, updated_at, updated_by, deleted_at, deleted_by, replaced_by) SELECT car_code, day, '
-                         'kind, what, amount_amd, odometer_km, note, created_at, created_by, updated_at, updated_by, ?, ?, '
-                         'id FROM garage_entry WHERE id = ?', (now, user, target))
+            conn.execute('INSERT INTO garage_entry(car_code, day, kind, what, amount_amd, odometer_km, note, spread_months, '
+                         'created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, replaced_by) SELECT '
+                         'car_code, day, kind, what, amount_amd, odometer_km, note, spread_months, created_at, created_by, '
+                         'updated_at, updated_by, ?, ?, id FROM garage_entry WHERE id = ?', (now, user, target))
         conn.execute('UPDATE garage_entry SET car_code = ?, day = ?, kind = ?, what = ?, amount_amd = ?, '
-                     'odometer_km = ?, note = ?, updated_at = ?, updated_by = ? WHERE id = ?', (*values, now, user, target))
+                     'odometer_km = ?, note = ?, spread_months = ?, updated_at = ?, updated_by = ? WHERE id = ?',
+                     (*values, now, user, target))
         return target
 
     def save_garage_entry(self, item: GarageInput, user: str | None, entry_id: int | None = None) -> int:
@@ -2261,7 +2305,7 @@ class Store:
                 raise GarageError({'odometer_km': problem})
             return self._garage_write(conn, item, target, user)
 
-        return self._transaction(write, 'не удалось сохранить запись журнала гаража')
+        return self._transaction(write, 'չհաջողվեց պահպանել ավտոտնակի գրառումը')
 
     def save_garage_odometers(self, items: Sequence[GarageInput], user: str | None) -> dict[int, str]:
         """Пробег машин одной таблицей (раз в месяц): каждая строка — «только пробег» своей машины на свой день (тот же
@@ -2281,10 +2325,10 @@ class Store:
                     self._garage_write(conn, item, target, user)
             return errors
 
-        return self._transaction(write, 'не удалось сохранить пробег')
+        return self._transaction(write, 'չհաջողվեց պահպանել վազքը')
 
     def delete_garage_entry(self, entry_id: int, user: str | None) -> bool:
         """Мягкое удаление: запись остаётся (её видит администратор), в расчётах не участвует. False — живой нет."""
         return self._transaction(lambda conn: conn.execute(
             'UPDATE garage_entry SET deleted_at = ?, deleted_by = ? WHERE id = ? AND deleted_at IS NULL',
-            (_now(), user, entry_id)).rowcount == 1, 'не удалось удалить запись журнала гаража')
+            (_now(), user, entry_id)).rowcount == 1, 'չհաջողվեց ջնջել ավտոտնակի գրառումը')

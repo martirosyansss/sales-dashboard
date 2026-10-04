@@ -353,8 +353,9 @@ def test_store_db_checks_and_broken_rows(tmp_path):
         conn.execute("INSERT INTO garage_entry(car_code, day, kind, what, amount_amd, odometer_km, created_at) "
                      "VALUES('C', '01.01.2026', 'repair', 'x', 5, 1, 'x')")
         conn.commit()
-    with pytest.raises(st.StoreError, match='журнала гаража'):
+    with pytest.raises(st.StoreError, match='վնասված է ավտոտնակի №') as exc:
         s.garage_entries()
+    assert not any('Ѐ' <= ch <= 'ӿ' for ch in str(exc.value))   # доходит до любой страницы — только по-армянски (№58)
 
 
 def test_store_migrates_15_to_16_keeps_all_rows(tmp_path):
@@ -531,8 +532,10 @@ def test_settings_show_garage_and_never_persist_it(client, monkeypatch):
     _ready_journal(state.store, car='CAR2', price_km=10_000, cost=50_000)
     trucks = {t['car_code']: t for t in client.get('/api/routes/settings').get_json()['trucks']}
     assert (trucks['CAR1']['wear_amd_per_km'], trucks['CAR1']['wear_source']) == (12.0, 'garage')
-    assert trucks['CAR1']['garage']['price'] == 30.0 and trucks['CAR1']['garage']['status'] == 'ready'
-    assert (trucks['CAR2']['wear_amd_per_km'], trucks['CAR2']['garage']['price']) == (None, 5.0)
+    g1, g2 = trucks['CAR1']['garage'], trucks['CAR2']['garage']
+    assert (g1['own'], g1['status'], g2['own'], trucks['CAR2']['wear_amd_per_km']) == (30.0, 'ready', 5.0, None)
+    # две готовые машины разных моделей (HOWO, FORD) — сглаживание к средней парка: 650 000 ֏ / 30 000 км
+    assert (g1['model_price'], g1['blend'], g1['price'], g2['price']) == (21.7, 'fleet', 25.8, 16.1)
     page = [{'car_code': c, 'wear_amd_per_km': trucks[c]['wear_amd_per_km']} for c in ('CAR1', 'CAR2')]
     assert client.post('/api/routes/settings', json={'trucks': page}).status_code == 200
     stored = state.store.load().trucks
@@ -601,11 +604,12 @@ def test_apk_odometer_completes_garage_price(client, monkeypatch):
     state = client.application.extensions['route_optimizer']
     state.store.save_garage_entry(st.GarageInput('CAR1', date(2026, 2, 1), 'odometer', None, 0, 50_000), 'qa')
     state.store.save_garage_entry(st.GarageInput('CAR1', date(2026, 6, 1), 'repair', 'x', 80_000, 58_000), 'qa')
-    assert views._garage_prices(state, AS_OF)['CAR1'].status == 'accumulating'
+    trucks = state.store.load().trucks
+    assert views._garage_prices(state, AS_OF, trucks)['CAR1'].status == 'accumulating'
     state.fleet_facts = _Facts([_refuel('a', 'CAR1', '2026-09-20T08:00:00+00:00', 66_000),
                                 _refuel('b', 'CAR2', '2026-01-20T08:00:00+00:00', 1_000),
                                 _refuel('c', 'CAR2', '2026-09-20T08:00:00+00:00', 30_000)])
-    prices = views._garage_prices(state, AS_OF)
+    prices = views._garage_prices(state, AS_OF, trucks)
     assert (prices['CAR1'].status, prices['CAR1'].price) == ('ready', 5.0) and 'CAR2' not in prices
     assert views._bundle(state).garage_wear == {'CAR1': 5.0}
 
@@ -766,7 +770,8 @@ def test_api_summary_and_months(gclient):
     assert list(months) == [f'2025-{m:02d}' for m in (11, 12)] + [f'2026-{m:02d}' for m in range(1, 11)]
     assert months['2026-03']['repair'] == 200_000 and months['2026-09'] == \
         {'month': '2026-09', 'repair': 0, 'accident': 70_000, 'fixed': 0, 'total': 70_000}
-    assert g['rules'] == {'ready_months': 6, 'ready_km': 500, 'stale_days': 45}
+    assert g['rules'] == {'ready_months': 6, 'ready_km': 500, 'stale_days': 30, 'blend_km': 20_000,
+                          'spread_months': [24, 36], 'spread_suggest_amd': 300_000} and g['journal_empty'] is False
 
 
 def test_api_garage_works_when_erp_is_down(gclient):
