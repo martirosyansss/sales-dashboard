@@ -1544,11 +1544,14 @@
         return ol;
     }
 
-    // Обед в пути (№61): где программа вставила паузу — строка расписания рейса «Ճաշ 13:05–13:35»
+    // Обед в пути (№61): где программа вставила паузу — строка расписания рейса «Ճաշ 13:05–13:35»; where — store (после
+    // разгрузки), depot (на складе до загрузки), road (в дороге: к концу окна обеда удобного места не было)
     function lunchText(l) {
         const rest = l.minutes - l.added_min;
+        const where = l.where || (l.after_stop === null ? 'depot' : 'store');
         return 'Ճաշ ' + (l.end === l.start ? l.start : l.start + '–' + l.end)
-            + (l.after_stop === null ? ' · պահեստում' : rest >= 0.5 ? ' (և ' + fmt(rest) + NB + 'րոպե՝ ընդունման ժամին սպասելիս)' : '');
+            + (where === 'depot' ? ' · պահեստում' : where === 'road' ? ' · ճանապարհին'
+                : rest >= 0.5 ? ' (և ' + fmt(rest) + NB + 'րոպե՝ ընդունման ժամին սպասելիս)' : '');
     }
     function lunchItem(l) {
         const li = document.createElement('li');
@@ -2150,8 +2153,13 @@
         if (tt.wait) bits.push('ընդունման ժամի սպասում՝ ' + minText(tt.wait));
         if (tt.lunch) bits.push('ճաշ՝ ' + minText(tt.lunch));
         const time = [capFirst(bits.join(', ')) + '։ Ընդամենը՝ ' + minText(tt.total) + ' (' + tr.loading_start + ' → ' + tr.return + ')։'];
-        if (tr.lunch) time.push(lunchText(tr.lunch) + '։');
-        if (x.idle_before_min >= 1) time.push((tt.loading ? 'Բեռնումը սկսվում է ' + tr.loading_start : 'Մեքենան մեկնում է ' + tr.depart)
+        // обед на складе — своими словами: это не «выезд позже, чтобы не ждать у окна первой точки» (простой — без обеда)
+        const depotLunch = tr.lunch && (tr.lunch.where || (tr.lunch.after_stop === null ? 'depot' : 'store')) === 'depot';
+        if (depotLunch) time.push('Մինչ բեռնումը վարորդը ճաշում է պահեստում՝ ' + tr.lunch.start + '–' + tr.lunch.end
+            + (x.idle_before_min >= 1 ? '․ բացի դրանից, մեքենան սպասում է ' + minText(x.idle_before_min)
+                + ', որպեսզի առաջին խանութ հասնի դրա ընդունման ժամի սկզբին' : '') + '։');
+        else if (tr.lunch) time.push(lunchText(tr.lunch) + '։');
+        if (x.idle_before_min >= 1 && !depotLunch) time.push((tt.loading ? 'Բեռնումը սկսվում է ' + tr.loading_start : 'Մեքենան մեկնում է ' + tr.depart)
             + '-ին, ոչ ավելի շուտ, որպեսզի ' + (tt.loading ? 'մեքենան ' : '') + 'առաջին խանութ հասնի դրա ընդունման ժամի սկզբին և չսպասի։');
         if (i < t.trips.length - 1) time.push('Դրանից հետո նույն մեքենան կատարում է ' + (i + 2) + '-րդ երթը։');
         else if (x.end_slack_min >= -0.5) time.push('Մինչև աշխատանքային օրվա ավարտը (' + d.work_end + ') մնում է ' + minText(x.end_slack_min) + '։');
@@ -2277,6 +2285,7 @@
             if (m.learned.travel) learned.push('ճանապարհին ծախսվող ժամանակն ըստ ժամերի');
             if (m.learned.unload) learned.push('բեռնաթափման ժամանակը');
             if (m.learned.loading) learned.push('բեռնման ժամանակը');
+            if (num(m.learned.lunch) !== null) learned.push('ճաշը ճանապարհին՝ ' + minText(m.learned.lunch));   // обед (№61)
             if ((m.learned.fuel || []).length) learned.push('դիզելի ծախսը՝ ' + m.learned.fuel.map(c => truckLabel(truckBy(c))).join(', '));
         }
         // загрузка на складе — те же числа, что прибавляет расчёт (tn.load), даже если задано только одно из двух

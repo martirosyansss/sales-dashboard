@@ -214,6 +214,11 @@
         $('lrGain').textContent = d.rules.min_gain_pct;
         $('lrTtGain').textContent = d.rules.min_gain_pct;
         $('lrFuelMin').textContent = d.rules.fuel_min_intervals;
+        // устойчивость выигрыша (бутстреп) и пороги обеда — числа правил с сервера, не разбор текста причин
+        [['lrBootShare', d.rules.boot_share_pct], ['lrBootN', d.rules.boot_resamples],
+            ['lrLunchTrain', (d.rules.lunch_min || [])[0]], ['lrLunchTest', (d.rules.lunch_min || [])[2]]].forEach(([id, v]) => {
+            if (num(v) !== null && $(id)) $(id).textContent = v;
+        });
         const tt = d.rules.truck_time_min || [];   // [участков обучения, дней обучения, участков проверки, дней проверки]
         [['lrTtTrain', 0], ['lrTtTrainDays', 1], ['lrTtTest', 2], ['lrTtTestDays', 3]].forEach(([id, i]) => {
             if (num(tt[i]) !== null) $(id).textContent = tt[i];

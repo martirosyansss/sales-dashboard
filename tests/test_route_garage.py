@@ -397,7 +397,7 @@ def test_owner_db_copy_migrates_to_16(tmp_path):
     assert b.garage_wear == {}
     with closing(sqlite3.connect(str(copy))) as conn:
         after = {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before}
-        if before.get('learned_norms'):                    # схема 17 добавила журналу столбец confidence (NULL)
+        if before.get('learned_norms'):                    # шаг журнала обучения (№61) добавил столбец confidence (NULL)
             after['learned_norms'] = [r[:len(before['learned_norms'][0])] for r in after['learned_norms']]
         assert after == before
         assert conn.execute('SELECT COUNT(*) FROM garage_entry').fetchone() == (0,)

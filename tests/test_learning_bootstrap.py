@@ -51,6 +51,34 @@ def test_bootstrap_share_clear_gain_passes_noise_fails_deterministic():
     assert lr.bootstrap_share([1.0] * 6 + [-5.5]) < lr.BOOT_SHARE
 
 
+def test_bootstrap_resamples_days_not_observations():
+    """Ревью M10: группа бутстрепа — день проверки, а не наблюдение. День 1 — 30 наблюдений, новая норма каждое лучше на 1;
+    день 2 — 40 наблюдений, каждое хуже на 0,5. По наблюдениям выигрыш выглядит устойчивым, по дням — нет (из выборок
+    двух дней новая точнее только в 75%): норма не принимается."""
+    rows = [(TEST_FROM, 30.0, 29.0, 20.0)] * 30 + [(TEST_FROM + timedelta(days=1), 30.0, 29.0, 29.75)] * 40
+    assert lr._gains(rows) == [pytest.approx(30.0), pytest.approx(-20.0)]
+    assert lr.bootstrap_share(lr._gains(rows)) == pytest.approx(0.75, abs=0.03)
+    obs = [lr.LunchObs(TEST_FROM - timedelta(days=1 + i % 5), 29.0) for i in range(15)]
+    obs += [lr.LunchObs(TEST_FROM, 20.0)] * 30 + [lr.LunchObs(TEST_FROM + timedelta(days=1), 29.75)] * 40
+    o = lr.fit_lunch(obs, 30.0, TODAY, 30)
+    assert o.params == {'minutes': 29.0} and o.mae_after <= 0.98 * o.mae_before          # выигрыш 2% есть
+    assert not o.accepted and o.confidence == pytest.approx(0.75, abs=0.03) and o.reason.startswith('ոչ հուսալի')
+
+
+def test_fuel_resamples_refuel_intervals():
+    """Ревью M23: у расхода группа бутстрепа — интервал заправок. Из четырёх отложенных интервалов новая норма в одном
+    лучше на 5 л/100 км, в трёх хуже на 1: в среднем лучше (ошибка 6,5 → 6), но устойчиво — нет (из выборок четырёх
+    интервалов лучше только в ~68%)."""
+    rnd = random.Random(8)
+    days = [TEST_FROM - timedelta(days=30 - i) for i in range(12)] + [TEST_FROM + timedelta(days=i) for i in range(4)]
+    obs = [lr.FuelObs(d, 0.1 + 0.05 * (i % 12), 25.0 + rnd.uniform(-0.01, 0.01)) for i, d in enumerate(days[:12])]
+    obs += [lr.FuelObs(days[12], 0.4, 10.0)] + [lr.FuelObs(d, 0.4, 28.0) for d in days[13:]]
+    o = lr.fit_fuel(obs, lambda u: 30.0, 'CAR1')
+    assert o.params['empty_l100'] == pytest.approx(25.0, abs=0.1) and o.mae_after <= 0.98 * o.mae_before
+    assert not o.accepted and o.confidence == pytest.approx(1 - 0.75 ** 4, abs=0.04), o.reason
+    assert 'ստուգման միջակայքերի (լրիվ բաքերի միջև)' in o.reason
+
+
 def test_accept_rule_needs_gain_and_robustness():
     ok, why, conf = lr._accept(2.0, 1.0, [1.5] * 7)
     assert ok and conf == 1.0 and why.startswith('ընդունված է․ սխալ 2 → 1․ հուսալի է՝')

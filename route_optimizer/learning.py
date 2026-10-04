@@ -50,16 +50,24 @@
   исправлений (supersedes); одометр — по самой длинной согласованной цепочке заправок машины (флаг при приёме не
   учитывается: опечатка в первой заправке не портит остальные). Ограничение: соседние заправки цепочки — не дальше
   REFUEL_LOOKBACK позиций: серия из ≥ 50 сомнительных одометров подряд (например, сломанный счётчик) разрывает цепочку;
-- lunch — обед водителя в пути (№61) → TruckNorms.lunch_minutes «Развоза» (окно начала обеда — из настроек). Машино-день
-  по треку (lunch_obs): самая длинная стоянка не по плану ('other': не склад и не точка плана), начавшаяся в окне начала
-  обеда ± LUNCH_SLACK, нет такой — 0; только дни, когда машина работала дольше конца окна (иначе план обеда и не ждёт).
-  Выученное — медиана обучения в пределах LUNCH_BOUNDS, шаг за прогон — не больше ±max(LUNCH_STEP × действующего,
-  LUNCH_STEP_MIN) (до 0 дойти можно). Ошибка — минут на машино-день: действующий обед против выученного. Обед в
-  настройках 0 — выключен: не учится и не включается выученным. Стоянка не по плану в обучение разгрузки и времени в
-  пути и так не идёт (участок с ней — не чистый; визиты — только стоянки у точек плана), и обедом она считается один
-  раз. Обед на складе — в стоянке перед рейсом: поставил его туда план — он в плановом ожидании (planned_wait; прогноз
-  рейсов — уже с обедом) и из стоянки загрузки вычитается; вопреки плану — остаётся в ней (её сдерживают отсечение
-  длинных стоянок и нижний квантиль загрузки).
+- lunch — обед водителя в пути (№61) → TruckNorms.lunch_minutes «Развоза» (окно начала обеда — из настроек). Обед,
+  который водитель взял на самом деле (lunch_obs), — по машино-дню, где план поставил обед (прогноз сборки помнит, где:
+  после разгрузки какого магазина, на складе до загрузки какого рейса или в дороге — views._capture_prediction): больший
+  из двух — самая длинная стоянка не по плану ('other': не склад и не точка плана), начавшаяся в окне начала обеда ±
+  LUNCH_SLACK (свернул поесть в сторону), и излишек стоянки там, где обед по плану: у магазина — стоянка сверх его
+  разгрузки по действующей норме (как в расчёте, со своим временем магазина) и ожидания окна приёма до начала окна обеда
+  (ожидание после него — уже обед, как в плане), на складе — стоянка перед рейсом сверх плановой загрузки и планового
+  простоя без обеда. Водитель поел там, где план, — так и видно (а не 0: иначе обед за несколько ночей сошёл бы на нет);
+  поел в сторону — видно стоянку. Дни без обеда в плане (прогноз до №61, обед выключен, план машины кончился до окна) и
+  дни, когда машина не работала дольше конца окна, не учитываются. Выученное — медиана обучения в пределах LUNCH_BOUNDS,
+  шаг за прогон — не больше ±max(LUNCH_STEP × действующего, LUNCH_STEP_MIN) (до 0 дойти можно). Ошибка — минут на
+  машино-день: действующий обед против выученного. Обед в настройках 0 — выключен: не учится и не включается выученным.
+  Автообучение обеда по умолчанию ВЫКЛЮЧЕНО (как у загрузки): программа учит и показывает, включает владелец.
+  Обед не попадает в другие наблюдения: стоянка не по плану — ни в разгрузку, ни в чистые участки (так устроен факт);
+  визит магазина, после которого по плану обед, не идёт в обучение разгрузки и своего времени магазинов, а стоянка на
+  складе перед рейсом с обедом по плану — в обучение загрузки (unload_obs / load_obs: skip). Исключение, а не вычитание
+  обеда: вычитать нечего надёжно (наблюдаемый обед — сам излишек над нормой разгрузки, вычет вернул бы норму), а какой
+  визит после обеда — решает время по плану, не длина стоянки: выборка визитов не смещена, их только меньше.
 
 Правило принятия (одно для всех): обучение — на днях до отложенной недели (TRAIN_DAYS дней), проверка — на последних
 HOLDOUT_DAYS днях (до вчера включительно; у расхода — последние FUEL_TEST интервала заправок, а форма модели
@@ -88,7 +96,7 @@ import random
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from statistics import median
-from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
+from typing import Any, Callable, Collection, Iterable, Mapping, Protocol, Sequence
 
 from . import actuals as ac
 from . import valhalla_engine
@@ -103,7 +111,7 @@ KINDS = ('unload', 'loading', 'travel', 'truck_time', 'lunch', 'fuel')
 KIND_TITLES = {'unload': 'Բեռնաթափում խանութում', 'loading': 'Բեռնում պահեստում', 'travel': 'Մեքենաների արագությունն ըստ ժամերի',
                'truck_time': 'Բեռնատարների ճանապարհի ժամանակը՝ մոդել', 'lunch': 'Ճաշ ճանապարհին',
                'fuel': 'Վառելիքի ծախս'}
-DEFAULT_AUTO = {'unload': True, 'loading': False, 'travel': True, 'truck_time': True, 'lunch': True,
+DEFAULT_AUTO = {'unload': True, 'loading': False, 'travel': True, 'truck_time': True, 'lunch': False,
                 'fuel': True}   # нет переключателя в базе
 HOLDOUT_DAYS = 7
 TRAIN_DAYS = 120
@@ -674,7 +682,7 @@ def fit_lunch(obs: Sequence[LunchObs], current: float, today: date, setting: flo
     — минут на машино-день отложенной недели: current против выученного, правило принятия — _accept. setting — обед в
     настройках: 0 — обед выключен, не учится."""
     if setting <= 0:
-        return Outcome('lunch', '', False, 'ճաշն անջատված է կարգավորումներում (0 րոպե)․ ծրագիրը այն չի սովորում')
+        return Outcome('lunch', '', False, 'ճաշն անջատված է կարգավորումներում (0 րոպե)․ ծրագիրն այն չի սովորում')
     train, test = _split(obs, today)
     short = _enough(train, test, LUNCH_MIN)
     if short:
@@ -1026,13 +1034,23 @@ def draft_ranks(draft: Mapping[str, Any] | None, truck: str) -> tuple[dict[int, 
 
 
 @dataclass(frozen=True)
+class PlanLunch:
+    """Обед по плану в рейсе (прогноз сборки, №61): где — store (после разгрузки магазина customer), depot (на складе до
+    загрузки рейса), road (в дороге); минуты обеда."""
+    where: str
+    customer: int | None
+    minutes: float
+
+
+@dataclass(frozen=True)
 class PlanTrip:
     """Плановый рейс машины (прогноз сборки): начало загрузки, плановое возвращение предыдущего рейса (None — первый
-    рейс дня), плановый выезд, клиенты."""
+    рейс дня), плановый выезд, клиенты, обед по плану в этом рейсе (None — нет; прогноз до №61 — тоже)."""
     loading_start: datetime | None
     prev_return: datetime | None
     depart: datetime | None
     customers: frozenset[int]
+    lunch: PlanLunch | None = None
 
     @property
     def wait(self) -> tuple[datetime, datetime] | None:
@@ -1043,9 +1061,20 @@ class PlanTrip:
         return self.prev_return, self.loading_start
 
 
+def _plan_lunch(raw: Any) -> PlanLunch | None:
+    """Обед рейса из прогноза ({where, customer, minutes}); битый — None."""
+    if not isinstance(raw, Mapping) or raw.get('where') not in ('store', 'depot', 'road') \
+            or not _num(raw.get('minutes'), 0, 240):
+        return None
+    cid = raw.get('customer')
+    if raw['where'] == 'store' and (not isinstance(cid, int) or isinstance(cid, bool)):
+        return None
+    return PlanLunch(raw['where'], cid if raw['where'] == 'store' else None, float(raw['minutes']))
+
+
 def plan_trips(prediction: Mapping[str, Any] | None, day: date) -> list[PlanTrip]:
     """Прогноз сборки машины (views._capture_prediction: trips — loading_start, depart, return «HH:MM», stops —
-    [[клиент, ETA]]) → плановые рейсы по порядку. Прогноз старый (без рейсов) — пусто."""
+    [[клиент, ETA]], lunch — обед по плану) → плановые рейсы по порядку. Прогноз старый (без рейсов) — пусто."""
     midnight = datetime(day.year, day.month, day.day, tzinfo=ac.YEREVAN)
 
     def at(text: Any) -> datetime | None:
@@ -1053,8 +1082,15 @@ def plan_trips(prediction: Mapping[str, Any] | None, day: date) -> list[PlanTrip
         return midnight + timedelta(minutes=m) if m is not None else None
     trips = [t for t in (prediction or {}).get('trips') or () if isinstance(t, Mapping)]
     return [PlanTrip(at(t.get('loading_start')), at(trips[j - 1].get('return')) if j else None, at(t.get('depart')),
-                     frozenset(c[0] for c in t.get('stops') or () if isinstance(c, list) and c and isinstance(c[0], int)))
+                     frozenset(c[0] for c in t.get('stops') or () if isinstance(c, list) and c and isinstance(c[0], int)),
+                     _plan_lunch(t.get('lunch')))
             for j, t in enumerate(trips)]
+
+
+def lunch_customers(plan: Sequence[PlanTrip]) -> frozenset[int]:
+    """Магазины, после разгрузки которых по плану обед: их визит — не в обучение разгрузки (unload_obs, skip)."""
+    return frozenset(t.lunch.customer for t in plan if t.lunch is not None and t.lunch.where == 'store'
+                     and t.lunch.customer is not None)
 
 
 def _planned_trip(plan: Sequence[PlanTrip], n: int, cids: set[int], depart: datetime) -> PlanTrip | None:
@@ -1079,28 +1115,72 @@ def planned_wait(trip: PlanTrip | None, arrive: datetime, depart: datetime) -> f
     return max(0.0, (min(depart, w[1]) - max(arrive, w[0])).total_seconds() / 60.0)
 
 
-def lunch_obs(day: date, actual: ac.DayActual, window: tuple[float, float]) -> LunchObs | None:
-    """Обед машины за день по треку (№61): самая длинная стоянка не по плану ('other' — не склад и не точка плана),
-    начавшаяся в окне начала обеда window (минуты от полуночи рабочего дня) ± LUNCH_SLACK; такой нет — 0. Машина
-    работала не дольше конца окна (последнее возвращение на склад или отъезд от точки — не позже window[1]) — None: такой
-    день план и не кормит."""
+def _trip_cids(actual: ac.DayActual, stops: Sequence[ac.PlanStop], t: ac.Trip) -> set[int]:
+    by_key = {s.key: s for s in stops}
+    return {by_key[k].customer_id for k, i in actual.served if i in t.visits and k in by_key   # type: ignore[misc]
+            and by_key[k].customer_id is not None}
+
+
+def lunch_obs(day: date, actual: ac.DayActual, window: tuple[float, float], stops: Sequence[ac.PlanStop] = (),
+              plan: Sequence[PlanTrip] = (), expected: Callable[[UnloadObs], float] | None = None) -> LunchObs | None:
+    """Обед, который машина взяла за день (№61, правило — в шапке модуля): больший из двух — самая длинная стоянка не по
+    плану, начавшаяся в окне начала обеда window (минуты от полуночи рабочего дня) ± LUNCH_SLACK, и излишек стоянки там,
+    где обед по плану (plan — плановые рейсы с обедом, plan_trips): у магазина — стоянка его обслуживающего визита без
+    разгрузки по действующей норме (expected — прогноз нормы для визита, как в обучении разгрузки; доставлено
+    неизвестно — вес накладной) и без ожидания окна приёма до начала окна обеда; на складе — стоянка перед рейсом сверх
+    плановой загрузки и планового простоя без обеда; в дороге — только стоянка не по плану. Обеда в плане нет — None
+    (где искать, неизвестно); машина работала не дольше конца окна — None (такой день план и не кормит)."""
+    meal = next(((n, t) for n, t in enumerate(plan) if t.lunch is not None), None)
+    if meal is None:
+        return None
     ends = [t.ret for t in actual.trips if t.ret is not None] + [v.leave for v in actual.visits]
     if not ends or ac.day_minutes(day, max(ends)) <= window[1]:
         return None
     lo, hi = window[0] - LUNCH_SLACK, window[1] + LUNCH_SLACK
     stays = [s.minutes for s in actual.stays if s.kind == 'other' and lo <= ac.day_minutes(day, s.arrive) <= hi]
-    return LunchObs(day, round(max(stays, default=0.0), 1))
+    place = 0.0
+    _, trip = meal
+    lunch = trip.lunch
+    if lunch.where == 'store':   # type: ignore[union-attr]
+        by_key = {s.key: s for s in stops}
+        vi = next((i for k, i in actual.served if k in by_key and by_key[k].customer_id == lunch.customer), None)  # type: ignore[union-attr]
+        if vi is not None:
+            v = actual.visits[vi]
+            ss = [by_key[k] for k in v.keys if k in by_key]
+            tonnes = math.fsum(s.delivered_kg if s.delivered_kg is not None else s.kg for s in ss) / 1000.0
+            norm = expected(UnloadObs(day, len(ss), tonnes, 0.0, tuple(sorted(s.customer_id for s in ss
+                                                                                if s.customer_id is not None)))) \
+                if expected is not None else 0.0
+            arrive = ac.day_minutes(day, v.arrive)
+            opens = max((s.window[0] for s in ss if s.window is not None and math.isfinite(s.window[0])), default=None)
+            early = max(0.0, min(opens, window[0]) - arrive) if opens is not None else 0.0
+            place = v.minutes - norm - early
+    elif lunch.where == 'depot' and trip.loading_start is not None and trip.depart is not None:   # type: ignore[union-attr]
+        for n, t in enumerate(actual.trips):
+            if t.depart is None or _planned_trip(plan, n, _trip_cids(actual, stops, t), t.depart) is not trip:
+                continue
+            stay = next((s for s in actual.stays if s.kind == 'depot' and s.leave == t.depart), None)
+            if stay is None:
+                break
+            loading = (trip.depart - trip.loading_start).total_seconds() / 60.0
+            gap = ((trip.loading_start - trip.prev_return).total_seconds() / 60.0 if trip.prev_return is not None
+                   else lunch.minutes)   # type: ignore[union-attr]
+            place = stay.minutes - loading - max(0.0, gap - lunch.minutes)   # type: ignore[union-attr]
+            break
+    return LunchObs(day, round(max(0.0, place, *stays), 1))
 
 
-def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop]) -> list[UnloadObs]:
+def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop],
+               skip: Collection[int] = ()) -> list[UnloadObs]:
     """Обслуживающие визиты (не повторные), у всех точек которых известно доставленное. Из стоянки вычитается ожидание
     открытия окна приёма (начало окна позже прибытия — машина ждёт: это не разгрузка); стоянка дольше UNLOAD_MAX_MIN —
-    не учитывается."""
+    не учитывается. skip — магазины, после разгрузки которых по плану обед (lunch_customers): их визит не идёт (обед —
+    в его стоянке)."""
     by_key = {s.key: s for s in stops}
     out = []
     for v in actual.visits:
         ss = [by_key[k] for k in v.keys]
-        if v.repeat or any(s.delivered_kg is None for s in ss):
+        if v.repeat or any(s.delivered_kg is None for s in ss) or any(s.customer_id in skip for s in ss):
             continue
         opens = max((s.window[0] for s in ss if s.window is not None and math.isfinite(s.window[0])), default=None)
         wait = max(0.0, opens - ac.day_minutes(day, v.arrive)) if opens is not None else 0.0
@@ -1116,7 +1196,7 @@ def load_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop] = (),
              plan: Sequence[PlanTrip] = ()) -> list[LoadObs]:
     """Стоянка на складе перед рейсом (видно прибытие, не дольше actuals.MAX_LOAD_MIN и не короче LOAD_MIN_STAY — проезд
     через склад) без собственного ожидания плана (planned_wait по плановому рейсу _planned_trip); после вычета — тоже
-    не короче LOAD_MIN_STAY."""
+    не короче LOAD_MIN_STAY. Рейс, перед загрузкой которого по плану обед на складе, не учитывается (обед — в стоянке)."""
     by_key = {s.key: s for s in stops}
     served = dict(actual.served)
     out = []
@@ -1126,7 +1206,10 @@ def load_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop] = (),
             continue
         cids = {by_key[k].customer_id for k, i in served.items() if i in t.visits and k in by_key
                 and by_key[k].customer_id is not None}
-        minutes = t.load_min - planned_wait(_planned_trip(plan, n, cids, t.depart), arrive, t.depart)   # type: ignore[operator]
+        trip = _planned_trip(plan, n, cids, t.depart)
+        if trip is not None and trip.lunch is not None and trip.lunch.where == 'depot':
+            continue
+        minutes = t.load_min - planned_wait(trip, arrive, t.depart)   # type: ignore[operator]
         if minutes >= LOAD_MIN_STAY:
             out.append(LoadObs(day, t.loaded_kg / 1000.0, minutes))
     return out

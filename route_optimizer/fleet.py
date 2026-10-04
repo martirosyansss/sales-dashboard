@@ -32,13 +32,14 @@
   - машина обедает, только если у неё есть работа, начинающаяся после начала окна обеда lunch_from (точка или рейс);
     день кончился раньше — обеда нет;
   - обед начинается на первой границе не раньше lunch_from: сразу после разгрузки у магазина или на складе между
-    рейсами (до загрузки следующего; машина стоит на складе в начале окна — с lunch_from) — что раньше; в окне границы
-    нет (длинный перегон) — на первой после него;
+    рейсами (до загрузки следующего; машина стоит на складе в начале окна — с lunch_from) — что раньше; к lunch_to
+    границы не было и машина в пути (длинный перегон) — водитель останавливается в дороге в lunch_to (перегон длиннее на
+    обед); в lunch_to машина у магазина (ждёт окна или разгружается) — обед сразу после его разгрузки;
   - ожидание окна приёма магазина после начала окна обеда — уже обед (водитель ест, пока ждёт): обед сначала
     «съедает» это ожидание (и простой на складе до загрузки), сверху добавляется только остаток;
   - всё после обеда сдвигается; окна приёма, центр и конец дня проверяются на сдвинутом времени.
-Конец окна обеда lunch_to в расчёте не участвует (граница «на первой после окна»), его использует обучение (обед по
-факту — learning.lunch_obs). Без обеда (lunch_minutes 0) расчёт — байт в байт прежний.
+Окно начала обеда — и для обучения (обед по факту — learning.lunch_obs). Без обеда (lunch_minutes 0) расчёт — байт в
+байт прежний.
 """
 from __future__ import annotations
 
@@ -186,10 +187,12 @@ class _Stop:
 class Break:
     """Обед в рейсе (№61): at — начало (минуты от начала дня машины), added — на сколько позже всё после него (обед без
     ожидания окна приёма и простоя на складе, что на него пришлись), stop — после разгрузки какой точки рейса (номер по
-    порядку объезда); None — на складе до загрузки рейса."""
+    порядку объезда); None — на складе до загрузки рейса. road — в дороге (в конце окна обеда): stop — к какой точке
+    едет машина (len — обратно на склад)."""
     at: float
     added: float
     stop: int | None
+    road: bool = False
 
 
 def _split_unload(s: _Stop, n: int, tn: TruckNorms) -> float:
@@ -219,16 +222,24 @@ def _closed(seq: Sequence[int], stops: Sequence[_Stop], d: Matrix) -> float:
 
 def _schedule(seq: Sequence[int], stops: Sequence[_Stop], m: Matrix, start: float,
               arrivals: list[float] | None = None, parts: dict[str, Any] | None = None,
-              lunch: tuple[float, float, bool] | None = None, breaks: list[Break] | None = None) -> tuple[float, bool]:
+              lunch: tuple[float, float, bool, float] | None = None, breaks: list[Break] | None = None
+              ) -> tuple[float, bool]:
     """Рейс «склад → seq → склад» с выезда start (минуты от начала дня машины), с ожиданием у окон:
     (минуты от выезда до возвращения на склад — езда + разгрузка + ожидание, все окна соблюдены).
     Без ожидания минуты — ровно езда + разгрузка, как в остальном модуле. arrivals — сюда дописываются
     прибытия к точкам (начало разгрузки). parts — слагаемые этих минут из того же расчёта (пояснение на странице
     «Развоза»): 'loading' — загрузка на складе (без часовой модели — 0), 'legs' — (езда, ожидание, разгрузка) к каждой
     точке и последним — (езда на склад, 0, 0). lunch — (начало окна обеда, минуты обеда, после рейса у машины есть
-    работа): обед машины ещё впереди — он встаёт после разгрузки первой точки, закончившейся не раньше начала окна
-    (последней — только если работа после рейса есть или сама точка началась после начала окна), ожидание окна приёма
-    этой точки после начала окна обеда идёт в счёт обеда; Break — в breaks (минуты рейса — с ним)."""
+    работа, конец окна обеда): обед машины ещё впереди — он встаёт после разгрузки первой точки, закончившейся не раньше
+    начала окна (последней — только если работа после рейса есть или сама точка началась после начала окна), ожидание
+    окна приёма этой точки после начала окна обеда идёт в счёт обеда; машина в пути в конце окна обеда — обед в дороге
+    (перегон длиннее на обед; обратно на склад — только если работа после рейса есть); Break — в breaks (минуты рейса —
+    с ним)."""
+
+    def on_road(t: float, drive: float, last: bool) -> bool:
+        """Обед ещё впереди, а конец окна обеда приходится на этот перегон."""
+        return (lunch is not None and breaks is not None and not breaks and (lunch[2] or not last)
+                and t <= lunch[3] + _EPS and t + drive > lunch[3] + _EPS)
     dynamic = hasattr(m, 'travel')
     t, prev, wait, ok = start, 0, 0.0, True
     legs: list[tuple[float, float, float]] = []
@@ -239,6 +250,10 @@ def _schedule(seq: Sequence[int], stops: Sequence[_Stop], m: Matrix, start: floa
     for k, v in enumerate(seq):
         s = stops[v]
         drive = m.travel(prev, s.node, t) if dynamic else m[prev][s.node]
+        if on_road(t, drive, False):
+            breaks.append(Break(lunch[3], lunch[1], k, True))   # type: ignore[index, union-attr]
+            t += lunch[1]   # type: ignore[index]
+            paused += lunch[1]   # type: ignore[index]
         t += drive
         reach = t
         early = 0.0
@@ -261,6 +276,10 @@ def _schedule(seq: Sequence[int], stops: Sequence[_Stop], m: Matrix, start: floa
             t += pause
             paused += pause
     back = m.travel(prev, 0, t) if dynamic else m[prev][0]
+    if on_road(t, back, True):
+        breaks.append(Break(lunch[3], lunch[1], len(seq), True))   # type: ignore[index, union-attr]
+        t += lunch[1]   # type: ignore[index]
+        paused += lunch[1]   # type: ignore[index]
     if parts is not None:
         parts['loading'] = loading
         parts['legs'] = [*legs, (back, 0.0, 0.0)]
@@ -290,7 +309,9 @@ def _lunch_trip(seq: Sequence[int], stops: Sequence[_Stop], m: Matrix, free: flo
         minutes, ok = _schedule(seq, stops, m, depart, arrivals, parts)
     elif pending and tn.lunch_minutes > 0:
         got: list[Break] = []
-        minutes, ok = _schedule(seq, stops, m, depart, arrivals, parts, (tn.lunch_from, tn.lunch_minutes, more), got)
+        latest = tn.lunch_to if tn.lunch_to > tn.lunch_from else math.inf
+        minutes, ok = _schedule(seq, stops, m, depart, arrivals, parts, (tn.lunch_from, tn.lunch_minutes, more, latest),
+                                got)
         brk = got[0] if got else None
     else:
         minutes, ok = _schedule(seq, stops, m, depart, arrivals, parts)
@@ -1230,9 +1251,12 @@ def _days(trips: Sequence[Trip], vs: Sequence[_Stop], m: Matrix, start0: Mapping
         if arrivals is not None:
             clock, prev, wait = dep + m.load(math.fsum(vs[v].kg for v in seq)), 0, 0.
             for j, (v, arrival) in enumerate(zip(seq, arrivals)):
-                wait += max(0., arrival-clock-m.travel(prev, vs[v].node, clock))
+                drive = m.travel(prev, vs[v].node, clock)
+                if brk is not None and brk.road and brk.stop == j:
+                    clock += brk.added
+                wait += max(0., arrival-clock-drive)
                 clock, prev = arrival + vs[v].unload, vs[v].node
-                if brk is not None and brk.stop == j:
+                if brk is not None and not brk.road and brk.stop == j:
                     clock += brk.added
         out.setdefault(t.truck, []).append((k, dep, minutes, wait))
         free[t.truck] = dep + minutes

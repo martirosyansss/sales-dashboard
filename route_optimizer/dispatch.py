@@ -819,9 +819,9 @@ def _trip_explain(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, truc
                   cids: Sequence[int], routable: Mapping[int, Stop], kgs: Sequence[float], parts: Mapping[str, Any],
                   free: float, depart: float, minutes: float) -> dict[str, Any]:
     """Почему рейс такой («Ինչու է այս երթը այսպես» на странице) — только цифры этого же расчёта: слагаемые минут рейса
-    (из _timeline, в сумме — его минуты; обед в рейсе — lunch_min), простой на складе до выезда (выезд позже, чтобы не
-    ждать у окна первой точки; обед на складе до загрузки — не в нём), запас до конца рабочего дня, предел загрузки,
-    расход, объезд центра и другие машины дня на этот рейс."""
+    (из _timeline, в сумме — его минуты; обед в рейсе или в дороге — lunch_min), простой на складе до выезда (выезд
+    позже, чтобы не ждать у окна первой точки; обед на складе до загрузки — не в нём), запас до конца рабочего дня, предел
+    загрузки, расход, объезд центра и другие машины дня на этот рейс."""
     legs = parts['legs']
     brk = parts.get('lunch')
     kg = math.fsum(kgs)
@@ -834,7 +834,9 @@ def _trip_explain(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, truc
         'loading_min': _r(parts['loading']), 'drive_min': _r(math.fsum(x for x, _, _ in legs)),
         'unload_min': _r(math.fsum(x for _, _, x in legs)), 'wait_min': _r(math.fsum(x for _, x, _ in legs)),
         'back_min': _r(legs[-1][0]),
-        'idle_before_min': _r(depart - free - (brk.added if brk is not None and brk.stop is None else 0.0)),
+        # простой до выезда без обеда на складе (его показывает строка обеда; простой из-за окна первой точки — свой текст)
+        'idle_before_min': _r(max(0.0, depart - free - (ctx.tn.lunch_minutes if brk is not None and brk.stop is None
+                                                         else 0.0))),
         'end_slack_min': _r(ctx.tn.work_minutes - (depart + minutes)),
         'load_cap_pct': round(fl.LOAD_CAP * 100), 'load_limit_kg': round(limit) if limit is not None else None,
         'over_limit': limit is not None and kg > limit + _EPS, 'heavy_alone': heavy,
@@ -937,9 +939,10 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
     «почему так» — у рейса explain (_trip_explain), у дня — explain (_day_explain): только цифры того же расчёта, текст
     строит страница.
     explain=False — без них (км до правки, прогноз для «план — факт»: литры других машин и объезд не нужны).
-    Обед в пути (№61): у рейса, где он есть, — lunch: начало и конец (HH:MM; на складе — весь обед, в рейсе — сколько
-    добавилось после разгрузки), минут обеда, добавлено к рейсу, после какой точки (номер в stops; None — на складе до
-    загрузки); время рейса и машины — с ним. Без обеда план — прежний до байта."""
+    Обед в пути (№61): у рейса, где он есть, — lunch: где (where: store — после разгрузки у магазина, depot — на складе
+    до загрузки, road — в дороге в конце окна обеда), начало и конец (HH:MM; на складе и в дороге — весь обед, у магазина
+    — сколько добавилось после разгрузки), минут обеда, добавлено к рейсу, после какой точки (номер в stops; None — до
+    первой); время рейса и машины — с ним. Без обеда план — прежний до байта."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
     shares = _shares(draft.trips)
@@ -1003,8 +1006,10 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
         brk = parts[t.id].get('lunch')
         if brk is not None:
             meal = ctx.tn.lunch_minutes if brk.stop is None else brk.added
+            after = (brk.stop - 1 if brk.stop else None) if brk.road else brk.stop
             tj['lunch'] = {'start': _hhmm(ctx.work_start_min + brk.at), 'end': _hhmm(ctx.work_start_min + brk.at + meal),
-                           'minutes': _r(ctx.tn.lunch_minutes), 'added_min': _r(brk.added), 'after_stop': brk.stop}
+                           'minutes': _r(ctx.tn.lunch_minutes), 'added_min': _r(brk.added), 'after_stop': after,
+                           'where': 'road' if brk.road else 'depot' if brk.stop is None else 'store'}
         if explain:
             tj['explain'] = _trip_explain(ctx, sel, t.truck, truck, cids, routable, kgs, parts[t.id], free, depart, minutes)
         slot['trips'].append(tj)

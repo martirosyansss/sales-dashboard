@@ -5392,7 +5392,9 @@ def test_api_dispatch_overtime_button(client):
     """Кнопка «Везти после 18:00»: день машины 10 минут — ничего не помещается; после кнопки все в
     рейсах с переработкой, отметка дня и счётчик дней с переработкой за месяц."""
     _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2)])
-    r = client.post('/api/routes/settings', json={'settings': {'truck_work_start': '09:00', 'truck_work_end': '09:10'}})
+    # обед (№61) — внутри рабочего дня: в 10-минутный день его не вписать, выключен
+    r = client.post('/api/routes/settings', json={'settings': {'truck_work_start': '09:00', 'truck_work_end': '09:10',
+                                                               'truck_lunch_min': 0}})
     assert r.status_code == 200, r.get_json()
     d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
     assert d['plan']['summary']['trips'] == 0 and all(u['no_room'] for u in d['plan']['unassigned'])

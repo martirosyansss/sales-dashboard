@@ -1057,7 +1057,7 @@ def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, e
     участвует: км участков — как их берёт Norms.km (Яндекс, Valhalla, граф OSM или по прямой × извилистость), сколько точек
     считается по прямой (_straight_points), объезд малого центра, минуты (скорость зоны, Valhalla или Яндекс), скорости
     зон и их источник, часовой профиль по GPS менеджеров и действующие выученные нормы (_with_learned; расход — только
-    у машин расчёта)."""
+    у машин расчёта; обед — минуты, если выученный действует и обед в настройках включён)."""
     roads = norms.roads
     osm = roads.fallback if isinstance(roads, ValhallaRoads) else roads
     source = 'straight' if roads is None or roads.failed else roads.km_source
@@ -1075,7 +1075,10 @@ def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, e
         'speed_region_kmh': norms.speed_region_kmh, 'speed_region_source': road['speed_region_kmh'][1],
         'hourly_gps': report.get('source') == 'historical_gps',
         'learned': {'travel': bool(eff.travel), 'unload': bool(eff.unload), 'loading': bool(eff.loading),
-                    'fuel': sorted(c for c in (eff.fuel or ()) if c in trucks)},
+                    'fuel': sorted(c for c in (eff.fuel or ()) if c in trucks),
+                    # обед (№61) — минуты выученного, только когда он действует: без него пояснение — прежнее до байта
+                    **({'lunch': float(eff.lunch['minutes'])}
+                       if eff.lunch and float(s.get('truck_lunch_min') or 0) > 0 else {})},
     }
 
 
@@ -1494,19 +1497,30 @@ def _dispatch_request() -> tuple[Any, Any, Any]:
     return payload, day, None
 
 
+def _planned_lunch(tr: Mapping[str, Any]) -> dict[str, Any]:
+    """Обед рейса плана (plan_view: lunch) → запись прогноза: где, магазин (после разгрузки которого), начало, минуты
+    обеда и сколько он добавил к рейсу (остальное — ожидание окна приёма)."""
+    lunch = tr['lunch']
+    where = lunch['where']
+    return {'where': where, 'customer': tr['stops'][lunch['after_stop']]['customer_id'] if where == 'store' else None,
+            'start': lunch['start'], 'minutes': lunch['minutes'], 'added': lunch['added_min']}
+
+
 def _capture_prediction(dd, draft):
     view = dp.plan_view(dd.ctx, dd.stops, draft, _stop_info(dd), explain=False)
     now = _clock()
     start = datetime.combine(dd.day, datetime.strptime(dd.bundle.settings['truck_work_start'], '%H:%M').time())
     # depart/return — выезд первого рейса и возвращение последнего (HH:MM): «время работы» отчёта «план — факт»;
     # trips — начало загрузки, выезд, возвращение и ETA точек каждого рейса: плановое ожидание на складе (обучение
-    # загрузки) и карта «план — факт»
+    # загрузки) и карта «план — факт»; lunch — обед по плану (№61): где (магазин — после разгрузки которого, склад, дорога),
+    # начало, минуты — обучение обеда ищет его там, а разгрузка и загрузка эту стоянку не учитывают
     draft.prediction = {'created_at': now.isoformat(), 'prospective': now < start,
         'trucks': {t['car_code']: {**{key: t.get(key) for key in ('km', 'minutes', 'liters', 'loading_minutes', 'wear_amd')},
                                    'depart': t['trips'][0]['depart'] if t['trips'] else None, 'return': t.get('return'),
                                    'trips': [{'loading_start': tr['loading_start'], 'depart': tr['depart'],
                                               'return': tr['return'],
-                                              'stops': [[x['customer_id'], x.get('eta')] for x in tr['stops']]}
+                                              'stops': [[x['customer_id'], x.get('eta')] for x in tr['stops']],
+                                              **({'lunch': _planned_lunch(tr)} if tr.get('lunch') else {})}
                                              for tr in t['trips']]}
                    for t in view['trucks']}}
 
@@ -2401,6 +2415,10 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     compare = mode != 'yandex' and TRUCK_TIME_VALHALLA in variants
     # своё время магазинов в «действующей норме» — ровно как в расчёте: выученное, у остальных введённое (№50)
     extras = learning.store_extras(tn.unload_min_per_stop, bundle.unload_min, eff.unload)
+
+    def unload_norm(o: learning.UnloadObs) -> float:
+        return (tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes
+                + math.fsum(extras.get(c, 0.0) for c in o.customers))
     unload: list[learning.UnloadObs] = []
     loads: list[learning.LoadObs] = []
     lunches: list[learning.LunchObs] = []
@@ -2415,9 +2433,12 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     names = {code: c.name for code, c in snap.cars.items()}
     for car, day, stops, actual, draft, *_ in days:
         prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
-        unload += learning.unload_obs(day, actual, stops)
-        loads += learning.load_obs(day, actual, stops, learning.plan_trips(prediction, day))
-        meal = learning.lunch_obs(day, actual, lunch_window)   # type: ignore[arg-type]
+        plan = learning.plan_trips(prediction, day)
+        # обед по плану (№61): визит магазина и стоянка на складе с обедом — не в разгрузку и загрузку; обед по факту —
+        # и там, где он по плану (излишек над действующей нормой разгрузки), и в стороне
+        unload += learning.unload_obs(day, actual, stops, learning.lunch_customers(plan))
+        loads += learning.load_obs(day, actual, stops, plan)
+        meal = learning.lunch_obs(day, actual, lunch_window, stops, plan, unload_norm)   # type: ignore[arg-type]
         if meal is not None:
             lunches.append(meal)
         driven = actual

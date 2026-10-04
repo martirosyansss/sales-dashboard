@@ -2,7 +2,8 @@
 """«Развоз»: обед водителей в пути (ответ владельца №61).
 
 - правило (fleet: _lunch_trip / _schedule) — одно для всех расчётов дня машины: обед — на первой границе не раньше
-  начала окна (после разгрузки у магазина или на складе между рейсами), длинный перегон — на первой после окна,
+  начала окна (после разгрузки у магазина или на складе между рейсами), к концу окна границы нет и машина в пути — в
+  дороге в конец окна, в конце окна машина у магазина — сразу после его разгрузки,
   ожидание окна приёма после начала окна обеда идёт в его счёт, всё после него сдвигается; день кончился раньше окна —
   обеда нет; последняя точка — только если после неё есть работа или она сама началась после начала окна;
 - план (plan_view): где обед (время, сколько добавил, после какой точки), минуты рейса и машины — с ним, пояснение
@@ -10,8 +11,10 @@
 - сборка не планирует за конец дня и мимо окон и с обедом (решатель PyVRP пауз не знает: проверка — точным расчётом),
   «Везти после конца дня» — тоже;
 - настройки: минуты (0 — без обеда), окно начала обеда; модель парка менеджеров обеда не знает;
-- обучение (вид lunch): обед по треку — самая длинная стоянка не по плану в окне ± 30 мин, медиана, шаг, пределы,
-  принятие по общему правилу (с бутстрепом), применение в «Развозе».
+- обучение (вид lunch): обед по факту — там, где он по плану (излишек стоянки у магазина над нормой разгрузки, на
+  складе — над плановой загрузкой), или стоянка не по плану в окне ± 30 мин, больший; медиана, шаг, пределы, принятие
+  по общему правилу (с бутстрепом), автообучение по умолчанию выключено; визит и стоянка с обедом по плану — не в
+  разгрузку и загрузку; пять ночей подряд при обеде там, где план, — обед остаётся ≈ 30, нормы разгрузки не растут.
 
 Синтетические данные; ERP не читается; базы — временные.  Запуск:  python -m pytest tests/test_route_dispatch_lunch.py -q
 """
@@ -111,6 +114,21 @@ def test_receiving_window_wait_counts_toward_the_break():
     assert _trip([60, 160, 60], windows={1: (270.0, INF)})[3] == fl.Break(280.0, 0.0, 1)
 
 
+def test_latest_start_on_the_road_or_right_after_unloading():
+    """Конец окна обеда — самое позднее начало: к нему границы не было, а машина в пути — обед в дороге в конец окна
+    (перегон длиннее на обед, дальше всё сдвинуто); обратно на склад — только если после рейса есть работа; в конце окна
+    машина у магазина — сразу после его разгрузки."""
+    depart, minutes, ok, brk, arr = _trip([60, 300])              # перегон 70 → 370 через конец окна (330)
+    assert brk == fl.Break(330.0, 30.0, 1, True) and arr == [60.0, 400.0] and minutes == 60 + 10 + 300 + 30 + 10 + 360
+    late = replace(LTN, lunch_from=150.0, lunch_to=160.0)
+    assert _trip([100], tn=late)[3] is None                        # обратно на склад, работы после нет — без обеда
+    _, minutes, _, brk, _ = _trip([100], tn=late, more=True)       # есть — обед в дороге на склад
+    assert brk == fl.Break(160.0, 30.0, 1, True) and minutes == 100 + 10 + 100 + 30
+    _, _, _, brk, _ = _trip([155], unload=20.0, tn=late)          # в 160 разгружается — обед после разгрузки (175)
+    assert brk == fl.Break(175.0, 30.0, 0)
+    assert _trip([60, 300], tn=replace(LTN, lunch_to=0.0))[3] == fl.Break(380.0, 30.0, 1)   # конец не задан — как раньше
+
+
 def test_receiving_window_checked_on_shifted_time():
     """Без обеда третья точка успевает ровно к концу окна (310), с обедом после второй (кончилась в 240) — опаздывает."""
     ok_plain = _trip([100, 120, 70], windows={2: (0.0, 310.0)}, tn=TN)[2]
@@ -191,7 +209,7 @@ def test_plan_view_shows_lunch_and_includes_it_in_minutes():
     t1, t2 = view['trucks'][0]['trips']
     assert 'lunch' not in t2 and t1['lunch'] == {
         'start': dp._hhmm(9 * 60 + brk.at), 'end': dp._hhmm(9 * 60 + brk.at + brk.added), 'minutes': 30.0,
-        'added_min': round(brk.added, 1), 'after_stop': k}
+        'added_min': round(brk.added, 1), 'after_stop': k, 'where': 'store'}
     plain = dp.plan_view(plain_ctx, stops, draft, _info)
     assert view['trucks'][0]['minutes'] == round(base[2][0] + base[2][1] + brk.added) != plain['trucks'][0]['minutes']
     x = t1['explain']
@@ -211,8 +229,35 @@ def test_plan_view_depot_lunch_between_trips():
     view = dp.plan_view(_ctx(tn), stops, draft, _info)
     t1, t2 = view['trucks'][0]['trips']
     assert 'lunch' not in t1 and t2['lunch']['after_stop'] is None and t2['lunch']['added_min'] == 30.0
+    assert t2['lunch']['where'] == 'depot'                                         # пояснение — свой текст, не «простой»
     assert t2['lunch']['start'] == dp._hhmm(9 * 60 + back) and t2['loading_start'] == dp._hhmm(9 * 60 + back + 30)
     assert t2['explain']['idle_before_min'] == 0.0 and t2['explain']['lunch_min'] == 0.0
+
+
+def test_plan_view_road_lunch_and_runs_late_exact():
+    """Конец окна обеда приходится на первый перегон — обед в дороге (where road, до первой точки), прибытия позже на
+    обед. runs_late — по точному плану: последняя точка началась до начала окна обеда, кончилась после, работы после нет
+    — обеда нет и машина укладывается; занятое время для раскладки (обед после рейса с запасом) — её не «опаздывает»."""
+    stops, draft = _two_trips()
+    routable = {s.customer_id: s for s in stops}
+    base = dp._timeline(_ctx(TN), draft.trips, routable, dp._shares(draft.trips))
+    road = replace(TN, lunch_minutes=30.0, lunch_from=1.0, lunch_to=3.0)
+    view = dp.plan_view(_ctx(road), stops, draft, _info)
+    t1 = view['trucks'][0]['trips'][0]
+    assert t1['lunch'] == {'start': '09:03', 'end': '09:33', 'minutes': 30.0, 'added_min': 30.0, 'after_stop': None,
+                           'where': 'road'}
+    tl = dp._timeline(_ctx(road), draft.trips, routable, dp._shares(draft.trips))
+    assert all(a == pytest.approx(b + 30.0) for a, b in zip(tl[1][2], base[1][2]))
+    assert t1['explain']['lunch_min'] == 30.0 and t1['explain']['idle_before_min'] == 0.0
+    one = dp.Draft(trucks=[HOWO.car_code], trips=[dp.DraftTrip(1, HOWO.car_code, [101, 102, 103])])
+    plain = dp._timeline(_ctx(TN), one.trips, routable, {})[1]
+    last_end = plain[2][-1] + 9.2
+    tight = replace(TN, work_minutes=plain[0] + plain[1] + 10.0, lunch_minutes=30.0, lunch_from=last_end - 1.0,
+                    lunch_to=last_end + 100.0)
+    assert dp.runs_late(_ctx(tight), stops, one) is False
+    assert not any(t['over_time'] or 'lunch' in t for t in dp.plan_view(_ctx(tight), stops, one, _info)['trucks'][0]['trips'])
+    used, _, _ = dp._occupied(_ctx(tight), one.trips, routable, {})
+    assert used[HOWO.car_code] > tight.work_minutes                                  # с запасом — дольше дня
 
 
 def test_lunch_zero_or_out_of_reach_plan_identical():
@@ -301,7 +346,16 @@ def test_lunch_settings_validation(store):
         assert f'settings.{key}' in errors, (key, bad)
     _, errors = st.validate_payload({'settings': {'truck_lunch_from': '14:30', 'truck_lunch_to': '14:30'}},
                                     store.load(), REF)
-    assert errors['settings.truck_lunch_to'] == 'պետք է ավելի ուշ լինի, քան ճաշի սկզբի առաջին ժամը'
+    assert errors['settings.truck_lunch_to'] == 'Միջակայքի վերջը պետք է լինի սկզբից ուշ'
+    # окно начала обеда — внутри рабочего дня машины (обед включён)
+    _, errors = st.validate_payload({'settings': {'truck_lunch_from': '08:30', 'truck_lunch_to': '18:30'}},
+                                    store.load(), REF)
+    assert errors == {'settings.truck_lunch_from': 'ոչ շուտ, քան մեքենայի աշխատանքային օրվա սկիզբը',
+                      'settings.truck_lunch_to': 'ոչ ուշ, քան մեքենայի աշխատանքային օրվա ավարտը'}
+    _, errors = st.validate_payload({'settings': {'truck_work_end': '14:00'}}, store.load(), REF)
+    assert errors == {'settings.truck_lunch_to': 'ոչ ուշ, քան մեքենայի աշխատանքային օրվա ավարտը'}
+    _, errors = st.validate_payload({'settings': {'truck_work_end': '14:00', 'truck_lunch_min': 0}}, store.load(), REF)
+    assert errors == {}                                                             # обед выключен — окно не мешает
     _save(store, {'settings': {'truck_lunch_min': 0, 'truck_lunch_from': '13:00', 'truck_lunch_to': '15:00'}})
     s = store.load().settings
     assert (s['truck_lunch_min'], s['truck_lunch_from'], s['truck_lunch_to']) == (0, '13:00', '15:00')
@@ -310,9 +364,9 @@ def test_lunch_settings_validation(store):
 def test_settings_page_has_lunch_fields():
     js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert all(f"key: '{k}'" in js for k in ('truck_lunch_min', 'truck_lunch_from', 'truck_lunch_to'))
-    assert "routes_settings.js') }}?v=22" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
+    assert "routes_settings.js') }}?v=23" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
     page = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
-    assert "routes_dispatch.js') }}?v=59" in page and "routes_dispatch.css') }}?v=33" in page
+    assert "routes_dispatch.js') }}?v=60" in page and "routes_dispatch.css') }}?v=33" in page
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     assert 'function lunchItem' in djs and 'dp-lunch-mark' in djs
 
@@ -348,15 +402,78 @@ def _actual(stays, ret):
     return ac.DayActual(100, 10.0, _at(9), ret, tuple(ac.Stay('other', a, b) for a, b in stays), visits, trips)
 
 
+ROAD = [lr.PlanTrip(None, None, None, frozenset({1}), lr.PlanLunch('road', None, 30.0))]   # обед по плану — в дороге
+
+
 def test_lunch_obs_longest_off_plan_stay_in_window():
     window = (12 * 60 + 30.0, 14 * 60 + 30.0)
     day = _actual([(_at(12, 50), _at(13, 10)), (_at(13, 40), _at(14, 15)), (_at(16, 0), _at(17, 0)),
                    (_at(11, 0), _at(12, 30))], ret=_at(16, 30))
-    assert lr.lunch_obs(DAY, day, window) == lr.LunchObs(DAY, 35.0)               # 16:00 и 11:00 — вне окна ± 30 мин
-    assert lr.lunch_obs(DAY, _actual([], _at(16, 30)), window) == lr.LunchObs(DAY, 0.0)   # не обедал — 0
+    assert lr.lunch_obs(DAY, day, window, plan=ROAD) == lr.LunchObs(DAY, 35.0)   # 16:00 и 11:00 — вне окна ± 30 мин
+    assert lr.lunch_obs(DAY, _actual([], _at(16, 30)), window, plan=ROAD) == lr.LunchObs(DAY, 0.0)   # не обедал — 0
     edge = _actual([(_at(12, 0), _at(12, 25)), (_at(15, 0), _at(15, 40))], _at(16, 30))
-    assert lr.lunch_obs(DAY, edge, window).minutes == 40.0                          # 12:00 и 15:00 — на краях ± 30
-    assert lr.lunch_obs(DAY, _actual([(_at(12, 50), _at(13, 10))], _at(14, 20)), window) is None   # ушёл до 14:30
+    assert lr.lunch_obs(DAY, edge, window, plan=ROAD).minutes == 40.0                # 12:00 и 15:00 — на краях ± 30
+    assert lr.lunch_obs(DAY, _actual([(_at(12, 50), _at(13, 10))], _at(14, 20)), window, plan=ROAD) is None   # до 14:30
+    # в плане обеда нет (прогноз до №61, обед выключен, план кончился до окна) — где искать, неизвестно: день не идёт
+    assert lr.lunch_obs(DAY, day, window) is None
+    assert lr.lunch_obs(DAY, day, window, plan=[lr.PlanTrip(None, None, None, frozenset({1}))]) is None
+
+
+WINDOW = (12 * 60 + 30.0, 14 * 60 + 30.0)
+
+
+def _norm(o):
+    return 8.0 * o.n + 6.0 * o.tonnes                                               # действующая норма разгрузки
+
+
+def _store_day(arrive, leave, opens=None, others=()):
+    """Обед по плану — после разгрузки магазина 101 (500 кг): визит [arrive, leave], окно приёма с opens."""
+    stops = [ac.PlanStop('S:1', 101, (40.2, 44.5), 500.0, 500.0, (opens, 1e9) if opens is not None else None)]
+    trips = (ac.Trip(_at(9), _at(16, 30), None, (0,), 500.0, 10.0),)
+    visits = (ac.Visit(('S:1',), arrive, leave, 0, False),)
+    actual = ac.DayActual(100, 10.0, _at(9), _at(16, 30), tuple(ac.Stay('other', a, b) for a, b in others), visits,
+                          trips, served=(('S:1', 0),))
+    plan = [lr.PlanTrip(None, None, None, frozenset({101}), lr.PlanLunch('store', 101, 30.0))]
+    return actual, stops, plan
+
+
+def test_lunch_obs_where_planned_store():
+    """Обед там, где план: стоянка у магазина сверх разгрузки по действующей норме (8 + 6 × 0,5 = 11 мин) — это обед,
+    а не 0; ожидание окна приёма до начала окна обеда — не обед, после — обед (как в плане). Свернул поесть в сторону —
+    стоянка не по плану, больший из двух."""
+    actual, stops, plan = _store_day(_at(12, 40), _at(13, 21))                     # 41 мин: 11 разгрузка + 30 обед
+    assert lr.lunch_obs(DAY, actual, WINDOW, stops, plan, _norm) == lr.LunchObs(DAY, 30.0)
+    actual, stops, plan = _store_day(_at(12, 0), _at(13, 21), opens=12 * 60 + 50)   # ждал 12:00–12:50: 30 мин — до 12:30
+    assert lr.lunch_obs(DAY, actual, WINDOW, stops, plan, _norm).minutes == 81 - 11 - 30
+    actual, stops, plan = _store_day(_at(12, 40), _at(12, 51), others=[(_at(13, 0), _at(13, 27))])
+    assert lr.lunch_obs(DAY, actual, WINDOW, stops, plan, _norm).minutes == 27.0    # поел в сторону: стоянка не по плану
+    actual, stops, plan = _store_day(_at(12, 40), _at(12, 46))                     # быстрее нормы — не меньше 0
+    assert lr.lunch_obs(DAY, actual, WINDOW, stops, plan, _norm).minutes == 0.0
+
+
+def test_lunch_obs_where_planned_depot_and_other_observations_skip_it():
+    """Обед по плану на складе перед вторым рейсом: стоянка сверх плановой загрузки (15 мин) и планового простоя без
+    обеда (0) — обед. Визит магазина и стоянка на складе с обедом по плану — не в обучение разгрузки и загрузки."""
+    stops = [ac.PlanStop('S:1', 101, (40.2, 44.5), 500.0, 500.0), ac.PlanStop('S:2', 102, (40.3, 44.6), 800.0, 800.0)]
+    visits = (ac.Visit(('S:1',), _at(10), _at(10, 12), 0, False), ac.Visit(('S:2',), _at(14, 10), _at(14, 25), 1, False))
+    trips = (ac.Trip(_at(9, 30), _at(13, 5), 20.0, (0,), 500.0, 10.0), ac.Trip(_at(13, 50), _at(15), 45.0, (1,), 800.0, 9.0))
+    stays = (ac.Stay('depot', _at(9, 10), _at(9, 30)), ac.Stay('depot', _at(13, 5), _at(13, 50)))
+    actual = ac.DayActual(100, 19.0, _at(9), _at(15), stays, visits, trips, served=(('S:1', 0), ('S:2', 1)))
+    t = lambda h, m=0: _at(h, m)  # noqa: E731
+    plan = [lr.PlanTrip(t(9, 15), None, t(9, 30), frozenset({101})),
+            lr.PlanTrip(t(13, 30), t(13, 0), t(13, 45), frozenset({102}), lr.PlanLunch('depot', None, 30.0))]
+    assert lr.lunch_obs(DAY, actual, WINDOW, stops, plan, _norm) == lr.LunchObs(DAY, 45.0 - 15.0 - 0.0)
+    assert [o.tonnes for o in lr.load_obs(DAY, actual, stops, plan)] == [0.5]      # рейс с обедом на складе — мимо
+    assert len(lr.load_obs(DAY, actual, stops, [replace(p, lunch=None) for p in plan])) == 2
+    store_plan = [plan[0], replace(plan[1], lunch=lr.PlanLunch('store', 102, 30.0))]
+    assert lr.lunch_customers(store_plan) == {102} and lr.lunch_customers(plan) == frozenset()
+    assert [o.customers for o in lr.unload_obs(DAY, actual, stops, lr.lunch_customers(store_plan))] == [(101,)]
+    assert [o.customers for o in lr.unload_obs(DAY, actual, stops)] == [(101,), (102,)]
+    raw = {'trips': [{'stops': [[101, '10:00']]}, {'loading_start': '13:30', 'depart': '13:45', 'return': '15:00',
+                                                  'stops': [[102, '14:10']],
+                                                  'lunch': {'where': 'store', 'customer': 102, 'minutes': 30.0}}]}
+    assert lr.plan_trips(raw, DAY)[1].lunch == lr.PlanLunch('store', 102, 30.0)
+    assert lr.plan_trips({'trips': [{'lunch': {'where': 'store', 'customer': True, 'minutes': 30}}]}, DAY)[0].lunch is None
 
 
 def _lunch_obs(values_by_day):
@@ -391,7 +508,7 @@ def test_fit_lunch_too_little_data_setting_off_and_noise():
     few = lr.fit_lunch(_days(3, 22.0), 30.0, TODAY, 30)
     assert not few.accepted and few.params is None and few.reason.startswith('քիչ տվյալներ․ ուսուցում՝ 9 / 15')
     off = lr.fit_lunch(_days(10, 22.0), 0.0, TODAY, 0)
-    assert not off.accepted and off.reason == 'ճաշն անջատված է կարգավորումներում (0 րոպե)․ ծրագիրը այն չի սովորում'
+    assert not off.accepted and off.reason == 'ճաշն անջատված է կարգավորումներում (0 րոպե)․ ծրագիրն այն չի սովորում'
     # шум: в один день проверки обедали 20 мин (лучше новое 22), в другой — 40 (лучше прежние 30)
     obs = [o for o in _days(10, 22.0) if o.day < TEST_FROM]
     obs += [lr.LunchObs(TEST_FROM, 20.0)] * 6 + [lr.LunchObs(TEST_FROM + timedelta(days=1), 40.0)] * 5
@@ -402,15 +519,29 @@ def test_fit_lunch_too_little_data_setting_off_and_noise():
 def test_lunch_in_effect_applied_only_when_on():
     row = {'kind': 'lunch', 'scope': '', 'run_day': '2026-09-30', 'accepted': True, 'params': {'minutes': 25.0},
            'model_id': None}
-    eff = lr.in_effect([row], {}, None)
+    assert lr.DEFAULT_AUTO['lunch'] is False and lr.in_effect([row], {}, None).lunch is None   # по умолчанию выключено
+    eff = lr.in_effect([row], {'lunch': True}, None)
     assert eff.lunch == {'minutes': 25.0} and bool(eff)
     assert lr.in_effect([row], {'lunch': False}, None).lunch is None                 # автообучение выключено
-    assert lr.in_effect([{**row, 'params': {'minutes': 91.0}}], {}, None).lunch is None   # вне пределов — не действует
+    assert lr.in_effect([{**row, 'params': {'minutes': 91.0}}], {'lunch': True}, None).lunch is None   # вне пределов
     assert lr.valid_params('lunch', {'minutes': 0.0}) and not lr.valid_params('lunch', {'minutes': True})
     _, tn, _ = lr.apply_learned(DP_NORMS, LTN, {}, eff, {})
     assert tn.lunch_minutes == 25.0
     _, off, _ = lr.apply_learned(DP_NORMS, TN, {}, eff, {})
     assert off.lunch_minutes == 0.0                                                 # обед выключен в настройках
+
+
+def _plans(state, days, where='store'):
+    """Черновики «Развоза» на дни facts с прогнозом сборки (views._capture_prediction): CAR1 — 101, 102 → склад → 104,
+    обед по плану — после разгрузки 101 (where store) или в дороге (road)."""
+    for d in days:
+        lunch = {'where': where, 'customer': 101 if where == 'store' else None, 'start': '12:45', 'minutes': 30.0,
+                 'added': 30.0}
+        state.store.save_dispatch(d.isoformat(), {
+            'trucks': ['CAR1'], 'trips': [{'id': 1, 'truck': 'CAR1', 'stops': [101, 102]},
+                                          {'id': 2, 'truck': 'CAR1', 'stops': [104]}],
+            'prediction': {'trucks': {'CAR1': {'trips': [{'stops': [[101, '12:33'], [102, '13:30']], 'lunch': lunch},
+                                                          {'stops': [[104, '14:30']]}]}}}}, 'qa')
 
 
 class LunchFacts(FakeFacts):
@@ -434,6 +565,8 @@ def test_nightly_learns_lunch_and_dispatch_applies_it(client, monkeypatch):
     _dispatch_setup(client, [_dorder(1, 101, 400.0)])
     state = client.application.extensions['route_optimizer']
     state.fleet_facts = LunchFacts([TODAY - timedelta(days=i) for i in range(30, 0, -1)])
+    _plans(state, state.fleet_facts.days)                     # план: обед у 101, а водитель свернул поесть в сторону
+    state.store.save_learning_auto('lunch', True, 'qa')       # по умолчанию выключено — включает владелец
     monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 10, 3, 10, 0))
     monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 3, 10, 0, tzinfo=TZ))
     lunch = next(o for o in views.run_learning(state, TODAY) if o.kind == 'lunch')
@@ -445,7 +578,7 @@ def test_nightly_learns_lunch_and_dispatch_applies_it(client, monkeypatch):
     assert ctx.tn.lunch_minutes == 25.0 and ctx.tn.lunch_from == 210.0
     st_ = {s['kind']: s for s in client.get('/api/routes/learning/status').get_json()['status']}
     assert st_['lunch']['in_effect']['params'] == {'minutes': 25.0} and st_['lunch']['title'] == 'Ճաշ ճանապարհին'
-    assert st_['lunch']['manual'] == {'minutes': 30, 'from': '12:30', 'to': '14:30'} and st_['lunch']['default_auto']
+    assert st_['lunch']['manual'] == {'minutes': 30, 'from': '12:30', 'to': '14:30'} and not st_['lunch']['default_auto']
     # стоянка-обед не попала ни в разгрузку, ни в чистые участки
     d = TODAY - timedelta(days=3)
     facts = state.fleet_facts.day('CAR1', d.isoformat())
@@ -465,4 +598,70 @@ def test_nightly_learns_lunch_and_dispatch_applies_it(client, monkeypatch):
 def test_learning_page_shows_lunch():
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
     assert "if (kind === 'lunch') return 'ճաշ՝ '" in js and "kind === 'lunch' && m" in js
-    assert "routes_learning.js') }}?v=11" in (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
+    assert "routes_learning.js') }}?v=12" in (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
+
+
+class CabLunchFacts(FakeFacts):
+    """Водитель ест там, где план: после разгрузки 101 — 30 мин в кабине у магазина (стоянка у 101 = разгрузка + 30).
+    Разгрузка — 4 мин + 12 мин/т (в настройках 8 + 6), день — с 12:00, после 14:30."""
+
+    def day(self, car, ds):
+        d = date.fromisoformat(ds)
+        kg = self.kg(d)
+        tr = Track(DEPOT, datetime(d.year, d.month, d.day, 12, 0, tzinfo=TZ))
+        tr.stay(20).drive(S101, 15).stay(4 + 12 * kg[101] / 1000 + 30)
+        tr.drive(S102, 15).stay(4 + 12 * kg[102] / 1000).drive(DEPOT, 15).stay(10 + 8 * kg[104] / 1000)
+        tr.drive(S104, 15).stay(4 + 12 * kg[104] / 1000).drive(DEPOT, 15).stay(5)
+        track = [(int(f.at.timestamp() * 1000), f.lat, f.lon, f.accuracy, None) for f in tr.fixes]
+        stops = [{'stop_id': f'S:{cid}', 'customer_id': cid, 'lat': p[0], 'lon': p[1], 'weight_kg': kg[cid], 'seq': i,
+                  'delivered_share': 1.0} for i, (cid, p) in enumerate(((101, S101), (102, S102), (104, S104)), 1)]
+        return {'track': track, 'stops': stops}
+
+
+def test_five_nights_eating_where_planned_keeps_lunch_and_unload_honest(client, monkeypatch):
+    """Ревью H1: водитель обедает там, где план (у магазина, в кабине). Прежде обед по факту видел только стоянки не по
+    плану — 0 — и за пять ночей сводил обед 30 → 21 → 15 → 10 → 5 → 0, а стоянка с обедом раздувала разгрузку. Теперь
+    обед виден у магазина (стоянка сверх нормы разгрузки), за пять ночей остаётся ≈ 30; визит с обедом в разгрузку не
+    идёт — норма разгрузки выучивается настоящая (4 + 12 мин/т), а не раздутая обедом."""
+    _dispatch_setup(client, [_dorder(1, 101, 400.0)])
+    state = client.application.extensions['route_optimizer']
+    # факт — по вчерашний день последней ночи: у каждой ночи — полная неделя проверки
+    state.fleet_facts = CabLunchFacts([TODAY - timedelta(days=i) for i in range(30, -4, -1)])
+    _plans(state, state.fleet_facts.days)
+    state.store.save_learning_auto('lunch', True, 'qa')
+    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 10, 3, 10, 0))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 3, 10, 0, tzinfo=TZ))
+    bundle = views._bundle(state)
+    snap, _ = state.snapshots.cached()
+    lunches, unloads = [], []
+    for night in range(5):
+        today = TODAY + timedelta(days=night)
+        by = {o.kind: o for o in views.run_learning(state, today)}
+        assert by['lunch'].params is not None and 27.0 <= by['lunch'].params['minutes'] <= 33.0, by['lunch']
+        ctx = views._dispatch_ctx(state, snap, bundle, today, views._ready_trucks(snap, bundle), [S101], {101: S101})
+        lunches.append(ctx.tn.lunch_minutes)
+        unloads.append((ctx.tn.unload_min_per_stop, ctx.tn.unload_min_per_tonne))
+        u = by['unload']
+        assert u.params is not None and '101' not in u.params['store_stats'], u.reason   # визит с обедом — не в учёт
+        assert u.params['per_stop_min'] == pytest.approx(4, abs=1.0) and u.params['per_tonne_min'] == pytest.approx(12, abs=1.0)
+    assert all(27.0 <= x <= 33.0 for x in lunches), lunches                          # не сходит на нет
+    assert unloads[-1] == (pytest.approx(4, abs=1.0), pytest.approx(12, abs=1.0)), unloads
+
+
+def test_capture_prediction_records_planned_lunch(client):
+    """Прогноз сборки помнит обед по плану: где (магазин — после разгрузки которого, склад, дорога), начало, минуты."""
+    _dispatch_setup(client, [_dorder(i + 1, cid, kg) for i, (cid, _, kg) in enumerate(EAST + WEST)])
+    state = client.application.extensions['route_optimizer']
+    _save(state.store, {'settings': {'truck_lunch_from': '09:30', 'truck_lunch_to': '11:30'}})
+    r = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1']})
+    assert r.status_code == 200, r.get_json()
+    view = [t for tr in r.get_json()['plan']['trucks'] for t in tr['trips'] if 'lunch' in t][0]
+    raw, _ = state.store.load_dispatch('2026-10-01')
+    trips = raw['prediction']['trucks']['CAR1']['trips']
+    meal = [t['lunch'] for t in trips if 'lunch' in t]
+    assert len(meal) == 1 and meal[0]['where'] == view['lunch']['where'] and meal[0]['start'] == view['lunch']['start']
+    assert meal[0]['minutes'] == 30.0 and meal[0]['added'] == view['lunch']['added_min']
+    if meal[0]['where'] == 'store':
+        assert meal[0]['customer'] == view['stops'][view['lunch']['after_stop']]['customer_id']
+    assert lr.plan_trips(raw['prediction']['trucks']['CAR1'], date(2026, 10, 1))[trips.index(
+        next(t for t in trips if 'lunch' in t))].lunch is not None
