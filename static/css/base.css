@@ -20,14 +20,150 @@ body {
     box-shadow: 0 2px 10px rgba(0,0,0,0.3);
 }
 
-/* 14 пунктов навигации в развёрнутом виде занимают ~1736px. Ниже 1400px
-   меню сворачивается в гамбургер (navbar-expand-xxl). В промежутке
-   1400–1750px оно не помещалось в строку и давало горизонтальный скролл
-   всей страницы — здесь разрешаем перенос на вторую строку. На ≥1750px
-   меню помещается в одну строку, поэтому исходный вид не трогаем. */
-@media (min-width: 1400px) and (max-width: 1750px) {
-    .navbar-nav {
-        flex-wrap: wrap;
+/* Шапка приложения: разделы-выпадашки в одну строку (≥1200px), ниже — гамбургер.
+   Стили только внутри .app-nav: общие .nav-link ниже красят ещё и вкладки страниц. */
+.app-nav {
+    --nav-h: 56px;
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+.app-nav .navbar-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-right: 1.75rem;
+    font-size: 1.1rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    color: #f1f3f5;
+    background: none;
+    -webkit-text-fill-color: currentColor;
+}
+
+.app-nav-logo {
+    display: inline-grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #0d6efd, #0dcaf0);
+    color: #fff;
+    font-size: 0.9rem;
+}
+
+.app-nav .nav-link {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0 2px;
+    padding: 0.45rem 0.8rem;
+    border-radius: 8px;
+    font-size: 0.925rem;
+    font-weight: 500;
+    color: #adb5bd;
+    white-space: nowrap;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.app-nav .nav-link > .fas {
+    font-size: 0.85rem;
+    opacity: 0.8;
+}
+
+.app-nav .nav-link:hover,
+.app-nav .nav-link:focus-visible,
+.app-nav .nav-link.show {
+    color: #f8f9fa;
+    background: rgba(255, 255, 255, 0.06);
+    transform: none;
+}
+
+.app-nav .nav-link.active {
+    color: #fff !important;
+    background: rgba(13, 110, 253, 0.18);
+    box-shadow: inset 0 0 0 1px rgba(13, 110, 253, 0.35);
+}
+
+.app-nav .nav-link.active > .fas {
+    color: #4dabf7;
+    opacity: 1;
+}
+
+.app-nav .dropdown-toggle::after {
+    margin-left: 0.1rem;
+    opacity: 0.6;
+}
+
+.app-nav .dropdown-menu {
+    min-width: 220px;
+    margin-top: 0.4rem;
+    padding: 0.35rem;
+    border-radius: 10px;
+}
+
+.app-nav .dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.925rem;
+    color: #dee2e6;
+}
+
+.app-nav .dropdown-item > .fas {
+    color: #868e96;
+}
+
+.app-nav .dropdown-item:hover,
+.app-nav .dropdown-item:focus {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.app-nav .dropdown-item.active,
+.app-nav .dropdown-item:active {
+    color: #fff;
+    background: rgba(13, 110, 253, 0.25);
+}
+
+.app-nav .dropdown-item.active > .fas {
+    color: #4dabf7;
+}
+
+@media (min-width: 1200px) {
+    .app-nav .container-fluid {
+        min-height: var(--nav-h);
+    }
+
+    .app-nav .nav-icon {
+        padding-left: 0.6rem;
+        padding-right: 0.6rem;
+    }
+
+    .app-nav .navbar-nav:last-child {
+        padding-left: 0.75rem;
+        margin-left: 0.5rem;
+        border-left: 1px solid rgba(255, 255, 255, 0.08);
+    }
+}
+
+/* Гамбургер: пункты разделов — столбиком, без плавающих окон */
+@media (max-width: 1199.98px) {
+    .app-nav .container-fluid {
+        min-height: var(--nav-h);
+    }
+
+    .app-nav .navbar-collapse {
+        padding-bottom: 0.75rem;
+    }
+
+    .app-nav .dropdown-menu {
+        margin: 0 0 0.25rem 1.25rem;
+        border: 0;
+        box-shadow: none;
+        background: transparent;
     }
 }
 
