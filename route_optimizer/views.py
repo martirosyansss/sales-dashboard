@@ -35,7 +35,8 @@ from .geo import Point, haversine_km, is_valid_point
 from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
-                    center_auto, check_garage_entry, check_unload_min, check_window, validate_payload)
+                    center_auto, check_driver_name, check_garage_entry, check_unload_min, check_window,
+                    validate_payload)
 from .valhalla_engine import TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider, ValhallaRoads, truck_time_source
 from .vehicle_access import check_access
 
@@ -1281,9 +1282,17 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
     """Ответ дня для страницы: _dispatch_body и store_unload — своё время у магазинов дня, где оно задано (№50; клиент →
     мин, плашка у точки; у остальных — норма). Отдельно от plan (unload_min точки рейса — разгрузка, посчитанная планом)
     и не в данных «Հարցրու AI-ին»: /ask берёт _dispatch_body, а ai_chat убирает customer_id у точек — номера клиентов
-    модели ничего бы не сказали."""
+    модели ничего бы не сказали. Водители (№62, _drivers_json) — тоже только странице: имена людей модели не отправляются."""
     return {**_dispatch_body(dd), 'store_unload': {st.customer_id: dd.bundle.unload_min[st.customer_id]
-                                                   for st in dd.stops if st.customer_id in dd.bundle.unload_min}}
+                                                   for st in dd.stops if st.customer_id in dd.bundle.unload_min},
+            **_drivers_json(_state().store, dd.day)}
+
+
+def _drivers_json(store: Store, day: date) -> dict[str, Any]:
+    """Водители машин на день (№62): drivers — машина → имя, substitutes — машины с подменой на этот день (только он),
+    driver_names — все имена для подсказки при вводе."""
+    drivers, subs = store.truck_drivers(day.isoformat())
+    return {'drivers': drivers, 'substitutes': sorted(subs), 'driver_names': store.driver_names()}
 
 
 SETTINGS_TRUCKS_URL = '/routes/settings#trucks'
@@ -1714,7 +1723,45 @@ def api_dispatch_waybill() -> Any:
         raise ErpError('Загрузчик строк заказов не подключён')
     lines = state.waybill_loader([o['isn'] for tr in truck['trips'] for s in tr['stops'] for o in s['orders']])
     logger.info('[Routes] Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
-    return jsonify({'success': True, 'day': day.isoformat(), 'rev': dd.rev, **wb.truck_waybill(plan, car, lines)})
+    return jsonify({'success': True, 'day': day.isoformat(), 'rev': dd.rev, **wb.truck_waybill(plan, car, lines),
+                    'driver': state.store.truck_drivers(day.isoformat())[0].get(car)})
+
+
+DRIVER_NO_TRUCK = 'Մեքենան չի գտնվել — թարմացրեք էջը'
+BAD_ONLY_DAY = 'Սերվերը չընդունեց հարցումը'          # only_day не true/false — ошибка страницы, не логиста
+
+
+@bp.post('/api/routes/dispatch/driver')
+@_api
+def api_dispatch_driver() -> Any:
+    """Водитель машины для «Բեռնագիր» (ответ владельца №62): {"date", "car_code", "name", "only_day"?} — постоянный с этого
+    дня и до следующей смены (прежние дни не меняются); only_day: true — подмена только на этот день; прошедший день —
+    всегда подмена. "" («Հեռացնել») — водителя нет с этого дня, а у подмены — снять её (store.save_truck_driver).
+    Машина — из настроенных (store.trucks). Ответ — водители машин на этот день и все имена (как в ответе дня),
+    only_day — изменён только этот день. План не меняется."""
+    payload, day, error = _dispatch_request()
+    if error is not None:
+        return error
+    car = payload.get('car_code')
+    name, bad = check_driver_name(payload.get('name'))
+    one_day = payload.get('only_day', False)
+    errors = {}
+    if not isinstance(one_day, bool):
+        errors['only_day'] = BAD_ONLY_DAY
+    if not isinstance(car, str) or not car.strip() or len(car) > 64:
+        errors['car_code'] = 'Նշեք մեքենայի կոդը'
+    if bad is not None:
+        errors['name'] = bad
+    if errors:
+        return _bad_request(errors)
+    state = _state()
+    car = car.strip()
+    if car not in state.store.load().trucks:
+        return _bad_request({'car_code': DRIVER_NO_TRUCK})
+    only_day = one_day or day < _clock().date()
+    state.store.save_truck_driver(car, day.isoformat(), name, session.get('username'), only_day=only_day)
+    logger.info('[Routes] Водитель %s %s %s (%s)', car, 'на' if only_day else 'с', day, session.get('username'))
+    return jsonify({'success': True, 'day': day.isoformat(), 'only_day': only_day, **_drivers_json(state.store, day)})
 
 
 @bp.get('/api/routes/measurements')
