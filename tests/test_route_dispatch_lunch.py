@@ -451,6 +451,47 @@ def test_lunch_obs_where_planned_store():
     assert lr.lunch_obs(DAY, actual, WINDOW, stops, plan, _norm).minutes == 0.0
 
 
+def test_lunch_obs_first_trip_depot_lunch_counts_from_planned_start():
+    """Ревью: первый рейс дня с обедом на складе — прошлого возвращения нет. Машина на складе с 09:00 до 13:15, по плану
+    обед 12:30–13:00, загрузка 13:00–13:15: обед — 30 мин, считая с планового начала обеда (утро на складе — не обед),
+    а не 240. Начала обеда в прогнозе нет и прошлого рейса нет — где он, неизвестно: склад не считается."""
+    stops = [ac.PlanStop('S:1', 101, (40.2, 44.5), 500.0, 500.0)]
+    visits = (ac.Visit(('S:1',), _at(13, 40), _at(13, 55), 0, False),)
+    trips = (ac.Trip(_at(13, 15), _at(15), None, (0,), 500.0, 10.0),)
+    stays = (ac.Stay('depot', _at(9), _at(13, 15), (), False),)
+    actual = ac.DayActual(100, 10.0, _at(9), _at(15), stays, visits, trips, served=(('S:1', 0),))
+    raw = {'trips': [{'loading_start': '13:00', 'depart': '13:15', 'return': '15:00', 'stops': [[101, '13:40']],
+                      'lunch': {'where': 'depot', 'customer': None, 'start': '12:30', 'minutes': 30.0, 'added': 30.0}}]}
+    plan = lr.plan_trips(raw, DAY)
+    assert plan[0].lunch == lr.PlanLunch('depot', None, 30.0, _at(12, 30))
+    assert lr.lunch_obs(DAY, actual, WINDOW, stops, plan, _norm) == lr.LunchObs(DAY, 30.0)
+    late = replace(actual, stays=(ac.Stay('depot', _at(12, 40), _at(13, 15)),))    # приехал после начала обеда
+    assert lr.lunch_obs(DAY, late, WINDOW, stops, plan, _norm).minutes == 20.0
+    unknown = [replace(plan[0], lunch=replace(plan[0].lunch, start=None))]
+    assert lr.lunch_obs(DAY, actual, WINDOW, stops, unknown, _norm).minutes == 0.0
+
+
+def test_model_note_learned_lunch_only_while_in_effect(client):
+    """Пояснение дня: выученный обед — в model.learned.lunch (минуты), только пока он действует (принят, автообучение
+    обеда включено, обед в настройках не 0); иначе ключа нет — пояснение прежнее до байта."""
+    _dispatch_setup(client, [_dorder(1, 101, 400.0)])
+    state = client.application.extensions['route_optimizer']
+    snap, _ = state.snapshots.cached()
+
+    def learned():
+        bundle = views._bundle(state)
+        ctx = views._dispatch_ctx(state, snap, bundle, date(2026, 10, 1), views._ready_trucks(snap, bundle), [S101],
+                                  {101: S101})
+        return ctx.model['learned']
+    assert 'lunch' not in learned()
+    state.store.save_learned('2026-09-30', [lr.Outcome('lunch', '', True, 'x', {'minutes': 25.0})])
+    assert 'lunch' not in learned()                                                  # автообучение обеда выключено
+    state.store.save_learning_auto('lunch', True, 'qa')
+    assert learned()['lunch'] == 25.0
+    _save(state.store, {'settings': {'truck_lunch_min': 0}})
+    assert 'lunch' not in learned()                                                  # обед выключен в настройках
+
+
 def test_lunch_place_skipped_from_unload_even_with_tap():
     """Отметка «закончил» (№65, разгрузка — не дольше 10 мин после неё) и обед по плану у магазина вместе: визит магазина с
     обедом по плану не идёт в разгрузку и с отметкой (её хвост в 10 мин иначе добавил бы к разгрузке часть обеда);

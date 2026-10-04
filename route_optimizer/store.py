@@ -1089,9 +1089,11 @@ def validate_settings(values: Mapping[str, Any],
         errors['truck_overtime_end'] = 'ոչ շուտ, քան մեքենայի աշխատանքային օրվա ավարտը'
     # окно начала обеда (№61) — конец позже начала; обед включён — внутри рабочего дня машины
     lunch_on = bool(values.get('truck_lunch_min'))
-    if lunch_on and 'truck_lunch_from' in out and 'truck_work_start' in out             and _minutes(out['truck_lunch_from']) < _minutes(out['truck_work_start']):
+    if lunch_on and 'truck_lunch_from' in out and 'truck_work_start' in out \
+            and _minutes(out['truck_lunch_from']) < _minutes(out['truck_work_start']):
         errors['truck_lunch_from'] = 'ոչ շուտ, քան մեքենայի աշխատանքային օրվա սկիզբը'
-    if lunch_on and 'truck_lunch_to' in out and 'truck_work_end' in out             and _minutes(out['truck_lunch_to']) > _minutes(out['truck_work_end']):
+    if lunch_on and 'truck_lunch_to' in out and 'truck_work_end' in out \
+            and _minutes(out['truck_lunch_to']) > _minutes(out['truck_work_end']):
         errors['truck_lunch_to'] = 'ոչ ուշ, քան մեքենայի աշխատանքային օրվա ավարտը'
     elif ('truck_lunch_from' in out and 'truck_lunch_to' in out
             and _minutes(out['truck_lunch_to']) <= _minutes(out['truck_lunch_from'])):
