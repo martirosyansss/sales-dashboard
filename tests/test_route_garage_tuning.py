@@ -288,10 +288,9 @@ def _check_migrated(path, before):
 
 def test_garage_step_is_17_to_18_after_truck_driver():
     """Шаг журнала (spread_months) — после шага водителей (№62, уже в базе владельца): 16 → 17 — truck_driver, 17 → 18 —
-    журнал; иначе база на 17 пропустила бы пересборку и журнал остался бы без spread_months. 18 → 19 — журнал обучения
-    (столбец confidence и вид lunch, №61)."""
+    журнал; иначе база на 17 пропустила бы пересборку и журнал остался бы без spread_months."""
     driver = next(v for v, ddl in st._MIGRATIONS.items() if st._TRUCK_DRIVER_TABLE in ddl)
-    assert (driver, GARAGE_STEP, st.SCHEMA_VERSION) == (16, 17, 19)
+    assert (driver, GARAGE_STEP) == (16, 17) and st.SCHEMA_VERSION >= GARAGE_STEP + 1   # дальше — свои шаги (19 — առաքիչ)
 
 
 def test_store_migrates_17_to_18_keeps_rows_ids_and_history(tmp_path):
@@ -318,7 +317,7 @@ OWNER_DB = ROOT / 'route_optimizer.db'
 @pytest.mark.skipif(not OWNER_DB.exists(), reason='нет базы маршрутов владельца')
 def test_owner_db_copy_migrates_to_current(tmp_path):
     """Копия базы владельца (только чтение исходника; сейчас — схема 17 с водителями): все таблицы и строки те же, журнал
-    — те же строки и «не растянут», схема — текущая (19: у журнала обучения — столбец confidence, строки те же)."""
+    — те же строки и «не растянут», схема — текущая (у журнала обучения — столбец confidence, строки те же)."""
     copy = tmp_path / 'owner.db'
     with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro', uri=True)) as src, \
             closing(sqlite3.connect(str(copy))) as dst:
@@ -330,7 +329,7 @@ def test_owner_db_copy_migrates_to_current(tmp_path):
     st.Store(str(copy)).load()
     with closing(sqlite3.connect(str(copy))) as conn:
         after = {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before}
-        if before.get('learned_norms'):                    # схема 19 добавила журналу обучения столбец confidence (NULL)
+        if before.get('learned_norms'):                    # шаг журнала обучения (№61) добавил столбец confidence (NULL)
             assert {r[-1] for r in after['learned_norms']} <= {None}
             after['learned_norms'] = [r[:len(before['learned_norms'][0])] for r in after['learned_norms']]
         assert after == before

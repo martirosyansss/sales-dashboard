@@ -130,19 +130,29 @@ def test_confidence_stored_and_shown_in_status(client):
     assert st['travel']['last']['confidence'] == 1.0 and 'հուսալի է՝' in st['travel']['last']['reason']
 
 
-def test_store_migrates_18_to_19_keeps_rows_ids_and_allows_lunch(tmp_path):
-    path = str(tmp_path / 'v18.db')
+LEARN_STEP = next(v for v, ddl in rst._MIGRATIONS.items() if any('learned_norms_v' in x and 'confidence' in x for x in ddl))
+
+
+def test_learning_step_after_owner_steps():
+    """Шаг журнала обучения (confidence, вид lunch) — после всех шагов, что уже в базе владельца (последний — առաքիչ,
+    №62): иначе база на той схеме пропустила бы пересборку и журнал не читался бы без столбца confidence."""
+    helper = next(v for v, ddl in rst._MIGRATIONS.items() if rst._TRUCK_HELPER_TABLE in ddl)
+    assert LEARN_STEP > helper and rst.SCHEMA_VERSION >= LEARN_STEP + 1
+
+
+def test_store_migrates_learning_step_keeps_rows_ids_and_allows_lunch(tmp_path):
+    path = str(tmp_path / f'v{LEARN_STEP}.db')
     s = rst.Store(path)
     s.save_learned('2026-10-01', [lr.Outcome('truck_time', '', False, 'мало данных'),
                                   lr.Outcome('fuel', 'CAR1', False, 'мало данных', n_obs=3)])
     s.save_learning_auto('loading', True, 'qa')
-    with closing(sqlite3.connect(path)) as conn:                                # база схемы 18: прежний журнал
+    with closing(sqlite3.connect(path)) as conn:                                # база до шага: прежний журнал
         conn.execute('ALTER TABLE learned_norms RENAME TO learned_new')
         conn.execute(f'CREATE TABLE learned_norms({rst._LEARNED_COLUMNS_V14})')
         conn.execute(f'INSERT INTO learned_norms({rst._LEARNED_COPY}) SELECT {rst._LEARNED_COPY} FROM learned_new')
         conn.execute('DROP TABLE learned_new')
         conn.execute("UPDATE sqlite_sequence SET seq = 40 WHERE name = 'learned_norms'")
-        conn.execute("UPDATE meta SET value = '18' WHERE key = 'schema_version'")
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(LEARN_STEP),))
         conn.commit()
         before = conn.execute('SELECT * FROM learned_norms ORDER BY id').fetchall()
         with pytest.raises(sqlite3.IntegrityError):
@@ -151,11 +161,14 @@ def test_store_migrates_18_to_19_keeps_rows_ids_and_allows_lunch(tmp_path):
     s2 = rst.Store(path)
     s2.save_learned('2026-10-02', [lr.Outcome('lunch', '', True, 'да', {'minutes': 25.0}, confidence=0.95)])
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() ==             (str(rst.SCHEMA_VERSION),) == ('19',)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(rst.SCHEMA_VERSION),)
         rows = conn.execute('SELECT * FROM learned_norms ORDER BY id').fetchall()
         assert [r[:-1] for r in rows[:len(before)]] == before and all(r[-1] is None for r in rows[:len(before)])
         assert rows[-1][0] == 41 and rows[-1][1] == 'lunch' and rows[-1][-1] == 0.95
-        assert conn.execute("SELECT name FROM sqlite_sequence WHERE name LIKE 'learned_norms%'").fetchall() ==             [('learned_norms',)]
+        assert conn.execute("SELECT name FROM sqlite_sequence WHERE name LIKE 'learned_norms%'").fetchall() == \
+            [('learned_norms',)]
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'truck_helper'").fetchone()
     assert s2.learning_auto() == {'loading': True}
     assert [(r['kind'], r['confidence']) for r in s2.learned()] == [('fuel', None), ('truck_time', None), ('lunch', 0.95)]
 

@@ -782,7 +782,12 @@
 .dp-tdriver { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; font-size: .875rem; color: var(--rt-fg-dim); }
 .dp-tdriver i { font-size: .75rem; color: var(--rt-fg-mute); }
 .dp-unload-dlg .rt-input.dp-driver-input { width: 100%; }
-.dp-driver-scope { margin: 12px 0 0; padding: 0; border: 0; display: grid; gap: 8px; }
-.dp-driver-scope[hidden] { display: none; }
-.dp-driver-scope legend { margin-bottom: 4px; }
-.dp-driver-scope label { display: flex; align-items: flex-start; gap: 10px; font-size: .9375rem; cursor: pointer; }
+/* выбор водителя из списка (ERP + свои) и поле нового водителя под ним */
+.dp-unload-dlg .rt-select.dp-driver-input { width: 100%; max-width: none; }
+.dp-driver-new { margin-top: 10px; }
+.dp-driver-new[hidden] { display: none; }
+.dp-unload-dlg .dp-helper-label { margin-top: 14px; }
+.dp-helper-label small { font-weight: 400; color: var(--rt-fg-mute); }
+.dp-tdriver { flex-basis: 100%; flex-direction: column; align-items: flex-start; gap: 0; }
+.dp-crew-day { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; font-size: .875rem; color: var(--rt-fg-dim); cursor: pointer; }
+.dp-crew-day[hidden] { display: none; }
