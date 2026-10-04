@@ -116,6 +116,7 @@ class FactsSource:
                         'delivered_at': delivery.get('at') if delivery is not None else None})
         return {'track': track, 'stops': out}
 
-    def refuels(self) -> list[dict[str, Any]]:
-        """Все заправки (Store.refuels): с флагами, признаком superseded и моментом исходной заправки (eff_*)."""
-        return self.store.refuels() if self._exists() else []
+    def refuels(self, since: str = '') -> list[dict[str, Any]]:
+        """Заправки (Store.refuels; since — с этого дня, пусто — все): с флагами, признаком superseded и моментом
+        исходной заправки (eff_*)."""
+        return self.store.refuels(since) if self._exists() else []

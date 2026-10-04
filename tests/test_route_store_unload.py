@@ -138,8 +138,8 @@ def test_store_migrates_14_to_15_keeps_all_rows(tmp_path):
     assert b.unload_min == {} and b.windows[101] == st.CustomerWindow('between', 600, 720)
     with closing(sqlite3.connect(path)) as conn:
         assert {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before} == before
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('15',) == \
-            (str(st.SCHEMA_VERSION),)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(st.SCHEMA_VERSION),)                                          # 14 → 15 → … → текущая
         assert conn.execute('SELECT COUNT(*) FROM customer_unload').fetchone() == (0,)
     st.Store(path).save_customer_constraints(101, None, None, 'qa', 40)
     assert st.Store(path).load().unload_min == {101: 40.0}
@@ -202,7 +202,7 @@ def test_api_unload_norms_follow_learned_row_in_effect(client):
 def test_settings_page_has_field_and_bumped_assets():
     html = (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
     assert 'id="rcsUnload"' in html and 'Время у магазина, мин' in html
-    assert 'routes_customer_settings.js\') }}?v=3' in html and 'routes_customer_settings.css\') }}?v=2' in html
+    assert 'routes_customer_settings.js\') }}?v=3' in html and 'routes_customer_settings.css\') }}?v=3' in html
     js = (ROOT / 'static' / 'js' / 'routes_customer_settings.js').read_text(encoding='utf-8')
     assert 'unload_min: unloadMin' in js and 'Время на сам груз (' in js and 'Пусто — ' in js
     assert 'input.validity.badInput' in js                  # нечисло в поле — ошибка, а не «пусто» (стёрло бы время)
