@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0d1117">
     {# снаружи (araqich.orix.am, журнал гаража №53) — нейтрально, по-армянски, без названия программы #}
     <title>{% if public %}Ավտոտնակ — մուտք{% else %}Вход — Sales Dashboard v2.0{% endif %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
@@ -10,9 +11,13 @@
     <style>
         body {
             min-height: 100vh;
+            min-height: 100dvh;   /* телефон: высота без панелей браузера */
             display: flex;
             align-items: center;
             justify-content: center;
+            /* телефон (начальник гаража входит из интернета): карточка не прилипает к краям экрана */
+            padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+                     max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
             background: radial-gradient(1200px 600px at 50% -10%, #1b2a3a 0%, #0d1117 55%, #0a0d12 100%);
         }
         .login-card {
@@ -28,6 +33,10 @@
             letter-spacing: 0.2px;
         }
         .login-brand i { color: #3b82f6; }
+        /* поля и кнопка — под палец (≥ 48 px), шрифт полей 16 px: iOS не увеличивает страницу при вводе */
+        .login-card .form-control, .login-card .input-group-text { min-height: 48px; font-size: 1rem; }
+        .login-card .btn { min-height: 48px; font-size: 1.0625rem; }
+        .login-card .form-label { font-size: 1rem; }
     </style>
 </head>
 <body>
@@ -49,23 +58,26 @@
             <input type="hidden" name="next" value="{{ next or '' }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="mb-3">
-                <label class="form-label">{{ 'Մուտքանուն' if public else 'Логин' }}</label>
+                <label class="form-label" for="loginUser">{{ 'Մուտքանուն' if public else 'Логин' }}</label>
                 <div class="input-group">
-                    <span class="input-group-text"><i class="fas fa-user"></i></span>
-                    <input type="text" name="username" class="form-control" required autofocus
+                    <span class="input-group-text"><i class="fas fa-user" aria-hidden="true"></i></span>
+                    {# телефон: без заглавной первой буквы и автозамены — иначе логин не совпадёт #}
+                    <input type="text" name="username" id="loginUser" class="form-control" required autofocus
+                           autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="next"
                            placeholder="{{ 'Մուտքանուն' if public else 'Логин' }}">
                 </div>
             </div>
             <div class="mb-4">
-                <label class="form-label">{{ 'Գաղտնաբառ' if public else 'Пароль' }}</label>
+                <label class="form-label" for="loginPass">{{ 'Գաղտնաբառ' if public else 'Пароль' }}</label>
                 <div class="input-group">
-                    <span class="input-group-text"><i class="fas fa-lock"></i></span>
-                    <input type="password" name="password" class="form-control" required
+                    <span class="input-group-text"><i class="fas fa-lock" aria-hidden="true"></i></span>
+                    <input type="password" name="password" id="loginPass" class="form-control" required
+                           autocomplete="current-password" enterkeyhint="go"
                            placeholder="{{ 'Գաղտնաբառ' if public else 'Пароль' }}">
                 </div>
             </div>
             <button type="submit" class="btn btn-primary w-100">
-                <i class="fas fa-right-to-bracket me-1"></i> {{ 'Մուտք' if public else 'Войти' }}
+                <i class="fas fa-right-to-bracket me-1" aria-hidden="true"></i> {{ 'Մուտք' if public else 'Войти' }}
             </button>
         </form>
 
