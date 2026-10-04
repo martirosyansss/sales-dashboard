@@ -317,7 +317,7 @@ OWNER_DB = ROOT / 'route_optimizer.db'
 @pytest.mark.skipif(not OWNER_DB.exists(), reason='нет базы маршрутов владельца')
 def test_owner_db_copy_migrates_to_current(tmp_path):
     """Копия базы владельца (только чтение исходника; сейчас — схема 17 с водителями): все таблицы и строки те же, журнал
-    — те же строки и «не растянут», схема — текущая (18)."""
+    — те же строки и «не растянут», схема — текущая (у журнала обучения — столбец confidence, строки те же)."""
     copy = tmp_path / 'owner.db'
     with closing(sqlite3.connect(f'file:{OWNER_DB.as_posix()}?mode=ro', uri=True)) as src, \
             closing(sqlite3.connect(str(copy))) as dst:
@@ -328,7 +328,11 @@ def test_owner_db_copy_migrates_to_current(tmp_path):
         rows = conn.execute('SELECT * FROM garage_entry ORDER BY 1').fetchall() if 'garage_entry' in tables else []
     st.Store(str(copy)).load()
     with closing(sqlite3.connect(str(copy))) as conn:
-        assert {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before} == before
+        after = {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before}
+        if before.get('learned_norms'):                    # шаг журнала обучения (№61) добавил столбец confidence (NULL)
+            assert {r[-1] for r in after['learned_norms']} <= {None}
+            after['learned_norms'] = [r[:len(before['learned_norms'][0])] for r in after['learned_norms']]
+        assert after == before
         assert [r[:len(rows[0])] for r in conn.execute('SELECT * FROM garage_entry ORDER BY 1')] == rows if rows else True
         assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == (str(st.SCHEMA_VERSION),)
         assert 'spread_months' in [r[1] for r in conn.execute('PRAGMA table_info(garage_entry)')]
