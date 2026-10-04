@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=20">
 <!-- Журнал гаража (ответ владельца №53): страница на армянском, телефон и ПК — свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_garage.css') }}?v=4">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_garage.css') }}?v=5">
 {% endblock %}
 
 {% block content %}
@@ -82,10 +82,15 @@
                     <span id="gjKindHint" class="rt-field-hint">Վերանորոգումը մտնում է ֏/կմ-ի մեջ։ Վթարը, ապահովագրությունը և հարկը՝ միայն ամփոփման մեջ։</span>
                     <span id="gjKindErr" class="rt-ferr" data-for="kind"></span>
                 </div>
+                <!-- №63: что сделано — выбор из списка вида записи (routes_garage.js WHAT_LISTS); «Այլ…» — короткий текст -->
                 <div class="rt-field gj-wide" id="gjWhatBox">
                     <label for="gjWhat">Ինչ է արվել</label>
-                    <input id="gjWhat" class="rt-input" type="text" maxlength="300" autocomplete="off"
-                           placeholder="Օրինակ՝ արգելակի կոճղակներ, յուղի փոխում" aria-describedby="gjWhatErr">
+                    <select id="gjWhat" class="rt-select" required aria-describedby="gjWhatErr"></select>
+                    <div id="gjWhatOtherBox" class="gj-what-other" hidden>
+                        <label for="gjWhatOther" class="rt-sr-only">Ինչ է արվել՝ ձեր բառերով</label>
+                        <input id="gjWhatOther" class="rt-input" type="text" maxlength="120" autocomplete="off"
+                               placeholder="Գրեք կարճ, օրինակ՝ ռադիատոր" aria-describedby="gjWhatErr">
+                    </div>
                     <span id="gjWhatErr" class="rt-ferr" data-for="what"></span>
                 </div>
                 <div class="rt-field" id="gjAmountBox">
@@ -96,11 +101,12 @@
                 </div>
                 <div class="rt-field" id="gjSpreadBox">
                     <label for="gjSpread">Բաշխել</label>
-                    <select id="gjSpread" class="rt-select" aria-describedby="gjSpreadHint gjSpreadSuggest gjSpreadErr">
+                    <select id="gjSpread" class="rt-select" aria-describedby="gjSpreadWhy gjSpreadHint gjSpreadSuggest gjSpreadErr">
                         <option value="">Ոչ</option>
                         <option value="24">24 ամիս</option>
                         <option value="36">36 ամիս</option>
                     </select>
+                    <span id="gjSpreadWhy" class="gj-suggest" hidden></span>
                     <span id="gjSpreadHint" class="rt-field-hint">Շարժիչ, փոխանցման տուփ, անվադողերի ամբողջ հավաքածու՝ այն
                         ամենը, ինչ ծառայում է մեկ տարուց ավելի։ Գումարը հավասարաչափ կբաշխվի ընտրված ամիսների վրա։</span>
                     <span id="gjSpreadSuggest" class="gj-suggest" hidden>Գումարը մեծ է․ եթե սա խոշոր վերանորոգում է, ընտրեք
@@ -117,7 +123,8 @@
                 <div class="rt-field gj-wide">
                     <label for="gjNote">Նշում <span class="gj-opt">(ըստ ցանկության)</span></label>
                     <input id="gjNote" class="rt-input" type="text" maxlength="300" autocomplete="off"
-                           placeholder="Որտեղ են վերանորոգել, կտրոնի համար" aria-describedby="gjNoteErr">
+                           placeholder="Մանրամասներ՝ օրինակ՝ առջևի, ձախ, որտեղ են վերանորոգել, կտրոնի համար"
+                           aria-describedby="gjNoteErr">
                     <span id="gjNoteErr" class="rt-ferr" data-for="note"></span>
                 </div>
             </div>
@@ -227,5 +234,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=4"></script>
+<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=6"></script>
 {% endblock %}
