@@ -27,6 +27,7 @@
 .gj-date { color-scheme: dark; font-family: var(--rt-mono); }
 .gj-opt { color: var(--rt-fg-mute); font-weight: 400; }
 .gj-form [hidden] { display: none; }
+.gj-what-other { margin-top: 8px; }   /* «Այլ…» — короткий текст сразу под списком */
 .gj-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
 
 /* Список записей */

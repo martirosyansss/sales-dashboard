@@ -34,7 +34,10 @@
     }
     const icon = (cls) => h('i', { class: 'fas ' + cls, 'aria-hidden': 'true' });
 
-    const state = { data: null, entries: [], editing: null, busy: false };
+    // whatList — список «Ինչ է արվել» в форме; spreadTouched — «Բաշխել» меняли руками в этой форме, spreadAuto — срок
+    // поставлен выбором двигателя / КПП; odoWhat — текст правимой записи «только пробег» (поля у неё нет)
+    const state = { data: null, entries: [], editing: null, busy: false, whatList: null, spreadTouched: false,
+        spreadAuto: false, odoWhat: null };
 
     function announce(text) { $('gjStatus').textContent = ''; setTimeout(() => { $('gjStatus').textContent = text; }, 30); }
     function showError(text) {
@@ -103,9 +106,57 @@
     });
 
     // ---------- форма записи ----------
+    // «Ինչ է արվել» — выбор из списка вида записи (решение владельца №63); «Այլ…» — короткий текст своими словами. В базу
+    // идёт ровно текст пункта (или введённый текст): схема и проверка сервера прежние. У «только пробега» поля нет.
+    const OTHER = '__other';
+    const REPAIR_WHAT = ['Յուղ և ֆիլտրեր (ՏՍ)', 'Արգելակներ', 'Անվադողեր', 'Մարտկոց', 'Կախոց / ղեկ', 'Էլեկտրիկա',
+        'Կցորդիչ (սցեպլենիե)', 'Շարժիչ', 'Փոխանցման տուփ', 'Թափք / ապակի'];
+    const WHAT_LISTS = { repair: REPAIR_WHAT, accident: REPAIR_WHAT, fixed: ['Ապահովագրություն', 'Տեխզննում', 'Հարկ'] };
+    const SPREAD_WHAT = ['Շարժիչ', 'Փոխանցման տուփ'];   // крупный узел — сразу «Բաշխել» 24 месяца
+    const TIRES_WHAT = 'Անվադողեր';                      // комплект — тоже, но решает механик: только подсказка
+
+    function fillWhat(kind) {
+        const list = WHAT_LISTS[kind] || [];
+        $('gjWhat').replaceChildren(h('option', { value: '', text: 'Ընտրեք…' }),
+            ...list.map(text => h('option', { value: text, text })), h('option', { value: OTHER, text: 'Այլ…' }));
+        state.whatList = WHAT_LISTS[kind] || null;
+    }
+
+    // запись → поле: пункт списка своего вида — он и выбран; иное — «Այլ…» с этим текстом
+    function setWhat(kind, what) {
+        fillWhat(kind);
+        const text = what || '';
+        const inList = (WHAT_LISTS[kind] || []).includes(text);
+        $('gjWhat').value = inList ? text : text ? OTHER : '';
+        $('gjWhatOther').value = inList ? '' : text;
+    }
+
+    function whatValue() {
+        return $('gjWhat').value === OTHER ? $('gjWhatOther').value.trim() : $('gjWhat').value;
+    }
+
+    // выбран пункт: «Այլ…» — поле текста; двигатель и КПП — «Բաշխել» 24 месяца, если срок не трогали руками в этой форме
+    // (и не задан); ушли с них — авто-срок снимается; шины — только подсказка. auto=false — заполнение формы (правка).
+    function syncWhat(auto) {
+        const repair = $('gjKind').value === 'repair', what = $('gjWhat').value;
+        $('gjWhatOtherBox').hidden = what !== OTHER;
+        const big = repair && SPREAD_WHAT.includes(what);
+        if (auto && !state.spreadTouched) {
+            if (big && !$('gjSpread').value) { $('gjSpread').value = '24'; state.spreadAuto = true; }
+            else if (!big && state.spreadAuto) { $('gjSpread').value = ''; state.spreadAuto = false; }
+        }
+        const why = big ? 'Շարժիչը և փոխանցման տուփը ծառայում են տարիներ՝ ծախսը բաշխվում է 24 ամսվա վրա։ Կարող եք փոխել։'
+            : repair && what === TIRES_WHAT ? 'Եթե ամբողջ հավաքածու է — ընտրեք 24 ամիս։' : '';
+        $('gjSpreadWhy').textContent = why;
+        $('gjSpreadWhy').hidden = !why;
+        syncSpread();
+    }
+
     function fieldErrors(errors) {
         document.querySelectorAll('#gjForm [data-for]').forEach(el => { el.textContent = (errors || {})[el.dataset.for] || ''; });
-        const map = { car_code: 'gjCar', day: 'gjDay', kind: 'gjKind', what: 'gjWhat', amount_amd: 'gjAmount', spread_months: 'gjSpread', odometer_km: 'gjOdoKm', note: 'gjNote' };
+        const whatId = $('gjWhat').value === OTHER ? 'gjWhatOther' : 'gjWhat';
+        const map = { car_code: 'gjCar', day: 'gjDay', kind: 'gjKind', what: whatId, amount_amd: 'gjAmount', spread_months: 'gjSpread', odometer_km: 'gjOdoKm', note: 'gjNote' };
+        ['gjWhat', 'gjWhatOther'].filter(id => id !== whatId).forEach(id => { $(id).classList.remove('is-invalid'); $(id).removeAttribute('aria-invalid'); });
         Object.entries(map).forEach(([k, id]) => {
             const bad = !!(errors && errors[k]);
             $(id).classList.toggle('is-invalid', bad);
@@ -123,12 +174,13 @@
         $('gjSpreadSuggest').hidden = !(repair && big && !$('gjSpread').value);
     }
 
-    function syncKind() {
-        const odo = $('gjKind').value === 'odometer';
-        $('gjAmountBox').hidden = odo;
-        syncSpread();
-        $('gjWhat').placeholder = odo ? 'Ըստ ցանկության' : 'Օրինակ՝ արգելակի կոճղակներ, յուղի փոխում';
-        $('gjWhatBox').querySelector('label').textContent = odo ? 'Ինչ է արվել (ըստ ցանկության)' : 'Ինչ է արվել';
+    // вид записи сменился: другой список (ремонт и ДТП — общий) — выбор сброшен; у «только пробега» поля нет
+    function syncKind(auto) {
+        const kind = $('gjKind').value;
+        $('gjAmountBox').hidden = kind === 'odometer';
+        $('gjWhatBox').hidden = kind === 'odometer';
+        if (state.whatList !== (WHAT_LISTS[kind] || null)) setWhat(kind, '');
+        syncWhat(auto);
     }
 
     function syncOdoHint() {
@@ -160,8 +212,11 @@
         $('gjDay').max = state.data ? state.data.today : '';
         $('gjFormTitle').replaceChildren(icon('fa-plus'), 'Նոր գրառում');
         $('gjCancel').hidden = true;
+        state.spreadTouched = state.spreadAuto = false;
+        state.odoWhat = null;
+        setWhat($('gjKind').value, '');
         fieldErrors(null);
-        syncKind();
+        syncKind(false);
         syncOdoHint();
     }
 
@@ -172,7 +227,9 @@
         $('gjCar').value = e.car_code;
         $('gjDay').value = e.day;
         $('gjKind').value = e.kind;
-        $('gjWhat').value = e.what || '';
+        setWhat(e.kind, e.kind === 'odometer' ? '' : e.what);
+        state.odoWhat = e.kind === 'odometer' ? e.what || null : null;   // у «только пробега» поля нет — текст не теряем
+        state.spreadTouched = state.spreadAuto = false;
         $('gjAmount').value = e.kind === 'odometer' ? '' : String(e.amount_amd);
         $('gjSpread').value = e.spread_months ? String(e.spread_months) : '';
         $('gjOdoKm').value = String(e.odometer_km);
@@ -180,7 +237,7 @@
         $('gjFormTitle').replaceChildren(icon('fa-pen'), 'Գրառման փոփոխում · ' + dayHy(e.day));
         $('gjCancel').hidden = false;
         fieldErrors(null);
-        syncKind();
+        syncKind(false);
         syncOdoHint();
         $('gjForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
         $('gjCar').focus({ preventScroll: true });
@@ -198,12 +255,15 @@
         const kind = $('gjKind').value;
         const body = {
             car_code: $('gjCar').value, day: $('gjDay').value, kind,
-            what: $('gjWhat').value.trim() || null, odometer_km: intOrRaw($('gjOdoKm').value), note: $('gjNote').value.trim() || null,
+            what: kind === 'odometer' ? state.odoWhat : whatValue() || null,
+            odometer_km: intOrRaw($('gjOdoKm').value), note: $('gjNote').value.trim() || null,
         };
         if (kind !== 'odometer') body.amount_amd = intOrRaw($('gjAmount').value);
         body.spread_months = kind === 'repair' && $('gjSpread').value ? Number($('gjSpread').value) : null;
         if (state.editing !== null) body.id = state.editing;
-        const badNum = {};   // нечисло в числовом поле — своя ошибка, а не «пусто»
+        const badNum = {};   // нечисло в числовом поле — своя ошибка, а не «пусто»; что сделано — выбрано из списка
+        if (kind !== 'odometer' && !$('gjWhat').value) badNum.what = 'Ընտրեք, թե ինչ է արվել';
+        else if (kind !== 'odometer' && !body.what) badNum.what = 'Գրեք կարճ, թե ինչ է արվել';
         if ($('gjOdoKm').validity.badInput) badNum.odometer_km = 'Գրեք ամբողջ թիվ՝ կիլոմետր';
         if (kind !== 'odometer' && $('gjAmount').validity.badInput) badNum.amount_amd = 'Գրեք ամբողջ թիվ՝ դրամ';
         if (Object.keys(badNum).length) { fieldErrors(badNum); return; }
@@ -467,9 +527,13 @@
         selectTab(TABS.some(([t]) => t === tab) ? tab : 'gjTabCosts');
         $('gjForm').addEventListener('submit', saveEntry);
         $('gjCancel').addEventListener('click', resetForm);
-        $('gjKind').addEventListener('change', syncKind);
+        $('gjKind').addEventListener('change', () => syncKind(true));
+        $('gjWhat').addEventListener('change', () => {
+            syncWhat(true);
+            if ($('gjWhat').value === OTHER) $('gjWhatOther').focus();
+        });
         $('gjAmount').addEventListener('input', syncSpread);
-        $('gjSpread').addEventListener('change', syncSpread);
+        $('gjSpread').addEventListener('change', () => { state.spreadTouched = true; state.spreadAuto = false; syncSpread(); });
         $('gjBannerGo').addEventListener('click', goStale);
         $('gjCar').addEventListener('change', syncOdoHint);
         $('gjOdoForm').addEventListener('submit', saveOdo);

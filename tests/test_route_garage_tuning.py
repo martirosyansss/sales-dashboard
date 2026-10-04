@@ -492,8 +492,8 @@ def test_garage_page_js_pins_401_badinput_spread_and_banner():
         assert 'մաշվածություն' not in text and "'պարկի" not in text and ' պարկի' not in text
         assert 'մատյան' not in text                    # журнал гаража — «ավտոտնակի գրառումներ»
     html = (ROOT / 'templates' / 'routes_garage.html').read_text(encoding='utf-8')
-    assert 'id="gjSpread"' in html and 'id="gjBanner"' in html and "routes_garage.js') }}?v=4" in html
-    assert "routes_garage.css') }}?v=4" in html
+    assert 'id="gjSpread"' in html and 'id="gjBanner"' in html and "routes_garage.js') }}?v=5" in html
+    assert "routes_garage.css') }}?v=5" in html
     css = (ROOT / 'static' / 'css' / 'routes_garage.css').read_text(encoding='utf-8')
     assert '.gj-table td.gj-num .gj-sub { white-space: normal; font-family: var(--rt-font); }' in css
     assert '.gj-table .rt-cell-name .n { white-space: nowrap; overflow-wrap: normal; }' in css
