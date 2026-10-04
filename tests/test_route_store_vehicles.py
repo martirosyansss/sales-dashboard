@@ -68,7 +68,7 @@ def test_corrupt_rule_does_not_silently_allow_every_truck(tmp_path):
     store.save_customer_vehicles(101, VehicleAccess('allow', ('A',)), 'test')
     with sqlite3.connect(store.path) as db:
         db.execute("UPDATE customer_vehicle_access SET trucks='[false]'")
-    with pytest.raises(st.StoreError, match='ограничение машин'):
+    with pytest.raises(st.StoreError, match='մեքենաների սահմանափակումը'):
         store.load()
 
 

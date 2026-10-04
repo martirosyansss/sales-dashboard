@@ -73,7 +73,7 @@ def test_check_unload_min_accepts_whole_minutes(raw):
 @pytest.mark.parametrize('raw', [0, 121, -5, 40.5, 0.5, True, False, '40', None, float('nan'), float('inf'), [40], {}])
 def test_check_unload_min_rejects(raw):
     value, err = st.check_unload_min(raw)
-    assert value is None and 'от 1 до 120' in err
+    assert value is None and '1-ից մինչև 120' in err
 
 
 def test_store_roundtrip_keep_and_clear(tmp_path):
@@ -102,7 +102,7 @@ def test_store_rejects_broken_unload_rows(tmp_path):
             conn.execute("INSERT INTO customer_unload VALUES(101, 0, 'x', 'qa')")
         conn.execute("INSERT INTO customer_unload VALUES(101, 40.5, 'x', 'qa')")             # не целое — битая строка
         conn.commit()
-    with pytest.raises(st.StoreError, match='время у магазина'):
+    with pytest.raises(st.StoreError, match='խանութում ժամանակի'):
         s.load()
 
 
@@ -204,14 +204,15 @@ def test_api_unload_norms_follow_learned_row_in_effect(client):
 
 def test_settings_page_has_field_and_bumped_assets():
     html = (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
-    assert 'id="rcsUnload"' in html and 'Время у магазина, мин' in html
-    assert 'routes_customer_settings.js\') }}?v=5' in html and 'routes_customer_settings.css\') }}?v=3' in html
+    assert 'id="rcsUnload"' in html and 'Ժամանակ խանութում, րոպե' in html
+    assert 'routes_customer_settings.js\') }}?v=7' in html and 'routes_customer_settings.css\') }}?v=3' in html
     js = (ROOT / 'static' / 'js' / 'routes_customer_settings.js').read_text(encoding='utf-8')
-    assert 'unload_min: unloadMin' in js and 'Время на сам груз (' in js and 'Пусто — ' in js
+    assert 'unload_min: unloadMin' in js and 'Բեռի ժամանակը (' in js and 'Դատարկ՝ ' in js
     assert 'input.validity.badInput' in js                  # нечисло в поле — ошибка, а не «пусто» (стёрло бы время)
-    assert 'unload_auto_min' in js and 'unload_visits' in js and 'смешает' not in js        # №60: без смеси с фактом
-    assert 'Пока у магазина меньше 2 разгрузок по GPS, действует введённое время; со 2-й разгрузки программа берёт' in js
-    assert "если две первые разгрузки сильно расходятся —'" in js and "+ ' программа ждёт третью.'" in js
+    assert 'unload_auto_min' in js and 'unload_visits' in js and 'կհամադրի' not in js      # №60: без смеси с фактом
+    assert ('Քանի դեռ այս խանութում GPS-ով 2 կանգառ չկա, հաշվվում է ձեր գրած ժամանակը․ 2-րդ կանգառից ծրագիրը'
+            in js)
+    assert 'ժամանակը վերցնում է GPS-ից։ Եթե առաջին երկու կանգառները շատ են տարբերվում, ծրագիրը սպասում է երրորդին։' in js
 
 
 def test_api_huge_unload_number_is_400(client):
@@ -598,7 +599,7 @@ def test_settings_hint_is_truthful_with_learned_row(client):
 def _js_hints(norms, items):
     """unloadHint из routes_customer_settings.js — в node, на ответе сервера (unload_norms и строки магазинов)."""
     js = (ROOT / 'static' / 'js' / 'routes_customer_settings.js').read_text(encoding='utf-8').replace('\r\n', '\n')
-    parts = [re.search(p, js, re.S).group(0) for p in (r'    const minutes = .*?;\n', r'    const unloads = .*?;\n',
+    parts = [re.search(p, js, re.S).group(0) for p in (r'    const minutes = .*?;\n', r'    const stays = .*?;\n',
                                                          r'    function unloadHint\(item\) \{\n.*?\n    \}\n')]
     script = f'const norms = {json.dumps(norms)};\n' + ''.join(parts) + \
         f'console.log(JSON.stringify({json.dumps(items)}.map(unloadHint)));\n'
@@ -621,10 +622,11 @@ def test_settings_hint_rounded_learned_norm_is_not_by_fact(client):
         assert data['unload_norms']['per_stop_min'] == per_stop and rows[101]['unload_auto_min'] == round(per_stop, 1)
         assert rows[101]['unload_auto_min'] != per_stop and rows[102]['unload_auto_min'] - per_stop > 1
         plain, fact = _js_hints(data['unload_norms'], [rows[101], rows[102]])
-        assert plain.endswith(' Пусто — обычные ' + f'{per_stop:.1f}'.replace('.', ',') + ' мин.'), plain
-        assert fact.endswith(' мин — по факту.') and 'обычные' not in fact, fact
+        # подсказка по-армянски (№58): между числом и «րոպե» — неразрывный пробел U+00A0, как на «Развозе»
+        assert plain.endswith(' Դատարկ՝ սովորական ' + f'{per_stop:.1f}'.replace('.', ',') + ' րոպե։'), plain
+        assert fact.endswith(' րոպե (ըստ փաստի)։') and 'սովորական' not in fact, fact
     assert _js_hints({'per_stop_min': 8.0, 'per_tonne_min': 6.0}, [{'unload_auto_min': 8.5}])[0].endswith(
-        ' Пусто — 8,5 мин — по факту.')                                  # поправка 0,5 — уже своё время
+        ' Դատարկ՝ 8,5 րոպե (ըստ փաստի)։')                          # поправка 0,5 — уже своё время
 
 
 def test_manual_below_real_time_is_corrected_by_fact():
@@ -669,10 +671,10 @@ def test_learning_page_lists_active_offsets_without_stats_and_never_loads_erp(cl
 
 def test_learning_page_renders_store_block():
     html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
-    assert 'Разгрузка по магазинам' in html and 'id="lrStoreRows"' in html and "routes_learning.js') }}?v=8" in html
+    assert 'Բեռնաթափումն ըստ խանութների' in html and 'id="lrStoreRows"' in html and "routes_learning.js') }}?v=10" in html
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
     assert 'function renderStores' in js and "esc(r.name)" in js and "kind === 'unload'" in js
-    assert "learned: 'по GPS'" in js and 'уточнено' not in js                 # №60: время по GPS, а не «уточнено»
+    assert "learned: 'ըստ GPS-ի'" in js and 'ճշտված' not in js                # №60: время по GPS, а не «уточнено»
 
 
 # ============================== со 2-го визита — время по GPS (№56, №60) ==============================
@@ -850,7 +852,7 @@ def test_page_shows_disagreeing_visits_wait(client, monkeypatch):
     assert (rows[101]['split'], rows[101]['in_calc_min'], rows[101]['source']) == (True, 20.0, 'manual')
     assert (rows[102]['split'], rows[102]['in_calc_min'], rows[102]['source']) == (False, 41.0, 'learned')
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
-    assert "r.split ? ' сильно расходятся — ждём третью'" in js
+    assert "r.split ? ' — շատ են տարբերվում, ծրագիրը սպասում է երրորդին'" in js
 
 
 def test_page_and_hint_follow_second_visit_threshold(client, monkeypatch):
@@ -871,6 +873,12 @@ def test_page_and_hint_follow_second_visit_threshold(client, monkeypatch):
     assert (hint[101]['unload_visits'], hint[101]['unload_auto_min']) == (None, 6.0)
     assert (hint[102]['unload_visits'], hint[102]['unload_auto_min']) == (2, 41.0)
     html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
-    assert f'id="lrStoresMin">{lr.STORE_MIN_OBS}</span>' in html and 'Со второй разгрузки по GPS' in html
-    assert 'не меньше 5 раз' not in html and 'сначала понемногу' not in html
-    assert 'от остановки машины у магазина до начала движения' in html and 'введённое больше не участвует' in html
+    assert f'id="lrStoresMin">{lr.STORE_MIN_OBS}</span>' in html and 'Երկրորդ բեռնաթափումից սկսած' in html
+    # №60: от остановки до начала движения; введённое — пока нет 2 стоянок по GPS; две расходящиеся — ждём третью
+    assert 'մեքենայի կանգնելուց մինչև շարժվել սկսելը' in html and 'մուտքագրվածն այլևս հաշվի չի առնվում' in html
+    assert 'ծրագիրը սպասում է երրորդին' in html and 'քիչ-քիչ' not in html
+    # одна разгрузка время не меняет (STORE_MIN_OBS = 2), прежнего правила «не меньше 5 раз» нет ни на одном языке;
+    # в тексте нет управляющих символов (U+0001 съедал последнюю букву слова)
+    assert 'Մեկ բեռնաթափումով ժամանակը չի փոխվում՝ այն կարող է պատահական լինել։' in html
+    assert not re.search(r'не меньше 5 раз|առնվազն 5 (?:անգամ|բեռնաթափում)', html)
+    assert not re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', html)

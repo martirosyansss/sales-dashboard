@@ -26,7 +26,7 @@ def revenue_validation(snap, included: Collection[int]) -> dict[str, Any]:
     """
     orders = getattr(snap, 'validation_orders', ())
     if not orders:
-        return {'status': 'unavailable', 'ok': False, 'reason': 'Нет истории для независимой проверки',
+        return {'status': 'unavailable', 'ok': False, 'reason': 'Անկախ ստուգման համար պատմություն չկա',
                 'managers': [], 'passed': 0, 'total': 0, 'tolerance_pct': 100*TOLERANCE}
     today = snap.today
     last_sat = today - timedelta(days=(today.weekday()-5) % 7 or 7)
@@ -82,4 +82,4 @@ def revenue_validation(snap, included: Collection[int]) -> dict[str, Any]:
             'test_start':test_start.isoformat(),'test_end':test_end.isoformat(),
             'tolerance_pct':100*TOLERANCE,'passed':passed,'total':len(supported),
             'season_scale':round(scale,4),'season_supported':last_year_train>0 and last_year_test>0,
-            'managers':rows,'scope':'Выручка клиентов исходного плана, 4 завершённые недели'}
+            'managers':rows,'scope':'Սկզբնական պլանի հաճախորդների հասույթը, 4 ավարտված շաբաթ'}

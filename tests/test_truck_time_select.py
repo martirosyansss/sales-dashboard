@@ -142,7 +142,7 @@ def test_accepts_valhalla_when_truly_better_scored_with_applied_profile(bases):
     assert o.kind == 'truck_time' and o.accepted and o.params['source'] == VALHALLA, o.reason
     assert c[VALHALLA]['learned']['mae'] < 0.05 < c[MODEL]['learned']['mae']
     assert (o.mae_before, o.mae_after) == (c[MODEL]['learned']['mae'], c[VALHALLA]['learned']['mae'])
-    assert o.reason.startswith('Valhalla точнее, чем прежняя модель')
+    assert o.reason.startswith('Valhalla-ն ավելի ճշգրիտ է, քան նախկին մոդելը․')
     test = [p for p in pairs if p[0].day >= TEST_FROM]
     assert (o.n_test, o.params['legs']['test'], o.params['days']['test']) == (len(test), len(test), lr.HOLDOUT_DAYS)
     assert (o.test_from, o.test_to) == ('2026-09-26', '2026-10-02')
@@ -193,8 +193,8 @@ def test_each_model_gets_its_own_correction_before_comparison(bases):
 def test_rejects_valhalla_when_worse_or_equal(bases):
     worse, _ = lr.fit_truck_time(_pairs(model_knows), TODAY, MODEL, bases, {})
     assert not worse.accepted and worse.params['source'] == MODEL
-    assert worse.reason.startswith('Valhalla не точнее, чем прежняя модель, хотя бы на 2%')
-    assert worse.reason.endswith('— остаётся прежняя модель')
+    assert worse.reason.startswith('Valhalla-ն առնվազն 2%-ով ավելի ճշգրիտ չէ, քան նախկին մոդելը․ սխալ ')
+    assert worse.reason.endswith('— մնում է նախկին մոդելը')
     same, _ = lr.fit_truck_time(_pairs(lambda rnd, km: (1.1 * km / 25 * 60, km / 25 * 60, km / 25 * 60)), TODAY,
                                 MODEL, bases, {})
     c = same.params['candidates']
@@ -219,7 +219,7 @@ def test_minimum_data_on_the_boundary(bases, counts, enough):
     assert (legs['train'], days['train'], legs['test'], days['test']) == counts
     assert o.accepted is enough and o.params['source'] == (VALHALLA if enough else MODEL)
     if not enough:
-        assert o.reason.startswith('мало данных') and o.reason.endswith('— остаётся прежняя модель')
+        assert o.reason.startswith('քիչ տվյալներ') and o.reason.endswith('— մնում է նախկին մոդելը')
         assert o.params['candidates'][VALHALLA]['learned']['mae'] < o.params['candidates'][MODEL]['learned']['mae']
 
 
@@ -235,10 +235,10 @@ def test_hysteresis_switches_only_by_two_percent_both_ways(bases):
     assert run(_duel(VALHALLA, 0.01)) == MODEL            # Valhalla лучше на 1% — остаётся прежняя
     assert run(_duel(VALHALLA, 0.03)) == VALHALLA         # на 3% — переключение
     assert run(_duel(MODEL, 0.01)) == VALHALLA            # прежняя лучше на 1% — Valhalla остаётся: без «туда-сюда»
-    assert rows[2]['params']['challenger'] == MODEL and rows[2]['reason'].endswith('— остаётся Valhalla')
+    assert rows[2]['params']['challenger'] == MODEL and rows[2]['reason'].endswith('— մնում է Valhalla-ն')
     assert run(_duel(VALHALLA, 0.01)) == VALHALLA
     assert run(_duel(MODEL, 0.03)) == MODEL               # обратно — тоже только на 2%
-    assert rows[4]['reason'].startswith('прежняя модель точнее, чем Valhalla')
+    assert rows[4]['reason'].startswith('նախկին մոդելն ավելի ճշգրիտ է, քան Valhalla-ն')
     assert [r['accepted'] for r in rows] == [False, True, False, False, True]
 
 
@@ -285,10 +285,10 @@ def test_incumbent_is_scored_with_the_correction_the_run_keeps(bases):
 def test_valhalla_unavailable_or_no_common_legs(bases):
     o, fitted = lr.fit_truck_time([], TODAY, VALHALLA, {MODEL: bases[MODEL]}, {})
     assert not o.accepted and o.params is None and fitted == {}
-    assert o.reason.startswith('Valhalla недоступен') and o.reason.endswith('— остаётся Valhalla')
+    assert o.reason.startswith('Valhalla-ն հասանելի չէ') and o.reason.endswith('— մնում է Valhalla-ն')
     empty, _ = lr.fit_truck_time([], TODAY, MODEL, bases, {}, no_valhalla=12)
     assert not empty.accepted and empty.params['legs'] == {'train': 0, 'test': 0, 'no_valhalla': 12}
-    assert empty.params['candidates'] == {} and empty.reason.startswith('мало данных')
+    assert empty.params['candidates'] == {} and empty.reason.startswith('քիչ տվյալներ')
 
 
 def test_truck_time_learned_and_valid_params():
@@ -632,7 +632,7 @@ def test_nightly_switches_to_valhalla_with_its_correction_idempotent_no_flapping
     # поправки нет
     assert set(travels) == {'', VALHALLA} and '+valhalla-time:' not in travels[''].model_id
     v = travels[VALHALLA]
-    assert '+valhalla-time:' in v.model_id and v.accepted and v.reason.startswith('для выбранной модели «Valhalla»')
+    assert '+valhalla-time:' in v.model_id and v.accepted and v.reason.startswith('ընտրված մոդելի համար («Valhalla»)՝ ')
     assert all(0.8 < f[3] < 1.3 for f in v.params['factors'])                 # факт ≈ 1,1 × Valhalla
     assert views.run_learning(state, TODAY) == out                               # повтор дня — тот же итог
     ctx = _ctx(state, date(2026, 10, 4))
@@ -717,7 +717,7 @@ def test_nightly_without_valhalla_explains_and_keeps_model(client, monkeypatch, 
     state = _facts_client(client, tmp_path, monkeypatch)
     state.valhalla = None
     by = {o.kind: o for o in views.run_learning(state, TODAY)}
-    assert not by['truck_time'].accepted and by['truck_time'].reason.startswith('Valhalla недоступен')
+    assert not by['truck_time'].accepted and by['truck_time'].reason.startswith('Valhalla-ն հասանելի չէ')
     assert by['travel'].model_id == 'straight'
 
 
@@ -762,7 +762,7 @@ def test_learning_page_shows_truck_time_model(client, fake, tmp_path, monkeypatc
     state = _valhalla_client(client, tmp_path)
     d = client.get('/api/routes/learning').get_json()
     tt = next(s for s in d['status'] if s['kind'] == 'truck_time')
-    assert tt['title'] == 'Время в пути грузовиков: модель' and tt['auto'] and tt['default_auto']
+    assert tt['title'] == 'Բեռնատարների ճանապարհի ժամանակը՝ մոդել' and tt['auto'] and tt['default_auto']
     assert tt['source'] == {'value': MODEL, 'why': 'default', 'learned': None} and tt['last'] is None
     assert d['rules']['truck_time_min'] == list(lr.TRUCK_TIME_MIN)
     params = {'source': VALHALLA, 'challenger': VALHALLA, 'legs': {'train': 240, 'test': 70, 'no_valhalla': 0},
@@ -780,6 +780,6 @@ def test_learning_page_shows_truck_time_model(client, fake, tmp_path, monkeypatc
     from flask import render_template
     with app_v2.app.test_request_context('/routes/learning'):
         html = render_template('routes_learning.html')
-    assert 'Время в пути грузовиков: модель' in html and 'id="lrTtRows"' in html and 'routes_learning.js?v=8' in html
+    assert 'Բեռնատարների ճանապարհի ժամանակը՝ մոդել' in html and 'id="lrTtRows"' in html and 'routes_learning.js?v=10' in html
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
-    assert 'renderTruckTime' in js and "esc(last ? 'Сравнения пока нет: ' + last.reason" in js
+    assert 'renderTruckTime' in js and "esc(last ? 'Համեմատություն դեռ չկա՝ ' + last.reason" in js

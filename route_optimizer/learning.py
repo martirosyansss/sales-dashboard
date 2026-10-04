@@ -78,13 +78,15 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from . import actuals as ac
 from . import valhalla_engine
+from .frequency import fmt_decimal
 from .geo import Point, in_city
 from .measurements import _fit
 from .traffic_validation import TrafficProfile
 
 KINDS = ('unload', 'loading', 'travel', 'truck_time', 'fuel')
-KIND_TITLES = {'unload': 'Разгрузка у магазина', 'loading': 'Загрузка на складе', 'travel': 'Скорость машин по часам',
-               'truck_time': 'Время в пути грузовиков: модель', 'fuel': 'Расход топлива'}
+# Заголовки и причины журнала — по-армянски (решение владельца №58): их показывает страница «Обучение» как есть
+KIND_TITLES = {'unload': 'Բեռնաթափում խանութում', 'loading': 'Բեռնում պահեստում', 'travel': 'Մեքենաների արագությունն ըստ ժամերի',
+               'truck_time': 'Բեռնատարների ճանապարհի ժամանակը՝ մոդել', 'fuel': 'Վառելիքի ծախս'}
 DEFAULT_AUTO = {'unload': True, 'loading': False, 'travel': True, 'truck_time': True,
                 'fuel': True}   # нет переключателя в базе
 HOLDOUT_DAYS = 7
@@ -101,7 +103,10 @@ LEG_MIN_KM = 0.2
 # выбор модели времени грузовиков: общих участков и их дней в обучении, в проверке (как _enough)
 TRUCK_TIME_MIN = (200, 7, 60, 3)
 TRUCK_TIME_SOURCES = (valhalla_engine.TRUCK_TIME_MODEL, valhalla_engine.TRUCK_TIME_VALHALLA)   # model, valhalla
-TRUCK_TIME_TITLES = {'model': 'прежняя модель', 'valhalla': 'Valhalla'}
+TRUCK_TIME_TITLES = {'model': 'նախկին մոդել', 'valhalla': 'Valhalla'}
+# в причинах выбора модели — с артиклем; подлежащее стоит перед гласной («ավելի», «առնվազն») — артикль «-ն»
+TRUCK_TIME_DEF = {'model': 'նախկին մոդելը', 'valhalla': 'Valhalla-ն'}
+TRUCK_TIME_SUBJ = {'model': 'նախկին մոդելն', 'valhalla': 'Valhalla-ն'}
 STORE_MIN_OBS = 2                    # своё время магазина по факту — со 2-го одиночного визита (один — не в счёт), №60;
 STORE_SPLIT_MIN = 5.0                # но ровно 2 визита, чьё время по факту разнится больше чем на 5 мин…
 STORE_SPLIT_REL = 0.30               # …и больше чем на 30% большего из двух, — ждём 3-й (ответ владельца)
@@ -208,8 +213,8 @@ def _enough(train: Sequence[Any], test: Sequence[Any], need: tuple[int, int, int
     n1, d1, n2, d2 = need
     got = (len(train), len({o.day for o in train}), len(test), len({o.day for o in test}))
     if got[0] < n1 or got[1] < d1 or got[2] < n2 or got[3] < d2:
-        return (f'мало данных: обучение {got[0]} из {n1} (дней {got[1]} из {d1}), '
-                f'проверка {got[2]} из {n2} (дней {got[3]} из {d2})')
+        return (f'քիչ տվյալներ․ ուսուցում՝ {got[0]} / {n1} ({got[1]} / {d1} օր), '
+                f'ստուգում՝ {got[2]} / {n2} ({got[3]} / {d2} օր)')
     return None
 
 
@@ -229,8 +234,8 @@ def _spans(train: Sequence[Any], test: Sequence[Any]) -> dict[str, str | None]:
 
 def _verdict(before: float, after: float) -> tuple[bool, str]:
     if before > 0 and after <= before * (1 - MIN_GAIN):
-        return True, f'принято: ошибка {before:.2f} → {after:.2f}'
-    return False, f'не лучше действующей нормы хотя бы на {MIN_GAIN:.0%}: ошибка {before:.2f} → {after:.2f}'
+        return True, f'ընդունված է․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)}'
+    return False, f'գործող նորմից առնվազն {MIN_GAIN:.0%}-ով ավելի լավ չէ․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)}'
 
 
 def quantile(values: Sequence[float], q: float) -> float:
@@ -382,7 +387,7 @@ def fit_loading(obs: Sequence[LoadObs], today: date, cur: tuple[float, float] | 
     after = _mae((a + b * o.tonnes, o.minutes) for o in test)
     ok, why = _verdict(before, after)
     if cur is None:
-        why += f' (опора — медиана стоянок {ref[0]:.1f} мин: в настройках загрузки нет)'
+        why += f' (հենակետը՝ կանգառների մեդիանը, {fmt_decimal(ref[0], 1)} րոպե․ կարգավորումներում բեռնում նշված չէ)'
     return Outcome('loading', '', ok, why, {'fixed_min': a, 'per_tonne_min': b}, n_obs=len(train), n_test=len(test),
                    mae_before=round(before, 3), mae_after=round(after, 3), **_spans(train, test))
 
@@ -456,8 +461,8 @@ def fit_travel(obs: Sequence[LegObs], today: date, model_id: str, ref: Mapping[s
     scope = travel_scope(base_norms)
     if not ratio or len(held) < TRAVEL_MIN_TEST[0] or len({o.day for o in held}) < TRAVEL_MIN_TEST[1]:
         return Outcome('travel', scope, False,
-                       f'мало данных: ячеек профиля {len(ratio)}, участков проверки в них {len(held)} из '
-                       f'{TRAVEL_MIN_TEST[0]} (дней {len({o.day for o in held})} из {TRAVEL_MIN_TEST[1]})',
+                       f'քիչ տվյալներ․ պրոֆիլի վանդակներ՝ {len(ratio)}, դրանցում ստուգման հատվածներ՝ {len(held)} / '
+                       f'{TRAVEL_MIN_TEST[0]} ({len({o.day for o in held})} / {TRAVEL_MIN_TEST[1]} օր)',
                        model_id=model_id, n_obs=len(train), n_test=len(held), **_spans(train, test))
     params = _travel_params(ratio, ref, prev, _own_minutes(base_norms))
     profile = travel_profile(base_norms, params)
@@ -500,10 +505,10 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
     поправкой, участки и дни; строки travel моделей не из kept (fit_travel) — чтобы поправка выбранной модели была в
     журнале и тогда, когда «Развоз» перейдёт на неё позже: env, галочка, Valhalla готов)."""
     other = TRUCK_TIME_SOURCES[1] if incumbent == TRUCK_TIME_SOURCES[0] else TRUCK_TIME_SOURCES[0]
-    stays = f'остаётся {TRUCK_TIME_TITLES[incumbent]}'
+    stays = f'մնում է {TRUCK_TIME_DEF[incumbent]}'
     if bases.get(valhalla_engine.TRUCK_TIME_VALHALLA) is None:
-        return Outcome('truck_time', '', False, 'Valhalla недоступен (выключен, нет пакета или тайлов, либо матрица '
-                       f'грузовика для точек факта ещё считается) — {stays}'), {}
+        return Outcome('truck_time', '', False, 'Valhalla-ն հասանելի չէ (անջատված է, չկա փաթեթը կամ սալիկները, կամ '
+                       f'բեռնատարի մատրիցը փաստի կետերի համար դեռ հաշվվում է) — {stays}'), {}
     kept = kept or {}
     obs = {src: [p[k] for p in pairs] for k, src in enumerate(TRUCK_TIME_SOURCES)}
     train, test = _split(obs[incumbent], today)              # участки — одни и те же у обеих моделей
@@ -532,11 +537,11 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
     if short is not None:
         reason = f'{short} — {stays}'
     elif ok:
-        reason = (f'{TRUCK_TIME_TITLES[other]} точнее, чем {TRUCK_TIME_TITLES[incumbent]}: ошибка {before:.2f} → '
-                  f'{after:.2f} мин на участок')
+        reason = (f'{TRUCK_TIME_SUBJ[other]} ավելի ճշգրիտ է, քան {TRUCK_TIME_DEF[incumbent]}․ սխալ {fmt_decimal(before)} → '
+                  f'{fmt_decimal(after)} րոպե մեկ հատվածի համար')
     else:
-        reason = (f'{TRUCK_TIME_TITLES[other]} не точнее, чем {TRUCK_TIME_TITLES[incumbent]}, хотя бы на '
-                  f'{MIN_GAIN:.0%}: ошибка {before:.2f} → {after:.2f} мин на участок — {stays}')
+        reason = (f'{TRUCK_TIME_SUBJ[other]} առնվազն {MIN_GAIN:.0%}-ով ավելի ճշգրիտ չէ, քան '
+                  f'{TRUCK_TIME_DEF[incumbent]}․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)} րոպե մեկ հատվածի համար — {stays}')
     params = {'source': other if ok else incumbent, 'challenger': other, **counts, 'candidates': candidates}
     return Outcome('truck_time', '', ok, reason, params, None, len(train), len(test),
                    mae_before=round(before, 3) if before is not None else None,
@@ -552,7 +557,7 @@ def fit_fuel(obs: Sequence[FuelObs], current: Callable[[float], float], car: str
     rows = sorted(({'day': o.day.isoformat(), 'load': o.load, 'l100': o.l100} for o in obs),
                   key=lambda r: (r['day'], r['load'], r['l100']))
     if len(rows) < FUEL_MIN_INTERVALS or len({r['day'] for r in rows}) < FUEL_MIN_INTERVALS:
-        return Outcome('fuel', car, False, f'мало данных: интервалов между полными баками {len(rows)} из '
+        return Outcome('fuel', car, False, f'քիչ տվյալներ․ լրիվ բաքերի միջև միջակայքեր՝ {len(rows)} / '
                        f'{FUEL_MIN_INTERVALS}', n_obs=len(rows))
     train, test = rows[:-FUEL_TEST], rows[-FUEL_TEST:]
     fit = _fit(train, 'load', 'l100')
