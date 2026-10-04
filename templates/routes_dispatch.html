@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=20">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=33">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=36">
 {% endblock %}
 
 {% block content %}
@@ -130,6 +130,28 @@
                     <p class="dp-steplead" id="dpOrdersEmpty" hidden>Այս օրվա համար պատվերներ դեռ չկան։</p>
                     <ul class="dp-attn" id="dpAttn" aria-label="Ինչին ուշադրություն դարձնել"></ul>
                     <p class="dp-note" id="dpOrdersInfo"></p>
+
+                    <!-- Фильтр «Մենեջերներ»: чьи заказы везём сегодня (до сборки — применяется со сборкой, после — кнопкой) -->
+                    <details class="rt-fold" id="dpAgents" hidden>
+                        <summary><span class="rt-fold-t"><i class="fas fa-user-tie" aria-hidden="true"></i>Որ մենեջերների պատվերներն ենք տանում</span>
+                            <span class="rt-fold-note" id="dpAgentsNote"></span></summary>
+                        <div class="rt-fold-body">
+                            <p class="rt-fold-lead">Հանեք նշումը այն մենեջերներից, որոնց պատվերներն այսօր չենք տանում։
+                                Օրինակ՝ միայն երկու մենեջերի համար՝ սեղմեք «Հանել բոլոր նշումները» և նշեք այդ երկուսին։</p>
+                            <div class="dp-agents-acts">
+                                <button type="button" class="rt-linkbtn" id="dpAgentsAll">Նշել բոլորին</button>
+                                <button type="button" class="rt-linkbtn" id="dpAgentsNone">Հանել բոլոր նշումները</button>
+                            </div>
+                            <fieldset class="dp-trucks dp-agents" id="dpAgentsList">
+                                <legend class="rt-sr-only">Մենեջերներ, որոնց պատվերներն այսօր տանում ենք</legend>
+                            </fieldset>
+                            <p class="dp-note" id="dpAgentsSum" aria-live="polite"></p>
+                            <div class="dp-agents-apply" id="dpAgentsApplyBox" hidden>
+                                <button type="button" class="rt-btn rt-btn-primary rt-btn-sm" id="dpAgentsApply">Կիրառել</button>
+                                <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="dpAgentsUndo">Չեղարկել</button>
+                            </div>
+                        </div>
+                    </details>
 
                     <details class="rt-fold" id="dpNoCoords" hidden>
                         <summary><span class="rt-fold-t"><i class="fas fa-location-dot" aria-hidden="true"></i>Խանութներ, որոնց տեղը քարտեզում չկա</span>
@@ -369,5 +391,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=61"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=66"></script>
 {% endblock %}

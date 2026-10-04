@@ -145,6 +145,8 @@ class RoutesState:
     waybill_loader: Callable[[Sequence[str]], wb.Lines] | None = None
     # водители-экспедиторы ERP за [since, until) для выбора в «Վարորդ» (№62); кэш — (time.monotonic() до, имена)
     driver_list_loader: Callable[[date, date], list[str]] | None = None
+    # клиенты → код группы (CustGrp) из ERP — сети для сглаживания времени магазина в обучении (№66); None — только снимок
+    group_loader: Callable[[Sequence[int]], dict[int, str]] | None = None
     driver_list_cache: tuple[float, list[str]] | None = None
     driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
     dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
@@ -1082,7 +1084,12 @@ def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, e
                     'fuel': sorted(c for c in (eff.fuel or ()) if c in trucks),
                     # обед (№61) — минуты выученного, только когда он действует: без него пояснение — прежнее до байта
                     **({'lunch': float(eff.lunch['minutes'])}
-                       if eff.lunch and float(s.get('truck_lunch_min') or 0) > 0 else {})},
+                       if eff.lunch and float(s.get('truck_lunch_min') or 0) > 0 else {}),
+                    # запас на рейс и темп машин (№66) — только когда действуют: без них пояснение — прежнее до байта
+                    **({'buffer_pct': float(s['dispatch_buffer_pct'])}
+                       if learning.buffer_c_for(eff.buffer, float(s.get('dispatch_buffer_pct') or 0)) else {}),
+                    **({'pace': {c: list(p) for c, p in sorted(pace.items()) if c in trucks}}
+                       if (pace := learning.truck_pace(eff, learning.road_model_id(norms))) else {})},
     }
 
 
@@ -1139,10 +1146,12 @@ def _backlog_in(draft: dp.Draft | None, carried: Collection[str]) -> set[str]:
 
 def _active_orders(deliver: list[dp.DispatchOrder], backlog: list[dp.DispatchOrder],
                    draft: dp.Draft | None, carried: Collection[str] = ()) -> list[dp.DispatchOrder]:
-    """Заказы в развозе: заказы дня без «не везём сегодня» + заказы прошлых дней в развозе (_backlog_in)."""
+    """Заказы в развозе: заказы дня без «не везём сегодня» + заказы прошлых дней в развозе (_backlog_in);
+    заказы менеджеров, снятых фильтром «Մենեջերներ» (agents_off), — ни те, ни другие."""
     excluded = draft.excluded if draft is not None else set()
+    off = draft.agents_off if draft is not None else set()
     inside = _backlog_in(draft, carried)
-    return [o for o in deliver if o.isn not in excluded] + [o for o in backlog if o.isn in inside]
+    return [o for o in deliver if o.isn not in excluded and o.agent_id not in off]         + [o for o in backlog if o.isn in inside and o.agent_id not in off]
 
 
 def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: list[dp.DispatchOrder]) -> set[str]:
@@ -1188,7 +1197,8 @@ def _freshness(day: date, bundle: Bundle, data: dp.DispatchData, deliver: list[d
     if draft is not None:
         inside = _backlog_in(draft, carried)
         moved_in = [o for o in backlog if o.isn in set(carried) - draft.dropped]
-        changes = dp.since_build(draft.built_orders, [*deliver, *moved_in],
+        # заказы менеджеров, снятых фильтром, — не «новые»: их сегодня не везём
+        changes = dp.since_build(draft.built_orders, [o for o in (*deliver, *moved_in) if o.agent_id not in draft.agents_off],
                                  [*deliver, *(o for o in backlog if o.isn in inside)], draft.excluded)
     return {
         'orders_still_coming': dp.orders_still_coming(day, s['workdays'], _clock(), s['dispatch_ready_time']),
@@ -1290,13 +1300,27 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     no_coords = [s for s in dd.stops if s.point is None]
     active = _active_orders(dd.deliver, dd.backlog, draft, dd.carried)
     excl = [o for o in dd.deliver if o.isn in excluded]
+    off = draft.agents_off if draft is not None else set()
+    # фильтр «Մենեջերներ»: менеджеры заказов развоза дня (заказы дня без «не везём сегодня» и прошлых дней в развозе,
+    # и снятые фильтром — менеджер в списке, пока у него есть такие заказы)
+    by_agent: dict[int, list[dp.DispatchOrder]] = {}
+    for o in [*(o for o in dd.deliver if o.isn not in excluded), *(o for o in dd.backlog if o.isn in added)]:
+        by_agent.setdefault(o.agent_id, []).append(o)
+    agents_json = []
+    for aid, orders in by_agent.items():
+        agent = dd.snap.agents.get(aid)
+        agents_json.append({'agent_id': aid, 'code': agent.code if agent else '', 'name': agent.name if agent else '',
+                            'count': len(orders), 'kg': round(sum(o.kg for o in orders)),
+                            'revenue': round(sum(o.revenue for o in orders)), 'off': aid in off})
+    agents_json.sort(key=lambda a: (a['name'] or a['code'] or '~', a['agent_id']))
+    hidden = [o for os_ in (by_agent.get(a, []) for a in off) for o in os_]
 
     def order_json(o: dp.DispatchOrder) -> dict[str, Any]:
         code, name = dd.data.customers.get(o.customer_id) or ('', '')
         return {'isn': o.isn, 'doc_num': o.doc_num, 'customer_id': o.customer_id, 'code': code, 'name': name,
                 'order_date': o.order_date.isoformat(), 'kg': round(o.kg), 'revenue': round(o.revenue),
                 'added': o.isn in added, 'deferred': draft is not None and o.isn in draft.deferred,
-                'carried': o.isn in dd.carried}
+                'carried': o.isn in dd.carried, 'agent_off': o.agent_id in off}
 
     body: dict[str, Any] = {
         'day': dd.day.isoformat(), 'weekday': dd.day.isoweekday(),
@@ -1311,11 +1335,13 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
                    'revenue': round(sum(o.revenue for o in active)), 'customers': len(dd.stops),
                    'shipped_before': dd.shipped_before, 'excluded': len(excl),
+                   'agents_off': len(hidden), 'agents_off_kg': round(sum(o.kg for o in hidden)),
                    'self_delivery': len(dd.self_delivery),
                    'self_delivery_kg': round(sum(o.kg for o in dd.self_delivery)),
                    'no_coords': len(no_coords), 'no_coords_kg': round(sum(x.kg for x in no_coords))},
         'stops_no_coords': [info(x) | {'kg': round(x.kg)} for x in no_coords],
         'excluded': [order_json(o) for o in excl],
+        'agents': agents_json, 'agents_off': sorted(off),
         # не отгружены с прошлых дней: в план — только добавленные логистом (added)
         'backlog': [order_json(o) for o in dd.backlog],
         'backlog_since': dp.backlog_since(dd.since, s['workdays']).isoformat(),
@@ -1517,14 +1543,20 @@ def _capture_prediction(dd, draft):
     # depart/return — выезд первого рейса и возвращение последнего (HH:MM): «время работы» отчёта «план — факт»;
     # trips — начало загрузки, выезд, возвращение и ETA точек каждого рейса: плановое ожидание на складе (обучение
     # загрузки) и карта «план — факт»; lunch — обед по плану (№61): где (магазин — после разгрузки которого, склад, дорога),
-    # начало, минуты — обучение обеда ищет его там, а разгрузка и загрузка эту стоянку не учитывают
+    # начало, минуты — обучение обеда ищет его там, а разгрузка и загрузка эту стоянку не учитывают; return — по медиане
+    # (без запаса на рейс, №66), buffer — минуты запаса отдельно: запас не плановое возвращение и не плановый простой
+    # (обучение загрузки и обеда — learning.plan_trips, «время работы» — learning._plan_minutes)
+    def back(tr: Mapping[str, Any]) -> str:
+        return tr['buffer']['start'] if tr.get('buffer') else tr['return']
     draft.prediction = {'created_at': now.isoformat(), 'prospective': now < start,
         'trucks': {t['car_code']: {**{key: t.get(key) for key in ('km', 'minutes', 'liters', 'loading_minutes', 'wear_amd')},
-                                   'depart': t['trips'][0]['depart'] if t['trips'] else None, 'return': t.get('return'),
+                                   'depart': t['trips'][0]['depart'] if t['trips'] else None,
+                                   'return': back(t['trips'][-1]) if t['trips'] else t.get('return'),
                                    'trips': [{'loading_start': tr['loading_start'], 'depart': tr['depart'],
-                                              'return': tr['return'],
+                                              'return': back(tr),
                                               'stops': [[x['customer_id'], x.get('eta')] for x in tr['stops']],
-                                              **({'lunch': _planned_lunch(tr)} if tr.get('lunch') else {})}
+                                              **({'lunch': _planned_lunch(tr)} if tr.get('lunch') else {}),
+                                              **({'buffer': tr['buffer']['minutes']} if tr.get('buffer') else {})}
                                              for tr in t['trips']]}
                    for t in view['trucks']}}
 
@@ -1536,8 +1568,9 @@ def _conflict(text: str) -> Any:
 @bp.post('/api/routes/dispatch/build')
 @_api
 def api_dispatch_build() -> Any:
-    """«Собрать рейсы»: {"date", "trucks": [коды машин дня]}. Закреплённые рейсы и исключённые заказы
-    прежнего черновика сохраняются, остальное раскладывается заново."""
+    """«Собрать рейсы»: {"date", "trucks": [коды машин дня], "agents_off"?: [agent_id]}. Закреплённые рейсы и
+    исключённые заказы прежнего черновика сохраняются, остальное раскладывается заново; agents_off — фильтр
+    «Մենեջերներ» (чьи заказы не везём), без него — фильтр прежнего черновика."""
     payload, day, error = _dispatch_request()
     if error is not None:
         return error
@@ -1554,6 +1587,15 @@ def api_dispatch_build() -> Any:
         return _bad_request({'trucks': 'машина не готова к расчёту: ' + ', '.join(unknown)})
     if not codes:
         return _bad_request({'trucks': 'отметьте хотя бы одну машину'})
+    if 'agents_off' in payload:
+        # фильтр «Մենեջերներ» до первой сборки живёт на странице — приходит со сборкой; точки дня — по нему
+        off = dp.parse_agents(payload['agents_off'])
+        if off is None:
+            return _bad_request({'agents_off': 'ожидался список менеджеров'})
+        if off != (dd.draft.agents_off if dd.draft is not None else set()):
+            base = dd.draft or dp.Draft()
+            base.agents_off = off
+            dd = _load_day(state, bundle, day, draft=base, rev=dd.rev)
     started = time.perf_counter()
     # первая сборка дня: перенесённые сюда заказы прошлого дня — сразу в развозе
     draft = dp.build(dd.ctx, dd.stops, dd.draft, codes, _now())
@@ -1572,7 +1614,7 @@ def api_dispatch_build() -> Any:
 @bp.post('/api/routes/dispatch/edit')
 @_api
 def api_dispatch_edit() -> Any:
-    """Правка логиста: {"date", "rev", "action": move | pin | unpin | exclude | include, …}
+    """Правка логиста: {"date", "rev", "action": move | pin | unpin | exclude | include | agents, …}
     (dispatch.apply_edit). rev — номер черновика, от которого правка: план изменён в другой вкладке — 409.
     В ответе — день целиком и delta_km: как изменились км плана."""
     payload, day, error = _dispatch_request()
@@ -1598,13 +1640,17 @@ def api_dispatch_edit() -> Any:
     if day < _clock().date() and draft.deferred != deferred_before:
         # перенос с прошедшего дня меняет развоз уже другого дня — задним числом нельзя
         return _bad_request({'_': 'Прошедший день — перенос на другой день не меняется'})
-    # заказы после правки («не везём сегодня» / вернуть меняют точки и вес) — отметка дня по ним
-    draft.overtime = dp.runs_late(dd.ctx, _day_stops(dd, draft), draft)
+    # точки дня после правки («не везём сегодня», фильтр «Մենեջերներ», вернуть меняют точки и вес): по ним — рейсы
+    # черновика (магазин без заказов уходит и из сохранённого плана: его читают обучение и приложение водителя),
+    # отметка дня и прогноз
+    dd = _load_day(state, bundle, day, draft=draft, rev=dd.rev)
+    dp.prune(draft, dd.stops)
+    draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     _capture_prediction(dd, draft)
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)
     if rev is None:
         return _conflict('План изменили в другой вкладке — обновите страницу')
-    dd = _load_day(state, bundle, day, draft=draft, rev=rev)
+    dd.rev = rev
     body = _dispatch_page_body(dd)
     body['delta_km'] = round(body['plan']['summary']['km'] - km_before, 1) if body['plan'] else None
     return jsonify({'success': True, **body})
@@ -2164,9 +2210,14 @@ def api_customer_vehicles_search() -> Any:
     per_stop, per_tonne = _unload_norms(bundle, unload)
     empty = learning.store_extras(per_stop, {}, unload)    # поле пустое — своё время магазина только по факту
     stats = learning.store_stats(unload)
+    norms = {'per_stop_min': per_stop, 'per_tonne_min': per_tonne}
+    if learning.store_rule(unload) == 'shrink':   # №66: проверка выбрала сглаживание к группе — подсказка о нём
+        norms['store_rule'] = 'shrink'
+        stats = {c: (n, fact) for c, (n, fact, _) in learning.store_shrink(unload).items()}
+    least = 1 if 'store_rule' in norms else learning.STORE_MIN_OBS   # сглаживание: без введённого — и 1-й визит
     return jsonify({'success': True, 'total': len(customers),
                     'vehicles': [{'car_code': t['car_code'], 'name': t['name']} for t in _trucks_json(snap, bundle)],
-                    'unload_norms': {'per_stop_min': per_stop, 'per_tonne_min': per_tonne},
+                    'unload_norms': norms,
                     'customers': [
         {'customer_id': c.id, 'code': c.code, 'name': c.name,
          'vehicle_access': bundle.vehicle_access[c.id].to_json() if c.id in bundle.vehicle_access else None,
@@ -2174,7 +2225,7 @@ def api_customer_vehicles_search() -> Any:
          'unload_min': bundle.unload_min.get(c.id),
          # подсказка: сколько «Развоз» возьмёт с пустым полем; разгрузок по GPS — время по ним, введённое не участвует
          'unload_auto_min': round(per_stop + empty.get(c.id, 0.0), 1),
-         'unload_visits': stats[c.id][0] if stats.get(c.id, (0, 0.0))[0] >= learning.STORE_MIN_OBS else None}
+         'unload_visits': stats[c.id][0] if stats.get(c.id, (0, 0.0))[0] >= least else None}
         for c in customers[:30]]})
 
 
@@ -2363,6 +2414,22 @@ def _await_valhalla(state: RoutesState, ctx: dp.DayContext, make: Callable[[], d
     return ctx
 
 
+def _chain_customers(state: RoutesState, snap: Any, bundle: Bundle, ids: set[int],
+                     lookup: bool = True) -> dict[int, str]:
+    """Магазины-сети среди ids (№66: своя группа сглаживания): клиент → код группы (CustGrp) из settings chain_groups.
+    Группа — из снимка ERP (клиенты плана менеджеров); остальных (в «Развозе» бывают и магазины вне плана) — одним
+    запросом state.group_loader (ERP, только чтение) и только если сети заданы; lookup=False — только снимок. Ошибка
+    ERP — ErpError (run_learning: этой ночью правило времени магазина не меняется, остальное учится)."""
+    chain_set = set(bundle.settings.get('chain_groups') or ())
+    if not chain_set or not ids:
+        return {}
+    groups = {cid: snap.customers[cid].group for cid in ids if cid in snap.customers}
+    missing = sorted(ids - set(groups))
+    if missing and lookup and state.group_loader is not None:
+        groups.update({cid: g for cid, g in state.group_loader(missing).items() if cid in ids})
+    return {cid: g for cid, g in sorted(groups.items()) if g in chain_set}
+
+
 def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     """Прогон обучения за день today (Ереван; ночью — за наступивший день): наблюдения из факта до вчера включительно,
     проверка на последней неделе, итог — в learned_norms (повтор того же дня заменяет). «Действующая норма» для
@@ -2426,7 +2493,9 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     unload: list[learning.UnloadObs] = []
     loads: list[learning.LoadObs] = []
     lunches: list[learning.LunchObs] = []
+    trips: list[learning.TripObs] = []
     s = bundle.settings
+    work_start = float(int(s['truck_work_start'][:2]) * 60 + int(s['truck_work_start'][3:]))
     lunch_window = tuple(float(int(s[k][:2]) * 60 + int(s[k][3:])) for k in ('truck_lunch_from', 'truck_lunch_to'))
     legs: list[learning.LegObs] = []
     pairs: list[tuple[learning.LegObs, learning.LegObs]] = []
@@ -2440,7 +2509,7 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         plan = learning.plan_trips(prediction, day)
         # обед по плану (№61): визит магазина и стоянка на складе с обедом — не в разгрузку и загрузку; обед по факту —
         # и там, где он по плану (излишек над действующей нормой разгрузки), и в стороне
-        unload += learning.unload_obs(day, actual, stops, learning.lunch_customers(plan))
+        unload += learning.unload_obs(day, actual, stops, learning.lunch_customers(plan), car)
         loads += learning.load_obs(day, actual, stops, plan)
         meal = learning.lunch_obs(day, actual, lunch_window, stops, plan, unload_norm)   # type: ignore[arg-type]
         if meal is not None:
@@ -2451,7 +2520,9 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
             # напрямую или в объезд; км и минуты модели (объезд) с её фактом не сравниваются, иначе поправка времени
             # в пути всех машин занизится
             driven = replace(actual, legs=tuple(g for g in actual.legs if osm.detour(g.pa, g.pb) <= 1.0))
-        legs += learning.leg_obs(day, driven, norms)
+        legs += learning.leg_obs(day, driven, norms, car)
+        # запас на рейс (№66): рейсы факта и их минуты по той же модели, что строит план (действующие нормы и темп)
+        trips += learning.trip_obs(day, car, actual, stops, norms, tn, bundle.depot, work_start)
         if compare:
             got, missing = learning.truck_time_obs(day, driven, variants[TRUCK_TIME_MODEL])
             pairs += got
@@ -2459,14 +2530,40 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         profiles.setdefault(car, []).extend(ac.load_profile(actual, stops))
     loading_now = ((tn.warehouse_load_fixed_min, tn.warehouse_load_min_per_tonne)
                    if tn.loading_configured and tn.load(1000) > 0 else None)
+    # правило времени магазина (№66): группа — размер по среднему доставленному весу, сети (chain_groups) — своей
+    # группой; выбор — от действующей строки (её правило и k — гистерезис)
+    ids = {c for o in unload for c in o.customers}
+    try:
+        chains, rule_switch = _chain_customers(state, snap, bundle, ids), True
+    except ErpError:
+        # группы магазинов вне плана не получены: прогон не срывается — сети только по снимку, а правило времени
+        # магазина (№66) этой ночью не меняется (с неполными сетями сравнение правил не честное)
+        logger.warning('[Routes] Обучение: группы магазинов из ERP не получены — правило времени магазина не меняется',
+                       exc_info=True)
+        chains, rule_switch = _chain_customers(state, snap, bundle, ids, lookup=False), False
+    size_kg = (float(bundle.settings['size_small_max_kg']), float(bundle.settings['size_medium_max_kg']))
     outcomes = [
         learning.fit_unload(unload, lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes
                             + math.fsum(extras.get(c, 0.0) for c in o.customers), today, bundle.unload_min,
-                            lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes),
+                            lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes,
+                            eff.unload, chains, size_kg, rule_switch=rule_switch),
         learning.fit_loading(loads, today, loading_now),
         learning.fit_lunch(lunches, tn.lunch_minutes, today, float(s['truck_lunch_min'])),
     ]
     model_id = learning.road_model_id(norms)
+    # запас на рейс и темп машин (№66): против действующих (запас — того же процентиля q; темп — без него, если нет)
+    q = float(s.get('dispatch_buffer_pct') or 0)
+    outcomes.append(learning.fit_buffer(trips, today, q, learning.buffer_c_for(eff.buffer, q) or 0.0,
+                                        bool(eff.buffer) and float(eff.buffer['q']) != q))
+    pace_now = learning.truck_pace(eff, model_id)
+    outcomes.append(learning.fit_pace('truck_unload', [(o.day, o.car, unload_norm(o), o.minutes) for o in unload], today,
+                                      {c: p[0] for c, p in pace_now.items()}))
+    if mode == 'yandex':
+        outcomes.append(learning.Outcome('truck_travel', '', False, 'ճանապարհի ժամանակը հաշվում է Յանդեքսը՝ '
+                                         'խցանումներով — մեքենայի գործակիցը չի սովորվում'))
+    else:
+        outcomes.append(learning.fit_pace('truck_travel', [(o.day, o.car, o.current, o.minutes) for o in legs], today,
+                                          {c: p[1] for c, p in pace_now.items()}, model_id or 'straight'))
     if mode == 'yandex':
         outcomes.append(learning.Outcome('travel', '', False, 'ճանապարհի ժամանակը հաշվում է Յանդեքսը՝ խցանումներով — '
                                          'ժամային ճշգրտում պետք չէ'))
@@ -2568,6 +2665,8 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
         'travel': None,
         'truck_time': None,
         'lunch': {'minutes': s.get('truck_lunch_min'), 'from': s.get('truck_lunch_from'), 'to': s.get('truck_lunch_to')},
+        'buffer': {'q': s.get('dispatch_buffer_pct')},     # запас на рейс (№66): процентиль настроек
+        'truck_unload': None, 'truck_travel': None,
     }
     keys = [(k, scope_travel if k == 'travel' else '') for k in learning.KINDS if k != 'fuel'] + \
         sorted(k for k in latest if k[0] == 'fuel')
@@ -2579,6 +2678,18 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
             effect = next((r for r in reversed(rows) if r['kind'] == kind and r['scope'] == scope and r['accepted']
                            and learning.valid_params(kind, r['params'])
                            and (kind != 'travel' or r['model_id'] == model)), None)
+            if kind == 'buffer' and effect is not None and learning.buffer_c_for(
+                    effect['params'], float(s.get('dispatch_buffer_pct') or 0)) is None:
+                effect = None   # q ≤ 50 или у строки нет c для q настроек — запас не действует (learning.apply_learned)
+            elif kind == 'buffer' and effect is not None and float(effect['params']['q']) != float(s['dispatch_buffer_pct']):
+                # сменили q: действует c тех же рейсов при новом q (c_by_q) — его и показываем, без покрытия (не проверен)
+                p, q_now = effect['params'], float(s['dispatch_buffer_pct'])
+                c_now = learning.buffer_c_for(p, q_now)
+                typical = p.get('typical_min')
+                effect = {**effect, 'params': {
+                    'c': c_now, 'q': q_now, 'unchecked': True,
+                    **({'typical_min': typical, 'typical_reserve_min': round(fl.trip_reserve(c_now, typical), 1)}
+                       if typical is not None else {})}}
         if kind == 'fuel':
             t = bundle.trucks.get(scope)
             man = {'l100': t.fuel_l_per_100km, 'empty_l100': t.fuel_empty_l_per_100km,
@@ -2606,6 +2717,8 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
     строк до №50 без store_stats, и когда последний пересчёт не принят) — по числу визитов: введено, по факту (визитов,
     мин; split — два визита сильно расходятся, ждём третий: learning.store_waits), в расчёте — постоянная часть, которой
     «Развоз» считает сейчас (learning.store_times, как в расчёте; время на груз — сверху). Не больше STORES_SHOWN строк.
+    Действует сглаживание к группе (№66, learning.store_rule) — rule 'shrink' и k, магазины и визиты — и из store_shrink
+    (без введённого в расчёт идёт и 1-й визит).
     Названия — из снимка ERP, если он уже в памяти (ERP не читается: страница опрашивает статус во время пересчёта);
     снимка нет — без названий."""
     per_stop, per_tonne = _unload_norms(bundle, unload)
@@ -2615,6 +2728,11 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
     stats = learning.store_stats(last['params'] if last else None)
     waits = learning.store_waits(last['params'] if last else None)
     active = {int(c) for c in (unload or {}).get('store_offsets') or {}} | set(learning.store_stats(unload))
+    rule = learning.store_rule(unload)
+    if rule == 'shrink':
+        shrunk = learning.store_shrink(last['params'] if last else None) or learning.store_shrink(unload)
+        stats = {**{c: (n, fact) for c, (n, fact, _) in shrunk.items()}, **stats}
+        active |= set(learning.store_shrink(unload))
     cids = sorted(set(bundle.unload_min) | set(stats) | active, key=lambda c: (-stats[c][0] if c in stats else 0, c))
     snap = state.snapshots.peek()
     customers = snap.customers if snap is not None else {}
@@ -2627,7 +2745,8 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
                     'manual_min': bundle.unload_min.get(cid), 'visits': visits,
                     'fact_min': None if fact is None else max(0.0, fact), 'split': cid in waits,
                     'in_calc_min': round(per_stop + extra, 1), 'source': source})
-    return {'per_stop_min': per_stop, 'per_tonne_min': per_tonne, 'min_visits': learning.STORE_MIN_OBS,
+    return {'per_stop_min': per_stop, 'per_tonne_min': per_tonne, 'min_visits': learning.STORE_MIN_OBS, 'rule': rule,
+            'k': unload['store_rule']['k'] if rule == 'shrink' else None,   # type: ignore[index]
             'run_day': last['run_day'] if last else None, 'total': len(cids), 'shown': len(out), 'rows': out}
 
 
@@ -2676,6 +2795,8 @@ def api_learning() -> Any:
                               'min_gain_pct': round(learning.MIN_GAIN * 100), 'unload_min': learning.UNLOAD_MIN,
                               'loading_min': learning.LOADING_MIN, 'travel_min_test': learning.TRAVEL_MIN_TEST,
                               'truck_time_min': learning.TRUCK_TIME_MIN, 'lunch_min': learning.LUNCH_MIN,
+                              'buffer_min': learning.BUFFER_MIN, 'buffer_cap_pct': round(fl.BUFFER_CAP_REL * 100),
+                              'pace_unload_min': learning.PACE_UNLOAD_MIN, 'pace_travel_min': learning.PACE_TRAVEL_MIN,
                               'boot_share_pct': round(learning.BOOT_SHARE * 100),
                               'boot_resamples': learning.BOOT_RESAMPLES,
                               'fuel_min_intervals': learning.FUEL_MIN_INTERVALS,

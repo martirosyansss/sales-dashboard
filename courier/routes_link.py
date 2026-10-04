@@ -35,6 +35,7 @@ class RoutesView:
     added: frozenset[str] = frozenset()                    # заказы прошлых дней, добавленные логистом
     carried: frozenset[str] = frozenset()                  # «Везти завтра» прошлых дней
     dropped: frozenset[str] = frozenset()                  # перенесённые сюда, но убранные логистом
+    agents_off: frozenset[int] = frozenset()               # менеджеры, чьи заказы не везём (фильтр «Մենեջերներ»)
     roads: Any = None                                      # RoadDistances | None
 
     def car_customers(self, car_code: str) -> list[int]:
@@ -90,7 +91,8 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       plan_exists=bool(draft.trips),
                       trips=tuple((t.truck, tuple(t.stops)) for t in draft.trips),
                       excluded=frozenset(draft.excluded), added=frozenset(draft.added),
-                      carried=frozenset(carried), dropped=frozenset(draft.dropped), roads=roads)
+                      carried=frozenset(carried), dropped=frozenset(draft.dropped),
+                      agents_off=frozenset(draft.agents_off), roads=roads)
 
 
 def routes_depot(state: Any) -> Point | None:
@@ -124,12 +126,13 @@ def orders_window(day: date, view: RoutesView) -> tuple[date, date]:
 
 def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, car_code: str) -> list[DispatchOrder]:
     """Заказы, которые «Развоз» отдал машине: отбор как на странице «Развоз» (заказы дня без «не везём
-    сегодня» + добавленные и перенесённые прошлых дней); план на дату есть — клиенты рейсов машины,
-    нет — машина в самом заказе (ORDERS.fDELIVERYCAR)."""
+    сегодня» + добавленные и перенесённые прошлых дней, без заказов менеджеров, снятых фильтром); план на
+    дату есть — клиенты рейсов машины, нет — машина в самом заказе (ORDERS.fDELIVERYCAR)."""
     since, _ = dp.order_window(day, view.workdays)
     sel = dp.to_deliver(orders, day, since)
     inside = set(view.added) | (set(view.carried) - set(view.dropped))
     active = [o for o in sel.main if o.isn not in view.excluded] + [o for o in sel.backlog if o.isn in inside]
+    active = [o for o in active if o.agent_id not in view.agents_off]
     if view.plan_exists:
         mine = set(view.car_customers(car_code))
         return [o for o in active if o.customer_id in mine]

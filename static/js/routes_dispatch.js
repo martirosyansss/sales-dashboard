@@ -89,6 +89,7 @@
         stepsOpen: new Set(),               // шаги 1–2, раскрытые логистом после сборки (иначе свёрнуты в строку)
         open: new Set(),                    // раскрытые карточки машин (код машины)
         driverCar: null,                    // «Վարորդ»: машина открытого диалога
+        agentsPick: null,                   // «Մենեջերներ»: выбор, ещё не применённый к плану дня {day, off: Set agent_id}
         ai: { chats: new Map(), busy: false, shownDay: null },   // «Հարցրու AI-ին»: разговор по каждому дню [{role, text}]
     };
 
@@ -120,6 +121,8 @@
         'Точка не найдена — обновите страницу': 'Կետը չի գտնվել — թարմացրեք էջը',
         'Точка уже в рейсе — укажите, из какого': 'Կետն արդեն երթում է — նշեք, թե որ երթից',
         'Этой точки нет в рейсе — обновите страницу': 'Այս կետը երթում չէ — թարմացրեք էջը',
+        'Список менеджеров не принят — обновите страницу': 'Մենեջերների ցուցակը չընդունվեց — թարմացրեք էջը',
+        'ожидался список менеджеров': 'Մենեջերների ցուցակը չընդունվեց — թարմացրեք էջը',
         // «Հարցրու AI-ին» — POST /api/routes/dispatch/ask (ai_chat.py)
         'вопрос — непустой текст до 1000 символов': 'Հարցը պետք է լինի ոչ դատարկ՝ մինչև 1000 նիշ',
         'история диалога: ожидался список реплик': BAD_REQUEST,
@@ -249,7 +252,7 @@
         const trips = new Set();
         if (data.plan) data.plan.trucks.forEach(t => t.trips.forEach(tr => trips.add(tr.id)));
         const hadPlan = !!(state.data && state.data.day === data.day && state.data.plan);
-        if (data.day !== state.day) { state.mapFocus = null; state.stepsOpen.clear(); }
+        if (data.day !== state.day) { state.mapFocus = null; state.stepsOpen.clear(); state.agentsPick = null; }
         // рейсы дня появились: до трёх машин — все раскрыты, больше — первая (остальные по нажатию, день виден целиком)
         if (data.plan && !hadPlan) {
             const codes = data.plan.trucks.map(t => t.car_code);
@@ -307,6 +310,7 @@
         renderDateNote();
         renderTrucks();
         renderOrders();
+        renderAgents();
         renderNoCoords();
         renderGeoSug();
         renderOrderLists();
@@ -639,10 +643,14 @@
         if (o.no_coords) add('is-warn', 'fa-location-dot', pl(o.no_coords, 'խանութի') + ' տեղը քարտեզում նշված չէ (' + kgText(o.no_coords_kg)
             + ')։ Մինչև չնշեք, դրանք երթերի մեջ չեն մտնի։', 'Նշել քարտեզում', 'dpNoCoords');
         const bl = state.data.backlog || [];
-        const added = bl.filter(x => x.added).length;
+        const added = bl.filter(x => x.added && !x.agent_off).length;
         if (bl.length) add('', 'fa-clock-rotate-left', 'Նախորդ օրերից մնացել է ' + pl(bl.length, 'չառաքված պատվեր')
             + (added ? ', որից ' + added + '-ը ավելացրել եք այսօրվա առաքմանը' : '') + '։ Ստուգեք՝ պե՞տք է դրանք տանել այսօր։', 'Դիտել', 'dpBacklog');
         if (o.excluded) add('', 'fa-ban', pl(o.excluded, 'պատվեր') + ' նշել եք «այսօր չենք տանում»։', 'Դիտել', 'dpExcluded');
+        const ag = agentStats();
+        if (ag.off.size) add('', 'fa-user-tie', 'Տանում ենք միայն ' + pl(ag.kept, 'մենեջերի') + ' պատվերները'
+            + (ag.offCount ? ', ' + pl(ag.offCount, 'պատվեր') + ' (' + kgText(ag.offKg) + ') այսօր չենք տանում' : '')
+            + (agentsDirty() ? ' (ընտրությունը դեռ կիրառված չէ)' : '') + '։', 'Դիտել', 'dpAgents');
         const gs = geoSug();
         if (gs.count) add('is-warn', 'fa-location-crosshairs', 'Վարորդներն առաջարկում են նոր տեղ՝ ' + pl(gs.count, 'խանութի') + ' համար'
             + (gs.day_count ? ', որից ' + gs.day_count + '-ը այս օրվա խանութներ են' : '') + '։ Ստուգեք և ընդունեք կամ մերժեք։', 'Դիտել', 'dpGeoSug');
@@ -651,6 +659,98 @@
         if (o.shipped_before) info.push(pl(o.shipped_before, 'պատվեր') + ' արդեն առաքվել է');
         if (o.self_delivery) info.push(pl(o.self_delivery, 'պատվեր') + ' (' + kgText(o.self_delivery_kg) + ') մենեջերն ինքն է տանում');
         $('dpOrdersInfo').textContent = info.length ? 'Առաքման մեջ չեն մտնում՝ ' + info.join(', ') + '։' : '';
+    }
+
+    // ---------- «Մենեջերներ»: чьи заказы везём ----------
+    // До сборки выбор живёт на странице и уходит со сборкой; после — в плане дня (agents_off), меняется кнопкой «Կիրառել»
+    const sameSet = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
+    function agentsOff() {
+        const p = state.agentsPick;
+        return p && p.day === state.day ? p.off : new Set(state.data.agents_off || []);
+    }
+    function agentsDirty() {
+        const p = state.agentsPick;
+        return !!p && p.day === state.day && !sameSet(p.off, new Set(state.data.agents_off || []));
+    }
+    function agentStats() {
+        const off = agentsOff(), list = state.data.agents || [];
+        const st = { off, total: list.length, kept: 0, keptCount: 0, keptKg: 0, offCount: 0, offKg: 0 };
+        list.forEach(a => {
+            if (off.has(a.agent_id)) { st.offCount += a.count; st.offKg += a.kg; } else { st.kept++; st.keptCount += a.count; st.keptKg += a.kg; }
+        });
+        return st;
+    }
+    function pickAgents(off) {
+        state.agentsPick = { day: state.day, off };
+        if (!agentsDirty()) state.agentsPick = null;
+        renderAgents();
+        renderOrders();
+    }
+    function renderAgents() {
+        const list = state.data.agents || [];
+        const box = $('dpAgents');
+        const st = agentStats();
+        // один менеджер — выбирать нечего; фильтр уже снял кого-то — список нужен, чтобы вернуть
+        box.hidden = list.length < 2 && !st.off.size;
+        if (box.hidden) return;
+        if (agentsDirty()) box.open = true;
+        $('dpAgentsNote').textContent = st.off.size ? st.kept + ' / ' + st.total : 'բոլորը՝ ' + st.total;
+        const fs = $('dpAgentsList');
+        fs.querySelectorAll('.dp-truck').forEach(x => x.remove());
+        list.forEach(a => {
+            const lab = document.createElement('label');
+            lab.className = 'dp-truck dp-agent';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.value = String(a.agent_id);
+            cb.checked = !st.off.has(a.agent_id);
+            cb.addEventListener('change', () => {
+                const off = new Set(agentsOff());
+                if (cb.checked) off.delete(a.agent_id); else off.add(a.agent_id);
+                pickAgents(off);
+                // список строится заново — фокус клавиатуры вернуть на тот же переключатель
+                const again = $('dpAgentsList').querySelector('input[value="' + a.agent_id + '"]');
+                if (again) again.focus();
+            });
+            const txt = document.createElement('span');
+            txt.className = 'dp-truck-t';
+            const nm = document.createElement('b');
+            nm.textContent = a.name || a.code || ('մենեջեր ' + a.agent_id);
+            const sub = document.createElement('span');
+            sub.className = 'dp-truck-sub';
+            sub.textContent = (a.name && a.code ? a.code + ' · ' : '') + pl(a.count, 'պատվեր') + ' · ' + kgText(a.kg);
+            txt.append(nm, sub);
+            lab.append(cb, txt);
+            fs.appendChild(lab);
+        });
+        const plan = !!state.data.plan, dirty = agentsDirty();
+        let sum = '';
+        if (st.off.size) {
+            sum = 'Տանում ենք՝ ' + pl(st.keptCount, 'պատվեր') + ' · ' + kgText(st.keptKg)
+                + '։ Այսօր չենք տանում՝ ' + pl(st.offCount, 'պատվեր') + ' · ' + kgText(st.offKg) + '։';
+            if (!st.kept) sum += ' Նշեք գոնե մեկ մենեջեր։';
+            else if (!plan) sum += ' Ընտրությունը կկիրառվի «Կազմել երթերը» սեղմելիս։';
+        }
+        if (plan && dirty && st.kept) sum += (sum ? ' ' : '') + 'Սեղմեք «Կիրառել»՝ երթերը կթարմացվեն։';
+        $('dpAgentsSum').textContent = sum;
+        $('dpAgentsApplyBox').hidden = !(plan && dirty);
+        $('dpAgentsApply').disabled = state.busy || !st.kept;
+    }
+    // Все сняты — везти нечего: так не собираем и не применяем
+    function agentsNoneLeft() {
+        const st = agentStats();
+        return st.total > 0 && !st.kept;
+    }
+    async function applyAgents() {
+        if (!needPlan() || !agentsDirty()) return;
+        if (agentsNoneLeft()) { showActionError(new Error('Նշեք գոնե մեկ մենեջեր։')); return; }
+        const was = new Set(state.data.agents_off || []);
+        const off = state.agentsPick.off;
+        const back = [...was].some(x => !off.has(x));
+        const data = await edit({ action: 'agents', off: [...off] }, back
+            ? 'Մենեջերների ընտրությունը կիրառվեց․ վերադարձված պատվերները «Դեռ երթերում չեն» ցուցակում են, սեղմեք «Վերակազմել երթերը»'
+            : 'Մենեջերների ընտրությունը կիրառվեց');
+        if (data) { state.agentsPick = null; renderAgents(); renderOrders(); }
     }
 
     // ---------- Магазины без точки ----------
@@ -955,8 +1055,13 @@
         const empty = auto !== null && perStop !== null && Math.round(Math.abs(auto - perStop) * 100) > 5
             ? minutesText(auto) + ' (ըստ փաստի)' : 'սովորական ' + minutesText(perStop);
         const fact = (num(x.unload_visits) ? ' Ըստ վարորդների GPS-ի՝ այս խանութում արդեն եղել է ' + pl(x.unload_visits, 'բեռնաթափում') + '։' : '')
-            + ' Քանի դեռ այս խանութում GPS-ով 2 բեռնաթափում չկա, օգտագործվում է ձեր գրած ժամանակը․ 2-րդ բեռնաթափումից սկսած՝ ծրագիրը ժամանակը վերցնում է GPS-ից։'
-            + ' Եթե առաջին երկու բեռնաթափումները տևողությամբ շատ են տարբերվում, ծրագիրը սպասում է երրորդին։';
+            // №66: проверка выбрала сглаживание к группе (unload_norms.store_rule) — описать его, а не правило №60
+            + (norms.store_rule === 'shrink'
+                ? ' Քանի դեռ այս խանութում GPS-ով 2 բեռնաթափում չկա, օգտագործվում է ձեր գրած ժամանակը (դատարկ դաշտով՝ արդեն 1-ին բեռնաթափումը, փոքր կշռով)․'
+                    + ' 2-րդ բեռնաթափումից սկսած՝ ծրագիրը GPS-ի ժամանակը հարթեցնում է դեպի նման խանութների ժամանակը (չափը՝ ըստ միջին պատվերի, ցանցերը՝ առանձին)․'
+                    + ' որքան շատ են բեռնաթափումները, այնքան մեծ է GPS-ի կշիռը։ Այս կանոնն ընտրել է ստուգումը՝ այն ավելի ճշգրիտ էր։'
+                : ' Քանի դեռ այս խանութում GPS-ով 2 բեռնաթափում չկա, օգտագործվում է ձեր գրած ժամանակը․ 2-րդ բեռնաթափումից սկսած՝ ծրագիրը ժամանակը վերցնում է GPS-ից։'
+                    + ' Եթե առաջին երկու բեռնաթափումները տևողությամբ շատ են տարբերվում, ծրագիրը սպասում է երրորդին։');
         return 'Քանի րոպե է մեքենան կանգնում այս խանութի մոտ՝ կայանում, ընդունում, փաստաթղթեր։ Բեռի ժամանակը ('
             + minutesText(norms.per_tonne_min) + ' տոննայի համար) ծրագիրը կավելացնի ինքը։' + fact + ' Դատարկ՝ ' + empty + '։';
     }
@@ -1053,7 +1158,8 @@
         s.textContent = (o.code ? o.code + ' · ' : '') + 'պատվեր ' + (o.doc_num || '') + (o.order_date ? ', ' + dateRu(o.order_date) : '')
             + ' · ' + kgText(o.kg) + ' · ' + money(o.revenue)
             + (o.deferred ? ' · կտարվի ' + dayHuman(state.data.defer_to, true) : '')
-            + (o.carried ? ' · տեղափոխված է նախորդ օրից' : '');
+            + (o.carried ? ' · տեղափոխված է նախորդ օրից' : '')
+            + (o.agent_off ? ' · մենեջերը հանված է «Որ մենեջերների պատվերներն ենք տանում» ցուցակից' : '');
         t.append(b, s);
         const btn = document.createElement('button');
         btn.type = 'button';
@@ -1258,6 +1364,17 @@
                 });
                 bar.addEventListener('click', () => focusFromBoard(t, tr));
                 track.appendChild(bar);
+                if (tr.buffer) {   // запас на рейс (№66) — конец полосы: с медианного возвращения до возвращения с запасом
+                    const a = toMin(tr.buffer.start);
+                    if (a !== null && ret > a) {
+                        const z = document.createElement('span');
+                        z.className = 'dp-buffer-mark';
+                        z.style.left = x(a);
+                        z.style.width = w(a, ret);
+                        z.title = 'Ժամանակի պաշար՝ ' + minText(tr.buffer.minutes) + ' (' + tr.buffer.start + ' → ' + tr.return + ')';
+                        track.appendChild(z);
+                    }
+                }
                 if (tr.lunch) {   // обед — засечка на полосе дня (№61)
                     const a = toMin(tr.lunch.start), b = toMin(tr.lunch.end);
                     if (a !== null) {
@@ -2059,9 +2176,10 @@
     // Минуты рейса: загрузка, в пути, разгрузка, ожидание окон — целыми, в сумме ровно «загрузка → возвращение» по часам
     function tripTime(tr) {
         const x = tr.explain, begin = clockMin(tr.loading_start), back = clockMin(tr.return), meal = x.lunch_min || 0;   // обед в рейсе (№61)
-        const total = begin !== null && back !== null ? back - begin : Math.round(x.loading_min + x.drive_min + x.unload_min + x.wait_min + meal);
-        const [loading, drive, unload, wait, lunch] = roundParts([x.loading_min, x.drive_min, x.unload_min, x.wait_min, meal], total);
-        return { total, loading, drive, unload, wait, lunch };
+        const spare = x.buffer_min || 0;   // запас на рейс (№66)
+        const total = begin !== null && back !== null ? back - begin : Math.round(x.loading_min + x.drive_min + x.unload_min + x.wait_min + meal + spare);
+        const [loading, drive, unload, wait, lunch, buffer] = roundParts([x.loading_min, x.drive_min, x.unload_min, x.wait_min, meal, spare], total);
+        return { total, loading, drive, unload, wait, lunch, buffer };
     }
     // Км по прямой бывают и с картой: карта не загрузилась — пишем, что её нет; иначе — что объезд не посчитан
     const noBypass = (model) => (model.km === 'straight' ? 'ճանապարհային քարտեզը հասանելի չէ' : 'շրջանցման հաշվարկը հասանելի չէ');
@@ -2152,6 +2270,7 @@
         bits.push('ճանապարհին՝ ' + minText(tt.drive), 'բեռնաթափում՝ ' + minText(tt.unload));
         if (tt.wait) bits.push('ընդունման ժամի սպասում՝ ' + minText(tt.wait));
         if (tt.lunch) bits.push('ճաշ՝ ' + minText(tt.lunch));
+        if (tt.buffer) bits.push('ժամանակի պաշար երթի վերջում՝ ' + minText(tt.buffer));
         const time = [capFirst(bits.join(', ')) + '։ Ընդամենը՝ ' + minText(tt.total) + ' (' + tr.loading_start + ' → ' + tr.return + ')։'];
         // обед на складе — своими словами: это не «выезд позже, чтобы не ждать у окна первой точки» (простой — без обеда)
         const depotLunch = tr.lunch && (tr.lunch.where || (tr.lunch.after_stop === null ? 'depot' : 'store')) === 'depot';
@@ -2286,6 +2405,11 @@
             if (m.learned.unload) learned.push('բեռնաթափման ժամանակը');
             if (m.learned.loading) learned.push('բեռնման ժամանակը');
             if (num(m.learned.lunch) !== null) learned.push('ճաշը ճանապարհին՝ ' + minText(m.learned.lunch));   // обед (№61)
+            // запас на рейс и темп машин (№66)
+            if (num(m.learned.buffer_pct) !== null) learned.push('ժամանակի պաշար երթի վերջում (երթը ժամանակին է 100-ից ' + fmt(m.learned.buffer_pct) + ' դեպքում)');
+            const pace = Object.keys(m.learned.pace || {});
+            if (pace.length) learned.push('մեքենայի գործակիցները՝ ' + pace.map(c => truckLabel(truckBy(c)) + ' (բեռնաթափում ×'
+                + fmt(m.learned.pace[c][0], 2) + ', ճանապարհ ×' + fmt(m.learned.pace[c][1], 2) + ')').join(', '));
             if ((m.learned.fuel || []).length) learned.push('դիզելի ծախսը՝ ' + m.learned.fuel.map(c => truckLabel(truckBy(c))).join(', '));
         }
         // загрузка на складе — те же числа, что прибавляет расчёт (tn.load), даже если задано только одно из двух
@@ -2436,7 +2560,7 @@
     // ---------- Действия ----------
     function setBusy(on) {
         state.busy = on;
-        document.querySelectorAll('#dpBody button, #dpBody select').forEach(x => {
+        document.querySelectorAll('#dpBody button, #dpBody select, #dpAgentsList input').forEach(x => {
             if (on) { x.dataset.wasDisabled = x.disabled ? '1' : ''; x.disabled = true; } else if (x.dataset.wasDisabled !== undefined) { x.disabled = x.dataset.wasDisabled === '1'; delete x.dataset.wasDisabled; }
         });
         $('rtDispatch').setAttribute('aria-busy', String(on));
@@ -2446,12 +2570,17 @@
         if (state.busy) return;
         const trucks = selectedTrucks();
         if (!trucks.length) { showActionError(new Error('Նշեք գոնե մեկ մեքենա 1-ին քայլում։')); return; }
+        if (agentsNoneLeft()) { showActionError(new Error('Նշեք գոնե մեկ մենեջեր «Որ մենեջերների պատվերներն ենք տանում» ցուցակում։')); return; }
         hideActionError();
         setBusy(true);
         $('dpBuildText').textContent = 'Կազմում եմ երթերը…';
         try {
-            const data = await api('POST', '/api/routes/dispatch/build', { date: state.day, trucks });
+            // фильтр — только свой (до сборки или изменённый тут): иначе сервер берёт фильтр плана, а не копию этой вкладки
+            const body = { date: state.day, trucks };
+            if (!state.data.plan || agentsDirty()) body.agents_off = [...agentsOff()];
+            const data = await api('POST', '/api/routes/dispatch/build', body);
             state.geoChanged = null;
+            state.agentsPick = null;
             setBusy(false);
             setData(data);
             toast('Երթերը կազմված են՝ ' + pl(data.plan.summary.trips, 'երթ') + ', ≈ ' + fmt(data.plan.summary.km) + NB + 'կմ');
@@ -2527,6 +2656,7 @@
         try {
             const data = await api('POST', '/api/routes/dispatch/reset', { date: state.day });
             state.editing.clear();
+            state.agentsPick = null;
             setBusy(false);
             setData(data);
             toast('Օրվա պլանը ջնջված է — կարելի է նորից կազմել երթերը։');
@@ -2956,6 +3086,10 @@
         $('dpRefresh').addEventListener('click', () => load(state.day, true));
         $('dpRetry').addEventListener('click', () => load(state.day || day));
         $('dpBuild').addEventListener('click', build);
+        $('dpAgentsAll').addEventListener('click', () => pickAgents(new Set()));
+        $('dpAgentsNone').addEventListener('click', () => pickAgents(new Set((state.data.agents || []).map(a => a.agent_id))));
+        $('dpAgentsApply').addEventListener('click', applyAgents);
+        $('dpAgentsUndo').addEventListener('click', () => { state.agentsPick = null; renderAgents(); renderOrders(); });
         $('dpReset').addEventListener('click', reset);
         $('dpPrint').addEventListener('click', printSheets);
         $('dpExcel').addEventListener('click', exportExcel);

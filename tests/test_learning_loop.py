@@ -546,7 +546,8 @@ def test_run_learning_end_to_end_idempotent_and_applied(client, monkeypatch):
     state = _learning_client(client, monkeypatch)
     out = views.run_learning(state, TODAY)
     by = {o.kind: o for o in out}
-    assert set(by) == {'unload', 'loading', 'lunch', 'travel', 'truck_time'}     # + обед в пути (№61)
+    # + обед в пути (№61), запас на рейс и темп машин (№66)
+    assert set(by) == {'unload', 'loading', 'lunch', 'travel', 'truck_time', 'buffer', 'truck_unload', 'truck_travel'}
     # карты нет, но и участков меньше порога TRUCK_TIME_MIN — причина по правде: мало данных (№61, ночь 04.10)
     assert not by['truck_time'].accepted and by['truck_time'].reason.startswith('քիչ տվյալներ․ ուսուցում՝ 115 / 200')
     assert by['unload'].accepted and by['unload'].params['per_stop_min'] == pytest.approx(4, abs=0.6)
@@ -589,7 +590,8 @@ def test_learning_api_report_and_errors(client, monkeypatch):
     assert row['fact']['trips'] == 2 and row['fact']['stops'] == 3 and row['plan']['trips'] is None
     assert row['kpi']['km_per_stop'] > 0 and row['kpi']['stops_per_hour'] > 0 and row['kpi']['load_pct'] is not None
     kinds = [(s['kind'], s['in_effect']) for s in d['status']]
-    assert [k for k, _ in kinds] == ['unload', 'loading', 'travel', 'truck_time', 'lunch'] and kinds[0][1] is None \
+    assert [k for k, _ in kinds] == ['unload', 'loading', 'travel', 'truck_time', 'lunch', 'buffer', 'truck_unload',
+                                     'truck_travel'] and kinds[0][1] is None \
         and kinds[1][1] is None
     assert d['status'][0]['last']['reason'].startswith('քիչ տվյալներ')
     assert client.get('/api/routes/learning?from=2026-08-01&to=2026-10-02').status_code == 400

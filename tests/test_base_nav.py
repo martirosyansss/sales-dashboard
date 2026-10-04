@@ -58,4 +58,5 @@ def test_garage_sees_no_pages_but_can_log_out():
     html = render('/routes/garage', 'garage')
     for href in ('/customers-grid', '/areas', '/routes"', '/settings'):
         assert f'href="{href}' not in html
-    assert 'navbar-toggler' in html and 'logout' in html      # на телефоне «Выйти» доступен через гамбургер
+    assert 'app-nav' not in html                                  # у «Гаража» своя короткая шапка (№53)
+    assert 'gj-logout' in html and 'action="/logout"' in html

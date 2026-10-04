@@ -34,6 +34,10 @@
         return el;
     }
     const icon = (cls) => h('i', { class: 'fas ' + cls, 'aria-hidden': 'true' });
+    // телефон начальника гаража: узкий экран, палец вместо мыши; анимация прокрутки — если её не отключили в системе
+    const PHONE = window.matchMedia('(max-width: 575px)');
+    const TOUCH = window.matchMedia('(pointer: coarse)');
+    const scrollMode = () => (window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
 
     // whatList — список «Ինչ է արվել» в форме; spreadTouched — «Բաշխել» меняли руками в этой форме, spreadAuto — срок
     // поставлен выбором двигателя / КПП; odoWhat — текст правимой записи «только пробег» (поля у неё нет)
@@ -85,6 +89,13 @@
     };
 
     // ---------- вкладки ----------
+    // Вкладки прилипают к верху экрана (routes_garage.css): под шапкой дашборда, если она прилипает (администратор), иначе
+    // к самому верху (роль «Гараж» — шапка без меню, не прилипает)
+    function stickyTop() {
+        const nav = document.querySelector('.navbar.sticky-top');
+        return nav ? nav.getBoundingClientRect().height : 0;
+    }
+    const setStickyTop = () => $('gjPage').style.setProperty('--gj-top', stickyTop() + 'px');
     const TABS = [['gjTabCosts', 'gjCosts'], ['gjTabOdo', 'gjOdo'], ['gjTabSum', 'gjSum'], ['gjTabNorm', 'gjNorm']];
     function selectTab(tabId, focus) {
         TABS.forEach(([t, p]) => {
@@ -94,6 +105,9 @@
             $(p).hidden = !on;
         });
         if (focus) $(tabId).focus();
+        // вкладки прилипли к верху (прокрутили вниз) — новая вкладка открывается с начала, а не с середины
+        const top = $(TABS.find(([t]) => t === tabId)[1]).getBoundingClientRect().top - $('gjTabs').offsetHeight - stickyTop() - 8;
+        if (top < 0) window.scrollBy({ top, behavior: 'auto' });
         if (tabId === 'gjTabNorm') resumeNorm();   // считается только при открытии вкладки
         try { localStorage.setItem('gjTab', tabId); } catch (e) { /* без памяти вкладки */ }
     }
@@ -253,8 +267,21 @@
         fieldErrors(null);
         syncKind(false);
         syncOdoHint();
-        $('gjForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        $('gjForm').scrollIntoView({ behavior: scrollMode(), block: 'start' });
         $('gjCar').focus({ preventScroll: true });
+    }
+
+    // Телефон: Enter («Далее» на клавиатуре) в поле с enterkeyhint="next" — к следующему видимому полю формы, а не
+    // отправка формы с половиной полей; у пробега и «Готово» у последней машины не отправляет: сохраняет кнопка
+    function enterNext(ev) {
+        const el = ev.target, form = ev.currentTarget;
+        if (!TOUCH.matches || ev.key !== 'Enter' || !(el instanceof HTMLInputElement) || el.form !== form) return;   // компьютер: Enter — как раньше
+        const hint = el.getAttribute('enterkeyhint');
+        if (hint !== 'next' && !(hint === 'done' && form.id === 'gjOdoForm')) return;
+        ev.preventDefault();
+        const fields = [...form.querySelectorAll('input:not([type=hidden]), select')].filter(f => !f.disabled && f.getClientRects().length);
+        const next = hint === 'next' ? fields[fields.indexOf(el) + 1] : null;
+        if (next) next.focus(); else el.blur();
     }
 
     function intOrRaw(v) {
@@ -350,11 +377,12 @@
             return h('tr', { class: gone ? 'is-closed' : null },
                 h('td', { class: 'gj-day w-half', 'data-label': 'Ամսաթիվ', text: dayHy(e.day) }),
                 h('td', { class: 'gj-car', 'data-label': 'Մեքենա', text: truckName(e.car_code) }),
-                h('td', { class: 'w-half', 'data-label': 'Տեսակ' }, h('span', { class: 'rt-badge ' + (KIND_CLASS[e.kind] || ''), text: KIND[e.kind] || e.kind }),
+                h('td', { class: 'gj-kind w-half', 'data-label': 'Տեսակ' }, h('span', { class: 'rt-badge ' + (KIND_CLASS[e.kind] || ''), text: KIND[e.kind] || e.kind }),
                     e.spread_months ? h('small', { class: 'gj-sub', text: 'բաշխված՝ ' + e.spread_months + ' ամիս' }) : null),
-                h('td', { class: 'gj-what', 'data-label': 'Ինչ է արվել' }, e.what || '—', e.note ? h('small', { text: e.note }) : null),
-                h('td', { class: 'gj-num w-half', 'data-label': 'Գումար, ֏', text: e.kind === 'odometer' ? '—' : fmt(e.amount_amd) }),
-                h('td', { class: 'gj-num w-half', 'data-label': 'Սպիդոմետր, կմ', text: fmt(e.odometer_km) }),
+                // телефон — карточка: пустые «что сделано» и сумма (только пробег) не показываются
+                h('td', { class: 'gj-what' + (e.what || e.note ? '' : ' is-empty'), 'data-label': 'Ինչ է արվել' }, e.what || '—', e.note ? h('small', { text: e.note }) : null),
+                h('td', { class: 'gj-num gj-amt w-half' + (e.kind === 'odometer' ? ' is-empty' : ''), 'data-label': 'Գումար, ֏', text: e.kind === 'odometer' ? '—' : fmt(e.amount_amd) }),
+                h('td', { class: 'gj-num gj-odo w-half', 'data-label': 'Սպիդոմետր, կմ', text: fmt(e.odometer_km) }),
                 h('td', { class: 'gj-acts' }, acts));
         }));
     }
@@ -385,7 +413,7 @@
     function goStale() {
         selectTab('gjTabOdo');
         const first = $('gjOdoRows').querySelector('tr.is-stale input');
-        if (first) { first.scrollIntoView({ behavior: 'smooth', block: 'center' }); first.focus({ preventScroll: true }); }
+        if (first) { first.scrollIntoView({ behavior: scrollMode(), block: 'center' }); first.focus({ preventScroll: true }); }
     }
 
     function renderOdo() {
@@ -397,9 +425,10 @@
             $('gjOdoRows').replaceChildren(h('tr', {}, h('td', { colspan: 3, class: 'rt-empty', text: 'Աշխատող մեքենաներ չկան' })));
             return;
         }
-        $('gjOdoRows').replaceChildren(...trucks.map(t => {
+        $('gjOdoRows').replaceChildren(...trucks.map((t, i) => {
             const id = 'gjOdo-' + t.car_code.replace(/[^\w-]/g, '_');
             const input = h('input', { id, class: 'rt-input', type: 'number', inputmode: 'numeric', min: 0, max: 2000000, step: 1,
+                autocomplete: 'off', enterkeyhint: i === trucks.length - 1 ? 'done' : 'next',
                 placeholder: t.last_km !== null ? fmt(t.last_km) : 'կմ', 'aria-describedby': id + '-err', dataset: { car: t.car_code } });
             return h('tr', { class: stale.has(t.car_code) ? 'is-stale' : null },
                 h('td', { class: 'rt-cell-name' }, h('label', { for: id, class: 'n', text: t.car_code }), h('span', { class: 'c', text: t.name || '' })),
@@ -416,7 +445,7 @@
         const day = $('gjOdoDay').value;
         const inputs = [...$('gjOdoRows').querySelectorAll('input[data-car]')];
         inputs.forEach(inp => { inp.classList.remove('is-invalid'); inp.removeAttribute('aria-invalid'); $(inp.id + '-err').textContent = ''; });
-        $('gjOdoErr').textContent = '';
+        $('gjOdoFormErr').textContent = '';
         // нечисло в поле (badInput: value пустое) — ошибка строки, а не молчаливый пропуск
         const bad = inputs.filter(inp => inp.validity && inp.validity.badInput);
         if (bad.length) {
@@ -425,12 +454,12 @@
                 inp.setAttribute('aria-invalid', 'true');
                 $(inp.id + '-err').textContent = 'Գրեք ամբողջ թիվ՝ կիլոմետր';
             });
-            $('gjOdoErr').textContent = 'Ուղղեք նշված տողերը՝ ոչինչ չի պահպանվել։';
+            $('gjOdoFormErr').textContent = 'Ուղղեք նշված տողերը՝ ոչինչ չի պահպանվել։';
             bad[0].focus();
             return;
         }
         const filled = inputs.filter(inp => inp.value.trim() !== '');
-        if (!filled.length) { $('gjOdoErr').textContent = 'Լրացրեք գոնե մեկ մեքենայի վազքը'; return; }
+        if (!filled.length) { $('gjOdoFormErr').textContent = 'Լրացրեք գոնե մեկ մեքենայի վազքը'; return; }
         state.busy = true;
         $('gjOdoSave').disabled = true;
         try {
@@ -449,10 +478,10 @@
                 inp.setAttribute('aria-invalid', 'true');
                 $(inp.id + '-err').textContent = text;
             });
-            $('gjOdoErr').textContent = failed.length ? 'Պահպանվեց՝ ' + saved + ', սխալ՝ ' + failed.length + '։ Ուղղեք նշված տողերը։' : '';
+            $('gjOdoFormErr').textContent = failed.length ? 'Պահպանվեց՝ ' + saved + ', սխալ՝ ' + failed.length + '։ Ուղղեք նշված տողերը։' : '';
             announce('Վազքը պահպանվեց՝ ' + saved + ' մեքենա');
         } catch (e) {
-            $('gjOdoErr').textContent = e.message;
+            $('gjOdoFormErr').textContent = e.message;
         } finally {
             state.busy = false;
             $('gjOdoSave').disabled = false;
@@ -675,7 +704,7 @@
     // администратора); подложка — routes_basemap.js без ключа Яндекса: OpenStreetMap (страница открыта из интернета —
     // ключ ей не выдаётся)
     const YEREVAN = [40.1792, 44.4991];
-    const map = { obj: null, layers: null, failed: false, gen: 0 };
+    const map = { obj: null, layers: null, failed: false, gen: 0, opener: null };
     function ensureMap() {
         if (map.obj || map.failed) return;
         const el = $('gjMap');
@@ -685,7 +714,9 @@
             el.textContent = 'Քարտեզը չբեռնվեց։ Թարմացրեք էջը։';
             return;
         }
-        map.obj = L.map(el, { preferCanvas: true, zoomSnap: 0.5, scrollWheelZoom: false, zoomControl: false });
+        // телефон: один палец прокручивает страницу, а не карту (из карты высотой в экран иначе не выбраться) —
+        // карту двигают и масштабируют двумя пальцами (touchZoom) и кнопками +/−
+        map.obj = L.map(el, { preferCanvas: true, zoomSnap: 0.5, scrollWheelZoom: false, zoomControl: false, dragging: !TOUCH.matches });
         L.control.zoom({ zoomInTitle: 'Մեծացնել', zoomOutTitle: 'Փոքրացնել' }).addTo(map.obj);
         RoutesBasemap.add(map.obj);
         map.obj.setView(YEREVAN, 11);
@@ -702,10 +733,11 @@
             (num(s.rank) !== null ? '№' + fmt(s.rank + 1) + ' · ' : '') + 'պլան՝ ' + (s.planned_eta || '—') + ' · փաստ՝ ' + fact);
     }
     async function showDay(dayIso, car) {
+        map.opener = { day: dayIso, car };
         $('gjMapBox').hidden = false;
         $('gjMapTitle').textContent = truckName(car) + ' · ' + dayHy(dayIso);
         $('gjMapNote').textContent = 'Բեռնվում է…';
-        $('gjMapBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        $('gjMapBox').scrollIntoView({ behavior: scrollMode(), block: 'start' });
         ensureMap();
         const gen = ++map.gen;
         let d;
@@ -741,7 +773,14 @@
         }
         if (bounds.length) map.obj.fitBounds(bounds, { padding: [24, 24], maxZoom: 15, animate: false });
     }
-    $('gjMapClose').addEventListener('click', () => { $('gjMapBox').hidden = true; map.gen += 1; });
+    // «Փակել» — назад к дню, с которого открыли карту (на телефоне карта — под всем списком машин)
+    $('gjMapClose').addEventListener('click', () => {
+        $('gjMapBox').hidden = true;
+        map.gen += 1;
+        const o = map.opener;
+        const back = o && $('gjNormRows').querySelector('button[data-map="' + CSS.escape(o.day) + '"][data-car="' + CSS.escape(o.car) + '"]');
+        if (back) { back.focus({ preventScroll: true }); back.scrollIntoView({ behavior: scrollMode(), block: 'center' }); }
+    });
 
     // ---------- загрузка ----------
     async function reload() {
@@ -753,7 +792,29 @@
         await loadEntries();
     }
 
+    // Пояснения «Ինչպե՞ս …» на телефоне свёрнуты — данные сразу под рукой; на ПК раскрыты (кнопки не видно)
+    function syncHelp() {
+        document.querySelectorAll('#gjPage details.gj-help').forEach(d => { d.open = !PHONE.matches; });
+    }
+
+    // открылась клавиатура телефона (видимая часть окна заметно ниже) — поле, в котором пишут, не должно оказаться под
+    // ней; прочие изменения высоты (панель адреса браузера при прокрутке) прокрутку не трогают
+    let viewH = window.visualViewport ? window.visualViewport.height : 0;
+    function keepFieldVisible() {
+        const h = window.visualViewport.height, opened = h < viewH - 120;
+        viewH = h;
+        const el = document.activeElement;
+        if (opened && TOUCH.matches && el && el.matches('#gjPage input:not([type=checkbox]), #gjPage select')) el.scrollIntoView({ block: 'center', behavior: 'auto' });
+    }
+
     async function init() {
+        syncHelp();
+        PHONE.addEventListener('change', syncHelp);
+        setStickyTop();
+        window.addEventListener('resize', setStickyTop);
+        if (window.visualViewport) window.visualViewport.addEventListener('resize', keepFieldVisible);
+        $('gjForm').addEventListener('keydown', enterNext);
+        $('gjOdoForm').addEventListener('keydown', enterNext);
         let tab = 'gjTabCosts';
         try { tab = localStorage.getItem('gjTab') || tab; } catch (e) { /* без памяти вкладки */ }
         selectTab(TABS.some(([t]) => t === tab) ? tab : 'gjTabCosts');

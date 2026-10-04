@@ -99,7 +99,7 @@ window from the settings): start/end HH:MM, minutes = full break length, added_m
 next store's receiving window, and start-end covers only added_min), depot (at the warehouse before this trip; \
 added_min = how long the departure waited for it), road (the driver pulls over on the way at the end of the lunch \
 window because no store or depot came up - after after_store or, without it, on the first leg); explain lunch_min = \
-the minutes the break adds to the trip time (0 for a depot lunch).
+the minutes the break adds to the trip time (0 for a depot lunch). trips[].buffer = a learned time reserve at the end of the trip so that it returns on time in buffer_pct cases out of 100 (model.learned.buffer_pct): minutes, start = the expected (median) return; the trip's and the truck's return already include it, stop etas do not; explain buffer_min = the same minutes. model.learned.pace = learned truck multipliers [unload, travel] relative to the fleet (a slower crew), already in the trip times.
 Format: fields that are false, null or empty are left out (a missing flag means false). Lists of stores - trip stops, \
 unassigned stops, stores without coordinates, backlog and excluded orders - are tables: the first item is the column \
 header (not a store), each next item is one store (trip stops in visit order), cells separated by "|", an empty \

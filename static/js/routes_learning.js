@@ -57,9 +57,11 @@
     function normText(kind, p) {
         if (!p) return null;
         if (kind === 'unload') {
-            const n = Object.keys(p.store_offsets || {}).length;
+            // №66: строка выбрала сглаживание к группе — своё время у всех магазинов с визитами (store_shrink)
+            const shrink = !!p.store_rule && p.store_rule.rule === 'shrink';
+            const n = Object.keys((shrink ? p.store_shrink : p.store_offsets) || {}).length;
             return fmt(p.per_stop_min, 1) + ' րոպե մեկ կետում + ' + fmt(p.per_tonne_min, 1) + ' րոպե յուրաքանչյուր տոննայի համար'
-                + (n ? ' (սեփական ժամանակ՝ ' + fmt(n) + ' խանութում)' : '');
+                + (n ? ' (սեփական ժամանակ՝ ' + fmt(n) + ' խանութում' + (shrink ? '՝ հարթեցում դեպի նման խանութները' : '') + ')' : '');
         }
         if (kind === 'loading') return fmt(p.fixed_min, 1) + ' րոպե մեկ երթի համար + ' + fmt(p.per_tonne_min, 1) + ' րոպե յուրաքանչյուր տոննայի համար';
         if (kind === 'travel') {
@@ -70,6 +72,16 @@
         if (kind === 'fuel') return 'դատարկ՝ ' + fmt(p.empty_l100, 1) + ', լրիվ բեռնված՝ ' + fmt(p.full_l100, 1) + ' լ/100 կմ';
         if (kind === 'truck_time') return modelName(p.source);
         if (kind === 'lunch') return 'ճաշ՝ ' + fmt(p.minutes) + ' րոպե';   // обед в пути (№61)
+        // запас на рейс (№66): c · √(минуты рейса), пример на типичном рейсе, покрытие на проверке
+        if (kind === 'buffer') return 'պաշար՝ ' + fmt(p.c, 2) + ' × √(երթի րոպեներ), ' + fmt(p.q) + '%'
+            + (num(p.typical_min) !== null ? ' (' + fmt(p.typical_min) + ' րոպե տևող երթին՝ +' + fmt(p.typical_reserve_min) + ' րոպե)' : '')
+            + (num(p.coverage) !== null ? '․ ստուգման երթերից ժամանակին են վերադարձել ' + fmt(100 * p.coverage) + '%-ը'
+                + (num(p.coverage_before) !== null ? ' (առանց այս պաշարի՝ ' + fmt(100 * p.coverage_before) + '%)' : '') : '')
+            + (p.unchecked ? '․ չստուգված, կստուգվի գիշերը' : '');   // сменили q — c тех же рейсов при новом q
+        if (kind === 'truck_unload' || kind === 'truck_travel') {   // темп машины (№66)
+            const f = p.factors || {}, cars = Object.keys(f).sort();
+            return cars.length ? cars.map(c => c + ' ×' + fmt(f[c], 2)).join(', ') + ' (մյուսները՝ ×1)' : 'բոլոր մեքենաները՝ ×1';
+        }
         return '';
     }
     function manualText(kind, m) {
@@ -79,6 +91,8 @@
         if (kind === 'truck_time') return modelName('model');
         if (kind === 'fuel' && m) return num(m.empty_l100) !== null ? 'դատարկ՝ ' + fmt(m.empty_l100, 1) + ', լրիվ բեռնված՝ ' + fmt(m.full_l100, 1) + ' լ/100 կմ' : fmt(m.l100, 1) + ' լ/100 կմ';
         if (kind === 'lunch' && m) return num(m.minutes) ? 'ճաշ՝ ' + fmt(m.minutes) + ' րոպե, սկիզբը՝ ' + m.from + '–' + m.to : 'ճաշն անջատված է';
+        if (kind === 'buffer' && m) return num(m.q) > 50 ? 'պաշարը դեռ սովորած չէ (կարգավորումներում՝ ' + fmt(m.q) + '%)' : 'առանց պաշարի (50%)';
+        if (kind === 'truck_unload' || kind === 'truck_travel') return 'բոլոր մեքենաները՝ ×1';
         return '—';
     }
     // Модель времени грузовиков: какая действует и почему (s.source от сервера: value, why — env | learned | default)
@@ -130,16 +144,21 @@
             : '';
     }
     // Разгрузка по магазинам (№50): введено / по факту (визитов; split — 2 визита расходятся, ждём 3-й) / в расчёте
-    const STORE_SOURCE = { learned: 'ըստ GPS-ի', manual: 'ինչպես մուտքագրված է', norm: 'սովորական ժամանակ' };
+    // shrink — сглаживание к группе (№66): факт GPS вместе с временем похожих магазинов
+    const STORE_SOURCE = { learned: 'ըստ GPS-ի', manual: 'ինչպես մուտքագրված է', norm: 'սովորական ժամանակ',
+        shrink: 'GPS + նման խանութներ' };
     // По-армянски существительное после числа — в единственном числе: «2 բեռնաթափում», «5 բեռնաթափում»
     const unloads = (n) => fmt(n) + ' բեռնաթափում';
-    function storeRow(r, minVisits) {
+    // shrink — действует сглаживание к группе (№66): третьего не ждут; без введённого в расчёт идёт и 1-й визит, с
+    // введённым до 2-го визита — введённое
+    function storeRow(r, minVisits, shrink) {
         const name = r.name ? esc(r.name) + (r.code ? ' · ' + esc(r.code) : '') : 'հաճախորդ ' + esc(r.customer_id);
         const manual = num(r.manual_min) === null ? '—' : fmt(r.manual_min) + ' րոպե';
         const visits = num(r.visits);
         const fact = visits === null ? '<span class="lr-why">բեռնաթափումներ դեռ չկան</span>'
             : fmt(r.fact_min, 1) + ' րոպե <span class="lr-why">(' + unloads(visits)
-                + (r.split ? ' — շատ են տարբերվում, ծրագիրը սպասում է երրորդին'
+                + (shrink ? (r.source === 'manual' ? ' — դեռ քիչ է, գործում է մուտքագրվածը' : '')
+                    : r.split ? ' — շատ են տարբերվում, ծրագիրը սպասում է երրորդին'
                     : visits < minVisits ? ' — դեռ քիչ է, հաշվարկում չի մտնում' : '') + ')</span>';
         return '<tr><th scope="row">' + name + '</th><td>' + manual + '</td><td>' + fact + '</td><td><b>' + fmt(r.in_calc_min, 1)
             + ' րոպե</b><br><span class="lr-why">' + esc(STORE_SOURCE[r.source] || '') + '</span></td></tr>';
@@ -148,10 +167,16 @@
         const st = s && s.stores;
         if (!st) { $('lrStoreRows').innerHTML = '<tr><td colspan="4" class="rt-empty">Դեռ ցույց տալու բան չկա։</td></tr>'; $('lrStoresNote').textContent = ''; return; }
         $('lrStoresMin').textContent = st.min_visits;
+        const shrink = st.rule === 'shrink';   // №66: текст правила — того, что действует
+        $('lrStoresRule').hidden = shrink;
+        $('lrStoresShrink').hidden = !shrink;
+        $('lrRuleN60').hidden = shrink;
+        $('lrRuleShrink').hidden = !shrink;
+        $('lrStoresK').textContent = shrink ? fmt(st.k, 1) : '—';
         $('lrStoresTonne').textContent = fmt(st.per_tonne_min, 1);
-        $('lrStoreRows').innerHTML = st.rows.length ? st.rows.map(r => storeRow(r, st.min_visits)).join('')
+        $('lrStoreRows').innerHTML = st.rows.length ? st.rows.map(r => storeRow(r, st.min_visits, shrink)).join('')
             : '<tr><td colspan="4" class="rt-empty">Դեռ ոչ մի խանութ սեփական ժամանակ չունի։ Այն կարելի է մուտքագրել «Կարգավորումներ → Խանութներ՝ ժամ և մեքենաներ» բաժնում․ '
-                + 'ըստ փաստի այն կհայտնվի, երբ խանութում կկուտակվի ' + esc(unloads(st.min_visits)) + '։</td></tr>';
+                + 'ըստ փաստի այն կհայտնվի, երբ խանութում կկուտակվի ' + esc(unloads(shrink ? 1 : st.min_visits)) + '։</td></tr>';
         $('lrStoresNote').textContent = 'Մնացած խանութներում՝ սովորական ' + fmt(st.per_stop_min, 1) + ' րոպե։'
             + (st.run_day ? ' «Ըստ փաստի» սյունակը՝ ' + day(st.run_day) + '-ի վերահաշվարկից։' : '')
             + (st.total > st.shown ? ' Ցույց են տրված ' + fmt(st.shown) + ' / ' + fmt(st.total) + ' խանութ՝ ամենաշատ բեռնաթափումներով։' : '');

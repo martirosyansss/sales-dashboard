@@ -46,6 +46,7 @@ ISN_RE = re.compile(r'^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{
 _EPS = 1e-6
 MAX_TRIPS = 500           # защита от битого черновика
 MAX_BUILT_ORDERS = 20000  # заказов в отметке сборки — тоже защита от битого черновика
+MAX_AGENTS = 500          # менеджеров в «чьи заказы не везём» — защита от битого черновика и запроса
 BACKLOG_WORKDAYS = 2      # «не отгружены с прошлых дней» — заказы ещё двух рабочих дней раньше окна
 BYPASS_MIN_KM = 0.01      # пояснение рейса: участок длиннее из-за объезда центра хотя бы на 10 м — «в объезд»
 WEEKDAY_FULL = {1: 'понедельник', 2: 'вторник', 3: 'среда', 4: 'четверг', 5: 'пятница', 6: 'суббота',
@@ -274,6 +275,9 @@ class Draft:
     no_center: set[int] = field(default_factory=set)
     prediction: dict[str, Any] | None = None
     no_vehicle: set[int] = field(default_factory=set)
+    # менеджеры (agent_id), чьи заказы сегодня не везём: фильтр «Մենեջերներ» — все их заказы дня и прошлых дней
+    # вне развоза, пока менеджера не вернут (новые заказы этих менеджеров тоже); «не везём сегодня» — отдельно
+    agents_off: set[int] = field(default_factory=set)
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -285,7 +289,7 @@ class Draft:
                 'no_room': sorted(self.no_room), 'overtime': self.overtime, 'overtime_ok': self.overtime_ok,
                 'deferred': sorted(self.deferred), 'dropped': sorted(self.dropped),
                 'no_window': sorted(self.no_window), 'no_center': sorted(self.no_center), 'prediction': self.prediction,
-                'no_vehicle': sorted(self.no_vehicle)}
+                'no_vehicle': sorted(self.no_vehicle), 'agents_off': sorted(self.agents_off)}
 
     @classmethod
     def from_json(cls, raw: Any) -> Draft:
@@ -316,7 +320,9 @@ class Draft:
         return cls(trucks, excluded, added, trips, next_id, built, _built_orders(raw.get('built_orders')), cids('no_room'),
                    raw.get('overtime') is True, raw.get('overtime_ok') is True, isns('deferred'), isns('dropped'),
                    cids('no_window'), cids('no_center'), raw.get('prediction') if isinstance(raw.get('prediction'), dict) else None,
-                   no_vehicle=cids('no_vehicle'))
+                   no_vehicle=cids('no_vehicle'),
+                   agents_off={x for x in (raw.get('agents_off') or [])[:MAX_AGENTS] if _is_int(x)}
+                   if isinstance(raw.get('agents_off'), list) else set())
 
 
 def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
@@ -337,6 +343,13 @@ def _is_num(v: Any) -> bool:
 
 def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
+
+
+def parse_agents(raw: Any) -> set[int] | None:
+    """Список менеджеров (agent_id) из запроса или черновика; не список целых, длиннее MAX_AGENTS — None."""
+    if not isinstance(raw, list) or len(raw) > MAX_AGENTS or not all(_is_int(x) for x in raw):
+        return None
+    return set(raw)
 
 
 # --- Контекст расчёта ---
@@ -380,6 +393,12 @@ def _shares(trips: Sequence[DraftTrip]) -> dict[int, int]:
     return n
 
 
+def prune(draft: Draft, stops: Sequence[Stop]) -> None:
+    """Рейсы черновика — по точкам дня stops (после правки, меняющей заказы дня): клиент без заказов или без точки
+    уходит из рейсов, пустой рейс — тоже (как _clean перед расчётом, но для сохраняемого черновика)."""
+    _clean(draft, {s.customer_id: s for s in stops if s.point is not None})
+
+
 def _clean(draft: Draft, routable: Mapping[int, Stop]) -> None:
     """Из рейсов уходят клиенты, которых нет среди заказов с координатами; пустые рейсы — тоже.
     Повтор клиента в одном рейсе схлопывается."""
@@ -417,13 +436,13 @@ def _require_vehicle(ctx: DayContext, cids: Sequence[int], code: str) -> None:
 
 
 def _route(ctx: DayContext, cids: Sequence[int], stops: Mapping[int, Stop], shares: Mapping[int, int],
-           reorder: bool, start: float = 0.0) -> tuple[list[int], float, float, float]:
+           reorder: bool, start: float = 0.0, truck: str | None = None) -> tuple[list[int], float, float, float]:
     """(порядок клиентов, км, минуты, кг) рейса. reorder с выезда start: если порядок соблюдает окна приёма,
-    2-opt их не нарушит."""
+    2-opt их не нарушит (окна — с темпом машины truck, №66)."""
     kgs = [stops[c].kg / shares.get(c, 1) for c in cids]
     windows = [_span(ctx, c) for c in cids] if reorder and any(c in ctx.windows for c in cids) else None
     seq, km, minutes = fl.route_trip([stops[c].point for c in cids], kgs, ctx.depot, ctx.norms, ctx.tn,
-                                     reorder=reorder, windows=windows, start=start)
+                                     reorder=reorder, windows=windows, start=start, truck=truck)
     return [cids[i] for i in seq], km, minutes, math.fsum(kgs)
 
 
@@ -436,7 +455,8 @@ def _timeline(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, S
     что у _route. parts — рейс → слагаемые его минут (fl.trip_schedule: загрузка, езда, ожидание, разгрузка; при обеде —
     и 'lunch': fl.Break или None). Обед в пути (№61, ctx.tn.lunch_minutes) — по правилу fleet (шапка модуля): один на
     день машины; open_end — за последним рейсом машины будут ещё рейсы (занятое время для раскладки вокруг: обед может
-    встать и после его последней точки)."""
+    встать и после его последней точки). Запас на рейс и темп машины (№66, ctx.tn) — по правилу fleet: минуты рейса — с
+    запасом в конце (parts['buffer']), прибытия — без него."""
     used: dict[str, float] = {}
     out: dict[int, tuple[float, float, list[float]]] = {}
     lunch = ctx.tn.lunch_minutes > 0
@@ -450,7 +470,7 @@ def _timeline(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, S
         depart, arrivals, minutes = fl.trip_schedule(
             [stops[c].point for c in cids], [stops[c].kg / shares.get(c, 1) for c in cids], ctx.depot, ctx.norms,
             ctx.tn, used.get(t.truck, 0.0), [_span(ctx, c) for c in cids], got,
-            (t.truck not in eaten, open_end or last[t.truck] != t.id) if lunch else None)
+            (t.truck not in eaten, open_end or last[t.truck] != t.id) if lunch else None, t.truck)
         if lunch and got.get('lunch') is not None:   # type: ignore[union-attr]
             eaten.add(t.truck)
         used[t.truck] = depart + minutes
@@ -548,7 +568,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     sel = _selected(ctx, trucks)
     codes = {t.car_code for t in sel}
     draft = Draft(trucks=sorted(codes), excluded=set(old.excluded), added=set(old.added), next_id=old.next_id,
-                  built_at=now, deferred=set(old.deferred), dropped=set(old.dropped))
+                  built_at=now, deferred=set(old.deferred), dropped=set(old.dropped), agents_off=set(old.agents_off))
     pinned = [DraftTrip(t.id, t.truck, list(t.stops), True) for t in old.trips if t.pinned and t.truck in codes]
     tmp = Draft(trips=pinned)
     _clean(tmp, routable)
@@ -662,6 +682,8 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
       {"action": "exclude" | "include", "order": fISN} — «не везём сегодня» / вернуть; заказ прошлых
           дней (backlog_ids) — убрать из развоза / добавить в развоз (перенесённый сюда — carried —
           убранный запоминается в dropped); перенос на завтра снимается;
+      {"action": "agents", "off": [agent_id, …]} — фильтр «Մենեջերներ»: заказы этих менеджеров не везём
+          (остальные — везём); точки, где заказов не осталось, уходят из рейсов, вернувшиеся — «ещё не в рейсах»;
       {"action": "defer_trip", "trip": id} — «везти завтра» (№25: рейс дешевле min_trip_revenue): заказы
           рейса — не сегодня (excluded / из added) и в deferred — следующий день доставки возьмёт их сам;
           заказ старше defer_since (вне окна «не отгружены с прошлых дней» следующего дня) — ошибка:
@@ -687,6 +709,12 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
             raise DispatchError('Заказ не найден среди заказов дня — обновите страницу')
         (draft.excluded.add if action == 'exclude' else draft.excluded.discard)(isn)
         draft.deferred.discard(isn)
+        return draft
+    if action == 'agents':
+        off = parse_agents(edit.get('off'))
+        if off is None:
+            raise DispatchError('Список менеджеров не принят — обновите страницу')
+        draft.agents_off = off
         return draft
     if action == 'defer_trip':
         trip = _trip(draft, edit.get('trip'))
@@ -755,7 +783,7 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
         if t is not None and t.stops:
             # выезд рейса — для окон приёма при 2-opt; заново после перестановки src (та же машина — другой выезд)
             start = _timeline(ctx, draft.trips, routable, shares)[t.id][0]
-            t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True, start=start)
+            t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True, start=start, truck=t.truck)
     return draft
 
 
@@ -846,6 +874,7 @@ def _trip_explain(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, truc
         'bypass_km': _r(bypass_km), 'bypass_legs': bypass_legs,
         'others': _alternatives(ctx, sel, code, cids, routable, kgs),
         **({'lunch_min': _r(brk.added if brk.stop is not None else 0.0)} if brk is not None else {}),
+        **({'buffer_min': _r(parts['buffer'])} if 'buffer' in parts else {}),   # запас на рейс (№66)
     }
 
 
@@ -942,7 +971,9 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
     Обед в пути (№61): у рейса, где он есть, — lunch: где (where: store — после разгрузки у магазина, depot — на складе
     до загрузки, road — в дороге в конце окна обеда), начало и конец (HH:MM; на складе и в дороге — весь обед, у магазина
     — сколько добавилось после разгрузки), минут обеда, добавлено к рейсу, после какой точки (номер в stops; None — до
-    первой); время рейса и машины — с ним. Без обеда план — прежний до байта."""
+    первой); время рейса и машины — с ним. Без обеда план — прежний до байта.
+    Запас на рейс (№66): у рейса с запасом — buffer: минуты и с какого времени (возвращение по медиане; return — с
+    запасом). Без выученного запаса — прежний до байта."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
     shares = _shares(draft.trips)
@@ -1010,6 +1041,9 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
             tj['lunch'] = {'start': _hhmm(ctx.work_start_min + brk.at), 'end': _hhmm(ctx.work_start_min + brk.at + meal),
                            'minutes': _r(ctx.tn.lunch_minutes), 'added_min': _r(brk.added), 'after_stop': after,
                            'where': 'road' if brk.road else 'depot' if brk.stop is None else 'store'}
+        if parts[t.id].get('buffer'):
+            tj['buffer'] = {'minutes': _r(parts[t.id]['buffer']),
+                            'start': _hhmm(ctx.work_start_min + slot['used'] - parts[t.id]['buffer'])}
         if explain:
             tj['explain'] = _trip_explain(ctx, sel, t.truck, truck, cids, routable, kgs, parts[t.id], free, depart, minutes)
         slot['trips'].append(tj)

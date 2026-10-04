@@ -101,26 +101,71 @@
             renderDrivers();
         } catch (e) { showError(e.message); }
     }
+    // Инициалы в кружке водителя: первые буквы двух первых слов (армянская буква — целым символом)
+    const initials = (name) => String(name || '').trim().split(/\s+/).slice(0, 2).map(w => Array.from(w)[0] || '').join('').toUpperCase() || '?';
+    // Плитка итога (.rt-kpi из routes.css); sub — готовый HTML, числа в нём уже через fmt()
+    const kpi = (cls, icon, label, now, unit, sub) => '<div class="rt-kpi ' + cls + '"><div class="rt-kpi-label"><i class="fas ' + icon + '" aria-hidden="true"></i>'
+        + esc(label) + '</div><div class="rt-kpi-val"><span class="now">' + esc(now) + '</span>' + (unit ? '<span class="unit">' + esc(unit) + '</span>' : '')
+        + '</div><div class="rt-kpi-sub">' + sub + '</div></div>';
+    const isLocked = (t) => !t.revoked_at && !!t.locked_until && new Date(t.locked_until) > new Date();
     function renderDrivers() {
         const d = drv.data;
-        $('crDriverRows').innerHTML = d.drivers.length ? d.drivers.map(x => '<tr class="' + (x.active ? '' : 'is-closed') + '">'
-            + '<td>' + esc(x.name) + '</td><td>' + (x.pin_reset ? badge('սահմանել նորից', 'b-danger') + ' <span class="cr-muted">հին PIN-ը այլևս չի ստուգվում</span>'
-                : x.has_pin ? badge('կա', 'b-ok') : badge('չկա', 'b-warn')) + '</td>'
-            + '<td>' + (x.active ? 'Աշխատում է' : 'Չի աշխատում') + '</td>'
-            + '<td><button type="button" class="rt-linkbtn" data-edit="' + x.id + '">Փոփոխել</button></td></tr>').join('')
-            : '<tr><td colspan="4" class="cr-muted">Վարորդներ դեռ չկան</td></tr>';
-        const carName = (code) => { const c = d.cars.find(x => x.code === code); return c && c.name ? code + ' · ' + c.name : code; };
-        $('crTermRows').innerHTML = d.terminals.length ? d.terminals.map(t => {
-            const state = t.revoked_at ? badge('Անջատված', 'b-none')
-                : (t.locked_until && new Date(t.locked_until) > new Date()) ? badge('Արգելափակված PIN-ով', 'b-warn') : badge('Աշխատում է', 'b-ok');
-            return '<tr class="' + (t.revoked_at ? 'is-closed' : '') + '"><td>' + esc(t.name) + '</td><td>' + esc(carName(t.car_code)) + '</td>'
-                + '<td>' + esc(dateTime(t.last_seen_at)) + '</td><td>' + state + '</td>'
-                + '<td>' + (t.revoked_at ? '' : '<button type="button" class="rt-linkbtn" data-revoke="' + t.id + '">Անջատել</button>') + '</td></tr>';
-        }).join('') : '<tr><td colspan="5" class="cr-muted">Տերմինալներ դեռ չկան</td></tr>';
+        const working = d.drivers.filter(x => x.active);
+        const noPin = working.filter(x => x.pin_reset || !x.has_pin);
+        const live = d.terminals.filter(t => !t.revoked_at);
+        const seenToday = live.filter(t => typeof t.last_seen_at === 'string' && t.last_seen_at.slice(0, 10) === today());
+        const blocked = live.filter(isLocked);
+        const issues = noPin.length + blocked.length;
+        $('crDrvKpis').innerHTML = kpi('', 'fa-id-card', 'Վարորդներ', fmt(working.length), '/ ' + fmt(d.drivers.length), 'աշխատում են')
+            + kpi('', 'fa-mobile-screen', 'Տերմինալներ', fmt(live.length), '', 'այսօր կապի մեջ՝ <b>' + fmt(seenToday.length) + '</b>')
+            + kpi(issues ? 'is-warn' : 'is-good', issues ? 'fa-triangle-exclamation' : 'fa-circle-check', 'Ուշադրություն', fmt(issues), '',
+                issues ? [noPin.length ? 'PIN չունի՝ <b>' + fmt(noPin.length) + '</b>' : '', blocked.length ? 'արգելափակված՝ <b>' + fmt(blocked.length) + '</b>' : '']
+                    .filter(Boolean).join(' · ') : 'Ամեն ինչ կարգին է');
+        $('crDriversCount').textContent = d.drivers.length ? fmt(d.drivers.length) : '';
+        $('crTermCount').textContent = d.terminals.length ? fmt(d.terminals.length) : '';
+        const editing = $('crDriverId').value;
+        // Работающие — сверху, дальше по имени
+        const drivers = d.drivers.slice().sort((a, b) => (b.active - a.active) || String(a.name).localeCompare(String(b.name), 'hy'));
+        $('crDriverRows').innerHTML = drivers.length ? drivers.map(x => '<li class="cr-row' + (x.active ? '' : ' is-off') + (String(x.id) === editing ? ' is-editing' : '') + '">'
+            + '<span class="cr-avatar" aria-hidden="true">' + esc(initials(x.name)) + '</span>'
+            + '<span class="cr-row-main"><span class="cr-row-name">' + esc(x.name) + '</span>'
+            + '<span class="cr-row-sub"><span class="cr-state' + (x.active ? ' is-on' : '') + '">' + (x.active ? 'Աշխատում է' : 'Չի աշխատում') + '</span>'
+            + (x.pin_reset ? '<span>հին PIN-ը այլևս չի ստուգվում</span>' : '') + '</span></span>'
+            + '<span class="cr-row-badge">' + (x.pin_reset ? badge('PIN-ը սահմանել նորից', 'b-danger')
+                : x.has_pin ? badge('PIN կա', 'b-ok') : badge('PIN չկա', 'b-warn')) + '</span>'
+            + '<button type="button" class="rt-iconbtn cr-row-act" data-edit="' + x.id + '" title="Փոփոխել" aria-label="Փոփոխել՝ ' + esc(x.name) + '">'
+            + '<i class="fas fa-pen" aria-hidden="true"></i></button></li>').join('')
+            : '<li class="cr-empty"><i class="fas fa-user-plus" aria-hidden="true"></i>Վարորդներ դեռ չկան՝ ավելացրեք առաջինը ներքևում</li>';
+        const car = (code) => d.cars.find(x => x.code === code);
+        // Отключённые — внизу
+        const terms = d.terminals.slice().sort((a, b) => (!!a.revoked_at - !!b.revoked_at) || String(a.name).localeCompare(String(b.name), 'hy'));
+        $('crTermRows').innerHTML = terms.length ? terms.map(t => {
+            const c = car(t.car_code);
+            const state = t.revoked_at ? badge('Անջատված', 'b-none') : isLocked(t) ? badge('Արգելափակված PIN-ով', 'b-warn') : badge('Աշխատում է', 'b-ok');
+            const seen = t.last_seen_at ? '<i class="far fa-clock" aria-hidden="true"></i>' + esc(dateTime(t.last_seen_at)) : 'դեռ չի միացել';
+            return '<li class="cr-row' + (t.revoked_at ? ' is-off' : '') + '">'
+                + '<span class="cr-avatar is-device" aria-hidden="true"><i class="fas fa-mobile-screen"></i></span>'
+                + '<span class="cr-row-main"><span class="cr-row-name">' + esc(t.name) + '</span>'
+                + '<span class="cr-row-sub"><span class="cr-plate">' + esc(t.car_code) + '</span>' + (c && c.name ? '<span>' + esc(c.name) + '</span>' : '')
+                + '<span class="cr-seen" title="Վերջին կապը">' + seen + '</span></span></span>'
+                + '<span class="cr-row-badge">' + state + '</span>'
+                + (t.revoked_at ? ''
+                    : '<button type="button" class="rt-btn rt-btn-ghost rt-btn-sm cr-row-act cr-danger" data-revoke="' + t.id + '" aria-label="Անջատել՝ ' + esc(t.name) + '">Անջատել</button>')
+                + '</li>';
+        }).join('') : '<li class="cr-empty"><i class="fas fa-qrcode" aria-hidden="true"></i>Տերմինալներ դեռ չկան՝ ստեղծեք առաջինը ներքևում</li>';
         const sel = $('crTermCar');
+        const picked = sel.value;   // список пересобирается после каждого сохранения — выбор не теряем
         sel.innerHTML = '<option value="">— ընտրեք —</option>' + d.cars.map(c => '<option value="' + esc(c.code) + '">'
             + esc(c.code + (c.name ? ' · ' + c.name : '') + (c.docs ? ' (' + c.docs + ' ապրանքագիր)' : '')) + '</option>').join('');
+        if (picked && d.cars.some(c => c.code === picked)) sel.value = picked;
         $('crTermCarHint').textContent = d.cars_erp_failed ? 'ERP-ն հասանելի չէ՝ մեքենաների ցուցակը չբեռնվեց։' : 'Մեքենաները, որոնք վերջին 90 օրում առաքել են ERP-ի ապրանքագրերով։';
+    }
+    function markEditing(id) {
+        document.querySelectorAll('#crDriverRows .cr-row').forEach(li => {
+            const b = li.querySelector('[data-edit]');
+            li.classList.toggle('is-editing', id !== null && !!b && b.dataset.edit === String(id));
+        });
+        $('crDriverForm').classList.toggle('is-editing', id !== null);
     }
     function editDriver(id) {
         const x = drv.data.drivers.find(v => v.id === id);
@@ -132,7 +177,10 @@
         $('crDriverFormTitle').textContent = 'Փոփոխել՝ ' + x.name;
         $('crDriverPinHint').textContent = x.has_pin ? '(դատարկ՝ չփոխել)' : '(4–6 թվանշան)';
         $('crDriverNew').hidden = false;
-        $('crDriverName').focus();
+        $('crDriverErr').textContent = '';
+        markEditing(x.id);
+        $('crDriverForm').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        $('crDriverName').focus({ preventScroll: true });
     }
     function resetDriverForm() {
         $('crDriverForm').reset();
@@ -141,6 +189,7 @@
         $('crDriverPinHint').textContent = '(4–6 թվանշան)';
         $('crDriverNew').hidden = true;
         $('crDriverErr').textContent = '';
+        markEditing(null);
     }
     async function saveDriver(ev, reset) {
         if (ev) ev.preventDefault();
@@ -179,6 +228,8 @@
             $('crQrText').textContent = r.qr_text;
             $('crQrAdminPin').textContent = r.admin_pin || '—';
             $('crQrBox').hidden = false;
+            $('crQrBox').scrollIntoView({ block: 'center', behavior: 'smooth' });
+            $('crQrBox').focus({ preventScroll: true });
             $('crTermForm').reset();
             announce('Տերմինալը ստեղծված է — սկանավորեք QR-ը');
             await loadDrivers();

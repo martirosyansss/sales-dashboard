@@ -17,7 +17,14 @@
     пускает;
   - предел загрузки (load_cap, ответ №45: 0,9) — второе измерение вместимости: в нём груз заказа считается, если
     заказ можно увезти машиной не тяжелее предела, — тяжелее предела только заказ, который иначе не увезти.
-    Такой заказ едет один: рёбра между ним и другими клиентами запрещены, допускается возврат на склад.
+    Такой заказ едет один: рёбра между ним и другими клиентами запрещены, допускается возврат на склад;
+  - запас на рейс (№66, fleet.trip_reserve: c·√D) — пауз PyVRP не знает: его линейная верхняя оценка по езде и
+    разгрузке (касательная в типичном рейсе D0: c·√D ≤ c·√D0 / 2 + c / (2√D0) · D; не строгая — ожидание окон и обед
+    покрывают точная шкала «Развоза» и повтор fleet._solver) — минуты рёбер и разгрузка × (1 + reserve_slope) (загрузка на
+    складе — без), trip_reserve_min — на рёбрах «заказ → склад» (каждый рейс кончается таким ребром); темп машины (Vehicle.pace: множитель разгрузки, множитель
+    пути) — её профилем: минуты рёбер × множитель пути, лишняя разгрузка (множитель − 1) × разгрузка заказа — на рёбрах
+    из него (прибытие к следующему точно). Профили по темпу — только если у какой-то машины он не (1, 1). Точный расчёт
+    «Развоза» (fleet._days) решение всё равно проверяет.
 Минуты и километры — вверх до целых секунд и метров с запасом (время — вверх, окна — внутрь): решение,
 допустимое для PyVRP, допустимо и для расчёта «Развоза» в float.
 """
@@ -82,6 +89,7 @@ class Vehicle:
     center_ok: bool
     wear_amd_per_km: float | None = None   # износ, ֏/км; None или 0 — стоимость метра только литры
     fuel_price: float = 500.0              # цена литра, ֏ — перевод износа в литры (fleet.TruckNorms.fuel_price)
+    pace: tuple[float, float] = (1.0, 1.0)   # темп машины (№66): множитель разгрузки, множитель пути
 
 
 def unit_cost(v: Vehicle) -> int:
@@ -103,22 +111,24 @@ def _sec_down(minutes: float) -> int:
 def solve(pieces: Sequence[Piece], km: Sequence[Sequence[float]], minutes: Sequence[Sequence[float]],
           vehicles: Sequence[Vehicle], shifts: Sequence[Shift], start: Sequence[tuple[int, list[list[int]]]],
           load_cap: float | None, iterations: int = ITERATIONS, seed: int = SEED,
-          load_fixed_min: float = 0.0, load_tonne_min: float = 0.0
-          ) -> list[tuple[int, list[list[int]]]] | None:
+          load_fixed_min: float = 0.0, load_tonne_min: float = 0.0, trip_reserve_min: float = 0.0,
+          reserve_slope: float = 0.0) -> list[tuple[int, list[list[int]]]] | None:
     """Рейсы промежутков: [(номер промежутка в shifts, рейсы — номера pieces по порядку объезда)] или None —
     PyVRP нет, решение недопустимо или обязательный заказ не поставлен. start — план сборки в том же виде
-    (стартовое решение)."""
+    (стартовое решение). trip_reserve_min, reserve_slope — запас на рейс (№66): минут на рейс и доля к минутам езды и
+    разгрузки (касательная к c·√D, fleet._solver)."""
     if pyvrp is None or not pieces or not shifts:
         return None
     try:
         return _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, seed,
-                      load_fixed_min, load_tonne_min)
+                      load_fixed_min, load_tonne_min, trip_reserve_min, reserve_slope)
     except Exception:   # noqa: BLE001 — сбой решателя не должен ломать «Развоз»: свой расчёт
         logger.exception('[Routes] PyVRP: сбой, рейсы — своим расчётом')
         return None
 
 
-def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, seed, load_fixed_min=0., load_tonne_min=0.):
+def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, seed, load_fixed_min=0., load_tonne_min=0.,
+           trip_reserve_min=0., reserve_slope=0.):
     by_code = {v.code: v for v in vehicles}
     model = Model()
     loc0 = model.add_location(0.0, 0.0)
@@ -139,7 +149,8 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
             delivery.append(grams if p.kg <= load_cap * top(p) + 1e-9 else 0)
         early = 0 if p.early is None else max(0, _sec_up(p.early))
         late = horizon if p.late is None else min(horizon, _sec_down(p.late))
-        model.add_client(loc, delivery=delivery, service_duration=_sec_up(p.unload), tw_early=early,
+        service = _sec_up(p.unload * (1.0 + reserve_slope) if reserve_slope else p.unload)
+        model.add_client(loc, delivery=delivery, service_duration=service, tw_early=early,
                          tw_late=max(early, late), required=p.required, prize=0 if p.required else PRIZE)
     nodes = [0, *(p.node for p in pieces)]
     central = [False, *(p.center for p in pieces)]
@@ -152,8 +163,10 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
                               (p.allowed_trucks is not None and v.code not in p.allowed_trucks)
                               for p in pieces)) for v in vehicles}
     open_mask = (False,) * (len(pieces) + 1)
-    profiles = {mask: model.add_profile(name=f'access-{i}')
-                for i, mask in enumerate(dict.fromkeys([open_mask, *masks.values()]))}
+    # …и одинаковым темпом (№66; у всех (1, 1) — профили те же, что без темпа)
+    keys = {v.code: (masks[v.code], tuple(v.pace)) for v in vehicles}
+    profiles = {key: model.add_profile(name=f'access-{i}')
+                for i, key in enumerate(dict.fromkeys([(open_mask, (1.0, 1.0)), *keys.values()]))}
     for a, la in enumerate(every):
         ka, ma = km[nodes[a]], minutes[nodes[a]]
         for b, lb in enumerate(every):
@@ -166,8 +179,13 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
             # Загрузка всего рейса до выезда перепроверяется точным расписанием fleet.
             loading = (load_fixed_min if a == 0 else 0.) + (load_tonne_min * pieces[b-1].kg/1000 if b else 0.)
             dur = _sec_up(ma[nodes[b]] + loading)
-            for mask, profile in profiles.items():
-                model.add_edge(la, lb, distance=FORBIDDEN_M if mask[a] or mask[b] else dist, duration=dur,
+            back = trip_reserve_min if a and not b else 0.0      # рейс кончается ребром «заказ → склад»
+            for (mask, (mu, mt)), profile in profiles.items():
+                edge = dur
+                if back or reserve_slope or (mu, mt) != (1.0, 1.0):
+                    extra = (mu - 1.0) * pieces[a - 1].unload if a else 0.0
+                    edge = _sec_up(max(0.0, (ma[nodes[b]] * mt + extra) * (1.0 + reserve_slope) + loading) + back)
+                model.add_edge(la, lb, distance=FORBIDDEN_M if mask[a] or mask[b] else dist, duration=edge,
                                profile=profile)
     for s in shifts:
         v = by_code[s.truck]
@@ -177,7 +195,7 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
         t0, t1 = _sec_up(s.start), _sec_down(s.end)
         model.add_vehicle_type(1, capacity=cap, start_depot=depot, end_depot=depot, tw_early=t0, tw_late=max(t0, t1),
                                shift_duration=max(0, t1 - t0), unit_distance_cost=unit_cost(v),
-                               profile=profiles[masks[v.code]], reload_depots=[depot],
+                               profile=profiles[keys[v.code]], reload_depots=[depot],
                                max_distance=MAX_DISTANCE_M, name=s.truck)
     data = model.data()
     routes = []
