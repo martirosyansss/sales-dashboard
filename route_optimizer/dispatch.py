@@ -278,6 +278,9 @@ class Draft:
     # менеджеры (agent_id), чьи заказы сегодня не везём: фильтр «Մենեջերներ» — все их заказы дня и прошлых дней
     # вне развоза, пока менеджера не вернут (новые заказы этих менеджеров тоже); «не везём сегодня» — отдельно
     agents_off: set[int] = field(default_factory=set)
+    # черновик до последнего «resize» (to_json без prediction и undo): «Չեղարկել» возвращает его (apply_edit «undo»);
+    # любая другая правка, сборка и «Везти после конца дня» его сбрасывают — отменить можно только сам перенос
+    undo: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -289,7 +292,8 @@ class Draft:
                 'no_room': sorted(self.no_room), 'overtime': self.overtime, 'overtime_ok': self.overtime_ok,
                 'deferred': sorted(self.deferred), 'dropped': sorted(self.dropped),
                 'no_window': sorted(self.no_window), 'no_center': sorted(self.no_center), 'prediction': self.prediction,
-                'no_vehicle': sorted(self.no_vehicle), 'agents_off': sorted(self.agents_off)}
+                'no_vehicle': sorted(self.no_vehicle), 'agents_off': sorted(self.agents_off),
+                **({'undo': self.undo} if self.undo is not None else {})}
 
     @classmethod
     def from_json(cls, raw: Any) -> Draft:
@@ -322,7 +326,8 @@ class Draft:
                    cids('no_window'), cids('no_center'), raw.get('prediction') if isinstance(raw.get('prediction'), dict) else None,
                    no_vehicle=cids('no_vehicle'),
                    agents_off={x for x in (raw.get('agents_off') or [])[:MAX_AGENTS] if _is_int(x)}
-                   if isinstance(raw.get('agents_off'), list) else set())
+                   if isinstance(raw.get('agents_off'), list) else set(),
+                   undo=raw.get('undo') if isinstance(raw.get('undo'), dict) else None)
 
 
 def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
@@ -611,6 +616,7 @@ def overtime(ctx: DayContext, stops: Sequence[Stop], draft: Draft) -> Draft:
     сборке; не помещавшиеся в окно тоже пробуются: «после 17:30» могло не поместиться только до конца дня."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
+    draft.undo = None
     shares = _shares(draft.trips)
     sel = _selected(ctx, draft.trucks)
     rest = [routable[c] for c in sorted(draft.no_room | draft.no_window | draft.no_vehicle) if c in routable and c not in shares]
@@ -669,6 +675,212 @@ def _insert_cheapest(ctx: DayContext, cids: list[int], cid: int, stops: Mapping[
     return cids[:best] + [cid] + cids[best:]
 
 
+# --- Конец рейса тянут мышью на шкале дня (ответ владельца №59) ---
+
+def _closed_km(ctx: DayContext, cids: Sequence[int], stops: Mapping[int, Stop]) -> float:
+    """Км рейса «склад → cids по порядку → склад» (без рейса — 0)."""
+    if not cids:
+        return 0.0
+    pts = [ctx.depot, *(stops[c].point for c in cids), ctx.depot]
+    return math.fsum(ctx.norms.km(a, b) for a, b in zip(pts, pts[1:]))
+
+
+def _truck_day(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, Stop], shares: Mapping[int, int],
+               code: str) -> tuple[dict[int, float], float, int]:
+    """Рейсы машины code подряд (_timeline): (возвращение каждого рейса, конец дня машины, точек позже окна приёма) —
+    минуты от начала дня машины."""
+    mine = [t for t in trips if t.truck == code]
+    tl = _timeline(ctx, mine, stops, shares)
+    ends: dict[int, float] = {}
+    misses = 0
+    for t in mine:
+        if t.id in tl:
+            depart, minutes, arrivals = tl[t.id]
+            ends[t.id] = depart + minutes
+            misses += sum(1 for c, at in zip([c for c in t.stops if c in stops], arrivals) if at > _span(ctx, c)[1] + _EPS)
+    return ends, max(ends.values(), default=0.0), misses
+
+
+def _can_carry(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, cids: Sequence[int],
+               stops: Mapping[int, Stop], shares: Mapping[int, int]) -> bool:
+    """Рейс cids по силам машине code: право въезда (машина, центр) и груз не тяжелее предела сборки (fl.load_limit,
+    №45: 90% тоннажа)."""
+    truck = ctx.trucks[code]
+    if any(not _vehicle_ok(ctx, c, code) or (_central(ctx, stops[c]) and not truck.center_ok) for c in cids):
+        return False
+    kgs = [stops[c].kg / shares.get(c, 1) for c in cids]
+    lim = fl.load_limit(kgs, [_central(ctx, stops[c]) for c in cids], [_allowed_trucks(ctx, c) for c in cids], truck, sel)
+    return math.fsum(kgs) <= lim + 0.5
+
+
+def _moved(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, Stop], cid: int, src: int | None,
+           dst: DraftTrip) -> list[DraftTrip]:
+    """Копия рейсов, где клиент cid перешёл из рейса src (None — «ещё не в рейсах») в рейс dst (новый рейс — dst, которого
+    нет среди trips: он встаёт последним) на место с наименьшим объездом; опустевший рейс уходит."""
+    out = [DraftTrip(t.id, t.truck, list(t.stops), t.pinned) for t in trips]
+    if all(t.id != dst.id for t in out):
+        out.append(DraftTrip(dst.id, dst.truck, list(dst.stops), dst.pinned))
+    for t in out:
+        if t.id == src:
+            t.stops.remove(cid)
+        if t.id == dst.id:
+            t.stops = _insert_cheapest(ctx, t.stops, cid, stops)
+    return [t for t in out if t.stops]
+
+
+def _take(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trips: list[DraftTrip], cid: int,
+          touched: Sequence[int]) -> None:
+    """Принять перенос: рейсы trips — в черновик, у затронутых рейсов порядок заново (2-opt с их выезда, как у move) —
+    если рейс с ним возвращается не позже и окна приёма машины не нарушаются чаще (2-opt укорачивает км, а минуты с
+    пробками и окнами могут вырасти; окна он бережёт, только если порядок их уже соблюдал)."""
+    draft.trips = trips
+    if any(t.id >= draft.next_id for t in trips):
+        draft.next_id = max(t.id for t in trips) + 1
+    for left in (draft.no_room, draft.no_window, draft.no_center, draft.no_vehicle):
+        left.discard(cid)
+    shares = _shares(trips)
+    for t in trips:
+        if t.id in touched:
+            start = _timeline(ctx, trips, stops, shares)[t.id][0]
+            was = t.stops
+            ends, _, misses = _truck_day(ctx, trips, stops, shares, t.truck)
+            t.stops, *_ = _route(ctx, was, stops, shares, reorder=True, start=start)
+            ends2, _, misses2 = _truck_day(ctx, trips, stops, shares, t.truck)
+            if ends2[t.id] > ends[t.id] + _EPS or misses2 > misses:
+                t.stops = was
+
+
+def _shrink(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: DraftTrip, target: float) -> None:
+    """Рейс trip должен вернуться к target: его магазины по одному уходят в рейсы других машин (или новым рейсом
+    отмеченной машине), пока не вернётся. Каждый раз — перенос с наименьшим ростом км всего плана на минуту, которую рейс
+    выигрывает (выигрыш сверх нужного до target не в счёт; переносы без роста км — первыми). Принимающая машина
+    не позже конца дня (или своего прежнего конца), окна приёма у неё не нарушаются, груз — в пределе сборки;
+    закреплённые рейсы не трогаются. Некуда — остаётся сколько успели."""
+    sel = _selected(ctx, draft.trucks)
+    limit = ctx.overtime_minutes if draft.overtime_ok and ctx.overtime_minutes is not None else ctx.tn.work_minutes
+    others = [t.car_code for t in sel if t.car_code != trip.truck]
+    tid = trip.id
+    for _ in range(len(trip.stops)):
+        trip = next((t for t in draft.trips if t.id == tid), None)   # _take кладёт в черновик копии рейсов
+        if trip is None:
+            return
+        shares = _shares(draft.trips)
+        ends, _, _ = _truck_day(ctx, draft.trips, stops, shares, trip.truck)
+        now = ends.get(trip.id)
+        if now is None or now <= target + _EPS:
+            return
+        receivers = [t for t in draft.trips if t.truck in others and not t.pinned]
+        base_km = _closed_km(ctx, trip.stops, stops)
+        cands = []
+        for cid in trip.stops:
+            if shares[cid] != 1:          # тяжёлый заказ на несколько поездок — переносят целиком вручную
+                continue
+            rest = [c for c in trip.stops if c != cid]
+            saved_km = base_km - _closed_km(ctx, rest, stops)
+            if rest:
+                kept = [DraftTrip(t.id, t.truck, rest if t.id == trip.id else t.stops) for t in draft.trips]
+                saved = now - _truck_day(ctx, kept, stops, shares, trip.truck)[0][trip.id]
+            else:
+                saved = math.inf
+            if saved <= _EPS:
+                continue
+            useful = min(saved, now - target)   # сверх нужного выигрыш не в счёт
+            options = [*receivers, *(DraftTrip(draft.next_id, code, []) for code in others)]
+            for r in options:
+                if not _can_carry(ctx, sel, r.truck, [*r.stops, cid], stops, shares):
+                    continue
+                net = (_closed_km(ctx, _insert_cheapest(ctx, r.stops, cid, stops), stops)
+                       - _closed_km(ctx, r.stops, stops) - saved_km)
+                cands.append(((0, -useful) if net <= 0 else (1, net / useful), cid, r.id, r))
+        state: dict[str, tuple[float, int]] = {}
+        for _, cid, _, r in sorted(cands, key=lambda x: (x[0], x[1], x[2])):
+            if r.truck not in state:
+                _, end0, miss0 = _truck_day(ctx, draft.trips, stops, shares, r.truck)
+                state[r.truck] = (end0, miss0)
+            end0, miss0 = state[r.truck]
+            trial = _moved(ctx, draft.trips, stops, cid, trip.id, r)
+            _, end1, miss1 = _truck_day(ctx, trial, stops, _shares(trial), r.truck)
+            if end1 <= max(limit, end0) + _EPS and miss1 <= miss0:
+                _take(ctx, draft, stops, trial, cid, (trip.id, r.id))
+                break
+        else:
+            return
+
+
+def _grow(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: DraftTrip, target: float) -> None:
+    """Машина рейса trip работает до target: в рейс берутся магазины «ещё не в рейсах» (сначала — их надо везти), затем
+    из рейсов других машин — каждый раз тот, с которым км всего плана растут меньше всего, пока рейс успевает к target.
+    Рейс полон (предел сборки) и он у машины последний — после него новый рейс этой машины. Окна приёма машины не
+    нарушаются; позже конца дня — только если сам конец рейса тянут за него (не позже предела переработки); закреплённые
+    рейсы других машин не трогаются."""
+    sel = _selected(ctx, draft.trucks)
+    code = trip.truck
+    limit = ctx.overtime_minutes if draft.overtime_ok and ctx.overtime_minutes is not None else ctx.tn.work_minutes
+    shares = _shares(draft.trips)
+    ends, end, _ = _truck_day(ctx, draft.trips, stops, shares, code)
+    if trip.id not in ends:
+        return
+    last = [t for t in draft.trips if t.truck == code][-1].id == trip.id
+    # за конец дня — только если туда тянут сам последний рейс; следующие рейсы машины сдвигаются не дальше конца дня
+    cap = max(limit, target) if last else max(limit, end)
+    if ctx.overtime_minutes is not None:
+        cap = min(cap, max(limit, ctx.overtime_minutes))
+    follow: int | None = None
+    for _ in range(len(stops)):
+        shares = _shares(draft.trips)
+        ends, _, miss = _truck_day(ctx, draft.trips, stops, shares, code)
+        lead = follow if follow in ends else trip.id
+        if ends[lead] >= target - _EPS:
+            return
+        by_id = {t.id: t for t in draft.trips}
+        dests = [by_id[i] for i in (trip.id, follow) if i in by_id]
+        if last and follow not in by_id:
+            dests.append(DraftTrip(draft.next_id, code, []))
+        pool = [(cid, None) for cid in sorted(stops) if cid not in shares]
+        pool += [(cid, t) for t in draft.trips if t.truck != code and not t.pinned for cid in t.stops if shares[cid] == 1]
+        base = {t.id: _closed_km(ctx, t.stops, stops) for t in draft.trips if t.truck != code}
+        cands = []
+        for cid, src in pool:
+            saved_km = 0.0 if src is None else base[src.id] - _closed_km(ctx, [c for c in src.stops if c != cid], stops)
+            for r in dests:
+                if not _can_carry(ctx, sel, code, [*r.stops, cid], stops, shares):
+                    continue
+                net = (_closed_km(ctx, _insert_cheapest(ctx, r.stops, cid, stops), stops)
+                       - _closed_km(ctx, r.stops, stops) - saved_km)
+                cands.append(((src is not None, net, cid, r.id), cid, src, r))
+        for _, cid, src, r in sorted(cands, key=lambda x: x[0]):
+            trial = _moved(ctx, draft.trips, stops, cid, None if src is None else src.id, r)
+            t_ends, t_end, t_miss = _truck_day(ctx, trial, stops, _shares(trial), code)
+            at = t_ends[r.id if r.id != trip.id else (follow if follow in t_ends else trip.id)]
+            if at <= target + _EPS and t_end <= cap + _EPS and t_miss <= miss:
+                _take(ctx, draft, stops, trial, cid, (r.id, *(() if src is None else (src.id,))))
+                if r.id != trip.id:
+                    follow = r.id
+                break
+        else:
+            return
+
+
+def _resize(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], edit: Mapping[str, Any]) -> Draft:
+    """{"action": "resize", "trip": id, "return": минут от полуночи} — конец полосы рейса на шкале дня потянули мышью:
+    раньше — магазины уходят другим машинам (_shrink), позже — машина берёт магазины других и «ещё не в рейсах» (_grow)."""
+    trip = _trip(draft, edit.get('trip'))
+    at = edit.get('return')
+    if not _is_num(at) or not 0 <= at <= 2 * 24 * 60:
+        raise DispatchError('Նշեք, թե երբ պետք է վերադառնա երթը')
+    if trip.truck not in ctx.trucks or trip.truck not in draft.trucks:
+        raise DispatchError('Эта машина сегодня не работает — отметьте её в шаге 1')
+    target = at - ctx.work_start_min
+    ends, _, _ = _truck_day(ctx, draft.trips, stops, _shares(draft.trips), trip.truck)
+    if trip.id not in ends:
+        return draft
+    if target < ends[trip.id] - _EPS:
+        _shrink(ctx, draft, stops, trip, target)
+    elif target > ends[trip.id] + _EPS:
+        _grow(ctx, draft, stops, trip, target)
+    return draft
+
+
 def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mapping[str, Any],
                order_ids: set[str], backlog_ids: set[str] = frozenset(), defer_since: date | None = None,
                carried: Collection[str] = ()) -> Draft:
@@ -679,6 +891,8 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
             to_trip = null и truck = null — убрать из рейсов («ещё не в рейсах»);
       {"action": "pin", "trip": id, "truck": код} — закрепить машину за рейсом (рейс уходит к ней);
       {"action": "unpin", "trip": id};
+      {"action": "resize", "trip": id, "return": минут от полуночи} — конец рейса потянули на шкале дня (_resize);
+      {"action": "undo"} — «Չեղարկել»: черновик до последнего resize (Draft.undo);
       {"action": "exclude" | "include", "order": fISN} — «не везём сегодня» / вернуть; заказ прошлых
           дней (backlog_ids) — убрать из развоза / добавить в развоз (перенесённый сюда — carried —
           убранный запоминается в dropped); перенос на завтра снимается;
@@ -692,6 +906,11 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
     action = edit.get('action')
+    if action == 'undo':
+        if draft.undo is None:
+            raise DispatchError('Չեղարկելու բան չկա՝ պլանը դրանից հետո արդեն փոխվել է')
+        return Draft.from_json(draft.undo)
+    draft.undo = None
     if action in ('exclude', 'include'):
         isn = edit.get('order')
         isn = isn.upper() if isinstance(isn, str) else None
@@ -746,6 +965,11 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
             trip.truck = truck
             draft.trips.append(trip)
         trip.pinned = True
+        return draft
+    if action == 'resize':
+        before = {k: v for k, v in draft.to_json().items() if k not in ('prediction', 'undo')}
+        draft = _resize(ctx, draft, routable, edit)
+        draft.undo = before
         return draft
     if action != 'move':
         raise DispatchError('Неизвестное действие')

@@ -1,7 +1,7 @@
 /* «Развоз» /routes/dispatch — план развоза на завтра (docs/plans/dispatch-plan.md).
    Данные: GET /api/routes/dispatch?date=…; «Собрать рейсы» — POST /api/routes/dispatch/build;
-   правки логиста — POST /api/routes/dispatch/edit (move | pin | unpin | exclude | include, с номером
-   черновика rev); «Начать заново» — POST /api/routes/dispatch/reset; ручная точка магазина —
+   правки логиста — POST /api/routes/dispatch/edit (move | pin | unpin | exclude | include | resize — конец
+   полосы рейса тянут мышью на шкале дня, пока тянут — resize с preview, undo — «Չեղարկել», с номером черновика rev); «Начать заново» — POST /api/routes/dispatch/reset; ручная точка магазина —
    POST /api/routes/geo-override; «План и факт» — GET /api/routes/dispatch/fact?date=…; окно приёма магазина
    («Ընդունման ժամ», windows-center-plan.md) — POST /api/routes/customer-window. Точка любого магазина «Փոխել տեղը»
    — тот же POST /api/routes/geo-override (null — «авто»); предложения водителей (geo_suggestions в ответе дня,
@@ -78,7 +78,7 @@
         mapFitting: false, mapUserMoved: false,   // логист сам двигал или приближал карту — не перевписывать
         mapFocus: null,                     // карта только одной машины {truck} или одного рейса {truck, trip}; null — все
         roadCache: new Map(), roadGen: 0,   // линии рейсов по дорогам: ключ — точки линии; номер отрисовки
-        pickMap: null, pickMarker: null, pickCid: null,
+        pickMap: null, pickMarker: null, pickCid: null, dragging: false, undo: null,
         loadSeq: 0,                         // номер последнего запроса дня: ответы на прежние запросы не применяются
         editing: new Set(),                 // рейсы, открытые кнопкой «Փոփոխել»
         fetchedAt: 0,                       // когда последний раз спрашивали сервер о заказах дня
@@ -193,7 +193,8 @@
         setTimeout(() => { el.textContent = msg; }, 40);
     }
     let toastTimer = null;
-    function toast(msg) {
+    // act — кнопка в подсказке ({label, run}, «Չեղարկել» после перетаскивания рейса): подсказка держится дольше
+    function toast(msg, act) {
         let el = $('dpToast');
         if (!el) {
             el = document.createElement('div');
@@ -203,9 +204,18 @@
             $('rtDispatch').appendChild(el);
         }
         el.textContent = msg;
+        el.classList.toggle('has-act', !!act);
+        if (act) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'dp-toast-act';
+            b.textContent = act.label;
+            b.addEventListener('click', () => { el.classList.remove('is-on'); act.run(); });
+            el.append(' ', b);
+        }
         el.classList.add('is-on');
         clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => el.classList.remove('is-on'), 4200);
+        toastTimer = setTimeout(() => { el.classList.remove('is-on'); const b = el.querySelector('.dp-toast-act'); if (b) b.remove(); }, act ? 9000 : 4200);
         announce(msg);
     }
     function showActionError(err) {
@@ -441,7 +451,7 @@
     // тогда обновляются только подсказки, а страница — при следующей проверке.
     const interacting = () => {
         const a = document.activeElement;
-        return state.pickCid !== null || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
+        return state.pickCid !== null || state.dragging || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
     async function poll() {
@@ -1363,6 +1373,7 @@
                     bar.appendChild(tick);
                 });
                 bar.addEventListener('click', () => focusFromBoard(t, tr));
+                if (!d.is_past && ret - dep >= span / 40) resizable(bar, track, t, tr, dep, ret, t0, span);
                 track.appendChild(bar);
                 if (tr.buffer) {   // запас на рейс (№66) — конец полосы: с медианного возвращения до возвращения с запасом
                     const a = toMin(tr.buffer.start);
@@ -1403,6 +1414,138 @@
         scroll.appendChild(grid);
         box.appendChild(scroll);
         syncFocus();
+    }
+
+    // Конец полосы рейса тянут мышью (ответ владельца №59): отпустили раньше — магазины уходят другим машинам, позже —
+    // машина берёт магазины других и «ещё не в рейсах» (dispatch._resize); шаг 5 минут, Esc — отмена. С клавиатуры на
+    // полосе — Shift+← / Shift+→: на 15 минут
+    const RESIZE_STEP = 5, RESIZE_KEY_STEP = 15;
+    // пока тянут — что будет, если отпустить (тот же resize на сервере с preview: ничего не сохраняется): «−3 կետ · +18 կմ»
+    const RESIZE_PREVIEW_MS = 220;
+    const previewText = (p) => (p.stops ? (p.stops > 0 ? '+' : '−') + pl(Math.abs(p.stops), 'կետ') : 'առանց փոփոխության')
+        + (p.stops && num(p.delta_km) !== null ? ' · ' + (p.delta_km > 0 ? '+' : p.delta_km < 0 ? '−' : '') + fmt(Math.abs(p.delta_km), 1) + NB + 'կմ' : '');
+    // время после полуночи — как у сервера: «00:30 (+1)»
+    const clock = (m) => hhmm(m % 1440) + (m >= 1440 ? ' (+' + Math.floor(m / 1440) + ')' : '');
+    function resizable(bar, track, t, tr, dep, ret, t0, span) {
+        const grip = document.createElement('span');
+        grip.className = 'dp-grip';
+        grip.setAttribute('aria-hidden', 'true');
+        grip.title = 'Քաշեք՝ երթը կարճացնելու (կետերը կանցնեն այլ մեքենաների) կամ երկարացնելու համար';
+        bar.appendChild(grip);
+        bar.setAttribute('aria-keyshortcuts', 'Shift+ArrowLeft Shift+ArrowRight Control+Z');
+        bar.title += '\nԱջ եզրը քաշեք կամ Shift+← / Shift+→՝ կարճացնել կամ երկարացնել երթը, Ctrl+Z՝ չեղարկել';
+        let drag = null;
+        const place = (m) => {
+            drag.at = Math.max(dep, Math.min(t0 + span, Math.round(m / RESIZE_STEP) * RESIZE_STEP));
+            bar.style.width = (Math.max(0, drag.at - dep) / span * 100).toFixed(3) + '%';
+            const was = drag.shown;
+            drag.shown = drag.at;
+            const when = drag.at <= dep ? 'ամբողջը՝ այլ մեքենաների' : clock(drag.at);
+            drag.tip.textContent = Math.abs(drag.at - ret) < RESIZE_STEP ? when : when + ' · …';
+            if (was !== drag.at) {
+                clearTimeout(drag.timer);
+                if (Math.abs(drag.at - ret) >= RESIZE_STEP) drag.timer = setTimeout(() => previewAt(drag.at, when), RESIZE_PREVIEW_MS);
+            }
+            drag.tip.style.left = ((drag.at - t0) / span * 100).toFixed(3) + '%';
+        };
+        const previewAt = (at, when) => {
+            if (drag.asking) { drag.next = [at, when]; return; }      // один запрос за раз — потом последнее положение
+            drag.asking = true;
+            const mine = drag;
+            api('POST', '/api/routes/dispatch/edit', { date: state.day, rev: state.data.rev, action: 'resize', trip: tr.id, return: at, preview: true }, 15000)
+                .then(d => {
+                    if (drag !== mine || drag.at !== at || !isObj(d.preview)) return;
+                    // к отпущенному времени не успеть — в подсказке настоящее возвращение
+                    const late = at < ret && d.preview.return && toMin(d.preview.return) > at ? ' · վերադարձ ' + d.preview.return : '';
+                    drag.tip.textContent = when + ' · ' + previewText(d.preview) + late;
+                })
+                .catch(() => { if (drag === mine && drag.at === at) drag.tip.textContent = when; })
+                .finally(() => {
+                    mine.asking = false;
+                    const next = mine.next;
+                    mine.next = null;
+                    if (drag === mine && next && next[0] === drag.at) previewAt(...next);
+                });
+        };
+        const finish = (commit) => {
+            if (!drag) return;
+            clearTimeout(drag.timer);
+            const at = drag.at;
+            drag.tip.remove();
+            document.removeEventListener('keydown', drag.esc, true);
+            document.removeEventListener('pointerup', drag.up, true);
+            drag = null;
+            state.dragging = false;
+            bar.classList.remove('is-drag');
+            bar.style.width = (Math.max(0, ret - dep) / span * 100).toFixed(3) + '%';
+            if (commit && Math.abs(at - ret) >= RESIZE_STEP) resizeTrip(t, tr, at);
+        };
+        grip.addEventListener('pointerdown', (e) => {
+            if (state.busy || e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            grip.setPointerCapture(e.pointerId);
+            const tip = document.createElement('span');
+            tip.className = 'dp-drag-tip';
+            tip.setAttribute('aria-hidden', 'true');
+            track.appendChild(tip);
+            // шкалу перерисовали посреди перетаскивания (ручки уже нет на странице) — Esc больше не перехватывается
+            drag = { box: track.getBoundingClientRect(), at: ret, shown: ret, timer: null, asking: false, next: null, tip, esc: (k) => { if (k.key === 'Escape' && grip.isConnected) { k.preventDefault(); finish(false); } else if (!grip.isConnected) finish(false); } };
+            drag.up = () => { if (!grip.isConnected) finish(false); };
+            document.addEventListener('pointerup', drag.up, true);
+            state.dragging = true;
+            document.addEventListener('keydown', drag.esc, true);
+            bar.classList.add('is-drag');
+            place(ret);
+        });
+        grip.addEventListener('pointermove', (e) => {
+            if (drag) place(t0 + (e.clientX - drag.box.left) / drag.box.width * span);
+        });
+        grip.addEventListener('pointerup', () => finish(true));
+        grip.addEventListener('pointercancel', () => finish(false));
+        grip.addEventListener('lostpointercapture', () => finish(false));
+        // отпустили над ручкой — клик по полосе (фокус карты) не нужен
+        grip.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
+        bar.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z') && canUndo()) { e.preventDefault(); undoResize(); return; }
+            if (!e.shiftKey || e.altKey || e.ctrlKey || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') || state.busy) return;
+            e.preventDefault();
+            resizeTrip(t, tr, Math.max(Math.min(ret, dep + RESIZE_STEP), ret + (e.key === 'ArrowLeft' ? -RESIZE_KEY_STEP : RESIZE_KEY_STEP)), true);
+        });
+    }
+
+    // «Չեղարկել» — только того переноса, после которого показана: тот же день и номер правки плана (state.undo); после
+    // другой правки, в другой вкладке или в другом дне — нечего отменять
+    const canUndo = () => !!state.undo && !state.busy && state.undo.day === state.day && !!state.data && state.undo.rev === state.data.rev;
+    function undoResize() {
+        if (!canUndo()) { toast('Պլանն արդեն փոխվել է՝ չեղարկելու բան չկա։'); return; }
+        state.undo = null;
+        edit({ action: 'undo' }, 'Չեղարկվեց');
+    }
+
+    async function resizeTrip(t, tr, at, keyboard) {
+        const code = t.car_code, ret = toMin(tr.return);
+        const stopsOf = (plan) => (plan.trucks.find(x => x.car_code === code) || { stops: 0 }).stops;
+        const before = stopsOf(state.data.plan);
+        const data = await edit({ action: 'resize', trip: tr.id, return: at }, null);
+        if (!data || !data.plan) return;
+        const diff = stopsOf(data.plan) - before;
+        const cur = data.plan.trucks.flatMap(x => x.trips).find(x => x.id === tr.id);
+        const shrink = at < ret;
+        // с клавиатуры — фокус на ту же полосу (шкала перерисована)
+        const back = keyboard && $('dpBoard').querySelector('.dp-bar[data-trip="' + tr.id + '"]');
+        if (back) back.focus();
+        let text;
+        if (!diff) text = shrink ? 'Կետերը տեղափոխել չհաջողվեց՝ մյուս մեքենաները չեն հասցնի կամ տեղ չունեն'
+            : 'Ավելացնելու կետ չգտնվեց՝ մեքենան չի հասցնի մինչև ' + clock(at) + ' կամ մինչև աշխատանքային օրվա վերջը';
+        else {
+            text = shrink ? truckLabel(t) + '՝ ' + pl(-diff, 'կետ') + ' անցավ այլ մեքենաների' : truckLabel(t) + '՝ ավելացավ ' + pl(diff, 'կետ');
+            const late = cur ? toMin(cur.return) : null;
+            if (shrink && late !== null && late > at) text += ', վերադարձ ' + cur.return + ' (ավելի շուտ չի ստացվում)';
+            text += ' — ' + deltaText(data.delta_km);
+        }
+        state.undo = diff ? { day: state.day, rev: data.rev } : null;
+        toast(text + '։', diff ? { label: 'Չեղարկել', run: undoResize } : null);
     }
 
     // Выбранное на карте — подсвечено и на шкале, и в карточках машин

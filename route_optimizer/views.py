@@ -1614,9 +1614,11 @@ def api_dispatch_build() -> Any:
 @bp.post('/api/routes/dispatch/edit')
 @_api
 def api_dispatch_edit() -> Any:
-    """Правка логиста: {"date", "rev", "action": move | pin | unpin | exclude | include | agents, …}
+    """Правка логиста: {"date", "rev", "action": move | pin | unpin | exclude | include | agents | defer_trip | resize | undo, …}
     (dispatch.apply_edit). rev — номер черновика, от которого правка: план изменён в другой вкладке — 409.
-    В ответе — день целиком и delta_km: как изменились км плана."""
+    В ответе — день целиком и delta_km: как изменились км плана. resize с "preview": true — только подсказка во время
+    перетаскивания (ничего не сохраняется): {"preview": {delta_km, stops — сколько точек у машины рейса прибавилось
+    (минус — ушло), return — возвращение рейса «HH:MM» или null — рейса больше нет}}."""
     payload, day, error = _dispatch_request()
     if error is not None:
         return error
@@ -1628,7 +1630,10 @@ def api_dispatch_edit() -> Any:
     if payload.get('rev') != dd.rev:
         return _conflict('План изменили в другой вкладке — обновите страницу')
     info = _stop_info(dd)
-    km_before = dp.plan_view(dd.ctx, dd.stops, dd.draft, info, explain=False)['summary']['km']
+    view_before = dp.plan_view(dd.ctx, dd.stops, dd.draft, info, explain=False)
+    km_before = view_before['summary']['km']
+    if payload.get('preview') is True and payload.get('action') == 'resize':
+        return _resize_preview(dd, payload, info, view_before)
     workdays = bundle.settings['workdays']
     deferred_before = set(dd.draft.deferred)
     try:
@@ -1654,6 +1659,26 @@ def api_dispatch_edit() -> Any:
     body = _dispatch_page_body(dd)
     body['delta_km'] = round(body['plan']['summary']['km'] - km_before, 1) if body['plan'] else None
     return jsonify({'success': True, **body})
+
+
+def _resize_preview(dd: _DispatchDay, payload: Mapping[str, Any], info: Callable[[dp.Stop], dict[str, Any]],
+                    view_before: Mapping[str, Any]) -> Any:
+    """Подсказка во время перетаскивания конца рейса: тот же resize на копии черновика, без сохранения."""
+    trial = dp.Draft.from_json(dd.draft.to_json())
+    try:
+        trial = dp.apply_edit(dd.ctx, dd.stops, trial, payload, {o.isn for o in dd.deliver})
+    except dp.DispatchError as e:
+        return _bad_request({'_': str(e)})
+    view = dp.plan_view(dd.ctx, dd.stops, trial, info, explain=False)
+    code = next((t.truck for t in dd.draft.trips if t.id == payload.get('trip')), None)
+
+    def stops_of(v: Mapping[str, Any]) -> int:
+        return next((t['stops'] for t in v['trucks'] if t['car_code'] == code), 0)
+
+    back = next((tr['return'] for t in view['trucks'] for tr in t['trips'] if tr['id'] == payload.get('trip')), None)
+    return jsonify({'success': True, 'preview': {
+        'delta_km': round(view['summary']['km'] - view_before['summary']['km'], 1),
+        'stops': stops_of(view) - stops_of(view_before), 'return': back}})
 
 
 @bp.post('/api/routes/dispatch/overtime')

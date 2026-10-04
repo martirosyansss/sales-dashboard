@@ -800,3 +800,23 @@
 .dp-tdriver { flex-basis: 100%; flex-direction: column; align-items: flex-start; gap: 0; }
 .dp-crew-day { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; font-size: .875rem; color: var(--rt-fg-dim); cursor: pointer; }
 .dp-crew-day[hidden] { display: none; }
+
+/* --- Шкала дня: конец рейса тянут мышью (№59) --- */
+.dp-grip {
+    position: absolute; top: 0; right: 0; bottom: 0; width: 12px; cursor: ew-resize; touch-action: none;
+    display: flex; align-items: center; justify-content: center;
+}
+.dp-grip::before { content: ""; width: 3px; height: 14px; border-radius: 2px; background: rgba(11, 15, 21, .45); opacity: 0; transition: opacity .15s; }
+.dp-bar:hover .dp-grip::before, .dp-bar:focus-visible .dp-grip::before, .dp-bar.is-drag .dp-grip::before { opacity: 1; }
+.dp-bar.is-drag { z-index: 3; transition: none; animation: none; box-shadow: 0 0 0 2px var(--rt-bg), 0 0 0 4px var(--rt-acc); }
+.dp-drag-tip {
+    position: absolute; top: -18px; transform: translateX(-50%); padding: 1px 6px; border-radius: 6px; z-index: 4;
+    background: var(--rt-fg); color: var(--rt-bg); font: 700 .75rem var(--rt-mono); white-space: nowrap; pointer-events: none;
+}
+@media (pointer: coarse) { .dp-grip { width: 20px; } .dp-grip::before { opacity: 1; } }
+#rtDispatch .dp-toast.is-on.has-act { pointer-events: auto; }
+.dp-toast-act {
+    margin-left: 10px; padding: 2px 10px; border: 1px solid var(--rt-acc-dim); border-radius: 999px; background: none;
+    color: var(--rt-acc); font: 700 .875rem var(--rt-font); cursor: pointer;
+}
+.dp-toast-act:hover, .dp-toast-act:focus-visible { background: var(--rt-acc-glow); }
