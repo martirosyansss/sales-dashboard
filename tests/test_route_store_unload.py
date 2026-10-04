@@ -2,7 +2,10 @@
 import hashlib
 import json
 import math
+import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 from contextlib import closing
 from dataclasses import replace
@@ -202,7 +205,7 @@ def test_api_unload_norms_follow_learned_row_in_effect(client):
 def test_settings_page_has_field_and_bumped_assets():
     html = (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
     assert 'id="rcsUnload"' in html and 'Время у магазина, мин' in html
-    assert 'routes_customer_settings.js\') }}?v=3' in html and 'routes_customer_settings.css\') }}?v=2' in html
+    assert 'routes_customer_settings.js\') }}?v=4' in html and 'routes_customer_settings.css\') }}?v=2' in html
     js = (ROOT / 'static' / 'js' / 'routes_customer_settings.js').read_text(encoding='utf-8')
     assert 'unload_min: unloadMin' in js and 'Время на сам груз (' in js and 'Пусто — ' in js
     assert 'input.validity.badInput' in js                  # нечисло в поле — ошибка, а не «пусто» (стёрло бы время)
@@ -471,16 +474,16 @@ def test_fit_unload_store_time_bounded_0_to_120():
 
 
 def test_fit_unload_few_visits_manual_applies_in_check():
-    """Магазин 105 (своё время 25 мин) — 4 визита в обучении: в строке его нет, но проверка считает его введённым
-    временем — ровно тем, что применится (ошибка у его визитов — 0); store_stats показывает его визиты."""
+    """Магазин 105 (своё время 25 мин) — 1 визит в обучении: в строке его нет, но проверка считает его введённым
+    временем — ровно тем, что применится (ошибка у его визитов — 0); store_stats показывает его визит."""
     test_from = TODAY - timedelta(days=lr.HOLDOUT_DAYS)
     obs = [o for o in _exact_obs() if o.customers != (105,)]
-    obs += [lr.UnloadObs(d, 1, 0.5, 25 + 12 * 0.5, (105,)) for d in _days(4, start=test_from - timedelta(days=10))]
+    obs += [lr.UnloadObs(d, 1, 0.5, 25 + 12 * 0.5, (105,)) for d in _days(1, start=test_from - timedelta(days=10))]
     held = [lr.UnloadObs(d, 1, 0.5, 25 + 12 * 0.5, (105,)) for d in _days(7, start=test_from)]
     obs += held
     cur = lambda x: 8 * x.n + 6 * x.tonnes   # noqa: E731
     without, with_manual = lr.fit_unload(obs, cur, TODAY), lr.fit_unload(obs, cur, TODAY, {105: 25.0})
-    assert '105' not in with_manual.params['store_offsets'] and with_manual.params['store_stats']['105'][0] == 4
+    assert '105' not in with_manual.params['store_offsets'] and with_manual.params['store_stats']['105'][0] == 1
     assert '105' not in without.params['store_stats'] and with_manual.n_test == without.n_test
     p = with_manual.params
     assert p['per_stop_min'] == without.params['per_stop_min']
@@ -530,7 +533,7 @@ def test_run_learning_compares_against_current_with_manual(client, monkeypatch):
     cur, manual, _ = seen[-1]
     assert manual == {101: 30.0, 102: 20.0}
     assert cur(lr.UnloadObs(TODAY, 1, 0.0, 0.0, (101,))) == pytest.approx(a + p['store_offsets']['101'])
-    # 102 с фактом (≥ 5 визитов): смесь с введённым 20 — ровно та, что применит «Развоз»
+    # 102 с фактом (≥ 2 визитов): смесь с введённым 20 — ровно та, что применит «Развоз»
     n2, fact2 = p['store_stats']['102']
     blend = round((n2 * fact2 + 5 * 20) / (n2 + 5) - a, 1)
     assert cur(lr.UnloadObs(TODAY, 1, 0.0, 0.0, (102,))) == pytest.approx(a + blend)
@@ -584,6 +587,38 @@ def test_settings_hint_is_truthful_with_learned_row(client):
     assert ctx.tn.unload_at(0.0, pts[102]) == pytest.approx(rows[102]['unload_auto_min'])
 
 
+def _js_hints(norms, items):
+    """unloadHint из routes_customer_settings.js — в node, на ответе сервера (unload_norms и строки магазинов)."""
+    js = (ROOT / 'static' / 'js' / 'routes_customer_settings.js').read_text(encoding='utf-8').replace('\r\n', '\n')
+    parts = [re.search(p, js, re.S).group(0) for p in (r'    const minutes = .*?;\n', r'    const unloads = .*?;\n',
+                                                         r'    function unloadHint\(item\) \{\n.*?\n    \}\n')]
+    script = f'const norms = {json.dumps(norms)};\n' + ''.join(parts) + \
+        f'console.log(JSON.stringify({json.dumps(items)}.map(unloadHint)));\n'
+    out = subprocess.run(['node'], input=script, capture_output=True, text=True, encoding='utf-8', check=True)
+    return json.loads(out.stdout)
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='нет node')
+def test_settings_hint_rounded_learned_norm_is_not_by_fact(client):
+    """Норма обучения — до сотых (8,37), время в подсказке сервер шлёт до десятых (8,4): у магазина без своего времени
+    это округление — «обычные», а не «по факту»; 8,75 → 8,8 — тоже (разница ровно 0,05). Своё время по факту — «по
+    факту»."""
+    _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2)])
+    state = client.application.extensions['route_optimizer']
+    for run_day, per_stop in (('2026-09-02', 8.37), ('2026-09-03', 8.75)):
+        state.store.save_learned(run_day, [lr.Outcome('unload', '', True, 'да', {
+            'per_stop_min': per_stop, 'per_tonne_min': 6.0, 'store_offsets': {}, 'store_stats': {'102': [10, 12.4]}})])
+        data = client.get('/api/routes/customer-vehicles?q=C10').get_json()
+        rows = {c['customer_id']: c for c in data['customers']}
+        assert data['unload_norms']['per_stop_min'] == per_stop and rows[101]['unload_auto_min'] == round(per_stop, 1)
+        assert rows[101]['unload_auto_min'] != per_stop and rows[102]['unload_auto_min'] - per_stop > 1
+        plain, fact = _js_hints(data['unload_norms'], [rows[101], rows[102]])
+        assert plain.endswith(' Пусто — обычные ' + f'{per_stop:.1f}'.replace('.', ',') + ' мин.'), plain
+        assert fact.endswith(' мин — по факту.') and 'обычные' not in fact, fact
+    assert _js_hints({'per_stop_min': 8.0, 'per_tonne_min': 6.0}, [{'unload_auto_min': 8.5}])[0].endswith(
+        ' Пусто — 8,5 мин — по факту.')                                  # поправка 0,5 — уже своё время
+
+
 def test_manual_below_real_time_is_corrected_by_fact():
     """Введено 5 мин, на деле 25: отсечение «дольше 3 × нормы» — не строже общей нормы, визиты магазина остаются в
     обучении и проверке, смесь сдвигает время магазина к 25."""
@@ -629,3 +664,140 @@ def test_learning_page_renders_store_block():
     assert 'Разгрузка по магазинам' in html and 'id="lrStoreRows"' in html and "routes_learning.js') }}?v=6" in html
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
     assert 'function renderStores' in js and "esc(r.name)" in js and "kind === 'unload'" in js
+
+
+# ============================== со 2-го визита (выбор владельца к №50) ==============================
+
+def test_store_times_one_visit_ignored_two_visits_weight_two_sevenths():
+    """Один визит — не в счёт: введённое (102), нет — норма (101 нет в ответе). Два — смесь, вес факта ровно 2/7.
+    Норма строки 6, факт 41: без введённого 6 + 2/7·35 = 16 (103), введено 20 — 20 + 2/7·21 = 26 (104)."""
+    row = {'per_stop_min': 6.0, 'per_tonne_min': 10.0, 'store_offsets': {},
+           'store_stats': {'101': [1, 41.0], '102': [1, 41.0], '103': [2, 41.0], '104': [2, 41.0]}}
+    assert lr.store_times(6.0, {102: 20.0, 104: 20.0}, row) == {102: (14.0, 'manual'), 103: (10.0, 'learned'),
+                                                               104: (20.0, 'learned')}
+    # вес факта n / (n + 5): 0 у одного визита, 2/7 у двух и дальше больше с каждым визитом — и к введённому, и к норме
+    for prior, manual in ((6.0, {}), (20.0, {1: 20.0})):
+        fact, weights = 76.0, []
+        for n in range(1, 16):
+            extra, _ = lr.store_times(6.0, manual, {'store_stats': {'1': [n, fact]}}).get(1, (0.0, 'norm'))
+            weights.append((6.0 + extra - prior) / (fact - prior))
+        assert weights == pytest.approx([0.0] + [n / (n + 5) for n in range(2, 16)], abs=0.05 / (fact - prior))
+
+
+def test_store_times_from_5_visits_same_as_before(monkeypatch):
+    """Магазины с ≥ 5 визитами — ровно как при прежнем пороге 5 при любом введённом; меняются только 2–4 визита
+    (раньше у них — введённое или норма)."""
+    row = {'per_stop_min': 6.0, 'per_tonne_min': 10.0, 'store_offsets': {'130': 3.0},
+           'store_stats': {str(100 + n): [n, 30.0 + n] for n in range(1, 21)}}
+    for manual in ({}, {c: 15.0 for c in range(101, 121)}, {103: 60.0, 107: 1.0, 130: 9.0}):
+        new = lr.store_times(6.0, manual, row)
+        with monkeypatch.context() as m:
+            m.setattr(lr, 'STORE_MIN_OBS', 5)
+            old = lr.store_times(6.0, manual, row)
+        assert set(new) == set(old) | {102, 103, 104}
+        assert {c for c in new if new[c] != old.get(c)} == {102, 103, 104}, manual
+
+
+def _two_visits(cid, minutes, tonnes=0.5):
+    """Визиты магазина в обучении (с 10-го дня до отложенной недели), по одному на день."""
+    start = TODAY - timedelta(days=lr.HOLDOUT_DAYS + 10)
+    return [lr.UnloadObs(d, 1, tonnes, m, (cid,)) for d, m in zip(_days(len(minutes), start=start), minutes)]
+
+
+def test_fit_unload_learns_from_second_visit_with_weight_two_sevenths():
+    """Своё время 25 мин. 201 — один визит в обучении: не в счёт (введённое, нет — норма). 202 — два: в строке, вес
+    факта ровно 2/7 — введено 60 → (2·25 + 5·60) / 7 = 50, без введённого → (2·25 + 5·a) / 7; строка на день прогона
+    (store_offsets) — та же смесь."""
+    obs = _exact_obs() + _two_visits(201, [25 + 12 * 0.5]) + _two_visits(202, [25 + 12 * 0.5] * 2)
+    cur = lambda x: 8 * x.n + 6 * x.tonnes   # noqa: E731
+    for manual in ({}, {201: 60.0, 202: 60.0}):
+        p = lr.fit_unload(obs, cur, TODAY, manual).params
+        a = p['per_stop_min']
+        times = lr.store_times(a, manual, p)
+        n, fact = p['store_stats']['202']
+        prior = manual.get(202, a)
+        assert n == 2 and fact == pytest.approx(25, abs=0.1) and times[202][1] == 'learned'
+        assert (a + times[202][0] - prior) / (fact - prior) == pytest.approx(2 / 7, abs=0.003)
+        assert p['store_offsets']['202'] == times[202][0] and '201' not in p['store_offsets']
+        if manual:
+            assert a + times[202][0] == pytest.approx(50.0, abs=0.06)
+            assert p['store_stats']['201'][0] == 1 and times[201] == (60.0 - a, 'manual')
+        else:
+            assert '201' not in p['store_stats'] and 201 not in times                  # норма
+
+
+def test_fit_unload_stores_from_5_visits_same_as_before(monkeypatch):
+    """Порог 2 вместо 5 не трогает магазины с ≥ 5 визитами: те же a, b, store_stats и поправки; в строку добавляются
+    только магазины с 2–4 визитами. У магазина с введённым временем store_stats были и при пороге 5 (203, 3 визита) —
+    теперь и старая строка смешивает его с фактом, ровно как новая."""
+    start = TODAY - timedelta(days=lr.HOLDOUT_DAYS + 20)
+    obs = _exact_obs({101: 10.0, 102: -1.0})
+    for k, cid in enumerate((201, 202, 203, 204), start=1):                           # k визитов, своё время 4 + 3k
+        obs += [lr.UnloadObs(d, 1, 0.5, 4 + 3 * k + 12 * 0.5, (cid,)) for d in _days(k, start=start)]
+    manual = {101: 30.0, 203: 20.0}
+    cur = lambda x: 8 * x.n + 6 * x.tonnes   # noqa: E731
+    new = lr.fit_unload(obs, cur, TODAY, manual).params
+    with monkeypatch.context() as m:
+        m.setattr(lr, 'STORE_MIN_OBS', 5)
+        old = lr.fit_unload(obs, cur, TODAY, manual).params
+    many = {c for c, (n, _) in new['store_stats'].items() if n >= 5}
+    assert many == {str(c) for c in range(100, 106)}
+    assert (new['per_stop_min'], new['per_tonne_min']) == (old['per_stop_min'], old['per_tonne_min'])
+    assert {c: v for c, v in new['store_stats'].items() if c in many} == \
+        {c: v for c, v in old['store_stats'].items() if c in many}
+    assert {c: v for c, v in new['store_offsets'].items() if c in many} == \
+        {c: v for c, v in old['store_offsets'].items() if c in many}
+    assert set(new['store_stats']) - set(old['store_stats']) == {'202', '204'}         # 201 — один визит
+    assert old['store_stats']['203'] == new['store_stats']['203'] and '203' not in old['store_offsets']
+    a = new['per_stop_min']
+    assert lr.store_times(a, manual, old)[203] == lr.store_times(a, manual, new)[203]
+    assert lr.store_times(a, manual, new)[203][1] == 'learned'
+
+
+@pytest.mark.parametrize('prior', [12.0, None])
+def test_fit_unload_two_visits_extreme_in_cap_moves_time_by_seventh(prior):
+    """Два визита, один — крайний, но в пределах отсечения (≤ 3 × действующей нормы и ≤ 90 мин): медиана двух — их
+    середина, смесь даёт факту 2/7, значит крайний визит сдвигает время магазина от опоры не больше чем на 1/7 своего
+    отрыва. Чуть дольше отсечения — визит выброшен, остаётся один: время не меняется вовсе."""
+    manual = {} if prior is None else {205: prior}
+    plain = lambda o: 8 * o.n + 6 * o.tonnes   # noqa: E731
+    ext = lr.store_extras(8.0, manual, None)
+    cur = lambda o: plain(o) + math.fsum(ext.get(c, 0.0) for c in o.customers)   # noqa: E731
+    cap = lr.UNLOAD_CAP_REL * cur(lr.UnloadObs(TODAY, 1, 0.5, 0.0, (205,)))   # действующая норма не меньше общей
+    assert cap <= lr.UNLOAD_MAX_MIN
+    normal = (prior or 4.0) + 12 * 0.5                     # обычный визит — ровно опора (без введённого — a = 4)
+    p = lr.fit_unload(_exact_obs() + _two_visits(205, [normal, cap - 1.0]), cur, TODAY, manual, plain).params
+    a, b = p['per_stop_min'], p['per_tonne_min']
+    base = prior or a
+    extreme = cap - 1.0 - b * 0.5                          # постоянная часть крайнего визита
+    n, fact = p['store_stats']['205']
+    extra, src = lr.store_times(a, manual, p)[205]
+    swing = a + extra - base
+    assert (n, src) == (2, 'learned') and extreme - base > 20
+    assert swing == pytest.approx(2 / 7 * (fact - base), abs=0.07)
+    assert 0 < swing <= (extreme - base) / 7 + 0.07
+    out = lr.fit_unload(_exact_obs() + _two_visits(205, [normal, cap + 1.0]), cur, TODAY, manual, plain).params
+    assert out['store_stats'].get('205', [1])[0] == 1
+    assert a + lr.store_extras(a, manual, out).get(205, 0.0) == pytest.approx(base, abs=0.06)
+
+
+def test_page_and_hint_follow_second_visit_threshold(client, monkeypatch):
+    """Страница обучения и подсказка «Условий магазина» — тот же порог, что расчёт: 1 визит — «пока мало» (введённое
+    или норма), 2 — уже по факту: (2·41 + 5·6) / 7 = 16."""
+    state = _learning_client(client, monkeypatch)
+    state.store.save_customer_constraints(101, None, None, 'qa', 20)
+    state.store.save_learned('2026-09-02', [lr.Outcome('unload', '', True, 'да', {
+        'per_stop_min': 6.0, 'per_tonne_min': 10.0, 'store_offsets': {'102': 10.0},
+        'store_stats': {'101': [1, 41.0], '102': [2, 41.0]}})])
+    stores = next(s for s in client.get('/api/routes/learning/status').get_json()['status']
+                  if s['kind'] == 'unload')['stores']
+    rows = {r['customer_id']: r for r in stores['rows']}
+    assert stores['min_visits'] == 2
+    assert (rows[101]['visits'], rows[101]['in_calc_min'], rows[101]['source']) == (1, 20.0, 'manual')
+    assert (rows[102]['visits'], rows[102]['in_calc_min'], rows[102]['source']) == (2, 16.0, 'learned')
+    hint = {c['customer_id']: c for c in client.get('/api/routes/customer-vehicles?q=C10').get_json()['customers']}
+    assert (hint[101]['unload_visits'], hint[101]['unload_auto_min']) == (None, 6.0)
+    assert (hint[102]['unload_visits'], hint[102]['unload_auto_min']) == (2, 16.0)
+    html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
+    assert f'id="lrStoresMin">{lr.STORE_MIN_OBS}</span>' in html and 'Со второй разгрузки' in html
+    assert 'не меньше 5 раз' not in html

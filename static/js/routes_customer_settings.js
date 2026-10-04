@@ -33,11 +33,14 @@
     const unloads = n => n + ' ' + (n % 10 === 1 && n % 100 !== 11 ? 'разгрузка'
         : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'разгрузки' : 'разгрузок');
     // Подсказка — как посчитает «Развоз»: пустое поле — обычное время или своё время магазина по факту
-    // (unload_auto_min); есть разгрузки по GPS (unload_visits) — введённое смешается с фактом.
+    // (unload_auto_min); есть разгрузки по GPS (unload_visits) — введённое смешается с фактом. «По факту» — только если
+    // время отличается от нормы на точку больше, чем на округление: сервер шлёт его до десятых, норма обучения — до
+    // сотых, разница — целые сотые, до 5 сотых — округление (8,37 → 8,4; 8,75 → 8,8), своё время по факту — от 0,5 мин.
     function unloadHint(item) {
         const perTonne = norms ? minutes(norms.per_tonne_min) + ' мин на тонну' : 'минуты на тонну';
         const auto = item && item.unload_auto_min != null ? Number(item.unload_auto_min) : null;
-        const empty = auto !== null && norms && auto !== Number(norms.per_stop_min) ? minutes(auto) + ' мин — по факту'
+        const byFact = auto !== null && norms && Math.round(Math.abs(auto - Number(norms.per_stop_min)) * 100) > 5;
+        const empty = byFact ? minutes(auto) + ' мин — по факту'
             : norms ? 'обычные ' + minutes(norms.per_stop_min) + ' мин' : 'обычное время';
         const fact = item && item.unload_visits ? ' По GPS водителей у этого магазина уже ' + unloads(item.unload_visits)
             + ': введённое время программа смешает с фактом — чем больше разгрузок, тем ближе к факту.' : '';
