@@ -3,17 +3,19 @@
 
 Что учится (каждую ночь и по кнопке «Пересчитать»), из факта actuals.reconstruct по треку APK:
 - unload — разгрузка на точке = a·точек + b·тонн доставлено (+ поправка магазина) → TruckNorms.unload_min_per_stop /
-  unload_min_per_tonne (+ unload_extra по точке магазина). Из стоянки вычитается ожидание открытия окна приёма;
-  стоянка дольше UNLOAD_CAP_REL × действующей нормы (и её же без своего времени магазинов) — не разгрузка. Своё время
-  магазина (ответ владельца №50: постоянная часть его разгрузки — парковка, приёмка, документы — вместо a; время на
-  груз b·т — как у всех): введённое логистом (store.Bundle.unload_min, абсолютные минуты) действует в «Развозе»
-  всегда — и без выученных строк, и с выключенным автообучением; по факту — a + медиана остатков одиночных визитов
-  магазина (store_stats строки: визитов и минуты). От STORE_MIN_OBS (2-го) визита в расчёт идёт смесь (n·факт +
-  STORE_SHRINK·опора) / (n + STORE_SHRINK), опора — введённое на момент расчёта (нет — a строки, поправка стягивается
-  к 0): смесь считается при применении (store_times), изменённое или убранное введённое действует сразу. Меньше
-  визитов — введённое; у строк до №50 (без store_stats) и у битой записи — введённое, иначе поправка строки
-  (store_offsets — та же смесь на день прогона). Проверка и «действующая норма» для сравнения — та же store_times,
-  ровно то, что применится. Магазины в одной точке — среднее их поправок на каждую стоянку точки (unload_extra);
+  unload_min_per_tonne (+ unload_extra по точке магазина). Стоянка — от остановки у магазина до начала движения
+  (actuals, №60); из неё вычитается ожидание открытия окна приёма; стоянка дольше UNLOAD_CAP_REL × действующей нормы (и
+  её же без своего времени магазинов) — не разгрузка. Своё время магазина (ответ владельца №50: постоянная часть его
+  разгрузки — парковка, приёмка, документы — вместо a; время на груз b·т — как у всех): по факту — a + медиана остатков
+  одиночных визитов магазина (store_stats строки: визитов и минуты). Правило №60: пока у магазина меньше STORE_MIN_OBS
+  (2) визитов по GPS, действует введённое логистом (store.Bundle.unload_min, абсолютные минуты; в «Развозе» — всегда, и
+  без выученных строк, и с выключенным автообучением), нет введённого — a; со STORE_MIN_OBS — время по факту, без смеси
+  с введённым и нормой; ровно два визита, которые сильно расходятся (store_waits: больше STORE_SPLIT_MIN и больше
+  STORE_SPLIT_REL от большего), — ждём третий (ответ владельца «ждать 3-ю»), а пока — как без факта. Считается при
+  применении (store_times): изменённое или убранное введённое действует сразу. У строк до №50 (без store_stats) и у
+  битой записи — введённое, иначе поправка строки (store_offsets — время по факту на день прогона). Проверка и
+  «действующая норма» для сравнения — та же store_times, ровно то, что применится. Магазины в одной точке — среднее их
+  поправок на каждую стоянку точки (unload_extra);
 - loading — загрузка на складе = a + b·тонн рейса → TruckNorms.warehouse_load_fixed_min / warehouse_load_min_per_tonne.
   Стоянка на складе — не только загрузка (обед, бумаги, ожидание выезда под окно первой точки), поэтому: из неё
   вычитается только собственное ожидание плана — пересечение стоянки с [плановое возвращение предыдущего рейса,
@@ -91,6 +93,7 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 from . import actuals as ac
 from . import valhalla_engine
 from .frequency import fmt_decimal
+from .garage import KM_PER_DAY_MAX
 from .geo import Point, in_city
 from .measurements import _fit
 from .traffic_validation import TrafficProfile
@@ -123,8 +126,9 @@ TRUCK_TIME_TITLES = {'model': 'նախկին մոդել', 'valhalla': 'Valhalla'}
 # в причинах выбора модели — с артиклем; подлежащее стоит перед гласной («ավելի», «առնվազն») — артикль «-ն»
 TRUCK_TIME_DEF = {'model': 'նախկին մոդելը', 'valhalla': 'Valhalla-ն'}
 TRUCK_TIME_SUBJ = {'model': 'նախկին մոդելն', 'valhalla': 'Valhalla-ն'}
-STORE_MIN_OBS = 2                    # своё время магазина по факту — со 2-го одиночного визита (один — не в счёт)
-STORE_SHRINK = 5.0                   # и стягивается к опоре: (n·факт + 5·опора) / (n + 5) — у 2 визитов вес факта 2/7
+STORE_MIN_OBS = 2                    # своё время магазина по факту — со 2-го одиночного визита (один — не в счёт), №60;
+STORE_SPLIT_MIN = 5.0                # но ровно 2 визита, чьё время по факту разнится больше чем на 5 мин…
+STORE_SPLIT_REL = 0.30               # …и больше чем на 30% большего из двух, — ждём 3-й (ответ владельца)
 STORE_OFFSET_MAX = 120.0             # время магазина a + поправка — не больше 120 мин (как введённое)
 UNLOAD_MAX_MIN = 90.0                # стоянка у магазина дольше (после вычета ожидания окна) — не разгрузка
 UNLOAD_CAP_REL = 3.0                 # …или дольше 3 × действующей нормы
@@ -143,7 +147,7 @@ FUEL_MIN_INTERVALS = 16              # 12 на выбор формы (measuremen
 FUEL_MIN_KM = 50.0                   # интервал заправок короче — не считается
 FUEL_L100 = (3.0, 80.0)
 FUEL_TRACK_COVER = 0.6               # участки трека покрывают не меньше 60% км одометра интервала
-REFUEL_KM_PER_DAY = 1500.0           # как courier.events: прирост одометра больше — несогласован
+REFUEL_KM_PER_DAY = KM_PER_DAY_MAX   # как courier.events и журнал гаража: прирост одометра больше — несогласован
 REFUEL_WINDOW_DAYS = 400             # приём заправки: цепочка одометра — по заправкам ± 400 дней от неё…
 REFUEL_WINDOW_MAX = 300              # …и не больше 300 (время приёма ограничено); офис — ± 200 дней вокруг дня
 REFUEL_LOOKBACK = 50                 # в цепочке соседние заправки — не дальше 50 позиций (пропущено подряд ≤ 49 сомнительных)
@@ -379,11 +383,13 @@ def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], 
     своим временем магазинов, как в расчёте: store_extras), plain — она же без своего времени магазинов. Стоянки дольше
     UNLOAD_CAP_REL × max(current, plain) не учитываются ни в обучении, ни в проверке: отсечение не зависит от
     проверяемой нормы и не строже общей нормы — введённое меньше настоящего (5 мин при 25) визиты магазина не
-    выбрасывает, факт его поправит. Своё время магазина — store_stats: одиночных визитов и время по факту (a + медиана
+    выбрасывает, факт его заменит. Своё время магазина — store_stats: одиночных визитов и время по факту (a + медиана
     остатков, в пределах STORE_FACT_BOUNDS) у магазинов с ≥ STORE_MIN_OBS визитами или с введённым временем (manual:
-    клиент → мин, №50); в расчёт идёт смесь store_times с опорой — введённым на момент расчёта. store_offsets — та же
-    смесь на день прогона (для страницы и как запас: строки до №50, битая запись store_stats). Проверка — ровно то, что
-    применится: store_extras по параметрам строки и введённому."""
+    клиент → мин, №50; у них визиты видны на странице), у двух визитов — ещё их разброс (|разница| их времени по факту,
+    для store_waits); в расчёт идёт store_times — со STORE_MIN_OBS визитов время по факту, меньше или два сильно
+    расходящихся — введённое (№60). store_offsets — время по факту на день прогона (для страницы и как запас: строки до
+    №50, битая запись store_stats). Проверка — ровно то, что применится: store_extras по параметрам строки и
+    введённому."""
     manual = manual or {}
     cap = current if plain is None else (lambda o: max(current(o), plain(o)))
     train, test = _capped(obs, today, cap, UNLOAD_CAP_REL)
@@ -397,12 +403,12 @@ def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], 
         if o.n == 1 and len(o.customers) == 1:
             residuals.setdefault(o.customers[0], []).append(o.minutes - a - b * o.tonnes)
     lo, hi = STORE_FACT_BOUNDS
-    stats = {str(cid): [len(rs), round(max(lo, min(hi, a + median(rs))), 1)] for cid, rs in sorted(residuals.items())
-             if len(rs) >= STORE_MIN_OBS or cid in manual}
+    stats = {str(cid): [len(rs), round(max(lo, min(hi, a + median(rs))), 1)]
+             + ([round(abs(rs[0] - rs[1]), 1)] if len(rs) == 2 else [])
+             for cid, rs in sorted(residuals.items()) if len(rs) >= STORE_MIN_OBS or cid in manual}
     times = store_times(a, manual, {'store_stats': stats})
     params = {'per_stop_min': a, 'per_tonne_min': b,
-              'store_offsets': {str(c): e for c, (e, src) in times.items()
-                                if src == 'learned' and (abs(e) >= 0.5 or c in manual)},
+              'store_offsets': {str(c): e for c, (e, src) in times.items() if src == 'learned' and abs(e) >= 0.5},
               'store_stats': stats}
     extras = store_extras(a, manual, params)
 
@@ -843,38 +849,51 @@ def travel_profile(norms: Any, travel: Mapping[str, Any]) -> TrafficProfile:
     return TrafficProfile(factors, report)
 
 
-def store_stats(unload: Mapping[str, Any] | None) -> dict[int, tuple[int, float]]:
-    """store_stats строки → клиент → (одиночных визитов, своё время по факту, мин). Битая запись пропускается: у её
-    магазина — правило без факта (store_times), сама строка от неё не портится."""
+def _store_entries(unload: Mapping[str, Any] | None) -> dict[int, tuple[int, float, float | None]]:
+    """store_stats строки → клиент → (одиночных визитов, своё время по факту, мин; разброс двух визитов, мин, —
+    третий элемент записи, у строк до «ждать 3-ю» его нет: None). Битая запись пропускается: у её магазина — правило
+    без факта (store_times), сама строка от неё не портится."""
     raw = (unload or {}).get('store_stats')
-    out: dict[int, tuple[int, float]] = {}
+    out: dict[int, tuple[int, float, float | None]] = {}
     for c, v in raw.items() if isinstance(raw, Mapping) else ():
-        if (isinstance(c, str) and c.isdigit() and isinstance(v, (list, tuple)) and len(v) == 2
+        if (isinstance(c, str) and c.isdigit() and isinstance(v, (list, tuple)) and len(v) in (2, 3)
                 and isinstance(v[0], int) and not isinstance(v[0], bool) and v[0] >= 1
-                and _num(v[1], *STORE_FACT_BOUNDS)):
-            out[int(c)] = (v[0], float(v[1]))
+                and _num(v[1], *STORE_FACT_BOUNDS) and (len(v) == 2 or _num(v[2], 0.0, math.inf))):
+            out[int(c)] = (v[0], float(v[1]), float(v[2]) if len(v) == 3 else None)
     return out
+
+
+def store_stats(unload: Mapping[str, Any] | None) -> dict[int, tuple[int, float]]:
+    """store_stats строки → клиент → (одиночных визитов, своё время по факту, мин); битая запись пропускается."""
+    return {c: (n, fact) for c, (n, fact, _) in _store_entries(unload).items()}
+
+
+def store_waits(unload: Mapping[str, Any] | None) -> set[int]:
+    """Магазины, чьё время по GPS ждёт третьего визита (ответ владельца «ждать 3-ю»): ровно два визита, и их время по
+    факту (минуты − b·т) разнится больше чем на STORE_SPLIT_MIN и больше чем на STORE_SPLIT_REL от большего из двух
+    (= середина + разброс / 2). Запись без разброса (строка до этого правила) — как раньше: время по факту."""
+    return {c for c, (n, fact, spread) in _store_entries(unload).items() if n == 2 and spread is not None
+            and spread > STORE_SPLIT_MIN and spread > STORE_SPLIT_REL * (fact + spread / 2)}
 
 
 def store_times(per_stop: float, manual: Mapping[int, float],
                 unload: Mapping[str, Any] | None) -> dict[int, tuple[float, str]]:
     """Своё время магазинов в расчёте → клиент → (поправка к норме на точку per_stop, мин на визит; learned | manual), у
-    кого его нет — норма. per_stop — норма на точку в расчёте (действует строка unload — её per_stop_min). С фактом
-    (store_stats строки, ≥ STORE_MIN_OBS визитов) — смесь (n·факт + STORE_SHRINK·опора) / (n + STORE_SHRINK), опора —
-    введённое сейчас (manual: клиент → абсолютные минуты), нет — per_stop; время магазина не больше STORE_OFFSET_MAX
-    само собой (факт ≤ UNLOAD_MAX_MIN, введённое и норма ≤ 120), поправка — до 0,1 мин, у магазина без введённого
-    меньше 0,5 мин — ноль (как не хранили строки до №50). Без факта (строка до №50, мало визитов, битая запись):
-    введённое (manual − per_stop), иначе поправка строки (store_offsets). Разгрузка не бывает отрицательной: поправка не
-    меньше −per_stop (время магазина не меньше 0)."""
-    stats = store_stats(unload)
+    кого его нет — норма. per_stop — норма на точку в расчёте (действует строка unload — её per_stop_min). Правило №60:
+    с фактом (store_stats строки, ≥ STORE_MIN_OBS визитов; два сильно расходящихся — store_waits — ещё не факт) — время
+    по факту, без смеси с введённым (manual: клиент → абсолютные минуты) и нормой; время магазина не больше
+    STORE_OFFSET_MAX само собой (факт ≤ UNLOAD_MAX_MIN), поправка — до 0,1 мин, меньше 0,5 мин — ноль (как не хранили
+    строки до №50). Без факта (мало визитов, два расходятся, строка до №50, битая запись): введённое (manual −
+    per_stop), иначе поправка строки (store_offsets). Разгрузка не бывает отрицательной: поправка не меньше −per_stop
+    (время магазина не меньше 0)."""
+    stats, waits = store_stats(unload), store_waits(unload)
     offsets = {int(c): float(v) for c, v in ((unload or {}).get('store_offsets') or {}).items()}
     out: dict[int, tuple[float, str]] = {}
     for c in sorted(set(manual) | set(offsets) | set(stats)):
         n, fact = stats.get(c, (0, 0.0))
-        if n >= STORE_MIN_OBS:
-            fixed = (n * fact + STORE_SHRINK * float(manual.get(c, per_stop))) / (n + STORE_SHRINK)
-            extra = round(fixed - per_stop, 1)
-            out[c] = (0.0 if c not in manual and abs(extra) < 0.5 else extra, 'learned')
+        if n >= STORE_MIN_OBS and c not in waits:
+            extra = round(fact - per_stop, 1)
+            out[c] = (0.0 if abs(extra) < 0.5 else extra, 'learned')
         elif c in manual:
             out[c] = (float(manual[c]) - per_stop, 'manual')
         elif c in offsets:

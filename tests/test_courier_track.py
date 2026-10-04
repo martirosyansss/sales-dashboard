@@ -438,7 +438,11 @@ def test_track_payload_between_20k_and_40k_accepted_above_40k_rejected(cs):
     assert 'մեծ' in ev.ingest(cs, who, [other]).json()['rejected'][0]['message']   # прочим типам — прежние 20 000
 
 
-def test_m3_office_gps_km_ignores_jitter_at_stops():
+@pytest.mark.parametrize('jitter, spd', [(6e-4, 0.0), (2.6e-4, None)])
+def test_m3_office_gps_km_ignores_jitter_at_stops(jitter, spd):
+    """Дрожание у магазина км не добавляет: терминал шлёт скорость 0 — при ±60 м; без скорости — в пределах дрожания
+    стоя (±29 м: до 73 м между точками, actuals.STAND_JITTER_M — 75 м). Без скорости дрожание больше — уже движение
+    (№60), и стоянку у точки дня оно не спасает."""
     import random
     from route_optimizer.geo import haversine_km
     rnd = random.Random(1)
@@ -448,14 +452,13 @@ def test_m3_office_gps_km_ignores_jitter_at_stops():
     for i in range(41):                                                    # 40 × ≈ 111 м к магазину, 5 м/с
         pts.append((int(t.timestamp() * 1000), 40.20 - (40 - i) * 0.001, 44.52, 5.0, 5.0))
         t += timedelta(seconds=22)
-    for _ in range(30):                                                    # 30 мин у магазина, дрожание ±60 м
+    for _ in range(30):                                                    # 30 мин у магазина
         t += timedelta(seconds=60)
-        pts.append((int(t.timestamp() * 1000), shop[0] + rnd.uniform(-6e-4, 6e-4), shop[1] + rnd.uniform(-6e-4, 6e-4),
-                    8.0, None))
+        pts.append((int(t.timestamp() * 1000), shop[0] + rnd.uniform(-jitter, jitter),
+                    shop[1] + rnd.uniform(-jitter, jitter), 8.0, spd))
     path = haversine_km((40.16, 44.52), shop)
-    plain = gps_summary(pts)
     with_stop = gps_summary(pts, [{'stop_id': 'S:1', 'lat': shop[0], 'lon': shop[1]}])
-    assert plain['km'] > path * 1.3 and with_stop['km'] == pytest.approx(path, abs=0.15)
+    assert with_stop['km'] == pytest.approx(path, abs=0.15)
 
 
 def test_m3_office_today_km_ignores_jitter_at_day_stop(st, client, now):
@@ -476,16 +479,16 @@ def test_m3_office_today_km_ignores_jitter_at_day_stop(st, client, now):
     for i in range(41):                                                 # 4,4 км к магазину, 5 м/с
         pts.append({'at': clock.iso(t), 'lat': 40.16 + i * 0.001, 'lon': 44.52, 'acc': 5.0, 'spd': 5.0, 'brg': 0.0})
         t += timedelta(seconds=22)
-    for _ in range(30):                                                 # 30 мин у магазина, ±60 м, скорости нет
+    for _ in range(30):                                                 # 30 мин у магазина, ±29 м, скорости нет
         t += timedelta(seconds=60)
-        pts.append({'at': clock.iso(t), 'lat': shop[0] + rnd.uniform(-6e-4, 6e-4), 'lon': shop[1] + rnd.uniform(-6e-4, 6e-4),
-                    'acc': 8.0, 'spd': None, 'brg': None})
+        pts.append({'at': clock.iso(t), 'lat': shop[0] + rnd.uniform(-2.6e-4, 2.6e-4),
+                    'lon': shop[1] + rnd.uniform(-2.6e-4, 2.6e-4), 'acc': 8.0, 'spd': None, 'brg': None})
     evs = [{'id': _id(), 'type': 'track', 'stop_id': None, 'date': DAY, 'at': pts[min(k * 100 + 99, len(pts) - 1)]['at'],
             'payload': {'points': pts[k * 100:(k + 1) * 100]}} for k in range((len(pts) + 99) // 100)]
     assert ev.ingest(st.store, who, evs).json()['rejected'] == []
     car = next(c for c in client.get(f'/api/courier/admin/today?date={DAY}').get_json()['cars'] if c['car_code'] == 'CAR1')
     path = haversine_km((40.16, 44.52), shop)
-    assert abs(car['gps']['km'] - path) < 0.15 and gps_summary(st.store.track('CAR1', DAY))['km'] > path * 1.3
+    assert abs(car['gps']['km'] - path) < 0.15
 
 
 # ============================== верификация, раунд 2: окно флага одометра в офисе ==============================

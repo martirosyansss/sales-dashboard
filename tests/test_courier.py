@@ -969,10 +969,11 @@ def dashboard(tmp_path, monkeypatch):
 def test_public_host_guard(dashboard):
     client, state = dashboard
     public = {'Host': 'araqich.orix.am'}
-    for path in ('/', '/login', '/routes', '/courier', '/api/customers', '/static/css/courier.css', '/favicon.ico'):
+    # вход и журнал гаража снаружи (№53) — tests/test_garage_public.py; всё остальное закрыто
+    for path in ('/', '/settings', '/routes', '/courier', '/api/customers', '/static/css/courier.css', '/static/favicon.ico'):
         assert client.get(path, headers=public).status_code == 404, path
-    assert client.get('/login', headers={'Host': '192.168.1.10:5000', 'Cf-Connecting-Ip': '1.2.3.4'}).status_code == 404
-    assert client.get('/login', headers={'Host': 'ARAQICH.ORIX.AM:443'}).status_code == 404
+    assert client.get('/courier', headers={'Host': '192.168.1.10:5000', 'Cf-Connecting-Ip': '1.2.3.4'}).status_code == 404
+    assert client.get('/courier', headers={'Host': 'ARAQICH.ORIX.AM:443'}).status_code == 404
     # API терминалов снаружи открыт — но только с токеном
     r = client.get('/api/courier/v1/ping', headers=public)
     assert r.status_code == 401 and r.get_json()['error'] == 'unauthorized'
@@ -1435,7 +1436,7 @@ def test_role_user_blocked_from_courier_office(dashboard, monkeypatch):
     monkeypatch.setattr(app_v2, 'load_users', lambda: users)
     lan = {}   # localhost: внутренняя сеть (cookie сессии теста — на localhost)
     with client.session_transaction() as sess:
-        sess['username'] = 'u'
+        app_v2._stamp_session(sess, 'u', users['u'])
     r = client.get('/courier', headers=lan)
     assert r.status_code in (302, 403) and '/courier' not in r.headers.get('Location', '')
     for path in ('/api/courier/admin/today', '/api/courier/admin/drivers', '/api/courier/admin/money',
@@ -1443,7 +1444,7 @@ def test_role_user_blocked_from_courier_office(dashboard, monkeypatch):
         assert client.get(path, headers=lan).status_code == 403, path
     assert client.post('/api/courier/admin/drivers', json={'name': 'x', 'pin': '1234'}, headers=lan).status_code == 403
     with client.session_transaction() as sess:
-        sess['username'] = 'boss'
+        app_v2._stamp_session(sess, 'boss', users['boss'])
     assert client.get('/api/courier/admin/drivers', headers=lan).status_code == 200
 
 

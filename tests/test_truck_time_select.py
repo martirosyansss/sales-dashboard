@@ -782,6 +782,6 @@ def test_learning_page_shows_truck_time_model(client, fake, tmp_path, monkeypatc
     from flask import render_template
     with app_v2.app.test_request_context('/routes/learning'):
         html = render_template('routes_learning.html')
-    assert 'Բեռնատարների ճանապարհի ժամանակը՝ մոդել' in html and 'id="lrTtRows"' in html and 'routes_learning.js?v=10' in html
+    assert 'Բեռնատարների ճանապարհի ժամանակը՝ մոդել' in html and 'id="lrTtRows"' in html and 'routes_learning.js?v=11' in html
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
     assert 'renderTruckTime' in js and "esc(last ? 'Համեմատություն դեռ չկա՝ ' + last.reason" in js

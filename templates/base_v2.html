@@ -204,7 +204,7 @@
                             <li>
                                 <span class="dropdown-item-text small text-muted">
                                     {% if is_admin %}<i class="fas fa-user-shield me-1"></i> Администратор
-                                    {% elif is_garage %}<i class="fas fa-wrench me-1"></i> Ավտոտնակ — վերանորոգման և վազքի մատյան
+                                    {% elif is_garage %}<i class="fas fa-wrench me-1"></i> Ավտոտնակ — վերանորոգման և վազքի գրառումներ
                                     {% else %}<i class="fas fa-map-marker-alt me-1"></i> Территории: {{ (current_user.areas | join(', ')) if current_user and current_user.areas else '—' }}
                                     {% endif %}
                                 </span>

@@ -879,6 +879,7 @@
                             </label>
                             <input type="password" class="form-control" x-model="userForm.password"
                                    autocomplete="new-password" placeholder="Пароль">
+                            <div class="form-text" x-show="userForm.role === 'garage'">Для роли «Гараж» — не короче 10 символов (вход из интернета).</div>
                         </div>
                         <div class="col-12" x-show="userForm.role === 'user'">
                             <label class="form-label d-flex justify-content-between align-items-center">
