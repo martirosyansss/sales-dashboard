@@ -248,10 +248,18 @@ def test_m2_unload_obs_subtracts_window_wait_and_caps():
 
 # ============================== M3: дрожание GPS на месте ==============================
 
-@pytest.mark.parametrize('jitter', [60.0, 80.0])
-def test_m3_standstill_jitter_adds_no_km(jitter):
-    clean = ac.reconstruct(_two_trips().fixes, _stops(), DEPOT)
-    noisy = ac.reconstruct(_two_trips(jitter=jitter).fixes, _stops(), DEPOT)
+@pytest.mark.parametrize('jitter, speed', [(60.0, True), (80.0, True), (20.0, False)])
+def test_m3_standstill_jitter_adds_no_km(jitter, speed):
+    """Дрожание GPS стоя км не добавляет и стоянки не рвёт: терминал шлёт скорость 0 — при любом дрожании (±60–80 м);
+    без скорости — пока смещение за шаг не больше дрожания стоя (actuals.STAND_JITTER_M; у пилота — до 67 м), а
+    больше — уже движение (№60)."""
+    plain = _two_trips().fixes
+    clean = ac.reconstruct(plain, _stops(), DEPOT)
+    fixes = _two_trips(jitter=jitter).fixes
+    if speed:                            # стоя — 0, в пути — 30 км/ч (моменты у обоих треков одни и те же)
+        fixes = [ac.TrackFix(n.at, n.lat, n.lon, n.accuracy, 30 / 3.6 if k and c.point != plain[k - 1].point else 0.0)
+                 for k, (c, n) in enumerate(zip(plain, fixes))]
+    noisy = ac.reconstruct(fixes, _stops(), DEPOT)
     assert [v.keys for v in noisy.visits] == [('A',), ('B',), ('C',)]
     assert noisy.km_gps == pytest.approx(clean.km_gps, rel=0.03)
     assert sum(t.km_gps for t in noisy.trips) == pytest.approx(clean.km_gps, rel=0.03)

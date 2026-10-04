@@ -12,16 +12,18 @@
   заезд к соседнему магазину остаётся визитом). Склад — стоянка ≥ MIN_DWELL в его зоне: от первой до последней точки;
 - магазин (ответ владельца №60) — от момента, когда машина остановилась в его зоне, до момента, когда начала движение:
   остановка — подряд идущие точки, между которыми машина стояла (_still: скорость терминала ниже STOP_MS, как режим
-  «стоит» APK; без скорости — шаг от STAND_STEP_S или смещение медленнее STOP_MS); прибытие — первая точка остановки,
-  отъезд — первая точка движения минус путь до неё по её скорости (в промежутке после последней точки остановки: стоя
-  терминал пишет раз в 60 с; промежуток дольше LEAVE_GAP — дыра в треке, отъезд — последняя точка). Подъезд, поиск
-  места и отъезд в зоне — уже езда (участок, км); проезд и пробка без остановки ≥ MIN_DWELL — не визит; остановка
-  только за краем зоны — не у магазина. Перестановка машины (снова стоит не позже JITTER_BREAK и не дальше
-  REPOSITION_M; у магазина, который в своём месте один, — и дальше, если обе остановки ≥ MIN_DWELL: ждал у ворот,
-  разгружался во дворе) стоянку не прерывает — это ещё обслуживание магазина, так читается «до начала движения»;
-  иначе — новая стоянка (короткая остановка поодаль — не у магазина);
+  «стоит» APK; без скорости — смещение медленнее STOP_MS и не дальше STAND_JITTER_M); прибытие — первая точка
+  остановки, отъезд — первая точка движения минус путь до неё по её скорости (в промежутке после последней точки
+  остановки: стоя терминал пишет раз в 60 с; промежуток дольше JITTER_BREAK — дыра в треке, отъезд — последняя точка).
+  Подъезд, поиск места и отъезд в зоне — уже езда (участок, км). Остановки не позже JITTER_BREAK и не дальше
+  REPOSITION_M одна от другой — одна стоянка (переставил машину; скорость мигнула — терминал 2 мин пишет раз в 15 с и
+  рвёт остановку); у магазина, который в своём месте один, — и дальше, если стоянки по обе стороны ≥ MIN_DWELL (ждал у
+  ворот, разгружался во дворе): это ещё обслуживание магазина, так читается «до начала движения». Визит — если машина
+  простояла в сумме ≥ MIN_DWELL: проезд и пробка без остановки — не визит; остановка только за краем зоны — не у
+  магазина;
 - точки плана ближе STOP_RADIUS_M друг к другу — одно «место». Стоянка там относится к точкам по отметке доставки
-  водителя (момент `delivery` в пределах стоянки ± DELIVERY_SLACK); без отметок — к ближайшей точке, если середина
+  водителя (момент `delivery` в пределах стоянки ± DELIVERY_SLACK; несколько таких стоянок — у этой точки, затем
+  ближайшая по времени: водитель отметил доставки места разом); без отметок — к ближайшей точке, если середина
   стоянки ближе к ней, чем половина расстояния до соседней точки места, иначе — ко всем точкам места в STOP_RADIUS_M
   (общая разгрузка). «Обслуживающий» визит точки — стоянка её доставки, без доставки — первый визит; остальные
   заезды к точке — repeat (в обучение разгрузки не идут). Стоянка ≥ OTHER_DWELL в OTHER_RADIUS_M вне склада и точек
@@ -31,7 +33,8 @@
   Груз рейса — вес накладных точек, обслуженных в рейсе, и точек без стоянки по GPS (доставка отмечена во время
   рейса или место точки в плане — между обслуженными точками рейса);
 - участок — от отъезда с одной стоянки плана (или склада) до прибытия на следующую в том же рейсе; «чистый»
-  (годится для обучения скорости) — без стоянки не по плану и без дыры в треке длиннее LEG_GAP;
+  (годится для обучения скорости) — без стоянки не по плану, без ≥ MIN_DWELL остановок в зонах магазинов, не ставших
+  стоянкой (пробка у магазина, остановка за краем зоны), и без дыры в треке длиннее LEG_GAP;
 - км — geo.track_km по точкам движения: стоянка — одна точка (её середина), точки вне стоянок со скоростью
   терминала ниже STILL_MS — тоже стоянка (дрожание GPS на месте км не добавляет);
 - опоздание — прибытие обслуживающего визита позже конца окна приёма (минуты от полуночи рабочего дня: после
@@ -65,9 +68,8 @@ OTHER_RADIUS_M = 50.0                # …на месте в 50 м
 STILL_MS = 0.5                       # скорость терминала ниже, м/с, — машина стоит
 STOP_MS = 1.0                        # стоянка у магазина (№60): машина стоит — скорость ниже 1 м/с (режим «стоит» APK);
 MOVE_STEP_S = 15.0                   # без скорости — смещение медленнее 1 м/с за max(шаг, 15 с) (шаг APK в пути)…
-STAND_STEP_S = 45.0                  # …или шаг от 45 с: терминал уже пишет «стоя» (раз в 60 с)
-LEAVE_GAP = timedelta(minutes=2)     # отъезд — в обычном шаге «стоя» (APK — 60 с, у пилота — до 115 с); дольше — дыра
-REPOSITION_M = 50.0                  # место из нескольких магазинов: снова встал дальше 50 м — стоянка у другого
+STAND_JITTER_M = 75.0                # …и не больше 75 м (дрожание GPS стоя: у пилота — до 67 м за шаг 81–115 с)
+REPOSITION_M = 50.0                  # снова встал не дальше 50 м (не позже JITTER_BREAK) — та же стоянка
 DELIVERY_SLACK = timedelta(minutes=10)   # отметка доставки — в пределах стоянки ± 10 мин
 DEPOT = 'depot'
 
@@ -287,24 +289,24 @@ def _center(seg: Sequence[Fix]) -> Point:
 
 def _still(f: Fix, g: Fix) -> bool:
     """Машина стояла между соседними точками трека f и g: скорость терминала у обеих ниже STOP_MS. У точки без скорости
-    — по шагу и смещению: шаг от STAND_STEP_S — терминал уже пишет «стоя» (раз в 60 с), дрожание GPS в таком шаге (у
-    пилотного терминала на складе — до ±70 м при скорости 0) не движение; шаг короче — смещение медленнее STOP_MS за
-    max(шаг, MOVE_STEP_S) (за шаг 15 с — до 15 м)."""
+    — та же скорость по смещению: медленнее STOP_MS за max(шаг, MOVE_STEP_S) (за шаг 15 с — до 15 м: дрожание GPS на
+    коротком шаге) и не дальше STAND_JITTER_M (больше дрожание стоя не бывает: у пилотного терминала — до 67 м)."""
     speeds = (getattr(f, 'spd', None), getattr(g, 'spd', None))
     if any(s is not None and s >= STOP_MS for s in speeds):
         return False
     if None not in speeds:
         return True
-    dt = (g.at - f.at).total_seconds()
-    return dt >= STAND_STEP_S or _m(f.point, g.point) < STOP_MS * max(dt, MOVE_STEP_S)
+    d = _m(f.point, g.point)
+    return d < STOP_MS * max((g.at - f.at).total_seconds(), MOVE_STEP_S) and d <= STAND_JITTER_M
 
 
 def _leave(pts: Sequence[Fix], j: int) -> datetime:
     """Начало движения после последней точки стоянки j: первая точка движения j + 1 минус путь до неё по её скорости
     (скорость терминала; без неё — скорость следующего перегона), в промежутке [j, j + 1] (на стоянке терминал пишет раз
-    в 60 с — отъезд где-то между). Промежуток дольше LEAVE_GAP (дыра в треке: отъезд не виден), скорость неизвестна или
-    ниже STOP_MS (трек кончился; следующая точка — стоя, но уже вне зоны) — момент последней точки стоянки."""
-    if j + 1 >= len(pts) or pts[j + 1].at - pts[j].at > LEAVE_GAP:
+    в 60 с, у пилота — до 115 с: отъезд где-то между). Промежуток дольше JITTER_BREAK (дыра в треке: отъезд не виден),
+    скорость неизвестна или ниже STOP_MS (трек кончился; следующая точка — стоя, но уже вне зоны) — момент последней
+    точки стоянки."""
+    if j + 1 >= len(pts) or pts[j + 1].at - pts[j].at > JITTER_BREAK:
         return pts[j].at
     f, g = pts[j], pts[j + 1]
     v = getattr(g, 'spd', None)
@@ -318,15 +320,17 @@ def _leave(pts: Sequence[Fix], j: int) -> datetime:
 
 
 def _site_stays(pts: Sequence[Fix], labels: Sequence[int | None], lab: int, a: int, b: int,
-                shared: bool) -> list[tuple[int, int, datetime]]:
-    """Стоянки у магазина в отрезке a…b зоны места lab (№60) → [(первая точка, последняя точка, отъезд)]: от остановки
-    до начала движения. Остановка — подряд идущие точки, между которыми машина стояла (_still), хоть одна — в зоне
-    (остановка за краем зоны, к которой отрезок пришёл через выход до JITTER_BREAK, — не у магазина): прибытие — первая
-    из них, отъезд — _leave после последней. Следующая остановка не позже JITTER_BREAK и не дальше REPOSITION_M от
-    прежней (середины точек) — та же стоянка: машину переставили — это ещё обслуживание магазина. Дальше — та же, только
-    если магазин в своём месте один (не shared) и обе остановки ≥ MIN_DWELL (ждал у ворот, потом разгружался во дворе);
-    короткая остановка поодаль (постоял в пробке на углу) — уже не магазин, в месте из нескольких магазинов — стоянка у
-    соседнего. Стоянка — только с остановкой ≥ MIN_DWELL: проезд мимо и пробка без такой остановки — не визит."""
+                shared: bool) -> tuple[list[tuple[int, int, datetime]], list[tuple[datetime, datetime]]]:
+    """Стоянки у магазина в отрезке a…b зоны места lab (№60) → ([(первая точка, последняя точка, отъезд)], остановки
+    не у магазина [(начало, конец)] — для чистоты участков). Остановка — подряд идущие точки, между которыми машина
+    стояла (_still), хоть одна — в зоне (остановка за краем зоны, к которой отрезок пришёл через выход до JITTER_BREAK,
+    — не у магазина). Остановки не позже JITTER_BREAK и не дальше REPOSITION_M одна от другой (середины точек) — одна
+    стоянка: машину переставили, скорость мигнула (после неё терминал 2 мин пишет раз в 15 с и рвёт остановку) — это ещё
+    обслуживание магазина. У магазина, который в своём месте один (не shared), и дальше — если стоянки по обе стороны
+    ≥ MIN_DWELL (ждал у ворот, потом разгружался во дворе); короткая остановка поодаль (постоял в пробке на углу) — не
+    магазин, в месте из нескольких магазинов — стоянка у соседнего. Стоянка — если стояла в сумме ≥ MIN_DWELL: проезд
+    мимо и пробка без такой остановки — не визит. Прибытие — первая точка первой остановки, отъезд — _leave после
+    последней."""
     stops: list[list[int]] = []
     for k in range(a, b):
         if not _still(pts[k], pts[k + 1]):
@@ -335,18 +339,30 @@ def _site_stays(pts: Sequence[Fix], labels: Sequence[int | None], lab: int, a: i
             stops[-1][1] = k + 1
         else:
             stops.append([k, k + 1])
-    stops = [s for s in stops if lab in labels[s[0]:s[1] + 1]]
+    idle = [s for s in stops if lab not in labels[s[0]:s[1] + 1]]
+
+    def stood(g: Sequence[Sequence[int]]) -> timedelta:
+        return sum((pts[j].at - pts[i].at for i, j in g), timedelta(0))
     groups: list[list[list[int]]] = []
-    for s in stops:
+    for s in (s for s in stops if s not in idle):
         p = groups[-1][-1] if groups else None
-        if p is not None and pts[s[0]].at - pts[p[1]].at <= JITTER_BREAK and (
-                _m(_center(pts[p[0]:p[1] + 1]), _center(pts[s[0]:s[1] + 1])) <= REPOSITION_M
-                or (not shared and min(pts[x[1]].at - pts[x[0]].at for x in (p, s)) >= MIN_DWELL)):
+        if p is not None and (pts[s[0]].at - pts[p[1]].at <= JITTER_BREAK
+                              and _m(_center(pts[p[0]:p[1] + 1]), _center(pts[s[0]:s[1] + 1])) <= REPOSITION_M):
             groups[-1].append(s)
         else:
             groups.append([s])
-    return [(g[0][0], g[-1][1], _leave(pts, g[-1][1])) for g in groups
-            if any(pts[j].at - pts[i].at >= MIN_DWELL for i, j in g)]
+    if not shared:
+        merged: list[list[list[int]]] = []
+        for g in groups:
+            if merged and (pts[g[0][0]].at - pts[merged[-1][-1][1]].at <= JITTER_BREAK
+                           and min(stood(merged[-1]), stood(g)) >= MIN_DWELL):
+                merged[-1] += g
+            else:
+                merged.append(g)
+        groups = merged
+    idle += [s for g in groups if stood(g) < MIN_DWELL for s in g]
+    return ([(g[0][0], g[-1][1], _leave(pts, g[-1][1])) for g in groups if stood(g) >= MIN_DWELL],
+            [(pts[i].at, pts[j].at) for i, j in idle])
 
 
 def _nearest_keys(site: Sequence[PlanStop], center: Point) -> tuple[str, ...]:
@@ -365,18 +381,21 @@ def _nearest_keys(site: Sequence[PlanStop], center: Point) -> tuple[str, ...]:
 
 def _assign(site: Sequence[PlanStop], stays: Sequence[Stay]) -> tuple[list[tuple[str, ...]], dict[str, int]]:
     """Стоянки одного места (по времени) → (точки каждой стоянки, точка → номер её обслуживающей стоянки). Точка с
-    отметкой доставки — к стоянке, ближайшей по времени к отметке (не дальше DELIVERY_SLACK); остальные стоянки —
-    _nearest_keys. Обслуживающая стоянка точки без отметки — первая, где она есть."""
+    отметкой доставки — к стоянке не дальше DELIVERY_SLACK от отметки; из нескольких таких — к стоянке у этой точки
+    (_nearest_keys середины стоянки — она: водитель отметил обе доставки места разом на одной стоянке, а стоял у каждой
+    по очереди), время — только между равными; остальные стоянки — _nearest_keys. Обслуживающая стоянка точки без
+    отметки — первая, где она есть."""
     assigned: dict[int, list[str]] = {}
     service: dict[str, int] = {}
     for s in site:
         if s.delivered_at is None:
             continue
-        best: tuple[timedelta, int] | None = None
+        best: tuple[tuple[bool, timedelta], int] | None = None
         for j, x in enumerate(stays):
             gap = max(timedelta(0), x.arrive - s.delivered_at, s.delivered_at - x.leave)
-            if gap <= DELIVERY_SLACK and (best is None or gap < best[0]):
-                best = (gap, j)
+            rank = (s.key not in _nearest_keys(site, x.center), gap)   # type: ignore[arg-type]
+            if gap <= DELIVERY_SLACK and (best is None or rank < best[0]):
+                best = (rank, j)
         if best is not None:
             assigned.setdefault(best[1], []).append(s.key)
             service[s.key] = best[1]
@@ -423,17 +442,19 @@ def reconstruct(track: Iterable[Fix], stops: Sequence[PlanStop], depot: Point | 
     labels = [_label(f.point, depot, sites) for f in pts]
     stays: list[Stay] = []
     by_site: dict[int, list[int]] = {}
+    idle: list[tuple[datetime, datetime]] = []      # остановки в зонах магазинов, не ставшие стоянкой
     for lab, a, b in _runs(pts, labels):
         if lab is None:
             stays += [Stay('other', pts[i].at, pts[j].at, (), True, _center(pts[i:j + 1]))
                       for i, j in _other_stays(pts, a, b)]
             continue
-        if pts[b].at - pts[a].at < MIN_DWELL:
-            continue
         if lab == -1:
-            stays.append(Stay('depot', pts[a].at, pts[b].at, (), a > 0, _center(pts[a:b + 1])))
+            if pts[b].at - pts[a].at >= MIN_DWELL:
+                stays.append(Stay('depot', pts[a].at, pts[b].at, (), a > 0, _center(pts[a:b + 1])))
             continue
-        for i, j, leave in _site_stays(pts, labels, lab, a, b, len(sites[lab]) > 1):
+        site_stays, site_idle = _site_stays(pts, labels, lab, a, b, len(sites[lab]) > 1)
+        idle += site_idle
+        for i, j, leave in site_stays:
             by_site.setdefault(lab, []).append(len(stays))
             stays.append(Stay('site', pts[i].at, leave, (), i > 0, _center(pts[i:j + 1])))
     service_at: dict[str, datetime] = {}
@@ -494,7 +515,8 @@ def reconstruct(track: Iterable[Fix], stops: Sequence[PlanStop], depot: Point | 
                 continue
             inside = [f for f in pts if dep <= f.at <= arr]
             gap = any(b.at - a.at > LEG_GAP for a, b in zip(inside, inside[1:]))
-            stop = any(o.arrive < arr and o.leave > dep for o in others)
+            stood = sum((min(t1, arr) - max(t0, dep) for t0, t1 in idle if t0 < arr and t1 > dep), timedelta(0))
+            stop = stood >= MIN_DWELL or any(o.arrive < arr and o.leave > dep for o in others)
             legs.append(Leg(ka, kb, pa, pb, dep, arr, _km(moving, dep, arr),
                             not gap and not stop and len(inside) >= 2))
     return DayActual(len(pts), track_km(moving), pts[0].at, pts[-1].at, tuple(stays), tuple(visits), tuple(trips),

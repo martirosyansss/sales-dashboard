@@ -210,7 +210,7 @@ def test_settings_page_has_field_and_bumped_assets():
     assert 'unload_min: unloadMin' in js and 'Время на сам груз (' in js and 'Пусто — ' in js
     assert 'input.validity.badInput' in js                  # нечисло в поле — ошибка, а не «пусто» (стёрло бы время)
     assert 'unload_auto_min' in js and 'unload_visits' in js and 'смешает' not in js        # №60: без смеси с фактом
-    assert 'Пока у магазина нет разгрузок по GPS, действует введённое время; со 2-й разгрузки программа берёт' in js
+    assert 'Пока у магазина меньше 2 разгрузок по GPS, действует введённое время; со 2-й разгрузки программа берёт' in js
 
 
 def test_api_huge_unload_number_is_400(client):

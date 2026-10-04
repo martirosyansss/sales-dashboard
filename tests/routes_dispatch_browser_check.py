@@ -298,7 +298,7 @@ def main() -> int:
             store.save_learned('2026-09-03', [lr.Outcome('unload', '', True, 'да', {**row, 'store_stats': {str(cid): [10, 20.0]}})])
             hint = open_unload()
             check('(ըստ փաստի)' in hint and 'արդեն եղել է 10 կանգառ։' in hint and 'կհամադրի' not in hint
-                  and 'Քանի դեռ այս խանութում GPS-ով կանգառներ չկան, հաշվվում է ձեր գրած ժամանակը' in hint
+                  and 'Քանի դեռ այս խանութում GPS-ով 2 կանգառ չկա, հաշվվում է ձեր գրած ժամանակը' in hint
                   and 'սովորական' not in hint, f'U learned norm + 10 GPS stays → time from GPS (№60): {hint!r}')
             page.click('#dpUnloadCancel')
             store.save_learning_auto('unload', False, 'qa')      # дальше — нормы настроек, как до блока U

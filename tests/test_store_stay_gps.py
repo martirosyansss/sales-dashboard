@@ -2,8 +2,11 @@
 """Стоянка у магазина — от остановки до начала движения (ответ владельца №60; route_optimizer.actuals).
 
 Синтетические треки терминала «Առաքիչ» (контракт §7.1: в пути — точка раз в 15 с, стоя — первые 2 мин раз в 15 с,
-потом раз в 60 с; скорость — м/с или null). Запуск из корня проекта:  python -m pytest tests/test_store_stay_gps.py -q
+потом раз в 60 с — у пилотного терминала на деле 81–115 с; скорость — м/с или null). Запуск из корня проекта:
+python -m pytest tests/test_store_stay_gps.py -q
 """
+import math
+import random
 import sys
 from dataclasses import replace
 from datetime import date, timedelta
@@ -24,6 +27,10 @@ def _north(p, m):
     return p[0] + m / 111195, p[1]
 
 
+def _east(p, m):
+    return p[0], p[1] + m / (111195 * math.cos(math.radians(p[0])))
+
+
 SOUTH = _north(A, -1000)          # подъезд к A с юга
 EDGE = _north(A, -99)             # въезд в зону A (STOP_RADIUS_M — 100 м)
 PARK = _north(A, 20)              # где встал: в 20 м за точкой A (искал место)
@@ -31,9 +38,8 @@ OUT = _north(A, 120)              # уехал из зоны на север
 
 
 class Path:
-    """Трек терминала: drive — точка раз в 15 с (не меньше двух на перегон) со скоростью перегона; stand — стоит
-    (скорость 0; точка остановки — тоже 0), первые 2 мин раз в 15 с, потом раз в 60 с. spd=False — терминал скорость
-    не шлёт (None)."""
+    """Трек терминала: drive — точка раз в step с (не меньше двух на перегон) со скоростью перегона; stand — стоит
+    (скорость 0; точка остановки — тоже 0). spd=False — терминал скорость не шлёт (None)."""
 
     def __init__(self, start, at, spd=True):
         self.pos, self.t, self.spd = start, at, spd
@@ -42,9 +48,9 @@ class Path:
     def _add(self, t, p, v):
         self.fixes.append(ac.TrackFix(t, p[0], p[1], 8.0, v if self.spd else None))
 
-    def drive(self, to, kmh):
+    def drive(self, to, kmh, step=15):
         secs = haversine_km(self.pos, to) / kmh * 3600
-        n = max(2, round(secs / 15))
+        n = max(2, round(secs / step))
         a = self.pos
         for i in range(1, n + 1):
             k = i / n
@@ -54,15 +60,23 @@ class Path:
         self.pos = to
         return self
 
-    def stand(self, minutes):
+    def stand(self, minutes, steps=(60, 60), jitter_m=0.0, spike_at=None, seed=1):
+        """Стоит minutes. После остановки и после мигнувшей скорости (spike_at — минута, точка 1,5 м/с) терминал 2 мин
+        пишет раз в 15 с, потом раз в steps с (случайно в этих пределах); jitter_m — дрожание GPS: точка в круге этого
+        радиуса (между соседними — до 2 × jitter_m)."""
+        rnd = random.Random(seed)
         if self.spd:
             self.fixes[-1] = replace(self.fixes[-1], spd=0.0)
-        start, t = self.t, self.t
+        start = fast = t = self.t
         while True:
-            t += timedelta(seconds=15 if t - start < timedelta(minutes=2) else 60)
+            t += timedelta(seconds=15 if t - fast < timedelta(minutes=2) else rnd.uniform(*steps))
             if t > start + timedelta(minutes=minutes, seconds=1):
                 break
-            self._add(t, self.pos, 0.0)
+            r, phi = jitter_m * math.sqrt(rnd.random()), rnd.uniform(0, 2 * math.pi)
+            v = 0.0
+            if spike_at is not None and abs((t - start).total_seconds() - spike_at * 60) < 8:
+                v, fast = 1.5, t
+            self._add(t, _north(_east(self.pos, r * math.sin(phi)), r * math.cos(phi)), v)
         self.t = start + timedelta(minutes=minutes)
         return self
 
@@ -102,6 +116,21 @@ def test_slow_approach_stop_unload_leave_counts_stop_to_move(spd):
     assert day.km_gps == pytest.approx(path, rel=0.005)
 
 
+def test_pilot_like_steps_and_jitter_give_one_stay():
+    """Как у пилотного терминала 123AV61 (03.10): стоя — точка раз в 81–115 с, дрожание GPS до 66 м между соседними,
+    скорость 0. Визит — одна стоянка ≈ 12 мин: от остановки до движения (отъезд оценён в промежутке до 2 мин после
+    последней точки стоянки, ± дрожание её места); дрожание км не добавляет."""
+    path = sum(haversine_km(a, b) for a, b in ((DEPOT, SOUTH), (SOUTH, EDGE), (EDGE, PARK), (PARK, OUT), (OUT, DEPOT)))
+    for seed in range(1, 6):
+        p = _to_a()
+        stop = p.t
+        p.stand(12, steps=(81, 115), jitter_m=33, seed=seed).drive(OUT, 6).drive(DEPOT, 30).stand(5)
+        day = ac.reconstruct(p.fixes, _stops(), DEPOT)
+        (v,) = day.visits
+        assert v.arrive == stop and v.minutes == pytest.approx(12, abs=0.4), seed
+        assert day.km_gps == pytest.approx(path, rel=0.01), seed
+
+
 def test_lateness_counts_from_stop_not_zone_entry():
     """Окно приёма кончилось в момент въезда в зону: по прежнему правилу — вовремя, теперь — опоздание на подъезд
     (≈ 70 с по зоне до места стоянки)."""
@@ -129,11 +158,49 @@ def test_jam_through_zone_without_stop_is_not_a_visit(spd):
     assert day.km_gps == pytest.approx(path, rel=0.005)
 
 
+def test_no_speed_jam_with_long_steps_is_not_a_visit():
+    """Без скорости терминала: пробка 4 км/ч через зону A, точки раз в 50 с (по 55 м) — смещение быстрее 1 м/с, это
+    езда, а не дрожание стоя: визита нет."""
+    p = Path(DEPOT, _t(8), spd=False).stand(5).drive(SOUTH, 30).drive(_north(A, -120), 30)
+    p.drive(_north(A, 150), 4, step=50).drive(B, 30).stand(8).drive(DEPOT, 30).stand(5)
+    assert [v.keys for v in ac.reconstruct(p.fixes, _stops(), DEPOT).visits] == [('B',)]
+
+
 def test_short_stop_in_jam_next_to_store_is_not_a_visit():
     """В пробке у магазина постоял 1,5 мин и поехал дальше — остановки ≥ MIN_DWELL нет: не визит."""
     p = Path(DEPOT, _t(8)).stand(5).drive(SOUTH, 30).drive(EDGE, 30).drive(PARK, 4.5).stand(1.5).drive(OUT, 4.5)
     p.drive(B, 30).stand(8).drive(DEPOT, 30).stand(5)
     assert [v.keys for v in ac.reconstruct(p.fixes, _stops(), DEPOT).visits] == [('B',)]
+
+
+def test_speed_blip_early_in_short_stop_keeps_the_visit():
+    """Скорость мигнула (1,5 м/с) на 1:30 стоянки: терминал снова 2 мин пишет раз в 15 с, остановка рвётся на куски
+    короче 2 мин, но на том же месте — одна стоянка: в сумме стояла ≥ MIN_DWELL, от остановки до движения."""
+    for minutes in (3.0, 4.0):
+        p = _to_a()
+        stop = p.t
+        p.stand(minutes, spike_at=1.5)
+        end = p.t
+        p.drive(OUT, 6).drive(DEPOT, 30).stand(5)
+        got = ac.reconstruct(p.fixes, _stops(), DEPOT).visits
+        assert [(v.keys, v.arrive, v.leave) for v in got] == [(('A',), stop, end)], minutes
+
+
+def test_standing_in_zone_without_visit_spoils_the_leg():
+    """Очередь у A: три остановки по 1,5 мин в 60 м одна от другой — врозь, каждая короче 2 мин: визита нет, но машина
+    простояла 4,5 мин — участок через зону (склад → B) не чистый, в обучение скорости не идёт. Подползала по 15 м — одна
+    стоянка (в сумме 4,5 мин): визит A, участки чистые."""
+    p = Path(DEPOT, _t(8)).stand(5).drive(SOUTH, 30).drive(EDGE, 30).drive(_north(A, -60), 6).stand(1.5)
+    p.drive(A, 6).stand(1.5).drive(_north(A, 60), 6).stand(1.5).drive(_north(A, 200), 20).drive(B, 30).stand(8)
+    p.drive(DEPOT, 30).stand(5)
+    day = ac.reconstruct(p.fixes, _stops(), DEPOT)
+    assert [v.keys for v in day.visits] == [('B',)]
+    assert {(g.a, g.b): g.clean for g in day.legs} == {('depot', 'B'): False, ('B', 'depot'): True}
+    p = Path(DEPOT, _t(8)).stand(5).drive(SOUTH, 30).drive(EDGE, 30).drive(PARK, 6).stand(1.5)
+    p.drive(_north(PARK, 15), 4).stand(1.5).drive(_north(PARK, 30), 4).stand(1.5).drive(_north(A, 200), 20)
+    p.drive(B, 30).stand(8).drive(DEPOT, 30).stand(5)
+    day = ac.reconstruct(p.fixes, _stops(), DEPOT)
+    assert [v.keys for v in day.visits] == [('A',), ('B',)] and all(g.clean for g in day.legs)
 
 
 def test_reposition_inside_zone_keeps_one_stay():
@@ -173,10 +240,13 @@ def test_reposition_inside_zone_keeps_one_stay():
 
 def test_stop_outside_zone_is_not_a_store_stay():
     """Встал в 115 м от A (за краем зоны) на 2 мин и вернулся в зону раньше JITTER_BREAK — отрезок зоны «склеен» через
-    выход, но остановка — не у магазина, а в зоне машина не стояла: визита нет (по прежнему правилу — был)."""
+    выход, но остановка — не у магазина, а в зоне машина не стояла: визита нет (по прежнему правилу — был), участок с
+    этой остановкой — не чистый."""
     p = Path(DEPOT, _t(8)).stand(5).drive(SOUTH, 30).drive(EDGE, 30).drive(_north(A, 50), 30)
     p.drive(_north(A, 115), 6).stand(2.1).drive(_north(A, -150), 30).drive(B, 30).stand(8).drive(DEPOT, 30).stand(5)
-    assert [v.keys for v in ac.reconstruct(p.fixes, _stops(), DEPOT).visits] == [('B',)]
+    day = ac.reconstruct(p.fixes, _stops(), DEPOT)
+    assert [v.keys for v in day.visits] == [('B',)]
+    assert {(g.a, g.b): g.clean for g in day.legs}[('depot', 'B')] is False      # 2 мин стояла — участок не чистый
 
 
 # ============================== момент отъезда ==============================
@@ -253,3 +323,23 @@ def test_shared_site_stops_at_each_store_stay_apart():
     p = Path(DEPOT, _t(8)).stand(5).drive(SOUTH, 30).drive(EDGE, 30).drive(A, 6)
     p.stand(6).drive(_north(A, -20), 5).stand(7).drive(_north(A, 200), 6).drive(DEPOT, 30).stand(5)
     assert [(v.keys, v.repeat) for v in ac.reconstruct(p.fixes, stops, DEPOT).visits] == [(('A',), False)]
+
+
+@pytest.mark.parametrize('during', [0, 1])
+def test_shared_site_batch_taps_go_to_each_stores_own_stay(during):
+    """Место из двух магазинов (A и B в 60 м): 6 мин у A, 7 мин у B, а обе доставки водитель отметил разом — на первой
+    стоянке (during=0) или на второй (1). Обе стоянки в DELIVERY_SLACK от обеих отметок: каждая доставка — к стоянке у
+    своей точки, обе обслуживающие, в обучение — 6 и 7 мин (по ближайшей по времени B ушла бы на стоянку у A, а её
+    7 мин — в «повторный» заезд)."""
+    b_point = _north(A, 60)
+    p = Path(DEPOT, _t(8)).stand(5).drive(SOUTH, 30).drive(EDGE, 30).drive(A, 6)
+    first = p.t
+    p.stand(6).drive(b_point, 5)
+    second = p.t
+    p.stand(7).drive(_north(A, 200), 6).drive(DEPOT, 30).stand(5)
+    tap = (first, second)[during]
+    stops = _stops(A={'delivered_at': tap + timedelta(minutes=4)},
+                   B={'point': b_point, 'delivered_at': tap + timedelta(minutes=5)})
+    day = ac.reconstruct(p.fixes, stops, DEPOT)
+    assert [(v.keys, v.repeat, round(v.minutes, 2)) for v in day.visits] == [(('A',), False, 6.0), (('B',), False, 7.0)]
+    assert [(o.customers, round(o.minutes, 2)) for o in lr.unload_obs(DAY, day, stops)] == [((101,), 6.0), ((102,), 7.0)]
