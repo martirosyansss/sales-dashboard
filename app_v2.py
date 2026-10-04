@@ -16,6 +16,7 @@ import hashlib
 import shutil
 import tempfile
 import threading
+import time
 from functools import wraps
 from urllib.parse import urlsplit
 from typing import Dict, List, Any
@@ -188,31 +189,44 @@ USERS_FILE = 'users.json'
 USER_ROLES = ('admin', 'user', 'garage')
 GARAGE_ROLE = 'garage'
 GARAGE_MIN_PASSWORD = 10   # роль «Гараж» входит из интернета (№53): пароль не короче 10 символов
+# Весь доступ к users.json — под одной блокировкой процесса (waitress — потоки одного процесса): load_users, save_users
+# и каждое «прочитать → изменить → записать» (API пользователей, выход «Гаража», пересчёт хэша) целиком внутри неё —
+# иначе параллельная запись вернула бы удалённого пользователя или потеряла чужое изменение. Долгое (PBKDF2) — снаружи.
+_USERS_LOCK = threading.RLock()
+_USERS_REPLACE_TRIES = 5   # Windows: os.replace падает PermissionError, пока файл открыт другим (антивирус, копия)
 
 
 def save_users(users: dict) -> bool:
     """Сохранить словарь пользователей в users.json атомарно: временный файл в той же папке → fsync → os.replace.
     Сбой на середине записи не оставит обрезанный users.json (load_users на нём создал бы нового администратора
     по умолчанию): прежний файл цел, временный удаляется. Права прежнего файла переносятся на новый."""
-    tmp = None
-    try:
-        fd, tmp = tempfile.mkstemp(prefix='.users-', suffix='.tmp', dir=os.path.dirname(os.path.abspath(USERS_FILE)))
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(users, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        if os.path.exists(USERS_FILE):
-            shutil.copymode(USERS_FILE, tmp)
-        os.replace(tmp, USERS_FILE)
-        return True
-    except Exception as e:
-        logger.error(f"[Auth] Не удалось сохранить {USERS_FILE}: {e}")
-        if tmp is not None:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-        return False
+    with _USERS_LOCK:
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(prefix='.users-', suffix='.tmp', dir=os.path.dirname(os.path.abspath(USERS_FILE)))
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(users, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            if os.path.exists(USERS_FILE):
+                shutil.copymode(USERS_FILE, tmp)
+            for attempt in range(1, _USERS_REPLACE_TRIES + 1):
+                try:
+                    os.replace(tmp, USERS_FILE)
+                    break
+                except PermissionError:
+                    if attempt == _USERS_REPLACE_TRIES:
+                        raise
+                    time.sleep(0.05 * attempt)
+            return True
+        except Exception as e:
+            logger.error(f"[Auth] Не удалось сохранить {USERS_FILE}: {e}")
+            if tmp is not None:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            return False
 
 
 def load_users() -> dict:
@@ -221,36 +235,37 @@ def load_users() -> dict:
     Пароль администратора по умолчанию берётся из переменной окружения
     DASHBOARD_ADMIN_PASSWORD (иначе 'admin' — обязательно сменить в Настройках).
     """
-    try:
-        if os.path.exists(USERS_FILE):
-            with open(USERS_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if isinstance(data, dict) and data:
-                    return data
-    except Exception as e:
-        logger.error(f"[Auth] Ошибка чтения {USERS_FILE}: {e}")
+    with _USERS_LOCK:
+        try:
+            if os.path.exists(USERS_FILE):
+                with open(USERS_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, dict) and data:
+                        return data
+        except Exception as e:
+            logger.error(f"[Auth] Ошибка чтения {USERS_FILE}: {e}")
 
-    env_password = os.environ.get('DASHBOARD_ADMIN_PASSWORD')
-    if env_password:
-        default_password = env_password
-        password_note = "пароль из переменной окружения DASHBOARD_ADMIN_PASSWORD"
-    else:
-        # Не используем предсказуемый дефолт: генерируем случайный пароль и печатаем его
-        # ОДИН раз в лог. Администратор входит с ним и меняет в Настройках → Пользователи.
-        import secrets as _secrets
-        default_password = _secrets.token_urlsafe(12)
-        password_note = f"СГЕНЕРИРОВАН случайный пароль: {default_password}  (смените его после входа!)"
-    default = {
-        'admin': {
-            'password_hash': generate_password_hash(default_password, method='pbkdf2:sha256'),
-            'role': 'admin',
-            'areas': [],
-            'display_name': 'Администратор',
+        env_password = os.environ.get('DASHBOARD_ADMIN_PASSWORD')
+        if env_password:
+            default_password = env_password
+            password_note = "пароль из переменной окружения DASHBOARD_ADMIN_PASSWORD"
+        else:
+            # Не используем предсказуемый дефолт: генерируем случайный пароль и печатаем его
+            # ОДИН раз в лог. Администратор входит с ним и меняет в Настройках → Пользователи.
+            import secrets as _secrets
+            default_password = _secrets.token_urlsafe(12)
+            password_note = f"СГЕНЕРИРОВАН случайный пароль: {default_password}  (смените его после входа!)"
+        default = {
+            'admin': {
+                'password_hash': generate_password_hash(default_password, method='pbkdf2:sha256'),
+                'role': 'admin',
+                'areas': [],
+                'display_name': 'Администратор',
+            }
         }
-    }
-    if save_users(default):
-        logger.warning("[Auth] Создан администратор по умолчанию (логин 'admin'). %s", password_note)
-    return default
+        if save_users(default):
+            logger.warning("[Auth] Создан администратор по умолчанию (логин 'admin'). %s", password_note)
+        return default
 
 
 def current_username():
@@ -593,6 +608,24 @@ def _public_register_failure(username) -> None:
             _public_failures.pop(next(iter(_public_failures)))
 
 
+# Отказы 429 — в журнал не чаще раза в минуту на причину (поток попыток не забьёт журнал), с числом пропущенных.
+_THROTTLE_LOG_EVERY = 60
+_throttle_log_last = {}  # причина -> (когда записали, сколько отказов с тех пор не записано); причин — три
+_throttle_log_lock = threading.Lock()
+
+
+def _log_login_throttled(reason, username, ip, where) -> None:
+    now = datetime.now().timestamp()
+    with _throttle_log_lock:
+        last, skipped = _throttle_log_last.get(reason, (None, 0))
+        if last is not None and now - last < _THROTTLE_LOG_EVERY:
+            _throttle_log_last[reason] = (last, skipped + 1)
+            return
+        _throttle_log_last[reason] = (now, 0)
+    logger.warning('[Auth] Вход %.64r отклонён (%s): IP %s, %s%s', username, reason, ip, where,
+                   f'; до этого за минуту ещё {skipped} таких отказов не записано' if skipped else '')
+
+
 # Тексты страницы входа: в офисе — как было; снаружи — по-армянски и без названия программы.
 _LOGIN_TEXT = {
     False: {'bad': 'Неверный логин или пароль',
@@ -661,18 +694,30 @@ def _login_reset(username):
 
 def _rehash_if_outdated(username: str, user: dict, password: str) -> dict:
     """Хэш с другими параметрами, чем текущие (меньше итераций прежнего Werkzeug и т.п.), — пересчитать при входе:
-    проверка такого пароля по времени не отличалась бы от фиктивной (несуществующий логин). Возвращает запись."""
-    if (user.get('password_hash') or '').split('$', 1)[0] == _PWD_HASH_PARAMS:
+    проверка такого пароля по времени не отличалась бы от фиктивной (несуществующий логин). Возвращает запись,
+    от которой ставить отпечаток сессии.
+
+    Новый хэш считается вне блокировки (≈ 0,3 с), записывается сравнением с обменом: только если пользователь ещё
+    есть и его хэш тот же, что проверили. Иначе (удалён, админ сменил пароль, параллельный вход уже пересчитал)
+    не пишем: запись — как в файле, если пароль подходит к ней (параллельный пересчёт), иначе прежняя (сессия от
+    неё не пройдёт: пароль сменили или логин удалили)."""
+    old_hash = user.get('password_hash') or ''
+    if old_hash.split('$', 1)[0] == _PWD_HASH_PARAMS:
         return user
-    users = load_users()
-    if username not in users:
-        return user
-    old = (users[username].get('password_hash') or '').split('$', 1)[0]
-    users[username] = {**users[username], 'password_hash': generate_password_hash(password, method=_PWD_METHOD)}
-    if not save_users(users):
-        return user
-    logger.info('[Auth] Хэш пароля %.64r пересчитан: %s → %s', username, old, _PWD_HASH_PARAMS)
-    return users[username]
+    new_hash = generate_password_hash(password, method=_PWD_METHOD)
+    with _USERS_LOCK:
+        users = load_users()
+        current = users.get(username)
+        if current is not None and current.get('password_hash') == old_hash:
+            users[username] = {**current, 'password_hash': new_hash}
+            if not save_users(users):
+                return user
+            logger.info('[Auth] Хэш пароля %.64r пересчитан: %s → %s', username, old_hash.split('$', 1)[0],
+                        _PWD_HASH_PARAMS)
+            return users[username]
+    if current is not None and check_password_hash(current.get('password_hash') or '', password):
+        return current
+    return user
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -688,7 +733,7 @@ def login():
 
         def throttled(reason):
             """429 — та же страница с общим текстом, без проверки пароля."""
-            logger.warning('[Auth] Вход %.64r отклонён (%s): IP %s, %s', username, reason, ip, where)
+            _log_login_throttled(reason, username, ip, where)
             return render_template('login.html', error=text['throttled'], next=next_url, public=public), 429
 
         if _login_locked(username):
@@ -752,14 +797,19 @@ def logout():
     (их прежние сессии закрывают смена пароля и срок 7 дней)."""
     user = current_user()
     uname = current_username() if user else None
+    where = 'интернет' if courier.is_public_request(request) else 'офис'
+    revoked = True
     if uname and user.get('role') == GARAGE_ROLE:
-        users = load_users()
-        if uname in users:
-            users[uname] = {**users[uname], 'session_gen': int(users[uname].get('session_gen') or 0) + 1}
-            save_users(users)
-    if uname:
-        logger.info('[Auth] Выход: %.64r, IP %s, %s', uname, _login_client_ip(),
-                    'интернет' if courier.is_public_request(request) else 'офис')
+        with _USERS_LOCK:
+            users = load_users()
+            if uname in users:
+                users[uname] = {**users[uname], 'session_gen': int(users[uname].get('session_gen') or 0) + 1}
+                revoked = save_users(users)
+    if uname and not revoked:
+        logger.warning('[Auth] Выход %.64r: users.json не сохранён — сессии на других устройствах НЕ отозваны '
+                       '(сменить пароль логина), IP %s, %s', uname, _login_client_ip(), where)
+    elif uname:
+        logger.info('[Auth] Выход: %.64r, IP %s, %s', uname, _login_client_ip(), where)
     session.clear()
     return redirect(url_for('login'))
 
@@ -8805,40 +8855,42 @@ def api_users_save():
         return jsonify({'success': False, 'error': f'Пароль для роли «Гараж» — не короче {GARAGE_MIN_PASSWORD} '
                                                    'символов (вход из интернета)'}), 400
 
-    users = load_users()
-    existing = users.get(username)
-    # Стал «Гаражом» без нового пароля — длину прежнего не проверить: нужен новый.
-    if existing is not None and role == GARAGE_ROLE and existing.get('role') != GARAGE_ROLE and not password:
-        return jsonify({'success': False, 'error': f'При смене роли на «Гараж» задайте новый пароль — не короче '
-                                                   f'{GARAGE_MIN_PASSWORD} символов (вход из интернета)'}), 400
+    new_hash = generate_password_hash(password, method='pbkdf2:sha256') if password else None   # ≈ 0,3 с — вне блокировки
+    with _USERS_LOCK:   # прочитать → изменить → записать — целиком под блокировкой users.json
+        users = load_users()
+        existing = users.get(username)
+        # Стал «Гаражом» без нового пароля — длину прежнего не проверить: нужен новый.
+        if existing is not None and role == GARAGE_ROLE and existing.get('role') != GARAGE_ROLE and not password:
+            return jsonify({'success': False, 'error': f'При смене роли на «Гараж» задайте новый пароль — не короче '
+                                                       f'{GARAGE_MIN_PASSWORD} символов (вход из интернета)'}), 400
 
-    if existing is None:
-        if not password:
-            return jsonify({'success': False,
-                            'error': 'Для нового пользователя нужен пароль'}), 400
-        entry = {
-            'password_hash': generate_password_hash(password, method='pbkdf2:sha256'),
-            'role': role,
-            'areas': areas,
-            'display_name': display_name,
-        }
-    else:
-        entry = dict(existing)
-        # Не даём снять роль admin с последнего администратора.
-        if existing.get('role') == 'admin' and role != 'admin':
-            admins = [n for n, v in users.items() if v.get('role') == 'admin']
-            if len(admins) <= 1:
+        if existing is None:
+            if not password:
                 return jsonify({'success': False,
-                                'error': 'Нельзя снять роль с последнего администратора'}), 400
-        entry['role'] = role
-        entry['areas'] = areas
-        entry['display_name'] = display_name
-        if password:
-            entry['password_hash'] = generate_password_hash(password, method='pbkdf2:sha256')
+                                'error': 'Для нового пользователя нужен пароль'}), 400
+            entry = {
+                'password_hash': new_hash,
+                'role': role,
+                'areas': areas,
+                'display_name': display_name,
+            }
+        else:
+            entry = dict(existing)
+            # Не даём снять роль admin с последнего администратора.
+            if existing.get('role') == 'admin' and role != 'admin':
+                admins = [n for n, v in users.items() if v.get('role') == 'admin']
+                if len(admins) <= 1:
+                    return jsonify({'success': False,
+                                    'error': 'Нельзя снять роль с последнего администратора'}), 400
+            entry['role'] = role
+            entry['areas'] = areas
+            entry['display_name'] = display_name
+            if password:
+                entry['password_hash'] = new_hash
 
-    users[username] = entry
-    if not save_users(users):
-        return jsonify({'success': False, 'error': 'Не удалось сохранить пользователя'}), 500
+        users[username] = entry
+        if not save_users(users):
+            return jsonify({'success': False, 'error': 'Не удалось сохранить пользователя'}), 500
     if password and username == current_username():
         session['pwv'] = _session_fingerprint(entry)   # свой пароль сменил — эта сессия остаётся, прочие отозваны
     return jsonify({'success': True})
@@ -8851,19 +8903,20 @@ def api_users_delete():
         return _forbid()
     data = request.get_json(silent=True) or {}
     username = (data.get('username') or '').strip()
-    users = load_users()
-    if username not in users:
-        return jsonify({'success': False, 'error': 'Пользователь не найден'}), 404
-    if username == current_username():
-        return jsonify({'success': False, 'error': 'Нельзя удалить текущего пользователя'}), 400
-    if users[username].get('role') == 'admin':
-        admins = [n for n, v in users.items() if v.get('role') == 'admin']
-        if len(admins) <= 1:
-            return jsonify({'success': False,
-                            'error': 'Нельзя удалить последнего администратора'}), 400
-    del users[username]
-    if not save_users(users):
-        return jsonify({'success': False, 'error': 'Не удалось сохранить изменения'}), 500
+    with _USERS_LOCK:   # прочитать → изменить → записать — целиком под блокировкой users.json
+        users = load_users()
+        if username not in users:
+            return jsonify({'success': False, 'error': 'Пользователь не найден'}), 404
+        if username == current_username():
+            return jsonify({'success': False, 'error': 'Нельзя удалить текущего пользователя'}), 400
+        if users[username].get('role') == 'admin':
+            admins = [n for n, v in users.items() if v.get('role') == 'admin']
+            if len(admins) <= 1:
+                return jsonify({'success': False,
+                                'error': 'Нельзя удалить последнего администратора'}), 400
+        del users[username]
+        if not save_users(users):
+            return jsonify({'success': False, 'error': 'Не удалось сохранить изменения'}), 500
     return jsonify({'success': True})
 
 # ===== Менеджеры =====

@@ -47,6 +47,7 @@ def app_v2(tmp_path, monkeypatch):
     monkeypatch.setattr(module, 'save_users', lambda data: users.update(data) or True)
     monkeypatch.setattr(module, '_login_attempts', {})
     monkeypatch.setattr(module, '_public_failures', {})
+    monkeypatch.setattr(module, '_throttle_log_last', {})
     monkeypatch.setattr(module, '_TUNNEL_PEERS', frozenset({TUNNEL}))
     state = module.app.extensions['route_optimizer']
     monkeypatch.setattr(state, 'store', st.Store(str(tmp_path / 'routes.db')))
@@ -794,3 +795,319 @@ def test_save_users_creates_missing_file(tmp_path, monkeypatch):
     monkeypatch.setattr(module, 'USERS_FILE', str(path))
     assert module.save_users(USERS_ON_DISK) is True and module.load_users() == USERS_ON_DISK
     assert sorted(p.name for p in tmp_path.iterdir()) == ['users.json']
+
+
+# ============================== ревью: гонки чтения-записи users.json ==============================
+
+FAST = 'pbkdf2:sha256:2000'                                   # «текущие» параметры в этих тестах (быстро)
+OUTDATED = 'pbkdf2:sha256:1000'
+
+
+@pytest.fixture
+def file_app(tmp_path, monkeypatch):
+    """Настоящие load_users/save_users на временном users.json; у garage1 и g2 — хэши с устаревшими параметрами."""
+    import app_v2 as module
+    from werkzeug.security import generate_password_hash
+    path = tmp_path / 'users.json'
+    users = {name: {'role': role, 'areas': ['01'] if role == 'user' else [], 'display_name': name,
+                    'password_hash': generate_password_hash(PASSWORDS.get(name, 'garage-pass-2'),
+                                                            method=OUTDATED if role == 'garage' else FAST)}
+             for name, role in (('garage1', 'garage'), ('g2', 'garage'), ('boss', 'admin'), ('u', 'user'))}
+    users['victim'] = {'role': 'user', 'areas': ['01'], 'display_name': 'v',
+                       'password_hash': generate_password_hash('victim-pass', method=FAST)}
+    path.write_text(json.dumps(users, ensure_ascii=False, indent=2), encoding='utf-8')
+    monkeypatch.setattr(module, 'USERS_FILE', str(path))
+    monkeypatch.setattr(module, '_PWD_METHOD', FAST)
+    monkeypatch.setattr(module, '_PWD_HASH_PARAMS', FAST)
+    for name, value in (('_login_attempts', {}), ('_public_failures', {}), ('_throttle_log_last', {}),
+                        ('_TUNNEL_PEERS', frozenset({TUNNEL}))):
+        monkeypatch.setattr(module, name, value)
+    return module, path
+
+
+def _stored(path):
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
+def _admin(module):
+    c = module.app.test_client()
+    assert _login(c, 'boss', PASSWORDS['boss'], base=LAN).status_code == 302
+    page = c.get('/settings', base_url=LAN).get_data(as_text=True)
+    return c, {'X-CSRF-Token': page.split('name="csrf-token" content="')[1].split('"')[0], 'Origin': LAN}
+
+
+def _gate_hash(module, monkeypatch, passwords):
+    """generate_password_hash для этих паролей ждёт gate (детерминированно, без таймингов); arrived — дошёл."""
+    real, arrived, gate = module.generate_password_hash, threading.Semaphore(0), threading.Event()
+
+    def gen(password, *a, **kw):
+        if password in passwords:
+            arrived.release()
+            assert gate.wait(10)
+        return real(password, *a, **kw)
+    monkeypatch.setattr(module, 'generate_password_hash', gen)
+    return arrived, gate
+
+
+def _login_in_thread(module, name, password, results):
+    c = module.app.test_client()
+    t = threading.Thread(target=lambda: results.setdefault(name, []).append(_login(c, name, password, base=LAN).status_code))
+    t.start()
+    return c, t
+
+
+def test_rehash_racing_admin_delete_does_not_resurrect_user(file_app, monkeypatch):
+    """(a) Вход с пересчётом хэша и удаление другого пользователя админом одновременно: удалённый не возвращается."""
+    module, path = file_app
+    admin, h = _admin(module)
+    arrived, gate = _gate_hash(module, monkeypatch, {PASSWORDS['garage1']})
+    res = {}
+    garage, t = _login_in_thread(module, 'garage1', PASSWORDS['garage1'], res)
+    try:
+        assert arrived.acquire(timeout=10)                    # пароль проверен, новый хэш считается (вне блокировки)
+        assert admin.post('/api/users/delete', base_url=LAN, headers=h, json={'username': 'victim'}).status_code == 200
+        assert 'victim' not in _stored(path)
+    finally:
+        gate.set()
+        t.join(10)
+    assert res == {'garage1': [302]}
+    stored = _stored(path)
+    assert 'victim' not in stored                             # до правки: пересчёт записывал старую копию — victim снова есть
+    assert stored['garage1']['password_hash'].startswith(FAST + '$')
+    assert garage.get('/routes/garage', base_url=LAN).status_code == 200
+
+
+def test_rehash_racing_delete_of_same_user(file_app, monkeypatch):
+    module, path = file_app
+    admin, h = _admin(module)
+    arrived, gate = _gate_hash(module, monkeypatch, {PASSWORDS['garage1']})
+    res = {}
+    garage, t = _login_in_thread(module, 'garage1', PASSWORDS['garage1'], res)
+    try:
+        assert arrived.acquire(timeout=10)
+        assert admin.post('/api/users/delete', base_url=LAN, headers=h, json={'username': 'garage1'}).status_code == 200
+    finally:
+        gate.set()
+        t.join(10)
+    assert 'garage1' not in _stored(path)                     # удалённый не воскрес
+    r = garage.get('/routes/garage', base_url=LAN)
+    assert r.status_code == 302 and r.headers['Location'].startswith('/login')
+
+
+def test_rehash_racing_admin_password_change_keeps_new_password(file_app, monkeypatch):
+    """Сравнение с обменом: админ сменил пароль, пока вход пересчитывал хэш, — пересчёт старого пароля не пишется."""
+    from werkzeug.security import check_password_hash as real_check
+    module, path = file_app
+    admin, h = _admin(module)
+    arrived, gate = _gate_hash(module, monkeypatch, {PASSWORDS['garage1']})
+    res = {}
+    garage, t = _login_in_thread(module, 'garage1', PASSWORDS['garage1'], res)
+    try:
+        assert arrived.acquire(timeout=10)
+        assert admin.post('/api/users', base_url=LAN, headers=h,
+                          json={'username': 'garage1', 'role': 'garage', 'password': 'brand-new-pass-1'}).status_code == 200
+    finally:
+        gate.set()
+        t.join(10)
+    stored = _stored(path)['garage1']['password_hash']
+    assert real_check(stored, 'brand-new-pass-1') and not real_check(stored, PASSWORDS['garage1'])
+    r = garage.get('/routes/garage', base_url=LAN)            # сессия по старому паролю — не действует
+    assert r.status_code == 302 and r.headers['Location'].startswith('/login')
+
+
+def test_two_concurrent_rehash_logins_both_kept(file_app, monkeypatch):
+    """(b) Два входа с пересчётом одновременно (разные логины): оба хэша записаны, обе свежие сессии действуют."""
+    module, path = file_app
+    arrived, gate = _gate_hash(module, monkeypatch, {PASSWORDS['garage1'], 'garage-pass-2'})
+    res = {}
+    c1, t1 = _login_in_thread(module, 'garage1', PASSWORDS['garage1'], res)
+    c2, t2 = _login_in_thread(module, 'g2', 'garage-pass-2', res)
+    try:
+        assert arrived.acquire(timeout=10) and arrived.acquire(timeout=10)   # оба посчитали хэш по старой картине
+    finally:
+        gate.set()
+        t1.join(10)
+        t2.join(10)
+    assert res == {'garage1': [302], 'g2': [302]}
+    stored = _stored(path)
+    for name, c in (('garage1', c1), ('g2', c2)):
+        assert stored[name]['password_hash'].startswith(FAST + '$'), name   # до правки один пересчёт терялся
+        assert c.get('/routes/garage', base_url=LAN).status_code == 200, name
+
+
+def test_double_submit_same_user_rehash_both_sessions_valid(file_app, monkeypatch):
+    """Двойное нажатие «Вход» одним логином: пересчёт пишется один раз, обе сессии действуют."""
+    module, path = file_app
+    arrived, gate = _gate_hash(module, monkeypatch, {PASSWORDS['garage1']})
+    res = {}
+    c1, t1 = _login_in_thread(module, 'garage1', PASSWORDS['garage1'], res)
+    c2, t2 = _login_in_thread(module, 'garage1', PASSWORDS['garage1'], res)
+    try:
+        assert arrived.acquire(timeout=10) and arrived.acquire(timeout=10)
+    finally:
+        gate.set()
+        t1.join(10)
+        t2.join(10)
+    assert res == {'garage1': [302, 302]}
+    assert _stored(path)['garage1']['password_hash'].startswith(FAST + '$')
+    assert c1.get('/routes/garage', base_url=LAN).status_code == 200
+    assert c2.get('/routes/garage', base_url=LAN).status_code == 200
+
+
+class _TrackingLock:
+    """RLock, который помнит номер «удержания» (0 → 1) и владельца: видно, были ли чтение и запись в одном удержании."""
+
+    def __init__(self):
+        self._lock, self.owner, self.depth, self.holds = threading.RLock(), None, 0, 0
+
+    def __enter__(self):
+        self._lock.acquire()
+        if self.depth == 0:
+            self.holds += 1
+        self.owner, self.depth = threading.get_ident(), self.depth + 1
+        return self
+
+    def __exit__(self, *exc):
+        self.depth -= 1
+        if self.depth == 0:
+            self.owner = None
+        self._lock.release()
+
+    def hold(self):
+        return self.holds if self.owner == threading.get_ident() else None
+
+
+FLOWS = ['api_new_user', 'api_edit_password', 'api_delete', 'garage_logout', 'rehash_login']
+
+
+@pytest.mark.parametrize('flow', FLOWS)
+def test_users_read_modify_write_inside_lock(file_app, monkeypatch, flow):
+    """Каждый писатель users.json: load → save в одном удержании блокировки; PBKDF2 — вне её."""
+    module, path = file_app
+    admin, h = _admin(module) if flow.startswith('api') else (None, None)
+    garage = module.app.test_client()
+    if flow == 'garage_logout':
+        assert _login(garage, 'garage1', PASSWORDS['garage1'], base=LAN).status_code == 302
+        page = garage.get('/routes/garage', base_url=LAN).get_data(as_text=True)
+        gh = {'X-CSRF-Token': page.split('name="csrf-token" content="')[1].split('"')[0], 'Origin': LAN}
+    lock, events = _TrackingLock(), []
+    real_load, real_save, real_gen = module.load_users, module.save_users, module.generate_password_hash
+    monkeypatch.setattr(module, '_USERS_LOCK', lock)
+    monkeypatch.setattr(module, 'load_users', lambda: events.append(('load', lock.hold())) or real_load())
+    monkeypatch.setattr(module, 'save_users', lambda d: events.append(('save', lock.hold())) or real_save(d))
+    monkeypatch.setattr(module, 'generate_password_hash',
+                        lambda *a, **kw: events.append(('hash', lock.hold())) or real_gen(*a, **kw))
+    if flow == 'api_new_user':
+        r = admin.post('/api/users', base_url=LAN, headers=h, json={'username': 'n1', 'role': 'admin', 'password': 'pw-new-1'})
+    elif flow == 'api_edit_password':
+        r = admin.post('/api/users', base_url=LAN, headers=h, json={'username': 'u', 'role': 'user', 'areas': ['01'],
+                                                                   'password': 'pw-edit-1'})
+    elif flow == 'api_delete':
+        r = admin.post('/api/users/delete', base_url=LAN, headers=h, json={'username': 'victim'})
+    elif flow == 'garage_logout':
+        r = garage.post('/logout', base_url=LAN, headers=gh)
+    else:
+        r = _login(garage, 'garage1', PASSWORDS['garage1'], base=LAN)
+    assert r.status_code in (200, 302), r.get_data(as_text=True)[:200]
+    saves = [i for i, e in enumerate(events) if e[0] == 'save']
+    assert saves, events
+    for i in saves:
+        hold = events[i][1]
+        assert hold is not None, (flow, events)                                # запись — под блокировкой
+        assert ('load', hold) in events[:i], (flow, events)                   # и чтение — в том же удержании
+    assert all(hold is None for kind, hold in events if kind == 'hash'), events   # PBKDF2 — вне блокировки
+    if flow in ('api_new_user', 'api_edit_password', 'rehash_login'):
+        assert ('hash', None) in events, events
+
+
+def test_garage_logout_save_failure_logged_not_pretended(file_app, monkeypatch, caplog):
+    module, path = file_app
+    caplog.set_level(logging.INFO, logger='app_v2')
+    garage = module.app.test_client()
+    assert _login(garage, 'garage1', PASSWORDS['garage1'], base=LAN, peer='192.168.1.60').status_code == 302
+    copied = garage.get_cookie('session', domain=_host(LAN)).value
+    page = garage.get('/routes/garage', base_url=LAN).get_data(as_text=True)
+    gh = {'X-CSRF-Token': page.split('name="csrf-token" content="')[1].split('"')[0], 'Origin': LAN}
+    monkeypatch.setattr(module, 'save_users', lambda d: False)
+    caplog.clear()
+    assert garage.post('/logout', base_url=LAN, headers=gh, environ_base={'REMOTE_ADDR': '192.168.1.60'}).status_code == 302
+    msgs = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == 'app_v2']
+    assert any(lvl == logging.WARNING and "Выход 'garage1': users.json не сохранён — сессии на других устройствах НЕ "
+               "отозваны" in m and '192.168.1.60' in m for lvl, m in msgs), msgs
+    assert not any(m.startswith('[Auth] Выход: ') for _, m in msgs)          # «вышел» как будто всё отозвано — нет
+    assert _replay(module, copied, '/routes/garage', base=LAN) == 200         # честно: копия cookie ещё жива
+    assert 'session_gen' not in _stored(path)['garage1']
+
+
+@pytest.mark.parametrize('fails,ok', [(2, True), (4, True), (5, False), (9, False)])
+def test_save_users_retries_windows_replace(users_file, monkeypatch, fails, ok):
+    """Windows: os.replace — PermissionError, пока файл открыт другим; до 5 попыток с паузой."""
+    module, path = users_file
+    before = path.read_bytes()
+    calls, sleeps, real_replace = [], [], os.replace
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) <= fails:
+            raise PermissionError(13, 'The process cannot access the file because it is being used by another process')
+        return real_replace(src, dst)
+    monkeypatch.setattr(os, 'replace', flaky)
+    monkeypatch.setattr(module.time, 'sleep', sleeps.append)
+    assert module.save_users({'x': {'role': 'admin', 'password_hash': 'h'}}) is ok
+    assert len(calls) == (fails + 1 if ok else module._USERS_REPLACE_TRIES)
+    assert sleeps == [0.05 * a for a in range(1, len(calls))] and len(sleeps) < module._USERS_REPLACE_TRIES
+    assert (path.read_bytes() != before) is ok
+    assert sorted(p.name for p in path.parent.iterdir()) == ['users.json']
+
+
+def test_save_users_other_os_error_not_retried(users_file, monkeypatch):
+    module, path = users_file
+    calls = []
+    monkeypatch.setattr(os, 'replace', lambda s, d: calls.append(1) or (_ for _ in ()).throw(OSError(18, 'cross-device')))
+    assert module.save_users({'x': {}}) is False and calls == [1]
+
+
+# ============================== ревью: отказы 429 в журнале — не чаще раза в минуту ==============================
+
+def test_throttled_warnings_once_per_reason_per_minute(client, app_v2, caplog):
+    caplog.set_level(logging.INFO, logger='app_v2')
+
+    def lines(reason):
+        return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and f'({reason})' in r.getMessage()]
+    slots = app_v2._PUBLIC_HASH_SLOTS
+    assert slots.acquire(blocking=False) and slots.acquire(blocking=False)
+    try:
+        for i in range(10):
+            assert _login(client, 'garage1', 'x' * 12, peer=TUNNEL, cf=f'203.0.113.{150 + i}').status_code == 429
+        busy = 'заняты проверки паролей'
+        assert len(lines(busy)) == 1
+        last, skipped = app_v2._throttle_log_last[busy]
+        assert skipped == 9
+        app_v2._throttle_log_last[busy] = (last - 61, skipped)          # прошла минута
+        assert _login(client, 'garage1', 'x' * 12, peer=TUNNEL, cf='203.0.113.170').status_code == 429
+        assert len(lines(busy)) == 2 and 'ещё 9 таких отказов не записано' in lines(busy)[-1]
+    finally:
+        slots.release()
+        slots.release()
+    for i in range(app_v2._PUBLIC_FAIL_BUDGET):                          # другая причина — своя строка
+        assert _login(client, 'garage1', 'wrong-password', peer=TUNNEL, cf=f'198.51.100.{i}').status_code == 401
+    for i in range(20):
+        assert _login(client, 'garage1', 'wrong-password', peer=TUNNEL, cf=f'198.51.101.{i}').status_code == 429
+    assert len(lines(f'больше {app_v2._PUBLIC_FAIL_BUDGET} неудач за час из интернета')) == 1
+    assert len(app_v2._throttle_log_last) == 2                           # память — по числу причин
+
+
+def test_load_and_save_users_take_the_lock(users_file, monkeypatch):
+    """Сами load_users/save_users (и создание администратора по умолчанию) — под блокировкой, даже без внешней."""
+    module, path = users_file
+    lock, seen = _TrackingLock(), []
+    monkeypatch.setattr(module, '_USERS_LOCK', lock)
+    real_replace, real_json_load = os.replace, module.json.load
+    monkeypatch.setattr(os, 'replace', lambda s, d: seen.append(('replace', lock.hold())) or real_replace(s, d))
+    monkeypatch.setattr(module.json, 'load', lambda f: seen.append(('read', lock.hold())) or real_json_load(f))
+    assert module.save_users(USERS_ON_DISK) is True
+    assert module.load_users() == USERS_ON_DISK
+    path.unlink()                                             # нет файла — создаётся администратор по умолчанию
+    default = module.load_users()
+    assert list(default) == ['admin'] and _stored(path) == default
+    assert [k for k, _ in seen] == ['replace', 'read', 'replace'] and all(h is not None for _, h in seen), seen
