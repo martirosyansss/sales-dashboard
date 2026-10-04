@@ -47,7 +47,17 @@
   сравнения «Развоза») — расход при половинной загрузке. Момент заправки — момент исходной заправки цепочки
   исправлений (supersedes); одометр — по самой длинной согласованной цепочке заправок машины (флаг при приёме не
   учитывается: опечатка в первой заправке не портит остальные). Ограничение: соседние заправки цепочки — не дальше
-  REFUEL_LOOKBACK позиций: серия из ≥ 50 сомнительных одометров подряд (например, сломанный счётчик) разрывает цепочку.
+  REFUEL_LOOKBACK позиций: серия из ≥ 50 сомнительных одометров подряд (например, сломанный счётчик) разрывает цепочку;
+- lunch — обед водителя в пути (№61) → TruckNorms.lunch_minutes «Развоза» (окно начала обеда — из настроек). Машино-день
+  по треку (lunch_obs): самая длинная стоянка не по плану ('other': не склад и не точка плана), начавшаяся в окне начала
+  обеда ± LUNCH_SLACK, нет такой — 0; только дни, когда машина работала дольше конца окна (иначе план обеда и не ждёт).
+  Выученное — медиана обучения в пределах LUNCH_BOUNDS, шаг за прогон — не больше ±max(LUNCH_STEP × действующего,
+  LUNCH_STEP_MIN) (до 0 дойти можно). Ошибка — минут на машино-день: действующий обед против выученного. Обед в
+  настройках 0 — выключен: не учится и не включается выученным. Стоянка не по плану в обучение разгрузки и времени в
+  пути и так не идёт (участок с ней — не чистый; визиты — только стоянки у точек плана), и обедом она считается один
+  раз. Обед на складе — в стоянке перед рейсом: поставил его туда план — он в плановом ожидании (planned_wait; прогноз
+  рейсов — уже с обедом) и из стоянки загрузки вычитается; вопреки плану — остаётся в ней (её сдерживают отсечение
+  длинных стоянок и нижний квантиль загрузки).
 
 Правило принятия (одно для всех): обучение — на днях до отложенной недели (TRAIN_DAYS дней), проверка — на последних
 HOLDOUT_DAYS днях (до вчера включительно; у расхода — последние FUEL_TEST интервала заправок, а форма модели
@@ -84,10 +94,10 @@ from .geo import Point, in_city
 from .measurements import _fit
 from .traffic_validation import TrafficProfile
 
-KINDS = ('unload', 'loading', 'travel', 'truck_time', 'fuel')
+KINDS = ('unload', 'loading', 'travel', 'truck_time', 'lunch', 'fuel')
 KIND_TITLES = {'unload': 'Разгрузка у магазина', 'loading': 'Загрузка на складе', 'travel': 'Скорость машин по часам',
-               'truck_time': 'Время в пути грузовиков: модель', 'fuel': 'Расход топлива'}
-DEFAULT_AUTO = {'unload': True, 'loading': False, 'travel': True, 'truck_time': True,
+               'truck_time': 'Время в пути грузовиков: модель', 'lunch': 'Ճաշ ճանապարհին', 'fuel': 'Расход топлива'}
+DEFAULT_AUTO = {'unload': True, 'loading': False, 'travel': True, 'truck_time': True, 'lunch': True,
                 'fuel': True}   # нет переключателя в базе
 HOLDOUT_DAYS = 7
 TRAIN_DAYS = 120
@@ -131,6 +141,11 @@ REFUEL_KM_PER_DAY = 1500.0           # как courier.events: прирост о�
 REFUEL_WINDOW_DAYS = 400             # приём заправки: цепочка одометра — по заправкам ± 400 дней от неё…
 REFUEL_WINDOW_MAX = 300              # …и не больше 300 (время приёма ограничено); офис — ± 200 дней вокруг дня
 REFUEL_LOOKBACK = 50                 # в цепочке соседние заправки — не дальше 50 позиций (пропущено подряд ≤ 49 сомнительных)
+LUNCH_MIN = (15, 5, 5, 2)            # обед: машино-дней и их дней в обучении, в проверке (как загрузка)
+LUNCH_BOUNDS = (0.0, 90.0)           # выученный обед, мин
+LUNCH_STEP = 0.30                    # за прогон — не больше ±30% от действующего…
+LUNCH_STEP_MIN = 5.0                 # …но хотя бы на 5 мин: до 0 дойти можно (и подняться с него)
+LUNCH_SLACK = 30.0                   # обед — стоянка не по плану, начавшаяся в окне начала обеда ± 30 мин
 NIGHTLY_AT = (3, 0)                  # ночной прогон — 03:00 Еревана
 
 
@@ -170,6 +185,12 @@ class LegObs:
     speed: float = 0.0
     weekday: int = 0
     start: float = 0.0        # выезд, минуты от полуночи (Ереван)
+
+
+@dataclass(frozen=True)
+class LunchObs:
+    day: date
+    minutes: float            # обед машино-дня по треку (lunch_obs); 0 — стоянки не по плану в окне не было
 
 
 @dataclass(frozen=True)
@@ -635,6 +656,27 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
                    **_spans(train, test)), fitted
 
 
+def fit_lunch(obs: Sequence[LunchObs], current: float, today: date, setting: float) -> Outcome:
+    """Обед в пути (№61): выученное — медиана обеда машино-дней обучения (целые минуты, в пределах LUNCH_BOUNDS), шаг за
+    прогон от действующего current — не больше ±max(LUNCH_STEP × current, LUNCH_STEP_MIN): до 0 дойти можно. Проверка
+    — минут на машино-день отложенной недели: current против выученного, правило принятия — _accept. setting — обед в
+    настройках: 0 — обед выключен, не учится."""
+    if setting <= 0:
+        return Outcome('lunch', '', False, 'ճաշը կարգավորումներում անջատված է (0 րոպե)՝ չի սովորվում')
+    train, test = _split(obs, today)
+    short = _enough(train, test, LUNCH_MIN)
+    if short:
+        return Outcome('lunch', '', False, short, n_obs=len(train), n_test=len(test), **_spans(train, test))
+    step = max(LUNCH_STEP * current, LUNCH_STEP_MIN)
+    value = min(current + step, max(current - step, median(o.minutes for o in train)))
+    value = float(round(min(LUNCH_BOUNDS[1], max(LUNCH_BOUNDS[0], value))))
+    before = _mae((current, o.minutes) for o in test)
+    after = _mae((value, o.minutes) for o in test)
+    ok, why, conf = _accept(before, after, _gains((o.day, current, value, o.minutes) for o in test))
+    return Outcome('lunch', '', ok, why, {'minutes': value}, n_obs=len(train), n_test=len(test),
+                   mae_before=round(before, 3), mae_after=round(after, 3), confidence=conf, **_spans(train, test))
+
+
 def fit_fuel(obs: Sequence[FuelObs], current: Callable[[float], float], car: str) -> Outcome:
     """Расход л/100 км = пустой + (полный − пустой) × загрузка. Форма выбирается только по обучающим интервалам
     (все, кроме последних FUEL_TEST): measurements._fit (≥ 12 интервалов, разброс загрузки ≥ 20%, своя проверка на
@@ -673,9 +715,10 @@ class InEffect:
     loading: Mapping[str, Any] | None = None
     travel: Mapping[str, Any] | None = None        # params + 'model_id'
     fuel: Mapping[str, Mapping[str, Any]] | None = None   # машина → params
+    lunch: Mapping[str, Any] | None = None
 
     def __bool__(self) -> bool:
-        return bool(self.unload or self.loading or self.travel or self.fuel)
+        return bool(self.unload or self.loading or self.travel or self.fuel or self.lunch)
 
 
 def _num(x: Any, lo: float, hi: float) -> bool:
@@ -707,6 +750,8 @@ def valid_params(kind: str, p: Any) -> bool:
                 and p['empty_l100'] <= p['full_l100'])
     if kind == 'truck_time':   # в расчёт идёт только источник; сравнение — для страницы
         return p.get('source') in TRUCK_TIME_SOURCES
+    if kind == 'lunch':
+        return _num(p.get('minutes'), *LUNCH_BOUNDS)
     return False
 
 
@@ -729,7 +774,7 @@ def in_effect(rows: Sequence[Mapping[str, Any]], auto: Mapping[str, bool], model
     return InEffect(last[('unload', '')]['params'] if ('unload', '') in last else None,
                     last[('loading', '')]['params'] if ('loading', '') in last else None,
                     {**travel['params'], 'model_id': travel['model_id']} if travel is not None else None,
-                    fuel or None)
+                    fuel or None, last[('lunch', '')]['params'] if ('lunch', '') in last else None)
 
 
 def truck_time_learned(rows: Sequence[Mapping[str, Any]]) -> str | None:
@@ -863,7 +908,7 @@ def apply_learned(norms: Any, tn: Any, trucks: Mapping[str, Any], eff: InEffect,
     точку после выученного). Расход машины: пустой/полный — в расчёт по остаточному грузу
     (running_costs.route_cost), а единый l100 машины (стоимость км в PyVRP, выбор машины и проверка «км × л/100» при
     выравнивании) — расход при половинной загрузке: рейс выезжает загруженным и возвращается пустым, средний груз на
-    борту — около половины загрузки выезда."""
+    борту — около половины загрузки выезда. Обед (№61) — выученные минуты, если обед включён в настройках (tn с обедом)."""
     trucks = dict(trucks)
     if eff.unload:
         p = eff.unload
@@ -875,6 +920,8 @@ def apply_learned(norms: Any, tn: Any, trucks: Mapping[str, Any], eff: InEffect,
                      warehouse_load_min_per_tonne=float(eff.loading['per_tonne_min']), loading_configured=True)
     if eff.travel and road_model_id(norms) == eff.travel.get('model_id'):
         norms = replace(norms, traffic=travel_profile(norms, eff.travel))
+    if eff.lunch and tn.lunch_minutes > 0:
+        tn = replace(tn, lunch_minutes=float(eff.lunch['minutes']))
     for code, p in (eff.fuel or {}).items():
         if code in trucks:
             empty, full = float(p['empty_l100']), float(p['full_l100'])
@@ -1005,6 +1052,19 @@ def planned_wait(trip: PlanTrip | None, arrive: datetime, depart: datetime) -> f
     if w is None or depart <= w[1]:
         return 0.0
     return max(0.0, (min(depart, w[1]) - max(arrive, w[0])).total_seconds() / 60.0)
+
+
+def lunch_obs(day: date, actual: ac.DayActual, window: tuple[float, float]) -> LunchObs | None:
+    """Обед машины за день по треку (№61): самая длинная стоянка не по плану ('other' — не склад и не точка плана),
+    начавшаяся в окне начала обеда window (минуты от полуночи рабочего дня) ± LUNCH_SLACK; такой нет — 0. Машина
+    работала не дольше конца окна (последнее возвращение на склад или отъезд от точки — не позже window[1]) — None: такой
+    день план и не кормит."""
+    ends = [t.ret for t in actual.trips if t.ret is not None] + [v.leave for v in actual.visits]
+    if not ends or ac.day_minutes(day, max(ends)) <= window[1]:
+        return None
+    lo, hi = window[0] - LUNCH_SLACK, window[1] + LUNCH_SLACK
+    stays = [s.minutes for s in actual.stays if s.kind == 'other' and lo <= ac.day_minutes(day, s.arrive) <= hi]
+    return LunchObs(day, round(max(stays, default=0.0), 1))
 
 
 def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop]) -> list[UnloadObs]:

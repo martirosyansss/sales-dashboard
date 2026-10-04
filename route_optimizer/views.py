@@ -986,7 +986,7 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
                                durations={p: v * k[p] for p, v in provider.durations.items()})
         norms = replace(norms, provider=provider, traffic_status=status)
     h2, m2 = map(int, s['truck_overtime_end'].split(':'))
-    tn = fl.TruckNorms.from_settings(s)
+    tn = fl.TruckNorms.from_settings(s, lunch=True)     # обед в пути (№61) — только «Развоз»
     # learned=False — журнала нет: выученных норм нет (eff пуст), только введённое время магазинов
     norms, tn, trucks, eff = _with_learned(state, norms, tn, trucks, customers or {}, journal, bundle.unload_min)
     return dp.DayContext(day, bundle.depot, trucks, norms, tn, h * 60 + m,
@@ -2240,6 +2240,9 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     extras = learning.store_extras(tn.unload_min_per_stop, bundle.unload_min, eff.unload)
     unload: list[learning.UnloadObs] = []
     loads: list[learning.LoadObs] = []
+    lunches: list[learning.LunchObs] = []
+    s = bundle.settings
+    lunch_window = tuple(float(int(s[k][:2]) * 60 + int(s[k][3:])) for k in ('truck_lunch_from', 'truck_lunch_to'))
     legs: list[learning.LegObs] = []
     pairs: list[tuple[learning.LegObs, learning.LegObs]] = []
     no_valhalla = 0
@@ -2251,6 +2254,9 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
         unload += learning.unload_obs(day, actual, stops)
         loads += learning.load_obs(day, actual, stops, learning.plan_trips(prediction, day))
+        meal = learning.lunch_obs(day, actual, lunch_window)   # type: ignore[arg-type]
+        if meal is not None:
+            lunches.append(meal)
         driven = actual
         if isinstance(osm, CenterBypassRoads) and bundle.truck_center_ok(car, names.get(car)):
             # машине с правом въезда центр открыт: где расчёт объезжает центр (detour > 1), её путь неизвестен —
@@ -2270,6 +2276,7 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
                             + math.fsum(extras.get(c, 0.0) for c in o.customers), today, bundle.unload_min,
                             lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes),
         learning.fit_loading(loads, today, loading_now),
+        learning.fit_lunch(lunches, tn.lunch_minutes, today, float(s['truck_lunch_min'])),
     ]
     model_id = learning.road_model_id(norms)
     if mode == 'yandex':
@@ -2372,6 +2379,7 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
                     'per_tonne_min': s.get('warehouse_load_min_per_tonne')},
         'travel': None,
         'truck_time': None,
+        'lunch': {'minutes': s.get('truck_lunch_min'), 'from': s.get('truck_lunch_from'), 'to': s.get('truck_lunch_to')},
     }
     keys = [(k, scope_travel if k == 'travel' else '') for k in learning.KINDS if k != 'fuel'] + \
         sorted(k for k in latest if k[0] == 'fuel')
@@ -2476,7 +2484,9 @@ def api_learning() -> Any:
                     'rules': {'holdout_days': learning.HOLDOUT_DAYS, 'train_days': learning.TRAIN_DAYS,
                               'min_gain_pct': round(learning.MIN_GAIN * 100), 'unload_min': learning.UNLOAD_MIN,
                               'loading_min': learning.LOADING_MIN, 'travel_min_test': learning.TRAVEL_MIN_TEST,
-                              'truck_time_min': learning.TRUCK_TIME_MIN,
+                              'truck_time_min': learning.TRUCK_TIME_MIN, 'lunch_min': learning.LUNCH_MIN,
+                              'boot_share_pct': round(learning.BOOT_SHARE * 100),
+                              'boot_resamples': learning.BOOT_RESAMPLES,
                               'fuel_min_intervals': learning.FUEL_MIN_INTERVALS,
                               'nightly_at': '%02d:%02d' % learning.NIGHTLY_AT}})
 

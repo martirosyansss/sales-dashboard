@@ -1278,6 +1278,17 @@
                 });
                 bar.addEventListener('click', () => focusFromBoard(t, tr));
                 track.appendChild(bar);
+                if (tr.lunch) {   // обед — засечка на полосе дня (№61)
+                    const a = toMin(tr.lunch.start), b = toMin(tr.lunch.end);
+                    if (a !== null) {
+                        const z = document.createElement('span');
+                        z.className = 'dp-lunch-mark';
+                        z.style.left = x(a);
+                        z.style.width = w(a, Math.max(b ?? a, a + 3));
+                        z.title = lunchText(tr.lunch);
+                        track.appendChild(z);
+                    }
+                }
             });
             if (now !== null) { const n = document.createElement('span'); n.className = 'dp-now'; n.style.left = x(now); n.title = 'Հիմա'; track.appendChild(n); }
 
@@ -1542,11 +1553,31 @@
         return li;
     }
 
-    function stopList(stops, tripId, editing) {
+    function stopList(stops, tripId, editing, lunch) {
         const ol = document.createElement('ol');
         ol.className = 'dp-stoplist';
-        stops.forEach((s, i) => ol.appendChild(stopItem(s, i + 1, tripId, editing)));
+        if (lunch && lunch.after_stop === null) ol.appendChild(lunchItem(lunch));
+        stops.forEach((s, i) => {
+            ol.appendChild(stopItem(s, i + 1, tripId, editing));
+            if (lunch && lunch.after_stop === i) ol.appendChild(lunchItem(lunch));
+        });
         return ol;
+    }
+
+    // Обед в пути (№61): где программа вставила паузу — строка расписания рейса «Ճաշ 13:05–13:35»
+    function lunchText(l) {
+        const rest = l.minutes - l.added_min;
+        return 'Ճաշ ' + (l.end === l.start ? l.start : l.start + '–' + l.end)
+            + (l.after_stop === null ? ' · պահեստում' : rest >= 0.5 ? ' (և ' + fmt(rest) + NB + 'րոպե՝ ընդունման ժամին սպասելիս)' : '');
+    }
+    function lunchItem(l) {
+        const li = document.createElement('li');
+        li.className = 'dp-stop dp-lunch';
+        li.innerHTML = '<span class="dp-stop-eta"></span><span class="dp-num" aria-hidden="true"><i class="fas fa-utensils"></i></span>'
+            + '<div class="dp-stop-main"><b></b></div><span class="dp-stop-kg"></span>';
+        li.firstChild.textContent = l.start;
+        li.querySelector('b').textContent = lunchText(l);
+        return li;
     }
 
     function renderUnassigned(plan) {
@@ -1783,7 +1814,7 @@
         div.appendChild(head);
         if (tr.poor && !state.data.is_past) div.appendChild(poorNote(tr));
         if (editing) div.appendChild(tripTools(t, tr, i));
-        div.appendChild(stopList(tr.stops, tr.id, editing));
+        div.appendChild(stopList(tr.stops, tr.id, editing, tr.lunch));
         return div;
     }
 
@@ -2032,10 +2063,10 @@
     }
     // Минуты рейса: загрузка, в пути, разгрузка, ожидание окон — целыми, в сумме ровно «загрузка → возвращение» по часам
     function tripTime(tr) {
-        const x = tr.explain, begin = clockMin(tr.loading_start), back = clockMin(tr.return);
-        const total = begin !== null && back !== null ? back - begin : Math.round(x.loading_min + x.drive_min + x.unload_min + x.wait_min);
-        const [loading, drive, unload, wait] = roundParts([x.loading_min, x.drive_min, x.unload_min, x.wait_min], total);
-        return { total, loading, drive, unload, wait };
+        const x = tr.explain, begin = clockMin(tr.loading_start), back = clockMin(tr.return), meal = x.lunch_min || 0;   // обед в рейсе (№61)
+        const total = begin !== null && back !== null ? back - begin : Math.round(x.loading_min + x.drive_min + x.unload_min + x.wait_min + meal);
+        const [loading, drive, unload, wait, lunch] = roundParts([x.loading_min, x.drive_min, x.unload_min, x.wait_min, meal], total);
+        return { total, loading, drive, unload, wait, lunch };
     }
     // Км по прямой бывают и с картой: карта не загрузилась — пишем, что её нет; иначе — что объезд не посчитан
     const noBypass = (model) => (model.km === 'straight' ? 'ճանապարհային քարտեզը հասանելի չէ' : 'շրջանցման հաշվարկը հասանելի չէ');
@@ -2125,7 +2156,9 @@
         if (tt.loading) bits.push('բեռնում պահեստում՝ ' + minText(tt.loading));
         bits.push('ճանապարհին՝ ' + minText(tt.drive), 'բեռնաթափում՝ ' + minText(tt.unload));
         if (tt.wait) bits.push('ընդունման ժամի սպասում՝ ' + minText(tt.wait));
+        if (tt.lunch) bits.push('ճաշ՝ ' + minText(tt.lunch));
         const time = [capFirst(bits.join(', ')) + '։ Ընդամենը՝ ' + minText(tt.total) + ' (' + tr.loading_start + ' → ' + tr.return + ')։'];
+        if (tr.lunch) time.push(lunchText(tr.lunch) + '։');
         if (x.idle_before_min >= 1) time.push((tt.loading ? 'Բեռնումը սկսվում է ' + tr.loading_start : 'Մեքենան մեկնում է ' + tr.depart)
             + '-ին, ոչ ավելի շուտ, որպեսզի ' + (tt.loading ? 'մեքենան ' : '') + 'առաջին խանութ հասնի դրա ընդունման ժամի սկզբին և չսպասի։');
         if (i < t.trips.length - 1) time.push('Դրանից հետո նույն մեքենան կատարում է ' + (i + 2) + '-րդ երթը։');
@@ -2200,8 +2233,13 @@
             });
             table.tBodies[0].appendChild(r);
         };
-        tr.stops.forEach((s, k) => row([(k + 1) + '. ' + (s.name || s.code), s.arrive || s.eta, fmt(s.drive_min),
-            s.wait_min >= 0.5 ? fmt(s.wait_min) + ' (մինչև ' + s.eta + ')' : '0', fmt(s.unload_min), windowText(s.window) || '—']));
+        const meal = tr.lunch ? [lunchText(tr.lunch), tr.lunch.start, '', '', '', ''] : null;
+        if (meal && tr.lunch.after_stop === null) row(meal);
+        tr.stops.forEach((s, k) => {
+            row([(k + 1) + '. ' + (s.name || s.code), s.arrive || s.eta, fmt(s.drive_min),
+                s.wait_min >= 0.5 ? fmt(s.wait_min) + ' (մինչև ' + s.eta + ')' : '0', fmt(s.unload_min), windowText(s.window) || '—']);
+            if (meal && tr.lunch.after_stop === k) row(meal);
+        });
         row(['Վերադարձ պահեստ', tr.return, fmt(x.back_min), '', '', '']);
         const wrap = document.createElement('div');
         wrap.className = 'dp-why-scroll';   // на телефоне таблица прокручивается в своей рамке, страница — нет
@@ -2218,7 +2256,8 @@
                 + (tr.load_pct !== null ? ' (' + tr.load_pct + '%)' : '') + ' · ≈ ' + fmt(tr.km, 1) + NB + 'կմ'
                 + (tr.liters !== null ? ' · ≈ ' + fmt(tr.liters, 1) + NB + 'լ' : '') + ' · '
                 + (tt.loading ? 'բեռնում ' + minText(tt.loading) + ', ' : '') + 'ճանապարհին ' + minText(tt.drive)
-                + ', բեռնաթափում ' + minText(tt.unload) + (tt.wait ? ', ընդունման ժամի սպասում ' + minText(tt.wait) : '') + '։';
+                + ', բեռնաթափում ' + minText(tt.unload) + (tt.wait ? ', ընդունման ժամի սպասում ' + minText(tt.wait) : '')
+                + (tt.lunch ? ', ճաշ ' + minText(tt.lunch) : '') + '։';
         });
         const last = t.trips[t.trips.length - 1].explain, end = state.data.work_end;
         const box = document.createElement('section');

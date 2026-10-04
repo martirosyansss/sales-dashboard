@@ -373,6 +373,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'truck_work_end': '18:00',
     # Форс-мажор (ответ владельца №32): «Везти после конца дня» в «Развозе» — машины возвращаются не позже
     'truck_overtime_end': '20:00',
+    # Обед водителей (ответ владельца №61): в пути, гибко — «Развоз» сам вставляет паузу в рейс; truck_lunch_from …
+    # truck_lunch_to — когда обед начинается; 0 минут — без обеда. Модель парка менеджеров его не знает
+    'truck_lunch_min': 30,
+    'truck_lunch_from': '12:30',
+    'truck_lunch_to': '14:30',
     'unload_min_per_stop': 8,
     'unload_min_per_tonne': 6,
     'warehouse_load_fixed_min': None,
@@ -427,6 +432,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'transfer_radius_km': (0.1, 20, False),
     'unload_min_per_stop': (0, 120, False),
     'unload_min_per_tonne': (0, 120, False),
+    'truck_lunch_min': (0, 120, False),
     'warehouse_load_fixed_min': (0, 240, True),
     'warehouse_load_min_per_tonne': (0, 120, True),
 }
@@ -949,7 +955,7 @@ def validate_settings(values: Mapping[str, Any],
         out['traffic_mode'] = mode
 
     for key in ('work_start', 'work_end', 'truck_work_start', 'truck_work_end', 'truck_overtime_end',
-                'dispatch_ready_time'):
+                'dispatch_ready_time', 'truck_lunch_from', 'truck_lunch_to'):
         v = values.get(key)
         if not isinstance(v, str) or not _HHMM_RE.match(v):
             errors[key] = 'время в формате ЧЧ:ММ'
@@ -961,6 +967,9 @@ def validate_settings(values: Mapping[str, Any],
     if ('truck_work_end' in out and 'truck_overtime_end' in out
             and _minutes(out['truck_overtime_end']) < _minutes(out['truck_work_end'])):
         errors['truck_overtime_end'] = 'не раньше конца рабочего дня машины'
+    if ('truck_lunch_from' in out and 'truck_lunch_to' in out
+            and _minutes(out['truck_lunch_to']) <= _minutes(out['truck_lunch_from'])):
+        errors['truck_lunch_to'] = 'ճաշի սկզբի վերջին ժամը պետք է ավելի ուշ լինի առաջինից'
 
     days, err = _check_int_set(values.get('workdays'), 1, 7, 'дней недели')
     if err:

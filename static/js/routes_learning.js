@@ -58,6 +58,7 @@
         }
         if (kind === 'fuel') return 'пустая ' + fmt(p.empty_l100, 1) + ', полная ' + fmt(p.full_l100, 1) + ' л/100 км';
         if (kind === 'truck_time') return modelName(p.source);
+        if (kind === 'lunch') return 'ճաշ՝ ' + fmt(p.minutes) + ' րոպե';   // обед в пути (№61)
         return '';
     }
     function manualText(kind, m) {
@@ -66,6 +67,7 @@
         if (kind === 'travel') return 'скорости из настроек и пробки по GPS менеджеров';
         if (kind === 'truck_time') return modelName('model');
         if (kind === 'fuel' && m) return num(m.empty_l100) !== null ? 'пустая ' + fmt(m.empty_l100, 1) + ', полная ' + fmt(m.full_l100, 1) + ' л/100 км' : fmt(m.l100, 1) + ' л/100 км';
+        if (kind === 'lunch' && m) return num(m.minutes) ? 'ճաշ՝ ' + fmt(m.minutes) + ' րոպե, սկիզբը՝ ' + m.from + '–' + m.to : 'ճաշն անջատված է';
         return '—';
     }
     // Модель времени грузовиков: какая действует и почему (s.source от сервера: value, why — env | learned | default)
