@@ -116,7 +116,7 @@
                 + changed + last.reason + '.'
             : '';
     }
-    // Разгрузка по магазинам (№50): введено / по факту (визитов) / в расчёте — stores строки unload
+    // Разгрузка по магазинам (№50): введено / по факту (визитов; split — 2 визита расходятся, ждём 3-й) / в расчёте
     const STORE_SOURCE = { learned: 'по GPS', manual: 'как введено', norm: 'обычное время' };
     const unloads = (n) => fmt(n) + ' ' + (n % 10 === 1 && n % 100 !== 11 ? 'разгрузка'
         : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'разгрузки' : 'разгрузок');
@@ -125,7 +125,8 @@
         const manual = num(r.manual_min) === null ? '—' : fmt(r.manual_min) + ' мин';
         const visits = num(r.visits);
         const fact = visits === null ? '<span class="lr-why">разгрузок пока нет</span>'
-            : fmt(r.fact_min, 1) + ' мин <span class="lr-why">(' + unloads(visits) + (visits < minVisits ? ' — пока мало, в расчёт не идёт' : '') + ')</span>';
+            : fmt(r.fact_min, 1) + ' мин <span class="lr-why">(' + unloads(visits) + (r.split ? ' сильно расходятся — ждём третью'
+                : visits < minVisits ? ' — пока мало, в расчёт не идёт' : '') + ')</span>';
         return '<tr><th scope="row">' + name + '</th><td>' + manual + '</td><td>' + fact + '</td><td><b>' + fmt(r.in_calc_min, 1)
             + ' мин</b><br><span class="lr-why">' + esc(STORE_SOURCE[r.source] || '') + '</span></td></tr>';
     }

@@ -211,6 +211,7 @@ def test_settings_page_has_field_and_bumped_assets():
     assert 'input.validity.badInput' in js                  # нечисло в поле — ошибка, а не «пусто» (стёрло бы время)
     assert 'unload_auto_min' in js and 'unload_visits' in js and 'смешает' not in js        # №60: без смеси с фактом
     assert 'Пока у магазина меньше 2 разгрузок по GPS, действует введённое время; со 2-й разгрузки программа берёт' in js
+    assert "если две первые разгрузки сильно расходятся —'" in js and "+ ' программа ждёт третью.'" in js
 
 
 def test_api_huge_unload_number_is_400(client):
@@ -503,9 +504,13 @@ def test_valid_params_old_rows_and_store_stats():
     assert lr.valid_params('unload', good) and lr.store_stats(good) == {101: (7, 12.5), 105: (1, -3.0)}
     # битые записи store_stats строку не портят (они только у своего магазина) — пропускаются
     for bad in ({'101': [0, 5.0]}, {'101': [True, 5.0]}, {'101': [2.0, 5.0]}, {'101': [2, -121.0]}, {'101': [2, 91.0]},
-                {'101': [2, 5.0, 1]}, {'x': [2, 5.0]}, [['101', 2, 5.0]], 'oops', {'101': [2, float('nan')]}):
+                {'101': [2, 5.0, 1, 1]}, {'101': [2, 5.0, -1.0]}, {'101': [2, 5.0, '3']}, {'101': [2, 5.0, float('inf')]},
+                {'x': [2, 5.0]}, [['101', 2, 5.0]], 'oops', {'101': [2, float('nan')]}):
         assert lr.valid_params('unload', {**old, 'store_stats': bad}), bad
-        assert lr.store_stats({**old, 'store_stats': bad}) == {}, bad
+        assert lr.store_stats({**old, 'store_stats': bad}) == {} and lr.store_waits({**old, 'store_stats': bad}) == set()
+    # третий элемент — разброс двух визитов («ждать 3-ю»): запись цела, в store_stats — как прежде
+    assert lr.store_stats({**old, 'store_stats': {'101': [2, 5.0, 1], '102': [2, 22.5, 35.0]}}) == {101: (2, 5.0),
+                                                                                                 102: (2, 22.5)}
 
 
 def test_run_learning_compares_against_current_with_manual(client, monkeypatch):
@@ -719,7 +724,8 @@ def test_fit_unload_learns_from_second_visit_gps_time():
         p = lr.fit_unload(obs, cur, TODAY, manual).params
         a = p['per_stop_min']
         times = lr.store_times(a, manual, p)
-        n, fact = p['store_stats']['202']
+        n, fact, spread = p['store_stats']['202']
+        assert spread == pytest.approx(0, abs=0.1)                           # два одинаковых визита — согласны
         assert n == 2 and fact == pytest.approx(25, abs=0.1) and times[202][1] == 'learned'
         assert a + times[202][0] == pytest.approx(fact, abs=0.06)
         assert p['store_offsets']['202'] == times[202][0] and '201' not in p['store_offsets']
@@ -743,7 +749,7 @@ def test_fit_unload_stores_from_5_visits_same_as_before(monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(lr, 'STORE_MIN_OBS', 5)
         old = lr.fit_unload(obs, cur, TODAY, manual).params
-    many = {c for c, (n, _) in new['store_stats'].items() if n >= 5}
+    many = {c for c, (n, *_) in new['store_stats'].items() if n >= 5}
     assert many == {str(c) for c in range(100, 106)}
     assert (new['per_stop_min'], new['per_tonne_min']) == (old['per_stop_min'], old['per_tonne_min'])
     assert {c: v for c, v in new['store_stats'].items() if c in many} == \
@@ -758,11 +764,11 @@ def test_fit_unload_stores_from_5_visits_same_as_before(monkeypatch):
 
 
 @pytest.mark.parametrize('prior', [12.0, None])
-def test_fit_unload_two_visits_extreme_in_cap_moves_time_by_half(prior):
-    """Два визита, один — крайний, но в пределах отсечения (≤ 3 × действующей нормы и ≤ 90 мин): медиана двух — их
-    середина, а время магазина со 2-го визита — факт без смеси (№60), значит крайний визит сдвигает его от обычного
-    ровно на половину своего отрыва (цена учёбы со 2-го визита; от выбросов — только отсечение). Чуть дольше отсечения
-    — визит выброшен, остаётся один: время — введённое или норма, не меняется вовсе."""
+def test_fit_unload_two_visits_extreme_in_cap_waits_for_third(prior):
+    """Два визита, один — крайний, но в пределах отсечения (≤ 3 × действующей нормы и ≤ 90 мин): они сильно расходятся
+    (store_waits) — время по GPS ждёт третьего визита (ответ владельца «ждать 3-ю»): пока введённое или норма, крайний
+    визит его не двигает. Третий обычный визит — медиана трёх, крайний больше не важен. Чуть дольше отсечения — визит
+    выброшен, остаётся один: время — введённое или норма."""
     manual = {} if prior is None else {205: prior}
     plain = lambda o: 8 * o.n + 6 * o.tonnes   # noqa: E731
     ext = lr.store_extras(8.0, manual, None)
@@ -774,15 +780,77 @@ def test_fit_unload_two_visits_extreme_in_cap_moves_time_by_half(prior):
     a, b = p['per_stop_min'], p['per_tonne_min']
     base = prior or a
     extreme = cap - 1.0 - b * 0.5                          # постоянная часть крайнего визита
-    n, fact = p['store_stats']['205']
-    extra, src = lr.store_times(a, manual, p)[205]
-    swing = a + extra - base
-    assert (n, src) == (2, 'learned') and extreme - base > 20
-    assert a + extra == pytest.approx(fact, abs=0.06)
-    assert swing == pytest.approx((extreme - base) / 2, abs=0.1)
+    n, fact, spread = p['store_stats']['205']
+    assert n == 2 and spread == pytest.approx(extreme - base, abs=0.1) and extreme - base > 20
+    assert lr.store_waits(p) == {205} and '205' not in p['store_offsets']
+    assert lr.store_times(a, manual, p).get(205) == ((prior - a, 'manual') if prior else None)
+    three = lr.fit_unload(_exact_obs() + _two_visits(205, [normal, cap - 1.0, normal]), cur, TODAY, manual,
+                          plain).params
+    assert three['store_stats']['205'] == [3, pytest.approx(base, abs=0.1)] and lr.store_waits(three) == set()
+    a3 = three['per_stop_min']
+    assert a3 + lr.store_extras(a3, manual, three).get(205, 0.0) == pytest.approx(base, abs=0.1)
     out = lr.fit_unload(_exact_obs() + _two_visits(205, [normal, cap + 1.0]), cur, TODAY, manual, plain).params
     assert out['store_stats'].get('205', [1])[0] == 1
     assert a + lr.store_extras(a, manual, out).get(205, 0.0) == pytest.approx(base, abs=0.06)
+
+
+def test_store_times_two_disagreeing_visits_wait_for_third():
+    """Ответ владельца «ждать 3-ю»: ровно 2 визита по GPS, чьё время по факту разнится больше чем на 5 мин и больше чем
+    на 30% большего, — как без факта (введённое, нет — норма). 5 и 40 — ждём (введено 30 → 30; без введённого — норма);
+    10 и 14 — 12; 20 и 27 — 23,5 (7 мин > 5, но 26% < 30%); 18 и 24,6 — 21,3 (30% — от большего, не от середины);
+    10 и 15 — 12,5 (33%, но ровно 5 мин); 10 и 15,5 — ждём.
+    Третий визит — медиана; запись без разброса (строка до правила) — как раньше; разброс у 3 визитов не учитывается."""
+    def stat(x1, x2):
+        return [2, (x1 + x2) / 2, abs(x1 - x2)]
+    row = {'per_stop_min': 6.0, 'per_tonne_min': 10.0, 'store_offsets': {},
+           'store_stats': {'101': stat(5, 40), '102': stat(5, 40), '103': stat(10, 14), '104': stat(20, 27),
+                           '105': stat(10, 15), '106': stat(10, 15.5), '107': [2, 22.5], '108': [3, 12.0, 35.0],
+                           '109': stat(18, 24.6)}}
+    assert lr.store_waits(row) == {101, 102, 106}
+    times = {c: round(6.0 + e, 2) for c, (e, _) in lr.store_times(6.0, {101: 30.0}, row).items()}
+    assert times == {101: 30.0, 103: 12.0, 104: 23.5, 105: 12.5, 107: 22.5, 108: 12.0, 109: 21.3}   # 102, 106 — норма
+    assert lr.store_times(6.0, {101: 30.0}, row)[101] == (24.0, 'manual')
+    # store_extras — прогноз проверки обучения и unload_extra «Развоза»: то же решение
+    assert lr.store_extras(6.0, {}, row).keys() == {103, 104, 105, 107, 108, 109}
+    tn = lr.unload_extra(6.0, {}, row, {101: A, 103: B})
+    assert tn == {B: 6.0}
+
+
+def test_fit_unload_two_disagreeing_visits_wait_then_third_resolves():
+    """Конец в конец: у магазина 206 (введено 30) визиты с постоянной частью 5 и 40 мин — в строке разброс 35, время по
+    GPS ждёт: введённое 30 и в расчёте, и в проверке (ровно то, что применит «Развоз»); 207 — 10 и 14: время 12; третий
+    визит 206 (12) — медиана 12."""
+    obs = _exact_obs() + _two_visits(206, [5 + 12 * 0.5, 40 + 12 * 0.5]) + _two_visits(207, [10 + 6.0, 14 + 6.0])
+    manual = {206: 30.0}
+    plain = lambda o: 8 * o.n + 6 * o.tonnes   # noqa: E731
+    ext = lr.store_extras(8.0, manual, None)
+    cur = lambda o: plain(o) + math.fsum(ext.get(c, 0.0) for c in o.customers)   # noqa: E731
+    p = lr.fit_unload(obs, cur, TODAY, manual, plain).params
+    a = p['per_stop_min']
+    assert p['store_stats']['206'] == [2, pytest.approx(22.5, abs=0.1), pytest.approx(35, abs=0.1)]
+    assert lr.store_waits(p) == {206} and '206' not in p['store_offsets']
+    assert lr.store_times(a, manual, p)[206] == (30.0 - a, 'manual') and 206 not in lr.store_extras(a, {}, p)
+    assert a + lr.store_extras(a, manual, p)[207] == pytest.approx(12, abs=0.1)
+    three = lr.fit_unload(obs + _two_visits(206, [12 + 6.0]), cur, TODAY, manual, plain).params
+    assert three['store_stats']['206'] == [3, pytest.approx(12, abs=0.1)]
+    a3 = three['per_stop_min']
+    assert a3 + lr.store_extras(a3, manual, three)[206] == pytest.approx(12, abs=0.1)
+
+
+def test_page_shows_disagreeing_visits_wait(client, monkeypatch):
+    """Страница обучения: у магазина с двумя сильно расходящимися визитами — «ждём третью» (split) и время в расчёте —
+    введённое; у старой записи без разброса — как раньше."""
+    state = _learning_client(client, monkeypatch)
+    state.store.save_customer_constraints(101, None, None, 'qa', 20)
+    state.store.save_learned('2026-09-02', [lr.Outcome('unload', '', True, 'да', {
+        'per_stop_min': 6.0, 'per_tonne_min': 10.0, 'store_offsets': {},
+        'store_stats': {'101': [2, 22.5, 35.0], '102': [2, 41.0]}})])
+    rows = {r['customer_id']: r for r in next(s for s in client.get('/api/routes/learning/status').get_json()['status']
+                                              if s['kind'] == 'unload')['stores']['rows']}
+    assert (rows[101]['split'], rows[101]['in_calc_min'], rows[101]['source']) == (True, 20.0, 'manual')
+    assert (rows[102]['split'], rows[102]['in_calc_min'], rows[102]['source']) == (False, 41.0, 'learned')
+    js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
+    assert "r.split ? ' сильно расходятся — ждём третью'" in js
 
 
 def test_page_and_hint_follow_second_visit_threshold(client, monkeypatch):
