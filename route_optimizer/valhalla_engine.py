@@ -1022,6 +1022,12 @@ class ValhallaProvider:
             with self._lock:
                 self._kick()
 
+    def preparing(self) -> bool:
+        """Фон ещё работает (собирает тайлы или считает матрицы запрошенных точек): ждать готовности есть смысла.
+        Valhalla выключен, сборка не удалась или всё готово — False."""
+        with self._lock:
+            return self._usable() and self._thread is not None and self._thread.is_alive()
+
     def get(self, fallback: RoadDistances | CenterBypassRoads | None, points: Iterable[Point | None],
             truck_capacity_kg: float | None = None, truck_time: bool | None = None) -> ValhallaRoads | None:
         """Срез Valhalla для расчёта по точкам points (truck_capacity_kg — тоннаж самой большой машины парка), если

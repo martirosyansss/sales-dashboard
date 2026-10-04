@@ -2043,6 +2043,8 @@ def api_road_lines() -> Any:
 LEARNING_REPORT_DAYS = 14         # отчёт по умолчанию — две недели до вчера
 LEARNING_REPORT_MAX_DAYS = 62
 ACTUALS_CACHE_MAX = 3000          # факт машино-дней в памяти (отчёт и ночной прогон не пересчитывают неизменённые дни)
+VALHALLA_WAIT_S = 600.0           # обучение ждёт фон Valhalla (матрица грузовика для точек факта) не дольше…
+VALHALLA_POLL_S = 5.0             # …проверяя готовность так часто
 MAP_TRACK_POINTS = 1500           # трек на карте — упрощённый (Дуглас — Пекер)
 
 
@@ -2163,6 +2165,23 @@ def _unload_norms(bundle: Bundle, unload: Mapping[str, Any] | None) -> tuple[flo
     return float(s['unload_min_per_stop']), float(s['unload_min_per_tonne'])
 
 
+def _valhalla_ready(ctx: dp.DayContext) -> bool:
+    """Срез дорог расчёта — Valhalla (матрицы для его точек готовы)."""
+    return isinstance(ctx.norms.roads, ValhallaRoads) and ctx.norms.roads.active
+
+
+def _await_valhalla(state: RoutesState, ctx: dp.DayContext, make: Callable[[], dp.DayContext]) -> dp.DayContext:
+    """Контекст расчёта с Valhalla, если фон его ещё готовит: ночной прогон идёт в 03:00, когда матрицу грузовика для
+    точек факта никто ещё не запрашивал (ValhallaProvider.get не ждёт — сразу граф OSM; 04.10.2026 так и вышло).
+    make — тот же контекст заново (точки уже переданы фону); ждём, пока фон работает, не дольше VALHALLA_WAIT_S."""
+    deadline = time.monotonic() + VALHALLA_WAIT_S
+    while (not _valhalla_ready(ctx) and state.valhalla is not None and state.valhalla.preparing()
+           and time.monotonic() < deadline):
+        time.sleep(VALHALLA_POLL_S)
+        ctx = make()
+    return ctx
+
+
 def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     """Прогон обучения за день today (Ереван; ночью — за наступивший день): наблюдения из факта до вчера включительно,
     проверка на последней неделе, итог — в learned_norms (повтор того же дня заменяет). «Действующая норма» для
@@ -2174,7 +2193,9 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     на одних и тех же участках, срез дорог с матрицей грузовика (learning.fit_truck_time; автообучение travel
     выключено — «как есть»). Выбранная модель — не та, которой учился этот прогон (только что переключились, env,
     галочка), — рядом пишется и её поправка по часам (travel её scope): перейдёт на неё «Развоз» — поправка уже есть.
-    Сравнения нет (Valhalla не готов, Яндекс) — решение этого дня из прежнего прогона не затирается."""
+    Сравнения нет (Valhalla не готов, Яндекс) — решение этого дня из прежнего прогона не затирается. Чистых участков
+    факта хватает на сравнение, а фон Valhalla ещё готовит матрицу грузовика для их точек — прогон её ждёт
+    (_await_valhalla); причина строки truck_time — по правде: мало участков, матрица ещё считается или Valhalla нет."""
     if state.fleet_facts is None:
         return []
     bundle = _bundle(state)
@@ -2196,13 +2217,19 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
                  if s.point is not None and s.customer_id is not None}
     journal = _learned_journal(state, today.isoformat())
     source = _truck_time_choice(journal)[0]
-    # нормы без выученного; срез Valhalla — с матрицей грузовика (её минуты нужны обеим моделям сравнения)
-    base = (_dispatch_ctx(state, snap, calc, today, ready, points, customers, learned=False, truck_time=True)
-            if ready else None)
+
+    def make() -> dp.DayContext | None:
+        # нормы без выученного; срез Valhalla — с матрицей грузовика (её минуты нужны обеим моделям сравнения)
+        return _dispatch_ctx(state, snap, calc, today, ready, points, customers, learned=False, truck_time=True)
+    base = make() if ready else None
     if base is None:
         raise dp.DispatchError('Сначала укажите тоннаж и расход машин в настройках')
+    # чистые участки факта (по дню): мало их — выбирать модель не на чем, и Valhalla ждать незачем
+    clean = [day for _, day, _, actual, *_ in days for g in actual.legs if g.clean and g.minutes > 0]
+    if mode != 'yandex' and learning.truck_time_short(clean, today) is None:
+        base = _await_valhalla(state, base, make)
     variants = {TRUCK_TIME_MODEL: base.norms}   # модель → нормы грузовиков из одного среза дорог
-    if isinstance(base.norms.roads, ValhallaRoads) and base.norms.roads.active:
+    if _valhalla_ready(base):
         variants = {m: base.norms.for_trucks(truck_time=m == TRUCK_TIME_VALHALLA) for m in learning.TRUCK_TIME_SOURCES}
     base_run = source if source in variants else TRUCK_TIME_MODEL   # как считает «Развоз» (Valhalla не готов — прежняя)
     plain = variants[base_run]
@@ -2258,8 +2285,10 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         incumbent = learning.truck_time_learned(rows) or TRUCK_TIME_MODEL
         prevs = {m: learning.in_effect(rows, auto, learning.road_model_id(n), learning.travel_scope(n)).travel
                  for m, n in variants.items()}
-        decision, fitted = learning.fit_truck_time(pairs, today, incumbent, variants, prevs, no_valhalla,
-                                                   learning.auto_on(auto, 'travel'), {base_run: regular})
+        decision, fitted = learning.fit_truck_time(
+            pairs, today, incumbent, variants, prevs, no_valhalla, learning.auto_on(auto, 'travel'), {base_run: regular},
+            fact=legs, preparing=(TRUCK_TIME_VALHALLA not in variants and state.valhalla is not None
+                                  and state.valhalla.preparing()))
         chosen = decision.params['source'] if decision.accepted else incumbent
         if chosen != base_run and chosen in fitted:
             # выбранная модель — не та, которой этот прогон учил «Развоз» (только что переключились, env, галочка):

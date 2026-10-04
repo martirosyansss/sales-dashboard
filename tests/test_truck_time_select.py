@@ -748,7 +748,9 @@ def test_store_migrates_13_to_14_keeps_rows_and_ids(tmp_path):
         assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
             (str(rst.SCHEMA_VERSION),)                                          # 13 → 14 → … → текущая
         rows = conn.execute('SELECT * FROM learned_norms ORDER BY id').fetchall()
-        assert rows[:len(before)] == before and rows[-1][1] == 'truck_time' and rows[-1][0] == 51   # id не повторяются
+        # схема 17 добавила столбец confidence (у прежних строк — NULL)
+        assert [r[:-1] for r in rows[:len(before)]] == before and all(r[-1] is None for r in rows[:len(before)])
+        assert rows[-1][1] == 'truck_time' and rows[-1][0] == 51   # id не повторяются
         assert conn.execute("SELECT name FROM sqlite_sequence WHERE name LIKE 'learned_norms%'").fetchall() == \
             [('learned_norms',)]
         with pytest.raises(sqlite3.IntegrityError):

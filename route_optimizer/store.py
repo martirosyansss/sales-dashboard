@@ -27,7 +27,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -158,8 +158,9 @@ _LEARNED_TABLE_V13 = (
     "UNIQUE (kind, scope, run_day))")
 # Схема 14: вид truck_time — выбор модели времени в пути грузовиков (learning.fit_truck_time). Столбцы те же; SQLite не
 # меняет CHECK столбца — таблица пересобирается, строки переносятся как есть (с id). scope у travel — к каким минутам
-# выучена поправка (learning.travel_scope): '' — прежняя модель, 'valhalla' — время Valhalla.
-_LEARNED_COLUMNS = (
+# выучена поправка (learning.travel_scope): '' — прежняя модель, 'valhalla' — время Valhalla. Как была создана миграцией
+# 13 → 14 (история миграций не меняется).
+_LEARNED_COLUMNS_V14 = (
     "id INTEGER PRIMARY KEY AUTOINCREMENT, "
     "kind TEXT NOT NULL CHECK (kind IN ('unload', 'loading', 'travel', 'truck_time', 'fuel')), "
     "scope TEXT NOT NULL DEFAULT '', "
@@ -167,6 +168,16 @@ _LEARNED_COLUMNS = (
     "train_from TEXT, train_to TEXT, test_from TEXT, test_to TEXT, mae_before REAL, mae_after REAL, "
     "accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)), reason TEXT NOT NULL, created_at TEXT NOT NULL, "
     "UNIQUE (kind, scope, run_day)")
+# Схема 17 (№61): вид lunch — обед в пути (learning.fit_lunch) — и confidence: доля повторных выборок проверки, где новая
+# норма точнее (learning._accept; NULL — не считали, и у строк до схемы 17). Таблица пересобирается так же, как 13 → 14.
+_LEARNED_COLUMNS = (
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+    "kind TEXT NOT NULL CHECK (kind IN ('unload', 'loading', 'travel', 'truck_time', 'fuel', 'lunch')), "
+    "scope TEXT NOT NULL DEFAULT '', "
+    "run_day TEXT NOT NULL, params TEXT, model_id TEXT, n_obs INTEGER NOT NULL, n_test INTEGER NOT NULL, "
+    "train_from TEXT, train_to TEXT, test_from TEXT, test_to TEXT, mae_before REAL, mae_after REAL, "
+    "accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)), reason TEXT NOT NULL, created_at TEXT NOT NULL, "
+    "confidence REAL, UNIQUE (kind, scope, run_day)")
 _LEARNED_COPY = ('id, kind, scope, run_day, params, model_id, n_obs, n_test, train_from, train_to, test_from, test_to, '
                  'mae_before, mae_after, accepted, reason, created_at')
 _LEARNED_TABLE = f"CREATE TABLE IF NOT EXISTS learned_norms({_LEARNED_COLUMNS})"
@@ -277,7 +288,7 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     # есть, счётчик AUTOINCREMENT — прежний (повторный прогон дня расходует номера: id не повторяются);
     # переключатели автообучения (без CHECK вида) не меняются.
     13: (
-        f"CREATE TABLE learned_norms_v14({_LEARNED_COLUMNS})",
+        f"CREATE TABLE learned_norms_v14({_LEARNED_COLUMNS_V14})",
         f"INSERT INTO learned_norms_v14({_LEARNED_COPY}) SELECT {_LEARNED_COPY} FROM learned_norms",
         "DELETE FROM sqlite_sequence WHERE name = 'learned_norms_v14'",
         "INSERT INTO sqlite_sequence(name, seq) SELECT 'learned_norms_v14', seq FROM sqlite_sequence "
@@ -289,6 +300,17 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     14: (_CUSTOMER_UNLOAD_TABLE,),
     # 15 → 16 (№53): только добавляем — журнал гаража и его индекс; прежние таблицы и значения не меняются.
     15: (_GARAGE_TABLE, _GARAGE_ONE_ODOMETER),
+    # 16 → 17 (№61): вид выученной нормы lunch и столбец confidence — журнал пересобирается, как 13 → 14: строки (и id)
+    # переносятся как есть (confidence — NULL), счётчик AUTOINCREMENT — прежний; переключатели не меняются.
+    16: (
+        f"CREATE TABLE learned_norms_v17({_LEARNED_COLUMNS})",
+        f"INSERT INTO learned_norms_v17({_LEARNED_COPY}) SELECT {_LEARNED_COPY} FROM learned_norms",
+        "DELETE FROM sqlite_sequence WHERE name = 'learned_norms_v17'",
+        "INSERT INTO sqlite_sequence(name, seq) SELECT 'learned_norms_v17', seq FROM sqlite_sequence "
+        "WHERE name = 'learned_norms'",
+        "DROP TABLE learned_norms",
+        "ALTER TABLE learned_norms_v17 RENAME TO learned_norms",
+    ),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -2004,17 +2026,18 @@ class Store:
             for o in outcomes:
                 conn.execute(
                     'INSERT INTO learned_norms(kind, scope, run_day, params, model_id, n_obs, n_test, train_from, '
-                    'train_to, test_from, test_to, mae_before, mae_after, accepted, reason, created_at) '
-                    'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(kind, scope, run_day) DO UPDATE '
+                    'train_to, test_from, test_to, mae_before, mae_after, accepted, reason, created_at, confidence) '
+                    'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(kind, scope, run_day) DO UPDATE '
                     'SET params = excluded.params, model_id = excluded.model_id, n_obs = excluded.n_obs, '
                     'n_test = excluded.n_test, train_from = excluded.train_from, train_to = excluded.train_to, '
                     'test_from = excluded.test_from, test_to = excluded.test_to, mae_before = excluded.mae_before, '
                     'mae_after = excluded.mae_after, accepted = excluded.accepted, reason = excluded.reason, '
-                    'created_at = excluded.created_at',
+                    'created_at = excluded.created_at, confidence = excluded.confidence',
                     (o.kind, o.scope, run_day,
                      json.dumps(o.params, ensure_ascii=False, sort_keys=True, allow_nan=False)
                      if o.params is not None else None, o.model_id, o.n_obs, o.n_test, o.train_from, o.train_to,
-                     o.test_from, o.test_to, o.mae_before, o.mae_after, int(o.accepted), o.reason, now))
+                     o.test_from, o.test_to, o.mae_before, o.mae_after, int(o.accepted), o.reason, now,
+                     getattr(o, 'confidence', None)))
 
         self._transaction(write, 'не удалось сохранить выученные нормы')
 
@@ -2024,11 +2047,11 @@ class Store:
         where = [w for w, on in (('run_day < ?', before is not None), ('accepted = 1', accepted_only)) if on]
         rows = self._read(lambda conn: conn.execute(
             'SELECT id, kind, scope, run_day, params, model_id, n_obs, n_test, train_from, train_to, test_from, '
-            'test_to, mae_before, mae_after, accepted, reason, created_at FROM learned_norms '
+            'test_to, mae_before, mae_after, accepted, reason, created_at, confidence FROM learned_norms '
             + (f'WHERE {" AND ".join(where)} ' if where else '') + 'ORDER BY run_day, kind, scope',
             (before,) if before is not None else ()).fetchall())
         keys = ('id', 'kind', 'scope', 'run_day', 'params', 'model_id', 'n_obs', 'n_test', 'train_from', 'train_to',
-                'test_from', 'test_to', 'mae_before', 'mae_after', 'accepted', 'reason', 'created_at')
+                'test_from', 'test_to', 'mae_before', 'mae_after', 'accepted', 'reason', 'created_at', 'confidence')
         out = []
         for r in rows:
             d = dict(zip(keys, r))

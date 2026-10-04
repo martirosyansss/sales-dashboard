@@ -547,7 +547,8 @@ def test_run_learning_end_to_end_idempotent_and_applied(client, monkeypatch):
     out = views.run_learning(state, TODAY)
     by = {o.kind: o for o in out}
     assert set(by) == {'unload', 'loading', 'travel', 'truck_time'}
-    assert not by['truck_time'].accepted and by['truck_time'].reason.startswith('Valhalla недоступен')   # нет карты
+    # карты нет, но и участков меньше порога TRUCK_TIME_MIN — причина по правде: мало данных (№61, ночь 04.10)
+    assert not by['truck_time'].accepted and by['truck_time'].reason.startswith('мало данных: обучение 115 из 200')
     assert by['unload'].accepted and by['unload'].params['per_stop_min'] == pytest.approx(4, abs=0.6)
     assert by['unload'].params['per_tonne_min'] == pytest.approx(12, abs=0.6)
     assert by['loading'].accepted and by['loading'].params['fixed_min'] == pytest.approx(10, abs=1.5)

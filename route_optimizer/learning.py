@@ -52,9 +52,12 @@
 Правило принятия (одно для всех): обучение — на днях до отложенной недели (TRAIN_DAYS дней), проверка — на последних
 HOLDOUT_DAYS днях (до вчера включительно; у расхода — последние FUEL_TEST интервала заправок, а форма модели
 выбирается только по обучающим интервалам); новая норма принимается, только если средняя абсолютная ошибка на
-проверке меньше, чем у действующей нормы, не меньше чем на MIN_GAIN (2%), и данных не меньше порогов (константы ниже).
-Иначе действует прежняя (выученная раньше или ручная из настроек). Применяется норма, обученная на днях до отложенной
-недели, — ровно та, что прошла проверку. Результат каждого прогона — строка learned_norms (store.save_learned).
+проверке меньше, чем у действующей нормы, не меньше чем на MIN_GAIN (2%), выигрыш устойчив — новая норма точнее
+действующей не меньше чем в BOOT_SHARE (90%) повторных выборок дней проверки (у расхода — интервалов; парный бутстреп
+bootstrap_share: на двух днях выигрыш в 2–3% бывает и шумом), и данных не меньше порогов (константы ниже); доля —
+в причине строки и в её столбце confidence. У truck_time — так же поверх гистерезиса. Иначе действует прежняя
+(выученная раньше или ручная из настроек). Применяется норма, обученная на днях до отложенной недели, — ровно та, что
+прошла проверку. Результат каждого прогона — строка learned_norms (store.save_learned).
 Действующая норма вида — последняя принятая с корректными параметрами (travel — ещё и той же дорожной модели и scope;
 truck_time — truck_time_learned); автообучение вида выключено (DEFAULT_AUTO — по умолчанию) — действуют ручные
 настройки (у truck_time — прежняя модель или ROUTES_TRUCK_TIME).
@@ -69,6 +72,7 @@ truck_time — truck_time_learned); автообучение вида выклю
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from statistics import median
@@ -88,6 +92,9 @@ DEFAULT_AUTO = {'unload': True, 'loading': False, 'travel': True, 'truck_time': 
 HOLDOUT_DAYS = 7
 TRAIN_DAYS = 120
 MIN_GAIN = 0.02
+BOOT_RESAMPLES = 2000                # устойчивость выигрыша: повторных выборок групп проверки (bootstrap_share)…
+BOOT_SHARE = 0.90                    # …и в скольких из них новая норма должна быть точнее
+BOOT_SEED = 61                       # своё зерно: итог прогона воспроизводим
 # пороги данных: (наблюдений в обучении, дней в обучении, наблюдений в проверке, дней в проверке)
 UNLOAD_MIN = (30, 5, 10, 2)
 LOADING_MIN = (15, 5, 5, 2)
@@ -188,6 +195,7 @@ class Outcome:
     test_to: str | None = None
     mae_before: float | None = None
     mae_after: float | None = None
+    confidence: float | None = None   # доля повторных выборок проверки, где новая норма точнее (_accept); None — не считали
 
 
 def windows(today: date) -> tuple[date, date]:
@@ -228,6 +236,54 @@ def _verdict(before: float, after: float) -> tuple[bool, str]:
     if before > 0 and after <= before * (1 - MIN_GAIN):
         return True, f'принято: ошибка {before:.2f} → {after:.2f}'
     return False, f'не лучше действующей нормы хотя бы на {MIN_GAIN:.0%}: ошибка {before:.2f} → {after:.2f}'
+
+
+def bootstrap_share(gains: Sequence[float], resamples: int = BOOT_RESAMPLES, seed: int = BOOT_SEED) -> float:
+    """Парный бутстреп по группам проверки (дни; у расхода — интервалы заправок). gains — выигрыш новой нормы в группе:
+    Σ |действующая − факт| − Σ |новая − факт| на одних и тех же наблюдениях. Группы выбираются с возвращением (столько
+    же, сколько их есть), одни и те же для обеих норм; итог — доля выборок, где новая норма точнее (сумма выигрышей > 0:
+    знаменатель средней ошибки у обеих один). Детерминирован (своё зерно, не общий random); групп нет — 0."""
+    if not gains:
+        return 0.0
+    rnd, n = random.Random(seed), len(gains)
+    better = sum(1 for _ in range(resamples) if math.fsum(gains[rnd.randrange(n)] for _ in range(n)) > 1e-9)
+    return better / resamples
+
+
+def _gains(rows: Iterable[tuple[Any, float, float, float]]) -> list[float]:
+    """(группа, прогноз действующей нормы, прогноз новой, факт) → выигрыш новой нормы по группам (bootstrap_share), по
+    возрастанию группы."""
+    acc: dict[Any, list[float]] = {}
+    for g, cur, new, y in rows:
+        acc.setdefault(g, []).append(abs(cur - y) - abs(new - y))
+    return [math.fsum(acc[g]) for g in sorted(acc)]
+
+
+GROUPS_HY = {'days': 'ստուգման օրերի', 'intervals': 'ստուգման լիցքավորումների միջակայքերի'}
+
+
+def _pct(share: float) -> str:
+    """Доля → «93,5» (вниз до десятой: 89,96% — не «90%»)."""
+    v = math.floor(share * 1000 + 1e-9) / 10
+    return (f'{v:.0f}' if v == int(v) else f'{v:.1f}').replace('.', ',')
+
+
+def _robust(share: float, groups: str, who: str = 'նոր նորմն') -> str:
+    return f'{GROUPS_HY[groups]} {BOOT_RESAMPLES} պատահական համադրությունից {_pct(share)}%-ում {who} ավելի ճշգրիտ է'
+
+
+def _accept(before: float, after: float, gains: Sequence[float], groups: str = 'days') -> tuple[bool, str, float]:
+    """Правило принятия: _verdict (ошибка меньше хотя бы на MIN_GAIN) и устойчивость выигрыша — новая норма точнее
+    действующей не меньше чем в BOOT_SHARE повторных выборок групп проверки (bootstrap_share по gains; groups — days |
+    intervals, для текста). (принята, причина, доля выборок — Outcome.confidence)."""
+    ok, why = _verdict(before, after)
+    share = round(bootstrap_share(gains), 4)
+    if not ok:
+        return False, why, share
+    if share < BOOT_SHARE:
+        return False, (f'ոչ հուսալի․ սխալը {before:.2f} → {after:.2f}, բայց միայն {_robust(share, groups)} '
+                       f'(պետք է առնվազն {_pct(BOOT_SHARE)}%)'), share
+    return True, f'{why}; հուսալի է՝ {_robust(share, groups)}', share
 
 
 def quantile(values: Sequence[float], q: float) -> float:
@@ -326,9 +382,9 @@ def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], 
     def predict(o: UnloadObs) -> float:
         return a * o.n + b * o.tonnes + math.fsum(extras.get(c, 0.0) for c in o.customers)
     before, after = _mae((current(o), o.minutes) for o in test), _mae((predict(o), o.minutes) for o in test)
-    ok, why = _verdict(before, after)
+    ok, why, conf = _accept(before, after, _gains((o.day, current(o), predict(o), o.minutes) for o in test))
     return Outcome('unload', '', ok, why, params, n_obs=len(train), n_test=len(test), mae_before=round(before, 3),
-                   mae_after=round(after, 3), **_spans(train, test))
+                   mae_after=round(after, 3), confidence=conf, **_spans(train, test))
 
 
 def limit_step(cur: tuple[float, float], new: tuple[float, float], tonnes: Sequence[float],
@@ -375,11 +431,11 @@ def fit_loading(obs: Sequence[LoadObs], today: date, cur: tuple[float, float] | 
     a, b = round(a, 2), round(b, 2)
     before = _mae((baseline(o), o.minutes) for o in test)
     after = _mae((a + b * o.tonnes, o.minutes) for o in test)
-    ok, why = _verdict(before, after)
+    ok, why, conf = _accept(before, after, _gains((o.day, baseline(o), a + b * o.tonnes, o.minutes) for o in test))
     if cur is None:
         why += f' (опора — медиана стоянок {ref[0]:.1f} мин: в настройках загрузки нет)'
     return Outcome('loading', '', ok, why, {'fixed_min': a, 'per_tonne_min': b}, n_obs=len(train), n_test=len(test),
-                   mae_before=round(before, 3), mae_after=round(after, 3), **_spans(train, test))
+                   mae_before=round(before, 3), mae_after=round(after, 3), confidence=conf, **_spans(train, test))
 
 
 def _bucket(o: LegObs) -> tuple[bool, int, int]:
@@ -456,11 +512,12 @@ def fit_travel(obs: Sequence[LegObs], today: date, model_id: str, ref: Mapping[s
                        model_id=model_id, n_obs=len(train), n_test=len(held), **_spans(train, test))
     params = _travel_params(ratio, ref, prev, _own_minutes(base_norms))
     profile = travel_profile(base_norms, params)
+    new = [profile.travel(o.km, o.speed, o.city, o.weekday, o.start) for o in held]
     before = _mae((o.current, o.minutes) for o in held)
-    after = _mae((profile.travel(o.km, o.speed, o.city, o.weekday, o.start), o.minutes) for o in held)
-    ok, why = _verdict(before, after)
+    after = _mae((p, o.minutes) for p, o in zip(new, held))
+    ok, why, conf = _accept(before, after, _gains((o.day, o.current, p, o.minutes) for p, o in zip(new, held)))
     return Outcome('travel', scope, ok, why, params, model_id, len(train), len(held), mae_before=round(before, 3),
-                   mae_after=round(after, 3), **_spans(train, test))
+                   mae_after=round(after, 3), confidence=conf, **_spans(train, test))
 
 
 def _errors(pairs: Sequence[tuple[float, float]]) -> dict[str, float]:
@@ -477,9 +534,22 @@ def _forecast(base: Any, params: Mapping[str, Any] | None, legs: Sequence[LegObs
     return [(profile.travel(o.km, o.speed, o.city, o.weekday, o.start), o.minutes) for o in legs]
 
 
+@dataclass(frozen=True)
+class _Dated:
+    day: date
+
+
+def truck_time_short(days: Sequence[date], today: date) -> str | None:
+    """Хватает ли чистых участков факта (по дню каждого) на выбор модели времени грузовиков — пороги TRUCK_TIME_MIN, как
+    _enough: текст «мало данных» или None."""
+    train, test = _split([_Dated(d) for d in days], today)
+    return _enough(train, test, TRUCK_TIME_MIN)
+
+
 def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumbent: str, bases: Mapping[str, Any],
                    prev: Mapping[str, Mapping[str, Any] | None], no_valhalla: int = 0, correct: bool = True,
-                   kept: Mapping[str, Outcome] | None = None) -> tuple[Outcome, dict[str, Outcome]]:
+                   kept: Mapping[str, Outcome] | None = None, fact: Sequence[Any] | None = None,
+                   preparing: bool = False) -> tuple[Outcome, dict[str, Outcome]]:
     """Выбор модели времени грузовиков (вид truck_time) по парам truck_time_obs — (прежняя модель, Valhalla) одного и
     того же участка: сравнение — только на общих участках. Каждая модель проверяется на одних и тех же участках
     отложенной недели с той поправкой по часам, которая у неё применится: своя, выученная на днях обучения ровно по
@@ -489,21 +559,37 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
     prev — с ней модель и сравнивается. correct=False — поправки по часам не применяются (автообучение travel
     выключено): модели сравниваются «как есть», поправки не учатся. bases — нормы грузовиков каждой модели без
     выученного профиля (Norms.for_trucks(truck_time=…)); Valhalla недоступен — без 'valhalla'. Выбранная модель
-    incumbent меняется на другую, только если ошибка той меньше хотя бы на MIN_GAIN (_verdict) и общих участков не
-    меньше TRUCK_TIME_MIN; иначе остаётся — в обе стороны (гистерезис). no_valhalla — участков без минут Valhalla
-    (отчёт). Итог — (строка truck_time: params — выбор после прогона, ошибка и смещение обеих моделей «как есть» и с
-    поправкой, участки и дни; строки travel моделей не из kept (fit_travel) — чтобы поправка выбранной модели была в
-    журнале и тогда, когда «Развоз» перейдёт на неё позже: env, галочка, Valhalla готов)."""
+    incumbent меняется на другую, только если ошибка той меньше хотя бы на MIN_GAIN и устойчиво (_accept: по
+    повторным выборкам дней проверки) и общих участков не меньше TRUCK_TIME_MIN; иначе остаётся — в обе стороны
+    (гистерезис). no_valhalla — участков без минут Valhalla (отчёт). Итог — (строка truck_time: params — выбор после
+    прогона, ошибка и смещение обеих моделей «как есть» и с поправкой, участки и дни; строки travel моделей не из kept
+    (fit_travel) — чтобы поправка выбранной модели была в журнале и тогда, когда «Развоз» перейдёт на неё позже: env,
+    галочка, Valhalla готов).
+    Valhalla недоступен (в bases нет 'valhalla') — причина по правде: fact (чистые участки факта прогона; None —
+    неизвестны) меньше порогов TRUCK_TIME_MIN — «мало данных» (сравнивать и с Valhalla было бы не на чем); иначе
+    preparing — Valhalla включён, но матрица грузовика для точек факта ещё считается (прогон её не дождался); иначе —
+    Valhalla недоступен."""
     other = TRUCK_TIME_SOURCES[1] if incumbent == TRUCK_TIME_SOURCES[0] else TRUCK_TIME_SOURCES[0]
     stays = f'остаётся {TRUCK_TIME_TITLES[incumbent]}'
     if bases.get(valhalla_engine.TRUCK_TIME_VALHALLA) is None:
-        return Outcome('truck_time', '', False, 'Valhalla недоступен (выключен, нет пакета или тайлов, либо матрица '
-                       f'грузовика для точек факта ещё считается) — {stays}'), {}
+        seen, held = _split(fact or (), today)
+        short = _enough(seen, held, TRUCK_TIME_MIN) if fact is not None else None
+        if short is not None:
+            reason = short
+        elif preparing:
+            reason = ('Valhalla-ն միացված է, բայց փաստի կետերի համար բեռնատարի ժամանակները դեռ հաշվվում են․ '
+                      'համեմատությունը կլինի հաջորդ վերահաշվարկին')
+        else:
+            reason = ('Valhalla недоступен (выключен, нет пакета или тайлов, либо матрица грузовика для точек факта ещё '
+                      'считается)')
+        return Outcome('truck_time', '', False, f'{reason} — {stays}', n_obs=len(seen), n_test=len(held),
+                       **_spans(seen, held)), {}
     kept = kept or {}
     obs = {src: [p[k] for p in pairs] for k, src in enumerate(TRUCK_TIME_SOURCES)}
     train, test = _split(obs[incumbent], today)              # участки — одни и те же у обеих моделей
     errors: dict[str, float] = {}                             # модель → ошибка на проверке с её поправкой
     candidates: dict[str, dict[str, dict[str, float]]] = {}
+    predicted: dict[str, list[float]] = {}                    # модель → прогноз участков проверки с её поправкой
     fitted: dict[str, Outcome] = {}
     for src in TRUCK_TIME_SOURCES if test else ():
         base, old, applied = bases[src], prev.get(src) if correct else None, None
@@ -518,24 +604,35 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
         raw, learned = _forecast(base, None, te), _forecast(base, applied, te)
         errors[src] = _mae(learned)
         candidates[src] = {'raw': _errors(raw), 'learned': _errors(learned)}
+        predicted[src] = [p for p, _ in learned]
     counts = {'legs': {'train': len(train), 'test': len(test), 'no_valhalla': no_valhalla},
               'days': {'train': len({o.day for o in train}), 'test': len({o.day for o in test})},
               'corrected': correct}
     before, after = errors.get(incumbent), errors.get(other)   # None — проверки нет
     short = _enough(train, test, TRUCK_TIME_MIN)
-    ok = short is None and before is not None and after is not None and _verdict(before, after)[0]
+    better, robust, conf = False, False, None
+    if short is None and before is not None and after is not None:   # участки проверки у обеих моделей — одни и те же
+        better = _verdict(before, after)[0]
+        robust, _, conf = _accept(before, after, _gains((o.day, a, b, o.minutes) for o, a, b in
+                                                        zip(test, predicted[incumbent], predicted[other])))
+    ok = better and robust
     if short is not None:
         reason = f'{short} — {stays}'
     elif ok:
         reason = (f'{TRUCK_TIME_TITLES[other]} точнее, чем {TRUCK_TIME_TITLES[incumbent]}: ошибка {before:.2f} → '
-                  f'{after:.2f} мин на участок')
+                  f'{after:.2f} мин на участок; հուսալի է՝ {_robust(conf, "days", "մյուս մոդելն")}')
+    elif better:
+        reason = (f'ոչ հուսալի․ սխալը {before:.2f} → {after:.2f} րոպե հատվածի վրա, բայց միայն '
+                  f'{_robust(conf, "days", "մյուս մոդելն")} '
+                  f'(պետք է առնվազն {_pct(BOOT_SHARE)}%) — {stays}')
     else:
         reason = (f'{TRUCK_TIME_TITLES[other]} не точнее, чем {TRUCK_TIME_TITLES[incumbent]}, хотя бы на '
                   f'{MIN_GAIN:.0%}: ошибка {before:.2f} → {after:.2f} мин на участок — {stays}')
     params = {'source': other if ok else incumbent, 'challenger': other, **counts, 'candidates': candidates}
     return Outcome('truck_time', '', ok, reason, params, None, len(train), len(test),
                    mae_before=round(before, 3) if before is not None else None,
-                   mae_after=round(after, 3) if after is not None else None, **_spans(train, test)), fitted
+                   mae_after=round(after, 3) if after is not None else None, confidence=conf,
+                   **_spans(train, test)), fitted
 
 
 def fit_fuel(obs: Sequence[FuelObs], current: Callable[[float], float], car: str) -> Outcome:
@@ -543,7 +640,7 @@ def fit_fuel(obs: Sequence[FuelObs], current: Callable[[float], float], car: str
     (все, кроме последних FUEL_TEST): measurements._fit (≥ 12 интервалов, разброс загрузки ≥ 20%, своя проверка на
     последних 4 обучающих) — зависимость от загрузки; не подтвердилась — один расход (медиана обучения). Последние
     FUEL_TEST интервалов — только проверка: принимается при ошибке на ≥ 2% меньше, чем у действующей нормы машины
-    (current(загрузка) → л/100 км)."""
+    (current(загрузка) → л/100 км), и устойчиво — по повторным выборкам интервалов проверки (_accept)."""
     rows = sorted(({'day': o.day.isoformat(), 'load': o.load, 'l100': o.l100} for o in obs),
                   key=lambda r: (r['day'], r['load'], r['l100']))
     if len(rows) < FUEL_MIN_INTERVALS or len({r['day'] for r in rows}) < FUEL_MIN_INTERVALS:
@@ -560,10 +657,11 @@ def fit_fuel(obs: Sequence[FuelObs], current: Callable[[float], float], car: str
         return empty + (full - empty) * load
     before = _mae((current(r['load']), r['l100']) for r in test)
     after = _mae((predict(r['load']), r['l100']) for r in test)
-    ok, why = _verdict(before, after)
+    ok, why, conf = _accept(before, after, _gains((k, current(r['load']), predict(r['load']), r['l100'])
+                                                  for k, r in enumerate(test)), 'intervals')
     return Outcome('fuel', car, ok, why, {'empty_l100': empty, 'full_l100': full}, n_obs=len(train), n_test=len(test),
                    train_from=train[0]['day'], train_to=train[-1]['day'], test_from=test[0]['day'],
-                   test_to=test[-1]['day'], mae_before=round(before, 3), mae_after=round(after, 3))
+                   test_to=test[-1]['day'], mae_before=round(before, 3), mae_after=round(after, 3), confidence=conf)
 
 
 # --- действующие нормы и применение в расчёте ---
