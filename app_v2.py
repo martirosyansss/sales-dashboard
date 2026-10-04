@@ -7,12 +7,15 @@ from flask import Flask, render_template, jsonify, request, send_file, send_from
 from flask.sessions import SecureCookieSessionInterface
 import pyodbc
 from datetime import datetime, timedelta
+import hmac
 import ipaddress
 import os
 import re
 import json
 import hashlib
+import threading
 from functools import wraps
+from urllib.parse import urlsplit
 from typing import Dict, List, Any
 import logging
 from dotenv import load_dotenv
@@ -239,12 +242,38 @@ def current_username():
     return session.get('username')
 
 
+# Сессию можно отозвать: в cookie при входе — отпечаток «версии пароля» (pwv) и время входа (iat). Смена пароля и
+# выход (поколение session_gen в users.json) меняют отпечаток — все прежние cookie этого логина недействительны;
+# старше _SESSION_MAX_AGE — вход заново, даже при непрерывной работе. Cookie без pwv/iat (до этой версии) — тоже.
+_SESSION_MAX_AGE = 7 * 24 * 3600
+
+
+def _session_fingerprint(user: dict) -> str:
+    msg = f"{user.get('password_hash', '')}\x00{user.get('session_gen', 0)}".encode('utf-8')
+    return hmac.new(str(app.secret_key).encode('utf-8'), msg, hashlib.sha256).hexdigest()[:16]
+
+
+def _stamp_session(sess, username: str, user: dict) -> None:
+    """Новая сессия вошедшего (старое содержимое — прочь: против фиксации сессии)."""
+    sess.clear()
+    sess['username'] = username
+    sess['pwv'] = _session_fingerprint(user)
+    sess['iat'] = int(datetime.now().timestamp())
+    sess.permanent = True
+
+
 def current_user():
-    """Запись текущего пользователя из users.json (или None, если не вошёл/удалён)."""
+    """Запись текущего пользователя из users.json (или None: не вошёл, удалён, сессия отозвана или истекла)."""
     uname = current_username()
     if not uname:
         return None
-    return load_users().get(uname)
+    user = load_users().get(uname)
+    if not user or session.get('pwv') != _session_fingerprint(user):
+        return None
+    iat = session.get('iat')
+    if not isinstance(iat, int) or datetime.now().timestamp() - iat >= _SESSION_MAX_AGE:
+        return None
+    return user
 
 
 def is_admin() -> bool:
@@ -321,14 +350,17 @@ def _forbid():
 def _safe_next_url(url):
     """Безопасный локальный редирект: только относительный путь того же сайта.
 
-    Отсекаем открытый редирект (`//host`, `/\\host`, обратные слэши, NUL, схемы) —
-    браузеры нормализуют '\\' в '/', поэтому одной проверки на '//' недостаточно.
+    Отсекаем открытый редирект (`//host`, `/\\host`, обратные слэши, управляющие символы, схемы) —
+    браузеры нормализуют '\\' в '/' и выбрасывают TAB/CR/LF ('/\\t/evil' → '//evil'), поэтому одной
+    проверки на '//' недостаточно: любой символ < 0x20 — отказ, и urlsplit не должен видеть ни схемы, ни хоста.
     """
     if not url:
         return None
-    if url.startswith('/') and not url.startswith('//') \
-            and '\\' not in url and '\x00' not in url and '\r' not in url and '\n' not in url:
-        return url
+    if url.startswith('/') and not url.startswith('//') and '\\' not in url \
+            and not any(ord(ch) < 0x20 for ch in url):
+        parts = urlsplit(url)
+        if not parts.scheme and not parts.netloc:
+            return url
     return None
 
 
@@ -510,7 +542,48 @@ _LOGIN_LOCK_SECONDS = 300  # 5 минут блокировки после сер
 _LOGIN_ATTEMPTS_MAX_KEYS = 10000  # предел размера словаря (защита от memory-DoS)
 _login_attempts = {}  # key=(username, ip) -> [timestamps неудач в пределах окна]
 # Фиктивный хэш для выравнивания времени ответа, когда логина нет (anti-enumeration).
-_DUMMY_PWD_HASH = generate_password_hash('dummy-nonexistent-password', method='pbkdf2:sha256')
+_PWD_METHOD = 'pbkdf2:sha256'   # как у всех хэшей users.json; итерации — по умолчанию установленного Werkzeug
+_DUMMY_PWD_HASH = generate_password_hash('dummy-nonexistent-password', method=_PWD_METHOD)
+_PWD_HASH_PARAMS = _DUMMY_PWD_HASH.split('$', 1)[0]   # 'pbkdf2:sha256:<итерации>': хэш с другими — пересчитать при входе
+
+# Вход из интернета (№53) — защита сервера и логина «Гаража» от потока попыток (кроме блокировки по (логин, IP)):
+# - не больше 2 проверок пароля одновременно (PBKDF2 ≈ 0,3 с CPU): поток входов не займёт все потоки waitress
+#   (API терминалов работает дальше); занято — 429 без проверки хэша;
+# - по одному логину со всех адресов интернета — не больше 30 неудач за час, дальше 429 до конца окна (офис —
+#   без ограничения: бюджет считает и проверяет только вход снаружи). Память ограничена: ≤ 30 отметок на логин,
+#   ≤ 10 000 логинов (вытесняется тот, кто дольше всех не ошибался).
+_PUBLIC_HASH_SLOTS = threading.BoundedSemaphore(2)
+_PUBLIC_FAIL_BUDGET = 30
+_PUBLIC_FAIL_WINDOW = 3600
+_PUBLIC_FAIL_MAX_KEYS = 10000
+_public_failures = {}  # логин (нижний регистр) -> последние ≤ _PUBLIC_FAIL_BUDGET моментов неудач, по возрастанию
+_public_failures_lock = threading.Lock()
+
+
+def _public_budget_exhausted(username) -> bool:
+    with _public_failures_lock:
+        ts = _public_failures.get(username.lower())
+        return bool(ts) and len(ts) >= _PUBLIC_FAIL_BUDGET \
+            and datetime.now().timestamp() - ts[0] < _PUBLIC_FAIL_WINDOW
+
+
+def _public_register_failure(username) -> None:
+    now = datetime.now().timestamp()
+    key = username.lower()
+    with _public_failures_lock:
+        recent = [t for t in _public_failures.pop(key, []) if now - t < _PUBLIC_FAIL_WINDOW]
+        _public_failures[key] = (recent + [now])[-_PUBLIC_FAIL_BUDGET:]   # в конец: первым вытесняется давний
+        while len(_public_failures) > _PUBLIC_FAIL_MAX_KEYS:
+            _public_failures.pop(next(iter(_public_failures)))
+
+
+# Тексты страницы входа: в офисе — как было; снаружи — по-армянски и без названия программы.
+_LOGIN_TEXT = {
+    False: {'bad': 'Неверный логин или пароль',
+            'throttled': 'Слишком много неудачных попыток. Повторите через несколько минут.'},
+    True: {'bad': 'Սխալ մուտքանուն կամ գաղտնաբառ',
+           'throttled': 'Չափազանց շատ փորձեր։ Կրկնեք մի քանի րոպեից։'},
+}
 
 
 # Узлы туннеля Cloudflare (через запятую): только от них верим заголовку Cf-Connecting-Ip — его ставит Cloudflare,
@@ -570,36 +643,69 @@ def _login_reset(username):
     _login_attempts.pop(_login_key(username), None)
 
 
+def _rehash_if_outdated(username: str, user: dict, password: str) -> dict:
+    """Хэш с другими параметрами, чем текущие (меньше итераций прежнего Werkzeug и т.п.), — пересчитать при входе:
+    проверка такого пароля по времени не отличалась бы от фиктивной (несуществующий логин). Возвращает запись."""
+    if (user.get('password_hash') or '').split('$', 1)[0] == _PWD_HASH_PARAMS:
+        return user
+    users = load_users()
+    if username not in users:
+        return user
+    old = (users[username].get('password_hash') or '').split('$', 1)[0]
+    users[username] = {**users[username], 'password_hash': generate_password_hash(password, method=_PWD_METHOD)}
+    if not save_users(users):
+        return user
+    logger.info('[Auth] Хэш пароля %.64r пересчитан: %s → %s', username, old, _PWD_HASH_PARAMS)
+    return users[username]
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     """Страница входа."""
     next_url = request.args.get('next', '') or request.form.get('next', '')
     public = courier.is_public_request(request)   # вход из интернета (туннель) — только роль «Гараж», №53
+    text = _LOGIN_TEXT[public]
     if request.method == 'POST':
         username = (request.form.get('username') or '').strip()
-        password = request.form.get('password') or ''
+        password = request.form.get('password') or ''   # в журнал — никогда
+        ip, where = _login_client_ip(), ('интернет' if public else 'офис')
+
+        def throttled(reason):
+            """429 — та же страница с общим текстом, без проверки пароля."""
+            logger.warning('[Auth] Вход %.64r отклонён (%s): IP %s, %s', username, reason, ip, where)
+            return render_template('login.html', error=text['throttled'], next=next_url, public=public), 429
 
         if _login_locked(username):
-            return render_template(
-                'login.html',
-                error='Слишком много неудачных попыток. Повторите через несколько минут.',
-                next=next_url), 429
+            return throttled('блокировка после 5 неудач с этого адреса')
+        if public and _public_budget_exhausted(username):
+            return throttled(f'больше {_PUBLIC_FAIL_BUDGET} неудач за час из интернета')
 
         user = load_users().get(username)
         # Всегда прогоняем проверку хэша (у несуществующего — фиктивный),
         # чтобы время ответа не выдавало существование логина.
         stored_hash = user.get('password_hash', '') if user else _DUMMY_PWD_HASH
-        password_ok = check_password_hash(stored_hash, password)
+        if public:
+            if not _PUBLIC_HASH_SLOTS.acquire(blocking=False):
+                return throttled('заняты проверки паролей')
+            try:
+                password_ok = check_password_hash(stored_hash, password)
+            finally:
+                _PUBLIC_HASH_SLOTS.release()
+        else:
+            password_ok = check_password_hash(stored_hash, password)
         # Снаружи входит только «Гараж» с паролем не короче GARAGE_MIN_PASSWORD; прочим — та же общая ошибка, что и
         # при неверном пароле (хэш уже проверен — время то же), и попытка идёт в счёт блокировки.
         if public and user and (user.get('role') != GARAGE_ROLE or len(password) < GARAGE_MIN_PASSWORD):
+            logger.warning('[Auth] Вход из интернета не разрешён: %.64r (роль %s, пароль %s%s), IP %s', username,
+                           user.get('role'), 'верный' if password_ok else 'неверный',
+                           '' if user.get('role') != GARAGE_ROLE else ', короче 10 символов', ip)
             user = None
 
         if user and password_ok:
             _login_reset(username)
-            session.clear()          # регенерация сессии — против фиксации
-            session['username'] = username
-            session.permanent = True
+            user = _rehash_if_outdated(username, user, password)
+            _stamp_session(session, username, user)
+            logger.info('[Auth] Вход: %.64r (роль %s), IP %s, %s', username, user.get('role'), ip, where)
             if user.get('role') == GARAGE_ROLE:
                 target = _GARAGE_PAGE   # начальник гаража видит только журнал гаража
             elif user.get('role') != 'admin':
@@ -610,19 +716,30 @@ def login():
             return redirect(target)
 
         _login_register_failure(username)
-        return render_template('login.html', error='Неверный логин или пароль', next=next_url), 401
+        if public:
+            _public_register_failure(username)
+        logger.warning('[Auth] Неудачный вход: %.64r, IP %s, %s', username, ip, where)
+        return render_template('login.html', error=text['bad'], next=next_url, public=public), 401
 
     u = current_user()
     if u and not public:
         return redirect('/')
     if u and u.get('role') == GARAGE_ROLE:
         return redirect(_GARAGE_PAGE)   # снаружи '/' закрыт; прочие сессии снаружи — просто форма входа
-    return render_template('login.html', next=next_url)
+    return render_template('login.html', next=next_url, public=public)
 
 
 @app.route('/logout', methods=['POST'])
 def logout():
-    """Выход из системы."""
+    """Выход из системы: новое поколение сессий логина — его cookie (на всех устройствах) больше не действуют."""
+    uname = current_username() if current_user() else None
+    if uname:
+        users = load_users()
+        if uname in users:
+            users[uname] = {**users[uname], 'session_gen': int(users[uname].get('session_gen') or 0) + 1}
+            save_users(users)
+        logger.info('[Auth] Выход: %.64r, IP %s, %s', uname, _login_client_ip(),
+                    'интернет' if courier.is_public_request(request) else 'офис')
     session.clear()
     return redirect(url_for('login'))
 
@@ -8702,6 +8819,8 @@ def api_users_save():
     users[username] = entry
     if not save_users(users):
         return jsonify({'success': False, 'error': 'Не удалось сохранить пользователя'}), 500
+    if password and username == current_username():
+        session['pwv'] = _session_fingerprint(entry)   # свой пароль сменил — эта сессия остаётся, прочие отозваны
     return jsonify({'success': True})
 
 

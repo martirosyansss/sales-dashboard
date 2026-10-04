@@ -1,7 +1,12 @@
 """Журнал гаража из интернета (№53, docs/plans/garage-journal-plan.md, последний раздел): что открыто на публичном
 хосте туннеля, вход только роли «Гараж», ключ счётчика неудач по Cf-Connecting-Ip только от узла туннеля,
-Secure-cookie и HSTS только снаружи, пароль «Гаража» ≥ 10 символов. Офисная сеть (LAN) — без изменений."""
+Secure-cookie и HSTS только снаружи, пароль «Гаража» ≥ 10 символов. Офисная сеть (LAN) — без изменений.
+После ревью безопасности: ≤ 2 проверки пароля одновременно снаружи, бюджет неудач логина из интернета, журнал входов,
+нейтральная страница входа снаружи, отзыв сессий (выход, смена пароля, 7 дней), пересчёт устаревших хэшей,
+открытый редирект через управляющие символы в next."""
+import logging
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -38,6 +43,7 @@ def app_v2(tmp_path, monkeypatch):
     monkeypatch.setattr(module, 'load_users', lambda: users)
     monkeypatch.setattr(module, 'save_users', lambda data: users.update(data) or True)
     monkeypatch.setattr(module, '_login_attempts', {})
+    monkeypatch.setattr(module, '_public_failures', {})
     monkeypatch.setattr(module, '_TUNNEL_PEERS', frozenset({TUNNEL}))
     state = module.app.extensions['route_optimizer']
     monkeypatch.setattr(state, 'store', st.Store(str(tmp_path / 'routes.db')))
@@ -55,10 +61,12 @@ def client(app_v2):
 
 
 def _session_as(c, name, base=PUBLIC):
+    """Сессия как после входа name (None — без входа) с известным токеном формы."""
+    import app_v2
     with c.session_transaction(base_url=base) as s:
         s.clear()
         if name:
-            s['username'] = name
+            app_v2._stamp_session(s, name, app_v2.test_users[name])
         s['_office_csrf'] = 'x' * 40
     return {'X-CSRF-Token': 'x' * 40}
 
@@ -230,7 +238,7 @@ def test_public_login_only_garage_same_generic_failure(client, app_v2, monkeypat
         checked.clear()
         r = _login(client, name, pw, peer=TUNNEL, cf='203.0.113.20')
         assert r.status_code == 401, name
-        assert 'Неверный логин или пароль' in r.get_data(as_text=True)
+        assert 'Սխալ մուտքանուն կամ գաղտնաբառ' in r.get_data(as_text=True)
         bodies.add(r.get_data())
         # одна проверка хэша на попытку: своего у существующего логина, фиктивного — у несуществующего (время то же)
         users = app_v2.test_users
@@ -397,3 +405,302 @@ def test_garage_password_min_length(client, app_v2):
     assert save({'username': 'a2', 'password': 'pw', 'role': 'admin'}).status_code == 200
     assert save({'username': 'u2', 'password': 'pw', 'role': 'user', 'areas': ['01']}).status_code == 200
     assert save({'username': 'u2', 'role': 'user', 'areas': ['01']}).status_code == 200
+
+
+# ============================== ревью: нагрузка входом из интернета (≤ 2 проверки пароля сразу) ==============================
+
+THROTTLED_HY = 'Չափազանց շատ փորձեր։ Կրկնեք մի քանի րոպեից։'
+
+
+def _spy_hash(app_v2, monkeypatch, hold=None):
+    """Счётчик вызовов check_password_hash; пароль hold держит проверку, пока не откроют gate."""
+    real, calls = app_v2.check_password_hash, []
+    gate, inside = threading.Event(), threading.Semaphore(0)
+
+    def spy(h, p):
+        calls.append(h)
+        if p == hold:
+            inside.release()
+            assert gate.wait(10)
+        return real(h, p)
+    monkeypatch.setattr(app_v2, 'check_password_hash', spy)
+    return calls, gate, inside
+
+
+def test_public_hash_slots_busy_429_without_hashing(client, app_v2, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger='app_v2')
+    calls, _, _ = _spy_hash(app_v2, monkeypatch)
+    slots = app_v2._PUBLIC_HASH_SLOTS
+    assert slots.acquire(blocking=False) and slots.acquire(blocking=False)      # обе проверки «заняты»
+    try:
+        r = _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.50')
+        html = r.get_data(as_text=True)
+        assert r.status_code == 429 and THROTTLED_HY in html and 'name="password"' in html and calls == []
+        assert 'заняты проверки паролей' in caplog.text
+        r = _login(client, 'garage1', PASSWORDS['garage1'], base=LAN)          # офис — без этого предела
+        assert r.status_code == 302 and len(calls) == 1
+    finally:
+        slots.release()
+        slots.release()
+    r = _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.50')
+    assert r.status_code == 302                                                 # занятость — не неудача
+
+
+def test_public_hash_slots_real_concurrency(client, app_v2, monkeypatch):
+    """Две проверки снаружи идут — третья сразу 429 (без проверки), офис проходит; слоты освобождаются."""
+    calls, gate, inside = _spy_hash(app_v2, monkeypatch, hold='hold-the-slot!')
+    codes = []
+
+    def attempt(i):
+        codes.append(_login(app_v2.app.test_client(), 'garage1', 'hold-the-slot!', peer=TUNNEL,
+                            cf=f'203.0.113.{60 + i}').status_code)
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    try:
+        assert inside.acquire(timeout=10) and inside.acquire(timeout=10)
+        r = _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.70')
+        assert r.status_code == 429 and len(calls) == 2
+        assert _login(app_v2.app.test_client(), 'boss', PASSWORDS['boss'], base=LAN).status_code == 302
+    finally:
+        gate.set()
+        for t in threads:
+            t.join(10)
+    assert sorted(codes) == [401, 401]
+    assert _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.71').status_code == 302
+
+
+def test_public_hash_slot_released_on_error(client, app_v2, monkeypatch):
+    def boom(h, p):
+        raise RuntimeError('hash backend failed')
+    monkeypatch.setattr(app_v2, 'check_password_hash', boom)
+    monkeypatch.setitem(app_v2.app.config, 'PROPAGATE_EXCEPTIONS', False)
+    for _ in range(3):
+        assert _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.80').status_code == 500
+    slots = app_v2._PUBLIC_HASH_SLOTS
+    assert slots.acquire(blocking=False) and slots.acquire(blocking=False)      # обе свободны
+    slots.release()
+    slots.release()
+
+
+# ============================== ревью: бюджет неудач логина из интернета (со всех адресов) ==============================
+
+def test_public_budget_per_username_across_ips(client, app_v2, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger='app_v2')
+    budget = app_v2._PUBLIC_FAIL_BUDGET
+    assert budget == 30 and app_v2._PUBLIC_FAIL_WINDOW == 3600
+    for i in range(budget):                                   # по одной неудаче с каждого адреса: блокировка (5) молчит
+        assert _login(client, 'Garage1' if i % 2 else 'garage1', 'wrong-password', peer=TUNNEL,
+                      cf=f'198.51.100.{i}').status_code == 401
+    calls, _, _ = _spy_hash(app_v2, monkeypatch)
+    r = _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.90')    # новый адрес, верный пароль
+    assert r.status_code == 429 and THROTTLED_HY in r.get_data(as_text=True) and calls == []
+    assert f'больше {budget} неудач за час из интернета' in caplog.text
+    assert any(rec.levelno == logging.WARNING and 'отклонён' in rec.getMessage() for rec in caplog.records)
+    assert _login(client, 'garage1', PASSWORDS['garage1'], base=LAN).status_code == 302      # офис не заблокирован
+    assert _login(client, 'boss', 'wrong-password', peer=TUNNEL, cf='203.0.113.91').status_code == 401  # другой логин
+    # окно скользит: отметки старше часа не считаются
+    with app_v2._public_failures_lock:
+        for key, ts in app_v2._public_failures.items():
+            app_v2._public_failures[key] = [t - 3601 for t in ts]
+    assert _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.92').status_code == 302
+
+
+def test_public_budget_counts_only_internet_failures(client, app_v2):
+    for i in range(40):                                       # офис ошибается сколько угодно (с разных адресов)
+        assert _login(client, 'garage1', 'wrong-password', base=LAN, peer=f'192.168.1.{100 + i}').status_code == 401
+    assert app_v2._public_failures == {}
+    assert _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.93').status_code == 302
+
+
+def test_public_budget_memory_bounded(app_v2, monkeypatch):
+    monkeypatch.setattr(app_v2, '_PUBLIC_FAIL_MAX_KEYS', 5)
+    for _ in range(100):
+        app_v2._public_register_failure('garage1')
+    assert len(app_v2._public_failures['garage1']) == app_v2._PUBLIC_FAIL_BUDGET
+    assert app_v2._public_budget_exhausted('GARAGE1')
+    for i in range(4):
+        app_v2._public_register_failure(f'random{i}')
+    app_v2._public_register_failure('garage1')                # свежая неудача — в конец очереди вытеснения
+    for i in range(4, 20):                                    # поток случайных логинов
+        app_v2._public_register_failure(f'random{i}')
+        assert len(app_v2._public_failures) <= 5
+        if i < 7:
+            assert 'garage1' in app_v2._public_failures      # вытесняются сначала давно не ошибавшиеся
+    assert 'random0' not in app_v2._public_failures and 'random19' in app_v2._public_failures
+
+
+# ============================== ревью: журнал входов ==============================
+
+def test_login_events_logged_without_password(client, app_v2, caplog):
+    caplog.set_level(logging.INFO, logger='app_v2')
+
+    def last(level):
+        recs = [r for r in caplog.records if r.name == 'app_v2' and r.levelno == level]
+        return recs[-1].getMessage() if recs else ''
+    _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.100')
+    assert "Вход: 'garage1' (роль garage), IP 203.0.113.100, интернет" in last(logging.INFO)
+    _login(client, 'garage1', 'wrong-pass-123', peer=TUNNEL, cf='203.0.113.101')
+    assert "Неудачный вход: 'garage1', IP 203.0.113.101, интернет" in last(logging.WARNING)
+    _login(client, 'boss', PASSWORDS['boss'], peer=TUNNEL, cf='203.0.113.102')
+    assert any("не разрешён: 'boss' (роль admin, пароль верный), IP 203.0.113.102" in r.getMessage()
+               for r in caplog.records)
+    _login(client, 'gshort', PASSWORDS['gshort'], peer=TUNNEL, cf='203.0.113.103')
+    assert any("не разрешён: 'gshort' (роль garage, пароль верный, короче 10 символов)" in r.getMessage()
+               for r in caplog.records)
+    for _ in range(6):
+        _login(client, 'u', 'wrong-pass-456', base=LAN, peer='192.168.1.77')
+    assert "Вход 'u' отклонён (блокировка после 5 неудач с этого адреса): IP 192.168.1.77, офис" in last(logging.WARNING)
+    _login(client, 'boss', PASSWORDS['boss'], base=LAN, peer='192.168.1.78')
+    assert "Вход: 'boss' (роль admin), IP 192.168.1.78, офис" in last(logging.INFO)
+    _login(client, 'evil\nFAKE ENTRY', 'wrong-pass-789', peer=TUNNEL, cf='203.0.113.104')
+    assert "'evil\\nFAKE ENTRY'" in last(logging.WARNING)                         # подделать строку журнала нельзя
+    text = '\n'.join(r.getMessage() for r in caplog.records)
+    for secret in (*PASSWORDS.values(), 'wrong-pass-123', 'wrong-pass-456', 'wrong-pass-789'):
+        assert secret not in text, secret
+
+
+# ============================== ревью: нейтральная страница входа снаружи ==============================
+
+def test_public_login_page_neutral_lan_unchanged(client):
+    for r in (client.get('/login', base_url=PUBLIC),
+              _login(client, 'garage1', 'wrong-password', peer=TUNNEL, cf='203.0.113.110')):
+        html = r.get_data(as_text=True)
+        assert 'lang="hy"' in html and 'Ավտոտնակ' in html and 'Գաղտնաբառ' in html
+        for word in ('Sales Dashboard', 'AS-Sales', 'READ-ONLY', 'Вход', 'Логин', 'Пароль', 'Неверный'):
+            assert word not in html, word
+    lan = client.get('/login', base_url=LAN).get_data(as_text=True)
+    assert 'lang="ru"' in lan and '<title>Вход — Sales Dashboard v2.0</title>' in lan
+    assert 'READ-ONLY аналитика · AS-Sales Management 7' in lan and 'Ավտոտնակ' not in lan
+    r = _login(client, 'garage1', 'wrong-password', base=LAN)
+    assert 'Неверный логин или пароль' in r.get_data(as_text=True)
+
+
+# ============================== ревью: пересчёт устаревшего хэша при входе ==============================
+
+def test_outdated_hash_rehashed_on_login(client, app_v2, monkeypatch):
+    from werkzeug.security import check_password_hash as real_check
+    users = app_v2.test_users
+    assert users['garage1']['password_hash'].startswith('pbkdf2:sha256:1000$')          # «старые» параметры
+    assert _login(client, 'garage1', 'wrong-password', peer=TUNNEL, cf='203.0.113.120').status_code == 401
+    assert users['garage1']['password_hash'].startswith('pbkdf2:sha256:1000$')          # неудача — не трогаем
+    assert _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.120').status_code == 302
+    new = users['garage1']['password_hash']
+    assert new.split('$', 1)[0] == app_v2._PWD_HASH_PARAMS == app_v2._DUMMY_PWD_HASH.split('$', 1)[0]
+    assert real_check(new, PASSWORDS['garage1'])
+    assert client.get('/api/routes/garage', base_url=PUBLIC).status_code == 200          # сессия — от нового хэша
+    saves = []
+    monkeypatch.setattr(app_v2, 'save_users', lambda data: saves.append(1) or True)
+    assert _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.121').status_code == 302
+    assert saves == [] and users['garage1']['password_hash'] == new                     # текущие параметры — без записи
+
+
+# ============================== ревью: отзыв сессий ==============================
+
+def _host(base):
+    return base.split('//')[1].split(':')[0]
+
+
+def _replay(app_v2, cookie, path='/api/routes/garage', base=PUBLIC):
+    c = app_v2.app.test_client()
+    c.set_cookie('session', cookie, domain=_host(base))
+    return c.get(path, base_url=base).status_code
+
+
+def test_logout_revokes_replayed_cookie_on_all_devices(client, app_v2):
+    assert _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.130').status_code == 302
+    phone2 = app_v2.app.test_client()
+    assert _login(phone2, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.131').status_code == 302
+    stolen = client.get_cookie('session', domain=_host(PUBLIC)).value
+    assert _replay(app_v2, stolen) == 200
+    page = client.get('/routes/garage', base_url=PUBLIC).get_data(as_text=True)
+    token = page.split('name="csrf-token" content="')[1].split('"')[0]
+    assert client.post('/logout', base_url=PUBLIC, headers={'X-CSRF-Token': token, 'Origin': PUBLIC}).status_code == 302
+    assert _replay(app_v2, stolen) == 401                                               # скопированная cookie — мертва
+    assert phone2.get('/api/routes/garage', base_url=PUBLIC).status_code == 401         # и на другом устройстве
+    assert _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.130').status_code == 302
+    assert client.get('/api/routes/garage', base_url=PUBLIC).status_code == 200         # новый вход — как обычно
+
+
+def test_logout_with_revoked_session_writes_nothing(client, app_v2, monkeypatch):
+    _session_as(client, 'garage1')
+    with client.session_transaction(base_url=PUBLIC) as s:
+        s['pwv'] = '0' * 16                                   # отозванная / чужая cookie
+    saves = []
+    monkeypatch.setattr(app_v2, 'save_users', lambda data: saves.append(1) or True)
+    r = client.post('/logout', base_url=PUBLIC, headers={'X-CSRF-Token': 'x' * 40, 'Origin': PUBLIC})
+    assert r.status_code == 302 and saves == [] and 'session_gen' not in app_v2.test_users['garage1']
+
+
+def test_password_change_revokes_sessions(client, app_v2):
+    assert _login(client, 'garage1', PASSWORDS['garage1'], peer=TUNNEL, cf='203.0.113.140').status_code == 302
+    garage_cookie = client.get_cookie('session', domain=_host(PUBLIC)).value
+    admin = app_v2.app.test_client()
+    assert _login(admin, 'boss', PASSWORDS['boss'], base=LAN).status_code == 302
+    admin2 = app_v2.app.test_client()                         # тот же админ на втором компьютере
+    assert _login(admin2, 'boss', PASSWORDS['boss'], base=LAN).status_code == 302
+    page = admin.get('/settings', base_url=LAN).get_data(as_text=True)
+    h = {'X-CSRF-Token': page.split('name="csrf-token" content="')[1].split('"')[0], 'Origin': LAN}
+    r = admin.post('/api/users', base_url=LAN, headers=h, json={'username': 'garage1', 'role': 'garage',
+                                                               'password': 'new-garage-pass-2'})
+    assert r.status_code == 200, r.get_json()
+    assert _replay(app_v2, garage_cookie) == 401                                       # телефон потерян → новый пароль
+    r = admin.post('/api/users', base_url=LAN, headers=h, json={'username': 'boss', 'role': 'admin',
+                                                               'password': 'new-boss-password'})
+    assert r.status_code == 200
+    assert admin.get('/api/users', base_url=LAN).status_code == 200                    # свой пароль — сессия остаётся
+    assert admin2.get('/api/users', base_url=LAN).status_code == 401                   # прочие сессии — отозваны
+    r = admin.post('/api/users', base_url=LAN, headers=h, json={'username': 'u', 'role': 'user', 'areas': ['01'],
+                                                               'display_name': 'x'})
+    assert r.status_code == 200 and admin.get('/api/users', base_url=LAN).status_code == 200  # без пароля — не трогаем
+
+
+@pytest.mark.parametrize('age,ok', [(7 * 24 * 3600 - 60, True), (7 * 24 * 3600, False), (30 * 24 * 3600, False)])
+def test_session_absolute_lifetime(client, app_v2, age, ok):
+    _session_as(client, 'garage1')
+    with client.session_transaction(base_url=PUBLIC) as s:
+        s['iat'] = int(datetime.now().timestamp()) - age
+        iat = s['iat']
+    assert client.get('/api/routes/garage', base_url=PUBLIC).status_code == (200 if ok else 401)
+    if ok:                                                    # работа не продлевает срок (абсолютный, не скользящий)
+        with client.session_transaction(base_url=PUBLIC) as s:
+            assert s['iat'] == iat
+
+
+@pytest.mark.parametrize('broken', ['legacy', 'no_iat', 'str_iat', 'bad_pwv'])
+def test_session_without_valid_stamp_rejected(client, app_v2, broken):
+    _session_as(client, 'boss', base=LAN)
+    with client.session_transaction(base_url=LAN) as s:
+        if broken == 'legacy':                                # cookie до этой версии: только логин
+            del s['pwv'], s['iat']
+        elif broken == 'no_iat':
+            del s['iat']
+        elif broken == 'str_iat':
+            s['iat'] = str(s['iat'])
+        else:
+            s['pwv'] = '0' * 16
+    r = client.get('/settings', base_url=LAN)
+    assert r.status_code == 302 and r.headers['Location'].startswith('/login')
+    assert client.get('/api/users', base_url=LAN).status_code == 401
+
+
+# ============================== ревью: открытый редирект через next ==============================
+
+@pytest.mark.parametrize('url', ['/\t/evil.example', '/\n/evil.example', '/\r/evil.example', '/\x00/x', '/\x1f/evil',
+                                 '\t//evil.example', '//evil.example', '/\\evil.example', '/\\/evil.example',
+                                 'https://evil.example', 'javascript:alert(1)', 'evil.example', '', None, '/a\tb'])
+def test_safe_next_url_rejects(app_v2, url):
+    assert app_v2._safe_next_url(url) is None
+
+
+@pytest.mark.parametrize('url', ['/', '/settings', '/areas?x=1&y=/z', '/routes/garage#top', '/a//b', '/%09/evil.example'])
+def test_safe_next_url_accepts(app_v2, url):
+    assert app_v2._safe_next_url(url) == url
+
+
+@pytest.mark.parametrize('nxt,target', [('/\t/evil.example', '/'), ('/\n/evil.example', '/'), ('/settings', '/settings')])
+def test_admin_login_next_redirect(client, nxt, target):
+    h = _session_as(client, None, LAN)
+    r = client.post('/login', base_url=LAN, headers={'Origin': LAN}, data={
+        'username': 'boss', 'password': PASSWORDS['boss'], 'csrf_token': h['X-CSRF-Token'], 'next': nxt})
+    assert r.status_code == 302 and r.headers['Location'] == target

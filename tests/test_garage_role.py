@@ -41,9 +41,9 @@ def dashboard(tmp_path, monkeypatch):
 
 
 def _login_as(c, name):
+    import app_v2
     with c.session_transaction() as s:
-        s.clear()
-        s['username'] = name
+        app_v2._stamp_session(s, name, c.users[name])     # как после входа: отпечаток пароля и время входа
         s['_office_csrf'] = 'x' * 40
     return {'X-CSRF-Token': 'x' * 40}
 
