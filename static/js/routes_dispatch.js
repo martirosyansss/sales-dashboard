@@ -2604,7 +2604,7 @@
         $('dpDriverScope').hidden = past;
         $('dpDriverDayText').textContent = 'Միայն ' + dayHuman(state.day) + 'ն (փոխարինող վարորդ)';
         $('dpDriverFromText').textContent = dayFrom(state.day) + ' սկսած՝ մինչև հաջորդ փոփոխությունը';
-        $(driverOf(code) ? 'dpDriverDay' : 'dpDriverFrom').checked = true;
+        $(driverOf(code) || isSub(code) ? 'dpDriverDay' : 'dpDriverFrom').checked = true;   // у подмены «водителя нет» — тоже день
         $('dpDriverHint').textContent = past
             ? 'Միայն ' + dayHuman(state.day) + ' համար՝ օրն արդեն անցել է․ մյուս օրերի վարորդը չի փոխվում։'
             : 'Նախորդ օրերի բեռնագրերը չեն փոխվում։';
