@@ -28,6 +28,7 @@ from . import ai_chat
 from . import dispatch as dp
 from . import evaluate, garage, learning, optimize
 from . import fleet as fl
+from . import waybill as wb
 from .running_costs import profile_fields
 from .erp import ErpError
 from .geo import Point, haversine_km, is_valid_point
@@ -138,6 +139,8 @@ class RoutesState:
     # план развоза: заказы ERP на дату (since, until, day) → DispatchData; факт развоза за дату → FactData
     dispatch_loader: Callable[[date, date, date], dp.DispatchData] | None = None
     fact_loader: Callable[[date], dp.FactData] | None = None
+    # Բեռնագիր (№57): fISN заказов точек машины → их строки (из проведённой накладной заказа, если она есть) и товары
+    waybill_loader: Callable[[Sequence[str]], wb.Lines] | None = None
     dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
     driver_geo: DriverGeo | None = None   # None — раздела «Առաքիչ» нет: точек водителей нет, всё как раньше
@@ -1665,6 +1668,52 @@ def api_dispatch_fact() -> Any:
     if ctx is None:
         return _bad_request({'_': 'Сначала укажите склад и тоннаж с расходом машин в настройках'})
     return jsonify({'success': True, 'fact': dp.plan_vs_fact(ctx, data.docs, coord, bundle.van_trucks())})
+
+
+# тексты для страницы — сразу по-армянски (ответ владельца №58: раздел только на армянском), SERVER_HY их не переводит
+WAYBILL_STALE = 'Էջը բացելուց հետո պլանը փոխվել է․ բեռնագիրը չէր համընկնի էկրանի պլանի հետ։ Թարմացրեք էջը։'
+WAYBILL_NO_PLAN = 'Այս օրվա երթերը դեռ կազմված չեն'
+WAYBILL_NO_SETUP = 'Նախ նշեք պահեստը և մեքենաների տոննաժն ու ծախսը կարգավորումներում'
+WAYBILL_NO_TRUCK = 'Այս մեքենան օրվա պլանում չկա — թարմացրեք էջը'
+_REV_RE = re.compile(r'^\d{1,9}$')
+
+
+@bp.get('/api/routes/dispatch/waybill')
+@_api
+def api_dispatch_waybill() -> Any:
+    """Բեռնագիր машины (ответ владельца №57): ?date=ГГГГ-ММ-ДД&truck=код&rev=номер плана на странице → её рейсы по
+    порядку плана, в каждом — что грузить на складе (waybill.truck_waybill; строки накладных и заказов — из ERP, только
+    чтение). rev не совпал с черновиком или машины нет в плане — 409 stale: накладная разошлась бы с планом на экране
+    (состав рейсов страница сверяет сама по basis). Ничего не сохраняет."""
+    state = _state()
+    day = _parse_day(request.args.get('date'))
+    car = (request.args.get('truck') or '').strip()
+    rev = request.args.get('rev')
+    errors = {}
+    if day is None:
+        errors['date'] = 'дата в формате ГГГГ-ММ-ДД'
+    if not car or len(car) > 64:
+        errors['truck'] = 'Նշեք մեքենայի կոդը'
+    if rev is not None and not _REV_RE.match(rev):
+        errors['rev'] = 'номер плана: ожидалось целое число'
+    if errors:
+        return _bad_request(errors)
+    dd = _load_day(state, _bundle(state), day)
+    if rev is not None and int(rev) != dd.rev:
+        return jsonify({'success': False, 'error': WAYBILL_STALE, 'stale': True}), 409
+    if dd.draft is None:
+        return jsonify({'success': False, 'error': WAYBILL_NO_PLAN}), 409
+    if dd.ctx is None:      # склад или машины не настроены — рейсы не посчитать
+        return _bad_request({'_': WAYBILL_NO_SETUP})
+    plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
+    truck = next((t for t in plan['trucks'] if t['car_code'] == car), None)
+    if truck is None:
+        return jsonify({'success': False, 'error': WAYBILL_NO_TRUCK, 'stale': True}), 409
+    if state.waybill_loader is None:
+        raise ErpError('Загрузчик строк заказов не подключён')
+    lines = state.waybill_loader([o['isn'] for tr in truck['trips'] for s in tr['stops'] for o in s['orders']])
+    logger.info('[Routes] Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
+    return jsonify({'success': True, 'day': day.isoformat(), 'rev': dd.rev, **wb.truck_waybill(plan, car, lines)})
 
 
 @bp.get('/api/routes/measurements')

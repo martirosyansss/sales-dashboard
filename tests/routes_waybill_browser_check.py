@@ -1,0 +1,231 @@
+# -*- coding: utf-8 -*-
+"""Проверка «Բեռնագիր» (ответ владельца №57) на странице «Развоз» в настоящем браузере.
+
+Запуск из корня проекта:  python tests/routes_waybill_browser_check.py
+Имя без префикса test_: pytest его не собирает (нужны Playwright с Chromium и интернет — Leaflet и Excel-библиотека с CDN).
+Приложение — то же, что в tests/routes_dispatch_browser_check.py (настоящие шаблон, статика и blueprint, поддельная ERP,
+синтетический день), строки заказов — подделка waybill_loader. Порт 8767 на 127.0.0.1 (8766 — у общей проверки «Развоза»).
+
+A после «Կազմել երթերը» у каждой карточки машины две кнопки «Բեռնագիր» и «Excel», и у свёрнутой карточки тоже;
+B «Բեռնագիր» открывает окно с листом `.sheet` на каждый рейс машины: «ԲԵՌՆԱԳԻՐ», машина, товары подделки (имя, код,
+  «N փաթեթ + M հատ»), итог кг, подписи; разметка из ERP экранирована (имя товара с <b> — текстом);
+C «Excel» скачивает bernagir_<машина>_<день>.xlsx: лист на рейс, строка заголовка таблицы и товары; фокус остаётся на кнопке;
+F тот же номер плана, но на сервере у магазина рейса появился заказ (ERP перечитана) → страница сама видит другой состав
+  рейса (basis): ошибка «Թարմացրեք էջը», окно закрыто, сервер ответил 200;
+G пока шёл запрос, план на экране сменился (ответ с другим rev) → ошибка, файл не скачан;
+D план изменён за спиной страницы (закрепление рейса) → «Բեռնագիր»: окно закрывается, ошибка «Թարմացրեք էջը» с кнопкой
+  перечитать; Excel — та же ошибка, файл не скачан;
+M 1280 px (две колонки): у кнопок только значки, подписи в aria-label, кнопки внутри карточки;
+E телефон 390×860: кнопки строкой под шапкой карточки, горизонтальной прокрутки нет;
+ошибки страницы (pageerror) и консоли — провал (кроме сетевых для внешних ресурсов и road-lines и двух ожидаемых 409 в D).
+"""
+from __future__ import annotations
+
+import dataclasses
+import io
+import logging
+import sys
+import tempfile
+import threading
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / 'tests'))
+
+import routes_dispatch_browser_check as base  # noqa: E402  (до Flask: задаёт ROUTES_OSM_PATH и ключ AI)
+from openpyxl import load_workbook  # noqa: E402
+from playwright.sync_api import sync_playwright  # noqa: E402
+from werkzeug.serving import make_server  # noqa: E402
+
+from route_optimizer import waybill as wb  # noqa: E402
+from test_route_optimizer import _dorder  # noqa: E402
+
+PORT = 8767
+BASE = f'http://127.0.0.1:{PORT}'
+DAY = base.DAY
+PRODUCTS = {10: wb.Product(10, '2801', 'Գառնի 6լ <b>x</b>', 'հատ', 6.03, 2),
+            11: wb.Product(11, '1113', 'Կոլա 1.5լ', 'հատ', 1.65, 6)}
+
+
+def loader(isns):
+    """Каждый заказ: 10 бутылей 6 л и 13 колы (2 упаковки + 1 шт.); первый заказ — «по накладной»."""
+    first = sorted(i.upper() for i in isns)[:1]
+    return wb.Lines({i.upper(): ((10, 10.0), (11, 13.0)) for i in isns}, frozenset(first), PRODUCTS)
+
+
+def main() -> int:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    logging.getLogger('werkzeug').setLevel(logging.ERROR)
+    results = []
+
+    def check(cond, msg):
+        results.append(bool(cond))
+        print(('OK   ' if cond else 'FAIL ') + msg)
+
+    app = base.build_app(tempfile.mkdtemp(prefix='waybill-check-'), base.FakeClient())
+    app.extensions['route_optimizer'].waybill_loader = loader
+    server = make_server('127.0.0.1', PORT, app, threaded=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    errors = []
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch()
+            ctx = browser.new_context(viewport={'width': 1440, 'height': 950}, accept_downloads=True)
+            page = ctx.new_page()
+            page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
+            expected_409 = []      # D: ответы 409 на устаревший план — ожидаемые, браузер пишет их в консоль
+
+            def on_console(m):
+                url = (m.location or {}).get('url', '')
+                if m.type == 'error' and '409' in m.text and '/api/routes/dispatch/waybill' in url:
+                    expected_409.append(url)
+                elif m.type == 'error' and not base.is_ignorable(m):
+                    errors.append('console: ' + m.text)
+            page.on('console', on_console)
+            page.on('dialog', lambda d: d.accept())
+            for pat in ('https://tiles.api-maps.yandex.ru/**', 'https://*.tile.openstreetmap.org/**'):
+                page.route(pat, lambda r: r.fulfill(status=200, content_type='image/png', body=base.TILE_PNG))
+            page.goto(f'{BASE}/routes/dispatch?date={DAY}')
+            page.wait_for_selector('#dpBody', state='visible', timeout=30000)
+            page.wait_for_function("() => !document.getElementById('dpBuild').disabled", timeout=15000)
+            page.click('#dpBuild')
+            page.wait_for_selector('#dpTruckCards .dp-tcard', timeout=30000)
+
+            # A
+            cards = page.locator('#dpTruckCards .dp-tcard')
+            n = cards.count()
+            ok = n > 0 and all(cards.nth(i).locator('.dp-tacts .dp-wbbtn').count() == 2 for i in range(n))
+            check(ok, f'A {n} truck cards, each with 2 waybill buttons')
+            card = cards.first
+            truck = card.get_attribute('data-truck')
+            labels = card.locator('.dp-wbbtn').evaluate_all("els => els.map(b => b.textContent.trim() + '|' + b.getAttribute('aria-label'))")
+            check(labels[0].startswith('Բեռնագիր|Տպել բեռնագիրը՝') and labels[1].startswith('Excel|Բեռնագիրը Excel-ով՝')
+                  and truck in labels[0], f'A labels {labels}')
+            if card.locator('.dp-thead').get_attribute('aria-expanded') == 'true':
+                card.locator('.dp-thead').click()
+            check(card.locator('.dp-thead').get_attribute('aria-expanded') == 'false'
+                  and card.locator('.dp-wbbtn').first.is_visible(), 'A buttons visible on a collapsed card')
+
+            # B
+            with ctx.expect_page(timeout=15000) as popup:
+                card.locator('.dp-wbbtn').first.click()
+            sheet = popup.value
+            sheet.wait_for_function("() => document.querySelectorAll('.sheet').length > 0", timeout=15000)
+            api = page.request.get(f'{BASE}/api/routes/dispatch/waybill', params={'date': DAY, 'truck': truck}).json()
+            n_trips = len(api['trips'])
+            text = sheet.inner_text('body')
+            check(sheet.locator('.sheet').count() == n_trips and n_trips >= 1, f'B print window: {sheet.locator(".sheet").count()} sheets for {n_trips} trips')
+            check('ԲԵՌՆԱԳԻՐ' in text and truck in text and 'Բաց թողեց (պահեստապետ)' in text and 'Ընդունեց (վարորդ)' in text,
+                  'B title, truck, signatures')
+            check('Գառնի 6լ <b>x</b>' in text and sheet.locator('.sheet b:text-is("x")').count() == 0, 'B ERP markup shown as text')
+            cola = sheet.locator('.sheet').first.locator('tr', has_text='Կոլա 1.5լ').inner_text().replace(' ', ' ')
+            first = api['trips'][0]
+            q = next(r for r in first['rows'] if r['product_id'] == 11)
+            check(f'{q["packs"]} փաթեթ' in cola and (q['loose'] == 0 or f'+ {q["loose"]} հատ' in cola) and '6-ական' in cola,
+                  f'B cola row packs: {cola!r}')
+            check(first['invoiced'] >= 0 and 'Քանակները՝' in text, 'B source note present')
+            sheet.close()
+
+            # C
+            with page.expect_download(timeout=15000) as dl:
+                card.locator('.dp-wbbtn').nth(1).click()
+            d = dl.value
+            data = Path(d.path()).read_bytes()
+            book = load_workbook(io.BytesIO(data))
+            safe = ''.join(ch for ch in truck if ch.isascii() and ch.isalnum())
+            check(d.suggested_filename == f'bernagir_{safe}_{DAY}.xlsx', f'C file name {d.suggested_filename}')
+            check(book.sheetnames == [f'Երթ {i + 1}' for i in range(n_trips)], f'C sheets {book.sheetnames}')
+            vals = [[c for c in row] for row in book.worksheets[0].iter_rows(values_only=True)]
+            head = next((i for i, r in enumerate(vals) if r[0] == '№'), None)
+            check(head is not None and vals[head][2] == 'Ապրանք' and {vals[head + 1][2], vals[head + 2][2]} == {'Գառնի 6լ <b>x</b>', 'Կոլա 1.5լ'},
+                  'C table header and products in sheet 1')
+            check(page.evaluate("() => document.activeElement && document.activeElement.classList.contains('dp-wbbtn')"
+                                " && document.activeElement.textContent.trim() === 'Excel'"), 'C focus stays on the Excel button')
+
+            # F
+            state = app.extensions['route_optimizer']
+            loader0 = state.dispatch_loader
+            cid = api['trips'][0]['basis'][0][0]
+            state.dispatch_loader = lambda since, until, day: dataclasses.replace(
+                loader0(since, until, day), orders=loader0(since, until, day).orders + (_dorder(77, cid, 5.0),))
+            state.dispatch_cache.clear()
+            served = []
+            page.on('response', lambda r: served.append(r.status) if '/api/routes/dispatch/waybill' in r.url else None)
+            n_pages = len(ctx.pages)
+            card.locator('.dp-wbbtn').first.click()
+            page.wait_for_selector('#dpActionError:not(.d-none)', timeout=15000)
+            page.wait_for_timeout(300)
+            check('Թարմացրեք էջը' in page.inner_text('#dpActionErrorText') and served == [200] and len(ctx.pages) == n_pages,
+                  f'F same rev, other trip content: page refuses (server {served}), window closed')
+            state.dispatch_loader = loader0
+            state.dispatch_cache.clear()
+            page.evaluate("() => document.getElementById('dpActionError').classList.add('d-none')")
+
+            # G
+            def newer_rev(route):
+                resp = route.fetch()
+                body = resp.json()
+                body['rev'] = body['rev'] + 1
+                route.fulfill(response=resp, json=body)
+            page.route('**/api/routes/dispatch/waybill*', newer_rev)
+            got_g = []
+            page.on('download', lambda x: got_g.append(x))
+            card.locator('.dp-wbbtn').nth(1).click()
+            page.wait_for_selector('#dpActionError:not(.d-none)', timeout=15000)
+            page.wait_for_timeout(500)
+            check(not got_g and 'Թարմացրեք էջը' in page.inner_text('#dpActionErrorText'), 'G plan changed during the request: error, no download')
+            page.unroute('**/api/routes/dispatch/waybill*')
+            page.evaluate("() => document.getElementById('dpActionError').classList.add('d-none')")
+
+            # D
+            day = page.request.get(f'{BASE}/api/routes/dispatch', params={'date': DAY}).json()
+            t0 = next(t for t in day['plan']['trucks'] if t['car_code'] == truck)
+            pin = page.request.post(f'{BASE}/api/routes/dispatch/edit', data={
+                'date': DAY, 'rev': day['rev'], 'action': 'pin', 'trip': t0['trips'][0]['id'], 'truck': truck})
+            check(pin.status == 200, f'D plan changed behind the page (pin {pin.status})')
+            n_pages = len(ctx.pages)
+            card.locator('.dp-wbbtn').first.click()
+            page.wait_for_selector('#dpActionError:not(.d-none)', timeout=15000)
+            page.wait_for_timeout(300)
+            check('Թարմացրեք էջը' in page.inner_text('#dpActionErrorText') and page.locator('#dpActionReload').is_visible()
+                  and len(ctx.pages) == n_pages, f'D stale print: error {page.inner_text("#dpActionErrorText")!r}, window closed')
+            got = []
+            page.on('download', lambda x: got.append(x))
+            page.evaluate("() => document.getElementById('dpActionError').classList.add('d-none')")
+            card.locator('.dp-wbbtn').nth(1).click()
+            page.wait_for_selector('#dpActionError:not(.d-none)', timeout=15000)
+            page.wait_for_timeout(500)
+            check(not got and 'Թարմացրեք էջը' in page.inner_text('#dpActionErrorText'), 'D stale Excel: error, no download')
+            check(len(expected_409) == 2, f'D two 409 answers from the waybill API ({len(expected_409)})')
+            page.click('#dpActionReload')
+            page.wait_for_timeout(1500)
+
+            # M
+            page.set_viewport_size({'width': 1280, 'height': 900})
+            page.wait_for_timeout(500)
+            c0 = page.locator('#dpTruckCards .dp-tcard').first
+            spans = c0.locator('.dp-wbbtn span').evaluate_all("els => els.map(e => e.getBoundingClientRect().width)")
+            cb, ab = c0.bounding_box(), c0.locator('.dp-tacts').bounding_box()
+            check(all(w <= 1 for w in spans) and ab['x'] + ab['width'] <= cb['x'] + cb['width'] + 0.5
+                  and c0.locator('.dp-wbbtn').first.get_attribute('aria-label').startswith('Տպել բեռնագիրը՝'),
+                  f'M 1280: icon-only buttons inside the card (label widths {spans})')
+
+            # E
+            page.set_viewport_size({'width': 390, 'height': 860})
+            page.wait_for_timeout(500)
+            sw = page.evaluate('() => document.documentElement.scrollWidth')
+            c0 = page.locator('#dpTruckCards .dp-tcard').first
+            hb, ab = c0.locator('.dp-thead').bounding_box(), c0.locator('.dp-tacts').bounding_box()
+            check(sw <= 390 and hb and ab and ab['y'] >= hb['y'] + hb['height'] - 1, f'E phone: scrollWidth={sw}, buttons under header')
+
+            check(not errors, 'no pageerror / console errors' + ('' if not errors else ': ' + ' | '.join(errors[:5])))
+            browser.close()
+    finally:
+        server.shutdown()
+    print('ALL OK' if all(results) else 'SOME FAILED')
+    return 0 if all(results) else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

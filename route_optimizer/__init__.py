@@ -19,7 +19,7 @@ from typing import Any
 
 from flask import Flask
 
-from . import erp, learning
+from . import erp, learning, waybill
 from .actuals import YEREVAN
 from .roads import RoadProvider, osm_path
 from .snapshot import ResultCache, SnapshotCache, load_snapshot
@@ -58,6 +58,7 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         valhalla=valhalla,
         dispatch_loader=lambda since, until, day: erp.load_dispatch_data(connection_string, since, until, day),
         fact_loader=lambda day: erp.load_fact_data(connection_string, day),
+        waybill_loader=lambda isns: waybill.load_lines(connection_string, isns),
     )
     app.register_blueprint(bp)
     logger.info('[Routes] Раздел «Маршруты» подключён; база настроек: %s; карта дорог: %s%s', path,
