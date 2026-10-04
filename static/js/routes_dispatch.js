@@ -964,11 +964,12 @@
     const ownUnload = (stop) => (isObj(state.data.store_unload) ? num(state.data.store_unload[stop.customer_id]) : null);
     // Подсказка — как посчитает «Развоз» (та же логика, что в «Условиях магазина» /routes/settings): пустое поле — обычное
     // время или своё время магазина по факту (unload_auto_min); есть разгрузки по GPS (unload_visits) — введённое смешается с фактом.
-    // «По факту» — только если отличается от нормы на 0,05 мин и больше: сервер округляет unload_auto_min до 0,1, а норму
-    // строки обучения — до 0,01 (8,4 и 8,37 — одно и то же «обычное» время)
+    // «По факту» — только если отличается от нормы больше, чем на округление: сервер шлёт unload_auto_min до 0,1, норму
+    // строки обучения — до 0,01, разница — целые сотые, до 5 сотых — округление (8,37 → 8,4; 8,75 → 8,8: в JS
+    // 8,8 − 8,75 = 0,05000000000000071, поэтому не «≥ 0,05»), своё время по факту — от 0,5 мин
     function unloadHint(x, norms) {
         const auto = num(x.unload_auto_min), perStop = num(norms.per_stop_min);
-        const empty = auto !== null && perStop !== null && Math.abs(auto - perStop) >= 0.05
+        const empty = auto !== null && perStop !== null && Math.round(Math.abs(auto - perStop) * 100) > 5
             ? minutesText(auto) + ' (ըստ փաստի)' : 'սովորական ' + minutesText(perStop);
         const fact = num(x.unload_visits) ? ' Ըստ վարորդների GPS-ի՝ այս խանութում արդեն եղել է ' + pl(x.unload_visits, 'բեռնաթափում')
             + '։ Ձեր գրած ժամանակը ծրագիրը կհամադրի փաստի հետ՝ որքան շատ բեռնաթափում, այնքան ավելի մոտ փաստին։' : '';

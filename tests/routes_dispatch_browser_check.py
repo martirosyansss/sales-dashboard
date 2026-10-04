@@ -278,6 +278,12 @@ def main() -> int:
             check('Դատարկ՝ սովորական 8,4 րոպե։' in hint and 'ըստ փաստի' not in hint and '(6,1 րոպե տոննայի համար)' in hint,
                   f'U learned norm 8.37, no GPS visits → «սովորական», not «ըստ փաստի»: {hint!r}')
             page.click('#dpUnloadCancel')
+            # 8,75 → сервер шлёт 8,8, а в JS 8,8 − 8,75 = 0,05000000000000071: сравнение «≥ 0,05» дало бы «ըստ փաստի»
+            store.save_learned('2026-09-02', [lr.Outcome('unload', '', True, 'да', {**row, 'per_stop_min': 8.75})])
+            hint = open_unload()
+            check('Դատարկ՝ սովորական 8,8 րոպե։' in hint and 'ըստ փաստի' not in hint,
+                  f'U learned norm 8.75 (server 8.8) → «սովորական», not «ըստ փաստի»: {hint!r}')
+            page.click('#dpUnloadCancel')
             store.save_learned('2026-09-03', [lr.Outcome('unload', '', True, 'да', {**row, 'store_stats': {str(cid): [10, 20.0]}})])
             hint = open_unload()
             check('(ըստ փաստի)' in hint and '10 բեռնաթափում' in hint and 'կհամադրի փաստի հետ' in hint
