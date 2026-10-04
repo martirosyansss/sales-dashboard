@@ -18,7 +18,8 @@
   битой записи — введённое, иначе поправка строки (store_offsets — время по факту на день прогона). Проверка и
   «действующая норма» для сравнения — та же store_times, ровно то, что применится. Магазины в одной точке — среднее их
   поправок на каждую стоянку точки (unload_extra). Соперник №60 (ответ владельца №66) — сглаживание к группе
-  (shrink_times: t = (n·факт + k·опора) / (n + k), опора — введённое, иначе медиана группы размера / сети, иначе a):
+  (shrink_times: t = (n·факт + k·опора) / (n + k), опора — медиана группы размера / сети, иначе a; введённое — само,
+  пока визитов меньше STORE_MIN_OBS, как в №60):
   действует, только если проверка выбрала его (_fit_store_rule, гистерезис как у truck_time; store_rule строки);
 - loading — загрузка на складе = a + b·тонн рейса → TruckNorms.warehouse_load_fixed_min / warehouse_load_min_per_tonne.
   Стоянка на складе — не только загрузка (обед, бумаги, ожидание выезда под окно первой точки), поэтому: из неё
@@ -120,7 +121,7 @@ STORE_OFFSET_MAX = 120.0             # время магазина a + попр�
 # правило времени магазина (№66): n60 — №60 (выше), shrink — сглаживание к группе t = (n·факт + k·опора) / (n + k);
 # действует shrink, только если проверка выбрала его (fit_unload → store_rule строки); нет выбора — n60
 STORE_RULES = ('n60', 'shrink')
-STORE_RULE_TITLES = {'n60': 'ըստ GPS-ի՝ 2-րդ բեռնաթափումից', 'shrink': 'GPS-ը՝ հարթեցված դեպի նման խանութները'}
+STORE_RULE_TITLES = {'n60': '2-րդ բեռնաթափումից՝ ըստ փաստի', 'shrink': 'հարթեցում դեպի նման խանութները'}
 SHRINK_K_BOUNDS = (1.0, 20.0)        # k = σ²_внутри / τ²_между — прижимается к этим пределам
 SHRINK_K_MIN = (8, 20)               # оценка k: магазинов с ≥ 2 визитами и степеней свободы внутри них (Σ(n − 1)) не меньше
 SHRINK_GROUP_MIN = 3                 # опора группы — медиана её магазинов с ≥ 2 визитами, если их не меньше; иначе a
@@ -315,7 +316,7 @@ def _capped(obs: Sequence[Any], today: date, current: Callable[[Any], float], re
 
 def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], today: date,
                manual: Mapping[int, float] | None = None,
-               plain: Callable[[UnloadObs], float] | None = None, rule: str = 'n60',
+               plain: Callable[[UnloadObs], float] | None = None, current_unload: Mapping[str, Any] | None = None,
                chains: Mapping[int, str] | None = None,
                size_kg: tuple[float, float] = (60.0, 250.0)) -> Outcome:
     """Разгрузка = a·точек + b·тонн (+ своё время магазина). current — прогноз действующей нормы для наблюдения (со
@@ -330,10 +331,13 @@ def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], 
     №50, битая запись store_stats). Проверка — ровно то, что применится: store_extras по параметрам строки и
     введённому.
 
-    Правило времени магазина (№66, _fit_store_rule): rule — действующее (store_rule действующей строки), chains —
+    Правило времени магазина (№66, _fit_store_rule): current_unload — действующая строка unload (её правило и k —
+    гистерезис), chains —
     клиент → код группы-сети (settings chain_groups), size_kg — пороги малый / средний магазин, кг (settings
     size_small_max_kg, size_medium_max_kg). Данных хватает для оценки k — в строку пишутся store_shrink и store_rule
-    (выбор проверки с гистерезисом), store_extras строки — по выбранному правилу; не хватает — строка как до №66."""
+    (выбор проверки с гистерезисом; store_shrink — только при выборе сглаживания), store_extras строки — по выбранному
+    правилу; не хватает (и сглаживание не действует) — строка как до №66. Строка не принята — в причине сказано, что
+    выбор правила не применяется."""
     manual = manual or {}
     cap = current if plain is None else (lambda o: max(current(o), plain(o)))
     train, test = _capped(obs, today, cap, UNLOAD_CAP_REL)
@@ -360,7 +364,7 @@ def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], 
     chains = chains or {}
     groups = {c: f'chain:{chains[c]}' if c in chains
               else dm.size_class(1000.0 * math.fsum(tonnes[c]) / len(tonnes[c]), None, (), *size_kg) for c in residuals}
-    chosen = _fit_store_rule(test, a, b, residuals, groups, manual, params, rule)
+    chosen = _fit_store_rule(test, a, b, residuals, groups, manual, params, current_unload)
     if chosen is not None:
         params.update(chosen[0])
     extras = store_extras(a, manual, params)
@@ -369,8 +373,9 @@ def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], 
         return a * o.n + b * o.tonnes + math.fsum(extras.get(c, 0.0) for c in o.customers)
     before, after = _mae((current(o), o.minutes) for o in test), _mae((predict(o), o.minutes) for o in test)
     ok, why = _verdict(before, after)
-    if chosen is not None:
-        why += f'․ խանութի ժամանակը՝ {chosen[1]}'
+    if chosen is not None:   # строка не принята — выбор правила не применяется (действует прежняя строка)
+        why += (f'․ խանութի ժամանակը՝ {chosen[1]}' if ok
+                else f'․ խանութի ժամանակի կանոնների համեմատությունը (չի կիրառվում՝ տողն ընդունված չէ)՝ {chosen[1]}')
     return Outcome('unload', '', ok, why, params, n_obs=len(train), n_test=len(test), mae_before=round(before, 3),
                    mae_after=round(after, 3), **_spans(train, test))
 
@@ -799,25 +804,40 @@ def store_extras(per_stop: float, manual: Mapping[int, float], unload: Mapping[s
 
 # --- время магазина: сглаживание к группе (№66) ---
 
+def _own_groups(residuals: Mapping[int, Sequence[float]], groups: Mapping[int, str]) -> set[str]:
+    """Группы со своей опорой: магазинов с ≥ STORE_MIN_OBS визитами в группе не меньше SHRINK_GROUP_MIN; магазины
+    остальных групп сглаживаются к a."""
+    counts: dict[str, int] = {}
+    for c, rs in residuals.items():
+        if len(rs) >= STORE_MIN_OBS:
+            counts[groups[c]] = counts.get(groups[c], 0) + 1
+    return {g for g, m in counts.items() if m >= SHRINK_GROUP_MIN}
+
+
 def shrink_k(residuals: Mapping[int, Sequence[float]], groups: Mapping[int, str]) -> float | None:
-    """k = σ²_внутри / τ²_между методом моментов по магазинам с ≥ 2 визитами, один на все группы: σ² — объединённая
-    дисперсия визитов около среднего своего магазина (Σ(n − 1) степеней свободы), τ² — дисперсия средних магазинов около
-    среднего их группы (магазинов − групп степеней свободы) за вычетом шума среднего σ² · ср.(1/n). Прижат к
-    SHRINK_K_BOUNDS: τ² ≤ 0 (различие магазинов не больше шума) — верхний предел. Магазинов или степеней свободы меньше
-    SHRINK_K_MIN (или все магазины — по одному в группе) — None: сглаживание не участвует."""
-    many = {c: rs for c, rs in residuals.items() if len(rs) >= 2}
+    """k = σ²_внутри / τ²_между методом моментов по магазинам с ≥ STORE_MIN_OBS визитами, один на все группы. σ² —
+    объединённая дисперсия визитов около среднего своего магазина (Σ(n − 1) степеней свободы). τ² — разброс средних
+    магазинов около той опоры, к которой их сглаживают: в группе со своей опорой (_own_groups) — около среднего группы
+    (m_g − 1 степеней свободы), остальные — одной группой около a (остаток 0, по степени свободы на магазин: смещение a от
+    их настоящего уровня — тоже разброс, k меньше); за вычетом шума средних σ²·(Σ_g (m_g − 1)/m_g·Σ_g 1/n + Σ_a 1/n) / df.
+    Прижат к SHRINK_K_BOUNDS: τ² ≤ 0 (различие магазинов не больше шума) — верхний предел. Магазинов или степеней свободы
+    меньше SHRINK_K_MIN — None: сглаживание не участвует."""
+    many = {c: rs for c, rs in residuals.items() if len(rs) >= STORE_MIN_OBS}
     df_within = sum(len(rs) - 1 for rs in many.values())
-    by_group: dict[str, list[int]] = {}
+    own = _own_groups(residuals, groups)
+    by_group: dict[str | None, list[int]] = {}           # None — магазины, которые сглаживаются к a
     for c in sorted(many):
-        by_group.setdefault(groups[c], []).append(c)
-    df_between = len(many) - len(by_group)
+        by_group.setdefault(groups[c] if groups[c] in own else None, []).append(c)
+    df_between = sum(len(cs) - 1 if g is not None else len(cs) for g, cs in by_group.items())
     if len(many) < SHRINK_K_MIN[0] or df_within < SHRINK_K_MIN[1] or df_between < 1:
         return None
     means = {c: math.fsum(rs) / len(rs) for c, rs in many.items()}
     sigma2 = math.fsum((r - means[c]) ** 2 for c, rs in many.items() for r in rs) / df_within
-    centre = {g: math.fsum(means[c] for c in cs) / len(cs) for g, cs in by_group.items()}
+    centre = {g: math.fsum(means[c] for c in cs) / len(cs) if g is not None else 0.0 for g, cs in by_group.items()}
     between = math.fsum((means[c] - centre[g]) ** 2 for g, cs in by_group.items() for c in cs) / df_between
-    tau2 = between - sigma2 * math.fsum(1.0 / len(rs) for rs in many.values()) / len(many)
+    noise = math.fsum(((len(cs) - 1) / len(cs) if g is not None else 1.0) * math.fsum(1.0 / len(many[c]) for c in cs)
+                      for g, cs in by_group.items()) / df_between
+    tau2 = between - sigma2 * noise
     lo, hi = SHRINK_K_BOUNDS
     return hi if tau2 <= 0 else round(min(hi, max(lo, sigma2 / tau2)), 2)
 
@@ -826,15 +846,15 @@ def shrink_entries(residuals: Mapping[int, Sequence[float]], a: float,
                    groups: Mapping[int, str]) -> dict[str, list[float]]:
     """Записи store_shrink строки: клиент → [одиночных визитов n, своё время по факту (a + медиана остатков, как №60, в
     пределах STORE_FACT_BOUNDS), опора группы]. Опора — медиана времени по факту магазинов той же группы с ≥
-    STORE_MIN_OBS визитами, если таких не меньше SHRINK_GROUP_MIN, иначе a; в пределах [0, STORE_OFFSET_MAX]. Введённое
-    логистом — опора сильнее группы, но берётся при применении (shrink_times): изменённое действует сразу."""
+    STORE_MIN_OBS визитами в группе со своей опорой (_own_groups), иначе a; в пределах [0, STORE_OFFSET_MAX]."""
     lo, hi = STORE_FACT_BOUNDS
     fact = {c: max(lo, min(hi, a + median(rs))) for c, rs in residuals.items()}
+    own = _own_groups(residuals, groups)
     members: dict[str, list[float]] = {}
     for c, rs in sorted(residuals.items()):
-        if len(rs) >= STORE_MIN_OBS:
+        if len(rs) >= STORE_MIN_OBS and groups[c] in own:
             members.setdefault(groups[c], []).append(fact[c])
-    prior = {g: median(fs) for g, fs in members.items() if len(fs) >= SHRINK_GROUP_MIN}
+    prior = {g: median(fs) for g, fs in members.items()}
     return {str(c): [len(rs), round(fact[c], 1), round(min(STORE_OFFSET_MAX, max(0.0, prior.get(groups[c], a))), 1)]
             for c, rs in sorted(residuals.items())}
 
@@ -862,37 +882,40 @@ def store_shrink(unload: Mapping[str, Any] | None) -> dict[int, tuple[int, float
 
 def shrink_times(per_stop: float, manual: Mapping[int, float],
                  unload: Mapping[str, Any] | None) -> dict[int, tuple[float, str]]:
-    """store_times по сглаживанию к группе: у магазина с визитами (store_shrink) t = (n·факт + k·опора) / (n + k), опора —
-    введённое (manual), без него — опора группы строки; источник 'shrink_manual' | 'shrink'. Без визитов — введённое
-    ('manual'), без него — норма (нет в ответе). Поправка t − per_stop — до 0,1 мин, меньше 0,5 — ноль, не меньше
-    −per_stop (как store_times)."""
+    """store_times по сглаживанию к группе. Введённое логистом (manual) — как в №60: само, пока у магазина меньше
+    STORE_MIN_OBS визитов ('manual'); оно в минутах стоянки, а факт и опора — за вычетом выученного груза b·т, и его
+    надёжность неизвестна — опорой сглаживания оно не служит. С визитами (store_shrink; без введённого — и с одним)
+    t = (n·факт + k·опора группы) / (n + k) ('shrink'). Без визитов и введённого — норма (нет в ответе). Поправка
+    t − per_stop — до 0,1 мин, меньше 0,5 — ноль, не меньше −per_stop (как store_times)."""
     k = float(unload['store_rule']['k'])   # type: ignore[index]
     entries = store_shrink(unload)
     out: dict[int, tuple[float, str]] = {}
     for c in sorted(set(manual) | set(entries)):
-        if c in entries:
-            n, fact, group = entries[c]
-            prior = float(manual[c]) if c in manual else group
-            extra = round((n * fact + k * prior) / (n + k) - per_stop, 1)
-            out[c] = (0.0 if abs(extra) < 0.5 else extra, 'shrink_manual' if c in manual else 'shrink')
-        else:
+        n, fact, group = entries.get(c, (0, 0.0, 0.0))
+        if c in manual and n < STORE_MIN_OBS:
             out[c] = (float(manual[c]) - per_stop, 'manual')
+        else:
+            extra = round((n * fact + k * group) / (n + k) - per_stop, 1)
+            out[c] = (0.0 if abs(extra) < 0.5 else extra, 'shrink')
     return {c: (max(-per_stop, e), src) for c, (e, src) in out.items()}
 
 
 def _fit_store_rule(test: Sequence[UnloadObs], a: float, b: float, residuals: Mapping[int, Sequence[float]],
                     groups: Mapping[int, str], manual: Mapping[int, float], params: Mapping[str, Any],
-                    incumbent: str) -> tuple[dict[str, Any], str] | None:
+                    current: Mapping[str, Any] | None) -> tuple[dict[str, Any], str] | None:
     """Выбор правила времени магазина (№66) — как truck_time: оба правила (params строки по №60 и он же со
-    сглаживанием к группе) с одними a, b предсказывают визиты отложенной недели, в которых есть магазин с визитами в
-    обучении (у остальных прогнозы одинаковы); действующее правило incumbent меняется на другое, только если ошибка того
-    меньше хотя бы на MIN_GAIN (_verdict) и таких визитов и дней не меньше SHRINK_MIN_TEST — в обе стороны (гистерезис).
-    k не оценить (shrink_k) — None: сглаживание не участвует, строка — как до №66. Итог — (store_shrink и store_rule
-    строки: выбранное правило, k, ошибки обоих, визиты и дни проверки; причина по-армянски)."""
-    k = shrink_k(residuals, groups)
+    сглаживанием к группе) с одними a, b предсказывают визиты отложенной недели к магазинам с визитами в обучении (у
+    остальных прогнозы одинаковы); действующее правило (store_rule действующей строки current) меняется на другое, только
+    если ошибка того меньше хотя бы на MIN_GAIN (_verdict) и таких визитов и дней не меньше SHRINK_MIN_TEST — в обе
+    стороны (гистерезис). k не оценить (shrink_k): действует сглаживание — k действующей строки (факты свежие), иначе
+    None — сглаживание не участвует, строка — как до №66. Итог — (store_rule строки: выбранное правило, k, ошибки обоих,
+    визиты и дни проверки; store_shrink — только если выбрано сглаживание; причина по-армянски)."""
+    incumbent = store_rule(current)
+    k, carried = shrink_k(residuals, groups), False
+    if k is None and incumbent == 'shrink':
+        k, carried = float(current['store_rule']['k']), True   # type: ignore[index]
     if k is None:
         return None
-    incumbent = incumbent if incumbent in STORE_RULES else 'n60'
     other = 'shrink' if incumbent == 'n60' else 'n60'
     entries = shrink_entries(residuals, a, groups)
     variants = {'n60': params, 'shrink': {**params, 'store_rule': {'rule': 'shrink', 'k': k}, 'store_shrink': entries}}
@@ -914,8 +937,11 @@ def _fit_store_rule(test: Sequence[UnloadObs], a: float, b: float, residuals: Ma
         gap = f'սխալ {fmt_decimal(errors[incumbent])} → {fmt_decimal(errors[other])} րոպե'
         reason = (f'«{STORE_RULE_TITLES[other]}» կանոնն ավելի ճշգրիտ է․ {gap}' if switch else
                   f'«{STORE_RULE_TITLES[other]}» կանոնն առնվազն {MIN_GAIN:.0%}-ով ավելի ճշգրիտ չէ․ {gap} — {stays}')
-    return {'store_shrink': entries, 'store_rule': {'rule': chosen, 'k': k, 'mae': errors, 'n_test': len(held),
-                                                    'days_test': days}}, reason
+    if carried:
+        reason += f' (k = {fmt_decimal(k)}՝ գործող տողից․ այս անգամ տվյալները քիչ են այն նորից գնահատելու համար)'
+    rule = {'rule': chosen, 'k': k, 'mae': errors, 'n_test': len(held), 'days_test': days, **({'k_carried': True}
+                                                                                            if carried else {})}
+    return ({'store_rule': rule, 'store_shrink': entries} if chosen == 'shrink' else {'store_rule': rule}), reason
 
 
 def unload_extra(per_stop: float, manual: Mapping[int, float], unload: Mapping[str, Any] | None,

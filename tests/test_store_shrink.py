@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 from collections import defaultdict
+from types import SimpleNamespace
 from datetime import date, timedelta
 from pathlib import Path
 from statistics import mean, variance
@@ -14,6 +15,7 @@ from statistics import mean, variance
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from route_optimizer import erp  # noqa: E402
 from route_optimizer import learning as lr  # noqa: E402
 from route_optimizer import views  # noqa: E402
 from test_learning_loop import TODAY, _learning_client, _unload_obs  # noqa: E402
@@ -21,6 +23,12 @@ from test_route_optimizer import _dispatch_setup, _dorder, client  # noqa: E402,
 from test_route_store_unload import GOLDEN, GOLDEN_KG, GOLDEN_POINTS, _build, _js_hints, _plan  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+SHRINK_ON = {'store_rule': {'rule': 'shrink', 'k': 4.0}, 'store_shrink': {}}   # действующая строка: сглаживание, k = 4
+
+
+def _current(rule):
+    """Действующая строка unload с правилом rule (гистерезис fit_unload)."""
+    return SHRINK_ON if rule == 'shrink' else {'store_rule': {'rule': rule, 'k': 4.0}}
 
 
 def _row(rule='shrink', k=4.0, shrink=None, **extra):
@@ -69,10 +77,36 @@ def test_shrink_k_bounds_and_too_little_data():
     ok = _stores([0.0, 4.0, 9.0, 1.0, 6.0, 12.0, 3.0, 8.0, 2.0, 7.0], n=3)   # 10 × 2 = 20 — уже можно
     assert lr.shrink_k(ok, {c: 'small' for c in ok}) is not None
     alone = _stores([0.0, 4.0, 9.0, 1.0, 6.0, 12.0, 3.0, 8.0])
-    assert lr.shrink_k(alone, {c: f'chain:{c}' for c in alone}) is None   # все по одному в группе — τ² не оценить
+    # группы меньше SHRINK_GROUP_MIN — своей опоры нет, магазины сглаживаются к a: разброс — около a (остаток 0)
+    assert lr.shrink_k(alone, {c: f'chain:{c}' for c in alone}) == lr.shrink_k(alone, {c: f'g{c // 2}' for c in alone})
     # магазины с одним визитом в оценку не входят (ни внутри, ни между)
     plus_one = {**alone, **{900 + i: [50.0 * i] for i in range(10)}}
     assert lr.shrink_k(plus_one, {c: 'small' for c in plus_one}) == lr.shrink_k(alone, {c: 'small' for c in alone})
+
+
+def test_shrink_k_measures_spread_around_prior_used():
+    """№66, ревью M2: разброс средних — около той опоры, к которой сглаживают. Магазины без своей группы (группы меньше
+    SHRINK_GROUP_MIN) — около a (остаток 0, по степени свободы на магазин): их уровень далеко от a — k меньше (к a
+    тянуть слабее), чем если бы у них была своя группа. Шум средних — σ²·(Σ_g (m_g − 1)/m_g·Σ 1/n + Σ_a 1/n) / df."""
+    means = [10.0, 12.0, 14.0, 11.0, 13.0, 15.0, 11.5, 12.5]
+    res = _stores(means)
+    sigma2 = mean(variance(rs) for rs in res.values())
+    own = lr.shrink_k(res, {c: 'small' for c in res})                           # одна группа со своей опорой
+    to_a = lr.shrink_k(res, {c: f'chain:{c}' for c in res})                     # каждый — к a
+    assert own == pytest.approx(sigma2 / (variance(means) - sigma2 / 4), abs=0.006)
+    tau2_a = mean(m * m for m in means) - sigma2 / 4
+    assert to_a == pytest.approx(max(lr.SHRINK_K_BOUNDS[0], sigma2 / tau2_a), abs=0.006) and to_a < own
+    # смешанно: 4 магазина в группе со своей опорой, 4 — к a; разные n — шум с весами групп
+    mixed = {**{c: rs for c, rs in _stores(means[:4]).items()},
+             **{200 + i: [m + d for d in (-3.0, -1.0, 1.0, 3.0, -2.0, 2.0)] for i, m in enumerate(means[4:])}}
+    groups = {c: ('small' if c < 200 else f'chain:{c}') for c in mixed}
+    m_own = [mean(mixed[c]) for c in mixed if c < 200]
+    s2 = (sum(variance(mixed[c]) * (len(mixed[c]) - 1) for c in mixed)
+          / sum(len(rs) - 1 for rs in mixed.values()))
+    between = (sum((x - mean(m_own)) ** 2 for x in m_own) + sum(mean(mixed[c]) ** 2 for c in mixed if c >= 200)) / (3 + 4)
+    noise = ((4 - 1) / 4 * sum(1 / len(mixed[c]) for c in mixed if c < 200)
+             + sum(1 / len(mixed[c]) for c in mixed if c >= 200)) / (3 + 4)
+    assert lr.shrink_k(mixed, groups) == pytest.approx(max(1.0, min(20.0, s2 / (between - s2 * noise))), abs=0.006)
 
 
 def test_shrink_k_recovers_true_ratio():
@@ -135,16 +169,17 @@ def _cur(o):
     return 20.0 * o.n + 6.0 * o.tonnes        # действующая норма: отсечение 3 × — не мешает сетям (≈ 31 мин)
 
 
-def test_fit_unload_chains_are_own_group_not_large():
+def test_fit_unload_chains_are_own_group_not_large(monkeypatch):
     """Сети (chain_groups) — своя группа: опора сетей — их медиана (≈ 24 + груз), а не крупных магазинов; без chains
     те же магазины попадают в крупные по весу и получают общую опору."""
+    monkeypatch.setattr(lr, 'SHRINK_MIN_TEST', (10 ** 6, 3))      # сглаживание действует и остаётся — записи в строке
     obs, truth, chains, _, _ = _sim()
-    p = lr.fit_unload(obs, _cur, TODAY, chains=chains).params
+    p = lr.fit_unload(obs, _cur, TODAY, current_unload=SHRINK_ON, chains=chains).params
     prior = {int(c): v[2] for c, v in p['store_shrink'].items()}
     chain_p = {prior[c] for c in chains}
     large_p = {prior[c] for c in truth if 1081 <= c <= 1120}
     assert len(chain_p) == 1 and len(large_p) == 1 and min(chain_p) - max(large_p) > 5
-    lumped = lr.fit_unload(obs, _cur, TODAY).params
+    lumped = lr.fit_unload(obs, _cur, TODAY, current_unload=SHRINK_ON).params
     lp = {int(c): v[2] for c, v in lumped['store_shrink'].items()}
     assert {lp[c] for c in chains} == {lp[c] for c in truth if 1081 <= c <= 1120}
     # размер — по среднему весу визита: у малых, средних и крупных — своя опора (время по факту — без груза b·т)
@@ -154,17 +189,19 @@ def test_fit_unload_chains_are_own_group_not_large():
 
 # ============================== применение ==============================
 
-def test_shrink_times_formula_manual_over_group():
-    """t = (n·факт + k·опора) / (n + k): опора — введённое, без него — опора группы строки; без визитов — введённое."""
+def test_shrink_times_formula_manual_then_group():
+    """t = (n·факт + k·опора группы) / (n + k). Введённое (ревью H1, как №60) — само, пока визитов меньше STORE_MIN_OBS;
+    с STORE_MIN_OBS визитов — сглаживание к группе, введённое не участвует; без введённого — и с одного визита."""
     row = _row()
     t = lr.shrink_times(6.0, {}, row)
     assert t[101] == (pytest.approx((1 * 30 + 4 * 10) / 5 - 6, abs=0.051), 'shrink')            # 14 − 6 = 8
     assert t[102] == (pytest.approx((3 * 20 + 4 * 10) / 7 - 6, abs=0.051), 'shrink')
     assert t[103] == (pytest.approx((12 * 40 + 4 * 10) / 16 - 6, abs=0.051), 'shrink')
-    m = lr.shrink_times(6.0, {101: 50.0, 104: 25.0}, row)
-    assert m[101] == (pytest.approx((30 + 4 * 50) / 5 - 6, abs=0.051), 'shrink_manual')          # введённое — опора
-    assert m[104] == (19.0, 'manual') and 105 not in m                                          # без визитов
-    assert lr.store_times(6.0, {101: 50.0, 104: 25.0}, row) == m                               # store_times — то же
+    m = lr.shrink_times(6.0, {101: 50.0, 102: 90.0, 104: 25.0}, row)
+    assert m[101] == (44.0, 'manual')                                    # 1 визит < STORE_MIN_OBS — введённое само
+    assert m[102] == t[102]                                              # 3 визита — к группе, введённое 90 не тянет
+    assert m[104] == (19.0, 'manual') and 105 not in m                   # без визитов
+    assert lr.store_times(6.0, {101: 50.0, 102: 90.0, 104: 25.0}, row) == m          # store_times — то же
     assert lr.store_extras(6.0, {}, row) == {c: e for c, (e, _) in t.items()}
     # поправка < 0,5 — ноль; время не меньше 0
     assert lr.shrink_times(6.0, {}, _row(shrink={'1': [5, 6.2, 6.2]}))[1] == (0.0, 'shrink')
@@ -221,8 +258,53 @@ def test_holdout_gate_picks_shrink_and_keeps_it():
     after = lr._mae((a * o.n + b * o.tonnes + sum(ex.get(c, 0.0) for c in o.customers), o.minutes) for o in test)
     assert out.mae_after == pytest.approx(after, abs=0.002)
     # уже действует — остаётся (обратно на №60 — только если тот точнее на MIN_GAIN)
-    again = lr.fit_unload(obs, _cur, TODAY, rule='shrink', chains=chains).params['store_rule']
-    assert again['rule'] == 'shrink' and again['mae'] == r['mae']
+    again = lr.fit_unload(obs, _cur, TODAY, current_unload=SHRINK_ON, chains=chains).params
+    assert again['store_rule']['rule'] == 'shrink' and again['store_rule']['mae'] == r['mae']
+    assert again['store_shrink'] == out.params['store_shrink'] and 'k_carried' not in again['store_rule']
+
+
+def test_holdout_compares_only_visits_to_stores_seen_in_training():
+    """Ревью L4: в сравнении правил — только визиты проверки к магазинам с визитами в обучении (у остальных прогнозы
+    обоих правил одинаковы — разбавляли бы выигрыш); визиты новых магазинов n_test и ошибки не меняют."""
+    obs, _, chains, _, _ = _sim()
+    test_from = lr.windows(TODAY)[1]
+    fresh = [lr.UnloadObs(test_from + timedelta(days=i % 7), 1, 0.1, 9.0 + i % 5, (5000 + i,)) for i in range(200)]
+    base = lr.fit_unload(obs, _cur, TODAY, chains=chains)
+    more = lr.fit_unload(obs + fresh, _cur, TODAY, chains=chains)
+    assert more.n_test == base.n_test + len(fresh)
+    r0, r1 = base.params['store_rule'], more.params['store_rule']
+    assert (r1['n_test'], r1['days_test'], r1['mae'], r1['rule']) == (r0['n_test'], r0['days_test'], r0['mae'], r0['rule'])
+    seen = {c for o in obs if o.day < test_from for c in o.customers}
+    assert r0['n_test'] == sum(1 for o in obs if o.day >= test_from and set(o.customers) & seen)
+
+
+def test_shrink_in_effect_keeps_k_when_it_cannot_be_estimated():
+    """Ревью M3: сглаживание действует, а этой ночью k не оценить (мало магазинов) — правило не слетает молча: k —
+    действующей строки, факты свежие, сменить правило может только проверка. Без действующего сглаживания — как до №66."""
+    obs, _, chains, _, _ = _sim()
+    obs = [o for o in obs if o.customers[0] <= 1007]                   # 7 магазинов < SHRINK_K_MIN[0]
+    out = lr.fit_unload(obs, _cur, TODAY, current_unload=SHRINK_ON, chains=chains)
+    r = out.params['store_rule']
+    assert r['k'] == 4.0 and r['k_carried'] is True and r['rule'] == 'shrink' and out.params['store_shrink']
+    assert 'գործող տողից' in out.reason and lr.store_rule(out.params) == 'shrink'
+    plain = lr.fit_unload(obs, _cur, TODAY, chains=chains)
+    assert 'store_rule' not in plain.params and 'store_shrink' not in plain.params
+
+
+def test_rejected_row_does_not_claim_rule_is_applied(monkeypatch):
+    """Ревью L2: строка не принята — в причине сказано, что выбор правила не применяется."""
+    obs, _, chains, _, _ = _sim()
+    monkeypatch.setattr(lr, '_verdict', lambda before, after: (False, 'չի ընդունվել'))
+    out = lr.fit_unload(obs, _cur, TODAY, chains=chains)
+    assert not out.accepted and 'չի կիրառվում՝ տողն ընդունված չէ' in out.reason
+
+
+def test_store_shrink_written_only_when_shrink_chosen():
+    """Ревью L6: записи store_shrink — только при выборе сглаживания (гистерезису они не нужны: каждую ночь — свежие);
+    выбран №60 — в строке лишь store_rule (k и ошибки для страницы)."""
+    obs, _, chains, _, _ = _sim(sigma=1.0, tau=12.0)
+    p = lr.fit_unload(obs, _cur, TODAY, chains=chains).params
+    assert p['store_rule']['rule'] == 'n60' and 'store_shrink' not in p
 
 
 def test_holdout_gate_keeps_and_returns_to_n60_when_stores_differ_a_lot():
@@ -230,7 +312,7 @@ def test_holdout_gate_keeps_and_returns_to_n60_when_stores_differ_a_lot():
     раньше возвращается к №60 тем же правилом."""
     obs, _, chains, _, _ = _sim(sigma=1.0, tau=12.0)
     keep = lr.fit_unload(obs, _cur, TODAY, chains=chains).params['store_rule']
-    back = lr.fit_unload(obs, _cur, TODAY, rule='shrink', chains=chains).params['store_rule']
+    back = lr.fit_unload(obs, _cur, TODAY, current_unload=SHRINK_ON, chains=chains).params['store_rule']
     assert keep['mae']['n60'] <= keep['mae']['shrink'] * (1 - lr.MIN_GAIN)
     assert keep['rule'] == 'n60' and back['rule'] == 'n60'
 
@@ -241,16 +323,17 @@ def test_hysteresis_needs_min_gain_and_enough_holdout(monkeypatch):
     obs, _, chains, _, _ = _sim()
     monkeypatch.setattr(lr, 'MIN_GAIN', 0.9)                  # выигрыш 90% недостижим
     for rule in lr.STORE_RULES:
-        out = lr.fit_unload(obs, _cur, TODAY, rule=rule, chains=chains)
+        out = lr.fit_unload(obs, _cur, TODAY, current_unload=_current(rule), chains=chains)
         assert out.params['store_rule']['rule'] == rule and f'մնում է «{lr.STORE_RULE_TITLES[rule]}»' in out.reason
     monkeypatch.setattr(lr, 'MIN_GAIN', 0.02)
     monkeypatch.setattr(lr, 'SHRINK_MIN_TEST', (10 ** 6, 3))  # проверки мало
     for rule in lr.STORE_RULES:
-        out = lr.fit_unload(obs, _cur, TODAY, rule=rule, chains=chains)
+        out = lr.fit_unload(obs, _cur, TODAY, current_unload=_current(rule), chains=chains)
         assert out.params['store_rule']['rule'] == rule and 'քիչ են' in out.reason
     monkeypatch.setattr(lr, 'SHRINK_MIN_TEST', (30, 10 ** 3))  # дней проверки мало
     assert lr.fit_unload(obs, _cur, TODAY, chains=chains).params['store_rule']['rule'] == 'n60'
-    assert lr.fit_unload(obs, _cur, TODAY, rule='bogus', chains=chains).params['store_rule']['rule'] == 'n60'
+    bogus = {'store_rule': {'rule': 'bogus', 'k': 4.0}, 'store_shrink': {}}
+    assert lr.fit_unload(obs, _cur, TODAY, current_unload=bogus, chains=chains).params['store_rule']['rule'] == 'n60'
 
 
 # ============================== синтетика: №60 против сглаживания ==============================
@@ -262,19 +345,25 @@ def _bucket(n):
     return str(n) if n <= 4 else '5–6' if n <= 6 else '7–12' if n <= 12 else '13–20'
 
 
-def simulate_errors(seeds=range(1, 11)):
+def simulate_errors(seeds=range(1, 11), manual_share=0.0):
     """Ошибка прогноза визита (своё время + груз) против истинного ожидания, мин, по числу визитов в обучении: правило
-    №60 и сглаживание — с одними a, b строки; доля прогонов, где проверка выбрала сглаживание."""
+    №60 и сглаживание — с одними a, b строки; доля прогонов, где проверка выбрала сглаживание. manual_share — доля
+    магазинов-сетей с введённым логистом точным временем (ревью H1)."""
     sums = defaultdict(lambda: [0.0, 0.0, 0])
     picked = 0
     for seed in seeds:
         obs, truth, chains, visits, tons = _sim(seed)
-        p = lr.fit_unload(obs, _cur, TODAY, chains=chains).params
-        picked += p['store_rule']['rule'] == 'shrink'
+        manual = {c: float(round(truth[c])) for c in sorted(chains)[:int(len(chains) * manual_share)]}
+        picked += lr.fit_unload(obs, _cur, TODAY, manual, chains=chains).params['store_rule']['rule'] == 'shrink'
+        with pytest.MonkeyPatch.context() as mp:         # те же a, b и записи — при любом выборе проверки
+            mp.setattr(lr, 'SHRINK_MIN_TEST', (10 ** 6, 3))
+            p = lr.fit_unload(obs, _cur, TODAY, manual, current_unload=SHRINK_ON, chains=chains).params
         a, b = p['per_stop_min'], p['per_tonne_min']
-        n60 = lr.store_extras(a, {}, {**p, 'store_rule': {**p['store_rule'], 'rule': 'n60'}})
-        shrink = lr.store_extras(a, {}, {**p, 'store_rule': {**p['store_rule'], 'rule': 'shrink'}})
+        n60 = lr.store_extras(a, manual, {**p, 'store_rule': {**p['store_rule'], 'rule': 'n60'}})
+        shrink = lr.store_extras(a, manual, {**p, 'store_rule': {**p['store_rule'], 'rule': 'shrink'}})
         for c, t in truth.items():
+            if manual_share and c not in manual:
+                continue
             want = t + 12.0 * tons[c]
             s = sums[_bucket(visits[c])]
             s[0] += abs(a + n60.get(c, 0.0) + b * tons[c] - want)
@@ -285,10 +374,6 @@ def simulate_errors(seeds=range(1, 11)):
 
 def test_simulation_shrink_beats_n60_at_few_visits_and_converges():
     errors, picked = simulate_errors()
-    print('\nвизитов | №60 | сглаживание | магазинов')
-    for k in SIM_BUCKETS:
-        print(k, *errors[k])
-    print('проверка выбрала сглаживание:', picked)
     for k in ('2', '3', '4'):
         n60, shrink, _ = errors[k]
         assert shrink <= 0.85 * n60, (k, errors[k])                       # при 2–4 визитах — заметно точнее
@@ -297,6 +382,17 @@ def test_simulation_shrink_beats_n60_at_few_visits_and_converges():
     gain = {k: errors[k][0] - errors[k][1] for k in SIM_BUCKETS}
     assert gain['13–20'] < min(gain['2'], gain['3'], gain['4'])
     assert picked >= 0.8                                                  # проверка это видит
+
+
+def test_simulation_correct_manual_on_heavy_stores_not_worse_than_n60():
+    """Ревью H1: логист вписал точное время всем сетям (тяжёлые магазины, груз b̂·т далёк от настоящего) — со
+    сглаживанием их ошибка не хуже №60: введённое — само до 2-го визита (как №60), дальше — к группе, а не к введённому."""
+    errors, picked = simulate_errors(range(1, 7), manual_share=1.0)
+    n60 = sum(e[0] * e[2] for e in errors.values()) / sum(e[2] for e in errors.values())
+    shrink = sum(e[1] * e[2] for e in errors.values()) / sum(e[2] for e in errors.values())
+    assert shrink <= n60 * 1.02, errors
+    assert errors['1'][0] == errors['1'][1]                               # 1 визит — введённое у обоих правил
+    assert picked >= 0.5
 
 
 # ============================== «Развоз»: байт-в-байт и применение ==============================
@@ -372,8 +468,15 @@ def test_api_hint_and_learning_page_follow_active_rule(client, monkeypatch):
     by = {r['customer_id']: r for r in st['rows']}
     assert (st['rule'], st['k']) == ('shrink', 4.0)
     assert (by[101]['visits'], by[101]['source'], by[101]['in_calc_min']) == (1, 'shrink', round((41 + 4 * 11) / 5, 1))
-    assert (by[102]['visits'], by[102]['source']) == (3, 'shrink_manual')
-    assert by[102]['in_calc_min'] == pytest.approx((3 * 30 + 4 * 20) / 7, abs=0.051)       # введённое 20 — опора
+    assert (by[102]['visits'], by[102]['source']) == (3, 'shrink')
+    assert by[102]['in_calc_min'] == pytest.approx((3 * 30 + 4 * 11) / 7, abs=0.051)       # введённое 20 не участвует
+    # введённое при 1 визите (ревью H1, L4): в расчёте — введённое, в подсказке визит виден (со сглаживанием — с 1-го)
+    state.store.save_customer_constraints(101, None, None, 'qa', 15)
+    hint = {c['customer_id']: c for c in client.get('/api/routes/customer-vehicles?q=C10').get_json()['customers']}
+    assert (hint[101]['unload_visits'], hint[101]['unload_auto_min']) == (1, round((41 + 4 * 11) / 5, 1))
+    by = {r['customer_id']: r for r in next(s for s in client.get('/api/routes/learning/status').get_json()['status']
+                                            if s['kind'] == 'unload')['stores']['rows']}
+    assert (by[101]['source'], by[101]['in_calc_min']) == ('manual', 15.0)
 
 
 @pytest.mark.skipif(shutil.which('node') is None, reason='нет node')
@@ -381,8 +484,9 @@ def test_settings_hint_describes_active_rule():
     item = {'unload_auto_min': 12.0, 'unload_visits': 1}
     shrink, = _js_hints({'per_stop_min': 6.0, 'per_tonne_min': 10.0, 'store_rule': 'shrink'}, [item])
     n60, = _js_hints({'per_stop_min': 6.0, 'per_tonne_min': 10.0}, [{**item, 'unload_visits': None}])
-    assert 'հարթեցնելով' in shrink and 'երրորդին' not in shrink and 'նման խանութների' in shrink
-    assert 'երրորդին' in n60 and 'հարթեցնելով' not in n60
+    assert 'հարթեցնում է' in shrink and 'երրորդին' not in shrink and 'նման խանութների' in shrink
+    assert 'ձեր գրած ժամանակը' in shrink and 'դեպի ձեր գրած' not in shrink              # H1: введённое — не опора
+    assert 'երրորդին' in n60 and 'հարթեցնում է' not in n60
     nb = '\N{NO-BREAK SPACE}'   # между числом и словом — неразрывный пробел (как на «Развозе»)
     assert f'արդեն եղել է 1{nb}բեռնաթափում' in shrink and shrink.endswith(f'Դատարկ՝ 12{nb}րոպե (ըստ փաստի)։')
 
@@ -390,16 +494,22 @@ def test_settings_hint_describes_active_rule():
 def test_dispatch_dialog_and_learning_page_describe_active_rule():
     js = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     hint = re.search(r'    function unloadHint\(x, norms\) \{\n.*?\n    \}\n', js.replace('\r\n', '\n'), re.S).group(0)
-    assert "norms.store_rule === 'shrink'" in hint and 'հարթեցնելով' in hint and 'երրորդին' in hint
+    assert "norms.store_rule === 'shrink'" in hint and 'հարթեցնում է' in hint and 'երրորդին' in hint
+    assert 'դեպի ձեր գրած' not in hint
     html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
     for piece in ('id="lrStoresRule"', 'id="lrStoresShrink" hidden', 'id="lrStoresK"', 'id="lrRuleN60"',
                   'id="lrRuleShrink" hidden', 'նման խանութների'):
         assert piece in html, piece
     ljs = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
     for piece in ("st.rule === 'shrink'", "$('lrStoresShrink').hidden = !shrink", "$('lrRuleN60').hidden = shrink",
-                  "shrink: 'GPS + նման խանութներ'", "shrink_manual: 'GPS + մուտքագրված'"):
+                  "shrink: 'GPS + նման խանութներ'", "unloads(shrink ? 1 : st.min_visits)",
+                  "p.store_rule.rule === 'shrink'", "գործում է մուտքագրվածը"):
         assert piece in ljs, piece
-    assert "routes_dispatch.js') }}?v=60" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    assert 'shrink_manual' not in ljs
+    # заголовки правил в причинах журнала — те же слова, что на странице (ревью L3)
+    for title in lr.STORE_RULE_TITLES.values():
+        assert f'«{title}»' in ' '.join(html.split()), title
+    assert "routes_dispatch.js') }}?v=61" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
 
 
 def test_run_learning_passes_active_rule_chains_and_size(client, monkeypatch):
@@ -412,11 +522,30 @@ def test_run_learning_passes_active_rule_chains_and_size(client, monkeypatch):
     real = lr.fit_unload
     monkeypatch.setattr(lr, 'fit_unload', lambda *args: seen.append(args[5:]) or real(*args))
     views.run_learning(state, TODAY)
-    rule, chains, size_kg = seen[-1]
-    assert rule == 'n60' and size_kg == (50.0, 300.0) and chains and set(chains.values()) == {'036'}
+    current, chains, size_kg = seen[-1]
+    assert lr.store_rule(current) == 'n60' and size_kg == (50.0, 300.0) and chains and set(chains.values()) == {'036'}
     # прогон дня выбрал сглаживание (строка того же дня заменяет) — завтра от него и сравнение
     state.store.save_learned(TODAY.isoformat(), [lr.Outcome('unload', '', True, 'да', {
         'per_stop_min': 6.0, 'per_tonne_min': 10.0, 'store_offsets': {}, 'store_shrink': {'101': [2, 9.0, 8.0]},
         'store_rule': {'rule': 'shrink', 'k': 3.0}})])
     views.run_learning(state, TODAY + timedelta(days=1))
-    assert seen[-1][0] == 'shrink'
+    assert lr.store_rule(seen[-1][0]) == 'shrink' and seen[-1][0]['store_rule']['k'] == 3.0
+
+
+def test_chain_customers_for_stores_outside_managers_plan():
+    """Ревью M1: сеть узнаётся и у магазинов вне плана менеджеров — одним запросом группы (ERP, только чтение) по
+    недостающим клиентам; сети не заданы — запроса нет."""
+    calls = []
+
+    def loader(ids):
+        calls.append(list(ids))
+        return {555: '036', 556: '777', 999: '036'}
+    snap = SimpleNamespace(customers={101: erp.Customer(101, 'C101', 'К', '036', None, False, None),
+                                      102: erp.Customer(102, 'C102', 'К', '017', None, False, None)})
+    state = SimpleNamespace(group_loader=loader)
+    bundle = SimpleNamespace(settings={'chain_groups': ['036']})
+    assert views._chain_customers(state, snap, bundle, {101, 102, 555, 556}) == {101: '036', 555: '036'}
+    assert calls == [[555, 556]]
+    assert views._chain_customers(state, snap, SimpleNamespace(settings={'chain_groups': []}), {555}) == {}
+    assert views._chain_customers(SimpleNamespace(group_loader=None), snap, bundle, {101, 555}) == {101: '036'}
+    assert len(calls) == 1

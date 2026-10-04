@@ -594,6 +594,15 @@ def load_dispatch_data(connection_string: str, since: date, until: date, day: da
         close_quietly(conn)
 
 
+def load_customer_groups(connection_string: str, ids: Sequence[int]) -> dict[int, str]:
+    """Клиент → код группы (CustGrp) — одним соединением, только чтение (обучение «Развоза»: сети, №66)."""
+    conn = connect(connection_string)
+    try:
+        return {c.id: c.group for c in customers(conn, ids).values()}
+    finally:
+        close_quietly(conn)
+
+
 def load_fact_data(connection_string: str, day: date) -> FactData:
     """Факт развоза за прошедшую дату: реализации с машинами и справочники клиентов."""
     conn = connect(connection_string)

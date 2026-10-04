@@ -145,6 +145,8 @@ class RoutesState:
     waybill_loader: Callable[[Sequence[str]], wb.Lines] | None = None
     # водители-экспедиторы ERP за [since, until) для выбора в «Վարորդ» (№62); кэш — (time.monotonic() до, имена)
     driver_list_loader: Callable[[date, date], list[str]] | None = None
+    # клиенты → код группы (CustGrp) из ERP — сети для сглаживания времени магазина в обучении (№66); None — только снимок
+    group_loader: Callable[[Sequence[int]], dict[int, str]] | None = None
     driver_list_cache: tuple[float, list[str]] | None = None
     driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
     dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
@@ -2150,7 +2152,7 @@ def api_customer_vehicles_search() -> Any:
     if learning.store_rule(unload) == 'shrink':   # №66: проверка выбрала сглаживание к группе — подсказка о нём
         norms['store_rule'] = 'shrink'
         stats = {c: (n, fact) for c, (n, fact, _) in learning.store_shrink(unload).items()}
-    least = 1 if 'store_rule' in norms else learning.STORE_MIN_OBS   # со сглаживанием в расчёт идёт и 1-й визит
+    least = 1 if 'store_rule' in norms else learning.STORE_MIN_OBS   # сглаживание: без введённого — и 1-й визит
     return jsonify({'success': True, 'total': len(customers),
                     'vehicles': [{'car_code': t['car_code'], 'name': t['name']} for t in _trucks_json(snap, bundle)],
                     'unload_norms': norms,
@@ -2331,6 +2333,21 @@ def _unload_norms(bundle: Bundle, unload: Mapping[str, Any] | None) -> tuple[flo
     return float(s['unload_min_per_stop']), float(s['unload_min_per_tonne'])
 
 
+def _chain_customers(state: RoutesState, snap: Any, bundle: Bundle, ids: set[int]) -> dict[int, str]:
+    """Магазины-сети среди ids (№66: своя группа сглаживания): клиент → код группы (CustGrp) из settings chain_groups.
+    Группа — из снимка ERP (клиенты плана менеджеров); остальных (в «Развозе» бывают и магазины вне плана) — одним
+    запросом state.group_loader (ERP, только чтение) и только если сети заданы. Ошибка ERP — ErpError: прогон обучения
+    не выполняется (как без снимка), а не учится с другими группами."""
+    chain_set = set(bundle.settings.get('chain_groups') or ())
+    if not chain_set or not ids:
+        return {}
+    groups = {cid: snap.customers[cid].group for cid in ids if cid in snap.customers}
+    missing = sorted(ids - set(groups))
+    if missing and state.group_loader is not None:
+        groups.update({cid: g for cid, g in state.group_loader(missing).items() if cid in ids})
+    return {cid: g for cid, g in sorted(groups.items()) if g in chain_set}
+
+
 def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     """Прогон обучения за день today (Ереван; ночью — за наступивший день): наблюдения из факта до вчера включительно,
     проверка на последней неделе, итог — в learned_norms (повтор того же дня заменяет). «Действующая норма» для
@@ -2407,15 +2424,14 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     loading_now = ((tn.warehouse_load_fixed_min, tn.warehouse_load_min_per_tonne)
                    if tn.loading_configured and tn.load(1000) > 0 else None)
     # правило времени магазина (№66): группа — размер по среднему доставленному весу, сети (chain_groups) — своей
-    # группой (сеть известна у клиентов плана менеджеров — снимок ERP); выбор — от действующего правила (гистерезис)
-    chain_set = set(bundle.settings.get('chain_groups') or ())
-    chains = {cid: c.group for cid, c in snap.customers.items() if c.group in chain_set}
+    # группой; выбор — от действующей строки (её правило и k — гистерезис)
+    chains = _chain_customers(state, snap, bundle, {c for o in unload for c in o.customers})
     size_kg = (float(bundle.settings['size_small_max_kg']), float(bundle.settings['size_medium_max_kg']))
     outcomes = [
         learning.fit_unload(unload, lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes
                             + math.fsum(extras.get(c, 0.0) for c in o.customers), today, bundle.unload_min,
                             lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes,
-                            learning.store_rule(eff.unload), chains, size_kg),
+                            eff.unload, chains, size_kg),
         learning.fit_loading(loads, today, loading_now),
     ]
     model_id = learning.road_model_id(norms)
@@ -2556,7 +2572,7 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
     мин; split — два визита сильно расходятся, ждём третий: learning.store_waits), в расчёте — постоянная часть, которой
     «Развоз» считает сейчас (learning.store_times, как в расчёте; время на груз — сверху). Не больше STORES_SHOWN строк.
     Действует сглаживание к группе (№66, learning.store_rule) — rule 'shrink' и k, магазины и визиты — и из store_shrink
-    (в расчёт идёт и 1-й визит).
+    (без введённого в расчёт идёт и 1-й визит).
     Названия — из снимка ERP, если он уже в памяти (ERP не читается: страница опрашивает статус во время пересчёта);
     снимка нет — без названий."""
     per_stop, per_tonne = _unload_norms(bundle, unload)
