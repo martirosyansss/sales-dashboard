@@ -417,6 +417,9 @@ def _golden_digest(client, learned, manual=None):
             'per_stop_min': 6.5, 'per_tonne_min': 9.0, 'store_offsets': {'201': 7.5, '205': -2.0, '212': 12.0}})])
     plan = _plan(_build(client, ('CAR1', 'CAR2')))
     assert plan['coverage']['stops_assigned'] == len(GOLDEN_POINTS)
+    # совет «что добавить» (№54, plan.advice) — новое поле плана, не рейсы: здесь всё помещается, совета нет; отпечаток —
+    # по рейсам и цифрам, как до него
+    assert plan.pop('advice', None) is None
     return hashlib.sha256(json.dumps(plan, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
 
 
