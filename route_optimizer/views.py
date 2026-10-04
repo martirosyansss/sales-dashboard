@@ -275,11 +275,28 @@ def _garage_prices(state: RoutesState, as_of: date, trucks: Mapping[str, Any]) -
                          _garage_models(state, trucks))
 
 
+def _garage_priors(state: RoutesState, prices: Mapping[str, garage.Price],
+                   trucks: Mapping[str, Any]) -> dict[str, garage.Prior]:
+    """Средняя модели или парка машинам раздела (trucks) без своей готовой цены журнала (garage.priors); журнал пуст —
+    пусто."""
+    return garage.priors(prices, _garage_models(state, trucks)) if prices else {}
+
+
+def _garage_bundle(bundle: Bundle, prices: Mapping[str, garage.Price],
+                   priors: Mapping[str, garage.Prior]) -> Bundle:
+    """Настройки с ценами журнала: готовые (garage_wear) перекрывают ручной износ, средние (garage_prior) — только
+    пустой ручной (Bundle.resolved_trucks). Ничего не изменилось — те же настройки (расчёт и отпечаток — прежние)."""
+    wear = garage.effective(prices)
+    prior = {code: p.price for code, p in priors.items()}
+    if wear == bundle.garage_wear and prior == bundle.garage_prior:
+        return bundle
+    return replace(bundle, garage_wear=wear, garage_prior=prior)
+
+
 def _with_garage(state: RoutesState, bundle: Bundle, as_of: date) -> Bundle:
-    """Настройки с ремонтом ֏/км журнала гаража на as_of: готовые цены перекрывают ручной износ в расчёте
-    (Bundle.resolved_trucks). Готовых нет — настройки как есть (расчёт и отпечаток — прежние)."""
-    wear = garage.effective(_garage_prices(state, as_of, bundle.trucks))
-    return bundle if wear == bundle.garage_wear else replace(bundle, garage_wear=wear)
+    """Настройки с ремонтом ֏/км журнала гаража на as_of (_garage_bundle). Готовых цен нет — настройки как есть."""
+    prices = _garage_prices(state, as_of, bundle.trucks)
+    return _garage_bundle(bundle, prices, _garage_priors(state, prices, bundle.trucks))
 
 
 def _api(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -442,13 +459,14 @@ def api_settings_get() -> Any:
     season = evaluate.resolve_season(snap.season_index, s)
     # «авто» без ручных чисел: ровно те значения по GPS (округлённые, в диапазоне), что возьмёт расчёт
     gps = {**evaluate.road_norms({}, calib), **_visit_suggestions(state, snap, bundle, calib, season)}
+    prices = _garage_prices(state, _clock().date(), bundle.trucks)
     return jsonify({
         'success': True,
         'settings': s,
         'traffic_provider': {'name': 'yandex', 'configured': bool(os.environ.get('ROUTES_YANDEX_API_KEY'))},
         'center_zone_default': DEFAULT_SETTINGS['center_zone'],
         'depot': {'lat': bundle.depot[0], 'lon': bundle.depot[1]} if bundle.depot else None,
-        'trucks': _trucks_json(snap, bundle, _garage_prices(state, _clock().date(), bundle.trucks)),
+        'trucks': _trucks_json(snap, bundle, prices, _garage_priors(state, prices, bundle.trucks)),
         'expeditors': _expeditors_json(snap, bundle),
         'car_idle_days': CAR_IDLE_DAYS,
         'managers': _managers_json(snap, bundle),
@@ -544,17 +562,18 @@ def _agent_order(snap: Snapshot) -> list[int]:
                   key=lambda a: (snap.agents[a].code if a in snap.agents else '', a))
 
 
-def _trucks_json(snap: Snapshot, bundle: Bundle,
-                 prices: Mapping[str, garage.Price] | None = None) -> list[dict[str, Any]]:
+def _trucks_json(snap: Snapshot, bundle: Bundle, prices: Mapping[str, garage.Price] | None = None,
+                 priors: Mapping[str, garage.Prior] | None = None) -> list[dict[str, Any]]:
     """Машины CARS и их настройки, затем ручные машины (их нет в ERP). Машина закреплена за водителем, а не
     за менеджером (ответ владельца №29) — вместо менеджера подсказка из ERP: сколько машина возит в день
     (90 дней) и когда последний раз была в накладных. «Активна» — действующее значение; active_source:
     manual — выбор владельца, auto — решают накладные (auto_active: возила за CAR_IDLE_DAYS дней).
     «Можно в центр» (center_ok) — так же: center_ok_source, auto_center_ok — по названию (машины JAC).
     Износ: wear_amd_per_km — ручное значение (его и сохраняет страница); garage — ремонт ֏/км журнала гаража на
-    сегодня (только чтение), wear_source — какое значение в расчёте (garage | manual | None)."""
-    prices = prices or {}
-    used = replace(bundle, garage_wear=garage.effective(prices))
+    сегодня (только чтение), garage_prior — средняя модели или парка машине без своей цены журнала (garage.Prior),
+    wear_source — какое значение в расчёте (garage | manual | garage_avg | None)."""
+    prices, priors = prices or {}, priors or {}
+    used = _garage_bundle(bundle, prices, priors)
     out = []
     active_cars = snap.active_cars
     for code, car in sorted(snap.cars.items()):
@@ -578,6 +597,7 @@ def _trucks_json(snap: Snapshot, bundle: Bundle,
             'center_ok_source': 'auto' if t is None or t.center_ok is None else 'manual',
             'auto_center_ok': center_auto(car.name),
             'garage': _garage_price_json(prices.get(code)), 'wear_source': used.wear_source(code),
+            'garage_prior': _garage_prior_json(priors.get(code)),
             'last_used': last.isoformat() if last else None,
             'erp_days': days,
             'erp_kg_day': round(avg) if avg is not None else None,
@@ -593,6 +613,7 @@ def _trucks_json(snap: Snapshot, bundle: Bundle,
                 'center_ok': bundle.truck_center_ok(code, t.name),
                 'center_ok_source': 'auto' if t.center_ok is None else 'manual', 'auto_center_ok': center_auto(t.name),
                 'garage': _garage_price_json(prices.get(code)), 'wear_source': used.wear_source(code),
+                'garage_prior': _garage_prior_json(priors.get(code)),
                 'van_agent_id': t.van_agent_id, 'van': _agent_json(snap, t.van_agent_id),
                 'erp_days': 0, 'erp_kg_day': None, 'erp_kg_day_max': None,
             })
@@ -608,6 +629,11 @@ def _garage_price_json(p: garage.Price | None) -> dict[str, Any] | None:
             'end': p.end.isoformat() if p.end else None, 'repair_amd': p.repair_amd, 'accident_amd': p.accident_amd,
             'fixed_amd': p.fixed_amd, 'ready_months': garage.MONTHS_READY, 'own': p.own, 'model': p.model,
             'model_price': p.model_price, 'blend': p.blend, 'blend_km': garage.BLEND_KM}
+
+
+def _garage_prior_json(p: garage.Prior | None) -> dict[str, Any] | None:
+    """Средняя модели (scope model) или парка (fleet) машине без своей готовой цены журнала; нет — None."""
+    return None if p is None else {'price': p.price, 'scope': p.scope, 'model': p.model}
 
 
 def _agent_json(snap: Snapshot, agent_id: int | None) -> dict[str, Any] | None:
@@ -1237,7 +1263,8 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
                        'capacity_kg': ready.capacity_kg if ready else None,
                        'l100': ready.l100 if ready else None, 'center_ok': ready.center_ok if ready else None,
                        'ready': ready is not None, 'selected': ready is not None and code in selected,
-                       # износ в расчёте дня: garage — ремонт ֏/км журнала гаража, manual — из настроек (№53)
+                       # износ в расчёте дня: garage — ремонт ֏/км журнала гаража, manual — из настроек, garage_avg —
+                       # средняя модели или парка по журналу (ручное пусто; №53)
                        'wear_amd_per_km': ready.wear_amd_per_km if ready else None,
                        'wear_source': dd.bundle.wear_source(code)})
     added = _backlog_in(draft, dd.carried)
@@ -2566,7 +2593,8 @@ def _garage_months(entries: Sequence[Any], today: date) -> list[dict[str, Any]]:
 @_api
 def api_garage() -> Any:
     """«Ավտոտնակ»: машины (последнее показание пробега — журнал и одометр APK), по машине за 12 месяцев — ремонт, ДТП,
-    страховка и налоги, км, ремонт ֏/км и статус на сегодня, расходы по месяцам. Записи — /api/routes/garage/entries."""
+    страховка и налоги, км, ремонт ֏/км и статус на сегодня, средняя модели или парка машине без своей цены, какое
+    значение в расчёте (wear_source, как в «Настройках»), расходы по месяцам. Записи — /api/routes/garage/entries."""
     state = _state()
     today = _clock().date()
     bundle = state.store.load()
@@ -2574,8 +2602,10 @@ def api_garage() -> Any:
     by_car = _garage_by_car(entries)
     rows = _garage_trucks(state, bundle)   # снимок ERP — до цены: модели машин по его именам
     apk = _apk_odometers(state, date(today.year - GARAGE_APK_YEARS, 1, 1)) if by_car else {}
-    prices = garage.prices(by_car, today, apk, _garage_models(state, bundle.trucks))
-    used = garage.effective(prices)
+    models = _garage_models(state, bundle.trucks)
+    prices = garage.prices(by_car, today, apk, models)
+    priors = garage.priors(prices, models) if prices else {}
+    used = _garage_bundle(bundle, prices, priors)
     trucks, summary = [], []
     for t in rows:
         code = t['car_code']
@@ -2587,7 +2617,8 @@ def api_garage() -> Any:
         trucks.append(row)
         ago = (today - last[-1][0]).days if last else None
         summary.append({**row, 'garage': _garage_price_json(prices.get(code)), 'days_since_last': ago,
-                        'stale': ago is None or ago > GARAGE_STALE_DAYS, 'in_calc': code in used})
+                        'stale': ago is None or ago > GARAGE_STALE_DAYS, 'in_calc': code in used.garage_wear,
+                        'garage_prior': _garage_prior_json(priors.get(code)), 'wear_source': used.wear_source(code)})
     return jsonify({'success': True, 'today': today.isoformat(), 'admin': _garage_admin(), 'trucks': trucks,
                     'summary': summary, 'months': _garage_months(entries, today), 'journal_empty': not entries,
                     'rules': {'ready_months': garage.MONTHS_READY, 'ready_km': garage.READY_KM,

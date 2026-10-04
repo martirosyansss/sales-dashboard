@@ -761,6 +761,9 @@ class Bundle:
     # добавляет views._bundle (на сегодня; «Развоз» — на свой день). В расчёте перекрывает ручное «Износ, драм/км»
     # (resolved_trucks); в trucks и в настройки не попадает. В отпечатке — только когда есть: без журнала он прежний
     garage_wear: dict[str, float] = field(default_factory=dict)
+    # средняя модели или парка (garage.priors) машинам без своей готовой цены: в расчёте — только при пустом ручном
+    # «Износ, драм/км» (resolved_trucks; 0 — задано). Добавляет views._bundle вместе с garage_wear; в отпечатке — так же
+    garage_prior: dict[str, float] = field(default_factory=dict)
 
     def profile(self, agent_id: int) -> ManagerProfile:
         return self.managers.get(agent_id) or ManagerProfile(agent_id)
@@ -789,22 +792,27 @@ class Bundle:
     def resolved_trucks(self, active_cars: Collection[str]) -> dict[str, Truck]:
         """Машины расчёта парка и развоза — единственная точка, где запись машины становится нормами расчёта:
         действующее «активна» (bool) и «Износ, драм/км» — по журналу гаража, если его цена готова (garage_wear), иначе
-        ручной из настроек."""
+        ручной из настроек, а пустой ручной (None; 0 — задано) — средняя модели или парка (garage_prior)."""
         out = {}
         for code, t in self.trucks.items():
             if t.active is None:
                 t = replace(t, active=code in active_cars)
             if code in self.garage_wear:
                 t = replace(t, wear_amd_per_km=self.garage_wear[code])
+            elif t.wear_amd_per_km is None and code in self.garage_prior:
+                t = replace(t, wear_amd_per_km=self.garage_prior[code])
             out[code] = t
         return out
 
     def wear_source(self, code: str) -> str | None:
-        """Откуда «Износ, драм/км» машины в расчёте: garage — журнал гаража, manual — настройки, None — не задан."""
+        """Откуда «Износ, драм/км» машины в расчёте: garage — своя цена журнала гаража, manual — настройки, garage_avg —
+        средняя модели или парка по журналу (ручное пусто), None — не задан."""
         if code in self.garage_wear:
             return 'garage'
         t = self.trucks.get(code)
-        return 'manual' if t is not None and t.wear_amd_per_km is not None else None
+        if t is not None and t.wear_amd_per_km is not None:
+            return 'manual'
+        return 'garage_avg' if code in self.garage_prior else None
 
     def truck_center_ok(self, code: str, name: str | None) -> bool:
         """Можно ли машине в малый центр: выбор владельца; «авто» (записи нет или center_ok NULL) — center_auto
@@ -832,6 +840,8 @@ class Bundle:
             data['driver'] = sorted(self.driver_points.items())
         if self.garage_wear:     # без готовых цен журнала гаража — тоже
             data['garage'] = sorted(self.garage_wear.items())
+        if self.garage_prior:    # без средних журнала (готовых машин меньше двух) — тоже
+            data['garage_prior'] = sorted(self.garage_prior.items())
         raw = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
         return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
 

@@ -495,8 +495,10 @@
     // Текст — по-армянски (раздел «Маршруты» — только армянский, №58).
     function garageNote(t) {
         const g = t.garage, used = t.wear_source;
+        // своей цены журнала нет, поле выше пусто — в расчёте средняя модели (или парка) по журналу
         const inCalc = used === 'garage' ? 'հաշվարկում է մատյանի արժեքը'
-            : used === 'manual' ? 'հաշվարկում է վերևի դաշտի արժեքը' : 'մաշվածությունը հաշվարկում չի մասնակցում';
+            : used === 'garage_avg' ? 'հաշվարկում է ' + priorText(t.garage_prior) + ', քանի որ վերևի դաշտը դատարկ է'
+            : used === 'manual' ? 'հաշվարկում է վերևի դաշտի արժեքը' : 'մաշվածքը հաշվարկում չի մասնակցում';
         let text;
         if (!g) text = 'Ավտոտնակի մատյան․ գրառումներ չկան — ' + inCalc;
         else if (g.status === 'ready' && g.blend) {
@@ -510,7 +512,12 @@
         else if (g.status === 'no_repairs') text = 'Ավտոտնակի մատյան․ վերանորոգումներ գրանցված չեն — '
             + (used === 'manual' ? 'հաշվարկում է ձեռքով արժեքը' : inCalc);
         else text = 'Ավտոտնակի մատյան․ 12 ամսում վազք չկա — ' + inCalc;
-        return h('span', { class: 'rs-garage' + (used === 'garage' ? ' is-used' : ''), text });
+        return h('span', { class: 'rs-garage' + (used === 'garage' || used === 'garage_avg' ? ' is-used' : ''), text });
+    }
+
+    function priorText(p) {
+        return (p.scope === 'model' ? 'մոդելի միջինը' + (p.model ? ' (' + p.model + ')' : '') : 'ավտոպարկի միջինը')
+            + '՝ ' + fmt(p.price, 1) + ' ֏/կմ';
     }
 
     const LOAD_COSTS = [
@@ -542,7 +549,8 @@
                 key === 'wear_amd_per_km' ? garageNote(t) : null);
         });
         const costs = h('details', { class: 'rs-load-costs' },
-            h('summary', { text: 'Загрузка и износ' + (t.wear_source === 'garage' ? ' · մաշվածությունը՝ ավտոտնակի մատյանից' : '') }),
+            h('summary', { text: 'Загрузка и износ' + (t.wear_source === 'garage' ? ' · մաշվածքը՝ ավտոտնակի մատյանից'
+                : t.wear_source === 'garage_avg' ? ' · մաշվածքը՝ ' + (t.garage_prior.scope === 'model' ? 'մոդելի' : 'ավտոպարկի') + ' միջինից' : '') }),
             h('div', { class: 'rs-load-fields' }, ...costFields),
             h('p', { class: 'rt-muted', text: 'Пустая и полная — по замерам этой машины. Надбавка за износ растёт с квадратом доли загрузки. Пусто — влияние нагрузки не настроено.' }));
         const wasManual = manual || t.active_source === 'manual', autoOn = t.auto_active === true;

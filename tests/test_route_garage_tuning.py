@@ -1,9 +1,10 @@
 """Журнал гаража — доработка после оценки (№53, «fix all»): растяжение крупного ремонта на 24/36 месяцев, сглаживание
-цены к средней модели, плашка о пробеге; схема 17."""
+цены к средней модели, средняя модели или парка машинам без своей цены (пустое ручное), плашка о пробеге; схема 17."""
 import ast
 import sqlite3
 import sys
 from contextlib import closing
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -133,6 +134,50 @@ def test_blend_weight_k_and_more_km_more_own():
         assert out['A'].price == round((30 * km + gr.BLEND_KM * avg) / (km + gr.BLEND_KM), 1)
         assert abs(out['A'].price - expected) < 0.35
     assert gr.BLEND_KM == 20_000
+
+
+# ============================== средняя машинам без своей цены ==============================
+
+def test_priors_tiers_model_fleet_none():
+    """Машина без своей готовой цены (мало км, накапливается, записей журнала нет) — средняя модели, если в ней ≥ 2 готовых,
+    иначе парка (≥ 2 готовых), иначе ничего; у готовых машин средней нет — у них своя (сглаженная)."""
+    journal = {'H1': _ready(600_000, 20_000), 'H2': _ready(200_000, 20_000), 'J1': _ready(100_000, 10_000),
+               'N1': _ready(10_000, 300),                       # HOWO, мало км
+               'A1': _ready(50_000, 5_000, days=100)}            # JAC, накапливается
+    models = {'H1': 'HOWO', 'H2': 'HOWO', 'J1': 'JAC', 'N1': 'HOWO', 'A1': 'JAC',
+              'H3': 'HOWO', 'F1': 'FORD', 'X1': None}            # H3, F1, X1 — в журнале их нет
+    found = gr.prices(journal, AS_OF, models=models)
+    assert (found['N1'].status, found['A1'].status) == ('low_km', 'accumulating')
+    howo, fleet = 800_000 / 40_000, 900_000 / 50_000
+    assert gr.priors(found, models) == {
+        'N1': gr.Prior(round(howo, 1), 'model', 'HOWO'), 'H3': gr.Prior(round(howo, 1), 'model', 'HOWO'),
+        'A1': gr.Prior(round(fleet, 1), 'fleet', 'JAC'),        # готовая JAC одна — средняя парка
+        'F1': gr.Prior(round(fleet, 1), 'fleet', 'FORD'), 'X1': gr.Prior(round(fleet, 1), 'fleet', None)}
+    assert found['N1'].model_price is None and gr.effective(found) == {c: found[c].price for c in ('H1', 'H2', 'J1')}
+    one = gr.prices({'H1': journal['H1'], 'N1': journal['N1']}, AS_OF, models=models)   # готовая одна на весь парк
+    assert gr.priors(one, models) == {} and gr.priors({}, models) == {}
+    jac = gr.prices({'J1': journal['J1'], 'H1': journal['H1'], 'A1': journal['A1']}, AS_OF, models=models)
+    assert gr.priors(jac, {'J1': 'JAC', 'H1': 'HOWO', 'A1': 'JAC'}) == \
+        {'A1': gr.Prior(round(700_000 / 30_000, 1), 'fleet', 'JAC')}
+
+
+def test_bundle_prior_only_for_empty_manual_zero_is_set():
+    """В расчёте: своя готовая цена журнала — всегда; иначе ручное «Износ, драм/км», если задано (и 0 — задано); пустое
+    (None) — средняя модели или парка (garage_prior), wear_source garage_avg. Отпечаток без средних — прежний."""
+    trucks = {'NUL': st.Truck('NUL', 5000.0, 18.0), 'ZERO': st.Truck('ZERO', 5000.0, 18.0, wear_amd_per_km=0.0),
+              'MAN': st.Truck('MAN', 5000.0, 18.0, wear_amd_per_km=12.0), 'OWN': st.Truck('OWN', 5000.0, 18.0),
+              'NONE': st.Truck('NONE', 5000.0, 18.0, wear_load_amd_per_km=3.0)}
+    plain = st.Bundle(dict(st.DEFAULT_SETTINGS), None, trucks, {}, garage_wear={'OWN': 30.0})
+    b = replace(plain, garage_prior={'NUL': 21.7, 'ZERO': 21.7, 'MAN': 21.7, 'OWN': 21.7, 'GONE': 9.0})
+    r = b.resolved_trucks(set())
+    assert {c: t.wear_amd_per_km for c, t in r.items()} == \
+        {'NUL': 21.7, 'ZERO': 0.0, 'MAN': 12.0, 'OWN': 30.0, 'NONE': None}
+    assert r['NONE'].wear_load_amd_per_km == 3.0 and 'GONE' not in r and b.trucks == trucks
+    assert {c: b.wear_source(c) for c in (*trucks, 'GONE')} == {
+        'NUL': 'garage_avg', 'ZERO': 'manual', 'MAN': 'manual', 'OWN': 'garage', 'NONE': None, 'GONE': 'garage_avg'}
+    assert plain.wear_source('NUL') is None and plain.resolved_trucks(set())['NUL'].wear_amd_per_km is None
+    assert plain.fingerprint() == replace(plain, garage_prior={}).fingerprint() != b.fingerprint()
+    assert b.fingerprint() != replace(b, garage_prior={**b.garage_prior, 'NUL': 21.8}).fingerprint()
 
 
 @pytest.mark.parametrize('name,capacity,model', [('HOWO SIN0TRUK', 5000.0, 'HOWO'), ('  jac 1040 ', 2200.0, 'JAC'),
@@ -268,8 +313,8 @@ def test_models_from_snapshot_names_and_capacity_fallback(client, monkeypatch):
 
 
 def test_dispatch_uses_blended_price_model_tier(client, monkeypatch):
-    """«Развоз»: CAR1 и ручная M1 «HOWO …» — обе готовы: в расчёте — сглаженные к средней HOWO; CAR2 (FORD, единственная
-    в модели) — к средней парка; машины без своей готовой цены — на ручном значении."""
+    """«Развоз»: CAR1 и ручная M1 «HOWO …» — обе готовы: в расчёте — сглаженные к средней HOWO; CAR2 (FORD) без журнала:
+    ручное пусто — средняя парка, задано (и 0) — ручное; с журналом CAR2 (единственная в модели) — к средней парка."""
     monkeypatch.setattr(views, '_clock', lambda: NOW)
     _dispatch_setup(client, [_dorder(1, 101, 400.0)])
     state = client.application.extensions['route_optimizer']
@@ -279,7 +324,13 @@ def test_dispatch_uses_blended_price_model_tier(client, monkeypatch):
     _journal(state.store, 'M1', 200_000)
     trucks = {t['car_code']: t for t in client.get(f'/api/routes/dispatch?date={DAY}').get_json()['trucks']}
     assert (trucks['CAR1']['wear_amd_per_km'], trucks['M1']['wear_amd_per_km']) == (25.0, 15.0)
-    assert (trucks['CAR2']['wear_amd_per_km'], trucks['CAR2']['wear_source']) == (None, None)
+    assert (trucks['CAR2']['wear_amd_per_km'], trucks['CAR2']['wear_source']) == (20.0, 'garage_avg')   # 800 000 / 40 000
+    for manual, expected in ((0, (0.0, 'manual')), (7.5, (7.5, 'manual')), (None, (20.0, 'garage_avg'))):
+        assert client.post('/api/routes/settings', json={'trucks': [{'car_code': 'CAR2', 'wear_amd_per_km': manual}]}
+                           ).status_code == 200
+        assert state.store.load().trucks['CAR2'].wear_amd_per_km == (None if manual is None else float(manual))
+        trucks = {t['car_code']: t for t in client.get(f'/api/routes/dispatch?date={DAY}').get_json()['trucks']}
+        assert (trucks['CAR2']['wear_amd_per_km'], trucks['CAR2']['wear_source']) == expected
     _journal(state.store, 'CAR2', 100_000, km=10_000)
     state.snapshots = SnapshotCache(lambda: make_snapshot())   # снимка в памяти нет: «Развоз» берёт его до цены журнала
     trucks = {t['car_code']: t for t in client.get(f'/api/routes/dispatch?date={DAY}').get_json()['trucks']}
@@ -311,7 +362,30 @@ def test_api_garage_summary_and_settings_show_own_model_used(gclient):
     assert entry['spread_months'] == 36
     settings = {t['car_code']: t for t in c.get('/api/routes/settings').get_json()['trucks']}
     assert settings['CAR1']['garage']['own'] == 30.0 and settings['CAR1']['garage']['price'] == rows['CAR1']['price']
-    assert settings['CAR1']['wear_source'] == 'garage'
+    assert settings['CAR1']['wear_source'] == 'garage' and settings['CAR1']['garage_prior'] is None
+
+
+def test_api_summary_and_settings_show_model_average_for_trucks_without_own(gclient):
+    """Ручная M1 «HOWO» без журнала, ручное пусто: в «Ամփոփում» и «Настройках» в расчёте — средняя по журналу (CAR1 и
+    CAR2 готовы, модели разные — средняя парка); ручное задано (0) — в расчёте ручное, средняя только видна."""
+    c = gclient
+    state = c.application.extensions['route_optimizer']
+    m1 = {'car_code': 'M1', 'name': 'HOWO 2', 'capacity_kg': 5000, 'fuel_l_per_100km': 20, 'active': True}
+    assert c.post('/api/routes/settings', json={'manual_trucks': [m1]}).status_code == 200
+    row = {x['car_code']: x for x in c.get('/api/routes/garage').get_json()['summary']}['M1']
+    assert (row['wear_source'], row['garage_prior'], row['garage']) == (None, None, None)          # журнал пуст
+    _journal(state.store, 'CAR1', 600_000)
+    _journal(state.store, 'CAR2', 200_000)
+    prior = {'price': 20.0, 'scope': 'fleet', 'model': 'HOWO'}
+    row = {x['car_code']: x for x in c.get('/api/routes/garage').get_json()['summary']}['M1']
+    assert (row['wear_source'], row['garage_prior'], row['in_calc']) == ('garage_avg', prior, False)
+    settings = {t['car_code']: t for t in c.get('/api/routes/settings').get_json()['trucks']}
+    assert (settings['M1']['wear_source'], settings['M1']['garage_prior'], settings['M1']['wear_amd_per_km']) == \
+        ('garage_avg', prior, None)
+    assert settings['CAR1']['wear_source'] == 'garage' and settings['CAR1']['garage_prior'] is None
+    assert c.post('/api/routes/settings', json={'manual_trucks': [{**m1, 'wear_amd_per_km': 0}]}).status_code == 200
+    row = {x['car_code']: x for x in c.get('/api/routes/garage').get_json()['summary']}['M1']
+    assert (row['wear_source'], row['garage_prior']) == ('manual', prior)
 
 
 # ============================== замечания повторной проверки ==============================
@@ -340,6 +414,17 @@ def test_garage_page_js_pins_401_badinput_spread_and_banner():
     code = [ln.split('//')[0] for ln in note.splitlines() if not ln.strip().startswith('//')]
     assert not [ln for ln in code if any('Ѐ' <= ch <= 'ӿ' for ch in ln)], 'строка журнала — только по-армянски (№58)'
     assert "'Ավտոտնակի մատյան․ վերանորոգումներ գրանցված չեն — '" in note and "'-ի միջինը՝ '" in note
-    assert "' · մաշվածությունը՝ ավտոտնակի մատյանից'" in settings
+    assert "' · մաշվածքը՝ ավտոտնակի մատյանից'" in settings
+    assert ("used === 'garage_avg' ? 'հաշվարկում է ' + priorText(t.garage_prior) + ', քանի որ վերևի դաշտը դատարկ է'"
+            in note)
+    assert "'մոդելի միջինը'" in note and "'ավտոպարկի միջինը'" in note and "used === 'garage' || used === 'garage_avg'" in note
+    assert "t.wear_source === 'garage_avg' ? ' · մաշվածքը՝ '" in settings
+    summary = js[js.index('function renderSummary'):js.index('// ---------- загрузка')]
+    assert "r.wear_source === 'garage_avg' ? [h('b', { class: 'gj-price', text: fmt(r.garage_prior.price, 1) })" in summary
+    assert "'մոդելի միջին'" in summary and "'ավտոպարկի միջին'" in summary
+    # глоссарий раздела (docs/research/armenian-glossary.md): износ — «մաշվածք», не «մաշվածություն»; парк — «ավտոպարկ»
+    garage_line = settings[settings.index('function garageNote'):settings.index("h('div', { class: 'rs-load-fields' }")]
+    for text in (js, garage_line):
+        assert 'մաշվածություն' not in text and "'պարկի" not in text and ' պարկի' not in text
     html = (ROOT / 'templates' / 'routes_garage.html').read_text(encoding='utf-8')
     assert 'id="gjSpread"' in html and 'id="gjBanner"' in html and "routes_garage.js') }}?v=3" in html

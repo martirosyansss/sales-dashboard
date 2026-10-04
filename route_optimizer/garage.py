@@ -18,10 +18,15 @@
 Сглаживание (blend): своя цена машины тянется к средней по модели — (km·своя + BLEND_KM·m) / (km + BLEND_KM) = (cost +
 BLEND_KM·m) / (km + BLEND_KM); m = Σcost / Σkm готовых машин этой модели (вместе с ней), если их ≥ 2, иначе — готовых
 машин парка, если их ≥ 2, иначе цена — своя. Модель — первое слово имени машины заглавными, без имени — тоннаж (model_of).
+Средняя без своей цены (priors): машине без своей готовой цены (накапливается, мало км, ремонтов нет, записей нет) — та же
+средняя m: модели, если в ней ≥ 2 готовых машин, иначе парка (≥ 2 готовых), иначе ничего. В расчёт она идёт, только если
+ручное «Износ, драм/км» пусто (store.Bundle.resolved_trucks; 0 — задано): иначе машины без журнала были бы «бесплатными»
+и забирали бы работу у машин с журналом, пока журнал ведут не для всего парка.
 ДТП (accident) и страховка / техосмотр / налог (fixed) — только итоги окна, в цену не входят: от того, куда поедет
 машина, они не зависят. Ноль ремонтов за полгода и больше — это не «0 ֏/км», а нет данных (журнал ведут только для
-пробега или ремонты не вносят): цены нет (status no_repairs), в расчёте — ручное «Износ, драм/км». Без записей журнала
-о машине в окне цены нет тем более (status none, «нет пробега»): одометр APK только дополняет показания журнала.
+пробега или ремонты не вносят): цены нет (status no_repairs), в расчёте — ручное «Износ, драм/км» (пусто — средняя,
+priors). Без записей журнала о машине в окне цены нет тем более (status none, «нет пробега»): одометр APK только
+дополняет показания журнала.
 """
 from __future__ import annotations
 
@@ -151,21 +156,53 @@ def price(entries: Sequence[Entry], as_of: date, apk: Iterable[tuple[date, float
                  totals['fixed'], own=own, cost=cost)
 
 
+@dataclass(frozen=True)
+class Prior:
+    """Средняя для машины без своей готовой цены (priors): ֏/км (0,1), откуда — model | fleet, модель машины."""
+    price: float
+    scope: str
+    model: str | None
+
+
+def _average(ready: Mapping[str, Price], models: Mapping[str, str | None],
+             key: str | None) -> tuple[float, str] | None:
+    """Средняя m = Σcost / Σkm готовых машин модели key, если их ≥ 2, иначе готовых машин парка (≥ 2): (m, model | fleet);
+    меньше двух готовых — None (одна машина — не средняя)."""
+    same = [q for c, q in ready.items() if key is not None and models.get(c) == key]
+    group, scope = (same, 'model') if len(same) >= 2 else (list(ready.values()), 'fleet')
+    if len(group) < 2:
+        return None
+    return math.fsum(q.cost for q in group) / math.fsum(q.km for q in group), scope
+
+
 def blend(found: Mapping[str, Price], models: Mapping[str, str | None]) -> dict[str, Price]:
     """Своя цена готовых машин → сглаженная к средней модели или парка (правило — в описании модуля); у машины без своей
-    готовой цены цены нет и теперь (в расчёте — ручное значение)."""
+    готовой цены своей цены нет и теперь (её средняя — priors)."""
     ready = {code: p for code, p in found.items() if p.price is not None}
     out = {}
     for code, p in found.items():
         key = models.get(code)
-        same = [q for c, q in ready.items() if key is not None and models.get(c) == key]
-        group, scope = (same, 'model') if len(same) >= 2 else (list(ready.values()), 'fleet')
-        if p.price is None or len(group) < 2:
+        avg = _average(ready, models, key)
+        if p.price is None or avg is None:
             out[code] = replace(p, model=key)
             continue
-        m = math.fsum(q.cost for q in group) / math.fsum(q.km for q in group)
+        m, scope = avg
         out[code] = replace(p, price=round((p.cost + BLEND_KM * m) / (p.km + BLEND_KM), 1), model=key,
                             model_price=round(m, 1), blend=scope)
+    return out
+
+
+def priors(found: Mapping[str, Price], models: Mapping[str, str | None]) -> dict[str, Prior]:
+    """Машина без своей готовой цены → средняя её модели или парка (Prior; правило — в описании модуля). found — цены
+    журнала (prices), models — модели всех машин раздела: средняя положена и машине, которой в журнале нет."""
+    ready = {code: p for code, p in found.items() if p.price is not None}
+    out = {}
+    for code in sorted(set(models) | set(found)):
+        if code in ready:
+            continue
+        avg = _average(ready, models, models.get(code))
+        if avg is not None:
+            out[code] = Prior(round(avg[0], 1), avg[1], models.get(code))
     return out
 
 
@@ -179,5 +216,6 @@ def prices(entries: Mapping[str, Sequence[Entry]], as_of: date,
 
 
 def effective(found: Mapping[str, Price]) -> dict[str, float]:
-    """Машина → ремонт ֏/км в расчёте: только готовые цены. Остальные машины — с ручным «Износ, драм/км»."""
+    """Машина → ремонт ֏/км в расчёте: только готовые цены. Остальные машины — с ручным «Износ, драм/км» (пусто —
+    средняя, priors)."""
     return {code: p.price for code, p in found.items() if p.price is not None}
