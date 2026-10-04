@@ -417,13 +417,13 @@ def _require_vehicle(ctx: DayContext, cids: Sequence[int], code: str) -> None:
 
 
 def _route(ctx: DayContext, cids: Sequence[int], stops: Mapping[int, Stop], shares: Mapping[int, int],
-           reorder: bool, start: float = 0.0) -> tuple[list[int], float, float, float]:
+           reorder: bool, start: float = 0.0, truck: str | None = None) -> tuple[list[int], float, float, float]:
     """(порядок клиентов, км, минуты, кг) рейса. reorder с выезда start: если порядок соблюдает окна приёма,
-    2-opt их не нарушит."""
+    2-opt их не нарушит (окна — с темпом машины truck, №66)."""
     kgs = [stops[c].kg / shares.get(c, 1) for c in cids]
     windows = [_span(ctx, c) for c in cids] if reorder and any(c in ctx.windows for c in cids) else None
     seq, km, minutes = fl.route_trip([stops[c].point for c in cids], kgs, ctx.depot, ctx.norms, ctx.tn,
-                                     reorder=reorder, windows=windows, start=start)
+                                     reorder=reorder, windows=windows, start=start, truck=truck)
     return [cids[i] for i in seq], km, minutes, math.fsum(kgs)
 
 
@@ -756,7 +756,7 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
         if t is not None and t.stops:
             # выезд рейса — для окон приёма при 2-opt; заново после перестановки src (та же машина — другой выезд)
             start = _timeline(ctx, draft.trips, routable, shares)[t.id][0]
-            t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True, start=start)
+            t.stops, *_ = _route(ctx, t.stops, routable, shares, reorder=True, start=start, truck=t.truck)
     return draft
 
 

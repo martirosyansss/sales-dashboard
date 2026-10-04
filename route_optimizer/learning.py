@@ -82,12 +82,13 @@
   fleet.BUFFER_CAP_REL · D): c — q-квантиль (факт − D) / √D на днях обучения, c ≥ 0 (нормировка по √D — между
   «ошибки точек независимы» и «полностью связаны»; связь ошибок внутри дня учтена тем, что калибруется по целым рейсам).
   Проверка — квантильная (pinball) потеря при q на отложенной неделе против действующего запаса (нет — 0); в причине и
-  params — ещё покрытие: доля рейсов проверки, вернувшихся не позже D + запас (цель ≈ q). Действует только при том q,
-  при котором проверен (сменили q в настройках — запас не действует до следующего пересчёта);
+  params — ещё покрытие: доля рейсов проверки, вернувшихся не позже D + запас (цель ≈ q). Сменили q в настройках —
+  сразу действует c тех же рейсов обучения при новом q (c_by_q строки, buffer_c_for), следующий пересчёт проверяет его;
 - truck_unload, truck_travel — темп машины (№66, этап 3 learning-fixes): множитель разгрузки и множитель пути машины =
   exp(сглаженное среднее log(факт / прогноз)) по её визитам (прогноз — действующая норма со своим временем магазинов) и
   чистым участкам (прогноз — действующая модель с поправкой по часам); единица — машино-день (среднее его логарифмов:
-  ошибки внутри дня связаны), сглаживание к 0 (множитель 1) empirical Bayes: m = exp(n / (n + k) · среднее), n — дней
+  ошибки внутри дня связаны), относительно уровня парка (средний машино-день вычитается: уровень учат unload / travel),
+  сглаживание к 0 (множитель 1) empirical Bayes: m = exp(n / (n + k) · среднее), n — дней
   машины, k = σ²_дней / τ²_машин методом моментов, в пределах PACE_K_BOUNDS; множитель — в пределах PACE_RATIO. Новая
   машина или мало дней — 1. Проверка — прогноз с множителями против действующих (нет — без них) на отложенной неделе;
   truck_travel — той же дорожной модели (model_id, как travel). Применение — TruckNorms.pace (fleet: разгрузка точек и
@@ -825,15 +826,22 @@ def fit_buffer(obs: Sequence[TripObs], today: date, q_pct: float, current: float
     typical = median(o.predicted for o in train)
     why += (f'․ ստուգման երթերից պլանի ժամանակին (պաշարով) վերադարձել է {_pct(cover)}%-ը '
             f'(նպատակը՝ {_pct(q_pct / 100)}%, առանց նոր պաշարի՝ {_pct(cover0)}%)')
+    ratios = [(o.minutes - o.predicted) / math.sqrt(o.predicted) for o in train]
     params = {'c': c, 'q': q_pct, 'coverage': round(cover, 4), 'coverage_before': round(cover0, 4),
-              'typical_min': round(typical, 1), 'typical_reserve_min': round(trip_reserve(c, typical), 1)}
+              'typical_min': round(typical, 1), 'typical_reserve_min': round(trip_reserve(c, typical), 1),
+              # c тех же рейсов обучения при других q (сменили процентиль в настройках — запас сразу по нему, до
+              # проверки следующим пересчётом; buffer_c_for)
+              'c_by_q': {str(p): round(min(BUFFER_C_MAX, max(0.0, quantile(ratios, p / 100.0))), 3)
+                         for p in range(int(BUFFER_Q_OFF) + 1, int(BUFFER_Q_MAX) + 1)}}
     return Outcome('buffer', '', ok, why, params, n_obs=len(train), n_test=len(test), mae_before=round(before, 3),
                    mae_after=round(after, 3), confidence=conf, **_spans(train, test))
 
 
 def pace_factors(train: Sequence[PaceObs]) -> tuple[dict[str, float], float, dict[str, int]] | None:
     """Темп машин (№66): (машина → множитель, k, машина → дней). Машино-день — среднее log(факт / прогноз) его
-    наблюдений; у машины — n дней и их среднее x̄; k = σ² / τ² методом моментов: σ² — разброс дней около среднего своей
+    наблюдений; уровень парка — среднее всех машино-дней (взвешено днями) — вычитается: множители только относительные
+    (общий уровень учат unload / travel той же ночью — иначе двойной счёт); у машины — n дней и их среднее x̄ (после
+    вычета); k = σ² / τ² методом моментов: σ² — разброс дней около среднего своей
     машины (Σ(n − 1) степеней свободы), τ² — разброс средних машин около общего за вычетом шума σ² · ср.(1/n), в пределах
     PACE_K_BOUNDS (τ² ≤ 0 — верхний предел); множитель = exp(n / (n + k) · x̄) в пределах PACE_RATIO, до 0,001 (ровно 1
     — не пишется). Машин с ≥ 2 днями или степеней свободы меньше PACE_K_MIN — None (не оценить)."""
@@ -843,6 +851,8 @@ def pace_factors(train: Sequence[PaceObs]) -> tuple[dict[str, float], float, dic
     days: dict[str, list[float]] = {}
     for (car, _), xs in sorted(by.items()):
         days.setdefault(car, []).append(math.fsum(xs) / len(xs))
+    level = math.fsum(x for xs in days.values() for x in xs) / sum(len(xs) for xs in days.values())
+    days = {c: [x - level for x in xs] for c, xs in days.items()}   # относительно парка
     many = {c: xs for c, xs in days.items() if len(xs) >= 2}
     df_within = sum(len(xs) - 1 for xs in many.values())
     if len(many) < PACE_K_MIN[0] or df_within < PACE_K_MIN[1]:
@@ -973,7 +983,10 @@ def valid_params(kind: str, p: Any) -> bool:
     if kind == 'lunch':
         return _num(p.get('minutes'), *LUNCH_BOUNDS)
     if kind == 'buffer':
-        return _num(p.get('c'), 0.0, BUFFER_C_MAX) and _num(p.get('q'), BUFFER_Q_OFF, BUFFER_Q_MAX)
+        table = p.get('c_by_q', {})
+        return (_num(p.get('c'), 0.0, BUFFER_C_MAX) and _num(p.get('q'), BUFFER_Q_OFF, BUFFER_Q_MAX)
+                and isinstance(table, Mapping)
+                and all(isinstance(k, str) and k.isdigit() and _num(v, 0.0, BUFFER_C_MAX) for k, v in table.items()))
     if kind in PACE_KINDS:
         f = p.get('factors')
         return isinstance(f, Mapping) and all(isinstance(c, str) and c and _num(v, *PACE_RATIO) for c, v in f.items())
@@ -1355,8 +1368,9 @@ def apply_learned(norms: Any, tn: Any, trucks: Mapping[str, Any], eff: InEffect,
         norms = replace(norms, traffic=travel_profile(norms, eff.travel))
     if eff.lunch and tn.lunch_minutes > 0:
         tn = replace(tn, lunch_minutes=float(eff.lunch['minutes']))
-    if eff.buffer and tn.buffer_pct > BUFFER_Q_OFF and float(eff.buffer['q']) == tn.buffer_pct:
-        tn = replace(tn, buffer_c=float(eff.buffer['c']))
+    c = buffer_c_for(eff.buffer, tn.buffer_pct)
+    if c is not None:
+        tn = replace(tn, buffer_c=c)
     if pace:
         tn = replace(tn, pace=pace)
     for code, p in (eff.fuel or {}).items():
@@ -1365,6 +1379,18 @@ def apply_learned(norms: Any, tn: Any, trucks: Mapping[str, Any], eff: InEffect,
             trucks[code] = replace(trucks[code], fuel_empty_l_per_100km=empty, fuel_full_l_per_100km=full,
                                    l100=(empty + full) / 2)
     return norms, tn, trucks
+
+
+def buffer_c_for(buffer: Mapping[str, Any] | None, q_pct: float) -> float | None:
+    """c запаса на рейс строки buffer при процентиле настроек q_pct (№66): q ≤ BUFFER_Q_OFF — запаса нет (None); тот же
+    q, при котором запас проверен, — его c; другой q — c тех же рейсов обучения при этом q (c_by_q: сменили процентиль —
+    запас сразу по нему, ночной пересчёт проверит его на отложенной неделе); у строки нет такого q — None (без запаса)."""
+    if not buffer or not q_pct > BUFFER_Q_OFF:
+        return None
+    if float(buffer['q']) == float(q_pct):
+        return float(buffer['c'])
+    got = (buffer.get('c_by_q') or {}).get(str(int(q_pct))) if float(q_pct).is_integer() else None
+    return float(got) if got is not None else None
 
 
 def truck_pace(eff: InEffect, model_id: str | None) -> dict[str, tuple[float, float]]:

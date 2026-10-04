@@ -49,9 +49,14 @@
     и проверяется против конца дня;
   - темп машины pace — (множитель разгрузки, множитель пути): разгрузка каждой точки × первый, минуты каждого участка ×
     второй; машины без него — (1, 1).
-PyVRP пауз и запаса не знает: запас типичного рейса — на рёбрах «точка → склад», темп — профилем машины (рёбра × множитель
-пути, разгрузка × множитель — на выходящих рёбрах); решает точная проверка (_days). Без запаса (buffer_c 0) и темпа —
-расчёт байт в байт прежний.
+Запас и обед на складе складываются: рейс, вернувшийся (с запасом) после начала окна обеда, обедает на складе с конца
+запаса — оценка с запасом (в жизни водитель, вернувшийся по медиане, может поесть в минуты запаса); так и задумано: запас —
+на опоздание рейса, обед — сверх него. В Кларке–Райте (_savings) рейс без окон сливается, только если езда + разгрузка +
+запас укладываются в день.
+PyVRP пауз и запаса не знает: запас — линейной верхней оценкой (касательная к c·√D в типичном рейсе, _solver: минуты
+рёбер и разгрузка × (1 + наклон), полкасательной — на рёбрах «точка → склад»), темп — профилем машины (рёбра × множитель
+пути, разгрузка × множитель — на выходящих рёбрах); решает точная проверка (_days), не уложилось по времени — попытка с
+запасом × RESERVE_RETRY. Без запаса (buffer_c 0) и темпа — расчёт байт в байт прежний.
 """
 from __future__ import annotations
 
@@ -448,7 +453,8 @@ def _waiting(seq, stops, m, start, minutes):
 
 
 def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix, cap: float,
-             window: float, fits: Callable[..., list[int] | None] | None = None) -> list[list[int]]:
+             window: float, fits: Callable[..., list[int] | None] | None = None,
+             reserve: Callable[[float], float] | None = None) -> list[list[int]]:
     """Кларк–Райт (параллельная версия): s(i, j) = d(0,i) + d(0,j) − d(i,j), по убыванию (ничьи — по
     номеру); маршруты сливаются через концы, пока груз ≤ cap и время рейса ≤ window. fits(a, b, reverse) — проверка
     слияния a + b (окна приёма, тоннаж центра): допустимый порядок объезда слитого рейса или None.
@@ -491,7 +497,8 @@ def _savings(light: Sequence[int], stops: Sequence[_Stop], d: Matrix, m: Matrix,
             continue
         a, b = stops[i].node, stops[j].node
         t = time[ri] + time[rj] - m[a][0] - m0[b] + m[a][b]
-        if t > window + _EPS:   # езда + разгрузка — нижняя граница времени рейса и с ожиданием у окон
+        # езда + разгрузка (+ запас на рейс, №66: reserve) — нижняя граница времени рейса и с ожиданием у окон
+        if (t + reserve(t) if reserve is not None else t) > window + _EPS:
             continue
         if fits is not None:
             merged = (fits(A, B, reverse=False) if directed else
@@ -653,7 +660,7 @@ def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[Fl
             vs.append(s)
     single_set = set(singles)
     light = [v for v in range(len(vs)) if v not in single_set]
-    routes = [_two_opt(r, vs, d) for r in _savings(light, vs, d, m, cap, window)]
+    routes = [_two_opt(r, vs, d) for r in _savings(light, vs, d, m, cap, window, reserve=tn.reserve)]
     routes += [[v] for v in singles]
 
     def drive(seq: Sequence[int]) -> tuple[float, float]:
@@ -881,7 +888,7 @@ def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[F
 
     single_set = set(singles) | set(at.values())
     light = [v for v in range(len(vs)) if v not in single_set]
-    routes = [_two_opt(r, vs, d, guard(r)) for r in _savings(light, vs, d, m, cap, window, fits)]
+    routes = [_two_opt(r, vs, d, guard(r)) for r in _savings(light, vs, d, m, cap, window, fits, tn.reserve)]
     routes += [[v] for v in singles]
 
     def item(seq: list[int]) -> tuple:
@@ -1433,8 +1440,11 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
     окна обеда, короче на обед (машину, что кончает раньше, это не стесняет), а крайний срок окон приёма позже начала
     окна обеда — раньше на обед (не раньше начала окна): обед сдвигает всё после него не больше чем на свою длину.
     Решает точный расчёт с обедом (_days) — та же проверка, что выше.
-    Запас на рейс и темп машин (№66): PyVRP получает запас типичного рейса сборки (медиана езды и разгрузки её рейсов)
-    на каждый рейс и темп машины её профилем (vrp.solve); решает та же точная проверка (_days)."""
+    Запас на рейс и темп машин (№66): запас c·√D PyVRP получает линейной верхней оценкой — касательной в типичном рейсе
+    сборки D0 (медиана минут её рейсов с темпом машины и ожиданием окон, без загрузки, обеда и запаса): c·√D ≤ c·√D0 / 2 +
+    c / (2√D0) · D — минуты езды и разгрузки × (1 + c / (2√D0)), c·√D0 / 2 — на каждый рейс (vrp.solve); темп машины —
+    её профилем. Решение не прошло проверку по времени (окно или конец дня: ожидания и обеда PyVRP не знает) — ещё одна
+    попытка с запасом × RESERVE_RETRY; решает та же точная проверка (_days)."""
     if not vrp.available() or not trips:
         return None
     window = tn.work_minutes
@@ -1498,14 +1508,49 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
     begin = sorted(start.items())
     loading: dict[str, float] = ({'load_fixed_min': tn.warehouse_load_fixed_min,
                                   'load_tonne_min': tn.warehouse_load_min_per_tonne} if tn.load(1000) > 0 else {})
-    if tn.buffer_c > 0:   # запас типичного рейса сборки — на каждый рейс решателя (№66)
-        loading['trip_reserve_min'] = tn.reserve(median(
-            _closed(t.items, vs, m) + math.fsum(vs[i].unload for i in t.items) for t in trips))
-    res = vrp.solve(pieces, d, m, vehicles, shifts, begin, LOAD_CAP, **loading)
+    tries: list[dict[str, float]] = [loading]
+    if tn.buffer_c > 0:   # запас на рейс (№66): касательная к c·√D в типичном рейсе сборки (см. выше)
+        plain = []
+        for k, t in enumerate(trips):
+            parts: dict[str, Any] = {}
+            mins, _ = _schedule(list(t.items), vs, m, when[k][0] if k in when else 0.0, parts=parts,
+                                pace=tn.pace_of(t.truck))
+            plain.append(mins - parts['loading'])
+        root = math.sqrt(max(median(plain), 1.0))
+        tries = [{**loading, 'trip_reserve_min': f * tn.buffer_c * root / 2, 'reserve_slope': f * tn.buffer_c / (2 * root)}
+                 for f in (1.0, RESERVE_RETRY)]
+    got: list[Trip] | None = None
+    why: str | None = None
+    for kw in tries:
+        got, why = _solver_try(trips, stops, d, m, trucks, tn, fed, pieces, origin, vehicles, shifts, begin, kw, keep,
+                               when, placed, start0, locked, pinned, pins, wait0)
+        if got is not None or why != 'time':
+            break
+    if got is None and why in ('load', 'time', 'wait'):
+        logger.warning('[Routes] PyVRP: рейсы не прошли проверку «Развоза» — рейсы своим расчётом')
+    return got
+
+
+RESERVE_RETRY = 1.5   # решение PyVRP с запасом на рейс не уложилось по времени — ещё попытка с запасом × 1,5 (№66)
+
+
+def _solver_try(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[FleetTruck],
+                tn: TruckNorms, fed: Collection[str], pieces: list[vrp.Piece], origin: list[int],
+                vehicles: list[vrp.Vehicle], shifts: list[vrp.Shift], begin: list[tuple[int, list[list[int]]]],
+                kw: Mapping[str, float], keep: set[int], when: Mapping[int, tuple[float, float]], placed: Counter,
+                start0: Mapping[str, float], locked: set[str], pinned: set[tuple[str, tuple[int, ...]]], pins: set[int],
+                wait0: float) -> tuple[list[Trip] | None, str | None]:
+    """Одна попытка _solver: PyVRP с параметрами kw (загрузка, запас на рейс) и проверка «Развоза». (рейсы, None) или
+    (None, причина): None — решения нет; 'orders' — заказы не сходятся со сборкой; 'vehicle' — допуск машин; 'load' —
+    тоннаж, центр, предел загрузки; 'time' — окно приёма или конец дня по точной шкале; 'wait' — ожидание у окон выросло
+    больше WAIT_MERGE_SLACK или закреплённый рейс выезжает позже."""
+    window = tn.work_minutes
+    by_code = {t.car_code: t for t in trucks}
+    res = vrp.solve(pieces, d, m, vehicles, shifts, begin, LOAD_CAP, **kw)
     if res is None:
-        res = vrp.solve(pieces, d, m, vehicles, shifts, begin, None, **loading)
+        res = vrp.solve(pieces, d, m, vehicles, shifts, begin, None, **kw)
     if res is None:
-        return None
+        return None, None
     rows: list[tuple[float, int, int, tuple[int, ...], str, Trip | None]] = \
         [(when[k][0], 0, k, t.items, t.truck, t) for k, t in enumerate(trips) if k in keep]
     for at, ts in res:
@@ -1517,7 +1562,7 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
     if any(share[i] != n for i, n in placed.items()) or any(n > 1 for i, n in share.items() if i not in placed) \
             or any(len(set(r[3])) != len(r[3]) for r in rows):
         logger.warning('[Routes] PyVRP: заказы не сходятся со сборкой — рейсы своим расчётом')
-        return None
+        return None, 'orders'
     out: list[Trip] = []
     for _, _, _, items, code, old in rows:
         if old is not None:
@@ -1532,25 +1577,23 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
     days = _days(out, vs2, m, start0, tn, fed)
     if any(not _vehicle_allowed(vs2[i], by_code[t.truck]) for t in out for i in t.items):
         logger.warning('[Routes] PyVRP: нарушены ограничения машин магазинов — рейсы своим расчётом')
-        return None
+        return None, 'vehicle'
     ok = all(t.kg <= by_code[t.truck].capacity_kg + 1e-6 and (by_code[t.truck].center_ok or not any(vs2[v].center for v in t.items))
              for t in out if t.truck not in locked)
     ok = ok and all(t.kg <= _load_limit(t.items, vs2, by_code[t.truck], trucks, LOAD_CAP) + 1e-6
                     for t in out if t.truck not in locked and (t.truck, t.items) not in pinned)
-    for c, r in days.items():
-        if c in locked:
-            continue
-        ok = ok and r is not None and (not r or r[-1][1] + r[-1][2] <= window + _EPS)
-    if ok:
-        dep = {k: x for r in days.values() if r for k, x, *_ in r}
-        idx = {id(t): k for k, t in enumerate(out)}
-        ok = all(dep[idx[id(trips[k])]] <= when[k][0] + _EPS for k in pins) and \
-            math.fsum(w for c, r in days.items() if r and c not in locked for *_, w in r) <= wait0 + WAIT_MERGE_SLACK + _EPS
     if not ok:
-        logger.warning('[Routes] PyVRP: рейсы не прошли проверку «Развоза» — рейсы своим расчётом')
-        return None
+        return None, 'load'
+    if not all(r is not None and (not r or r[-1][1] + r[-1][2] <= window + _EPS)
+               for c, r in days.items() if c not in locked):
+        return None, 'time'
+    dep = {k: x for r in days.values() if r for k, x, *_ in r}
+    idx = {id(t): k for k, t in enumerate(out)}
+    if not (all(dep[idx[id(trips[k])]] <= when[k][0] + _EPS for k in pins) and
+            math.fsum(w for c, r in days.items() if r and c not in locked for *_, w in r) <= wait0 + WAIT_MERGE_SLACK + _EPS):
+        return None, 'wait'
     minutes = {k: mins for r in days.values() if r for k, _, mins, _ in r}
-    return [t if t.extra or k not in minutes else replace(t, minutes=minutes[k]) for k, t in enumerate(out)]
+    return [t if t.extra or k not in minutes else replace(t, minutes=minutes[k]) for k, t in enumerate(out)], None
 
 
 # --- День с известными заказами (план развоза, dispatch.py) ---
@@ -1653,13 +1696,14 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
 
 def route_trip(points: Sequence[Point], kgs: Sequence[float], depot: Point, norms: Norms,
                tn: TruckNorms, reorder: bool = True, windows: Sequence[Window] | None = None,
-               start: float = 0.0) -> tuple[list[int], float, float]:
+               start: float = 0.0, truck: str | None = None) -> tuple[list[int], float, float]:
     """Рейс «склад → points → склад»: (порядок объезда — номера points, км, минуты: езда + разгрузка).
     reorder — улучшить порядок 2-opt (от заданного; длина не растёт), иначе — как задан. windows — окна
     приёма точек: если с выезда start (минуты от начала дня машины) заданный порядок их соблюдает, 2-opt
-    их не нарушит."""
+    их не нарушит; окна — с темпом машины truck (№66, tn.pace_of; минуты рейса — без него, как прежде)."""
     if not points:
         return [], 0.0, 0.0
+    pace = tn.pace_of(truck)
     d, m = _matrices(points, depot, norms, tn)
     stops = [_Stop(i + 1, float(kg), 0.0, tn.unload_at(float(kg), points[i])) for i, kg in enumerate(kgs)]
     if windows is not None:
@@ -1668,8 +1712,8 @@ def route_trip(points: Sequence[Point], kgs: Sequence[float], depot: Point, norm
     seq = list(range(len(points)))
     if reorder:
         ok = None
-        if windows is not None and _schedule(seq, stops, m, start)[1]:
-            ok = lambda s2: _schedule(s2, stops, m, start)[1]   # noqa: E731
+        if windows is not None and _schedule(seq, stops, m, start, pace=pace)[1]:
+            ok = lambda s2: _schedule(s2, stops, m, start, pace=pace)[1]   # noqa: E731
         seq = _two_opt(seq, stops, d, ok)
     minutes = (_schedule(seq, stops, m, start)[0] if hasattr(m, 'travel') else
                _closed(seq, stops, m) + math.fsum(s.unload for s in stops))

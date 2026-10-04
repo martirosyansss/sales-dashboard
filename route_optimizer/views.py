@@ -1082,9 +1082,8 @@ def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, e
                     **({'lunch': float(eff.lunch['minutes'])}
                        if eff.lunch and float(s.get('truck_lunch_min') or 0) > 0 else {}),
                     # запас на рейс и темп машин (№66) — только когда действуют: без них пояснение — прежнее до байта
-                    **({'buffer_pct': float(eff.buffer['q'])}
-                       if eff.buffer and float(s.get('dispatch_buffer_pct') or 0) > learning.BUFFER_Q_OFF
-                       and float(eff.buffer['q']) == float(s.get('dispatch_buffer_pct') or 0) else {}),
+                    **({'buffer_pct': float(s['dispatch_buffer_pct'])}
+                       if learning.buffer_c_for(eff.buffer, float(s.get('dispatch_buffer_pct') or 0)) else {}),
                     **({'pace': {c: list(p) for c, p in sorted(pace.items()) if c in trucks}}
                        if (pace := learning.truck_pace(eff, learning.road_model_id(norms))) else {})},
     }
@@ -1521,14 +1520,20 @@ def _capture_prediction(dd, draft):
     # depart/return — выезд первого рейса и возвращение последнего (HH:MM): «время работы» отчёта «план — факт»;
     # trips — начало загрузки, выезд, возвращение и ETA точек каждого рейса: плановое ожидание на складе (обучение
     # загрузки) и карта «план — факт»; lunch — обед по плану (№61): где (магазин — после разгрузки которого, склад, дорога),
-    # начало, минуты — обучение обеда ищет его там, а разгрузка и загрузка эту стоянку не учитывают
+    # начало, минуты — обучение обеда ищет его там, а разгрузка и загрузка эту стоянку не учитывают; return — по медиане
+    # (без запаса на рейс, №66), buffer — минуты запаса отдельно: запас не плановое возвращение и не плановый простой
+    # (обучение загрузки и обеда — learning.plan_trips, «время работы» — learning._plan_minutes)
+    def back(tr: Mapping[str, Any]) -> str:
+        return tr['buffer']['start'] if tr.get('buffer') else tr['return']
     draft.prediction = {'created_at': now.isoformat(), 'prospective': now < start,
         'trucks': {t['car_code']: {**{key: t.get(key) for key in ('km', 'minutes', 'liters', 'loading_minutes', 'wear_amd')},
-                                   'depart': t['trips'][0]['depart'] if t['trips'] else None, 'return': t.get('return'),
+                                   'depart': t['trips'][0]['depart'] if t['trips'] else None,
+                                   'return': back(t['trips'][-1]) if t['trips'] else t.get('return'),
                                    'trips': [{'loading_start': tr['loading_start'], 'depart': tr['depart'],
-                                              'return': tr['return'],
+                                              'return': back(tr),
                                               'stops': [[x['customer_id'], x.get('eta')] for x in tr['stops']],
-                                              **({'lunch': _planned_lunch(tr)} if tr.get('lunch') else {})}
+                                              **({'lunch': _planned_lunch(tr)} if tr.get('lunch') else {}),
+                                              **({'buffer': tr['buffer']['minutes']} if tr.get('buffer') else {})}
                                              for tr in t['trips']]}
                    for t in view['trucks']}}
 
@@ -2511,8 +2516,7 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     model_id = learning.road_model_id(norms)
     # запас на рейс и темп машин (№66): против действующих (запас — того же процентиля q; темп — без него, если нет)
     q = float(s.get('dispatch_buffer_pct') or 0)
-    outcomes.append(learning.fit_buffer(trips, today, q, float(eff.buffer['c']) if eff.buffer and float(
-        eff.buffer['q']) == q else 0.0))
+    outcomes.append(learning.fit_buffer(trips, today, q, learning.buffer_c_for(eff.buffer, q) or 0.0))
     pace_now = learning.truck_pace(eff, model_id)
     outcomes.append(learning.fit_pace('truck_unload', [(o.day, o.car, unload_norm(o), o.minutes) for o in unload], today,
                                       {c: p[0] for c, p in pace_now.items()}))
@@ -2636,9 +2640,9 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
             effect = next((r for r in reversed(rows) if r['kind'] == kind and r['scope'] == scope and r['accepted']
                            and learning.valid_params(kind, r['params'])
                            and (kind != 'travel' or r['model_id'] == model)), None)
-            if kind == 'buffer' and effect is not None and float(effect['params']['q']) != float(
-                    s.get('dispatch_buffer_pct') or 0):
-                effect = None   # запас проверен при другом q — не действует (learning.apply_learned)
+            if kind == 'buffer' and effect is not None and learning.buffer_c_for(
+                    effect['params'], float(s.get('dispatch_buffer_pct') or 0)) is None:
+                effect = None   # q ≤ 50 или у строки нет c для q настроек — запас не действует (learning.apply_learned)
         if kind == 'fuel':
             t = bundle.trucks.get(scope)
             man = {'l100': t.fuel_l_per_100km, 'empty_l100': t.fuel_empty_l_per_100km,

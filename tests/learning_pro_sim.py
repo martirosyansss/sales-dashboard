@@ -29,6 +29,18 @@ CARS = ('CAR1', 'CAR2', 'CAR3', 'CAR4', 'CAR5', 'CAR6')
 SLOW = 'CAR4'
 SLOW_UNLOAD = 1.30
 SLOW_TRAVEL = 1.25
+# модель «Развоза» откалибрована по всему парку (норма разгрузки и поправка пути учатся на всех машинах): уровень парка —
+# среднее геометрическое темпа машин — 1, т. е. правда машины = её темп / уровень (у медленной ≈ ×1,24 и ×1,20, у
+# остальных ≈ ×0,96)
+LEVEL_UNLOAD = SLOW_UNLOAD ** (1 / len(CARS))
+LEVEL_TRAVEL = SLOW_TRAVEL ** (1 / len(CARS))
+
+
+def truth(car: str) -> tuple[float, float]:
+    """Темп машины относительно модели: (разгрузка, путь)."""
+    if car == SLOW:
+        return SLOW_UNLOAD / LEVEL_UNLOAD, SLOW_TRAVEL / LEVEL_TRAVEL
+    return 1 / LEVEL_UNLOAD, 1 / LEVEL_TRAVEL
 DAY_SD = 0.10            # шум машино-дня (лог), общий для его участков и визитов
 LEG_SD = 0.12            # шум участка (лог)
 VISIT_SD = 0.20          # шум визита (лог)
@@ -99,7 +111,7 @@ def simulate(days: list[date], seed: int = 1, cars=CARS, per_trip: int = 5) -> l
     out = []
     for d in days:
         for car in cars:
-            tu, tt = (SLOW_UNLOAD, SLOW_TRAVEL) if car == SLOW else (1.0, 1.0)
+            tu, tt = truth(car)
             day_eff = math.exp(rnd.gauss(0.0, DAY_SD))
             cids = rnd.sample(sorted(pts), 2 * per_trip)
             kg = {c: rnd.choice((150.0, 300.0, 600.0, 1000.0)) for c in cids}

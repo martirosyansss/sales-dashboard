@@ -35,7 +35,7 @@ from route_optimizer import learning as lr  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
 from route_optimizer import vrp  # noqa: E402
 from test_route_dispatch_lunch import JAC, _ctx, _random_day, _two_trips, _violations  # noqa: E402
-from test_route_optimizer import DP_DEPOT, DP_NORMS, EAST, FORD, HOWO, TN, WEST, _dp_stops, _info  # noqa: E402
+from test_route_optimizer import DP_DAY, DP_DEPOT, DP_NORMS, EAST, FORD, HOWO, TN, WEST, _dp_stops, _info  # noqa: E402
 
 TODAY = date(2026, 10, 3)
 INF = float('inf')
@@ -80,6 +80,15 @@ def test_schedule_pace_scales_drive_and_unload():
     assert fl._schedule(seq, stops, m, 0.0, pace=fl.NO_PACE) == fl._schedule(seq, stops, m, 0.0)
 
 
+def test_savings_merge_respects_reserve():
+    """Ревью L6: Кларк–Райт сливает рейсы без окон, только если езда + разгрузка + запас укладываются в день."""
+    seq, stops, m = _line([30, 5])                                                  # слитый рейс: 30 + 5 + 35 + 20 = 90
+    assert fl._savings(seq, stops, m, m, 1e9, 95.0) == [[0, 1]]
+    tn = replace(TN, buffer_c=1.0)                                                  # запас √90 ≈ 9,5 → 99,5 > 95
+    assert fl._savings(seq, stops, m, m, 1e9, 95.0, reserve=tn.reserve) == [[0], [1]]
+    assert fl._savings(seq, stops, m, m, 1e9, 95.0, reserve=TN.reserve) == [[0, 1]]
+
+
 def test_lunch_trip_carries_buffer_and_pace_of_truck():
     seq, stops, m = _line([60, 60, 60, 60])
     tn = replace(TN, lunch_minutes=30.0, lunch_from=210.0, lunch_to=330.0, buffer_c=2.0, pace={'SLOW': (1.0, 1.25)})
@@ -117,6 +126,47 @@ def test_timeline_buffer_pushes_next_trip_and_plan_view_shows_it():
     tight = replace(tn, work_minutes=end - 1.0)
     assert dp.runs_late(_ctx(tight), stops, draft) and not dp.runs_late(_ctx(replace(TN, work_minutes=end - 1.0)),
                                                                         stops, draft)
+
+
+def test_prediction_saves_median_return_and_buffer(monkeypatch):
+    """Ревью M1: в прогнозе для «план — факт» возвращение — по медиане, запас — отдельно: обучение загрузки (плановое
+    ожидание на складе — от медианного возвращения) и «время работы» плана запаса не видят."""
+    from types import SimpleNamespace
+    from route_optimizer import views
+    stops, draft = _two_trips()
+    monkeypatch.setattr(views, '_stop_info', lambda dd: _info)
+    preds = {}
+    for c in (0.0, 3.0):
+        dd = SimpleNamespace(ctx=_ctx(replace(TN, buffer_c=c)), stops=stops, day=DP_DAY,
+                             bundle=SimpleNamespace(settings={'truck_work_start': '09:00'}))
+        d = dp.Draft(trucks=draft.trucks, trips=[dp.DraftTrip(t.id, t.truck, list(t.stops)) for t in draft.trips])
+        views._capture_prediction(dd, d)
+        preds[c] = d.prediction['trucks'][HOWO.car_code]
+    view = dp.plan_view(_ctx(replace(TN, buffer_c=3.0)), stops, draft, _info)
+    t1 = view['trucks'][0]['trips'][0]
+    got = preds[3.0]
+    assert got['trips'][0]['return'] == t1['buffer']['start'] != t1['return'] and got['trips'][0]['buffer'] == t1['buffer']['minutes']
+    assert got['return'] == view['trucks'][0]['trips'][-1]['buffer']['start']
+    assert 'buffer' not in preds[0.0]['trips'][0] and preds[0.0]['trips'][0]['return'] == preds[0.0]['trips'][0]['return']
+    # второй рейс грузится после возвращения с запасом: плановое ожидание на складе — от медианного возвращения
+    plan = lr.plan_trips(got, DP_DAY)
+    assert plan[1].wait is not None and (plan[1].wait[1] - plan[1].wait[0]).total_seconds() / 60 == pytest.approx(
+        t1['buffer']['minutes'], abs=1.0)
+    assert lr._plan_minutes(got) < lr._plan_minutes({**got, 'return': view['trucks'][0]['return']})
+
+
+def test_route_trip_window_check_with_truck_pace(monkeypatch):
+    """Ревью L1: ручная перестановка (route_trip с окнами) проверяет окна с темпом машины рейса."""
+    seen = []
+    real = fl._schedule
+    monkeypatch.setattr(fl, '_schedule', lambda *a, **k: seen.append(k.get('pace')) or real(*a, **k))
+    pts = [p for _, p, _ in EAST]
+    tn = replace(TN, pace={HOWO.car_code: (1.3, 1.2)})
+    fl.route_trip(pts, [200.0] * 3, DP_DEPOT, DP_NORMS, tn, windows=[(0.0, INF)] * 3, truck=HOWO.car_code)
+    assert seen and all(p == (1.3, 1.2) for p in seen)
+    seen.clear()
+    fl.route_trip(pts, [200.0] * 3, DP_DEPOT, DP_NORMS, tn, windows=[(0.0, INF)] * 3, truck=FORD.car_code)
+    assert seen and all(p == fl.NO_PACE for p in seen)
 
 
 def test_no_buffer_no_pace_plan_identical():
@@ -190,6 +240,70 @@ def test_vrp_profiles_and_reserve_edges():
     assert vrp.solve(pieces, km, mins, fast, shifts, [], None, trip_reserve_min=60.0) is None   # 46 + 60 > 100
     slow = [vrp.Vehicle('A', 1000.0, 10.0, False, pace=(3.0, 2.0))]                 # 2·26 + 3·20 = 112 > 100
     assert vrp.solve(pieces, km, mins, slow, shifts, [], None) is None
+    # касательная: езда и разгрузка × (1 + наклон) — 46 · 2 = 92 ≤ 100, 46 · 2,2 = 101,2 > 100
+    assert vrp.solve(pieces, km, mins, fast, shifts, [], None, reserve_slope=1.0) is not None
+    assert vrp.solve(pieces, km, mins, fast, shifts, [], None, reserve_slope=1.2) is None
+    assert vrp.solve(pieces, km, mins, fast, shifts, [], None, reserve_slope=1.0, trip_reserve_min=9.0) is None
+
+
+def test_tangent_is_upper_bound_of_reserve():
+    """Линейная оценка запаса для PyVRP (_solver): c·√D0 / 2 + c / (2√D0) · D ≥ запас(D) при любом D, равна в D0."""
+    for c in (0.5, 1.5, 2.36, 5.0):
+        for d0 in (30.0, 150.0, 400.0):
+            b, a = c * math.sqrt(d0) / 2, c / (2 * math.sqrt(d0))
+            assert b + a * d0 == pytest.approx(c * math.sqrt(d0))
+            assert all(b + a * d >= fl.trip_reserve(c, d) - 1e-9 for d in range(0, 800, 7))
+
+
+@pytest.mark.skipif(not vrp.available(), reason='нет PyVRP')
+def test_solver_with_buffer_tangent_and_retry(monkeypatch):
+    """С запасом решатель получает касательную (наклон и полкасательной на рейс) по типичному рейсу сборки, не
+    уложился по времени — вторая попытка с запасом × RESERVE_RETRY; по ожиданию у окон — без повтора."""
+    calls = []
+    real = fl._solver_try
+
+    def spy(*a, **k):
+        calls.append(dict(a[12]))
+        got, why = real(*a, **k)
+        return (None, 'time') if len(calls) == 1 else (got, why)
+    monkeypatch.setattr(fl, '_solver_try', spy)
+    stops, windows, trucks = _random_day(1)
+    dp.build(_ctx(replace(TN, buffer_c=2.0), trucks, windows), stops, None, [t.car_code for t in trucks], 'now')
+    assert len(calls) == 2 and calls[0]['reserve_slope'] > 0 and calls[0]['trip_reserve_min'] > 0
+    assert calls[1]['reserve_slope'] == pytest.approx(fl.RESERVE_RETRY * calls[0]['reserve_slope'])
+    d0 = (calls[0]['trip_reserve_min'] * 2 / 2.0) ** 2                              # c·√D0 / 2 → D0
+    assert calls[0]['reserve_slope'] == pytest.approx(2.0 / (2 * math.sqrt(d0)))
+    calls.clear()
+    monkeypatch.setattr(fl, '_solver_try', lambda *a, **k: calls.append(1) or (None, 'wait'))
+    dp.build(_ctx(replace(TN, buffer_c=2.0), trucks, windows), stops, None, [t.car_code for t in trucks], 'now')
+    assert len(calls) == 1
+    calls.clear()
+    dp.build(_ctx(TN, trucks, windows), stops, None, [t.car_code for t in trucks], 'now')
+    assert len(calls) == 1                                                          # без запаса — одна попытка
+
+
+@pytest.mark.skipif(not vrp.available(), reason='нет PyVRP')
+def test_solver_accepts_with_buffer_on_random_days():
+    """Ревью H1: с запасом решатель принимается не реже, чем без него (на 10 случайных днях c = 2,36 — не меньше 3;
+    без запаса — 4), и «не поместились» почти не растёт (до касательной — 38 против 18)."""
+    accepted, unplaced = 0, 0
+    real = fl._solver
+
+    def count(*a, **k):
+        nonlocal accepted
+        got = real(*a, **k)
+        accepted += got is not None
+        return got
+    fl._solver, saved = count, fl._solver
+    try:
+        for seed in range(10):
+            stops, windows, trucks = _random_day(seed)
+            ctx = _ctx(replace(TN, buffer_c=2.36, lunch_minutes=30.0, lunch_from=210.0, lunch_to=330.0), trucks, windows)
+            d = dp.build(ctx, stops, None, [t.car_code for t in trucks], 'now')
+            unplaced += len(d.no_room) + len(d.no_window)
+    finally:
+        fl._solver = saved
+    assert accepted >= 3 and unplaced <= 30
 
 
 # ============================== обучение запаса и темпа: синтетика ==============================
@@ -212,10 +326,10 @@ def test_simulation_buffer_coverage_and_gate(world):
     out = lr.fit_buffer(trips, TODAY, 80, 0.0)
     assert out.accepted and out.confidence >= lr.BOOT_SHARE and out.mae_after < 0.7 * out.mae_before
     p = out.params
-    assert p['c'] > 1.0 and p['q'] == 80 and 0.72 <= p['coverage'] <= 0.88 and p['coverage_before'] < 0.5
+    assert p['c'] > 1.0 and p['q'] == 80 and 0.72 <= p['coverage'] <= 0.88 and p['coverage_before'] < 0.62   # без запаса — около медианы
     assert 'նպատակը՝ 80%' in out.reason
     ahead, _, _ = sim.observations(future, tn)
-    assert abs(sim.coverage(ahead, p['c']) - 0.80) <= 0.04 and sim.coverage(ahead, 0.0) < 0.5
+    assert abs(sim.coverage(ahead, p['c']) - 0.80) <= 0.04 and sim.coverage(ahead, 0.0) < 0.62
     again = lr.fit_buffer(trips, TODAY, 80, p['c'])                                 # тот же запас уже действует
     assert not again.accepted and again.params['c'] == p['c']
     q90 = lr.fit_buffer(trips, TODAY, 90, 0.0).params
@@ -230,9 +344,12 @@ def test_simulation_pace_finds_slow_crew_and_gate(world):
     t = lr.fit_pace('truck_travel', sim.leg_rows(legs), TODAY, model_id='straight')
     assert u.accepted and t.accepted and u.confidence >= lr.BOOT_SHARE and t.confidence >= lr.BOOT_SHARE
     fu, ft = u.params['factors'], t.params['factors']
-    assert abs(fu[sim.SLOW] - sim.SLOW_UNLOAD) <= 0.06 and abs(ft[sim.SLOW] - sim.SLOW_TRAVEL) <= 0.05
+    (tu, tt), (ou, ot) = sim.truth(sim.SLOW), sim.truth('CAR1')
+    assert abs(fu[sim.SLOW] - tu) <= 0.06 and abs(ft[sim.SLOW] - tt) <= 0.05
     others = [c for c in sim.CARS if c != sim.SLOW]
-    assert all(abs(fu.get(c, 1.0) - 1.0) <= 0.06 and abs(ft.get(c, 1.0) - 1.0) <= 0.05 for c in others)
+    assert all(abs(fu.get(c, 1.0) - ou) <= 0.05 and abs(ft.get(c, 1.0) - ot) <= 0.04 for c in others)
+    # множители относительные: среднее логарифмов по машинам (дни у всех равны) — 0
+    assert abs(sum(math.log(fu.get(c, 1.0)) for c in sim.CARS)) <= 0.02 * len(sim.CARS)
     assert lr.valid_params('truck_unload', u.params) and lr.valid_params('truck_travel', t.params)
     paced = sim.with_pace(tn, u, t)
     assert paced.pace_of(sim.SLOW) == (fu[sim.SLOW], ft[sim.SLOW]) and paced.pace_of('NEW') == fl.NO_PACE
@@ -254,14 +371,44 @@ def test_pace_factors_shrink_and_limits():
     train = rows('A', 30, 1.0) + rows('B', 30, 1.0) + rows('C', 30, 1.2) + rows('D', 2, 1.2)
     factors, k, days = lr.pace_factors(train)
     assert lr.PACE_K_BOUNDS[0] <= k <= lr.PACE_K_BOUNDS[1] and days == {'A': 30, 'B': 30, 'C': 30, 'D': 2}
-    assert factors['C'] == pytest.approx(math.exp(30 / (30 + k) * math.log(1.2) + 30 / (30 + k) * 0), abs=0.01)
-    assert 1.0 < factors['D'] < factors['C']                                        # мало дней — ближе к 1
-    assert 'A' not in factors or abs(factors['A'] - 1.0) < 0.01
+    # относительно уровня парка: у A и C по 30 дней — их отношение ≈ exp(30 / (30 + k) · log 1,2)
+    assert factors['C'] / factors['A'] == pytest.approx(math.exp(30 / (30 + k) * math.log(1.2)), abs=0.01)
+    assert factors['A'] < 1.0 < factors['C'] and factors['A'] < factors['D'] < factors['C']   # 2 дня — ближе к 1
+    assert factors['A'] == pytest.approx(factors.get('B', 1.0), abs=0.005)
     same = rows('A', 30, 1.0) + rows('B', 30, 1.0) + rows('C', 30, 1.0)
     assert lr.pace_factors(same)[1] == lr.PACE_K_BOUNDS[1]                          # τ² ≤ 0 — наибольшее сглаживание
     assert lr.pace_factors(rows('A', 30, 1.0) + rows('B', 30, 1.0)) is None          # две машины — k не оценить
     wild = rows('A', 30, 1.0) + rows('B', 30, 1.0) + rows('C', 30, 9.0)
     assert lr.pace_factors(wild)[0]['C'] == lr.PACE_RATIO[1]
+
+
+def test_pace_factors_relative_to_fleet_level():
+    """Шесть одинаковых машин, весь парк на 10,5% медленнее модели: это уровень парка (его учат unload / travel той же
+    ночью), а не темп машин — множителей нет (иначе двойной счёт); медленная машина на фоне — относительно парка."""
+    d0 = TODAY - timedelta(days=40)
+    rows = [lr.PaceObs(d0 + timedelta(days=i), c, 10.0, 10.0 * 1.105 * (1.04 if (i + j) % 2 else 0.96))
+            for j, c in enumerate(('A', 'B', 'C', 'D', 'E', 'F')) for i in range(30)]
+    factors, _, _ = lr.pace_factors(rows)
+    assert all(abs(f - 1.0) < 0.01 for f in factors.values())
+    slow = [replace(o, minutes=o.minutes * 1.3) if o.car == 'F' else o for o in rows]
+    f2, _, _ = lr.pace_factors(slow)
+    level = math.exp(math.log(1.3) / 6)
+    assert f2['F'] == pytest.approx(1.3 / level, abs=0.02) and f2['A'] == pytest.approx(1 / level, abs=0.02)
+
+
+def test_buffer_c_for_q_change():
+    """Ревью L2: сменили q — сразу c тех же рейсов обучения при новом q (c_by_q), а не ноль до ночи; q ≤ 50 — без
+    запаса; у строки без таблицы (до ревью) другой q — без запаса."""
+    d0 = TODAY - timedelta(days=40)
+    obs = [lr.TripObs(d0 + timedelta(days=i % 40), 'A', 100.0, 100.0 + (i % 10) * 3) for i in range(200)]
+    p = lr.fit_buffer(obs, TODAY, 80, 0.0).params
+    assert p['c_by_q']['80'] == p['c'] and p['c_by_q']['95'] >= p['c'] >= p['c_by_q']['60'] and lr.valid_params('buffer', p)
+    assert lr.buffer_c_for(p, 80.0) == p['c'] and lr.buffer_c_for(p, 90.0) == p['c_by_q']['90']
+    assert lr.buffer_c_for(p, 50.0) is None and lr.buffer_c_for(None, 80.0) is None
+    assert lr.buffer_c_for({'c': 2.0, 'q': 80}, 90.0) is None and lr.buffer_c_for(p, 85.5) is None
+    assert not lr.valid_params('buffer', {**p, 'c_by_q': {'80': -1.0}})
+    _, t2, _ = lr.apply_learned(DP_NORMS, replace(TN, buffer_pct=90.0), {}, lr.InEffect(buffer=p), {})
+    assert t2.buffer_c == p['c_by_q']['90']
 
 
 def test_fit_buffer_rules():
@@ -335,7 +482,7 @@ def test_settings_buffer_pct_and_from_settings():
     assert st._NUMERIC['dispatch_buffer_pct'] == (50, 95, False)
     js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert "key: 'dispatch_buffer_pct'" in js and 'min: 50, max: 95' in js
-    assert "routes_settings.js') }}?v=24" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
+    assert "routes_settings.js') }}?v=25" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
 
 
 def test_store_migrates_20_to_21_keeps_rows_and_allows_new_kinds(tmp_path):
@@ -375,7 +522,7 @@ def test_learning_page_texts_armenian():
     assert "kind === 'buffer'" in js and "kind === 'truck_unload' || kind === 'truck_travel'" in js
     html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
     assert 'Ժամանակի պաշար երթի վերջում' in html and 'Մեքենայի գործակիցները' in html
-    assert "routes_learning.js') }}?v=15" in html
+    assert "routes_learning.js') }}?v=16" in html
     assert lr.KIND_TITLES['buffer'] == 'Ժամանակի պաշար երթի վերջում'
     assert all(lr.DEFAULT_AUTO[k] for k in ('buffer', 'truck_unload', 'truck_travel'))
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
