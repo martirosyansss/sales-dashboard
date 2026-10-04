@@ -35,7 +35,7 @@ from .erp import ErpError
 from .geo import Point, haversine_km, is_valid_point
 from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
-from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
+from .store import (CREW_TABLES, DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
                     center_auto, check_driver_name, check_garage_entry, check_unload_min, check_window,
                     validate_payload)
 from .valhalla_engine import TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider, ValhallaRoads, truck_time_source
@@ -1371,18 +1371,21 @@ def _erp_drivers(state: RoutesState) -> list[str]:
 
 
 def _drivers_json(state: RoutesState, day: date) -> dict[str, Any]:
-    """Водители машин на день (№62): drivers — машина → имя, substitutes — машины с подменой на этот день (только он),
+    """Водители машин на день (№62): drivers — машина → имя, substitutes — машины с подменой на этот день (только он);
+    helpers, helper_substitutes — то же для առաքիչ (второй человек в машине);
     driver_list — из чего выбирать (ответ владельца: «из ERP + добавить своих»): [{name, erp}] — экспедиторы ERP за
     DRIVER_LIST_DAYS, затем свои (вписанные в «Վարորդ» за тот же срок и не из ERP)."""
-    drivers, subs = state.store.truck_drivers(day.isoformat())
+    store = state.store
+    drivers, subs = store.truck_drivers(day.isoformat())
+    helpers, helper_subs = store.truck_drivers(day.isoformat(), 'helper')
     erp_names = _erp_drivers(state)
     in_erp = set(erp_names)
     today = _clock().date()
     since = (today - timedelta(days=DRIVER_LIST_DAYS)).isoformat()
-    # свои — вписанные за срок и все, кто водит сейчас или в этот день (давно закреплённый не пропадает из выбора)
-    current = set(state.store.truck_drivers(today.isoformat())[0].values()) | set(drivers.values())
-    own = sorted((set(state.store.driver_names(since)) | current) - in_erp)
-    return {'drivers': drivers, 'substitutes': sorted(subs),
+    # свои — вписанные за срок и все, кто в машинах сейчас или в этот день (давно закреплённый не пропадает из выбора)
+    current = {n for role in CREW_TABLES for n in store.truck_drivers(today.isoformat(), role)[0].values()}
+    own = sorted((set(store.driver_names(since)) | current | set(drivers.values()) | set(helpers.values())) - in_erp)
+    return {'drivers': drivers, 'substitutes': sorted(subs), 'helpers': helpers, 'helper_substitutes': sorted(helper_subs),
             'driver_list': [{'name': n, 'erp': True} for n in erp_names] + [{'name': n, 'erp': False} for n in own]}
 
 
@@ -1815,44 +1818,65 @@ def api_dispatch_waybill() -> Any:
     lines = state.waybill_loader([o['isn'] for tr in truck['trips'] for s in tr['stops'] for o in s['orders']])
     logger.info('[Routes] Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
     return jsonify({'success': True, 'day': day.isoformat(), 'rev': dd.rev, **wb.truck_waybill(plan, car, lines),
-                    'driver': state.store.truck_drivers(day.isoformat())[0].get(car)})
+                    'driver': state.store.truck_drivers(day.isoformat())[0].get(car),
+                    'helper': state.store.truck_drivers(day.isoformat(), 'helper')[0].get(car)})
 
 
 DRIVER_NO_TRUCK = 'Մեքենան չի գտնվել — թարմացրեք էջը'
+CREW_EMPTY = 'Նշեք վարորդին կամ առաքիչին'
+CREW_SAME = 'Վարորդն ու առաքիչը նույն մարդն են'
 BAD_ONLY_DAY = 'Սերվերը չընդունեց հարցումը'          # only_day не true/false — ошибка страницы, не логиста
 
 
 @bp.post('/api/routes/dispatch/driver')
 @_api
 def api_dispatch_driver() -> Any:
-    """Водитель машины для «Բեռնագիր» (ответ владельца №62): {"date", "car_code", "name", "only_day"?} — постоянный с этого
-    дня и до следующей смены (прежние дни не меняются); only_day: true — подмена только на этот день; прошедший день —
-    всегда подмена. "" («Հեռացնել») — водителя нет с этого дня, а у подмены — снять её (store.save_truck_driver).
+    """Водитель и առաքիչ машины для «Բեռնագիր» (ответ владельца №62): {"date", "car_code", "name"?, "only_day"?,
+    "helper"?, "helper_only_day"?} — name — водитель, helper — առաքիչ (второй человек; хотя бы один из двух), "" — никого;
+    у каждого свой срок: постоянно с этого дня и до следующей смены (прежние дни не меняются) или true — подмена только
+    на этот день; прошедший день — всегда подмена (store.save_truck_crew). Водитель и առաքիչ — не один человек. В ответе
+    only_day — {роль: подмена ли} по сохранённым ролям.
     Машина — из настроенных (store.trucks). Ответ — водители машин на этот день и все имена (как в ответе дня),
     only_day — изменён только этот день. План не меняется."""
     payload, day, error = _dispatch_request()
     if error is not None:
         return error
     car = payload.get('car_code')
-    name, bad = check_driver_name(payload.get('name'))
-    one_day = payload.get('only_day', False)
     errors = {}
-    if not isinstance(one_day, bool):
-        errors['only_day'] = BAD_ONLY_DAY
+    people: dict[str, tuple[str, bool]] = {}
+    # кто пришёл — того и меняем; у каждого свой срок: only_day — водителя, helper_only_day — առաքիչ
+    for role, key, day_key in (('driver', 'name', 'only_day'), ('helper', 'helper', 'helper_only_day')):
+        one_day = payload.get(day_key, False)
+        if not isinstance(one_day, bool):
+            errors[day_key] = BAD_ONLY_DAY
+        if key in payload:
+            value, bad = check_driver_name(payload[key])
+            if bad is not None:
+                errors[key] = bad
+            elif isinstance(one_day, bool):
+                people[role] = (value, one_day)
+    if not people and not errors:
+        errors['name'] = CREW_EMPTY
     if not isinstance(car, str) or not car.strip() or len(car) > 64:
         errors['car_code'] = 'Նշեք մեքենայի կոդը'
-    if bad is not None:
-        errors['name'] = bad
     if errors:
         return _bad_request(errors)
     state = _state()
     car = car.strip()
     if car not in state.store.load().trucks:
         return _bad_request({'car_code': DRIVER_NO_TRUCK})
-    only_day = one_day or day < _clock().date()
-    state.store.save_truck_driver(car, day.isoformat(), name, session.get('username'), only_day=only_day)
-    logger.info('[Routes] Водитель %s %s %s (%s)', car, 'на' if only_day else 'с', day, session.get('username'))
-    return jsonify({'success': True, 'day': day.isoformat(), 'only_day': only_day, **_drivers_json(state, day)})
+    crew = {role: state.store.truck_drivers(day.isoformat(), role)[0].get(car, '') for role in CREW_TABLES} | {
+        role: name for role, (name, _) in people.items()}
+    if crew['driver'] and crew['driver'] == crew['helper']:
+        return _bad_request({'helper': CREW_SAME})
+    past = day < _clock().date()                    # прошедший день — всегда только он
+    people = {role: (name, one_day or past) for role, (name, one_day) in people.items()}
+    state.store.save_truck_crew(car, day.isoformat(), people, session.get('username'))
+    logger.info('[Routes] Машина %s на %s: %s (%s)', car, day,
+                ', '.join(f'{role} {"на день" if one_day else "с дня"}' for role, (_, one_day) in people.items()),
+                session.get('username'))
+    return jsonify({'success': True, 'day': day.isoformat(),
+                    'only_day': {role: one_day for role, (_, one_day) in people.items()}, **_drivers_json(state, day)})
 
 
 @bp.get('/api/routes/measurements')

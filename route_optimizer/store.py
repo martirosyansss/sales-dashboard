@@ -28,7 +28,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -159,6 +159,10 @@ _TRUCK_DRIVER_TABLE = (
     "CREATE TABLE IF NOT EXISTS truck_driver(car_code TEXT NOT NULL, from_day TEXT NOT NULL, "
     "only_day INTEGER NOT NULL DEFAULT 0 CHECK (only_day IN (0, 1)), name TEXT NOT NULL CHECK (length(name) <= 60), "
     "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (car_code, from_day, only_day))")
+# Схема 19 (ответ владельца к №62: «двое в машине» → «Վարորդ + առաքիչ»): второй человек в машине — առաքիչ, необязательный;
+# та же структура и те же правила срока, что у водителя.
+_TRUCK_HELPER_TABLE = _TRUCK_DRIVER_TABLE.replace('truck_driver(', 'truck_helper(', 1)
+CREW_TABLES = {'driver': 'truck_driver', 'helper': 'truck_helper'}   # роль → таблица (только эти имена идут в SQL)
 
 _CUSTOMER_VEHICLES_TABLE = (
     "CREATE TABLE IF NOT EXISTS customer_vehicle_access(customer_id INTEGER PRIMARY KEY, "
@@ -216,6 +220,7 @@ _SCHEMA = (
     _GARAGE_TABLE,
     _GARAGE_ONE_ODOMETER,
     _TRUCK_DRIVER_TABLE,
+    _TRUCK_HELPER_TABLE,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -325,6 +330,8 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "ALTER TABLE garage_entry_v18 RENAME TO garage_entry",
         _GARAGE_ONE_ODOMETER,
     ),
+    # 18 → 19 (к №62, «Վարորդ + առաքիչ»): только добавляем — таблица առաքիչ; прежние таблицы и значения не меняются.
+    18: (_TRUCK_HELPER_TABLE,),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -559,6 +566,14 @@ def check_unload_min(raw: Any) -> tuple[float | None, str | None]:
 
 
 DRIVER_NAME_MAX = 60
+
+
+def _crew_table(role: str) -> str:
+    """Таблица роли (CREW_TABLES); другое значение — ValueError: в SQL идут только эти имена."""
+    if role not in CREW_TABLES:
+        raise ValueError(f'роль: {", ".join(CREW_TABLES)}')
+    return CREW_TABLES[role]
+
 # управляющие, форматные (направление текста, мягкий перенос, нулевой ширины), частные, несуществующие и разделители
 # строк — в печатаемом имени не нужны и могут переставить текст накладной
 _INVISIBLE_CATEGORIES = frozenset({'Cc', 'Cf', 'Co', 'Cs', 'Cn', 'Zl', 'Zp'})
@@ -2022,16 +2037,18 @@ class Store:
                          'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
                          (customer_id, float(unload_min), _now(), user))
 
-    def truck_drivers(self, day: str) -> tuple[dict[str, str], frozenset[str]]:
-        """Водители машин на день YYYY-MM-DD (№62): (машина → имя, машины с подменой на этот день). Водитель дня — подмена
-        этого дня, если есть, иначе постоянный: запись с наибольшим from_day ≤ day. Пустое имя («водителя нет») — не в
-        словаре (подмена «водителя нет» — во втором множестве)."""
+    def truck_drivers(self, day: str, role: str = 'driver') -> tuple[dict[str, str], frozenset[str]]:
+        """Водители (role='driver') или առաքիչ (role='helper') машин на день YYYY-MM-DD (№62): (машина → имя, машины с
+        подменой на этот день). Человек дня — подмена этого дня, если есть, иначе постоянный: запись с наибольшим
+        from_day ≤ day. Пустое имя («никого») — не в словаре (подмена «никого» — во втором множестве)."""
+        table = _crew_table(role)
+
         def query(conn: sqlite3.Connection) -> tuple[list[Any], list[Any]]:
             permanent = conn.execute(
-                'SELECT d.car_code, d.name FROM truck_driver d WHERE d.only_day = 0 AND d.from_day = '
-                '(SELECT MAX(x.from_day) FROM truck_driver x WHERE x.car_code = d.car_code AND x.only_day = 0 '
+                f'SELECT d.car_code, d.name FROM {table} d WHERE d.only_day = 0 AND d.from_day = '
+                f'(SELECT MAX(x.from_day) FROM {table} x WHERE x.car_code = d.car_code AND x.only_day = 0 '
                 'AND x.from_day <= ?)', (day,)).fetchall()
-            subs = conn.execute('SELECT car_code, name FROM truck_driver WHERE only_day = 1 AND from_day = ?',
+            subs = conn.execute(f'SELECT car_code, name FROM {table} WHERE only_day = 1 AND from_day = ?',
                                 (day,)).fetchall()
             return permanent, subs
 
@@ -2040,38 +2057,52 @@ class Store:
         return {code: name for code, name in names.items() if name}, frozenset(code for code, _ in subs)
 
     def driver_names(self, since: str = '') -> list[str]:
-        """Имена водителей из записей (№62) с днём записи не раньше since (YYYY-MM-DD; '' — все), по алфавиту: «свои»
-        водители для выбора — давно не встречавшиеся из списка уходят сами (опечатку не нужно удалять)."""
+        """Имена водителей и առաքիչ из записей (№62) с днём записи не раньше since (YYYY-MM-DD; '' — все), по алфавиту:
+        «свои» для выбора — давно не встречавшиеся из списка уходят сами (опечатку не нужно удалять)."""
         rows = self._read(lambda conn: conn.execute(
-            "SELECT DISTINCT name FROM truck_driver WHERE name <> '' AND from_day >= ?", (since,)).fetchall())
+            "SELECT name FROM truck_driver WHERE name <> '' AND from_day >= ? "
+            "UNION SELECT name FROM truck_helper WHERE name <> '' AND from_day >= ?", (since, since)).fetchall())
         return sorted(r[0] for r in rows)
 
-    def save_truck_driver(self, car_code: str, day: str, name: str, user: str | None, only_day: bool = False) -> None:
-        """Водитель машины (№62; name — проверенное check_driver_name). only_day=False — постоянный с day и до следующей
-        смены (подмена этого дня снимается, подмены других дней остаются); '' — с этого дня водителя нет. only_day=True —
-        подмена только на day (прошедший день — всегда так); '' («Հեռացնել») снимает подмену этого дня — снова постоянный, а
-        если подмены не было — в этот день водителя нет. Запись того же дня и вида заменяется — ошибку исправляют, вписав
-        верное имя."""
+    def save_truck_driver(self, car_code: str, day: str, name: str, user: str | None, only_day: bool = False,
+                          role: str = 'driver') -> None:
+        """Один человек машины — save_truck_crew({role: (name, only_day)})."""
+        self.save_truck_crew(car_code, day, {role: (name, only_day)}, user)
+
+    def save_truck_crew(self, car_code: str, day: str, people: Mapping[str, tuple[str, bool]], user: str | None) -> None:
+        """Водитель и/или առաքիչ машины одной транзакцией (№62; people — роль → (проверенное check_driver_name имя, ''
+        — никого; only_day)). only_day=False — постоянный с day и до следующей смены (подмена этого дня снимается,
+        подмены других дней остаются); only_day=True — подмена только на day (прошедший день — всегда так), а подмена тем
+        же, кто там постоянный (или «никого», если постоянного нет), — просто снимает подмену дня: иначе строка дня
+        закрепила бы имя и пережила бы следующую постоянную смену. Запись того же дня и вида заменяется — ошибку
+        исправляют, выбрав верного человека."""
         if not isinstance(car_code, str) or not car_code or len(car_code) > 64:
             raise ValueError('car_code: непустая строка до 64 символов')
         if not isinstance(day, str) or not _ISO_DAY_RE.match(day):
             raise ValueError('day: дата YYYY-MM-DD')
-        if check_driver_name(name) != (name, None):
-            raise ValueError('имя водителя не прошло проверку')
-        kind = 1 if only_day else 0
-        drop_sub = 'DELETE FROM truck_driver WHERE car_code = ? AND from_day = ? AND only_day = 1'
+        if not people:
+            raise ValueError('people: хотя бы одна роль')
+        for role, (name, only_day) in people.items():
+            _crew_table(role)
+            if check_driver_name(name) != (name, None) or not isinstance(only_day, bool):
+                raise ValueError('имя или only_day не прошли проверку')
 
         def write(conn: sqlite3.Connection) -> None:
-            if only_day and name == '' and conn.execute(drop_sub.replace('DELETE', 'SELECT 1', 1),
-                                                        (car_code, day)).fetchone() is not None:
-                conn.execute(drop_sub, (car_code, day))
-                return
-            conn.execute('INSERT INTO truck_driver(car_code, from_day, only_day, name, updated_at, updated_by) '
-                         'VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(car_code, from_day, only_day) DO UPDATE SET '
-                         'name = excluded.name, updated_at = excluded.updated_at, updated_by = excluded.updated_by',
-                         (car_code, day, kind, name, _now(), user))
-            if not only_day:
-                conn.execute(drop_sub, (car_code, day))
+            for role, (name, only_day) in people.items():
+                table = _crew_table(role)
+                drop_sub = f'DELETE FROM {table} WHERE car_code = ? AND from_day = ? AND only_day = 1'
+                if only_day:
+                    row = conn.execute(f'SELECT name FROM {table} WHERE car_code = ? AND only_day = 0 AND from_day <= ? '
+                                       'ORDER BY from_day DESC LIMIT 1', (car_code, day)).fetchone()
+                    if name == (row[0] if row else ''):     # подмена тем же, кто там и так, — подмены нет
+                        conn.execute(drop_sub, (car_code, day))
+                        continue
+                conn.execute(f'INSERT INTO {table}(car_code, from_day, only_day, name, updated_at, updated_by) '
+                             'VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(car_code, from_day, only_day) DO UPDATE SET '
+                             'name = excluded.name, updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                             (car_code, day, 1 if only_day else 0, name, _now(), user))
+                if not only_day:
+                    conn.execute(drop_sub, (car_code, day))
 
         self._transaction(write, 'не удалось сохранить водителя машины')
 
