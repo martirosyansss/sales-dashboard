@@ -2350,7 +2350,7 @@
         });
         if (depot) {
             bounds.push(depot);
-            L.marker(depot, { icon: L.divIcon({ className: 'rt-pin rt-pin-depot', html: '<i class="fas fa-warehouse"></i>', iconSize: [28, 28] }), keyboard: false })
+            L.marker(depot, { icon: L.divIcon({ className: 'rt-pin rt-pin-depot', html: '<span><i class="fas fa-warehouse" aria-hidden="true"></i></span>', iconSize: [28, 28], iconAnchor: [14, 14] }), keyboard: false, zIndexOffset: 1000 })
                 .bindTooltip('Պահեստ').addTo(state.layers);
         }
         state.mapBounds = bounds.length ? bounds : null;
