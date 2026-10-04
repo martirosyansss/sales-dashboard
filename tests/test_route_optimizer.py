@@ -4273,7 +4273,7 @@ def test_transfers_remove_overlap_of_districts():
         ch['effect_from']['manager_km_week'] + ch['effect_to']['manager_km_week'], abs=0.11)
     assert ch['debt'] == round(debts[ch['customer_id']])
     assert ch['revenue_month'] == round(opt.revenue_month(out.before.models[ch['customer_id']]))
-    assert ch['reason'].startswith('այս տարածքում արդեն աշխատում է Гор-ը')
+    assert ch['reason'].startswith('Гор՝ արդեն աշխատում է այս տարածքում')
     # баланс: у каждого «отдаёт» = сумма его передач, по компании «отдано» = «получено»
     for m in res['managers']:
         mine = [c for c in m['changes'] if c['type'] == 'transfer']
