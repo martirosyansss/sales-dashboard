@@ -312,7 +312,7 @@ def _api(fn: Callable[..., Any]) -> Callable[..., Any]:
             return fn(*args, **kwargs)
         except ErpError:
             logger.exception('[Routes] ERP недоступна (%s)', request.path)
-            return jsonify({'success': False, 'error': 'База данных ERP недоступна'}), 503
+            return jsonify({'success': False, 'error': 'ERP տվյալների բազան հասանելի չէ'}), 503
         except StoreError as e:
             # Текст StoreError формируем сами — он предназначен пользователю (битая база настроек
             # должна быть видна в UI, а не молча заменяться дефолтами).
@@ -323,7 +323,7 @@ def _api(fn: Callable[..., Any]) -> Callable[..., Any]:
             return jsonify({'success': False, 'error': str(e)}), 400
         except Exception:
             logger.exception('[Routes] Внутренняя ошибка (%s)', request.path)
-            return jsonify({'success': False, 'error': 'Внутренняя ошибка'}), 500
+            return jsonify({'success': False, 'error': 'Սերվերի ներքին սխալ'}), 500
     return wrapper
 
 
@@ -399,8 +399,8 @@ def api_overview() -> Any:
     body = {'success': True, **payload, 'from_cache': from_cache}
     if stale:   # кэшированный payload не трогаем — предупреждение только в этом ответе
         body['warnings'] = [{'code': 'erp_stale', 'link': None,
-                             'text': f'ERP сейчас недоступна — показаны данные на '
-                                     f'{snap.data_as_of:%d.%m %H:%M}'}, *payload['warnings']]
+                             'text': f'ERP-ն հիմա հասանելի չէ — ցույց են տրված տվյալները '
+                                     f'{snap.data_as_of:%d.%m, %H:%M} դրությամբ'}, *payload['warnings']]
     return jsonify(body)
 
 
@@ -520,14 +520,14 @@ def _json_body() -> tuple[Any, Any]:
     """(тело, None) или (None, ответ 415/400): POST раздела принимает только JSON."""
     if not request.is_json:
         return None, (jsonify({'success': False,
-                               'error': 'Ожидается JSON (Content-Type: application/json)'}), 415)
+                               'error': 'Սերվերը չընդունեց հարցումը'}), 415)
     try:
         payload = request.get_json(silent=True)
     except RecursionError:   # silent глотает только ValueError, а сверхглубокая вложенность — это
         payload = None       # RecursionError парсера: тоже некорректный запрос (400), а не сбой (500)
     if payload is None:
-        return None, (jsonify({'success': False, 'error': 'Некорректный JSON',
-                               'errors': {'_': 'Некорректный JSON'}}), 400)
+        return None, (jsonify({'success': False, 'error': 'Սերվերը չընդունեց հարցումը',
+                               'errors': {'_': 'Սերվերը չընդունեց հարցումը'}}), 400)
     return payload, None
 
 
@@ -541,13 +541,13 @@ def api_settings_post() -> Any:
     """Сохранение настроек (§10.3): всё или ничего; ошибки — по путям полей."""
     if not request.is_json:
         return jsonify({'success': False,
-                        'error': 'Ожидается JSON (Content-Type: application/json)'}), 415
+                        'error': 'Սերվերը չընդունեց հարցումը'}), 415
     try:
         payload = request.get_json(silent=True)
     except RecursionError:   # silent глотает только ValueError, а сверхглубокая вложенность — это
         payload = None       # RecursionError парсера: тоже некорректный запрос (400), а не сбой (500)
     if payload is None:
-        return jsonify({'success': False, 'errors': {'_': 'Некорректный JSON'}}), 400
+        return jsonify({'success': False, 'errors': {'_': 'Սերվերը չընդունեց հարցումը'}}), 400
     state = _state()
     bundle = state.store.load()
     snap, _ = state.snapshots.get(allow_stale=True)
@@ -693,7 +693,7 @@ def _groups_json(snap: Snapshot) -> list[dict[str, Any]]:
 
 def _busy(job_id: str | None) -> Any:
     """409: расчёт уже идёт; job_id — чтобы страница показала ход идущей задачи."""
-    body: dict[str, Any] = {'success': False, 'error': 'Расчёт уже идёт'}
+    body: dict[str, Any] = {'success': False, 'error': 'Հաշվարկն արդեն ընթանում է'}
     if job_id is not None:
         body['job_id'] = job_id
     return jsonify(body), 409
@@ -751,7 +751,7 @@ def api_optimize_start() -> Any:
         threading.Thread(target=_run_optimize, args=(state, job, snap, bundle, decisions),
                          name=f'routes-optimize-{job.id[:8]}', daemon=True).start()
     except BaseException:
-        _finish(state, job, error='Не удалось запустить расчёт')
+        _finish(state, job, error='Չհաջողվեց սկսել հաշվարկը')
         raise
     logger.info('[Routes] Оптимизация %s запущена (%s): менеджеров %d, старт %s, частоты %s, режим %s%s',
                 job.id, job.created_by, len(run_ids), params['start'], params['frequencies'],
@@ -799,7 +799,7 @@ def _run_optimize(state: RoutesState, job: OptimizeJob, snap: Snapshot, bundle: 
         _finish(state, job, result=outcome.result)
     except ErpError:
         logger.exception('[Routes] Оптимизация %s: ERP недоступна', job.id)
-        _finish(state, job, error='База данных ERP недоступна')
+        _finish(state, job, error='ERP տվյալների բազան հասանելի չէ')
     except StoreError as e:
         logger.exception('[Routes] Оптимизация %s: база маршрутов', job.id)
         _finish(state, job, error=str(e))   # текст StoreError — для пользователя
@@ -808,9 +808,9 @@ def _run_optimize(state: RoutesState, job: OptimizeJob, snap: Snapshot, bundle: 
         _finish(state, job, error=str(e))
     except Exception:
         logger.exception('[Routes] Оптимизация %s: внутренняя ошибка', job.id)
-        _finish(state, job, error='Внутренняя ошибка расчёта — подробности в журнале сервера')
+        _finish(state, job, error='Հաշվարկի ներքին սխալ — մանրամասները սերվերի մատյանում են')
     finally:
-        _finish(state, job, error='Расчёт прерван')   # задача уже завершена — ничего не меняет
+        _finish(state, job, error='Հաշվարկն ընդհատվել է')   # задача уже завершена — ничего не меняет
 
 
 def _job_body(state: RoutesState, job: dict[str, Any], progress: dict[str, Any],
@@ -843,7 +843,7 @@ def api_optimize_last() -> Any:
     if view is None:
         scenario = state.store.last_scenario()
         if scenario is None:
-            return jsonify({'success': False, 'error': 'Расчётов ещё не было'}), 404
+            return jsonify({'success': False, 'error': 'Հաշվարկներ դեռ չեն եղել'}), 404
         job = _scenario_job(scenario)
         with state.jobs.lock:
             if state.jobs.last is None:
@@ -867,7 +867,7 @@ def api_optimize_job(job_id: str) -> Any:
     if view is None:
         scenario = state.store.get_scenario(job_id) if _JOB_ID_RE.match(job_id) else None
         if scenario is None:
-            return jsonify({'success': False, 'error': 'Расчёт не найден'}), 404
+            return jsonify({'success': False, 'error': 'Հաշվարկը չի գտնվել'}), 404
         view = _job_view(_scenario_job(scenario))
     return jsonify(_job_body(state, *view))
 
@@ -942,7 +942,8 @@ def api_plan_export() -> Any:
                                 optimize.proposals_of(_last_result(state)), distance, calib, roads)
     if not body['time_gate']['ok']:
         return jsonify({'success':False,'code':'shift_exceeded',
-                        'error':'Принятый план не помещается в смену. Проверьте дни и частоты и пересчитайте план.',
+                        'error':'Ընդունված պլանը չի տեղավորվում աշխատանքային օրվա մեջ։ Ստուգեք օրերը և հաճախականությունները, '
+                                'ապա վերահաշվեք պլանը։',
                         'time_gate':body['time_gate']}), 409
     return jsonify({'success': True, 'generated_at': _now(), **body})
 
@@ -1805,7 +1806,7 @@ def api_missing_coordinates() -> Any:
     rows = _missing_coordinates(state, snap, bundle)
     output = io.StringIO()
     writer = csv.writer(output, delimiter=';')
-    writer.writerow(['ID клиента', 'Код', 'Название', 'Адрес', 'Широта', 'Долгота'])
+    writer.writerow(['Հաճախորդի ID', 'Կոդ', 'Անվանում', 'Հասցե', 'Լայնություն', 'Երկայնություն'])
     def safe(value):
         value = str(value or '')
         return "'" + value if value[:1] in ('=', '+', '-', '@', '\t', '\r') else value
@@ -1854,16 +1855,16 @@ def api_geo_override() -> Any:
     if error is not None:
         return error
     if not isinstance(payload, dict) or set(payload) != {'customer_id', 'lat', 'lon'}:
-        return _bad_request({'_': 'ожидалось {"customer_id", "lat", "lon"}'})
+        return _bad_request({'_': 'Սերվերը չընդունեց հարցումը'})
     cid = payload['customer_id']
     if isinstance(cid, bool) or not isinstance(cid, int) or not 0 < cid < 2 ** 31:
-        return _bad_request({'customer_id': 'ожидался код клиента'})
+        return _bad_request({'customer_id': 'Սպասվում էր հաճախորդի կոդ'})
     lat, lon = payload['lat'], payload['lon']
     point = None
     if lat is not None or lon is not None:
         if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in (lat, lon)) \
                 or not is_valid_point(lat, lon):
-            return _bad_request({'point': 'точка вне Армении'})
+            return _bad_request({'point': 'Կետը Հայաստանից դուրս է'})
         point = (float(lat), float(lon))
     state = _state()
     state.store.save_geo_override(cid, point, session.get('username'))
@@ -1873,7 +1874,7 @@ def api_geo_override() -> Any:
 
 _EVENT_ID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
 GEO_DECISIONS = ('accepted', 'rejected')
-GEO_GONE = 'Предложение не найдено или уже решено — обновите страницу'
+GEO_GONE = 'Առաջարկը չի գտնվել կամ արդեն որոշված է — թարմացրեք էջը'
 
 
 @bp.post('/api/routes/geo-suggest/decide')
@@ -1891,13 +1892,13 @@ def api_geo_suggest_decide() -> Any:
     if error is not None:
         return error
     if not isinstance(payload, dict) or set(payload) != {'event_id', 'decision'}:
-        return _bad_request({'_': 'ожидалось {"event_id", "decision"}'})
+        return _bad_request({'_': 'Սերվերը չընդունեց հարցումը'})
     event_id = payload['event_id']
     if not isinstance(event_id, str) or not _EVENT_ID_RE.match(event_id):
-        return _bad_request({'event_id': 'ожидался id предложения'})
+        return _bad_request({'event_id': 'Սերվերը չընդունեց հարցումը'})
     decision = payload['decision']
     if decision not in GEO_DECISIONS:
-        return _bad_request({'decision': 'решение: accepted или rejected'})
+        return _bad_request({'decision': 'Սերվերը չընդունեց հարցումը'})
     state = _state()
     if state.driver_geo is None:
         return jsonify({'success': False, 'error': GEO_GONE}), 404
@@ -1932,10 +1933,10 @@ def api_customer_window() -> Any:
     if error is not None:
         return error
     if not isinstance(payload, dict) or set(payload) != {'customer_id', 'window'}:
-        return _bad_request({'_': 'ожидалось {"customer_id", "window"}'})
+        return _bad_request({'_': 'Սերվերը չընդունեց հարցումը'})
     cid = payload['customer_id']
     if isinstance(cid, bool) or not isinstance(cid, int) or not 0 < cid < 2 ** 31:
-        return _bad_request({'customer_id': 'ожидался код клиента'})
+        return _bad_request({'customer_id': 'Սպասվում էր հաճախորդի կոդ'})
     window = None
     if payload['window'] is not None:
         window, err = check_window(payload['window'])
@@ -1961,15 +1962,14 @@ def api_customer_vehicles() -> Any:
     if not isinstance(payload, dict) or set(payload) not in ({'customer_id', 'access'}, {'customer_id', 'access', 'window'},
                                                              {'customer_id', 'access', 'window', 'unload_min'},
                                                              {'customer_id', 'unload_min'}):
-        return _bad_request({'_': 'ожидалось {"customer_id", "access"} с необязательными "window" и "unload_min" '
-                                  'или {"customer_id", "unload_min"}'})
+        return _bad_request({'_': 'Սերվերը չընդունեց հարցումը'})
     cid = payload['customer_id']
     if isinstance(cid, bool) or not isinstance(cid, int) or not 0 < cid < 2 ** 31:
-        return _bad_request({'customer_id': 'ожидался код клиента'})
+        return _bad_request({'customer_id': 'Սպասվում էր հաճախորդի կոդ'})
     state = _state()
     snap, _ = state.snapshots.get(allow_stale=True)
     if cid not in snap.customers:
-        return _bad_request({'customer_id': 'магазин не найден — обновите страницу'})
+        return _bad_request({'customer_id': 'Խանութը չի գտնվել — թարմացրեք էջը'})
     if 'access' not in payload:     # только время у магазина
         minutes = None
         if payload['unload_min'] is not None:
@@ -2015,11 +2015,11 @@ def api_customer_vehicles_search() -> Any:
     """Поиск магазина для настройки допуска, в том числе без заказов на выбранный день."""
     query = request.args.get('q', '').strip().casefold()
     if len(query) > 100:
-        return _bad_request({'q': 'поиск: не больше 100 символов'})
+        return _bad_request({'q': 'Որոնում՝ առավելագույնը 100 նիշ'})
     customer_id = request.args.get('customer_id')
     if customer_id is not None:
         if not customer_id.isascii() or not customer_id.isdigit() or len(customer_id) > 10 or not 0 < int(customer_id) < 2 ** 31:
-            return _bad_request({'customer_id': 'ожидался код клиента'})
+            return _bad_request({'customer_id': 'Սպասվում էր հաճախորդի կոդ'})
         customer_id = int(customer_id)
     state = _state()
     snap, _ = state.snapshots.get(allow_stale=True)
@@ -2062,10 +2062,10 @@ def api_road_lines() -> Any:
         return error
     lines = payload.get('lines') if isinstance(payload, dict) else None
     if not isinstance(lines, list) or not all(isinstance(line, list) for line in lines):
-        return _bad_request({'lines': 'ожидался список линий из точек [широта, долгота]'})
+        return _bad_request({'lines': 'Սպասվում էր գծերի ցուցակ՝ [լայնություն, երկայնություն] կետերից'})
     avoid_center = payload.get('avoid_center', False)
     if not isinstance(avoid_center, bool):
-        return _bad_request({'avoid_center': 'ожидалось true или false'})
+        return _bad_request({'avoid_center': 'Սպասվում էր true կամ false'})
     parsed: list[list[tuple[float, float]]] = []
     for line in lines:
         points = []
@@ -2073,11 +2073,12 @@ def api_road_lines() -> Any:
             if not (isinstance(p, list) and len(p) == 2
                     and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in p)
                     and is_valid_point(p[0], p[1])):
-                return _bad_request({'lines': 'точка вне Армении или не [широта, долгота]'})
+                return _bad_request({'lines': 'Կետը Հայաստանից դուրս է կամ [լայնություն, երկայնություն] չէ'})
             points.append((float(p[0]), float(p[1])))
         parsed.append(points)
     if sum(map(len, parsed)) > ROAD_LINES_MAX_POINTS:
-        return _bad_request({'lines': f'не больше {ROAD_LINES_MAX_POINTS} точек за запрос'})
+        return _bad_request({'lines': f'Մեկ հարցման մեջ՝ առավելագույնը {ROAD_LINES_MAX_POINTS:,} կետ'
+                                      .replace(',', ' ')})
     state = _state()
     roads = state.roads.get() if state.roads is not None else None
     if roads is not None and avoid_center and not roads.failed:
@@ -2147,8 +2148,8 @@ def _learning_failed(state: RoutesState) -> None:
     «Обучение и факт» (снимается, как только нормы снова применились). Вызывать из обработчика исключения."""
     logger.exception('[Routes] Выученные нормы не применены — расчёт по нормам из настроек')
     state.learning_warning = {'at': _yerevan_now().isoformat(timespec='seconds'),
-                              'text': 'Выученные нормы не применились (ошибка журнала обучения) — «Развоз» считает '
-                                      'по нормам из настроек. Нажмите «Пересчитать сейчас».'}
+                              'text': 'Սովորած նորմերը չկիրառվեցին (ուսուցման գրառումների սխալ) — «Առաքում» էջը '
+                                      'հաշվում է կարգավորումների նորմերով։ Սեղմեք «Վերահաշվել հիմա»։'}
 
 
 def _learned_journal(state: RoutesState, before: str | None) -> _Journal | None:
@@ -2228,7 +2229,7 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         return []
     bundle = _bundle(state)
     if bundle.depot is None:
-        raise dp.DispatchError('Сначала укажите склад в настройках')
+        raise dp.DispatchError('Նախ կարգավորումներում նշեք պահեստը')
     train_from, _ = learning.windows(today)
     days = _learning_days(state, bundle, train_from, today - timedelta(days=1))
     refuels = [r for r in state.fleet_facts.refuels()
@@ -2249,7 +2250,7 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     base = (_dispatch_ctx(state, snap, calc, today, ready, points, customers, learned=False, truck_time=True)
             if ready else None)
     if base is None:
-        raise dp.DispatchError('Сначала укажите тоннаж и расход машин в настройках')
+        raise dp.DispatchError('Նախ կարգավորումներում նշեք մեքենաների տոննաժը և ծախսը')
     variants = {TRUCK_TIME_MODEL: base.norms}   # модель → нормы грузовиков из одного среза дорог
     if isinstance(base.norms.roads, ValhallaRoads) and base.norms.roads.active:
         variants = {m: base.norms.for_trucks(truck_time=m == TRUCK_TIME_VALHALLA) for m in learning.TRUCK_TIME_SOURCES}
@@ -2295,10 +2296,10 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     ]
     model_id = learning.road_model_id(norms)
     if mode == 'yandex':
-        outcomes.append(learning.Outcome('travel', '', False, 'время в пути считает Яндекс с пробками — поправка '
-                                         'по часам не нужна'))
-        decision = learning.Outcome('truck_time', '', False, 'время в пути считает Яндекс с пробками — модель '
-                                    'времени грузовиков не выбирается')
+        outcomes.append(learning.Outcome('travel', '', False, 'ճանապարհի ժամանակը հաշվում է Յանդեքսը՝ խցանումներով — '
+                                         'ժամային ճշգրտում պետք չէ'))
+        decision = learning.Outcome('truck_time', '', False, 'ճանապարհի ժամանակը հաշվում է Յանդեքսը՝ խցանումներով — '
+                                    'բեռնատարների ժամանակի մոդելը չի ընտրվում')
     else:
         prev = eff.travel if eff.travel is not None and eff.travel.get('model_id') == model_id else None
         regular = learning.fit_travel(legs, today, model_id or 'straight', learning.model_ref(plain), plain, prev)
@@ -2314,7 +2315,7 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
             # выбранная модель — не та, которой этот прогон учил «Развоз» (только что переключились, env, галочка):
             # её поправка по часам — в журнал рядом (свой scope), перейдёт на неё «Развоз» — поправка уже есть
             o = fitted[chosen]
-            outcomes.append(replace(o, reason=f'для выбранной модели «{learning.TRUCK_TIME_TITLES[chosen]}»: '
+            outcomes.append(replace(o, reason=f'ընտրված մոդելի համար («{learning.TRUCK_TIME_TITLES[chosen]}»)՝ '
                                               f'{o.reason}'))
     # сравнения не было (Valhalla ещё не готов, Яндекс) — сравнение этого дня из прежнего прогона не затирается
     if decision.params is not None or not any(r['kind'] == 'truck_time' and r['run_day'] == today.isoformat()
@@ -2326,7 +2327,7 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     for car in sorted({iv.car_code for iv in intervals}):
         truck = trucks.get(car)
         if truck is None:
-            outcomes.append(learning.Outcome('fuel', car, False, 'машина не настроена (тоннаж и расход)'))
+            outcomes.append(learning.Outcome('fuel', car, False, 'մեքենան կարգավորված չէ (տոննաժ և ծախս)'))
             continue
 
         def fuel_now(load: float, t: fl.FleetTruck = truck) -> float:
@@ -2356,7 +2357,7 @@ def run_learning_job(state: RoutesState, today: date, user: str | None) -> bool:
         except ErpError:
             logger.warning('[Routes] Обучение не выполнено: ERP недоступна', exc_info=True)
             state.learning_job.update(status='error', finished_at=_yerevan_now().isoformat(timespec='seconds'),
-                                      error='База данных ERP недоступна')
+                                      error='ERP տվյալների բազան հասանելի չէ')
         except (StoreError, dp.DispatchError) as e:
             logger.warning('[Routes] Обучение не выполнено: %s', e)
             state.learning_job.update(status='error', finished_at=_yerevan_now().isoformat(timespec='seconds'),
@@ -2364,7 +2365,7 @@ def run_learning_job(state: RoutesState, today: date, user: str | None) -> bool:
         except Exception:
             logger.exception('[Routes] Обучение: внутренняя ошибка')
             state.learning_job.update(status='error', finished_at=_yerevan_now().isoformat(timespec='seconds'),
-                                      error='Внутренняя ошибка')
+                                      error='Սերվերի ներքին սխալ')
     finally:
         state.learning_lock.release()
     return True
@@ -2475,7 +2476,8 @@ def api_learning() -> Any:
     ERP не читается: план — сохранённые черновики «Развоза», факт — трек и отметки терминалов (кэш машино-дней)."""
     rng = _report_range()
     if rng is None:
-        return _bad_request({'date': f'период: даты ГГГГ-ММ-ДД, не больше {LEARNING_REPORT_MAX_DAYS} дней'})
+        return _bad_request({'date': f'Ժամանակահատված՝ ՏՏՏՏ-ԱԱ-ՕՕ ամսաթվեր, '
+                                     f'առավելագույնը {LEARNING_REPORT_MAX_DAYS} օր'})
     state = _state()
     bundle = _bundle(state)
     days = _learning_days(state, bundle, *rng)
@@ -2521,10 +2523,10 @@ def api_learning_day() -> Any:
     day = _parse_day(request.args.get('date'))
     car = request.args.get('car')
     if day is None or not isinstance(car, str) or not car or len(car) > 20:
-        return _bad_request({'_': 'нужны date=ГГГГ-ММ-ДД и car'})
+        return _bad_request({'_': 'Անհրաժեշտ են date=ՏՏՏՏ-ԱԱ-ՕՕ և car'})
     state = _state()
     if state.fleet_facts is None:
-        return _bad_request({'_': 'Раздел «Առաքիչ» не подключён — факта нет'})
+        return _bad_request({'_': '«Առաքիչ» բաժինը միացված չէ — փաստ չկա'})
     bundle = _bundle(state)
     days = [d for d in _learning_days(state, bundle, day, day) if d[0] == car]
     data = state.fleet_facts.day(car, day.isoformat())
@@ -2567,9 +2569,9 @@ def api_learning_run() -> Any:
     """«Пересчитать»: обучение в фоне за сегодняшний день по Еревану (страница опрашивает статус); уже идёт — 409."""
     state = _state()
     if state.fleet_facts is None:
-        return _bad_request({'_': 'Раздел «Առաքիչ» не подключён — учиться не на чем'})
+        return _bad_request({'_': '«Առաքիչ» բաժինը միացված չէ — սովորելու տվյալներ չկան'})
     if state.learning_lock.locked():
-        return _conflict('Обучение уже идёт')
+        return _conflict('Ուսուցումն արդեն ընթանում է')
     today, user = _yerevan_now().date(), session.get('username')
     threading.Thread(target=run_learning_job, args=(state, today, user), name='routes-learning-run',
                      daemon=True).start()
@@ -2586,7 +2588,7 @@ def api_learning_auto() -> Any:
     kind = payload.get('kind') if isinstance(payload, dict) else None
     auto = payload.get('auto') if isinstance(payload, dict) else None
     if kind not in learning.KINDS or not isinstance(auto, bool):
-        return _bad_request({'_': 'ожидалось {"kind": вид, "auto": true|false}'})
+        return _bad_request({'_': 'Սպասվում էր {"kind": տեսակ, "auto": true|false}'})
     state = _state()
     state.store.save_learning_auto(kind, auto, session.get('username'))
     return jsonify({'success': True, **_status_body(state)})
