@@ -344,6 +344,16 @@ def main() -> int:
             page.wait_for_timeout(500)
             sw = page.evaluate('() => document.documentElement.scrollWidth')
             check(sw <= 390, f'H phone 390: plan built, scrollWidth={sw}')
+            # scrollWidth не ловит обрезку внутри карточек (overflow:hidden у предка) — правый край блоков
+            # плана, карточек машин и кнопок рейса должен быть внутри #dpStep3
+            wide = page.evaluate('''() => {
+                const lim = document.getElementById('dpStep3').getBoundingClientRect().right + 1;
+                return ['.dp-split', '#dpTruckCards', '.dp-mapcol', '.dp-tcard', '.dp-trip-acts', '.dp-tacts']
+                    .flatMap(sel => [...document.querySelectorAll('#dpStep3 ' + sel)]
+                        .filter(el => el.offsetParent !== null && el.getBoundingClientRect().right > lim)
+                        .map(el => sel + ' ' + Math.round(el.getBoundingClientRect().width) + 'px'));
+            }''')
+            check(not wide, f'H phone 390: plan blocks fit #dpStep3 (too wide: {wide[:4]})')
             page.click('#dpAiOpen')
             page.wait_for_selector('#dpAi', state='visible', timeout=5000)
             page.wait_for_timeout(300)

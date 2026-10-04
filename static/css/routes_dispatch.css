@@ -269,7 +269,9 @@
 /* ==========================================================================
    ШАГ 3 · РЕЙСЫ
    ========================================================================== */
-.dp-plan { display: grid; gap: 16px; scroll-margin-top: var(--dp-top); }
+/* колонка minmax(0, 1fr), не неявная auto: иначе её распирает шкала дня (min-width 600 px на телефоне)
+   и карточки машин шире экрана — обрезаны; прокручиваться вбок должна только шкала */
+.dp-plan { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; scroll-margin-top: var(--dp-top); }
 .dp-plan[hidden] { display: none; }
 .dp-summary {
     padding: 18px 20px 20px; border-radius: var(--rt-radius);
@@ -751,3 +753,20 @@
 .dp-unload-hint { margin: 10px 0 0; font-size: .875rem; color: var(--rt-fg-dim); line-height: 1.5; }
 .dp-unload-hint:empty { display: none; }
 .dp-unload-dlg .rt-ferr { margin-top: 8px; }
+
+/* «Բեռնագիր» (ответ владельца №57): кнопки печати и Excel справа от шапки карточки машины, на телефоне — строкой под ней */
+.dp-ttop { display: flex; align-items: center; }
+.dp-ttop > .dp-thead-h { flex: 1 1 auto; min-width: 0; }
+.dp-tacts { flex: 0 0 auto; display: flex; gap: 6px; padding-right: 14px; }
+.dp-wbbtn[aria-busy="true"] { opacity: .6; cursor: progress; }
+@media (max-width: 767px) {
+    .dp-ttop { flex-wrap: wrap; }
+    .dp-ttop > .dp-thead-h { flex-basis: 100%; }
+    .dp-tacts { width: 100%; padding: 0 12px 12px 16px; }
+    .dp-tacts .rt-btn { flex: 1 1 0; }
+}
+/* две колонки при узкой колонке машин (1101–1400 px; до 1100 — одна колонка): у кнопок только значки, подпись — в aria-label и подсказке title */
+@media (min-width: 1101px) and (max-width: 1400px) {
+    .dp-tacts .dp-wbbtn { padding: 0 10px; }
+    .dp-tacts .dp-wbbtn span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
