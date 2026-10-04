@@ -173,6 +173,7 @@ SHRINK_K_BOUNDS = (1.0, 20.0)        # k = σ²_внутри / τ²_между �
 SHRINK_K_MIN = (8, 20)               # оценка k: магазинов с ≥ 2 визитами и степеней свободы внутри них (Σ(n − 1)) не меньше
 SHRINK_GROUP_MIN = 3                 # опора группы — медиана её магазинов с ≥ 2 визитами, если их не меньше; иначе a
 SHRINK_MIN_TEST = (30, 3)            # смена правила: визитов проверки у магазинов с визитами в обучении и их дней
+SHRINK_K_MAX_AGE = 28                # k действующей строки (этой ночью не оценить) переносится не дольше 28 дней от оценки
 UNLOAD_MAX_MIN = 90.0                # стоянка у магазина дольше (после TAP_TAIL и вычета ожидания окна) — не разгрузка
 UNLOAD_CAP_REL = 3.0                 # …или дольше 3 × действующей нормы
 TAP_TAIL = timedelta(minutes=10)     # разгрузка — не дольше 10 мин после отметки доставки «закончил» (ответ владельца
@@ -455,7 +456,7 @@ def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], 
                manual: Mapping[int, float] | None = None,
                plain: Callable[[UnloadObs], float] | None = None, current_unload: Mapping[str, Any] | None = None,
                chains: Mapping[int, str] | None = None,
-               size_kg: tuple[float, float] = (60.0, 250.0)) -> Outcome:
+               size_kg: tuple[float, float] = (60.0, 250.0), rule_switch: bool = True) -> Outcome:
     """Разгрузка = a·точек + b·тонн (+ своё время магазина). current — прогноз действующей нормы для наблюдения (со
     своим временем магазинов, как в расчёте: store_extras), plain — она же без своего времени магазинов. Стоянки дольше
     UNLOAD_CAP_REL × max(current, plain) не учитываются ни в обучении, ни в проверке: отсечение не зависит от
@@ -473,7 +474,8 @@ def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], 
     клиент → код группы-сети (settings chain_groups), size_kg — пороги малый / средний магазин, кг (settings
     size_small_max_kg, size_medium_max_kg). Данных хватает для оценки k — в строку пишутся store_shrink и store_rule
     (выбор проверки с гистерезисом; store_shrink — только при выборе сглаживания), store_extras строки — по выбранному
-    правилу; не хватает (и сглаживание не действует) — строка как до №66. Строка не принята — в причине сказано, что
+    правилу; не хватает (и сглаживание не действует) — строка как до №66. rule_switch=False — группы сетей этой ночью
+    неизвестны (ERP): правило не меняется. Строка не принята — в причине сказано, что
     выбор правила не применяется."""
     manual = manual or {}
     cap = current if plain is None else (lambda o: max(current(o), plain(o)))
@@ -501,7 +503,7 @@ def fit_unload(obs: Sequence[UnloadObs], current: Callable[[UnloadObs], float], 
     chains = chains or {}
     groups = {c: f'chain:{chains[c]}' if c in chains
               else dm.size_class(1000.0 * math.fsum(tonnes[c]) / len(tonnes[c]), None, (), *size_kg) for c in residuals}
-    chosen = _fit_store_rule(test, a, b, residuals, groups, manual, params, current_unload)
+    chosen = _fit_store_rule(test, a, b, residuals, groups, manual, params, current_unload, today, rule_switch)
     if chosen is not None:
         params.update(chosen[0])
     extras = store_extras(a, manual, params)
@@ -1221,20 +1223,46 @@ def shrink_times(per_stop: float, manual: Mapping[int, float],
     return {c: (max(-per_stop, e), src) for c, (e, src) in out.items()}
 
 
+def _k_day(raw: Any) -> date | None:
+    """День оценки k в store_rule строки (k_day, YYYY-MM-DD); нет или битый — None (возраст неизвестен)."""
+    try:
+        return date.fromisoformat(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+
+
 def _fit_store_rule(test: Sequence[UnloadObs], a: float, b: float, residuals: Mapping[int, Sequence[float]],
                     groups: Mapping[int, str], manual: Mapping[int, float], params: Mapping[str, Any],
-                    current: Mapping[str, Any] | None) -> tuple[dict[str, Any], str] | None:
+                    current: Mapping[str, Any] | None, today: date,
+                    switch_ok: bool = True) -> tuple[dict[str, Any], str] | None:
     """Выбор правила времени магазина (№66) — как truck_time: оба правила (params строки по №60 и он же со
     сглаживанием к группе) с одними a, b предсказывают визиты отложенной недели к магазинам с визитами в обучении (у
     остальных прогнозы одинаковы); действующее правило (store_rule действующей строки current) меняется на другое, только
-    если ошибка того меньше хотя бы на MIN_GAIN (_verdict) и таких визитов и дней не меньше SHRINK_MIN_TEST — в обе
-    стороны (гистерезис). k не оценить (shrink_k): действует сглаживание — k действующей строки (факты свежие), иначе
-    None — сглаживание не участвует, строка — как до №66. Итог — (store_rule строки: выбранное правило, k, ошибки обоих,
-    визиты и дни проверки; store_shrink — только если выбрано сглаживание; причина по-армянски)."""
+    если ошибка того меньше хотя бы на MIN_GAIN и устойчиво по дням проверки (_accept), а таких визитов и дней не меньше
+    SHRINK_MIN_TEST — в обе стороны (гистерезис). switch_ok=False (группы сетей этой ночью неизвестны — ERP) — правило
+    не меняется, сравнение — только для страницы.
+
+    k — день его оценки (k_day) пишется в store_rule. k не оценить (shrink_k): действует сглаживание и k оценён не
+    раньше SHRINK_K_MAX_AGE дней назад — k действующей строки (k_carried; факты свежие); иначе — сглаживание не
+    участвует: без действующего сглаживания — None (строка как до №66), с действующим, но k устарел (или день его оценки
+    неизвестен), — строка по №60 с причиной (store_rule: rule n60, k_expired). Она применится, только если пройдёт общее
+    правило принятия строки unload против действующей строки со сглаживанием (fit_unload → _accept); не прошла —
+    действует прежняя строка со сглаживанием (её k и факты были проверены), молча №60 не включается. Итог — (store_rule
+    строки: выбранное правило, k, его день, ошибки обоих, визиты и дни проверки; store_shrink — только если выбрано
+    сглаживание; причина по-армянски)."""
     incumbent = store_rule(current)
-    k, carried = shrink_k(residuals, groups), False
+    k, k_day, carried = shrink_k(residuals, groups), today.isoformat(), False
     if k is None and incumbent == 'shrink':
-        k, carried = float(current['store_rule']['k']), True   # type: ignore[index]
+        old = current['store_rule']   # type: ignore[index]
+        day0 = _k_day(old.get('k_day'))
+        if day0 is None or (today - day0).days > SHRINK_K_MAX_AGE:
+            when = f'{day0.isoformat()}-ին' if day0 is not None else 'անհայտ օր'
+            return {'store_rule': {'rule': 'n60', 'k_expired': old.get('k_day')}}, (
+                f'հարթեցման k-ն գնահատվել է {when} (ավելի քան {SHRINK_K_MAX_AGE} օր առաջ), իսկ նորից գնահատելու համար '
+                f'տվյալները քիչ են — «{STORE_RULE_TITLES["shrink"]}» կանոնն այլևս չի մասնակցում․ տողը հաշվված է '
+                f'«{STORE_RULE_TITLES["n60"]}» կանոնով և կգործի միայն ընդունվելու դեպքում (գործող տողից ավելի ճշգրիտ '
+                f'լինի ստուգման շաբաթում), այլապես մնում է գործող տողը')
+        k, k_day, carried = float(old['k']), day0.isoformat(), True
     if k is None:
         return None
     other = 'shrink' if incumbent == 'n60' else 'n60'
@@ -1242,26 +1270,44 @@ def _fit_store_rule(test: Sequence[UnloadObs], a: float, b: float, residuals: Ma
     variants = {'n60': params, 'shrink': {**params, 'store_rule': {'rule': 'shrink', 'k': k}, 'store_shrink': entries}}
     held = [o for o in test if any(c in residuals for c in o.customers)]
     days = len({o.day for o in held})
+    predicted: dict[str, list[float]] = {}
     errors: dict[str, float] = {}
     for name, p in variants.items() if held else ():
         extras = store_extras(a, manual, p)
-        errors[name] = round(_mae((a * o.n + b * o.tonnes + math.fsum(extras.get(c, 0.0) for c in o.customers),
-                                   o.minutes) for o in held), 3)
+        predicted[name] = [a * o.n + b * o.tonnes + math.fsum(extras.get(c, 0.0) for c in o.customers) for o in held]
+        errors[name] = round(_mae(zip(predicted[name], (o.minutes for o in held))), 3)
     enough = len(held) >= SHRINK_MIN_TEST[0] and days >= SHRINK_MIN_TEST[1]
-    switch = enough and _verdict(errors[incumbent], errors[other])[0]
+    better = robust = False
+    conf = 0.0
+    if enough:
+        better = _verdict(errors[incumbent], errors[other])[0]
+        robust, _, conf = _accept(errors[incumbent], errors[other], _gains(
+            (o.day, pi, po, o.minutes) for o, pi, po in zip(held, predicted[incumbent], predicted[other])))
+    switch = switch_ok and better and robust
     chosen = other if switch else incumbent
     stays = f'մնում է «{STORE_RULE_TITLES[incumbent]}» կանոնը'
+    subject = f'«{STORE_RULE_TITLES[other]}» կանոնն'
     if not enough:
         reason = (f'կանոնները համեմատելու համար ստուգման բեռնաթափումները քիչ են՝ {len(held)} / {SHRINK_MIN_TEST[0]} '
                   f'({days} / {SHRINK_MIN_TEST[1]} օր) — {stays}')
     else:
         gap = f'սխալ {fmt_decimal(errors[incumbent])} → {fmt_decimal(errors[other])} րոպե'
-        reason = (f'«{STORE_RULE_TITLES[other]}» կանոնն ավելի ճշգրիտ է․ {gap}' if switch else
-                  f'«{STORE_RULE_TITLES[other]}» կանոնն առնվազն {MIN_GAIN:.0%}-ով ավելի ճշգրիտ չէ․ {gap} — {stays}')
+        if switch:
+            reason = f'«{STORE_RULE_TITLES[other]}» կանոնն ավելի ճշգրիտ է․ {gap}․ հուսալի է՝ {_robust(conf, "days", subject)}'
+        elif better and robust:   # точнее, но менять нельзя: группы сетей неизвестны
+            reason = (f'«{STORE_RULE_TITLES[other]}» կանոնն ավելի ճշգրիտ է ({gap}), բայց այս անգամ ցանցերի խմբերը ERP-ից '
+                      f'չստացվեցին, և կանոնը չի փոխվում — {stays}')
+        elif better:
+            reason = (f'ոչ հուսալի․ {gap}, բայց միայն {_robust(conf, "days", subject)} (պետք է առնվազն '
+                      f'{_pct(BOOT_SHARE)}%) — {stays}')
+        else:
+            reason = f'«{STORE_RULE_TITLES[other]}» կանոնն առնվազն {MIN_GAIN:.0%}-ով ավելի ճշգրիտ չէ․ {gap} — {stays}'
+    if not switch_ok and not (enough and better and robust):
+        reason += '․ ցանցերի խմբերը ERP-ից չստացվեցին — այս անգամ կանոնը չի փոխվում'
     if carried:
-        reason += f' (k = {fmt_decimal(k)}՝ գործող տողից․ այս անգամ տվյալները քիչ են այն նորից գնահատելու համար)'
-    rule = {'rule': chosen, 'k': k, 'mae': errors, 'n_test': len(held), 'days_test': days, **({'k_carried': True}
-                                                                                            if carried else {})}
+        reason += f' (k = {fmt_decimal(k)}՝ գործող տողից, գնահատված {k_day}-ին․ այս անգամ տվյալները քիչ են այն նորից գնահատելու համար)'
+    rule = {'rule': chosen, 'k': k, 'k_day': k_day, 'mae': errors, 'n_test': len(held), 'days_test': days,
+            **({'k_carried': True} if carried else {})}
     return ({'store_rule': rule, 'store_shrink': entries} if chosen == 'shrink' else {'store_rule': rule}), reason
 
 

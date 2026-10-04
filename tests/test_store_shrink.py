@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 from collections import defaultdict
+from dataclasses import replace
 from types import SimpleNamespace
 from datetime import date, timedelta
 from pathlib import Path
@@ -23,7 +24,9 @@ from test_route_optimizer import _dispatch_setup, _dorder, client  # noqa: E402,
 from test_route_store_unload import GOLDEN, GOLDEN_KG, GOLDEN_POINTS, _build, _js_hints, _plan  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-SHRINK_ON = {'store_rule': {'rule': 'shrink', 'k': 4.0}, 'store_shrink': {}}   # действующая строка: сглаживание, k = 4
+# действующая строка: сглаживание, k = 4, оценён 3 дня назад
+SHRINK_ON = {'store_rule': {'rule': 'shrink', 'k': 4.0, 'k_day': (TODAY - timedelta(days=3)).isoformat()},
+             'store_shrink': {}}
 
 
 def _current(rule):
@@ -286,9 +289,40 @@ def test_shrink_in_effect_keeps_k_when_it_cannot_be_estimated():
     out = lr.fit_unload(obs, _cur, TODAY, current_unload=SHRINK_ON, chains=chains)
     r = out.params['store_rule']
     assert r['k'] == 4.0 and r['k_carried'] is True and r['rule'] == 'shrink' and out.params['store_shrink']
+    assert r['k_day'] == SHRINK_ON['store_rule']['k_day']               # день оценки не обновляется при переносе
     assert 'գործող տողից' in out.reason and lr.store_rule(out.params) == 'shrink'
     plain = lr.fit_unload(obs, _cur, TODAY, chains=chains)
     assert 'store_rule' not in plain.params and 'store_shrink' not in plain.params
+
+
+def _aged(days):
+    return {**SHRINK_ON, 'store_rule': {**SHRINK_ON['store_rule'], 'k_day': (TODAY - timedelta(days=days)).isoformat()}}
+
+
+def test_carried_k_expires_after_max_age_through_acceptance_gate(monkeypatch):
+    """Ревью L-new-4: k переносится не дольше SHRINK_K_MAX_AGE дней от оценки. Устарел (или день оценки неизвестен) —
+    сглаживание не участвует: строка по №60 с причиной (k_expired), и она заменит действующую строку со сглаживанием
+    только через общее правило принятия строки; не принята — действует прежняя строка со сглаживанием (не молча №60)."""
+    obs, _, chains, _, _ = _sim()
+    obs = [o for o in obs if o.customers[0] <= 1007]                   # k этой ночью не оценить
+    kept = lr.fit_unload(obs, _cur, TODAY, current_unload=_aged(lr.SHRINK_K_MAX_AGE), chains=chains)
+    assert kept.params['store_rule']['rule'] == 'shrink' and kept.params['store_rule']['k_carried'] is True
+    for current in (_aged(lr.SHRINK_K_MAX_AGE + 1), {**SHRINK_ON, 'store_rule': {'rule': 'shrink', 'k': 4.0}},
+                    {**SHRINK_ON, 'store_rule': {'rule': 'shrink', 'k': 4.0, 'k_day': 'вчера'}}):
+        out = lr.fit_unload(obs, _cur, TODAY, current_unload=current, chains=chains)
+        p = out.params
+        assert p['store_rule'] == {'rule': 'n60', 'k_expired': current['store_rule'].get('k_day')}
+        assert 'store_shrink' not in p and lr.store_rule(p) == 'n60'
+        assert f'ավելի քան {lr.SHRINK_K_MAX_AGE} օր առաջ' in out.reason and 'այլապես մնում է գործող տողը' in out.reason
+        assert lr.store_extras(p['per_stop_min'], {}, p) == lr.store_extras(
+            p['per_stop_min'], {}, {k: v for k, v in p.items() if k != 'store_rule'})   # ровно №60
+    # общее правило не приняло строку — действует прежняя строка со сглаживанием
+    monkeypatch.setattr(lr, '_accept', lambda before, after, gains, groups='days': (False, 'չի ընդունվել', 0.0))
+    old = {'per_stop_min': 6.0, 'per_tonne_min': 10.0, 'store_offsets': {}, **_aged(40)}
+    out = lr.fit_unload(obs, _cur, TODAY, current_unload=old, chains=chains)
+    rows = [{'kind': 'unload', 'scope': '', 'accepted': 1, 'params': old, 'model_id': None},
+            {'kind': 'unload', 'scope': '', 'accepted': int(out.accepted), 'params': out.params, 'model_id': None}]
+    assert not out.accepted and lr.store_rule(lr.in_effect(rows, {}, None).unload) == 'shrink'
 
 
 def test_rejected_row_does_not_claim_rule_is_applied(monkeypatch):
@@ -308,13 +342,35 @@ def test_store_shrink_written_only_when_shrink_chosen():
 
 
 def test_holdout_gate_keeps_and_returns_to_n60_when_stores_differ_a_lot():
-    """Магазины сильно различаются, шум мал (τ = 12, σ = 1): №60 точнее — сглаживание не включается, а включённое
-    раньше возвращается к №60 тем же правилом."""
-    obs, _, chains, _, _ = _sim(sigma=1.0, tau=12.0)
+    """Магазины сильно различаются, шум мал (τ = 20, σ = 1): №60 точнее и устойчиво — сглаживание не включается, а
+    включённое раньше возвращается к №60 тем же правилом."""
+    obs, _, chains, _, _ = _sim(sigma=1.0, tau=20.0)
     keep = lr.fit_unload(obs, _cur, TODAY, chains=chains).params['store_rule']
     back = lr.fit_unload(obs, _cur, TODAY, current_unload=SHRINK_ON, chains=chains).params['store_rule']
     assert keep['mae']['n60'] <= keep['mae']['shrink'] * (1 - lr.MIN_GAIN)
     assert keep['rule'] == 'n60' and back['rule'] == 'n60'
+
+
+def test_rule_switch_needs_robust_gain_like_truck_time():
+    """Смена правила — по общему правилу принятия (_accept): №60 точнее на ≥ 2%, но не устойчиво по дням проверки
+    (τ = 12, σ = 1) — действующее сглаживание остаётся, причина «ոչ հուսալի»."""
+    obs, _, chains, _, _ = _sim(sigma=1.0, tau=12.0)
+    out = lr.fit_unload(obs, _cur, TODAY, current_unload=SHRINK_ON, chains=chains)
+    r = out.params['store_rule']
+    assert r['mae']['n60'] <= r['mae']['shrink'] * (1 - lr.MIN_GAIN) and r['rule'] == 'shrink'
+    assert 'ոչ հուսալի' in out.reason and 'մնում է «հարթեցում դեպի նման խանութները» կանոնը' in out.reason
+
+
+def test_rule_switch_off_when_chain_groups_unknown():
+    """Ревью L-new-2: группы сетей этой ночью не получены (rule_switch=False) — правило не меняется, причина сказана."""
+    obs, _, chains, _, _ = _sim()
+    on = lr.fit_unload(obs, _cur, TODAY, chains=chains)
+    off = lr.fit_unload(obs, _cur, TODAY, chains=chains, rule_switch=False)
+    assert on.params['store_rule']['rule'] == 'shrink' and off.params['store_rule']['rule'] == 'n60'
+    assert off.params['store_rule']['mae'] == on.params['store_rule']['mae'] and 'store_shrink' not in off.params
+    assert 'ERP-ից չստացվեցին' in off.reason
+    back = lr.fit_unload(obs, _cur, TODAY, current_unload=SHRINK_ON, chains=chains, rule_switch=False)
+    assert back.params['store_rule']['rule'] == 'shrink'
 
 
 def test_hysteresis_needs_min_gain_and_enough_holdout(monkeypatch):
@@ -381,7 +437,7 @@ def test_simulation_shrink_beats_n60_at_few_visits_and_converges():
     assert abs(n60 - shrink) <= 0.15 * n60, errors['13–20']                # при многих — сходятся
     gain = {k: errors[k][0] - errors[k][1] for k in SIM_BUCKETS}
     assert gain['13–20'] < min(gain['2'], gain['3'], gain['4'])
-    assert picked >= 0.8                                                  # проверка это видит
+    assert picked >= 0.7          # проверка это видит (с устойчивостью _accept — 8 из 10 прогонов; 7 дней проверки)
 
 
 def test_simulation_correct_manual_on_heavy_stores_not_worse_than_n60():
@@ -520,7 +576,7 @@ def test_run_learning_passes_active_rule_chains_and_size(client, monkeypatch):
     assert r.status_code == 200, r.get_json()
     seen = []
     real = lr.fit_unload
-    monkeypatch.setattr(lr, 'fit_unload', lambda *args: seen.append(args[5:]) or real(*args))
+    monkeypatch.setattr(lr, 'fit_unload', lambda *args, **kw: seen.append(args[5:]) or real(*args, **kw))
     views.run_learning(state, TODAY)
     current, chains, size_kg = seen[-1]
     assert lr.store_rule(current) == 'n60' and size_kg == (50.0, 300.0) and chains and set(chains.values()) == {'036'}
@@ -530,6 +586,33 @@ def test_run_learning_passes_active_rule_chains_and_size(client, monkeypatch):
         'store_rule': {'rule': 'shrink', 'k': 3.0}})])
     views.run_learning(state, TODAY + timedelta(days=1))
     assert lr.store_rule(seen[-1][0]) == 'shrink' and seen[-1][0]['store_rule']['k'] == 3.0
+
+
+def test_run_learning_survives_erp_error_in_chain_lookup(client, monkeypatch):
+    """Ревью L-new-2: ERP не отдала группы магазинов вне плана — прогон не срывается: все виды учатся, сети — только
+    по снимку, правило времени магазина этой ночью не меняется (rule_switch=False)."""
+    state = _learning_client(client, monkeypatch)
+    assert client.post('/api/routes/settings', json={'settings': {'chain_groups': ['036']}}).status_code == 200
+    snap, extra = state.snapshots.cached()
+    trimmed = replace(snap, customers={c: v for c, v in snap.customers.items() if c != 104})   # 104 — вне плана
+    monkeypatch.setattr(state.snapshots, 'cached', lambda *a, **k: (trimmed, extra))
+    calls = []
+
+    def broken(ids):
+        calls.append(list(ids))
+        raise erp.ErpError('нет связи')
+    state.group_loader = broken
+    seen = []
+    real = lr.fit_unload
+    monkeypatch.setattr(lr, 'fit_unload', lambda *args, **kw: seen.append((args[6], kw)) or real(*args, **kw))
+    out = {o.kind for o in views.run_learning(state, TODAY)}
+    assert calls == [[104]] and {'unload', 'loading', 'travel'} <= out
+    chains, kw = seen[-1]
+    assert kw == {'rule_switch': False} and 104 not in chains and set(chains.values()) <= {'036'}
+    state.group_loader = lambda ids: {104: '036'}
+    views.run_learning(state, TODAY)
+    chains, kw = seen[-1]
+    assert kw == {'rule_switch': True} and chains.get(104) == '036'
 
 
 def test_chain_customers_for_stores_outside_managers_plan():

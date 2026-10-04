@@ -2372,17 +2372,18 @@ def _await_valhalla(state: RoutesState, ctx: dp.DayContext, make: Callable[[], d
     return ctx
 
 
-def _chain_customers(state: RoutesState, snap: Any, bundle: Bundle, ids: set[int]) -> dict[int, str]:
+def _chain_customers(state: RoutesState, snap: Any, bundle: Bundle, ids: set[int],
+                     lookup: bool = True) -> dict[int, str]:
     """Магазины-сети среди ids (№66: своя группа сглаживания): клиент → код группы (CustGrp) из settings chain_groups.
     Группа — из снимка ERP (клиенты плана менеджеров); остальных (в «Развозе» бывают и магазины вне плана) — одним
-    запросом state.group_loader (ERP, только чтение) и только если сети заданы. Ошибка ERP — ErpError: прогон обучения
-    не выполняется (как без снимка), а не учится с другими группами."""
+    запросом state.group_loader (ERP, только чтение) и только если сети заданы; lookup=False — только снимок. Ошибка
+    ERP — ErpError (run_learning: этой ночью правило времени магазина не меняется, остальное учится)."""
     chain_set = set(bundle.settings.get('chain_groups') or ())
     if not chain_set or not ids:
         return {}
     groups = {cid: snap.customers[cid].group for cid in ids if cid in snap.customers}
     missing = sorted(ids - set(groups))
-    if missing and state.group_loader is not None:
+    if missing and lookup and state.group_loader is not None:
         groups.update({cid: g for cid, g in state.group_loader(missing).items() if cid in ids})
     return {cid: g for cid, g in sorted(groups.items()) if g in chain_set}
 
@@ -2489,13 +2490,21 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
                    if tn.loading_configured and tn.load(1000) > 0 else None)
     # правило времени магазина (№66): группа — размер по среднему доставленному весу, сети (chain_groups) — своей
     # группой; выбор — от действующей строки (её правило и k — гистерезис)
-    chains = _chain_customers(state, snap, bundle, {c for o in unload for c in o.customers})
+    ids = {c for o in unload for c in o.customers}
+    try:
+        chains, rule_switch = _chain_customers(state, snap, bundle, ids), True
+    except ErpError:
+        # группы магазинов вне плана не получены: прогон не срывается — сети только по снимку, а правило времени
+        # магазина (№66) этой ночью не меняется (с неполными сетями сравнение правил не честное)
+        logger.warning('[Routes] Обучение: группы магазинов из ERP не получены — правило времени магазина не меняется',
+                       exc_info=True)
+        chains, rule_switch = _chain_customers(state, snap, bundle, ids, lookup=False), False
     size_kg = (float(bundle.settings['size_small_max_kg']), float(bundle.settings['size_medium_max_kg']))
     outcomes = [
         learning.fit_unload(unload, lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes
                             + math.fsum(extras.get(c, 0.0) for c in o.customers), today, bundle.unload_min,
                             lambda o: tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes,
-                            eff.unload, chains, size_kg),
+                            eff.unload, chains, size_kg, rule_switch=rule_switch),
         learning.fit_loading(loads, today, loading_now),
         learning.fit_lunch(lunches, tn.lunch_minutes, today, float(s['truck_lunch_min'])),
     ]

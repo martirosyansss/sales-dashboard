@@ -521,8 +521,8 @@ def test_run_learning_compares_against_current_with_manual(client, monkeypatch):
     state.store.save_customer_constraints(101, None, None, 'qa', 30)
     seen = []
     real = lr.fit_unload
-    monkeypatch.setattr(lr, 'fit_unload', lambda obs, cur, today, manual=None, plain=None, *rest:
-                        seen.append((cur, manual, plain)) or real(obs, cur, today, manual, plain, *rest))
+    monkeypatch.setattr(lr, 'fit_unload', lambda obs, cur, today, manual=None, plain=None, *rest, **kw:
+                        seen.append((cur, manual, plain)) or real(obs, cur, today, manual, plain, *rest, **kw))
     out = {o.kind: o for o in views.run_learning(state, TODAY)}
     cur, manual, plain = seen[-1]
     assert manual == {101: 30.0}
