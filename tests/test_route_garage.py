@@ -353,8 +353,9 @@ def test_store_db_checks_and_broken_rows(tmp_path):
         conn.execute("INSERT INTO garage_entry(car_code, day, kind, what, amount_amd, odometer_km, created_at) "
                      "VALUES('C', '01.01.2026', 'repair', 'x', 5, 1, 'x')")
         conn.commit()
-    with pytest.raises(st.StoreError, match='ավտոտնակի մատյանի'):
+    with pytest.raises(st.StoreError, match='ավտոտնակի գրառումներում №') as exc:
         s.garage_entries()
+    assert not any('Ѐ' <= ch <= 'ӿ' for ch in str(exc.value))   # доходит до любой страницы — только по-армянски (№58)
 
 
 def test_store_migrates_15_to_16_keeps_all_rows(tmp_path):
@@ -374,7 +375,8 @@ def test_store_migrates_15_to_16_keeps_all_rows(tmp_path):
     assert b.unload_min == {101: 40.0} and b.garage_wear == {} and st.Store(path).garage_entries() == []
     with closing(sqlite3.connect(path)) as conn:
         assert {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before} == before
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() ==             (str(st.SCHEMA_VERSION),)                                          # 15 → 16 → … → текущая
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == \
+            (str(st.SCHEMA_VERSION),)                                          # 15 → 16 → … → текущая
         assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'garage_one_odometer'").fetchone()
 
 

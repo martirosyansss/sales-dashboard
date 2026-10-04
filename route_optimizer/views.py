@@ -263,7 +263,9 @@ def _garage_models(state: RoutesState, trucks: Mapping[str, Any]) -> dict[str, s
             out[code] = garage.model_of(car.name if car is not None else t.name, t.capacity_kg)
         return out
 
-    return _garage_memo(('models', snap.id if snap is not None else None), compute)
+    # запоминается по снимку и по машинам: модели зависят и от их названий, ручного признака и тоннажа
+    names = tuple(sorted((code, t.manual, t.name, t.capacity_kg) for code, t in trucks.items()))
+    return _garage_memo(('models', snap.id if snap is not None else None, names), compute)
 
 
 def _garage_prices(state: RoutesState, as_of: date, trucks: Mapping[str, Any]) -> dict[str, garage.Price]:

@@ -2130,8 +2130,10 @@ class Store:
         for row in rows:
             entry, problems = _loaded_garage(row)
             if problems:
-                raise StoreError(f'{self._name()}: ավտոտնակի մատյանի {row[0]!r} գրառումը վնասված է '
-                                 f'({", ".join(problems)}){_FIX_HINT}')
+                # текст доходит до любой страницы раздела (журнал читают все расчёты) — по-армянски (№58)
+                raise StoreError(f'Երթուղիների կարգավորումների բազա {os.path.basename(self.path)}՝ ավտոտնակի '
+                                 f'գրառումներում №{row[0]} գրառումը վնասված է ({", ".join(problems)}) — ուղղեք կամ '
+                                 f'ջնջեք ֆայլը, լռելյայն արժեքներ ինքնաբերաբար չեն դրվում։')
             out.append(entry)
         return out
 

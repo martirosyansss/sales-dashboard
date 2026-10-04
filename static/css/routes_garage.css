@@ -36,6 +36,8 @@
 .gj-total:empty { display: none; }
 .gj-table .gj-num { text-align: right; white-space: nowrap; }
 .gj-table td.gj-num { font-family: var(--rt-mono); }
+.gj-table td.gj-num .gj-sub { white-space: normal; font-family: var(--rt-font); }   /* подписи цены — с переносом */
+.gj-table .rt-cell-name .n { white-space: nowrap; overflow-wrap: normal; }        /* номер машины — одной строкой */
 .gj-table td { vertical-align: middle; }
 .gj-day { font-family: var(--rt-mono); white-space: nowrap; }
 .gj-what { overflow-wrap: anywhere; min-width: 160px; }

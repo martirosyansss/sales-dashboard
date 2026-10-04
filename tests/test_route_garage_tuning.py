@@ -307,6 +307,12 @@ def test_models_from_snapshot_names_and_capacity_fallback(client, monkeypatch):
     trucks = state.store.load().trucks
     state.snapshots.cached()
     assert views._garage_models(state, trucks) == {'CAR1': 'HOWO', 'CAR2': 'FORD', 'M1': 'HOWO'}
+    with client.application.test_request_context():   # в запросе запоминаются — по снимку и по машинам
+        assert views._garage_models(state, trucks)['M1'] == 'HOWO'
+        renamed = {**trucks, 'M1': replace(trucks['M1'], name='JAC 1'),
+                   'CAR2': replace(trucks['CAR2'], capacity_kg=2200.0)}
+        assert views._garage_models(state, renamed) == {'CAR1': 'HOWO', 'CAR2': 'FORD', 'M1': 'JAC'}
+        assert views._garage_models(state, {'M1': trucks['M1']}) == {'M1': 'HOWO'}
     calls = []
     state.snapshots = SnapshotCache(lambda: calls.append(1) or make_snapshot())
     assert views._garage_models(state, trucks) == {'CAR1': '10000 կգ', 'CAR2': '3500 կգ', 'M1': 'HOWO'} and calls == []
@@ -413,18 +419,32 @@ def test_garage_page_js_pins_401_badinput_spread_and_banner():
     note = settings[settings.index('function garageNote'):settings.index('const LOAD_COSTS')]
     code = [ln.split('//')[0] for ln in note.splitlines() if not ln.strip().startswith('//')]
     assert not [ln for ln in code if any('Ѐ' <= ch <= 'ӿ' for ch in ln)], 'строка журнала — только по-армянски (№58)'
-    assert "'Ավտոտնակի մատյան․ վերանորոգումներ գրանցված չեն — '" in note and "'-ի միջինը՝ '" in note
-    assert "' · մաշվածքը՝ ավտոտնակի մատյանից'" in settings
+    assert "'Ավտոտնակի գրառումներ․ վերանորոգումներ գրանցված չեն — '" in note and "'-ի միջինը՝ '" in note
+    assert "' · մաշվածքը՝ ըստ ավտոտնակի գրառումների'" in settings
+    # ручное задано — средняя по журналу видна, но «не применяется» (в расчёте — ручное)
+    assert "' (չի կիրառվում, քանի որ վերևում արժեք կա)'" in note
+    assert "'հաշվարկում է վերևի դաշտի արժեքը' + unused" in note
     assert ("used === 'garage_avg' ? 'հաշվարկում է ' + priorText(t.garage_prior) + ', քանի որ վերևի դաշտը դատարկ է'"
             in note)
     assert "'մոդելի միջինը'" in note and "'ավտոպարկի միջինը'" in note and "used === 'garage' || used === 'garage_avg'" in note
     assert "t.wear_source === 'garage_avg' ? ' · մաշվածքը՝ '" in settings
     summary = js[js.index('function renderSummary'):js.index('// ---------- загрузка')]
     assert "r.wear_source === 'garage_avg' ? [h('b', { class: 'gj-price', text: fmt(r.garage_prior.price, 1) })" in summary
+    assert "r.wear_source === 'manual' && r.garage_prior ? [" in summary
+    assert "'չի կիրառվում, քանի որ կարգավորումներում արժեք կա'" in summary
+    # плашка — по серверу (stale), без дат браузера; фраза заканчивается «։»
+    stale = js[js.index('function staleTrucks'):js.index('function goStale')]
+    assert "state.data.summary.filter(r => r.active && r.stale)" in stale and 'new Date' not in stale
+    assert "stale.map(t => t.car_code).join(', ') + '։'" in stale
     assert "'մոդելի միջին'" in summary and "'ավտոպարկի միջին'" in summary
     # глоссарий раздела (docs/research/armenian-glossary.md): износ — «մաշվածք», не «մաշվածություն»; парк — «ավտոպարկ»
     garage_line = settings[settings.index('function garageNote'):settings.index("h('div', { class: 'rs-load-fields' }")]
     for text in (js, garage_line):
         assert 'մաշվածություն' not in text and "'պարկի" not in text and ' պարկի' not in text
+        assert 'մատյան' not in text                    # журнал гаража — «ավտոտնակի գրառումներ»
     html = (ROOT / 'templates' / 'routes_garage.html').read_text(encoding='utf-8')
-    assert 'id="gjSpread"' in html and 'id="gjBanner"' in html and "routes_garage.js') }}?v=3" in html
+    assert 'id="gjSpread"' in html and 'id="gjBanner"' in html and "routes_garage.js') }}?v=4" in html
+    assert "routes_garage.css') }}?v=4" in html
+    css = (ROOT / 'static' / 'css' / 'routes_garage.css').read_text(encoding='utf-8')
+    assert '.gj-table td.gj-num .gj-sub { white-space: normal; font-family: var(--rt-font); }' in css
+    assert '.gj-table .rt-cell-name .n { white-space: nowrap; overflow-wrap: normal; }' in css

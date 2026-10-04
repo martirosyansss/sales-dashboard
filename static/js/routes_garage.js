@@ -293,17 +293,17 @@
     });
 
     // ---------- пробег всех машин ----------
-    // Работающие машины без показания пробега дольше rules.stale_days (или вовсе без него) — плашка и подсветка в «Վազք»
+    // Работающие машины без показания пробега дольше rules.stale_days (или вовсе без него) — плашка и подсветка в «Վազք»;
+    // «давно» решает сервер (stale по его «сегодня»), не часы браузера
     function staleTrucks() {
-        const d = state.data, today = new Date(d.today + 'T00:00:00');
-        return d.trucks.filter(t => t.active && (!t.last_day || (today - new Date(t.last_day + 'T00:00:00')) / 86400000 > d.rules.stale_days));
+        return state.data.summary.filter(r => r.active && r.stale);
     }
 
     function renderBanner() {
         const d = state.data, stale = staleTrucks();
         const text = d.journal_empty
             ? 'Սկսեք՝ գրանցելով բոլոր մեքենաների ընթացիկ վազքը և անցած տարվա վերանորոգումները։'
-            : stale.length ? stale.length + ' մեքենայի վազքը ' + d.rules.stale_days + ' օրից ավելի չի գրանցվել՝ ' + stale.map(t => t.car_code).join(', ') : '';
+            : stale.length ? stale.length + ' մեքենայի վազքը ' + d.rules.stale_days + ' օրից ավելի չի գրանցվել՝ ' + stale.map(t => t.car_code).join(', ') + '։' : '';
         $('gjBanner').hidden = !text;
         $('gjBannerText').textContent = text;
     }
@@ -399,6 +399,7 @@
 
     function renderSummary() {
         const d = state.data, rules = d.rules;
+        const avgLabel = (p) => p.scope === 'model' ? 'մոդելի միջին' + (p.model ? ' (' + p.model + ')' : '') : 'ավտոպարկի միջին';
         $('gjSumLead').textContent = 'Վերանորոգում ֏/կմ = վերանորոգման ծախսը ÷ վազքը նույն ժամանակահատվածում (բաշխված վերանորոգումից՝ '
             + 'այդ ամիսներին ընկնող մասը)։ Առաքման հաշվարկում է, երբ վազքը ծածկում է ' + rules.ready_months + ' ամիս և առնվազն '
             + fmt(rules.ready_km) + ' կմ, և այդ ընթացքում գրանցված է գոնե մեկ վերանորոգում։ Սեփական գինը մոտեցվում է նույն մոդելի '
@@ -421,9 +422,12 @@
                         h('small', { class: 'gj-sub', text: fmt(g.cost_amd) + ' ֏ ÷ ' + fmt(g.km) + ' կմ' })]
                     // своей цены нет, «Износ» в настройках пуст — в расчёте средняя модели (или парка)
                     : r.wear_source === 'garage_avg' ? [h('b', { class: 'gj-price', text: fmt(r.garage_prior.price, 1) }),
-                        h('small', { class: 'gj-sub', text: r.garage_prior.scope === 'model'
-                            ? 'մոդելի միջին' + (r.garage_prior.model ? ' (' + r.garage_prior.model + ')' : '') : 'ավտոպարկի միջին' }),
+                        h('small', { class: 'gj-sub', text: avgLabel(r.garage_prior) }),
                         h('small', { class: 'gj-sub', text: 'սեփականը դեռ չկա, կարգավորումներում՝ դատարկ' })]
+                    // ручное задано — средняя по журналу видна, но в расчёт не идёт
+                    : r.wear_source === 'manual' && r.garage_prior ? [h('span', { text: '—' }),
+                        h('small', { class: 'gj-sub', text: avgLabel(r.garage_prior) + '՝ ' + fmt(r.garage_prior.price, 1) }),
+                        h('small', { class: 'gj-sub', text: 'չի կիրառվում, քանի որ կարգավորումներում արժեք կա' })]
                     : [h('span', { text: '—' })];
                 // ремонт за 12 месяцев — полная сумма; «в расчёте» — с долями растянутых
                 const repair = g ? [h('span', { text: fmt(g.repair_amd) }),
