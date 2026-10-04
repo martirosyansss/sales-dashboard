@@ -269,7 +269,9 @@
 /* ==========================================================================
    ШАГ 3 · РЕЙСЫ
    ========================================================================== */
-.dp-plan { display: grid; gap: 16px; scroll-margin-top: var(--dp-top); }
+/* колонка minmax(0, 1fr), не неявная auto: иначе её распирает шкала дня (min-width 600 px на телефоне)
+   и карточки машин шире экрана — обрезаны; прокручиваться вбок должна только шкала */
+.dp-plan { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; scroll-margin-top: var(--dp-top); }
 .dp-plan[hidden] { display: none; }
 .dp-summary {
     padding: 18px 20px 20px; border-radius: var(--rt-radius);
