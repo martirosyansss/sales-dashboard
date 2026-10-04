@@ -9,26 +9,29 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=20">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=21">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=38">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=39">
 {% endblock %}
 
 {% block content %}
+<!-- Вкладки раздела — одинаковая полоса на всех страницах «Маршрутов» (одно место, один вид) -->
+<div class="rt-page rt-secbar" lang="hy">
+    <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
+        <a href="/routes">Ակնարկ</a>
+        <a href="/routes/optimize">Օպտիմալացում</a>
+        <a href="/routes/dispatch" aria-current="page">Առաքում</a>
+        <a href="/routes/learning">Ուսուցում</a>
+        <a href="/routes/settings">Կարգավորումներ</a>
+        <a href="/routes/garage">Ավտոտնակ</a>
+    </nav>
+</div>
 <div class="rt-page" id="rtDispatch" lang="hy">
 
     <!-- ШАПКА: какой день развозим, листать дни -->
     <header class="dp-mast">
         <div class="dp-mast-top">
             <p class="dp-kicker"><i class="fas fa-truck-fast" aria-hidden="true"></i>Առաքում<span class="dp-kicker-sub">երթերի կազմում վարորդների համար</span></p>
-            <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
-                <a href="/routes">Ակնարկ</a>
-                <a href="/routes/optimize">Օպտիմալացում</a>
-                <a href="/routes/dispatch" aria-current="page">Առաքում</a>
-                <a href="/routes/learning">Ուսուցում</a>
-                <a href="/routes/settings">Կարգավորումներ</a>
-                <a href="/routes/garage">Ավտոտնակ</a>
-            </nav>
         </div>
 
         <div class="dp-dayboard">

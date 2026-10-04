@@ -123,6 +123,11 @@
 }
 .rt-page .rt-tabs a:hover { color: var(--rt-fg); background: var(--rt-panel-2); }
 .rt-page .rt-tabs a[aria-current="page"] { background: var(--rt-acc); color: var(--rt-acc-ink); }
+/* Полоса вкладок над шапкой — одна и та же на всех страницах раздела: своя ширина (не ширина страницы — у страниц
+   она разная), вкладки справа. Поэтому при переходе между страницами вкладки стоят на одном месте и выглядят одинаково. */
+.rt-secbar { display: flex; justify-content: flex-end; max-width: 1640px; margin: 4px auto 12px; }
+.rt-secbar::before { content: none; }   /* фон рисует сама страница */
+.rt-secbar .rt-tabs { background: var(--rt-panel); }
 
 /* --------------------------------------------------------------------------
    КНОПКИ И ПОЛЯ
@@ -1496,5 +1501,5 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
 
 /* Вкладки раздела на узком экране переносятся в 2 строки — контейнер не «таблетка», а скруглённая карточка */
 @media (max-width: 767px) {
-    .rt-page .rt-tabs, #rtDispatch .rt-tabs { border-radius: 18px; }
+    .rt-page .rt-tabs { border-radius: 18px; }
 }

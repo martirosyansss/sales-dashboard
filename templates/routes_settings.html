@@ -8,25 +8,28 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=20">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=21">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_customer_settings.css') }}?v=3">
 {% endblock %}
 
 {% block content %}
+<!-- Вкладки раздела — одинаковая полоса на всех страницах «Маршрутов» (одно место, один вид) -->
+<div class="rt-page rt-secbar" lang="hy">
+    <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
+        <a href="/routes">Ակնարկ</a>
+        <a href="/routes/optimize">Օպտիմալացում</a>
+        <a href="/routes/dispatch">Առաքում</a>
+        <a href="/routes/learning">Ուսուցում</a>
+        <a href="/routes/settings" aria-current="page">Կարգավորումներ</a>
+        <a href="/routes/garage">Ավտոտնակ</a>
+    </nav>
+</div>
 <!-- Страница на армянском (решение владельца №58) -->
 <div class="rt-page" id="rtSettings" lang="hy">
 
     <header class="rt-head">
         <div class="rt-head-row">
             <h1 class="rt-title">Երթուղիների կարգավորումներ</h1>
-            <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
-                <a href="/routes">Ակնարկ</a>
-                <a href="/routes/optimize">Օպտիմալացում</a>
-                <a href="/routes/dispatch">Առաքում</a>
-                <a href="/routes/learning">Ուսուցում</a>
-                <a href="/routes/settings" aria-current="page">Կարգավորումներ</a>
-                <a href="/routes/garage">Ավտոտնակ</a>
-            </nav>
         </div>
         <p class="rt-head-lead">Այստեղ նշեք այն, ինչ ծրագիրն ինքը չի կարող իմանալ՝ որտեղ է պահեստը, ինչ մեքենաներ կան, երբ են խանութներն ընդունում ապրանքը և որքան արժե վառելիքը։
             Մնացածը ծրագիրն ինքն է ընտրել ըստ ERP-ի և GPS-ի — դա կարելի է չփոխել։</p>

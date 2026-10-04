@@ -47,9 +47,6 @@
 #rtDispatch a.rt-btn-ghost { color: var(--rt-fg); }
 #rtDispatch a.rt-btn-ghost:hover { color: var(--rt-acc); }
 #rtDispatch .rt-btn-lg { height: 50px; padding: 0 26px; border-radius: 999px; }
-#rtDispatch .rt-tabs { border-radius: 999px; padding: 4px; background: var(--rt-panel); }
-#rtDispatch .rt-tabs a { border-radius: 999px; }
-#rtDispatch .rt-tabs a[aria-current="page"] { color: var(--dp-acc-ink); }
 #rtDispatch .rt-input, #rtDispatch .rt-select { border-radius: 10px; }
 #rtDispatch .rt-dot { box-shadow: 0 0 0 2px var(--rt-panel); }
 #rtDispatch .rt-badge { font-weight: 500; }
@@ -669,7 +666,6 @@
     #rtDispatch .dp-mapbox-body > .dp-map { height: 360px; }
 }
 @media (max-width: 420px) {
-    #rtDispatch .rt-tabs a { font-size: .8125rem; padding: 0 8px; }
     #rtDispatch .dp-trucks { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) {

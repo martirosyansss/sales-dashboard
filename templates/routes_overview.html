@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=20">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=21">
 <style>
     /* Армянские подписи длиннее русских (№58): заголовки столбцов переносятся по словам — таблицы не шире, чем были */
     #rtOverview .rt-risk-table thead th, #rtOverview .rt-heat thead th.rt-heat-week { white-space: normal; vertical-align: bottom; }
@@ -21,6 +21,17 @@
 {% endblock %}
 
 {% block content %}
+<!-- Вкладки раздела — одинаковая полоса на всех страницах «Маршрутов» (одно место, один вид) -->
+<div class="rt-page rt-secbar" lang="hy">
+    <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
+        <a href="/routes" aria-current="page">Ակնարկ</a>
+        <a href="/routes/optimize">Օպտիմալացում</a>
+        <a href="/routes/dispatch">Առաքում</a>
+        <a href="/routes/learning">Ուսուցում</a>
+        <a href="/routes/settings">Կարգավորումներ</a>
+        <a href="/routes/garage">Ավտոտնակ</a>
+    </nav>
+</div>
 <div class="rt-page" id="rtOverview" lang="hy">
 
     <!-- ШАПКА -->
@@ -31,14 +42,6 @@
                 <span id="rtFresh" class="rt-pill d-none"></span>
             </div>
             <div class="rt-head-tools">
-                <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
-                    <a href="/routes" aria-current="page">Ակնարկ</a>
-                    <a href="/routes/optimize">Օպտիմալացում</a>
-                    <a href="/routes/dispatch">Առաքում</a>
-                    <a href="/routes/learning">Ուսուցում</a>
-                    <a href="/routes/settings">Կարգավորումներ</a>
-                    <a href="/routes/garage">Ավտոտնակ</a>
-                </nav>
                 <button id="rtRefreshBtn" type="button" class="rt-btn rt-btn-ghost" title="Կրկին կարդալ տվյալները ERP-ից և վերահաշվել">
                     <i class="fas fa-rotate" aria-hidden="true"></i><span>Թարմացնել</span>
                 </button>
