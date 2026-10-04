@@ -492,10 +492,11 @@ def test_model_note_learned_lunch_only_while_in_effect(client):
     assert 'lunch' not in learned()                                                  # обед выключен в настройках
 
 
-def test_lunch_place_skipped_from_unload_even_with_tap():
+def test_lunch_place_unload_ends_at_tap():
     """Отметка «закончил» (№65, разгрузка — не дольше 10 мин после неё) и обед по плану у магазина вместе: визит магазина с
-    обедом по плану не идёт в разгрузку и с отметкой (её хвост в 10 мин иначе добавил бы к разгрузке часть обеда);
-    соседний магазин — по правилу отметки как есть; обед по факту у магазина виден и с отметкой."""
+    обедом по плану идёт в разгрузку до самой отметки, без хвоста в 10 мин (после отметки здесь обед — хвост добавил бы
+    к разгрузке часть обеда), — магазин, где план регулярно ставит обед, получает своё время по GPS (№60); без отметки
+    визит не идёт. Соседний магазин — по правилу отметки как есть; обед по факту у магазина виден и с отметкой."""
     tap = _at(12, 51)                                                               # разгрузка 12:40–12:51, обед до 13:21
     stops = [ac.PlanStop('S:1', 101, (40.2, 44.5), 500.0, 500.0, None, None, tap),
              ac.PlanStop('S:2', 102, (40.3, 44.6), 300.0, 300.0, None, None, _at(14, 5))]
@@ -506,8 +507,11 @@ def test_lunch_place_skipped_from_unload_even_with_tap():
     plain = lr.unload_obs(DAY, actual, stops)
     assert [(o.customers, o.minutes) for o in plain] == [((101,), 21.0), ((102,), 15.0)]   # хвост отметки — как у №65
     got = lr.unload_obs(DAY, actual, stops, lr.lunch_customers(plan))
-    assert [(o.customers, o.minutes) for o in got] == [((102,), 15.0)]               # визит с обедом — мимо и с отметкой
+    assert [(o.customers, o.minutes) for o in got] == [((101,), 11.0), ((102,), 15.0)]   # визит с обедом — до отметки
     assert lr.lunch_obs(DAY, actual, WINDOW, stops, plan, _norm).minutes == 41 - 11   # обед виден по стоянке
+    untapped = [replace(stops[0], delivered_at=None), stops[1]]
+    assert [o.customers for o in lr.unload_obs(DAY, actual, untapped, lr.lunch_customers(plan))] == [(102,)]   # без отметки — мимо
+    assert [o.customers for o in lr.unload_obs(DAY, actual, untapped)] == [(101,), (102,)]
 
 
 def test_lunch_obs_where_planned_depot_and_other_observations_skip_it():
