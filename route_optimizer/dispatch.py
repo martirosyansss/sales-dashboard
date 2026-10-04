@@ -46,6 +46,7 @@ ISN_RE = re.compile(r'^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{
 _EPS = 1e-6
 MAX_TRIPS = 500           # защита от битого черновика
 MAX_BUILT_ORDERS = 20000  # заказов в отметке сборки — тоже защита от битого черновика
+MAX_AGENTS = 500          # менеджеров в «чьи заказы не везём» — защита от битого черновика и запроса
 BACKLOG_WORKDAYS = 2      # «не отгружены с прошлых дней» — заказы ещё двух рабочих дней раньше окна
 BYPASS_MIN_KM = 0.01      # пояснение рейса: участок длиннее из-за объезда центра хотя бы на 10 м — «в объезд»
 WEEKDAY_FULL = {1: 'понедельник', 2: 'вторник', 3: 'среда', 4: 'четверг', 5: 'пятница', 6: 'суббота',
@@ -274,6 +275,9 @@ class Draft:
     no_center: set[int] = field(default_factory=set)
     prediction: dict[str, Any] | None = None
     no_vehicle: set[int] = field(default_factory=set)
+    # менеджеры (agent_id), чьи заказы сегодня не везём: фильтр «Մենեջերներ» — все их заказы дня и прошлых дней
+    # вне развоза, пока менеджера не вернут (новые заказы этих менеджеров тоже); «не везём сегодня» — отдельно
+    agents_off: set[int] = field(default_factory=set)
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -285,7 +289,7 @@ class Draft:
                 'no_room': sorted(self.no_room), 'overtime': self.overtime, 'overtime_ok': self.overtime_ok,
                 'deferred': sorted(self.deferred), 'dropped': sorted(self.dropped),
                 'no_window': sorted(self.no_window), 'no_center': sorted(self.no_center), 'prediction': self.prediction,
-                'no_vehicle': sorted(self.no_vehicle)}
+                'no_vehicle': sorted(self.no_vehicle), 'agents_off': sorted(self.agents_off)}
 
     @classmethod
     def from_json(cls, raw: Any) -> Draft:
@@ -316,7 +320,9 @@ class Draft:
         return cls(trucks, excluded, added, trips, next_id, built, _built_orders(raw.get('built_orders')), cids('no_room'),
                    raw.get('overtime') is True, raw.get('overtime_ok') is True, isns('deferred'), isns('dropped'),
                    cids('no_window'), cids('no_center'), raw.get('prediction') if isinstance(raw.get('prediction'), dict) else None,
-                   no_vehicle=cids('no_vehicle'))
+                   no_vehicle=cids('no_vehicle'),
+                   agents_off={x for x in (raw.get('agents_off') or [])[:MAX_AGENTS] if _is_int(x)}
+                   if isinstance(raw.get('agents_off'), list) else set())
 
 
 def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
@@ -337,6 +343,13 @@ def _is_num(v: Any) -> bool:
 
 def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
+
+
+def parse_agents(raw: Any) -> set[int] | None:
+    """Список менеджеров (agent_id) из запроса или черновика; не список целых, длиннее MAX_AGENTS — None."""
+    if not isinstance(raw, list) or len(raw) > MAX_AGENTS or not all(_is_int(x) for x in raw):
+        return None
+    return set(raw)
 
 
 # --- Контекст расчёта ---
@@ -378,6 +391,12 @@ def _shares(trips: Sequence[DraftTrip]) -> dict[int, int]:
         for c in t.stops:
             n[c] = n.get(c, 0) + 1
     return n
+
+
+def prune(draft: Draft, stops: Sequence[Stop]) -> None:
+    """Рейсы черновика — по точкам дня stops (после правки, меняющей заказы дня): клиент без заказов или без точки
+    уходит из рейсов, пустой рейс — тоже (как _clean перед расчётом, но для сохраняемого черновика)."""
+    _clean(draft, {s.customer_id: s for s in stops if s.point is not None})
 
 
 def _clean(draft: Draft, routable: Mapping[int, Stop]) -> None:
@@ -549,7 +568,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     sel = _selected(ctx, trucks)
     codes = {t.car_code for t in sel}
     draft = Draft(trucks=sorted(codes), excluded=set(old.excluded), added=set(old.added), next_id=old.next_id,
-                  built_at=now, deferred=set(old.deferred), dropped=set(old.dropped))
+                  built_at=now, deferred=set(old.deferred), dropped=set(old.dropped), agents_off=set(old.agents_off))
     pinned = [DraftTrip(t.id, t.truck, list(t.stops), True) for t in old.trips if t.pinned and t.truck in codes]
     tmp = Draft(trips=pinned)
     _clean(tmp, routable)
@@ -663,6 +682,8 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
       {"action": "exclude" | "include", "order": fISN} — «не везём сегодня» / вернуть; заказ прошлых
           дней (backlog_ids) — убрать из развоза / добавить в развоз (перенесённый сюда — carried —
           убранный запоминается в dropped); перенос на завтра снимается;
+      {"action": "agents", "off": [agent_id, …]} — фильтр «Մենեջերներ»: заказы этих менеджеров не везём
+          (остальные — везём); точки, где заказов не осталось, уходят из рейсов, вернувшиеся — «ещё не в рейсах»;
       {"action": "defer_trip", "trip": id} — «везти завтра» (№25: рейс дешевле min_trip_revenue): заказы
           рейса — не сегодня (excluded / из added) и в deferred — следующий день доставки возьмёт их сам;
           заказ старше defer_since (вне окна «не отгружены с прошлых дней» следующего дня) — ошибка:
@@ -688,6 +709,12 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
             raise DispatchError('Заказ не найден среди заказов дня — обновите страницу')
         (draft.excluded.add if action == 'exclude' else draft.excluded.discard)(isn)
         draft.deferred.discard(isn)
+        return draft
+    if action == 'agents':
+        off = parse_agents(edit.get('off'))
+        if off is None:
+            raise DispatchError('Список менеджеров не принят — обновите страницу')
+        draft.agents_off = off
         return draft
     if action == 'defer_trip':
         trip = _trip(draft, edit.get('trip'))

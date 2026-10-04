@@ -590,4 +590,4 @@ def test_learning_page_texts_armenian():
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     assert 'dp-buffer-mark' in djs and 'ժամանակի պաշար երթի վերջում՝' in djs
     page = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
-    assert "routes_dispatch.js') }}?v=64" in page and "routes_dispatch.css') }}?v=34" in page
+    assert "routes_dispatch.js') }}?v=66" in page and "routes_dispatch.css') }}?v=36" in page

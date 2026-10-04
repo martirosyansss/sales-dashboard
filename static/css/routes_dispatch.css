@@ -229,6 +229,10 @@
 #rtDispatch .dp-truck:not(:has(input:checked)):not(.is-off) .dp-truck-t b { text-decoration: line-through; text-decoration-color: var(--rt-fg-mute); }
 #rtDispatch .dp-truck.is-off { opacity: .5; border-style: dashed; }
 .dp-truck-center { color: var(--rt-acc); }
+/* «Մենեջերներ» — те же плитки, что у машин; над ними «отметить всех / снять», под ними «Կիրառել» */
+.dp-agents-acts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 10px; }
+.dp-agents-apply { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.dp-agents-apply[hidden] { display: none; }
 
 /* Крупные цифры дня */
 .dp-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin: 0 0 14px; }
