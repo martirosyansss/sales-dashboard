@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Синтетические GPS-дни с известной правдой для обучения «как у профессионалов» (№66: запас на рейс).
+"""Синтетические GPS-дни с известной правдой для обучения «как у профессионалов» (№66: запас на рейс, темп машины).
 
 Парк машин; у одной — медленный экипаж (разгрузка × SLOW_UNLOAD, путь × SLOW_TRAVEL). Каждый день каждая машина делает
 два рейса по случайным магазинам; правда относительно модели «Развоза» (по прямой × 1,3 / 25 км/ч, разгрузка 8 + 6 мин/т):
 минуты участка = модель × темп машины × шум машино-дня × шум участка, разгрузка — так же со своим шумом; шум машино-дня
 общий для всех участков и визитов этого дня (связь ошибок внутри дня). Трек — точки раз в 15 с в пути и раз в 60 с на
-стоянке, факт восстанавливает actuals.reconstruct, наблюдения — learning.trip_obs.
+стоянке, факт восстанавливает actuals.reconstruct, наблюдения — learning.trip_obs / unload_obs / leg_obs.
 Без БД и ERP; используется tests/test_learning_pro.py.
 """
 from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 
 from route_optimizer import actuals as ac
@@ -117,12 +117,28 @@ def simulate(days: list[date], seed: int = 1, cars=CARS, per_trip: int = 5) -> l
 
 
 def observations(sim: list[CarDay], tn: fl.TruckNorms | None = None):
-    """Рейсы — наблюдения запаса по факту, прогноз — нормами tn (нет — из настроек)."""
+    """(рейсы, визиты, участки) — наблюдения обучения по факту, прогноз — нормами tn (нет — из настроек)."""
     nm, tn = norms(), tn or truck_norms()
-    trips = []
+    trips, visits, legs = [], [], []
     for cd in sim:
         trips += lr.trip_obs(cd.day, cd.car, cd.actual, cd.stops, nm, tn, DEPOT, WORK_START)
-    return trips
+        visits += lr.unload_obs(cd.day, cd.actual, cd.stops, car=cd.car)
+        legs += lr.leg_obs(cd.day, cd.actual, nm, cd.car)
+    return trips, visits, legs
+
+
+def unload_rows(visits, tn: fl.TruckNorms):
+    return [(o.day, o.car, tn.unload_min_per_stop * o.n + tn.unload_min_per_tonne * o.tonnes, o.minutes) for o in visits]
+
+
+def leg_rows(legs):
+    return [(o.day, o.car, o.current, o.minutes) for o in legs]
+
 
 def coverage(trips, c: float) -> float:
     return sum(1 for o in trips if o.minutes <= o.predicted + fl.trip_reserve(c, o.predicted) + 1e-9) / len(trips)
+
+
+def with_pace(tn: fl.TruckNorms, unload: lr.Outcome, travel: lr.Outcome) -> fl.TruckNorms:
+    eff = lr.InEffect(truck_unload=unload.params, truck_travel={**travel.params, 'model_id': travel.model_id})
+    return replace(tn, pace=lr.truck_pace(eff, travel.model_id))

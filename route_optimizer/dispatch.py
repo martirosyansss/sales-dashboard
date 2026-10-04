@@ -436,8 +436,8 @@ def _timeline(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, S
     что у _route. parts — рейс → слагаемые его минут (fl.trip_schedule: загрузка, езда, ожидание, разгрузка; при обеде —
     и 'lunch': fl.Break или None). Обед в пути (№61, ctx.tn.lunch_minutes) — по правилу fleet (шапка модуля): один на
     день машины; open_end — за последним рейсом машины будут ещё рейсы (занятое время для раскладки вокруг: обед может
-    встать и после его последней точки). Запас на рейс (№66, ctx.tn) — по правилу fleet: минуты рейса — с запасом в конце
-    (parts['buffer']), прибытия — без него."""
+    встать и после его последней точки). Запас на рейс и темп машины (№66, ctx.tn) — по правилу fleet: минуты рейса — с
+    запасом в конце (parts['buffer']), прибытия — без него."""
     used: dict[str, float] = {}
     out: dict[int, tuple[float, float, list[float]]] = {}
     lunch = ctx.tn.lunch_minutes > 0
@@ -451,7 +451,7 @@ def _timeline(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, S
         depart, arrivals, minutes = fl.trip_schedule(
             [stops[c].point for c in cids], [stops[c].kg / shares.get(c, 1) for c in cids], ctx.depot, ctx.norms,
             ctx.tn, used.get(t.truck, 0.0), [_span(ctx, c) for c in cids], got,
-            (t.truck not in eaten, open_end or last[t.truck] != t.id) if lunch else None)
+            (t.truck not in eaten, open_end or last[t.truck] != t.id) if lunch else None, t.truck)
         if lunch and got.get('lunch') is not None:   # type: ignore[union-attr]
             eaten.add(t.truck)
         used[t.truck] = depart + minutes

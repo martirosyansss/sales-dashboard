@@ -19,8 +19,10 @@
     заказ можно увезти машиной не тяжелее предела, — тяжелее предела только заказ, который иначе не увезти.
     Такой заказ едет один: рёбра между ним и другими клиентами запрещены, допускается возврат на склад;
   - запас на рейс (№66, fleet.trip_reserve) — пауз PyVRP не знает: запас типичного рейса (trip_reserve_min) — на рёбрах
-    «заказ → склад» (каждый рейс кончается таким ребром). Точный расчёт «Развоза» (fleet._days) решение всё равно
-    проверяет.
+    «заказ → склад» (каждый рейс кончается таким ребром); темп машины (Vehicle.pace: множитель разгрузки, множитель
+    пути) — её профилем: минуты рёбер × множитель пути, лишняя разгрузка (множитель − 1) × разгрузка заказа — на рёбрах
+    из него (прибытие к следующему точно). Профили по темпу — только если у какой-то машины он не (1, 1). Точный расчёт
+    «Развоза» (fleet._days) решение всё равно проверяет.
 Минуты и километры — вверх до целых секунд и метров с запасом (время — вверх, окна — внутрь): решение,
 допустимое для PyVRP, допустимо и для расчёта «Развоза» в float.
 """
@@ -85,6 +87,7 @@ class Vehicle:
     center_ok: bool
     wear_amd_per_km: float | None = None   # износ, ֏/км; None или 0 — стоимость метра только литры
     fuel_price: float = 500.0              # цена литра, ֏ — перевод износа в литры (fleet.TruckNorms.fuel_price)
+    pace: tuple[float, float] = (1.0, 1.0)   # темп машины (№66): множитель разгрузки, множитель пути
 
 
 def unit_cost(v: Vehicle) -> int:
@@ -156,8 +159,10 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
                               (p.allowed_trucks is not None and v.code not in p.allowed_trucks)
                               for p in pieces)) for v in vehicles}
     open_mask = (False,) * (len(pieces) + 1)
-    profiles = {mask: model.add_profile(name=f'access-{i}')
-                for i, mask in enumerate(dict.fromkeys([open_mask, *masks.values()]))}
+    # …и одинаковым темпом (№66; у всех (1, 1) — профили те же, что без темпа)
+    keys = {v.code: (masks[v.code], tuple(v.pace)) for v in vehicles}
+    profiles = {key: model.add_profile(name=f'access-{i}')
+                for i, key in enumerate(dict.fromkeys([(open_mask, (1.0, 1.0)), *keys.values()]))}
     for a, la in enumerate(every):
         ka, ma = km[nodes[a]], minutes[nodes[a]]
         for b, lb in enumerate(every):
@@ -171,8 +176,11 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
             loading = (load_fixed_min if a == 0 else 0.) + (load_tonne_min * pieces[b-1].kg/1000 if b else 0.)
             dur = _sec_up(ma[nodes[b]] + loading)
             back = trip_reserve_min if a and not b else 0.0      # рейс кончается ребром «заказ → склад»
-            edge = _sec_up(ma[nodes[b]] + loading + back) if back else dur
-            for mask, profile in profiles.items():
+            for (mask, (mu, mt)), profile in profiles.items():
+                edge = dur
+                if back or (mu, mt) != (1.0, 1.0):
+                    extra = (mu - 1.0) * pieces[a - 1].unload if a else 0.0
+                    edge = _sec_up(max(0.0, ma[nodes[b]] * mt + loading + extra) + back)
                 model.add_edge(la, lb, distance=FORBIDDEN_M if mask[a] or mask[b] else dist, duration=edge,
                                profile=profile)
     for s in shifts:
@@ -183,7 +191,7 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
         t0, t1 = _sec_up(s.start), _sec_down(s.end)
         model.add_vehicle_type(1, capacity=cap, start_depot=depot, end_depot=depot, tw_early=t0, tw_late=max(t0, t1),
                                shift_duration=max(0, t1 - t0), unit_distance_cost=unit_cost(v),
-                               profile=profiles[masks[v.code]], reload_depots=[depot],
+                               profile=profiles[keys[v.code]], reload_depots=[depot],
                                max_distance=MAX_DISTANCE_M, name=s.truck)
     data = model.data()
     routes = []

@@ -1079,10 +1079,12 @@ def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, e
                     # обед (№61) — минуты выученного, только когда он действует: без него пояснение — прежнее до байта
                     **({'lunch': float(eff.lunch['minutes'])}
                        if eff.lunch and float(s.get('truck_lunch_min') or 0) > 0 else {}),
-                    # запас на рейс (№66) — только когда действует: без него пояснение — прежнее до байта
+                    # запас на рейс и темп машин (№66) — только когда действуют: без них пояснение — прежнее до байта
                     **({'buffer_pct': float(eff.buffer['q'])}
                        if eff.buffer and float(s.get('dispatch_buffer_pct') or 0) > learning.BUFFER_Q_OFF
-                       and float(eff.buffer['q']) == float(s.get('dispatch_buffer_pct') or 0) else {})},
+                       and float(eff.buffer['q']) == float(s.get('dispatch_buffer_pct') or 0) else {}),
+                    **({'pace': {c: list(p) for c, p in sorted(pace.items()) if c in trucks}}
+                       if (pace := learning.truck_pace(eff, learning.road_model_id(norms))) else {})},
     }
 
 
@@ -2447,7 +2449,7 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         plan = learning.plan_trips(prediction, day)
         # обед по плану (№61): визит магазина и стоянка на складе с обедом — не в разгрузку и загрузку; обед по факту —
         # и там, где он по плану (излишек над действующей нормой разгрузки), и в стороне
-        unload += learning.unload_obs(day, actual, stops, learning.lunch_customers(plan))
+        unload += learning.unload_obs(day, actual, stops, learning.lunch_customers(plan), car)
         loads += learning.load_obs(day, actual, stops, plan)
         meal = learning.lunch_obs(day, actual, lunch_window, stops, plan, unload_norm)   # type: ignore[arg-type]
         if meal is not None:
@@ -2458,8 +2460,8 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
             # напрямую или в объезд; км и минуты модели (объезд) с её фактом не сравниваются, иначе поправка времени
             # в пути всех машин занизится
             driven = replace(actual, legs=tuple(g for g in actual.legs if osm.detour(g.pa, g.pb) <= 1.0))
-        legs += learning.leg_obs(day, driven, norms)
-        # запас на рейс (№66): рейсы факта и их минуты по той же модели, что строит план (действующие нормы)
+        legs += learning.leg_obs(day, driven, norms, car)
+        # запас на рейс (№66): рейсы факта и их минуты по той же модели, что строит план (действующие нормы и темп)
         trips += learning.trip_obs(day, car, actual, stops, norms, tn, bundle.depot, work_start)
         if compare:
             got, missing = learning.truck_time_obs(day, driven, variants[TRUCK_TIME_MODEL])
@@ -2482,10 +2484,19 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         learning.fit_lunch(lunches, tn.lunch_minutes, today, float(s['truck_lunch_min'])),
     ]
     model_id = learning.road_model_id(norms)
-    # запас на рейс (№66): против действующего того же процентиля q (нет — без запаса)
+    # запас на рейс и темп машин (№66): против действующих (запас — того же процентиля q; темп — без него, если нет)
     q = float(s.get('dispatch_buffer_pct') or 0)
     outcomes.append(learning.fit_buffer(trips, today, q, float(eff.buffer['c']) if eff.buffer and float(
         eff.buffer['q']) == q else 0.0))
+    pace_now = learning.truck_pace(eff, model_id)
+    outcomes.append(learning.fit_pace('truck_unload', [(o.day, o.car, unload_norm(o), o.minutes) for o in unload], today,
+                                      {c: p[0] for c, p in pace_now.items()}))
+    if mode == 'yandex':
+        outcomes.append(learning.Outcome('truck_travel', '', False, 'ճանապարհի ժամանակը հաշվում է Յանդեքսը՝ '
+                                         'խցանումներով — մեքենայի գործակիցը չի սովորվում'))
+    else:
+        outcomes.append(learning.fit_pace('truck_travel', [(o.day, o.car, o.current, o.minutes) for o in legs], today,
+                                          {c: p[1] for c, p in pace_now.items()}, model_id or 'straight'))
     if mode == 'yandex':
         outcomes.append(learning.Outcome('travel', '', False, 'ճանապարհի ժամանակը հաշվում է Յանդեքսը՝ խցանումներով — '
                                          'ժամային ճշգրտում պետք չէ'))
@@ -2588,6 +2599,7 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
         'truck_time': None,
         'lunch': {'minutes': s.get('truck_lunch_min'), 'from': s.get('truck_lunch_from'), 'to': s.get('truck_lunch_to')},
         'buffer': {'q': s.get('dispatch_buffer_pct')},     # запас на рейс (№66): процентиль настроек
+        'truck_unload': None, 'truck_travel': None,
     }
     keys = [(k, scope_travel if k == 'travel' else '') for k in learning.KINDS if k != 'fuel'] + \
         sorted(k for k in latest if k[0] == 'fuel')
@@ -2708,6 +2720,7 @@ def api_learning() -> Any:
                               'loading_min': learning.LOADING_MIN, 'travel_min_test': learning.TRAVEL_MIN_TEST,
                               'truck_time_min': learning.TRUCK_TIME_MIN, 'lunch_min': learning.LUNCH_MIN,
                               'buffer_min': learning.BUFFER_MIN, 'buffer_cap_pct': round(fl.BUFFER_CAP_REL * 100),
+                              'pace_unload_min': learning.PACE_UNLOAD_MIN, 'pace_travel_min': learning.PACE_TRAVEL_MIN,
                               'boot_share_pct': round(learning.BOOT_SHARE * 100),
                               'boot_resamples': learning.BOOT_RESAMPLES,
                               'fuel_min_intervals': learning.FUEL_MIN_INTERVALS,

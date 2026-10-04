@@ -2304,8 +2304,11 @@
             if (m.learned.unload) learned.push('բեռնաթափման ժամանակը');
             if (m.learned.loading) learned.push('բեռնման ժամանակը');
             if (num(m.learned.lunch) !== null) learned.push('ճաշը ճանապարհին՝ ' + minText(m.learned.lunch));   // обед (№61)
-            // запас на рейс (№66)
+            // запас на рейс и темп машин (№66)
             if (num(m.learned.buffer_pct) !== null) learned.push('ժամանակի պաշար երթի վերջում (երթը ժամանակին է 100-ից ' + fmt(m.learned.buffer_pct) + ' դեպքում)');
+            const pace = Object.keys(m.learned.pace || {});
+            if (pace.length) learned.push('մեքենայի գործակիցները՝ ' + pace.map(c => truckLabel(truckBy(c)) + ' (բեռնաթափում ×'
+                + fmt(m.learned.pace[c][0], 2) + ', ճանապարհ ×' + fmt(m.learned.pace[c][1], 2) + ')').join(', '));
             if ((m.learned.fuel || []).length) learned.push('դիզելի ծախսը՝ ' + m.learned.fuel.map(c => truckLabel(truckBy(c))).join(', '));
         }
         // загрузка на складе — те же числа, что прибавляет расчёт (tn.load), даже если задано только одно из двух
