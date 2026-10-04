@@ -224,6 +224,7 @@
 #rtDispatch .dp-truck-t { grid-column: 1; grid-row: 1; gap: 1px; }
 #rtDispatch .dp-truck-t b { font-size: .9688rem; font-weight: 700; line-height: 1.25; }
 #rtDispatch .dp-truck-sub { font-size: .8125rem; color: var(--rt-fg-mute); line-height: 1.35; }
+#rtDispatch .dp-truck-sub.dp-agent-line { color: var(--rt-fg-dim); font-weight: 600; }
 #rtDispatch .dp-truck-sub.dp-plate { font-family: var(--rt-mono); color: var(--rt-fg-dim); font-size: .8125rem; letter-spacing: .02em; border: 0; background: none; padding: 0; }
 #rtDispatch .dp-truck:not(:has(input:checked)):not(.is-off) { opacity: .62; }
 #rtDispatch .dp-truck:not(:has(input:checked)):not(.is-off) .dp-truck-t b { text-decoration: line-through; text-decoration-color: var(--rt-fg-mute); }

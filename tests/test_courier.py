@@ -276,7 +276,7 @@ class FakeErp:
         if sql.startswith(ed.SQL_GPS_VISITS.split('{')[0]):
             return [(12, 40.3, 44.6, 10), (12, 40.3, 44.6, 10), (12, 40.3, 44.6, 500), (12, 40.3, 44.6, None)]
         if sql == erp.SQL_AGENTS:
-            return [(7, 'A7', 'Մենեջեր', False)]
+            return [(7, 'A7', 'Մենեջեր', False, 'Կենտրոն')]
         if sql == erp.SQL_CARS:
             return [('991AT61', 'HOWO', False)]
         if sql.startswith(ed.SQL_DEBIT_BEFORE.split('{')[0]):

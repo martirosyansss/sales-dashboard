@@ -726,10 +726,17 @@
             txt.className = 'dp-truck-t';
             const nm = document.createElement('b');
             nm.textContent = a.name || a.code || ('մենեջեր ' + a.agent_id);
+            txt.appendChild(nm);
+            if (a.area) {
+                const line = document.createElement('span');
+                line.className = 'dp-truck-sub dp-agent-line';
+                line.textContent = a.area;
+                txt.appendChild(line);
+            }
             const sub = document.createElement('span');
             sub.className = 'dp-truck-sub';
             sub.textContent = (a.name && a.code ? a.code + ' · ' : '') + pl(a.count, 'պատվեր') + ' · ' + kgText(a.kg);
-            txt.append(nm, sub);
+            txt.appendChild(sub);
             lab.append(cb, txt);
             fs.appendChild(lab);
         });

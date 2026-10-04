@@ -197,8 +197,13 @@ def _day(x: Any) -> date:
 # --- Запросы (все — SELECT с WITH (NOLOCK); {ph} — только плейсхолдеры `?`) ---
 
 SQL_AGENTS = """
-SELECT a.fID, a.fCODE, a.fNAME, a.fCLOSED
+SELECT a.fID, a.fCODE, a.fNAME, a.fCLOSED, ar.area
 FROM SALESAGENTS a WITH (NOLOCK)
+OUTER APPLY (SELECT TOP 1 COALESCE(t.fCAPTION, RTRIM(sa.fSALESAREA)) AS area
+             FROM SALESAGENTAREAS sa WITH (NOLOCK)
+             LEFT JOIN TREES t WITH (NOLOCK) ON t.fTREEID = 'SArea' AND t.fCODE = sa.fSALESAREA
+             WHERE sa.fSALESAGENTID = a.fID
+             ORDER BY sa.fDEFAULT DESC, sa.fROWNUM) ar
 """
 
 SQL_ROUTE_TEMPLATES = """
@@ -390,6 +395,7 @@ class Agent:
     code: str
     name: str
     closed: bool
+    area: str = ''          # «գիծ»: название основной зоны продаж (SALESAGENTAREAS → TREES 'SArea')
 
 
 @dataclass(frozen=True)
@@ -421,7 +427,7 @@ class Car:
 
 
 def agents(conn: Any) -> dict[int, Agent]:
-    return {int(r[0]): Agent(int(r[0]), _str(r[1]), _str(r[2]), bool(r[3]))
+    return {int(r[0]): Agent(int(r[0]), _str(r[1]), _str(r[2]), bool(r[3]), _str(r[4]))
             for r in _select(conn, SQL_AGENTS)}
 
 

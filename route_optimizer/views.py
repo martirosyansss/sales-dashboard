@@ -1310,6 +1310,7 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     for aid, orders in by_agent.items():
         agent = dd.snap.agents.get(aid)
         agents_json.append({'agent_id': aid, 'code': agent.code if agent else '', 'name': agent.name if agent else '',
+                            'area': agent.area if agent else '',
                             'count': len(orders), 'kg': round(sum(o.kg for o in orders)),
                             'revenue': round(sum(o.revenue for o in orders)), 'off': aid in off})
     agents_json.sort(key=lambda a: (a['name'] or a['code'] or '~', a['agent_id']))

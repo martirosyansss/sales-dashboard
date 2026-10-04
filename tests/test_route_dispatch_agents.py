@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 from courier import routes_link as rl  # noqa: E402
 from route_optimizer import dispatch as dp  # noqa: E402
+from route_optimizer import erp  # noqa: E402
 from test_route_optimizer import (EAST, FORD, HOWO, _dispatch_setup, _dorder, _dp_ctx, _dp_stops, _isn,  # noqa: E402,F401
                                   client)
 
@@ -78,6 +79,7 @@ def test_api_agents_filter_before_and_after_build(client):
     d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
     assert [(a['agent_id'], a['code'], a['count'], a['kg'], a['off']) for a in d['agents']] == \
         [(1, 'A001', 3, 530, False), (2, 'A002', 2, 1500, False)]
+    assert [a['area'] for a in d['agents']] == ['', '']           # «գիծ» неизвестна — пусто, карточка без строки
     assert d['agents_off'] == [] and (d['orders']['agents_off'], d['orders']['agents_off_kg']) == (0, 0)
 
     # до сборки фильтр приходит со сборкой: везём только менеджера 1
@@ -154,3 +156,12 @@ def test_courier_pick_orders_skips_filtered_managers():
     # магазин 2 в рейсе ради заказа менеджера 7: заказ менеджера 8 там же и его заказ прошлых дней водитель не везёт
     off = rl.RoutesView(plan_exists=True, trips=(('A', (2, 3)),), added=frozenset({isn[2]}), agents_off=frozenset({8}))
     assert [o.isn for o in rl.pick_orders(orders, d, off, 'A')] == [isn[0]]
+
+
+def test_erp_agents_carry_line_name(monkeypatch):
+    # «գիծ» карточки менеджера — основная зона продаж; у менеджера без зоны — пусто
+    monkeypatch.setattr(erp, '_select', lambda conn, sql, *a: [(1, 'A002/10', 'Գալստյան Հայկ', False, ' Կոտայք - Էրեբունի '),
+                                                               (2, 'A000', 'Rocarm', False, None)])
+    got = erp.agents(object())
+    assert (got[1].area, got[2].area) == ('Կոտայք - Էրեբունի', '')
+    assert 'SALESAGENTAREAS' in erp.SQL_AGENTS and "'SArea'" in erp.SQL_AGENTS
