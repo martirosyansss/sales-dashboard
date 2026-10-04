@@ -462,8 +462,9 @@ def test_learning_skips_center_truck_legs_on_bypass(client, fake, monkeypatch, t
     seen = {'leg_obs': [], 'truck_time_obs': []}
     for name in seen:
         real = getattr(views.learning, name)
-        monkeypatch.setattr(views.learning, name, lambda day, actual, norms, name=name, real=real:
-                            seen[name].append(actual.legs) or real(day, actual, norms))
+        # leg_obs получает и машину (темп машины, №66) — шпион передаёт её дальше
+        monkeypatch.setattr(views.learning, name, lambda day, actual, norms, *more, name=name, real=real:
+                            seen[name].append(actual.legs) or real(day, actual, norms, *more))
     views.run_learning(state, LEARNING_DAY)
     crossing = (rd.point_key(S101), rd.point_key(S102))
     for name, days in seen.items():
