@@ -108,11 +108,12 @@ def test_template_select_other_note_versions_and_no_new_static():
     assert 'id="gjWhatOther" class="rt-input" type="text" maxlength="120"' in HTML
     assert '<span id="gjSpreadWhy" class="gj-suggest" hidden></span>' in HTML
     assert 'placeholder="Մանրամասներ՝ օրինակ՝ առջևի, ձախ, որտեղ են վերանորոգել, կտրոնի համար"' in HTML
-    assert "routes_garage.css') }}?v=5" in HTML and "routes_garage.js') }}?v=6" in HTML
+    assert "routes_garage.css') }}?v=7" in HTML and "routes_garage.js') }}?v=8" in HTML
     assert '.gj-what-other { margin-top: 8px; }' in CSS
-    # вход из интернета пропускает ровно эту статику (app_v2._PUBLIC_STATIC) — новых файлов нет
+    # вход из интернета пропускает ровно эту статику (app_v2._PUBLIC_STATIC); routes_basemap.js — карта дня «Նորմ և
+    # փաստ» (04.10), в списке открытых снаружи вместе с ним
     assert re.findall(r"filename='((?:css|js)/[^']+)'", HTML) == ['css/routes.css', 'css/routes_garage.css',
-                                                                   'js/routes_garage.js']
+                                                                   'js/routes_basemap.js', 'js/routes_garage.js']
     text = [ln for ln in JS[JS.index('const OTHER'):JS.index('function syncOdoHint')].splitlines()
             if not ln.strip().startswith('//')]
     assert not [ln for ln in text if any('Ѐ' <= ch <= 'ӿ' for ch in ln.split('//')[0])], 'тексты — по-армянски (№58)'

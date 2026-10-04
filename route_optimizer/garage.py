@@ -33,7 +33,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 KINDS = ('repair', 'accident', 'fixed', 'odometer')
 WINDOW_DAYS = 365
@@ -219,3 +219,78 @@ def effective(found: Mapping[str, Price]) -> dict[str, float]:
     """Машина → ремонт ֏/км в расчёте: только готовые цены. Остальные машины — с ручным «Износ, драм/км» (пусто —
     средняя, priors)."""
     return {code: p.price for code, p in found.items() if p.price is not None}
+
+
+# --- «Նորմ և փաստ» (вкладка журнала гаража, 04.10): расход и км машины за месяц против нормы и плана ---
+# Факт — из APK: заправки (learning.fuel_intervals) и трек GPS (learning.day_report через views._learning_days).
+# Числа здесь — без округления (Δ% и флаг — по ним); округляет только ответ страницы.
+ALERT_PCT = 10   # факт выше нормы расхода (или км выше плана) больше чем на 10% — красный флаг (просьба владельца)
+
+
+def delta_pct(fact: float | None, norm: float | None) -> float | None:
+    """(факт − норма) / норма, %; нет факта или нормы (≤ 0) — None."""
+    if fact is None or norm is None or norm <= 0:
+        return None
+    return (fact - norm) / norm * 100.0
+
+
+def over(fact: float | None, norm: float | None) -> bool:
+    """Факт выше нормы больше чем на ALERT_PCT % (ровно +10% — не флаг)."""
+    if fact is None or norm is None or norm <= 0:
+        return False
+    return round((fact - norm) / norm * 100.0, 6) > ALERT_PCT   # без шума float: 30.8 к 28.0 — ровно +10%, не флаг
+
+
+@dataclass(frozen=True)
+class FuelMonth:
+    """Расход машины за месяц по заправкам: l100 = liters / km × 100 по интервалам «полный бак → полный бак»."""
+    l100: float | None
+    liters: float
+    km: float
+    intervals: int
+    refuels: int                # заправок с днём в месяце (исправленные водителем — не в счёт)
+    reason: str | None          # нет расхода: no_refuels | one_refuel | no_interval | suspicious; есть — None
+    too_high: int = 0           # интервалов с расходом выше learning.FUEL_L100 (литры или одометр с ошибкой) —
+    too_low: int = 0            # …и ниже: в расход не идут, но видны красным (подозрительные заправки)
+
+
+def fuel_month(intervals: Iterable[tuple[date, float, float]], refuel_days: Iterable[date], first: date,
+               last: date, rejected: Iterable[tuple[date, bool]] = ()) -> FuelMonth:
+    """Расход за месяц [first, last]. intervals — (день закрывающей заправки по Еревану, литры, км одометра); интервал
+    идёт в месяц закрывающей заправки целиком (как learning.fuel_obs): через границу месяца литры и км не делятся —
+    сколько км проехано по дням до границы, по одометру заправок не известно. Расход = Σ литров / Σ км. rejected —
+    (день закрывающей заправки, выше ли границы) интервалов с расходом вне learning.FUEL_L100: считаются по тому же
+    правилу месяца. Интервалов в месяце нет — почему: только подозрительные (suspicious), заправок в месяце нет
+    (no_refuels), одна (one_refuel: расход — между двумя полными баками), иначе (no_interval) нет пары полных баков с
+    согласованным одометром не короче learning.FUEL_MIN_KM."""
+    got = [(liters, km) for day, liters, km in intervals if first <= day <= last]
+    bad = [high for day, high in rejected if first <= day <= last]
+    high, low = sum(1 for x in bad if x), sum(1 for x in bad if not x)
+    n = sum(1 for d in refuel_days if first <= d <= last)
+    liters, km = math.fsum(x for x, _ in got), math.fsum(k for _, k in got)
+    if got and km > 0:
+        return FuelMonth(liters / km * 100.0, liters, km, len(got), n, None, high, low)
+    reason = 'suspicious' if bad else 'no_refuels' if n == 0 else 'one_refuel' if n == 1 else 'no_interval'
+    return FuelMonth(None, 0.0, 0.0, 0, n, reason, high, low)
+
+
+@dataclass(frozen=True)
+class KmMonth:
+    """Км машины за месяц: план «Развоза» и GPS в дни, где есть и то и другое; отклонения — за все дни с треком."""
+    days: int                   # дней с треком GPS
+    plan_days: int              # из них с сохранённым планом «Развоза» (км плана)
+    plan_km: float
+    fact_km: float              # км по GPS в те же plan_days
+    unplanned_stays: int        # стоянки вне точек плана (все дни с треком)
+    order_changes: int          # точки не по порядку плана
+
+
+def km_month(rows: Iterable[Mapping[str, Any]]) -> KmMonth:
+    """Строки learning.day_report машины за месяц → KmMonth. План без км (старый черновик) или без факта км — день в
+    сравнение км не идёт."""
+    rows = list(rows)
+    both = [r for r in rows if r['plan']['km'] is not None and r['fact']['km'] is not None]
+    return KmMonth(len(rows), len(both), math.fsum(r['plan']['km'] for r in both),
+                   math.fsum(r['fact']['km'] for r in both),
+                   sum(r['fact']['unplanned_stays'] or 0 for r in rows),
+                   sum(r['kpi']['order_changes'] or 0 for r in rows))

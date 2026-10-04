@@ -161,6 +161,10 @@ class RoutesState:
     # факт машино-дня: (машина, день) → (отпечаток данных, точки плана, факт) — views._learning_days
     actuals_cache: dict[tuple[str, str], tuple[Any, Any, Any]] = field(default_factory=dict)
     actuals_lock: threading.Lock = field(default_factory=threading.Lock)
+    # «Նորմ և փաստ»: факт месяца, который считается в фоне, (с, по) → поток (не больше одного) и периоды, чей расчёт
+    # упал (views._month_ready; под actuals_lock)
+    garage_warm: dict[tuple[date, date], threading.Thread] = field(default_factory=dict)
+    garage_warm_failed: set[tuple[date, date]] = field(default_factory=set)
 
 
 def _now() -> str:
@@ -2773,6 +2777,11 @@ def api_learning_day() -> Any:
     """Карта «план — факт» машины за день (ответ владельца №46): упрощённый трек GPS (≤ MAP_TRACK_POINTS точек), склад,
     точки дня с плановым (на момент сборки) и фактическим временем и опозданием, плановые рейсы (точки по порядку —
     линии по дорогам строит страница через /api/routes/road-lines). ERP не читается."""
+    return _day_map()
+
+
+def _day_map() -> Any:
+    """Ответ карты дня ?date=&car= (api_learning_day; ту же карту видит «Ավտոտնակ» — api_garage_day)."""
     day = _parse_day(request.args.get('date'))
     car = request.args.get('car')
     if day is None or not isinstance(car, str) or not car or len(car) > 20:
@@ -3034,3 +3043,200 @@ def api_garage_odometers() -> Any:
     logger.info('[Routes] Журнал гаража (%s): пробег — записано %d, ошибок %d', session.get('username'), len(saved),
                 len(errors))
     return jsonify({'success': True, 'saved': saved, 'errors': {str(i): t for i, t in sorted(errors.items())}})
+
+
+# --- «Նորմ և փաստ»: расход и км машины за месяц против нормы и плана (вкладка «Ավտոտնակ», 04.10) ---
+# Факт — тот же, что у «Обучения и факта» (_learning_days, learning.day_report, learning.fuel_intervals); ERP не
+# читается, кроме названий машин (_garage_trucks, снимок в кэше).
+
+GARAGE_REFUEL_LOOKBACK_DAYS = 60   # заправки до месяца — начало первого интервала (как отчёт api_learning)
+GARAGE_NORM_MONTHS = 12            # раньше — не считается (тело «տվյալ չկա», без потока): факт таких месяцев не в кэше
+# Факт машино-дня без кэша — ≈ 0,03–0,1 с (actuals.reconstruct): месяц 20 машин впервые после перезапуска — до минуты.
+# Дольше этого ответ не ждёт: факт досчитывается в фоне (в кэш _learning_days), страница спрашивает снова (pending).
+GARAGE_NORM_WAIT_S = 1.5
+
+
+def _add_months(first: date, n: int) -> date:
+    return date(first.year + (first.month - 1 + n) // 12, (first.month - 1 + n) % 12 + 1, 1)
+
+
+def _garage_month(raw: str, today: date) -> date | None:
+    """«YYYY-MM» → первый день месяца: не позже месяца today и не раньше 2000 года; пусто — месяц today."""
+    if not raw:
+        return today.replace(day=1)
+    if not _MONTH_RE.match(raw):
+        return None
+    year, month = int(raw[:4]), int(raw[5:])
+    if not 1 <= month <= 12 or year < 2000:
+        return None
+    first = date(year, month, 1)
+    return first if first <= today.replace(day=1) else None
+
+
+def _warm_days(state: RoutesState, bundle: Bundle, since: date, until: date) -> None:
+    """Фоновый расчёт факта за since…until (в кэш _learning_days). Сбой — в журнал и в garage_warm_failed: следующий
+    запрос этого периода получит {failed: true}, а не тот же долгий пересчёт с 500."""
+    try:
+        _learning_days(state, bundle, since, until)
+    except Exception:
+        logger.exception('[Routes] «Նորմ և փաստ»: факт %s…%s не посчитан', since, until)
+        with state.actuals_lock:
+            state.garage_warm_failed.add((since, until))
+    finally:
+        with state.actuals_lock:
+            state.garage_warm.pop((since, until), None)
+
+
+def _month_ready(state: RoutesState, bundle: Bundle, since: date, until: date) -> str:
+    """Факт машин за since…until: ready — в кэше _learning_days (досчитан не дольше GARAGE_NORM_WAIT_S); pending —
+    досчитывается в фоне; failed — фоновый расчёт упал (отметка снимается: следующий запрос пробует снова). Поток
+    один на весь сервер: идёт расчёт другого месяца — этот ждёт своей очереди (pending), CPU не делится на несколько."""
+    with state.actuals_lock:
+        if (since, until) in state.garage_warm_failed:
+            state.garage_warm_failed.discard((since, until))
+            return 'failed'
+        job = state.garage_warm.get((since, until))
+        if job is None:
+            if state.garage_warm:
+                return 'pending'
+            job = threading.Thread(target=_warm_days, args=(state, bundle, since, until), name='routes-garage-norm',
+                                   daemon=True)
+            state.garage_warm[(since, until)] = job
+            job.start()
+    job.join(GARAGE_NORM_WAIT_S)
+    if job.is_alive():
+        return 'pending'
+    with state.actuals_lock:
+        if (since, until) in state.garage_warm_failed:
+            state.garage_warm_failed.discard((since, until))
+            return 'failed'
+    return 'ready'
+
+
+def _fuel_norms(state: RoutesState, bundle: Bundle, before: str) -> dict[str, dict[str, Any]]:
+    """Машина → норма тревоги «Ավտոտնակ» и выученный расход. Норма — ручная из настроек: пустой и полный заданы — их
+    середина (manual_profile; ими считает рейс running_costs.route_cost), иначе «Расход, л/100 км» (manual). Выученный
+    (learned: середина «пустой — полный» действующей строки журнала до дня before — конец показываемого месяца) —
+    только рядом: он подогнан под те же заправки, что и факт, и перерасход «выучился» бы. Ручной нормы нет — норма
+    выученная (source learned: тревога слабая, страница это говорит)."""
+    journal = _learned_journal(state, before)
+    fuel = (learning.in_effect(*journal, None).fuel or {}) if journal is not None else {}
+    out = {}
+    for code, t in bundle.trucks.items():
+        p = fuel.get(code)
+        learned = (float(p['empty_l100']) + float(p['full_l100'])) / 2 if p is not None else None
+        if t.fuel_empty_l_per_100km is not None and t.fuel_full_l_per_100km is not None:
+            norm, source = (float(t.fuel_empty_l_per_100km) + float(t.fuel_full_l_per_100km)) / 2, 'manual_profile'
+        elif t.fuel_l_per_100km is not None:
+            norm, source = float(t.fuel_l_per_100km), 'manual'
+        else:
+            norm, source = learned, 'learned' if learned is not None else None
+        out[code] = {'l100': norm, 'source': source, 'learned': learned}
+    return out
+
+
+def _r1(x: float | None) -> float | None:
+    return None if x is None else round(x, 1)
+
+
+@bp.get('/api/routes/garage/norm')
+@_api
+def api_garage_norm() -> Any:
+    """«Նորմ և փաստ» за месяц ?month=YYYY-MM (пусто — текущий по Еревану): по машине — норма тревоги (_fuel_norms:
+    ручная, выученный — рядом) и расход по заправкам (garage.fuel_month: интервал — в месяц закрывающей заправки;
+    расход вне learning.FUEL_L100 — подозрительные заправки), км плана «Развоза» и GPS в дни, где есть оба
+    (garage.km_month), стоянки вне плана и точки не по порядку, флаги выше нормы / плана больше чем на
+    garage.ALERT_PCT %, по дням — строки learning.day_report. Дни GPS — до вчера (сегодня ещё не кончилось). Месяц
+    раньше GARAGE_NORM_MONTHS назад — too_old, без данных. Факт месяца не успел посчитаться за GARAGE_NORM_WAIT_S —
+    {pending: true}: досчитывается в фоне, страница спрашивает снова; фоновый расчёт упал — {failed: true}. Карта дня —
+    /api/routes/garage/day."""
+    today = _yerevan_now().date()
+    first = _garage_month(request.args.get('month') or '', today)
+    if first is None:
+        return _bad_request({'month': 'Ամիսը՝ ՏՏՏՏ-ԱԱ, ոչ ուշ, քան ընթացիկ ամիսը'})
+    last = _add_months(first, 1) - timedelta(days=1)
+    gps_to = min(last, today - timedelta(days=1))
+    oldest = _add_months(today.replace(day=1), -(GARAGE_NORM_MONTHS - 1))   # 12 месяцев вместе с текущим
+    too_old = first < oldest
+    state = _state()
+    bundle = state.store.load()
+    facts = None if too_old else state.fleet_facts
+    head = {'success': True, 'month': first.isoformat()[:7]}
+    # трека в месяце нет (дешёвый запрос по индексу) — считать нечего, поток не нужен
+    if facts is not None and gps_to >= first and facts.car_days(first.isoformat(), gps_to.isoformat()):
+        ready = _month_ready(state, bundle, first, gps_to)
+        if ready != 'ready':
+            return jsonify({**head, 'pending': ready == 'pending', 'failed': ready == 'failed'})
+        days = _learning_days(state, bundle, first, gps_to)
+    else:
+        days = []
+    since = (first - timedelta(days=GARAGE_REFUEL_LOOKBACK_DAYS)).isoformat()
+    refuels = [r for r in (facts.refuels(since) if facts is not None else [])
+               if (r.get('eff_date') or r.get('date') or '') >= since]
+    rejected: list[learning.Interval] = []
+    intervals = learning.fuel_intervals(refuels, rejected)
+    reports: dict[str, list[dict[str, Any]]] = {}
+    for car, day, stops, actual, draft, plan_trips, plan_stops in days:
+        truck = bundle.trucks.get(car)
+        prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
+        reports.setdefault(car, []).append(learning.day_report(
+            car, day, actual, stops, prediction, plan_trips, plan_stops, truck.capacity_kg if truck is not None else None,
+            learning.daily_l100(intervals, car, day)))
+    ends: dict[str, list[tuple[date, float, float]]] = {}
+    for iv in intervals:
+        ends.setdefault(iv.car_code, []).append((iv.end.astimezone(ac.YEREVAN).date(), iv.liters, iv.km))
+    odd: dict[str, list[tuple[date, bool]]] = {}
+    for iv in rejected:
+        odd.setdefault(iv.car_code, []).append((iv.end.astimezone(ac.YEREVAN).date(), iv.l100 > learning.FUEL_L100[1]))
+    refuel_days: dict[str, list[date]] = {}
+    for r in refuels:
+        when = _parse_day(r.get('eff_date') or r.get('date'))
+        if not r.get('superseded') and when is not None:
+            refuel_days.setdefault(r['car_code'], []).append(when)
+    norms = _fuel_norms(state, bundle, _add_months(first, 1).isoformat())
+    known = {t['car_code']: t for t in _garage_trucks(state, bundle)}
+    out = []
+    for code in sorted(set(known) | set(reports) | set(ends) | set(odd) | set(refuel_days)):
+        t = known.get(code, {'car_code': code, 'name': '', 'active': False})
+        fuel = garage.fuel_month(ends.get(code, ()), refuel_days.get(code, ()), first, last, odd.get(code, ()))
+        km = garage.km_month(reports.get(code, ()))
+        if not t['active'] and not km.days and not fuel.refuels and fuel.reason is not None and fuel.reason != 'suspicious':
+            continue   # не в работе и в месяце ничего нет
+        norm = norms.get(code, {'l100': None, 'source': None, 'learned': None})
+        rows = sorted(reports.get(code, ()), key=lambda r: r['day'], reverse=True)
+        out.append({**t, 'norm': {'l100': _r1(norm['l100']), 'source': norm['source'], 'learned': _r1(norm['learned'])},
+                    'fuel': {'l100': _r1(fuel.l100), 'liters': round(fuel.liters, 1), 'km': round(fuel.km, 1),
+                             'intervals': fuel.intervals, 'refuels': fuel.refuels, 'reason': fuel.reason,
+                             'too_high': fuel.too_high, 'too_low': fuel.too_low,
+                             'delta_pct': _r1(garage.delta_pct(fuel.l100, norm['l100'])),
+                             'over': garage.over(fuel.l100, norm['l100'])},
+                    'km': {'days': km.days, 'plan_days': km.plan_days, 'plan': round(km.plan_km, 1),
+                           'fact': round(km.fact_km, 1),
+                           'delta': round(km.fact_km - km.plan_km, 1) if km.plan_days else None,
+                           'delta_pct': _r1(garage.delta_pct(km.fact_km, km.plan_km)) if km.plan_days else None,
+                           'over': bool(km.plan_days) and garage.over(km.fact_km, km.plan_km)},
+                    'unplanned_stays': km.unplanned_stays, 'order_changes': km.order_changes,
+                    'days': [{'day': r['day'], 'plan_km': r['plan']['km'], 'fact_km': r['fact']['km'],
+                              'liters': r['fact']['liters'], 'unplanned_stays': r['fact']['unplanned_stays'],
+                              'order_changes': r['kpi']['order_changes'],
+                              'over': garage.over(r['fact']['km'], r['plan']['km'])} for r in rows]})
+    # сначала машины с флагом (и с подозрительными заправками), затем с данными — начальнику гаража на телефоне не листать
+    out.sort(key=lambda x: (not (x['fuel']['over'] or x['km']['over'] or x['fuel']['too_high'] or x['fuel']['too_low']),
+                            not (x['km']['days'] or x['fuel']['refuels'])))
+    return jsonify({**head, 'pending': False, 'failed': False, 'too_old': too_old, 'from': first.isoformat(),
+                    'to': last.isoformat(), 'gps_to': gps_to.isoformat() if gps_to >= first else None,
+                    'current_month': today.isoformat()[:7], 'oldest_month': oldest.isoformat()[:7],
+                    'connected': state.fleet_facts is not None,
+                    'has_data': any(x['km']['days'] or x['fuel']['refuels'] or x['fuel']['intervals'] for x in out),
+                    'trucks': out,
+                    'rules': {'alert_pct': garage.ALERT_PCT, 'fuel_min_km': learning.FUEL_MIN_KM,
+                              'fuel_l100': list(learning.FUEL_L100)}})
+
+
+@bp.get('/api/routes/garage/day')
+@_api
+def api_garage_day() -> Any:
+    """Карта дня машины ?date=&car= для «Նորմ և փաստ»: ровно ответ /api/routes/learning/day (трек GPS, точки плана с
+    плановым и фактическим временем, плановые рейсы). Линии плана по дорогам странице гаража не строятся (road-lines —
+    API администратора): по прямой между точками."""
+    return _day_map()

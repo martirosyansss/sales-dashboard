@@ -6,9 +6,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- Leaflet — карта дня во вкладке «Նորմ և փաստ» (CDN, как у «Обучения»: статики на публичном хосте не прибавляется) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=20">
 <!-- Журнал гаража (ответ владельца №53): страница на армянском, телефон и ПК — свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_garage.css') }}?v=5">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_garage.css') }}?v=7">
 {% endblock %}
 
 {% block content %}
@@ -52,6 +55,8 @@
             <i class="fas fa-gauge" aria-hidden="true"></i>Վազք</button>
         <button type="button" role="tab" id="gjTabSum" aria-controls="gjSum" aria-selected="false" tabindex="-1">
             <i class="fas fa-chart-column" aria-hidden="true"></i>Ամփոփում</button>
+        <button type="button" role="tab" id="gjTabNorm" aria-controls="gjNorm" aria-selected="false" tabindex="-1">
+            <i class="fas fa-gas-pump" aria-hidden="true"></i>Նորմ և փաստ</button>
     </div>
 
     <!-- 1. Ծախսեր: форма записи и список записей -->
@@ -230,9 +235,58 @@
             </div>
         </section>
     </section>
+    <!-- 4. Նորմ և փաստ: расход по заправкам против нормы «Развоза», км по GPS против плана — за месяц -->
+    <section id="gjNorm" role="tabpanel" aria-labelledby="gjTabNorm" hidden>
+        <section class="rt-card" aria-labelledby="gjNormTitle">
+            <div class="rt-card-head">
+                <h2 class="rt-card-title" id="gjNormTitle"><i class="fas fa-gas-pump" aria-hidden="true"></i>Նորմ և փաստ ըստ մեքենաների</h2>
+            </div>
+            <div class="gj-filters">
+                <div class="rt-field">
+                    <label for="gjNormMonth">Ամիս</label>
+                    <input id="gjNormMonth" class="rt-input gj-date" type="month">
+                </div>
+            </div>
+            <p class="rt-card-lead" id="gjNormLead"></p>
+            <div id="gjNormEmpty" class="rt-alert is-warn gj-norm-empty" role="status" hidden>
+                <i class="fas fa-satellite-dish" aria-hidden="true"></i>
+                <span id="gjNormEmptyText" class="rt-alert-text"></span>
+            </div>
+            <div class="rt-table-scroll gj-scroll">
+                <table class="rt-table gj-table gj-norm-table">
+                    <caption class="rt-sr-only">Վառելիքի ծախսը և կիլոմետրերը՝ նորմ և փաստ ըստ մեքենաների</caption>
+                    <thead><tr>
+                        <th scope="col">Մեքենա</th><th scope="col" class="gj-num">Նորմ, լ/100 կմ</th>
+                        <th scope="col" class="gj-num">Փաստ, լ/100 կմ</th><th scope="col" class="gj-num">Կմ՝ պլան → փաստ</th>
+                        <th scope="col" class="gj-num">Կանգառներ պլանից դուրս</th><th scope="col" class="gj-num">Ոչ հերթականությամբ</th>
+                        <th scope="col" class="gj-num">Օրեր GPS-ով</th><th scope="col"><span class="rt-sr-only">Ըստ օրերի</span></th>
+                    </tr></thead>
+                    <tbody id="gjNormRows"><tr><td colspan="8" class="rt-empty">Բեռնվում է…</td></tr></tbody>
+                </table>
+            </div>
+        </section>
+        <section class="rt-card" id="gjMapBox" aria-labelledby="gjMapTitle" hidden>
+            <div class="rt-card-head">
+                <h2 class="rt-card-title"><i class="fas fa-map-location-dot" aria-hidden="true"></i><span id="gjMapTitle">Օրվա քարտեզ</span></h2>
+                <button id="gjMapClose" type="button" class="rt-btn rt-btn-ghost rt-btn-sm"><i class="fas fa-xmark" aria-hidden="true"></i>Փակել</button>
+            </div>
+            <p class="gj-sub" id="gjMapNote"></p>
+            <div id="gjMap" class="gj-map" role="region" aria-label="Քարտեզ՝ մեքենայի օրվա պլանը և փաստը"></div>
+            <p class="gj-map-legend">
+                <span><span class="gj-line is-plan" aria-hidden="true"></span>պլան (ուղիղ գծով կետից կետ)</span>
+                <span><span class="gj-line is-fact" aria-hidden="true"></span>փաստացի ճանապարհ (GPS)</span>
+                <span><span class="rt-dot is-ok" aria-hidden="true"></span>ժամանակին</span>
+                <span><span class="rt-dot is-late" aria-hidden="true"></span>ուշ կամ շուտ</span>
+                <span><span class="rt-dot is-none" aria-hidden="true"></span>չի այցելել</span></p>
+        </section>
+    </section>
 </div>
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=6"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+<!-- подложка карт раздела (№47) — без ключа Яндекса: страница открыта из интернета, ключ сюда не выдаётся → OpenStreetMap -->
+<script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key=""></script>
+<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=8"></script>
 {% endblock %}

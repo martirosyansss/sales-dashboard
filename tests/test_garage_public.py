@@ -30,7 +30,7 @@ PASSWORDS = {'garage1': 'garage-pass-1', 'gshort': 'short-pw', 'boss': 'boss-pas
              'odd': 'odd-password'}
 ROLES = {'garage1': 'garage', 'gshort': 'garage', 'boss': 'admin', 'u': 'user', 'odd': 'superuser'}
 STATIC = ('/static/css/tokens.css', '/static/css/base.css', '/static/js/base.js', '/static/css/routes.css',
-          '/static/css/routes_garage.css', '/static/js/routes_garage.js', '/favicon.ico')
+          '/static/css/routes_garage.css', '/static/js/routes_garage.js', '/static/js/routes_basemap.js', '/favicon.ico')
 ENTRY = {'car_code': 'CAR1', 'day': '2026-09-01', 'kind': 'repair', 'what': 'Կոճղակներ', 'amount_amd': 85_000,
          'odometer_km': 120_500}
 

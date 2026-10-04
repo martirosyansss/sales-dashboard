@@ -6,9 +6,9 @@
 #gjPage { max-width: 1280px; margin: 0 auto; }
 #gjPage .rt-title { font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.125rem); }
 
-/* Вкладки страницы: Ծախսեր · Վազք · Ամփոփում */
+/* Вкладки страницы: Ծախսեր · Վազք · Ամփոփում · Նորմ և փաստ */
 .gj-tabs {
-    display: flex; gap: 4px; padding: 4px; margin: 16px 0 14px; max-width: 560px;
+    display: flex; gap: 4px; padding: 4px; margin: 16px 0 14px; max-width: 760px;
     background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: 12px;
 }
 .gj-tabs button {
@@ -63,13 +63,42 @@
 .gj-suggest { font-size: .8125rem; color: var(--rt-warn); line-height: 1.45; }
 .gj-suggest[hidden] { display: none; }
 
+/* Նորմ և փաստ: красный — факт выше нормы или плана больше чем на 10%; по дням — список под строкой машины; карта дня */
+.gj-over { color: var(--rt-danger); }
+.gj-nodata { color: var(--rt-fg-mute); }
+.gj-weak { color: var(--rt-warn); }               /* норма — выученная (ручной нет): тревога слабая */
+.gj-days-note { margin: 0 0 6px; }
+.gj-flags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.gj-norm-table tr.is-over td:first-child { box-shadow: inset 3px 0 0 var(--rt-danger); }
+.gj-norm-empty { margin: 0 0 12px; }
+.gj-norm-days > td { padding-top: 0; }
+.gj-days { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.gj-days li {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 8px 10px;
+    border: 1px solid var(--rt-line); border-radius: 10px; background: var(--rt-inset); font-size: .875rem;
+}
+.gj-days li .rt-btn { margin-left: auto; }
+.gj-map { height: 420px; border-radius: 12px; margin: 8px 0; }
+.gj-map-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: .8125rem; color: var(--rt-fg-dim); margin: 0; }
+.gj-map-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.gj-line { display: inline-block; width: 22px; border-top: 3px solid #3b82f6; }
+.gj-line.is-plan { border-top: 3px dashed #8791a3; }
+.gj-map-legend .rt-dot.is-ok { background: #45d98f; }
+.gj-map-legend .rt-dot.is-late { background: #ff6b79; }
+.gj-map-legend .rt-dot.is-none { background: #8791a3; }
+
 @media (max-width: 767px) {
     .gj-grid { grid-template-columns: minmax(0, 1fr); }
     .gj-actions .rt-btn { flex: 1 1 auto; }
 }
 @media (max-width: 575px) {
-    .gj-tabs { max-width: none; }
+    .gj-tabs { max-width: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }   /* 4 вкладки — 2 × 2 */
     .gj-tabs button { font-size: .9375rem; padding: 0 6px; gap: 6px; }
+    .gj-map { height: 340px; }
+    .gj-norm-table tbody tr.is-over { border-color: var(--rt-danger-line); }
+    .gj-norm-table tr.is-over td:first-child { box-shadow: none; }
+    .gj-norm-table tbody tr.gj-norm-days { padding: 0; border: none; background: none; margin-top: -4px; }
+    .gj-norm-table tbody tr.gj-norm-days[hidden] { display: none; }
     .gj-table .gj-num { text-align: left; white-space: normal; }
     .gj-table tbody td[data-label]::before { font-family: var(--rt-font); }   /* подпись — не моноширинным цифр */
     .gj-table tbody td.gj-acts { grid-column: 1 / -1; }
