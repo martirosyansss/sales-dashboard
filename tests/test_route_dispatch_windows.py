@@ -92,17 +92,19 @@ def test_customer_window_check_and_span():
     assert st.check_window({'kind': 'after', 't1': 840})[0].span() == (840.0, INF)
     assert st.check_window({'kind': 'between', 't1': 600, 't2': 840})[0].span() == (600.0, 840.0)
     assert st.check_window({'kind': 'at', 't1': 660, 'tol': 0})[0].span() == (660.0, 660.0)
-    for bad, text in (({'kind': 'soon', 't1': 600}, 'вид окна'),
-                      ({'kind': 'before', 't1': 1440}, 'минуты от 0 до 1439'),
-                      ({'kind': 'before', 't1': True}, 'минуты от 0 до 1439'),
-                      ({'kind': 'before', 't1': 600.5}, 'минуты от 0 до 1439'),
-                      ({'kind': 'between', 't1': 600, 't2': 600}, 'конец интервала'),
-                      ({'kind': 'between', 't1': 600}, 'минуты от 0 до 1439'),
-                      ({'kind': 'at', 't1': 600, 'tol': 121}, 'допуск'),
-                      ({'kind': 'before', 't1': 600, 'tol': 5}, 'лишнее поле'),
-                      ({'kind': 'after', 't1': 600, 't2': 700}, 'лишнее поле'),
-                      ({'kind': 'before', 't1': 600, 'x': 1}, 'ожидалось'),
-                      ([600], 'ожидалось')):
+    extra = 'Սերվերը չընդունեց հարցումը՝ ընդունման ժամի այս տեսակի համար ավելորդ դաշտ'
+    shape = 'Սերվերը չընդունեց հարցումը՝ սպասվում էր {"kind", "t1", "t2", "tol"}'
+    for bad, text in (({'kind': 'soon', 't1': 600}, 'Ընդունման ժամի տեսակը'),
+                      ({'kind': 'before', 't1': 1440}, '00:00-ից մինչև 23:59'),
+                      ({'kind': 'before', 't1': True}, '00:00-ից մինչև 23:59'),
+                      ({'kind': 'before', 't1': 600.5}, '00:00-ից մինչև 23:59'),
+                      ({'kind': 'between', 't1': 600, 't2': 600}, 'Միջակայքի վերջը'),
+                      ({'kind': 'between', 't1': 600}, '00:00-ից մինչև 23:59'),
+                      ({'kind': 'at', 't1': 600, 'tol': 121}, 'Թույլատրելի շեղումը'),
+                      ({'kind': 'before', 't1': 600, 'tol': 5}, extra),
+                      ({'kind': 'after', 't1': 600, 't2': 700}, extra),
+                      ({'kind': 'before', 't1': 600, 'x': 1}, shape),
+                      ([600], shape)):
         w, err = st.check_window(bad)
         assert w is None and text in err, bad
 
@@ -580,13 +582,13 @@ def test_store_rejects_broken_window_rows(tmp_path):
             conn.execute('DELETE FROM customer_window')
             conn.execute(f"INSERT INTO customer_window VALUES({row}, 'x', NULL)")
             conn.commit()
-        with pytest.raises(st.StoreError, match='окно приёма'):
+        with pytest.raises(st.StoreError, match='ընդունման ժամը'):
             s.load()
     with closing(sqlite3.connect(path)) as conn:
         conn.execute('DELETE FROM customer_window')
         conn.execute("INSERT INTO trucks(car_code, active, center_ok, updated_at) VALUES('A', 1, 5, 'x')")
         conn.commit()
-    with pytest.raises(st.StoreError, match='можно в центр'):
+    with pytest.raises(st.StoreError, match='կարող է մտնել կենտրոն'):
         s.load()
 
 
@@ -679,7 +681,7 @@ def test_api_customer_window_and_dispatch_marks(client):
         r = client.post('/api/routes/customer-window', json=body)
         assert r.status_code == 400 and r.get_json()['success'] is False, body
     r = client.post('/api/routes/customer-window', json={'customer_id': 101, 'window': {'kind': 'between', 't1': 700, 't2': 600}})
-    assert r.get_json()['error'] == 'конец интервала должен быть позже начала'
+    assert r.get_json()['error'] == 'Միջակայքի վերջը պետք է լինի սկզբից ուշ'
     assert client.post('/api/routes/customer-window', data='x', content_type='text/plain').status_code == 415
     d = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']}).get_json()
     assert {t['car_code']: t['center_ok'] for t in d['trucks']} == {'CAR1': True, 'CAR2': False}

@@ -1,6 +1,6 @@
 {% extends "base_v2.html" %}
 
-{% block title %}Настройки маршрутов — Sales Dashboard{% endblock %}
+{% block title %}Երթուղիների կարգավորումներ — Sales Dashboard{% endblock %}
 
 {% block extra_css %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -13,35 +13,36 @@
 {% endblock %}
 
 {% block content %}
-<div class="rt-page" id="rtSettings">
+<!-- Страница на армянском (решение владельца №58) -->
+<div class="rt-page" id="rtSettings" lang="hy">
 
     <header class="rt-head">
         <div class="rt-head-row">
-            <h1 class="rt-title">Настройки маршрутов</h1>
-            <nav class="rt-tabs" aria-label="Разделы маршрутов">
-                <a href="/routes">Обзор</a>
-                <a href="/routes/optimize">Оптимизация</a>
-                <a href="/routes/dispatch">Развоз</a>
-                <a href="/routes/learning">Обучение</a>
-                <a href="/routes/settings" aria-current="page">Настройки</a>
-                <a href="/routes/garage">Гараж</a>
+            <h1 class="rt-title">Երթուղիների կարգավորումներ</h1>
+            <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
+                <a href="/routes">Ակնարկ</a>
+                <a href="/routes/optimize">Օպտիմալացում</a>
+                <a href="/routes/dispatch">Առաքում</a>
+                <a href="/routes/learning">Ուսուցում</a>
+                <a href="/routes/settings" aria-current="page">Կարգավորումներ</a>
+                <a href="/routes/garage">Ավտոտնակ</a>
             </nav>
         </div>
-        <p class="rt-head-lead">Здесь указывают то, что программа не может узнать сама: где склад, какие машины, когда магазины принимают доставку и сколько стоит топливо.
-            Остальное она подобрала по ERP и GPS — это можно не трогать.</p>
+        <p class="rt-head-lead">Այստեղ նշեք այն, ինչ ծրագիրն ինքը չի կարող իմանալ՝ որտեղ է պահեստը, ինչ մեքենաներ կան, երբ են խանութներն ընդունում ապրանքը և որքան արժե վառելիքը։
+            Մնացածը ծրագիրն ինքն է ընտրել ըստ ERP-ի և GPS-ի — դա կարելի է չփոխել։</p>
     </header>
 
     <div id="rsStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
 
     <section class="rt-card rcs-card" id="rsCustomerSettings" aria-labelledby="rcsTitle">
         <div class="rt-card-head">
-            <h2 class="rt-card-title" id="rcsTitle"><i class="fas fa-store" aria-hidden="true"></i>Магазины: время и машины</h2>
+            <h2 class="rt-card-title" id="rcsTitle"><i class="fas fa-store" aria-hidden="true"></i>Խանութներ՝ ժամ և մեքենաներ</h2>
         </div>
-        <p class="rt-card-lead">Найдите магазин и задайте время доставки, сколько машина стоит у магазина и какие машины могут его обслуживать.
-            Условия действуют для всех дней, в том числе когда у магазина пока нет заказа.</p>
+        <p class="rt-card-lead">Գտեք խանութը և նշեք ընդունման ժամը, որքան է մեքենան կանգնում խանութի մոտ և որ մեքենաները կարող են այն սպասարկել։
+            Պայմանները գործում են բոլոր օրերի համար, այդ թվում, երբ խանութը դեռ պատվեր չունի։</p>
         <div class="rt-field">
-            <label for="rcsSearch">Название или код магазина</label>
-            <input id="rcsSearch" class="rt-input" type="search" maxlength="100" autocomplete="off" placeholder="Найти магазин" aria-describedby="rcsSearchStatus">
+            <label for="rcsSearch">Խանութի անվանումը կամ կոդը</label>
+            <input id="rcsSearch" class="rt-input" type="search" maxlength="100" autocomplete="off" placeholder="Գտնել խանութ" aria-describedby="rcsSearchStatus">
         </div>
         <p id="rcsSearchStatus" class="rt-field-hint" role="status" aria-live="polite"></p>
         <ul id="rcsMatches" class="rcs-matches"></ul>
@@ -49,57 +50,57 @@
     </section>
 
     <dialog id="rcsDialog" class="rcs-dialog" aria-labelledby="rcsDialogTitle" aria-describedby="rcsShop">
-        <h2 id="rcsDialogTitle" class="rcs-dialog-title">Условия доставки магазина</h2>
+        <h2 id="rcsDialogTitle" class="rcs-dialog-title">Խանութի առաքման պայմանները</h2>
         <p id="rcsShop" class="rt-card-lead"></p>
         <div class="rcs-time">
             <div class="rt-field">
-                <label for="rcsTimeKind">Время доставки</label>
+                <label for="rcsTimeKind">Ընդունման ժամ</label>
                 <select id="rcsTimeKind" class="rt-select">
-                    <option value="">Без ограничения</option>
-                    <option value="at">В конкретное время</option>
-                    <option value="between">В интервале</option>
-                    <option value="before">До указанного времени</option>
-                    <option value="after">После указанного времени</option>
+                    <option value="">Առանց սահմանափակման</option>
+                    <option value="at">Որոշակի ժամի</option>
+                    <option value="between">Միջակայքում</option>
+                    <option value="before">Մինչև նշված ժամը</option>
+                    <option value="after">Նշված ժամից հետո</option>
                 </select>
             </div>
             <div class="rcs-time-fields">
-                <label id="rcsTimeFirst" hidden><span id="rcsTimeFirstLabel">Время</span><input id="rcsTimeT1" class="rt-input" type="time" step="60"></label>
-                <label id="rcsTimeLast" hidden><span>До</span><input id="rcsTimeT2" class="rt-input" type="time" step="60"></label>
-                <label id="rcsTimeTolerance" hidden><span>Допустимое отклонение, ± минут</span><input id="rcsTimeTol" class="rt-input" type="number" min="0" max="120" step="1" inputmode="numeric" value="0"></label>
+                <label id="rcsTimeFirst" hidden><span id="rcsTimeFirstLabel">Ժամ</span><input id="rcsTimeT1" class="rt-input" type="time" step="60"></label>
+                <label id="rcsTimeLast" hidden><span>Մինչև</span><input id="rcsTimeT2" class="rt-input" type="time" step="60"></label>
+                <label id="rcsTimeTolerance" hidden><span>Թույլատրելի շեղում, ± րոպե</span><input id="rcsTimeTol" class="rt-input" type="number" min="0" max="120" step="1" inputmode="numeric" value="0"></label>
             </div>
-            <p id="rcsTimeHint" class="rt-field-hint">Время прибытия и начала разгрузки у магазина.</p>
+            <p id="rcsTimeHint" class="rt-field-hint">Խանութում ժամանման և բեռնաթափման սկզբի ժամը։</p>
         </div>
         <div class="rt-field rcs-unload">
-            <label for="rcsUnload">Время у магазина, мин</label>
-            <input id="rcsUnload" class="rt-input" type="number" min="1" max="120" step="1" inputmode="numeric" placeholder="Обычное" aria-describedby="rcsUnloadHint">
-            <p id="rcsUnloadHint" class="rt-field-hint">Сколько минут машина стоит у этого магазина: парковка, приёмка, документы. Время на сам груз программа добавит сама. Пусто — обычное время.</p>
+            <label for="rcsUnload">Ժամանակ խանութում, րոպե</label>
+            <input id="rcsUnload" class="rt-input" type="number" min="1" max="120" step="1" inputmode="numeric" placeholder="Սովորական" aria-describedby="rcsUnloadHint">
+            <p id="rcsUnloadHint" class="rt-field-hint">Քանի րոպե է մեքենան կանգնում այս խանութի մոտ՝ կայանում, ընդունում, փաստաթղթեր։ Բեռի ժամանակը ծրագիրը կավելացնի ինքը։ Դատարկ՝ սովորական ժամանակ։</p>
         </div>
         <div class="rt-field">
-            <label for="rcsVehicleMode">Какие машины могут обслуживать</label>
+            <label for="rcsVehicleMode">Որ մեքենաները կարող են սպասարկել</label>
             <select id="rcsVehicleMode" class="rt-select">
-                <option value="">Все машины</option>
-                <option value="allow">Только выбранные машины</option>
-                <option value="deny">Все, кроме выбранных</option>
+                <option value="">Բոլոր մեքենաները</option>
+                <option value="allow">Միայն ընտրված մեքենաները</option>
+                <option value="deny">Բոլորը, բացի ընտրվածներից</option>
             </select>
         </div>
         <p id="rcsChoicesTitle" class="rcs-label" hidden></p>
         <div id="rcsVehicles" class="rcs-choices" role="group" aria-labelledby="rcsChoicesTitle" hidden></div>
         <p id="rcsVehicleHint" class="rt-field-hint"></p>
-        <p class="rt-field-hint">Сохраните условия здесь, затем нажмите «Վերակազմել երթերը» в развозе, чтобы пересчитать рейсы.</p>
+        <p class="rt-field-hint">Պահպանեք պայմաններն այստեղ, ապա «Առաքում» էջում սեղմեք «Վերակազմել երթերը», որ երթերը վերահաշվվեն։</p>
         <p id="rcsError" class="rt-ferr" role="alert"></p>
         <div class="rcs-actions">
-            <button id="rcsSave" type="button" class="rt-btn rt-btn-primary">Сохранить условия магазина</button>
-            <button id="rcsCancel" type="button" class="rt-btn rt-btn-ghost">Отмена</button>
+            <button id="rcsSave" type="button" class="rt-btn rt-btn-primary">Պահպանել խանութի պայմանները</button>
+            <button id="rcsCancel" type="button" class="rt-btn rt-btn-ghost">Չեղարկել</button>
         </div>
     </dialog>
 
     <div id="rsLoading" class="rt-loading" role="status" aria-live="polite">
-        <div class="rt-spinner" aria-hidden="true"></div>Загружаю настройки…
+        <div class="rt-spinner" aria-hidden="true"></div>Բեռնում եմ կարգավորումները…
     </div>
     <div id="rsLoadError" class="rt-alert d-none" role="alert">
         <i class="fas fa-plug-circle-xmark" aria-hidden="true"></i>
         <span id="rsLoadErrorText" class="rt-alert-text"></span>
-        <button id="rsRetryBtn" type="button" class="rt-btn rt-btn-ghost">Повторить</button>
+        <button id="rsRetryBtn" type="button" class="rt-btn rt-btn-ghost">Կրկնել</button>
     </div>
 
     <form id="rsForm" class="d-none" novalidate>
@@ -112,29 +113,29 @@
         <section class="rt-step" id="rsStep1" aria-labelledby="rsStep1Title">
             <div class="rt-step-mark" aria-hidden="true"><span>1</span></div>
             <div class="rt-step-body">
-                <h2 class="rt-step-title" id="rsStep1Title"><span class="rt-sr-only">Шаг 1. </span>Обязательно заполнить</h2>
+                <h2 class="rt-step-title" id="rsStep1Title"><span class="rt-sr-only">Քայլ 1. </span>Պարտադիր լրացնել</h2>
                 <div class="rt-progress" id="rsProgress">
                     <span class="rt-progress-bar" aria-hidden="true"><span></span><span></span><span></span></span>
                     <span class="rt-progress-text" id="rsProgressText" role="status" aria-live="polite"></span>
-                    <span class="rt-progress-note">без этого программа не посчитает рейсы машин и расходы на топливо</span>
+                    <span class="rt-progress-note">առանց դրա ծրագիրը չի հաշվի մեքենաների երթերը և վառելիքի ծախսերը</span>
                 </div>
 
                 <section class="rt-card" id="depot" aria-labelledby="rsHDepot">
                     <div class="rt-card-head">
-                        <h3 class="rt-card-title" id="rsHDepot"><i class="fas fa-warehouse" aria-hidden="true"></i>Склад</h3>
+                        <h3 class="rt-card-title" id="rsHDepot"><i class="fas fa-warehouse" aria-hidden="true"></i>Պահեստ</h3>
                         <span class="rt-card-state" id="rsStDepot"></span>
                     </div>
-                    <p class="rt-card-lead">Отсюда выезжают и сюда возвращаются машины. Нажмите на карте, где стоит склад, — точку можно потянуть мышью.
-                        Или вставьте координаты из Google Maps: правый клик по месту → первая строка меню.</p>
+                    <p class="rt-card-lead">Մեքենաները մեկնում են այստեղից և վերադառնում այստեղ։ Սեղմեք քարտեզի վրա՝ պահեստի տեղում — կետը կարելի է քաշել մկնիկով։
+                        Կամ տեղադրեք կոորդինատները Google Maps-ից՝ աջ սեղմում տեղի վրա → մենյուի առաջին տողը։</p>
                     <div class="rt-depot">
-                        <div id="rsDepotMap" class="rt-depotmap" role="region" aria-label="Карта: нажмите, чтобы поставить склад"></div>
+                        <div id="rsDepotMap" class="rt-depotmap" role="region" aria-label="Քարտեզ — սեղմեք պահեստի տեղում"></div>
                         <div>
                             <div class="rt-field">
-                                <label for="rsDepot">Широта, долгота</label>
+                                <label for="rsDepot">Լայնություն, երկայնություն</label>
                                 <div class="rt-coord">
                                     <input id="rsDepot" class="rt-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
                                            placeholder="40.17920, 44.49910" aria-describedby="rsDepotNote rsDepotErr">
-                                    <button type="button" class="rt-iconbtn" id="rsDepotClear" title="Убрать склад" aria-label="Убрать координаты склада">
+                                    <button type="button" class="rt-iconbtn" id="rsDepotClear" title="Հեռացնել պահեստը" aria-label="Հեռացնել պահեստի կոորդինատները">
                                         <i class="fas fa-xmark" aria-hidden="true"></i></button>
                                 </div>
                                 <div class="rt-coord-note" id="rsDepotNote"></div>
@@ -146,26 +147,26 @@
 
                 <section class="rt-card" id="trucks" aria-labelledby="rsHTrucks">
                     <div class="rt-card-head">
-                        <h3 class="rt-card-title" id="rsHTrucks"><i class="fas fa-truck" aria-hidden="true"></i>Машины доставки</h3>
+                        <h3 class="rt-card-title" id="rsHTrucks"><i class="fas fa-truck" aria-hidden="true"></i>Առաքման մեքենաներ</h3>
                         <span class="rt-card-state" id="rsStTrucks"></span>
                     </div>
-                    <p class="rt-card-lead">Список машин — из ERP; машину, которой там нет, можно добавить вручную. Укажите, сколько тонн возит машина и сколько литров тратит на 100 км.
-                        Машина закреплена за водителем: заказы всех менеджеров за день программа сама разложит по машинам и рейсам.
-                        Подсказка «по накладным» — сколько машина обычно возила в день за 3 месяца и когда возила последний раз:
-                        машина, которая не возила больше 60 дней, по умолчанию выключена.
-                        В «Загрузка и износ» задайте расход пустой и полной машины и стоимость износа — тогда выбор машины и порядок точек учитывают остаточный груз на каждом участке.
-                        Пустые нормы означают, что влияние загрузки ещё не настроено.</p>
+                    <p class="rt-card-lead">Մեքենաների ցուցակը վերցված է ERP-ից։ Մեքենան, որը այնտեղ չկա, կարելի է ավելացնել ձեռքով։ Նշեք, թե քանի տոննա է տանում մեքենան և քանի լիտր է ծախսում 100 կմ-ի վրա։
+                        Մեքենան ամրացված է վարորդին՝ օրվա ընթացքում բոլոր մենեջերների պատվերները ծրագիրն ինքը կբաշխի մեքենաների և երթերի միջև։
+                        «Ըստ ERP ապրանքագրերի» հուշումը ցույց է տալիս, թե վերջին 3 ամսում մեքենան սովորաբար որքան է տարել օրական և երբ է տարել վերջին անգամ։
+                        60 օրից ավելի բեռ չտարած մեքենան լռելյայն անջատված է։
+                        «Բեռնվածություն և մաշվածք» բաժնում նշեք դատարկ և լրիվ բեռնված մեքենայի ծախսը և մաշվածքի արժեքը — այդ դեպքում մեքենայի ընտրությունը և կետերի հերթականությունը հաշվի են առնում մնացորդային բեռը յուրաքանչյուր հատվածում։
+                        Դատարկ նորմերը նշանակում են, որ բեռնվածության ազդեցությունը դեռ կարգավորված չէ։</p>
                     <div id="rsTrucks"></div>
-                    <p class="rt-field-hint"><a href="{{ url_for('route_optimizer.api_missing_coordinates') }}">Скачать актуальный список клиентов без координат</a>.
-                        Проверяются ERP, GPS визитов, подтверждённые точки водителей и ручные точки. Новую точку можно указать в «Развозе».</p>
+                    <p class="rt-field-hint"><a href="{{ url_for('route_optimizer.api_missing_coordinates') }}">Ներբեռնել առանց կոորդինատների հաճախորդների թարմ ցուցակը</a>։
+                        Ստուգվում են ERP-ն, այցերի GPS-ը, վարորդների հաստատված կետերը և ձեռքով նշված կետերը։ Նոր կետ կարելի է նշել «Առաքում» էջում։</p>
                 </section>
 
                 <section class="rt-card" id="fuel" aria-labelledby="rsHFuel">
                     <div class="rt-card-head">
-                        <h3 class="rt-card-title" id="rsHFuel"><i class="fas fa-gas-pump" aria-hidden="true"></i>Цены топлива</h3>
+                        <h3 class="rt-card-title" id="rsHFuel"><i class="fas fa-gas-pump" aria-hidden="true"></i>Վառելիքի գներ</h3>
                         <span class="rt-card-state" id="rsStFuel"></span>
                     </div>
-                    <p class="rt-card-lead">По ним литры переводятся в драмы. Пустая цена — расходы в драмах не считаются.</p>
+                    <p class="rt-card-lead">Դրանցով լիտրերը վերածվում են դրամի։ Եթե գինը դատարկ է, ծախսերը դրամով չեն հաշվվում։</p>
                     <div id="rsFuel" class="rt-form-grid"></div>
                 </section>
             </div>
@@ -175,30 +176,30 @@
         <section class="rt-step" id="rsStep2" aria-labelledby="rsStep2Title">
             <div class="rt-step-mark" aria-hidden="true"><span>2</span></div>
             <div class="rt-step-body">
-                <h2 class="rt-step-title" id="rsStep2Title"><span class="rt-sr-only">Шаг 2. </span>Проверьте</h2>
+                <h2 class="rt-step-title" id="rsStep2Title"><span class="rt-sr-only">Քայլ 2. </span>Ստուգեք</h2>
                 <section class="rt-card" id="managers" aria-labelledby="rsHManagers">
                     <div class="rt-card-head">
-                        <h3 class="rt-card-title" id="rsHManagers"><i class="fas fa-user-check" aria-hidden="true"></i>Менеджеры: дом и кто в расчёте</h3>
+                        <h3 class="rt-card-title" id="rsHManagers"><i class="fas fa-user-check" aria-hidden="true"></i>Մենեջերներ՝ տուն և մասնակցություն հաշվարկին</h3>
                         <span class="rt-card-state" id="rsStManagers"></span>
                     </div>
-                    <p class="rt-card-lead">День менеджера начинается и заканчивается дома. Программа нашла дома по GPS — если точка верная,
-                        нажмите «Верно», если нет — «Поправить» и впишите свою. «В расчёте» программа ставит сама: без заказов и визитов
-                        8 недель — не в расчёте. Галочку можно поставить или снять вручную, «вернуть авто» — отдать решение программе.</p>
+                    <p class="rt-card-lead">Մենեջերի օրը սկսվում և ավարտվում է տանը։ Ծրագիրը տները գտել է ըստ GPS-ի — եթե կետը ճիշտ է,
+                        սեղմեք «Ճիշտ է», եթե ոչ՝ «Ուղղել» և գրեք ձերը։ «Հաշվարկում» նշումը ծրագիրը դնում է ինքը՝ 8 շաբաթ առանց պատվերների և այցերի
+                        մենեջերը հաշվարկում չէ։ Նշումը կարելի է դնել կամ հանել ձեռքով, իսկ «վերադարձնել ավտոմատ» կոճակով որոշումը կրկին թողնել ծրագրին։</p>
                     <div id="rsManagers"></div>
                 </section>
 
                 <section class="rt-card" id="center" aria-labelledby="rsHCenter">
                     <div class="rt-card-head">
-                        <h3 class="rt-card-title" id="rsHCenter"><i class="fas fa-city" aria-hidden="true"></i>Малый центр</h3>
+                        <h3 class="rt-card-title" id="rsHCenter"><i class="fas fa-city" aria-hidden="true"></i>Փոքր կենտրոն</h3>
                         <span class="rt-card-state" id="rsStCenter"></span>
                     </div>
-                    <p class="rt-card-lead">В малый центр «Развоз» отправляет только машины с отметкой «В центр» в таблице машин
-                        (по умолчанию — JAC). Граница — синяя линия: потяните точку, чтобы сдвинуть; щелчок по карте добавляет точку
-                        на ближайшую сторону; двойной щелчок по точке убирает её. Записать — кнопкой «Сохранить» внизу страницы.</p>
-                    <div id="rsCenterMap" class="rt-depotmap rs-centermap" role="region" aria-label="Карта: граница малого центра"></div>
+                    <p class="rt-card-lead">Փոքր կենտրոն «Առաքում» էջը ուղարկում է միայն այն մեքենաները, որոնց համար մեքենաների աղյուսակի «Կենտրոն» սյունակում
+                        ընտրված է «այո» (լռելյայն՝ JAC)։ Սահմանը կապույտ գիծն է՝ քաշեք կետը՝ այն տեղաշարժելու համար, սեղմեք քարտեզի վրա՝ մոտակա կողմին
+                        կետ ավելացնելու համար, կրկնակի սեղմեք կետի վրա՝ այն հեռացնելու համար։ Պահպանելու համար սեղմեք «Պահպանել» կոճակը էջի ներքևում։</p>
+                    <div id="rsCenterMap" class="rt-depotmap rs-centermap" role="region" aria-label="Քարտեզ՝ փոքր կենտրոնի սահմանը"></div>
                     <div class="rs-center-bar">
                         <span id="rsCenterNote" class="rt-field-hint" aria-live="polite"></span>
-                        <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rsCenterReset"><i class="fas fa-rotate-left" aria-hidden="true"></i>Вернуть стартовую границу</button>
+                        <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="rsCenterReset"><i class="fas fa-rotate-left" aria-hidden="true"></i>Վերադարձնել սկզբնական սահմանը</button>
                     </div>
                     <div class="rt-ferr" id="rsCenterErr"></div>
                 </section>
@@ -209,31 +210,31 @@
         <section class="rt-step" id="rsStep3" aria-labelledby="rsStep3Title">
             <div class="rt-step-mark" aria-hidden="true"><span>3</span></div>
             <div class="rt-step-body">
-                <h2 class="rt-step-title" id="rsStep3Title"><span class="rt-sr-only">Шаг 3. </span>Можно не трогать — программа подобрала сама</h2>
+                <h2 class="rt-step-title" id="rsStep3Title"><span class="rt-sr-only">Քայլ 3. </span>Կարելի է չփոխել — ծրագիրն ինքն է ընտրել</h2>
                 <details class="rt-fold" id="rsAuto">
-                    <summary><span class="rt-fold-t">Показать нормы, сезоны и правила расчёта</span>
-                        <span class="rt-fold-note">время визита, дороги, пороги выручки, сезоны, как программа выбирает дни</span></summary>
+                    <summary><span class="rt-fold-t">Ցույց տալ նորմերը, սեզոնները և հաշվարկի կանոնները</span>
+                        <span class="rt-fold-note">այցի տևողություն, ճանապարհներ, հասույթի շեմեր, սեզոններ, ինչպես է ծրագիրն ընտրում օրերը</span></summary>
                     <div class="rt-fold-body">
                         <section class="rs-sub" id="norms" aria-labelledby="rsHNorms">
-                            <h3 class="rt-h3" id="rsHNorms">Нормы и правила</h3>
-                            <p class="rt-h3-note">У полей с пометкой «авто по GPS» пусто — значит, программа берёт цифру из GPS-треков сама.</p>
+                            <h3 class="rt-h3" id="rsHNorms">Նորմեր և կանոններ</h3>
+                            <p class="rt-h3-note">Եթե «ավտոմատ՝ GPS-ով» նշումով դաշտը դատարկ է, ծրագիրն ինքն է վերցնում թիվը GPS հետագծերից։</p>
                             <div id="rsNorms" class="rt-form-grid mt-3"></div>
                             <div class="rt-field mt-3">
-                                <label for="rsTrafficMode">Скорость по времени суток</label>
+                                <label for="rsTrafficMode">Արագությունն ըստ օրվա ժամերի</label>
                                 <select id="rsTrafficMode" class="rt-input">
-                                    <option value="gps">Проверенный часовой профиль GPS</option>
-                                    <option value="static">Постоянная средняя скорость</option>
-                                    <option value="yandex">Яндекс: прогноз трафика на начало смены</option>
+                                    <option value="gps">Ստուգված ժամային պրոֆիլ (GPS)</option>
+                                    <option value="static">Մշտական միջին արագություն</option>
+                                    <option value="yandex">Յանդեքս՝ երթևեկության կանխատեսում հերթափոխի սկզբի համար</option>
                                 </select>
                                 <p id="rsTrafficStatus" class="rt-field-hint" aria-live="polite"></p>
                             </div>
                         </section>
                         <section class="rs-sub" id="season" aria-labelledby="rsHSeason">
-                            <h3 class="rt-h3" id="rsHSeason">Сезоны</h3>
+                            <h3 class="rt-h3" id="rsHSeason">Սեզոններ</h3>
                             <div id="rsSeason" class="mt-2"></div>
                         </section>
                         <section class="rs-sub" id="calibration" aria-labelledby="rsHCalib">
-                            <h3 class="rt-h3" id="rsHCalib">Что показали GPS-треки</h3>
+                            <h3 class="rt-h3" id="rsHCalib">Ինչ ցույց տվեցին GPS հետագծերը</h3>
                             <div id="rsCalib" class="mt-2"></div>
                         </section>
                     </div>
@@ -242,31 +243,31 @@
         </section>
 
         <div class="rt-savebar">
-            <span id="rsDirty" class="rt-savebar-state">Изменений нет</span>
-            <button type="submit" id="rsSaveBtn" class="rt-btn rt-btn-primary"><i class="fas fa-floppy-disk" aria-hidden="true"></i><span>Сохранить</span></button>
+            <span id="rsDirty" class="rt-savebar-state">Փոփոխություններ չկան</span>
+            <button type="submit" id="rsSaveBtn" class="rt-btn rt-btn-primary"><i class="fas fa-floppy-disk" aria-hidden="true"></i><span>Պահպանել</span></button>
         </div>
     </form>
 
     <details class="rt-fold mt-4" id="measurements">
-        <summary><span class="rt-fold-t">Фактические замеры и проверка прогноза</span></summary>
+        <summary><span class="rt-fold-t">Փաստացի չափումներ և կանխատեսման ստուգում</span></summary>
         <div class="rt-fold-body">
-            <p>Внесите показания за завершённый день. Дизель — израсходованные литры по замеру, объём заправки сам по себе не подходит.
-                Прогноз сохраняется при сборке рейсов. Расчёт, сделанный после начала дня, отмечается как ретроспективный.</p>
+            <p>Մուտքագրեք ավարտված օրվա ցուցմունքները։ Դիզելի դաշտում գրեք չափումով ծախսված լիտրերը — լիցքավորման ծավալն ինքնին չի համապատասխանում։
+                Կանխատեսումը պահպանվում է երթերը կազմելիս։ Օրվա սկզբից հետո արված հաշվարկը նշվում է որպես «հետին թվով»։</p>
             <form id="rmForm">
                 <div class="rt-form-grid" id="rmFields"></div>
-                <button class="rt-btn rt-btn-primary mt-3" type="submit">Сохранить замер</button>
+                <button class="rt-btn rt-btn-primary mt-3" type="submit">Պահպանել չափումը</button>
                 <p id="rmStatus" role="status" aria-live="polite"></p>
             </form>
             <div id="rmSuggestions"></div>
-            <div class="rt-table-scroll"><table class="rt-table"><thead><tr><th>Дата / машина</th><th>Км</th><th>Минуты</th><th>Дизель, л</th><th>Ошибка прогноза</th></tr></thead><tbody id="rmHistory"></tbody></table></div>
+            <div class="rt-table-scroll"><table class="rt-table"><thead><tr><th>Ամսաթիվ / մեքենա</th><th>Կմ</th><th>Րոպե</th><th>Դիզել, լ</th><th>Կանխատեսման սխալ</th></tr></thead><tbody id="rmHistory"></tbody></table></div>
         </div>
     </details>
 
     <div class="position-fixed bottom-0 end-0 p-3" style="z-index:1080">
         <div id="rsToast" class="toast rt-toast align-items-center border-0" role="status" aria-live="polite" aria-atomic="true">
             <div class="d-flex">
-                <div class="toast-body"><i class="fas fa-circle-check me-2" aria-hidden="true"></i>Настройки сохранены — маршруты пересчитаются</div>
-                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Закрыть"></button>
+                <div class="toast-body"><i class="fas fa-circle-check me-2" aria-hidden="true"></i>Կարգավորումները պահպանված են — երթուղիները կվերահաշվվեն</div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Փակել"></button>
             </div>
         </div>
     </div>
@@ -277,7 +278,7 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=16"></script>
-<script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=4"></script>
-<script src="{{ url_for('static', filename='js/routes_measurements.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=20"></script>
+<script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=6"></script>
+<script src="{{ url_for('static', filename='js/routes_measurements.js') }}?v=4"></script>
 {% endblock %}

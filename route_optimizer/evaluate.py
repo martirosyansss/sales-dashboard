@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, Sequence
 from . import demand as dm
 from . import fleet as fl
 from . import status as cst
-from .frequency import plural
+from .frequency import fmt_decimal
 from .geo import (GPS_MAX_ACCURACY_M, Coord, Fix, Point, haversine_km, in_city, is_valid_point,
                   resolve_coord, track_km, usable_fixes)
 from .plan import WEEKDAY_LABELS, CurrentPlan, PlanDay, delivery_weekday
@@ -73,7 +73,7 @@ VISIT_MIN_RANGE = (1.0, 120.0)
 VISIT_MIN_STEP = 0.5
 
 SEASON_FALLBACK_MONTHS = 3  # порогам не подошёл ни один месяц — берём 3 крайних по индексу
-MONTH_SHORT = ('янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек')
+MONTH_SHORT = ('հնվ', 'փտվ', 'մրտ', 'ապր', 'մյս', 'հնս', 'հլս', 'օգս', 'սեպ', 'հոկ', 'նոյ', 'դեկ')   # как в «Развозе» (№58)
 
 DEFAULT_MANAGER_FUEL = 'petrol'
 SETTINGS_URL = '/routes/settings'
@@ -1316,85 +1316,90 @@ def _fleet_json(fe: fl.FleetEval, bundle: Bundle) -> dict[str, Any]:
 def _warnings(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
               totals: Mapping[str, Any], season: Season,
               idle: Sequence[ManagerEval], pe: PlanEvaluation) -> list[dict[str, Any]]:
+    # Тексты — по-армянски (решение владельца №58); страница «Обзор» (routes_overview.js, todoOf) достаёт из них числа и
+    # коды регэкспами, которые узнают и прежний русский текст: форму «N մեքենայի», «շաբաթվա N առաքման օր», «(…)՝ коды —»,
+    # «N մենեջերի», «N / M» и первое число в off_days менять только вместе с ними
     s = bundle.settings
     out = []
     if idle:
         codes = ', '.join(snap.agents[me.agent_id].code if me.agent_id in snap.agents
                           else str(me.agent_id) for me in idle)
-        out.append(_warning('inactive_templates', f'Шаблоны без работы 8 недель (нет заказов и '
-                                                  f'визитов): {codes} — не входят в расчёт. '
-                                                  f'Включить можно в настройках.', 'managers'))
+        out.append(_warning('inactive_templates', f'8 շաբաթ առանց աշխատանքի (պատվերներ և այցեր չկան)՝ '
+                                                  f'{codes} — հաշվարկում չեն։ Կարելի է միացնել '
+                                                  f'կարգավորումներում։', 'managers'))
     if bundle.depot is None:
-        out.append(_warning('no_depot', 'Не указан склад — дизель грузовиков не посчитан', 'depot'))
+        out.append(_warning('no_depot', 'Պահեստը նշված չէ — բեռնատարների դիզելը հաշվված չէ։', 'depot'))
     elif pe.fleet is None:
-        out.append(_warning('no_fleet', 'Укажите тоннаж и расход машин — тогда программа посчитает '
-                                        'дизель грузовиков', 'trucks'))
+        out.append(_warning('no_fleet', 'Նշեք մեքենաների տոննաժը և ծախսը — այդ դեպքում ծրագիրը կհաշվի '
+                                        'բեռնատարների դիզելը։', 'trucks'))
     if pe.fleet is not None:
         if s.get('warehouse_load_fixed_min') is None or s.get('warehouse_load_min_per_tonne') is None:
-            out.append(_warning('warehouse_loading_unknown', 'Время загрузки на складе не заполнено полностью; '
-                                'незаданные части пока считаются нулевыми. Внесите замеры в настройках.', 'norms'))
+            out.append(_warning('warehouse_loading_unknown', 'Պահեստում բեռնման ժամանակն ամբողջությամբ լրացված չէ․ '
+                                'չնշված մասերն առայժմ հաշվվում են զրո։ Մուտքագրեք չափումները կարգավորումներում։', 'norms'))
         missing_fuel = [t.car_code for t in pe.fleet.trucks if t.fuel_empty_l_per_100km is None]
         missing_wear = [t.car_code for t in pe.fleet.trucks
                         if t.wear_amd_per_km is None and t.wear_load_amd_per_km is None]
         if missing_fuel or missing_wear:
             parts = []
             if missing_fuel:
-                parts.append('расход по загрузке: ' + ', '.join(missing_fuel))
+                parts.append('ծախսն ըստ բեռնվածության՝ ' + ', '.join(missing_fuel))
             if missing_wear:
-                parts.append('стоимость износа: ' + ', '.join(missing_wear))
-            out.append(_warning('load_costs_incomplete', 'Не заданы нормы машин (' + '; '.join(parts)
-                                + '). Заполните «Загрузка и износ» в настройках машин.', 'trucks'))
+                parts.append('մաշվածքի արժեքը՝ ' + ', '.join(missing_wear))
+            out.append(_warning('load_costs_incomplete', 'Մեքենաների նորմերը նշված չեն (' + '; '.join(parts)
+                                + ')։ Լրացրեք «Բեռնվածություն և մաշվածք» բաժինը մեքենաների կարգավորումներում։', 'trucks'))
     if pe.trucks_incomplete and pe.fleet is not None:
         codes = pe.trucks_incomplete
-        out.append(_warning('truck_incomplete', f'У {len(codes)} {plural(len(codes), "машины", "машин", "машин")} '
-                                                f'не указан тоннаж или расход ({", ".join(codes)}) — в развозе '
-                                                f'их нет', 'trucks'))
+        out.append(_warning('truck_incomplete', f'{len(codes)} մեքենայի տոննաժը կամ ծախսը նշված չէ '
+                                                f'({", ".join(codes)}) — դրանք առաքման մեջ չեն։', 'trucks'))
     short = totals.get('truck_days_short_week')
     if short:
-        out.append(_warning('fleet_short', f'В пик в {_num(short)} дн. доставки в неделю машины не '
-                                           f'успевают развезти заказы за рабочий день — нужна ещё машина '
-                                           f'или рейс после конца дня', 'trucks'))
+        out.append(_warning('fleet_short', f'Բարձր սեզոնին շաբաթվա {fmt_decimal(short, 1)} առաքման օրում մեքենաները '
+                                           f'չեն հասցնում աշխատանքային օրվա ընթացքում տանել պատվերները — անհրաժեշտ է '
+                                           f'ևս մեկ մեքենա կամ արտաժամյա երթ։', 'trucks'))
     needed = ({'diesel'} if pe.fleet is not None else set()) | {me.fuel_type for me in included}
     missing = sorted(f for f in needed if s.get(f'fuel_price_{f}') is None)
     if missing:
-        names = {'diesel': 'дизель', 'petrol': 'бензин', 'lpg': 'газ'}
-        out.append(_warning('no_fuel_prices', 'Не заданы цены топлива (' +
+        names = {'diesel': 'դիզել', 'petrol': 'բենզին', 'lpg': 'գազ'}
+        out.append(_warning('no_fuel_prices', 'Վառելիքի գները նշված չեն (' +
                             ', '.join(names[f] for f in missing) +
-                            ') — стоимость в драмах не посчитана', 'norms'))
+                            ') — արժեքը դրամով հաշվված չէ։', 'norms'))
     no_home = [me for me in included if me.home is None]
     if no_home:
-        out.append(_warning('no_home', f'Нет дома у {len(no_home)} менеджеров — маршрут дня '
-                                       f'считается от первого до последнего визита', 'managers'))
+        out.append(_warning('no_home', f'{len(no_home)} մենեջերի տունը հայտնի չէ — օրվա երթուղին '
+                                       f'հաշվվում է առաջին այցից մինչև վերջինը։', 'managers'))
     coords = totals['coords']
     missing_coords = coords['visits_total'] - coords['visits_with_coords']
     if missing_coords > 0:
         share = coords['revenue_share_with_coords']
-        share_txt = f' (с координатами {share * 100:.0f}% выручки)' if share is not None else ''
+        share_txt = f' (կոորդինատներով այցերը՝ հասույթի {share * 100:.0f}%-ը)' if share is not None else ''
         out.append(_warning('coords_missing',
-                            f'Нет координат у {missing_coords} из {coords["visits_total"]} визитов '
-                            f'плана{share_txt} — их км не посчитаны', None))
+                            f'Կոորդինատներ չկան պլանի {fmt_decimal(missing_coords, 1)} / '
+                            f'{fmt_decimal(coords["visits_total"], 1)} այցի '
+                            f'համար{share_txt} — դրանց կմ-ները հաշվված չեն։', None))
     off = sum(1 for me in included for r in me.days if not r.workday)
     if off:
-        out.append(_warning('off_days', f'В плане {off} дн. в нерабочие дни недели — они показаны, '
-                                        f'но не входят в «слабые дни» и средние часы', 'norms'))
+        out.append(_warning('off_days', f'Պլանում {off} օր ընկնում է ոչ աշխատանքային օրերի վրա — դրանք ցույց են '
+                                        f'տրված, բայց չեն մտնում «թույլ օրերի» և միջին ժամերի մեջ։', 'norms'))
     if snap.plan.multiweek:
         out.append(_warning('templates_multiweek_unverified',
-                            'В шаблонах ERP есть неделя/периодичность ≠ 1 — формат не проверен, '
-                            'цикл развёрнут по допущению', None))
+                            'ERP-ի ձևանմուշներում կա շաբաթ/պարբերականություն ≠ 1 — ձևաչափը ստուգված չէ, '
+                            'ցիկլը մեկնաբանված է ենթադրաբար։', None))
     if snap.season_index is None and (s['low_months'] is None or s['peak_months'] is None):
-        out.append(_warning('season_unknown', 'Мало истории продаж для сезонного индекса — '
-                                              'задайте месяцы сезонов вручную', 'season'))
+        out.append(_warning('season_unknown', 'Սեզոնային ինդեքսի համար վաճառքի պատմությունը քիչ է — '
+                                              'նշեք սեզոնների ամիսները ձեռքով։', 'season'))
     if season.fallback:
         def months(ms: Sequence[int]) -> str:
             return ', '.join(MONTH_SHORT[m - 1] for m in ms)
         used = []
         if 'low' in season.fallback:
-            used.append(f'низкий сезон — {months(season.low)} (самые низкие продажи)')
+            used.append(f'ցածր սեզոն՝ {months(season.low)}')
         if 'peak' in season.fallback:
-            used.append(f'пик — {months(season.peak)} (самые высокие продажи)')
-        out.append(_warning('season_empty', 'Под пороги сезонного индекса не подошёл ни один '
-                                            'месяц, взяты 3 крайних: ' + '; '.join(used)
-                            + '. Пороги можно поправить в настройках.', 'season'))
+            used.append(f'բարձր սեզոն՝ {months(season.peak)}')
+        taken = ('ամենացածր և ամենաբարձր վաճառքով 3-ական ամիսները' if len(used) == 2 else
+                 'ամենացածր վաճառքով 3 ամիսները' if 'low' in season.fallback else 'ամենաբարձր վաճառքով 3 ամիսները')
+        out.append(_warning('season_empty', 'Սեզոնային ինդեքսի շեմերին ոչ մի ամիս չհամապատասխանեց, վերցված են '
+                                            + taken + '՝ ' + '; '.join(used)
+                            + '։ Շեմերը կարելի է ուղղել կարգավորումներում։', 'season'))
     return out
 
 
@@ -1403,18 +1408,18 @@ def _road_warnings(roads: RoadDistances | None, points: Sequence[Point],
     """Км по прямой: карты нет или она не загрузилась — у всех участков, точка дальше 0,5 км от
     дороги — у её участков."""
     if failed:
-        return [_warning('roads_failed', 'Карту дорог не удалось загрузить (подробности — в журнале '
-                                         'сервера) — км считаются по прямой с поправкой на '
-                                         'извилистость', 'norms')]
+        return [_warning('roads_failed', 'Ճանապարհային քարտեզը չհաջողվեց բեռնել (մանրամասները՝ սերվերի '
+                                         'մատյանում) — կմ-ները հաշվվում են ուղիղ գծով՝ ոլորունության '
+                                         'ճշգրտումով։', 'norms')]
     if roads is None:
-        return [_warning('roads_off', 'Карта дорог не подключена — км считаются по прямой с '
-                                      'поправкой на извилистость', 'norms')]
+        return [_warning('roads_off', 'Ճանապարհային քարտեզը միացված չէ — կմ-ները հաշվվում են ուղիղ գծով՝ '
+                                      'ոլորունության ճշգրտումով։', 'norms')]
     n = roads.unsnapped(points)
     if not n:
         return []
-    return [_warning('roads_unsnapped', f'{n} {plural(n, "точка", "точки", "точек")} плана дальше '
-                                        f'0,5 км от дорог на карте — км до них считаются по прямой '
-                                        f'с поправкой на извилистость', None)]
+    return [_warning('roads_unsnapped', f'Պլանի {n} կետ քարտեզի ճանապարհներից 0,5 կմ-ից ավելի հեռու է — '
+                                        f'դրանց հասնող կմ-ները հաշվվում են ուղիղ գծով՝ ոլորունության '
+                                        f'ճշգրտումով։', None)]
 
 
 def _customers_json(snap: Snapshot, models: Mapping[int, CustomerModel],

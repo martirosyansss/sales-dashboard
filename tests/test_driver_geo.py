@@ -369,7 +369,7 @@ def test_dispatch_driver_points_and_suggestions(client, tmp_path, monkeypatch):
     assert d['geo_suggestions']['count'] == 0
     assert (_stops(d['plan'])[102]['coord_source'], _stops(d['plan'])[102]['lat']) == ('manual', 40.1955)
     r = client.post('/api/routes/geo-suggest/decide', json={'event_id': sug_id, 'decision': 'rejected'})
-    assert r.status_code == 404 and 'уже решено' in r.get_json()['error']
+    assert r.status_code == 404 and 'արդեն որոշված է' in r.get_json()['error']
     # «Մերժել» предложения той же точки, что уже ручная: точка не меняется, ответ об этом говорит
     who = ev.Who(1, 'CAR1', 1, 'Արամ')
     again = _event('geo_suggest', _sid(2), {'lat': 40.1955, 'lon': 44.5250, 'accuracy': 6.0}, '2026-10-01')

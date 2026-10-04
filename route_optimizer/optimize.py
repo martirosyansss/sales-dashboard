@@ -70,12 +70,12 @@ MAX_ID = 2 ** 31 - 1
 # Поля дня в результате (§10.1) — подмножество дня обзора этапа 1
 DAY_KEYS = ('week', 'weekday', 'label', 'visits', 'revenue_low_exp', 'p_day_ge_min', 'work_minutes',
             'commute_minutes', 'plan_minutes', 'manager_km', 'stops')
-MARKS = {'move': 'перенос', 'both': 'перенос, частота', 'frequency': 'частота', 'remove': 'убрать',
-         'transfer': 'передать'}
+MARKS = {'move': 'տեղափոխում', 'both': 'տեղափոխում, հաճախականություն', 'frequency': 'հաճախականություն',
+         'remove': 'հանել', 'transfer': 'փոխանցել'}
 SOURCE_STATUS = 'status'   # убрать из маршрута по статусу клиента (§15): потерян или без заказов
 # Решение относительно плана снимка (decision_state)
 DECISION_ACTIVE, DECISION_STALE, DECISION_RETIRED = 'active', 'stale', 'retired'
-NOT_IN_PLAN_TEXT = 'клиента нет в плане менеджера'
+NOT_IN_PLAN_TEXT = 'հաճախորդը մենեջերի պլանում չէ'   # humanPlanText() в routes_optimize.js узнаёт этот текст
 
 ProgressFn = Callable[[int, int, 'str | None'], None]
 
@@ -91,34 +91,34 @@ def parse_params(payload: Any) -> tuple[dict[str, Any] | None, dict[str, str]]:
     Отсутствующие поля — по умолчанию; mode = transfer попадает в params (days — режим по умолчанию,
     его в params нет). Ошибки — {поле: текст}."""
     if not isinstance(payload, dict):
-        return None, {'_': 'ожидался JSON-объект'}
+        return None, {'_': 'սպասվում էր JSON օբյեկտ'}
     errors: dict[str, str] = {}
     unknown = sorted(str(k) for k in set(payload) - set(DEFAULT_PARAMS) - {'mode'})
     if unknown:
-        errors['_'] = 'неизвестные параметры: ' + ', '.join(unknown)
+        errors['_'] = 'անհայտ պարամետրեր՝ ' + ', '.join(unknown)
     params = dict(DEFAULT_PARAMS)
     ids = payload.get('agent_ids')
     if ids is not None:
         if (not isinstance(ids, list) or not ids or len(ids) > MAX_AGENTS
                 or any(isinstance(a, bool) or not isinstance(a, int) for a in ids)):
-            errors['agent_ids'] = 'ожидался непустой список id менеджеров или null (все в расчёте)'
+            errors['agent_ids'] = 'սպասվում էր մենեջերների id-ների ոչ դատարկ ցուցակ կամ null (հաշվարկում գտնվող բոլորը)'
         elif len(set(ids)) != len(ids):
-            errors['agent_ids'] = 'менеджер указан дважды'
+            errors['agent_ids'] = 'մենեջերը նշված է երկու անգամ'
         else:
             params['agent_ids'] = list(ids)
     start = payload.get('start', DEFAULT_PARAMS['start'])
     if start not in START_MODES:
-        errors['start'] = 'старт: current (улучшить текущий план) или fresh (построить с нуля)'
+        errors['start'] = 'սկիզբ՝ current (բարելավել ընթացիկ պլանը) կամ fresh (կազմել զրոյից)'
     else:
         params['start'] = start
     freq = payload.get('frequencies', DEFAULT_PARAMS['frequencies'])
     if freq not in FREQUENCY_MODES:
-        errors['frequencies'] = 'частота: sales (по продажам) или current (как сейчас)'
+        errors['frequencies'] = 'հաճախականություն՝ sales (ըստ վաճառքի) կամ current (ինչպես հիմա)'
     else:
         params['frequencies'] = freq
     mode = payload.get('mode', MODE_DAYS)
     if mode not in MODES:
-        errors['mode'] = 'режим: days (только дни внутри менеджера) или transfer (передавать магазины)'
+        errors['mode'] = 'ռեժիմ՝ days (միայն օրերը՝ նույն մենեջերի մոտ) կամ transfer (փոխանցել խանութներ)'
     elif mode == MODE_TRANSFER:
         params['mode'] = MODE_TRANSFER
     return (None, errors) if errors else (params, {})
@@ -133,15 +133,15 @@ def parse_decision(payload: Any) -> tuple[DecisionInput | None, dict[str, str]]:
     у remove и transfer from — шаблон. from — от чего принимается решение (строка «было» предложения);
     нет — возьмётся план снимка (bind_decisions); для reset не нужен."""
     if not isinstance(payload, dict):
-        return None, {'_': 'ожидался JSON-объект'}
+        return None, {'_': 'սպասվում էր JSON օբյեկտ'}
     errors: dict[str, str] = {}
     unknown = sorted(str(k) for k in set(payload) - set(DECISION_FIELDS))
     if unknown:
-        errors['_'] = 'неизвестные поля: ' + ', '.join(unknown)
+        errors['_'] = 'անհայտ դաշտեր՝ ' + ', '.join(unknown)
     for key in ('customer_id', 'agent_id'):
         v = payload.get(key)
         if isinstance(v, bool) or not isinstance(v, int) or not 0 < v <= MAX_ID:
-            errors[key] = 'ожидался id — целое число'
+            errors[key] = 'սպասվում էր id՝ ամբողջ թիվ'
     kind = payload.get('kind')
     action = payload.get('action')
     raw_from = payload.get('from')
@@ -152,45 +152,45 @@ def parse_decision(payload: Any) -> tuple[DecisionInput | None, dict[str, str]]:
             if raw is None or (isinstance(raw, list) and not raw):
                 value = REMOVE_VALUE
             else:
-                errors['value'] = 'убрать из маршрута — значение не нужно (или пустой список [])'
+                errors['value'] = 'հանել երթուղուց՝ արժեքը պետք չէ (կամ դատարկ ցուցակ [])'
         elif kind == 'transfer':
             hit = pt.parse_transfer(payload.get('value'))
             if hit is None:
-                errors['value'] = ('передать — {"agent_id": id менеджера, "pattern": [[неделя 1–2, '
-                                   'день недели 1–7], …]}')
+                errors['value'] = ('փոխանցել՝ {"agent_id": մենեջերի id, "pattern": [[շաբաթ 1–2, '
+                                   'շաբաթվա օր 1–7], …]}')
             elif hit[0] == payload.get('agent_id'):
-                errors['value'] = 'передать можно только другому менеджеру'
+                errors['value'] = 'փոխանցել կարելի է միայն այլ մենեջերի'
             else:
                 value = pt.transfer_key(*hit)
         else:
             p = pt.parse_pattern(payload.get('value'))
             if p is None:
-                errors['value'] = 'шаблон — список пар [неделя 1–2, день недели 1–7] без повторов'
+                errors['value'] = 'ձևանմուշ՝ [շաբաթ 1–2, շաբաթվա օր 1–7] զույգերի ցուցակ՝ առանց կրկնությունների'
             else:
                 value = pt.pattern_key(p)
         if raw_from is not None and action != 'reset':
             p = pt.parse_pattern(raw_from)
             if p is None:
-                errors['from'] = 'было — список пар [неделя 1–2, день недели 1–7] без повторов'
+                errors['from'] = 'էր՝ [շաբաթ 1–2, շաբաթվա օր 1–7] զույգերի ցուցակ՝ առանց կրկնությունների'
             else:
                 from_value = pt.pattern_key(p)
     elif kind == 'freq':
         f = pt.parse_freq(payload.get('value'))
         if f is None:
-            errors['value'] = 'частота — 0.5, 1, 2 или 3 визита в неделю'
+            errors['value'] = 'հաճախականություն՝ 0.5, 1, 2 կամ 3 այց շաբաթում'
         else:
             value = pt.freq_key(f)
         if raw_from is not None and action != 'reset':
             f = pt.parse_plan_freq(raw_from)
             if f is None:
-                errors['from'] = 'было — визитов в неделю: 0.5, 1, 1.5 … 7'
+                errors['from'] = 'էր՝ այց շաբաթում՝ 0.5, 1, 1.5 … 7'
             else:
                 from_value = pt.freq_key(f)
     else:
-        errors['kind'] = ('вид решения: pattern (шаблон), freq (частота), remove (убрать из маршрута) '
-                          'или transfer (передать другому менеджеру)')
+        errors['kind'] = ('որոշման տեսակ՝ pattern (ձևանմուշ), freq (հաճախականություն), remove (հանել երթուղուց) '
+                          'կամ transfer (փոխանցել այլ մենեջերի)')
     if action not in ('accept', 'reject', 'reset'):
-        errors['action'] = 'действие: accept, reject или reset'
+        errors['action'] = 'գործողություն՝ accept, reject կամ reset'
     if errors or value is None:
         return None, errors
     return DecisionInput(payload['customer_id'], payload['agent_id'], kind, value, action,
@@ -212,10 +212,10 @@ def parse_decisions(payload: Any) -> tuple[DecisionRequest | None, dict[str, str
         errors: dict[str, str] = {}
         unknown = sorted(str(k) for k in set(payload) - {'items'})
         if unknown:
-            errors['_'] = 'неизвестные поля: ' + ', '.join(unknown)
+            errors['_'] = 'անհայտ դաշտեր՝ ' + ', '.join(unknown)
         items = payload['items']
         if not isinstance(items, list) or not items or len(items) > MAX_DECISION_ITEMS:
-            errors['items'] = f'ожидался непустой список решений (не больше {MAX_DECISION_ITEMS})'
+            errors['items'] = f'սպասվում էր որոշումների ոչ դատարկ ցուցակ (առավելագույնը {MAX_DECISION_ITEMS})'
             return None, errors
         out = []
         for i, item in enumerate(items):
@@ -227,7 +227,7 @@ def parse_decisions(payload: Any) -> tuple[DecisionRequest | None, dict[str, str
     if isinstance(payload, dict) and payload.get('action') == 'reset_all':
         unknown = sorted(str(k) for k in set(payload) - {'action'})
         if unknown:
-            return None, {'_': 'неизвестные поля: ' + ', '.join(unknown)}
+            return None, {'_': 'անհայտ դաշտեր՝ ' + ', '.join(unknown)}
         return DecisionRequest('reset_all'), {}
     d, errors = parse_decision(payload)
     return (None, errors) if d is None else (DecisionRequest('one', (d,)), {})
@@ -282,12 +282,12 @@ def bind_decisions(request: DecisionRequest, pairs: Mapping[int, Mapping[int, Pa
         cur = current_value(pairs, d.agent_id, d.customer_id, d.kind)
         prefix = f'items.{i}.' if request.mode == 'batch' else ''
         if cur is None:
-            errors[prefix + 'customer_id'] = 'У этого менеджера нет такого клиента в плане ERP'
+            errors[prefix + 'customer_id'] = 'Այս մենեջերի ERP-ի պլանում նման հաճախորդ չկա'
             continue
         if d.kind == 'transfer':
             hit = pt.parse_transfer_key(d.value)
             if hit is None or hit[0] not in pairs:
-                errors[prefix + 'value'] = 'У менеджера, которому передать, нет маршрутов в ERP'
+                errors[prefix + 'value'] = 'Մենեջերը, ում պետք է փոխանցել, ERP-ում երթուղիներ չունի'
                 continue
         out.append(d if d.from_value is not None else replace(d, from_value=cur))
     return out, errors
@@ -433,7 +433,7 @@ def decision_json(snap: Snapshot, d: Decision, pairs: Mapping[int, Mapping[int, 
             to_agent = snap.agents.get(hit[0])
             value = {'agent_id': hit[0], 'agent_code': _code(snap, hit[0]),
                      'agent_name': to_agent.name if to_agent else '', 'pattern': pt.pattern_json(hit[1])}
-            to_text = f'передать {_code(snap, hit[0])}: {pt.pattern_text(hit[1])}'
+            to_text = f'փոխանցել {_code(snap, hit[0])}-ին՝ {pt.pattern_text(hit[1])}'
     else:
         value, to_text = _side_text(d.kind, d.value)
     frm, from_text = _side_text(plan_kind, d.from_value)
@@ -466,8 +466,8 @@ class PairInfo:
 def plan_pairs(plan: CurrentPlan) -> dict[int, dict[int, PairInfo]]:
     """агент → клиент → текущий шаблон. Недельный план (W = 1) действует в обе недели цикла."""
     if plan.cycle_weeks not in (1, 2):
-        raise OptimizeError(f'Цикл шаблонов ERP — {plan.cycle_weeks} нед.; оптимизация поддерживает '
-                            f'цикл 1 или 2 недели')
+        raise OptimizeError(f'ERP-ի ձևանմուշների ցիկլը {plan.cycle_weeks} շաբաթ է — օպտիմալացումն աշխատում է '
+                            f'միայն 1 կամ 2 շաբաթվա ցիկլով')
     raw: dict[int, dict[int, list]] = {}
     for d in sorted(plan.days, key=lambda x: (x.agent_id, x.week, x.weekday)):
         weeks = (1, 2) if plan.cycle_weeks == 1 else (d.week,)
@@ -494,12 +494,12 @@ def resolve_agents(snap: Snapshot, bundle: Bundle,
     order = _agent_order(snap)
     included = [a for a in order if bundle.included(a, snap.active_agents)]
     if agent_ids is None:
-        return (included, None) if included else ([], 'Нет менеджеров в расчёте — включите их в настройках')
+        return (included, None) if included else ([], 'Հաշվարկում մենեջերներ չկան — միացրեք նրանց կարգավորումներում')
     allowed = set(included)
     bad = [a for a in agent_ids if a not in allowed]
     if bad:
-        return [], ('Не в расчёте или без маршрутов: ' + ', '.join(_code(snap, a) for a in bad)
-                    + ' — включить менеджера можно в настройках')
+        return [], ('Հաշվարկում չեն կամ երթուղիներ չունեն՝ ' + ', '.join(_code(snap, a) for a in bad)
+                    + ' — մենեջերին կարելի է միացնել կարգավորումներում')
     wanted = set(agent_ids)
     return [a for a in order if a in wanted], None
 
@@ -1351,12 +1351,12 @@ TRANSFER_HOME_CANDIDATES = 3     # кандидаты передачи: + 3 ме
 TRANSFER_NEIGHBORS = 10          # ближайшие клиенты в радиусе — партнёры обмена
 TRANSFER_GROUP_RADIUS = 3.0      # передача группой: клиенты того же менеджера в те же дни — в 3 радиусах
 MONTH_DAYS = 365.25 / 12
-TRANSFER_REASONS = {
-    'km': 'в этот район уже ездит {to} — меньше км',
-    'weak': 'у {to} в этот день не хватает заказов — день станет сильнее',
-    'overload': 'у {frm} перегружен день — станет короче',
-    None: 'отдельно почти ничего не меняет — выгода вместе с другими изменениями',
-    'owner': 'передача принята владельцем',
+TRANSFER_REASONS = {   # для передач routes_optimize.js смотрит reason_kind, не текст
+    'km': '{to}՝ արդեն աշխատում է այս տարածքում — ավելի քիչ կմ',   # имя из ERP не склоняется — форма «{to}՝ …»
+    'weak': '{to}՝ այդ օրը պատվերները քիչ են — օրն ավելի ուժեղ կլինի',
+    'overload': '{frm}՝ օրը ծանրաբեռնված է — այն ավելի կարճ կդառնա',
+    None: 'առանձին գրեթե ոչինչ չի փոխում — օգուտը՝ այլ փոփոխությունների հետ միասին',
+    'owner': 'փոխանցումն ընդունված է ձեր որոշմամբ',
 }
 
 
@@ -1786,16 +1786,16 @@ def _reason(spec: PairSpec, f_cur: float, f_new: float, lam: float, lam_season: 
     silent = status is not None and status.silent
     if spec.removed:   # §15: «не покупает 150 дн (обычно раз в 14 дн)» / «ни одного заказа за год»
         if spec.source == fq.SOURCE_MANUAL:
-            return 'удаление принято владельцем'
+            return 'հեռացումն ընդունված է ձեր որոշմամբ'
         return cst.silence_text(status) if silent else None
-    if spec.locked:
-        return 'шаблон принят владельцем'
+    if spec.locked:   # тексты решений владельца узнаёт rowReason() в routes_optimize.js — менять вместе
+        return 'օրերն ընդունված են ձեր որոշմամբ'
     # визиты в нерабочий день переносятся всегда (Р3-9) — причина видна и при смене частоты
     off = pt.off_days_text(spec.current, workdays)
     if pt.same_freq(f_cur, f_new):
         return off
     if spec.source == fq.SOURCE_MANUAL:
-        why = 'частота принята владельцем'
+        why = 'հաճախականությունն ընդունված է ձեր որոշմամբ'
     elif silent:   # затих (или владелец оставил потерянного): раз в неделю — попробовать вернуть
         why = cst.win_back_text(status)
     elif spec.source == fq.SOURCE_RULE:

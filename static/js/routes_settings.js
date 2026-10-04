@@ -8,12 +8,21 @@
     const $ = (id) => document.getElementById(id);
     const ARM = { latMin: 38.8, latMax: 41.4, lonMin: 43.4, lonMax: 46.7 };
     const YEREVAN = [40.1792, 44.4991];
-    const WD = [[1, 'Пн', 'понедельник'], [2, 'Вт', 'вторник'], [3, 'Ср', 'среда'], [4, 'Чт', 'четверг'],
-                [5, 'Пт', 'пятница'], [6, 'Сб', 'суббота'], [7, 'Вс', 'воскресенье']];
-    const MONTHS = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
-    const MONTHS_FULL = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
-    const FUEL = [['petrol', 'бензин'], ['diesel', 'дизель'], ['lpg', 'газ']];
-    const HOME_METHOD = { night: 'по ночёвкам', morning: 'по первым точкам дня', first_point: 'по первым точкам дня' };
+    // Страница на армянском (решение владельца №58); по-армянски после числа существительное — в единственном числе
+    const NB = '\u00a0';
+    const WD = [[1, 'Երկ', 'երկուշաբթի'], [2, 'Երք', 'երեքշաբթի'], [3, 'Չրք', 'չորեքշաբթի'], [4, 'Հնգ', 'հինգշաբթի'],
+                [5, 'Ուրբ', 'ուրբաթ'], [6, 'Շբթ', 'շաբաթ'], [7, 'Կիր', 'կիրակի']];
+    const MONTHS = ['հնվ', 'փտվ', 'մրտ', 'ապր', 'մյս', 'հնս', 'հլս', 'օգս', 'սեպ', 'հոկ', 'նոյ', 'դեկ'];
+    const MONTHS_FULL = ['հունվար', 'փետրվար', 'մարտ', 'ապրիլ', 'մայիս', 'հունիս', 'հուլիս', 'օգոստոս', 'սեպտեմբեր', 'հոկտեմբեր', 'նոյեմբեր', 'դեկտեմբեր'];
+    const FUEL = [['petrol', 'բենզին'], ['diesel', 'դիզել'], ['lpg', 'գազ']];
+    const HOME_METHOD = { night: 'ըստ գիշերակացի վայրերի', morning: 'ըստ օրվա առաջին կետերի', first_point: 'ըստ օրվա առաջին կետերի' };
+    // Ответы дашборда (вход, доступ) приходят по-русски — свой армянский текст по коду ответа
+    // Кнопки масштаба Leaflet — подсказки по-армянски (по умолчанию «Zoom in» / «Zoom out»)
+    const ZOOM_HY = { zoomInTitle: 'Մեծացնել', zoomOutTitle: 'Փոքրացնել' };
+    const AUTH_HY = { 401: 'Անհրաժեշտ է մուտք գործել համակարգ։', 403: 'Մուտքն արգելված է — բաժինը միայն ադմինիստրատորի համար է։' };
+    // 403 CSRF дашборда («сессия формы устарела») — не запрет доступа (как routes_learning.js и routes_garage.js)
+    const CSRF_HY = 'Էջը հնացել է՝ թարմացրեք այն և կրկնեք։';
+    const authText = (resp, data) => (resp.status === 403 && data && data.error === 'csrf' ? CSRF_HY : AUTH_HY[resp.status]);
     const SECTIONS = ['depot', 'trucks', 'fuel', 'managers', 'center', 'norms', 'season', 'calibration'];
     const ZONE_MAX = 200;   // точек границы малого центра — как store.CENTER_ZONE_VERTICES
     const RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -22,88 +31,88 @@
     // окончательную проверку диапазонов делает сервер (§9), его ошибки показываются у поля.
     // place: 'fuel' — в «Обязательно заполнить», остальное — в «Можно не трогать»
     const NORMS = [
-        { place: 'fuel', title: 'Цена за литр, драм', items: [
-            { key: 'fuel_price_diesel', label: 'Дизель', min: 1, max: 10000, step: 1, nullable: true, hint: 'для грузовиков и машин на дизеле' },
-            { key: 'fuel_price_petrol', label: 'Бензин', min: 1, max: 10000, step: 1, nullable: true, hint: 'для машин менеджеров на бензине' },
-            { key: 'fuel_price_lpg', label: 'Газ', min: 1, max: 10000, step: 1, nullable: true, hint: 'нужен, только если кто-то из менеджеров ездит на газе' },
+        { place: 'fuel', title: 'Մեկ լիտրի գինը, դրամ', items: [
+            { key: 'fuel_price_diesel', label: 'Դիզել', min: 1, max: 10000, step: 1, nullable: true, hint: 'բեռնատարների և դիզելային մեքենաների համար' },
+            { key: 'fuel_price_petrol', label: 'Բենզին', min: 1, max: 10000, step: 1, nullable: true, hint: 'մենեջերների բենզինով մեքենաների համար' },
+            { key: 'fuel_price_lpg', label: 'Գազ', min: 1, max: 10000, step: 1, nullable: true, hint: 'պետք է միայն, եթե մենեջերներից որևէ մեկի մեքենան գազով է' },
         ] },
-        { place: 'fuel', title: 'Машины менеджеров', items: [
-            { key: 'manager_car_default_l_per_100km', label: 'Расход, если не указан, л на 100 км', min: 1, max: 40, step: 0.1,
-                hint: 'для менеджеров, у которых в «Проверьте» расход не заполнен' },
+        { place: 'fuel', title: 'Մենեջերների մեքենաներ', items: [
+            { key: 'manager_car_default_l_per_100km', label: 'Ծախսը, եթե նշված չէ, լ/100 կմ', min: 1, max: 40, step: 0.1,
+                hint: 'այն մենեջերների համար, որոնց ծախսը «Ստուգեք» քայլում լրացված չէ' },
         ] },
-        { title: 'Рабочий день', items: [
-            { key: 'work_start', label: 'Начало', type: 'time' },
-            { key: 'work_end', label: 'Конец', type: 'time' },
-            { key: 'workdays', kind: 'workdays', label: 'Рабочие дни' },
+        { title: 'Աշխատանքային օր', items: [
+            { key: 'work_start', label: 'Սկիզբ', type: 'time' },
+            { key: 'work_end', label: 'Ավարտ', type: 'time' },
+            { key: 'workdays', kind: 'workdays', label: 'Աշխատանքային օրեր' },
         ] },
         // Парк машин (fleet-plan §2): рабочий день машины и разгрузка — для рейсов и «хватает ли машин»
-        { title: 'Машины доставки', items: [
-            { key: 'truck_work_start', label: 'Машина выезжает', type: 'time' },
-            { key: 'truck_work_end', label: 'Машина возвращается до', type: 'time', hint: 'рейсы, которые не успевают, — «нужна ещё машина»' },
-            { key: 'truck_overtime_end', label: 'Форс-мажор: машина возвращается не позже', type: 'time',
-              hint: 'кнопка «Везти после конца дня» в «Развозе» — только в исключительные дни' },
-            { key: 'unload_min_per_stop', label: 'Разгрузка на точке, минут', min: 0, max: 120, step: 1 },
-            { key: 'unload_min_per_tonne', label: 'И ещё на каждую тонну, минут', min: 0, max: 120, step: 1 },
-            { key: 'warehouse_load_fixed_min', label: 'Загрузка на складе: подготовка рейса, минут', min: 0, max: 240, step: 1, nullable: true,
-                hint: 'на каждый рейс, включая повторный; пусто — время пока неизвестно' },
-            { key: 'warehouse_load_min_per_tonne', label: 'Загрузка: дополнительно на тонну, минут', min: 0, max: 120, step: 0.5, nullable: true,
-                hint: 'укажите измеренное время; 0 — дополнительного времени нет' },
-            { key: 'dispatch_ready_time', label: 'Рейсы на завтра собирать после', type: 'time',
-                hint: 'до этого времени менеджеры ещё принимают заказы — «Развоз» об этом напомнит' },
+        { title: 'Առաքման մեքենաներ', items: [
+            { key: 'truck_work_start', label: 'Մեքենան մեկնում է', type: 'time' },
+            { key: 'truck_work_end', label: 'Մեքենան վերադառնում է մինչև', type: 'time', hint: 'չհասցնող երթերի համար՝ «անհրաժեշտ է ևս մեկ մեքենա»' },
+            { key: 'truck_overtime_end', label: 'Բացառիկ դեպքում մեքենան վերադառնում է ոչ ուշ, քան', type: 'time',
+              hint: '«Առաքում» էջի «Տանել …-ից հետո» կոճակը — միայն բացառիկ օրերին' },
+            { key: 'unload_min_per_stop', label: 'Բեռնաթափում մեկ կետում, րոպե', min: 0, max: 120, step: 1 },
+            { key: 'unload_min_per_tonne', label: 'Եվս յուրաքանչյուր տոննայի համար, րոպե', min: 0, max: 120, step: 1 },
+            { key: 'warehouse_load_fixed_min', label: 'Բեռնում պահեստում՝ երթի նախապատրաստում, րոպե', min: 0, max: 240, step: 1, nullable: true,
+                hint: 'յուրաքանչյուր երթի համար, այդ թվում՝ երկրորդ և հաջորդ երթերի համար․ դատարկ՝ ժամանակը դեռ հայտնի չէ' },
+            { key: 'warehouse_load_min_per_tonne', label: 'Բեռնում՝ լրացուցիչ յուրաքանչյուր տոննայի համար, րոպե', min: 0, max: 120, step: 0.5, nullable: true,
+                hint: 'նշեք չափված ժամանակը․ 0՝ լրացուցիչ ժամանակ չկա' },
+            { key: 'dispatch_ready_time', label: 'Վաղվա երթերը կազմել ոչ շուտ, քան', type: 'time',
+                hint: 'մինչ այդ մենեջերները դեռ ընդունում են պատվերներ — «Առաքում» էջը կհիշեցնի այդ մասին' },
         ] },
-        { title: 'Сколько длится визит, минут', items: [
-            { key: 'visit_min_small', label: 'Небольшой магазин', min: 1, max: 120, step: 0.5, nullable: true, auto: true, hint: 'пусто — берём по стоянкам у магазинов в GPS-треках' },
-            { key: 'visit_min_medium', label: 'Средний магазин', min: 1, max: 120, step: 0.5, nullable: true, auto: true },
-            { key: 'visit_min_large', label: 'Крупный магазин и сеть', min: 1, max: 120, step: 0.5, nullable: true, auto: true },
+        { title: 'Այցի տևողությունը, րոպե', items: [
+            { key: 'visit_min_small', label: 'Փոքր խանութ', min: 1, max: 120, step: 0.5, nullable: true, auto: true, hint: 'դատարկ՝ վերցնում ենք GPS հետագծերում խանութների մոտ կանգառներից' },
+            { key: 'visit_min_medium', label: 'Միջին խանութ', min: 1, max: 120, step: 0.5, nullable: true, auto: true },
+            { key: 'visit_min_large', label: 'Խոշոր խանութ և ցանց', min: 1, max: 120, step: 0.5, nullable: true, auto: true },
         ] },
-        { title: 'Размер магазина — по среднему заказу', items: [
-            { key: 'size_small_max_kg', label: 'Небольшой — до, кг', min: 1, max: 100000, step: 1 },
-            { key: 'size_medium_max_kg', label: 'Средний — до, кг', min: 1, max: 100000, step: 1, hint: 'тяжелее — крупный' },
+        { title: 'Խանութի չափը՝ ըստ միջին պատվերի', items: [
+            { key: 'size_small_max_kg', label: 'Փոքր՝ մինչև, կգ', min: 1, max: 100000, step: 1 },
+            { key: 'size_medium_max_kg', label: 'Միջին՝ մինչև, կգ', min: 1, max: 100000, step: 1, hint: 'ավելի ծանր՝ խոշոր' },
         ] },
-        { title: 'Сколько должен приносить', items: [
-            { key: 'min_day_revenue', label: 'День менеджера — не меньше, драм', min: 0, max: 100000000, step: 1000, hint: 'день, который зимой скорее всего не наберёт столько, считается слабым' },
-            { key: 'min_trip_revenue', label: 'Рейс машины — не меньше, драм', min: 0, max: 100000000, step: 1000, hint: 'меньше — машина едет почти пустая' },
+        { title: 'Որքան պետք է բերի', items: [
+            { key: 'min_day_revenue', label: 'Մենեջերի օրը՝ առնվազն, դրամ', min: 0, max: 100000000, step: 1000, hint: 'օրը, որը ձմռանը հավանաբար չի հավաքի այդքան, համարվում է թույլ' },
+            { key: 'min_trip_revenue', label: 'Մեքենայի երթը՝ առնվազն, դրամ', min: 0, max: 100000000, step: 1000, hint: 'պակաս՝ մեքենան գնում է գրեթե դատարկ' },
         ] },
         // auto: пустое поле — «авто» (по GPS-трекам, без них — по умолчанию), см. autoText()
-        { title: 'Дороги и скорость', items: [
-            { key: 'detour_factor', label: 'Во сколько раз дорога длиннее прямой', min: 1, max: 3, step: 0.01, nullable: true, auto: true, hint: 'пусто — берём по GPS-трекам' },
-            { key: 'speed_city_kmh', label: 'Скорость в городе, км/ч', min: 5, max: 120, step: 1, nullable: true, auto: true, hint: 'пусто — берём по GPS-трекам' },
-            { key: 'speed_region_kmh', label: 'Скорость по области, км/ч', min: 5, max: 120, step: 1, nullable: true, auto: true, hint: 'пусто — берём по GPS-трекам' },
-            { key: 'city_center', kind: 'coord', label: 'Центр города — широта, долгота', lat: 'city_center_lat', lon: 'city_center_lon' },
-            { key: 'city_radius_km', label: 'Радиус города, км', min: 1, max: 50, step: 0.5, hint: 'внутри — городская скорость' },
+        { title: 'Ճանապարհներ և արագություն', items: [
+            { key: 'detour_factor', label: 'Քանի անգամ է ճանապարհը երկար ուղիղ գծից', min: 1, max: 3, step: 0.01, nullable: true, auto: true, hint: 'դատարկ՝ վերցնում ենք GPS հետագծերից' },
+            { key: 'speed_city_kmh', label: 'Արագությունը քաղաքում, կմ/ժ', min: 5, max: 120, step: 1, nullable: true, auto: true, hint: 'դատարկ՝ վերցնում ենք GPS հետագծերից' },
+            { key: 'speed_region_kmh', label: 'Արագությունը մարզում, կմ/ժ', min: 5, max: 120, step: 1, nullable: true, auto: true, hint: 'դատարկ՝ վերցնում ենք GPS հետագծերից' },
+            { key: 'city_center', kind: 'coord', label: 'Քաղաքի կենտրոն՝ լայնություն, երկայնություն', lat: 'city_center_lat', lon: 'city_center_lon' },
+            { key: 'city_radius_km', label: 'Քաղաքի շառավիղ, կմ', min: 1, max: 50, step: 0.5, hint: 'ներսում՝ քաղաքային արագություն' },
         ] },
         // Этап 3 — как программа сравнивает варианты дней: во сколько драм «обходится» каждая неприятность
-        { title: 'Как программа выбирает дни', items: [
-            { key: 'penalty_weak_day', label: 'Слабый день зимой обходится как, драм', min: 0, max: 10000000, step: 1000, hint: 'больше — сильнее выравнивает выручку по дням' },
-            { key: 'penalty_poor_trip', label: 'Почти пустой рейс обходится как, драм', min: 0, max: 10000000, step: 500, hint: 'рейс, где заказов меньше нормы рейса' },
-            { key: 'penalty_overtime_per_min', label: 'Минута сверх рабочего дня обходится как, драм', min: 0, max: 1000000, step: 50 },
-            { key: 'penalty_change', label: 'Перенос магазина на другой день обходится как, драм', min: 0, max: 1000000, step: 50, hint: 'больше — меньше переносов ради мелкой экономии' },
-            { key: 'penalty_transfer', label: 'Передача магазина другому менеджеру обходится как, драм в неделю', min: 0, max: 1000000, step: 100, hint: 'передача должна окупаться заметно — больше, меньше передач' },
-            { key: 'transfer_radius_km', label: 'Кому можно передать: у менеджера есть магазин ближе, км', min: 0.1, max: 20, step: 0.1, hint: 'плюс 3 менеджера, чей дом ближе всего к магазину' },
-            { key: 'truck_priority', label: 'Расходы грузовиков важнее топлива менеджеров во столько раз', min: 1, max: 10, step: 0.1 },
-            { key: 'fuel_price_fallback', label: 'Цена топлива, если в «Ценах топлива» пусто, драм за литр', min: 1, max: 10000, step: 1, hint: 'только чтобы сравнивать варианты' },
-            { key: 'optimizer_seconds_per_manager', label: 'Время расчёта на менеджера — не больше, секунд', min: 1, max: 120, step: 1 },
-            { key: 'abc_a_share', label: 'Крупные магазины — доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'самые крупные вместе дают эту долю' },
-            { key: 'abc_b_share', label: 'Средние магазины — следующая доля выручки', min: 0.05, max: 0.95, step: 0.05, hint: 'остальные — небольшие; любой магазин посещается не реже раза в неделю' },
-            { key: 'freq_safety', label: 'Запас по визитам', min: 0.5, max: 3, step: 0.1, hint: 'визитов в неделю — не меньше, чем заказов в неделю × запас' },
+        { title: 'Ինչպես է ծրագիրն ընտրում օրերը', items: [
+            { key: 'penalty_weak_day', label: 'Ձմռան թույլ օրվա պայմանական գինը, դրամ', min: 0, max: 10000000, step: 1000, hint: 'ավելի մեծ՝ ավելի ուժեղ է հավասարեցնում հասույթն ըստ օրերի' },
+            { key: 'penalty_poor_trip', label: 'Գրեթե դատարկ երթի պայմանական գինը, դրամ', min: 0, max: 10000000, step: 500, hint: 'երթ, որի պատվերները պակաս են երթի նվազագույն արժեքից' },
+            { key: 'penalty_overtime_per_min', label: 'Աշխատանքային օրից ավել մեկ րոպեի պայմանական գինը, դրամ', min: 0, max: 1000000, step: 50 },
+            { key: 'penalty_change', label: 'Խանութն այլ օր տեղափոխելու պայմանական գինը, դրամ', min: 0, max: 1000000, step: 50, hint: 'ավելի մեծ՝ ավելի քիչ տեղափոխումներ մանր խնայողության համար' },
+            { key: 'penalty_transfer', label: 'Խանութն այլ մենեջերի փոխանցելու պայմանական գինը, դրամ շաբաթում', min: 0, max: 1000000, step: 100, hint: 'փոխանցումը պետք է նկատելի օգուտ տա — ավելի մեծ՝ ավելի քիչ փոխանցումներ' },
+            { key: 'transfer_radius_km', label: 'Ում կարելի է փոխանցել՝ մենեջերն ունի ավելի մոտ խանութ, կմ', min: 0.1, max: 20, step: 0.1, hint: 'գումարած 3 մենեջեր, որոնց տունն ամենամոտն է խանութին' },
+            { key: 'truck_priority', label: 'Քանի անգամ են բեռնատարների ծախսերն ավելի կարևոր, քան մենեջերների վառելիքը', min: 1, max: 10, step: 0.1 },
+            { key: 'fuel_price_fallback', label: 'Վառելիքի գինը, եթե «Վառելիքի գներ» բաժնում դատարկ է, դրամ/լ', min: 1, max: 10000, step: 1, hint: 'միայն տարբերակները համեմատելու համար' },
+            { key: 'optimizer_seconds_per_manager', label: 'Հաշվարկի ժամանակը մեկ մենեջերի համար՝ առավելագույնը, վայրկյան', min: 1, max: 120, step: 1 },
+            { key: 'abc_a_share', label: 'Խոշոր խանութներ՝ հասույթի բաժին', min: 0.05, max: 0.95, step: 0.05, hint: 'ամենախոշորները միասին տալիս են այս բաժինը' },
+            { key: 'abc_b_share', label: 'Միջին խանութներ՝ հասույթի հաջորդ բաժինը', min: 0.05, max: 0.95, step: 0.05, hint: 'մնացածը փոքր են․ ցանկացած խանութ այցելվում է առնվազն շաբաթը մեկ անգամ' },
+            { key: 'freq_safety', label: 'Այցերի պաշար', min: 0.5, max: 3, step: 0.1, hint: 'այցերը շաբաթում՝ ոչ պակաս, քան պատվերները շաբաթում × պաշար' },
         ] },
         // §15 — статус магазина по давности последнего заказа (ответ владельца №27)
-        { title: 'Кто перестал покупать', items: [
-            { key: 'status_new_days', label: 'Новый магазин — первый заказ за последние, дней', min: 1, max: 365, step: 1, hint: 'новые не считаются переставшими покупать' },
-            { key: 'dormant_min_days', label: 'Перестал покупать — не заказывает дольше, дней', min: 1, max: 365, step: 1, hint: 'таким — визит каждую неделю, чтобы попробовать вернуть' },
-            { key: 'dormant_mult', label: 'Перестал покупать — во сколько раз дольше обычного', min: 1, max: 20, step: 0.5 },
-            { key: 'lost_min_days', label: 'Давно не покупает — дольше, дней', min: 1, max: 730, step: 1, hint: 'или ни одного заказа за год: программа предложит убрать из маршрута' },
-            { key: 'lost_mult', label: 'Давно не покупает — во сколько раз дольше обычного', min: 1, max: 50, step: 0.5 },
+        { title: 'Ովքեր են դադարել գնել', items: [
+            { key: 'status_new_days', label: 'Նոր խանութ՝ առաջին պատվերը վերջին …, օր', min: 1, max: 365, step: 1, hint: 'նոր խանութները «դադարել է գնել» չեն համարվում' },
+            { key: 'dormant_min_days', label: 'Դադարել է գնել՝ չի պատվիրում ավելի, քան …, օր', min: 1, max: 365, step: 1, hint: 'այդպիսիներին՝ այց ամեն շաբաթ, որ փորձենք վերադարձնել' },
+            { key: 'dormant_mult', label: 'Դադարել է գնել՝ քանի անգամ ավելի երկար, քան սովորաբար', min: 1, max: 20, step: 0.5 },
+            { key: 'lost_min_days', label: 'Վաղուց չի գնում՝ ավելի, քան …, օր', min: 1, max: 730, step: 1, hint: 'կամ վերջին տարում ոչ մի պատվեր՝ ծրագիրը կառաջարկի հանել երթուղուց' },
+            { key: 'lost_mult', label: 'Վաղուց չի գնում՝ քանի անգամ ավելի երկար, քան սովորաբար', min: 1, max: 50, step: 0.5 },
         ] },
     ];
     // def — «авто» без калибровки по GPS (как ROAD_NORMS и VISIT_NORMS в route_optimizer/evaluate.py)
     const CALIB = [
-        { key: 'detour_factor', label: 'Извилистость дорог', d: 2, unit: '', def: 1.3 },
-        { key: 'speed_city_kmh', label: 'Скорость в городе', d: 1, unit: ' км/ч', def: 25 },
-        { key: 'speed_region_kmh', label: 'Скорость по области', d: 1, unit: ' км/ч', def: 45 },
-        { key: 'visit_min_small', label: 'Визит — мелкий магазин', d: 1, unit: ' мин', def: 7 },
-        { key: 'visit_min_medium', label: 'Визит — средний магазин', d: 1, unit: ' мин', def: 10 },
-        { key: 'visit_min_large', label: 'Визит — крупный магазин', d: 1, unit: ' мин', def: 20 },
+        { key: 'detour_factor', label: 'Ճանապարհների ոլորունություն', d: 2, unit: '', def: 1.3 },
+        { key: 'speed_city_kmh', label: 'Արագությունը քաղաքում', d: 1, unit: NB + 'կմ/ժ', def: 25 },
+        { key: 'speed_region_kmh', label: 'Արագությունը մարզում', d: 1, unit: NB + 'կմ/ժ', def: 45 },
+        { key: 'visit_min_small', label: 'Այց՝ փոքր խանութ', d: 1, unit: NB + 'րոպե', def: 7 },
+        { key: 'visit_min_medium', label: 'Այց՝ միջին խանութ', d: 1, unit: NB + 'րոպե', def: 10 },
+        { key: 'visit_min_large', label: 'Այց՝ խոշոր խանութ', d: 1, unit: NB + 'րոպե', def: 20 },
     ];
 
     const state = {
@@ -159,11 +168,11 @@
         const s = String(text || '').trim();
         if (!s) return { empty: true };
         const parts = s.match(/-?\d+(?:[.,]\d+)?/g) || [];
-        if (parts.length !== 2) return { error: 'Нужно два числа: широта, долгота — например 40.1792, 44.4991' };
+        if (parts.length !== 2) return { error: 'Անհրաժեշտ են երկու թիվ՝ լայնություն, երկայնություն — օրինակ՝ 40.1792, 44.4991' };
         let [a, b] = parts.map(x => parseFloat(x.replace(',', '.')));
         let swapped = false;
         if (!inArmenia(a, b) && inArmenia(b, a)) { [a, b] = [b, a]; swapped = true; }
-        if (!inArmenia(a, b)) return { error: 'Точка вне Армении: широта должна быть от 38.8 до 41.4, долгота — от 43.4 до 46.7' };
+        if (!inArmenia(a, b)) return { error: 'Կետը Հայաստանից դուրս է՝ լայնությունը պետք է լինի 38.8-ից մինչև 41.4, երկայնությունը՝ 43.4-ից մինչև 46.7' };
         return { lat: round(a, 6), lon: round(b, 6), swapped };
     }
 
@@ -174,11 +183,11 @@
 
     // Число из поля: {value} или {error}. Пустое — null, если поле необязательное.
     function readNum(input, nullable) {
-        if (input.validity && input.validity.badInput) return { error: 'Введите число' };
+        if (input.validity && input.validity.badInput) return { error: 'Գրեք թիվ' };
         const raw = String(input.value).trim().replace(',', '.');
-        if (raw === '') return nullable ? { value: null } : { error: 'Заполните поле' };
+        if (raw === '') return nullable ? { value: null } : { error: 'Լրացրեք դաշտը' };
         const v = Number(raw);
-        return Number.isFinite(v) ? { value: v } : { error: 'Введите число' };
+        return Number.isFinite(v) ? { value: v } : { error: 'Գրեք թիվ' };
     }
 
     // ---------- Регистр полей для ошибок сервера ----------
@@ -226,19 +235,19 @@
                 if (seen.has(f)) return;   // два сообщения про одно поле — одна строка в сводке
                 seen.add(f);
                 list.append(h('li', {}, h('button', { type: 'button', class: 'rt-alert-link', on: { click: () => focusField(f.el) } },
-                    (f.label ? f.label + ': ' : '') + text)));
+                    (f.label ? f.label + '՝ ' : '') + text)));
             } else {
                 list.append(h('li', { text: text }));
             }
             count++;
         });
-        box.append(h('b', { text: (fromClient ? 'Проверьте поля — ' : 'Не сохранено — ') + 'нужно исправить: ' + count }), list);
+        box.append(h('b', { text: (fromClient ? 'Ստուգեք դաշտերը — ' : 'Չի պահպանվել — ') + 'պետք է ուղղել՝ ' + count }), list);
         if ($('rsAuto').querySelector('.is-invalid')) $('rsAuto').open = true;   // ошибка в свёрнутом блоке — раскрываем его
         const alert = $('rsSaveError');
         alert.classList.remove('d-none');
         alert.scrollIntoView({ behavior: RM ? 'auto' : 'smooth', block: 'start' });
         alert.focus({ preventScroll: true });
-        announce('Настройки не сохранены: нужно исправить ' + count);
+        announce('Կարգավորումները չեն պահպանվել՝ պետք է ուղղել ' + count);
     }
 
     function showSaveError(text) {
@@ -263,14 +272,6 @@
         for (let d = el.closest('details'); d; d = d.parentElement && d.parentElement.closest('details')) d.open = true;
     }
 
-    function plural(n, one, few, many) {
-        const a = Math.abs(Math.trunc(n)) % 100, b = a % 10;
-        if (a > 10 && a < 20) return many;
-        if (b > 1 && b < 5) return few;
-        if (b === 1) return one;
-        return many;
-    }
-
     function flash(el) {
         el.classList.remove('rt-flash');
         void el.offsetWidth;   // перезапуск анимации
@@ -288,12 +289,13 @@
             try {
                 resp = await fetch('/api/routes/settings', { headers: { Accept: 'application/json' }, credentials: 'same-origin', cache: 'no-store' });
             } catch (e) {
-                throw new Error('Нет связи с сервером. Проверьте сеть и нажмите «Повторить».');
+                throw new Error('Սերվերի հետ կապ չկա։ Ստուգեք ցանցը և սեղմեք «Կրկնել»։');
             }
             let data = null;
             try { data = await resp.json(); } catch (e) { data = null; }
-            if (!data || typeof data !== 'object') throw new Error('Сервер ответил непонятно (код ' + resp.status + ').');
-            if (!resp.ok || data.success !== true) throw new Error(data.error || ('Ошибка сервера (код ' + resp.status + ').'));
+            if (authText(resp, data)) throw new Error(authText(resp, data));
+            if (!data || typeof data !== 'object') throw new Error('Սերվերն անհասկանալի պատասխան տվեց (կոդ ' + resp.status + ')։');
+            if (!resp.ok || data.success !== true) throw new Error(data.error || ('Սերվերի սխալ (կոդ ' + resp.status + ')։'));
             state.data = normalize(data);
             renderAll();
             $('rsForm').classList.remove('d-none');
@@ -305,9 +307,9 @@
             if (!afterSave) jumpToHash();
         } catch (e) {
             if (afterSave) {
-                showSaveError('Настройки сохранены, но перечитать их не удалось: ' + e.message + ' Обновите страницу.');
+                showSaveError('Կարգավորումները պահպանված են, բայց չհաջողվեց դրանք կրկին կարդալ՝ ' + e.message + ' Թարմացրեք էջը։');
             } else {
-                $('rsLoadErrorText').textContent = 'Не удалось загрузить настройки. ' + e.message;
+                $('rsLoadErrorText').textContent = 'Չհաջողվեց բեռնել կարգավորումները։ ' + e.message;
                 $('rsLoadError').classList.remove('d-none');
                 $('rsForm').classList.add('d-none');
             }
@@ -356,7 +358,7 @@
         const dp = state.data.depot;
         const inp = $('rsDepot');
         inp.value = dp ? fmtCoord(dp.lat, dp.lon) : '';
-        reg(['depot', 'depot.lat', 'depot.lon'], inp, $('rsDepotErr'), 'Склад');
+        reg(['depot', 'depot.lat', 'depot.lon'], inp, $('rsDepotErr'), 'Պահեստ');
         initDepotMap();
         syncDepot({ pan: true, strict: false });
     }
@@ -366,10 +368,11 @@
         const el = $('rsDepotMap');
         if (typeof window.L === 'undefined') {
             el.classList.add('rt-map-fallback');
-            el.textContent = 'Карта не загрузилась (нет доступа к cdn.jsdelivr.net). Введите координаты в поле справа.';
+            el.textContent = 'Քարտեզը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ)։ Գրեք կոորդինատները աջ կողմի դաշտում։';
             return;
         }
-        const map = L.map(el, { zoomSnap: 0.5, scrollWheelZoom: false });
+        const map = L.map(el, { zoomSnap: 0.5, scrollWheelZoom: false, zoomControl: false });
+        L.control.zoom(ZOOM_HY).addTo(map);
         RoutesBasemap.add(map);
         map.setView(YEREVAN, 11);
         map.on('click', (e) => placeDepot(e.latlng.lat, e.latlng.lng));
@@ -386,7 +389,7 @@
                 html: '<span><i class="fas fa-warehouse" aria-hidden="true"></i></span>',
                 iconSize: [30, 30], iconAnchor: [15, 15],
             });
-            state.marker = L.marker([lat, lon], { icon, draggable: true, title: 'Склад', keyboard: false }).addTo(state.map);
+            state.marker = L.marker([lat, lon], { icon, draggable: true, title: 'Պահեստ', keyboard: false }).addTo(state.map);
             state.marker.on('dragend', () => {
                 const p = state.marker.getLatLng();
                 placeDepot(p.lat, p.lng);
@@ -400,7 +403,7 @@
     function placeDepot(lat, lon) {
         const err = $('rsDepotErr'), inp = $('rsDepot');
         if (!inArmenia(lat, lon)) {
-            err.textContent = 'Эта точка вне Армении — склад должен быть в Армении.';
+            err.textContent = 'Այս կետը Հայաստանից դուրս է — պահեստը պետք է լինի Հայաստանում։';
             if (state.marker) {
                 const cur = parseCoord(inp.value);
                 if (!cur.error && !cur.empty) state.marker.setLatLng([cur.lat, cur.lon]);
@@ -410,7 +413,7 @@
         inp.value = fmtCoord(lat, lon);
         syncDepot({ pan: false, strict: true });
         inp.dispatchEvent(new Event('input', { bubbles: true }));
-        announce('Склад поставлен: ' + inp.value);
+        announce('Պահեստը նշված է՝ ' + inp.value);
     }
 
     // strict — показывать ошибку формата (по «change»), иначе молча ждём, пока человек допечатает
@@ -422,7 +425,7 @@
             err.textContent = '';
             inp.classList.remove('is-invalid');
             inp.removeAttribute('aria-invalid');
-            note.textContent = 'Склад не указан — рейсы машин и дизель не считаются.';
+            note.textContent = 'Պահեստը նշված չէ — մեքենաների երթերը և դիզելը չեն հաշվվում։';
             if (state.marker && state.map) state.map.removeLayer(state.marker);
             return;
         }
@@ -438,7 +441,7 @@
         err.textContent = '';
         inp.classList.remove('is-invalid');
         inp.removeAttribute('aria-invalid');
-        note.textContent = p.swapped ? 'Широта и долгота были перепутаны — поменяли местами.' : 'Точка на карте.';
+        note.textContent = p.swapped ? 'Լայնությունը և երկայնությունը շփոթված էին — տեղերը փոխեցինք։' : 'Կետը քարտեզում է։';
         note.classList.add('is-ok');
         depotMarker(p.lat, p.lon);
         if (pan && state.map) state.map.setView([p.lat, p.lon], Math.max(state.map.getZoom(), 14), { animate: !RM });
@@ -457,21 +460,21 @@
 
     function erpHint(t) {
         const avg = num(t.erp_kg_day), top = num(t.erp_kg_day_max), days = num(t.erp_days);
-        const load = avg === null ? h('span', { class: 'rs-erp-none', text: 'по накладным за 3 месяца не возила' })
-            : h('span', { class: 'rs-erp' }, 'обычно возит в день ≈' + ' ' + fmt(avg / 1000, 1) + ' т, максимум '
-                + fmt(top / 1000, 1) + ' т', h('small', { text: ' · ' + fmt(days) + ' ' + plural(days, 'день', 'дня', 'дней') + ' с развозом' }));
+        const load = avg === null ? h('span', { class: 'rs-erp-none', text: 'վերջին 3 ամսում ըստ ապրանքագրերի բեռ չի տարել' })
+            : h('span', { class: 'rs-erp' }, 'սովորաբար օրական տանում է ≈' + NB + fmt(avg / 1000, 1) + NB + 'տ, առավելագույնը՝ '
+                + fmt(top / 1000, 1) + NB + 'տ', h('small', { text: ' · ' + fmt(days) + NB + 'առաքման օր' }));
         return h('div', { class: 'rs-erp-box' }, load,
-            h('span', { class: 'rs-erp-last', text: t.last_used ? 'последний раз в накладных: ' + dateRu(t.last_used) : 'в накладных не было' }));
+            h('span', { class: 'rs-erp-last', text: t.last_used ? 'վերջին անգամ ապրանքագրերում՝ ' + dateRu(t.last_used) : 'ապրանքագրերում չի եղել' }));
     }
 
     // Ручная машина: что о её экспедиторе известно из накладных (без машины, за 3 месяца)
     function vanHint(m) {
         const v = vanInfo(m.van_agent_id);
-        if (!v) return h('span', { class: 'rs-erp-none', text: 'машины нет в ERP — рейсы в «Плане и факте» не видны, пока не выбран экспедитор' });
+        if (!v) return h('span', { class: 'rs-erp-none', text: 'մեքենան ERP-ում չկա — «Պլան և փաստ» բաժնում երթերը չեն երևում, քանի դեռ առաքիչ ընտրված չէ' });
         return h('div', { class: 'rs-erp-box' },
-            h('span', { class: 'rs-erp', text: 'возит экспедитор ' + v.code + (v.name ? ' · ' + v.name : '') }),
-            h('span', { class: 'rs-erp-last', text: num(v.docs) ? fmt(v.docs) + ' ' + plural(v.docs, 'накладная', 'накладные', 'накладных')
-                + ' без машины за 3 месяца, последняя — ' + dateRu(v.last_day) : 'за 3 месяца накладных без машины не было' }));
+            h('span', { class: 'rs-erp', text: 'բեռը տանում է առաքիչ ' + v.code + (v.name ? ' · ' + v.name : '') }),
+            h('span', { class: 'rs-erp-last', text: num(v.docs) ? fmt(v.docs) + NB + 'ապրանքագիր առանց մեքենայի՝ վերջին 3 ամսում, վերջինը՝ '
+                + dateRu(v.last_day) : 'վերջին 3 ամսում առանց մեքենայի ապրանքագրեր չեն եղել' }));
     }
 
     function vanInfo(id) {
@@ -484,10 +487,10 @@
 
     // «выключена, потому что не возила» — только пока «Работает» решает авто
     function idleText(t) {
-        const tail = ' — выключена; включите, если машина работает';
-        if (t.erp_closed) return 'закрыта в ERP' + tail;
-        if (!t.last_used) return 'в накладных не было' + tail;
-        return 'не возила с ' + dateRu(t.last_used) + tail;
+        const tail = ' — անջատված է․ միացրեք, եթե մեքենան աշխատում է';
+        if (t.erp_closed) return 'փակված է ERP-ում' + tail;
+        if (!t.last_used) return 'ապրանքագրերում չի եղել' + tail;
+        return dateRu(t.last_used) + '-ից բեռ չի տարել' + tail;
     }
 
     // Износ по журналу гаража (№53) — только чтение: ремонт ֏/км на сегодня и какое значение идёт в расчёт. Поле
@@ -508,39 +511,39 @@
     }
 
     const LOAD_COSTS = [
-        ['fuel_empty_l_per_100km', 'Пустая, л/100 км', 1, 80],
-        ['fuel_full_l_per_100km', 'Полная, л/100 км', 1, 80],
-        ['wear_amd_per_km', 'Износ, драм/км', 0, 1000000],
-        ['wear_load_amd_per_km', 'Надбавка при полной загрузке, драм/км', 0, 1000000],
+        ['fuel_empty_l_per_100km', 'Դատարկ, լ/100 կմ', 1, 80],
+        ['fuel_full_l_per_100km', 'Լրիվ բեռնված, լ/100 կմ', 1, 80],
+        ['wear_amd_per_km', 'Մաշվածք, ֏/կմ', 0, 1000000],
+        ['wear_load_amd_per_km', 'Հավելում լրիվ բեռնվածության դեպքում, ֏/կմ', 0, 1000000],
     ];
 
     function truckRow(t, i) {
         const manual = !!t.manual;
         const code = String(t.car_code ?? '');
-        const who = 'машина ' + code;
+        const who = 'մեքենա ' + code;
         const capE = errNode(), fuelE = errNode(), actE = errNode();
         const cap = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 0.1, max: 30, step: 0.1,
             value: num(t.capacity_kg) === null ? '' : String(round(num(t.capacity_kg) / 1000, 3)),
-            placeholder: '—', 'aria-label': 'Тоннаж в тоннах — ' + who, dataset: { f: 'cap' } });
+            placeholder: '—', 'aria-label': 'Տոննաժ, տոննա — ' + who, dataset: { f: 'cap' } });
         const fuel = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 1, max: 80, step: 0.1,
             value: num(t.fuel_l_per_100km) === null ? '' : String(t.fuel_l_per_100km),
-            placeholder: '—', 'aria-label': 'Расход, литров на 100 км — ' + who, dataset: { f: 'fuel' } });
+            placeholder: '—', 'aria-label': 'Ծախս, լիտր 100 կմ-ի վրա — ' + who, dataset: { f: 'fuel' } });
         const costFields = LOAD_COSTS.map(([key, label, min, max]) => {
             const input = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min, max, step: 0.1,
-                value: num(t[key]) === null ? '' : String(t[key]), placeholder: 'не задано',
+                value: num(t[key]) === null ? '' : String(t[key]), placeholder: 'նշված չէ',
                 'aria-label': label + ' — ' + who, dataset: { f: key } });
             const error = errNode();
             const prefix = manual ? ['manual_trucks.' + code] : ['trucks.' + i, 'trucks.' + code];
-            reg(prefix.map(p => p + '.' + key), input, error, 'Машина ' + code + ', ' + label);
+            reg(prefix.map(p => p + '.' + key), input, error, 'Մեքենա ' + code + ', ' + label);
             return h('label', { class: 'rs-load-field' }, h('span', { text: label }), input, error,
                 key === 'wear_amd_per_km' ? garageNote(t) : null);
         });
         const costs = h('details', { class: 'rs-load-costs' },
-            h('summary', { text: 'Загрузка и износ' + (t.wear_source === 'garage' ? ' · износ по журналу гаража' : '') }),
+            h('summary', { text: 'Բեռնվածություն և մաշվածք' + (t.wear_source === 'garage' ? ' · износ по журналу гаража' : '') }),
             h('div', { class: 'rs-load-fields' }, ...costFields),
-            h('p', { class: 'rt-muted', text: 'Пустая и полная — по замерам этой машины. Надбавка за износ растёт с квадратом доли загрузки. Пусто — влияние нагрузки не настроено.' }));
+            h('p', { class: 'rt-muted', text: 'Դատարկ և լրիվ բեռնված՝ ըստ այս մեքենայի չափումների։ Մաշվածքի հավելումը համեմատական է բեռնվածության բաժնի քառակուսուն։ Եթե դաշտերը լրացված չեն՝ բեռի ազդեցությունը կարգավորված չէ։' }));
         const wasManual = manual || t.active_source === 'manual', autoOn = t.auto_active === true;
-        const active = h('input', { type: 'checkbox', checked: t.active !== false, 'aria-label': 'Машина работает — ' + who,
+        const active = h('input', { type: 'checkbox', checked: t.active !== false, 'aria-label': 'Մեքենան աշխատում է — ' + who,
             dataset: { f: 'active', mode: wasManual ? 'manual' : 'auto' } });
         const actSrc = h('span', { class: 'rt-inc-src' });
         const idle = h('span', { class: 'rs-idle', role: 'note' });
@@ -550,25 +553,25 @@
             // авто и давно не возила — выключена; владелец включил сам — мягкое напоминание, не выключаем
             const offByAuto = mode === 'auto' && !autoOn && !manual;
             const stale = mode === 'manual' && active.checked && !autoOn && !manual;
-            idle.textContent = offByAuto ? idleText(t) : (stale ? 'в накладных давно нет — проверьте, работает ли машина' : '');
+            idle.textContent = offByAuto ? idleText(t) : (stale ? 'ապրանքագրերում վաղուց չկա — ստուգեք, արդյոք մեքենան աշխատում է' : '');
             idle.classList.toggle('is-soft', stale);
             idle.hidden = !idle.textContent;
             if (manual) return;
             if (mode === 'auto') {
-                actSrc.append(h('span', { class: 'rt-badge', text: 'авто',
-                    title: autoOn ? 'Авто: возила по накладным за последние ' + (state.data.car_idle_days || 60) + ' дней — работает'
-                        : 'Авто: давно не возила по накладным или закрыта в ERP — выключена' }));
+                actSrc.append(h('span', { class: 'rt-badge', text: 'ավտոմատ',
+                    title: autoOn ? 'Ավտոմատ՝ վերջին ' + (state.data.car_idle_days || 60) + ' օրում բեռ է տարել ըստ ապրանքագրերի — աշխատում է'
+                        : 'Ավտոմատ՝ ըստ ապրանքագրերի վաղուց բեռ չի տարել կամ փակված է ERP-ում — անջատված է' }));
                 return;
             }
-            const back = h('button', { type: 'button', class: 'rt-hintbtn', 'aria-label': 'Вернуть авто — ' + who,
-                title: 'Снять ручной выбор: работает, если возила по накладным за последние ' + (state.data.car_idle_days || 60) + ' дней' }, 'вернуть авто');
+            const back = h('button', { type: 'button', class: 'rt-hintbtn', 'aria-label': 'Վերադարձնել ավտոմատ — ' + who,
+                title: 'Հանել ձեռքով ընտրությունը՝ աշխատում է, եթե վերջին ' + (state.data.car_idle_days || 60) + ' օրում բեռ է տարել ըստ ապրանքագրերի' }, 'վերադարձնել ավտոմատ');
             back.addEventListener('click', () => {
                 active.checked = autoOn;
                 setMode('auto');
                 updateDirty();
                 renderProgress();
                 active.focus();
-                announce(code + ': «Работает» — снова авто');
+                announce(code + '՝ «Աշխատում է» — կրկին ավտոմատ');
             });
             actSrc.append(back);
         };
@@ -580,43 +583,43 @@
         const autoCenter = manual ? /JAC/i.test(t.name || '') : t.auto_center_ok === true;
         const centerMode = t.center_mode || (t.center_ok_source === 'manual' ? (t.center_ok ? 'yes' : 'no') : 'auto');
         const centerE = errNode();
-        const center = h('select', { class: 'rt-select rs-center-sel', 'aria-label': 'Можно в малый центр — ' + who,
-            title: 'Авто: в малый центр въезжают машины JAC (по названию машины)', dataset: { f: 'center', auto: autoCenter ? '1' : '0' } },
-            h('option', { value: 'auto', text: 'авто: ' + (autoCenter ? 'да' : 'нет'), selected: centerMode === 'auto' }),
-            h('option', { value: 'yes', text: 'да', selected: centerMode === 'yes' }),
-            h('option', { value: 'no', text: 'нет', selected: centerMode === 'no' }));
+        const center = h('select', { class: 'rt-select rs-center-sel', 'aria-label': 'Կարող է մտնել փոքր կենտրոն — ' + who,
+            title: 'Ավտոմատ՝ փոքր կենտրոն մտնում են JAC մեքենաները (ըստ մեքենայի անվանման)', dataset: { f: 'center', auto: autoCenter ? '1' : '0' } },
+            h('option', { value: 'auto', text: 'ավտոմատ՝ ' + (autoCenter ? 'այո' : 'ոչ'), selected: centerMode === 'auto' }),
+            h('option', { value: 'yes', text: 'այո', selected: centerMode === 'yes' }),
+            h('option', { value: 'no', text: 'ոչ', selected: centerMode === 'no' }));
         const nameCell = h('td', { class: 'rt-cell-name' },
             h('span', { class: 'n', text: code || '—' }),
             h('span', { class: 'c', text: t.name || '' }),
-            t.erp_closed ? h('span', { class: 'rt-badge b-warn mt-1', text: 'закрыта в ERP' }) : null,
-            manual ? h('span', { class: 'rt-badge b-manual mt-1', text: 'добавлена вручную' }) : null);
+            t.erp_closed ? h('span', { class: 'rt-badge b-warn mt-1', text: 'փակված է ERP-ում' }) : null,
+            manual ? h('span', { class: 'rt-badge b-manual mt-1', text: 'ավելացված է ձեռքով' }) : null);
         const tr = h('tr', { class: t.erp_closed ? 'is-closed' : null, dataset: manual ? { mk: t.key } : { i: String(i) } },
             nameCell,
-            h('td', { class: 'w-num w-half', dataset: { label: 'Тоннаж, т' } }, cap, capE),
-            h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л на 100 км' } }, fuel, fuelE, costs),
-            h('td', { class: 'rs-erp-cell', dataset: { label: manual ? 'Экспедитор' : 'По накладным ERP' } }, manual ? vanHint(t) : erpHint(t), idle),
-            h('td', { class: 'w-sel', dataset: { label: 'В центр' } }, center, centerE),
-            h('td', { class: 'w-chk w-inc', dataset: { label: 'Работает' } }, active, actSrc, actE));
+            h('td', { class: 'w-num w-half', dataset: { label: 'Տոննաժ, տ' } }, cap, capE),
+            h('td', { class: 'w-num w-half', dataset: { label: 'Ծախս, լ/100 կմ' } }, fuel, fuelE, costs),
+            h('td', { class: 'rs-erp-cell', dataset: { label: manual ? 'Առաքիչ' : 'Ըստ ERP ապրանքագրերի' } }, manual ? vanHint(t) : erpHint(t), idle),
+            h('td', { class: 'w-sel', dataset: { label: 'Կենտրոն' } }, center, centerE),
+            h('td', { class: 'w-chk w-inc', dataset: { label: 'Աշխատում է' } }, active, actSrc, actE));
         if (manual) {
-            const edit = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Изменить — ' + who },
-                icon('fa-pen'), 'Изменить');
-            const del = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Удалить — ' + who },
-                icon('fa-trash-can'), 'Удалить');
+            const edit = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Փոփոխել — ' + who },
+                icon('fa-pen'), 'Փոփոխել');
+            const del = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Ջնջել — ' + who },
+                icon('fa-trash-can'), 'Ջնջել');
             edit.addEventListener('click', () => openManualForm(t.key));
             del.addEventListener('click', () => removeManual(t.key));
             nameCell.append(h('span', { class: 'rs-mt-acts' }, edit, del));
             const keys = (f) => ['manual_trucks.' + code + '.' + f];
-            reg(keys('capacity_kg'), cap, capE, 'Машина ' + code + ', тоннаж');
-            reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Машина ' + code + ', расход');
-            reg(keys('active'), active, actE, 'Машина ' + code);
-            reg(keys('center_ok'), center, centerE, 'Машина ' + code + ', в центр');
-            reg(keys('car_code').concat(keys('name'), keys('van_agent_id'), ['manual_trucks.' + code]), edit, actE, 'Машина ' + code);
+            reg(keys('capacity_kg'), cap, capE, 'Մեքենա ' + code + ', տոննաժ');
+            reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Մեքենա ' + code + ', ծախս');
+            reg(keys('active'), active, actE, 'Մեքենա ' + code);
+            reg(keys('center_ok'), center, centerE, 'Մեքենա ' + code + ', կենտրոն');
+            reg(keys('car_code').concat(keys('name'), keys('van_agent_id'), ['manual_trucks.' + code]), edit, actE, 'Մեքենա ' + code);
         } else {
             const keys = (f) => ['trucks.' + i + '.' + f, 'trucks.' + code + '.' + f];
-            reg(keys('capacity_kg').concat(['trucks.' + i, 'trucks.' + code]), cap, capE, 'Машина ' + code + ', тоннаж');
-            reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Машина ' + code + ', расход');
-            reg(keys('active').concat(keys('car_code')), active, actE, 'Машина ' + code);
-            reg(keys('center_ok'), center, centerE, 'Машина ' + code + ', в центр');
+            reg(keys('capacity_kg').concat(['trucks.' + i, 'trucks.' + code]), cap, capE, 'Մեքենա ' + code + ', տոննաժ');
+            reg(keys('fuel_l_per_100km'), fuel, fuelE, 'Մեքենա ' + code + ', ծախս');
+            reg(keys('active').concat(keys('car_code')), active, actE, 'Մեքենա ' + code);
+            reg(keys('center_ok'), center, centerE, 'Մեքենա ' + code + ', կենտրոն');
         }
         return tr;
     }
@@ -629,17 +632,17 @@
         state.data.trucks.forEach((t, i) => { if (!t.manual) tbody.append(truckRow(t, i)); });
         state.manual.forEach(m => tbody.append(truckRow(m)));
         const table = h('table', { class: 'rt-table' },
-            h('caption', { class: 'rt-sr-only', text: 'Машины доставки: тоннаж, расход и сколько машина возит в день по накладным ERP' }),
+            h('caption', { class: 'rt-sr-only', text: 'Առաքման մեքենաներ՝ տոննաժ, ծախս և որքան է մեքենան տանում օրական ըստ ERP ապրանքագրերի' }),
             h('thead', {}, h('tr', {},
-                h('th', { scope: 'col', text: 'Машина' }),
-                h('th', { scope: 'col', text: 'Тоннаж, т' }),
-                h('th', { scope: 'col', text: 'Расход, л на 100 км' }),
-                h('th', { scope: 'col', text: 'По накладным ERP' }),
-                h('th', { scope: 'col', text: 'В центр', title: 'Можно въезжать в малый центр' }),
-                h('th', { scope: 'col', class: 'w-chk w-inc', text: 'Работает' }))),
+                h('th', { scope: 'col', text: 'Մեքենա' }),
+                h('th', { scope: 'col', text: 'Տոննաժ, տ' }),
+                h('th', { scope: 'col', text: 'Ծախս, լ/100 կմ' }),
+                h('th', { scope: 'col', text: 'Ըստ ERP ապրանքագրերի' }),
+                h('th', { scope: 'col', text: 'Կենտրոն', title: 'Կարող է մտնել փոքր կենտրոն' }),
+                h('th', { scope: 'col', class: 'w-chk w-inc', text: 'Աշխատում է' }))),
             tbody);
         const addBtn = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', id: 'rsMtAdd', 'aria-expanded': 'false', 'aria-controls': 'rsMtForm' },
-            icon('fa-plus'), 'Добавить машину вручную');
+            icon('fa-plus'), 'Ավելացնել մեքենա ձեռքով');
         addBtn.addEventListener('click', () => openManualForm(null));
         box.append(
             h('div', { class: 'rt-alert is-info rs-mt-hint', id: 'rsMtHint' }, icon('fa-circle-info'), h('span', { class: 'rt-alert-text', id: 'rsMtHintText' }), addBtn),
@@ -652,12 +655,12 @@
     function renderManualHint() {
         const linked = new Set(state.manual.map(m => m.van_agent_id).filter(v => v !== null && v !== undefined));
         const free = (state.data.expeditors || []).filter(e => !linked.has(e.agent_id)).map(e => e.code);
-        let text = 'Нет нужной машины? Её нет в ERP — добавьте вручную.';
+        let text = 'Չե՞ք գտնում անհրաժեշտ մեքենան։ Եթե այն ERP-ում չկա, ավելացրեք ձեռքով։';
         if (free.length) {
             const list = free.slice(0, 3);
-            const names = list.length === 1 ? list[0] : list.slice(0, -1).join(', ') + ' и ' + list[list.length - 1];
-            text += ' Например, ' + (free.length === 1 ? 'экспедитор ' + names + ' возит' : 'экспедиторы ' + names + (free.length > 3 ? ' и другие' : '') + ' возят')
-                + ' без машины в накладных.';
+            const names = list.length === 1 ? list[0] : list.slice(0, -1).join(', ') + ' և ' + list[list.length - 1];
+            text += ' Օրինակ՝ ապրանքագրերում առանց մեքենայի ' + (free.length === 1 ? 'բեռ է տանում առաքիչ ' + names : 'բեռ են տանում առաքիչներ ' + names + (free.length > 3 ? ' և ուրիշներ' : ''))
+                + '։';
         }
         $('rsMtHintText').textContent = text;
     }
@@ -667,28 +670,28 @@
         const f = (id, label, input, hint) => h('div', { class: 'rt-field' }, h('label', { for: id, text: label }), input,
             hint ? h('div', { class: 'rt-field-hint', text: hint }) : null);
         const nt = { noTrack: '1' };
-        const code = h('input', { class: 'rt-input', id: 'rsMtCode', type: 'text', maxlength: 20, autocomplete: 'off', spellcheck: 'false', placeholder: 'например 35 XY 123', dataset: nt });
-        const name = h('input', { class: 'rt-input', id: 'rsMtName', type: 'text', maxlength: 60, autocomplete: 'off', placeholder: 'например ГАЗель', dataset: nt });
+        const code = h('input', { class: 'rt-input', id: 'rsMtCode', type: 'text', maxlength: 20, autocomplete: 'off', spellcheck: 'false', placeholder: 'օրինակ՝ 35 XY 123', dataset: nt });
+        const name = h('input', { class: 'rt-input', id: 'rsMtName', type: 'text', maxlength: 60, autocomplete: 'off', placeholder: 'օրինակ՝ Գազել', dataset: nt });
         const cap = h('input', { class: 'rt-input', id: 'rsMtCap', type: 'number', inputmode: 'decimal', min: 0.1, max: 30, step: 0.1, placeholder: '—', dataset: nt });
         const fuel = h('input', { class: 'rt-input', id: 'rsMtFuel', type: 'number', inputmode: 'decimal', min: 1, max: 80, step: 0.1, placeholder: '—', dataset: nt });
         const van = h('select', { class: 'rt-select', id: 'rsMtVan', dataset: nt });
         const act = h('input', { type: 'checkbox', id: 'rsMtActive', checked: true, dataset: nt });
-        const ok = h('button', { type: 'button', class: 'rt-btn rt-btn-primary rt-btn-sm', id: 'rsMtOk' }, icon('fa-check'), h('span', { text: 'Добавить в список' }));
-        const cancel = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', id: 'rsMtCancel' }, 'Отмена');
+        const ok = h('button', { type: 'button', class: 'rt-btn rt-btn-primary rt-btn-sm', id: 'rsMtOk' }, icon('fa-check'), h('span', { text: 'Ավելացնել ցուցակում' }));
+        const cancel = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', id: 'rsMtCancel' }, 'Չեղարկել');
         ok.addEventListener('click', applyManualForm);
         cancel.addEventListener('click', closeManualForm);
         const wrap = h('div', { class: 'rs-mt-form', id: 'rsMtForm', role: 'group', 'aria-labelledby': 'rsMtTitle', hidden: true },
-            h('h4', { class: 'rs-mt-title', id: 'rsMtTitle', text: 'Новая машина' }),
+            h('h4', { class: 'rs-mt-title', id: 'rsMtTitle', text: 'Նոր մեքենա' }),
             h('div', { class: 'rs-mt-grid' },
-                f('rsMtCode', 'Номер', code, 'как на машине; номер не должен совпадать с машинами из ERP'),
-                f('rsMtName', 'Марка или название', name),
-                f('rsMtCap', 'Тоннаж, т', cap),
-                f('rsMtFuel', 'Расход, л на 100 км', fuel),
-                f('rsMtVan', 'Экспедитор (можно не указывать)', van, 'его накладные без машины в ERP программа будет считать рейсами этой машины'),
-                h('label', { class: 'rs-mt-check' }, act, 'Машина работает')),
+                f('rsMtCode', 'Համարանիշ', code, 'ինչպես մեքենայի վրա․ համարանիշը չպետք է համընկնի ERP-ի մեքենաների հետ'),
+                f('rsMtName', 'Մակնիշ կամ անվանում', name),
+                f('rsMtCap', 'Տոննաժ, տ', cap),
+                f('rsMtFuel', 'Ծախս, լ/100 կմ', fuel),
+                f('rsMtVan', 'Առաքիչ (կարելի է չնշել)', van, 'ERP-ում նրա առանց մեքենայի ապրանքագրերը ծրագիրը կհամարի այս մեքենայի երթեր'),
+                h('label', { class: 'rs-mt-check' }, act, 'Մեքենան աշխատում է')),
             h('div', { class: 'rt-ferr', id: 'rsMtErr', role: 'alert' }),
             h('div', { class: 'rs-mt-btns' }, ok, cancel),
-            h('p', { class: 'rt-field-hint mb-0', text: 'Машина попадёт в список; записать — кнопкой «Сохранить» внизу страницы.' }));
+            h('p', { class: 'rt-field-hint mb-0', text: 'Մեքենան կավելանա ցուցակում։ Պահպանելու համար սեղմեք «Պահպանել» կոճակը էջի ներքևում։' }));
         wrap.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') { e.preventDefault(); applyManualForm(); }
             if (e.key === 'Escape') { e.preventDefault(); closeManualForm(); }
@@ -699,14 +702,14 @@
     function fillVanOptions(selected, editingKey) {
         const sel = $('rsMtVan');
         sel.textContent = '';
-        sel.append(h('option', { value: '', text: '— без экспедитора —' }));
+        sel.append(h('option', { value: '', text: '— առանց առաքիչի —' }));
         const list = (state.data.expeditors || []).slice();
         if (selected !== null && selected !== undefined && !list.some(e => e.agent_id === selected)) list.push(vanInfo(selected));
         list.forEach(e => {
             const other = state.manual.find(m => m.van_agent_id === e.agent_id && m.key !== editingKey);
             sel.append(h('option', { value: String(e.agent_id), selected: e.agent_id === selected, disabled: !!other,
-                text: e.code + (e.name ? ' · ' + e.name : '') + (num(e.docs) ? ' · ' + fmt(e.docs) + ' ' + plural(e.docs, 'накладная', 'накладные', 'накладных') + ' без машины' : '')
-                    + (other ? ' (уже у машины ' + other.car_code + ')' : '') }));
+                text: e.code + (e.name ? ' · ' + e.name : '') + (num(e.docs) ? ' · ' + fmt(e.docs) + NB + 'ապրանքագիր առանց մեքենայի' : '')
+                    + (other ? ' (արդեն կցված է ' + other.car_code + ' մեքենային)' : '') }));
         });
     }
 
@@ -716,11 +719,11 @@
         const cur = (f) => tr ? tr.querySelector('[data-f="' + f + '"]') : null;
         const form = $('rsMtForm');
         form.dataset.key = key || '';
-        $('rsMtTitle').textContent = m ? 'Машина ' + m.car_code : 'Новая машина';
-        $('rsMtOk').querySelector('span').textContent = m ? 'Применить' : 'Добавить в список';
+        $('rsMtTitle').textContent = m ? 'Մեքենա ' + m.car_code : 'Նոր մեքենա';
+        $('rsMtOk').querySelector('span').textContent = m ? 'Կիրառել' : 'Ավելացնել ցուցակում';
         $('rsMtCode').value = m ? m.car_code : '';
         $('rsMtCode').disabled = !!m;
-        $('rsMtCode').title = m ? 'Номер не меняется — удалите машину и добавьте заново' : '';
+        $('rsMtCode').title = m ? 'Համարանիշը չի փոխվում — ջնջեք մեքենան և ավելացրեք նորից' : '';
         $('rsMtName').value = m ? (m.name || '') : '';
         $('rsMtCap').value = cur('cap') ? cur('cap').value : '';
         $('rsMtFuel').value = cur('fuel') ? cur('fuel').value : '';
@@ -744,15 +747,15 @@
         const err = (text, el) => { $('rsMtErr').textContent = text; if (el) el.focus(); };
         const code = String($('rsMtCode').value).trim().replace(/\s+/g, ' ');
         if (!key) {
-            if (!MANUAL_CODE.test(code)) return err('Номер — до 20 букв и цифр (можно пробел и дефис).', $('rsMtCode'));
-            if (state.data.trucks.some(t => !t.manual && codeKey(t.car_code) === codeKey(code))) return err('Машина ' + code + ' уже есть в списке из ERP — заполните её строку.', $('rsMtCode'));
-            if (state.manual.some(m => codeKey(m.car_code) === codeKey(code))) return err('Машина с таким номером уже добавлена.', $('rsMtCode'));
+            if (!MANUAL_CODE.test(code)) return err('Համարանիշ՝ մինչև 20 տառ և թիվ (կարելի է բացատ և գծիկ)։', $('rsMtCode'));
+            if (state.data.trucks.some(t => !t.manual && codeKey(t.car_code) === codeKey(code))) return err(code + ' մեքենան արդեն կա ERP-ի ցուցակում — լրացրեք դրա տողը։', $('rsMtCode'));
+            if (state.manual.some(m => codeKey(m.car_code) === codeKey(code))) return err('Այս համարանիշով մեքենան արդեն ավելացված է։', $('rsMtCode'));
         }
         const name = String($('rsMtName').value).trim().replace(/\s+/g, ' ');
-        if (name.length > 60) return err('Название — не длиннее 60 символов.', $('rsMtName'));
+        if (name.length > 60) return err('Անվանումը՝ առավելագույնը 60 նիշ։', $('rsMtName'));
         const cap = readNum($('rsMtCap'), true), fuel = readNum($('rsMtFuel'), true);
-        if (cap.error || (cap.value !== null && (cap.value < 0.1 || cap.value > 30))) return err('Тоннаж — от 0,1 до 30 т.', $('rsMtCap'));
-        if (fuel.error || (fuel.value !== null && (fuel.value < 1 || fuel.value > 80))) return err('Расход — от 1 до 80 л на 100 км.', $('rsMtFuel'));
+        if (cap.error || (cap.value !== null && (cap.value < 0.1 || cap.value > 30))) return err('Տոննաժը՝ 0,1-ից մինչև 30 տ։', $('rsMtCap'));
+        if (fuel.error || (fuel.value !== null && (fuel.value < 1 || fuel.value > 80))) return err('Ծախսը՝ 1-ից մինչև 80 լ/100 կմ։', $('rsMtFuel'));
         const vanRaw = $('rsMtVan').value;
         const data = {
             name: name || null,
@@ -786,7 +789,7 @@
         flash(row);
         row.querySelector('button').focus({ preventScroll: true });
         row.scrollIntoView({ behavior: RM ? 'auto' : 'smooth', block: 'nearest' });
-        announce('Машина ' + m.car_code + (key ? ' изменена' : ' добавлена в список') + ' — нажмите «Сохранить»');
+        announce(m.car_code + ' մեքենան ' + (key ? 'փոփոխվեց' : 'ավելացվեց ցուցակում') + ' — սեղմեք «Պահպանել»');
     }
 
     function removeManual(key) {
@@ -799,7 +802,7 @@
         updateDirty();
         renderProgress();
         $('rsMtAdd').focus();
-        announce('Машина ' + m.car_code + ' убрана из списка — нажмите «Сохранить»');
+        announce(m.car_code + ' մեքենան հանվեց ցուցակից — սեղմեք «Պահպանել»');
     }
 
     // ---------- 03 · Менеджеры ----------
@@ -808,37 +811,37 @@
         box.textContent = '';
         const list = state.data.managers;
         if (!list.length) {
-            box.append(h('p', { class: 'rt-empty px-0', text: 'В ERP нет менеджеров с маршрутами.' }));
+            box.append(h('p', { class: 'rt-empty px-0', text: 'ERP-ում երթուղիներով մենեջերներ չկան։' }));
             return;
         }
         const defL = num(state.data.settings.manager_car_default_l_per_100km);
         const tbody = h('tbody');
         list.forEach((m, i) => {
-            const name = m.name || ('Менеджер ' + m.agent_id);
+            const name = m.name || ('Մենեջեր ' + m.agent_id);
             const incE = errNode(), homeE = errNode(), fuelE = errNode(), typeE = errNode();
             // «В расчёте»: авто — решает работа за 8 недель (сервер: inactive), ручной выбор держится
             // до «вернуть авто». data-mode: auto | manual — что уйдёт на сервер (см. collect()).
             const autoInc = m.inactive !== true, wasManual = m.included_source === 'manual';
-            const inc = h('input', { type: 'checkbox', checked: m.included !== false, 'aria-label': 'В расчёте — ' + name,
+            const inc = h('input', { type: 'checkbox', checked: m.included !== false, 'aria-label': 'Հաշվարկում — ' + name,
                 dataset: { f: 'inc', mode: wasManual ? 'manual' : 'auto' } });
             const incSrc = h('span', { class: 'rt-inc-src' });
             const setIncMode = (mode) => {
                 inc.dataset.mode = mode;
                 incSrc.textContent = '';
                 if (mode === 'auto') {
-                    incSrc.append(h('span', { class: 'rt-badge', text: 'авто',
-                        title: autoInc ? 'Авто: за 8 недель есть заказы или визиты — в расчёте'
-                            : 'Авто: за 8 недель нет заказов и визитов — не в расчёте' }));
+                    incSrc.append(h('span', { class: 'rt-badge', text: 'ավտոմատ',
+                        title: autoInc ? 'Ավտոմատ՝ 8 շաբաթում կան պատվերներ կամ այցեր — հաշվարկում է'
+                            : 'Ավտոմատ՝ 8 շաբաթում պատվերներ և այցեր չկան — հաշվարկում չէ' }));
                     return;
                 }
-                const back = h('button', { type: 'button', class: 'rt-hintbtn', 'aria-label': 'Вернуть авто — ' + name,
-                    title: 'Снять ручной выбор: в расчёте, если за 8 недель есть заказы или визиты' }, 'вернуть авто');
+                const back = h('button', { type: 'button', class: 'rt-hintbtn', 'aria-label': 'Վերադարձնել ավտոմատ — ' + name,
+                    title: 'Հանել ձեռքով ընտրությունը՝ հաշվարկում է, եթե 8 շաբաթում կան պատվերներ կամ այցեր' }, 'վերադարձնել ավտոմատ');
                 back.addEventListener('click', () => {
                     inc.checked = autoInc;
                     setIncMode('auto');
                     updateDirty();
                     inc.focus();
-                    announce(name + ': «В расчёте» — снова авто');
+                    announce(name + '՝ «Հաշվարկում» — կրկին ավտոմատ');
                 });
                 incSrc.append(back);
             };
@@ -847,8 +850,8 @@
             inc.addEventListener('change', () => setIncMode(wasManual || inc.checked !== autoInc ? 'manual' : 'auto'));
             const home = m.home || {};
             const homeInp = h('input', { class: 'rt-input rt-num', type: 'text', inputmode: 'decimal', autocomplete: 'off', spellcheck: 'false',
-                value: fmtCoord(home.lat, home.lon), placeholder: 'пусто — дом по GPS',
-                'aria-label': 'Дом, широта и долгота — ' + name, dataset: { f: 'home' } });
+                value: fmtCoord(home.lat, home.lon), placeholder: 'դատարկ՝ տունն ըստ GPS-ի',
+                'aria-label': 'Տուն, լայնություն և երկայնություն — ' + name, dataset: { f: 'home' } });
             const sug = m.home_suggestion;
             const hasSug = !!sug && num(sug.lat) !== null && num(sug.lon) !== null;
             // Дом по GPS: «Верно» — закрепить найденную точку, «Поправить» — закрепить и исправить вручную
@@ -861,7 +864,7 @@
                 homeInp.dispatchEvent(new Event('input', { bubbles: true }));
                 flash(homeInp);
             };
-            const how = hasSug ? (HOME_METHOD[sug.method] || 'по треку') + (num(sug.days) !== null ? ', ' + fmt(sug.days) + ' ' + dayWord(sug.days) : '') : '';
+            const how = hasSug ? (HOME_METHOD[sug.method] || 'ըստ հետագծի') + (num(sug.days) !== null ? ', ' + fmt(sug.days) + NB + 'օր' : '') : '';
             const isGps = () => {
                 const p = parseCoord(homeInp.value);
                 return hasSug && !p.empty && !p.error && Math.abs(p.lat - num(sug.lat)) < 1e-4 && Math.abs(p.lon - num(sug.lon)) < 1e-4;
@@ -875,16 +878,16 @@
                 homeState.textContent = '';
                 const p = parseCoord(homeInp.value);
                 if (p.empty && hasSug) {
-                    homeState.append(h('span', { class: 'rt-badge b-gps', text: 'найден по GPS' }), h('span', { class: 'how', text: how }),
-                        smallBtn('Верно', 'Дом верный', () => { pinGps(); announce(name + ': дом по GPS закреплён'); }),
-                        smallBtn('Поправить', 'Поправить дом', () => { pinGps(); homeInp.focus(); homeInp.select(); announce(name + ': поправьте координаты дома'); }));
+                    homeState.append(h('span', { class: 'rt-badge b-gps', text: 'գտնվել է GPS-ով' }), h('span', { class: 'how', text: how }),
+                        smallBtn('Ճիշտ է', 'Տունը ճիշտ է', () => { pinGps(); announce(name + '՝ GPS-ով գտնված տունն ամրացված է'); }),
+                        smallBtn('Ուղղել', 'Ուղղել տունը', () => { pinGps(); homeInp.focus(); homeInp.select(); announce(name + '՝ ուղղեք տան կոորդինատները'); }));
                 } else if (p.empty) {
-                    homeState.append(h('span', { class: 'rt-badge b-warn', text: 'не найден' }), h('span', { class: 'how', text: 'впишите широту и долготу дома' }));
+                    homeState.append(h('span', { class: 'rt-badge b-warn', text: 'չի գտնվել' }), h('span', { class: 'how', text: 'գրեք տան լայնությունը և երկայնությունը' }));
                 } else if (isGps()) {
-                    homeState.append(h('span', { class: 'rt-badge b-ok', text: 'по GPS, проверен' }));
+                    homeState.append(h('span', { class: 'rt-badge b-ok', text: 'GPS-ով, ստուգված' }));
                 } else {
-                    homeState.append(h('span', { class: 'rt-badge b-manual', text: 'указан вручную' }),
-                        hasSug ? smallBtn('Взять из GPS', 'Взять дом из GPS', () => { pinGps(); announce(name + ': дом подставлен из GPS'); }) : null);
+                    homeState.append(h('span', { class: 'rt-badge b-manual', text: 'նշված է ձեռքով' }),
+                        hasSug ? smallBtn('Վերցնել GPS-ից', 'Վերցնել տունը GPS-ից', () => { pinGps(); announce(name + '՝ տունը վերցվեց GPS-ից'); }) : null);
                 }
             };
             homeInp.addEventListener('input', renderHome);
@@ -892,36 +895,36 @@
             homeInp.addEventListener('change', () => checkCoordField(homeInp, homeE));
             const fuelL = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 1, max: 40, step: 0.1,
                 value: num(m.car_fuel_l_per_100km) === null ? '' : String(m.car_fuel_l_per_100km),
-                placeholder: defL !== null ? 'обычно ' + fmt(defL, 1) : 'обычный',
-                'aria-label': 'Расход машины, литров на 100 км — ' + name, dataset: { f: 'fuel' } });
+                placeholder: defL !== null ? 'սովորաբար ' + fmt(defL, 1) : 'սովորական',
+                'aria-label': 'Մեքենայի ծախս, լիտր 100 կմ-ի վրա — ' + name, dataset: { f: 'fuel' } });
             const typeOpts = FUEL.map(([v, t]) => h('option', { value: v, text: t, selected: m.car_fuel_type === v }));
-            if (!FUEL.some(([v]) => v === m.car_fuel_type)) typeOpts.unshift(h('option', { value: '', text: '— не указано —', selected: true }));
-            const type = h('select', { class: 'rt-select', 'aria-label': 'Топливо — ' + name, dataset: { f: 'type' } }, typeOpts);
+            if (!FUEL.some(([v]) => v === m.car_fuel_type)) typeOpts.unshift(h('option', { value: '', text: '— նշված չէ —', selected: true }));
+            const type = h('select', { class: 'rt-select', 'aria-label': 'Վառելիք — ' + name, dataset: { f: 'type' } }, typeOpts);
             tbody.append(h('tr', { dataset: { i: String(i) } },
-                h('td', { class: 'w-chk w-inc', dataset: { label: 'В расчёте' } }, inc, incSrc, incE),
+                h('td', { class: 'w-chk w-inc', dataset: { label: 'Հաշվարկում' } }, inc, incSrc, incE),
                 h('td', { class: 'rt-cell-name' }, h('span', { class: 'n', text: name }), h('span', { class: 'c', text: m.code || '' }),
-                    m.inactive ? h('span', { class: 'rt-badge b-warn mt-1', text: 'без работы 8 недель',
-                        title: 'Нет заказов и визитов за 8 недель — по умолчанию не в расчёте' }) : null),
-                h('td', { class: 'w-coord', dataset: { label: 'Дом — широта, долгота' } },
+                    m.inactive ? h('span', { class: 'rt-badge b-warn mt-1', text: '8 շաբաթ առանց աշխատանքի',
+                        title: '8 շաբաթում պատվերներ և այցեր չկան — լռելյայն հաշվարկում չէ' }) : null),
+                h('td', { class: 'w-coord', dataset: { label: 'Տուն՝ լայնություն, երկայնություն' } },
                     homeInp,
                     homeState,
                     homeE),
-                h('td', { class: 'w-num w-half', dataset: { label: 'Расход, л на 100 км' } }, fuelL, fuelE),
-                h('td', { class: 'w-sel w-half', style: 'min-width:130px', dataset: { label: 'Топливо' } }, type, typeE)));
+                h('td', { class: 'w-num w-half', style: 'min-width:150px', dataset: { label: 'Ծախս, լ/100 կմ' } }, fuelL, fuelE),
+                h('td', { class: 'w-sel w-half', style: 'min-width:130px', dataset: { label: 'Վառելիք' } }, type, typeE)));
             const keys = (f) => ['managers.' + i + '.' + f, 'managers.' + m.agent_id + '.' + f];
             reg(keys('included').concat(keys('agent_id'), ['managers.' + i, 'managers.' + m.agent_id]), inc, incE, name);
-            reg(keys('home_lat').concat(keys('home_lon'), keys('home')), homeInp, homeE, name + ', дом');
-            reg(keys('car_fuel_l_per_100km'), fuelL, fuelE, name + ', расход');
-            reg(keys('car_fuel_type'), type, typeE, name + ', топливо');
+            reg(keys('home_lat').concat(keys('home_lon'), keys('home')), homeInp, homeE, name + ', տուն');
+            reg(keys('car_fuel_l_per_100km'), fuelL, fuelE, name + ', ծախս');
+            reg(keys('car_fuel_type'), type, typeE, name + ', վառելիք');
         });
         const table = h('table', { class: 'rt-table' },
-            h('caption', { class: 'rt-sr-only', text: 'Менеджеры: участие в расчёте, дом, машина' }),
+            h('caption', { class: 'rt-sr-only', text: 'Մենեջերներ՝ մասնակցություն հաշվարկին, տուն, մեքենա' }),
             h('thead', {}, h('tr', {},
-                h('th', { scope: 'col', class: 'w-chk w-inc', text: 'В расчёте' }),
-                h('th', { scope: 'col', text: 'Менеджер' }),
-                h('th', { scope: 'col', text: 'Дом — широта, долгота' }),
-                h('th', { scope: 'col', text: 'Расход, л на 100 км' }),
-                h('th', { scope: 'col', text: 'Топливо' }))),
+                h('th', { scope: 'col', class: 'w-chk w-inc', text: 'Հաշվարկում' }),
+                h('th', { scope: 'col', text: 'Մենեջեր' }),
+                h('th', { scope: 'col', text: 'Տուն՝ լայնություն, երկայնություն' }),
+                h('th', { scope: 'col', text: 'Ծախս, լ/100 կմ' }),
+                h('th', { scope: 'col', text: 'Վառելիք' }))),
             tbody);
         box.append(h('div', { class: 'rt-table-scroll' }, table));
     }
@@ -941,7 +944,7 @@
     function renderZone() {
         const z = state.data.settings.center_zone;
         state.zone = Array.isArray(z) ? z.filter(p => Array.isArray(p) && p.length === 2).map(p => [Number(p[0]), Number(p[1])]) : [];
-        reg(['settings.center_zone'], $('rsCenterMap'), $('rsCenterErr'), 'Граница малого центра');
+        reg(['settings.center_zone'], $('rsCenterMap'), $('rsCenterErr'), 'Փոքր կենտրոնի սահման');
         initZoneMap();
         drawZone(true);
     }
@@ -951,10 +954,11 @@
         const el = $('rsCenterMap');
         if (typeof window.L === 'undefined') {
             el.classList.add('rt-map-fallback');
-            el.textContent = 'Карта не загрузилась (нет доступа к cdn.jsdelivr.net) — граница центра остаётся прежней.';
+            el.textContent = 'Քարտեզը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ) — կենտրոնի սահմանը մնում է նախկինը։';
             return;
         }
-        const map = L.map(el, { zoomSnap: 0.5, scrollWheelZoom: false, doubleClickZoom: false });
+        const map = L.map(el, { zoomSnap: 0.5, scrollWheelZoom: false, doubleClickZoom: false, zoomControl: false });
+        L.control.zoom(ZOOM_HY).addTo(map);
         RoutesBasemap.add(map);
         map.setView(YEREVAN, 14);
         map.on('click', (e) => addZonePoint(e.latlng.lat, e.latlng.lng));
@@ -966,26 +970,26 @@
 
     function drawZone(fit) {
         const n = state.zone.length;
-        $('rsCenterNote').textContent = 'Точек границы: ' + n + (n <= 3 ? ' — меньше трёх быть не может' : '') + '.';
+        $('rsCenterNote').textContent = 'Սահմանի կետեր՝ ' + n + (n <= 3 ? ' — երեքից պակաս չի կարող լինել' : '') + '։';
         if (!state.zoneMap) return;
         state.zoneLayer.clearLayers();
         const poly = L.polygon(state.zone, { color: '#397be9', weight: 3, fillOpacity: 0.12, interactive: false }).addTo(state.zoneLayer);
         const icon = L.divIcon({ className: '', html: '<span class="rs-zone-pt"></span>', iconSize: [14, 14], iconAnchor: [7, 7] });
         state.zone.forEach((p, i) => {
-            const mk = L.marker(p, { icon, draggable: true, keyboard: false, title: 'Точка ' + (i + 1) + ': потяните, чтобы сдвинуть; двойной щелчок — убрать' })
+            const mk = L.marker(p, { icon, draggable: true, keyboard: false, title: 'Կետ ' + (i + 1) + ' — քաշեք՝ տեղաշարժելու համար, կրկնակի սեղմեք՝ հեռացնելու համար' })
                 .addTo(state.zoneLayer);
             mk.on('drag', (e) => { const ll = e.target.getLatLng(); state.zone[i] = [ll.lat, ll.lng]; poly.setLatLngs(state.zone); });
             mk.on('dragend', (e) => {
                 const ll = e.target.getLatLng();
                 state.zone[i] = inArmenia(ll.lat, ll.lng) ? [round(ll.lat, 6), round(ll.lng, 6)] : p;
                 drawZone(false);
-                zoneChanged('Точка ' + (i + 1) + ' сдвинута');
+                zoneChanged('Կետ ' + (i + 1) + '-ը տեղաշարժվեց');
             });
             mk.on('dblclick', () => {
-                if (state.zone.length <= 3) { announce('У границы не меньше трёх точек'); return; }
+                if (state.zone.length <= 3) { announce('Սահմանը պետք է ունենա առնվազն երեք կետ'); return; }
                 state.zone.splice(i, 1);
                 drawZone(false);
-                zoneChanged('Точка ' + (i + 1) + ' убрана');
+                zoneChanged('Կետ ' + (i + 1) + '-ը հեռացվեց');
             });
         });
         if (fit && n) state.zoneMap.fitBounds(state.zone, { padding: [24, 24], animate: false });
@@ -995,7 +999,7 @@
     function addZonePoint(lat, lon) {
         const n = state.zone.length;
         if (!inArmenia(lat, lon)) return;
-        if (n >= ZONE_MAX) { announce('У границы не больше ' + ZONE_MAX + ' точек'); return; }
+        if (n >= ZONE_MAX) { announce('Սահմանը կարող է ունենալ առավելագույնը ' + ZONE_MAX + ' կետ'); return; }
         const k = Math.cos(lat * Math.PI / 180);
         const xy = (p) => [p[1] * k, p[0]];
         const c = xy([lat, lon]);
@@ -1011,14 +1015,14 @@
         }
         state.zone.splice(best + 1, 0, [round(lat, 6), round(lon, 6)]);
         drawZone(false);
-        zoneChanged('Точка добавлена');
+        zoneChanged('Կետն ավելացվեց');
     }
 
     function zoneChanged(msg) {
         $('rsCenterErr').textContent = '';
         $('rsCenterMap').classList.remove('is-invalid');
         updateDirty();
-        if (msg) announce(msg + ' — нажмите «Сохранить»');
+        if (msg) announce(msg + ' — սեղմեք «Պահպանել»');
     }
 
     // ---------- 04 · Нормы ----------
@@ -1043,7 +1047,7 @@
             const wrap = h('div', { class: 'rt-wd', role: 'group', 'aria-labelledby': id + '_l', id: id });
             WD.forEach(([n, short, full]) => wrap.append(h('label', { title: full },
                 h('input', { type: 'checkbox', value: String(n), checked: sel.has(n), 'aria-label': full, dataset: { wd: '1' } }), short)));
-            reg(['settings.workdays'], wrap, err, 'Рабочие дни');
+            reg(['settings.workdays'], wrap, err, 'Աշխատանքային օրեր');
             return h('div', { class: 'rt-field' }, h('span', { class: 'rt-field-label', id: id + '_l', text: it.label }), wrap, err);
         }
         if (it.kind === 'coord') {
@@ -1059,7 +1063,7 @@
             inputmode: isTime ? 'numeric' : 'decimal', autocomplete: 'off', maxlength: isTime ? 5 : null,
             min: it.min, max: it.max, step: it.step,
             value: s[it.key] === null || s[it.key] === undefined ? '' : String(s[it.key]),
-            placeholder: isTime ? '09:00' : (it.auto ? autoText(it.key) : (it.nullable ? 'не указана' : null)),
+            placeholder: isTime ? '09:00' : (it.auto ? autoText(it.key) : (it.nullable ? 'նշված չէ' : null)),
             dataset: isTime ? { norm: it.key, time: '1' } : { norm: it.key },
         });
         // «9:00», «9.00», «900» → «09:00» (24-часовой формат независимо от языка Windows)
@@ -1081,7 +1085,7 @@
             const manual = !!inp && String(inp.value).trim() !== '';
             const gps = num((state.data.calibration || {})[el.dataset.src]) !== null;
             el.className = 'rt-badge rt-field-src ' + (manual ? 'b-manual' : (gps ? 'b-gps' : 'b-none'));
-            el.textContent = manual ? 'вручную' : (gps ? 'авто по GPS' : 'по умолчанию');
+            el.textContent = manual ? 'ձեռքով' : (gps ? 'ավտոմատ՝ GPS-ով' : 'լռելյայն');
         });
     }
 
@@ -1096,7 +1100,7 @@
         };
         const dp = parseCoord($('rsDepot').value);
         const depotOk = !dp.empty && !dp.error;
-        set('rsStDepot', depotOk ? 'ok' : 'todo', depotOk ? 'заполнено' : 'не указан');
+        set('rsStDepot', depotOk ? 'ok' : 'todo', depotOk ? 'լրացված է' : 'նշված չէ');
 
         // машины: в расчёте — работающие машины с тоннажем и расходом; нужна хотя бы одна
         const rows = [...$('rsManagers').querySelectorAll('tbody tr')];
@@ -1109,33 +1113,33 @@
             else noData += 1;
         });
         const trucksOk = full > 0 && !noData;
-        set('rsStTrucks', trucksOk ? 'ok' : (full ? 'part' : 'todo'), trucksOk ? 'заполнено · ' + full + ' ' + plural(full, 'машина', 'машины', 'машин')
-            : (full ? 'в расчёте ' + full + ', без тоннажа или расхода — ' + noData : 'нет машины с тоннажем и расходом'));
+        set('rsStTrucks', trucksOk ? 'ok' : (full ? 'part' : 'todo'), trucksOk ? 'լրացված է · ' + full + NB + 'մեքենա'
+            : (full ? 'հաշվարկում՝ ' + full + ', առանց տոննաժի կամ ծախսի՝ ' + noData : 'տոննաժով և ծախսով մեքենա չկա'));
 
         // цены: дизель (грузовики) и то топливо, на котором ездят менеджеры в расчёте
         const need = new Set(['diesel']);
         inCalc.forEach(tr => need.add(tr.querySelector('[data-f="type"]').value || 'petrol'));
-        const names = { diesel: 'дизель', petrol: 'бензин', lpg: 'газ' };
+        const names = { diesel: 'դիզել', petrol: 'բենզին', lpg: 'գազ' };
         const miss = [...need].filter(k => { const i = document.querySelector('[data-norm="fuel_price_' + k + '"]'); return !i || String(i.value).trim() === ''; });
         const fuelOk = !miss.length;
-        set('rsStFuel', fuelOk ? 'ok' : 'todo', fuelOk ? 'заполнено' : 'не указано: ' + miss.map(k => names[k] || k).join(', '));
+        set('rsStFuel', fuelOk ? 'ok' : 'todo', fuelOk ? 'լրացված է' : 'նշված չէ՝ ' + miss.map(k => names[k] || k).join(', '));
 
         // малый центр: работающие машины, которым можно в центр (авто — JAC)
         const toCenter = [...$('rsTrucks').querySelectorAll('tbody tr')].filter(tr => {
             const sel = tr.querySelector('[data-f="center"]');
             return tr.querySelector('[data-f="active"]').checked && (sel.value === 'yes' || (sel.value === 'auto' && sel.dataset.auto === '1'));
         }).length;
-        set('rsStCenter', toCenter ? 'ok' : 'part', toCenter ? 'в центр: ' + toCenter + ' ' + plural(toCenter, 'машина', 'машины', 'машин')
-            : 'нет машины, которой можно в центр');
+        set('rsStCenter', toCenter ? 'ok' : 'part', toCenter ? 'կենտրոն՝ ' + toCenter + NB + 'մեքենա'
+            : 'չկա մեքենա, որը կարող է մտնել կենտրոն');
 
         // дома менеджеров в расчёте
         const noHome = inCalc.filter(tr => tr.querySelector('.rs-home .b-warn')).length;
-        set('rsStManagers', noHome ? 'part' : 'ok', noHome ? 'дом не найден — ' + noHome + ' ' + plural(noHome, 'менеджер', 'менеджера', 'менеджеров') : 'дома на месте');
+        set('rsStManagers', noHome ? 'part' : 'ok', noHome ? 'տունը չի գտնվել՝ ' + noHome + NB + 'մենեջեր' : 'տները նշված են');
 
         const n = [depotOk, trucksOk, fuelOk].filter(Boolean).length;
         $('rsProgress').querySelectorAll('.rt-progress-bar > span').forEach((el, i) => el.classList.toggle('is-ok', i < n));
         const t = $('rsProgressText');
-        t.textContent = n === 3 ? 'Всё заполнено' : 'Заполнено ' + n + ' из 3';
+        t.textContent = n === 3 ? 'Ամեն ինչ լրացված է' : 'Լրացված է՝ ' + n + ' / 3';
         t.classList.toggle('is-done', n === 3);
         $('rsStep1').classList.toggle('is-done', n === 3);
     }
@@ -1145,15 +1149,15 @@
         const r = CALIB.find(x => x.key === key);
         const gps = num((state.data.calibration || {})[key]);
         return gps !== null
-            ? 'авто · по GPS ' + gps.toLocaleString('ru-RU', { minimumFractionDigits: r.d, maximumFractionDigits: r.d })
-            : 'авто · ' + fmt(r.def, r.d) + ' по умолчанию';
+            ? 'ավտոմատ · GPS-ով ' + gps.toLocaleString('ru-RU', { minimumFractionDigits: r.d, maximumFractionDigits: r.d })
+            : 'ավտոմատ · լռելյայն ' + fmt(r.def, r.d);
     }
 
     function chainsGroup(s) {
         const chosen = new Set((Array.isArray(s.chain_groups) ? s.chain_groups : []).map(String));
         const groups = state.data.customer_groups;
         const err = errNode();
-        const list = h('div', { class: 'rt-groups', id: 'rsChains', role: 'group', 'aria-label': 'Группы клиентов — сети' });
+        const list = h('div', { class: 'rt-groups', id: 'rsChains', role: 'group', 'aria-label': 'Հաճախորդների խմբեր՝ ցանցեր' });
         groups.forEach((g, i) => {
             const cid = 'rsCg' + i;
             list.append(h('label', { class: 'rt-group-item', for: cid, dataset: { q: ((g.name || '') + ' ' + (g.code || '')).toLowerCase() } },
@@ -1161,18 +1165,18 @@
                 h('span', { class: 'n', text: g.name || g.code || '—', title: g.name || '' }),
                 num(g.customers) !== null ? h('span', { class: 'cnt', text: fmt(g.customers) }) : null));
         });
-        const search = h('input', { class: 'rt-input w-100 mb-2', type: 'search', placeholder: 'Найти группу…',
-            'aria-label': 'Поиск группы клиентов', dataset: { noTrack: '1' } });
+        const search = h('input', { class: 'rt-input w-100 mb-2', type: 'search', placeholder: 'Գտնել խումբ…',
+            'aria-label': 'Հաճախորդների խմբի որոնում', dataset: { noTrack: '1' } });
         search.addEventListener('input', () => {
             const q = search.value.trim().toLowerCase();
             list.querySelectorAll('.rt-group-item').forEach(el => { el.hidden = !!q && !el.dataset.q.includes(q); });
         });
-        reg(['settings.chain_groups'], list, err, 'Сети');
+        reg(['settings.chain_groups'], list, err, 'Ցանցեր');
         const group = h('div', { class: 'rt-group', style: 'grid-column: 1 / -1' },
-            h('h3', { text: 'Сети — всегда «крупный» магазин' }),
-            h('p', { class: 'rt-field-hint mb-2', text: 'Отметьте группы клиентов из ERP, которые считаются сетями: визит к ним длится как к крупному магазину.' }),
+            h('h3', { text: 'Ցանցերը միշտ «խոշոր» խանութ են' }),
+            h('p', { class: 'rt-field-hint mb-2', text: 'Նշեք ERP-ի հաճախորդների այն խմբերը, որոնք համարվում են ցանցեր՝ դրանց այցը տևում է այնքան, որքան խոշոր խանութինը։' }),
             groups.length ? search : null,
-            groups.length ? list : h('p', { class: 'rt-field-hint', text: 'В ERP нет групп клиентов.' }),
+            groups.length ? list : h('p', { class: 'rt-field-hint', text: 'ERP-ում հաճախորդների խմբեր չկան։' }),
             err);
         return group;
     }
@@ -1192,8 +1196,8 @@
         state.season.peak = new Set(pick(manual ? s.peak_months : null, se.peak_months, se.detected_peak));
 
         const radio = (val, text) => h('label', {}, h('input', { type: 'radio', name: 'rsSeasonMode', value: val, checked: state.season.mode === val }), text);
-        const seg = h('div', { class: 'rt-seg', role: 'radiogroup', 'aria-label': 'Как выбирать месяцы сезонов' },
-            radio('auto', 'Авто — по продажам'), radio('manual', 'Выбрать вручную'));
+        const seg = h('div', { class: 'rt-seg', role: 'radiogroup', 'aria-label': 'Ինչպես ընտրել սեզոնների ամիսները' },
+            radio('auto', 'Ավտոմատ՝ ըստ վաճառքի'), radio('manual', 'Ընտրել ձեռքով'));
         seg.addEventListener('change', (e) => {
             if (e.target.name !== 'rsSeasonMode') return;
             if (e.target.value === 'manual') {
@@ -1207,8 +1211,8 @@
 
         const thr = h('div', { class: 'rt-form-grid mt-3', id: 'rsSeasonThr' });
         [
-            { key: 'low_season_index_max', label: 'Зима — месяцы с продажами не выше, доля от среднего', min: 0.1, max: 1, step: 0.05 },
-            { key: 'peak_season_index_min', label: 'Лето — месяцы с продажами не ниже, доля от среднего', min: 1, max: 3, step: 0.05 },
+            { key: 'low_season_index_max', label: 'Ձմեռ՝ ամիսներ, որոնց վաճառքը միջինի … բաժնից բարձր չէ', min: 0.1, max: 1, step: 0.05 },
+            { key: 'peak_season_index_min', label: 'Ամառ՝ ամիսներ, որոնց վաճառքը միջինի … բաժնից ցածր չէ', min: 1, max: 3, step: 0.05 },
         ].forEach(it => thr.append(normField(it, s)));
 
         const bars = h('div', { class: 'rt-months', id: 'rsMonths', 'aria-hidden': 'true' });
@@ -1224,11 +1228,11 @@
             return wrap;
         };
         const err = errNode();
-        const rows = h('div', {}, row('low', 'Низкий сезон (зима)', 'fa-snowflake'), row('peak', 'Пик (лето)', 'fa-sun'));
-        reg(['settings.low_months', 'settings.peak_months'], rows, err, 'Месяцы сезонов');
+        const rows = h('div', {}, row('low', 'Ցածր սեզոն (ձմեռ)', 'fa-snowflake'), row('peak', 'Բարձր սեզոն (ամառ)', 'fa-sun'));
+        reg(['settings.low_months', 'settings.peak_months'], rows, err, 'Սեզոնների ամիսներ');
         box.append(
-            h('p', { class: 'rt-lead', text: 'Выручку дня (100 000) проверяем по низкому сезону, загрузку машин — по пику. '
-                + 'Программа сравнивает каждый месяц со средним по трём годам продаж.' }),
+            h('p', { class: 'rt-lead', text: 'Օրվա հասույթը (100 000) ստուգում ենք ցածր սեզոնով, մեքենաների բեռնվածությունը՝ բարձր սեզոնով։ '
+                + 'Ծրագիրը յուրաքանչյուր ամիս համեմատում է վաճառքի երեք տարվա միջինի հետ։' }),
             seg, thr, bars, rows, err,
             h('p', { class: 'rt-field-hint mt-2', id: 'rsSeasonSummary', 'aria-live': 'polite' }),
             h('p', { class: 'rt-season-fallback', id: 'rsSeasonFallback', hidden: true }));
@@ -1312,16 +1316,16 @@
                     + '<span class="m">' + MONTHS[i] + '</span><span class="i">' + (v === null ? '—' : fmt(v, 2)) + '</span></div>';
             }).join('');
         }
-        const list = (set) => set.size ? [...set].sort((a, b) => a - b).map(m => MONTHS[m - 1]).join(', ') : 'нет';
-        $('rsSeasonSummary').textContent = (manual ? 'Выбрано вручную. ' : (idx.some(v => v !== null)
-            ? 'Найдено по продажам. ' : 'Продаж для автомата мало — выберите месяцы вручную. '))
-            + 'Зима: ' + list(low) + '. Лето: ' + list(peak) + '.';
+        const list = (set) => set.size ? [...set].sort((a, b) => a - b).map(m => MONTHS[m - 1]).join(', ') : 'չկա';
+        $('rsSeasonSummary').textContent = (manual ? 'Ընտրված է ձեռքով։ ' : (idx.some(v => v !== null)
+            ? 'Գտնված է ըստ վաճառքի։ ' : 'Ավտոմատ ընտրության համար վաճառքը քիչ է — ընտրեք ամիսները ձեռքով։ '))
+            + 'Ձմեռ՝ ' + list(low) + '։ Ամառ՝ ' + list(peak) + '։';
         const fbLow = eff.fallback.includes('low'), fbPeak = eff.fallback.includes('peak');
         const note = $('rsSeasonFallback');
         note.textContent = (fbLow && fbPeak)
-            ? 'Под пороги не подошёл ни один месяц — взяты по 3 месяца с самыми низкими и самыми высокими продажами. Пороги можно поправить выше.'
-            : (fbLow ? 'Под порог зимы не подошёл ни один месяц — взяты 3 месяца с самыми низкими продажами. Порог можно поправить выше.'
-                : (fbPeak ? 'Под порог лета не подошёл ни один месяц — взяты 3 месяца с самыми высокими продажами. Порог можно поправить выше.' : ''));
+            ? 'Ոչ մի ամիս չհամապատասխանեց շեմերին — վերցված են ամենացածր և ամենաբարձր վաճառքով 3-ական ամիսները։ Շեմերը կարելի է ուղղել վերևում։'
+            : (fbLow ? 'Ոչ մի ամիս չհամապատասխանեց ձմռան շեմին — վերցված են ամենացածր վաճառքով 3 ամիսները։ Շեմը կարելի է ուղղել վերևում։'
+                : (fbPeak ? 'Ոչ մի ամիս չհամապատասխանեց ամռան շեմին — վերցված են ամենաբարձր վաճառքով 3 ամիսները։ Շեմը կարելի է ուղղել վերևում։' : ''));
         note.hidden = !(fbLow || fbPeak);
     }
 
@@ -1332,9 +1336,9 @@
         const c = state.data.calibration;
         const avail = !!c && CALIB.some(r => num(c[r.key]) !== null);
         if (!avail) {
-            box.append(h('p', { class: 'rt-empty px-0 mb-0', text: 'Пока мало GPS-данных для подсказок: нужны дни, где у менеджера не меньше 8 визитов и подробный трек. '
-                + 'Пустые поля в «Нормах» считаются по умолчанию: извилистость 1,3, скорость 25 км/ч в городе и 45 км/ч по области, '
-                + 'визит 7 / 10 / 20 мин (мелкий / средний / крупный магазин).' }));
+            box.append(h('p', { class: 'rt-empty px-0 mb-0', text: 'Հուշումների համար GPS տվյալները դեռ քիչ են՝ անհրաժեշտ են օրեր, երբ մենեջերն ունի առնվազն 8 այց և մանրամասն հետագիծ։ '
+                + '«Նորմեր և կանոններ» բաժնի դատարկ դաշտերը հաշվվում են լռելյայն՝ ոլորունություն 1,3, արագություն՝ 25 կմ/ժ քաղաքում և 45 կմ/ժ մարզում, '
+                + 'այց՝ 7 / 10 / 20 րոպե (փոքր / միջին / խոշոր խանութ)։' }));
             return;
         }
         const rows = h('div', { class: 'rt-calib' });
@@ -1345,42 +1349,35 @@
             const val = round(sug, r.d);
             const inp = document.querySelector('[data-norm="' + r.key + '"]');
             const cur = h('span', { class: 'cur', dataset: { calibCur: r.key } });
-            const btn = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Применить: ' + r.label + ' ' + fmt(val, r.d) },
-                icon('fa-check'), 'Применить');
+            const btn = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Կիրառել՝ ' + r.label + ' ' + fmt(val, r.d) },
+                icon('fa-check'), 'Կիրառել');
             const apply = () => {
                 if (!inp) return;
                 inp.value = String(val);
                 inp.dispatchEvent(new Event('input', { bubbles: true }));
                 flash(inp);
             };
-            btn.addEventListener('click', () => { apply(); announce(r.label + ': подставлено ' + fmt(val, r.d)); });
+            btn.addEventListener('click', () => { apply(); announce(r.label + '՝ տեղադրվեց ' + fmt(val, r.d)); });
             appliers.push(apply);
             rows.append(h('div', { class: 'rt-calib-row', dataset: { calibRow: r.key } },
                 h('span', { class: 'k', text: r.label }),
                 cur,
-                h('span', { class: 'sug' }, h('small', { text: 'по GPS' }), fmt(val, r.d) + r.unit),
+                h('span', { class: 'sug' }, h('small', { text: 'GPS-ով' }), fmt(val, r.d) + r.unit),
                 btn));
         });
-        const all = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost mt-2' }, icon('fa-check-double'), 'Применить всё');
-        all.addEventListener('click', () => { appliers.forEach(f => f()); announce('Подсказки GPS подставлены в «Нормы»'); });
+        const all = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost mt-2' }, icon('fa-check-double'), 'Կիրառել բոլորը');
+        all.addEventListener('click', () => { appliers.forEach(f => f()); announce('GPS-ի հուշումները տեղադրվեցին «Նորմեր և կանոններ» բաժնում'); });
         const avgVisit = num(c.visit_min_avg);
         box.append(
-            h('p', { class: 'rt-lead', text: 'Посчитано по GPS-трекам менеджеров за последние 6 недель'
-                + (num(c.days_used) !== null ? ' (' + fmt(c.days_used) + ' ' + dayWord(c.days_used) + ')' : '')
-                + '. Скорость — только пока машина едет: ходьба между магазинами её не занижает. '
-                + (avgVisit !== null ? 'У клиента менеджер стоит в среднем ' + fmt(avgVisit, 1) + ' мин на визит. Визит к мелкому магазину — '
-                    + '0,7 от визита к среднему, к крупному — вдвое дольше; средний подобран так, чтобы в среднем по плану визит длился столько же. ' : '')
-                + 'Пустое поле в «Нормах» — это авто: расчёт сам берёт эти цифры по GPS и обновляет их вместе с треками. '
-                + '«Применить» закрепляет число в поле — сохраните, чтобы оно заработало.' }),
+            h('p', { class: 'rt-lead', text: 'Հաշվված է մենեջերների GPS հետագծերով՝ վերջին 6 շաբաթում'
+                + (num(c.days_used) !== null ? ' (' + fmt(c.days_used) + NB + 'օր)' : '')
+                + '։ Արագությունը հաշվվում է միայն այն ժամանակ, երբ մեքենան շարժվում է՝ խանութների միջև քայլելն այն չի նվազեցնում։ '
+                + (avgVisit !== null ? 'Հաճախորդի մոտ մենեջերը միջինում մնում է ' + fmt(avgVisit, 1) + NB + 'րոպե մեկ այցի ընթացքում։ Փոքր խանութի այցը '
+                    + 'միջին խանութի այցի 0,7-ն է, խոշորինը՝ երկու անգամ ավելի երկար․ միջինն ընտրված է այնպես, որ պլանով այցը միջինում տևի նույնքան։ ' : '')
+                + '«Նորմեր և կանոններ» բաժնի դատարկ դաշտը նշանակում է ավտոմատ՝ հաշվարկն ինքն է վերցնում այս թվերը GPS-ից և թարմացնում դրանք հետագծերի հետ միասին։ '
+                + '«Կիրառել» կոճակը թիվն ամրացնում է դաշտում — պահպանեք, որ այն գործի։' }),
             rows, all);
         updateCalib();
-    }
-    function dayWord(n) {
-        const a = Math.abs(Math.trunc(n)) % 100, b = a % 10;
-        if (a > 10 && a < 20) return 'дней';
-        if (b === 1) return 'день';
-        if (b > 1 && b < 5) return 'дня';
-        return 'дней';
     }
 
     // «Сейчас» в калибровке всегда показывает то, что стоит в поле норм; пустое поле — авто, т.е. та же цифра GPS
@@ -1393,7 +1390,7 @@
             const v = inp ? num(inp.value) : null;
             const auto = !!inp && String(inp.value).trim() === '' && !(inp.validity && inp.validity.badInput);
             el.textContent = '';
-            el.append(h('small', { text: 'сейчас' }), auto ? 'авто (по GPS)' : (v === null ? '—' : fmt(v, r.d) + r.unit));
+            el.append(h('small', { text: 'հիմա' }), auto ? 'ավտոմատ (GPS-ով)' : (v === null ? '—' : fmt(v, r.d) + r.unit));
             const same = auto || (v !== null && round(v, r.d) === round(num(c[r.key]), r.d));
             el.closest('.rt-calib-row').classList.toggle('is-same', same);
         });
@@ -1408,7 +1405,7 @@
             const key = inp.dataset.norm;
             if (inp.dataset.time) {
                 const v = normTime(inp.value);
-                if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) errors['settings.' + key] = 'Время — часы и минуты, например 09:00';
+                if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) errors['settings.' + key] = 'Գրեք ժամը ԺԺ:ՐՐ ձևաչափով, օրինակ՝ 09:00';
                 else s[key] = v;
                 return;
             }
@@ -1418,9 +1415,9 @@
             else s[key] = r.value;
         });
         s.workdays = [...document.querySelectorAll('#rsForm [data-wd]:checked')].map(i => Number(i.value));
-        if (!s.workdays.length) errors['settings.workdays'] = 'Отметьте хотя бы один рабочий день';
+        if (!s.workdays.length) errors['settings.workdays'] = 'Նշեք գոնե մեկ աշխատանքային օր';
         const cc = parseCoord($('rsN_city_center').value);
-        if (cc.empty) errors['settings.city_center_lat'] = 'Укажите центр города';
+        if (cc.empty) errors['settings.city_center_lat'] = 'Նշեք քաղաքի կենտրոնը';
         else if (cc.error) errors['settings.city_center_lat'] = cc.error;
         else { s.city_center_lat = cc.lat; s.city_center_lon = cc.lon; }
         s.chain_groups = [...document.querySelectorAll('#rsForm [data-chain]:checked')].map(i => i.value);
@@ -1443,7 +1440,7 @@
             const m = tr.dataset.mk ? state.manual.find(x => x.key === tr.dataset.mk) : null;
             const p = m ? 'manual_trucks.' + manualTrucks.length + '.' : 'trucks.' + tr.dataset.i + '.';
             if (cap.error) errors[p + 'capacity_kg'] = cap.error;
-            else if (cap.value !== null && (cap.value < 0.1 || cap.value > 30)) errors[p + 'capacity_kg'] = 'Тоннаж — от 0,1 до 30 т';
+            else if (cap.value !== null && (cap.value < 0.1 || cap.value > 30)) errors[p + 'capacity_kg'] = 'Տոննաժը՝ 0,1-ից մինչև 30 տ';
             if (fuel.error) errors[p + 'fuel_l_per_100km'] = fuel.error;
             const item = {
                 car_code: m ? m.car_code : state.data.trucks[+tr.dataset.i].car_code,
@@ -1453,13 +1450,13 @@
             LOAD_COSTS.forEach(([f, , min, max]) => {
                 const value = readNum(q(f), true);
                 if (value.error) errors[p + f] = value.error;
-                else if (value.value !== null && (value.value < min || value.value > max)) errors[p + f] = 'Значение — от ' + min + ' до ' + max;
+                else if (value.value !== null && (value.value < min || value.value > max)) errors[p + f] = 'Արժեքը՝ ' + min + '-ից մինչև ' + max;
                 item[f] = value.value === undefined ? null : value.value;
             });
             const empty = item.fuel_empty_l_per_100km, full = item.fuel_full_l_per_100km;
             if ((empty === null) !== (full === null)) {
-                errors[p + 'fuel_empty_l_per_100km'] = errors[p + 'fuel_full_l_per_100km'] = 'Задайте расход пустой и полной машины вместе';
-            } else if (empty !== null && full < empty) errors[p + 'fuel_full_l_per_100km'] = 'Расход полной машины не меньше расхода пустой';
+                errors[p + 'fuel_empty_l_per_100km'] = errors[p + 'fuel_full_l_per_100km'] = 'Նշեք դատարկ և լրիվ բեռնված մեքենայի ծախսը միասին';
+            } else if (empty !== null && full < empty) errors[p + 'fuel_full_l_per_100km'] = 'Լրիվ բեռնված մեքենայի ծախսը չի կարող պակաս լինել դատարկի ծախսից';
             const act = q('active');
             // «В центр»: авто — null (решает название машины), иначе выбор владельца
             const cm = q('center').value;
@@ -1521,7 +1518,7 @@
         if (!state.data) return;
         state.dirty = snapshot() !== state.initial;
         const el = $('rsDirty');
-        el.textContent = state.dirty ? 'Есть несохранённые изменения' : 'Изменений нет';
+        el.textContent = state.dirty ? 'Կան չպահպանված փոփոխություններ' : 'Փոփոխություններ չկան';
         el.classList.toggle('is-dirty', state.dirty);
     }
 
@@ -1531,7 +1528,7 @@
         btn.disabled = on;
         btn.setAttribute('aria-busy', on ? 'true' : 'false');
         btn.querySelector('i').className = on ? 'rt-spin-inline' : 'fas fa-floppy-disk';
-        btn.querySelector('span').textContent = on ? 'Сохраняю…' : 'Сохранить';
+        btn.querySelector('span').textContent = on ? 'Պահպանում եմ…' : 'Պահպանել';
     }
 
     async function save() {
@@ -1549,7 +1546,7 @@
                     body: JSON.stringify(payload),
                 });
             } catch (e) {
-                showSaveError('Нет связи с сервером — настройки не сохранены. Проверьте сеть и нажмите «Сохранить» ещё раз.');
+                showSaveError('Սերվերի հետ կապ չկա — կարգավորումները չեն պահպանվել։ Ստուգեք ցանցը և կրկին սեղմեք «Պահպանել»։');
                 return;
             }
             let data = null;
@@ -1559,7 +1556,7 @@
                 updateDirty();
                 const toast = $('rsToast');
                 if (window.bootstrap && bootstrap.Toast) bootstrap.Toast.getOrCreateInstance(toast).show();
-                announce('Настройки сохранены');
+                announce('Կարգավորումները պահպանված են');
                 await load(true);   // сервер мог привести значения к своему виду
                 return;
             }
@@ -1567,7 +1564,7 @@
                 showErrors(data.errors, false);
                 return;
             }
-            showSaveError((data && data.error) || ('Не удалось сохранить (код ' + resp.status + '). Попробуйте ещё раз.'));
+            showSaveError(authText(resp, data) || (data && data.error) || ('Չհաջողվեց պահպանել (կոդ ' + resp.status + ')։ Փորձեք կրկին։'));
         } finally {
             setSaving(false);
         }
@@ -1606,7 +1603,7 @@
             if (!Array.isArray(z)) return;
             state.zone = z.map(p => [Number(p[0]), Number(p[1])]);
             drawZone(true);
-            zoneChanged('Граница центра — стартовая');
+            zoneChanged('Կենտրոնի սահմանը վերադարձվեց սկզբնական վիճակին');
         });
         $('rsRetryBtn').addEventListener('click', () => load(false));
         window.addEventListener('beforeunload', (e) => {

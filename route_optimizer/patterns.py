@@ -20,9 +20,11 @@ FREQUENCIES = (0.5, 1.0, 2.0, 3.0)
 # 2 раза в неделю: пн+чт, вт+пт, ср+сб, пн+ср, вт+чт, чт+сб; 3 раза: пн+ср+пт, вт+чт+сб
 TWICE_DAYS = ((1, 4), (2, 5), (3, 6), (1, 3), (2, 4), (4, 6))
 THRICE_DAYS = ((1, 3, 5), (2, 4, 6))
-DAY_SHORT = {1: 'пн', 2: 'вт', 3: 'ср', 4: 'чт', 5: 'пт', 6: 'сб', 7: 'вс'}
-DAY_NAMES = {1: 'понедельник', 2: 'вторник', 3: 'среда', 4: 'четверг', 5: 'пятница', 6: 'суббота',
-             7: 'воскресенье'}
+# Тексты для пользователя — по-армянски (решение владельца №58): «երկ», «երկուշաբթի» (суббота кратко — «շբթ»:
+# «շաբաթ» — это и «неделя»)
+DAY_SHORT = {1: 'երկ', 2: 'երք', 3: 'չրք', 4: 'հնգ', 5: 'ուրբ', 6: 'շբթ', 7: 'կիր'}
+DAY_NAMES = {1: 'երկուշաբթի', 2: 'երեքշաբթի', 3: 'չորեքշաբթի', 4: 'հինգշաբթի', 5: 'ուրբաթ', 6: 'շաբաթ',
+             7: 'կիրակի'}
 SATURDAY = 6
 _EPS = 1e-9
 
@@ -122,32 +124,33 @@ def change_type(before: Pattern, after: Pattern) -> str | None:
 
 def _days_text(days: Iterable[int], labels: Mapping[int, str] = DAY_SHORT) -> str:
     names = [labels.get(d, str(d)) for d in sorted(days)]
-    return names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' и ' + names[-1]
+    return names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' և ' + names[-1]
 
 
 def off_days_text(p: Pattern, workdays: Collection[int]) -> str | None:
-    """Причина обязательного переноса (Р3-9): «воскресенье — нерабочий день»; None — в шаблоне
+    """Причина обязательного переноса (Р3-9): «կիրակի՝ ոչ աշխատանքային օր»; None — в шаблоне
     только рабочие дни."""
     wd = set(workdays)
     off = {d for _, d in p if d not in wd}
     if not off:
         return None
-    return _days_text(off, DAY_NAMES) + (' — нерабочий день' if len(off) == 1 else ' — нерабочие дни')
+    return _days_text(off, DAY_NAMES) + ('՝ ոչ աշխատանքային օր' if len(off) == 1 else '՝ ոչ աշխատանքային օրեր')
 
 
 def pattern_text(p: Pattern) -> str:
-    """«вт, каждую неделю», «чт, 1-я неделя из 2», «пн и чт, каждую неделю»."""
+    """«երք, ամեն շաբաթ», «հնգ, 2 շաբաթից 1-ինը», «երկ և հնգ, ամեն շաբաթ». С этими текстами сверяется
+    humanPlanText() в static/js/routes_optimize.js — менять вместе."""
     w1 = {d for w, d in p if w == 1}
     w2 = {d for w, d in p if w == 2}
     if not p:
-        return 'без визитов'
+        return 'առանց այցերի'
     if w1 == w2:
-        return f'{_days_text(w1)}, каждую неделю'
+        return f'{_days_text(w1)}, ամեն շաբաթ'
     if not w2:
-        return f'{_days_text(w1)}, 1-я неделя из 2'
+        return f'{_days_text(w1)}, 2 շաբաթից 1-ինը'
     if not w1:
-        return f'{_days_text(w2)}, 2-я неделя из 2'
-    return f'{_days_text(w1)} — 1-я неделя, {_days_text(w2)} — 2-я неделя'
+        return f'{_days_text(w2)}, 2 շաբաթից 2-րդը'
+    return f'{_days_text(w1)} — 1-ին շաբաթ, {_days_text(w2)} — 2-րդ շաբաթ'
 
 
 def pattern_json(p: Pattern) -> list[list[int]]:
