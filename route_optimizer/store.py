@@ -18,7 +18,7 @@ import re
 import sqlite3
 import unicodedata
 from dataclasses import asdict, dataclass, field, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from enum import Enum
 from typing import Any, Callable, Collection, Literal, Mapping, Sequence
 
@@ -138,13 +138,14 @@ _GARAGE_ONE_ODOMETER = (
     "CREATE UNIQUE INDEX IF NOT EXISTS garage_one_odometer ON garage_entry(car_code, day) "
     "WHERE kind = 'odometer' AND deleted_at IS NULL")
 
-# Схема 17 (ответ владельца №62): водитель машины — для «Բեռնագիր». Закреплён за машиной, но меняется часто: строка на
-# (машина, с какого дня); на день D действует последняя строка с from_day ≤ D — смена с сегодня не переписывает прошлые
-# дни. Пустое имя — «с этого дня водителя нет» (в накладной — строка, вписать от руки). Только для печати, в расчёты не входит.
+# Схема 17 (ответ владельца №62): водитель машины — для «Բեռնագիր». Закреплён за машиной, но меняется часто. only_day = 0 —
+# постоянный водитель с from_day и до следующей такой строки (смена не переписывает прошлые дни); only_day = 1 — подмена
+# ровно на день from_day. Водитель дня: подмена этого дня, иначе постоянный с наибольшим from_day ≤ дня. Пустое имя —
+# «водителя нет» (в накладной — строка, вписать от руки). Только для печати, в расчёты не входит.
 _TRUCK_DRIVER_TABLE = (
     "CREATE TABLE IF NOT EXISTS truck_driver(car_code TEXT NOT NULL, from_day TEXT NOT NULL, "
-    "name TEXT NOT NULL CHECK (length(name) <= 60), updated_at TEXT NOT NULL, updated_by TEXT, "
-    "PRIMARY KEY (car_code, from_day))")
+    "only_day INTEGER NOT NULL DEFAULT 0 CHECK (only_day IN (0, 1)), name TEXT NOT NULL CHECK (length(name) <= 60), "
+    "updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY (car_code, from_day, only_day))")
 
 _CUSTOMER_VEHICLES_TABLE = (
     "CREATE TABLE IF NOT EXISTS customer_vehicle_access(customer_id INTEGER PRIMARY KEY, "
@@ -1974,13 +1975,22 @@ class Store:
                          'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
                          (customer_id, float(unload_min), _now(), user))
 
-    def truck_drivers(self, day: str) -> dict[str, str]:
-        """Водители машин на день YYYY-MM-DD (№62): машина → имя её последней записи с from_day ≤ day; машины без записи
-        и с пустым именем («водителя нет») — не в ответе."""
-        rows = self._read(lambda conn: conn.execute(
-            'SELECT d.car_code, d.name FROM truck_driver d WHERE d.from_day = (SELECT MAX(x.from_day) FROM truck_driver x '
-            'WHERE x.car_code = d.car_code AND x.from_day <= ?)', (day,)).fetchall())
-        return {code: name for code, name in rows if name}
+    def truck_drivers(self, day: str) -> tuple[dict[str, str], frozenset[str]]:
+        """Водители машин на день YYYY-MM-DD (№62): (машина → имя, машины с подменой на этот день). Водитель дня — подмена
+        этого дня, если есть, иначе постоянный: запись с наибольшим from_day ≤ day. Пустое имя («водителя нет») — не в
+        словаре (подмена «водителя нет» — во втором множестве)."""
+        def query(conn: sqlite3.Connection) -> tuple[list[Any], list[Any]]:
+            permanent = conn.execute(
+                'SELECT d.car_code, d.name FROM truck_driver d WHERE d.only_day = 0 AND d.from_day = '
+                '(SELECT MAX(x.from_day) FROM truck_driver x WHERE x.car_code = d.car_code AND x.only_day = 0 '
+                'AND x.from_day <= ?)', (day,)).fetchall()
+            subs = conn.execute('SELECT car_code, name FROM truck_driver WHERE only_day = 1 AND from_day = ?',
+                                (day,)).fetchall()
+            return permanent, subs
+
+        permanent, subs = self._read(query)
+        names = dict(permanent) | dict(subs)
+        return {code: name for code, name in names.items() if name}, frozenset(code for code, _ in subs)
 
     def driver_names(self) -> list[str]:
         """Все имена водителей из записей — подсказка при вводе (№62)."""
@@ -1988,37 +1998,32 @@ class Store:
             "SELECT DISTINCT name FROM truck_driver WHERE name <> ''").fetchall())
         return sorted(r[0] for r in rows)
 
-    def save_truck_driver(self, car_code: str, from_day: str, name: str, user: str | None,
-                          only_this_day: bool = False) -> None:
-        """Водитель машины с from_day и до следующей смены (№62; name — проверенное check_driver_name, '' — «Հեռացնել»:
-        с этого дня водителя нет). Запись на тот же день заменяется — ошибку исправляют, вписав верное имя; записи более
-        поздних дней остаются — они действуют со своего дня. only_this_day — прошедший день (подменный водитель): меняется
-        только он — со следующего дня остаётся тот, кто был там до правки (у следующего дня появляется своя запись, если
-        его водитель иначе сдвинулся бы)."""
+    def save_truck_driver(self, car_code: str, day: str, name: str, user: str | None, only_day: bool = False) -> None:
+        """Водитель машины (№62; name — проверенное check_driver_name). only_day=False — постоянный с day и до следующей
+        смены (подмена этого дня снимается, подмены других дней остаются); '' — с этого дня водителя нет. only_day=True —
+        подмена только на day (прошедший день — всегда так); '' («Հեռացնել») снимает подмену этого дня — снова постоянный, а
+        если подмены не было — в этот день водителя нет. Запись того же дня и вида заменяется — ошибку исправляют, вписав
+        верное имя."""
         if not isinstance(car_code, str) or not car_code or len(car_code) > 64:
             raise ValueError('car_code: непустая строка до 64 символов')
-        if not isinstance(from_day, str) or not _ISO_DAY_RE.match(from_day):
-            raise ValueError('from_day: дата YYYY-MM-DD')
+        if not isinstance(day, str) or not _ISO_DAY_RE.match(day):
+            raise ValueError('day: дата YYYY-MM-DD')
         if check_driver_name(name) != (name, None):
             raise ValueError('имя водителя не прошло проверку')
-        next_day = (date.fromisoformat(from_day) + timedelta(days=1)).isoformat()
-
-        def on_day(conn: sqlite3.Connection, day: str) -> str | None:
-            row = conn.execute('SELECT name FROM truck_driver WHERE car_code = ? AND from_day <= ? '
-                               'ORDER BY from_day DESC LIMIT 1', (car_code, day)).fetchone()
-            return row[0] if row else None
-
-        def put(conn: sqlite3.Connection, day: str, value: str) -> None:
-            conn.execute('INSERT INTO truck_driver(car_code, from_day, name, updated_at, updated_by) VALUES(?, ?, ?, ?, ?) '
-                         'ON CONFLICT(car_code, from_day) DO UPDATE SET name = excluded.name, '
-                         'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
-                         (car_code, day, value, _now(), user))
+        kind = 1 if only_day else 0
+        drop_sub = 'DELETE FROM truck_driver WHERE car_code = ? AND from_day = ? AND only_day = 1'
 
         def write(conn: sqlite3.Connection) -> None:
-            before_next = on_day(conn, next_day)
-            put(conn, from_day, name)
-            if only_this_day and on_day(conn, next_day) != before_next:   # своя запись следующего дня — не сдвинулась
-                put(conn, next_day, before_next or '')
+            if only_day and name == '' and conn.execute(drop_sub.replace('DELETE', 'SELECT 1', 1),
+                                                        (car_code, day)).fetchone() is not None:
+                conn.execute(drop_sub, (car_code, day))
+                return
+            conn.execute('INSERT INTO truck_driver(car_code, from_day, only_day, name, updated_at, updated_by) '
+                         'VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(car_code, from_day, only_day) DO UPDATE SET '
+                         'name = excluded.name, updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                         (car_code, day, kind, name, _now(), user))
+            if not only_day:
+                conn.execute(drop_sub, (car_code, day))
 
         self._transaction(write, 'не удалось сохранить водителя машины')
 

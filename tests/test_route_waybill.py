@@ -380,24 +380,26 @@ def test_check_driver_name():
         assert name is None and err, bad
 
 
+def _on(s, day, car='CAR1'):
+    return s.truck_drivers(day)[0].get(car)
+
+
 def test_store_truck_driver_by_day(tmp_path):
-    """Закреплён за машиной, меняется часто: на день — последняя запись с from_day ≤ дня; прошлые дни не меняются."""
+    """Постоянный водитель: на день — запись с наибольшим from_day ≤ дня; смена не переписывает прошлые дни."""
     s = st.Store(str(tmp_path / 'r.db'))
-    assert s.truck_drivers('2026-10-05') == {} and s.driver_names() == []
+    assert s.truck_drivers('2026-10-05') == ({}, frozenset()) and s.driver_names() == []
     s.save_truck_driver('CAR1', '2026-10-01', 'Արամ', 'qa')
     s.save_truck_driver('CAR2', '2026-10-03', 'Գարիկ', 'qa')
     s.save_truck_driver('CAR1', '2026-10-05', 'Կարեն', 'qa')
-    assert s.truck_drivers('2026-09-30') == {}
-    assert s.truck_drivers('2026-10-01') == s.truck_drivers('2026-10-02') == {'CAR1': 'Արամ'}
-    assert s.truck_drivers('2026-10-04') == {'CAR1': 'Արամ', 'CAR2': 'Գարիկ'}
-    assert s.truck_drivers('2026-10-05') == s.truck_drivers('2027-01-01') == {'CAR1': 'Կարեն', 'CAR2': 'Գարիկ'}
-    s.save_truck_driver('CAR1', '2026-10-03', 'Սամվել', 'qa')       # смена «в середине»: действует до следующей записи
-    assert [s.truck_drivers(d).get('CAR1') for d in ('2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05')] == \
-        ['Արամ', 'Սամվել', 'Սամվել', 'Կարեն']
-    s.save_truck_driver('CAR1', '2026-10-03', 'Սամվել Ս.', 'qa2')   # тот же день — замена
-    s.save_truck_driver('CAR2', '2026-10-06', '', 'qa')             # с этого дня водителя нет
-    assert s.truck_drivers('2026-10-04') == {'CAR1': 'Սամվել Ս.', 'CAR2': 'Գարիկ'}
-    assert s.truck_drivers('2026-10-06') == {'CAR1': 'Կարեն'}
+    assert s.truck_drivers('2026-09-30') == ({}, frozenset())
+    assert s.truck_drivers('2026-10-04') == ({'CAR1': 'Արամ', 'CAR2': 'Գարիկ'}, frozenset())
+    assert s.truck_drivers('2027-01-01')[0] == {'CAR1': 'Կարեն', 'CAR2': 'Գարիկ'}
+    s.save_truck_driver('CAR1', '2026-10-03', 'Սամվել', 'qa')       # смена «в середине»: до следующей записи
+    assert [_on(s, d) for d in ('2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05')] == ['Արամ', 'Սամվել', 'Սամվել', 'Կարեն']
+    s.save_truck_driver('CAR1', '2026-10-03', 'Սամվել Ս.', 'qa2')   # тот же день — замена (исправление ошибки)
+    s.save_truck_driver('CAR2', '2026-10-06', '', 'qa')             # «Հեռացնել»: с этого дня водителя нет
+    assert s.truck_drivers('2026-10-04')[0] == {'CAR1': 'Սամվել Ս.', 'CAR2': 'Գարիկ'}
+    assert s.truck_drivers('2026-10-06')[0] == {'CAR1': 'Կարեն'}
     assert s.driver_names() == sorted(['Արամ', 'Գարիկ', 'Կարեն', 'Սամվել Ս.'])
     for args in (('', '2026-10-01', 'x'), ('CAR1', '01.10.2026', 'x'), ('CAR1', '2026-10-01', ' x'),
                  ('CAR1', '2026-10-01', 'x' * 61), ('C' * 65, '2026-10-01', 'x')):
@@ -405,35 +407,35 @@ def test_store_truck_driver_by_day(tmp_path):
             s.save_truck_driver(*args, 'qa')
 
 
-def test_store_truck_driver_clear_and_past_day(tmp_path):
-    """Замечания ревью: прошедший день — только он; «Հեռացնել» — всегда «с этого дня водителя нет», ошибка исправляется
-    верным именем в тот же день (запись дня заменяется)."""
+def test_store_truck_driver_substitute(tmp_path):
+    """Подмена — только на свой день; постоянная смена в тот же день снимает подмену (замечание ревью 3: «Այս օրվանից»
+    после «Միայն այս օրը» тем же днём действовал один день); «Հեռացնել» подмены — снова постоянный водитель."""
     s = st.Store(str(tmp_path / 'r.db'))
     s.save_truck_driver('CAR1', '2026-10-01', 'Արամ', 'qa')
-    s.save_truck_driver('CAR1', '2026-10-05', 'Կարեն', 'qa')          # по ошибке
-    s.save_truck_driver('CAR1', '2026-10-05', 'Արամ', 'qa')           # исправили тем же днём
-    assert s.truck_drivers('2026-10-05') == s.truck_drivers('2026-10-09') == {'CAR1': 'Արամ'}
-    s.save_truck_driver('CAR1', '2026-10-05', '', 'qa')               # «Հեռացնել» — с этого дня водителя нет
-    assert s.truck_drivers('2026-10-05') == s.truck_drivers('2026-10-09') == {} and s.truck_drivers('2026-10-04') == {'CAR1': 'Արամ'}
-    s.save_truck_driver('CAR1', '2026-10-05', 'Արամ', 'qa')
-    # прошедший 02.10 — подменный водитель только на этот день: 03.10 и дальше снова Արամ
-    s.save_truck_driver('CAR1', '2026-10-02', 'Սամվել', 'qa', only_this_day=True)
-    assert [s.truck_drivers(d).get('CAR1') for d in ('2026-10-01', '2026-10-02', '2026-10-03', '2026-10-09')] == \
-        ['Արամ', 'Սամվել', 'Արամ', 'Արամ']
-    s.save_truck_driver('CAR1', '2026-10-02', '', 'qa', only_this_day=True)   # «Հեռացնել» в прошлом: только 02.10 без водителя
-    assert [s.truck_drivers(d).get('CAR1') for d in ('2026-10-01', '2026-10-02', '2026-10-03')] == ['Արամ', None, 'Արամ']
-    s.save_truck_driver('CAR1', '2026-10-02', 'Արամ', 'qa', only_this_day=True)
-    s.save_truck_driver('CAR1', '2026-10-04', 'Գոռ', 'qa', only_this_day=True)  # со следующего дня — снова Արամ
-    assert [s.truck_drivers(d).get('CAR1') for d in ('2026-10-04', '2026-10-05', '2026-10-06')] == ['Գոռ', 'Արամ', 'Արամ']
-    s.save_truck_driver('CAR2', '2026-09-20', 'Լևոն', 'qa', only_this_day=True)  # раньше ничего не было — и после ничего
-    assert s.truck_drivers('2026-09-20') == {'CAR2': 'Լևոն'} and 'CAR2' not in s.truck_drivers('2026-09-21')
-    # ревью 2: подмена 04.10 в прошлом пишет строку возврата на 05.10; «Հեռացնել» 05.10 — водителя нет, а не подменный
+    s.save_truck_driver('CAR1', '2026-10-05', 'Կարեն', 'qa', only_day=True)
+    assert [_on(s, d) for d in ('2026-10-04', '2026-10-05', '2026-10-06', '2026-10-20')] == ['Արամ', 'Կարեն', 'Արամ', 'Արամ']
+    assert s.truck_drivers('2026-10-05')[1] == {'CAR1'} and s.truck_drivers('2026-10-06')[1] == frozenset()
+    s.save_truck_driver('CAR1', '2026-10-05', 'Սամվել', 'qa')       # постоянная смена с 05.10 — подмена 05.10 снята
+    assert [_on(s, d) for d in ('2026-10-04', '2026-10-05', '2026-10-06', '2026-10-20')] == ['Արամ', 'Սամվել', 'Սամվել', 'Սամվել']
+    assert s.truck_drivers('2026-10-05')[1] == frozenset()
+    s.save_truck_driver('CAR1', '2026-10-07', 'Լևոն', 'qa', only_day=True)
+    s.save_truck_driver('CAR1', '2026-10-06', 'Գոռ', 'qa')          # новая постоянная — подмена 07.10 остаётся
+    assert [_on(s, d) for d in ('2026-10-06', '2026-10-07', '2026-10-08')] == ['Գոռ', 'Լևոն', 'Գոռ']
+    s.save_truck_driver('CAR1', '2026-10-07', '', 'qa', only_day=True)     # «Հեռացնել» подмены — снова постоянный
+    assert _on(s, '2026-10-07') == 'Գոռ' and s.truck_drivers('2026-10-07')[1] == frozenset()
+    s.save_truck_driver('CAR1', '2026-10-07', '', 'qa', only_day=True)     # подмены нет — в этот день водителя нет
+    assert _on(s, '2026-10-07') is None and s.truck_drivers('2026-10-07')[1] == {'CAR1'}
+    assert [_on(s, d) for d in ('2026-10-06', '2026-10-08')] == ['Գոռ', 'Գոռ']
+    s.save_truck_driver('CAR1', '2026-10-07', '', 'qa', only_day=True)     # снять «водителя нет» этого дня
+    assert _on(s, '2026-10-07') == 'Գոռ'
+    # ревью 2: подмена 04.10 и «Հեռացնել» с 05.10 — водителя нет, а не подменный
     s = st.Store(str(tmp_path / 'r2.db'))
     s.save_truck_driver('CAR1', '2026-10-01', 'Արամ', 'qa')
-    s.save_truck_driver('CAR1', '2026-10-04', 'Կարեն', 'qa', only_this_day=True)
-    assert [s.truck_drivers(d).get('CAR1') for d in ('2026-10-03', '2026-10-04', '2026-10-05')] == ['Արամ', 'Կարեն', 'Արամ']
+    s.save_truck_driver('CAR1', '2026-10-04', 'Կարեն', 'qa', only_day=True)
     s.save_truck_driver('CAR1', '2026-10-05', '', 'qa')
-    assert [s.truck_drivers(d).get('CAR1') for d in ('2026-10-04', '2026-10-05', '2026-10-20')] == ['Կարեն', None, None]
+    assert [_on(s, d) for d in ('2026-10-03', '2026-10-04', '2026-10-05', '2026-10-20')] == ['Արամ', 'Կարեն', None, None]
+    s.save_truck_driver('CAR2', '2026-09-20', 'Լևոն', 'qa', only_day=True)  # постоянного нет — подмена только в свой день
+    assert _on(s, '2026-09-20', 'CAR2') == 'Լևոն' and _on(s, '2026-09-21', 'CAR2') is None
 
 
 def test_store_migration_adds_truck_driver_keeps_all_rows(tmp_path):
@@ -451,13 +453,13 @@ def test_store_migration_adds_truck_driver_keeps_all_rows(tmp_path):
         tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
         before = {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in tables if t != 'meta'}
     s = st.Store(path)
-    assert s.truck_drivers('2026-10-01') == {} and s.load().unload_min == {101: 40.0}
+    assert s.truck_drivers('2026-10-01') == ({}, frozenset()) and s.load().unload_min == {101: 40.0}
     s.save_truck_driver('CAR1', '2026-10-01', 'Արամ', 'qa')
     with closing(sqlite3.connect(path)) as conn:
         assert {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before} == before
         assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == (str(st.SCHEMA_VERSION),)
-        assert conn.execute('SELECT car_code, from_day, name, updated_by FROM truck_driver').fetchall() == \
-            [('CAR1', '2026-10-01', 'Արամ', 'qa')]
+        assert conn.execute('SELECT car_code, from_day, only_day, name, updated_by FROM truck_driver').fetchall() == \
+            [('CAR1', '2026-10-01', 0, 'Արամ', 'qa')]
 
 
 def _post_driver(client, **body):
@@ -467,11 +469,11 @@ def _post_driver(client, **body):
 def test_api_driver_saved_from_day_and_printed(client, day, monkeypatch):
     monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 9, 30, 18, 0))   # 01.10 — завтра: «с этого дня»
     page, _ = day
-    assert page['drivers'] == {} and page['driver_names'] == []
+    assert page['drivers'] == {} and page['substitutes'] == [] and page['driver_names'] == []
     r = _post_driver(client, name='  Վարդանյան  Գարիկ ')
     assert r.status_code == 200, r.get_json()
     assert r.get_json() == {'success': True, 'day': '2026-10-01', 'only_day': False, 'drivers': {'CAR1': 'Վարդանյան Գարիկ'},
-                            'driver_names': ['Վարդանյան Գարիկ']}
+                            'substitutes': [], 'driver_names': ['Վարդանյան Գարիկ']}
     get = lambda d: client.get(f'/api/routes/dispatch?date={d}').get_json()         # noqa: E731
     assert get('2026-10-01')['drivers'] == get('2026-10-02')['drivers'] == {'CAR1': 'Վարդանյան Գարիկ'}
     assert get('2026-09-30')['drivers'] == {}                                        # прошлые дни не меняются
@@ -493,6 +495,24 @@ def test_api_driver_past_day_only_that_day(client, day, monkeypatch):
     assert (get('2026-10-01'), get('2026-10-02')) == ({'CAR1': 'Արամ'}, {})
     r = _post_driver(client, name='Կարեն', date='2026-10-03').get_json()                     # сегодня — с этого дня
     assert r['only_day'] is False and get('2026-10-09') == {'CAR1': 'Կարեն'}
+
+
+def test_api_driver_substitute_only_today(client, day, monkeypatch):
+    """Вопрос владельца: «а если прикреплён водитель, но сегодня везёт другой?» — only_day на сегодняшний/будущий день."""
+    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 9, 30, 18, 0))
+    get = lambda d: client.get(f'/api/routes/dispatch?date={d}').get_json()['drivers']      # noqa: E731
+    assert _post_driver(client, name='Արամ', date='2026-09-30').get_json()['only_day'] is False   # закреплён с 30.09
+    r = _post_driver(client, name='Կարեն', only_day=True).get_json()                            # 01.10 — подмена
+    assert r['only_day'] is True and r['drivers'] == {'CAR1': 'Կարեն'} and r['substitutes'] == ['CAR1']
+    assert (get('2026-09-30'), get('2026-10-01'), get('2026-10-02'), get('2026-10-20')) == \
+        ({'CAR1': 'Արամ'}, {'CAR1': 'Կարեն'}, {'CAR1': 'Արամ'}, {'CAR1': 'Արամ'})
+    assert _post_driver(client, name='Կարեն', only_day=False, date='2026-10-05').get_json()['only_day'] is False
+    assert (get('2026-10-04'), get('2026-10-05'), get('2026-10-20')) == ({'CAR1': 'Արամ'}, {'CAR1': 'Կարեն'}, {'CAR1': 'Կարեն'})
+    r = _post_driver(client, name='Կարեն', only_day=False).get_json()      # подмена 01.10 осталась насовсем (ревью 3)
+    assert r['substitutes'] == [] and (get('2026-10-01'), get('2026-10-02')) == ({'CAR1': 'Կարեն'}, {'CAR1': 'Կարեն'})
+    for bad in ('yes', 1, None):
+        r = _post_driver(client, name='x', only_day=bad)
+        assert r.status_code == 400 and 'only_day' in r.get_json()['errors'], bad
 
 
 def test_api_driver_not_in_ai_day_data(client, day, monkeypatch):

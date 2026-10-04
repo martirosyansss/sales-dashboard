@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+from datetime import datetime
 import logging
 import sys
 import tempfile
@@ -40,6 +41,7 @@ from openpyxl import load_workbook  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
 
+from route_optimizer import views  # noqa: E402
 from route_optimizer import waybill as wb  # noqa: E402
 from test_route_optimizer import _dorder  # noqa: E402
 
@@ -67,6 +69,7 @@ def main() -> int:
 
     app = base.build_app(tempfile.mkdtemp(prefix='waybill-check-'), base.FakeClient())
     app.extensions['route_optimizer'].waybill_loader = loader
+    views._clock = lambda: datetime(2026, 9, 30, 18, 0)     # «сейчас» — накануне DAY: день не прошёл, у водителя есть выбор срока
     server = make_server('127.0.0.1', PORT, app, threaded=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     errors = []
@@ -114,9 +117,11 @@ def main() -> int:
             card.locator('.dp-drvbtn').click()
             page.wait_for_selector('#dpDriverDlg[open]', timeout=5000)
             past = page.request.get(f'{BASE}/api/routes/dispatch', params={'date': DAY}).json()['is_past']
-            check(('Միայն' if past else 'Կգործի') in page.inner_text('#dpDriverHint') and not page.locator('#dpDriverClear').is_visible()
+            check(('Միայն' if past else 'Նախորդ օրերի') in page.inner_text('#dpDriverHint') and not page.locator('#dpDriverClear').is_visible()
                   and page.evaluate("() => document.activeElement && document.activeElement.id") == 'dpDriverName',
                   f'R dialog: hint ({"only that past day" if past else "from this day"}), focus in the field, no «Հեռացնել» yet')
+            check(page.locator('#dpDriverScope').is_visible() != past
+                  and (past or page.is_checked('#dpDriverFrom')), 'R scope choice: hidden on a past day, «from this day» when no driver yet')
             page.fill('#dpDriverName', '  Վարդանյան   Գարիկ <i>x</i> ')
             page.press('#dpDriverName', 'Enter')
             page.wait_for_function("() => !document.getElementById('dpDriverDlg').open", timeout=10000)
@@ -126,6 +131,12 @@ def main() -> int:
                   f'R card header shows the driver as text: {head!r}')
             check(page.evaluate("() => document.activeElement && document.activeElement.classList.contains('dp-drvbtn')"),
                   'R focus back on «Վարորդ»')
+            card.locator('.dp-drvbtn').click()           # водитель уже есть — по умолчанию «только этот день» (подмена)
+            page.wait_for_selector('#dpDriverDlg[open]', timeout=5000)
+            check(page.is_checked('#dpDriverDay') and page.input_value('#dpDriverName') == DRIVER and page.is_visible('#dpDriverClear'),
+                  'R reopen: substitute «only this day» preselected, current name in the field, «Հեռացնել» visible')
+            page.click('#dpDriverCancel')
+            page.wait_for_function("() => !document.getElementById('dpDriverDlg').open", timeout=5000)
             saved = page.request.get(f'{BASE}/api/routes/dispatch', params={'date': DAY}).json()
             check(saved['drivers'].get(truck) == DRIVER and saved['driver_names'] == [DRIVER], f'R saved on the server {saved["drivers"]}')
 
