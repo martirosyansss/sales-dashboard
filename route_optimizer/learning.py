@@ -90,13 +90,16 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from . import actuals as ac
 from . import valhalla_engine
+from .frequency import fmt_decimal
 from .geo import Point, in_city
 from .measurements import _fit
 from .traffic_validation import TrafficProfile
 
 KINDS = ('unload', 'loading', 'travel', 'truck_time', 'lunch', 'fuel')
-KIND_TITLES = {'unload': 'Разгрузка у магазина', 'loading': 'Загрузка на складе', 'travel': 'Скорость машин по часам',
-               'truck_time': 'Время в пути грузовиков: модель', 'lunch': 'Ճաշ ճանապարհին', 'fuel': 'Расход топлива'}
+# Заголовки и причины журнала — по-армянски (решение владельца №58): их показывает страница «Обучение» как есть
+KIND_TITLES = {'unload': 'Բեռնաթափում խանութում', 'loading': 'Բեռնում պահեստում', 'travel': 'Մեքենաների արագությունն ըստ ժամերի',
+               'truck_time': 'Բեռնատարների ճանապարհի ժամանակը՝ մոդել', 'lunch': 'Ճաշ ճանապարհին',
+               'fuel': 'Վառելիքի ծախս'}
 DEFAULT_AUTO = {'unload': True, 'loading': False, 'travel': True, 'truck_time': True, 'lunch': True,
                 'fuel': True}   # нет переключателя в базе
 HOLDOUT_DAYS = 7
@@ -116,7 +119,10 @@ LEG_MIN_KM = 0.2
 # выбор модели времени грузовиков: общих участков и их дней в обучении, в проверке (как _enough)
 TRUCK_TIME_MIN = (200, 7, 60, 3)
 TRUCK_TIME_SOURCES = (valhalla_engine.TRUCK_TIME_MODEL, valhalla_engine.TRUCK_TIME_VALHALLA)   # model, valhalla
-TRUCK_TIME_TITLES = {'model': 'прежняя модель', 'valhalla': 'Valhalla'}
+TRUCK_TIME_TITLES = {'model': 'նախկին մոդել', 'valhalla': 'Valhalla'}
+# в причинах выбора модели — с артиклем; подлежащее стоит перед гласной («ավելի», «առնվազն») — артикль «-ն»
+TRUCK_TIME_DEF = {'model': 'նախկին մոդելը', 'valhalla': 'Valhalla-ն'}
+TRUCK_TIME_SUBJ = {'model': 'նախկին մոդելն', 'valhalla': 'Valhalla-ն'}
 STORE_MIN_OBS = 2                    # своё время магазина по факту — со 2-го одиночного визита (один — не в счёт)
 STORE_SHRINK = 5.0                   # и стягивается к опоре: (n·факт + 5·опора) / (n + 5) — у 2 визитов вес факта 2/7
 STORE_OFFSET_MAX = 120.0             # время магазина a + поправка — не больше 120 мин (как введённое)
@@ -234,8 +240,8 @@ def _enough(train: Sequence[Any], test: Sequence[Any], need: tuple[int, int, int
     n1, d1, n2, d2 = need
     got = (len(train), len({o.day for o in train}), len(test), len({o.day for o in test}))
     if got[0] < n1 or got[1] < d1 or got[2] < n2 or got[3] < d2:
-        return (f'мало данных: обучение {got[0]} из {n1} (дней {got[1]} из {d1}), '
-                f'проверка {got[2]} из {n2} (дней {got[3]} из {d2})')
+        return (f'քիչ տվյալներ․ ուսուցում՝ {got[0]} / {n1} ({got[1]} / {d1} օր), '
+                f'ստուգում՝ {got[2]} / {n2} ({got[3]} / {d2} օր)')
     return None
 
 
@@ -255,8 +261,8 @@ def _spans(train: Sequence[Any], test: Sequence[Any]) -> dict[str, str | None]:
 
 def _verdict(before: float, after: float) -> tuple[bool, str]:
     if before > 0 and after <= before * (1 - MIN_GAIN):
-        return True, f'принято: ошибка {before:.2f} → {after:.2f}'
-    return False, f'не лучше действующей нормы хотя бы на {MIN_GAIN:.0%}: ошибка {before:.2f} → {after:.2f}'
+        return True, f'ընդունված է․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)}'
+    return False, f'գործող նորմից առնվազն {MIN_GAIN:.0%}-ով ավելի լավ չէ․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)}'
 
 
 def bootstrap_share(gains: Sequence[float], resamples: int = BOOT_RESAMPLES, seed: int = BOOT_SEED) -> float:
@@ -280,7 +286,7 @@ def _gains(rows: Iterable[tuple[Any, float, float, float]]) -> list[float]:
     return [math.fsum(acc[g]) for g in sorted(acc)]
 
 
-GROUPS_HY = {'days': 'ստուգման օրերի', 'intervals': 'ստուգման լիցքավորումների միջակայքերի'}
+GROUPS_HY = {'days': 'ստուգման օրերի', 'intervals': 'ստուգման միջակայքերի (լրիվ բաքերի միջև)'}
 
 
 def _pct(share: float) -> str:
@@ -302,9 +308,9 @@ def _accept(before: float, after: float, gains: Sequence[float], groups: str = '
     if not ok:
         return False, why, share
     if share < BOOT_SHARE:
-        return False, (f'ոչ հուսալի․ սխալը {before:.2f} → {after:.2f}, բայց միայն {_robust(share, groups)} '
-                       f'(պետք է առնվազն {_pct(BOOT_SHARE)}%)'), share
-    return True, f'{why}; հուսալի է՝ {_robust(share, groups)}', share
+        return False, (f'ոչ հուսալի․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)}, բայց միայն '
+                       f'{_robust(share, groups)} (պետք է առնվազն {_pct(BOOT_SHARE)}%)'), share
+    return True, f'{why}․ հուսալի է՝ {_robust(share, groups)}', share
 
 
 def quantile(values: Sequence[float], q: float) -> float:
@@ -454,7 +460,7 @@ def fit_loading(obs: Sequence[LoadObs], today: date, cur: tuple[float, float] | 
     after = _mae((a + b * o.tonnes, o.minutes) for o in test)
     ok, why, conf = _accept(before, after, _gains((o.day, baseline(o), a + b * o.tonnes, o.minutes) for o in test))
     if cur is None:
-        why += f' (опора — медиана стоянок {ref[0]:.1f} мин: в настройках загрузки нет)'
+        why += f' (հենակետը՝ կանգառների մեդիանը, {fmt_decimal(ref[0], 1)} րոպե․ կարգավորումներում բեռնում նշված չէ)'
     return Outcome('loading', '', ok, why, {'fixed_min': a, 'per_tonne_min': b}, n_obs=len(train), n_test=len(test),
                    mae_before=round(before, 3), mae_after=round(after, 3), confidence=conf, **_spans(train, test))
 
@@ -528,8 +534,8 @@ def fit_travel(obs: Sequence[LegObs], today: date, model_id: str, ref: Mapping[s
     scope = travel_scope(base_norms)
     if not ratio or len(held) < TRAVEL_MIN_TEST[0] or len({o.day for o in held}) < TRAVEL_MIN_TEST[1]:
         return Outcome('travel', scope, False,
-                       f'мало данных: ячеек профиля {len(ratio)}, участков проверки в них {len(held)} из '
-                       f'{TRAVEL_MIN_TEST[0]} (дней {len({o.day for o in held})} из {TRAVEL_MIN_TEST[1]})',
+                       f'քիչ տվյալներ․ պրոֆիլի վանդակներ՝ {len(ratio)}, դրանցում ստուգման հատվածներ՝ {len(held)} / '
+                       f'{TRAVEL_MIN_TEST[0]} ({len({o.day for o in held})} / {TRAVEL_MIN_TEST[1]} օր)',
                        model_id=model_id, n_obs=len(train), n_test=len(held), **_spans(train, test))
     params = _travel_params(ratio, ref, prev, _own_minutes(base_norms))
     profile = travel_profile(base_norms, params)
@@ -591,7 +597,7 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
     preparing — Valhalla включён, но матрица грузовика для точек факта ещё считается (прогон её не дождался); иначе —
     Valhalla недоступен."""
     other = TRUCK_TIME_SOURCES[1] if incumbent == TRUCK_TIME_SOURCES[0] else TRUCK_TIME_SOURCES[0]
-    stays = f'остаётся {TRUCK_TIME_TITLES[incumbent]}'
+    stays = f'մնում է {TRUCK_TIME_DEF[incumbent]}'
     if bases.get(valhalla_engine.TRUCK_TIME_VALHALLA) is None:
         seen, held = _split(fact or (), today)
         short = _enough(seen, held, TRUCK_TIME_MIN) if fact is not None else None
@@ -601,8 +607,8 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
             reason = ('Valhalla-ն միացված է, բայց փաստի կետերի համար բեռնատարի ժամանակները դեռ հաշվվում են․ '
                       'համեմատությունը կլինի հաջորդ վերահաշվարկին')
         else:
-            reason = ('Valhalla недоступен (выключен, нет пакета или тайлов, либо матрица грузовика для точек факта ещё '
-                      'считается)')
+            reason = ('Valhalla-ն հասանելի չէ (անջատված է, չկա փաթեթը կամ սալիկները, կամ բեռնատարի մատրիցը փաստի '
+                      'կետերի համար դեռ հաշվվում է)')
         return Outcome('truck_time', '', False, f'{reason} — {stays}', n_obs=len(seen), n_test=len(held),
                        **_spans(seen, held)), {}
     kept = kept or {}
@@ -640,15 +646,15 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
     if short is not None:
         reason = f'{short} — {stays}'
     elif ok:
-        reason = (f'{TRUCK_TIME_TITLES[other]} точнее, чем {TRUCK_TIME_TITLES[incumbent]}: ошибка {before:.2f} → '
-                  f'{after:.2f} мин на участок; հուսալի է՝ {_robust(conf, "days", "մյուս մոդելն")}')
+        reason = (f'{TRUCK_TIME_SUBJ[other]} ավելի ճշգրիտ է, քան {TRUCK_TIME_DEF[incumbent]}․ սխալ {fmt_decimal(before)} → '
+                  f'{fmt_decimal(after)} րոպե մեկ հատվածի համար․ հուսալի է՝ '
+                  f'{_robust(conf, "days", TRUCK_TIME_SUBJ[other])}')
     elif better:
-        reason = (f'ոչ հուսալի․ սխալը {before:.2f} → {after:.2f} րոպե հատվածի վրա, բայց միայն '
-                  f'{_robust(conf, "days", "մյուս մոդելն")} '
-                  f'(պետք է առնվազն {_pct(BOOT_SHARE)}%) — {stays}')
+        reason = (f'ոչ հուսալի․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)} րոպե մեկ հատվածի համար, բայց միայն '
+                  f'{_robust(conf, "days", TRUCK_TIME_SUBJ[other])} (պետք է առնվազն {_pct(BOOT_SHARE)}%) — {stays}')
     else:
-        reason = (f'{TRUCK_TIME_TITLES[other]} не точнее, чем {TRUCK_TIME_TITLES[incumbent]}, хотя бы на '
-                  f'{MIN_GAIN:.0%}: ошибка {before:.2f} → {after:.2f} мин на участок — {stays}')
+        reason = (f'{TRUCK_TIME_SUBJ[other]} առնվազն {MIN_GAIN:.0%}-ով ավելի ճշգրիտ չէ, քան '
+                  f'{TRUCK_TIME_DEF[incumbent]}․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)} րոպե մեկ հատվածի համար — {stays}')
     params = {'source': other if ok else incumbent, 'challenger': other, **counts, 'candidates': candidates}
     return Outcome('truck_time', '', ok, reason, params, None, len(train), len(test),
                    mae_before=round(before, 3) if before is not None else None,
@@ -662,7 +668,7 @@ def fit_lunch(obs: Sequence[LunchObs], current: float, today: date, setting: flo
     — минут на машино-день отложенной недели: current против выученного, правило принятия — _accept. setting — обед в
     настройках: 0 — обед выключен, не учится."""
     if setting <= 0:
-        return Outcome('lunch', '', False, 'ճաշը կարգավորումներում անջատված է (0 րոպե)՝ չի սովորվում')
+        return Outcome('lunch', '', False, 'ճաշն անջատված է կարգավորումներում (0 րոպե)․ ծրագիրը այն չի սովորում')
     train, test = _split(obs, today)
     short = _enough(train, test, LUNCH_MIN)
     if short:
@@ -686,7 +692,7 @@ def fit_fuel(obs: Sequence[FuelObs], current: Callable[[float], float], car: str
     rows = sorted(({'day': o.day.isoformat(), 'load': o.load, 'l100': o.l100} for o in obs),
                   key=lambda r: (r['day'], r['load'], r['l100']))
     if len(rows) < FUEL_MIN_INTERVALS or len({r['day'] for r in rows}) < FUEL_MIN_INTERVALS:
-        return Outcome('fuel', car, False, f'мало данных: интервалов между полными баками {len(rows)} из '
+        return Outcome('fuel', car, False, f'քիչ տվյալներ․ լրիվ բաքերի միջև միջակայքեր՝ {len(rows)} / '
                        f'{FUEL_MIN_INTERVALS}', n_obs=len(rows))
     train, test = rows[:-FUEL_TEST], rows[-FUEL_TEST:]
     fit = _fit(train, 'load', 'l100')

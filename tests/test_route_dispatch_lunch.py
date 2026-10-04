@@ -301,7 +301,7 @@ def test_lunch_settings_validation(store):
         assert f'settings.{key}' in errors, (key, bad)
     _, errors = st.validate_payload({'settings': {'truck_lunch_from': '14:30', 'truck_lunch_to': '14:30'}},
                                     store.load(), REF)
-    assert errors['settings.truck_lunch_to'] == 'ճաշի սկզբի վերջին ժամը պետք է ավելի ուշ լինի առաջինից'
+    assert errors['settings.truck_lunch_to'] == 'պետք է ավելի ուշ լինի, քան ճաշի սկզբի առաջին ժամը'
     _save(store, {'settings': {'truck_lunch_min': 0, 'truck_lunch_from': '13:00', 'truck_lunch_to': '15:00'}})
     s = store.load().settings
     assert (s['truck_lunch_min'], s['truck_lunch_from'], s['truck_lunch_to']) == (0, '13:00', '15:00')
@@ -310,9 +310,9 @@ def test_lunch_settings_validation(store):
 def test_settings_page_has_lunch_fields():
     js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert all(f"key: '{k}'" in js for k in ('truck_lunch_min', 'truck_lunch_from', 'truck_lunch_to'))
-    assert "routes_settings.js') }}?v=17" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
+    assert "routes_settings.js') }}?v=21" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
     page = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
-    assert "routes_dispatch.js') }}?v=55" in page and "routes_dispatch.css') }}?v=29" in page
+    assert "routes_dispatch.js') }}?v=56" in page and "routes_dispatch.css') }}?v=29" in page
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     assert 'function lunchItem' in djs and 'dp-lunch-mark' in djs
 
@@ -384,14 +384,14 @@ def test_fit_lunch_median_step_bounds_and_acceptance():
     assert lr.fit_lunch(_days(10, 0.0), 5.0, TODAY, 30).params == {'minutes': 0.0}       # до 0 дойти можно
     assert lr.fit_lunch(_days(10, 30.0), 0.0, TODAY, 30).params == {'minutes': 5.0}      # и подняться с 0
     same = lr.fit_lunch(_days(10, 30.0), 30.0, TODAY, 30)
-    assert not same.accepted and same.reason.startswith('не лучше действующей нормы')
+    assert not same.accepted and same.reason.startswith('գործող նորմից առնվազն 2%-ով ավելի լավ չէ')
 
 
 def test_fit_lunch_too_little_data_setting_off_and_noise():
     few = lr.fit_lunch(_days(3, 22.0), 30.0, TODAY, 30)
-    assert not few.accepted and few.params is None and few.reason.startswith('мало данных: обучение 9 из 15')
+    assert not few.accepted and few.params is None and few.reason.startswith('քիչ տվյալներ․ ուսուցում՝ 9 / 15')
     off = lr.fit_lunch(_days(10, 22.0), 0.0, TODAY, 0)
-    assert not off.accepted and off.reason == 'ճաշը կարգավորումներում անջատված է (0 րոպե)՝ չի սովորվում'
+    assert not off.accepted and off.reason == 'ճաշն անջատված է կարգավորումներում (0 րոպե)․ ծրագիրը այն չի սովորում'
     # шум: в один день проверки обедали 20 мин (лучше новое 22), в другой — 40 (лучше прежние 30)
     obs = [o for o in _days(10, 22.0) if o.day < TEST_FROM]
     obs += [lr.LunchObs(TEST_FROM, 20.0)] * 6 + [lr.LunchObs(TEST_FROM + timedelta(days=1), 40.0)] * 5
@@ -465,4 +465,4 @@ def test_nightly_learns_lunch_and_dispatch_applies_it(client, monkeypatch):
 def test_learning_page_shows_lunch():
     js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
     assert "if (kind === 'lunch') return 'ճաշ՝ '" in js and "kind === 'lunch' && m" in js
-    assert "routes_learning.js') }}?v=8" in (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
+    assert "routes_learning.js') }}?v=10" in (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')

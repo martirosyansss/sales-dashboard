@@ -39,8 +39,8 @@ NEW, NEVER, SEASONAL, DORMANT, LOST, ACTIVE = 'new', 'never', 'seasonal', 'dorma
 SILENT = frozenset({DORMANT, LOST, NEVER})     # λ = 0 во всех сезонах
 REMOVABLE = frozenset({LOST, NEVER})           # предложение «убрать из маршрута»
 
-REMOVE_TEXT = 'убрать из маршрута'
-WIN_BACK_TEXT = 'визит каждую неделю, попробовать вернуть'
+REMOVE_TEXT = 'հանել երթուղուց'
+WIN_BACK_TEXT = 'այց ամեն շաբաթ՝ փորձել վերադարձնել'
 
 
 @dataclass(frozen=True)
@@ -101,10 +101,10 @@ def customer_status(orders: Iterable[Order], first_order: date | None, as_of: da
 def silence_text(st: CustomerStatus) -> str:
     """«не покупает 150 дн (обычно раз в 14 дн)», «не покупает 130 дн», «ни одного заказа за год»."""
     if st.silent_days is None:
-        return 'ни одного заказа за год'
-    text = f'не покупает {st.silent_days} дн'
+        return 'վերջին տարում ոչ մի պատվեր'
+    text = f'չի գնում {st.silent_days} օր'
     if st.usual_interval_days is not None:
-        text += f' (обычно раз в {math.floor(st.usual_interval_days + 0.5)} дн)'
+        text += f' (սովորաբար՝ {math.floor(st.usual_interval_days + 0.5)} օրը մեկ)'
     return text
 
 

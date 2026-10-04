@@ -246,9 +246,9 @@ def test_fit_unload_accepts_when_better():
 def test_fit_unload_rejects_when_not_better_and_when_short():
     obs = _unload_obs()
     truth = lr.fit_unload(obs, lambda x: 4 * x.n + 12 * x.tonnes, TODAY)   # действующая норма уже верная
-    assert not truth.accepted and 'не лучше' in truth.reason
+    assert not truth.accepted and 'ավելի լավ չէ' in truth.reason
     few = lr.fit_unload(obs[-40:], lambda x: 8 * x.n + 6 * x.tonnes, TODAY)
-    assert not few.accepted and few.reason.startswith('мало данных') and few.params is None
+    assert not few.accepted and few.reason.startswith('քիչ տվյալներ') and few.params is None
 
 
 def test_fit_unload_store_offset_with_shrinkage_only_from_2_visits():
@@ -299,7 +299,7 @@ def test_fit_travel_accepts_and_rejects():
     same = lr.fit_travel(_legs(current=lambda m: m * 1.3), TODAY, 'straight', REF, BASE)
     assert not same.accepted
     short = lr.fit_travel(_legs(days=12), TODAY, 'straight', REF, BASE)
-    assert not short.accepted and short.reason.startswith('мало данных')
+    assert not short.accepted and short.reason.startswith('քիչ տվյալներ')
 
 
 def test_fuel_intervals_and_fit():
@@ -548,7 +548,7 @@ def test_run_learning_end_to_end_idempotent_and_applied(client, monkeypatch):
     by = {o.kind: o for o in out}
     assert set(by) == {'unload', 'loading', 'lunch', 'travel', 'truck_time'}     # + обед в пути (№61)
     # карты нет, но и участков меньше порога TRUCK_TIME_MIN — причина по правде: мало данных (№61, ночь 04.10)
-    assert not by['truck_time'].accepted and by['truck_time'].reason.startswith('мало данных: обучение 115 из 200')
+    assert not by['truck_time'].accepted and by['truck_time'].reason.startswith('քիչ տվյալներ․ ուսուցում՝ 115 / 200')
     assert by['unload'].accepted and by['unload'].params['per_stop_min'] == pytest.approx(4, abs=0.6)
     assert by['unload'].params['per_tonne_min'] == pytest.approx(12, abs=0.6)
     assert by['loading'].accepted and by['loading'].params['fixed_min'] == pytest.approx(10, abs=1.5)
@@ -569,7 +569,7 @@ def test_run_learning_end_to_end_idempotent_and_applied(client, monkeypatch):
     assert ctx.norms.traffic is not None and ctx.norms.traffic.report['trucks'] == 'learned'
     # следующий день: действующая норма уже выученная — новая не лучше её, остаётся прежняя
     nxt = {o.kind: o for o in views.run_learning(state, TODAY + timedelta(days=1))}
-    assert not nxt['unload'].accepted and 'не лучше' in nxt['unload'].reason
+    assert not nxt['unload'].accepted and 'ավելի լավ չէ' in nxt['unload'].reason
     ctx2 = views._dispatch_ctx(state, snap, bundle, date(2026, 10, 5), ready, [S101], {101: S101})
     assert ctx2.tn.unload_min_per_stop == ctx.tn.unload_min_per_stop
     # автообучение разгрузки выключено — снова ручные 8 + 6
@@ -591,7 +591,7 @@ def test_learning_api_report_and_errors(client, monkeypatch):
     kinds = [(s['kind'], s['in_effect']) for s in d['status']]
     assert [k for k, _ in kinds] == ['unload', 'loading', 'travel', 'truck_time', 'lunch'] and kinds[0][1] is None \
         and kinds[1][1] is None
-    assert d['status'][0]['last']['reason'].startswith('мало данных')
+    assert d['status'][0]['last']['reason'].startswith('քիչ տվյալներ')
     assert client.get('/api/routes/learning?from=2026-08-01&to=2026-10-02').status_code == 400
     assert client.get('/api/routes/learning?from=2026-10-02&to=2026-10-01').status_code == 400
     assert client.post('/api/routes/learning/auto', json={'kind': 'x', 'auto': True}).status_code == 400
@@ -604,7 +604,7 @@ def test_learning_page_renders_and_linked():
     from flask import render_template
     with app_v2.app.test_request_context('/routes/learning'):
         html = render_template('routes_learning.html')
-    assert 'Обучение и факт' in html and 'js/routes_learning.js' in html and 'aria-current="page">Обучение' in html
+    assert 'Ուսուցում և փաստ' in html and 'js/routes_learning.js' in html and 'aria-current="page">Ուսուցում' in html
     for name in ('routes_overview.html', 'routes_optimize.html', 'routes_settings.html', 'routes_dispatch.html'):
         assert 'href="/routes/learning"' in (ROOT / 'templates' / name).read_text(encoding='utf-8'), name
 
@@ -629,7 +629,7 @@ def test_learning_job_reports_errors(client, monkeypatch):
         raise RuntimeError('x')
     monkeypatch.setattr(views, 'run_learning', boom)
     assert views.run_learning_job(state, TODAY, 'qa') is True
-    assert state.learning_job['status'] == 'error' and state.learning_job['error'] == 'Внутренняя ошибка'
+    assert state.learning_job['status'] == 'error' and state.learning_job['error'] == 'Սերվերի ներքին սխալ'
 
 
 def test_dispatch_unchanged_without_learned_norms(client):

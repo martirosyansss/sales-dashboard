@@ -53,19 +53,19 @@ def test_bootstrap_share_clear_gain_passes_noise_fails_deterministic():
 
 def test_accept_rule_needs_gain_and_robustness():
     ok, why, conf = lr._accept(2.0, 1.0, [1.5] * 7)
-    assert ok and conf == 1.0 and why.startswith('принято: ошибка 2.00 → 1.00')
+    assert ok and conf == 1.0 and why.startswith('ընդունված է․ սխալ 2 → 1․ հուսալի է՝')
     assert why.endswith('հուսալի է՝ ստուգման օրերի 2000 պատահական համադրությունից 100%-ում նոր նորմն ավելի ճշգրիտ է')
     # шум: в среднем на 2,5% лучше (20 наблюдений, ошибка 1,00 → 0,975), но один из двух дней хуже
     ok, why, conf = lr._accept(1.0, 0.975, [2.0, -1.5])
     assert not ok and conf < lr.BOOT_SHARE
-    assert why.startswith('ոչ հուսալի․ սխալը 1.00 → 0.97, բայց միայն ստուգման օրերի 2000 պատահական համադրությունից')
+    assert why.startswith('ոչ հուսալի․ սխալ 1 → 0,97, բայց միայն ստուգման օրերի 2000 պատահական համադրությունից')
     assert why.endswith('(պետք է առնվազն 90%)') and f'{lr._pct(conf)}%-ում' in why
     # выигрыш меньше 2% — прежняя причина (без доли), доля всё равно посчитана
     ok, why, conf = lr._accept(1.0, 0.99, [0.1] * 7)
-    assert not ok and why.startswith('не лучше действующей нормы хотя бы на 2%') and conf == 1.0
+    assert not ok and why.startswith('գործող նորմից առնվազն 2%-ով ավելի լավ չէ') and conf == 1.0
     assert lr._pct(0.8999) == '89,9' and lr._pct(0.9) == '90' and lr._pct(1.0) == '100'
     _, fuel, _ = lr._accept(2.0, 1.0, [0.5] * 4, 'intervals')
-    assert 'ստուգման լիցքավորումների միջակայքերի 2000' in fuel
+    assert 'ստուգման միջակայքերի (լրիվ բաքերի միջև) 2000' in fuel
 
 
 def _loading_noise(second_day_bad):
@@ -109,7 +109,7 @@ def test_every_kind_requires_robust_gain(bases, monkeypatch):
     clear = _all_kinds(bases)
     assert all(o.accepted and o.confidence >= lr.BOOT_SHARE for o in clear.values()), \
         {k: (o.accepted, o.confidence, o.reason) for k, o in clear.items()}
-    assert clear['truck_time'].params['source'] == VALHALLA and 'մյուս մոդելն' in clear['truck_time'].reason
+    assert clear['truck_time'].params['source'] == VALHALLA and '%-ում Valhalla-ն ավելի ճշգրիտ է' in clear['truck_time'].reason
     monkeypatch.setattr(lr, 'bootstrap_share', lambda gains, *a, **k: 0.5)      # выигрыш не устойчив
     shaky = _all_kinds(bases)
     for kind, o in shaky.items():
@@ -117,7 +117,7 @@ def test_every_kind_requires_robust_gain(bases, monkeypatch):
         assert 'ոչ հուսալի' in o.reason and '50%-ում' in o.reason, (kind, o.reason)
         assert o.mae_after == clear[kind].mae_after and o.mae_before == clear[kind].mae_before
     tt = shaky['truck_time']
-    assert tt.params['source'] == MODEL and tt.reason.endswith('— остаётся прежняя модель')   # гистерезис: остаётся
+    assert tt.params['source'] == MODEL and tt.reason.endswith('— մնում է նախկին մոդելը')   # гистерезис: остаётся
 
 
 def test_confidence_stored_and_shown_in_status(client):
@@ -177,18 +177,18 @@ def test_truck_time_reason_tells_the_truth_without_valhalla(bases):
     for fact in ([], _fact(30, 10)):                                             # нет участков / мало
         o, fitted = lr.fit_truck_time([], TODAY, MODEL, no_valhalla, {}, fact=fact, preparing=True)
         assert not o.accepted and o.params is None and fitted == {}
-        assert o.reason.startswith('мало данных: обучение ') and o.reason.endswith('— остаётся прежняя модель')
+        assert o.reason.startswith('քիչ տվյալներ․ ուսուցում՝ ') and o.reason.endswith('— մնում է նախկին մոդելը')
         assert (o.n_obs, o.n_test) == (len(fact) - min(len(fact), 10), min(len(fact), 10))
     enough = _fact(220, 70)
     wait, _ = lr.fit_truck_time([], TODAY, VALHALLA, no_valhalla, {}, fact=enough, preparing=True)
     assert wait.reason == ('Valhalla-ն միացված է, բայց փաստի կետերի համար բեռնատարի ժամանակները դեռ հաշվվում են․ '
-                           'համեմատությունը կլինի հաջորդ վերահաշվարկին — остаётся Valhalla')
+                           'համեմատությունը կլինի հաջորդ վերահաշվարկին — մնում է Valhalla-ն')
     off, _ = lr.fit_truck_time([], TODAY, MODEL, no_valhalla, {}, fact=enough)
-    assert off.reason.startswith('Valhalla недоступен') and (off.n_obs, off.n_test) == (220, 70)
+    assert off.reason.startswith('Valhalla-ն հասանելի չէ') and (off.n_obs, off.n_test) == (220, 70)
     old, _ = lr.fit_truck_time([], TODAY, MODEL, no_valhalla, {})                # участки неизвестны — как раньше
-    assert old.reason.startswith('Valhalla недоступен') and old.n_obs == 0
+    assert old.reason.startswith('Valhalla-ն հասանելի չէ') and old.n_obs == 0
     assert lr.truck_time_short([d for o in enough for d in [o.day]], TODAY) is None
-    assert lr.truck_time_short([], TODAY).startswith('мало данных')
+    assert lr.truck_time_short([], TODAY).startswith('քիչ տվյալներ')
 
 
 class SlowProvider(FakeProvider):
@@ -227,13 +227,13 @@ def test_nightly_reason_when_matrix_still_computing_or_data_short(client, fake, 
     state.valhalla = SlowProvider(tmp_path / 'never', late=0, ready=False)
     tt = next(o for o in views.run_learning(state, TODAY) if o.kind == 'truck_time')
     assert not tt.accepted and tt.reason.startswith('Valhalla-ն միացված է') and tt.n_obs >= 200
-    assert tt.reason.endswith('— остаётся прежняя модель')
+    assert tt.reason.endswith('— մնում է նախկին մոդելը')
     # участков мало (три дня факта) — Valhalla не ждём, причина — мало данных
     state.fleet_facts = ValhallaFacts([TODAY - timedelta(days=i) for i in range(3, 0, -1)])
     monkeypatch.setattr(views, 'VALHALLA_WAIT_S', 3600.0)
     state.valhalla = SlowProvider(tmp_path / 'never2', late=0, ready=False)
     tt = next(o for o in views.run_learning(state, TODAY + timedelta(days=1)) if o.kind == 'truck_time')
-    assert tt.reason.startswith('мало данных') and state.valhalla.calls == 1
+    assert tt.reason.startswith('քիչ տվյալներ') and state.valhalla.calls == 1
 
 
 def test_nightly_without_valhalla_and_without_legs_says_short(client, tmp_path, monkeypatch):
@@ -244,5 +244,5 @@ def test_nightly_without_valhalla_and_without_legs_says_short(client, tmp_path, 
                                           'at_utc': '2026-10-01T06:00:00+00:00',
                                           'payload': {'odometer_km': 1000, 'liters': 50, 'full_tank': True}}]
     tt = next(o for o in views.run_learning(state, TODAY) if o.kind == 'truck_time')
-    assert tt.reason == 'мало данных: обучение 0 из 200 (дней 0 из 7), проверка 0 из 60 (дней 0 из 3) — остаётся ' \
-                        'прежняя модель'
+    assert tt.reason == 'քիչ տվյալներ․ ուսուցում՝ 0 / 200 (0 / 7 օր), ստուգում՝ 0 / 60 (0 / 3 օր) — մնում է ' \
+                        'նախկին մոդելը'

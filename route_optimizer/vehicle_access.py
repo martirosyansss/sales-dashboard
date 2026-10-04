@@ -22,14 +22,14 @@ def check_access(raw: Any, known_trucks: Collection[str] | None = None) -> tuple
     if raw is None:
         return None, None
     if not isinstance(raw, dict) or set(raw) != {'mode', 'trucks'}:
-        return None, 'ожидалось правило с полями mode и trucks'
+        return None, 'Սպասվում էր կանոն՝ mode և trucks դաշտերով'
     mode, trucks = raw['mode'], raw['trucks']
     if mode not in ('allow', 'deny'):
-        return None, 'режим: allow (только выбранные) или deny (кроме выбранных)'
+        return None, 'Ռեժիմ՝ allow (միայն ընտրվածները) կամ deny (բոլորը, բացի ընտրվածներից)'
     if not isinstance(trucks, list) or len(trucks) > 500 or any(
             not isinstance(code, str) or not code.strip() or len(code) > 80 or code != code.strip()
             for code in trucks):
-        return None, 'машины: список непустых кодов машин'
+        return None, 'Մեքենաներ՝ մեքենաների ոչ դատարկ կոդերի ցուցակ'
     if known_trucks is not None and any(code not in known_trucks for code in trucks):
-        return None, 'машина не найдена в справочнике — обновите страницу'
+        return None, 'Մեքենան չի գտնվել ցուցակում — թարմացրեք էջը'
     return VehicleAccess(mode, tuple(sorted(set(trucks)))), None
