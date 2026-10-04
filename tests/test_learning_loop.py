@@ -145,7 +145,7 @@ def test_reconstruct_tunnel_gap_and_no_fix_while_parked():
     tr.drive(B, 30, gap=(30, 30 + 4 * 60)).stay(5).drive(DEPOT, 30).stay(5)   # 4 мин тоннель — участок чистый
     day = ac.reconstruct(tr.fixes, _stops(), DEPOT)
     assert [v.keys for v in day.visits] == [('A',), ('B',)]
-    assert day.visits[0].minutes == pytest.approx(15, abs=1)        # подъезд в зоне 100 м — тоже стоянка (±30 с)
+    assert day.visits[0].minutes == pytest.approx(15, abs=0.01)     # от остановки до движения (№60): подъезд — езда
     legs = {(g.a, g.b): g for g in day.legs}
     assert legs[('depot', 'A')].clean is False and legs[('A', 'B')].clean is True
 
