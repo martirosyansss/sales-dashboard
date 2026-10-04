@@ -92,6 +92,8 @@ def test_customer_window_check_and_span():
     assert st.check_window({'kind': 'after', 't1': 840})[0].span() == (840.0, INF)
     assert st.check_window({'kind': 'between', 't1': 600, 't2': 840})[0].span() == (600.0, 840.0)
     assert st.check_window({'kind': 'at', 't1': 660, 'tol': 0})[0].span() == (660.0, 660.0)
+    extra = 'Սերվերը չընդունեց հարցումը՝ ընդունման ժամի այս տեսակի համար ավելորդ դաշտ'
+    shape = 'Սերվերը չընդունեց հարցումը՝ սպասվում էր {"kind", "t1", "t2", "tol"}'
     for bad, text in (({'kind': 'soon', 't1': 600}, 'Ընդունման ժամի տեսակը'),
                       ({'kind': 'before', 't1': 1440}, '00:00-ից մինչև 23:59'),
                       ({'kind': 'before', 't1': True}, '00:00-ից մինչև 23:59'),
@@ -99,10 +101,10 @@ def test_customer_window_check_and_span():
                       ({'kind': 'between', 't1': 600, 't2': 600}, 'Միջակայքի վերջը'),
                       ({'kind': 'between', 't1': 600}, '00:00-ից մինչև 23:59'),
                       ({'kind': 'at', 't1': 600, 'tol': 121}, 'Թույլատրելի շեղումը'),
-                      ({'kind': 'before', 't1': 600, 'tol': 5}, 'Սերվերը չընդունեց հարցումը'),
-                      ({'kind': 'after', 't1': 600, 't2': 700}, 'Սերվերը չընդունեց հարցումը'),
-                      ({'kind': 'before', 't1': 600, 'x': 1}, 'Սերվերը չընդունեց հարցումը'),
-                      ([600], 'Սերվերը չընդունեց հարցումը')):
+                      ({'kind': 'before', 't1': 600, 'tol': 5}, extra),
+                      ({'kind': 'after', 't1': 600, 't2': 700}, extra),
+                      ({'kind': 'before', 't1': 600, 'x': 1}, shape),
+                      ([600], shape)):
         w, err = st.check_window(bad)
         assert w is None and text in err, bad
 

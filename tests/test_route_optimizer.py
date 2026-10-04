@@ -871,6 +871,7 @@ def test_store_rejects_invalid_values_with_messages(store):
         'trucks.0.car_code', 'trucks.1.capacity_kg', 'trucks.1.agent_id',
         'managers.0.car_fuel_type', 'managers.0.home', 'managers.1.agent_id'}
     assert errors['settings.detour_factor'] == 'թույլատրելի է՝ 1-ից մինչև 3'
+    assert errors['settings.city_center_lat'] == 'թույլատրելի է՝ 38.8-ից մինչև 41.4'   # координаты — с точкой
     assert errors['depot'] == 'կետը Հայաստանից դուրս է'
     # тексты для страницы настроек — армянские (№58), без кириллицы
     assert all(re.search('[Ա-֏]', msg) and not re.search('[а-яА-ЯёЁ]', msg) for msg in errors.values())
@@ -1733,7 +1734,11 @@ def test_season_empty_warning_names_months():
     assert (ov['season']['low_months'], ov['season']['peak_months']) == ([1, 2, 3], [10, 11, 12])
     w = next(w for w in ov['warnings'] if w['code'] == 'season_empty')
     assert 'հնվ, փտվ, մրտ' in w['text'] and 'հոկ, նոյ, դեկ' in w['text']
+    assert 'վերցված են ամենացածր և ամենաբարձր վաճառքով 3-ական ամիսները՝ ' in w['text']
     assert w['link'] == '/routes/settings#season'
+    peak_only = ev.build_overview(snap, _bundle(low_months=[1, 2, 3]))
+    w = next(w for w in peak_only['warnings'] if w['code'] == 'season_empty')
+    assert 'վերցված են ամենաբարձր վաճառքով 3 ամիսները՝ բարձր սեզոն՝ հոկ, նոյ, դեկ' in w['text'] and 'ցածր սեզոն' not in w['text']
     plain = ev.build_overview(make_snapshot(), _bundle())
     assert 'season_empty' not in [w['code'] for w in plain['warnings']]
 
@@ -2275,6 +2280,19 @@ def test_totals_are_per_week_for_two_week_cycle():
                 'revenue_week_year', 'avg_plan_hours', 'avg_plan_work_hours'):
         assert two[key] == one[key], key
     assert two['coords']['visits_total'] == one['coords']['visits_total'] == 3
+
+
+def test_coords_missing_warning_counts_half_visits_with_decimal_comma():
+    """Цикл 2 недели: визитов в неделю — дробное число; в тексте «0,5 / 1,5», не «0.5 / 1.5» (числа из текста достаёт
+    todoOf в routes_overview.js)."""
+    rows = [_row(1, 21, 1, 1, 2, 101, 0, 1001), _row(1, 22, 2, 1, 2, 101, 0, 1001),
+            _row(1, 21, 1, 1, 2, 103, 1, 0)]                    # 103 — только в 1-ю неделю и без координат
+    snap = replace(make_snapshot(), plan=pl.build_plan(rows), gps_points={})
+    ov = ev.build_overview(snap, _bundle())
+    coords = ov['totals']['coords']
+    assert (coords['visits_total'], coords['visits_with_coords']) == (1.5, 1)
+    w = next(w for w in ov['warnings'] if w['code'] == 'coords_missing')
+    assert w['text'].startswith('Կոորդինատներ չկան պլանի 0,5 / 1,5 այցի համար')
 
 
 # ============================== этап 3: расчёт целиком ==============================
@@ -3872,7 +3890,7 @@ def test_overview_without_roads_unchanged_and_warns():
     assert far['distance_source'] == 'roads'
     n = len({rd.point_key(p) for p in ev.plan_points(snap, bundle, {})})
     assert [w['text'] for w in far['warnings'] if w['code'] == 'roads_unsnapped'] == [
-        f'Պլանի {n} կետ քարտեզի ճանապարհներից 0,5 կմ-ից ավելի հեռու է — մինչև դրանք կմ-ները հաշվվում են '
+        f'Պլանի {n} կետ քարտեզի ճանապարհներից 0,5 կմ-ից ավելի հեռու է — դրանց հասնող կմ-ները հաշվվում են '
         f'ուղիղ գծով՝ ոլորունության ճշգրտումով։']
     assert far['totals'] == ov['totals'] and far['managers'] == ov['managers']
 
@@ -4255,7 +4273,7 @@ def test_transfers_remove_overlap_of_districts():
         ch['effect_from']['manager_km_week'] + ch['effect_to']['manager_km_week'], abs=0.11)
     assert ch['debt'] == round(debts[ch['customer_id']])
     assert ch['revenue_month'] == round(opt.revenue_month(out.before.models[ch['customer_id']]))
-    assert ch['reason'].startswith('այս տարածք արդեն այցելում է Гор')
+    assert ch['reason'].startswith('այս տարածքում արդեն աշխատում է Гор-ը')
     # баланс: у каждого «отдаёт» = сумма его передач, по компании «отдано» = «получено»
     for m in res['managers']:
         mine = [c for c in m['changes'] if c['type'] == 'transfer']

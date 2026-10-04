@@ -102,6 +102,9 @@ LEG_MIN_KM = 0.2
 TRUCK_TIME_MIN = (200, 7, 60, 3)
 TRUCK_TIME_SOURCES = (valhalla_engine.TRUCK_TIME_MODEL, valhalla_engine.TRUCK_TIME_VALHALLA)   # model, valhalla
 TRUCK_TIME_TITLES = {'model': 'նախկին մոդել', 'valhalla': 'Valhalla'}
+# в причинах выбора модели — с артиклем; подлежащее стоит перед гласной («ավելի», «առնվազն») — артикль «-ն»
+TRUCK_TIME_DEF = {'model': 'նախկին մոդելը', 'valhalla': 'Valhalla-ն'}
+TRUCK_TIME_SUBJ = {'model': 'նախկին մոդելն', 'valhalla': 'Valhalla-ն'}
 STORE_MIN_OBS = 2                    # своё время магазина по факту — со 2-го одиночного визита (один — не в счёт)
 STORE_SHRINK = 5.0                   # и стягивается к опоре: (n·факт + 5·опора) / (n + 5) — у 2 визитов вес факта 2/7
 STORE_OFFSET_MAX = 120.0             # время магазина a + поправка — не больше 120 мин (как введённое)
@@ -229,7 +232,7 @@ def _spans(train: Sequence[Any], test: Sequence[Any]) -> dict[str, str | None]:
 def _verdict(before: float, after: float) -> tuple[bool, str]:
     if before > 0 and after <= before * (1 - MIN_GAIN):
         return True, f'ընդունված է․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)}'
-    return False, f'գործող նորմից առնվազն {MIN_GAIN:.0%}-ով լավը չէ․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)}'
+    return False, f'գործող նորմից առնվազն {MIN_GAIN:.0%}-ով ավելի լավ չէ․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)}'
 
 
 def quantile(values: Sequence[float], q: float) -> float:
@@ -497,7 +500,7 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
     поправкой, участки и дни; строки travel моделей не из kept (fit_travel) — чтобы поправка выбранной модели была в
     журнале и тогда, когда «Развоз» перейдёт на неё позже: env, галочка, Valhalla готов)."""
     other = TRUCK_TIME_SOURCES[1] if incumbent == TRUCK_TIME_SOURCES[0] else TRUCK_TIME_SOURCES[0]
-    stays = f'մնում է {TRUCK_TIME_TITLES[incumbent]}'
+    stays = f'մնում է {TRUCK_TIME_DEF[incumbent]}'
     if bases.get(valhalla_engine.TRUCK_TIME_VALHALLA) is None:
         return Outcome('truck_time', '', False, 'Valhalla-ն հասանելի չէ (անջատված է, չկա փաթեթը կամ սալիկները, կամ '
                        f'բեռնատարի մատրիցը փաստի կետերի համար դեռ հաշվվում է) — {stays}'), {}
@@ -529,11 +532,11 @@ def fit_truck_time(pairs: Sequence[tuple[LegObs, LegObs]], today: date, incumben
     if short is not None:
         reason = f'{short} — {stays}'
     elif ok:
-        reason = (f'{TRUCK_TIME_TITLES[other]} — ավելի ճշգրիտ, քան {TRUCK_TIME_TITLES[incumbent]}․ սխալ {fmt_decimal(before)} → '
+        reason = (f'{TRUCK_TIME_SUBJ[other]} ավելի ճշգրիտ է, քան {TRUCK_TIME_DEF[incumbent]}․ սխալ {fmt_decimal(before)} → '
                   f'{fmt_decimal(after)} րոպե մեկ հատվածի համար')
     else:
-        reason = (f'{TRUCK_TIME_TITLES[other]} — առնվազն {MIN_GAIN:.0%}-ով ավելի ճշգրիտ չէ, քան '
-                  f'{TRUCK_TIME_TITLES[incumbent]}․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)} րոպե մեկ հատվածի համար — {stays}')
+        reason = (f'{TRUCK_TIME_SUBJ[other]} առնվազն {MIN_GAIN:.0%}-ով ավելի ճշգրիտ չէ, քան '
+                  f'{TRUCK_TIME_DEF[incumbent]}․ սխալ {fmt_decimal(before)} → {fmt_decimal(after)} րոպե մեկ հատվածի համար — {stays}')
     params = {'source': other if ok else incumbent, 'challenger': other, **counts, 'candidates': candidates}
     return Outcome('truck_time', '', ok, reason, params, None, len(train), len(test),
                    mae_before=round(before, 3) if before is not None else None,

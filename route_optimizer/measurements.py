@@ -19,7 +19,7 @@ def validate(raw, codes, today):
             raise ValueError()
         out['day'] = day.isoformat()
     except (ValueError, TypeError):
-        errors['day'] = 'նշեք ավարտված ամսաթիվ՝ ոչ ուշ, քան այսօր'
+        errors['day'] = 'նշեք արդեն ավարտված օր՝ ոչ ուշ, քան այսօր'
     if raw.get('car_code') not in codes:
         errors['car_code'] = 'ընտրեք կարգավորված մեքենա'
     else:

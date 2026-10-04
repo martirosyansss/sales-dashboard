@@ -27,7 +27,7 @@
                 <a href="/routes/garage">Ավտոտնակ</a>
             </nav>
         </div>
-        <p class="rt-head-lead">Ծրագիրն առաջարկում է, թե որ օրերին այցելել խանութներ, որպեսզի ավելի քիչ ճանապարհ անցնեք, և ամեն օր
+        <p class="rt-head-lead">Ծրագիրն առաջարկում է, թե որ օրերին այցելել խանութներ, որպեսզի մենեջերներն ավելի քիչ ճանապարհ անցնեն, և ամեն օր
             բավականաչափ պատվերներ լինեն։ ERP-ում ոչինչ չի փոխվում, քանի դեռ ինքներդ չեք մուտքագրել պլանը։</p>
     </header>
 
@@ -93,7 +93,7 @@
                                         <input type="radio" name="roMode" value="transfer">
                                         <span class="ro-opt-t">Թույլատրել խանութների փոխանցումը մենեջերների միջև</span>
                                         <span class="ro-opt-d">Ծրագիրը կառաջարկի խանութը փոխանցել այլ մենեջերի, եթե նա առանց այդ էլ անցնում է մոտակայքով, կամ
-                                            այդ օրը նրա պատվերները չեն բավականացնում։ Յուրաքանչյուր փոխանցման մասին որոշում եք առանձին։ Հաշվարկն ավելի երկար է տևում՝ մոտ մեկ րոպե։</span>
+                                            այդ օրը նրա պատվերները քիչ են։ Յուրաքանչյուր փոխանցման մասին որոշում եք առանձին։ Հաշվարկն ավելի երկար է տևում՝ մոտ մեկ րոպե։</span>
                                     </label>
                                 </div>
                             </fieldset>
@@ -108,7 +108,7 @@
                                     <label class="ro-opt">
                                         <input type="radio" name="roStart" value="fresh">
                                         <span class="ro-opt-t">Կազմել զրոյից</span>
-                                        <span class="ro-opt-d">Կարծես պլան չկա։ Փոփոխությունները շատ ավելի շատ կլինեն — այսպես երևում է, թե առավելագույնը որքան կարելի է խնայել։</span>
+                                        <span class="ro-opt-d">Ասես պլան չլինի։ Փոփոխություններն էապես ավելի շատ կլինեն — այսպես երևում է, թե առավելագույնը որքան կարելի է խնայել։</span>
                                     </label>
                                 </div>
                             </fieldset>
@@ -298,5 +298,5 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_optimize.js') }}?v=11"></script>
+<script src="{{ url_for('static', filename='js/routes_optimize.js') }}?v=12"></script>
 {% endblock %}

@@ -20,6 +20,9 @@
     // Кнопки масштаба Leaflet — подсказки по-армянски (по умолчанию «Zoom in» / «Zoom out»)
     const ZOOM_HY = { zoomInTitle: 'Մեծացնել', zoomOutTitle: 'Փոքրացնել' };
     const AUTH_HY = { 401: 'Անհրաժեշտ է մուտք գործել համակարգ։', 403: 'Մուտքն արգելված է — բաժինը միայն ադմինիստրատորի համար է։' };
+    // 403 CSRF дашборда («сессия формы устарела») — не запрет доступа (как routes_learning.js и routes_garage.js)
+    const CSRF_HY = 'Էջը հնացել է՝ թարմացրեք այն և կրկնեք։';
+    const authText = (resp, data) => (resp.status === 403 && data && data.error === 'csrf' ? CSRF_HY : AUTH_HY[resp.status]);
     const SECTIONS = ['depot', 'trucks', 'fuel', 'managers', 'center', 'norms', 'season', 'calibration'];
     const ZONE_MAX = 200;   // точек границы малого центра — как store.CENTER_ZONE_VERTICES
     const RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -31,7 +34,7 @@
         { place: 'fuel', title: 'Մեկ լիտրի գինը, դրամ', items: [
             { key: 'fuel_price_diesel', label: 'Դիզել', min: 1, max: 10000, step: 1, nullable: true, hint: 'բեռնատարների և դիզելային մեքենաների համար' },
             { key: 'fuel_price_petrol', label: 'Բենզին', min: 1, max: 10000, step: 1, nullable: true, hint: 'մենեջերների բենզինով մեքենաների համար' },
-            { key: 'fuel_price_lpg', label: 'Գազ', min: 1, max: 10000, step: 1, nullable: true, hint: 'պետք է միայն, եթե մենեջերներից որևէ մեկը գազով է աշխատում' },
+            { key: 'fuel_price_lpg', label: 'Գազ', min: 1, max: 10000, step: 1, nullable: true, hint: 'պետք է միայն, եթե մենեջերներից որևէ մեկի մեքենան գազով է' },
         ] },
         { place: 'fuel', title: 'Մենեջերների մեքենաներ', items: [
             { key: 'manager_car_default_l_per_100km', label: 'Ծախսը, եթե նշված չէ, լ/100 կմ', min: 1, max: 40, step: 0.1,
@@ -51,7 +54,7 @@
             { key: 'unload_min_per_stop', label: 'Բեռնաթափում մեկ կետում, րոպե', min: 0, max: 120, step: 1 },
             { key: 'unload_min_per_tonne', label: 'Եվս յուրաքանչյուր տոննայի համար, րոպե', min: 0, max: 120, step: 1 },
             { key: 'warehouse_load_fixed_min', label: 'Բեռնում պահեստում՝ երթի նախապատրաստում, րոպե', min: 0, max: 240, step: 1, nullable: true,
-                hint: 'յուրաքանչյուր երթի համար, այդ թվում կրկնակի․ դատարկ՝ ժամանակը դեռ հայտնի չէ' },
+                hint: 'յուրաքանչյուր երթի համար, այդ թվում՝ երկրորդ և հաջորդ երթերի․ դատարկ՝ ժամանակը դեռ հայտնի չէ' },
             { key: 'warehouse_load_min_per_tonne', label: 'Բեռնում՝ լրացուցիչ յուրաքանչյուր տոննայի համար, րոպե', min: 0, max: 120, step: 0.5, nullable: true,
                 hint: 'նշեք չափված ժամանակը․ 0՝ լրացուցիչ ժամանակ չկա' },
             { key: 'dispatch_ready_time', label: 'Վաղվա երթերը կազմել ոչ շուտ, քան', type: 'time',
@@ -290,7 +293,7 @@
             }
             let data = null;
             try { data = await resp.json(); } catch (e) { data = null; }
-            if (AUTH_HY[resp.status]) throw new Error(AUTH_HY[resp.status]);
+            if (authText(resp, data)) throw new Error(authText(resp, data));
             if (!data || typeof data !== 'object') throw new Error('Սերվերն անհասկանալի պատասխան տվեց (կոդ ' + resp.status + ')։');
             if (!resp.ok || data.success !== true) throw new Error(data.error || ('Սերվերի սխալ (կոդ ' + resp.status + ')։'));
             state.data = normalize(data);
@@ -469,7 +472,7 @@
         const v = vanInfo(m.van_agent_id);
         if (!v) return h('span', { class: 'rs-erp-none', text: 'մեքենան ERP-ում չկա — «Պլան և փաստ» բաժնում երթերը չեն երևում, քանի դեռ առաքիչ ընտրված չէ' });
         return h('div', { class: 'rs-erp-box' },
-            h('span', { class: 'rs-erp', text: 'տանում է առաքիչ ' + v.code + (v.name ? ' · ' + v.name : '') }),
+            h('span', { class: 'rs-erp', text: 'բեռը տանում է առաքիչ ' + v.code + (v.name ? ' · ' + v.name : '') }),
             h('span', { class: 'rs-erp-last', text: num(v.docs) ? fmt(v.docs) + NB + 'ապրանքագիր առանց մեքենայի՝ վերջին 3 ամսում, վերջինը՝ '
                 + dateRu(v.last_day) : 'վերջին 3 ամսում առանց մեքենայի ապրանքագրեր չեն եղել' }));
     }
@@ -538,7 +541,7 @@
         const costs = h('details', { class: 'rs-load-costs' },
             h('summary', { text: 'Բեռնվածություն և մաշվածք' + (t.wear_source === 'garage' ? ' · износ по журналу гаража' : '') }),
             h('div', { class: 'rs-load-fields' }, ...costFields),
-            h('p', { class: 'rt-muted', text: 'Դատարկ և լրիվ բեռնված՝ ըստ այս մեքենայի չափումների։ Մաշվածքի հավելումը համեմատական է բեռնվածության բաժնի քառակուսուն։ Դատարկ՝ բեռի ազդեցությունը կարգավորված չէ։' }));
+            h('p', { class: 'rt-muted', text: 'Դատարկ և լրիվ բեռնված՝ ըստ այս մեքենայի չափումների։ Մաշվածքի հավելումը համեմատական է բեռնվածության բաժնի քառակուսուն։ Եթե դաշտերը լրացված չեն՝ բեռի ազդեցությունը կարգավորված չէ։' }));
         const wasManual = manual || t.active_source === 'manual', autoOn = t.auto_active === true;
         const active = h('input', { type: 'checkbox', checked: t.active !== false, 'aria-label': 'Մեքենան աշխատում է — ' + who,
             dataset: { f: 'active', mode: wasManual ? 'manual' : 'auto' } });
@@ -1561,7 +1564,7 @@
                 showErrors(data.errors, false);
                 return;
             }
-            showSaveError(AUTH_HY[resp.status] || (data && data.error) || ('Չհաջողվեց պահպանել (կոդ ' + resp.status + ')։ Փորձեք կրկին։'));
+            showSaveError(authText(resp, data) || (data && data.error) || ('Չհաջողվեց պահպանել (կոդ ' + resp.status + ')։ Փորձեք կրկին։'));
         } finally {
             setSaving(false);
         }
@@ -1600,7 +1603,7 @@
             if (!Array.isArray(z)) return;
             state.zone = z.map(p => [Number(p[0]), Number(p[1])]);
             drawZone(true);
-            zoneChanged('Կենտրոնի սահմանը վերադարձվեց սկզբնականին');
+            zoneChanged('Կենտրոնի սահմանը վերադարձվեց սկզբնական վիճակին');
         });
         $('rsRetryBtn').addEventListener('click', () => load(false));
         window.addEventListener('beforeunload', (e) => {

@@ -491,7 +491,7 @@ def check_window(raw: Any) -> tuple[CustomerWindow | None, str | None]:
     """Окно приёма из запроса или из базы: {"kind", "t1", "t2", "tol"} → (окно, None) или (None, ошибка).
     У at без допуска — DEFAULT_WINDOW_TOL; поля, которых у вида нет, — null или нет ключа."""
     if not isinstance(raw, dict) or not set(raw) <= {'kind', 't1', 't2', 'tol'}:
-        return None, 'Սերվերը չընդունեց հարցումը'
+        return None, 'Սերվերը չընդունեց հարցումը՝ սպասվում էր {"kind", "t1", "t2", "tol"}'
     kind = raw.get('kind')
     if kind not in WINDOW_KINDS:
         return None, 'Ընդունման ժամի տեսակը սխալ է'
@@ -502,7 +502,7 @@ def check_window(raw: Any) -> tuple[CustomerWindow | None, str | None]:
         if not _is_int(v) or not 0 <= v < _DAY_MINUTES:
             return None, 'Ժամը պետք է լինի 00:00-ից մինչև 23:59'
     if (kind != 'between' and t2 is not None) or (kind != 'at' and tol is not None):
-        return None, 'Սերվերը չընդունեց հարցումը'
+        return None, 'Սերվերը չընդունեց հարցումը՝ ընդունման ժամի այս տեսակի համար ավելորդ դաշտ'
     if kind == 'between' and t2 <= t1:
         return None, 'Միջակայքի վերջը պետք է լինի սկզբից ուշ'
     if kind == 'at' and (not _is_int(tol) or not 0 <= tol <= WINDOW_TOL_MAX):
@@ -878,7 +878,7 @@ def _fmt(x: float) -> str:
 
 
 def _check_number(value: Any, lo: float, hi: float, nullable: bool = False,
-                  lo_exclusive: bool = False) -> tuple[Any, str | None]:
+                  lo_exclusive: bool = False, coord: bool = False) -> tuple[Any, str | None]:
     if value is None:
         return (None, None) if nullable else (None, 'պարտադիր թիվ')
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -889,8 +889,9 @@ def _check_number(value: Any, lo: float, hi: float, nullable: bool = False,
     except OverflowError:
         pass   # целое больше предела float (10**400 из JSON) — конечное; отсечёт диапазон ниже
     if value < lo or value > hi or (lo_exclusive and value == lo):
-        low = f'{_fmt(lo)}-ից մեծ և' if lo_exclusive else f'{_fmt(lo)}-ից'
-        return None, f'թույլատրելի է՝ {low} մինչև {_fmt(hi)}'
+        text = '{:g}'.format if coord else _fmt   # координаты — с точкой: «38.8-ից մինչև 41.4» (глоссарий §1.4)
+        low = f'{text(lo)}-ից մեծ և' if lo_exclusive else f'{text(lo)}-ից'
+        return None, f'թույլատրելի է՝ {low} մինչև {text(hi)}'
     return value, None
 
 
@@ -949,7 +950,8 @@ def validate_settings(values: Mapping[str, Any],
 
     for key, (lo, hi, nullable) in _NUMERIC.items():
         v, err = _check_number(values.get(key), lo, hi, nullable,
-                               lo_exclusive=(key == 'size_small_max_kg'))
+                               lo_exclusive=(key == 'size_small_max_kg'),
+                               coord=key in ('city_center_lat', 'city_center_lon'))
         if err:
             errors[key] = err
         else:
@@ -1811,7 +1813,7 @@ class Store:
             conn.execute('DELETE FROM scenario WHERE rowid NOT IN '
                          '(SELECT rowid FROM scenario ORDER BY rowid DESC LIMIT ?)', (SCENARIOS_KEPT,))
 
-        self._transaction(write, 'не удалось сохранить расчёт')
+        self._transaction(write, 'չհաջողվեց պահպանել հաշվարկը')
 
     def _scenario(self, row: tuple | None) -> Scenario | None:
         if row is None:

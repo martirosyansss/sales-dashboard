@@ -894,7 +894,7 @@ def api_plan_export() -> Any:
                                 optimize.proposals_of(_last_result(state)), distance, calib, roads)
     if not body['time_gate']['ok']:
         return jsonify({'success':False,'code':'shift_exceeded',
-                        'error':'Ընդունված պլանը չի տեղավորվում հերթափոխի մեջ։ Ստուգեք օրերը և հաճախականությունները, '
+                        'error':'Ընդունված պլանը չի տեղավորվում աշխատանքային օրվա մեջ։ Ստուգեք օրերը և հաճախականությունները, '
                                 'ապա վերահաշվեք պլանը։',
                         'time_gate':body['time_gate']}), 409
     return jsonify({'success': True, 'generated_at': _now(), **body})

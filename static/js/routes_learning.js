@@ -102,7 +102,7 @@
             : '<span class="lr-why">դեռ չի վերահաշվվել</span>';
         const err = last && num(last.mae_before) !== null ? fmt(last.mae_before, 2) + ' → ' + fmt(last.mae_after, 2) + (s.kind === 'fuel' ? ' լ/100 կմ' : ' րոպե') : '—';
         const off = !s.auto && !s.auto_chosen && !s.default_auto
-            ? '<br><span class="lr-off">Լռելյայն անջատված է. ստուգեք, թե ինչ է սովորել ծրագիրը (ձախ սյունակում), և միացրեք ինքներդ։</span>' : '';
+            ? '<br><span class="lr-off">Լռելյայն անջատված է։ Ստուգեք, թե ինչ է սովորել ծրագիրը (ձախ սյունակում), և միացրեք ինքներդ։</span>' : '';
         const toggle = s.scope && s.kind === 'fuel' && s !== firstFuel ? '<span class="lr-why">ինչպես վերևի ծախսինը</span>'
             : '<label class="lr-why"><input type="checkbox" data-kind="' + esc(s.kind) + '"' + (s.auto ? ' checked' : '') + '> սովորել</label>' + off;
         return '<tr><th scope="row">' + title + '</th><td>' + now + '</td><td>' + lastText + '</td><td>' + esc(err) + '</td><td>' + toggle + '</td></tr>';
@@ -265,7 +265,8 @@
             el.textContent = 'Քարտեզը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ)։ Ներքևի կետերի աղյուսակն աշխատում է։';
             return;
         }
-        map.obj = L.map(el, { preferCanvas: true, zoomSnap: 0.5, scrollWheelZoom: false });
+        map.obj = L.map(el, { preferCanvas: true, zoomSnap: 0.5, scrollWheelZoom: false, zoomControl: false });
+        L.control.zoom({ zoomInTitle: 'Մեծացնել', zoomOutTitle: 'Փոքրացնել' }).addTo(map.obj);   // подсказки кнопок — по-армянски (как в настройках)
         RoutesBasemap.add(map.obj);
         map.obj.setView(YEREVAN, 11);
         map.obj.on('click focus', () => map.obj.scrollWheelZoom.enable());

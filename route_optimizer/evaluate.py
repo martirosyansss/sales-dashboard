@@ -1373,7 +1373,8 @@ def _warnings(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
         share = coords['revenue_share_with_coords']
         share_txt = f' (կոորդինատներով այցերը՝ հասույթի {share * 100:.0f}%-ը)' if share is not None else ''
         out.append(_warning('coords_missing',
-                            f'Կոորդինատներ չկան պլանի {missing_coords} / {coords["visits_total"]} այցի '
+                            f'Կոորդինատներ չկան պլանի {fmt_decimal(missing_coords, 1)} / '
+                            f'{fmt_decimal(coords["visits_total"], 1)} այցի '
                             f'համար{share_txt} — դրանց կմ-ները հաշվված չեն։', None))
     off = sum(1 for me in included for r in me.days if not r.workday)
     if off:
@@ -1394,8 +1395,10 @@ def _warnings(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
             used.append(f'ցածր սեզոն՝ {months(season.low)} (ամենացածր վաճառքը)')
         if 'peak' in season.fallback:
             used.append(f'բարձր սեզոն՝ {months(season.peak)} (ամենաբարձր վաճառքը)')
+        taken = ('ամենացածր և ամենաբարձր վաճառքով 3-ական ամիսները' if len(used) == 2 else
+                 'ամենացածր վաճառքով 3 ամիսները' if 'low' in season.fallback else 'ամենաբարձր վաճառքով 3 ամիսները')
         out.append(_warning('season_empty', 'Սեզոնային ինդեքսի շեմերին ոչ մի ամիս չհամապատասխանեց, վերցված են '
-                                            '3 ծայրահեղ ամիսները՝ ' + '; '.join(used)
+                                            + taken + '՝ ' + '; '.join(used)
                             + '։ Շեմերը կարելի է ուղղել կարգավորումներում։', 'season'))
     return out
 
@@ -1415,7 +1418,7 @@ def _road_warnings(roads: RoadDistances | None, points: Sequence[Point],
     if not n:
         return []
     return [_warning('roads_unsnapped', f'Պլանի {n} կետ քարտեզի ճանապարհներից 0,5 կմ-ից ավելի հեռու է — '
-                                        f'մինչև դրանք կմ-ները հաշվվում են ուղիղ գծով՝ ոլորունության '
+                                        f'դրանց հասնող կմ-ները հաշվվում են ուղիղ գծով՝ ոլորունության '
                                         f'ճշգրտումով։', None)]
 
 

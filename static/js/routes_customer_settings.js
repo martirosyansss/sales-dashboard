@@ -18,9 +18,12 @@
                 headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
                 ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
         } catch (e) { throw new Error('Սերվերի հետ կապ չկա։ Փորձեք կրկին։'); }
+        let data = null;
+        try { data = await response.json(); } catch (e) { data = null; }
+        // 403 CSRF дашборда («сессия формы устарела») — не запрет доступа (как routes_learning.js и routes_garage.js)
+        if (response.status === 403 && data && data.error === 'csrf') throw new Error('Էջը հնացել է՝ թարմացրեք այն և կրկնեք։');
         if (AUTH_HY[response.status]) throw new Error(AUTH_HY[response.status]);
-        let data;
-        try { data = await response.json(); } catch (e) { throw new Error('Չհաջողվեց կարդալ սերվերի պատասխանը։ Թարմացրեք էջը։'); }
+        if (data === null) throw new Error('Չհաջողվեց կարդալ սերվերի պատասխանը։ Թարմացրեք էջը։');
         if (!response.ok || !data || data.success !== true) {
             const details = data && data.errors ? Object.values(data.errors).join('; ') : '';
             throw new Error(details || (data && data.error) || 'Չհաջողվեց կատարել հարցումը։');
@@ -129,7 +132,7 @@
         $('rcsVehicleHint').textContent = mode === 'allow'
             ? 'Ընտրեք թույլատրված մեքենաները։ Եթե ոչ մեկն ընտրված չէ կամ այդ օրը չի աշխատում, խանութը կմնա առանց մեքենայի։'
             : mode === 'deny' ? 'Ընտրված մեքենաները չեն կարող սպասարկել այս խանութը։ Մնացածը կարող են։'
-            : 'Կհամապատասխանեն բոլոր մեքենաները՝ հաշվի առնելով բեռնատարողությունը և մյուս սահմանափակումները։';
+            : 'Կարող են սպասարկել բոլոր մեքենաները՝ հաշվի առնելով բեռնատարողությունը և մյուս սահմանափակումները։';
         $('rcsError').textContent = '';
     }
     function readWindow() {

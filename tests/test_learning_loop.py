@@ -246,7 +246,7 @@ def test_fit_unload_accepts_when_better():
 def test_fit_unload_rejects_when_not_better_and_when_short():
     obs = _unload_obs()
     truth = lr.fit_unload(obs, lambda x: 4 * x.n + 12 * x.tonnes, TODAY)   # действующая норма уже верная
-    assert not truth.accepted and 'լավը չէ' in truth.reason
+    assert not truth.accepted and 'ավելի լավ չէ' in truth.reason
     few = lr.fit_unload(obs[-40:], lambda x: 8 * x.n + 6 * x.tonnes, TODAY)
     assert not few.accepted and few.reason.startswith('քիչ տվյալներ') and few.params is None
 
@@ -568,7 +568,7 @@ def test_run_learning_end_to_end_idempotent_and_applied(client, monkeypatch):
     assert ctx.norms.traffic is not None and ctx.norms.traffic.report['trucks'] == 'learned'
     # следующий день: действующая норма уже выученная — новая не лучше её, остаётся прежняя
     nxt = {o.kind: o for o in views.run_learning(state, TODAY + timedelta(days=1))}
-    assert not nxt['unload'].accepted and 'լավը չէ' in nxt['unload'].reason
+    assert not nxt['unload'].accepted and 'ավելի լավ չէ' in nxt['unload'].reason
     ctx2 = views._dispatch_ctx(state, snap, bundle, date(2026, 10, 5), ready, [S101], {101: S101})
     assert ctx2.tn.unload_min_per_stop == ctx.tn.unload_min_per_stop
     # автообучение разгрузки выключено — снова ручные 8 + 6

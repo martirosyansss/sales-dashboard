@@ -160,6 +160,8 @@
             throw Object.assign(new Error('Սերվերն անհասկանալի պատասխան տվեց (կոդ ' + resp.status + ')։ Փորձեք կրկին։'), { status: resp.status });
         }
         if (!resp.ok || data.success !== true) {
+            // 403 CSRF дашборда («сессия формы устарела») — не запрет доступа (как routes_learning.js и routes_garage.js)
+            if (resp.status === 403 && data.error === 'csrf') throw Object.assign(new Error('Էջը հնացել է՝ թարմացրեք այն և կրկնեք։'), { status: resp.status });
             const text = typeof data.error === 'string' && HY.test(data.error) ? data.error : '';
             throw Object.assign(new Error(text || HTTP_TEXT[resp.status] || ('Սերվերի սխալ (կոդ ' + resp.status + ')։')), { status: resp.status });
         }
@@ -447,7 +449,7 @@
         const below = num(t.days_below_min), total = num(t.days_total);
         if (below !== null && total) {
             items.push(below > 0
-                ? { tone: -1, nodes: [mark(fmt(below) + ' / ' + fmt(total), -1), ' աշխատանքային օրում մենեջերները ձմռանը բերում են '
+                ? { tone: -1, nodes: [fmt(total) + ' աշխատանքային օրից ', mark(fmt(below) + '-ում', -1), ' մենեջերները ձմռանը բերում են '
                     + minDayText(true) + ' պակաս'], tip: weakTip(), label: 'թույլ օրեր' }
                 : { tone: 1, nodes: ['Բոլոր ' + fmt(total) + ' աշխատանքային օրերը ձմռանը բերում են ', mark('առնվազն ' + minDayText(), 1)], tip: weakTip(), label: 'թույլ օրեր' });
         }
@@ -520,7 +522,7 @@
                 return { p: 5, hash: 'managers', btn: 'Նշել տունը',
                     text: k + ' մենեջերի տունը հայտնի չէ — օրը հաշվվում է առաջին խանութից, ոչ թե տնից։' };
             }
-            case 'season_unknown': return { p: 6, hash: 'season', btn: 'Նշել սեզոնները', text: 'Վաճառքը քիչ է, որպեսզի ծրագիրն ինքը գտնի ձմեռն ու ամառը — նշեք ամիսները ձեռքով։' };
+            case 'season_unknown': return { p: 6, hash: 'season', btn: 'Նշել սեզոնները', text: 'Վաճառքի տվյալները բավարար չեն, որ ծրագիրն ինքը գտնի ձմեռն ու ամառը — նշեք ամիսները ձեռքով։' };
             case 'season_empty': return { p: 6, hash: 'season', btn: 'Ստուգել սեզոնները', text: 'Ձմեռն ու ամառն ընտրված են պահուստային կանոնով — ստուգեք ամիսները։' };
             case 'inactive_templates': {
                 // коды менеджеров — между «):» (прежний текст) или «)՝» (армянский) и «—»
@@ -533,13 +535,14 @@
                 return { p: 8, info: true, text: (k ? 'Պլանում ' + k + ' օր ընկնում է' : 'Պլանի որոշ օրեր ընկնում են') + ' ոչ աշխատանքային օրվա վրա (կիրակի)։ Օպտիմալացումը կառաջարկի տեղափոխել այդ այցերը։' };
             }
             case 'coords_missing': {
-                // прежний текст: «…у 5 из 100 визитов…», армянский: «…5 / 100 այցի համար…»
-                const m = /(\d+)(?: из | \/ )(\d+)/.exec(text);
-                return { p: 9, info: true, text: m ? 'Կոորդինատներ չկան ' + m[1] + ' / ' + m[2] + ' այցի համար — դրանց կիլոմետրերը հաշվված չեն։' : 'Այցերի մի մասի համար կոորդինատներ չկան — դրանց կիլոմետրերը հաշվված չեն։' };
+                // прежний текст: «…у 5 из 100 визитов…» (цикл 2 недели — «у 2.5 из 101.5»), армянский: «…2,5 / 101,5 այցի համար…»
+                const m = /(\d+(?:[.,]\d+)?)(?: из | \/ )(\d+(?:[.,]\d+)?)/.exec(text);
+                const dec = (s) => s.replace('.', ',');
+                return { p: 9, info: true, text: m ? 'Կոորդինատներ չկան ' + dec(m[1]) + ' / ' + dec(m[2]) + ' այցի համար — դրանց կիլոմետրերը հաշվված չեն։' : 'Այցերի մի մասի համար կոորդինատներ չկան — դրանց կիլոմետրերը հաշվված չեն։' };
             }
             case 'roads_off': case 'roads_failed':
                 return { p: 10, info: true, text: 'Կիլոմետրերը հաշվվում են ուղիղ գծով՝ ճանապարհների ոլորունության ճշգրտումով — ճանապարհային քարտեզը միացված չէ։' };
-            case 'roads_unsnapped': return { p: 10, info: true, text: 'Մի քանի խանութ հեռու է քարտեզի ճանապարհներից — մինչև դրանք կիլոմետրերը հաշվվում են ուղիղ գծով։' };
+            case 'roads_unsnapped': return { p: 10, info: true, text: 'Մի քանի խանութ հեռու է քարտեզի ճանապարհներից — դրանց հասնող կիլոմետրերը հաշվվում են ուղիղ գծով։' };
             case 'templates_multiweek_unverified': return { p: 11, info: true, text: 'ERP-ում կան մի քանի շաբաթվա ցիկլով երթուղիներ — ծրագիրը դրանք մեկնաբանել է ենթադրաբար։' };
             default: {
                 const link = safeLink(w.link);
@@ -766,7 +769,8 @@
             el.textContent = 'Քարտեզը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ)։ Թվերը և աղյուսակը ներքևում աշխատում են։';
             return;
         }
-        const map = L.map('rtMap', { preferCanvas: true, zoomSnap: 0.5, scrollWheelZoom: false });
+        const map = L.map('rtMap', { preferCanvas: true, zoomSnap: 0.5, scrollWheelZoom: false, zoomControl: false });
+        L.control.zoom({ zoomInTitle: 'Մեծացնել', zoomOutTitle: 'Փոքրացնել' }).addTo(map);   // подсказки кнопок — по-армянски (как в настройках)
         RoutesBasemap.add(map);
         map.setView(YEREVAN, 9);
         // колесо мыши масштабирует карту только после клика по ней — страница прокручивается свободно
@@ -964,7 +968,7 @@
         let h;
         if (ix.W > 1) {
             h = '<tr class="rt-heat-weeks"><th scope="col" rowspan="2" class="rt-heat-mgr">Մենեջեր</th>';
-            for (let k = 1; k <= ix.W; k++) h += '<th scope="colgroup" colspan="' + ix.wdList.length + '">Շաբաթ ' + k + '</th>';
+            for (let k = 1; k <= ix.W; k++) h += '<th scope="colgroup" colspan="' + ix.wdList.length + '">' + ord(k) + ' շաբաթ</th>';
             h += '<th scope="col" rowspan="2" class="rt-heat-week">Շաբաթում</th></tr><tr>' + ix.cols.map(th).join('') + '</tr>';
         } else {
             h = '<tr><th scope="col" class="rt-heat-mgr">Մենեջեր</th>' + ix.cols.map(th).join('')
@@ -979,7 +983,7 @@
         const tags = [];
         if (m.included === false) tags.push('<span class="rt-badge" title="Մենեջերը ներառված չէ ընդհանուր թվերում։ Կարելի է միացնել կարգավորումներում։">հաշվարկում չէ</span>');
         if ((m.flags || []).includes('inactive')) tags.push('<span class="rt-badge b-warn" title="8 շաբաթ պատվերներ և այցեր չկան — լռելյայն մենեջերը հաշվարկում չէ">8 շաբաթ առանց աշխատանքի</span>');
-        if (!hasHome(m)) tags.push('<span class="rt-badge b-warn" title="Տունը հայտնի չէ — օրը հաշվվում է առաջին հաճախորդից մինչև վերջինը">տուն չկա</span>');
+        if (!hasHome(m)) tags.push('<span class="rt-badge b-warn" title="Տունը հայտնի չէ — օրը հաշվվում է առաջին հաճախորդից մինչև վերջինը">տունն անհայտ է</span>');
         let tr = '<tr' + (m.included === false ? ' class="is-excluded"' : '') + '>'
             + '<th scope="row" class="rt-heat-mgr"><div class="rt-mgr"><span class="rt-dot" style="background:' + mgrColor(mi) + '"></span>'
             + '<div class="rt-mgr-txt"><span class="n" title="' + esc(mgrName(m)) + '">' + esc(mgrName(m)) + '</span>'
@@ -1302,11 +1306,11 @@
               + '<th scope="col" class="wrap" title="Այցելության հերթականությունը՝ օրվա ներսում ամենակարճը">Այցի №</th>'
               + '<th scope="col" class="wrap" title="Հերթականությունը ERP-ի երթուղում">№ ERP-ում</th>'
               + '<th scope="col" class="l">Հաճախորդ</th><th scope="col" class="l rt-dl-wide">Կետ</th><th scope="col" class="l rt-dl-wide">Չափ</th>'
-              + '<th scope="col" title="Հավանականությունը, որ հաճախորդը ձմռանը այցի ժամանակ կպատվիրի">Պատվեր</th>'
+              + '<th scope="col" class="wrap" title="Հավանականությունը, որ հաճախորդը ձմռանը այցի ժամանակ կպատվիրի">Պատվերի %</th>'
               + '<th scope="col" title="Այս այցի սպասվող հասույթը ձմռանը, դրամ">Հասույթ</th>'
               + '<th scope="col" title="Պատվերի միջին քաշը վերջին տարում">Կգ</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
-              + '<p class="rt-day-note mt-2 mb-0">' + ORDER_NOTE + ' «Պատվեր»՝ ձմռանը այցի ժամանակ պատվերի հավանականությունը, «Հասույթ»՝ այդ հավանականությունը × ձմռան միջին պատվերը։ Կգ՝ միջին պատվերը վերջին տարում։'
-              + (silent ? ' Գնելը դադարեցրած և վաղուց չգնող հաճախորդների հավանականությունը և հասույթը 0 է՝ նրանք դադարել են գնել։' : '') + '</p>'
+              + '<p class="rt-day-note mt-2 mb-0">' + ORDER_NOTE + ' «Պատվերի %»՝ ձմռանը այցի ժամանակ պատվերի հավանականությունը, «Հասույթ»՝ այդ հավանականությունը × ձմռան միջին պատվերը։ Կգ՝ միջին պատվերը վերջին տարում։'
+              + (silent ? ' Դադարած և վաղուց չգնող հաճախորդների հավանականությունը և հասույթը 0 է՝ նրանք դադարել են գնել։' : '') + '</p>'
             : '<p class="rt-empty px-0">Այս օրը պլանով այցեր չկան։</p>';
 
         return '<div class="rt-day" id="rtDay">'

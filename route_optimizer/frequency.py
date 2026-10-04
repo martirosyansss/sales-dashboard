@@ -87,14 +87,6 @@ def fmt_decimal(x: float, digits: int = 2) -> str:
     return (text or '0').replace('.', ',')
 
 
-def plural(n: int, one: str, few: str, many: str) -> str:
-    n = abs(n) % 100
-    if 11 <= n <= 14:
-        return many
-    last = n % 10
-    return one if last == 1 else (few if 2 <= last <= 4 else many)
-
-
 def order_rate_text(lam: float, lam_season: float | None = None) -> str:
     """Причина снижения частоты: «պատվիրում է 3 շաբաթը մեկ (0,33 պատվեր շաբաթում)»; lam_season —
     наибольшая λ сезонов, если она выше годовой (частота подобрана по ней):
