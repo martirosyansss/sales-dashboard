@@ -251,16 +251,16 @@ def test_fit_unload_rejects_when_not_better_and_when_short():
     assert not few.accepted and few.reason.startswith('мало данных') and few.params is None
 
 
-def test_fit_unload_store_offset_with_shrinkage_only_from_2_visits():
+def test_fit_unload_store_offset_only_from_2_visits_without_shrinkage():
     obs = _unload_obs(store_extra={101: 10.0}, per_day=6)
-    # магазин 106 бывает 1 раз — поправки нет, хотя он медленный; 105 — 4 раза: поправка уже есть, стянутая к 0
+    # магазин 106 бывает 1 раз — поправки нет, хотя он медленный; 105 — 4 раза: поправка уже есть — сам факт (№60:
+    # без стягивания к 0, как у 101 со множеством визитов)
     obs = [o for o in obs if o.customers != (105,)] + [lr.UnloadObs(d, 1, 0.5, 4 + 6 + 10, (105,)) for d in _days(4)]
     obs += [lr.UnloadObs(_days(1)[0], 1, 0.5, 4 + 6 + 10, (106,))]
     o = lr.fit_unload(obs, lambda x: 8 * x.n + 6 * x.tonnes, TODAY)
     offs = o.params['store_offsets']
-    n101 = sum(1 for x in obs if x.customers == (101,) and x.day < TODAY - timedelta(days=7))
-    assert '106' not in offs and float(offs['101']) == pytest.approx(10 * n101 / (n101 + 5), abs=0.6)
-    assert float(offs['105']) == pytest.approx(10 * 4 / (4 + 5), abs=0.6)
+    assert '106' not in offs and float(offs['101']) == pytest.approx(10, abs=0.6)
+    assert float(offs['105']) == pytest.approx(10, abs=0.6)
     assert o.accepted
 
 

@@ -1992,7 +1992,7 @@ def api_customer_vehicles_search() -> Any:
          'vehicle_access': bundle.vehicle_access[c.id].to_json() if c.id in bundle.vehicle_access else None,
          'window': bundle.windows[c.id].to_json() if c.id in bundle.windows else None,
          'unload_min': bundle.unload_min.get(c.id),
-         # подсказка: сколько «Развоз» возьмёт с пустым полем; разгрузок по факту — введённое смешается с фактом
+         # подсказка: сколько «Развоз» возьмёт с пустым полем; разгрузок по GPS — время по ним, введённое не участвует
          'unload_auto_min': round(per_stop + empty.get(c.id, 0.0), 1),
          'unload_visits': stats[c.id][0] if stats.get(c.id, (0, 0.0))[0] >= learning.STORE_MIN_OBS else None}
         for c in customers[:30]]})

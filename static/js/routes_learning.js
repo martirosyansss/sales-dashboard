@@ -117,7 +117,7 @@
             : '';
     }
     // Разгрузка по магазинам (№50): введено / по факту (визитов) / в расчёте — stores строки unload
-    const STORE_SOURCE = { learned: 'уточнено по факту', manual: 'как введено', norm: 'обычное время' };
+    const STORE_SOURCE = { learned: 'по GPS', manual: 'как введено', norm: 'обычное время' };
     const unloads = (n) => fmt(n) + ' ' + (n % 10 === 1 && n % 100 !== 11 ? 'разгрузка'
         : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'разгрузки' : 'разгрузок');
     function storeRow(r, minVisits) {

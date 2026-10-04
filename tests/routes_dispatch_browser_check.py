@@ -19,7 +19,8 @@ U «Ժամանակ խանութում» (№50) у точки рейса в ре
   8 րոպե), «Հեռացնել» скрыта; пустое поле → диалог закрыт без запроса и уведомления; нечисло — ошибка и aria-invalid,
   ничего не отправлено; 40 → уведомление «40 րոպե» с «Վերակազմեք երթերը», у точки плашка «Բեռնաթափում՝ 40 ր» с
   подсказкой, в базе — только время (окно и допуск магазина целы); снова диалог → «Հեռացնել» → плашки нет, в базе пусто;
-  выученная норма 8,37 у магазина без GPS — «սովորական 8,4 րոպե», а не «ըստ փաստի»; 10 разгрузок по GPS — время по факту;
+  выученная норма 8,37 у магазина без GPS — «սովորական 8,4 րոպե», а не «ըստ փաստի»; 10 стоянок по GPS — время по факту;
+  в подсказке — правило №60 (пока стоянок по GPS нет — введённое время, со 2-й — время из GPS), смеси с фактом нет;
 E ИИ-панель: кнопка открытия → панель с подсказками; подсказка → сообщение пользователя и ответ с пунктом списка,
   у клиента ровно один вызов (в данных дня <day_data); вопрос из поля по Enter → второй ответ с историей из
   двух реплик; Esc закрывает панель, фокус возвращается на кнопку открытия;
@@ -284,8 +285,9 @@ def main() -> int:
             row = {'per_stop_min': 8.37, 'per_tonne_min': 6.12, 'store_offsets': {}, 'store_stats': {}}
             store.save_learned('2026-09-02', [lr.Outcome('unload', '', True, 'да', row)])
             hint = open_unload()
-            check('Դատարկ՝ սովորական 8,4 րոպե։' in hint and 'ըստ փաստի' not in hint and '(6,1 րոպե տոննայի համար)' in hint,
-                  f'U learned norm 8.37, no GPS visits → «սովորական», not «ըստ փաստի»: {hint!r}')
+            check('Դատարկ՝ սովորական 8,4 րոպե։' in hint and 'ըստ փաստի' not in hint and '(6,1 րոպե տոննայի համար)' in hint
+                  and 'արդեն եղել է' not in hint and '2-րդ կանգառից ծրագիրը ժամանակը վերցնում է GPS-ից։' in hint,
+                  f'U learned norm 8.37, no GPS visits → «սովորական», not «ըստ փաստի», rule №60 shown: {hint!r}')
             page.click('#dpUnloadCancel')
             # 8,75 → сервер шлёт 8,8, а в JS 8,8 − 8,75 = 0,05000000000000071: сравнение «≥ 0,05» дало бы «ըստ փաստի»
             store.save_learned('2026-09-02', [lr.Outcome('unload', '', True, 'да', {**row, 'per_stop_min': 8.75})])
@@ -295,8 +297,9 @@ def main() -> int:
             page.click('#dpUnloadCancel')
             store.save_learned('2026-09-03', [lr.Outcome('unload', '', True, 'да', {**row, 'store_stats': {str(cid): [10, 20.0]}})])
             hint = open_unload()
-            check('(ըստ փաստի)' in hint and '10 բեռնաթափում' in hint and 'կհամադրի փաստի հետ' in hint
-                  and 'սովորական' not in hint, f'U learned norm + 10 GPS visits → time by fact: {hint!r}')
+            check('(ըստ փաստի)' in hint and 'արդեն եղել է 10 կանգառ։' in hint and 'կհամադրի' not in hint
+                  and 'Քանի դեռ այս խանութում GPS-ով կանգառներ չկան, հաշվվում է ձեր գրած ժամանակը' in hint
+                  and 'սովորական' not in hint, f'U learned norm + 10 GPS stays → time from GPS (№60): {hint!r}')
             page.click('#dpUnloadCancel')
             store.save_learning_auto('unload', False, 'qa')      # дальше — нормы настроек, как до блока U
             page.locator('.dp-editbtn[aria-expanded="true"]').first.click()
