@@ -2,7 +2,7 @@
    API: GET /api/routes/garage (машины с последним показанием, итоги за 12 месяцев с ремонтом ֏/км, расходы по месяцам),
    GET /api/routes/garage/entries?car=&month=&deleted= (записи), POST /api/routes/garage/entries (новая или правка, "id"),
    POST /api/routes/garage/entries/delete {id}, POST /api/routes/garage/odometers {items: [{car_code, day, odometer_km}]},
-   GET /api/routes/garage/norm?month= и /api/routes/garage/day?date=&car= (вкладка «Նորմա և փաստ»).
+   GET /api/routes/garage/norm?month= и /api/routes/garage/day?date=&car= (вкладка «Նորմ և փաստ»).
    Ошибки сервера — по-армянски, по полям. Всё, что пришло с сервера, выводится только через textContent.
    CSRF-заголовок к fetch добавляет base_v2.html. */
 (function () {
@@ -94,7 +94,7 @@
             $(p).hidden = !on;
         });
         if (focus) $(tabId).focus();
-        if (tabId === 'gjTabNorm' && !norm.data && !norm.gen) loadNorm();   // считается только при открытии вкладки
+        if (tabId === 'gjTabNorm') resumeNorm();   // считается только при открытии вкладки
         try { localStorage.setItem('gjTab', tabId); } catch (e) { /* без памяти вкладки */ }
     }
     TABS.forEach(([t], i) => {
@@ -526,43 +526,59 @@
     }
 
     // ---------- норма и факт ----------
-    // GET /api/routes/garage/norm?month= — по машине: норма расхода «Развоза» и расход по заправкам, км плана и GPS,
+    // GET /api/routes/garage/norm?month= — по машине: норма расхода (ручная) и расход по заправкам, км плана и GPS,
     // стоянки вне плана, точки не по порядку, по дням; GET /api/routes/garage/day?date=&car= — карта дня (как у
     // «Обучения»). Считается при первом открытии вкладки и при смене месяца — не при каждой загрузке страницы.
-    const norm = { data: null, gen: 0, open: new Set() };
+    const norm = { data: null, gen: 0, open: new Set(), timer: null, busy: false };
     const signed = (v, d = 0) => { const n = num(v); return n === null ? '—' : (n > 0 ? '+' : '') + fmt(n, d); };
     const FUEL_WHY = {
         no_refuels: () => 'ամսում լիցքավորում չկա',
         one_refuel: () => 'ամսում միայն մեկ լիցքավորում է — ծախսը հաշվվում է երկու լրիվ բաքի միջև',
         no_interval: (f) => fmt(f.refuels) + ' լիցքավորում, բայց լրիվ բաքից լրիվ բաք միջակայք չկա (լրիվ բաք, ճիշտ օդոմետր, առնվազն '
             + fmt(norm.data.rules.fuel_min_km) + ' կմ)',
+        suspicious: () => 'բոլոր միջակայքերը կասկածելի են (տես կարմիր նշանը)',
     };
-    const NORM_SRC = { learned: 'սովորած՝ ըստ փաստի', manual: 'կարգավորումներից' };
+    // норма тревоги — ручная из настроек; выученная — рядом (она подогнана под те же заправки, что и факт)
+    const NORM_SRC = { manual: 'կարգավորումներից', manual_profile: 'կարգավորումներից՝ դատարկ և լրիվ բեռնվածի միջինը',
+        learned: 'սովորած՝ կարգավորումներում նորմ չկա, ահազանգը թույլ է' };
+    const normVisible = () => !$('gjNorm').hidden && !document.hidden;
+    const normRow = (text) => $('gjNormRows').replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'rt-empty', text })));
 
-    // pending — факт месяца сервер досчитывает в фоне (впервые после перезапуска — до минуты): спросить снова через 3 с
+    // pending — факт месяца сервер досчитывает в фоне (впервые после перезапуска — до минуты): спросить снова через 3 с,
+    // только пока вкладка видна и страница не в фоне; иначе — при возвращении (resumeNorm)
     async function loadNorm(again) {
+        clearTimeout(norm.timer);
+        norm.timer = null;
         const gen = again || ++norm.gen;
         const month = $('gjNormMonth').value;
-        if (!again) $('gjNormRows').replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'rt-empty', text: 'Հաշվում է…' })));
+        if (!again) { norm.data = null; normRow('Հաշվում է…'); }
+        norm.busy = true;
         try {
             const d = await api('/api/routes/garage/norm' + (month ? '?month=' + encodeURIComponent(month) : ''));
             if (gen !== norm.gen) return;
             if (d.pending) {
-                $('gjNormRows').replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'rt-empty',
-                    text: 'Հաշվում է ամսվա GPS հետագծերը… Առաջին անգամ սա կարող է տևել մինչև մեկ րոպե։' })));
-                setTimeout(() => { if (gen === norm.gen) loadNorm(gen); }, 3000);
+                normRow('Հաշվում է ամսվա GPS հետագծերը… Առաջին անգամ սա կարող է տևել մինչև մեկ րոպե։');
+                norm.timer = setTimeout(() => { norm.timer = null; if (gen === norm.gen && normVisible()) loadNorm(gen); }, 3000);
                 return;
             }
+            if (d.failed) { normRow('Չհաջողվեց հաշվել ամսվա GPS տվյալները (սերվերի սխալ)։ Բացեք ներդիրը նորից կամ կրկնեք ավելի ուշ։'); return; }
             norm.data = d;
             norm.open.clear();
             $('gjNormMonth').value = d.month;
             $('gjNormMonth').max = d.current_month;
+            $('gjNormMonth').min = d.oldest_month;
             renderNorm();
         } catch (e) {
             if (gen !== norm.gen) return;
             showError(e.message);
-            $('gjNormRows').replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'rt-empty', text: 'Չհաջողվեց բեռնել' })));
+            normRow('Չհաջողվեց բեռնել');
+        } finally {
+            if (gen === norm.gen) norm.busy = false;
         }
+    }
+    // вкладку открыли снова или страница вернулась из фона: данных нет и запроса нет — спросить (в т.ч. после pending)
+    function resumeNorm() {
+        if (normVisible() && !norm.data && !norm.busy && !norm.timer) loadNorm();
     }
 
     function fuelCell(t) {
@@ -584,25 +600,30 @@
             h('small', { class: 'gj-sub', text: 'պլանով օրեր՝ ' + fmt(k.plan_days) })];
     }
 
+    const LITERS_NOTE = 'Օրվա լիտրերը մոտավոր են՝ օրվա GPS կմ × լիցքավորումների այն միջակայքի ծախսը, որի մեջ ընկնում է օրը։';
     function dayList(t) {
-        return h('ul', { class: 'gj-days' }, ...t.days.map(d => h('li', {},
+        return h('div', {}, h('p', { class: 'gj-sub gj-days-note', text: '≈ ' + LITERS_NOTE }),
+            h('ul', { class: 'gj-days' }, ...t.days.map(d => h('li', {},
             h('b', { class: 'gj-day', text: dayHy(d.day) }),
             h('span', { class: d.over ? 'gj-over' : null, text: 'կմ՝ ' + (d.plan_km !== null ? fmt(d.plan_km) + ' → ' : 'պլան չկա → ') + fmt(d.fact_km) }),
-            h('span', { text: 'լիտր՝ ' + fmt(d.liters, 1) }),
+            h('span', { title: LITERS_NOTE, text: 'լիտր՝ ' + (d.liters !== null ? '≈' + fmt(d.liters, 1) : '—') }),
             h('span', { text: 'պլանից դուրս՝ ' + fmt(d.unplanned_stays) }),
             h('span', { text: 'ոչ հերթականությամբ՝ ' + fmt(d.order_changes) }),
             h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Քարտեզ՝ ' + t.car_code + ', ' + dayHy(d.day),
-                dataset: { map: d.day, car: t.car_code } }, icon('fa-map-location-dot'), 'Քարտեզ'))));
+                dataset: { map: d.day, car: t.car_code } }, icon('fa-map-location-dot'), 'Քարտեզ')))));
     }
 
     function renderNorm() {
         const d = norm.data, pct = d.rules.alert_pct;
-        $('gjNormLead').textContent = 'Նորմը՝ այն ծախսը, որով «Առաքում» էջը հաշվում է մեքենան։ Փաստը՝ վարորդների լիցքավորումներից՝ '
+        $('gjNormLead').textContent = 'Նորմը՝ կարգավորումներում նշված ծախսը (եթե նշված են դատարկ և լրիվ բեռնվածի ծախսերը՝ դրանց միջինը)։ '
+            + 'Ծրագրի սովորած ծախսը ցույց է տրվում կողքին․ այն հաշվված է նույն լիցքավորումներից, ուստի ահազանգի հիմք չէ։ Փաստը՝ վարորդների լիցքավորումներից՝ '
             + 'լրիվ բաքից լրիվ բաք․ լիտրերը ÷ կմ ըստ օդոմետրի (միջակայքը, որն անցնում է ամսվա սահմանով, մտնում է այն ամիսը, երբ '
             + 'ավարտվել է)։ Կմ-ը համեմատվում է միայն այն օրերին, երբ կա և «Առաքում» էջի պլանը, և GPS հետագիծը։ Կարմիրով է նշված '
             + 'այն, ինչ նորմից կամ պլանից ավելի է ' + pct + '%-ից ավելի։' + (d.month === d.current_month ? ' Այսօրը դեռ չի մտնում։' : '');
         $('gjNormEmpty').hidden = d.has_data;
-        $('gjNormEmptyText').textContent = !d.connected
+        $('gjNormEmptyText').textContent = d.too_old
+            ? 'Ցույց են տրվում միայն վերջին 12 ամիսները։'
+            : !d.connected
             ? '«Առաքիչ» բաժինը միացված չէ — GPS հետագծեր և լիցքավորումներ չկան։'
             : 'Այս ամսում GPS հետագծեր և լիցքավորումներ դեռ չկան։ Դրանք կհայտնվեն, երբ վարորդներն աշխատեն «Առաքիչ» հավելվածի այն '
                 + 'տարբերակով, որը գրանցում է GPS հետագիծը և լիցքավորումները (լիտր, օդոմետր, լրիվ բաք)։';
@@ -613,13 +634,18 @@
         $('gjNormRows').replaceChildren(...d.trucks.flatMap(t => {
             const id = 'gjNormDays-' + t.car_code.replace(/[^\w-]/g, '_');
             const open = norm.open.has(t.car_code);
+            const lim = d.rules.fuel_l100;
             const flags = [t.fuel.over ? h('span', { class: 'rt-badge b-danger', text: 'Վառելիք ' + signed(t.fuel.delta_pct, 1) + '%' }) : null,
+                t.fuel.too_high ? h('span', { class: 'rt-badge b-danger', text: fmt(t.fuel.too_high) + ' կասկածելի լիցքավորում՝ ավելի քան ' + fmt(lim[1]) + ' լ/100 կմ' }) : null,
+                t.fuel.too_low ? h('span', { class: 'rt-badge b-danger', text: fmt(t.fuel.too_low) + ' կասկածելի լիցքավորում՝ պակաս քան ' + fmt(lim[0]) + ' լ/100 կմ' }) : null,
                 t.km.over ? h('span', { class: 'rt-badge b-danger', text: 'Կմ ' + signed(t.km.delta_pct, 1) + '%' }) : null].filter(Boolean);
-            const row = h('tr', { class: (t.fuel.over || t.km.over ? 'is-over' : '') + (t.active ? '' : ' is-closed') || null },
+            const row = h('tr', { class: (flags.length ? 'is-over' : '') + (t.active ? '' : ' is-closed') || null },
                 h('td', { class: 'rt-cell-name' }, h('span', { class: 'n', text: t.car_code }), h('span', { class: 'c', text: t.name || (t.active ? '' : 'չի աշխատում') }),
                     flags.length ? h('span', { class: 'gj-flags' }, ...flags) : null),
                 h('td', { class: 'gj-num w-half', 'data-label': 'Նորմ, լ/100 կմ' }, t.norm.l100 !== null
-                    ? [h('b', { class: 'gj-price', text: fmt(t.norm.l100, 1) }), h('small', { class: 'gj-sub', text: NORM_SRC[t.norm.source] || '' })]
+                    ? [h('b', { class: 'gj-price', text: fmt(t.norm.l100, 1) }),
+                        h('small', { class: 'gj-sub' + (t.norm.source === 'learned' ? ' gj-weak' : ''), text: NORM_SRC[t.norm.source] || '' }),
+                        t.norm.source !== 'learned' && t.norm.learned !== null ? h('small', { class: 'gj-sub', text: 'սովորած՝ ' + fmt(t.norm.learned, 1) }) : null]
                     : [h('span', { text: '—' }), h('small', { class: 'gj-sub', text: 'նշված չէ' })]),
                 h('td', { class: 'gj-num w-half', 'data-label': 'Փաստ, լ/100 կմ' }, ...fuelCell(t)),
                 h('td', { class: 'gj-num', 'data-label': 'Կմ՝ պլան → փաստ' }, ...kmCell(t)),
@@ -748,6 +774,7 @@
         $('gjFilterMonth').addEventListener('change', refilter);
         if ($('gjShowDeleted')) $('gjShowDeleted').addEventListener('change', refilter);
         $('gjNormMonth').addEventListener('change', () => { if ($('gjNormMonth').value) loadNorm(); });
+        document.addEventListener('visibilitychange', resumeNorm);
         try {
             await reload();
             resetForm();

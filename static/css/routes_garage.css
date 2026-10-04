@@ -6,7 +6,7 @@
 #gjPage { max-width: 1280px; margin: 0 auto; }
 #gjPage .rt-title { font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.125rem); }
 
-/* Вкладки страницы: Ծախսեր · Վազք · Ամփոփում · Նորմա և փաստ */
+/* Вкладки страницы: Ծախսեր · Վազք · Ամփոփում · Նորմ և փաստ */
 .gj-tabs {
     display: flex; gap: 4px; padding: 4px; margin: 16px 0 14px; max-width: 760px;
     background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: 12px;
@@ -63,9 +63,11 @@
 .gj-suggest { font-size: .8125rem; color: var(--rt-warn); line-height: 1.45; }
 .gj-suggest[hidden] { display: none; }
 
-/* Նորմա և փաստ: красный — факт выше нормы или плана больше чем на 10%; по дням — список под строкой машины; карта дня */
+/* Նորմ և փաստ: красный — факт выше нормы или плана больше чем на 10%; по дням — список под строкой машины; карта дня */
 .gj-over { color: var(--rt-danger); }
 .gj-nodata { color: var(--rt-fg-mute); }
+.gj-weak { color: var(--rt-warn); }               /* норма — выученная (ручной нет): тревога слабая */
+.gj-days-note { margin: 0 0 6px; }
 .gj-flags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .gj-norm-table tr.is-over td:first-child { box-shadow: inset 3px 0 0 var(--rt-danger); }
 .gj-norm-empty { margin: 0 0 12px; }

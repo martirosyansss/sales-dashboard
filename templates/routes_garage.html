@@ -6,12 +6,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
-<!-- Leaflet — карта дня во вкладке «Նորմա և փաստ» (CDN, как у «Обучения»: статики на публичном хосте не прибавляется) -->
+<!-- Leaflet — карта дня во вкладке «Նորմ և փաստ» (CDN, как у «Обучения»: статики на публичном хосте не прибавляется) -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=20">
 <!-- Журнал гаража (ответ владельца №53): страница на армянском, телефон и ПК — свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_garage.css') }}?v=6">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_garage.css') }}?v=7">
 {% endblock %}
 
 {% block content %}
@@ -56,7 +56,7 @@
         <button type="button" role="tab" id="gjTabSum" aria-controls="gjSum" aria-selected="false" tabindex="-1">
             <i class="fas fa-chart-column" aria-hidden="true"></i>Ամփոփում</button>
         <button type="button" role="tab" id="gjTabNorm" aria-controls="gjNorm" aria-selected="false" tabindex="-1">
-            <i class="fas fa-gas-pump" aria-hidden="true"></i>Նորմա և փաստ</button>
+            <i class="fas fa-gas-pump" aria-hidden="true"></i>Նորմ և փաստ</button>
     </div>
 
     <!-- 1. Ծախսեր: форма записи и список записей -->
@@ -235,7 +235,7 @@
             </div>
         </section>
     </section>
-    <!-- 4. Նորմա և փաստ: расход по заправкам против нормы «Развоза», км по GPS против плана — за месяц -->
+    <!-- 4. Նորմ և փաստ: расход по заправкам против нормы «Развоза», км по GPS против плана — за месяц -->
     <section id="gjNorm" role="tabpanel" aria-labelledby="gjTabNorm" hidden>
         <section class="rt-card" aria-labelledby="gjNormTitle">
             <div class="rt-card-head">
@@ -259,7 +259,7 @@
                         <th scope="col">Մեքենա</th><th scope="col" class="gj-num">Նորմ, լ/100 կմ</th>
                         <th scope="col" class="gj-num">Փաստ, լ/100 կմ</th><th scope="col" class="gj-num">Կմ՝ պլան → փաստ</th>
                         <th scope="col" class="gj-num">Կանգառներ պլանից դուրս</th><th scope="col" class="gj-num">Ոչ հերթականությամբ</th>
-                        <th scope="col" class="gj-num">Օրեր</th><th scope="col"><span class="rt-sr-only">Ըստ օրերի</span></th>
+                        <th scope="col" class="gj-num">Օրեր GPS-ով</th><th scope="col"><span class="rt-sr-only">Ըստ օրերի</span></th>
                     </tr></thead>
                     <tbody id="gjNormRows"><tr><td colspan="8" class="rt-empty">Բեռնվում է…</td></tr></tbody>
                 </table>
@@ -288,5 +288,5 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка карт раздела (№47) — без ключа Яндекса: страница открыта из интернета, ключ сюда не выдаётся → OpenStreetMap -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key=""></script>
-<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=7"></script>
+<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=8"></script>
 {% endblock %}

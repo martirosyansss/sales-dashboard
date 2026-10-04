@@ -1124,12 +1124,13 @@ def effective_refuels(refuels: Sequence[Mapping[str, Any]], since: datetime | No
     return {car: sorted(items, key=lambda x: (x[0], x[1])) for car, items in by_car.items()}
 
 
-def fuel_intervals(refuels: Sequence[Mapping[str, Any]]) -> list[Interval]:
+def fuel_intervals(refuels: Sequence[Mapping[str, Any]], rejected: list[Interval] | None = None) -> list[Interval]:
     """Заправки → интервалы «полный бак → полный бак» по каждой машине: литры — все заправки после первого полного бака
     до следующего включительно, км — разница их одометров. Исправленные (superseded) не считаются вовсе; момент
     исправления — момент исходной заправки (effective_refuels). Одометр несогласованный (odometer_plausible; флаг при
     приёме не учитывается) — литры заправки считаются (топливо в бак попало), но границей интервала она не служит.
-    Литры не числом — интервал обрывается. Интервал короче FUEL_MIN_KM или с расходом вне FUEL_L100 — не считается."""
+    Литры не числом — интервал обрывается. Интервал короче FUEL_MIN_KM или с расходом вне FUEL_L100 — не считается;
+    последние (не короткие) — в rejected, если он дан: «Ավտոտնակ» показывает их как подозрительные заправки."""
     out: list[Interval] = []
     for car, items in sorted(effective_refuels(refuels).items()):
         plausible = odometer_plausible([(at, p.get('odometer_km')) for at, _, p in items])
@@ -1149,6 +1150,8 @@ def fuel_intervals(refuels: Sequence[Mapping[str, Any]]) -> list[Interval]:
                 km = odo - start[1]
                 if km >= FUEL_MIN_KM and FUEL_L100[0] <= liters / km * 100.0 <= FUEL_L100[1]:
                     out.append(Interval(car, start[0], at, liters, km))
+                elif km >= FUEL_MIN_KM and rejected is not None:
+                    rejected.append(Interval(car, start[0], at, liters, km))
             start, liters = (at, odo), 0.0
     return out
 

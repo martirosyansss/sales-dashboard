@@ -443,7 +443,7 @@ _PUBLIC_STATIC = frozenset((
     '/favicon.ico',
     '/static/css/tokens.css', '/static/css/base.css', '/static/js/base.js',                    # base_v2.html
     '/static/css/routes.css', '/static/css/routes_garage.css', '/static/js/routes_garage.js',  # routes_garage.html
-    '/static/js/routes_basemap.js',   # routes_garage.html: подложка карты дня «Նորմա և փաստ» (без ключа Яндекса)
+    '/static/js/routes_basemap.js',   # routes_garage.html: подложка карты дня «Նորմ և փաստ» (без ключа Яндекса)
 ))
 # API журнала снаружи — только простые сегменты (путь уже раскодирован сервером): без '..', '//', '%', '\', регистра.
 _PUBLIC_GARAGE_API_RE = re.compile(r'/api/routes/garage(?:/[a-z0-9_-]+)*')
