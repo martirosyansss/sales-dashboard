@@ -139,7 +139,7 @@ main:has(> #gjPage) { padding-top: 12px !important; }   /* py-4 дашборда
 @media (max-width: 767px) {
     .gj-grid { grid-template-columns: minmax(0, 1fr); }
     .gj-actions .rt-btn { flex: 1 1 auto; }
-    /* «Պահպանել» — у нижнего края экрана, пока видна форма (длинная форма, открытая клавиатура) */
+    /* «Պահպանել» — у нижнего края экрана, пока видна форма (длинная форма; при открытой клавиатуре — под ней) */
     .gj-form .gj-actions, #gjOdoForm .gj-actions {
         position: sticky; bottom: 0; z-index: 15; margin: 8px -18px -18px;
         padding: 10px 18px calc(10px + env(safe-area-inset-bottom, 0px));

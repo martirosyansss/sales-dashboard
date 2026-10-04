@@ -271,11 +271,11 @@
         $('gjCar').focus({ preventScroll: true });
     }
 
-    // Enter («Далее» на клавиатуре телефона) в поле с enterkeyhint="next" — к следующему видимому полю формы, а не
+    // Телефон: Enter («Далее» на клавиатуре) в поле с enterkeyhint="next" — к следующему видимому полю формы, а не
     // отправка формы с половиной полей; у пробега и «Готово» у последней машины не отправляет: сохраняет кнопка
     function enterNext(ev) {
         const el = ev.target, form = ev.currentTarget;
-        if (ev.key !== 'Enter' || !(el instanceof HTMLInputElement) || el.form !== form) return;
+        if (!TOUCH.matches || ev.key !== 'Enter' || !(el instanceof HTMLInputElement) || el.form !== form) return;   // компьютер: Enter — как раньше
         const hint = el.getAttribute('enterkeyhint');
         if (hint !== 'next' && !(hint === 'done' && form.id === 'gjOdoForm')) return;
         ev.preventDefault();
@@ -445,7 +445,7 @@
         const day = $('gjOdoDay').value;
         const inputs = [...$('gjOdoRows').querySelectorAll('input[data-car]')];
         inputs.forEach(inp => { inp.classList.remove('is-invalid'); inp.removeAttribute('aria-invalid'); $(inp.id + '-err').textContent = ''; });
-        $('gjOdoErr').textContent = '';
+        $('gjOdoFormErr').textContent = '';
         // нечисло в поле (badInput: value пустое) — ошибка строки, а не молчаливый пропуск
         const bad = inputs.filter(inp => inp.validity && inp.validity.badInput);
         if (bad.length) {
@@ -454,12 +454,12 @@
                 inp.setAttribute('aria-invalid', 'true');
                 $(inp.id + '-err').textContent = 'Գրեք ամբողջ թիվ՝ կիլոմետր';
             });
-            $('gjOdoErr').textContent = 'Ուղղեք նշված տողերը՝ ոչինչ չի պահպանվել։';
+            $('gjOdoFormErr').textContent = 'Ուղղեք նշված տողերը՝ ոչինչ չի պահպանվել։';
             bad[0].focus();
             return;
         }
         const filled = inputs.filter(inp => inp.value.trim() !== '');
-        if (!filled.length) { $('gjOdoErr').textContent = 'Լրացրեք գոնե մեկ մեքենայի վազքը'; return; }
+        if (!filled.length) { $('gjOdoFormErr').textContent = 'Լրացրեք գոնե մեկ մեքենայի վազքը'; return; }
         state.busy = true;
         $('gjOdoSave').disabled = true;
         try {
@@ -478,10 +478,10 @@
                 inp.setAttribute('aria-invalid', 'true');
                 $(inp.id + '-err').textContent = text;
             });
-            $('gjOdoErr').textContent = failed.length ? 'Պահպանվեց՝ ' + saved + ', սխալ՝ ' + failed.length + '։ Ուղղեք նշված տողերը։' : '';
+            $('gjOdoFormErr').textContent = failed.length ? 'Պահպանվեց՝ ' + saved + ', սխալ՝ ' + failed.length + '։ Ուղղեք նշված տողերը։' : '';
             announce('Վազքը պահպանվեց՝ ' + saved + ' մեքենա');
         } catch (e) {
-            $('gjOdoErr').textContent = e.message;
+            $('gjOdoFormErr').textContent = e.message;
         } finally {
             state.busy = false;
             $('gjOdoSave').disabled = false;
