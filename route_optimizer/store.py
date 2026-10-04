@@ -16,8 +16,9 @@ import math
 import os
 import re
 import sqlite3
+import unicodedata
 from dataclasses import asdict, dataclass, field, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Collection, Literal, Mapping, Sequence
 
@@ -27,7 +28,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -137,6 +138,14 @@ _GARAGE_ONE_ODOMETER = (
     "CREATE UNIQUE INDEX IF NOT EXISTS garage_one_odometer ON garage_entry(car_code, day) "
     "WHERE kind = 'odometer' AND deleted_at IS NULL")
 
+# Схема 17 (ответ владельца №62): водитель машины — для «Բեռնագիր». Закреплён за машиной, но меняется часто: строка на
+# (машина, с какого дня); на день D действует последняя строка с from_day ≤ D — смена с сегодня не переписывает прошлые
+# дни. Пустое имя — «с этого дня водителя нет» (в накладной — строка, вписать от руки). Только для печати, в расчёты не входит.
+_TRUCK_DRIVER_TABLE = (
+    "CREATE TABLE IF NOT EXISTS truck_driver(car_code TEXT NOT NULL, from_day TEXT NOT NULL, "
+    "name TEXT NOT NULL CHECK (length(name) <= 60), updated_at TEXT NOT NULL, updated_by TEXT, "
+    "PRIMARY KEY (car_code, from_day))")
+
 _CUSTOMER_VEHICLES_TABLE = (
     "CREATE TABLE IF NOT EXISTS customer_vehicle_access(customer_id INTEGER PRIMARY KEY, "
     "mode TEXT NOT NULL CHECK(mode IN ('allow', 'deny')), trucks TEXT NOT NULL, "
@@ -192,6 +201,7 @@ _SCHEMA = (
     _CUSTOMER_UNLOAD_TABLE,
     _GARAGE_TABLE,
     _GARAGE_ONE_ODOMETER,
+    _TRUCK_DRIVER_TABLE,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -289,6 +299,8 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     14: (_CUSTOMER_UNLOAD_TABLE,),
     # 15 → 16 (№53): только добавляем — журнал гаража и его индекс; прежние таблицы и значения не меняются.
     15: (_GARAGE_TABLE, _GARAGE_ONE_ODOMETER),
+    # 16 → 17 (№62): только добавляем — водители машин; прежние таблицы и значения не меняются.
+    16: (_TRUCK_DRIVER_TABLE,),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -520,6 +532,26 @@ def check_unload_min(raw: Any) -> tuple[float | None, str | None]:
             or not float(raw).is_integer()):
         return None, f'время у магазина — целое число минут от {lo} до {hi}'
     return float(raw), None
+
+
+DRIVER_NAME_MAX = 60
+# управляющие, форматные (направление текста, мягкий перенос, нулевой ширины), частные, несуществующие и разделители
+# строк — в печатаемом имени не нужны и могут переставить текст накладной
+_INVISIBLE_CATEGORIES = frozenset({'Cc', 'Cf', 'Co', 'Cs', 'Cn', 'Zl', 'Zp'})
+
+
+def check_driver_name(raw: Any) -> tuple[str | None, str | None]:
+    """Имя водителя машины (№62) → (имя, None) или (None, ошибка по-армянски — раздел только на армянском, №58). Пробелы
+    по краям убираются, подряд — один; пустая строка — «водителя нет»; не длиннее DRIVER_NAME_MAX; управляющие и
+    невидимые символы не принимаются (имя печатается в накладной)."""
+    if not isinstance(raw, str):
+        return None, 'Վարորդի անունը պետք է լինի տեքստ'
+    if any(unicodedata.category(c) in _INVISIBLE_CATEGORIES for c in raw):
+        return None, 'Վարորդի անվան մեջ կան անթույլատրելի նշաններ'
+    name = ' '.join(raw.split())
+    if len(name) > DRIVER_NAME_MAX:
+        return None, f'Վարորդի անունը՝ ոչ ավելի, քան {DRIVER_NAME_MAX} նիշ'
+    return name, None
 
 
 class GarageError(ValueError):
@@ -1941,6 +1973,54 @@ class Store:
                          'VALUES(?, ?, ?, ?) ON CONFLICT(customer_id) DO UPDATE SET fixed_min = excluded.fixed_min, '
                          'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
                          (customer_id, float(unload_min), _now(), user))
+
+    def truck_drivers(self, day: str) -> dict[str, str]:
+        """Водители машин на день YYYY-MM-DD (№62): машина → имя её последней записи с from_day ≤ day; машины без записи
+        и с пустым именем («водителя нет») — не в ответе."""
+        rows = self._read(lambda conn: conn.execute(
+            'SELECT d.car_code, d.name FROM truck_driver d WHERE d.from_day = (SELECT MAX(x.from_day) FROM truck_driver x '
+            'WHERE x.car_code = d.car_code AND x.from_day <= ?)', (day,)).fetchall())
+        return {code: name for code, name in rows if name}
+
+    def driver_names(self) -> list[str]:
+        """Все имена водителей из записей — подсказка при вводе (№62)."""
+        rows = self._read(lambda conn: conn.execute(
+            "SELECT DISTINCT name FROM truck_driver WHERE name <> ''").fetchall())
+        return sorted(r[0] for r in rows)
+
+    def save_truck_driver(self, car_code: str, from_day: str, name: str, user: str | None,
+                          only_this_day: bool = False) -> None:
+        """Водитель машины с from_day и до следующей смены (№62; name — проверенное check_driver_name, '' — «Հեռացնել»:
+        с этого дня водителя нет). Запись на тот же день заменяется — ошибку исправляют, вписав верное имя; записи более
+        поздних дней остаются — они действуют со своего дня. only_this_day — прошедший день (подменный водитель): меняется
+        только он — со следующего дня остаётся тот, кто был там до правки (у следующего дня появляется своя запись, если
+        его водитель иначе сдвинулся бы)."""
+        if not isinstance(car_code, str) or not car_code or len(car_code) > 64:
+            raise ValueError('car_code: непустая строка до 64 символов')
+        if not isinstance(from_day, str) or not _ISO_DAY_RE.match(from_day):
+            raise ValueError('from_day: дата YYYY-MM-DD')
+        if check_driver_name(name) != (name, None):
+            raise ValueError('имя водителя не прошло проверку')
+        next_day = (date.fromisoformat(from_day) + timedelta(days=1)).isoformat()
+
+        def on_day(conn: sqlite3.Connection, day: str) -> str | None:
+            row = conn.execute('SELECT name FROM truck_driver WHERE car_code = ? AND from_day <= ? '
+                               'ORDER BY from_day DESC LIMIT 1', (car_code, day)).fetchone()
+            return row[0] if row else None
+
+        def put(conn: sqlite3.Connection, day: str, value: str) -> None:
+            conn.execute('INSERT INTO truck_driver(car_code, from_day, name, updated_at, updated_by) VALUES(?, ?, ?, ?, ?) '
+                         'ON CONFLICT(car_code, from_day) DO UPDATE SET name = excluded.name, '
+                         'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                         (car_code, day, value, _now(), user))
+
+        def write(conn: sqlite3.Connection) -> None:
+            before_next = on_day(conn, next_day)
+            put(conn, from_day, name)
+            if only_this_day and on_day(conn, next_day) != before_next:   # своя запись следующего дня — не сдвинулась
+                put(conn, next_day, before_next or '')
+
+        self._transaction(write, 'не удалось сохранить водителя машины')
 
     def load_dispatch(self, day: str) -> tuple[dict[str, Any], int] | None:
         """Черновик плана развоза на дату (YYYY-MM-DD): (данные, номер правки) или None."""

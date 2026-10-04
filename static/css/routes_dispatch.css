@@ -770,3 +770,7 @@
     .dp-tacts .dp-wbbtn { padding: 0 10px; }
     .dp-tacts .dp-wbbtn span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }
+/* водитель машины (№62): имя в шапке карточки; поле диалога «Վարորդ» шире поля минут */
+.dp-tdriver { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; font-size: .875rem; color: var(--rt-fg-dim); }
+.dp-tdriver i { font-size: .75rem; color: var(--rt-fg-mute); }
+.dp-unload-dlg .rt-input.dp-driver-input { width: 100%; }
