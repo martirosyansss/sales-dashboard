@@ -1997,10 +1997,11 @@ class Store:
         names = dict(permanent) | dict(subs)
         return {code: name for code, name in names.items() if name}, frozenset(code for code, _ in subs)
 
-    def driver_names(self) -> list[str]:
-        """Все имена водителей из записей — подсказка при вводе (№62)."""
+    def driver_names(self, since: str = '') -> list[str]:
+        """Имена водителей из записей (№62) с днём записи не раньше since (YYYY-MM-DD; '' — все), по алфавиту: «свои»
+        водители для выбора — давно не встречавшиеся из списка уходят сами (опечатку не нужно удалять)."""
         rows = self._read(lambda conn: conn.execute(
-            "SELECT DISTINCT name FROM truck_driver WHERE name <> ''").fetchall())
+            "SELECT DISTINCT name FROM truck_driver WHERE name <> '' AND from_day >= ?", (since,)).fetchall())
         return sorted(r[0] for r in rows)
 
     def save_truck_driver(self, car_code: str, day: str, name: str, user: str | None, only_day: bool = False) -> None:

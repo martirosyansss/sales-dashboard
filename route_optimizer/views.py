@@ -21,7 +21,8 @@ from datetime import date, datetime, timedelta
 from functools import wraps
 from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
 
-from flask import Blueprint, Response, current_app, g, has_app_context, jsonify, render_template, request, session
+from flask import (Blueprint, Response, current_app, g, has_app_context, has_request_context, jsonify,
+                   render_template, request, session)
 
 from . import actuals as ac
 from . import ai_chat
@@ -142,6 +143,10 @@ class RoutesState:
     fact_loader: Callable[[date], dp.FactData] | None = None
     # Բեռնագիր (№57): fISN заказов точек машины → их строки (из проведённой накладной заказа, если она есть) и товары
     waybill_loader: Callable[[Sequence[str]], wb.Lines] | None = None
+    # водители-экспедиторы ERP за [since, until) для выбора в «Վարորդ» (№62); кэш — (time.monotonic() до, имена)
+    driver_list_loader: Callable[[date, date], list[str]] | None = None
+    driver_list_cache: tuple[float, list[str]] | None = None
+    driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
     dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
     driver_geo: DriverGeo | None = None   # None — раздела «Առաքիչ» нет: точек водителей нет, всё как раньше
@@ -1285,14 +1290,51 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
     модели ничего бы не сказали. Водители (№62, _drivers_json) — тоже только странице: имена людей модели не отправляются."""
     return {**_dispatch_body(dd), 'store_unload': {st.customer_id: dd.bundle.unload_min[st.customer_id]
                                                    for st in dd.stops if st.customer_id in dd.bundle.unload_min},
-            **_drivers_json(_state().store, dd.day)}
+            **_drivers_json(_state(), dd.day)}
 
 
-def _drivers_json(store: Store, day: date) -> dict[str, Any]:
+DRIVER_LIST_DAYS = 90        # водители ERP и свои — кто встречался за 90 дней
+DRIVER_LIST_TTL_S = 3600     # список ERP перечитывается не чаще раза в час
+DRIVER_LIST_RETRY_S = 60     # ERP недоступна — снова спросить через минуту (страница работает со своими)
+
+
+def _erp_drivers(state: RoutesState) -> list[str]:
+    """Водители-экспедиторы ERP (waybill.load_drivers) из кэша. Перечитывает только GET (открытие дня) и только один
+    запрос за раз: правки плана (POST) ERP ради необязательного списка не ждут — им прежний список, даже устаревший. ERP
+    недоступна — прежний список остаётся (в логе), повтор через DRIVER_LIST_RETRY_S; страница не падает."""
+    cached = state.driver_list_cache
+    names = cached[1] if cached is not None else []
+    if (cached is not None and time.monotonic() < cached[0]) or state.driver_list_loader is None \
+            or not (has_request_context() and request.method == 'GET') or not state.driver_list_lock.acquire(blocking=False):
+        return names
+    try:
+        today = _clock().date()
+        try:
+            names = state.driver_list_loader(today - timedelta(days=DRIVER_LIST_DAYS), today + timedelta(days=1))
+            ttl = DRIVER_LIST_TTL_S
+        except ErpError:
+            logger.warning('[Routes] Список водителей ERP не прочитан — прежний список', exc_info=True)
+            ttl = DRIVER_LIST_RETRY_S
+        state.driver_list_cache = (time.monotonic() + ttl, names)
+        return names
+    finally:
+        state.driver_list_lock.release()
+
+
+def _drivers_json(state: RoutesState, day: date) -> dict[str, Any]:
     """Водители машин на день (№62): drivers — машина → имя, substitutes — машины с подменой на этот день (только он),
-    driver_names — все имена для подсказки при вводе."""
-    drivers, subs = store.truck_drivers(day.isoformat())
-    return {'drivers': drivers, 'substitutes': sorted(subs), 'driver_names': store.driver_names()}
+    driver_list — из чего выбирать (ответ владельца: «из ERP + добавить своих»): [{name, erp}] — экспедиторы ERP за
+    DRIVER_LIST_DAYS, затем свои (вписанные в «Վարորդ» за тот же срок и не из ERP)."""
+    drivers, subs = state.store.truck_drivers(day.isoformat())
+    erp_names = _erp_drivers(state)
+    in_erp = set(erp_names)
+    today = _clock().date()
+    since = (today - timedelta(days=DRIVER_LIST_DAYS)).isoformat()
+    # свои — вписанные за срок и все, кто водит сейчас или в этот день (давно закреплённый не пропадает из выбора)
+    current = set(state.store.truck_drivers(today.isoformat())[0].values()) | set(drivers.values())
+    own = sorted((set(state.store.driver_names(since)) | current) - in_erp)
+    return {'drivers': drivers, 'substitutes': sorted(subs),
+            'driver_list': [{'name': n, 'erp': True} for n in erp_names] + [{'name': n, 'erp': False} for n in own]}
 
 
 SETTINGS_TRUCKS_URL = '/routes/settings#trucks'
@@ -1761,7 +1803,7 @@ def api_dispatch_driver() -> Any:
     only_day = one_day or day < _clock().date()
     state.store.save_truck_driver(car, day.isoformat(), name, session.get('username'), only_day=only_day)
     logger.info('[Routes] Водитель %s %s %s (%s)', car, 'на' if only_day else 'с', day, session.get('username'))
-    return jsonify({'success': True, 'day': day.isoformat(), 'only_day': only_day, **_drivers_json(state.store, day)})
+    return jsonify({'success': True, 'day': day.isoformat(), 'only_day': only_day, **_drivers_json(state, day)})
 
 
 @bp.get('/api/routes/measurements')

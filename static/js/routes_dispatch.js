@@ -2590,14 +2590,8 @@
         if (!t) return;
         state.driverCar = code;
         $('dpDriverLead').textContent = truckLabel(t);
-        $('dpDriverName').value = driverOf(code);
-        const list = $('dpDriverNames');
-        list.textContent = '';
-        (Array.isArray(state.data.driver_names) ? state.data.driver_names : []).forEach(n => {
-            const o = document.createElement('option');
-            o.value = n;
-            list.appendChild(o);
-        });
+        fillDriverPick(driverOf(code));
+        $('dpDriverName').value = '';
         // сегодня и дальше — выбор: только этот день (подменный водитель; по умолчанию, если водитель уже закреплён) или
         // с этого дня до следующей смены; прошедший день — только он (выбора нет, как решит и сервер)
         const past = !!state.data.is_past;
@@ -2611,11 +2605,40 @@
         markDriver(false);
         $('dpDriverClear').hidden = !driverOf(code) && !isSub(code);
         $('dpDriverDlg').showModal();
-        $('dpDriverName').focus();
+        $('dpDriverPick').focus();
+    }
+    // Выбор водителя (ответ владельца: «из ERP + добавить своих»): экспедиторы ERP, затем свои, последний пункт — новый
+    // водитель (поле имени). Нынешний водитель дня, которого в списке нет (давно не встречался), — среди своих.
+    const DRIVER_NEW = '__new__';
+    function fillDriverPick(current) {
+        const sel = $('dpDriverPick');
+        sel.textContent = '';
+        const list = Array.isArray(state.data.driver_list) ? state.data.driver_list.filter(x => isObj(x) && typeof x.name === 'string') : [];
+        const own = list.filter(x => !x.erp).map(x => x.name);
+        if (current && !list.some(x => x.name === current)) own.push(current);
+        const add = (parent, value, text) => {
+            const o = document.createElement('option');
+            o.value = value;
+            o.textContent = text;
+            parent.appendChild(o);
+        };
+        add(sel, '', '— ընտրեք —');
+        [['ERP-ի առաքիչներ', list.filter(x => x.erp).map(x => x.name)], ['Ավելացված ծրագրում', own]].forEach(([label, names]) => {
+            if (!names.length) return;
+            const g = document.createElement('optgroup');
+            g.label = label;
+            names.forEach(n => add(g, n, n));
+            sel.appendChild(g);
+        });
+        add(sel, DRIVER_NEW, '+ Նոր վարորդ (ERP-ում չկա)…');
+        sel.value = current || '';
+        $('dpDriverNewBox').hidden = true;
     }
     function markDriver(bad, text) {
         $('dpDriverErr').textContent = text || '';
-        if (bad) $('dpDriverName').setAttribute('aria-invalid', 'true'); else $('dpDriverName').removeAttribute('aria-invalid');
+        const field = $('dpDriverPick').value === DRIVER_NEW ? $('dpDriverName') : $('dpDriverPick');
+        ['dpDriverPick', 'dpDriverName'].forEach(id => $(id).removeAttribute('aria-invalid'));
+        if (bad) field.setAttribute('aria-invalid', 'true');
     }
     // clear — «Հեռացնել»: «только этот день» — снять подмену (снова постоянный; подмены не было — в этот день водителя нет),
     // «с этого дня» — с этого дня водителя нет (в накладной — строка вписать от руки); пустое поле — то же. Ошибку
@@ -2623,11 +2646,17 @@
     async function saveDriver(clear) {
         const code = state.driverCar;
         if (!code || state.busy) return;
-        const name = clear ? '' : $('dpDriverName').value.trim().replace(/\s+/g, ' ');
+        const pick = $('dpDriverPick').value;
+        const name = clear ? '' : (pick === DRIVER_NEW ? $('dpDriverName').value : pick).trim().replace(/\s+/g, ' ');
+        if (!clear && !name) {
+            markDriver(true, pick === DRIVER_NEW ? 'Գրեք նոր վարորդի անունը' : 'Ընտրեք վարորդին ցուցակից');
+            (pick === DRIVER_NEW ? $('dpDriverName') : $('dpDriverPick')).focus();
+            return;
+        }
         const onlyDay = !state.data.is_past && $('dpDriverDay').checked;
         // ничего не меняется: то же имя и тот же вид (подмена / постоянный); «Հեռացնել» подмены — всегда запрос
         if (!clear && name === driverOf(code) && (onlyDay || state.data.is_past) === isSub(code)) { $('dpDriverDlg').close(); return; }
-        const lock = ['dpDriverSave', 'dpDriverClear', 'dpDriverCancel', 'dpDriverName', 'dpDriverDay', 'dpDriverFrom'];
+        const lock = ['dpDriverSave', 'dpDriverClear', 'dpDriverCancel', 'dpDriverPick', 'dpDriverName', 'dpDriverDay', 'dpDriverFrom'];
         state.busy = true;
         lock.forEach(id => { $(id).disabled = true; });
         markDriver(false);
@@ -2639,7 +2668,7 @@
             state.busy = false;
             lock.forEach(id => { $(id).disabled = false; });
             markDriver(!!(e.data && isObj(e.data.errors) && e.data.errors.name), e.message);
-            $('dpDriverName').focus();
+            ($('dpDriverPick').value === DRIVER_NEW ? $('dpDriverName') : $('dpDriverPick')).focus();
             return;
         }
         state.busy = false;
@@ -2648,7 +2677,7 @@
         if (state.data && state.data.day === r.day) {
             state.data.drivers = r.drivers;
             state.data.substitutes = r.substitutes;
-            state.data.driver_names = r.driver_names;
+            state.data.driver_list = r.driver_list;
             if (state.data.plan) renderTruckCards(state.data.plan);
         }
         const t = wbTruck(state.data, code);
@@ -2873,6 +2902,11 @@
         });
         $('dpDriverDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
         $('dpDriverName').addEventListener('input', () => markDriver(false));
+        // поле нового водителя — без перевода фокуса: стрелки по закрытому списку тоже дают change (WCAG 3.2.2)
+        $('dpDriverPick').addEventListener('change', () => {
+            $('dpDriverNewBox').hidden = $('dpDriverPick').value !== DRIVER_NEW;
+            markDriver(false);
+        });
         $('dpDriverName').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveDriver(false); } });
         $('dpUnloadSave').addEventListener('click', () => saveUnload(false));
         $('dpUnloadClear').addEventListener('click', () => saveUnload(true));

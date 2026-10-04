@@ -29,6 +29,7 @@ WATER = wb.Product(10, '2801', 'Գառնի 6լ', 'հատ', 6.03, 2)
 COLA = wb.Product(11, '1113', 'Կոլա 1.5լ', 'հատ', 1.65, 6)
 CUP = wb.Product(12, 'A-1', 'Բաժակ', 'տուփ', 0.2, None)
 PRODUCTS = {p.id: p for p in (WATER, COLA, CUP)}
+ERP_DRIVERS = ('Ավակիմյան Արթուր', 'Վարդանյան Գարիկ')        # водители-экспедиторы ERP в API-тестах
 
 
 # ============================== деление строки между рейсами ==============================
@@ -278,6 +279,7 @@ def test_load_lines_closes_connection_on_error(monkeypatch):
 def day(client):
     """План 01.10 на CAR1 и CAR2; строки заказов — подделка (запоминает, какие заказы спросили)."""
     _dispatch_setup(client, [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2), _dorder(3, 104, 1200.0, agent=2)])
+    client.application.extensions['route_optimizer'].driver_list_loader = lambda since, until: list(ERP_DRIVERS)
     r = client.post('/api/routes/dispatch/build', json={'date': '2026-10-01', 'trucks': ['CAR1', 'CAR2']})
     assert r.status_code == 200, r.get_json()
     asked = []
@@ -469,11 +471,12 @@ def _post_driver(client, **body):
 def test_api_driver_saved_from_day_and_printed(client, day, monkeypatch):
     monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 9, 30, 18, 0))   # 01.10 — завтра: «с этого дня»
     page, _ = day
-    assert page['drivers'] == {} and page['substitutes'] == [] and page['driver_names'] == []
+    erp_list = [{'name': n, 'erp': True} for n in ERP_DRIVERS]
+    assert page['drivers'] == {} and page['substitutes'] == [] and page['driver_list'] == erp_list
     r = _post_driver(client, name='  Վարդանյան  Գարիկ ')
     assert r.status_code == 200, r.get_json()
     assert r.get_json() == {'success': True, 'day': '2026-10-01', 'only_day': False, 'drivers': {'CAR1': 'Վարդանյան Գարիկ'},
-                            'substitutes': [], 'driver_names': ['Վարդանյան Գարիկ']}
+                            'substitutes': [], 'driver_list': erp_list}            # из ERP — в «своих» не дублируется
     get = lambda d: client.get(f'/api/routes/dispatch?date={d}').get_json()         # noqa: E731
     assert get('2026-10-01')['drivers'] == get('2026-10-02')['drivers'] == {'CAR1': 'Վարդանյան Գարիկ'}
     assert get('2026-09-30')['drivers'] == {}                                        # прошлые дни не меняются
@@ -482,7 +485,7 @@ def test_api_driver_saved_from_day_and_printed(client, day, monkeypatch):
     assert wbill['driver'] == ('Վարդանյան Գարիկ' if code == 'CAR1' else None)
     assert _post_driver(client, name='', date='2026-10-02').get_json()['drivers'] == {}   # «Հեռացնել» со 2-го
     assert get('2026-10-02')['drivers'] == {} and get('2026-10-01')['drivers'] == {'CAR1': 'Վարդանյան Գարիկ'}
-    assert get('2026-10-02')['driver_names'] == ['Վարդանյան Գարիկ']                 # имя осталось в подсказке
+    assert get('2026-10-02')['driver_list'] == erp_list
     assert _post_driver(client, name='').get_json()['drivers'] == {}                  # тот же день — замена
     assert _get(client, date='2026-10-01', truck=code, rev=page['rev']).get_json()['driver'] is None
     assert get('2026-10-01')['rev'] == page['rev']                                   # план не менялся
@@ -522,7 +525,8 @@ def test_api_driver_not_in_ai_day_data(client, day, monkeypatch):
         state = client.application.extensions['route_optimizer']
         dd = views._load_day(state, views._bundle(state), views.date(2026, 10, 1))
         body = views._dispatch_body(dd)
-    assert 'drivers' not in body and 'driver_names' not in body and 'Արամ' not in str(body)
+    assert 'drivers' not in body and 'driver_list' not in body and 'Արամ' not in str(body)
+    assert 'Վարդանյան' not in str(body)                                             # и список водителей ERP
 
 
 def test_api_driver_bad_request(client, day):
@@ -533,3 +537,108 @@ def test_api_driver_bad_request(client, day):
         assert r.status_code == 400 and field in r.get_json()['errors'], (body, r.get_json())
     assert client.get('/api/routes/dispatch?date=2026-10-01').get_json()['drivers'] == {}
     assert client.post('/api/routes/dispatch/driver', data='x', content_type='text/plain').status_code == 415
+
+
+def test_api_driver_list_erp_then_own(client, day, monkeypatch):
+    """Ответ владельца: «из ERP + добавить своих» — ERP за 90 дней, затем вписанные в программе за тот же срок и не из ERP."""
+    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 9, 30, 18, 0))
+    assert _post_driver(client, name='Սամվել Նոր', date='2026-06-01').status_code == 200        # давно — не в списке
+    assert _post_driver(client, name='Լևոն Ավելացված', only_day=True).status_code == 200
+    assert _post_driver(client, name='Վարդանյան Գարիկ', date='2026-10-02').status_code == 200   # есть в ERP
+    page = client.get('/api/routes/dispatch?date=2026-10-01').get_json()
+    assert page['driver_list'] == [{'name': n, 'erp': True} for n in ERP_DRIVERS] + [{'name': 'Լևոն Ավելացված', 'erp': False}]
+    assert page['drivers'] == {'CAR1': 'Լևոն Ավելացված'}
+
+
+def test_erp_driver_list_cached_and_erp_down(client, day, monkeypatch):
+    state = client.application.extensions['route_optimizer']
+    calls = []
+
+    def loader(since, until):
+        calls.append((since, until))
+        return ['Ա']
+    state.driver_list_loader, state.driver_list_cache = loader, None
+    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 10, 4, 9, 0))
+    assert _post_driver(client, name='Արամ', date='2026-10-04').get_json()['driver_list'] == \
+        [{'name': 'Արամ', 'erp': False}] and calls == []                              # POST ERP не ждёт
+    for _ in range(3):
+        assert client.get('/api/routes/dispatch?date=2026-10-01').get_json()['driver_list'] == \
+            [{'name': 'Ա', 'erp': True}, {'name': 'Արամ', 'erp': False}]
+    assert calls == [(views.date(2026, 7, 6), views.date(2026, 10, 5))]          # 90 дней, один запрос в час
+
+    def down(since, until):
+        calls.append('down')
+        raise views.ErpError('нет связи')
+    state.driver_list_loader = down
+    clock = [10 ** 12]
+    monkeypatch.setattr(views.time, 'monotonic', lambda: clock[0])                # кэш истёк
+    r = client.get('/api/routes/dispatch?date=2026-10-01')
+    assert r.status_code == 200 and r.get_json()['driver_list'][0] == {'name': 'Ա', 'erp': True}   # прежний список ERP
+    client.get('/api/routes/dispatch?date=2026-10-01')
+    assert calls.count('down') == 1                                              # повтор — не раньше чем через минуту
+    clock[0] += views.DRIVER_LIST_RETRY_S + 1
+    client.get('/api/routes/dispatch?date=2026-10-01')
+    assert calls.count('down') == 2
+    assert state.driver_list_lock.acquire(blocking=False)                         # перечитывает уже кто-то — не ждать
+    try:
+        clock[0] += 10 ** 6
+        assert client.get('/api/routes/dispatch?date=2026-10-01').status_code == 200 and calls.count('down') == 2
+    finally:
+        state.driver_list_lock.release()
+
+
+def test_driver_list_keeps_current_driver_older_than_window(client, day, monkeypatch):
+    """Ревью: свой водитель, закреплённый давно (запись старше 90 дней), остаётся в выборе для других машин."""
+    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 10, 4, 9, 0))
+    state = client.application.extensions['route_optimizer']
+    state.store.save_truck_driver('CAR2', '2026-05-01', 'Հին Վարորդ', 'qa')
+    state.store.save_truck_driver('CAR2', '2026-10-01', 'Ուրիշ', 'qa', only_day=True)   # в открытый день — подмена
+    page = client.get('/api/routes/dispatch?date=2026-10-01').get_json()
+    assert page['drivers'] == {'CAR2': 'Ուրիշ'}                                    # Հին — только «сегодня» (04.10)
+    assert {'name': 'Հին Վարորդ', 'erp': False} in page['driver_list']
+
+
+def test_store_driver_names_since(tmp_path):
+    s = st.Store(str(tmp_path / 'r.db'))
+    s.save_truck_driver('CAR1', '2026-06-01', 'Հին', 'qa')
+    s.save_truck_driver('CAR1', '2026-09-01', 'Նոր', 'qa', only_day=True)
+    s.save_truck_driver('CAR2', '2026-09-02', '', 'qa')
+    assert s.driver_names() == ['Հին', 'Նոր'] and s.driver_names('2026-07-01') == ['Նոր']
+
+
+def test_load_drivers_normalizes_and_dedupes(monkeypatch):
+    class Cur:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def execute(self, sql, params=None):
+            self.conn.calls.append((sql, params))
+
+        def fetchall(self):
+            return [('Հակոբյան  Կարապետ',), ('Հակոբյան Կարապետ ',), ('Ա' * 61,), ('',), (None,), ('Բ',)]
+
+        def close(self):
+            pass
+
+    class Conn:
+        calls, closed = [], False
+
+        def cursor(self):
+            return Cur(self)
+
+        def close(self):
+            Conn.closed = True
+
+    conn = Conn()
+    timeouts = []
+
+    def connect(cs, login_timeout=15, query_timeout=120):
+        timeouts.append((login_timeout, query_timeout))
+        return conn
+    monkeypatch.setattr(erp, 'connect', connect)
+    assert wb.load_drivers('DRIVER={none};', views.date(2026, 7, 1), views.date(2026, 10, 1)) == ['Բ', 'Հակոբյան Կարապետ']
+    assert Conn.closed and conn.calls[0][1] == [views.date(2026, 7, 1), views.date(2026, 10, 1)]
+    assert timeouts == [(3, 10)]                                                  # недоступная ERP не держит страницу
+    sql = conn.calls[0][0]
+    erp.check_sql(sql)
+    assert sql.count('WITH (NOLOCK)') == 2 and 's.fSTATE = 2' in sql and 'fCLOSED' in sql

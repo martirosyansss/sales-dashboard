@@ -778,3 +778,7 @@
 .dp-driver-scope[hidden] { display: none; }
 .dp-driver-scope legend { margin-bottom: 4px; }
 .dp-driver-scope label { display: flex; align-items: flex-start; gap: 10px; font-size: .9375rem; cursor: pointer; }
+/* выбор водителя из списка (ERP + свои) и поле нового водителя под ним */
+.dp-unload-dlg .rt-select.dp-driver-input { width: 100%; max-width: none; }
+.dp-driver-new { margin-top: 10px; }
+.dp-driver-new[hidden] { display: none; }
