@@ -1,13 +1,93 @@
 /* «Առաքիչ» /courier — офис терминалов водителей, армянский, «для чайников».
    Поверх routes.css: те же токены (--rt-*), только классы этой страницы (cr-*). */
 
-#crPage {
-    --rt-font: 'Golos Text', 'Noto Sans Armenian', 'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
-    max-width: 1320px; margin: 0 auto;
+/* шрифт и цвета — общие из routes.css (тема «Развоза»: Google Sans с армянскими буквами), ширина — как у «Ավտոտնակ» */
+#crPage { max-width: 1320px; margin: 0 auto; }
+.cr-kicker { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 4px; font-size: .9375rem; font-weight: 700; color: var(--rt-acc); }
+
+/* Вкладки страницы — сегменты под шапкой, как у «Ավտոտնակ» (.gj-tabs) */
+.cr-tabs {
+    display: flex; gap: 4px; padding: 4px; margin: 0 0 4px;
+    background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: 12px;
 }
-.cr-kicker { margin: 0 0 2px; font-size: .9375rem; font-weight: 700; color: var(--rt-acc); }
-#crPage .rt-tabs a[aria-selected="true"] { background: var(--rt-acc); color: #06201d; }
-.cr-pane { padding-top: 18px; }
+#crPage .cr-tabs a {
+    flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px;
+    padding: 0 14px; border-radius: 9px; color: var(--rt-fg-dim); font-weight: 600; font-size: 1rem;
+    text-decoration: none; white-space: nowrap; transition: background .15s, color .15s;
+}
+#crPage .cr-tabs a:hover { color: var(--rt-fg); background: var(--rt-panel-2); }
+#crPage .cr-tabs a[aria-selected="true"] { background: var(--rt-acc); color: var(--rt-acc-ink); }
+.cr-tabs a i { font-size: .9em; opacity: .9; }
+.cr-pane { padding-top: 14px; }
+
+/* «Վարորդներ»: итог, списки водителей и терминалов, формы добавления */
+.cr-kpis:empty { display: none; }
+/* три короткие плитки — в ряд на любой ширине (routes.css на ≤ 991 px ставит их столбиком) */
+.cr-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.cr-kpis .rt-kpi { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
+.cr-kpis .rt-kpi-label i { color: var(--rt-fg-mute); }
+.cr-kpis .rt-kpi.is-good .rt-kpi-label i { color: var(--rt-ok); }
+.cr-kpis .rt-kpi.is-warn .rt-kpi-label i { color: var(--rt-warn); }
+.cr-panel { display: flex; flex-direction: column; }
+.cr-count {
+    margin-left: auto; min-width: 28px; padding: 1px 9px; border-radius: 999px; text-align: center;
+    font: 600 .875rem var(--rt-mono); color: var(--rt-fg-dim); background: var(--rt-inset); border: 1px solid var(--rt-line);
+}
+.cr-count:empty { display: none; }
+
+.cr-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.cr-row {
+    display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; align-items: center; gap: 4px 12px;
+    padding: 10px 10px 10px 12px; border: 1px solid var(--rt-line-soft); border-radius: var(--rt-radius-sm);
+    background: var(--rt-inset); transition: border-color .15s, background .15s;
+}
+.cr-row:hover { border-color: var(--rt-line); }
+.cr-row.is-off { opacity: .6; }
+.cr-row.is-off:hover { opacity: .85; }
+.cr-row.is-editing { border-color: var(--rt-acc-dim); background: var(--rt-acc-glow); opacity: 1; }
+.cr-avatar {
+    width: 40px; height: 40px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: .9375rem; letter-spacing: .02em; color: var(--rt-acc);
+    background: var(--rt-acc-glow); box-shadow: inset 0 0 0 1px rgba(56, 189, 248, .28);
+}
+.cr-avatar.is-device { border-radius: 11px; color: var(--rt-fg-dim); background: var(--rt-panel-2); box-shadow: inset 0 0 0 1px var(--rt-line); }
+.cr-row.is-off .cr-avatar { color: var(--rt-fg-mute); background: var(--rt-panel-2); box-shadow: inset 0 0 0 1px var(--rt-line); }
+.cr-row-main { display: flex; flex-direction: column; min-width: 0; }
+.cr-row-name { font-weight: 600; color: var(--rt-fg); overflow-wrap: anywhere; line-height: 1.3; }
+.cr-row-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; font-size: .8125rem; color: var(--rt-fg-mute); margin-top: 2px; }
+.cr-state { display: inline-flex; align-items: center; gap: 6px; }
+.cr-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--rt-fg-mute); }
+.cr-state.is-on { color: var(--rt-fg-dim); }
+.cr-state.is-on::before { background: var(--rt-ok); box-shadow: 0 0 0 3px var(--rt-ok-bg); }
+.cr-plate {
+    font: 600 .8125rem var(--rt-mono); letter-spacing: .04em; color: var(--rt-fg);
+    padding: 0 7px; border-radius: 5px; border: 1px solid var(--rt-line); background: var(--rt-panel-2);
+}
+.cr-seen { display: inline-flex; align-items: center; gap: 5px; }
+.cr-row-badge { justify-self: end; }
+.cr-row-badge .rt-badge { white-space: nowrap; }
+.cr-row-act.rt-iconbtn { width: 36px; height: 36px; border-radius: 10px; }
+.rt-btn.cr-danger:hover { color: var(--rt-danger); border-color: var(--rt-danger-line); background: var(--rt-danger-bg); }
+.cr-empty {
+    display: flex; align-items: center; gap: 10px; padding: 18px 14px; color: var(--rt-fg-dim); font-size: .9375rem;
+    border: 1px dashed var(--rt-line); border-radius: var(--rt-radius-sm);
+}
+.cr-empty i { color: var(--rt-fg-mute); }
+
+/* Форма добавления — вложенная панель внизу карточки */
+.cr-add {
+    margin-top: 14px; padding: 14px 14px 12px; border: 1px solid var(--rt-line-soft); border-radius: var(--rt-radius-sm);
+    background: linear-gradient(180deg, rgba(255, 255, 255, .015), transparent), var(--rt-inset); transition: border-color .2s, box-shadow .2s;
+}
+.cr-add.is-editing { border-color: var(--rt-acc-dim); box-shadow: 0 0 0 3px var(--rt-acc-glow); }
+#crPage .cr-add-t { display: flex; align-items: center; gap: 9px; font-size: 1rem; font-weight: 700; margin: 0 0 12px; }
+.cr-add-t i { color: var(--rt-acc); font-size: .9em; }
+.cr-add-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
+.cr-add-grid .cr-wide { grid-column: 1 / -1; }
+.cr-add .rt-input, .cr-add .rt-select { height: 44px; width: 100%; font-size: 1rem; background: var(--rt-bg); }
+.cr-add .cr-pin-input { font-family: var(--rt-mono); letter-spacing: .25em; }
+.cr-add .cr-pin-input::placeholder { letter-spacing: .25em; }
+.cr-add .cr-check { margin: 0 0 12px; }
 .cr-lead { color: var(--rt-fg-dim); margin: 6px 0 14px; max-width: 92ch; }
 .cr-hint { color: var(--rt-fg-mute); font-size: .8125rem; }
 
@@ -35,11 +115,27 @@
 .cr-muted { color: var(--rt-fg-mute); }
 
 /* QR регистрации терминала — белый фон, чтобы камера читала */
-.cr-qr { margin-top: 16px; padding: 14px; border: 1px dashed var(--rt-warn-line); border-radius: var(--rt-radius-sm); background: var(--rt-warn-bg); }
-.cr-qr-warn { margin: 0 0 10px; font-weight: 600; color: var(--rt-warn); }
-.cr-qr-img { background: #fff; display: inline-block; width: 336px; max-width: 100%; box-sizing: border-box; padding: 8px; border-radius: 8px; }
+.cr-qr {
+    display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 1fr); gap: 16px 18px; align-items: start;
+    margin-top: 14px; padding: 16px; border: 1px solid var(--rt-warn-line); border-radius: var(--rt-radius-sm); background: var(--rt-warn-bg);
+}
+.cr-qr[hidden] { display: none; }
+.cr-qr:focus { outline: none; }
+.cr-qr:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+.cr-qr-warn { display: flex; align-items: flex-start; gap: 9px; margin: 0 0 10px; font-weight: 600; color: var(--rt-warn); line-height: 1.45; }
+.cr-qr-warn i { margin-top: 4px; }
+.cr-qr-img { background: #fff; width: 100%; box-sizing: border-box; padding: 8px; border-radius: 12px; box-shadow: 0 10px 28px rgba(0, 0, 0, .35); }
 .cr-qr-img svg { display: block; width: 100%; height: auto; aspect-ratio: 1; }
-.cr-qr-text { margin: 10px 0; font-size: .8125rem; }
+.cr-steps { margin: 0 0 12px; padding-left: 20px; color: var(--rt-fg-dim); font-size: .9375rem; display: grid; gap: 3px; }
+.cr-adminpin {
+    display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 0 12px; margin-bottom: 10px;
+    padding: 10px 12px; border-radius: 10px; background: var(--rt-inset); border: 1px solid var(--rt-line);
+}
+.cr-adminpin span { font-size: .875rem; color: var(--rt-fg-dim); }
+.cr-adminpin b { font: 700 1.375rem var(--rt-mono); letter-spacing: .18em; color: var(--rt-fg); justify-self: end; }
+.cr-adminpin small { grid-column: 1 / -1; font-size: .8125rem; color: var(--rt-fg-mute); }
+.cr-qr-text { margin: 0 0 12px; font-size: .8125rem; color: var(--rt-fg-dim); }
+.cr-qr-text summary { cursor: pointer; }
 .cr-qr-text code { display: block; margin-top: 6px; word-break: break-all; color: var(--rt-fg); }
 
 /* Машины дня */
@@ -70,8 +166,26 @@
 .cr-thumb img { width: 56px; height: 56px; object-fit: cover; background: #fff; }
 .cr-thumb:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
 
+@media (max-width: 991px) {
+    /* пять вкладок не влезают — лента с прокруткой, без полосы */
+    .cr-tabs { overflow-x: auto; scrollbar-width: none; scroll-snap-type: x proximity; }
+    .cr-tabs::-webkit-scrollbar { display: none; }
+    #crPage .cr-tabs a { flex: 0 0 auto; scroll-snap-align: start; }
+}
 @media (max-width: 640px) {
-    #crPage .rt-tabs { width: 100%; overflow-x: auto; flex-wrap: nowrap; }
+    .cr-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .cr-kpis .rt-kpi { padding: 10px; gap: 4px; }
+    .cr-kpis .rt-kpi-label { font-size: .75rem; overflow-wrap: anywhere; }
+    .cr-kpis .rt-kpi-label i { display: none; }   /* три плитки на 390 px — подписи без значков */
+    .cr-kpis .rt-kpi-val .now { font-size: 1.5rem; }
+    .cr-kpis .rt-kpi-sub { font-size: .8125rem; }
+    .cr-row { grid-template-columns: 40px minmax(0, 1fr) auto; }
+    .cr-row-badge { grid-column: 2; grid-row: 2; justify-self: start; }
+    .cr-row-act { grid-column: 3; grid-row: 1 / span 2; }
+    .cr-add-grid { grid-template-columns: minmax(0, 1fr); }
+    .cr-add .cr-btns .rt-btn { flex: 1 1 auto; }
+    .cr-qr { grid-template-columns: minmax(0, 1fr); }
+    .cr-qr-img { max-width: 300px; justify-self: center; }
     .rt-input.cr-date { min-width: 0; flex: 1 1 140px; }
     .cr-money-foot .rt-input { width: 100%; }
 }
