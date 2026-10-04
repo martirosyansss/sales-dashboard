@@ -13,6 +13,8 @@ import os
 import re
 import json
 import hashlib
+import shutil
+import tempfile
 import threading
 from functools import wraps
 from urllib.parse import urlsplit
@@ -189,13 +191,27 @@ GARAGE_MIN_PASSWORD = 10   # роль «Гараж» входит из инте�
 
 
 def save_users(users: dict) -> bool:
-    """Сохранить словарь пользователей в users.json."""
+    """Сохранить словарь пользователей в users.json атомарно: временный файл в той же папке → fsync → os.replace.
+    Сбой на середине записи не оставит обрезанный users.json (load_users на нём создал бы нового администратора
+    по умолчанию): прежний файл цел, временный удаляется. Права прежнего файла переносятся на новый."""
+    tmp = None
     try:
-        with open(USERS_FILE, 'w', encoding='utf-8') as f:
+        fd, tmp = tempfile.mkstemp(prefix='.users-', suffix='.tmp', dir=os.path.dirname(os.path.abspath(USERS_FILE)))
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump(users, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.exists(USERS_FILE):
+            shutil.copymode(USERS_FILE, tmp)
+        os.replace(tmp, USERS_FILE)
         return True
     except Exception as e:
         logger.error(f"[Auth] Не удалось сохранить {USERS_FILE}: {e}")
+        if tmp is not None:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
         return False
 
 
@@ -242,9 +258,9 @@ def current_username():
     return session.get('username')
 
 
-# Сессию можно отозвать: в cookie при входе — отпечаток «версии пароля» (pwv) и время входа (iat). Смена пароля и
-# выход (поколение session_gen в users.json) меняют отпечаток — все прежние cookie этого логина недействительны;
-# старше _SESSION_MAX_AGE — вход заново, даже при непрерывной работе. Cookie без pwv/iat (до этой версии) — тоже.
+# Сессию можно отозвать: в cookie при входе — отпечаток «версии пароля» (pwv) и время входа (iat). Смена пароля (все
+# роли) и выход роли «Гараж» (поколение session_gen в users.json) меняют отпечаток — все прежние cookie этого логина
+# недействительны; старше _SESSION_MAX_AGE — вход заново, даже при непрерывной работе. Cookie без pwv/iat — тоже.
 _SESSION_MAX_AGE = 7 * 24 * 3600
 
 
@@ -731,13 +747,17 @@ def login():
 
 @app.route('/logout', methods=['POST'])
 def logout():
-    """Выход из системы: новое поколение сессий логина — его cookie (на всех устройствах) больше не действуют."""
-    uname = current_username() if current_user() else None
-    if uname:
+    """Выход из системы. Роль «Гараж» (входит из интернета) — новое поколение сессий логина: его cookie на всех
+    устройствах, в т.ч. скопированные, больше не действуют. Офисные роли — как раньше: выходит только этот браузер
+    (их прежние сессии закрывают смена пароля и срок 7 дней)."""
+    user = current_user()
+    uname = current_username() if user else None
+    if uname and user.get('role') == GARAGE_ROLE:
         users = load_users()
         if uname in users:
             users[uname] = {**users[uname], 'session_gen': int(users[uname].get('session_gen') or 0) + 1}
             save_users(users)
+    if uname:
         logger.info('[Auth] Выход: %.64r, IP %s, %s', uname, _login_client_ip(),
                     'интернет' if courier.is_public_request(request) else 'офис')
     session.clear()

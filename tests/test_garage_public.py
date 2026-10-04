@@ -4,7 +4,10 @@ Secure-cookie и HSTS только снаружи, пароль «Гаража»
 После ревью безопасности: ≤ 2 проверки пароля одновременно снаружи, бюджет неудач логина из интернета, журнал входов,
 нейтральная страница входа снаружи, отзыв сессий (выход, смена пароля, 7 дней), пересчёт устаревших хэшей,
 открытый редирект через управляющие символы в next."""
+import json
 import logging
+import os
+import shutil
 import sys
 import threading
 from datetime import datetime
@@ -704,3 +707,90 @@ def test_admin_login_next_redirect(client, nxt, target):
     r = client.post('/login', base_url=LAN, headers={'Origin': LAN}, data={
         'username': 'boss', 'password': PASSWORDS['boss'], 'csrf_token': h['X-CSRF-Token'], 'next': nxt})
     assert r.status_code == 302 and r.headers['Location'] == target
+
+
+@pytest.mark.parametrize('who', ['boss', 'u'])
+def test_office_logout_unchanged_only_this_browser(client, app_v2, monkeypatch, who):
+    """Офисные роли: «Выход» — как раньше, только этот браузер; users.json не трогается."""
+    pc1 = app_v2.app.test_client()
+    pc2 = app_v2.app.test_client()
+    for c in (pc1, pc2):
+        assert _login(c, who, PASSWORDS[who], base=LAN).status_code == 302
+    copied = pc1.get_cookie('session', domain=_host(LAN)).value
+    path = '/api/users' if who == 'boss' else '/areas'            # без ERP: 200 — вошёл, иначе 401 / на /login
+    saves = []
+    monkeypatch.setattr(app_v2, 'save_users', lambda data: saves.append(1) or True)
+    page = pc1.get('/settings' if who == 'boss' else '/areas', base_url=LAN).get_data(as_text=True)
+    token = page.split('name="csrf-token" content="')[1].split('"')[0]
+    r = pc1.post('/logout', base_url=LAN, headers={'X-CSRF-Token': token, 'Origin': LAN})
+    assert r.status_code == 302 and r.headers['Location'] == '/login'
+    assert pc1.get(path, base_url=LAN).status_code in (401, 302)                       # этот браузер вышел
+    assert pc2.get(path, base_url=LAN).status_code == 200                              # второй компьютер — как был
+    assert _replay(app_v2, copied, path, base=LAN) == 200                              # как до ревью: cookie жива
+    assert saves == [] and 'session_gen' not in app_v2.test_users[who]
+
+
+# ============================== ревью: users.json пишется атомарно ==============================
+
+USERS_ON_DISK = {'boss': {'role': 'admin', 'areas': [], 'password_hash': 'pbkdf2:sha256:1$x$y', 'display_name': 'Գլխավոր'}}
+
+
+@pytest.fixture
+def users_file(tmp_path, monkeypatch):
+    """Настоящий save_users/load_users на временном users.json (не на рабочем)."""
+    import app_v2 as module
+    path = tmp_path / 'users.json'
+    path.write_text(json.dumps(USERS_ON_DISK, ensure_ascii=False, indent=2), encoding='utf-8')
+    monkeypatch.setattr(module, 'USERS_FILE', str(path))
+    return module, path
+
+
+def test_save_users_atomic_replace(users_file, monkeypatch):
+    module, path = users_file
+    if os.name == 'posix':
+        os.chmod(path, 0o640)
+    mode = os.stat(path).st_mode
+    events, real_fsync, real_replace, real_copymode = [], os.fsync, os.replace, shutil.copymode
+    monkeypatch.setattr(os, 'fsync', lambda fd: events.append(('fsync',)) or real_fsync(fd))
+    monkeypatch.setattr(os, 'replace', lambda src, dst: events.append(('replace', src, dst)) or real_replace(src, dst))
+    monkeypatch.setattr(shutil, 'copymode', lambda src, dst: events.append(('copymode', src, dst)) or real_copymode(src, dst))
+    new = {**USERS_ON_DISK, 'garage1': {'role': 'garage', 'areas': [], 'password_hash': 'h', 'display_name': 'Գարեգին'}}
+    assert module.save_users(new) is True
+    assert path.read_text(encoding='utf-8') == json.dumps(new, ensure_ascii=False, indent=2)   # кодировка как раньше
+    assert module.load_users() == new
+    assert [e[0] for e in events] == ['fsync', 'copymode', 'replace']                  # на диске — до подмены
+    tmp = events[-1][1]
+    assert events[-1][2] == str(path) and os.path.dirname(tmp) == str(path.parent)     # та же папка: rename атомарен
+    assert events[1][1:] == (str(path), tmp)                                           # права прежнего файла
+    assert os.stat(path).st_mode == mode
+    assert sorted(p.name for p in path.parent.iterdir()) == ['users.json']             # временного не осталось
+
+
+@pytest.mark.parametrize('stage', ['write', 'fsync', 'replace'])
+def test_save_users_crash_keeps_old_file(users_file, monkeypatch, stage):
+    """Сбой посреди записи (диск полон / нет прав на подмену): прежний users.json цел, временный удалён."""
+    module, path = users_file
+    before = path.read_bytes()
+    if stage == 'write':
+        def half_then_fail(obj, f, **kw):
+            f.write('{"boss": {"ro')
+            raise OSError(28, 'No space left on device')
+        monkeypatch.setattr(module.json, 'dump', half_then_fail)
+    elif stage == 'fsync':
+        monkeypatch.setattr(os, 'fsync', lambda fd: (_ for _ in ()).throw(OSError(5, 'I/O error')))
+    else:
+        monkeypatch.setattr(os, 'replace', lambda src, dst: (_ for _ in ()).throw(PermissionError(13, 'denied')))
+    assert module.save_users({'other': {'role': 'admin', 'password_hash': 'z'}}) is False
+    assert path.read_bytes() == before
+    assert sorted(p.name for p in path.parent.iterdir()) == ['users.json']
+    monkeypatch.undo()                                        # load_users — настоящий json; файл — прежний
+    monkeypatch.setattr(module, 'USERS_FILE', str(path))
+    assert module.load_users() == USERS_ON_DISK               # не «администратор по умолчанию»
+
+
+def test_save_users_creates_missing_file(tmp_path, monkeypatch):
+    import app_v2 as module
+    path = tmp_path / 'users.json'
+    monkeypatch.setattr(module, 'USERS_FILE', str(path))
+    assert module.save_users(USERS_ON_DISK) is True and module.load_users() == USERS_ON_DISK
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['users.json']
