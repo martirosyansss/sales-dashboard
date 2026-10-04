@@ -10,7 +10,9 @@
     сборки, обязательны, остальные — необязательные с огромным призом (не помещаются — остаются вне рейсов);
   - машина — один «тип» PyVRP на каждый свободный промежуток её дня [начало, конец]: несколько рейсов подряд с
     возвратом на склад (reload), рейсы и разгрузка укладываются в промежуток;
-  - стоимость метра — расход машины (л/100 км × 10): цель — литры дизеля;
+  - стоимость метра — расход машины (л/100 км × 10): цель — литры дизеля; износ машины («Износ, драм/км», у машины с
+    журналом гаража — его ремонт ֏/км, №53) — в литрах той же цены: (л/100 км + ֏/км × 100 / цена литра) × 10; без
+    износа — ровно прежнее round(л/100 км × 10);
   - малый центр — профиль машины без права въезда: рёбра к точкам центра «бесконечные», max_distance их не
     пускает;
   - предел загрузки (load_cap, ответ №45: 0,9) — второе измерение вместимости: в нём груз заказа считается, если
@@ -78,6 +80,16 @@ class Vehicle:
     capacity_kg: float
     l100: float
     center_ok: bool
+    wear_amd_per_km: float | None = None   # износ, ֏/км; None или 0 — стоимость метра только литры
+    fuel_price: float = 500.0              # цена литра, ֏ — перевод износа в литры (fleet.TruckNorms.fuel_price)
+
+
+def unit_cost(v: Vehicle) -> int:
+    """Стоимость метра машины для PyVRP — литры на 100 км × 10; износ — в литрах той же цены. Без износа — ровно
+    прежнее round(л/100 км × 10)."""
+    if not v.wear_amd_per_km:
+        return int(round(v.l100 * 10))
+    return int(round((v.l100 + v.wear_amd_per_km * 100.0 / v.fuel_price) * 10))
 
 
 def _sec_up(minutes: float) -> int:
@@ -164,7 +176,7 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
             cap.append(int(math.floor(v.capacity_kg * 1000.0 * load_cap + 1e-6)))
         t0, t1 = _sec_up(s.start), _sec_down(s.end)
         model.add_vehicle_type(1, capacity=cap, start_depot=depot, end_depot=depot, tw_early=t0, tw_late=max(t0, t1),
-                               shift_duration=max(0, t1 - t0), unit_distance_cost=int(round(v.l100 * 10)),
+                               shift_duration=max(0, t1 - t0), unit_distance_cost=unit_cost(v),
                                profile=profiles[masks[v.code]], reload_depots=[depot],
                                max_distance=MAX_DISTANCE_M, name=s.truck)
     data = model.data()

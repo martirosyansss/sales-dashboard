@@ -5,24 +5,22 @@
 {% block extra_css %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<!-- Google Sans — интерфейс (есть армянские буквы), IBM Plex Mono — время и цифры в столбцах -->
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=18">
-<!-- Страница на армянском (ответ владельца №31), интерфейс «для чайников» — свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=13">
+<!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=26">
 {% endblock %}
 
 {% block content %}
 <div class="rt-page" id="rtDispatch" lang="hy">
 
-    <!-- ШАПКА: какой день развозим -->
-    <header class="rt-head">
-        <div class="rt-head-row">
-            <div>
-                <p class="dp-kicker">Առաքում</p>
-                <h1 class="rt-title" id="dpTitle">Վաղը</h1>
-            </div>
+    <!-- ШАПКА: какой день развозим, листать дни -->
+    <header class="dp-mast">
+        <div class="dp-mast-top">
+            <p class="dp-kicker"><i class="fas fa-truck-fast" aria-hidden="true"></i>Առաքում<span class="dp-kicker-sub">երթերի կազմում վարորդների համար</span></p>
             <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
                 <a href="/routes">Ակնարկ</a>
                 <a href="/routes/optimize">Օպտիմալացում</a>
@@ -31,34 +29,50 @@
                 <a href="/routes/settings">Կարգավորումներ</a>
             </nav>
         </div>
-        <p class="rt-head-lead">Ծրագիրը բաշխում է պատվերները մեքենաների միջև այնպես, որ ճանապարհը լինի ամենակարճը։
-            Դուք ստուգում եք և տպում թերթիկները վարորդների համար։ ERP-ում ոչինչ չի փոխվում։</p>
-        <div class="dp-daynav">
-            <button type="button" id="dpDayPrev" class="rt-btn rt-btn-ghost rt-btn-sm" aria-label="Նախորդ օր"><i class="fas fa-chevron-left" aria-hidden="true"></i><span>Նախորդ օր</span></button>
-            <label for="dpDate" class="rt-sr-only">Առաքման օրը</label>
-            <input type="date" id="dpDate" class="rt-input dp-date" aria-describedby="dpDateNote">
-            <button type="button" id="dpDayNext" class="rt-btn rt-btn-ghost rt-btn-sm" aria-label="Հաջորդ օր"><span>Հաջորդ օր</span><i class="fas fa-chevron-right" aria-hidden="true"></i></button>
-            <button type="button" id="dpTomorrow" class="rt-linkbtn">Վերադառնալ վաղվան</button>
+
+        <div class="dp-dayboard">
+            <div class="dp-cal" aria-hidden="true">
+                <span class="dp-cal-wd" id="dpCalWd">—</span>
+                <span class="dp-cal-day" id="dpCalDay">–</span>
+                <span class="dp-cal-mon" id="dpCalMon"></span>
+            </div>
+            <div class="dp-day-main">
+                <h1 class="rt-title" id="dpTitle">Վաղը</h1>
+                <p class="dp-datenote"><span id="dpDateNote"></span>
+                    <button type="button" id="dpRefresh" class="rt-linkbtn" title="Կրկին կարդալ պատվերները ERP-ից">
+                        <i class="fas fa-rotate" aria-hidden="true"></i> Թարմացնել պատվերները</button></p>
+            </div>
+            <div class="dp-daynav">
+                <div class="dp-dayseg">
+                    <button type="button" id="dpDayPrev" class="dp-segbtn" aria-label="Նախորդ օր" title="Նախորդ օր"><i class="fas fa-chevron-left" aria-hidden="true"></i></button>
+                    <label for="dpDate" class="rt-sr-only">Առաքման օրը</label>
+                    <input type="date" id="dpDate" class="rt-input dp-date" aria-describedby="dpDateNote">
+                    <button type="button" id="dpDayNext" class="dp-segbtn" aria-label="Հաջորդ օր" title="Հաջորդ օր"><i class="fas fa-chevron-right" aria-hidden="true"></i></button>
+                </div>
+                <button type="button" id="dpTomorrow" class="rt-linkbtn">Վերադառնալ վաղվան</button>
+            </div>
         </div>
-        <p class="dp-datenote"><span id="dpDateNote"></span>
-            <button type="button" id="dpRefresh" class="rt-linkbtn" title="Կրկին կարդալ պատվերները ERP-ից">
-                <i class="fas fa-rotate" aria-hidden="true"></i> Թարմացնել պատվերները</button></p>
+
         <details class="dp-help">
             <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս օգտվել այս էջից</summary>
-            <ol>
-                <li><b>Մեքենաներ։</b> Հանեք նշումը այն մեքենաներից, որոնք այսօր դուրս չեն գալիս։</li>
-                <li><b>Պատվերներ։</b> Եթե կան դեղին նշումներ (օրինակ՝ խանութի տեղը քարտեզում չկա), ուղղեք դրանք։</li>
-                <li><b>Կազմել երթերը։</b> Սեղմեք կանաչ կոճակը՝ ծրագիրը կբաշխի պատվերները մեքենաներով։</li>
-                <li><b>Տպել։</b> Սեղմեք «Տպել վարորդների համար»՝ յուրաքանչյուր մեքենայի համար կտպվի առանձին թերթ։</li>
-            </ol>
-            <p>Եթե ինչ-որ բան պետք է փոխել, երթի մոտ սեղմեք «Փոփոխել»։ Ձեր փոփոխությունները պահպանվում են։</p>
+            <div class="dp-help-body">
+                <p class="dp-help-lead">Ծրագիրը բաշխում է պատվերները մեքենաների միջև այնպես, որ ճանապարհը լինի ամենակարճը։
+                    Դուք ստուգում եք և տպում թերթիկները վարորդների համար։ ERP-ում ոչինչ չի փոխվում։</p>
+                <ol>
+                    <li><b>Մեքենաներ։</b> Հանեք նշումը այն մեքենաներից, որոնք այսօր դուրս չեն գալիս։</li>
+                    <li><b>Պատվերներ։</b> Եթե կան դեղին նշումներ (օրինակ՝ խանութի տեղը քարտեզում չկա), ուղղեք դրանք։</li>
+                    <li><b>Կազմել երթերը։</b> Սեղմեք կանաչ կոճակը՝ ծրագիրը կբաշխի պատվերները մեքենաներով։</li>
+                    <li><b>Տպել։</b> Սեղմեք «Տպել վարորդների համար»՝ յուրաքանչյուր մեքենայի համար կտպվի առանձին թերթ։</li>
+                </ol>
+                <p>Եթե ինչ-որ բան պետք է փոխել, երթի մոտ սեղմեք «Փոփոխել»։ Ձեր փոփոխությունները պահպանվում են։</p>
+            </div>
         </details>
     </header>
 
     <div id="dpStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
 
-    <div id="dpLoading" class="rt-loading" role="status" aria-live="polite">
-        <div class="rt-spinner" aria-hidden="true"></div>Բեռնում եմ պատվերները…
+    <div id="dpLoading" class="rt-loading dp-loading" role="status" aria-live="polite">
+        <div class="dp-loadbar" aria-hidden="true"><span></span></div>Բեռնում եմ պատվերները…
         <small>Մի քանի վայրկյան</small>
     </div>
     <div id="dpLoadError" class="rt-alert d-none" role="alert">
@@ -77,135 +91,159 @@
             <button type="button" id="dpActionReload" class="rt-btn rt-btn-ghost rt-btn-sm d-none">Թարմացնել էջը</button>
         </div>
 
-        <!-- ШАГ 1 · МАШИНЫ -->
-        <section class="rt-step" id="dpStep1" aria-labelledby="dpStep1Title">
-            <div class="rt-step-mark" aria-hidden="true"><span>1</span></div>
-            <div class="rt-step-body">
-                <div class="dp-steprow">
-                    <h2 class="rt-step-title" id="dpStep1Title"><span class="rt-sr-only">Քայլ 1. </span>Ո՞ր մեքենաներն են աշխատում</h2>
+        <!-- ПОДГОТОВКА: шаг 1 (машины) и шаг 2 (заказы) рядом; после сборки — свёрнуты в строку -->
+        <div class="dp-prep">
+            <section class="dp-step" id="dpStep1" aria-labelledby="dpStep1Title">
+                <div class="dp-step-head">
+                    <span class="dp-step-no" aria-hidden="true">1</span>
+                    <div class="dp-step-hgroup">
+                        <h2 class="dp-step-title" id="dpStep1Title"><span class="rt-sr-only">Քայլ 1. </span>Ո՞ր մեքենաներն են աշխատում</h2>
+                        <p class="dp-step-sum" id="dpStep1Sum"></p>
+                    </div>
                     <span class="dp-chip" id="dpTrucksCount"></span>
+                    <button type="button" class="dp-step-tog" id="dpStep1Tog" aria-expanded="true" aria-controls="dpStep1Body" aria-describedby="dpStep1Title" hidden>
+                        <span>Բացել</span><i class="fas fa-chevron-down" aria-hidden="true"></i></button>
                 </div>
-                <p class="dp-steplead">Հանեք նշումը, եթե մեքենան այսօր դուրս չի գալիս։</p>
-                <fieldset class="dp-trucks" id="dpTrucks">
-                    <legend class="rt-sr-only">Աշխատող մեքենաները</legend>
-                </fieldset>
-                <p class="dp-note">Մեքենայի բեռնատարողությունը փոխվում է <a href="/routes/settings#trucks">կարգավորումներում</a>։</p>
-            </div>
-        </section>
+                <div class="dp-step-body" id="dpStep1Body">
+                    <p class="dp-steplead">Հանեք նշումը, եթե մեքենան այսօր դուրս չի գալիս։</p>
+                    <fieldset class="dp-trucks" id="dpTrucks">
+                        <legend class="rt-sr-only">Աշխատող մեքենաները</legend>
+                    </fieldset>
+                    <p class="dp-note">Մեքենայի բեռնատարողությունը փոխվում է <a href="/routes/settings#trucks">կարգավորումներում</a>։</p>
+                </div>
+            </section>
 
-        <!-- ШАГ 2 · ЗАКАЗЫ -->
-        <section class="rt-step" id="dpStep2" aria-labelledby="dpStep2Title">
-            <div class="rt-step-mark" aria-hidden="true"><span>2</span></div>
-            <div class="rt-step-body">
-                <h2 class="rt-step-title" id="dpStep2Title"><span class="rt-sr-only">Քայլ 2. </span>Պատվերներ</h2>
-                <div class="dp-stats" id="dpOrderStats"></div>
-                <p class="dp-steplead" id="dpOrdersEmpty" hidden>Այս օրվա համար պատվերներ դեռ չկան։</p>
-                <ul class="dp-attn" id="dpAttn" aria-label="Ինչին ուշադրություն դարձնել"></ul>
-                <p class="dp-note" id="dpOrdersInfo"></p>
+            <section class="dp-step" id="dpStep2" aria-labelledby="dpStep2Title">
+                <div class="dp-step-head">
+                    <span class="dp-step-no" aria-hidden="true">2</span>
+                    <div class="dp-step-hgroup">
+                        <h2 class="dp-step-title" id="dpStep2Title"><span class="rt-sr-only">Քայլ 2. </span>Պատվերներ</h2>
+                        <p class="dp-step-sum" id="dpStep2Sum"></p>
+                    </div>
+                    <button type="button" class="dp-step-tog" id="dpStep2Tog" aria-expanded="true" aria-controls="dpStep2Body" aria-describedby="dpStep2Title" hidden>
+                        <span>Բացել</span><i class="fas fa-chevron-down" aria-hidden="true"></i></button>
+                </div>
+                <div class="dp-step-body" id="dpStep2Body">
+                    <div class="dp-stats" id="dpOrderStats"></div>
+                    <p class="dp-steplead" id="dpOrdersEmpty" hidden>Այս օրվա համար պատվերներ դեռ չկան։</p>
+                    <ul class="dp-attn" id="dpAttn" aria-label="Ինչին ուշադրություն դարձնել"></ul>
+                    <p class="dp-note" id="dpOrdersInfo"></p>
 
-                <details class="rt-fold" id="dpNoCoords" hidden>
-                    <summary><span class="rt-fold-t"><i class="fas fa-location-dot" aria-hidden="true"></i>Խանութներ, որոնց տեղը քարտեզում չկա</span>
-                        <span class="rt-fold-note" id="dpNoCoordsNote"></span></summary>
-                    <div class="rt-fold-body">
-                        <ol class="dp-howto">
-                            <li>Ձախ կողմում ընտրեք խանութը։</li>
-                            <li>Քարտեզի վրա սեղմեք այնտեղ, որտեղ գտնվում է խանութը (կամ տեղադրեք կոորդինատները)։</li>
-                            <li>Սեղմեք «Պահպանել կետը»։ Ծրագիրը կհիշի այն և հաջորդ անգամ նորից չի հարցնի։</li>
-                        </ol>
-                        <div class="dp-pick">
-                            <ul class="dp-picklist" id="dpPickList"></ul>
-                            <div class="dp-pickside">
-                                <div id="dpPickMap" class="dp-pickmap" role="region" aria-label="Քարտեզ՝ սեղմեք այնտեղ, որտեղ գտնվում է խանութը"></div>
-                                <div class="dp-pickform">
-                                    <label for="dpPickCoord" class="dp-picklabel" id="dpPickLabel">Նախ ընտրեք խանութը ձախ կողմում</label>
-                                    <div class="rt-coord">
-                                        <input id="dpPickCoord" class="rt-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
-                                               placeholder="40.17920, 44.49910" disabled aria-describedby="dpPickErr">
-                                        <button type="button" id="dpPickSave" class="rt-btn rt-btn-primary rt-btn-sm" disabled>Պահպանել կետը</button>
+                    <details class="rt-fold" id="dpNoCoords" hidden>
+                        <summary><span class="rt-fold-t"><i class="fas fa-location-dot" aria-hidden="true"></i>Խանութներ, որոնց տեղը քարտեզում չկա</span>
+                            <span class="rt-fold-note" id="dpNoCoordsNote"></span></summary>
+                        <div class="rt-fold-body">
+                            <ol class="dp-howto">
+                                <li>Ձախ կողմում ընտրեք խանութը։</li>
+                                <li>Քարտեզի վրա սեղմեք այնտեղ, որտեղ գտնվում է խանութը (կամ տեղադրեք կոորդինատները)։</li>
+                                <li>Սեղմեք «Պահպանել կետը»։ Ծրագիրը կհիշի այն և հաջորդ անգամ նորից չի հարցնի։</li>
+                            </ol>
+                            <div class="dp-pick">
+                                <ul class="dp-picklist" id="dpPickList"></ul>
+                                <div class="dp-pickside">
+                                    <div id="dpPickMap" class="dp-pickmap" role="region" aria-label="Քարտեզ՝ սեղմեք այնտեղ, որտեղ գտնվում է խանութը"></div>
+                                    <div class="dp-pickform">
+                                        <label for="dpPickCoord" class="dp-picklabel" id="dpPickLabel">Նախ ընտրեք խանութը ձախ կողմում</label>
+                                        <div class="rt-coord">
+                                            <input id="dpPickCoord" class="rt-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
+                                                   placeholder="40.17920, 44.49910" disabled aria-describedby="dpPickErr">
+                                            <button type="button" id="dpPickSave" class="rt-btn rt-btn-primary rt-btn-sm" disabled>Պահպանել կետը</button>
+                                        </div>
+                                        <div class="rt-ferr" id="dpPickErr" role="alert"></div>
                                     </div>
-                                    <div class="rt-ferr" id="dpPickErr" role="alert"></div>
                                 </div>
                             </div>
                         </div>
-                    </div>
-                </details>
+                    </details>
 
-                <!-- Предложения водителей «точка неверная» (driver-geo-plan.md §5): слева список, справа старая и новая точка -->
-                <details class="rt-fold" id="dpGeoSug" hidden>
-                    <summary><span class="rt-fold-t"><i class="fas fa-location-crosshairs" aria-hidden="true"></i>Վարորդներն առաջարկում են նոր տեղ</span>
-                        <span class="rt-fold-note" id="dpGeoSugNote"></span></summary>
-                    <div class="rt-fold-body">
-                        <p class="rt-fold-lead">Վարորդը նշել է, որ խանութի կետը քարտեզում սխալ է, և ուղարկել է այն տեղը, որտեղ իրականում բեռնաթափում է։
-                            Ընտրեք առաջարկը՝ քարտեզում կտեսնեք հին (մոխրագույն) և նոր (կանաչ) կետը։ «Ընդունել»՝ նոր կետը կդառնա խանութի կետը,
-                            «Մերժել»՝ ամեն ինչ կմնա ինչպես կա։</p>
-                        <div class="dp-pick">
-                            <ul class="dp-picklist" id="dpGeoSugList"></ul>
-                            <div class="dp-pickside">
-                                <div id="dpGeoSugMap" class="dp-pickmap" role="region" aria-label="Քարտեզ՝ խանութի հին և նոր կետը"></div>
-                                <p class="dp-note" id="dpGeoSugMore"></p>
+                    <!-- Предложения водителей «точка неверная» (driver-geo-plan.md §5): слева список, справа старая и новая точка -->
+                    <details class="rt-fold" id="dpGeoSug" hidden>
+                        <summary><span class="rt-fold-t"><i class="fas fa-location-crosshairs" aria-hidden="true"></i>Վարորդներն առաջարկում են նոր տեղ</span>
+                            <span class="rt-fold-note" id="dpGeoSugNote"></span></summary>
+                        <div class="rt-fold-body">
+                            <p class="rt-fold-lead">Վարորդը նշել է, որ խանութի կետը քարտեզում սխալ է, և ուղարկել է այն տեղը, որտեղ իրականում բեռնաթափում է։
+                                Ընտրեք առաջարկը՝ քարտեզում կտեսնեք հին (մոխրագույն) և նոր (կանաչ) կետը։ «Ընդունել»՝ նոր կետը կդառնա խանութի կետը,
+                                «Մերժել»՝ ամեն ինչ կմնա ինչպես կա։</p>
+                            <div class="dp-pick">
+                                <ul class="dp-picklist" id="dpGeoSugList"></ul>
+                                <div class="dp-pickside">
+                                    <div id="dpGeoSugMap" class="dp-pickmap" role="region" aria-label="Քարտեզ՝ խանութի հին և նոր կետը"></div>
+                                    <p class="dp-note" id="dpGeoSugMore"></p>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                </details>
+                    </details>
 
-                <details class="rt-fold" id="dpBacklog" hidden>
-                    <summary><span class="rt-fold-t"><i class="fas fa-clock-rotate-left" aria-hidden="true"></i>Նախորդ օրերից չառաքված պատվերներ</span>
-                        <span class="rt-fold-note" id="dpBacklogNote"></span></summary>
-                    <div class="rt-fold-body">
-                        <p class="rt-fold-lead">Այս պատվերներն ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ Եթե պատվերը պետք է տանել այսօր,
-                            սեղմեք «Ավելացնել առաքմանը»։ Մնացածը կարող եք անտեսել։</p>
-                        <ul class="dp-olist" id="dpBacklogList"></ul>
-                    </div>
-                </details>
+                    <details class="rt-fold" id="dpBacklog" hidden>
+                        <summary><span class="rt-fold-t"><i class="fas fa-clock-rotate-left" aria-hidden="true"></i>Նախորդ օրերից չառաքված պատվերներ</span>
+                            <span class="rt-fold-note" id="dpBacklogNote"></span></summary>
+                        <div class="rt-fold-body">
+                            <p class="rt-fold-lead">Այս պատվերներն ընդունվել են ավելի վաղ, բայց դեռ չեն առաքվել։ Եթե պատվերը պետք է տանել այսօր,
+                                սեղմեք «Ավելացնել առաքմանը»։ Մնացածը կարող եք անտեսել։</p>
+                            <ul class="dp-olist" id="dpBacklogList"></ul>
+                        </div>
+                    </details>
 
-                <details class="rt-fold" id="dpExcluded" hidden>
-                    <summary><span class="rt-fold-t"><i class="fas fa-ban" aria-hidden="true"></i>Այսօր չենք տանում</span>
-                        <span class="rt-fold-note" id="dpExcludedNote"></span></summary>
-                    <div class="rt-fold-body">
-                        <p class="rt-fold-lead">Այս պատվերները դուք հանել եք այսօրվա առաքումից։ Եթե սխալմամբ, սեղմեք «Վերադարձնել»։</p>
-                        <ul class="dp-olist" id="dpExcludedList"></ul>
-                    </div>
-                </details>
-
-                <div class="dp-run">
-                    <button type="button" id="dpBuild" class="rt-btn rt-btn-primary rt-btn-lg">
-                        <i class="fas fa-truck-fast" aria-hidden="true"></i><span id="dpBuildText">Կազմել երթերը</span></button>
-                    <span class="dp-note" id="dpBuildNote">Մոտ 5 վայրկյան։</span>
-                    <button type="button" id="dpReset" class="rt-linkbtn" hidden>Ջնջել երթերը և սկսել նորից</button>
+                    <details class="rt-fold" id="dpExcluded" hidden>
+                        <summary><span class="rt-fold-t"><i class="fas fa-ban" aria-hidden="true"></i>Այսօր չենք տանում</span>
+                            <span class="rt-fold-note" id="dpExcludedNote"></span></summary>
+                        <div class="rt-fold-body">
+                            <p class="rt-fold-lead">Այս պատվերները դուք հանել եք այսօրվա առաքումից։ Եթե սխալմամբ, սեղմեք «Վերադարձնել»։</p>
+                            <ul class="dp-olist" id="dpExcludedList"></ul>
+                        </div>
+                    </details>
                 </div>
-            </div>
-        </section>
+            </section>
+        </div>
 
-        <!-- ШАГ 3 · РЕЙСЫ -->
-        <section class="rt-step" id="dpStep3" aria-labelledby="dpStep3Title" hidden>
-            <div class="rt-step-mark" aria-hidden="true"><span>3</span></div>
-            <div class="rt-step-body">
-                <h2 class="rt-step-title" id="dpStep3Title" tabindex="-1"><span class="rt-sr-only">Քայլ 3. </span>Երթեր</h2>
+        <!-- Главная кнопка сборки — всегда под рукой, и когда шаги свёрнуты -->
+        <div class="dp-run" id="dpRun">
+            <button type="button" id="dpBuild" class="rt-btn rt-btn-primary rt-btn-lg">
+                <i class="fas fa-truck-fast" aria-hidden="true"></i><span id="dpBuildText">Կազմել երթերը</span></button>
+            <span class="dp-note" id="dpBuildNote">Մոտ 5 վայրկյան։</span>
+            <button type="button" id="dpReset" class="rt-linkbtn dp-reset" hidden><i class="fas fa-eraser" aria-hidden="true"></i> Ջնջել երթերը և սկսել նորից</button>
+        </div>
 
-                <section class="dp-summary" aria-label="Ամփոփում">
-                    <div class="dp-stats" id="dpPlanStats"></div>
-                    <p class="dp-summary-lead" id="dpMainLead"></p>
+        <!-- ШАГ 3 · РЕЙСЫ: итог, шкала дня по машинам, проблемы, рейсы слева и карта справа -->
+        <section class="dp-plan" id="dpStep3" aria-labelledby="dpStep3Title" hidden>
+            <section class="dp-summary" aria-label="Ամփոփում">
+                <div class="dp-summary-top">
+                    <div class="dp-summary-t">
+                        <span class="dp-step-no" aria-hidden="true">3</span>
+                        <h2 class="dp-step-title" id="dpStep3Title" tabindex="-1"><span class="rt-sr-only">Քայլ 3. </span>Երթեր</h2>
+                    </div>
                     <div class="dp-summary-cta">
-                        <button type="button" id="dpPrint" class="rt-btn rt-btn-primary rt-btn-lg"><i class="fas fa-print" aria-hidden="true"></i><span>Տպել վարորդների համար</span></button>
-                        <button type="button" id="dpExcel" class="rt-btn rt-btn-ghost"><i class="fas fa-file-excel" aria-hidden="true"></i><span>Ներբեռնել Excel</span></button>
+                        <button type="button" id="dpPrint" class="rt-btn rt-btn-primary"><i class="fas fa-print" aria-hidden="true"></i><span>Տպել վարորդների համար</span></button>
+                        <button type="button" id="dpExcel" class="rt-btn rt-btn-ghost"><i class="fas fa-file-excel" aria-hidden="true"></i><span>Excel</span></button>
                     </div>
-                </section>
+                </div>
+                <div class="dp-stats dp-bigstats" id="dpPlanStats"></div>
+                <div class="dp-summary-lead" id="dpMainLead"></div>
+            </section>
 
-                <div id="dpOverflow"></div>
-                <div id="dpUnassigned"></div>
+            <!-- Шкала дня: день каждой машины по часам; нажать — машина или рейс на карте -->
+            <section class="dp-board" id="dpBoard" aria-labelledby="dpBoardTitle">
+                <h3 class="rt-sr-only" id="dpBoardTitle">Մեքենաների օրը ըստ ժամերի</h3>
+            </section>
+
+            <div id="dpOverflow"></div>
+            <div id="dpUnassigned"></div>
+
+            <div class="dp-split">
                 <div class="dp-trucklist" id="dpTruckCards"></div>
-
-                <details class="rt-fold" id="dpMapBox" open>
-                    <summary><span class="rt-fold-t"><i class="fas fa-map" aria-hidden="true"></i>Քարտեզ</span>
-                        <span class="rt-fold-note">յուրաքանչյուր մեքենա՝ իր գույնով, ընտրեք մեքենա կամ երթ՝ միայն այն տեսնելու համար</span></summary>
-                    <div>
-                        <div class="rt-maplegend dp-mapfilter" id="dpLegend" role="group" aria-label="Ինչ ցույց տալ քարտեզում"></div>
-                        <p class="dp-mapfocus" id="dpMapFocus" hidden></p>
-                        <div id="dpMap" class="rt-map dp-map" role="region" aria-label="Երթերի քարտեզ"></div>
-                        <!-- «Почему так» под картой (ответ владельца №49): рейс — что и как посчитано, «Բոլորը» — что учтено в дне -->
-                        <div class="dp-why" id="dpWhy" hidden></div>
-                    </div>
-                </details>
+                <aside class="dp-mapcol" aria-label="Քարտեզ">
+                    <details class="dp-mapbox" id="dpMapBox" open>
+                        <summary><span class="dp-mapbox-t"><i class="fas fa-map" aria-hidden="true"></i>Քարտեզ</span>
+                            <span class="dp-mapbox-note">ընտրեք մեքենա կամ երթ՝ միայն այն տեսնելու համար</span></summary>
+                        <div class="dp-mapbox-body">
+                            <div class="rt-maplegend dp-mapfilter" id="dpLegend" role="group" aria-label="Ինչ ցույց տալ քարտեզում"></div>
+                            <p class="dp-mapfocus" id="dpMapFocus" hidden></p>
+                            <div id="dpMap" class="rt-map dp-map" role="region" aria-label="Երթերի քարտեզ"></div>
+                            <!-- «Почему так» под картой (ответ владельца №49): рейс — что и как посчитано, «Բոլորը» — что учтено в дне -->
+                            <div class="dp-why" id="dpWhy" hidden></div>
+                        </div>
+                    </details>
+                </aside>
             </div>
         </section>
 
@@ -237,6 +275,31 @@
         </section>
     </div>
 
+    {% if ai_enabled %}
+    <!-- «Հարցրու AI-ին» (ответ владельца №52): вопросы по плану дня — AI отвечает по цифрам дня и ничего не меняет -->
+    <button type="button" class="dp-ai-fab" id="dpAiOpen" aria-controls="dpAi" aria-expanded="false" hidden>
+        <i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i><span>Հարցրու AI-ին</span></button>
+    <aside class="dp-ai" id="dpAi" aria-labelledby="dpAiTitle" hidden>
+        <div class="dp-ai-head">
+            <span class="dp-ai-ico" aria-hidden="true"><i class="fas fa-wand-magic-sparkles"></i></span>
+            <div class="dp-ai-ht">
+                <h2 class="dp-ai-t" id="dpAiTitle">Հարցրու AI-ին</h2>
+                <p class="dp-ai-sub" id="dpAiSub">Պատասխանում է այս օրվա թվերով · ոչինչ չի փոխում</p>
+            </div>
+            <button type="button" class="dp-ai-iconbtn" id="dpAiNew" title="Նոր զրույց" aria-label="Նոր զրույց"><i class="fas fa-rotate-left" aria-hidden="true"></i></button>
+            <button type="button" class="dp-ai-iconbtn" id="dpAiClose" title="Փակել" aria-label="Փակել"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+        </div>
+        <div class="dp-ai-log" id="dpAiLog" role="log" aria-live="polite"></div>
+        <form class="dp-ai-form" id="dpAiForm">
+            <label for="dpAiInput" class="rt-sr-only">Ձեր հարցը</label>
+            <textarea id="dpAiInput" class="dp-ai-input" rows="1" maxlength="1000"
+                      placeholder="Հարցրեք երթերի, մեքենաների կամ խանութների մասին…"></textarea>
+            <button type="submit" class="dp-ai-send" id="dpAiSend" aria-label="Ուղարկել" title="Ուղարկել (Enter)"><i class="fas fa-paper-plane" aria-hidden="true"></i></button>
+        </form>
+        <p class="dp-ai-foot">AI-ն կարող է սխալվել։ Կարևոր թվերը ստուգեք էջում։ Հարցերը և օրվա թվերը մշակում է Claude-ը (Anthropic)։</p>
+    </aside>
+    {% endif %}
+
     <!-- «Փոխել տեղը»: точка любого магазина — перетащить или вставить координаты; «авто» убирает ручную точку -->
     <dialog id="dpGeoDlg" class="dp-dlg" aria-labelledby="dpGeoTitle" aria-describedby="dpGeoLead">
         <h2 class="dp-dlg-t" id="dpGeoTitle">Խանութի տեղը</h2>
@@ -252,6 +315,22 @@
             <button type="button" id="dpGeoCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
         </div>
     </dialog>
+
+    <!-- «Ժամանակ խանութում» (ответ владельца №50): своё время у магазина — постоянная часть разгрузки; пусто — обычная норма -->
+    <dialog id="dpUnloadDlg" class="dp-dlg dp-unload-dlg" aria-labelledby="dpUnloadTitle" aria-describedby="dpUnloadLead">
+        <h2 class="dp-dlg-t" id="dpUnloadTitle">Ժամանակ խանութում</h2>
+        <p class="dp-dlg-lead" id="dpUnloadLead"></p>
+        <label for="dpUnloadMin" class="dp-picklabel">Րոպե</label>
+        <input id="dpUnloadMin" class="rt-input" type="number" min="1" max="120" step="1" inputmode="numeric"
+               autocomplete="off" aria-describedby="dpUnloadHint dpUnloadErr">
+        <p class="dp-unload-hint" id="dpUnloadHint"></p>
+        <div class="rt-ferr" id="dpUnloadErr" role="alert"></div>
+        <div class="dp-dlg-btns">
+            <button type="button" id="dpUnloadSave" class="rt-btn rt-btn-primary"><i class="fas fa-check" aria-hidden="true"></i><span>Պահպանել</span></button>
+            <button type="button" id="dpUnloadClear" class="rt-btn rt-btn-ghost"><i class="fas fa-rotate-left" aria-hidden="true"></i><span>Հեռացնել</span></button>
+            <button type="button" id="dpUnloadCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
+        </div>
+    </dialog>
 </div>
 {% endblock %}
 
@@ -259,5 +338,7 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=29"></script>
+<!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
+<script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=52"></script>
 {% endblock %}

@@ -1053,17 +1053,18 @@ class Store:
             return (*track, *deliv, snap[0])
         return self._read(query)
 
-    def refuels(self) -> list[dict[str, Any]]:
-        """Все принятые заправки: [{id, car_code, date, at, at_utc, driver_name, payload, flags, superseded, eff_at_utc,
-        eff_at, eff_date}] по машине и моменту. superseded — на событие ссылается `supersedes` другой заправки той же
+    def refuels(self, since: str = '') -> list[dict[str, Any]]:
+        """Принятые заправки (since — с этого дня YYYY-MM-DD, по индексу events_type; пусто — все; исправление, исходная
+        заправка которого раньше since, считается со своим моментом): [{id, car_code, date, at, at_utc, driver_name,
+        payload, flags, superseded, eff_at_utc, eff_at, eff_date}] по машине и моменту. superseded — на событие ссылается `supersedes` другой заправки той же
         машины (исправлено водителем): в расчёты не идёт. eff_* — момент и день исходной заправки цепочки исправлений
         (исправление пришло позже — заправка всё равно была тогда); исходной ещё нет на сервере — свои. Флаг
         odometer_suspicious — как поставлен при приёме; читатели пересчитывают его сами (learning.odometer_plausible).
-        Заправок немного (единицы в день) — читаются целиком."""
+        Заправок немного (единицы в день)."""
         rows = self._read(lambda c: c.execute(
             "SELECT e.id, e.car_code, e.date, e.at_device, e.at_utc, d.name, e.payload, e.flags FROM events e "
-            "LEFT JOIN drivers d ON d.id = e.driver_id WHERE e.type = 'refuel' ORDER BY e.car_code, e.at_utc, e.id"
-        ).fetchall())
+            "LEFT JOIN drivers d ON d.id = e.driver_id WHERE e.type = 'refuel' AND e.date >= ? "
+            "ORDER BY e.car_code, e.at_utc, e.id", (since,)).fetchall())
         out = []
         for eid, car, day, at, at_utc, name, raw, flags in rows:
             try:

@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=18">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_customer_settings.css') }}?v=2">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_customer_settings.css') }}?v=3">
 {% endblock %}
 
 {% block content %}
@@ -24,6 +24,7 @@
                 <a href="/routes/dispatch">Развоз</a>
                 <a href="/routes/learning">Обучение</a>
                 <a href="/routes/settings" aria-current="page">Настройки</a>
+                <a href="/routes/garage">Гараж</a>
             </nav>
         </div>
         <p class="rt-head-lead">Здесь указывают то, что программа не может узнать сама: где склад, какие машины, когда магазины принимают доставку и сколько стоит топливо.
@@ -276,7 +277,7 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=14"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=16"></script>
 <script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=4"></script>
 <script src="{{ url_for('static', filename='js/routes_measurements.js') }}?v=2"></script>
 {% endblock %}

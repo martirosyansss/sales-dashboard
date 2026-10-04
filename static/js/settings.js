@@ -1031,7 +1031,7 @@
                 const f = this.userForm;
                 if (!f.username.trim()) { alert('Укажите логин'); return; }
                 if (!f.editing && !f.password) { alert('Для нового пользователя нужен пароль'); return; }
-                if (f.role !== 'admin' && f.areas.length === 0) {
+                if (f.role === 'user' && f.areas.length === 0) {
                     alert('Выберите хотя бы одну территорию для пользователя');
                     return;
                 }
@@ -1043,7 +1043,7 @@
                             username: f.username.trim(),
                             display_name: f.display_name.trim(),
                             role: f.role,
-                            areas: f.role === 'admin' ? [] : f.areas,
+                            areas: f.role === 'user' ? f.areas : [],   // территории — только у роли «по территориям»
                             password: f.password || undefined
                         })
                     });

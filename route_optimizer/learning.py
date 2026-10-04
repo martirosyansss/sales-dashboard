@@ -803,8 +803,9 @@ class FleetFacts(Protocol):
         """Отпечаток данных машины за день (трек, доставки, снимок /day): не изменился — факт тот же (кэш)."""
         ...
 
-    def refuels(self) -> list[dict[str, Any]]:
-        """Заправки: id, car_code, date, at, at_utc, eff_at_utc, eff_date, payload, flags, superseded."""
+    def refuels(self, since: str = '') -> list[dict[str, Any]]:
+        """Заправки (since — с этого дня, YYYY-MM-DD; пусто — все): id, car_code, date, at, at_utc, eff_at_utc, eff_date,
+        payload, flags, superseded."""
         ...
 
 

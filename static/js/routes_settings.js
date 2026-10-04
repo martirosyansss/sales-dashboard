@@ -490,6 +490,23 @@
         return 'не возила с ' + dateRu(t.last_used) + tail;
     }
 
+    // Износ по журналу гаража (№53) — только чтение: ремонт ֏/км на сегодня и какое значение идёт в расчёт. Поле
+    // «Износ, драм/км» остаётся ручным: страница сохраняет только его, значение журнала в настройки не попадает.
+    function garageNote(t) {
+        const g = t.garage, used = t.wear_source;
+        const inCalc = used === 'garage' ? 'в расчёте: значение журнала'
+            : used === 'manual' ? 'в расчёте: значение из поля выше' : 'износ в расчёте не учитывается';
+        let text;
+        if (!g) text = 'Журнал гаража: записей нет — ' + inCalc;
+        else if (g.status === 'ready') text = 'По журналу гаража: ' + fmt(g.price, 1) + ' ֏/км (' + fmt(g.months) + ' мес.) — ' + inCalc;
+        else if (g.status === 'accumulating') text = 'Журнал гаража: накапливается ' + fmt(g.months) + ' из ' + fmt(g.ready_months) + ' мес. — ' + inCalc;
+        else if (g.status === 'low_km') text = 'Журнал гаража: мало км (' + fmt(g.km) + ' км) — ' + inCalc;
+        else if (g.status === 'no_repairs') text = 'Журнал гаража: ремонтов в журнале нет — '
+            + (used === 'manual' ? 'в расчёте ручное значение' : inCalc);
+        else text = 'Журнал гаража: нет пробега за 12 мес. — ' + inCalc;
+        return h('span', { class: 'rs-garage' + (used === 'garage' ? ' is-used' : ''), text });
+    }
+
     const LOAD_COSTS = [
         ['fuel_empty_l_per_100km', 'Пустая, л/100 км', 1, 80],
         ['fuel_full_l_per_100km', 'Полная, л/100 км', 1, 80],
@@ -515,10 +532,11 @@
             const error = errNode();
             const prefix = manual ? ['manual_trucks.' + code] : ['trucks.' + i, 'trucks.' + code];
             reg(prefix.map(p => p + '.' + key), input, error, 'Машина ' + code + ', ' + label);
-            return h('label', { class: 'rs-load-field' }, h('span', { text: label }), input, error);
+            return h('label', { class: 'rs-load-field' }, h('span', { text: label }), input, error,
+                key === 'wear_amd_per_km' ? garageNote(t) : null);
         });
         const costs = h('details', { class: 'rs-load-costs' },
-            h('summary', { text: 'Загрузка и износ' }),
+            h('summary', { text: 'Загрузка и износ' + (t.wear_source === 'garage' ? ' · износ по журналу гаража' : '') }),
             h('div', { class: 'rs-load-fields' }, ...costFields),
             h('p', { class: 'rt-muted', text: 'Пустая и полная — по замерам этой машины. Надбавка за износ растёт с квадратом доли загрузки. Пусто — влияние нагрузки не настроено.' }));
         const wasManual = manual || t.active_source === 'manual', autoOn = t.auto_active === true;

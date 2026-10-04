@@ -14,8 +14,13 @@
    словарём SERVER_HY; незнакомый текст показывается как есть.
    Интерфейс «для чайников»: вверху «Ի՞նչ անել հիմա» — одна подсказка и главная кнопка по состоянию дня;
    рейсы — простой список, как лист водителя; правки — по кнопке «Փոփոխել» у рейса.
+   Раскладка (редизайн, ответ владельца №51): шаги 1–2 после сборки свёрнуты в строку; шкала дня — рейсы машин
+   по часам; карточки машин раскрываются по нажатию; карта справа от рейсов. Нажатие на машину или рейс на шкале —
+   он же на карте и раскрытая карточка.
    Под картой — «почему так» про выбранное над ней (ответ владельца №49): рейс, машина или весь день — по цифрам
-   explain из ответа дня (dispatch.plan_view), без утверждений, которых расчёт не делает. */
+   explain из ответа дня (dispatch.plan_view), без утверждений, которых расчёт не делает.
+   «Հարցրու AI-ին» (ответ владельца №52) — панель чата в routes_dispatch_ai.js (подключается в init): вопрос логиста
+   по дню, сервер отвечает по тем же цифрам дня и ничего не меняет; переводы её ошибок — здесь, в SERVER_HY. */
 (function () {
     'use strict';
 
@@ -77,6 +82,10 @@
         geoMap: null, geoMarker: null, geoStop: null,   // «Փոխել տեղը»: карта диалога и магазин
         sugMap: null, sugLayer: null, sugSel: null,     // предложения водителей: карта и выбранное (event_id)
         geoChanged: null,                   // день, в котором после сборки меняли точку магазина — подсказать пересборку
+        unloadStop: null, unloadInfo: null, unloadSeq: 0,   // «Ժամանակ խանութում»: магазин диалога, его данные с сервера, номер запроса
+        stepsOpen: new Set(),               // шаги 1–2, раскрытые логистом после сборки (иначе свёрнуты в строку)
+        open: new Set(),                    // раскрытые карточки машин (код машины)
+        ai: { chats: new Map(), busy: false, shownDay: null },   // «Հարցրու AI-ին»: разговор по каждому дню [{role, text}]
     };
 
     // ---------- Сервер ----------
@@ -125,6 +134,27 @@
         'ожидался id предложения': BAD_REQUEST,
         'решение: accepted или rejected': BAD_REQUEST,
         'Предложение не найдено или уже решено — обновите страницу': 'Առաջարկը չի գտնվել կամ արդեն որոշված է — թարմացրեք էջը',
+        // «Հարցրու AI-ին» — POST /api/routes/dispatch/ask (ai_chat.py)
+        'вопрос — непустой текст до 1000 символов': 'Հարցը պետք է լինի ոչ դատարկ՝ մինչև 1000 նիշ',
+        'история диалога: ожидался список реплик': BAD_REQUEST,
+        'AI недоступен: не задан ANTHROPIC_API_KEY в .env сервера': 'AI-ն միացված չէ՝ սերվերում ANTHROPIC_API_KEY բանալին նշված չէ',
+        'AI недоступен: ключ ANTHROPIC_API_KEY не принят': 'AI-ն հասանելի չէ՝ ANTHROPIC_API_KEY բանալին չի ընդունվել',
+        'AI недоступен: модель не найдена — проверьте ROUTES_AI_MODEL': 'AI-ն հասանելի չէ՝ մոդելը չի գտնվել (ROUTES_AI_MODEL)',
+        'AI сейчас перегружен — повторите через минуту': 'AI-ն այժմ ծանրաբեռնված է — կրկնեք մեկ րոպեից',
+        'AI не принял запрос — начните новый разговор': 'AI-ն չընդունեց հարցումը — սկսեք նոր զրույց',
+        'AI временно недоступен — повторите позже': 'AI-ն ժամանակավորապես հասանելի չէ — կրկնեք ավելի ուշ',
+        'Нет связи с AI — повторите позже': 'AI-ի հետ կապ չկա — կրկնեք ավելի ուշ',
+        'AI не дал ответа — повторите вопрос': 'AI-ն պատասխան չտվեց — կրկնեք հարցը',
+        'AI недоступен: на счёте Anthropic закончились средства — пополните баланс': 'AI-ն հասանելի չէ՝ Anthropic-ի հաշվին միջոցները վերջացել են — լիցքավորեք հաշիվը',
+        'AI не успел ответить — спросите короче или повторите': 'AI-ն չհասցրեց պատասխանել — հարցրեք ավելի կարճ կամ կրկնեք',
+        // «Ժամանակ խանութում» — POST /api/routes/customer-vehicles {customer_id, unload_min} (store.check_unload_min)
+        'ожидалось {"customer_id", "access"} с необязательными "window" и "unload_min" или {"customer_id", "unload_min"}': BAD_REQUEST,
+        'магазин не найден — обновите страницу': 'Խանութը չի գտնվել — թարմացրեք էջը',
+        'время у магазина — целое число минут от 1 до 120': 'Ժամանակ խանութում՝ ամբողջ թիվ 1-ից մինչև 120 րոպե',
+        // план на экране устарел (views._seen_stale) и проверка rev / seen того же запроса
+        'План или настройки изменились после открытия страницы — обновите страницу': 'Էջը բացելուց հետո պլանը կամ կարգավորումները փոխվել են․ պատասխանը չէր համապատասխանի էկրանի պլանին։ Թարմացրեք էջը։',
+        'номер плана: ожидалось целое число': BAD_REQUEST,
+        'рейсы плана на странице: ожидался список [id, возвращение, опаздывает]': BAD_REQUEST,
     };
     const SERVER_HY_PREFIX = [['машина не готова к расчёту: ', 'Մեքենան պատրաստ չէ հաշվարկի համար՝ ']];
     // StoreError «База настроек маршрутов <файл>: не удалось сохранить …» — по окончанию текста
@@ -132,6 +162,7 @@
         [': не удалось сохранить окно приёма клиента', 'Չհաջողվեց պահպանել ընդունման ժամը — կարգավորումների բազան հասանելի չէ'],
         [': не удалось сохранить точку клиента', 'Չհաջողվեց պահպանել խանութի կետը — կարգավորումների բազան հասանելի չէ'],
         [': не удалось сохранить план развоза', 'Չհաջողվեց պահպանել առաքման պլանը — կարգավորումների բազան հասանելի չէ'],
+        [': не удалось сохранить время у магазина', 'Չհաջողվեց պահպանել ժամանակը խանութում — կարգավորումների բազան հասանելի չէ'],
     ];
     function serverText(s) {
         const t = String(s).trim();
@@ -141,18 +172,27 @@
         const p = SERVER_HY_PREFIX.find(([ru]) => t.startsWith(ru));
         return p ? p[1] + t.slice(p[0].length) : t;
     }
-    async function api(method, url, body) {
+    // timeoutMs — оборвать ожидание (вопрос AI: сервер укладывается в 100 с, страница ждёт 150 с)
+    async function api(method, url, body, timeoutMs) {
         const opts = { method, credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } };
+        let timer = null;
+        if (timeoutMs && typeof AbortController !== 'undefined') {
+            const ctl = new AbortController();
+            opts.signal = ctl.signal;
+            timer = setTimeout(() => ctl.abort(), timeoutMs);
+        }
         if (body !== undefined) {
             opts.headers['Content-Type'] = 'application/json';
             opts.body = JSON.stringify(body);
         }
-        let resp;
-        try { resp = await fetch(url, opts); } catch (e) {
-            throw Object.assign(new Error('Սերվերի հետ կապ չկա։'), { status: 0, data: null });
-        }
-        let data = null;
-        try { data = await resp.json(); } catch (e) { data = null; }
+        let resp, data = null;
+        try {
+            try { resp = await fetch(url, opts); } catch (e) {
+                if (e && e.name === 'AbortError') throw Object.assign(new Error('Պատասխանը շատ երկար է սպասվում — կրկնեք ավելի ուշ։'), { status: 0, data: null });
+                throw Object.assign(new Error('Սերվերի հետ կապ չկա։'), { status: 0, data: null });
+            }
+            try { data = await resp.json(); } catch (e) { data = null; }     // и чтение тела — под тем же таймаутом
+        } finally { if (timer) clearTimeout(timer); }
         if (resp.ok && isObj(data) && data.success === true) return data;
         const d = isObj(data) ? data : null;
         const msg = (d && typeof d.error === 'string' && d.error.trim() ? serverText(d.error) : '')
@@ -184,6 +224,7 @@
     }
     function showActionError(err) {
         $('dpActionErrorText').textContent = err.message || String(err);
+        if (state.data && /1-ին քայլում/.test(err.message || '')) unfoldStep('dpStep1');   // «…1-ին քայլում» — раскрыть шаг 1, чтобы было где отметить
         $('dpActionReload').classList.toggle('d-none', !(err.status === 409));
         $('dpActionError').classList.remove('d-none');
         $('dpActionError').focus();
@@ -191,6 +232,7 @@
     const hideActionError = () => $('dpActionError').classList.add('d-none');
 
     // ---------- Загрузка ----------
+    // true — день загружен и показан; ошибка (видна в dpLoadError) или ответ на прежний запрос — false
     async function load(day, refresh) {
         const seq = ++state.loadSeq;
         $('dpLoading').hidden = false;
@@ -201,13 +243,15 @@
             if (day) q.set('date', day);
             if (refresh) q.set('refresh', '1');
             const data = await api('GET', '/api/routes/dispatch' + (q.toString() ? '?' + q : ''));
-            if (seq !== state.loadSeq) return;
+            if (seq !== state.loadSeq) return false;
             $('dpBody').hidden = false;     // до отрисовки: карте Leaflet нужен настоящий размер блока, у скрытого он 0×0
             setData(data);
+            return true;
         } catch (e) {
-            if (seq !== state.loadSeq) return;
+            if (seq !== state.loadSeq) return false;
             $('dpLoadErrorText').textContent = e.message;
             $('dpLoadError').classList.remove('d-none');
+            return false;
         } finally {
             if (seq === state.loadSeq) $('dpLoading').classList.add('d-none');
         }
@@ -221,11 +265,18 @@
     function setData(data) {
         const trips = new Set();
         if (data.plan) data.plan.trucks.forEach(t => t.trips.forEach(tr => trips.add(tr.id)));
-        if (data.day !== state.day) { state.mapFocus = null; }
+        const hadPlan = !!(state.data && state.data.day === data.day && state.data.plan);
+        if (data.day !== state.day) { state.mapFocus = null; state.stepsOpen.clear(); }
+        // рейсы дня появились: до трёх машин — все раскрыты, больше — первая (остальные по нажатию, день виден целиком)
+        if (data.plan && !hadPlan) {
+            const codes = data.plan.trucks.map(t => t.car_code);
+            state.open = new Set(codes.length <= 3 ? codes : codes.slice(0, 1));
+        }
         if (data.day !== state.day || !data.plan) state.editing.clear();
         else [...state.editing].forEach(id => { if (!trips.has(id)) state.editing.delete(id); });
         state.data = data;
         state.day = data.day;
+        if (aiPanel) aiPanel.onDay(data.day);      // «Հարցրու AI-ին» (routes_dispatch_ai.js): кнопка и разговор дня
         state.fetchedAt = Date.now();
         const url = new URL(window.location.href);
         url.searchParams.set('date', data.day);
@@ -258,10 +309,15 @@
     }
 
     // ---------- Отрисовка ----------
+    const MONTH_SHORT = ['հնվ', 'փտվ', 'մրտ', 'ապր', 'մյս', 'հնս', 'հլս', 'օգս', 'սեպ', 'հոկ', 'նոյ', 'դեկ'];
     function render() {
         const d = state.data;
         const rel = relDay(d.day);
         $('dpTitle').textContent = (rel ? rel + '՝ ' : '') + dayHuman(d.day, true);
+        // листок календаря в шапке: день недели, число, месяц и год
+        $('dpCalWd').textContent = WD_SHORT[wdOf(d.day)] || '—';
+        $('dpCalDay').textContent = isDay(d.day) ? String(Number(d.day.slice(8, 10))) : '–';
+        $('dpCalMon').textContent = isDay(d.day) ? MONTH_SHORT[Number(d.day.slice(5, 7)) - 1] + ' ' + d.day.slice(0, 4) : '';
         document.title = 'Առաքում ' + dateRu(d.day) + ' — Sales Dashboard';
         $('dpDate').value = d.day;
         $('dpTomorrow').hidden = d.day === d.default_day;
@@ -276,8 +332,7 @@
         $('dpReset').hidden = !plan;
         $('dpBuild').disabled = !d.trucks.some(t => t.ready) || !d.depot;
         $('dpBuildNote').textContent = plan ? 'Ամրացված երթերը կմնան ինչպես կան, մնացածը ծրագիրը կբաշխի նորից։' : 'Մոտ 5 վայրկյան։';
-        $('dpStep1').classList.toggle('is-done', !!plan);
-        $('dpStep2').classList.toggle('is-done', !!plan);
+        renderSteps();
         $('dpStep3').hidden = !plan;
         if (plan) renderPlan(plan);
         $('dpAnalysis').hidden = !plan && !d.is_past;
@@ -338,6 +393,7 @@
             title = 'Երթերում ոչ մի խանութ չկա';
             lines.push('Բոլոր պատվերները հանված են առաքումից կամ դրանց տեղը քարտեզում նշված չէ։ Ստուգեք 2-րդ քայլը և վերակազմեք երթերը։');
             btns.push({ act: build, text: 'Վերակազմել երթերը', ico: 'fa-rotate' });
+            btns.push({ act: () => stepButton('dpStep2', '').click(), text: 'Բացել 2-րդ քայլը', ico: 'fa-arrow-up' });
         } else if (n && n.count) {
             tone = 'is-warn'; ico = 'fa-bell';
             title = 'Եկել է ' + pl(n.count, 'նոր պատվեր') + ' — վերակազմեք երթերը';
@@ -398,7 +454,7 @@
     // тогда обновляются только подсказки, а страница — при следующей проверке.
     const interacting = () => {
         const a = document.activeElement;
-        return state.pickCid !== null || $('dpGeoDlg').open
+        return state.pickCid !== null || $('dpGeoDlg').open || $('dpUnloadDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
     async function poll() {
@@ -453,6 +509,7 @@
         state.data.trucks.forEach(t => {
             const lab = document.createElement('label');
             lab.className = 'dp-truck' + (t.ready ? '' : ' is-off');
+            if (t.ready) lab.style.setProperty('--dp-c', truckColor(t.car_code));
             const cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.value = t.car_code;
@@ -468,7 +525,7 @@
             const nm = document.createElement('b');
             nm.textContent = t.name || t.car_code;
             const plate = document.createElement('span');
-            plate.className = 'dp-truck-sub';
+            plate.className = 'dp-truck-sub dp-plate';
             plate.textContent = t.name ? t.car_code : '';
             const sub = document.createElement('span');
             sub.className = 'dp-truck-sub';
@@ -484,7 +541,77 @@
     const selectedTrucks = () => [...$('dpTrucks').querySelectorAll('input[type="checkbox"]:checked')].map(x => x.value);
     function renderTruckCount() {
         const ready = state.data.trucks.filter(t => t.ready).length;
-        $('dpTrucksCount').textContent = ready ? 'Նշված է՝ ' + selectedTrucks().length + ' / ' + ready : '';
+        const picked = selectedTrucks();
+        $('dpTrucksCount').textContent = ready ? 'Նշված է՝ ' + picked.length + ' / ' + ready : '';
+        // свёрнутый шаг 1 — одной строкой: цвета и число работающих машин
+        const sum = $('dpStep1Sum');
+        sum.textContent = '';
+        const dots = document.createElement('span');
+        dots.className = 'dp-sumdots';
+        dots.setAttribute('aria-hidden', 'true');
+        picked.forEach(code => {
+            const dot = document.createElement('span');
+            dot.className = 'rt-dot';
+            dot.style.background = truckColor(code);
+            dots.appendChild(dot);
+        });
+        const txt = document.createElement('span');
+        txt.textContent = 'Աշխատում է՝ ' + (ready > picked.length ? picked.length + ' / ' + ready + NB + 'մեքենա' : pl(picked.length, 'մեքենա'));
+        sum.append(dots, txt);
+    }
+
+    // Шаги 1–2: пока рейсов нет — открыты; после сборки — свёрнуты в строку, «Բացել» раскрывает
+    function renderSteps() {
+        const d = state.data, plan = !!d.plan, o = d.orders;
+        [['dpStep1', 'dpStep1Tog'], ['dpStep2', 'dpStep2Tog']].forEach(([id, tog]) => {
+            const open = !plan || state.stepsOpen.has(id);
+            $(id).classList.toggle('is-done', plan);
+            $(id).classList.toggle('is-folded', !open);
+            $(tog).hidden = !plan;
+            $(tog).setAttribute('aria-expanded', String(open));
+            $(tog).firstElementChild.textContent = open ? 'Ծալել' : 'Բացել';
+        });
+        const sum = $('dpStep2Sum');
+        sum.textContent = '';
+        const main = document.createElement('span');
+        main.textContent = o.count ? pl(o.count, 'պատվեր') + ' · ' + pl(o.customers, 'խանութ') + ' · ' + kgText(o.kg) : 'Պատվերներ չկան';
+        sum.appendChild(main);
+        if (o.no_coords) {
+            const w = document.createElement('span');
+            w.className = 'is-warn';
+            w.innerHTML = '<i class="fas fa-location-dot" aria-hidden="true"></i> ';
+            w.appendChild(document.createTextNode(pl(o.no_coords, 'խանութ') + '՝ առանց կետի'));
+            sum.appendChild(w);
+        }
+        $('dpTrucksCount').hidden = plan && !state.stepsOpen.has('dpStep1');
+    }
+    function toggleStep(id) {
+        if (state.stepsOpen.has(id)) state.stepsOpen.delete(id); else state.stepsOpen.add(id);
+        renderSteps();
+        // карты внутри шага, нарисованные пока он был свёрнут (0×0), — перерисовать по настоящему размеру
+        if (id === 'dpStep2' && state.stepsOpen.has(id)) { if ($('dpNoCoords').open) ensurePickMap(); if ($('dpGeoSug').open) renderGeoSug(); }
+    }
+    // Открыть свёрнутый шаг (кнопка внутри него или «тут нужно поправить»)
+    function unfoldStep(id) {
+        if (!state.data.plan || state.stepsOpen.has(id)) return;
+        state.stepsOpen.add(id);
+        renderSteps();
+        if (id === 'dpStep2') { if ($('dpNoCoords').open) ensurePickMap(); if ($('dpGeoSug').open) renderGeoSug(); }
+    }
+    // Кнопка в подсказке «…в 1-ին քայլ…»: раскрыть шаг и перейти к нему
+    function stepButton(id, text) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-stepbtn';
+        b.innerHTML = '<i class="fas fa-arrow-up" aria-hidden="true"></i><span></span>';
+        b.lastChild.textContent = text;
+        b.addEventListener('click', () => {
+            unfoldStep(id);
+            $(id).scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
+            $(id + 'Title').setAttribute('tabindex', '-1');
+            $(id + 'Title').focus({ preventScroll: true });
+        });
+        return b;
     }
 
     // Крупные цифры: [значение, подпись]
@@ -504,7 +631,7 @@
 
     function renderOrders() {
         const o = state.data.orders;
-        statTiles($('dpOrderStats'), [[fmt(o.count), 'պատվեր'], [fmt(o.customers), 'խանութ'], [kgText(o.kg), 'քաշը'], [money(o.revenue), 'գումարը']]);
+        statTiles($('dpOrderStats'), [[fmt(o.count), 'պատվեր'], [fmt(o.customers), 'խանութ'], [kgText(o.kg), 'քաշը'], [fmt(Math.round(num(o.revenue) || 0)) + NB + '֏', 'գումարը']]);
         $('dpOrdersEmpty').hidden = !!o.count;
         const attn = $('dpAttn');
         attn.textContent = '';
@@ -825,6 +952,110 @@
         } finally { state.busy = false; }
     }
 
+    // ---------- Время у магазина «Ժամանակ խանութում» (ответ владельца №50) ----------
+    // Своё время магазина — постоянная часть разгрузки (парковка, приёмка, документы) вместо общей нормы на точку; время на
+    // груз программа добавляет сама. Данные диалога — GET /api/routes/customer-vehicles?customer_id=… (свежие: значение,
+    // нормы, время по факту); сохраняется только время — POST /api/routes/customer-vehicles {customer_id, unload_min}:
+    // допуск и окно приёма не пересылаются. Рейсы сами не пересобираются — подсказка в уведомлении, как после смены точки.
+    const UNLOAD_REBUILD = 'Վերակազմեք երթերը, որ հաշվի առնվի։';
+    const UNLOAD_BAD = 'Գրեք ամբողջ թիվ՝ 1-ից մինչև 120 րոպե, կամ թողեք դաշտը դատարկ։';
+    const minutesText = (v) => fmt(v, 1) + NB + 'րոպե';
+    // своё время магазина из ответа дня (store_unload: клиент → мин); не задано — null (общая норма)
+    const ownUnload = (stop) => (isObj(state.data.store_unload) ? num(state.data.store_unload[stop.customer_id]) : null);
+    // Подсказка — как посчитает «Развоз» (та же логика, что в «Условиях магазина» /routes/settings): пустое поле — обычное
+    // время или своё время магазина по факту (unload_auto_min); есть разгрузки по GPS (unload_visits) — введённое смешается с фактом.
+    // «По факту» — только если отличается от нормы на 0,05 мин и больше: сервер округляет unload_auto_min до 0,1, а норму
+    // строки обучения — до 0,01 (8,4 и 8,37 — одно и то же «обычное» время)
+    function unloadHint(x, norms) {
+        const auto = num(x.unload_auto_min), perStop = num(norms.per_stop_min);
+        const empty = auto !== null && perStop !== null && Math.abs(auto - perStop) >= 0.05
+            ? minutesText(auto) + ' (ըստ փաստի)' : 'սովորական ' + minutesText(perStop);
+        const fact = num(x.unload_visits) ? ' Ըստ վարորդների GPS-ի՝ այս խանութում արդեն եղել է ' + pl(x.unload_visits, 'բեռնաթափում')
+            + '։ Ձեր գրած ժամանակը ծրագիրը կհամադրի փաստի հետ՝ որքան շատ բեռնաթափում, այնքան ավելի մոտ փաստին։' : '';
+        return 'Քանի րոպե է մեքենան կանգնում այս խանութի մոտ՝ կայանում, ընդունում, փաստաթղթեր։ Բեռի ժամանակը ('
+            + minutesText(norms.per_tonne_min) + ' տոննայի համար) ծրագիրը կավելացնի ինքը։' + fact + ' Դատարկ՝ ' + empty + '։';
+    }
+    const lockUnload = (on) => ['dpUnloadMin', 'dpUnloadSave', 'dpUnloadClear'].forEach(id => { $(id).disabled = on; });
+    function markUnload(bad) {
+        $('dpUnloadMin').classList.toggle('is-invalid', bad);
+        if (bad) $('dpUnloadMin').setAttribute('aria-invalid', 'true'); else $('dpUnloadMin').removeAttribute('aria-invalid');
+    }
+    async function openUnload(stop) {
+        if (state.busy) return;
+        const seq = ++state.unloadSeq;
+        state.unloadStop = stop;
+        state.unloadInfo = null;
+        $('dpUnloadLead').textContent = '«' + (stop.name || stop.code) + '»' + (stop.address ? '՝ ' + stop.address : '');
+        $('dpUnloadMin').value = ownUnload(stop) !== null ? String(ownUnload(stop)) : '';
+        markUnload(false);
+        $('dpUnloadHint').textContent = 'Բեռնում եմ խանութի տվյալները…';
+        $('dpUnloadErr').textContent = '';
+        $('dpUnloadClear').hidden = true;
+        lockUnload(true);           // пока не пришли свежие данные магазина — сохранять нечего
+        $('dpUnloadDlg').showModal();
+        try {
+            const r = await api('GET', '/api/routes/customer-vehicles?customer_id=' + encodeURIComponent(stop.customer_id));
+            if (seq !== state.unloadSeq || !$('dpUnloadDlg').open) return;
+            const x = Array.isArray(r.customers) ? r.customers[0] : null;
+            // магазина нет в данных ERP раздела (новый) — сервер не сохранит и время
+            if (!isObj(x) || !isObj(r.unload_norms)) throw new Error('Խանութը չի գտնվել — թարմացրեք էջը');
+            state.unloadInfo = x;
+            const own = num(x.unload_min);
+            $('dpUnloadMin').value = own !== null ? String(own) : '';
+            $('dpUnloadHint').textContent = unloadHint(x, r.unload_norms);
+            $('dpUnloadClear').hidden = own === null;
+            lockUnload(false);
+            $('dpUnloadMin').focus();
+        } catch (e) {
+            if (seq !== state.unloadSeq) return;
+            $('dpUnloadHint').textContent = '';
+            $('dpUnloadErr').textContent = e.message;
+        }
+    }
+    function readUnload() {
+        const input = $('dpUnloadMin');
+        // нечисло в поле type=number браузер отдаёт как '' — это не «пусто»: иначе сохранённое время стёрлось бы молча
+        if (input.validity && input.validity.badInput) throw new Error(UNLOAD_BAD);
+        const raw = input.value.trim();
+        if (raw === '') return null;
+        const value = Number(raw);
+        if (!Number.isInteger(value) || value < 1 || value > 120) throw new Error(UNLOAD_BAD);
+        return value;
+    }
+    // clear — «Հեռացնել»: снова обычное время; пустое поле при «Պահպանել» — то же. Значение не изменилось (например,
+    // пустое поле у магазина без своего времени) — сохранять нечего: диалог закрывается без запроса и уведомления
+    async function saveUnload(clear) {
+        const stop = state.unloadStop, x = state.unloadInfo;
+        if (!stop || !x || state.busy) return;
+        let value = null;
+        if (!clear) {
+            try { value = readUnload(); } catch (e) {
+                $('dpUnloadErr').textContent = e.message;
+                markUnload(true);
+                $('dpUnloadMin').focus();
+                return;
+            }
+        }
+        if (value === num(x.unload_min)) { $('dpUnloadDlg').close(); return; }
+        state.busy = true;
+        lockUnload(true);
+        $('dpUnloadErr').textContent = '';
+        try {
+            await api('POST', '/api/routes/customer-vehicles', { customer_id: stop.customer_id, unload_min: value });
+        } catch (e) {
+            $('dpUnloadErr').textContent = e.message;
+            return;
+        } finally {
+            state.busy = false;
+            lockUnload(false);
+        }
+        $('dpUnloadDlg').close();
+        // время изменилось, а рейсы уже есть — подсказать пересборку, как после смены точки
+        toast('«' + (stop.name || stop.code) + '»՝ ' + (value === null ? 'ժամանակը խանութում նորից սովորական է։'
+            : 'ժամանակը խանութում պահպանված է (' + minutesText(value) + ')։') + (state.data.plan ? ' ' + UNLOAD_REBUILD : ''));
+        try { await reloadQuiet(); } catch (e) { showActionError(e); }
+    }
+
     // ---------- Заказы прошлых дней и исключённые ----------
     function orderLine(o, btnText, onClick) {
         const li = document.createElement('li');
@@ -880,28 +1111,33 @@
         statTiles($('dpPlanStats'), [[fmt(sm.trucks), 'մեքենա'], [fmt(sm.trips), 'երթ'], [fmt(sm.stops), 'խանութ'],
             ['≈ ' + fmt(sm.km) + NB + 'կմ', 'ճանապարհ'], ['≈ ' + fmt(sm.liters) + NB + 'լ', 'դիզել'],
             ['≈ ' + fmt(sm.operating_cost_amd) + NB + '֏', 'դիզել և մաշվածք']]);
+        // Под цифрами — сравнение с обычной развозкой по менеджерам и чего не хватает в расчёте
         const lead = $('dpMainLead');
-        lead.className = 'dp-summary-lead';
         lead.textContent = '';
+        const saveRow = (tone, ico, parts) => {
+            const row = document.createElement('div');
+            row.className = 'dp-save' + (tone ? ' ' + tone : '');
+            row.innerHTML = '<i class="fas ' + ico + '" aria-hidden="true"></i><span class="dp-save-t"></span>';
+            const tx = row.lastChild;
+            parts.forEach(([text, strong]) => {
+                if (strong) { const b = document.createElement('b'); b.textContent = text; tx.appendChild(b); } else tx.appendChild(document.createTextNode(text));
+            });
+            lead.appendChild(row);
+        };
         if (base && num(base.km) !== null) {
             const diff = Math.round(base.km - sm.km);
             const dl = base.liters !== null ? Math.round(base.liters - sm.liters) : 0;
-            if (diff > 0) lead.textContent = 'Սա ' + fmt(diff) + NB + 'կմ-ով կարճ է, քան եթե յուրաքանչյուր մենեջերի պատվերները տաներ իր սովորական մեքենան'
-                + (dl > 0 ? ' (≈ ' + fmt(dl) + NB + 'լ դիզելի խնայողություն)' : '') + '։';
-            else {
-                lead.classList.add('is-neutral');
-                lead.textContent = diff < 0
-                    ? 'Սա ' + fmt(-diff) + NB + 'կմ-ով երկար է, քան սովորական բաշխումը ըստ մենեջերների — ստուգեք ամրացված երթերը։'
-                    : 'Ճանապարհը նույնն է, ինչ սովորական բաշխումը ըստ մենեջերների։';
-            }
+            if (diff > 0) saveRow('', 'fa-arrow-trend-down', [['Սա '], [fmt(diff) + NB + 'կմ-ով կարճ է', true],
+                [', քան եթե յուրաքանչյուր մենեջերի պատվերները տաներ իր սովորական մեքենան'],
+                ...(dl > 0 ? [[' (≈ '], [fmt(dl) + NB + 'լ', true], [' դիզելի խնայողություն)']] : []), ['։']]);
+            else saveRow('is-neutral', 'fa-scale-balanced', [[diff < 0
+                ? 'Սա ' + fmt(-diff) + NB + 'կմ-ով երկար է, քան սովորական բաշխումը ըստ մենեջերների — ստուգեք ամրացված երթերը։'
+                : 'Ճանապարհը նույնն է, ինչ սովորական բաշխումը ըստ մենեջերների։']]);
         }
         if (plan.coverage && !plan.coverage.complete) {
             const c = plan.coverage;
-            const notice = document.createElement('strong');
-            notice.className = 'is-warn';
-            notice.textContent = ' Երթերում է ' + fmt(c.stops_assigned) + ' / ' + fmt(c.stops_total)
-                + ' խանութ։ Խնայողությունը հաշվված է միայն երթերում եղած պատվերների համար։';
-            lead.appendChild(notice);
+            saveRow('is-warn', 'fa-triangle-exclamation', [['Երթերում է '], [fmt(c.stops_assigned) + ' / ' + fmt(c.stops_total) + ' խանութ', true],
+                ['։ Խնայողությունը հաշվված է միայն երթերում եղած պատվերների համար։']]);
         }
         const costNotes = [];
         costNotes.push(sm.traffic && sm.traffic.status === 'provider_forecast'
@@ -917,10 +1153,12 @@
         if (sm.fuel_price_estimated) costNotes.push('դիզելի գինը պայմանական է՝ ' + money(sm.fuel_price_amd) + '/լ');
         if (costNotes.length) {
             const note = document.createElement('p');
-            note.className = 'rt-muted';
-            note.textContent = costNotes.join('։ ') + '։ Նորմերը լրացրեք մեքենաների կարգավորումներում։';
+            note.className = 'dp-costnote';
+            const text = costNotes.join('։ ') + '։ Նորմերը լրացրեք մեքենաների կարգավորումներում։';
+            note.textContent = text.charAt(0).toUpperCase() + text.slice(1);
             lead.appendChild(note);
         }
+        renderBoard(plan);
         renderOverflow(plan);
         renderUnassigned(plan);
         renderTruckCards(plan);
@@ -928,6 +1166,215 @@
         if (!$('dpMapBox').open) return;
         drawMap();
     }
+
+    // ---------- Шкала дня: строка на машину, рейсы — полосы по часам ----------
+    const toMin = (s) => clockMin(s);     // «HH:MM» и «HH:MM (+1)» после полуночи
+    const calm = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const tripBad = (tr) => !!(tr.over_time || tr.over_capacity || tr.no_truck || tr.window_miss || tr.center_miss || tr.vehicle_miss);
+    function renderBoard(plan) {
+        const box = $('dpBoard'), d = state.data;
+        box.textContent = '';
+        const key = d.day + '|' + (d.built_at || '');
+        box.classList.toggle('is-static', state.boardKey === key);
+        state.boardKey = key;
+        box.hidden = !plan.trucks.length;
+        if (!plan.trucks.length) return;
+        const ws = toMin(d.work_start) ?? 540, we = toMin(d.work_end) ?? 1080;
+        let lo = ws, hi = we, loading = false;
+        plan.trucks.forEach(t => t.trips.forEach(tr => {
+            [tr.loading_start, tr.depart].forEach(x => { const m = toMin(x); if (m !== null) lo = Math.min(lo, m); });
+            const r = toMin(tr.return);
+            if (r !== null) hi = Math.max(hi, r);
+            if (tr.loading_minutes) loading = true;
+        }));
+        const t0 = Math.floor((lo - 30) / 60) * 60, t1 = Math.ceil((hi + 30) / 60) * 60, span = t1 - t0;
+        const x = (m) => ((m - t0) / span * 100).toFixed(3) + '%';
+        const w = (a, b) => (Math.max(0, b - a) / span * 100).toFixed(3) + '%';
+
+        const head = document.createElement('div');
+        head.className = 'dp-board-head';
+        head.innerHTML = '<h3 class="dp-board-t" id="dpBoardTitle"><i class="fas fa-clock" aria-hidden="true"></i>Մեքենաների օրը ըստ ժամերի</h3>'
+            + '<div class="dp-board-legend" aria-hidden="true"><span><i class="dp-lg-work"></i></span><span><i class="dp-lg-over"></i></span></div>';
+        const lg = head.querySelectorAll('.dp-board-legend span');
+        lg[0].appendChild(document.createTextNode('աշխատանքային ժամ՝ ' + hhmm(ws) + '–' + hhmm(we)));
+        lg[1].appendChild(document.createTextNode(hhmm(we) + '-ից հետո'));
+        if (loading) head.lastChild.insertAdjacentHTML('beforeend', '<span><i class="dp-lg-load"></i>բեռնում պահեստում</span>');
+        box.appendChild(head);
+
+        const grid = document.createElement('div');
+        grid.className = 'dp-board-grid';
+        grid.style.setProperty('--dp-hours', String(span / 60));
+        const axis = document.createElement('div');
+        axis.className = 'dp-axis';
+        axis.setAttribute('aria-hidden', 'true');
+        const step = span > 13 * 60 ? 120 : 60;
+        for (let m = t0; m <= t1; m += step) {
+            const s = document.createElement('span');
+            s.textContent = hhmm(m).replace(/^0/, '');
+            s.style.left = x(m);
+            // на телефоне подписи — раз в три часа (остальные is-minor скрыты стилями)
+            s.className = (m === ws || m === we ? 'is-edge' : '') + (((m - t0) / step) % 3 ? ' is-minor' : '');
+            axis.appendChild(s);
+        }
+        grid.appendChild(axis);
+        // «сейчас» — только в сегодняшнем дне
+        let now = null;
+        if (d.day === d.today) { const n = new Date(); now = n.getHours() * 60 + n.getMinutes(); if (now < t0 || now > t1) now = null; }
+
+        plan.trucks.forEach((t, ti) => {
+            const color = truckColor(t.car_code);
+            const lab = document.createElement('button');
+            lab.type = 'button';
+            lab.className = 'dp-blabel';
+            lab.dataset.truck = t.car_code;
+            lab.setAttribute('aria-label', 'Ցույց տալ քարտեզում՝ ' + truckLabel(t) + ', ' + pl(t.trips.length, 'երթ') + ', վերադարձ ' + t.return);
+            lab.innerHTML = '<span class="rt-dot" aria-hidden="true"></span><span class="dp-blabel-t"><b></b><small></small></span>';
+            lab.querySelector('.rt-dot').style.background = color;
+            lab.querySelector('b').textContent = t.name || t.car_code;
+            lab.querySelector('small').textContent = t.name ? t.car_code : '';
+            lab.addEventListener('click', () => focusFromBoard(t, null));
+
+            const track = document.createElement('div');
+            track.className = 'dp-track';
+            const zone = (cls, a, b) => { const z = document.createElement('span'); z.className = cls; z.style.left = x(a); z.style.width = w(a, b); track.appendChild(z); };
+            zone('dp-work', ws, we);
+            zone('dp-over', we, t1);
+            t.trips.forEach((tr, i) => {
+                const ls = toMin(tr.loading_start), dep = toMin(tr.depart), ret = toMin(tr.return);
+                if (dep === null || ret === null) return;
+                if (tr.loading_minutes && ls !== null && ls < dep) zone('dp-load', ls, dep);
+                const bar = document.createElement('button');
+                bar.type = 'button';
+                bar.className = 'dp-bar' + (tripBad(tr) ? ' is-bad' : '') + (tr.late ? ' is-late' : '');
+                bar.dataset.truck = t.car_code;
+                bar.dataset.trip = String(tr.id);
+                bar.style.left = x(dep);
+                bar.style.width = w(dep, ret);
+                bar.style.setProperty('--dp-c', color);
+                bar.style.setProperty('--dp-delay', (ti * 70 + i * 40) + 'ms');
+                const info = (t.trips.length > 1 ? 'Երթ ' + (i + 1) + ' · ' : '') + pl(tr.stops.length, 'կետ')
+                    + (tr.load_pct !== null && tr.load_pct !== undefined ? ' · ' + tr.load_pct + '%' : '');
+                const full = truckLabel(t) + ' · երթ ' + (i + 1) + ' · ' + tr.depart + ' → ' + tr.return + ' · ' + pl(tr.stops.length, 'կետ')
+                    + ' · ' + kgText(tr.kg) + ' · ≈ ' + fmt(tr.km) + NB + 'կմ';
+                bar.title = full;
+                bar.setAttribute('aria-label', info + ' — ' + full + ' — ցույց տալ քարտեզում');
+                const bt = document.createElement('span');
+                bt.className = 'dp-bar-t';
+                bt.textContent = info;
+                bar.appendChild(bt);
+                // засечки — приезд в каждый магазин
+                tr.stops.forEach(s => {
+                    const e = toMin(s.eta);
+                    if (e === null || ret <= dep) return;
+                    const tick = document.createElement('i');
+                    tick.className = 'dp-tick';
+                    tick.style.left = ((e - dep) / (ret - dep) * 100).toFixed(2) + '%';
+                    bar.appendChild(tick);
+                });
+                bar.addEventListener('click', () => focusFromBoard(t, tr));
+                track.appendChild(bar);
+            });
+            if (now !== null) { const n = document.createElement('span'); n.className = 'dp-now'; n.style.left = x(now); n.title = 'Հիմա'; track.appendChild(n); }
+
+            const end = document.createElement('div');
+            end.className = 'dp-bend';
+            end.innerHTML = '<b></b><small></small>';
+            end.firstChild.textContent = t.return;
+            if (t.over_time) end.firstChild.className = 'is-bad'; else if (t.late) end.firstChild.className = 'is-late';
+            end.lastChild.textContent = 'վերադարձ · ≈ ' + fmt(t.km) + NB + 'կմ';
+            grid.append(lab, track, end);
+        });
+        // на узком экране шкала не сжимается, а прокручивается вбок
+        const scroll = document.createElement('div');
+        scroll.className = 'dp-board-scroll';
+        scroll.appendChild(grid);
+        box.appendChild(scroll);
+        syncFocus();
+    }
+
+    // Выбранное на карте — подсвечено и на шкале, и в карточках машин
+    function syncFocus() {
+        const f = state.mapFocus;
+        $('dpBoard').querySelectorAll('.dp-blabel').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.truck === b.dataset.truck && f.trip == null)));
+        $('dpBoard').querySelectorAll('.dp-bar').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.trip != null && String(f.trip) === b.dataset.trip)));
+        $('dpTruckCards').querySelectorAll('.dp-tcard').forEach(c => c.classList.toggle('is-focus', !!f && f.truck === c.dataset.truck));
+    }
+
+    // Нажали машину или рейс на шкале: он же на карте, карточка машины раскрыта и видна рядом с картой
+    function focusFromBoard(t, tr) {
+        state.open.add(t.car_code);
+        renderTruckCards(state.data.plan);
+        if (!$('dpMapBox').open) { state.mapFocus = { truck: t.car_code, trip: tr ? tr.id : null }; $('dpMapBox').open = true; syncFocus(); }
+        else setMapFocus({ truck: t.car_code, trip: tr ? tr.id : null });
+        // к карточке (и рейсу): рядом закреплена карта, а на узком экране карта ниже рейсов — к ней ведёт «Քարտեզում»
+        const card = [...$('dpTruckCards').querySelectorAll('.dp-tcard')].find(c => c.dataset.truck === t.car_code);
+        const target = tr && card ? card.querySelector('.dp-trip[data-trip="' + tr.id + '"]') || card : card;
+        if (target) target.scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
+    }
+
+    // Совет «как поместить» (ответ владельца №54; plan.advice — dispatch._advice): отмеченные машины без рейсов — пересобрать;
+    // неотмеченная готовая машина — одной кнопкой отметить её в шаге 1 и пересобрать; добавить нечего — «все машины уже
+    // отмечены»; опаздывающие закреплённые рейсы (pinned_late) пересборка не меняет — снять закрепление или перенести
+    // магазины. Сама сборка машин не добавляет (№32).
+    // { kind: rebuild | add | none (no_free) | pinned (только закреплённые), text — со строчной буквы (после «Ինչ անել՝ »),
+    //   button() — новая кнопка (rebuild, add),
+    //   forCenter, pinned — совет про закреплённые рейсы или '' }; совета нет — null: карточки пишут прежние тексты
+    const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+    function adviceButton(ico, text, act) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-stepbtn';
+        b.innerHTML = '<i class="fas ' + ico + '" aria-hidden="true"></i><span></span>';
+        b.lastChild.textContent = text;
+        b.addEventListener('click', act);
+        return b;
+    }
+    // «Ավելացնել և վերակազմել»: отметить машину в шаге 1 и пересобрать рейсы; галочки нет (машину сняли с расчёта
+    // после загрузки страницы) — ошибка, а не сборка без неё
+    function addTruckAndBuild(code) {
+        if (state.busy) return;
+        const cb = [...$('dpTrucks').querySelectorAll('input[type="checkbox"]')].find(x => x.value === code);
+        if (!cb || cb.disabled) { showActionError(new Error('Մեքենան՝ ' + truckLabel(truckBy(code)) + ', 1-ին քայլում նշել հնարավոր չէ — թարմացրեք էջը։')); return; }
+        cb.checked = true;
+        renderTruckCount();
+        build();
+    }
+    function planAdvice(plan) {
+        const a = plan.advice;
+        if (!isObj(a)) return null;
+        const ids = Array.isArray(a.pinned_late) ? a.pinned_late : [], late = [];
+        plan.trucks.forEach(t => t.trips.forEach((tr, i) => { if (ids.includes(tr.id)) late.push(truckLabel(t) + ', երթ ' + (i + 1)); }));
+        const pinned = !late.length ? ''
+            : late.length === 1 ? 'ուշացող երթը՝ ' + late[0] + ', ամրացված է, և «Վերակազմել երթերը» այն չի փոխի։ Ապամրացրեք այն կամ «Փոփոխել» կոճակով տեղափոխեք խանութներն այլ երթ։'
+            : 'ուշացող երթերը՝ ' + late.join('; ') + ', ամրացված են, և «Վերակազմել երթերը» դրանք չի փոխի։ Ապամրացրեք դրանք կամ «Փոփոխել» կոճակով տեղափոխեք խանութներն այլ երթ։';
+        // принятая переработка («Տանել … հետո»): пересборка собирает новый черновик без неё (dispatch.build)
+        const reset = state.data.overtime_ok ? ' Վերակազմելիս արտաժամյա աշխատանքը կչեղարկվի։' : '';
+        if (Array.isArray(a.rebuild) && a.rebuild.length) {
+            const one = a.rebuild.length === 1, names = a.rebuild.map(c => truckLabel(truckBy(c))).join(', ');
+            return {
+                kind: 'rebuild', forCenter: false, pinned,
+                text: 'սեղմեք «Վերակազմել երթերը»։ Նշված ' + (one ? 'մեքենան՝ ' + names + ', այս պլանում երթ չունի' : 'մեքենաները՝ ' + names + ', այս պլանում երթ չունեն')
+                    + ' — ծրագիրը բեռը կբաշխի նաև ' + (one ? 'դրա' : 'դրանց') + ' վրա։' + reset,
+                button: () => adviceButton('fa-rotate', 'Վերակազմել երթերը', build),
+            };
+        }
+        const t = a.add;
+        // добавить нечего: все готовые машины уже отмечены (no_free) или опаздывают только закреплённые рейсы
+        if (!isObj(t) || typeof t.car_code !== 'string') return { kind: a.no_free === true ? 'none' : 'pinned', forCenter: false, pinned, text: '' };
+        // тоннаж меньше груза, что не поместился (need_kg), — возьмёт только часть; остальное покажет пересборка
+        const part = num(t.need_kg) !== null && num(t.capacity_kg) !== null && t.capacity_kg < t.need_kg;
+        return {
+            kind: 'add', forCenter: !!t.for_center, pinned,
+            text: 'սեղմեք «Ավելացնել և վերակազմել»։ Չնշված մեքենան՝ ' + truckLabel(truckBy(t.car_code)) + ' (տանում է մինչև ' + kgText(t.capacity_kg)
+                + (t.for_center ? ', մտնում է կենտրոն' : '') + '), կարող է վերցնել ' + (part ? 'բեռի մի մասը։' : 'այս բեռը։') + reset,
+            button: () => adviceButton('fa-plus', 'Ավելացնել և վերակազմել', () => addTruckAndBuild(t.car_code)),
+        };
+    }
+
+    // Рейс не поместился и ему поможет пересборка или ещё машина: позже конца дня (кроме закреплённого — пересборка его не
+    // меняет), тяжелее тоннажа, машина не работает. Тогда кнопка совета — в карточке «Չի տեղավորվել», карточки ниже
+    // (dpUnassigned) её не повторяют
+    const stuckOf = (plan) => plan.trucks.some(t => t.trips.some(tr => (tr.over_time && !tr.pinned) || tr.over_capacity || tr.no_truck));
 
     // Не помещается: что именно и что делать — простыми словами
     function renderOverflow(plan) {
@@ -948,12 +1395,19 @@
         const div = document.createElement('div');
         div.className = 'rt-alert is-warn dp-problem';
         const notFit = plan.trucks.some(t => t.trips.some(tr => tr.over_time || tr.over_capacity || tr.no_truck));
+        const stuck = stuckOf(plan);
         const winMiss = plan.trucks.some(t => t.trips.some(tr => tr.window_miss));
         const cenMiss = plan.trucks.some(t => t.trips.some(tr => tr.center_miss));
         const vehicleMiss = plan.trucks.some(t => t.trips.some(tr => tr.vehicle_miss));
-        // что делать — по виду беды: не поместилось / не успевает к окну / центр на машине без права въезда
+        // что делать — по виду беды: не поместилось / не успевает к окну / центр на машине без права въезда;
+        // не поместилось и есть совет сервера (plan.advice) — какую машину загрузить, кнопкой; добавить нечего — «все
+        // машины уже отмечены» (без шага 1); опаздывает закреплённый рейс — снять закрепление или перенести магазины
+        const adv = notFit ? planAdvice(plan) : null, act = adv && adv.button ? adv : null, noFree = !!adv && adv.kind === 'none';
         const advice = [];
-        if (notFit) advice.push('1-ին քայլում նշեք ևս մեկ մեքենա և սեղմեք «Վերակազմել երթերը», կամ սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութները այլ երթ։');
+        if (stuck) advice.push(act ? act.text + (act.kind === 'add' ? ' Կամ սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութներն այլ երթ։' : '')
+            : noFree ? 'բոլոր մեքենաներն արդեն նշված են, բայց չեն հասցնում մինչև ' + endOfDay() + '-ը։ Սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութներն այլ երթ։'
+            : '1-ին քայլում նշեք ևս մեկ մեքենա և սեղմեք «Վերակազմել երթերը», կամ սեղմեք «Փոփոխել» երթի մոտ և տեղափոխեք խանութներն այլ երթ։');
+        if (adv && adv.pinned) advice.push(adv.pinned);
         if (winMiss) advice.push('ընդունման ժամին չհասցնող խանութի մոտ սեղմեք «Փոփոխել» և տեղափոխեք այն այլ երթ կամ մեքենա, որը կհասցնի, '
             + 'կամ նշեք «Այսօր չենք տանում»՝ կտանենք հաջորդ օրը։ Եթե ժամը օրվա վերջում է, կարող եք տանել ' + state.data.work_end + '-ից հետո։');
         if (cenMiss) advice.push('կենտրոնի խանութները տեղափոխեք կենտրոն մտնող մեքենայի երթ (նշեք այդ մեքենան 1-ին քայլում)։');
@@ -962,12 +1416,14 @@
             + (notFit ? 'Չի տեղավորվել' : 'Ուշադրություն') + '</b><ul></ul></div>';
         const ul = div.querySelector('ul');
         bad.forEach(t => { const li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
-        advice.forEach(t => {
+        advice.forEach((t, i) => {
             const p = document.createElement('p');
             p.className = 'dp-problem-do';
             p.textContent = 'Ինչ անել՝ ' + t;
             div.querySelector('.rt-alert-text').appendChild(p);
+            if (i === 0 && stuck && act) div.querySelector('.rt-alert-text').appendChild(act.button());   // кнопка — под своим советом
         });
+        if ((stuck && !act && !noFree) || cenMiss) div.querySelector('.rt-alert-text').appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
         box.appendChild(div);
     }
 
@@ -998,10 +1454,14 @@
         return sel;
     }
 
-    // Одна точка — как строка листа водителя: №, магазин, адрес, кг; в режиме правки — действия
+    // Одна точка — строка расписания: время приезда · № на линии маршрута · магазин, адрес · кг; в режиме правки — действия
     function stopItem(stop, idx, tripId, editing) {
         const li = document.createElement('li');
         li.className = 'dp-stop';
+        const eta = document.createElement('span');
+        eta.className = 'dp-stop-eta' + (stop.eta ? '' : ' is-none');
+        if (stop.eta) eta.innerHTML = '<span class="rt-sr-only">ժամանում ≈ </span>' + esc(stop.eta);
+        else { eta.textContent = '—'; eta.setAttribute('aria-hidden', 'true'); }
         const no = document.createElement('span');
         no.className = 'dp-num';
         no.setAttribute('aria-hidden', 'true');
@@ -1017,7 +1477,7 @@
         sub.className = 'dp-stop-sub';
         sub.textContent = [stop.code, stop.agent_name || stop.agent_code, money(stop.revenue / (stop.share || 1))].filter(Boolean).join(' · ');
         main.append(b, addr, sub);
-        // прибытие, окно приёма и центр — плашками; нарушение (после ручной правки) — красным
+        // окно приёма, центр, допуск машин и источник точки — плашками; нарушение (после ручной правки) — красным
         const tags = document.createElement('span');
         tags.className = 'dp-stop-tags';
         const tag = (cls, text, ico) => {
@@ -1027,10 +1487,15 @@
             bd.appendChild(document.createTextNode(text));
             tags.appendChild(bd);
         };
-        if (stop.eta) tag('b-none', 'ժամանում ≈ ' + stop.eta, 'fa-clock');
         const win = windowText(stop.window);
-        if (win) tag(stop.window_miss ? 'b-danger' : 'b-gps', (stop.window_miss ? 'չի հասցնում՝ ' : '') + win, 'fa-door-open');
-        if (stop.center) tag(stop.center_miss ? 'b-danger' : 'b-warn', stop.center_miss ? 'Կենտրոն — մեքենան չի կարող մտնել' : 'Կենտրոն');
+        if (win) tag(stop.window_miss ? 'b-danger' : 'b-gps', (stop.window_miss ? 'չի հասցնում՝ ' : 'ընդունում է՝ ') + win, 'fa-door-open');
+        // своё время у магазина (№50) — только у магазинов, где оно задано; у остальных — общая норма
+        const own = ownUnload(stop);
+        if (own !== null) {
+            tag('dp-b-unload', 'Բեռնաթափում՝ ' + fmt(own) + NB + 'ր', 'fa-stopwatch');
+            tags.lastChild.title = 'խանութի հաստատուն մասը՝ առանց բեռի ժամանակի';
+        }
+        if (stop.center) tag(stop.center_miss ? 'b-danger' : 'b-warn', stop.center_miss ? 'Կենտրոն — մեքենան չի կարող մտնել' : 'Կենտրոն', 'fa-city');
         if (stop.vehicle_access) tag(stop.vehicle_miss ? 'b-danger' : 'b-warn',
             (stop.vehicle_miss ? 'Մեքենան չի կարող սպասարկել · ' : '') + vehicleText(stop.vehicle_access, true), 'fa-truck');
         const src = COORD_HY[stop.coord_source];
@@ -1039,7 +1504,7 @@
         const kg = document.createElement('span');
         kg.className = 'dp-stop-kg';
         kg.textContent = kgText(stop.kg) + (stop.share > 1 ? ' (1/' + stop.share + ')' : '');
-        li.append(no, main, kg);
+        li.append(eta, no, main, kg);
         if (editing) {
             const acts = document.createElement('div');
             acts.className = 'dp-stop-acts';
@@ -1060,7 +1525,13 @@
             vb.innerHTML = '<i class="fas fa-truck" aria-hidden="true"></i><span>Առաքման պայմաններ</span>';
             vb.setAttribute('aria-label', 'Առաքման պայմաններ՝ ' + (stop.name || stop.code));
             vb.href = '/routes/settings?customer=' + stop.customer_id + '#rsCustomerSettings';
-            acts.append(moveSelect(stop, tripId), ex, vb, gb);
+            const ub = document.createElement('button');
+            ub.type = 'button';
+            ub.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-unloadbtn';
+            ub.innerHTML = '<i class="fas fa-stopwatch" aria-hidden="true"></i><span>Ժամանակ խանութում</span>';
+            ub.setAttribute('aria-label', 'Ժամանակ խանութում՝ ' + (stop.name || stop.code));
+            ub.addEventListener('click', () => openUnload(stop));
+            acts.append(moveSelect(stop, tripId), ex, vb, ub, gb);
             li.appendChild(acts);
         }
         return li;
@@ -1091,6 +1562,7 @@
             card.querySelector('.rt-card-title span').textContent = title;
             card.querySelector('.rt-card-state').textContent = pl(list.length, 'խանութ') + ', ' + kgText(kgOf(list));
             leads.filter(Boolean).forEach(t => { const p = document.createElement('p'); p.className = 'rt-card-lead'; p.textContent = t; card.appendChild(p); });
+            if (leads.some(t => t && t.includes('1-ին քայլում'))) card.appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
             card.appendChild(stopList(list, null, true));
             box.appendChild(card);
             return card;
@@ -1124,13 +1596,21 @@
                     + '-ից հետո՝ մինչև ' + state.data.overtime_end + '-ը։').forEach(x => card.insertBefore(x, list));
             }
         }
+        // совет сервера (ответ владельца №54): какую свободную машину отметить и пересобрать — кнопкой; кнопка одна на
+        // страницу — в первой карточке с советом («Չի տեղավորվել» выше или первая из карточек ниже), текст — во всех
+        const adv = planAdvice(plan), act = adv && adv.button ? adv : null;    // совет с действием: пересобрать / добавить
+        let advShown = stuckOf(plan);
+        const advButton = () => { if (advShown) return []; advShown = true; return [act.button()]; };
         if (noCenter.length) {
             const can = state.data.trucks.filter(t => t.ready && t.center_ok && !t.selected).map(truckLabel);
-            reasonCard(noCenter, 'fa-city', 'Կենտրոն՝ այսօր չկա թույլատրված մեքենա', [
+            const forCenter = act && act.forCenter;
+            const card = reasonCard(noCenter, 'fa-city', 'Կենտրոն՝ այսօր չկա թույլատրված մեքենա', [
                 'Այս խանութները փոքր կենտրոնում են, իսկ այսօր նշված մեքենաներից ոչ մեկը չի կարող մտնել կենտրոն։',
-                can.length ? 'Կենտրոն մտնում է՝ ' + can.join(', ') + '։ Նշեք այն 1-ին քայլում և սեղմեք «Վերակազմել երթերը»։'
+                forCenter ? cap(act.text)
+                    : can.length ? 'Կենտրոն մտնում է՝ ' + can.join(', ') + '։ Նշեք այն 1-ին քայլում և սեղմեք «Վերակազմել երթերը»։'
                     : 'Որ մեքենաները կարող են մտնել կենտրոն, նշվում է կարգավորումներում։',
                 'Կամ որոշեք ձեռքով՝ «Այսօր չենք տանում» կամ ավելացրեք որևէ երթի։']);
+            if (forCenter) advButton().forEach(b => card.insertBefore(b, card.querySelector('.dp-stoplist')));
         }
         if (noRoom.length) {
             const card = document.createElement('section');
@@ -1144,16 +1624,19 @@
             lead.className = 'rt-card-lead';
             if (state.data.overtime_ok) {
                 lead.textContent = 'Մեքենաներն արդեն աշխատում են ' + state.data.work_end + '-ից հետո, բայց սրանք չեն հասցնում նույնիսկ մինչև '
-                    + state.data.overtime_end + '-ը։ Նշեք «Այսօր չենք տանում»՝ դրանք կանցնեն հաջորդ օրվան։' + monthText;
+                    + state.data.overtime_end + '-ը։ ' + (act ? cap(act.text) + ' Կամ նշեք' : 'Նշեք') + ' «Այսօր չենք տանում»՝ դրանք կանցնեն հաջորդ օրվան։' + monthText;
+            } else if (act && act.kind === 'rebuild') {
+                lead.textContent = cap(act.text) + ' Կամ ավելացրեք խանութը որևէ երթի ձեռքով։';
             } else if (unpicked || changed) {
                 lead.textContent = 'Ընտրված մեքենաները չեն հասցնի այս խանութներին առաքել մինչև ' + state.data.work_end + '-ը։ '
-                    + (unpicked ? 'Կա ևս ' + pl(unpicked, 'մեքենա') + '՝ չնշված։ Նշեք 1-ին քայլում և սեղմեք «Վերակազմել երթերը»։ ' : '')
+                    + (act ? cap(act.text) + ' ' : unpicked ? 'Կա ևս ' + pl(unpicked, 'մեքենա') + '՝ չնշված։ Նշեք 1-ին քայլում և սեղմեք «Վերակազմել երթերը»։ ' : '')
                     + 'Կամ ավելացրեք խանութը որևէ երթի ձեռքով։';
             } else {
                 lead.textContent = 'Բոլոր մեքենաներն արդեն նշված են, բայց չեն հասցնում մինչև ' + state.data.work_end + '-ը։';
             }
-            card.append(lead, ...overtimeBlock('Եթե այս պատվերները պետք է տանել այսօր, մեքենաները կաշխատեն ' + state.data.work_end
-                + '-ից հետո՝ մինչև ' + state.data.overtime_end + '-ը։'));
+            card.append(lead, ...(act ? advButton() : []), ...overtimeBlock('Եթե այս պատվերները պետք է տանել այսօր, մեքենաները կաշխատեն '
+                + state.data.work_end + '-ից հետո՝ մինչև ' + state.data.overtime_end + '-ը։'));
+            if (unpicked && !act) card.appendChild(stepButton('dpStep1', 'Բացել 1-ին քայլը'));
             card.appendChild(stopList(noRoom, null, true));
             box.appendChild(card);
         }
@@ -1162,56 +1645,120 @@
         card.className = 'rt-card dp-unassigned';
         card.innerHTML = '<div class="rt-card-head"><h3 class="rt-card-title"><i class="fas fa-inbox" aria-hidden="true"></i>Դեռ ոչ մի երթում չեն</h3><span class="rt-card-state is-todo"></span></div>'
             + '<p class="rt-card-lead">Նոր կամ վերադարձված պատվերներ, կամ խանութներ, որոնց տեղը նոր եք նշել։ Յուրաքանչյուրի համար ընտրեք՝ որ երթին ավելացնել, '
-            + 'կամ պարզապես սեղմեք «Վերակազմել երթերը» 2-րդ քայլում։</p>';
+            + 'կամ պարզապես սեղմեք «Վերակազմել երթերը»։</p>';
         card.querySelector('.rt-card-state').textContent = pl(other.length, 'խանութ') + ', ' + kgText(kgOf(other));
         card.appendChild(stopList(other, null, true));
         box.appendChild(card);
     }
 
+    // Карточка машины: шапка — кнопка «раскрыть» (итог и время возвращения), внутри — рейсы со списком точек
     function renderTruckCards(plan) {
         const box = $('dpTruckCards');
         box.textContent = '';
-        plan.trucks.forEach(t => {
+        plan.trucks.forEach((t, k) => {
+            const color = truckColor(t.car_code);
+            const open = state.open.has(t.car_code) || t.trips.some(tr => state.editing.has(tr.id));
             const card = document.createElement('section');
             card.className = 'rt-card dp-tcard';
-            card.style.setProperty('--dp-c', truckColor(t.car_code));
-            const head = document.createElement('div');
-            head.className = 'dp-thead';
+            card.dataset.truck = t.car_code;
+            card.style.setProperty('--dp-c', color);
             const h = document.createElement('h3');
-            h.className = 'rt-card-title';
-            h.innerHTML = '<span class="rt-dot" aria-hidden="true"></span><span></span>';
-            h.querySelector('.rt-dot').style.background = truckColor(t.car_code);
-            h.lastChild.textContent = truckLabel(t);
-            const st = document.createElement('p');
-            st.className = 'dp-tstats';
-            st.textContent = pl(t.trips.length, 'երթ') + ' · ' + pl(t.stops, 'խանութ') + ' · ' + kgText(t.kg)
-                + ' · ≈ ' + fmt(t.km) + NB + 'կմ · վերադարձ՝ ' + t.return;
+            h.className = 'dp-thead-h';
+            const head = document.createElement('button');
+            head.type = 'button';
+            head.className = 'dp-thead';
+            head.id = 'dpTH' + k;
+            head.setAttribute('aria-expanded', String(open));
+            head.setAttribute('aria-controls', 'dpTB' + k);
+            head.innerHTML = '<span class="dp-thead-t"><span class="dp-thead-name"><b></b></span><span class="dp-tstats"></span></span>'
+                + '<span class="dp-tret"><small>վերադարձ</small><b></b></span>'
+                + '<span class="dp-chev" aria-hidden="true"><i class="fas fa-chevron-down"></i></span>';
+            head.querySelector('.dp-thead-name b').textContent = t.name || t.car_code;
+            if (t.name) {
+                const plate = document.createElement('span');
+                plate.className = 'dp-plate';
+                plate.textContent = t.car_code;
+                head.querySelector('.dp-thead-name').appendChild(plate);
+            }
+            const st = head.querySelector('.dp-tstats');
+            st.textContent = pl(t.trips.length, 'երթ') + ' · ' + pl(t.stops, 'խանութ') + ' · ' + kgText(t.kg) + ' · ≈ ' + fmt(t.km) + NB + 'կմ'
+                + (num(t.liters) !== null ? ' · ≈ ' + fmt(t.liters, 1) + NB + 'լ' : '');
             if (t.over_time) st.classList.add('is-bad');
-            head.append(h, st);
-            card.appendChild(head);
-            t.trips.forEach((tr, i) => card.appendChild(tripBlock(t, tr, i)));
+            const ret = head.querySelector('.dp-tret b');
+            ret.textContent = t.return;
+            if (t.over_time) ret.className = 'is-bad'; else if (t.late) ret.className = 'is-late';
+            head.addEventListener('click', () => toggleTruck(t.car_code));
+            h.appendChild(head);
+            const body = document.createElement('div');
+            body.className = 'dp-tbody';
+            body.id = 'dpTB' + k;
+            body.setAttribute('role', 'region');
+            body.setAttribute('aria-labelledby', head.id);
+            body.hidden = !open;
+            if (open) t.trips.forEach((tr, i) => body.appendChild(tripBlock(t, tr, i)));
+            card.append(h, body);
             box.appendChild(card);
         });
+        syncFocus();
+    }
+    function toggleTruck(code) {
+        const t = state.data.plan.trucks.find(x => x.car_code === code);
+        const shown = state.open.has(code) || (!!t && t.trips.some(tr => state.editing.has(tr.id)));
+        if (shown) { state.open.delete(code); if (t) t.trips.forEach(tr => state.editing.delete(tr.id)); } else state.open.add(code);
+        renderTruckCards(state.data.plan);
+        const card = [...$('dpTruckCards').querySelectorAll('.dp-tcard')].find(c => c.dataset.truck === code);
+        if (card) card.querySelector('.dp-thead').focus();
     }
 
     function tripBlock(t, tr, i) {
         const editing = state.editing.has(tr.id);
         const div = document.createElement('div');
         div.className = 'dp-trip' + (tr.over_time || tr.over_capacity || tr.vehicle_miss ? ' is-bad' : '') + (editing ? ' is-editing' : '');
+        div.dataset.trip = String(tr.id);
         const head = document.createElement('div');
         head.className = 'dp-trip-head';
         const title = document.createElement('h4');
         title.className = 'dp-trip-t';
         title.textContent = 'Երթ ' + (i + 1);
+        // время: погрузка · отъезд → возвращение (подписи «մեկնում / վերադարձ» — для экранного диктора)
         const time = document.createElement('span');
-        time.className = 'dp-trip-time';
-        time.textContent = 'մեկնում ' + tr.depart + ' → վերադարձ ' + tr.return;
-        if (tr.loading_minutes) time.textContent = 'բեռնում ' + tr.loading_start + ' · ' + time.textContent;
+        time.className = 'dp-time';
+        if (tr.loading_minutes) time.insertAdjacentHTML('beforeend', '<small>բեռնում ' + esc(tr.loading_start) + ' ·</small>');
+        time.insertAdjacentHTML('beforeend', '<span class="rt-sr-only">մեկնում </span>' + esc(tr.depart)
+            + '<span class="dp-arrow" aria-hidden="true">→</span><span class="rt-sr-only"> վերադարձ </span>' + esc(tr.return));
+        const acts = document.createElement('div');
+        acts.className = 'dp-trip-acts';
+        const onMap = document.createElement('button');
+        onMap.type = 'button';
+        onMap.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-mapbtn';
+        onMap.innerHTML = '<i class="fas fa-map-location-dot" aria-hidden="true"></i><span>Քարտեզում</span>';
+        onMap.setAttribute('aria-label', 'Ցույց տալ քարտեզում՝ ' + truckLabel(t) + ', երթ ' + (i + 1));
+        onMap.addEventListener('click', () => showTripOnMap(t, tr));
+        const tog = document.createElement('button');
+        tog.type = 'button';
+        tog.className = 'rt-btn rt-btn-sm dp-editbtn ' + (editing ? 'rt-btn-primary' : 'rt-btn-ghost');
+        tog.dataset.trip = String(tr.id);
+        tog.setAttribute('aria-expanded', String(editing));
+        tog.innerHTML = '<i class="fas ' + (editing ? 'fa-check' : 'fa-pen') + '" aria-hidden="true"></i><span></span>';
+        tog.lastChild.textContent = editing ? 'Պատրաստ է' : 'Փոփոխել';
+        tog.setAttribute('aria-label', (editing ? 'Ավարտել փոփոխությունը՝ ' : 'Փոփոխել՝ ') + truckLabel(t) + ', երթ ' + (i + 1));
+        tog.addEventListener('click', () => toggleEdit(tr.id));
+        acts.append(onMap, tog);
+        // строка под заголовком: загрузка машины полоской, км, литры, пометки
+        const line = document.createElement('div');
+        line.className = 'dp-trip-line';
+        const pct = num(tr.load_pct);
+        const load = document.createElement('span');
+        load.className = 'dp-loadm' + (tr.over_capacity || (pct !== null && pct > 100) ? ' is-over' : pct !== null && pct >= 90 ? ' is-high' : '');
+        if (pct !== null) {
+            load.innerHTML = '<span class="dp-loadm-bar" aria-hidden="true"><i></i></span>';
+            load.querySelector('i').style.width = Math.min(100, Math.max(0, pct)) + '%';
+        }
+        load.appendChild(document.createTextNode(kgText(tr.kg) + (pct !== null ? ' · մեքենան լցված է ' + pct + '%-ով' : '')));
         const meta = document.createElement('span');
         meta.className = 'dp-trip-meta';
-        meta.textContent = kgText(tr.kg) + (tr.load_pct !== null ? ' (մեքենան լցված է ' + tr.load_pct + '%-ով)' : '') + ' · ≈ ' + fmt(tr.km) + NB + 'կմ';
-        if (tr.liters !== null) meta.textContent += ' · ≈ ' + fmt(tr.liters, 1) + NB + 'լ';
-        if (tr.wear_configured) meta.textContent += ' · մաշվածք՝ ≈ ' + money(tr.wear_amd);
+        meta.textContent = '≈ ' + fmt(tr.km) + NB + 'կմ' + (tr.liters !== null ? ' · ≈ ' + fmt(tr.liters, 1) + NB + 'լ' : '')
+            + (tr.wear_configured ? ' · մաշվածք՝ ≈ ' + money(tr.wear_amd) : '');
         const flags = document.createElement('span');
         flags.className = 'dp-trip-flags';
         if (tr.over_time) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">ուշանում է</span>');
@@ -1222,22 +1769,8 @@
         if (tr.vehicle_miss) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">մեքենան չի կարող սպասարկել՝ ' + esc(fmt(tr.vehicle_miss)) + '</span>');
         if (tr.poor) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn">' + esc(fmt(state.data.min_trip_revenue)) + NB + 'դրամից պակաս</span>');
         if (tr.pinned) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-ok"><i class="fas fa-lock" aria-hidden="true"></i>ամրացված</span>');
-        const tog = document.createElement('button');
-        tog.type = 'button';
-        tog.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-editbtn';
-        tog.dataset.trip = String(tr.id);
-        tog.setAttribute('aria-expanded', String(editing));
-        tog.innerHTML = '<i class="fas ' + (editing ? 'fa-check' : 'fa-pen') + '" aria-hidden="true"></i><span></span>';
-        tog.lastChild.textContent = editing ? 'Պատրաստ է' : 'Փոփոխել';
-        tog.setAttribute('aria-label', (editing ? 'Ավարտել փոփոխությունը՝ ' : 'Փոփոխել՝ ') + truckLabel(t) + ', երթ ' + (i + 1));
-        tog.addEventListener('click', () => toggleEdit(tr.id));
-        const onMap = document.createElement('button');
-        onMap.type = 'button';
-        onMap.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-mapbtn';
-        onMap.innerHTML = '<i class="fas fa-map-location-dot" aria-hidden="true"></i><span>Քարտեզում</span>';
-        onMap.setAttribute('aria-label', 'Ցույց տալ քարտեզում՝ ' + truckLabel(t) + ', երթ ' + (i + 1));
-        onMap.addEventListener('click', () => showTripOnMap(t, tr));
-        head.append(title, time, meta, flags, onMap, tog);
+        line.append(load, meta, flags);
+        head.append(title, time, acts, line);
         div.appendChild(head);
         if (tr.poor && !state.data.is_past) div.appendChild(poorNote(tr));
         if (editing) div.appendChild(tripTools(t, tr, i));
@@ -1303,6 +1836,8 @@
 
     function toggleEdit(tripId) {
         if (state.editing.has(tripId)) state.editing.delete(tripId); else state.editing.add(tripId);
+        const t = state.data.plan.trucks.find(x => x.trips.some(tr => tr.id === tripId));
+        if (t) state.open.add(t.car_code);      // правка — внутри раскрытой карточки; «Պատրաստ է» её не сворачивает
         renderTruckCards(state.data.plan);
         const b = $('dpTruckCards').querySelector('.dp-editbtn[data-trip="' + tripId + '"]');
         if (b) b.focus();
@@ -1435,14 +1970,17 @@
     function setMapFocus(f) {
         state.mapFocus = f;
         drawMap();
+        syncFocus();
     }
     // Кнопка «Քարտեզում» у рейса: открыть карту только с этим рейсом и прокрутить к ней
     function showTripOnMap(t, tr) {
         state.mapFocus = { truck: t.car_code, trip: tr.id };
         const box = $('dpMapBox');
         if (box.open) drawMap(); else box.open = true;   // открытие само перерисует карту (toggle)
-        const calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-        box.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'start' });
+        syncFocus();
+        // карта закреплена рядом с рейсами и видна — не прокручивать; иначе (узкий экран, карта ниже рейсов) — к карте
+        const r = $('dpMap').getBoundingClientRect();
+        if (!box.open || r.top < 0 || r.top > window.innerHeight - 160) box.scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
     }
 
     // ---------- «Почему так» под картой выбранного (ответ владельца №49) ----------
@@ -1775,6 +2313,8 @@
         const shown = (t, tr) => !state.mapFocus || (state.mapFocus.truck === t.car_code
             && (state.mapFocus.trip == null || state.mapFocus.trip === tr.id));
         mapFilter(plan);
+        // фильтр и «почему так» над картой меняют её высоту (в колонке справа) — вписывать точки по новому размеру
+        state.map.invalidateSize({ pan: false });
         const routes = [];   // [линия на карте, точки рейса по порядку]
         plan.trucks.forEach(t => {
             const color = truckColor(t.car_code);
@@ -1815,6 +2355,7 @@
         }
         state.mapBounds = bounds.length ? bounds : null;
         state.mapUserMoved = false;
+        syncFocus();
         if (bounds.length) fitMap(state.map, bounds);
         roadLines(routes);
     }
@@ -2063,6 +2604,8 @@
         } finally { $('dpFactBtn').disabled = false; }
     }
 
+    let aiPanel = null;                     // панель «Հարցրու AI-ին» — routes_dispatch_ai.js
+
     // ---------- Старт ----------
     function init() {
         const params = new URLSearchParams(window.location.search);
@@ -2096,7 +2639,23 @@
             $('dpGeoSave').disabled = !p;
             if (p) setGeo(p[0], p[1], false);
         });
+        $('dpUnloadSave').addEventListener('click', () => saveUnload(false));
+        $('dpUnloadClear').addEventListener('click', () => saveUnload(true));
+        $('dpUnloadCancel').addEventListener('click', () => $('dpUnloadDlg').close());
+        $('dpUnloadDlg').addEventListener('close', () => { state.unloadStop = null; state.unloadInfo = null; });
+        $('dpUnloadDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
+        $('dpUnloadMin').addEventListener('input', () => { $('dpUnloadErr').textContent = ''; markUnload(false); });
+        $('dpUnloadMin').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveUnload(false); } });
         $('dpMapBox').addEventListener('toggle', () => { if ($('dpMapBox').open && state.data && state.data.plan) drawMap(); });
+        $('dpStep1Tog').addEventListener('click', () => toggleStep('dpStep1'));
+        $('dpStep2Tog').addEventListener('click', () => toggleStep('dpStep2'));
+        // высота закреплённой шапки дашборда — карта закрепляется под ней (меню на узком экране раскрывается — пересчитать)
+        const nav = document.querySelector('.navbar');
+        const navH = () => $('rtDispatch').style.setProperty('--rt-nav-h',
+            (nav && getComputedStyle(nav).position === 'sticky' ? Math.ceil(nav.getBoundingClientRect().height) : 0) + 'px');
+        navH();
+        if (nav && typeof window.ResizeObserver !== 'undefined') new ResizeObserver(navH).observe(nav); else window.addEventListener('resize', navH);
+        aiPanel = window.RoutesDispatchAI ? window.RoutesDispatchAI.attach({ $, state, api, announce, dayHuman, truckLabel, load }) : null;
         setInterval(poll, 30 * 1000);       // poll() сам проверяет, прошло ли 5 минут (и после сна компьютера тоже)
         document.addEventListener('visibilitychange', poll);
         load(day);

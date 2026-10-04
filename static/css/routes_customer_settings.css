@@ -24,3 +24,6 @@
 .rcs-actions .rt-btn { white-space: normal; }
 @media (max-width: 480px) { .rcs-choices, .rcs-time-fields { grid-template-columns: 1fr; } }
 .rcs-unload { margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--rt-line); }
+/* Машины: износ по журналу гаража (№53) — только чтение, под полем «Износ, драм/км» */
+.rs-garage { display: block; font-size: .78rem; line-height: 1.4; color: var(--rt-fg-mute); white-space: normal; }
+.rs-garage.is-used { color: var(--rt-ok); }
