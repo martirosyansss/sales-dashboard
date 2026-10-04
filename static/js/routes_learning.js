@@ -127,8 +127,8 @@
                 + changed + last.reason + '։'
             : '';
     }
-    // Разгрузка по магазинам (№50): введено / по факту (визитов) / в расчёте — stores строки unload
-    const STORE_SOURCE = { learned: 'ճշտված է ըստ փաստի', manual: 'ինչպես մուտքագրված է', norm: 'սովորական ժամանակ' };
+    // Разгрузка по магазинам (№50): введено / по факту (визитов; split — 2 визита расходятся, ждём 3-й) / в расчёте
+    const STORE_SOURCE = { learned: 'ըստ GPS-ի', manual: 'ինչպես մուտքագրված է', norm: 'սովորական ժամանակ' };
     // По-армянски существительное после числа — в единственном числе: «2 բեռնաթափում», «5 բեռնաթափում»
     const unloads = (n) => fmt(n) + ' բեռնաթափում';
     function storeRow(r, minVisits) {
@@ -136,7 +136,9 @@
         const manual = num(r.manual_min) === null ? '—' : fmt(r.manual_min) + ' րոպե';
         const visits = num(r.visits);
         const fact = visits === null ? '<span class="lr-why">բեռնաթափումներ դեռ չկան</span>'
-            : fmt(r.fact_min, 1) + ' րոպե <span class="lr-why">(' + unloads(visits) + (visits < minVisits ? ' — դեռ քիչ է, հաշվարկում չի մտնում' : '') + ')</span>';
+            : fmt(r.fact_min, 1) + ' րոպե <span class="lr-why">(' + unloads(visits)
+                + (r.split ? ' — շատ են տարբերվում, ծրագիրը սպասում է երրորդին'
+                    : visits < minVisits ? ' — դեռ քիչ է, հաշվարկում չի մտնում' : '') + ')</span>';
         return '<tr><th scope="row">' + name + '</th><td>' + manual + '</td><td>' + fact + '</td><td><b>' + fmt(r.in_calc_min, 1)
             + ' րոպե</b><br><span class="lr-why">' + esc(STORE_SOURCE[r.source] || '') + '</span></td></tr>';
     }

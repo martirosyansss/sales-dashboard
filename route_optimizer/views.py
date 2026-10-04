@@ -2154,7 +2154,7 @@ def api_customer_vehicles_search() -> Any:
          'vehicle_access': bundle.vehicle_access[c.id].to_json() if c.id in bundle.vehicle_access else None,
          'window': bundle.windows[c.id].to_json() if c.id in bundle.windows else None,
          'unload_min': bundle.unload_min.get(c.id),
-         # подсказка: сколько «Развоз» возьмёт с пустым полем; разгрузок по факту — введённое смешается с фактом
+         # подсказка: сколько «Развоз» возьмёт с пустым полем; разгрузок по GPS — время по ним, введённое не участвует
          'unload_auto_min': round(per_stop + empty.get(c.id, 0.0), 1),
          'unload_visits': stats[c.id][0] if stats.get(c.id, (0, 0.0))[0] >= learning.STORE_MIN_OBS else None}
         for c in customers[:30]]})
@@ -2542,14 +2542,16 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
     """«Разгрузка по магазинам» (№50) для страницы обучения: магазины с введённым временем, со своим временем по факту
     (store_stats последнего пересчёта с корректными параметрами) и со своим временем в действующей строке unload (и у
     строк до №50 без store_stats, и когда последний пересчёт не принят) — по числу визитов: введено, по факту (визитов,
-    мин), в расчёте — постоянная часть, которой «Развоз» считает сейчас (learning.store_times, как в расчёте; время на
-    груз — сверху). Не больше STORES_SHOWN строк. Названия — из снимка ERP, если он уже в памяти (ERP не читается:
-    страница опрашивает статус во время пересчёта); снимка нет — без названий."""
+    мин; split — два визита сильно расходятся, ждём третий: learning.store_waits), в расчёте — постоянная часть, которой
+    «Развоз» считает сейчас (learning.store_times, как в расчёте; время на груз — сверху). Не больше STORES_SHOWN строк.
+    Названия — из снимка ERP, если он уже в памяти (ERP не читается: страница опрашивает статус во время пересчёта);
+    снимка нет — без названий."""
     per_stop, per_tonne = _unload_norms(bundle, unload)
     times = learning.store_times(per_stop, bundle.unload_min, unload)
     last = next((r for r in reversed(rows) if r['kind'] == 'unload' and r['params'] is not None
                  and learning.valid_params('unload', r['params'])), None)
     stats = learning.store_stats(last['params'] if last else None)
+    waits = learning.store_waits(last['params'] if last else None)
     active = {int(c) for c in (unload or {}).get('store_offsets') or {}} | set(learning.store_stats(unload))
     cids = sorted(set(bundle.unload_min) | set(stats) | active, key=lambda c: (-stats[c][0] if c in stats else 0, c))
     snap = state.snapshots.peek()
@@ -2561,7 +2563,7 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
         extra, source = times.get(cid, (0.0, 'norm'))
         out.append({'customer_id': cid, 'code': c.code if c else None, 'name': c.name if c else None,
                     'manual_min': bundle.unload_min.get(cid), 'visits': visits,
-                    'fact_min': None if fact is None else max(0.0, fact),
+                    'fact_min': None if fact is None else max(0.0, fact), 'split': cid in waits,
                     'in_calc_min': round(per_stop + extra, 1), 'source': source})
     return {'per_stop_min': per_stop, 'per_tonne_min': per_tonne, 'min_visits': learning.STORE_MIN_OBS,
             'run_day': last['run_day'] if last else None, 'total': len(cids), 'shown': len(out), 'rows': out}
