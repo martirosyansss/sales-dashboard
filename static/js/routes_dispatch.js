@@ -1237,7 +1237,7 @@
                 bar.style.width = w(dep, ret);
                 bar.style.setProperty('--dp-c', color);
                 bar.style.setProperty('--dp-delay', (ti * 70 + i * 40) + 'ms');
-                const info = (t.trips.length > 1 ? 'Երթ ' + (i + 1) + ' · ' : '') + pl(tr.stops.length, 'կետ')
+                const info = (t.trips.length > 1 ? 'Երթ ' + (i + 1) + ' · ' : '') + pl(tr.stops.length, 'կետ') + ' · ' + kgText(tr.kg)
                     + (tr.load_pct !== null && tr.load_pct !== undefined ? ' · ' + tr.load_pct + '%' : '');
                 const full = truckLabel(t) + ' · երթ ' + (i + 1) + ' · ' + tr.depart + ' → ' + tr.return + ' · ' + pl(tr.stops.length, 'կետ')
                     + ' · ' + kgText(tr.kg) + ' · ≈ ' + fmt(tr.km) + NB + 'կմ';
