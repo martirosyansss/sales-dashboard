@@ -216,25 +216,52 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
 
 Всё остальное снаружи — 404: в приложении (`app_v2.py`: `_public_path_allowed`, `_PUBLIC_STATIC`), в nginx и в
 туннеле. Сессия администратора или пользователя по территориям, пришедшая на `araqich.orix.am`, — тоже 404; вход
-таких логинов снаружи — та же ошибка «Неверный логин или пароль», что и при неверном пароле (существование логина не
-выдаётся), и попытка идёт в счёт блокировки. Ответы снаружи: cookie сессии `Secure` (плюс `HttpOnly`,
-`SameSite=Lax`, как в офисе), заголовок `Strict-Transport-Security: max-age=31536000`. В офисной сети — без изменений.
+таких логинов снаружи — та же ошибка, что и при неверном пароле (существование логина не выдаётся), и попытка идёт в
+счёт блокировки. Страница входа снаружи — нейтральная, по-армянски («Ավտոտնակ», без названия программы); в офисе —
+прежняя. Ответы снаружи: cookie сессии `Secure` (плюс `HttpOnly`, `SameSite=Lax`, как в офисе), заголовок
+`Strict-Transport-Security: max-age=31536000`. В офисной сети — без изменений.
 
 **Новый файл статики на странице журнала** (новый `<script>`/`<link>` в `routes_garage.html` или `base_v2.html`)
 нужно добавить во все три места: `_PUBLIC_STATIC` в `app_v2.py`, `location` в nginx и правило туннеля. Иначе снаружи
 этот файл — 404 (страница без него), больше ничего не открывается.
 
-Подбор пароля: 5 неудач по одному логину с одного адреса → блок на 5 минут. Адрес клиента из интернета —
-`Cf-Connecting-Ip` (его ставит Cloudflare), но **только** если запрос пришёл от узла туннеля из
-`COURIER_TUNNEL_PEERS` (после ProxyFix, т.е. `X-Forwarded-For` от nginx); IPv6 — по сети /64. От других адресов
-заголовок не учитывается (подделка из офиса не помогает).
+### Защита входа из интернета
+
+- **По логину и адресу:** 5 неудач → блок на 5 минут. Адрес клиента — `Cf-Connecting-Ip` (его ставит Cloudflare), но
+  **только** если запрос пришёл от узла туннеля из `COURIER_TUNNEL_PEERS` (после ProxyFix, т.е. `X-Forwarded-For` от
+  nginx); IPv6 — по сети /64. От других адресов заголовок не учитывается (подделка из офиса не помогает).
+- **По логину со всего интернета:** больше 30 неудач за час (с любых адресов) → вход этим логином из интернета — 429
+  до конца окна; в журнале — WARNING. Из офиса этот логин входит как обычно.
+- **Не больше 2 проверок пароля одновременно** (одна — ≈ 0,3 с процессора): лишние попытки входа из интернета сразу
+  получают 429 без проверки — поток попыток не займёт сервер, API терминалов и офис работают дальше.
+- **nginx** (шаг 6): POST `/login` — не чаще 6 в минуту с одного адреса (запас 5) и 30 в минуту всего (запас 10), сверх —
+  429. Адрес здесь — целиком (IPv6 не по /64): общий предел 30 в минуту держит и тех, кто меняет адреса.
+- Ответ 429 — та же страница входа: «Չափազանց շատ փորձեր։ Կրկնեք մի քանի րոպեից։» (причина видна только в журнале).
+- **Журнал входов** (лог дашборда, строки `[Auth]`): «Вход», «Неудачный вход», «Вход … отклонён (причина)», «Вход из
+  интернета не разрешён (роль …, пароль верный/неверный)», «Выход» — с логином, адресом клиента и «интернет»/«офис».
+  Пароль в журнал не пишется никогда. Строка «не разрешён: 'admin' (роль admin, пароль **верный**)» значит, что пароль
+  администратора знает кто-то в интернете, — сменить его.
+- **Сессии:** действуют не дольше 7 дней от входа (работа срок не продлевает), потом — вход заново. Смена пароля
+  (Настройки → Пользователи) закрывает все сессии этого логина; «Выход» — тоже все, на всех устройствах. Телефон
+  начальника гаража потерян — в офисе сменить пароль его логина.
+- Хэш пароля со старыми параметрами пересчитывается при ближайшем входе (время проверки не отличается от проверки
+  несуществующего логина).
+- Возможное усиление позже: Cloudflare Access (одноразовый код на почту) перед путями журнала — владелец пока
+  отказался («хватит пароля»).
 
 ### Порядок выкладки (с OK владельца)
 
 1. **Релиз CT115** с этой версией — по `/opt/araqich/deploy/DEPLOY.md` (схема баз 14 → 17: время у магазина, редизайн
-   «Развоза», журнал гаража). Пока nginx и туннель не изменены (шаги 4–5), снаружи по-прежнему открыт только API
-   терминалов — приложение само ничего не открывает.
-2. **`.env` CT115** — проверить (без них не включать шаги 4–5):
+   «Развоза», журнал гаража). Пока nginx и туннель не изменены (шаги 6–7), снаружи по-прежнему открыт только API
+   терминалов — приложение само ничего не открывает. **После выкладки все (и офис) один раз входят заново:** прежние
+   cookie без отметки версии пароля и времени входа больше не действуют.
+2. **Версии пакетов на CT115** (известные уязвимости старых): `waitress ≥ 3.0.1`, `Werkzeug ≥ 3.0.6` — так в
+   `requirements.txt`. Проверить тем же Python, которым запущен дашборд:
+   ```sh
+   python3 -c "import importlib.metadata as m; print('waitress', m.version('waitress'), 'Werkzeug', m.version('werkzeug'))"
+   ```
+   Ниже — поставить по `requirements.txt` (как при релизе) и проверить снова; без этого шаги 6–7 не делать.
+3. **`.env` CT115** — проверить (без них не включать шаги 6–7):
    ```
    FLASK_TRUSTED_PROXY_HOPS=1          # уже есть: request.remote_addr = X-Forwarded-For от nginx
    COURIER_PUBLIC_HOST=araqich.orix.am  # по умолчанию такое же
@@ -243,27 +270,67 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
    # COURIER_TUNNEL_PEERS=192.168.1.11
    ```
    Перезапустить дашборд после правки `.env`.
-3. **Логин начальнику гаража создаётся в дашборде CT115** (не на ПК: у CT115 свой `users.json`): из офиса
+4. **Логин начальнику гаража создаётся в дашборде CT115** (не на ПК: у CT115 свой `users.json`): из офиса
    `https://192.168.1.24` → Настройки → Пользователи → «Добавить», роль «Гараж», пароль **не короче 10 символов**
    (лучше 14+ случайных: `python3 -c "import secrets; print(secrets.token_urlsafe(12))"`). Проверить в офисе: вход →
    сразу «Ավտոտնակ», других страниц нет. Сменить роль существующего пользователя на «Гараж» можно только вместе с
    новым паролем.
-4. **nginx CT115, сервер :5000.** Файл `/etc/nginx/snippets/araqich-garage-public.conf`:
+5. **Cloudflare, зона orix.am: «Always Use HTTPS» — ОБЯЗАТЕЛЬНО, до шагов 6–7.** SSL/TLS → Edge Certificates →
+   Always Use HTTPS = On (или правило перенаправления на https для `araqich.orix.am`). Почему: без него
+   `http://araqich.orix.am/login` отдаётся по обычному HTTP. Начальник гаража набрал адрес без `https://`, открыл
+   старую закладку или ссылку из мессенджера — форма входа уходит **открытым текстом**, и пароль виден по дороге
+   (мобильная сеть, Wi-Fi, провайдеры). HSTS при первом заходе ещё не работает (браузер о сайте не знает), а `Secure`
+   защищает только cookie, не пароль в форме. Проверка — только после неё дальше:
+   ```sh
+   curl -sI http://araqich.orix.am/login | head -3     # 301 или 308, Location: https://araqich.orix.am/login
+   ```
+6. **nginx CT115.**
+
+   a) Пределы на вход — файл `/etc/nginx/conf.d/araqich-garage-limits.conf` (контекст `http {}`: `conf.d/*.conf`
+   подключается внутри `http`; проверить — `nginx -T | grep araqich_login`):
    ```nginx
-   # Журнал гаража из интернета (№53): только от узла туннеля и локально; из офиса — как location / (на https).
+   # Вход журнала гаража из интернета (№53): считаются только POST /login (открыть форму — без предела).
+   map $request_method $araqich_login_ip {
+       POST    $http_cf_connecting_ip;
+       default '';
+   }
+   map $request_method $araqich_login_all {
+       POST    login;
+       default '';
+   }
+   limit_req_zone $araqich_login_ip  zone=araqich_login_ip:10m rate=6r/m;
+   limit_req_zone $araqich_login_all zone=araqich_login_all:1m rate=30r/m;
+   ```
+   (Пустой ключ — GET и прочие методы — nginx не считает.)
+
+   b) Общая часть location'ов — файл `/etc/nginx/snippets/araqich-garage-public.conf`:
+   ```nginx
+   # Журнал гаража из интернета (№53). В приложение — только запросы туннеля: с Cf-Connecting-Ip и от 192.168.1.11
+   # (или 127.0.0.1 — проверка на самом CT115); значит, каждый пропущенный запрос приложение видит как внешний.
+   # Остальное — ровно как location /: без заголовка Cloudflare (418) и не от туннеля (403) → @araqich_office.
+   error_page 403 418 = @araqich_office;
+   if ($http_cf_connecting_ip = '') { return 418; }
    allow 192.168.1.11;
    allow 127.0.0.1;
    deny all;
-   error_page 403 = @araqich_office;
+   client_max_body_size 64k;
    proxy_pass http://araqich_backend;
    proxy_set_header Host $http_host;
    proxy_set_header X-Forwarded-For $remote_addr;
    proxy_set_header X-Forwarded-Proto https;
    # остальные proxy_* (таймауты, proxy_http_version и т.п.) — как в location ^~ /api/courier/v1/
    ```
-   В `server { listen 5000; … }` рядом с `location ^~ /api/courier/v1/` (тот блок и `location /` не меняются):
+   `if … return` срабатывает раньше `allow/deny` (фаза rewrite) и внутри `if` нет ничего, кроме `return`, — так
+   безопасно. Ответы самого приложения `error_page` не перехватывает (`proxy_intercept_errors` выключен).
+
+   c) В `server { listen 5000; … }` рядом с `location ^~ /api/courier/v1/` (тот блок и `location /` не меняются):
    ```nginx
-   location = /login                        { include snippets/araqich-garage-public.conf; }
+   location = /login {
+       limit_req zone=araqich_login_ip  burst=5  nodelay;
+       limit_req zone=araqich_login_all burst=10 nodelay;
+       limit_req_status 429;
+       include snippets/araqich-garage-public.conf;
+   }
    location = /logout                       { include snippets/araqich-garage-public.conf; }
    location = /routes/garage                { include snippets/araqich-garage-public.conf; }
    location = /api/routes/garage            { include snippets/araqich-garage-public.conf; }
@@ -276,17 +343,16 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
    location = /static/js/base.js            { include snippets/araqich-garage-public.conf; }
    location = /static/js/routes_garage.js   { include snippets/araqich-garage-public.conf; }
 
-   # Не от туннеля (офис по старой ссылке http://192.168.1.24:5000/login и т.п.) — ровно как location /.
+   # Не от туннеля или без заголовка Cloudflare (офис по старой ссылке http://192.168.1.24:5000/login, прочие
+   # процессы на 192.168.1.11, curl на CT115 без заголовка) — ровно как location /.
    location @araqich_office {
        if ($http_cf_connecting_ip != '') { return 404; }
        if ($host = araqich.orix.am) { return 404; }
        return 308 https://192.168.1.24$request_uri;
    }
    ```
-   `error_page 403 = @araqich_office` нужен, чтобы офис по `http://192.168.1.24:5000/login` получал, как и сейчас,
-   308 на `https://192.168.1.24/login`, а не 403 от `deny all` (ответы самого приложения он не перехватывает:
-   `proxy_intercept_errors` выключен). Затем: `nginx -t && systemctl reload nginx`.
-5. **Туннель.** Правила для `araqich.orix.am` — **перед** последним `service: http_status:404`, `service` — тот же,
+   Затем `nginx -t && systemctl reload nginx`.
+7. **Туннель.** Правила для `araqich.orix.am` — **перед** последним `service: http_status:404`, `service` — тот же,
    что у существующего правила `^/api/courier/v1/` (nginx CT115 :5000). Если туннель настроен файлом `config.yml` на
    192.168.1.11:
    ```yaml
@@ -305,8 +371,6 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
    → `http_status:404`; перезапустить службу `cloudflared`. Если туннель управляется из кабинета Cloudflare
    (Zero Trust → Networks → Tunnels → туннель → Public Hostname): добавить три записи — поддомен `araqich`, домен
    `orix.am`, Path — те же три выражения, Service — как у записи API.
-6. **Cloudflare, зона orix.am:** SSL/TLS → Edge Certificates → **Always Use HTTPS** включено (или правило
-   перенаправления на https для `araqich.orix.am`): пароль не должен идти по http ни разу. HSTS приложение выдаёт само.
 
 ### Проверка после выкладки
 
@@ -314,9 +378,9 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
 
 | Запрос | Ожидается |
 |---|---|
-| `https://araqich.orix.am/login` | форма входа |
-| `http://araqich.orix.am/login` | 301/308 на `https://…` (шаг 6) |
-| вход логином администратора (верный пароль) | «Неверный логин или пароль» |
+| `https://araqich.orix.am/login` | форма входа «Ավտոտնակ» (по-армянски, без «Sales Dashboard») |
+| `http://araqich.orix.am/login` | 301/308 на `https://…` (шаг 5) |
+| вход логином администратора (верный пароль) | «Սխալ մուտքանուն կամ գաղտնաբառ»; в журнале — «не разрешён … роль admin» |
 | вход логином «Гаража» | сразу «Ավտոտնակ»; список машин, записи, пробег открываются |
 | `https://araqich.orix.am/`, `/settings`, `/routes`, `/routes/garage/`, `/static/js/settings.js` | 404 |
 | `https://araqich.orix.am/api/courier/v1/ping` | 401, как раньше |
@@ -327,13 +391,25 @@ curl -sI https://araqich.orix.am/login | grep -iE 'strict-transport|set-cookie'
 #   set-cookie: session=…; Secure; HttpOnly; Path=/; SameSite=Lax
 curl -s -o /dev/null -w '%{http_code}\n' https://araqich.orix.am/settings             # 404
 curl -s -o /dev/null -w '%{http_code}\n' https://araqich.orix.am/api/routes/garage    # 401 (без входа)
+# предел nginx: POST без токена формы приложение отклоняет (403, пароль не проверяется) — первые 6 ответов 403, дальше 429
+for i in $(seq 1 10); do curl -s -o /dev/null -w '%{http_code} ' -X POST https://araqich.orix.am/login; done; echo
 ```
 
-Из офиса — как раньше: `https://192.168.1.24/` — дашборд (без HSTS); `http://192.168.1.24:5000/login` —
+На самом CT115 (запросы с 127.0.0.1 пропускаются, но без заголовка Cloudflare — как `location /`):
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: araqich.orix.am' http://127.0.0.1:5000/login                   # 404
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: araqich.orix.am' -H 'Cf-Connecting-Ip: 203.0.113.1' \
+     http://127.0.0.1:5000/login                                                                                  # 200
+```
+
+Из офиса — как раньше: `https://192.168.1.24/` — дашборд (без HSTS, страница входа прежняя); `http://192.168.1.24:5000/login` —
 308 на `https://192.168.1.24/login`:
 ```sh
 curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://192.168.1.24:5000/login
 ```
 
+В журнале дашборда после входа с телефона — строка `[Auth] Вход: '<логин>' (роль garage), IP <адрес телефона>, интернет`
+(адрес — внешний, не 192.168.1.11: значит, `COURIER_TUNNEL_PEERS` и `X-Forwarded-For` настроены верно).
+
 **Закрыть журнал снаружи** (дашборд и API терминалов работают дальше): убрать три правила туннеля и `location`'ы
-шага 4 (`nginx -t && systemctl reload nginx`). Приложение менять не нужно.
+шага 6c (`nginx -t && systemctl reload nginx`). Приложение менять не нужно.
