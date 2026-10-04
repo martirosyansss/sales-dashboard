@@ -66,10 +66,11 @@
   машино-день: действующий обед против выученного. Обед в настройках 0 — выключен: не учится и не включается выученным.
   Автообучение обеда по умолчанию ВЫКЛЮЧЕНО (как у загрузки): программа учит и показывает, включает владелец.
   Обед не попадает в другие наблюдения: стоянка не по плану — ни в разгрузку, ни в чистые участки (так устроен факт);
-  визит магазина, после которого по плану обед, не идёт в обучение разгрузки и своего времени магазинов, а стоянка на
-  складе перед рейсом с обедом по плану — в обучение загрузки (unload_obs / load_obs: skip). Исключение, а не вычитание
-  обеда: вычитать нечего надёжно (наблюдаемый обед — сам излишек над нормой разгрузки, вычет вернул бы норму), а какой
-  визит после обеда — решает время по плану, не длина стоянки: выборка визитов не смещена, их только меньше.
+  визит магазина, после которого по плану обед, идёт в обучение разгрузки и своего времени магазинов только с отметкой
+  водителя «закончил» и только до неё (без хвоста TAP_TAIL: после отметки у этого магазина — обед), без отметки — не
+  идёт; стоянка на складе перед рейсом с обедом по плану — не в обучение загрузки (unload_obs / load_obs: skip).
+  Исключение, а не вычитание обеда: вычитать нечего надёжно (наблюдаемый обед — сам излишек над нормой разгрузки, вычет
+  вернул бы норму), а какой визит после обеда — решает время по плану, не длина стоянки: выборка не смещена.
 
 Правило принятия (одно для всех): обучение — на днях до отложенной недели (TRAIN_DAYS дней), проверка — на последних
 HOLDOUT_DAYS днях (до вчера включительно; у расхода — последние FUEL_TEST интервала заправок, а форма модели
@@ -1094,7 +1095,7 @@ def plan_trips(prediction: Mapping[str, Any] | None, day: date) -> list[PlanTrip
 
 
 def lunch_customers(plan: Sequence[PlanTrip]) -> frozenset[int]:
-    """Магазины, после разгрузки которых по плану обед: их визит — не в обучение разгрузки (unload_obs, skip)."""
+    """Магазины, после разгрузки которых по плану обед: их визит — в обучение разгрузки только до отметки (unload_obs, skip)."""
     return frozenset(t.lunch.customer for t in plan if t.lunch is not None and t.lunch.where == 'store'
                      and t.lunch.customer is not None)
 
@@ -1194,17 +1195,21 @@ def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop],
     12-й минуте — наблюдение 22 мин, а не «не разгрузка»). Ожидание окна — в начале стоянки, хвост — в конце; отметка
     за TAP_TAIL и раньше до открытия окна оставляет ≤ 0 — не учитывается. Факт визита (Visit.leave: участки, км, «план — факт»,
     опоздания) не меняется — только наблюдение разгрузки.
-    skip — магазины, после разгрузки которых по плану обед (№61, lunch_customers): их визит не идёт вовсе (обед —
-    в его стоянке; и без отметки «закончил», и с ней)."""
+    skip — магазины, после разгрузки которых по плану обед (№61, lunch_customers): обед — в их стоянке, поэтому визит
+    идёт только с отметкой «закончил» и кончается на ней (без TAP_TAIL — после отметки здесь обед); без отметки — не идёт:
+    иначе магазин, где план регулярно ставит обед, не получил бы своего времени по GPS (№60)."""
     by_key = {s.key: s for s in stops}
     out = []
     for v in actual.visits:
         ss = [by_key[k] for k in v.keys]
-        if v.repeat or any(s.delivered_kg is None for s in ss) or any(s.customer_id in skip for s in ss):
+        if v.repeat or any(s.delivered_kg is None for s in ss):
             continue
         taps = [s.delivered_at for s in ss if s.delivered_at is not None
                 and v.arrive <= s.delivered_at <= v.leave + ac.DELIVERY_SLACK]
-        end = min(v.leave, max(taps) + TAP_TAIL) if taps else v.leave
+        lunch_here = any(s.customer_id in skip for s in ss)
+        if lunch_here and not taps:
+            continue
+        end = min(v.leave, max(taps) + (timedelta(0) if lunch_here else TAP_TAIL)) if taps else v.leave
         opens = max((s.window[0] for s in ss if s.window is not None and math.isfinite(s.window[0])), default=None)
         wait = max(0.0, opens - ac.day_minutes(day, v.arrive)) if opens is not None else 0.0
         minutes = (end - v.arrive).total_seconds() / 60.0 - wait
