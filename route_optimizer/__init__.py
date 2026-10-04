@@ -59,6 +59,7 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         dispatch_loader=lambda since, until, day: erp.load_dispatch_data(connection_string, since, until, day),
         fact_loader=lambda day: erp.load_fact_data(connection_string, day),
         waybill_loader=lambda isns: waybill.load_lines(connection_string, isns),
+        driver_list_loader=lambda since, until: waybill.load_drivers(connection_string, since, until),
     )
     app.register_blueprint(bp)
     logger.info('[Routes] Раздел «Маршруты» подключён; база настроек: %s; карта дорог: %s%s', path,

@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Mapping, Sequence
 
 from . import erp
+from .store import check_driver_name
 
 QTY_SCALE = 10_000   # дробное количество ERP (money) — 4 знака: делим целые десятитысячные
 
@@ -57,6 +59,19 @@ SELECT p.fID, RTRIM(p.fCODE), p.fNAME, RTRIM(ISNULL(p.fMEASUREUNIT, '')), ISNULL
        p.fADDITIONALUNITUSED, p.fBASEUNITQUANTITY, p.fADDITIONALUNITQUANTITY
 FROM PRODUCTS p WITH (NOLOCK)
 WHERE p.fID IN ({ph})
+"""
+
+
+# Водители для выбора в «Վարորդ» (№62, ответ владельца: «из ERP + добавить своих»): кто развозил проведённые накладные
+# за [since, until) — экспедитор накладной (fVANAGENTID), не сам менеджер; закрытые агенты ERP — нет. 04.10.2026 за 90 дней —
+# 22 имени (агенты «B…»); одно имя у двух агентов бывает — в списке одно.
+SQL_DRIVERS = """
+SELECT a.fNAME
+FROM SALES s WITH (NOLOCK)
+JOIN SALESAGENTS a WITH (NOLOCK) ON a.fID = s.fVANAGENTID
+WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND s.fVANAGENTID <> ISNULL(s.fSALESAGENTID, 0)
+  AND ISNULL(a.fCLOSED, 0) = 0
+GROUP BY a.fNAME
 """
 
 
@@ -132,6 +147,19 @@ def load_lines(connection_string: str, isns: Sequence[str]) -> Lines:
         return Lines(by_order, frozenset(invoices), products, frozenset(mixed))
     finally:
         erp.close_quietly(conn)
+
+
+def load_drivers(connection_string: str, since: date, until: date) -> list[str]:
+    """Имена водителей-экспедиторов ERP за [since, until) — как их напечатает накладная (check_driver_name: пробелы
+    схлопнуты; негодное имя пропускается), без повторов, по алфавиту. Список для выбора необязателен — короткие
+    таймауты: недоступная ERP не держит страницу."""
+    conn = erp.connect(connection_string, login_timeout=3, query_timeout=10)
+    try:
+        rows = erp._select(conn, SQL_DRIVERS, (since, until))
+    finally:
+        erp.close_quietly(conn)
+    names = {check_driver_name(erp._str(r[0]))[0] for r in rows}
+    return sorted(n for n in names if n)
 
 
 def _even(n: int, parts: int, index: int) -> int:

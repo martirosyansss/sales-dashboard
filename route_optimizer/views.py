@@ -21,7 +21,8 @@ from datetime import date, datetime, timedelta
 from functools import wraps
 from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
 
-from flask import Blueprint, Response, current_app, g, has_app_context, jsonify, render_template, request, session
+from flask import (Blueprint, Response, current_app, g, has_app_context, has_request_context, jsonify,
+                   render_template, request, session)
 
 from . import actuals as ac
 from . import ai_chat
@@ -34,7 +35,7 @@ from .erp import ErpError
 from .geo import Point, haversine_km, is_valid_point
 from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
-from .store import (DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
+from .store import (CREW_TABLES, DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
                     center_auto, check_driver_name, check_garage_entry, check_unload_min, check_window,
                     validate_payload)
 from .valhalla_engine import TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider, ValhallaRoads, truck_time_source
@@ -142,6 +143,10 @@ class RoutesState:
     fact_loader: Callable[[date], dp.FactData] | None = None
     # Բեռնագիր (№57): fISN заказов точек машины → их строки (из проведённой накладной заказа, если она есть) и товары
     waybill_loader: Callable[[Sequence[str]], wb.Lines] | None = None
+    # водители-экспедиторы ERP за [since, until) для выбора в «Վարորդ» (№62); кэш — (time.monotonic() до, имена)
+    driver_list_loader: Callable[[date, date], list[str]] | None = None
+    driver_list_cache: tuple[float, list[str]] | None = None
+    driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
     dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
     driver_geo: DriverGeo | None = None   # None — раздела «Առաքիչ» нет: точек водителей нет, всё как раньше
@@ -1334,14 +1339,54 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
     модели ничего бы не сказали. Водители (№62, _drivers_json) — тоже только странице: имена людей модели не отправляются."""
     return {**_dispatch_body(dd), 'store_unload': {st.customer_id: dd.bundle.unload_min[st.customer_id]
                                                    for st in dd.stops if st.customer_id in dd.bundle.unload_min},
-            **_drivers_json(_state().store, dd.day)}
+            **_drivers_json(_state(), dd.day)}
 
 
-def _drivers_json(store: Store, day: date) -> dict[str, Any]:
-    """Водители машин на день (№62): drivers — машина → имя, substitutes — машины с подменой на этот день (только он),
-    driver_names — все имена для подсказки при вводе."""
+DRIVER_LIST_DAYS = 90        # водители ERP и свои — кто встречался за 90 дней
+DRIVER_LIST_TTL_S = 3600     # список ERP перечитывается не чаще раза в час
+DRIVER_LIST_RETRY_S = 60     # ERP недоступна — снова спросить через минуту (страница работает со своими)
+
+
+def _erp_drivers(state: RoutesState) -> list[str]:
+    """Водители-экспедиторы ERP (waybill.load_drivers) из кэша. Перечитывает только GET (открытие дня) и только один
+    запрос за раз: правки плана (POST) ERP ради необязательного списка не ждут — им прежний список, даже устаревший. ERP
+    недоступна — прежний список остаётся (в логе), повтор через DRIVER_LIST_RETRY_S; страница не падает."""
+    cached = state.driver_list_cache
+    names = cached[1] if cached is not None else []
+    if (cached is not None and time.monotonic() < cached[0]) or state.driver_list_loader is None \
+            or not (has_request_context() and request.method == 'GET') or not state.driver_list_lock.acquire(blocking=False):
+        return names
+    try:
+        today = _clock().date()
+        try:
+            names = state.driver_list_loader(today - timedelta(days=DRIVER_LIST_DAYS), today + timedelta(days=1))
+            ttl = DRIVER_LIST_TTL_S
+        except ErpError:
+            logger.warning('[Routes] Список водителей ERP не прочитан — прежний список', exc_info=True)
+            ttl = DRIVER_LIST_RETRY_S
+        state.driver_list_cache = (time.monotonic() + ttl, names)
+        return names
+    finally:
+        state.driver_list_lock.release()
+
+
+def _drivers_json(state: RoutesState, day: date) -> dict[str, Any]:
+    """Водители машин на день (№62): drivers — машина → имя, substitutes — машины с подменой на этот день (только он);
+    helpers, helper_substitutes — то же для առաքիչ (второй человек в машине);
+    driver_list — из чего выбирать (ответ владельца: «из ERP + добавить своих»): [{name, erp}] — экспедиторы ERP за
+    DRIVER_LIST_DAYS, затем свои (вписанные в «Վարորդ» за тот же срок и не из ERP)."""
+    store = state.store
     drivers, subs = store.truck_drivers(day.isoformat())
-    return {'drivers': drivers, 'substitutes': sorted(subs), 'driver_names': store.driver_names()}
+    helpers, helper_subs = store.truck_drivers(day.isoformat(), 'helper')
+    erp_names = _erp_drivers(state)
+    in_erp = set(erp_names)
+    today = _clock().date()
+    since = (today - timedelta(days=DRIVER_LIST_DAYS)).isoformat()
+    # свои — вписанные за срок и все, кто в машинах сейчас или в этот день (давно закреплённый не пропадает из выбора)
+    current = {n for role in CREW_TABLES for n in store.truck_drivers(today.isoformat(), role)[0].values()}
+    own = sorted((set(store.driver_names(since)) | current | set(drivers.values()) | set(helpers.values())) - in_erp)
+    return {'drivers': drivers, 'substitutes': sorted(subs), 'helpers': helpers, 'helper_substitutes': sorted(helper_subs),
+            'driver_list': [{'name': n, 'erp': True} for n in erp_names] + [{'name': n, 'erp': False} for n in own]}
 
 
 SETTINGS_TRUCKS_URL = '/routes/settings#trucks'
@@ -1773,44 +1818,65 @@ def api_dispatch_waybill() -> Any:
     lines = state.waybill_loader([o['isn'] for tr in truck['trips'] for s in tr['stops'] for o in s['orders']])
     logger.info('[Routes] Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
     return jsonify({'success': True, 'day': day.isoformat(), 'rev': dd.rev, **wb.truck_waybill(plan, car, lines),
-                    'driver': state.store.truck_drivers(day.isoformat())[0].get(car)})
+                    'driver': state.store.truck_drivers(day.isoformat())[0].get(car),
+                    'helper': state.store.truck_drivers(day.isoformat(), 'helper')[0].get(car)})
 
 
 DRIVER_NO_TRUCK = 'Մեքենան չի գտնվել — թարմացրեք էջը'
+CREW_EMPTY = 'Նշեք վարորդին կամ առաքիչին'
+CREW_SAME = 'Վարորդն ու առաքիչը նույն մարդն են'
 BAD_ONLY_DAY = 'Սերվերը չընդունեց հարցումը'          # only_day не true/false — ошибка страницы, не логиста
 
 
 @bp.post('/api/routes/dispatch/driver')
 @_api
 def api_dispatch_driver() -> Any:
-    """Водитель машины для «Բեռնագիր» (ответ владельца №62): {"date", "car_code", "name", "only_day"?} — постоянный с этого
-    дня и до следующей смены (прежние дни не меняются); only_day: true — подмена только на этот день; прошедший день —
-    всегда подмена. "" («Հեռացնել») — водителя нет с этого дня, а у подмены — снять её (store.save_truck_driver).
+    """Водитель и առաքիչ машины для «Բեռնագիր» (ответ владельца №62): {"date", "car_code", "name"?, "only_day"?,
+    "helper"?, "helper_only_day"?} — name — водитель, helper — առաքիչ (второй человек; хотя бы один из двух), "" — никого;
+    у каждого свой срок: постоянно с этого дня и до следующей смены (прежние дни не меняются) или true — подмена только
+    на этот день; прошедший день — всегда подмена (store.save_truck_crew). Водитель и առաքիչ — не один человек. В ответе
+    only_day — {роль: подмена ли} по сохранённым ролям.
     Машина — из настроенных (store.trucks). Ответ — водители машин на этот день и все имена (как в ответе дня),
     only_day — изменён только этот день. План не меняется."""
     payload, day, error = _dispatch_request()
     if error is not None:
         return error
     car = payload.get('car_code')
-    name, bad = check_driver_name(payload.get('name'))
-    one_day = payload.get('only_day', False)
     errors = {}
-    if not isinstance(one_day, bool):
-        errors['only_day'] = BAD_ONLY_DAY
+    people: dict[str, tuple[str, bool]] = {}
+    # кто пришёл — того и меняем; у каждого свой срок: only_day — водителя, helper_only_day — առաքիչ
+    for role, key, day_key in (('driver', 'name', 'only_day'), ('helper', 'helper', 'helper_only_day')):
+        one_day = payload.get(day_key, False)
+        if not isinstance(one_day, bool):
+            errors[day_key] = BAD_ONLY_DAY
+        if key in payload:
+            value, bad = check_driver_name(payload[key])
+            if bad is not None:
+                errors[key] = bad
+            elif isinstance(one_day, bool):
+                people[role] = (value, one_day)
+    if not people and not errors:
+        errors['name'] = CREW_EMPTY
     if not isinstance(car, str) or not car.strip() or len(car) > 64:
         errors['car_code'] = 'Նշեք մեքենայի կոդը'
-    if bad is not None:
-        errors['name'] = bad
     if errors:
         return _bad_request(errors)
     state = _state()
     car = car.strip()
     if car not in state.store.load().trucks:
         return _bad_request({'car_code': DRIVER_NO_TRUCK})
-    only_day = one_day or day < _clock().date()
-    state.store.save_truck_driver(car, day.isoformat(), name, session.get('username'), only_day=only_day)
-    logger.info('[Routes] Водитель %s %s %s (%s)', car, 'на' if only_day else 'с', day, session.get('username'))
-    return jsonify({'success': True, 'day': day.isoformat(), 'only_day': only_day, **_drivers_json(state.store, day)})
+    crew = {role: state.store.truck_drivers(day.isoformat(), role)[0].get(car, '') for role in CREW_TABLES} | {
+        role: name for role, (name, _) in people.items()}
+    if crew['driver'] and crew['driver'] == crew['helper']:
+        return _bad_request({'helper': CREW_SAME})
+    past = day < _clock().date()                    # прошедший день — всегда только он
+    people = {role: (name, one_day or past) for role, (name, one_day) in people.items()}
+    state.store.save_truck_crew(car, day.isoformat(), people, session.get('username'))
+    logger.info('[Routes] Машина %s на %s: %s (%s)', car, day,
+                ', '.join(f'{role} {"на день" if one_day else "с дня"}' for role, (_, one_day) in people.items()),
+                session.get('username'))
+    return jsonify({'success': True, 'day': day.isoformat(),
+                    'only_day': {role: one_day for role, (_, one_day) in people.items()}, **_drivers_json(state, day)})
 
 
 @bp.get('/api/routes/measurements')
@@ -2088,7 +2154,7 @@ def api_customer_vehicles_search() -> Any:
          'vehicle_access': bundle.vehicle_access[c.id].to_json() if c.id in bundle.vehicle_access else None,
          'window': bundle.windows[c.id].to_json() if c.id in bundle.windows else None,
          'unload_min': bundle.unload_min.get(c.id),
-         # подсказка: сколько «Развоз» возьмёт с пустым полем; разгрузок по факту — введённое смешается с фактом
+         # подсказка: сколько «Развоз» возьмёт с пустым полем; разгрузок по GPS — время по ним, введённое не участвует
          'unload_auto_min': round(per_stop + empty.get(c.id, 0.0), 1),
          'unload_visits': stats[c.id][0] if stats.get(c.id, (0, 0.0))[0] >= learning.STORE_MIN_OBS else None}
         for c in customers[:30]]})
@@ -2476,14 +2542,16 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
     """«Разгрузка по магазинам» (№50) для страницы обучения: магазины с введённым временем, со своим временем по факту
     (store_stats последнего пересчёта с корректными параметрами) и со своим временем в действующей строке unload (и у
     строк до №50 без store_stats, и когда последний пересчёт не принят) — по числу визитов: введено, по факту (визитов,
-    мин), в расчёте — постоянная часть, которой «Развоз» считает сейчас (learning.store_times, как в расчёте; время на
-    груз — сверху). Не больше STORES_SHOWN строк. Названия — из снимка ERP, если он уже в памяти (ERP не читается:
-    страница опрашивает статус во время пересчёта); снимка нет — без названий."""
+    мин; split — два визита сильно расходятся, ждём третий: learning.store_waits), в расчёте — постоянная часть, которой
+    «Развоз» считает сейчас (learning.store_times, как в расчёте; время на груз — сверху). Не больше STORES_SHOWN строк.
+    Названия — из снимка ERP, если он уже в памяти (ERP не читается: страница опрашивает статус во время пересчёта);
+    снимка нет — без названий."""
     per_stop, per_tonne = _unload_norms(bundle, unload)
     times = learning.store_times(per_stop, bundle.unload_min, unload)
     last = next((r for r in reversed(rows) if r['kind'] == 'unload' and r['params'] is not None
                  and learning.valid_params('unload', r['params'])), None)
     stats = learning.store_stats(last['params'] if last else None)
+    waits = learning.store_waits(last['params'] if last else None)
     active = {int(c) for c in (unload or {}).get('store_offsets') or {}} | set(learning.store_stats(unload))
     cids = sorted(set(bundle.unload_min) | set(stats) | active, key=lambda c: (-stats[c][0] if c in stats else 0, c))
     snap = state.snapshots.peek()
@@ -2495,7 +2563,7 @@ def _store_unload(state: RoutesState, bundle: Bundle, rows: Sequence[Mapping[str
         extra, source = times.get(cid, (0.0, 'norm'))
         out.append({'customer_id': cid, 'code': c.code if c else None, 'name': c.name if c else None,
                     'manual_min': bundle.unload_min.get(cid), 'visits': visits,
-                    'fact_min': None if fact is None else max(0.0, fact),
+                    'fact_min': None if fact is None else max(0.0, fact), 'split': cid in waits,
                     'in_calc_min': round(per_stop + extra, 1), 'source': source})
     return {'per_stop_min': per_stop, 'per_tonne_min': per_tonne, 'min_visits': learning.STORE_MIN_OBS,
             'run_day': last['run_day'] if last else None, 'total': len(cids), 'shown': len(out), 'rows': out}

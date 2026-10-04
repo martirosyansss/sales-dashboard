@@ -290,7 +290,7 @@ def test_garage_step_is_17_to_18_after_truck_driver():
     """Шаг журнала (spread_months) — после шага водителей (№62, уже в базе владельца): 16 → 17 — truck_driver, 17 → 18 —
     журнал; иначе база на 17 пропустила бы пересборку и журнал остался бы без spread_months."""
     driver = next(v for v, ddl in st._MIGRATIONS.items() if st._TRUCK_DRIVER_TABLE in ddl)
-    assert (driver, GARAGE_STEP, st.SCHEMA_VERSION) == (16, 17, 18)
+    assert (driver, GARAGE_STEP) == (16, 17) and st.SCHEMA_VERSION >= GARAGE_STEP + 1   # дальше — свои шаги (19 — առաքիչ)
 
 
 def test_store_migrates_17_to_18_keeps_rows_ids_and_history(tmp_path):
@@ -330,7 +330,7 @@ def test_owner_db_copy_migrates_to_current(tmp_path):
     with closing(sqlite3.connect(str(copy))) as conn:
         assert {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before} == before
         assert [r[:len(rows[0])] for r in conn.execute('SELECT * FROM garage_entry ORDER BY 1')] == rows if rows else True
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('18',)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == (str(st.SCHEMA_VERSION),)
         assert 'spread_months' in [r[1] for r in conn.execute('PRAGMA table_info(garage_entry)')]
         assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'truck_driver'").fetchone()
 
