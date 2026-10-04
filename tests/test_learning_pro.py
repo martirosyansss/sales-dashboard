@@ -35,7 +35,7 @@ from route_optimizer import learning as lr  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
 from route_optimizer import vrp  # noqa: E402
 from test_route_dispatch_lunch import JAC, _ctx, _random_day, _two_trips, _violations  # noqa: E402
-from test_route_optimizer import DP_DAY, DP_DEPOT, DP_NORMS, EAST, FORD, HOWO, TN, WEST, _dp_stops, _info  # noqa: E402
+from test_route_optimizer import client, DP_DAY, DP_DEPOT, DP_NORMS, EAST, FORD, HOWO, TN, WEST, _dp_stops, _info  # noqa: E402
 
 TODAY = date(2026, 10, 3)
 INF = float('inf')
@@ -411,6 +411,68 @@ def test_buffer_c_for_q_change():
     assert t2.buffer_c == p['c_by_q']['90']
 
 
+def test_fit_buffer_after_q_change_must_beat_no_buffer():
+    """Ночь после смены q (строки при этом q нет, действует непроверенный c_by_q): новый c принимается, только если
+    лучше и непроверенного, и «без запаса» — опора — лучшее из двух."""
+    d0 = TODAY - timedelta(days=40)
+    obs = [lr.TripObs(d0 + timedelta(days=i % 40), 'A', 100.0, 100.0 + (i % 10) * 3) for i in range(200)]
+    good = lr.fit_buffer(obs, TODAY, 80, 0.0)
+    assert good.accepted
+    near = lr.fit_buffer(obs, TODAY, 80, good.params['c'], unchecked=True)         # непроверенный хорош — опора он
+    assert near.mae_before == near.mae_after and not near.accepted
+    early = [replace(o, minutes=200.0 - o.minutes) for o in obs]                    # рейсы раньше модели: запас 0
+    wild = 15.0                                                                     # непроверенный — хуже, чем без запаса
+    trusted = lr.fit_buffer(early, TODAY, 80, wild)
+    gated = lr.fit_buffer(early, TODAY, 80, wild, unchecked=True)
+    assert trusted.params['c'] == gated.params['c'] == 0.0
+    assert trusted.accepted and trusted.mae_before > gated.mae_before                # было бы «лучше непроверенного»…
+    assert not gated.accepted and gated.mae_before == gated.mae_after                # …но не лучше «без запаса»
+
+
+def test_run_learning_gates_unchecked_buffer_after_q_change(client, monkeypatch):
+    """Ночной прогон после смены q передаёт fit_buffer действующий c нового q (c_by_q) как непроверенный."""
+    from route_optimizer import views
+    from test_learning_loop import _learning_client
+    state = _learning_client(client, monkeypatch)
+    d0 = TODAY - timedelta(days=40)
+    obs = [lr.TripObs(d0 + timedelta(days=i % 40), 'A', 100.0, 100.0 + (i % 10) * 3) for i in range(200)]
+    row = lr.fit_buffer(obs, TODAY, 80, 0.0)
+    state.store.save_learned('2026-10-01', [row])
+    seen = []
+    monkeypatch.setattr(views.learning, 'fit_buffer', lambda trips, today, q, cur=0.0, unchecked=False:
+                        seen.append((q, cur, unchecked)) or lr.Outcome('buffer', '', False, 'x'))
+    real = views._bundle
+    for q in (80, 90):
+        monkeypatch.setattr(views, '_bundle', lambda st, q=q: replace(real(st), settings={
+            **real(st).settings, 'dispatch_buffer_pct': q}))
+        views.run_learning(state, TODAY)
+    assert seen == [(80.0, row.params['c'], False), (90.0, row.params['c_by_q']['90'], True)]
+
+
+def test_learning_status_shows_buffer_used_after_q_change(client):
+    """Сменили q: страница «Обучение» показывает c, которым считает «Развоз» сейчас (c_by_q нового q), этот q и запас
+    типичного рейса — без покрытия и с пометкой «не проверен» (unchecked)."""
+    from route_optimizer import views
+    state = client.application.extensions['route_optimizer']
+    d0 = TODAY - timedelta(days=40)
+    obs = [lr.TripObs(d0 + timedelta(days=i % 40), 'A', 100.0, 100.0 + (i % 10) * 3) for i in range(200)]
+    out = lr.fit_buffer(obs, TODAY, 80, 0.0)
+    state.store.save_learned('2026-10-02', [out])
+    bundle = state.store.load()
+    same = next(x for x in views._learning_status(state, bundle) if x['kind'] == 'buffer')
+    assert same['in_effect']['params'] == out.params
+    other = replace(bundle, settings={**bundle.settings, 'dispatch_buffer_pct': 90})
+    row = next(x for x in views._learning_status(state, other) if x['kind'] == 'buffer')
+    p = row['in_effect']['params']
+    assert p['unchecked'] and p['q'] == 90.0 and p['c'] == out.params['c_by_q']['90'] and 'coverage' not in p
+    assert p['typical_reserve_min'] == round(fl.trip_reserve(p['c'], out.params['typical_min']), 1)
+    assert row['last']['params'] == out.params                                      # прогон — как был
+    off = replace(bundle, settings={**bundle.settings, 'dispatch_buffer_pct': 50})
+    assert next(x for x in views._learning_status(state, off) if x['kind'] == 'buffer')['in_effect'] is None
+    js = (ROOT / 'static' / 'js' / 'routes_learning.js').read_text(encoding='utf-8')
+    assert "p.unchecked ? '․ չստուգված, կստուգվի գիշերը'" in js
+
+
 def test_fit_buffer_rules():
     d0 = TODAY - timedelta(days=40)
     obs = [lr.TripObs(d0 + timedelta(days=i % 40), 'A', 100.0, 100.0 + (i % 10) * 3) for i in range(200)]
@@ -522,7 +584,7 @@ def test_learning_page_texts_armenian():
     assert "kind === 'buffer'" in js and "kind === 'truck_unload' || kind === 'truck_travel'" in js
     html = (ROOT / 'templates' / 'routes_learning.html').read_text(encoding='utf-8')
     assert 'Ժամանակի պաշար երթի վերջում' in html and 'Մեքենայի գործակիցները' in html
-    assert "routes_learning.js') }}?v=16" in html
+    assert "routes_learning.js') }}?v=17" in html
     assert lr.KIND_TITLES['buffer'] == 'Ժամանակի պաշար երթի վերջում'
     assert all(lr.DEFAULT_AUTO[k] for k in ('buffer', 'truck_unload', 'truck_travel'))
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')

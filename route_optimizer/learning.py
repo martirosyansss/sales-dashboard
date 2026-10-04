@@ -795,11 +795,14 @@ def pinball(y: float, pred: float, q: float) -> float:
     return q * u if u >= 0 else (q - 1.0) * u
 
 
-def fit_buffer(obs: Sequence[TripObs], today: date, q_pct: float, current: float = 0.0) -> Outcome:
+def fit_buffer(obs: Sequence[TripObs], today: date, q_pct: float, current: float = 0.0,
+               unchecked: bool = False) -> Outcome:
     """Запас на рейс (№66, правило — в шапке модуля): c = q-квантиль (факт − D) / √D рейсов обучения (≥ 0, ≤
     BUFFER_C_MAX); рейсы короче BUFFER_PRED_MIN по модели и с «факт / модель» вне BUFFER_RATIO не учитываются. Проверка —
     средняя pinball-потеря при q на рейсах отложенной недели: действующий c current (нет — 0) против нового, правило
-    принятия — _accept (по дням). q_pct — процентиль настроек; ≤ BUFFER_Q_OFF — запаса нет, не учится."""
+    принятия — _accept (по дням). q_pct — процентиль настроек; ≤ BUFFER_Q_OFF — запаса нет, не учится. unchecked — current
+    не проверен при q_pct (после смены q — c_by_q строки другого q, buffer_c_for): опора — лучшее из current и «без
+    запаса» на проверке (непроверенное значение тоже должно быть лучше, чем ничего)."""
     if not BUFFER_Q_OFF < q_pct <= BUFFER_Q_MAX:
         return Outcome('buffer', '', False, f'կարգավորումներում պաշարի տոկոսը {_pct(q_pct / 100)} է '
                                             f'(50՝ առանց պաշարի)․ ծրագիրը պաշար չի սովորում')
@@ -815,6 +818,11 @@ def fit_buffer(obs: Sequence[TripObs], today: date, q_pct: float, current: float
 
     def upper(o: TripObs, cc: float) -> float:
         return o.predicted + trip_reserve(cc, o.predicted)
+
+    def loss(cc: float) -> float:
+        return math.fsum(pinball(o.minutes, upper(o, cc), q) for o in test) / len(test)
+    if unchecked and loss(0.0) < loss(current):
+        current = 0.0
     before = math.fsum(pinball(o.minutes, upper(o, current), q) for o in test) / len(test)
     after = math.fsum(pinball(o.minutes, upper(o, c), q) for o in test) / len(test)
     days: dict[date, list[float]] = {}

@@ -2520,7 +2520,8 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
     model_id = learning.road_model_id(norms)
     # запас на рейс и темп машин (№66): против действующих (запас — того же процентиля q; темп — без него, если нет)
     q = float(s.get('dispatch_buffer_pct') or 0)
-    outcomes.append(learning.fit_buffer(trips, today, q, learning.buffer_c_for(eff.buffer, q) or 0.0))
+    outcomes.append(learning.fit_buffer(trips, today, q, learning.buffer_c_for(eff.buffer, q) or 0.0,
+                                        bool(eff.buffer) and float(eff.buffer['q']) != q))
     pace_now = learning.truck_pace(eff, model_id)
     outcomes.append(learning.fit_pace('truck_unload', [(o.day, o.car, unload_norm(o), o.minutes) for o in unload], today,
                                       {c: p[0] for c, p in pace_now.items()}))
@@ -2647,6 +2648,15 @@ def _learning_status(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]
             if kind == 'buffer' and effect is not None and learning.buffer_c_for(
                     effect['params'], float(s.get('dispatch_buffer_pct') or 0)) is None:
                 effect = None   # q ≤ 50 или у строки нет c для q настроек — запас не действует (learning.apply_learned)
+            elif kind == 'buffer' and effect is not None and float(effect['params']['q']) != float(s['dispatch_buffer_pct']):
+                # сменили q: действует c тех же рейсов при новом q (c_by_q) — его и показываем, без покрытия (не проверен)
+                p, q_now = effect['params'], float(s['dispatch_buffer_pct'])
+                c_now = learning.buffer_c_for(p, q_now)
+                typical = p.get('typical_min')
+                effect = {**effect, 'params': {
+                    'c': c_now, 'q': q_now, 'unchecked': True,
+                    **({'typical_min': typical, 'typical_reserve_min': round(fl.trip_reserve(c_now, typical), 1)}
+                       if typical is not None else {})}}
         if kind == 'fuel':
             t = bundle.trucks.get(scope)
             man = {'l100': t.fuel_l_per_100km, 'empty_l100': t.fuel_empty_l_per_100km,

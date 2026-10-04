@@ -1443,8 +1443,9 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
     Запас на рейс и темп машин (№66): запас c·√D PyVRP получает линейной верхней оценкой — касательной в типичном рейсе
     сборки D0 (медиана минут её рейсов с темпом машины и ожиданием окон, без загрузки, обеда и запаса): c·√D ≤ c·√D0 / 2 +
     c / (2√D0) · D — минуты езды и разгрузки × (1 + c / (2√D0)), c·√D0 / 2 — на каждый рейс (vrp.solve); темп машины —
-    её профилем. Решение не прошло проверку по времени (окно или конец дня: ожидания и обеда PyVRP не знает) — ещё одна
-    попытка с запасом × RESERVE_RETRY; решает та же точная проверка (_days)."""
+    её профилем. Это верхняя оценка только по езде и разгрузке, не строгая: ожидание окон и обед PyVRP не знает — их
+    покрывают точная шкала и повтор: решение не прошло проверку по времени (окно или конец дня) — ещё одна попытка с
+    запасом × RESERVE_RETRY (причина — в журнал INFO); решает та же точная проверка (_days)."""
     if not vrp.available() or not trips:
         return None
     window = tn.work_minutes
@@ -1526,6 +1527,9 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
                                when, placed, start0, locked, pinned, pins, wait0)
         if got is not None or why != 'time':
             break
+        if kw is not tries[-1]:
+            logger.info('[Routes] PyVRP: с запасом на рейс не прошло проверку (%s) — ещё попытка с запасом × %s',
+                        why, RESERVE_RETRY)
     if got is None and why in ('load', 'time', 'wait'):
         logger.warning('[Routes] PyVRP: рейсы не прошли проверку «Развоза» — рейсы своим расчётом')
     return got

@@ -76,7 +76,8 @@
         if (kind === 'buffer') return 'պաշար՝ ' + fmt(p.c, 2) + ' × √(երթի րոպեներ), ' + fmt(p.q) + '%'
             + (num(p.typical_min) !== null ? ' (' + fmt(p.typical_min) + ' րոպե տևող երթին՝ +' + fmt(p.typical_reserve_min) + ' րոպե)' : '')
             + (num(p.coverage) !== null ? '․ ստուգման երթերից ժամանակին են վերադարձել ' + fmt(100 * p.coverage) + '%-ը'
-                + (num(p.coverage_before) !== null ? ' (առանց այս պաշարի՝ ' + fmt(100 * p.coverage_before) + '%)' : '') : '');
+                + (num(p.coverage_before) !== null ? ' (առանց այս պաշարի՝ ' + fmt(100 * p.coverage_before) + '%)' : '') : '')
+            + (p.unchecked ? '․ չստուգված, կստուգվի գիշերը' : '');   // сменили q — c тех же рейсов при новом q
         if (kind === 'truck_unload' || kind === 'truck_travel') {   // темп машины (№66)
             const f = p.factors || {}, cars = Object.keys(f).sort();
             return cars.length ? cars.map(c => c + ' ×' + fmt(f[c], 2)).join(', ') + ' (մյուսները՝ ×1)' : 'բոլոր մեքենաները՝ ×1';
