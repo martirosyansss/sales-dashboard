@@ -1,8 +1,12 @@
 {% extends "base_v2.html" %}
 
-{% block title %}Ավտոտնակ — Sales Dashboard{% endblock %}
+{# снаружи (роль «Гараж», araqich.orix.am) — без названия программы, как страница входа #}
+{% block title %}Ավտոտնակ{% if not is_garage %} — Sales Dashboard{% endif %}{% endblock %}
+{# телефон начальника гаража: страница во весь экран, отступы — по safe-area (routes_garage.css) #}
+{% block viewport %}width=device-width, initial-scale=1.0, viewport-fit=cover{% endblock %}
 
 {% block extra_css %}
+<meta name="theme-color" content="#0e1116">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -11,7 +15,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=20">
 <!-- Журнал гаража (ответ владельца №53): страница на армянском, телефон и ПК — свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_garage.css') }}?v=7">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_garage.css') }}?v=9">
 {% endblock %}
 
 {% block content %}
@@ -31,9 +35,12 @@
             </nav>
             {% endif %}
         </div>
-        <p class="rt-head-lead">Գրանցեք, թե որ մեքենայի վրա ինչ է փոխվել կամ վերանորոգվել, ինչ գնով և սպիդոմետրի ինչ ցուցմունքով։
+        <details class="gj-help" open>
+            <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս օգտվել այս էջից</summary>
+            <p class="rt-head-lead">Գրանցեք, թե որ մեքենայի վրա ինչ է փոխվել կամ վերանորոգվել, ինչ գնով և սպիդոմետրի ինչ ցուցմունքով։
             Ամիսը մեկ անգամ լրացրեք բոլոր մեքենաների վազքը։ Ծրագիրը հաշվում է յուրաքանչյուր մեքենայի վերանորոգման ծախսը
             մեկ կիլոմետրի համար (֏/կմ) վերջին 12 ամսում և, երբ վազքը ծածկում է 6 ամիս, օգտագործում է այն առաքման հաշվարկում։</p>
+        </details>
     </header>
 
     <div id="gjStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
@@ -48,7 +55,7 @@
         <span id="gjAlertText" class="rt-alert-text"></span>
     </div>
 
-    <div class="gj-tabs" role="tablist" aria-label="Ավտոտնակի բաժիններ">
+    <div class="gj-tabs" id="gjTabs" role="tablist" aria-label="Ավտոտնակի բաժիններ">
         <button type="button" role="tab" id="gjTabCosts" aria-controls="gjCosts" aria-selected="true">
             <i class="fas fa-wrench" aria-hidden="true"></i>Ծախսեր</button>
         <button type="button" role="tab" id="gjTabOdo" aria-controls="gjOdo" aria-selected="false" tabindex="-1">
@@ -93,7 +100,7 @@
                     <select id="gjWhat" class="rt-select" required aria-describedby="gjWhatErr"></select>
                     <div id="gjWhatOtherBox" class="gj-what-other" hidden>
                         <label for="gjWhatOther" class="rt-sr-only">Ինչ է արվել՝ ձեր բառերով</label>
-                        <input id="gjWhatOther" class="rt-input" type="text" maxlength="120" autocomplete="off"
+                        <input id="gjWhatOther" class="rt-input" type="text" maxlength="120" autocomplete="off" enterkeyhint="next"
                                placeholder="Գրեք կարճ, օրինակ՝ ռադիատոր" aria-describedby="gjWhatErr">
                     </div>
                     <span id="gjWhatErr" class="rt-ferr" data-for="what"></span>
@@ -101,6 +108,7 @@
                 <div class="rt-field" id="gjAmountBox">
                     <label for="gjAmount">Գումար, ֏</label>
                     <input id="gjAmount" class="rt-input" type="number" inputmode="numeric" min="1" max="100000000" step="1"
+                           autocomplete="off" enterkeyhint="next"
                            placeholder="֏" aria-describedby="gjAmountErr">
                     <span id="gjAmountErr" class="rt-ferr" data-for="amount_amd"></span>
                 </div>
@@ -121,13 +129,14 @@
                 <div class="rt-field">
                     <label for="gjOdoKm">Սպիդոմետր, կմ</label>
                     <input id="gjOdoKm" class="rt-input" type="number" inputmode="numeric" min="0" max="2000000" step="1"
+                           autocomplete="off" enterkeyhint="next"
                            required aria-describedby="gjOdoHint gjOdoErr">
                     <span id="gjOdoHint" class="rt-field-hint"></span>
                     <span id="gjOdoErr" class="rt-ferr" data-for="odometer_km"></span>
                 </div>
                 <div class="rt-field gj-wide">
                     <label for="gjNote">Նշում <span class="gj-opt">(ըստ ցանկության)</span></label>
-                    <input id="gjNote" class="rt-input" type="text" maxlength="300" autocomplete="off"
+                    <input id="gjNote" class="rt-input" type="text" maxlength="300" autocomplete="off" enterkeyhint="done"
                            placeholder="Մանրամասներ՝ օրինակ՝ առջևի, ձախ, որտեղ են վերանորոգել, կտրոնի համար"
                            aria-describedby="gjNoteErr">
                     <span id="gjNoteErr" class="rt-ferr" data-for="note"></span>
@@ -159,7 +168,7 @@
             </div>
             <p id="gjTotal" class="gj-total" aria-live="polite"></p>
             <div class="rt-table-scroll gj-scroll">
-                <table class="rt-table gj-table">
+                <table class="rt-table gj-table gj-entries">
                     <caption class="rt-sr-only">Ավտոտնակի գրառումներ</caption>
                     <thead><tr>
                         <th scope="col">Ամսաթիվ</th><th scope="col">Մեքենա</th><th scope="col">Տեսակ</th>
@@ -192,7 +201,7 @@
                     <tbody id="gjOdoRows"></tbody>
                 </table>
             </div>
-            <p id="gjOdoErr" class="rt-ferr" role="alert"></p>
+            <p id="gjOdoFormErr" class="rt-ferr" role="alert"></p>
             <div class="gj-actions">
                 <button id="gjOdoSave" type="submit" class="rt-btn rt-btn-primary rt-btn-lg"><i class="fas fa-floppy-disk" aria-hidden="true"></i>Պահպանել բոլորը</button>
             </div>
@@ -205,7 +214,10 @@
             <div class="rt-card-head">
                 <h2 class="rt-card-title" id="gjSumTitle"><i class="fas fa-truck" aria-hidden="true"></i>Ըստ մեքենաների՝ վերջին 12 ամիս</h2>
             </div>
-            <p class="rt-card-lead" id="gjSumLead"></p>
+            <details class="gj-help" open>
+                <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս է հաշվարկվում</summary>
+                <p class="rt-card-lead" id="gjSumLead"></p>
+            </details>
             <div class="rt-table-scroll gj-scroll">
                 <table class="rt-table gj-table gj-sum-table">
                     <caption class="rt-sr-only">Ծախսերը և վերանորոգումը ֏/կմ ըստ մեքենաների</caption>
@@ -247,7 +259,10 @@
                     <input id="gjNormMonth" class="rt-input gj-date" type="month">
                 </div>
             </div>
-            <p class="rt-card-lead" id="gjNormLead"></p>
+            <details class="gj-help" open>
+                <summary><i class="fas fa-circle-question" aria-hidden="true"></i>Ինչպե՞ս է հաշվարկվում</summary>
+                <p class="rt-card-lead" id="gjNormLead"></p>
+            </details>
             <div id="gjNormEmpty" class="rt-alert is-warn gj-norm-empty" role="status" hidden>
                 <i class="fas fa-satellite-dish" aria-hidden="true"></i>
                 <span id="gjNormEmptyText" class="rt-alert-text"></span>
@@ -272,6 +287,7 @@
             </div>
             <p class="gj-sub" id="gjMapNote"></p>
             <div id="gjMap" class="gj-map" role="region" aria-label="Քարտեզ՝ մեքենայի օրվա պլանը և փաստը"></div>
+            <p class="gj-map-touch">Քարտեզը շարժեք երկու մատով։</p>
             <p class="gj-map-legend">
                 <span><span class="gj-line is-plan" aria-hidden="true"></span>պլան (ուղիղ գծով կետից կետ)</span>
                 <span><span class="gj-line is-fact" aria-hidden="true"></span>փաստացի ճանապարհ (GPS)</span>
@@ -288,5 +304,5 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка карт раздела (№47) — без ключа Яндекса: страница открыта из интернета, ключ сюда не выдаётся → OpenStreetMap -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key=""></script>
-<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=8"></script>
+<script src="{{ url_for('static', filename='js/routes_garage.js') }}?v=10"></script>
 {% endblock %}

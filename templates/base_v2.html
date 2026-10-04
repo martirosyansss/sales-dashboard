@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="ru" data-bs-theme="dark">
+<html lang="{{ 'hy' if is_garage else 'ru' }}" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="{% block viewport %}width=device-width, initial-scale=1.0{% endblock %}">
     <meta name="csrf-token" content="{{ csrf_token() if csrf_token is defined else '' }}">
     <script>
     // CSRF передаётся только на наш origin: сторонние адреса токен не получают.
@@ -48,6 +48,7 @@
     <!-- Font Awesome 6.4 -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0" crossorigin="anonymous">
     
+    {% if not is_garage %}{# роль «Гараж» видит только журнал гаража — ему эти библиотеки не нужны (телефон, интернет) #}
     <!-- Chart.js 4.4 -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g" crossorigin="anonymous"></script>
     
@@ -71,6 +72,7 @@
     
     <!-- SheetJS (xlsx) for Excel export -->
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" integrity="sha384-EnyY0/GSHQGSxSgMwaIPzSESbqoOLSexfnSMN2AP+39Ckmn92stwABZynq1JyzdT" crossorigin="anonymous"></script>
+    {% endif %}
     
     <!-- Общие стили (вынесены из инлайн <style> при рефакторинге фронтенда) -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
@@ -79,12 +81,25 @@
     {% block extra_css %}{% endblock %}
 </head>
 <body>
+    {% if is_garage %}
+    <!-- Роль «Гараж» (№53): только журнал гаража, с телефона — короткая шапка без меню: кто вошёл и выход -->
+    <header class="navbar navbar-dark gj-nav">
+        <div class="container-fluid">
+            <span class="gj-nav-user"><i class="fas fa-circle-user" aria-hidden="true"></i>
+                <span class="gj-nav-name">{{ (current_user.display_name if current_user and current_user.display_name else current_username) or '' }}</span></span>
+            <form method="post" action="{{ url_for('logout') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}">
+                <button class="gj-logout" type="submit"><i class="fas fa-right-from-bracket" aria-hidden="true"></i>Ելք</button>
+            </form>
+        </div>
+    </header>
+    {% else %}
     <!-- expand-xxl: 14 пунктов навигации не помещаются в одну строку на ширинах
          992–~1450px и вызывали горизонтальный скролл всей страницы. Сворачиваем в
          гамбургер ниже 1400px; на широких мониторах (≥1400) меню как прежде. -->
     <nav class="navbar navbar-expand-xxl navbar-dark sticky-top">
         <div class="container-fluid">
-            <a class="navbar-brand" href="{{ '/routes/garage' if is_garage else '/' }}">
+            <a class="navbar-brand" href="/">
                 <i class="fas fa-chart-line me-2"></i>Sales Dashboard v2.0
             </a>
             
@@ -136,7 +151,6 @@
                         </a>
                     </li>
                     {% endif %}
-                    {% if not is_garage %}{# роль «Гараж» видит только журнал гаража — ссылок на другие страницы нет #}
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/customers-grid' %}active{% endif %}" href="/customers-grid">
                             <i class="fas fa-table me-1"></i> Клиенты Grid
@@ -147,7 +161,6 @@
                             <i class="fas fa-map-marked-alt me-1"></i> Территории
                         </a>
                     </li>
-                    {% endif %}
                     {% if is_admin %}
                     <li class="nav-item">
                         <a class="nav-link {% if request.path == '/plans' %}active{% endif %}" href="/plans">
@@ -197,14 +210,12 @@
                            data-bs-toggle="dropdown" aria-expanded="false">
                             <i class="fas fa-circle-user me-1"></i>
                             {{ (current_user.display_name if current_user and current_user.display_name else current_username) or 'Гость' }}
-                            {% if is_garage %}<span class="badge bg-secondary ms-1">Ավտոտնակ</span>
-                            {% elif not is_admin %}<span class="badge bg-secondary ms-1">территория</span>{% endif %}
+                            {% if not is_admin %}<span class="badge bg-secondary ms-1">территория</span>{% endif %}
                         </a>
                         <ul class="dropdown-menu dropdown-menu-end">
                             <li>
                                 <span class="dropdown-item-text small text-muted">
                                     {% if is_admin %}<i class="fas fa-user-shield me-1"></i> Администратор
-                                    {% elif is_garage %}<i class="fas fa-wrench me-1"></i> Ավտոտնակ — վերանորոգման և վազքի գրառումներ
                                     {% else %}<i class="fas fa-map-marker-alt me-1"></i> Территории: {{ (current_user.areas | join(', ')) if current_user and current_user.areas else '—' }}
                                     {% endif %}
                                 </span>
@@ -224,11 +235,13 @@
             </div>
         </div>
     </nav>
+    {% endif %}
 
     <main class="container-fluid py-4">
         {% block content %}{% endblock %}
     </main>
 
+    {% if not is_garage %}
     <footer class="text-center py-3 mt-5" style="border-top: 1px solid var(--border-color);">
         <div class="container">
             <p class="text-muted mb-0">
@@ -237,6 +250,7 @@
             </p>
         </div>
     </footer>
+    {% endif %}
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
     
