@@ -1392,9 +1392,9 @@ def _warnings(snap: Snapshot, bundle: Bundle, included: Sequence[ManagerEval],
             return ', '.join(MONTH_SHORT[m - 1] for m in ms)
         used = []
         if 'low' in season.fallback:
-            used.append(f'ցածր սեզոն՝ {months(season.low)} (ամենացածր վաճառքը)')
+            used.append(f'ցածր սեզոն՝ {months(season.low)}')
         if 'peak' in season.fallback:
-            used.append(f'բարձր սեզոն՝ {months(season.peak)} (ամենաբարձր վաճառքը)')
+            used.append(f'բարձր սեզոն՝ {months(season.peak)}')
         taken = ('ամենացածր և ամենաբարձր վաճառքով 3-ական ամիսները' if len(used) == 2 else
                  'ամենացածր վաճառքով 3 ամիսները' if 'low' in season.fallback else 'ամենաբարձր վաճառքով 3 ամիսները')
         out.append(_warning('season_empty', 'Սեզոնային ինդեքսի շեմերին ոչ մի ամիս չհամապատասխանեց, վերցված են '
