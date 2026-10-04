@@ -20,7 +20,9 @@
    Под картой — «почему так» про выбранное над ней (ответ владельца №49): рейс, машина или весь день — по цифрам
    explain из ответа дня (dispatch.plan_view), без утверждений, которых расчёт не делает.
    «Հարցրու AI-ին» (ответ владельца №52) — панель чата в routes_dispatch_ai.js (подключается в init): вопрос логиста
-   по дню, сервер отвечает по тем же цифрам дня и ничего не меняет; переводы её ошибок — здесь, в SERVER_HY. */
+   по дню, сервер отвечает по тем же цифрам дня и ничего не меняет; переводы её ошибок — здесь, в SERVER_HY.
+   «Բեռնագիր» у каждой машины (ответ владельца №57) — GET /api/routes/dispatch/waybill?date=…&truck=…&rev=…: товары рейсов
+   машины на загрузку; печать и Excel только этой машины. */
 (function () {
     'use strict';
 
@@ -96,6 +98,8 @@
     };
     // Тексты ошибок сервера (views.py, dispatch.py) → армянский. Точное совпадение; незнакомое — как есть.
     const BAD_REQUEST = 'Սերվերը չընդունեց հարցումը';
+    // накладная (բեռնագիր) разошлась бы с планом на экране: rev на сервере другой или состав рейсов машины не тот (fetchWaybill)
+    const WB_STALE_HY = 'Էջը բացելուց հետո պլանը փոխվել է․ բեռնագիրը չէր համընկնի էկրանի պլանի հետ։ Թարմացրեք էջը։';
     const SERVER_HY = {
         'База данных ERP недоступна': 'ERP տվյալների բազան հասանելի չէ',
         'Внутренняя ошибка': 'Սերվերի ներքին սխալ',
@@ -964,11 +968,12 @@
     const ownUnload = (stop) => (isObj(state.data.store_unload) ? num(state.data.store_unload[stop.customer_id]) : null);
     // Подсказка — как посчитает «Развоз» (та же логика, что в «Условиях магазина» /routes/settings): пустое поле — обычное
     // время или своё время магазина по факту (unload_auto_min); есть разгрузки по GPS (unload_visits) — введённое смешается с фактом.
-    // «По факту» — только если отличается от нормы на 0,05 мин и больше: сервер округляет unload_auto_min до 0,1, а норму
-    // строки обучения — до 0,01 (8,4 и 8,37 — одно и то же «обычное» время)
+    // «По факту» — только если отличается от нормы больше, чем на округление: сервер шлёт unload_auto_min до 0,1, норму
+    // строки обучения — до 0,01, разница — целые сотые, до 5 сотых — округление (8,37 → 8,4; 8,75 → 8,8: в JS
+    // 8,8 − 8,75 = 0,05000000000000071, поэтому не «≥ 0,05»), своё время по факту — от 0,5 мин
     function unloadHint(x, norms) {
         const auto = num(x.unload_auto_min), perStop = num(norms.per_stop_min);
-        const empty = auto !== null && perStop !== null && Math.abs(auto - perStop) >= 0.05
+        const empty = auto !== null && perStop !== null && Math.round(Math.abs(auto - perStop) * 100) > 5
             ? minutesText(auto) + ' (ըստ փաստի)' : 'սովորական ' + minutesText(perStop);
         const fact = num(x.unload_visits) ? ' Ըստ վարորդների GPS-ի՝ այս խանութում արդեն եղել է ' + pl(x.unload_visits, 'բեռնաթափում')
             + '։ Ձեր գրած ժամանակը ծրագիրը կհամադրի փաստի հետ՝ որքան շատ բեռնաթափում, այնքան ավելի մոտ փաստին։' : '';
@@ -1696,7 +1701,11 @@
             body.setAttribute('aria-labelledby', head.id);
             body.hidden = !open;
             if (open) t.trips.forEach((tr, i) => body.appendChild(tripBlock(t, tr, i)));
-            card.append(h, body);
+            // справа от шапки — накладная машины «Բեռնագիր» (№57): кнопки видны и у свёрнутой карточки
+            const top = document.createElement('div');
+            top.className = 'dp-ttop';
+            top.append(h, waybillActs(t));
+            card.append(top, body);
             box.appendChild(card);
         });
         syncFocus();
@@ -2350,7 +2359,7 @@
         });
         if (depot) {
             bounds.push(depot);
-            L.marker(depot, { icon: L.divIcon({ className: 'rt-pin rt-pin-depot', html: '<i class="fas fa-warehouse"></i>', iconSize: [28, 28] }), keyboard: false })
+            L.marker(depot, { icon: L.divIcon({ className: 'rt-pin rt-pin-depot', html: '<span><i class="fas fa-warehouse" aria-hidden="true"></i></span>', iconSize: [28, 28], iconAnchor: [14, 14] }), keyboard: false, zIndexOffset: 1000 })
                 .bindTooltip('Պահեստ').addTo(state.layers);
         }
         state.mapBounds = bounds.length ? bounds : null;
@@ -2553,6 +2562,150 @@
         if (pending.length > 1) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pending), 'Երթերում չկան');
         XLSX.writeFile(wb, 'araqum_' + d.day + '.xlsx');
         announce('Excel ֆայլը ներբեռնված է');
+    }
+
+    // ---------- Բեռնագիր (ответ владельца №57) ----------
+    // Что машина грузит на складе в каждом рейсе: GET /api/routes/dispatch/waybill (товары — из проведённых накладных ERP,
+    // где они уже есть, иначе из заказов; тяжёлый магазин на несколько рейсов делится целыми упаковками). Печать — окно с
+    // листом на рейс, Excel — файл машины, лист на рейс. Ответ сверяется с планом на экране (rev и состав каждого рейса):
+    // разошлись — ошибка «обновите страницу», а не накладная по другому плану.
+    function waybillActs(t) {
+        const box = document.createElement('div');
+        box.className = 'dp-tacts';
+        const mk = (ico, text, label, fn) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-wbbtn';
+            b.innerHTML = '<i class="fas ' + ico + '" aria-hidden="true"></i><span></span>';
+            b.lastChild.textContent = text;
+            b.setAttribute('aria-label', label + truckLabel(t));
+            b.title = label + truckLabel(t);       // на средних экранах у кнопки только значок
+            b.addEventListener('click', () => fn(t.car_code, b));
+            return b;
+        };
+        box.append(mk('fa-print', 'Բեռնագիր', 'Տպել բեռնագիրը՝ ', printWaybill),
+            mk('fa-file-excel', 'Excel', 'Բեռնագիրը Excel-ով՝ ', excelWaybill));
+        return box;
+    }
+    const wbBasis = (tr) => tr.stops.map(s => [s.customer_id, s.share, (s.orders || []).map(o => o.isn).sort()]);
+    const wbStale = () => Object.assign(new Error(WB_STALE_HY), { status: 409, data: null });
+    const wbTruck = (d, code) => (d && d.plan ? d.plan.trucks.find(x => x.car_code === code) : null);
+    // Занята ли кнопка: не disabled (фокус клавиатуры остаётся на ней, setBusy страницы её состояние не путает)
+    const wbBusy = (btn) => btn.getAttribute('aria-busy') === 'true';
+    async function fetchWaybill(code, btn) {
+        const d = state.data;
+        if (!wbTruck(d, code)) throw wbStale();
+        btn.setAttribute('aria-busy', 'true');
+        let wb;
+        try {
+            wb = await api('GET', '/api/routes/dispatch/waybill?' + new URLSearchParams({ date: d.day, truck: code, rev: String(d.rev) }));
+        } finally {
+            btn.removeAttribute('aria-busy');
+        }
+        // сверка — с планом на экране ПОСЛЕ ответа: пока шёл запрос, логист мог перенести магазин или день перечитался
+        const cur = state.data, t = wbTruck(cur, code);
+        const same = !!t && cur.day === d.day && cur.rev === wb.rev && Array.isArray(wb.trips) && wb.trips.length === t.trips.length
+            && wb.trips.every((x, i) => x.id === t.trips[i].id && JSON.stringify(x.basis) === JSON.stringify(wbBasis(t.trips[i])));
+        if (!same) throw wbStale();
+        return { t, d: cur, wb };
+    }
+    const wbName = (r) => r.unknown ? 'ERP-ում անհայտ ապրանք (ID ' + r.product_id + ')' : (r.name || '—');
+    const wbQty = (r) => fmt(r.qty, 4) + (r.unit ? NB + r.unit : '');
+    // «12 փաթեթ + 3 հատ» — для склада: упаковка «փաթեթ» из доп. единицы товара ERP
+    const wbPacks = (r) => !r.pack || r.packs === null ? '' : [r.packs ? fmt(r.packs) + NB + 'փաթեթ' : '',
+        r.loose ? fmt(r.loose) + NB + (r.unit || 'հատ') : ''].filter(Boolean).join(' + ');
+    function wbNotes(tr) {
+        const out = [];
+        if (tr.orders && tr.invoiced === tr.orders) out.push('Քանակները՝ ERP-ի ապրանքագրերից։');
+        else if (!tr.invoiced) out.push('Քանակները՝ պատվերներից․ ապրանքագրեր դեռ չկան։');
+        else out.push('Քանակները՝ ' + pl(tr.invoiced, 'պատվեր') + '՝ ապրանքագրից, ' + fmt(tr.orders - tr.invoiced) + '՝ պատվերից (ապրանքագիր դեռ չկա)։');
+        if (tr.split) out.push('Ներառում է ' + fmt(tr.split) + NB + 'խանութի մեծ պատվերի մասը․ այդ պատվերները տարվում են մի քանի երթով։');
+        if (tr.mixed) out.push('Ուշադրություն՝ ' + fmt(tr.mixed) + NB + 'պատվերի ապրանքագրում կա նաև պատվեր, որը այս երթերում չէ'
+            + ' (օրինակ՝ «այսօր չենք տանում»)․ ապրանքագրի ամբողջ ապրանքը հաշվված է այստեղ — ստուգեք քանակները։');
+        if (tr.unknown) out.push('Ուշադրություն՝ ' + pl(tr.unknown, 'ապրանք') + ' ERP-ի ցուցակում չի գտնվել (նշված է ID-ով)։');
+        return out;
+    }
+    function waybillHtml(t, d, wb) {
+        const dayText = (WD_NAME[d.weekday] || '') + ', ' + dateRu(d.day);
+        const made = new Date();
+        const madeText = dateRu(made.getFullYear() + '-' + String(made.getMonth() + 1).padStart(2, '0') + '-' + String(made.getDate()).padStart(2, '0'))
+            + ' ' + hhmm(made.getHours() * 60 + made.getMinutes());
+        let html = '<!doctype html><html lang="hy"><head><meta charset="utf-8"><title>Բեռնագիր ' + esc(t.car_code) + ' ' + esc(dateRu(d.day)) + '</title><style>'
+            + 'body{font-family:"Segoe UI",Sylfaen,"Noto Sans Armenian",Arial,sans-serif;color:#000;margin:0;padding:12mm;font-size:15px}'
+            + '.sheet{page-break-after:always;break-after:page}.sheet:last-child{page-break-after:auto;break-after:auto}'
+            + 'h1{font-size:24px;margin:0 0 4px;letter-spacing:.04em}.sub{font-size:15px;margin:0 0 4px}.sub b{font-size:17px}'
+            + 'table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border:1px solid #000;padding:6px 8px;vertical-align:top;text-align:left}'
+            + 'th{font-size:13px;background:#eee}td.n{width:30px;text-align:center}td.c{width:64px;white-space:nowrap}'
+            + 'td.q{font-size:17px;font-weight:700;white-space:nowrap;text-align:right}td.p{white-space:nowrap}td.p small{color:#444}'
+            + 'td.kg{white-space:nowrap;text-align:right;width:80px}td.ok{width:34px}tfoot td{font-weight:700}'
+            + '.notes{margin:10px 0 0;padding-left:18px;font-size:13px}.sign{display:flex;gap:40px;margin-top:28px;font-size:15px}'
+            + '.sign div{flex:1}.sign span{display:block;border-bottom:1px solid #000;height:26px}.made{margin-top:14px;font-size:12px;color:#444}'
+            + '@media screen{body{background:#fff}}'
+            + '</style></head><body>';
+        wb.trips.forEach(tr => {
+            html += '<section class="sheet"><h1>ԲԵՌՆԱԳԻՐ</h1>'
+                + '<p class="sub"><b>' + esc(truckLabel(t)) + '</b> · ' + esc(dayText) + ' · Երթ ' + tr.no + (wb.trips.length > 1 ? ' / ' + wb.trips.length : '') + '</p>'
+                + '<p class="sub">Բեռնում՝ ' + esc(tr.loading_start) + ' · մեկնում՝ ' + esc(tr.depart) + ' · ' + esc(pl(tr.stops, 'խանութ')) + '</p>'
+                + '<table><thead><tr><th>№</th><th>Կոդ</th><th>Ապրանք</th><th>Քանակ</th><th>Փաթեթ</th><th>Քաշ, կգ</th><th>✓</th></tr></thead><tbody>';
+            tr.rows.forEach((r, i) => {
+                html += '<tr><td class="n">' + (i + 1) + '</td><td class="c">' + esc(r.code) + '</td><td>' + esc(wbName(r)) + '</td>'
+                    + '<td class="q">' + esc(wbQty(r)) + '</td><td class="p">' + esc(wbPacks(r))
+                    + (r.pack && r.packs !== null ? ' <small>(' + esc(r.pack) + '-ական)</small>' : '') + '</td>'
+                    + '<td class="kg">' + esc(fmt(r.kg, 1)) + '</td><td class="ok"></td></tr>';
+            });
+            if (!tr.rows.length) html += '<tr><td colspan="7">Ապրանքներ չկան՝ պատվերներում տողեր չեն գտնվել։</td></tr>';
+            html += '</tbody><tfoot><tr><td colspan="5">Ընդամենը՝ ' + esc(pl(tr.rows.length, 'ապրանք')) + '</td><td class="kg">' + esc(fmt(tr.kg))
+                + '</td><td></td></tr></tfoot></table><ul class="notes">' + wbNotes(tr).map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>'
+                + '<div class="sign"><div>Բաց թողեց (պահեստապետ)<span></span></div><div>Ընդունեց (վարորդ)<span></span></div></div>'
+                + '<p class="made">Կազմվել է՝ ' + esc(madeText) + ' · պլան № ' + esc(wb.rev) + '</p></section>';
+        });
+        return html + '</body></html>';
+    }
+    async function printWaybill(code, btn) {
+        if (wbBusy(btn) || state.busy) return;
+        hideActionError();
+        // окно — сразу по нажатию: открытое после ответа сервера браузер счёл бы всплывающим и заблокировал
+        const w = window.open('', '_blank');
+        if (!w) { showActionError(new Error('Զննարկիչը թույլ չտվեց բացել տպման պատուհանը — թույլատրեք թռուցիկ պատուհանները այս կայքի համար։')); return; }
+        w.document.write('<!doctype html><html lang="hy"><head><meta charset="utf-8"><title>Բեռնագիր</title></head>'
+            + '<body style="font-family:Segoe UI,Sylfaen,Arial,sans-serif;padding:24px">Բեռնագիրը պատրաստվում է…</body></html>');
+        w.document.close();
+        let res;
+        try { res = await fetchWaybill(code, btn); } catch (e) {
+            try { w.close(); } catch (x) { /* уже закрыто */ }
+            showActionError(e);
+            return;
+        }
+        if (w.closed) return;
+        w.document.open();
+        w.document.write(waybillHtml(res.t, res.d, res.wb));
+        w.document.close();
+        w.focus();
+        setTimeout(() => { try { w.print(); } catch (e) { /* окно закрыли раньше */ } }, 300);
+    }
+    async function excelWaybill(code, btn) {
+        if (wbBusy(btn) || state.busy) return;
+        hideActionError();
+        if (typeof window.XLSX === 'undefined') { showActionError(new Error('Excel-ի գրադարանը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ)։')); return; }
+        let res;
+        try { res = await fetchWaybill(code, btn); } catch (e) { showActionError(e); return; }
+        const { t, d, wb } = res;
+        const book = XLSX.utils.book_new();
+        wb.trips.forEach(tr => {
+            const rows = [['Բեռնագիր'], ['Մեքենա', truckLabel(t)], ['Օր', (WD_NAME[d.weekday] || '') + ', ' + dateRu(d.day)],
+                ['Երթ', tr.no + (wb.trips.length > 1 ? ' / ' + wb.trips.length : '')], ['Բեռնում', tr.loading_start], ['Մեկնում', tr.depart],
+                ['Խանութներ', tr.stops], [],
+                ['№', 'Կոդ', 'Ապրանք', 'Միավոր', 'Քանակ', 'Փաթեթ', 'Առանձին', 'Փաթեթում', 'Քաշ, կգ']];
+            tr.rows.forEach((r, i) => rows.push([i + 1, r.code, wbName(r), r.unit, r.qty,
+                r.pack && r.packs !== null ? r.packs : '', r.pack && r.packs !== null ? r.loose : '', r.pack || '', r.kg]));
+            rows.push(['', '', 'Ընդամենը', '', '', '', '', '', tr.kg], []);
+            wbNotes(tr).forEach(x => rows.push([x]));
+            const ws = XLSX.utils.aoa_to_sheet(rows);
+            ws['!cols'] = [{ wch: 5 }, { wch: 8 }, { wch: 42 }, { wch: 8 }, { wch: 9 }, { wch: 8 }, { wch: 9 }, { wch: 10 }, { wch: 9 }];
+            XLSX.utils.book_append_sheet(book, ws, 'Երթ ' + tr.no);
+        });
+        XLSX.writeFile(book, 'bernagir_' + (t.car_code.replace(/[^0-9A-Za-z]+/g, '') || 'mekena') + '_' + d.day + '.xlsx');
+        announce('Բեռնագիրը ներբեռնված է՝ ' + truckLabel(t));
     }
 
     // ---------- План и факт ----------

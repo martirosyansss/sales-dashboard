@@ -166,6 +166,15 @@ def main() -> int:
             check(bars > 0 and vis('#dpStep3'), f'B plan built, {bars} bars on the timeline')
             check(page.locator('#dpStep1.is-folded').count() == 1 and page.locator('#dpStep2.is-folded').count() == 1
                   and vis('#dpStep1Tog'), 'B steps 1 and 2 folded, step 1 toggle visible')
+            # склад — плашка .rt-pin-depot > span из routes.css (голая иконка светлая на светлой карте не видна)
+            pin = page.evaluate("""() => {
+                const s = document.querySelector('#dpMap .rt-pin-depot > span');
+                if (!s) return null;
+                const r = s.getBoundingClientRect(), cs = getComputedStyle(s);
+                return { w: r.width, h: r.height, bg: cs.backgroundColor };
+            }""")
+            check(pin is not None and pin['w'] >= 24 and pin['h'] >= 24 and pin['bg'] not in ('rgba(0, 0, 0, 0)', 'transparent'),
+                  f'B depot pin on the map is a filled plate: {pin}')
             page.click('#dpStep1Tog')
             page.wait_for_selector('#dpTrucks', state='visible', timeout=5000)
             check(page.get_attribute('#dpStep1Tog', 'aria-expanded') == 'true' and vis('#dpTrucks'),
@@ -278,6 +287,12 @@ def main() -> int:
             check('Դատարկ՝ սովորական 8,4 րոպե։' in hint and 'ըստ փաստի' not in hint and '(6,1 րոպե տոննայի համար)' in hint,
                   f'U learned norm 8.37, no GPS visits → «սովորական», not «ըստ փաստի»: {hint!r}')
             page.click('#dpUnloadCancel')
+            # 8,75 → сервер шлёт 8,8, а в JS 8,8 − 8,75 = 0,05000000000000071: сравнение «≥ 0,05» дало бы «ըստ փաստի»
+            store.save_learned('2026-09-02', [lr.Outcome('unload', '', True, 'да', {**row, 'per_stop_min': 8.75})])
+            hint = open_unload()
+            check('Դատարկ՝ սովորական 8,8 րոպե։' in hint and 'ըստ փաստի' not in hint,
+                  f'U learned norm 8.75 (server 8.8) → «սովորական», not «ըստ փաստի»: {hint!r}')
+            page.click('#dpUnloadCancel')
             store.save_learned('2026-09-03', [lr.Outcome('unload', '', True, 'да', {**row, 'store_stats': {str(cid): [10, 20.0]}})])
             hint = open_unload()
             check('(ըստ փաստի)' in hint and '10 բեռնաթափում' in hint and 'կհամադրի փաստի հետ' in hint
@@ -329,6 +344,16 @@ def main() -> int:
             page.wait_for_timeout(500)
             sw = page.evaluate('() => document.documentElement.scrollWidth')
             check(sw <= 390, f'H phone 390: plan built, scrollWidth={sw}')
+            # scrollWidth не ловит обрезку внутри карточек (overflow:hidden у предка) — правый край блоков
+            # плана, карточек машин и кнопок рейса должен быть внутри #dpStep3
+            wide = page.evaluate('''() => {
+                const lim = document.getElementById('dpStep3').getBoundingClientRect().right + 1;
+                return ['.dp-split', '#dpTruckCards', '.dp-mapcol', '.dp-tcard', '.dp-trip-acts', '.dp-tacts']
+                    .flatMap(sel => [...document.querySelectorAll('#dpStep3 ' + sel)]
+                        .filter(el => el.offsetParent !== null && el.getBoundingClientRect().right > lim)
+                        .map(el => sel + ' ' + Math.round(el.getBoundingClientRect().width) + 'px'));
+            }''')
+            check(not wide, f'H phone 390: plan blocks fit #dpStep3 (too wide: {wide[:4]})')
             page.click('#dpAiOpen')
             page.wait_for_selector('#dpAi', state='visible', timeout=5000)
             page.wait_for_timeout(300)

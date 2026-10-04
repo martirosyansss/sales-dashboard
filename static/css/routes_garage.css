@@ -2,11 +2,8 @@
    Поверх routes.css: те же токены (--rt-*), только классы этой страницы (.gj-*). Телефон 390 px — поля крупные,
    таблицы — карточками (routes.css, ≤ 575 px). */
 
-/* В Golos Text нет армянских букв — берём их из Noto Sans Armenian (как «Развоз») */
-#gjPage {
-    --rt-font: 'Golos Text', 'Noto Sans Armenian', 'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
-    max-width: 1280px; margin: 0 auto;
-}
+/* шрифт и цвета — общие из routes.css (тема «Развоза»: Google Sans с армянскими буквами) */
+#gjPage { max-width: 1280px; margin: 0 auto; }
 #gjPage .rt-title { font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.125rem); }
 
 /* Вкладки страницы: Ծախսեր · Վազք · Ամփոփում */
