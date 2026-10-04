@@ -5334,7 +5334,8 @@ def test_api_dispatch_flow(client):
     assert (d['day'], d['weekday'], d['order_dates'], d['plan'], d['rev']) == \
         ('2026-10-01', 4, {'since': '2026-09-30', 'until': '2026-09-30'}, None, 0)
     assert d['orders'] == {'count': 4, 'kg': 1950, 'revenue': 40000, 'customers': 4, 'shipped_before': 0,
-                           'excluded': 0, 'self_delivery': 1, 'self_delivery_kg': 100, 'no_coords': 1, 'no_coords_kg': 50}
+                           'excluded': 0, 'agents_off': 0, 'agents_off_kg': 0,
+                           'self_delivery': 1, 'self_delivery_kg': 100, 'no_coords': 1, 'no_coords_kg': 50}
     assert [s['customer_id'] for s in d['stops_no_coords']] == [999]
     assert [o['customer_id'] for o in d['backlog']] == [102] and d['backlog'][0]['added'] is False
     assert [(t['car_code'], t['ready'], t['selected']) for t in d['trucks']] == [('CAR1', True, True), ('CAR2', True, True)]

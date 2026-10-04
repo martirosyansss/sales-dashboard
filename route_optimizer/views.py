@@ -1139,10 +1139,12 @@ def _backlog_in(draft: dp.Draft | None, carried: Collection[str]) -> set[str]:
 
 def _active_orders(deliver: list[dp.DispatchOrder], backlog: list[dp.DispatchOrder],
                    draft: dp.Draft | None, carried: Collection[str] = ()) -> list[dp.DispatchOrder]:
-    """Заказы в развозе: заказы дня без «не везём сегодня» + заказы прошлых дней в развозе (_backlog_in)."""
+    """Заказы в развозе: заказы дня без «не везём сегодня» + заказы прошлых дней в развозе (_backlog_in);
+    заказы менеджеров, снятых фильтром «Մենեջերներ» (agents_off), — ни те, ни другие."""
     excluded = draft.excluded if draft is not None else set()
+    off = draft.agents_off if draft is not None else set()
     inside = _backlog_in(draft, carried)
-    return [o for o in deliver if o.isn not in excluded] + [o for o in backlog if o.isn in inside]
+    return [o for o in deliver if o.isn not in excluded and o.agent_id not in off]         + [o for o in backlog if o.isn in inside and o.agent_id not in off]
 
 
 def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: list[dp.DispatchOrder]) -> set[str]:
@@ -1188,7 +1190,8 @@ def _freshness(day: date, bundle: Bundle, data: dp.DispatchData, deliver: list[d
     if draft is not None:
         inside = _backlog_in(draft, carried)
         moved_in = [o for o in backlog if o.isn in set(carried) - draft.dropped]
-        changes = dp.since_build(draft.built_orders, [*deliver, *moved_in],
+        # заказы менеджеров, снятых фильтром, — не «новые»: их сегодня не везём
+        changes = dp.since_build(draft.built_orders, [o for o in (*deliver, *moved_in) if o.agent_id not in draft.agents_off],
                                  [*deliver, *(o for o in backlog if o.isn in inside)], draft.excluded)
     return {
         'orders_still_coming': dp.orders_still_coming(day, s['workdays'], _clock(), s['dispatch_ready_time']),
@@ -1290,13 +1293,27 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     no_coords = [s for s in dd.stops if s.point is None]
     active = _active_orders(dd.deliver, dd.backlog, draft, dd.carried)
     excl = [o for o in dd.deliver if o.isn in excluded]
+    off = draft.agents_off if draft is not None else set()
+    # фильтр «Մենեջերներ»: менеджеры заказов развоза дня (заказы дня без «не везём сегодня» и прошлых дней в развозе,
+    # и снятые фильтром — менеджер в списке, пока у него есть такие заказы)
+    by_agent: dict[int, list[dp.DispatchOrder]] = {}
+    for o in [*(o for o in dd.deliver if o.isn not in excluded), *(o for o in dd.backlog if o.isn in added)]:
+        by_agent.setdefault(o.agent_id, []).append(o)
+    agents_json = []
+    for aid, orders in by_agent.items():
+        agent = dd.snap.agents.get(aid)
+        agents_json.append({'agent_id': aid, 'code': agent.code if agent else '', 'name': agent.name if agent else '',
+                            'count': len(orders), 'kg': round(sum(o.kg for o in orders)),
+                            'revenue': round(sum(o.revenue for o in orders)), 'off': aid in off})
+    agents_json.sort(key=lambda a: (a['name'] or a['code'] or '~', a['agent_id']))
+    hidden = [o for os_ in (by_agent.get(a, []) for a in off) for o in os_]
 
     def order_json(o: dp.DispatchOrder) -> dict[str, Any]:
         code, name = dd.data.customers.get(o.customer_id) or ('', '')
         return {'isn': o.isn, 'doc_num': o.doc_num, 'customer_id': o.customer_id, 'code': code, 'name': name,
                 'order_date': o.order_date.isoformat(), 'kg': round(o.kg), 'revenue': round(o.revenue),
                 'added': o.isn in added, 'deferred': draft is not None and o.isn in draft.deferred,
-                'carried': o.isn in dd.carried}
+                'carried': o.isn in dd.carried, 'agent_off': o.agent_id in off}
 
     body: dict[str, Any] = {
         'day': dd.day.isoformat(), 'weekday': dd.day.isoweekday(),
@@ -1311,11 +1328,13 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
                    'revenue': round(sum(o.revenue for o in active)), 'customers': len(dd.stops),
                    'shipped_before': dd.shipped_before, 'excluded': len(excl),
+                   'agents_off': len(hidden), 'agents_off_kg': round(sum(o.kg for o in hidden)),
                    'self_delivery': len(dd.self_delivery),
                    'self_delivery_kg': round(sum(o.kg for o in dd.self_delivery)),
                    'no_coords': len(no_coords), 'no_coords_kg': round(sum(x.kg for x in no_coords))},
         'stops_no_coords': [info(x) | {'kg': round(x.kg)} for x in no_coords],
         'excluded': [order_json(o) for o in excl],
+        'agents': agents_json, 'agents_off': sorted(off),
         # не отгружены с прошлых дней: в план — только добавленные логистом (added)
         'backlog': [order_json(o) for o in dd.backlog],
         'backlog_since': dp.backlog_since(dd.since, s['workdays']).isoformat(),
@@ -1536,8 +1555,9 @@ def _conflict(text: str) -> Any:
 @bp.post('/api/routes/dispatch/build')
 @_api
 def api_dispatch_build() -> Any:
-    """«Собрать рейсы»: {"date", "trucks": [коды машин дня]}. Закреплённые рейсы и исключённые заказы
-    прежнего черновика сохраняются, остальное раскладывается заново."""
+    """«Собрать рейсы»: {"date", "trucks": [коды машин дня], "agents_off"?: [agent_id]}. Закреплённые рейсы и
+    исключённые заказы прежнего черновика сохраняются, остальное раскладывается заново; agents_off — фильтр
+    «Մենեջերներ» (чьи заказы не везём), без него — фильтр прежнего черновика."""
     payload, day, error = _dispatch_request()
     if error is not None:
         return error
@@ -1554,6 +1574,15 @@ def api_dispatch_build() -> Any:
         return _bad_request({'trucks': 'машина не готова к расчёту: ' + ', '.join(unknown)})
     if not codes:
         return _bad_request({'trucks': 'отметьте хотя бы одну машину'})
+    if 'agents_off' in payload:
+        # фильтр «Մենեջերներ» до первой сборки живёт на странице — приходит со сборкой; точки дня — по нему
+        off = dp.parse_agents(payload['agents_off'])
+        if off is None:
+            return _bad_request({'agents_off': 'ожидался список менеджеров'})
+        if off != (dd.draft.agents_off if dd.draft is not None else set()):
+            base = dd.draft or dp.Draft()
+            base.agents_off = off
+            dd = _load_day(state, bundle, day, draft=base, rev=dd.rev)
     started = time.perf_counter()
     # первая сборка дня: перенесённые сюда заказы прошлого дня — сразу в развозе
     draft = dp.build(dd.ctx, dd.stops, dd.draft, codes, _now())
@@ -1572,7 +1601,7 @@ def api_dispatch_build() -> Any:
 @bp.post('/api/routes/dispatch/edit')
 @_api
 def api_dispatch_edit() -> Any:
-    """Правка логиста: {"date", "rev", "action": move | pin | unpin | exclude | include, …}
+    """Правка логиста: {"date", "rev", "action": move | pin | unpin | exclude | include | agents, …}
     (dispatch.apply_edit). rev — номер черновика, от которого правка: план изменён в другой вкладке — 409.
     В ответе — день целиком и delta_km: как изменились км плана."""
     payload, day, error = _dispatch_request()
@@ -1598,13 +1627,17 @@ def api_dispatch_edit() -> Any:
     if day < _clock().date() and draft.deferred != deferred_before:
         # перенос с прошедшего дня меняет развоз уже другого дня — задним числом нельзя
         return _bad_request({'_': 'Прошедший день — перенос на другой день не меняется'})
-    # заказы после правки («не везём сегодня» / вернуть меняют точки и вес) — отметка дня по ним
-    draft.overtime = dp.runs_late(dd.ctx, _day_stops(dd, draft), draft)
+    # точки дня после правки («не везём сегодня», фильтр «Մենեջերներ», вернуть меняют точки и вес): по ним — рейсы
+    # черновика (магазин без заказов уходит и из сохранённого плана: его читают обучение и приложение водителя),
+    # отметка дня и прогноз
+    dd = _load_day(state, bundle, day, draft=draft, rev=dd.rev)
+    dp.prune(draft, dd.stops)
+    draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     _capture_prediction(dd, draft)
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)
     if rev is None:
         return _conflict('План изменили в другой вкладке — обновите страницу')
-    dd = _load_day(state, bundle, day, draft=draft, rev=rev)
+    dd.rev = rev
     body = _dispatch_page_body(dd)
     body['delta_km'] = round(body['plan']['summary']['km'] - km_before, 1) if body['plan'] else None
     return jsonify({'success': True, **body})
