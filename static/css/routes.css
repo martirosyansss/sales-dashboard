@@ -1,28 +1,30 @@
 /* ============================================================================
    «Маршруты»: /routes (обзор), /routes/optimize (оптимизация), /routes/dispatch (развоз), /routes/settings (настройки)
-   Тёмная панель дашборда, но спокойнее и крупнее — интерфейс «для чайников»
+   Тёмная спокойная тема «Развоза» (№51) для всех подстраниц — интерфейс «для чайников»
    (docs/plans/ux-simple-plan.md): вывод первым и человеческим языком, шаги с одной главной
    кнопкой, подробности — по раскрытию, обычный регистр, основной текст ≥ 15 px.
-   Шрифты: Golos Text — интерфейс (писался для кириллицы и госуслуг: читается легко),
-   IBM Plex Mono — только цифры в таблицах. Всё — под .rt-page, глобальные стили не трогаем.
+   Шрифты: Google Sans — интерфейс (кириллица и армянский), IBM Plex Mono — только цифры в таблицах. Всё — под .rt-page, глобальные стили не трогаем.
    ========================================================================== */
 
 .rt-page {
-    /* Поверхности */
-    --rt-bg:        #0c0f14;
-    --rt-panel:     #12161d;
-    --rt-panel-2:   #171c25;
-    --rt-inset:     #0e1218;
-    --rt-line:      #252e3b;
-    --rt-line-soft: #1b212b;
-    /* Текст (dim ≥ 4.5:1, mute ≥ 4.5:1 на панели) */
-    --rt-fg:        #eef1f6;
-    --rt-fg-dim:    #b0b8c6;
-    --rt-fg-mute:   #8791a3;
-    /* Акцент — бирюзовый, как у пульта производства */
-    --rt-acc:       #34d3c4;
-    --rt-acc-dim:   #1d8f86;
-    --rt-acc-glow:  rgba(52, 211, 196, .14);
+    /* Тёмная спокойная тема — как «Развоз» и тёмная тема Araqich 2.0 (ответы владельца №51, «все подстраницы в стиле
+       Развоза»): фон #0E1116, карточки #171C24, голубой акцент #38BDF8 */
+    --rt-bg:        #0e1116;
+    --rt-panel:     #171c24;
+    --rt-panel-2:   #1e2530;
+    --rt-inset:     #12161d;
+    --rt-line:      #283140;
+    --rt-line-soft: #202835;
+    /* Текст (dim ≥ 4.5:1, mute ≥ 4.5:1 на карточке) */
+    --rt-fg:        #e8edf4;
+    --rt-fg-dim:    #aab4c3;
+    --rt-fg-mute:   #8693a5;
+    /* Акцент — голубой; текст на нём — тёмный */
+    --rt-acc:       #38bdf8;
+    --rt-acc-dim:   #2287b8;
+    --rt-acc-glow:  rgba(56, 189, 248, .13);
+    --rt-acc-ink:   #03202e;
+    --rt-acc-hover: #7dd3fc;
     /* Цвет со смыслом, всегда вместе с текстом: зелёный — лучше, красный — проблема, серый — справочно */
     --rt-danger:    #ff6b79;
     --rt-danger-bg: rgba(255, 90, 106, .15);
@@ -38,12 +40,12 @@
     --rt-low-bg:    rgba(106, 168, 255, .13);
     --rt-peak:      #ff9f5a;
     --rt-peak-bg:   rgba(255, 159, 90, .13);
-    /* Шрифты и ритм */
-    --rt-font:      'Golos Text', 'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    /* Шрифты и ритм: Google Sans — интерфейс (кириллица и армянский), IBM Plex Mono — цифры в столбцах */
+    --rt-font:      'Google Sans', 'Noto Sans Armenian', system-ui, -apple-system, 'Segoe UI', sans-serif;
     --rt-mono:      'IBM Plex Mono', ui-monospace, monospace;
-    --rt-radius:    14px;
-    --rt-radius-sm: 10px;
-    --rt-shadow:    0 1px 0 rgba(255,255,255,.02), 0 10px 28px rgba(0,0,0,.32);
+    --rt-radius:    16px;
+    --rt-radius-sm: 11px;
+    --rt-shadow:    0 1px 0 rgba(255, 255, 255, .03) inset, 0 14px 34px rgba(0, 0, 0, .32);
 
     position: relative;
     color: var(--rt-fg);
@@ -59,17 +61,10 @@
 .rt-page::before {
     content: "";
     position: fixed; inset: 0; z-index: -1; pointer-events: none;
-    background:
-        radial-gradient(1100px 560px at 85% -10%, var(--rt-acc-glow), transparent 60%),
-        linear-gradient(var(--rt-line-soft) 1px, transparent 1px) 0 0 / 100% 44px,
-        linear-gradient(90deg, var(--rt-line-soft) 1px, transparent 1px) 0 0 / 44px 100%,
-        var(--rt-bg);
-    opacity: .45;
-    -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 30%, transparent 80%);
-            mask-image: linear-gradient(180deg, #000 0%, #000 30%, transparent 80%);
+    background: radial-gradient(1000px 420px at 78% -6%, rgba(56, 189, 248, .07), transparent 65%), var(--rt-bg);
 }
 .rt-page a { color: var(--rt-acc); text-underline-offset: 3px; }
-.rt-page a:hover { color: #6fe6da; }
+.rt-page a:hover { color: var(--rt-acc-hover); }
 .rt-page h1, .rt-page h2, .rt-page h3, .rt-page h4 { font-family: var(--rt-font); color: var(--rt-fg); }
 
 /* --------------------------------------------------------------------------
@@ -98,10 +93,13 @@
 /* --------------------------------------------------------------------------
    ШАПКА СТРАНИЦЫ: название, вкладки, одна строка «что это»
    ------------------------------------------------------------------------ */
-.rt-head { padding: 2px 0 18px; margin-bottom: 6px; border-bottom: 1px solid var(--rt-line); }
+.rt-head {
+    padding: 18px 20px; margin: 4px 0 18px; border: 1px solid var(--rt-line); border-radius: var(--rt-radius);
+    background: var(--rt-panel); box-shadow: var(--rt-shadow);
+}
 .rt-head-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 18px; }
 .rt-head-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-width: 0; }
-.rt-page .rt-title { font-size: 1.875rem; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; margin: 0; }
+.rt-page .rt-title { font-size: clamp(1.5rem, 1.15rem + 1.3vw, 2.125rem); font-weight: 700; letter-spacing: -.015em; line-height: 1.15; margin: 0; }
 .rt-head-lead { font-size: 1.0625rem; color: var(--rt-fg-dim); margin: 10px 0 0; line-height: 1.55; max-width: 92ch; }
 .rt-head-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .rt-pill {
@@ -115,45 +113,45 @@
 
 /* Вкладки раздела: Обзор · Оптимизация · Развоз · Настройки */
 .rt-tabs {
-    display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px;
-    background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: 12px;
+    display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 4px;
+    background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: 999px;
 }
 .rt-page .rt-tabs a {
-    display: inline-flex; align-items: center; justify-content: center; height: 36px; padding: 0 16px; border-radius: 9px;
+    display: inline-flex; align-items: center; justify-content: center; height: 36px; padding: 0 16px; border-radius: 999px;
     color: var(--rt-fg-dim); font-size: .9375rem; font-weight: 600; text-decoration: none; white-space: nowrap;
     transition: background .15s, color .15s;
 }
 .rt-page .rt-tabs a:hover { color: var(--rt-fg); background: var(--rt-panel-2); }
-.rt-page .rt-tabs a[aria-current="page"] { background: var(--rt-acc); color: #06201d; }
+.rt-page .rt-tabs a[aria-current="page"] { background: var(--rt-acc); color: var(--rt-acc-ink); }
 
 /* --------------------------------------------------------------------------
    КНОПКИ И ПОЛЯ
    ------------------------------------------------------------------------ */
 .rt-btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-    height: 40px; padding: 0 16px; border-radius: var(--rt-radius-sm);
+    height: 40px; padding: 0 16px; border-radius: 999px;
     font-family: var(--rt-font); font-size: .9375rem; font-weight: 600; line-height: 1;
     cursor: pointer; border: 1px solid transparent; transition: background .15s, color .15s, border-color .15s, box-shadow .15s, transform .1s;
     white-space: nowrap; text-decoration: none;
 }
-.rt-btn-primary { background: var(--rt-acc); color: #06201d; border-color: var(--rt-acc); }
-.rt-btn-primary:hover { background: #4fe3d4; color: #06201d; box-shadow: 0 6px 20px rgba(52, 211, 196, .22); }
+.rt-btn-primary { background: var(--rt-acc); color: var(--rt-acc-ink); border-color: var(--rt-acc); }
+.rt-btn-primary:hover { background: var(--rt-acc-hover); border-color: var(--rt-acc-hover); color: var(--rt-acc-ink); box-shadow: 0 8px 22px rgba(56, 189, 248, .22); }
 .rt-btn-ghost { background: var(--rt-panel-2); color: var(--rt-fg); border-color: var(--rt-line); }
 .rt-btn-ghost:hover { color: var(--rt-acc); border-color: var(--rt-acc-dim); }
 .rt-page a.rt-btn-ghost { color: var(--rt-fg); }
 .rt-page a.rt-btn-ghost:hover { color: var(--rt-acc); }
-.rt-page a.rt-btn-primary, .rt-page a.rt-btn-primary:hover { color: #06201d; }
+.rt-page a.rt-btn-primary, .rt-page a.rt-btn-primary:hover { color: var(--rt-acc-ink); }
 .rt-btn:disabled, .rt-btn[aria-disabled="true"] { opacity: .5; cursor: default; box-shadow: none; }
 .rt-btn:active:not(:disabled):not([aria-disabled="true"]) { transform: translateY(1px); }
 .rt-btn-sm { height: 34px; padding: 0 12px; font-size: .875rem; gap: 6px; }
-.rt-btn-lg { height: 50px; padding: 0 24px; font-size: 1.0625rem; font-weight: 700; border-radius: 12px; }
+.rt-btn-lg { height: 50px; padding: 0 26px; font-size: 1.0625rem; font-weight: 700; border-radius: 999px; }
 .rt-btn .fa-arrow-right, .rt-btn .fa-arrow-down { font-size: .85em; }
 .rt-linkbtn {
     display: inline; background: none; border: none; padding: 0; margin: 0;
     color: var(--rt-acc); font: inherit; font-weight: 600; cursor: pointer; text-align: left;
     text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px;
 }
-.rt-linkbtn:hover { color: #6fe6da; }
+.rt-linkbtn:hover { color: var(--rt-acc-hover); }
 .rt-linkbtn:disabled { color: var(--rt-fg-mute); cursor: default; text-decoration: none; }
 .rt-iconbtn {
     background: var(--rt-panel-2); border: 1px solid var(--rt-line); color: var(--rt-fg-dim);
@@ -175,7 +173,7 @@
 
 .rt-select, .rt-input {
     background: var(--rt-inset); border: 1px solid var(--rt-line); color: var(--rt-fg);
-    border-radius: var(--rt-radius-sm); font-family: var(--rt-font); font-size: .9375rem;
+    border-radius: 10px; font-family: var(--rt-font); font-size: .9375rem;
     height: 40px; padding: 0 12px; min-width: 0; max-width: 100%;
     transition: border-color .15s, box-shadow .15s;
 }
@@ -236,14 +234,14 @@
     position: relative; z-index: 1; width: 40px; height: 40px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
     border: 2px solid var(--rt-acc); color: var(--rt-acc); background: var(--rt-bg);
-    font-size: 1.0625rem; font-weight: 800;
+    font-size: 1.0625rem; font-weight: 700;
 }
 /* линия между номерами шагов */
 .rt-step:not(:last-of-type) .rt-step-mark::after {
     content: ""; position: absolute; left: 19px; top: 46px; bottom: -22px; width: 2px;
     background: linear-gradient(var(--rt-line), rgba(37, 46, 59, .15));
 }
-.rt-step.is-done .rt-step-mark > span { background: var(--rt-acc); color: #06201d; font-size: 0; }
+.rt-step.is-done .rt-step-mark > span { background: var(--rt-acc); color: var(--rt-acc-ink); font-size: 0; }
 .rt-step.is-done .rt-step-mark > span::before {
     content: "\f00c"; font-family: "Font Awesome 6 Free"; font-weight: 900; font-size: 1rem;
 }
@@ -314,7 +312,7 @@
 .rt-kpi-val { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; line-height: 1.1; }
 .rt-kpi-val .was { font-size: 1.25rem; font-weight: 500; color: var(--rt-fg-mute); }
 .rt-kpi-val .arr { font-size: 1.05rem; color: var(--rt-fg-mute); }
-.rt-kpi-val .now { font-size: 2rem; font-weight: 800; letter-spacing: -.02em; color: var(--rt-fg); }
+.rt-kpi-val .now { font-size: 2rem; font-weight: 700; letter-spacing: -.02em; color: var(--rt-fg); }
 .rt-kpi-val .unit { font-size: 1rem; font-weight: 600; color: var(--rt-fg-dim); }
 .rt-kpi.is-good .now { color: var(--rt-ok); }
 .rt-kpi.is-bad .now { color: var(--rt-danger); }
@@ -366,7 +364,7 @@
     font: 700 .75rem/1 var(--rt-font); transition: background .15s, color .15s, border-color .15s;
 }
 .rt-tip-btn::after { content: ""; position: absolute; inset: -10px; }   /* палец попадает легче */
-.rt-tip-btn:hover, .rt-tip-btn[aria-expanded="true"] { background: var(--rt-acc); border-color: var(--rt-acc); color: #06201d; }
+.rt-tip-btn:hover, .rt-tip-btn[aria-expanded="true"] { background: var(--rt-acc); border-color: var(--rt-acc); color: var(--rt-acc-ink); }
 .rt-tip-bubble {
     position: fixed; z-index: 1065; left: 0; top: 0; width: max-content; max-width: min(340px, calc(100vw - 16px));
     padding: 10px 13px; border-radius: 10px; background: #1e2531; color: var(--rt-fg);
@@ -424,7 +422,7 @@
 .rt-badge.b-danger { color: var(--rt-danger); border-color: var(--rt-danger-line); background: var(--rt-danger-bg); }
 .rt-badge.b-warn { color: var(--rt-warn); border-color: var(--rt-warn-line); background: var(--rt-warn-bg); }
 .rt-badge.b-ok { color: var(--rt-ok); border-color: var(--rt-ok-line); background: var(--rt-ok-bg); }
-.rt-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; display: inline-block; box-shadow: 0 0 0 2px rgba(12,15,20,.9); }
+.rt-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; display: inline-block; box-shadow: 0 0 0 2px var(--rt-panel); }
 
 /* --------------------------------------------------------------------------
    «ЧТО ЕЩЁ НАСТРОИТЬ» — не больше трёх строк, у каждой одна кнопка
@@ -470,7 +468,7 @@
     transition: background .15s, color .15s, border-color .15s;
 }
 .rt-chip:hover { color: var(--rt-fg); border-color: var(--rt-acc-dim); }
-.rt-chip[aria-pressed="true"] { background: var(--rt-acc); color: #06201d; border-color: var(--rt-acc); }
+.rt-chip[aria-pressed="true"] { background: var(--rt-acc); color: var(--rt-acc-ink); border-color: var(--rt-acc); }
 .rt-chip.is-off:not([aria-pressed="true"]) { border-style: dashed; }
 .rt-chip .cnt { font-weight: 500; opacity: .75; }
 .rt-maptools-note { margin-left: auto; font-size: .875rem; color: var(--rt-fg-dim); }
@@ -483,7 +481,7 @@
 
 .rt-mapgrid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); }
 .rt-mapcol { min-width: 0; display: flex; flex-direction: column; }
-.rt-map { height: 540px; width: 100%; background: #0b0e13; border-radius: 0 0 0 var(--rt-radius); }
+.rt-map { height: 540px; width: 100%; background: var(--rt-inset); border-radius: 0 0 0 var(--rt-radius); }
 .rt-map-fallback { display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; color: var(--rt-fg-dim); font-size: .9375rem; }
 .rt-maplegend {
     display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 14px;
@@ -516,7 +514,7 @@
 
 /* Leaflet под тёмную тему: затемняем ТОЛЬКО подложку OpenStreetMap, маркеры сохраняют цвета.
    Плитки Яндекса показываем как есть — условия Tiles API запрещают их изменять (№47, routes_basemap.js) */
-.rt-page .leaflet-container { font-family: var(--rt-font); background: #0b0e13; outline-offset: -2px; }
+.rt-page .leaflet-container { font-family: var(--rt-font); background: var(--rt-inset); outline-offset: -2px; }
 .rt-page .rt-tiles-osm { filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9) saturate(.35); }
 /* base.css ограничивает высоту любых canvas на телефонах — холст Leaflet сплющивать нельзя */
 .rt-page .leaflet-container canvas { max-height: none !important; }
@@ -889,7 +887,7 @@
     font-size: .9rem; font-weight: 600; color: var(--rt-fg-dim);
 }
 .rt-page .rt-seg input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-.rt-seg label:has(input:checked) { background: var(--rt-acc); color: #06201d; }
+.rt-seg label:has(input:checked) { background: var(--rt-acc); color: var(--rt-acc-ink); }
 .rt-seg label:has(input:focus-visible) { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
 .rt-monthrow { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 10px; }
 .rt-monthrow .lbl { width: 100%; font-size: .9rem; color: var(--rt-fg-dim); display: flex; align-items: center; gap: 7px; }
@@ -1035,7 +1033,7 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
     transition: border-color .15s, box-shadow .15s;
 }
 .ro-card:hover { border-color: #344152; }
-.ro-card.is-open { border-color: var(--rt-acc); box-shadow: 0 0 0 1px var(--rt-acc) inset, 0 12px 30px rgba(52, 211, 196, .10); }
+.ro-card.is-open { border-color: var(--rt-acc); box-shadow: 0 0 0 1px var(--rt-acc) inset, 0 12px 30px rgba(56, 189, 248, .10); }
 .ro-card-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .ro-card-name { font-size: 1.0625rem; font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ro-card-code { font-size: .875rem; color: var(--rt-fg-mute); flex: 0 0 auto; margin-left: auto; }
@@ -1093,7 +1091,7 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
 
 /* Группа предложений: цвет полосы — смысл группы */
 .ro-grp {
-    --g: var(--rt-acc); --gbg: rgba(52, 211, 196, .12);
+    --g: var(--rt-acc); --gbg: rgba(56, 189, 248, .12);
     padding: 14px 16px; border-radius: 12px; background: var(--rt-inset);
     border: 1px solid var(--rt-line); border-left: 4px solid var(--g);
 }
@@ -1408,7 +1406,7 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
 .dp-truck-sub { font-size: .875rem; color: var(--rt-fg-dim); }
 .dp-truck-empty { margin: 0; color: var(--rt-fg-dim); }
 .dp-orders { font-size: 1.125rem; margin: 0 0 8px; }
-.dp-orders b { font-weight: 800; }
+.dp-orders b { font-weight: 700; }
 .dp-facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: .9375rem; color: var(--rt-fg); }
 .dp-facts li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding-left: 16px; position: relative; }
 .dp-facts li::before { content: ""; position: absolute; left: 2px; top: .62em; width: 6px; height: 6px; border-radius: 50%; background: var(--rt-fg-mute); }
@@ -1429,7 +1427,7 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
 .dp-pickitem:hover, .dp-pickitem[aria-pressed="true"] { border-color: var(--rt-acc); }
 .dp-pickitem[aria-pressed="true"] { background: var(--rt-acc-glow); }
 .dp-pick-addr, .dp-pick-kg { font-size: .875rem; color: var(--rt-fg-dim); overflow-wrap: anywhere; }
-.dp-pickmap { height: 320px; border-radius: var(--rt-radius-sm); background: #0b0e13; }
+.dp-pickmap { height: 320px; border-radius: var(--rt-radius-sm); background: var(--rt-inset); }
 .dp-pickform { margin-top: 10px; }
 .dp-picklabel { display: block; font-size: .9375rem; font-weight: 600; margin-bottom: 6px; }
 .dp-pickform .rt-coord { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -1495,3 +1493,8 @@ fieldset:disabled .ro-opt { cursor: default; opacity: .6; }
 .rt-table-scroll { max-width: 100%; overflow-x: auto; }
 #rmHistory td { white-space: normal; min-width: 6rem; vertical-align: top; }
 #rmHistory td:last-child { min-width: 13rem; }
+
+/* Вкладки раздела на узком экране переносятся в 2 строки — контейнер не «таблетка», а скруглённая карточка */
+@media (max-width: 767px) {
+    .rt-page .rt-tabs, #rtDispatch .rt-tabs { border-radius: 18px; }
+}
