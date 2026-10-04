@@ -55,6 +55,13 @@
 .gj-price { font-family: var(--rt-mono); font-size: 1.0625rem; }
 .gj-stale { margin-top: 4px; }
 .gj-sub + .gj-stale { margin-top: 6px; }
+/* Плашка «пробег не вносился» и подсветка этих машин в «Վազք»; подсказка растянуть крупный ремонт */
+.gj-banner { margin: 12px 0 0; }
+.gj-banner .rt-btn { margin-left: auto; }
+.gj-odo-table tr.is-stale td { background: var(--rt-warn-bg); }
+.gj-odo-table tr.is-stale td:first-child { box-shadow: inset 3px 0 0 var(--rt-warn); }
+.gj-suggest { font-size: .8125rem; color: var(--rt-warn); line-height: 1.45; }
+.gj-suggest[hidden] { display: none; }
 
 @media (max-width: 767px) {
     .gj-grid { grid-template-columns: minmax(0, 1fr); }
@@ -70,5 +77,7 @@
     .gj-row-acts { display: flex; width: 100%; }
     .gj-row-acts .rt-btn { flex: 1 1 0; height: 44px; }
     .gj-odo-table .rt-input { max-width: none; }
+    .gj-odo-table tbody tr.is-stale { border-color: var(--rt-warn-line); background: var(--rt-warn-bg); }
+    .gj-odo-table tr.is-stale td { background: none; box-shadow: none !important; }
     .gj-what { min-width: 0; }
 }

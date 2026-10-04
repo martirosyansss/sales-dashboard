@@ -76,6 +76,7 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from . import actuals as ac
 from . import valhalla_engine
+from .garage import KM_PER_DAY_MAX
 from .geo import Point, in_city
 from .measurements import _fit
 from .traffic_validation import TrafficProfile
@@ -119,7 +120,7 @@ FUEL_MIN_INTERVALS = 16              # 12 на выбор формы (measuremen
 FUEL_MIN_KM = 50.0                   # интервал заправок короче — не считается
 FUEL_L100 = (3.0, 80.0)
 FUEL_TRACK_COVER = 0.6               # участки трека покрывают не меньше 60% км одометра интервала
-REFUEL_KM_PER_DAY = 1500.0           # как courier.events: прирост одометра больше — несогласован
+REFUEL_KM_PER_DAY = KM_PER_DAY_MAX   # как courier.events и журнал гаража: прирост одометра больше — несогласован
 REFUEL_WINDOW_DAYS = 400             # приём заправки: цепочка одометра — по заправкам ± 400 дней от неё…
 REFUEL_WINDOW_MAX = 300              # …и не больше 300 (время приёма ограничено); офис — ± 200 дней вокруг дня
 REFUEL_LOOKBACK = 50                 # в цепочке соседние заправки — не дальше 50 позиций (пропущено подряд ≤ 49 сомнительных)

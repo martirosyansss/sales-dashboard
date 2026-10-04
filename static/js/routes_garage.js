@@ -105,7 +105,7 @@
     // ---------- форма записи ----------
     function fieldErrors(errors) {
         document.querySelectorAll('#gjForm [data-for]').forEach(el => { el.textContent = (errors || {})[el.dataset.for] || ''; });
-        const map = { car_code: 'gjCar', day: 'gjDay', kind: 'gjKind', what: 'gjWhat', amount_amd: 'gjAmount', odometer_km: 'gjOdoKm', note: 'gjNote' };
+        const map = { car_code: 'gjCar', day: 'gjDay', kind: 'gjKind', what: 'gjWhat', amount_amd: 'gjAmount', spread_months: 'gjSpread', odometer_km: 'gjOdoKm', note: 'gjNote' };
         Object.entries(map).forEach(([k, id]) => {
             const bad = !!(errors && errors[k]);
             $(id).classList.toggle('is-invalid', bad);
@@ -115,9 +115,18 @@
         if (first) $(map[first]).focus();
     }
 
+    // «Բաշխել» — только у ремонта; крупная сумма (от rules.spread_suggest_amd) — подсказка растянуть, но не обязаловка
+    function syncSpread() {
+        const repair = $('gjKind').value === 'repair';
+        $('gjSpreadBox').hidden = !repair;
+        const big = num($('gjAmount').value) !== null && num($('gjAmount').value) >= ((state.data && state.data.rules.spread_suggest_amd) || 300000);
+        $('gjSpreadSuggest').hidden = !(repair && big && !$('gjSpread').value);
+    }
+
     function syncKind() {
         const odo = $('gjKind').value === 'odometer';
         $('gjAmountBox').hidden = odo;
+        syncSpread();
         $('gjWhat').placeholder = odo ? 'Ըստ ցանկության' : 'Օրինակ՝ արգելակի կոճղակներ, յուղի փոխում';
         $('gjWhatBox').querySelector('label').textContent = odo ? 'Ինչ է արվել (ըստ ցանկության)' : 'Ինչ է արվել';
     }
@@ -165,6 +174,7 @@
         $('gjKind').value = e.kind;
         $('gjWhat').value = e.what || '';
         $('gjAmount').value = e.kind === 'odometer' ? '' : String(e.amount_amd);
+        $('gjSpread').value = e.spread_months ? String(e.spread_months) : '';
         $('gjOdoKm').value = String(e.odometer_km);
         $('gjNote').value = e.note || '';
         $('gjFormTitle').replaceChildren(icon('fa-pen'), 'Գրառման փոփոխում · ' + dayHy(e.day));
@@ -191,6 +201,7 @@
             what: $('gjWhat').value.trim() || null, odometer_km: intOrRaw($('gjOdoKm').value), note: $('gjNote').value.trim() || null,
         };
         if (kind !== 'odometer') body.amount_amd = intOrRaw($('gjAmount').value);
+        body.spread_months = kind === 'repair' && $('gjSpread').value ? Number($('gjSpread').value) : null;
         if (state.editing !== null) body.id = state.editing;
         const badNum = {};   // нечисло в числовом поле — своя ошибка, а не «пусто»
         if ($('gjOdoKm').validity.badInput) badNum.odometer_km = 'Գրեք ամբողջ թիվ՝ կիլոմետր';
@@ -265,7 +276,8 @@
             return h('tr', { class: gone ? 'is-closed' : null },
                 h('td', { class: 'gj-day w-half', 'data-label': 'Ամսաթիվ', text: dayHy(e.day) }),
                 h('td', { class: 'gj-car', 'data-label': 'Մեքենա', text: truckName(e.car_code) }),
-                h('td', { class: 'w-half', 'data-label': 'Տեսակ' }, h('span', { class: 'rt-badge ' + (KIND_CLASS[e.kind] || ''), text: KIND[e.kind] || e.kind })),
+                h('td', { class: 'w-half', 'data-label': 'Տեսակ' }, h('span', { class: 'rt-badge ' + (KIND_CLASS[e.kind] || ''), text: KIND[e.kind] || e.kind }),
+                    e.spread_months ? h('small', { class: 'gj-sub', text: 'բաշխված՝ ' + e.spread_months + ' ամիս' }) : null),
                 h('td', { class: 'gj-what', 'data-label': 'Ինչ է արվել' }, e.what || '—', e.note ? h('small', { text: e.note }) : null),
                 h('td', { class: 'gj-num w-half', 'data-label': 'Գումար, ֏', text: e.kind === 'odometer' ? '—' : fmt(e.amount_amd) }),
                 h('td', { class: 'gj-num w-half', 'data-label': 'Սպիդոմետր, կմ', text: fmt(e.odometer_km) }),
@@ -281,8 +293,30 @@
     });
 
     // ---------- пробег всех машин ----------
+    // Работающие машины без показания пробега дольше rules.stale_days (или вовсе без него) — плашка и подсветка в «Վազք»
+    function staleTrucks() {
+        const d = state.data, today = new Date(d.today + 'T00:00:00');
+        return d.trucks.filter(t => t.active && (!t.last_day || (today - new Date(t.last_day + 'T00:00:00')) / 86400000 > d.rules.stale_days));
+    }
+
+    function renderBanner() {
+        const d = state.data, stale = staleTrucks();
+        const text = d.journal_empty
+            ? 'Սկսեք՝ գրանցելով բոլոր մեքենաների ընթացիկ վազքը և անցած տարվա վերանորոգումները։'
+            : stale.length ? stale.length + ' մեքենայի վազքը ' + d.rules.stale_days + ' օրից ավելի չի գրանցվել՝ ' + stale.map(t => t.car_code).join(', ') : '';
+        $('gjBanner').hidden = !text;
+        $('gjBannerText').textContent = text;
+    }
+
+    function goStale() {
+        selectTab('gjTabOdo');
+        const first = $('gjOdoRows').querySelector('tr.is-stale input');
+        if (first) { first.scrollIntoView({ behavior: 'smooth', block: 'center' }); first.focus({ preventScroll: true }); }
+    }
+
     function renderOdo() {
         const trucks = state.data.trucks.filter(t => t.active);
+        const stale = new Set(staleTrucks().map(t => t.car_code));
         $('gjOdoDay').value = $('gjOdoDay').value || state.data.today;
         $('gjOdoDay').max = state.data.today;
         if (!trucks.length) {
@@ -293,7 +327,7 @@
             const id = 'gjOdo-' + t.car_code.replace(/[^\w-]/g, '_');
             const input = h('input', { id, class: 'rt-input', type: 'number', inputmode: 'numeric', min: 0, max: 2000000, step: 1,
                 placeholder: t.last_km !== null ? fmt(t.last_km) : 'կմ', 'aria-describedby': id + '-err', dataset: { car: t.car_code } });
-            return h('tr', {},
+            return h('tr', { class: stale.has(t.car_code) ? 'is-stale' : null },
                 h('td', { class: 'rt-cell-name' }, h('label', { for: id, class: 'n', text: t.car_code }), h('span', { class: 'c', text: t.name || '' })),
                 h('td', { class: 'w-half', 'data-label': 'Վերջին ցուցմունքը' }, t.last_km !== null
                     ? [h('b', { class: 'gj-km', text: fmt(t.last_km) + ' կմ' }), h('small', { class: 'gj-sub', text: dayHy(t.last_day) })]
@@ -364,8 +398,10 @@
 
     function renderSummary() {
         const d = state.data, rules = d.rules;
-        $('gjSumLead').textContent = 'Վերանորոգում ֏/կմ = վերանորոգման ծախսը ÷ վազքը նույն ժամանակահատվածում։ Առաքման հաշվարկում է, երբ վազքը ծածկում է '
-            + rules.ready_months + ' ամիս և առնվազն ' + fmt(rules.ready_km) + ' կմ, և այդ ընթացքում գրանցված է գոնե մեկ վերանորոգում։ '
+        $('gjSumLead').textContent = 'Վերանորոգում ֏/կմ = վերանորոգման ծախսը ÷ վազքը նույն ժամանակահատվածում (բաշխված վերանորոգումից՝ '
+            + 'այդ ամիսներին ընկնող մասը)։ Առաքման հաշվարկում է, երբ վազքը ծածկում է ' + rules.ready_months + ' ամիս և առնվազն '
+            + fmt(rules.ready_km) + ' կմ, և այդ ընթացքում գրանցված է գոնե մեկ վերանորոգում։ Սեփական գինը մոտեցվում է նույն մոդելի '
+            + '(կամ ամբողջ ավտոպարկի) միջինին՝ որքան քիչ կմ, այնքան ավելի (' + fmt(rules.blend_km) + ' կմ-ով)։ '
             + 'Մինչ այդ հաշվարկում է կարգավորումների «մաշվածությունը»։';
         if (!d.summary.length) {
             $('gjSumRows').replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'rt-empty', text: 'Մեքենաներ չկան' })));
@@ -376,12 +412,19 @@
                     ? [h('span', { text: dayHy(r.last_day) }), h('small', { class: 'gj-sub', text: fmt(r.days_since_last) + ' օր առաջ' })]
                     : [];
                 if (r.stale) last.push(h('span', { class: 'rt-badge b-warn gj-stale', text: 'Լրացրեք վազքը' }));
+                // в расчёте — своя, сглаженная к средней модели (или парка): видно все три числа и что делится
                 const price = g && g.price !== null
-                    ? [h('b', { class: 'gj-price', text: fmt(g.price, 1) }), h('small', { class: 'gj-sub', text: fmt(g.cost_amd) + ' ֏ ÷ ' + fmt(g.km) + ' կմ' })]
+                    ? [h('b', { class: 'gj-price', text: fmt(g.price, 1) }),
+                        g.blend ? h('small', { class: 'gj-sub', text: 'սեփական՝ ' + fmt(g.own, 1) }) : null,
+                        g.blend ? h('small', { class: 'gj-sub', text: (g.blend === 'model' ? g.model + '-ի միջին՝ ' : 'ավտոպարկի միջին՝ ') + fmt(g.model_price, 1) }) : null,
+                        h('small', { class: 'gj-sub', text: fmt(g.cost_amd) + ' ֏ ÷ ' + fmt(g.km) + ' կմ' })]
                     : [h('span', { text: '—' })];
+                // ремонт за 12 месяцев — полная сумма; «в расчёте» — с долями растянутых
+                const repair = g ? [h('span', { text: fmt(g.repair_amd) }),
+                    g.status !== 'none' && g.cost_amd !== g.repair_amd ? h('small', { class: 'gj-sub', text: 'հաշվարկում՝ ' + fmt(g.cost_amd) }) : null] : ['—'];
                 return h('tr', { class: r.active ? null : 'is-closed' },
                     h('td', { class: 'rt-cell-name' }, h('span', { class: 'n', text: r.car_code }), h('span', { class: 'c', text: r.name || (r.active ? '' : 'չի աշխատում') })),
-                    h('td', { class: 'gj-num w-half', 'data-label': 'Վերանորոգում, ֏', text: g ? fmt(g.repair_amd) : '—' }),
+                    h('td', { class: 'gj-num w-half', 'data-label': 'Վերանորոգում, ֏' }, ...repair),
                     h('td', { class: 'gj-num w-half', 'data-label': 'Վթար, ֏', text: g ? fmt(g.accident_amd) : '—' }),
                     h('td', { class: 'gj-num w-half', 'data-label': 'Ապահովագրություն, հարկ, ֏', text: g ? fmt(g.fixed_amd) : '—' }),
                     h('td', { class: 'gj-num w-half', 'data-label': 'Կմ', text: g && g.status !== 'none' ? fmt(g.km) : '—' }),
@@ -404,6 +447,7 @@
         fillCars();
         renderOdo();
         renderSummary();
+        renderBanner();
         await loadEntries();
     }
 
@@ -414,6 +458,9 @@
         $('gjForm').addEventListener('submit', saveEntry);
         $('gjCancel').addEventListener('click', resetForm);
         $('gjKind').addEventListener('change', syncKind);
+        $('gjAmount').addEventListener('input', syncSpread);
+        $('gjSpread').addEventListener('change', syncSpread);
+        $('gjBannerGo').addEventListener('click', goStale);
         $('gjCar').addEventListener('change', syncOdoHint);
         $('gjOdoForm').addEventListener('submit', saveOdo);
         const refilter = () => loadEntries().catch(e => showError(e.message));

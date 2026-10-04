@@ -352,7 +352,7 @@ def _enforce_garage():
     if _garage_path_allowed(request.path, request.method):
         return None
     if _wants_json():
-        return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
+        return jsonify({'success': False, 'error': 'Մուտքն արգելված է'}), 403
     return redirect(_GARAGE_PAGE)
 
 
