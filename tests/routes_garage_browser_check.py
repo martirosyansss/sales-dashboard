@@ -8,14 +8,17 @@ tests/routes_dispatch_browser_check.py (настоящие шаблон, ста�
 
 A списки: ремонт и ДТП — список владельца по порядку, первым «Ընտրեք…» (поле обязательное), последним «Այլ…»;
   страховка / техосмотр / налог — «Ապահովագրություն», «Տեխզննում», «Հարկ», «Այլ…»; у «только пробега» поля нет;
-B смена вида: ремонт ↔ ДТП — выбор остаётся (список общий), ремонт → страховка — выбор сброшен;
+B смена вида: ремонт ↔ ДТП — выбор остаётся (список общий), ремонт → страховка — пункт сброшен, а «Այլ…» с текстом
+  остаётся; поле «Այլ…» обязательно, только пока видно;
 C «Բաշխել»: «Շարժիչ» и «Փոխանցման տուփ» — сразу 24 ամիս и пояснение; ушли на другой пункт — срок снят; «Անվադողեր» —
-  только подсказка про полный комплект; срок, выбранный руками (36 или «Ոչ»), выбор пункта не меняет;
+  только подсказка про полный комплект; срок, выбранный руками (36 или «Ոչ»), выбор пункта не меняет; пояснение — по
+  ТЕКУЩЕМУ сроку: 24 → «Ոչ» руками — совет 24 ամիս, → 36 — названы 36 месяцев;
 D проверка до отправки: пункт не выбран — «Ընտրեք…», «Այլ…» без текста — «Գրեք կարճ…» и фокус в поле; запроса нет;
 E сохранение: пункт списка — в базе ровно его текст; «Այլ…» — введённый текст; двигатель с 36 ամիս — срок 36, КПП с
   «Ոչ» руками — без срока;
 F правка: запись с текстом пункта — выбран он; с другим текстом — «Այլ…» и текст в поле; двигатель с 36 — срок 36 не
-  тронут (и при повторном выборе двигателя); КПП без срока — открытие правки срок не ставит; страховка — свой список;
+  тронут (и при повторном выборе двигателя), пояснение — 36; КПП без срока — открытие правки срок не ставит, пояснение —
+  совет 24; страховка — свой список; старый текст длиннее 120 знаков правится (поле не короче него), потом снова 120;
 G телефон 390×860: список высотой ≥ 44 px, горизонтальной прокрутки нет.
 Ошибки страницы (pageerror) и консоли — провал (кроме сетевых для внешних ресурсов — шрифты, CDN).
 """
@@ -40,6 +43,10 @@ BASE = f'http://127.0.0.1:{PORT}'
 REPAIR = ['Յուղ և ֆիլտրեր (ՏՍ)', 'Արգելակներ', 'Անվադողեր', 'Մարտկոց', 'Կախոց / ղեկ', 'Էլեկտրիկա',
           'Կցորդիչ (սցեպլենիե)', 'Շարժիչ', 'Փոխանցման տուփ', 'Թափք / ապակի']
 FIXED = ['Ապահովագրություն', 'Տեխզննում', 'Հարկ']
+# пояснение «Բաշխել» у двигателя и КПП — по текущему сроку
+ENGINE24 = 'Շարժիչը և փոխանցման տուփը ծառայում են տարիներ՝ ծախսը բաշխվում է 24 ամսվա վրա։'
+ENGINE36 = 'Շարժիչը և փոխանցման տուփը ծառայում են տարիներ՝ ծախսը բաշխվում է 36 ամսվա վրա։'
+ADVICE = 'Շարժիչը և փոխանցման տուփը ծառայում են տարիներ — խորհուրդ է տրվում բաշխել 24 ամսվա վրա։'
 
 
 def options(page):
@@ -112,12 +119,23 @@ def main() -> int:
             check(page.input_value('#gjWhat') == 'Արգելակներ', 'B ремонт → ДТП: выбор остался')
             page.select_option('#gjKind', 'fixed')
             check(page.input_value('#gjWhat') == '', 'B ДТП → страховка: выбор сброшен')
+            page.select_option('#gjWhat', '__other')
+            page.fill('#gjWhatOther', 'Ճանապարհի վճար')
+            required = 'e => [e.required, e.getAttribute("aria-required")]'
+            check(page.eval_on_selector('#gjWhatOther', required) == [True, 'true'],
+                  'B «Այլ…» видно — поле текста обязательное')
+            page.select_option('#gjKind', 'repair')
+            check(page.input_value('#gjWhat') == '__other' and page.input_value('#gjWhatOther') == 'Ճանապարհի վճար'
+                  and page.is_visible('#gjWhatOther'), 'B страховка → ремонт: «Այլ…» и введённый текст остались')
+            page.select_option('#gjWhat', 'Արգելակներ')
+            check(page.eval_on_selector('#gjWhatOther', required) == [False, 'false']
+                  and page.is_hidden('#gjWhatOtherBox'), 'B пункт списка — поле «Այլ…» скрыто и не обязательно')
 
             # C «Բաշխել»
             page.select_option('#gjKind', 'repair')
             page.select_option('#gjWhat', 'Շարժիչ')
             check(page.input_value('#gjSpread') == '24' and page.is_visible('#gjSpreadWhy')
-                  and 'Շարժիչը' in page.inner_text('#gjSpreadWhy'), 'C «Շարժիչ» — 24 ամիս и пояснение')
+                  and page.inner_text('#gjSpreadWhy') == ENGINE24, 'C «Շարժիչ» — 24 ամիս и пояснение «24»')
             page.select_option('#gjWhat', 'Արգելակներ')
             check(page.input_value('#gjSpread') == '' and page.is_hidden('#gjSpreadWhy'),
                   'C другой пункт — авто-срок снят')
@@ -133,6 +151,18 @@ def main() -> int:
             page.select_option('#gjSpread', '')                      # руками «Ոչ»
             page.select_option('#gjWhat', 'Շարժիչ')
             check(page.input_value('#gjSpread') == '', 'C «Ոչ» руками — двигатель срок не ставит')
+            check(page.inner_text('#gjSpreadWhy') == ADVICE, 'C «Ոչ» — пояснение-совет, а не «բաշխվում է»')
+
+            # C2 двигатель → 24 → «Ոչ» руками → 36 руками: пояснение следует за сроком
+            page.reload()
+            ready(page)
+            page.select_option('#gjWhat', 'Շարժիչ')
+            check(page.input_value('#gjSpread') == '24' and page.inner_text('#gjSpreadWhy') == ENGINE24,
+                  'C2 двигатель — 24 и «բաշխվում է 24»')
+            page.select_option('#gjSpread', '')
+            check(page.inner_text('#gjSpreadWhy') == ADVICE, 'C2 «Ոչ» — совет 24 ամիս')
+            page.select_option('#gjSpread', '36')
+            check(page.inner_text('#gjSpreadWhy') == ENGINE36, 'C2 36 — «բաշխվում է 36»')
 
             # D проверка до отправки
             page.reload()
@@ -188,18 +218,33 @@ def main() -> int:
             check(page.input_value('#gjWhat') == 'Արգելակներ' and page.is_hidden('#gjWhatOtherBox')
                   and page.input_value('#gjWhatOther') == '', 'F «Արգելակներ» — выбран пункт, текста нет')
             edit('2026-09-20')
-            check(page.input_value('#gjWhat') == 'Շարժիչ' and page.input_value('#gjSpread') == '36',
-                  'F двигатель — срок 36 не тронут')
+            check(page.input_value('#gjWhat') == 'Շարժիչ' and page.input_value('#gjSpread') == '36'
+                  and page.inner_text('#gjSpreadWhy') == ENGINE36, 'F двигатель — срок 36 не тронут, пояснение — 36')
             page.select_option('#gjWhat', 'Արգելակներ')
             page.select_option('#gjWhat', 'Շարժիչ')
             check(page.input_value('#gjSpread') == '36', 'F двигатель снова выбран — заданный срок 36 не перебит на 24')
             edit('2026-09-22')
             check(page.input_value('#gjWhat') == 'Փոխանցման տուփ' and page.input_value('#gjSpread') == ''
-                  and page.is_visible('#gjSpreadWhy'), 'F КПП без срока — правка срок не ставит, пояснение видно')
+                  and page.inner_text('#gjSpreadWhy') == ADVICE, 'F КПП без срока — правка срок не ставит, совет 24')
             edit('2026-09-25')
             check(page.input_value('#gjWhat') == 'Ապահովագրություն' and options(page)[1][1] == FIXED[0],
                   'F страховка — свой список, пункт выбран')
             page.click('#gjCancel')
+            long_text = 'Ռ' * 150                                     # старая запись длиннее нынешних 120 знаков
+            page.request.post(f'{BASE}/api/routes/garage/entries', data={
+                'car_code': 'CAR1', 'day': '2026-09-27', 'kind': 'repair', 'what': long_text, 'amount_amd': 10_000,
+                'odometer_km': 122_600})
+            page.reload()
+            ready(page)
+            old = next(e for e in page.request.get(f'{BASE}/api/routes/garage/entries').json()['entries']
+                       if e['what'] == long_text)
+            page.click(f'#gjRows button[data-act="edit"][data-id="{old["id"]}"]')
+            page.wait_for_function("document.getElementById('gjCancel').hidden === false")
+            check(page.input_value('#gjWhat') == '__other' and page.input_value('#gjWhatOther') == long_text
+                  and page.get_attribute('#gjWhatOther', 'maxlength') == '150',
+                  'F текст 150 знаков — поле не короче него')
+            page.click('#gjCancel')
+            check(page.get_attribute('#gjWhatOther', 'maxlength') == '120', 'F новая запись — снова 120 знаков')
 
             # G телефон
             page.set_viewport_size({'width': 390, 'height': 860})

@@ -122,33 +122,33 @@
         state.whatList = WHAT_LISTS[kind] || null;
     }
 
-    // запись → поле: пункт списка своего вида — он и выбран; иное — «Այլ…» с этим текстом
+    // запись → поле: пункт списка своего вида — он и выбран; иное — «Այլ…» с этим текстом (старый текст длиннее 120
+    // знаков — поле не короче него, чтобы его можно было править)
     function setWhat(kind, what) {
         fillWhat(kind);
         const text = what || '';
         const inList = (WHAT_LISTS[kind] || []).includes(text);
         $('gjWhat').value = inList ? text : text ? OTHER : '';
         $('gjWhatOther').value = inList ? '' : text;
+        $('gjWhatOther').maxLength = Math.max(120, inList ? 0 : text.length);
     }
 
     function whatValue() {
         return $('gjWhat').value === OTHER ? $('gjWhatOther').value.trim() : $('gjWhat').value;
     }
 
-    // выбран пункт: «Այլ…» — поле текста; двигатель и КПП — «Բաշխել» 24 месяца, если срок не трогали руками в этой форме
-    // (и не задан); ушли с них — авто-срок снимается; шины — только подсказка. auto=false — заполнение формы (правка).
+    // выбран пункт: «Այլ…» — поле текста (обязательное, пока видно); двигатель и КПП — «Բաշխել» 24 месяца, если срок не
+    // трогали руками в этой форме (и не задан); ушли с них — авто-срок снимается. auto=false — заполнение формы (правка).
     function syncWhat(auto) {
         const repair = $('gjKind').value === 'repair', what = $('gjWhat').value;
         $('gjWhatOtherBox').hidden = what !== OTHER;
+        $('gjWhatOther').required = what === OTHER;
+        $('gjWhatOther').setAttribute('aria-required', String(what === OTHER));
         const big = repair && SPREAD_WHAT.includes(what);
         if (auto && !state.spreadTouched) {
             if (big && !$('gjSpread').value) { $('gjSpread').value = '24'; state.spreadAuto = true; }
             else if (!big && state.spreadAuto) { $('gjSpread').value = ''; state.spreadAuto = false; }
         }
-        const why = big ? 'Շարժիչը և փոխանցման տուփը ծառայում են տարիներ՝ ծախսը բաշխվում է 24 ամսվա վրա։ Կարող եք փոխել։'
-            : repair && what === TIRES_WHAT ? 'Եթե ամբողջ հավաքածու է — ընտրեք 24 ամիս։' : '';
-        $('gjSpreadWhy').textContent = why;
-        $('gjSpreadWhy').hidden = !why;
         syncSpread();
     }
 
@@ -166,20 +166,32 @@
         if (first) $(map[first]).focus();
     }
 
-    // «Բաշխել» — только у ремонта; крупная сумма (от rules.spread_suggest_amd) — подсказка растянуть, но не обязаловка
+    // «Բաշխել» — только у ремонта; крупная сумма (от rules.spread_suggest_amd) — подсказка растянуть, но не обязаловка;
+    // двигатель и КПП — пояснение по ТЕКУЩЕМУ сроку (задан — сколько месяцев, «Ոչ» — совет 24), шины — подсказка
     function syncSpread() {
-        const repair = $('gjKind').value === 'repair';
+        const repair = $('gjKind').value === 'repair', what = $('gjWhat').value, months = $('gjSpread').value;
         $('gjSpreadBox').hidden = !repair;
         const big = num($('gjAmount').value) !== null && num($('gjAmount').value) >= ((state.data && state.data.rules.spread_suggest_amd) || 300000);
         $('gjSpreadSuggest').hidden = !(repair && big && !$('gjSpread').value);
+        const unit = repair && SPREAD_WHAT.includes(what);
+        const why = unit && months ? 'Շարժիչը և փոխանցման տուփը ծառայում են տարիներ՝ ծախսը բաշխվում է ' + months + ' ամսվա վրա։'
+            : unit ? 'Շարժիչը և փոխանցման տուփը ծառայում են տարիներ — խորհուրդ է տրվում բաշխել 24 ամսվա վրա։'
+            : repair && what === TIRES_WHAT ? 'Եթե ամբողջ հավաքածու է — ընտրեք 24 ամիս։' : '';
+        $('gjSpreadWhy').textContent = why;
+        $('gjSpreadWhy').hidden = !why;
     }
 
-    // вид записи сменился: другой список (ремонт и ДТП — общий) — выбор сброшен; у «только пробега» поля нет
+    // вид записи сменился: другой список (ремонт и ДТП — общий) — пункт списка сброшен, а «Այլ…» с введённым текстом
+    // остаётся; у «только пробега» поля нет
     function syncKind(auto) {
         const kind = $('gjKind').value;
         $('gjAmountBox').hidden = kind === 'odometer';
         $('gjWhatBox').hidden = kind === 'odometer';
-        if (state.whatList !== (WHAT_LISTS[kind] || null)) setWhat(kind, '');
+        if (state.whatList !== (WHAT_LISTS[kind] || null)) {
+            const other = $('gjWhat').value === OTHER;
+            fillWhat(kind);
+            $('gjWhat').value = other ? OTHER : '';
+        }
         syncWhat(auto);
     }
 

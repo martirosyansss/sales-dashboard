@@ -52,6 +52,7 @@ def test_edit_maps_list_label_or_other_text():
     assert "const inList = (WHAT_LISTS[kind] || []).includes(text);" in set_what
     assert "$('gjWhat').value = inList ? text : text ? OTHER : '';" in set_what
     assert "$('gjWhatOther').value = inList ? '' : text;" in set_what
+    assert "$('gjWhatOther').maxLength = Math.max(120, inList ? 0 : text.length);" in set_what   # старый длинный текст
     assert "return $('gjWhat').value === OTHER ? $('gjWhatOther').value.trim() : $('gjWhat').value;" in JS
     edit = _part('function editEntry', 'function intOrRaw')
     assert "setWhat(e.kind, e.kind === 'odometer' ? '' : e.what);" in edit
@@ -59,8 +60,15 @@ def test_edit_maps_list_label_or_other_text():
 
 
 def test_kind_switch_resets_other_list_and_save_validates():
-    kind = _part('function syncKind', 'function syncOdoHint')
-    assert "if (state.whatList !== (WHAT_LISTS[kind] || null)) setWhat(kind, '');" in kind
+    kind = _part('function syncKind', 'function syncOdoHint').replace('\r\n', '\n')
+    assert ("        if (state.whatList !== (WHAT_LISTS[kind] || null)) {\n"
+            "            const other = $('gjWhat').value === OTHER;\n"
+            "            fillWhat(kind);\n"
+            "            $('gjWhat').value = other ? OTHER : '';\n"
+            "        }") in kind                                 # пункт сброшен, «Այլ…» и его текст остались
+    sync = _part('function syncWhat', 'function fieldErrors')
+    assert "$('gjWhatOther').required = what === OTHER;" in sync
+    assert "$('gjWhatOther').setAttribute('aria-required', String(what === OTHER));" in sync
     save = _part('async function saveEntry', 'async function deleteEntry')
     assert "what: kind === 'odometer' ? state.odoWhat : whatValue() || null," in save
     assert "if (kind !== 'odometer' && !$('gjWhat').value) badNum.what = 'Ընտրեք, թե ինչ է արվել';" in save
@@ -80,7 +88,14 @@ def test_spread_preselect_only_engine_and_gearbox_never_over_hand_value():
     assert "if (auto && !state.spreadTouched) {" in sync
     assert "if (big && !$('gjSpread').value) { $('gjSpread').value = '24'; state.spreadAuto = true; }" in sync
     assert "else if (!big && state.spreadAuto) { $('gjSpread').value = ''; state.spreadAuto = false; }" in sync
-    assert "repair && what === TIRES_WHAT ? 'Եթե ամբողջ հավաքածու է — ընտրեք 24 ամիս։'" in sync
+    hint = _part('function syncSpread', 'function syncKind')      # пояснение — по ТЕКУЩЕМУ сроку
+    assert "months = $('gjSpread').value;" in hint and "const unit = repair && SPREAD_WHAT.includes(what);" in hint
+    assert ("const why = unit && months ? 'Շարժիչը և փոխանցման տուփը ծառայում են տարիներ՝ ծախսը բաշխվում է ' + months "
+            "+ ' ամսվա վրա։'") in hint
+    assert ": unit ? 'Շարժիչը և փոխանցման տուփը ծառայում են տարիներ — խորհուրդ է տրվում բաշխել 24 ամսվա վրա։'" in hint
+    assert "repair && what === TIRES_WHAT ? 'Եթե ամբողջ հավաքածու է — ընտրեք 24 ամիս։'" in hint
+    assert 'Կարող եք փոխել' not in JS and "ծախսը բաշխվում է 24 ամսվա վրա" not in JS   # не «24» при любом сроке
+    assert 'syncSpread();' in sync          # выбор пункта и смена срока руками — оба через syncSpread (пояснение)
     assert ("$('gjSpread').addEventListener('change', () => { state.spreadTouched = true; state.spreadAuto = false; "
             "syncSpread(); });") in JS
     assert "$('gjWhat').addEventListener('change', () => {" in JS and "syncWhat(true);" in JS
@@ -93,12 +108,12 @@ def test_template_select_other_note_versions_and_no_new_static():
     assert 'id="gjWhatOther" class="rt-input" type="text" maxlength="120"' in HTML
     assert '<span id="gjSpreadWhy" class="gj-suggest" hidden></span>' in HTML
     assert 'placeholder="Մանրամասներ՝ օրինակ՝ առջևի, ձախ, որտեղ են վերանորոգել, կտրոնի համար"' in HTML
-    assert "routes_garage.css') }}?v=5" in HTML and "routes_garage.js') }}?v=5" in HTML
+    assert "routes_garage.css') }}?v=5" in HTML and "routes_garage.js') }}?v=6" in HTML
     assert '.gj-what-other { margin-top: 8px; }' in CSS
     # вход из интернета пропускает ровно эту статику (app_v2._PUBLIC_STATIC) — новых файлов нет
     assert re.findall(r"filename='((?:css|js)/[^']+)'", HTML) == ['css/routes.css', 'css/routes_garage.css',
                                                                    'js/routes_garage.js']
-    text = [ln for ln in JS[JS.index('const OTHER'):JS.index('function fieldErrors')].splitlines()
+    text = [ln for ln in JS[JS.index('const OTHER'):JS.index('function syncOdoHint')].splitlines()
             if not ln.strip().startswith('//')]
     assert not [ln for ln in text if any('Ѐ' <= ch <= 'ӿ' for ch in ln.split('//')[0])], 'тексты — по-армянски (№58)'
 
