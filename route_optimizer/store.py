@@ -475,6 +475,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # «Развоз»: до этого времени менеджеры ещё принимают заказы на следующий рабочий день (заканчивают
     # ≈ 16:40) — страница подсказывает собирать рейсы позже. Нет ключа в базе — значение по умолчанию
     'dispatch_ready_time': '17:00',
+    # «Развоз» (№69): менеджеры (agent_id ERP), чьи заказы не везём, — правило для дней без плана: новый день
+    # начинает с него, у дня с планом — свой выбор (Draft.agents_off). Список снятых, а не выбранных: новый менеджер
+    # ERP по умолчанию в развозе — заказы молча не теряются. Нет ключа — пусто (везём всех)
+    'dispatch_agents_off': [],
     # «Развоз»: граница малого центра (№39–41) — вершины [широта, долгота]; туда въезжают только машины с правом
     # въезда. Стартовая — примерно кольцо бульваров Кентрона, владелец правит на карте. Нет ключа — она
     'center_zone': [[40.1915, 44.5070], [40.1925, 44.5170], [40.1890, 44.5245], [40.1800, 44.5265],
@@ -571,6 +575,7 @@ MANUAL_NAME_MAX = 60
 MANAGER_FUEL_L100 = (1, 40)
 _MAX_LIST = 500
 MAX_HOLIDAYS = 400      # нерабочих дат в настройках: с запасом на год вперёд и прошлый (№64)
+MAX_AGENTS_OFF = 500    # менеджеров в правиле «чьи заказы не везём» (№69) — как dispatch.MAX_AGENTS
 CENTER_ZONE_VERTICES = (3, 200)      # и у зоны Еревана (№68; она ещё может быть пустой — правило выключено)
 BIG_TRUCK_AUTO_KG = 5000             # «большая машина» по умолчанию (№68): тоннаж от 5 т
 YEREVAN_KM_STEPS = (0, 1, 3, 10)     # сила приоритета малых машин в Ереване (№68) — ступени ползунка страницы
@@ -1199,6 +1204,16 @@ def validate_settings(values: Mapping[str, Any],
         errors['holidays'] = err
     else:
         out['holidays'] = holidays
+
+    # «Развоз» (№69): agent_id менеджеров, чьи заказы не везём (int ERP: 1 … 2³¹−1); повторы схлопываются, порядок — по
+    # возрастанию
+    off = values.get('dispatch_agents_off', [])
+    if not isinstance(off, list) or len(off) > MAX_AGENTS_OFF:
+        errors['dispatch_agents_off'] = f'սպասվում էր մենեջերների ցուցակ (ոչ ավելի, քան {MAX_AGENTS_OFF})'
+    elif not all(isinstance(x, int) and not isinstance(x, bool) and 1 <= x < 2 ** 31 for x in off):
+        errors['dispatch_agents_off'] = 'մենեջերների համարները՝ դրական ամբողջ թվեր'
+    else:
+        out['dispatch_agents_off'] = sorted(set(off))
 
     for key, (lo, hi, nullable) in _NUMERIC.items():
         v, err = _check_number(values.get(key), lo, hi, nullable,
