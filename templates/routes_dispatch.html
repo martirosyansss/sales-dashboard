@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=23">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=42">
 {% endblock %}
@@ -136,6 +136,11 @@
                     <p class="dp-steplead" id="dpOrdersEmpty" hidden>Այս օրվա համար պատվերներ դեռ չկան։</p>
                     <ul class="dp-attn" id="dpAttn" aria-label="Ինչին ուշադրություն դարձնել"></ul>
                     <p class="dp-note" id="dpOrdersInfo"></p>
+                    <!-- день с планом выбран не по нынешним настройкам (№69, №74): применить их одной кнопкой -->
+                    <div class="dp-agents-apply" id="dpRuleDiff" hidden>
+                        <span class="dp-note">Այս օրվա ընտրությունը տարբերվում է <a href="/routes/settings#agents">կարգավորումներից</a>։</span>
+                        <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="dpRuleApply">Կիրառել կարգավորումները</button>
+                    </div>
 
                     <!-- Фильтр «Մենեջերներ»: чьи заказы везём сегодня (до сборки — применяется со сборкой, после — кнопкой) -->
                     <details class="rt-fold" id="dpAgents" hidden>
@@ -152,6 +157,8 @@
                                 <legend class="rt-sr-only">Մենեջերներ, որոնց պատվերներն այսօր տանում ենք</legend>
                             </fieldset>
                             <p class="dp-note" id="dpAgentsSum" aria-live="polite"></p>
+                            <!-- у дня нет плана, выбор — правило настроек (№69) -->
+                            <p class="dp-note" id="dpAgentsRule" hidden>Կանոնը՝ <a href="/routes/settings#agents">կարգավորումներից</a></p>
                             <div class="dp-agents-apply" id="dpAgentsApplyBox" hidden>
                                 <button type="button" class="rt-btn rt-btn-primary rt-btn-sm" id="dpAgentsApply">Կիրառել</button>
                                 <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="dpAgentsUndo">Չեղարկել</button>
@@ -220,6 +227,16 @@
                         <div class="rt-fold-body">
                             <p class="rt-fold-lead">Այս պատվերները դուք հանել եք այսօրվա առաքումից։ Եթե սխալմամբ, սեղմեք «Վերադարձնել»։</p>
                             <ul class="dp-olist" id="dpExcludedList"></ul>
+                        </div>
+                    </details>
+
+                    <!-- №74: заказы менеджеров правила в городах-исключениях — их везут другие машины -->
+                    <details class="rt-fold" id="dpOther" hidden>
+                        <summary><span class="rt-fold-t"><i class="fas fa-truck-arrow-right" aria-hidden="true"></i>Գնում է այլ մեքենայով</span>
+                            <span class="rt-fold-note" id="dpOtherNote"></span></summary>
+                        <div class="rt-fold-body">
+                            <p class="rt-fold-lead">Այս մենեջերների պատվերները տանում են մեր մեքենաները, բացի <a href="/routes/settings#fleet">կարգավորումներում</a> նշված քաղաքներից․ այս պատվերները գնում են այլ մեքենայով։</p>
+                            <ul class="dp-olist" id="dpOtherList"></ul>
                         </div>
                     </details>
                 </div>
@@ -409,5 +426,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=75"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=77"></script>
 {% endblock %}

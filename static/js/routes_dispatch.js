@@ -1083,8 +1083,9 @@
         if (bl.length) add('', 'fa-clock-rotate-left', 'Նախորդ օրերից մնացել է ' + pl(bl.length, 'չառաքված պատվեր')
             + (added ? ', որից ' + added + '-ը ավելացրել եք այսօրվա առաքմանը' : '') + '։ Ստուգեք՝ պե՞տք է դրանք տանել այսօր։', 'Դիտել', 'dpBacklog');
         if (o.excluded) add('', 'fa-ban', pl(o.excluded, 'պատվեր') + ' նշել եք «այսօր չենք տանում»։', 'Դիտել', 'dpExcluded');
+        if (o.other_vehicle) add('', 'fa-truck-arrow-right', pl(o.other_vehicle, 'պատվեր') + ' գնում է այլ մեքենայով (կարգավորումներով)։', 'Դիտել', 'dpOther');
         const ag = agentStats();
-        if (ag.off.size) add('', 'fa-user-tie', 'Տանում ենք միայն ' + pl(ag.kept, 'մենեջերի') + ' պատվերները'
+        if (ag.shown) add('', 'fa-user-tie', 'Տանում ենք միայն ' + pl(ag.kept, 'մենեջերի') + ' պատվերները'
             + (ag.offCount ? ', ' + pl(ag.offCount, 'պատվեր') + ' (' + kgText(ag.offKg) + ') այսօր չենք տանում' : '')
             + (agentsDirty() ? ' (ընտրությունը դեռ կիրառված չէ)' : '') + '։', 'Դիտել', 'dpAgents');
         const gs = geoSug();
@@ -1094,7 +1095,13 @@
         const info = [];
         if (o.shipped_before) info.push(pl(o.shipped_before, 'պատվեր') + ' արդեն առաքվել է');
         if (o.self_delivery) info.push(pl(o.self_delivery, 'պատվեր') + ' (' + kgText(o.self_delivery_kg) + ') մենեջերն ինքն է տանում');
+        // №74: правила настроек — везут другие машины (город-исключение) и клиенты, которых машины не везут
+        if (o.other_vehicle) info.push(pl(o.other_vehicle, 'պատվեր') + ' (' + kgText(o.other_vehicle_kg) + ') գնում է այլ մեքենայով');
+        if (o.customers_off) info.push(pl(o.customers_off, 'պատվեր') + ' (' + kgText(o.customers_off_kg) + ') չենք տանում՝ կարգավորումներով');
         $('dpOrdersInfo').textContent = info.length ? 'Առաքման մեջ չեն մտնում՝ ' + info.join(', ') + '։' : '';
+        // день с планом выбран не по нынешним настройкам (№69, №74)
+        $('dpRuleDiff').hidden = !state.data.settings_differ;
+        $('dpRuleApply').disabled = state.busy;
     }
 
     // ---------- «Մենեջերներ»: чьи заказы везём ----------
@@ -1108,13 +1115,20 @@
         const p = state.agentsPick;
         return !!p && p.day === state.day && !sameSet(p.off, new Set(state.data.agents_off || []));
     }
+    // off может держать и менеджеров без заказов этого дня (правило настроек, №69): показ и проверки — только по списку
+    // дня (shown — сколько снятых в нём), сам набор не меняется
     function agentStats() {
         const off = agentsOff(), list = state.data.agents || [];
-        const st = { off, total: list.length, kept: 0, keptCount: 0, keptKg: 0, offCount: 0, offKg: 0 };
+        const st = { off, shown: 0, total: list.length, kept: 0, keptCount: 0, keptKg: 0, offCount: 0, offKg: 0 };
         list.forEach(a => {
-            if (off.has(a.agent_id)) { st.offCount += a.count; st.offKg += a.kg; } else { st.kept++; st.keptCount += a.count; st.keptKg += a.kg; }
+            if (off.has(a.agent_id)) { st.shown++; st.offCount += a.count; st.offKg += a.kg; } else { st.kept++; st.keptCount += a.count; st.keptKg += a.kg; }
         });
         return st;
+    }
+    // «Նշել բոլորին» / «Հանել բոլոր նշումները» — только менеджеры списка; снятые без заказов дня остаются снятыми
+    function pickAllAgents(on) {
+        const listed = new Set((state.data.agents || []).map(a => a.agent_id));
+        pickAgents(new Set([...[...agentsOff()].filter(id => !listed.has(id)), ...(on ? [] : listed)]));
     }
     function pickAgents(off) {
         state.agentsPick = { day: state.day, off };
@@ -1127,10 +1141,10 @@
         const box = $('dpAgents');
         const st = agentStats();
         // один менеджер — выбирать нечего; фильтр уже снял кого-то — список нужен, чтобы вернуть
-        box.hidden = list.length < 2 && !st.off.size;
+        box.hidden = list.length < 2 && !st.shown;
         if (box.hidden) return;
         if (agentsDirty()) box.open = true;
-        $('dpAgentsNote').textContent = st.off.size ? st.kept + ' / ' + st.total : 'բոլորը՝ ' + st.total;
+        $('dpAgentsNote').textContent = st.shown ? st.kept + ' / ' + st.total : 'բոլորը՝ ' + st.total;
         const fs = $('dpAgentsList');
         fs.querySelectorAll('.dp-truck').forEach(x => x.remove());
         list.forEach(a => {
@@ -1161,14 +1175,18 @@
             }
             const sub = document.createElement('span');
             sub.className = 'dp-truck-sub';
-            sub.textContent = (a.name && a.code ? a.code + ' · ' : '') + pl(a.count, 'պատվեր') + ' · ' + kgText(a.kg);
+            // новые заказы дня, которые ещё решать (№72, same_day) — отдельно: в заказы развоза они не входят
+            const parts = [];
+            if (a.count || !a.same_day) parts.push(pl(a.count, 'պատվեր') + ' · ' + kgText(a.kg));
+            if (a.same_day) parts.push('այսօրվա նոր՝ ' + pl(a.same_day.count, 'պատվեր') + ' · ' + kgText(a.same_day.kg));
+            sub.textContent = (a.name && a.code ? a.code + ' · ' : '') + parts.join(' · ');
             txt.appendChild(sub);
             lab.append(cb, txt);
             fs.appendChild(lab);
         });
         const plan = !!state.data.plan, dirty = agentsDirty();
         let sum = '';
-        if (st.off.size) {
+        if (st.shown) {
             sum = 'Տանում ենք՝ ' + pl(st.keptCount, 'պատվեր') + ' · ' + kgText(st.keptKg)
                 + '։ Այսօր չենք տանում՝ ' + pl(st.offCount, 'պատվեր') + ' · ' + kgText(st.offKg) + '։';
             if (!st.kept) sum += ' Նշեք գոնե մեկ մենեջեր։';
@@ -1176,6 +1194,8 @@
         }
         if (plan && dirty && st.kept) sum += (sum ? ' ' : '') + 'Սեղմեք «Կիրառել»՝ երթերը կթարմացվեն։';
         $('dpAgentsSum').textContent = sum;
+        // у дня нет плана и выбор не меняли — он из правила настроек (№69)
+        $('dpAgentsRule').hidden = !(state.data.agents_from_settings && !dirty);
         $('dpAgentsApplyBox').hidden = !(plan && dirty);
         $('dpAgentsApply').disabled = state.busy || !st.kept;
     }
@@ -1602,14 +1622,17 @@
             + ' · ' + kgText(o.kg) + ' · ' + money(o.revenue)
             + (o.deferred ? ' · կտարվի ' + dayHuman(state.data.defer_to, true) : '')
             + (o.carried ? ' · տեղափոխված է նախորդ օրից' : '')
-            + (o.agent_off ? ' · մենեջերը հանված է «Որ մենեջերների պատվերներն ենք տանում» ցուցակից' : '');
+            + (o.agent_off ? ' · մենեջերը հանված է «Որ մենեջերների պատվերներն ենք տանում» ցուցակից' : '')
+            + (o.agent_name ? ' · ' + o.agent_name : '') + (o.city ? ' · ' + o.city : '');
         t.append(b, s);
+        li.append(t);
+        if (!btnText) return li;   // только строка — без кнопки («գնում է այլ մեքենայով»)
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'rt-btn rt-btn-ghost rt-btn-sm';
         btn.textContent = btnText;
         btn.addEventListener('click', onClick);
-        li.append(t, btn);
+        li.append(btn);
         return li;
     }
     function needPlan() {
@@ -1631,6 +1654,13 @@
         const ul2 = $('dpExcludedList');
         ul2.textContent = '';
         ex.forEach(o => ul2.appendChild(orderLine(o, 'Վերադարձնել', () => edit({ action: 'include', order: o.isn }, 'Պատվերը վերադարձվեց — կետը «Դեռ երթերում չեն» ցուցակում է կամ իր երթում'))));
+        // №74: везут другие машины — менеджер и город; вернуть можно только в настройках
+        const ov = state.data.other_vehicle || [];
+        $('dpOther').hidden = !ov.length;
+        $('dpOtherNote').textContent = ov.length ? pl(ov.length, 'պատվեր') : '';
+        const ul3 = $('dpOtherList');
+        ul3.textContent = '';
+        ov.forEach(o => ul3.appendChild(orderLine(o)));
     }
 
     // ---------- Рейсы ----------
@@ -3698,9 +3728,10 @@
         $('dpRefresh').addEventListener('click', () => load(state.day, true));
         $('dpRetry').addEventListener('click', () => load(state.day || day));
         $('dpBuild').addEventListener('click', build);
-        $('dpAgentsAll').addEventListener('click', () => pickAgents(new Set()));
-        $('dpAgentsNone').addEventListener('click', () => pickAgents(new Set((state.data.agents || []).map(a => a.agent_id))));
+        $('dpAgentsAll').addEventListener('click', () => pickAllAgents(true));
+        $('dpAgentsNone').addEventListener('click', () => pickAllAgents(false));
         $('dpAgentsApply').addEventListener('click', applyAgents);
+        $('dpRuleApply').addEventListener('click', () => edit({ action: 'apply_settings' }, 'Օրվա ընտրությունը համապատասխանեցվեց կարգավորումներին'));
         $('dpAgentsUndo').addEventListener('click', () => { state.agentsPick = null; renderAgents(); renderOrders(); });
         $('dpReset').addEventListener('click', reset);
         $('dpPrint').addEventListener('click', printSheets);

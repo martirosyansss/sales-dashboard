@@ -858,6 +858,13 @@
 }
 .rs-holiday-del:hover { color: var(--rt-danger); background: var(--rt-panel); }
 .rs-holiday-del:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 1px; }
+/* «Развоз» (№74): клиенты «машины не везут» — отмеченные, поиск и подсказка */
+.rs-cust-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rs-cust { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px;
+           border: 1px solid var(--rt-line); border-radius: 8px; background: var(--rt-panel); }
+.rs-cust-t { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.rs-cust-t small { color: var(--rt-fg-dim); }
+.rs-cust .rt-btn { flex: none; }
 
 /* Склад: карта + поле координат */
 .rt-depot { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; }

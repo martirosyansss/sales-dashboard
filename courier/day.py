@@ -242,5 +242,6 @@ class DayService:
         view = self.routes(day)
         loaded = clock.now()
         data = self.loader(car_code, day, orders_window(day, view),
-                           lambda orders: pick_orders(orders, day, view, car_code), invoice_owner(view, car_code))
+                           lambda orders, places: pick_orders(orders, day, view, car_code, places),
+                           invoice_owner(view, car_code))
         return day_payload(data, view, self.store, loaded)

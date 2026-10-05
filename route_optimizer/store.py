@@ -475,6 +475,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # «Развоз»: до этого времени менеджеры ещё принимают заказы на следующий рабочий день (заканчивают
     # ≈ 16:40) — страница подсказывает собирать рейсы позже. Нет ключа в базе — значение по умолчанию
     'dispatch_ready_time': '17:00',
+    # «Развоз» (№69): менеджеры (agent_id ERP), чьи заказы не везём, — правило для дней без плана: новый день
+    # начинает с него, у дня с планом — свой выбор (Draft.agents_off). Список снятых, а не выбранных: новый менеджер
+    # ERP по умолчанию в развозе — заказы молча не теряются. Нет ключа — пусто (везём всех)
+    'dispatch_agents_off': [],
+    # «Развоз» (№74): менеджеры (agent_id), чьи заказы машины парка везут, хотя в ERP «везёт сам» (экспедитор = менеджер,
+    # Rocarm A000), — кроме клиентов в городах dispatch_other_cities (адрес по умолчанию или название клиента): их везут
+    # другие машины. Пусто — правила нет: «везёт сам» не для машин, как раньше. Города — стартовые ответа владельца
+    'dispatch_fleet_agents': [],
+    'dispatch_other_cities': ['Գյումրի', 'Կապան', 'Գորիս', 'Վանաձոր'],
+    # «Развоз» (№74): клиенты (customer_id ERP), чьи заказы машины не везут никогда (внутренние счета, экспорт) —
+    # отмечает владелец. Пусто — везём всех
+    'dispatch_customers_off': [],
     # «Развоз»: граница малого центра (№39–41) — вершины [широта, долгота]; туда въезжают только машины с правом
     # въезда. Стартовая — примерно кольцо бульваров Кентрона, владелец правит на карте. Нет ключа — она
     'center_zone': [[40.1915, 44.5070], [40.1925, 44.5170], [40.1890, 44.5245], [40.1800, 44.5265],
@@ -571,6 +583,11 @@ MANUAL_NAME_MAX = 60
 MANAGER_FUEL_L100 = (1, 40)
 _MAX_LIST = 500
 MAX_HOLIDAYS = 400      # нерабочих дат в настройках: с запасом на год вперёд и прошлый (№64)
+MAX_AGENTS_OFF = 500    # менеджеров в правиле «чьи заказы не везём» (№69) — как dispatch.MAX_AGENTS
+MAX_FLEET_AGENTS = 500  # менеджеров, чьи заказы «везёт сам» всё равно везут машины (№74)
+MAX_OTHER_CITIES = 50   # городов-исключений этого правила (№74)
+CITY_NAME_MAX = 40      # символов в названии города
+MAX_CUSTOMERS_OFF = 2000   # клиентов «машины не везут» (№74)
 CENTER_ZONE_VERTICES = (3, 200)      # и у зоны Еревана (№68; она ещё может быть пустой — правило выключено)
 BIG_TRUCK_AUTO_KG = 5000             # «большая машина» по умолчанию (№68): тоннаж от 5 т
 YEREVAN_KM_STEPS = (0, 1, 3, 10)     # сила приоритета малых машин в Ереване (№68) — ступени ползунка страницы
@@ -1215,6 +1232,42 @@ def validate_settings(values: Mapping[str, Any],
         errors['holidays'] = err
     else:
         out['holidays'] = holidays
+
+    # «Развоз» (№69): agent_id менеджеров, чьи заказы не везём (int ERP: 1 … 2³¹−1); повторы схлопываются, порядок — по
+    # возрастанию
+    off = values.get('dispatch_agents_off', [])
+    if not isinstance(off, list) or len(off) > MAX_AGENTS_OFF:
+        errors['dispatch_agents_off'] = f'սպասվում էր մենեջերների ցուցակ (ոչ ավելի, քան {MAX_AGENTS_OFF})'
+    elif not all(isinstance(x, int) and not isinstance(x, bool) and 1 <= x < 2 ** 31 for x in off):
+        errors['dispatch_agents_off'] = 'մենեջերների համարները՝ դրական ամբողջ թվեր'
+    else:
+        out['dispatch_agents_off'] = sorted(set(off))
+
+    # «Развоз» (№74): менеджеры, чьи заказы «везёт сам» везут машины, и клиенты «машины не везут» — id ERP, как у №69
+    for key, limit, what in (('dispatch_fleet_agents', MAX_FLEET_AGENTS, 'մենեջերների'),
+                             ('dispatch_customers_off', MAX_CUSTOMERS_OFF, 'հաճախորդների')):
+        ids = values.get(key, [])
+        if not isinstance(ids, list) or len(ids) > limit:
+            errors[key] = f'սպասվում էր {what} ցուցակ (ոչ ավելի, քան {limit})'
+        elif not all(isinstance(x, int) and not isinstance(x, bool) and 1 <= x < 2 ** 31 for x in ids):
+            errors[key] = f'{what} համարները՝ դրական ամբողջ թվեր'
+        else:
+            out[key] = sorted(set(ids))
+    # города-исключения: названия как ввели (пробелы по краям — мимо), повтор без учёта регистра — один раз
+    cities = values.get('dispatch_other_cities', DEFAULT_SETTINGS['dispatch_other_cities'])
+    if not isinstance(cities, list) or len(cities) > MAX_OTHER_CITIES:
+        errors['dispatch_other_cities'] = f'սպասվում էր քաղաքների ցուցակ (ոչ ավելի, քան {MAX_OTHER_CITIES})'
+    elif not all(isinstance(c, str) and 0 < len(c.strip()) <= CITY_NAME_MAX and any(ch.isalpha() for ch in c)
+                 and not any(ch in c for ch in ',;\n') for c in cities):
+        errors['dispatch_other_cities'] = f'քաղաքի անունը՝ տառերով, ոչ ավելի, քան {CITY_NAME_MAX} նիշ'
+    else:
+        seen: set[str] = set()
+        out['dispatch_other_cities'] = []
+        for c in cities:
+            name = ' '.join(c.split())
+            if name.casefold() not in seen:
+                seen.add(name.casefold())
+                out['dispatch_other_cities'].append(name)
 
     for key, (lo, hi, nullable) in _NUMERIC.items():
         v, err = _check_number(values.get(key), lo, hi, nullable,

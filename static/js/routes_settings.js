@@ -23,7 +23,7 @@
     // 403 CSRF дашборда («сессия формы устарела») — не запрет доступа (как routes_learning.js и routes_garage.js)
     const CSRF_HY = 'Էջը հնացել է՝ թարմացրեք այն և կրկնեք։';
     const authText = (resp, data) => (resp.status === 403 && data && data.error === 'csrf' ? CSRF_HY : AUTH_HY[resp.status]);
-    const SECTIONS = ['depot', 'trucks', 'fuel', 'days', 'managers', 'center', 'yerevan', 'norms', 'season', 'calibration'];
+    const SECTIONS = ['depot', 'trucks', 'fuel', 'days', 'managers', 'center', 'yerevan', 'agents', 'fleet', 'custoff', 'norms', 'season', 'calibration'];
     const ZONE_MAX = 200;   // точек границы малого центра и зоны Еревана — как store.CENTER_ZONE_VERTICES
     const BIG_AUTO_T = 5;   // «большая машина» по умолчанию — тоннаж от 5 т (store.BIG_TRUCK_AUTO_KG, №68)
     // Сила приоритета малых машин в Ереване (№68, big_truck_yerevan_km): ступени ползунка — замеренные варианты
@@ -141,6 +141,7 @@
         manual: [],                     // ручные машины формы: {key, car_code, name, van_agent_id, …}
         season: { mode: 'auto', low: new Set(), peak: new Set() },
         holidays: new Set(),            // нерабочие даты ГГГГ-ММ-ДД (№64)
+        customersOff: new Map(),        // клиенты «машины не везут» (№74): id → {customer_id, code, name, address}
     };
 
     // ---------- Утилиты ----------
@@ -344,6 +345,7 @@
         d.trucks = Array.isArray(d.trucks) ? d.trucks : [];
         d.expeditors = Array.isArray(d.expeditors) ? d.expeditors : [];
         d.managers = Array.isArray(d.managers) ? d.managers : [];
+        d.dispatch_agents = Array.isArray(d.dispatch_agents) ? d.dispatch_agents : [];
         d.customer_groups = Array.isArray(d.customer_groups) ? d.customer_groups : [];
         d.season = (d.season && typeof d.season === 'object') ? d.season : {};
         return d;
@@ -368,6 +370,9 @@
         renderManagers();
         renderZone('center');
         renderYerevan();
+        renderDispatchAgents();
+        renderFleetAgents();
+        renderCustomersOff();
         renderNorms();
         renderSeason();
         renderCalib();
@@ -1237,6 +1242,199 @@
         });
     }
 
+    // ---------- «Развоз»: чьи заказы везём (№69) — правило для каждого дня без плана; день меняют на «Առաքում» ----------
+    // Галочка — везём; в настройки уходят снятые (dispatch_agents_off): новый менеджер ERP по умолчанию в развозе
+    function renderDispatchAgents() {
+        const box = $('rsAgents'), s = state.data.settings;
+        box.textContent = '';
+        const off = new Set((Array.isArray(s.dispatch_agents_off) ? s.dispatch_agents_off : []).map(Number));
+        const list = state.data.dispatch_agents;
+        if (!list.length) {
+            box.append(h('p', { class: 'rt-field-hint', text: 'Մենեջերների ցուցակը դեռ բեռնված չէ ERP-ից։' }));
+            return;
+        }
+        const err = errNode();
+        const group = h('div', { class: 'rt-wd', role: 'group', 'aria-labelledby': 'rsHAgents', id: 'rsAgentsList' });
+        list.forEach(a => group.append(h('label', { title: [a.code, a.area].filter(Boolean).join(' · ') || null },
+            h('input', { type: 'checkbox', value: String(a.agent_id), checked: !off.has(Number(a.agent_id)), dataset: { agentKeep: '1' } }),
+            a.name || a.code || ('մենեջեր ' + a.agent_id))));
+        reg(['settings.dispatch_agents_off'], group, err, 'Որ մենեջերների պատվերներն ենք տանում');
+        const setAll = (on, msg) => {
+            group.querySelectorAll('[data-agent-keep]').forEach(cb => { cb.checked = on; });
+            updateDirty();
+            renderProgress();
+            announce(msg);
+        };
+        const all = h('button', { type: 'button', class: 'rt-linkbtn', on: { click: () => setAll(true, 'Բոլոր մենեջերները նշված են — սեղմեք «Պահպանել»') } }, 'Նշել բոլորին');
+        const none = h('button', { type: 'button', class: 'rt-linkbtn', on: { click: () => setAll(false, 'Նշումները հանված են — նշեք այն մենեջերներին, որոնց պատվերներն ենք տանում') } }, 'Հանել բոլոր նշումները');
+        box.append(h('div', { class: 'rt-field' },
+            h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px 18px;margin-bottom:8px' }, all, none), group, err));
+    }
+
+    // ---------- «Развоз» (№74): «ինքն է տանում» менеджеров, которые всё равно везут машины, и города-исключения ----------
+    const CITIES_DEFAULT = ['Գյումրի', 'Կապան', 'Գորիս', 'Վանաձոր'];
+    const splitCities = (text) => String(text || '').split(/[,;\n]/).map(x => x.trim().replace(/\s+/g, ' ')).filter(Boolean);
+    function renderFleetAgents() {
+        const box = $('rsFleet'), s = state.data.settings;
+        box.textContent = '';
+        const on = new Set((Array.isArray(s.dispatch_fleet_agents) ? s.dispatch_fleet_agents : []).map(Number));
+        const list = state.data.dispatch_agents;
+        const err = errNode(), cErr = errNode();
+        if (!list.length) box.append(h('p', { class: 'rt-field-hint', text: 'Մենեջերների ցուցակը դեռ բեռնված չէ ERP-ից։' }));
+        else {
+            const group = h('div', { class: 'rt-wd', role: 'group', 'aria-labelledby': 'rsHFleet', id: 'rsFleetList' });
+            list.forEach(a => group.append(h('label', { title: [a.code, a.area].filter(Boolean).join(' · ') || null },
+                h('input', { type: 'checkbox', value: String(a.agent_id), checked: on.has(Number(a.agent_id)), dataset: { fleetAgent: '1' } }),
+                a.name || a.code || ('մենեջեր ' + a.agent_id))));
+            reg(['settings.dispatch_fleet_agents'], group, err, 'Ում «ինքն է տանում» պատվերներն են տանում մեր մեքենաները');
+            box.append(h('div', { class: 'rt-field' }, group,
+                h('p', { class: 'rt-field-hint', text: 'Լռելյայն ոչ ոք նշված չէ՝ «մենեջերն ինքն է տանում» պատվերները մեքենաներով չենք տանում, ինչպես նախկինում։' }), err));
+        }
+        const cities = Array.isArray(s.dispatch_other_cities) ? s.dispatch_other_cities : CITIES_DEFAULT;
+        const inp = h('input', { class: 'rt-input', type: 'text', id: 'rsCities', maxlength: 2000, autocomplete: 'off', value: cities.join(', ') });
+        reg(['settings.dispatch_other_cities'], inp, cErr, 'Քաղաքներ, որտեղ տանում են այլ մեքենաները');
+        const reset = h('button', { type: 'button', class: 'rt-linkbtn' }, 'Վերադարձնել սկզբնականը');
+        reset.addEventListener('click', () => { inp.value = CITIES_DEFAULT.join(', '); updateDirty(); renderProgress(); announce('Քաղաքները՝ ' + inp.value + ' — սեղմեք «Պահպանել»'); });
+        inp.addEventListener('input', () => { updateDirty(); renderProgress(); });
+        box.append(h('div', { class: 'rt-field mt-3' },
+            h('label', { for: 'rsCities', text: 'Քաղաքներ, որտեղ այս մենեջերների պատվերները տանում են այլ մեքենաները' }), inp,
+            h('p', { class: 'rt-field-hint', text: 'Ստորակետով։ Քաղաքը փնտրվում է հաճախորդի հասցեում և անվան մեջ (օրինակ՝ «Շիրակ, Գյումրի, …», «… ՍՊԸ/ԳՅՈՒՄՐԻ»)՝ մեծատառ թե փոքրատառ, նաև ռուսերեն և լատինատառ։ ' }, reset),
+            cErr));
+    }
+
+    // ---------- «Развоз» (№74): клиенты, чьи заказы машины не везут никогда ----------
+    // Список живёт в state.customersOff (id → {code, name, address}); названия — из ERP по запросу
+    async function getJson(url) {
+        let resp;
+        try {
+            resp = await fetch(url, { headers: { Accept: 'application/json' }, credentials: 'same-origin', cache: 'no-store' });
+        } catch (e) {
+            throw new Error('Սերվերի հետ կապ չկա։');
+        }
+        let data = null;
+        try { data = await resp.json(); } catch (e) { data = null; }
+        if (authText(resp, data)) throw new Error(authText(resp, data));
+        if (!resp.ok || !data || data.success !== true) throw new Error((data && data.error) || ('Սերվերի սխալ (կոդ ' + resp.status + ')։'));
+        return data;
+    }
+    const custText = (c) => [c.code, c.name].filter(Boolean).join(' · ') || ('հաճախորդ #' + c.customer_id);
+    const HINT_REASON = { no_address: 'հասցե չկա', abroad: 'Հայաստանից դուրս' };
+
+    function renderCustomersOff() {
+        const box = $('rsCustOff'), s = state.data.settings;
+        box.textContent = '';
+        const known = state.customersOff || new Map();
+        state.customersOff = new Map((Array.isArray(s.dispatch_customers_off) ? s.dispatch_customers_off : [])
+            .map(Number).map(id => [id, known.get(id) || { customer_id: id }]));
+        const err = errNode();
+        const list = h('ul', { class: 'rs-cust-list', id: 'rsCustOffList', 'aria-labelledby': 'rsHCustOff' });
+        reg(['settings.dispatch_customers_off'], list, err, 'Հաճախորդներ, որոնց պատվերները չենք տանում');
+        const q = h('input', { class: 'rt-input', type: 'search', id: 'rsCustQ', maxlength: 100, autocomplete: 'off',
+            placeholder: 'կոդ կամ անվան մաս', dataset: { noTrack: '1' } });
+        const found = h('ul', { class: 'rs-cust-list', id: 'rsCustFound', 'aria-live': 'polite' });
+        let timer = null, seq = 0;
+        q.addEventListener('input', () => {
+            clearTimeout(timer);
+            const text = q.value.trim();
+            if (text.length < 2 && !/^\d+$/.test(text)) { found.textContent = ''; return; }
+            timer = setTimeout(async () => {
+                const my = ++seq;
+                try {
+                    const d = await getJson('/api/routes/settings/customers?q=' + encodeURIComponent(text));
+                    if (my !== seq) return;
+                    drawCustRows(found, d.customers, 'Ոչինչ չի գտնվել։');
+                } catch (e) {
+                    if (my === seq) { found.textContent = ''; found.append(h('li', { class: 'rt-field-hint', text: e.message })); }
+                }
+            }, 300);
+        });
+        const hintBtn = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', id: 'rsCustHintsBtn' }, icon('fa-list'), 'Ցույց տալ');
+        const hints = h('ul', { class: 'rs-cust-list', id: 'rsCustHints', 'aria-live': 'polite' });
+        hintBtn.addEventListener('click', async () => {
+            hintBtn.disabled = true;
+            hints.textContent = '';
+            hints.append(h('li', { class: 'rt-field-hint', text: 'Բեռնում եմ…' }));
+            try {
+                const d = await getJson('/api/routes/settings/customer-hints');
+                drawCustRows(hints, d.customers, 'Այդպիսի հաճախորդներ չկան։');
+            } catch (e) {
+                hints.textContent = '';
+                hints.append(h('li', { class: 'rt-field-hint', text: e.message }));
+            } finally {
+                hintBtn.disabled = false;
+            }
+        });
+        box.append(
+            h('div', { class: 'rt-field' }, list, err),
+            h('div', { class: 'rt-field mt-3' }, h('label', { for: 'rsCustQ', text: 'Ավելացնել հաճախորդ' }), q, found),
+            h('div', { class: 'rt-field mt-3' },
+                h('span', { class: 'rt-field-label', text: 'Վերջին 60 օրում մենեջերների պատվերներ՝ առանց հասցեի կամ Հայաստանից դուրս' }),
+                h('p', { class: 'rt-field-hint', text: 'ERP-ից՝ միայն կարդալով։ Նշեք նրանց, ում պատվերները մեր մեքենաները չեն տանում (ներքին հաշիվներ, աշխատակիցներ, արտահանում)։' }),
+                h('div', {}, hintBtn), hints));
+        drawCustOff();
+        // названия уже отмеченных — из ERP (страница работает и без них: «հաճախորդ #id»)
+        const missing = [...state.customersOff.values()].filter(c => c.name === undefined).map(c => c.customer_id);
+        // по 200 id в запросе: адрес не длиннее буфера заголовков nginx (8 КБ)
+        for (let i = 0; i < missing.length; i += 200) {
+            getJson('/api/routes/settings/customers?ids=' + missing.slice(i, i + 200).join(',')).then(d => {
+                d.customers.forEach(c => { if (state.customersOff.has(c.customer_id)) state.customersOff.set(c.customer_id, c); });
+                drawCustOff();
+            }).catch(() => {});
+        }
+    }
+
+    function drawCustOff() {
+        const list = $('rsCustOffList');
+        list.textContent = '';
+        const all = [...state.customersOff.values()].sort((a, b) => (a.name || '').localeCompare(b.name || '') || a.customer_id - b.customer_id);
+        if (!all.length) list.append(h('li', { class: 'rt-field-hint', text: 'Ցուցակը դատարկ է՝ մեքենաները տանում են բոլոր հաճախորդների պատվերները։' }));
+        all.forEach(c => {
+            const del = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', 'aria-label': 'Հանել ցուցակից՝ ' + custText(c) }, icon('fa-xmark'), 'Հանել');
+            del.addEventListener('click', () => {
+                state.customersOff.delete(c.customer_id);
+                drawCustOff();
+                ['rsCustFound', 'rsCustHints'].forEach(id => syncCustRows($(id)));
+                updateDirty();
+                renderProgress();
+                announce('Ցուցակից հանված է՝ ' + custText(c) + ' — սեղմեք «Պահպանել»');
+            });
+            list.append(h('li', { class: 'rs-cust', dataset: { customerId: String(c.customer_id) } },
+                h('span', { class: 'rs-cust-t' }, h('b', { text: custText(c) }), c.address ? h('small', { text: c.address }) : null), del));
+        });
+    }
+
+    // Строки поиска и подсказки: клиент, адрес (у подсказки — почему, менеджеры, заказы) и «Ավելացնել»
+    function drawCustRows(ul, rows, emptyText) {
+        ul.textContent = '';
+        if (!rows.length) { ul.append(h('li', { class: 'rt-field-hint', text: emptyText })); return; }
+        rows.forEach(c => {
+            const add = h('button', { type: 'button', class: 'rt-btn rt-btn-ghost rt-btn-sm', dataset: { addCustomer: String(c.customer_id) } });
+            add.addEventListener('click', () => {
+                state.customersOff.set(c.customer_id, { customer_id: c.customer_id, code: c.code, name: c.name, address: c.address });
+                drawCustOff();
+                ['rsCustFound', 'rsCustHints'].forEach(id => syncCustRows($(id)));
+                updateDirty();
+                renderProgress();
+                announce('Ավելացված է՝ ' + custText(c) + ' — սեղմեք «Պահպանել»');
+            });
+            const meta = [];
+            if (c.reason) meta.push(HINT_REASON[c.reason] || c.reason);
+            if (c.agents) meta.push(c.agents.map(a => a.name || a.code || ('մենեջեր ' + a.agent_id)).join(', '));
+            if (c.orders) meta.push(fmt(c.orders) + NB + 'պատվեր · ' + fmt(c.revenue) + NB + '֏ · վերջինը՝ ' + dateRu(c.last_day));
+            ul.append(h('li', { class: 'rs-cust' },
+                h('span', { class: 'rs-cust-t' }, h('b', { text: custText(c) }),
+                    c.address ? h('small', { text: c.address }) : null, meta.length ? h('small', { text: meta.join(' · ') }) : null), add));
+        });
+        syncCustRows(ul);
+    }
+    function syncCustRows(ul) {
+        ul.querySelectorAll('[data-add-customer]').forEach(b => {
+            const inList = state.customersOff.has(Number(b.dataset.addCustomer));
+            b.disabled = inList;
+            b.textContent = inList ? 'Ավելացված է' : 'Ավելացնել';
+        });
+    }
+
     // ---------- 04 · Нормы ----------
     function renderNorms() {
         const box = $('rsNorms'), fuel = $('rsFuel');
@@ -1351,6 +1549,18 @@
         const soon = [...state.holidays].filter(d => d >= todayIso()).length;
         set('rsStDays', wdOn ? 'ok' : 'todo', wdOn ? 'շաբաթական՝ ' + wdOn + NB + 'օր' + (soon ? ' · առաջիկա տոներ՝ ' + soon : '')
             : 'նշեք գոնե մեկ աշխատանքային օր');
+
+        // чьи заказы везём (№69): все или сколько из скольких
+        const keep = [...document.querySelectorAll('#rsForm [data-agent-keep]')], kept = keep.filter(cb => cb.checked).length;
+        set('rsStAgents', !keep.length || kept ? 'ok' : 'todo', !keep.length ? 'տանում ենք բոլորի պատվերները'
+            : kept === keep.length ? 'բոլորը՝ ' + kept : !kept ? 'նշեք գոնե մեկ մենեջեր' : 'տանում ենք՝ ' + kept + ' / ' + keep.length);
+
+        // №74: «ինքն է տանում» машинами и клиенты «не везём»
+        const fleetOn = [...document.querySelectorAll('#rsForm [data-fleet-agent]')].filter(cb => cb.checked).length;
+        const nCities = $('rsCities') ? splitCities($('rsCities').value).length : 0;
+        set('rsStFleet', 'ok', fleetOn ? 'մենեջեր՝ ' + fleetOn + ' · բացառություն՝ ' + nCities + NB + 'քաղաք' : 'կանոն չկա');
+        const nOff = state.customersOff.size;
+        set('rsStCustOff', 'ok', nOff ? 'չենք տանում՝ ' + nOff + NB + 'հաճախորդ' : 'տանում ենք բոլորին');
 
         // дома менеджеров в расчёте
         const noHome = inCalc.filter(tr => tr.querySelector('.rs-home .b-warn')).length;
@@ -1646,6 +1856,17 @@
         s.center_zone = zoneValue('center');
         s.yerevan_zone = zoneValue('yerevan');
         if ($('rsYerevanKm')) s.big_truck_yerevan_km = YEREVAN_KM[+$('rsYerevanKm').value][0];
+        // чьи заказы везём (№69): списка нет (ERP не прочитана) — правило как было
+        const keep = [...document.querySelectorAll('#rsForm [data-agent-keep]')];
+        if (keep.length) {
+            s.dispatch_agents_off = keep.filter(cb => !cb.checked).map(cb => Number(cb.value)).sort((a, b) => a - b);
+            if (!keep.some(cb => cb.checked)) errors['settings.dispatch_agents_off'] = 'Նշեք գոնե մեկ մենեջեր, որի պատվերներն ենք տանում';
+        }
+        // №74: «ինքն է տանում» менеджеров — машинами (списка нет — как было), города-исключения, клиенты «не везём»
+        const fleet = [...document.querySelectorAll('#rsForm [data-fleet-agent]')];
+        if (fleet.length) s.dispatch_fleet_agents = fleet.filter(cb => cb.checked).map(cb => Number(cb.value)).sort((a, b) => a - b);
+        if ($('rsCities')) s.dispatch_other_cities = splitCities($('rsCities').value);
+        s.dispatch_customers_off = [...state.customersOff.keys()].sort((a, b) => a - b);
         const manual = state.season.mode === 'manual';
         s.low_months = manual ? [...state.season.low].sort((a, b) => a - b) : null;
         s.peak_months = manual ? [...state.season.peak].sort((a, b) => a - b) : null;
@@ -1738,7 +1959,7 @@
         // ручные машины: номер, название и экспедитор живут не в полях строки
         const manual = (state.manual || []).map(m => [m.car_code, m.name || null, m.van_agent_id === undefined ? null : m.van_agent_id]);
         return JSON.stringify([vals, incModes, manual, [...state.holidays].sort(), state.season.mode, [...state.season.low].sort(), [...state.season.peak].sort(),
-            zoneValue('center'), zoneValue('yerevan')]);
+            zoneValue('center'), zoneValue('yerevan'), [...state.customersOff.keys()].sort((a, b) => a - b)]);
     }
 
     function updateDirty() {
