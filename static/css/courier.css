@@ -215,4 +215,8 @@
     .cr-qr-img { max-width: 300px; justify-self: center; }
     .rt-input.cr-date { min-width: 0; flex: 1 1 140px; }
     .cr-money-foot .rt-input { width: 100%; }
+    /* экипаж — столбиком: «·» не висит в конце строки водителя, длинный առաքիչ — карточкой, а не овалом */
+    .cr-crew { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .cr-crew-sep { display: none; }
+    .cr-crew-p { max-width: 100%; border-radius: 14px; }
 }
