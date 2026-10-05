@@ -30,12 +30,16 @@
   событиям того же типа той же точки возвращается к самому событию, §5 п. 18) — отказ;
 - повторная delivery/tare по точке не удаляет прежние — «действующая» считается при чтении по правилу §5 п. 12
   (merge: последняя по at, затем по id, без вытесненных `supersedes`);
-- `track` (v1.3 §7 п. 1, без stop_id): 1–TRACK_MAX_POINTS точек; точка с ошибкой (поля, вне Армении, не по
+- `track` (v1.3 §7 п. 1, без stop_id): 0–TRACK_MAX_POINTS точек; точка с ошибкой (поля, вне Армении, не по
   возрастанию at, at позже «сейчас + сутки» или старше срока хранения) отбрасывается, остальные принимаются; число
-  отброшенных по причинам — в payload события и в журнале; ни одной годной точки — отказ. Точки — в track_points
-  (повтор того же at той же машины не пишется); в events — только счётчики (points, kept, new, dropped). Payload трека —
-  до MAX_TRACK_PAYLOAD_BYTES (100 точек с полной точностью double ≈ 19 КБ: у обычного предела нет запаса). Приём трека
-  раз в день удаляет трек старше store.TRACK_KEEP_DAYS;
+  отброшенных по причинам — в payload события и в журнале; нет ни одной годной точки и нет `device` хотя бы с одним верным полем — отказ. Точки —
+  в track_points (повтор того же at той же машины не пишется); в events — только счётчики (points, kept, new, dropped)
+  и `device`. Payload трека — до MAX_TRACK_PAYLOAD_BYTES (100 точек с полной точностью double ≈ 19 КБ: у обычного
+  предела нет запаса). Приём трека раз в день удаляет трек старше store.TRACK_KEEP_DAYS;
+- `track.device` (№76, APK 2.2.0, необязательно): состояние терминала — battery 0…100, charging, gps (on | off |
+  no_permission), net (wifi | cell | none), app (версия APK). Неверное или неизвестное значение поля — null, лишние
+  ключи не хранятся, не объект — `device` нет (событие от этого не отклоняется: состояние — справка для офиса). Пустой
+  `points: []` с верным `device` — сигнал «на связи» без GPS-фикса (GPS выключен, нет разрешения, нет спутников);
 - `refuel` (§7 п. 2, без stop_id): литры, одометр (целое), «до полного бака», сумма, место; исправление — `supersedes`
   (как у delivery; цикл — отказ). Момент заправки — момент исходной заправки цепочки исправлений (исправление пришло
   позже — заправка была тогда; исходной ещё нет — свой). Флаг `odometer_suspicious` — одометр новой заправки не входит
@@ -86,7 +90,11 @@ EPS = 1e-9
 TRACK_MAX_POINTS = 100
 TRACK_MAX_ACC_M = 200.0        # acc точки трека: 0 < acc ≤ 200 м
 TRACK_MAX_SPEED_MS = 60.0      # spd: 0…60 м/с или null
+HEARTBEAT_GAP = timedelta(seconds=20)   # пустой heartbeat трека чаще — принимается без записи (№76)
 TRACK_FUTURE = timedelta(days=1)   # точка позже «сейчас + сутки» — часы терминала сбиты
+DEVICE_GPS = ('on', 'off', 'no_permission')    # track.device.gps (№76)
+DEVICE_NET = ('wifi', 'cell', 'none')           # track.device.net
+DEVICE_APP_RE = re.compile(r'^[0-9A-Za-z.+-]{1,20}$')   # track.device.app — версия APK («2.2.0»)
 REFUEL_MAX_LITERS = 400.0
 REFUEL_MAX_ODOMETER = 2_000_000
 
@@ -491,13 +499,28 @@ def _track_point(raw: Any, now: datetime) -> tuple[TrackPoint | None, str | None
     return (round(at.timestamp() * 1000), lat, lon, acc, spd, brg), None
 
 
+def track_device(raw: Any) -> dict[str, Any] | None:
+    """№76: состояние терминала из track.device → {battery, charging, gps, net, app}; неверное значение поля — None,
+    лишние ключи отбрасываются; не объект — None (состояния нет)."""
+    if not isinstance(raw, dict):
+        return None
+    battery = _num(raw.get('battery'))
+    charging, gps, net, app = raw.get('charging'), raw.get('gps'), raw.get('net'), raw.get('app')
+    return {'battery': round(battery) if battery is not None and 0 <= battery <= 100 else None,
+            'charging': charging if isinstance(charging, bool) else None,
+            'gps': gps if gps in DEVICE_GPS else None,
+            'net': net if net in DEVICE_NET else None,
+            'app': app if isinstance(app, str) and DEVICE_APP_RE.match(app) else None}
+
+
 def track_points(p: Mapping[str, Any], now: datetime) -> tuple[list[TrackPoint], dict[str, int]]:
     """§7 п. 1: точки события track → (годные точки по возрастанию at, {причина: отброшено}). Точка не позже
-    предыдущей годной отбрасывается ('duplicate' — тот же at, 'order' — раньше). Нет списка из 1–TRACK_MAX_POINTS
-    точек или ни одной годной — Reject."""
+    предыдущей годной отбрасывается ('duplicate' — тот же at, 'order' — раньше). Нет списка из 0–TRACK_MAX_POINTS
+    точек — Reject; нет ни одной годной точки и нет состояния терминала (`device`, №76, хотя бы одно верное поле) — Reject. Пустой список
+    (APK 2.2.0 без GPS-фикса) — принимается только с таким device."""
     raw = p.get('points')
-    if not isinstance(raw, list) or not 1 <= len(raw) <= TRACK_MAX_POINTS:
-        raise Reject(f'points՝ 1-ից {TRACK_MAX_POINTS} կետ')
+    if not isinstance(raw, list) or len(raw) > TRACK_MAX_POINTS:
+        raise Reject(f'points՝ 0-ից {TRACK_MAX_POINTS} կետ')
     keep: list[TrackPoint] = []
     dropped: Counter[str] = Counter()
     for item in raw:
@@ -508,8 +531,8 @@ def track_points(p: Mapping[str, Any], now: datetime) -> tuple[list[TrackPoint],
             dropped[why or 'bad'] += 1
         else:
             keep.append(point)
-    if not keep:
-        raise Reject('Ոչ մի ճիշտ GPS կետ')
+    if not keep and not any(v is not None for v in (track_device(p.get('device')) or {}).values()):
+        raise Reject('Ոչ մի ճիշտ GPS կետ')   # пустой/негодный трек — только с проверенным device (№76, ревью)
     return keep, dict(sorted(dropped.items()))
 
 
@@ -637,6 +660,8 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who
     elif etype == 'track':
         track, dropped = track_points(payload, clock.now())
         stored = {'points': len(payload['points']), 'kept': len(track), 'dropped': dropped}   # точки — в track_points
+        if (device := track_device(payload.get('device'))) is not None:
+            stored['device'] = device   # №76: состояние терминала — в событии (без новой таблицы и схемы courier.db)
     elif etype == 'refuel':
         flags += _refuel(tx, payload, at, who.car_code, supersedes, event_id)
         stored.setdefault('full_tank', True)   # §7 п. 2: по умолчанию «до полного бака»
@@ -661,6 +686,13 @@ def _helper(tx: EventTx, raw: Mapping[str, Any], day: str, at_utc: str, who: Who
         return helper_id
     flags.append('helper_unconfirmed')
     return None
+
+
+def _same_state(new: Mapping[str, Any] | None, last: Mapping[str, Any] | None) -> bool:
+    """№76: состояние терминала то же, что в последнем событии (gps, net, charging, app; заряд батареи не в счёт).
+    Любая смена (в первую очередь gps) или отсутствие device у одного из них — не то же."""
+    keys = ('gps', 'net', 'charging', 'app')
+    return new is not None and last is not None and all(new.get(k) == last.get(k) for k in keys)
 
 
 def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
@@ -699,6 +731,12 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
                                    who.terminal_id, REJECTED_PER_DAY)
                 result.rejected.append({'id': raw_id, 'error': 'bad_request', 'message': str(e)})
                 continue
+            if track is not None and not track and _same_state(
+                    row['payload'].get('device'), tx.last_track_device(
+                        who.terminal_id, row['date'],
+                        clock.utc_key(datetime.fromisoformat(row['at_utc']) - HEARTBEAT_GAP), row['at_utc'])):
+                result.accepted.append(raw_id)   # №76: пустой heartbeat с тем же состоянием не позже HEARTBEAT_GAP после
+                continue                          # предыдущего события track — принят (APK не повторяет), но не пишется
             if track is not None:   # точки — до события: в нём число новых (пачка — одна транзакция)
                 row['payload']['new'] = tx.insert_track(who.car_code, row['date'], track)
                 tx.purge_track(clock.today().isoformat())

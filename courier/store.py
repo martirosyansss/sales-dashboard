@@ -1091,15 +1091,44 @@ class Store:
 
     # --- события (чтение для офиса и /status) ---
 
-    def events_for_day(self, day: str, etype: str | None = None) -> list[dict[str, Any]]:
-        """События даты (etype — только этого типа, по индексу events_type)."""
+    def events_for_day(self, day: str, etype: str | None = None, skip_track: bool = False) -> list[dict[str, Any]]:
+        """События даты (etype — только этого типа, по индексу events_type; skip_track — без heartbeat-ов `track`)."""
         rows = self._read(lambda c: c.execute(
             'SELECT e.id, e.terminal_id, e.driver_id, d.name, e.car_code, e.date, e.stop_id, e.type, e.at_device, '
             'e.at_utc, e.received_at, e.payload, e.flags, e.snapshot_id, e.helper_id, h.name FROM events e '
             'LEFT JOIN drivers d ON d.id = e.driver_id LEFT JOIN drivers h ON h.id = e.helper_id '
-            'WHERE e.date = ?' + (' AND e.type = ?' if etype else '') + ' ORDER BY e.at_utc, e.received_at, e.id',
+            'WHERE e.date = ?' + (' AND e.type = ?' if etype else '') + (" AND e.type <> 'track'" if skip_track else '')
+            + ' ORDER BY e.at_utc, e.received_at, e.id',
             (day, etype) if etype else (day,)).fetchall())
         return [_event_json(r, self._name()) for r in rows]
+
+    def heartbeats_for_day(self, day: str) -> list[dict[str, Any]]:
+        """Heartbeat-ы `track` даты без полного payload (карта «Մեքենաները առցանց», №76): id, driver_id, driver_name,
+        car_code, at, at_utc, received_at и device (track.device как записан при приёме, иначе None)."""
+        rows = self._read(lambda c: c.execute(
+            "SELECT e.id, e.driver_id, d.name, e.car_code, e.at_device, e.at_utc, e.received_at, "
+            "json_extract(e.payload, '$.device') FROM events e LEFT JOIN drivers d ON d.id = e.driver_id "
+            "WHERE e.date = ? AND e.type = 'track' ORDER BY e.at_utc, e.received_at, e.id", (day,)).fetchall())
+        out = []
+        for eid, driver_id, name, car, at, at_utc, received, raw in rows:
+            try:
+                device = json.loads(raw) if raw else None
+            except ValueError:
+                device = None
+            out.append({'id': eid, 'driver_id': driver_id, 'driver_name': name, 'car_code': car, 'at': at,
+                        'at_utc': at_utc, 'received_at': received,
+                        'device': device if isinstance(device, dict) else None})
+        return out
+
+    def day_fingerprint(self, day: str) -> tuple[Any, ...]:
+        """Дешёвый отпечаток данных дня для кэша карты: (событий, последнее получение; последний снимок /day;
+        последняя связь терминалов, их число и отозванных). Не изменился — расчёт fleet() тот же."""
+        def query(c: sqlite3.Connection) -> tuple[Any, ...]:
+            ev = c.execute('SELECT COUNT(*), MAX(received_at) FROM events WHERE date = ?', (day,)).fetchone()
+            snap = c.execute('SELECT MAX(id) FROM day_snapshots WHERE date = ?', (day,)).fetchone()
+            seen = c.execute('SELECT MAX(last_seen_at), COUNT(*), COUNT(revoked_at) FROM terminals').fetchone()
+            return (*ev, snap[0], *seen)
+        return self._read(query)
 
     # --- трек и заправки машин (контракт v1.3 §7): офис и обучение «Развоза» ---
 
@@ -1583,6 +1612,18 @@ class EventTx:
         if n:
             self.conn.execute('DELETE FROM rejected_events WHERE id = ?', (row['id'],))
         return n == 1
+
+    def last_track_device(self, terminal_id: int, day: str, since_utc: str, until_utc: str) -> dict[str, Any] | None:
+        """`device` последнего события `track` терминала за дату с моментом (at_utc) в [since_utc, until_utc];
+        нет такого события или в нём нет device — None (индекс events_day)."""
+        r = self.conn.execute("SELECT json_extract(payload, '$.device') FROM events WHERE date = ? AND type = 'track' "
+                              'AND terminal_id = ? AND at_utc >= ? AND at_utc <= ? ORDER BY at_utc DESC LIMIT 1',
+                              (day, terminal_id, since_utc, until_utc)).fetchone()
+        try:
+            device = json.loads(r[0]) if r and r[0] else None
+        except ValueError:
+            return None
+        return device if isinstance(device, dict) else None
 
     def rejected_today(self, terminal_id: int) -> int:
         """Сохранённых отказов терминала за сегодня (Ереван) — предел REJECTED_PER_DAY."""

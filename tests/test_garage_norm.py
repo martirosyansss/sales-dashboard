@@ -363,7 +363,8 @@ def test_public_allowlist_covers_norm_and_basemap_only():
         assert not app_v2._public_path_allowed(path, 'GET'), path
     assert app_v2._PUBLIC_STATIC == frozenset((
         '/favicon.ico', '/static/css/tokens.css', '/static/css/base.css', '/static/js/base.js', '/static/css/routes.css',
-        '/static/css/routes_garage.css', '/static/js/routes_garage.js', '/static/js/routes_basemap.js'))
+        '/static/css/routes_garage.css', '/static/js/routes_garage.js', '/static/js/routes_basemap.js',
+        '/static/css/routes_live.css', '/static/js/routes_live.js'))   # карта машин «Մեքենաները առցանց» (№76)
 
 
 def test_garage_page_tab_and_basemap_without_yandex_key(dashboard, monkeypatch):

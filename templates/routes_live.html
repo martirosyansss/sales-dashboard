@@ -1,0 +1,110 @@
+{% extends "base_v2.html" %}
+
+{# «Մեքենաները առցանց» (ответ владельца №76): администратор и роль «Гараж», в т.ч. из интернета — без названия программы #}
+{% block title %}Մեքենաները առցանց{% if not is_garage %} — Sales Dashboard{% endif %}{% endblock %}
+{% block viewport %}width=device-width, initial-scale=1.0, viewport-fit=cover{% endblock %}
+
+{% block extra_css %}
+<meta name="theme-color" content="#0e1116">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=22">
+<!-- Машины на карте сейчас (№76): тема «Развоза», свои классы .lv-*; новые файлы статики — и в _PUBLIC_STATIC app_v2 -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_live.css') }}?v=1">
+{% endblock %}
+
+{% block content %}
+{% if is_admin %}
+<!-- Вкладки раздела — одинаковая полоса на всех страницах «Маршрутов»; эта страница — из меню «Логистика» -->
+<div class="rt-page rt-secbar" lang="hy">
+    <nav class="rt-tabs" aria-label="Երթուղիների բաժիններ">
+        <a href="/routes">Ակնարկ</a>
+        <a href="/routes/optimize">Օպտիմալացում</a>
+        <a href="/routes/dispatch">Առաքում</a>
+        <a href="/routes/learning">Ուսուցում</a>
+        <a href="/routes/settings">Կարգավորումներ</a>
+        <a href="/routes/garage">Ավտոտնակ</a>
+    </nav>
+</div>
+{% endif %}
+<div class="rt-page" id="lvPage" lang="hy">
+
+    <header class="rt-head lv-head">
+        <div class="rt-head-row">
+            <div class="rt-head-title">
+                <h1 class="rt-title"><i class="fas fa-satellite-dish lv-title-ico" aria-hidden="true"></i>Մեքենաները առցանց</h1>
+                <span id="lvLive" class="lv-live" hidden><span class="lv-live-dot" aria-hidden="true"></span><span id="lvLiveText"></span></span>
+            </div>
+            <div class="rt-head-tools lv-tools">
+                {% if is_garage %}<a class="rt-btn rt-btn-ghost rt-btn-sm" href="/routes/garage"><i class="fas fa-wrench" aria-hidden="true"></i>Ավտոտնակ</a>{% endif %}
+                <label class="rt-sr-only" for="lvDate">Օր</label>
+                <input id="lvDate" class="rt-input lv-date" type="date">
+                <button id="lvToday" type="button" class="rt-btn rt-btn-ghost rt-btn-sm" hidden>Այսօր</button>
+            </div>
+        </div>
+    </header>
+
+    <div id="lvStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+    <div id="lvAlert" class="rt-alert" role="alert" hidden>
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        <span id="lvAlertText" class="rt-alert-text"></span>
+    </div>
+
+    <div class="lv-layout">
+        <!-- Список машин: состояние, связь, тревоги -->
+        <aside class="lv-side" aria-label="Մեքենաներ">
+            <div class="lv-summary" id="lvSummary"></div>
+            <ul class="lv-list" id="lvList" role="listbox" aria-label="Մեքենաներ"></ul>
+            <p class="lv-empty" id="lvEmpty" hidden>Այս օրը մեքենաների տվյալներ չկան։</p>
+        </aside>
+
+        <!-- Карта: машины, путь выбранной за день, её магазины цветом статуса -->
+        <section class="lv-mapbox" aria-label="Քարտեզ">
+            <div id="lvMap" class="lv-map"></div>
+            <div class="lv-legend" aria-hidden="true">
+                <span><i class="lv-dot is-moving"></i>ընթացքի մեջ</span>
+                <span><i class="lv-dot is-standing"></i>կանգնած</span>
+                <span><i class="lv-dot is-alert"></i>ահազանգ</span>
+                <span><i class="lv-dot is-offline"></i>կապ չկա</span>
+                <span class="lv-legend-stores"><i class="lv-sq is-full"></i>առաքված <i class="lv-sq is-partial"></i>մասնակի
+                    <i class="lv-sq is-refused"></i>մերժված <i class="lv-sq is-pending"></i>դեռ ոչ</span>
+            </div>
+        </section>
+
+        <!-- Карточка выбранной машины -->
+        <section class="lv-card rt-card" id="lvCard" aria-live="off" hidden>
+            <div class="lv-card-head">
+                <div>
+                    <h2 class="lv-plate" id="lvPlate"></h2>
+                    <p class="lv-sub" id="lvSub"></p>
+                </div>
+                <span class="lv-state" id="lvState"></span>
+            </div>
+            <div class="lv-active" id="lvActive" hidden></div>
+            <dl class="lv-grid" id="lvGrid"></dl>
+            <details class="lv-more" id="lvStopsBox">
+                <summary>Խանութներ</summary>
+                <ol class="lv-stops" id="lvStops"></ol>
+            </details>
+            <details class="lv-more" id="lvLogBox">
+                <summary>Այսօրվա ահազանգերը</summary>
+                <ul class="lv-log" id="lvLog"></ul>
+            </details>
+            <p class="lv-note">Վառելիքը՝ հաշվարկ (≈)․ կմ × ծախս ըստ բեռնվածության (դատարկ / լրիվ բեռնված մեքենայի նորմ), ոչ թե
+                տվիչի ցուցմունք։ Ժամանման ժամը՝ ուղիղ գծով × ճանապարհների ոլորունություն և միջին արագություն։</p>
+        </section>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+<!-- подложка — OpenStreetMap и при ключе Яндекса: условия Yandex Tiles API (п. 5.1.3) запрещают мониторинг транспорта в
+     реальном времени; страница открыта и из интернета — ключ сюда не выдаётся -->
+<script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=2"></script>
+{% endblock %}
