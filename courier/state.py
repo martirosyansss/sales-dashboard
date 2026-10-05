@@ -51,6 +51,8 @@ class CourierState:
     cars_loader: Callable[[date], list[dict[str, Any]]] | None = None
     invoice_loader: Callable[[date], tuple[list[InvoiceCar], dict[int, tuple[str, str]]]] | None = None
     refs: TtlCache = field(default_factory=TtlCache)
+    # экипаж плана «Развоза» для терминала (/login, /crew, /status): день → (monotonic, машина → экипаж | None)
+    crew_plan: dict[str, tuple[float, Any]] = field(default_factory=dict)
 
 
 def state() -> CourierState:

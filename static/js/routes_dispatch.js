@@ -1672,7 +1672,7 @@
 
     function renderPlan(plan) {
         const sm = plan.summary, base = plan.baseline;
-        statTiles($('dpPlanStats'), [[fmt(sm.trucks), 'մեքենա'], [fmt(sm.trips), 'երթ'], [fmt(sm.stops), 'խանութ'],
+        statTiles($('dpPlanStats'), [[fmt(sm.trucks), 'մեքենա'], [fmt(sm.trips), 'երթ'], [fmt(sm.stops), 'խանութ'], [kgText(sm.kg), 'քաշը'],
             ['≈ ' + fmt(sm.km) + NB + 'կմ', 'ճանապարհ'], ['≈ ' + fmt(sm.liters) + NB + 'լ', 'դիզել'],
             ['≈ ' + fmt(sm.operating_cost_amd) + NB + '֏', 'դիզել և մաշվածք']]);
         // Под цифрами — сравнение с обычной развозкой по менеджерам и чего не хватает в расчёте
