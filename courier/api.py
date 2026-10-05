@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from datetime import date, timedelta
 from functools import wraps
 from typing import Any, Callable
@@ -38,6 +39,8 @@ NO_SESSION = {'courier_api.ping', 'courier_api.login', 'courier_api.app_version'
 NO_STORE = {'Cache-Control': 'no-store', 'Pragma': 'no-cache'}
 DAY_WINDOW = 1                         # /day терминала: сегодня ± 1 день (контракт §5 п. 3)
 LOGIN_BUSY_RETRY = 2                   # секунд: вход на этом терминале уже проверяется
+PLAN_TTL = 60                          # секунд: экипаж плана «Развоза» дня в ответах терминалу (_planned)
+PLAN_FAIL_TTL = 5                      # «Маршруты» недоступны — повторить не раньше
 
 # Вход по PIN на терминале — по одному: параллельные попытки того же терминала сразу получают 429 (резерв
 # попытки в базе — Store.pin_attempt — ограничивает перебор и между процессами).
@@ -237,17 +240,29 @@ def _locked(until: str) -> Any:
 # --- экипаж: второй человек в машине (v1.4 §8) ---
 
 def _planned(car_code: str) -> dict[str, str | None] | None:
-    """Экипаж машины по плану «Развоза» на сегодня; «Маршрутов» нет или сбой — None."""
-    crew = planned_crew(current_app.extensions.get('route_optimizer'), clock.today())
-    return None if crew is None else crew.get(car_code, {'driver': None, 'helper': None})
+    """Экипаж машины по плану «Развоза» на сегодня; «Маршрутов» нет или сбой — None. План дня кэшируется на
+    PLAN_TTL секунд (терминалы зовут /status часто), сбой — только на PLAN_FAIL_TTL: «Маршруты» поднимутся — план
+    вернётся скоро."""
+    st, day = state(), clock.today().isoformat()
+    hit = st.crew_plan.get(day)
+    if hit is None or time.monotonic() - hit[0] >= (PLAN_TTL if hit[1] is not None else PLAN_FAIL_TTL):
+        hit = (time.monotonic(), planned_crew(current_app.extensions.get('route_optimizer'), clock.today()))
+        st.crew_plan.clear()                 # только сегодняшний день
+        st.crew_plan[day] = hit
+    return None if hit[1] is None else hit[1].get(car_code, {'driver': None, 'helper': None})
 
 
 def _crew(t: Terminal, s: Session, helper: Driver | None) -> dict[str, Any]:
-    """Crew: водитель сессии, առաքիչ, решён ли экипаж этой сессии (решение в crew_log после входа), план."""
+    """Crew: водитель сессии, առաքիչ, решён ли экипаж этой сессии (последнее решение в crew_log после входа — не
+    'revoked'), revoked — кого снял офис (последнее решение сессии — 'revoked': терминал сбрасывает своего помощника и
+    спрашивает экипаж заново), план."""
     since = clock.parse_moment(s.created_at)
+    last = state().store.crew_last(t.id, s.driver_id, clock.utc_key(since) if since else '')
+    revoked = last is not None and last['kind'] == 'revoked'
     return {'driver': {'id': s.driver_id, 'name': s.driver_name},
-            'helper': {'id': helper.id, 'name': helper.name} if helper else None,
-            'decided': state().store.crew_decided(t.id, s.driver_id, clock.utc_key(since) if since else ''),
+            'helper': {'id': helper.id, 'name': helper.name} if helper and not revoked else None,
+            'decided': last is not None and not revoked,
+            'revoked': {'id': last['helper_id'], 'name': last['helper_name'], 'at': last['at_utc']} if revoked else None,
             'planned': _planned(t.car_code)}
 
 
@@ -283,10 +298,10 @@ def post_crew() -> Any:
         if helper.id == s.driver_id:
             return error(409, 'same_person')
     digest = token_hash(request.headers.get('X-Courier-Session', '').strip())
-    if not st.store.set_crew(digest, t.id, t.car_code, s.driver_id, helper.id if helper else None):
+    if not st.store.set_crew(digest, t.id, t.car_code, s.driver_id, helper):
         if st.store.session(digest, t.id) is None:   # сессию закрыли (выход, новый вход, водитель выключен)
             return error(401, 'session')
-        return error(403, 'pin')                     # помощника выключили, пока проверялся PIN
+        return error(403, 'pin')                     # помощника выключили или сменили PIN, пока проверялся PIN
     return jsonify(_crew(t, s, helper))
 
 

@@ -271,7 +271,8 @@
             : (mm.error ? '<p class="cr-lead">Համեմատել պլանի հետ չհաջողվեց՝ ' + esc(mm.error) + '</p>' : ''))
             + (mm.no_car ? '<p class="cr-lead">Պլանի խանութների ' + fmt(mm.no_car) + ' ապրանքագիր ERP-ում առանց մեքենայի է։ Մեքենան որոշվում է ըստ պլանի։</p>' : '')
             + crewMismatch(d.crew_mismatch);
-        $('crTodayCars').innerHTML = d.cars.length ? d.cars.map(carCard).join('')
+        const plan = d.crew_mismatch && d.crew_mismatch.available ? (d.crew_mismatch.planned || {}) : null;
+        $('crTodayCars').innerHTML = d.cars.length ? d.cars.map(c => carCard(c, plan)).join('')
             : '<p class="rt-empty">Այս օրվա համար տվյալներ չկան։ Տերմինալ ունեցող մեքենաների կետերը կերևան այստեղ։</p>';
         $('crFlaggedBox').hidden = !d.flagged.length;
         $('crFlaggedNote').textContent = d.flagged.length ? String(d.flagged.length) : '';
@@ -307,24 +308,28 @@
             + '</ul></span></div>';
     }
     // Մեքենայի անձնակազմը՝ «Վարորդ՝ A · Առաքիչ՝ B» կամ «մենակ»։ Հին տերմինալը անձնակազմ չի հաղորդում՝ միայն վարորդը։
-    function crewStrip(c) {
-        const person = (role, names, cls) => '<span class="cr-crew-p ' + cls + '"><span class="cr-avatar" aria-hidden="true">' + esc(initials(names[0])) + '</span>'
-            + '<span class="cr-crew-t"><small>' + role + '</small><b>' + esc(names.join(', ')) + '</b></span></span>';
+    // Գրասենյակը հանել է առաքիչին՝ «(մինչև ԺԺ:ՐՐ)»; պլանում առաքիչ չկա՝ չեզոք նշում (ոչ նախազգուշացում)
+    function crewStrip(c, plan) {
+        const person = (role, names, cls, note) => '<span class="cr-crew-p ' + cls + '"><span class="cr-avatar" aria-hidden="true">' + esc(initials(names[0])) + '</span>'
+            + '<span class="cr-crew-t"><small>' + role + '</small><b>' + names.map(n => esc(n)
+                + (c.helper_until && c.helper_until[n] && cls === 'is-helper' ? ' <span class="cr-crew-note">(մինչև ' + esc(timeOf(c.helper_until[n])) + ')</span>' : '')).join(', ')
+            + (note ? ' <span class="cr-crew-note">' + esc(note) + '</span>' : '') + '</b></span></span>';
         const drivers = c.drivers || [], helpers = c.helpers || [];
-        const second = helpers.length ? person('Առաքիչ՝', helpers, 'is-helper')
+        const notPlanned = plan && !(plan[c.car_code] || {}).helper ? '(պլանում չկա)' : '';
+        const second = helpers.length ? person('Առաքիչ՝', helpers, 'is-helper', notPlanned)
             : c.alone ? '<span class="cr-crew-p is-alone"><span class="cr-avatar" aria-hidden="true"><i class="fas fa-user"></i></span><span class="cr-crew-t"><small>Առաքիչ՝</small><b>մենակ</b></span></span>' : '';
         if (!drivers.length && !second) return '';
         return '<div class="cr-crew" aria-label="Անձնակազմ">' + (drivers.length ? person('Վարորդ՝', drivers, '') : '')
             + (drivers.length && second ? '<span class="cr-crew-sep" aria-hidden="true">·</span>' : '') + second + '</div>';
     }
-    function carCard(c) {
+    function carCard(c, plan) {
         const stat = (v, label, cls) => '<div class="cr-stat ' + (v ? cls : '') + '"><b>' + fmt(v) + '</b><span>' + esc(label) + '</span></div>';
         const done = c.full + c.partial + c.refused + c.covered;
         const rows = [...c.stops, ...c.removed];
         return '<section class="rt-card"><div class="rt-card-head"><h2 class="rt-card-title"><i class="fas fa-truck" aria-hidden="true"></i>' + esc(c.car_code) + '</h2>'
             + '<span class="rt-card-state ' + (c.total && done === c.total ? 'is-ok' : 'is-todo') + '">' + fmt(done) + ' / ' + fmt(c.total) + ' կետ</span></div>'
             + (c.error ? '<p class="rt-ferr">' + esc(c.error) + '</p>' : '')
-            + crewStrip(c)
+            + crewStrip(c, plan)
             + '<div class="cr-stats">' + stat(c.full, 'Ստացված է', 'is-ok') + stat(c.partial, 'Մասնակի', 'is-warn') + stat(c.refused, 'Հրաժարում', 'is-bad')
             + stat(c.in_progress, 'Ընթացքում', 'is-warn') + stat(c.covered, 'Պատվերով արված է', 'is-ok')
             + stat(c.pending, 'Սպասում է', '') + stat(c.unreadable, 'Կոդը չի կարդացվում', 'is-warn') + stat(c.foreign, 'Այլ մեքենայի կետ', 'is-warn')

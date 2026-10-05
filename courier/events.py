@@ -68,6 +68,7 @@ from .store import REJECTED_PER_DAY, TRACK_KEEP_DAYS, EventTx, Store
 logger = logging.getLogger(__name__)
 
 MAX_BATCH = 200
+SQLITE_INT_MAX = 2 ** 63 - 1   # helper_id больше — не id человека (и не влез бы в запрос SQLite)
 MAX_PAYLOAD_BYTES = 20_000
 MAX_TRACK_PAYLOAD_BYTES = 40_000   # track: 100 точек с полной точностью double ≈ 19 КБ — запас вдвое (§7 п. 1)
 EVENT_TYPES = ('delivery', 'payment', 'tare', 'return', 'scan', 'scan_cancel', 'unreadable', 'arrived', 'day_closed',
@@ -639,7 +640,7 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who
     elif etype == 'refuel':
         flags += _refuel(tx, payload, at, who.car_code, supersedes, event_id)
         stored.setdefault('full_tank', True)   # §7 п. 2: по умолчанию «до полного бака»
-    helper_id = _helper(tx, raw, ev['date'], who, flags)
+    helper_id = _helper(tx, raw, ev['date'], clock.utc_key(at), who, flags)
     row = {'id': event_id, 'terminal_id': who.terminal_id, 'driver_id': who.driver_id, 'car_code': who.car_code,
            'date': ev['date'], 'stop_id': stop_id, 'type': etype, 'at_device': raw['at'], 'at_utc': clock.utc_key(at),
            'received_at': clock.iso(clock.now()), 'payload': stored, 'flags': flags, 'snapshot_id': stop.snapshot_id,
@@ -647,15 +648,16 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who
     return row, scan_row, track
 
 
-def _helper(tx: EventTx, raw: Mapping[str, Any], day: str, who: Who, flags: list[str]) -> int | None:
+def _helper(tx: EventTx, raw: Mapping[str, Any], day: str, at_utc: str, who: Who, flags: list[str]) -> int | None:
     """helper_id события (v1.4 §8): нет поля или null — водитель один (старый APK); подтверждён (crew_log kind='helper'
-    того же терминала и водителя сессии, решение в день события или накануне) — он; иначе (не подтверждён, не целое) —
-    None и флаг helper_unconfirmed: событие не отклоняется, доставка важнее."""
+    того же терминала и водителя сессии, решение — день события ±1) и не снят офисом к моменту события at_utc — он;
+    иначе (не подтверждён, снят, не целое или вне INTEGER SQLite) — None и флаг helper_unconfirmed: событие не
+    отклоняется, доставка важнее."""
     helper_id = raw.get('helper_id')
     if helper_id is None:
         return None
-    if isinstance(helper_id, int) and not isinstance(helper_id, bool) \
-            and tx.helper_confirmed(who.terminal_id, who.driver_id, helper_id, day):
+    if isinstance(helper_id, int) and not isinstance(helper_id, bool) and 0 < helper_id <= SQLITE_INT_MAX \
+            and tx.helper_confirmed(who.terminal_id, who.driver_id, helper_id, day, at_utc):
         return helper_id
     flags.append('helper_unconfirmed')
     return None

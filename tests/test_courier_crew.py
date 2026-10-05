@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Второй человек в машине — «Առաքիչ» (docs/plans/crew-helper-plan.md, контракт v1.4 §8): courier.db 6 → 7,
 POST/GET /crew (PIN помощника — тот же бюджет попыток и блокировка терминала, что /login), добавочные поля /login и
-/status, helper_id событий (подтверждён / helper_unconfirmed / нет поля — старый APK), save_driver снимает помощника,
-офис «Առաքում այսօր» (экипаж машины, помощник в таблицах, «план ≠ факт»).
+/status, helper_id событий (подтверждён / helper_unconfirmed / нет поля — старый APK), save_driver снимает помощника
+(строка 'revoked': экипаж снова не решён, события после снятия — без него), офис «Առաքում այսօր» (экипаж машины,
+помощник в таблицах, «план ≠ факт»).
 
-Синтетические данные, без ERP; courier.db — только временная.
+Синтетические данные, без ERP; courier.db — только временная (копия базы владельца — только копия во временной папке,
+оригинал открывается только на чтение).
 Запуск из корня проекта:  python -m pytest tests/test_courier_crew.py -q
 """
 import json
@@ -12,7 +14,7 @@ import sqlite3
 import sys
 import uuid
 from contextlib import closing
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,14 +23,17 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from courier import api as capi, events as ev, store as cstore, views as cv  # noqa: E402
+import courier  # noqa: E402
+from courier import api as capi, clock, events as ev, store as cstore, views as cv  # noqa: E402
 from courier.store import SCHEMA_VERSION, PinReset, Store  # noqa: E402
 from route_optimizer.store import StoreError as RoutesStoreError  # noqa: E402
-from test_courier import (NOW, _fresh_ref_cache, _pin_env, app, client, login, make_terminal, now, st)  # noqa: E402,F401
+from test_courier import (NOW, FakeDb, _fresh_ref_cache, _pin_env, app, client, login, make_terminal, now,  # noqa: E402,F401
+                          st)
 
 DAY = NOW.date().isoformat()          # рабочий день решений экипажа (часы тестов — 2026-10-02 09:00 Ереван)
 API = '/api/courier/v1'
 SAME_PERSON = 'Սա վարորդի PIN-ն է։ Առաքիչը պետք է մուտքագրի իր PIN-ը։'
+OWNER_COURIER = Path('F:/New Softs/Sales Dashboard/courier.db')   # живая база владельца: только чтение и копия
 
 
 @pytest.fixture
@@ -59,8 +64,8 @@ def session_helper(st):
         return [r[0] for r in conn.execute('SELECT helper_id FROM sessions')]
 
 
-def day_event(etype='day_closed', day=DAY, helper=..., stop_id=None, payload=None):
-    e = {'id': str(uuid.uuid4()), 'type': etype, 'stop_id': stop_id, 'date': day, 'at': f'{day}T10:00:00+04:00',
+def day_event(etype='day_closed', day=DAY, helper=..., stop_id=None, payload=None, at='10:00:00'):
+    e = {'id': str(uuid.uuid4()), 'type': etype, 'stop_id': stop_id, 'date': day, 'at': f'{day}T{at}+04:00',
          'payload': payload if payload is not None else {'summary': {}}}
     if helper is not ...:
         e['helper_id'] = helper
@@ -80,8 +85,10 @@ class FakeRoutesStore:
         self.crew = {'driver': drivers or {}, 'helper': helpers or {}}
         self.fail = fail
         self.days = []
+        self.calls = 0
 
     def truck_drivers(self, day, role='driver'):
+        self.calls += 1
         if self.fail:
             raise RoutesStoreError('битая база')
         self.days.append(day)
@@ -92,8 +99,10 @@ class FakeRoutesStore:
 
 
 def with_routes(app, **kw):
+    """Подставить «Маршруты»; кэш плана терминала (api._planned) сбрасывается — новый план виден сразу."""
     fake = FakeRoutesStore(**kw)
     app.extensions['route_optimizer'] = SimpleNamespace(store=fake)
+    app.extensions['courier'].crew_plan.clear()
     return fake
 
 
@@ -168,7 +177,7 @@ def test_crew_helper_confirmed_driver_session_intact(st, client, crew):
     assert r.status_code == 200
     body = r.get_json()
     assert body == {'driver': {'id': crew.driver_id, 'name': 'Արամ'}, 'helper': {'id': crew.helper_id, 'name': 'Բաբկեն'},
-                    'decided': True, 'planned': None}                       # «Маршрутов» в приложении нет — null
+                    'decided': True, 'revoked': None, 'planned': None}   # «Маршрутов» в приложении нет — null
     assert client.get(f'{API}/crew', headers=crew.s).get_json() == body
     # сессия водителя не менялась: тот же токен, тот же водитель, деньги — его
     assert client.get(f'{API}/status', headers=crew.s).status_code == 200
@@ -191,7 +200,8 @@ def test_crew_alone_and_change(st, client, crew, now):
     now['t'] = NOW + timedelta(minutes=30)
     s2 = login(client, crew.h)
     assert client.get(f'{API}/crew', headers=s2).get_json() == {
-        'driver': {'id': crew.driver_id, 'name': 'Արամ'}, 'helper': None, 'decided': False, 'planned': None}
+        'driver': {'id': crew.driver_id, 'name': 'Արամ'}, 'helper': None, 'decided': False, 'revoked': None,
+        'planned': None}
 
 
 @pytest.mark.parametrize('body', [{}, {'alone': True, 'helper_pin': '5678'}, {'alone': False}, {'alone': 1},
@@ -234,6 +244,18 @@ def test_crew_same_person_409(st, client, crew):
     r = post_crew(client, crew.s, {'helper_pin': '1234'})
     assert r.status_code == 409 and r.get_json() == {'error': 'same_person', 'message': SAME_PERSON}
     assert failed(st, crew.terminal.id) == 0                                 # свой PIN верный — не попытка
+
+
+def test_crew_same_person_keeps_attempt_window(st, client, crew):
+    """409 same_person не сбрасывает и не двигает счётчик неверных PIN терминала (и его окно)."""
+    for _ in range(2):
+        assert client.post(f'{API}/login', json={'pin': '9999'}, headers=crew.h).status_code == 403
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        before = conn.execute('SELECT failed_pin_count, pin_window_start, locked_until FROM terminals').fetchone()
+    assert post_crew(client, crew.s, {'helper_pin': '1234'}).status_code == 409
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        assert conn.execute('SELECT failed_pin_count, pin_window_start, locked_until FROM terminals').fetchone() == before
+    assert before[0] == 2
     assert crew_rows(st) == [] and session_helper(st) == [None]
     assert client.get(f'{API}/status', headers=crew.s).status_code == 200
 
@@ -243,6 +265,21 @@ def test_crew_inactive_helper_403_counts(st, client, crew):
     r = post_crew(client, crew.s, {'helper_pin': '5678'})
     assert r.status_code == 403 and r.get_json()['error'] == 'pin'
     assert failed(st, crew.terminal.id) == 1 and crew_rows(st) == []
+
+
+def test_crew_helper_pin_changed_during_check_403(st, client, crew, monkeypatch, now):
+    """Гонка: PIN узнан, а офис за это время сменил помощнику PIN (updated_at другой) — 403 pin, решение не записано."""
+    real = st.store.match_pin
+
+    def match_then_change(pin):
+        out = real(pin)
+        now['t'] = NOW + timedelta(minutes=1)
+        st.store.save_driver(crew.helper_id, 'Բաբկեն', True, '8765', 'admin')
+        return out
+    monkeypatch.setattr(st.store, 'match_pin', match_then_change)
+    r = post_crew(client, crew.s, {'helper_pin': '5678'})
+    assert r.status_code == 403 and r.get_json()['error'] == 'pin'
+    assert crew_rows(st) == [] and session_helper(st) == [None]
 
 
 def test_crew_helper_deactivated_during_check_403(st, client, crew, monkeypatch):
@@ -295,7 +332,7 @@ def test_login_and_status_additive_fields(app, st, client, crew):
     status = client.get(f'{API}/status', headers=s).get_json()
     assert set(status) == {'date', 'cash', 'rejected_events', 'crew'}
     assert status['crew'] == {'driver': {'id': crew.driver_id, 'name': 'Արամ'}, 'helper': None, 'decided': False,
-                              'planned': None}
+                              'revoked': None, 'planned': None}
     post_crew(client, s, {'helper_pin': '5678'})
     assert client.get(f'{API}/status', headers=s).get_json()['crew']['helper'] == {'id': crew.helper_id, 'name': 'Բաբկեն'}
 
@@ -312,6 +349,28 @@ def test_planned_from_dispatch_or_null(app, st, client, crew):
     r = client.get(f'{API}/status', headers=s)
     assert r.status_code == 200 and r.get_json()['crew']['planned'] is None
     assert post_crew(client, s, {'alone': True}).get_json()['planned'] is None
+
+
+def test_planned_cached_per_day(app, st, client, crew, monkeypatch):
+    """План дня читается из «Маршрутов» не чаще раза в PLAN_TTL; сбой помнится только PLAN_FAIL_TTL."""
+    tick = {'t': 1000.0}
+    monkeypatch.setattr(capi.time, 'monotonic', lambda: tick['t'])
+    fake = with_routes(app, helpers={'TEST': 'Գուրգեն'})
+    for _ in range(3):
+        assert client.get(f'{API}/status', headers=crew.s).get_json()['crew']['planned']['helper'] == 'Գուրգեն'
+    assert fake.calls == 2                                                   # одно чтение: водители + առաքիչ
+    fake.crew['helper']['TEST'] = 'Մուշեղ'                                   # логист сменил — видно после TTL
+    tick['t'] += capi.PLAN_TTL - 1
+    assert client.get(f'{API}/crew', headers=crew.s).get_json()['planned']['helper'] == 'Գուրգեն'
+    tick['t'] += 2
+    assert client.get(f'{API}/crew', headers=crew.s).get_json()['planned']['helper'] == 'Մուշեղ' and fake.calls == 4
+    broken = with_routes(app, fail=True)
+    for _ in range(3):
+        assert client.get(f'{API}/crew', headers=crew.s).get_json()['planned'] is None
+    assert broken.calls == 1
+    broken.fail = False
+    tick['t'] += capi.PLAN_FAIL_TTL
+    assert client.get(f'{API}/crew', headers=crew.s).get_json()['planned'] == {'driver': None, 'helper': None}
 
 
 # ============================== события: helper_id ==============================
@@ -333,7 +392,8 @@ def test_event_helper_confirmed_unconfirmed_and_absent(st, client, crew):
     ok = day_event(helper=crew.helper_id)
     other = st.store.save_driver(None, 'Դավիթ', True, '4321', 'admin')
     bad = [day_event(helper=other), day_event(helper=crew.driver_id), day_event(helper=str(crew.helper_id)),
-           day_event(helper=True), day_event(helper=1.5)]
+           day_event(helper=True), day_event(helper=1.5), day_event(helper=2 ** 64), day_event(helper=-1),
+           day_event(helper=0)]
     r = _post(client, crew.s, ok, *bad)
     assert r['accepted'] == [ok['id'], *[b['id'] for b in bad]] and not r['rejected']   # никогда не отказ
     assert stored_event(st, ok['id']) == (crew.driver_id, crew.helper_id, [])           # водитель — сессии
@@ -346,9 +406,9 @@ def test_event_helper_confirmed_unconfirmed_and_absent(st, client, crew):
     assert stored_event(st, late['id'])[1] == crew.helper_id
 
 
-@pytest.mark.parametrize('shift, confirmed', [(0, True), (1, True), (2, False), (-1, False)])
+@pytest.mark.parametrize('shift, confirmed', [(0, True), (1, True), (-1, True), (2, False), (-2, False)])
 def test_event_helper_date_rule(st, client, crew, shift, confirmed):
-    """Решение экипажа дня D подтверждает события дат D и D+1 (сессия до 04:00 следующего дня), не D+2 и не D−1."""
+    """Решение экипажа дня D подтверждает события дат D−1…D+1 (сессия идёт за полночь до 04:00), не D±2."""
     post_crew(client, crew.s, {'helper_pin': '5678'})
     e = day_event(day=(NOW.date() + timedelta(days=shift)).isoformat(), helper=crew.helper_id)
     _post(client, crew.s, e)
@@ -388,8 +448,69 @@ def test_save_driver_clears_helper_from_sessions(st, client, crew, change):
     else:
         st.store.save_driver(crew.helper_id, 'Բաբկեն', True, '8765', 'admin')
     assert session_helper(st) == [None]
-    r = client.get(f'{API}/crew', headers=crew.s)                            # сессия водителя цела
-    assert r.status_code == 200 and r.get_json()['helper'] is None and r.get_json()['decided'] is True
+    r = client.get(f'{API}/crew', headers=crew.s)                            # сессия водителя цела, экипаж — заново
+    assert r.status_code == 200 and r.get_json()['helper'] is None and r.get_json()['decided'] is False
+    # явный сигнал терминалу: кого и когда снял офис (момент — UTC, ключ clock.utc_key)
+    revoked = {'id': crew.helper_id, 'name': 'Բաբկեն', 'at': clock.utc_key(NOW)}
+    assert r.get_json()['revoked'] == revoked
+    assert client.get(f'{API}/status', headers=crew.s).get_json()['crew'] == {
+        'driver': {'id': crew.driver_id, 'name': 'Արամ'}, 'helper': None, 'decided': False, 'revoked': revoked,
+        'planned': None}
+    assert crew_rows(st)[-1] == (crew.terminal.id, 'TEST', DAY, crew.driver_id, crew.helper_id, 'revoked')
+
+
+def test_revoke_events_after_flagged_before_kept_and_reconfirm(st, client, crew, now):
+    """Офис сменил помощнику PIN в 09:00: событие 08:30 (сделано при нём, пришло позже) — с ним; 09:30 — без него и
+    helper_unconfirmed; помощник подтвердился новым PIN в 09:10 — событие 09:40 снова с ним, экипаж решён."""
+    now['t'] = NOW - timedelta(hours=1)                                      # 08:00 — подтвердился
+    post_crew(client, crew.s, {'helper_pin': '5678'})
+    now['t'] = NOW                                                           # 09:00 — офис сменил PIN
+    st.store.save_driver(crew.helper_id, 'Բաբկեն', True, '8765', 'admin')
+    before, after = day_event(helper=crew.helper_id, at='08:30:00'), day_event(helper=crew.helper_id, at='09:30:00')
+    at_revoke = day_event(helper=crew.helper_id, at='09:00:00')
+    assert len(_post(client, crew.s, before, after, at_revoke)['accepted']) == 3
+    assert stored_event(st, before['id'])[1:] == (crew.helper_id, [])
+    assert stored_event(st, after['id'])[1:] == (None, ['helper_unconfirmed'])
+    assert stored_event(st, at_revoke['id'])[1:] == (None, ['helper_unconfirmed'])
+    assert client.get(f'{API}/crew', headers=crew.s).get_json()['revoked']['id'] == crew.helper_id
+    now['t'] = NOW + timedelta(minutes=10)
+    r = post_crew(client, crew.s, {'helper_pin': '8765'}).get_json()
+    assert r['decided'] is True and r['revoked'] is None and r['helper']['id'] == crew.helper_id
+    assert client.get(f'{API}/crew', headers=crew.s).get_json()['revoked'] is None
+    again = day_event(helper=crew.helper_id, at='09:40:00')
+    _post(client, crew.s, again)
+    assert stored_event(st, again['id'])[1:] == (crew.helper_id, [])
+    assert [r[-1] for r in crew_rows(st)] == ['helper', 'revoked', 'helper']
+
+
+def test_revoke_only_sessions_with_that_helper(st, client, crew):
+    """'revoked' — только сессиям, где он помощник; другой терминал и чужой помощник не трогаются."""
+    _, t2, h2 = make_terminal(st, car='CAR2', pin='2222', name='Վահե')
+    s2 = login(client, h2, pin='2222')
+    other = st.store.save_driver(None, 'Դավիթ', True, '4321', 'admin')
+    post_crew(client, crew.s, {'helper_pin': '5678'})
+    post_crew(client, s2, {'helper_pin': '4321'})
+    st.store.save_driver(crew.helper_id, 'Բաբկեն', False, None, 'admin')
+    assert [r for r in crew_rows(st) if r[-1] == 'revoked'] == [
+        (crew.terminal.id, 'TEST', DAY, crew.driver_id, crew.helper_id, 'revoked')]
+    assert client.get(f'{API}/crew', headers=s2).get_json()['helper']['id'] == other
+    assert client.get(f'{API}/crew', headers=s2).get_json()['decided'] is True
+
+
+def test_reset_unverifiable_clears_helper_and_revokes(st, client, crew):
+    """Офис явно сбросил PIN, который не проверить (перца нет в среде), — человек снят с сессий как помощник."""
+    post_crew(client, crew.s, {'helper_pin': '5678'})
+    with closing(sqlite3.connect(st.store.path)) as conn:                   # PIN помощника — с потерянным перцем
+        conn.execute("UPDATE drivers SET pin_tag = ?, pin_scheme = 'pepper:deadbeef' WHERE id = ?",
+                     ('p2:deadbeef:' + 'a' * 64, crew.helper_id))
+        conn.commit()
+    with pytest.raises(cstore.PinPepperMissing):
+        st.store.save_driver(None, 'Դավիթ', True, '4321', 'admin')
+    assert session_helper(st) == [crew.helper_id]                           # без явного сброса — ничего
+    st.store.save_driver(None, 'Դավիթ', True, '4321', 'admin', reset_unverifiable=True)
+    assert session_helper(st) == [None]
+    assert crew_rows(st)[-1][-2:] == (crew.helper_id, 'revoked')
+    assert client.get(f'{API}/crew', headers=crew.s).get_json()['decided'] is False
 
 
 def test_save_driver_rename_keeps_helper(st, client, crew):
@@ -427,6 +548,19 @@ def test_day_overview_crew_helpers_alone_and_tables(app, st, client, crew):
     assert (row['driver_name'], row['helper_name']) == ('Արամ', 'Բաբկեն')
 
 
+def test_day_overview_helper_until_revoke(app, st, client, crew, now):
+    """Офис снял помощника в 11:15 — на карточке «до 11:15»; подтвердился снова — без «до»."""
+    post_crew(client, crew.s, {'helper_pin': '5678'})
+    now['t'] = NOW + timedelta(hours=2, minutes=15)
+    st.store.save_driver(crew.helper_id, 'Բաբկեն', True, '8765', 'admin')
+    (car,) = _overview(app)['cars']
+    assert car['helpers'] == ['Բաբկեն'] and car['helper_until'] == {'Բաբկեն': f'{DAY}T11:15:00+04:00'}
+    assert car['alone'] is False
+    now['t'] += timedelta(minutes=5)
+    post_crew(client, crew.s, {'helper_pin': '8765'})
+    assert _overview(app)['cars'][0]['helper_until'] == {}
+
+
 def test_rejected_shows_confirmed_helper_only(app, st, client, crew):
     post_crew(client, crew.s, {'helper_pin': '5678'})
     other = st.store.save_driver(None, 'Դավիթ', True, '4321', 'admin')
@@ -448,7 +582,7 @@ def test_crew_plan_mismatch(app, st, client, crew):
     assert body['success'] and body['crew_mismatch'] == {'available': True, 'items': [
         {'car_code': 'CAR2', 'role': 'driver', 'planned': 'Կարեն', 'fact': ['Վահե']},
         {'car_code': 'CAR2', 'role': 'helper', 'planned': 'Գուրգեն', 'fact': []},
-    ]}
+    ], 'planned': {'CAR2': {'driver': 'Կարեն', 'helper': 'Գուրգեն'}, 'TEST': {'driver': '  արամ ', 'helper': 'ԲԱԲԿԵՆ'}}}
     with_routes(app, drivers={'TEST': 'Արամ'}, helpers={'TEST': 'Գուրգեն'})   # другой առաքիչ
     items = client.get(f'/api/courier/admin/today?date={DAY}').get_json()['crew_mismatch']['items']
     assert items == [{'car_code': 'TEST', 'role': 'helper', 'planned': 'Գուրգեն', 'fact': ['Բաբկեն']}]
@@ -472,7 +606,7 @@ def test_office_page_hint_and_asset_versions(app, client):
     app.add_url_rule('/logout', 'logout', lambda: '')
     html = client.get('/courier').data.decode('utf-8')
     assert 'Առաքիչը' in html and 'իր PIN-ով' in html
-    assert 'js/courier.js?v=10' in html and 'css/courier.css?v=6' in html
+    assert 'js/courier.js?v=11' in html and 'css/courier.css?v=7' in html
 
 
 def test_today_old_events_unchanged_shape(app, st, client, crew):
@@ -484,3 +618,35 @@ def test_today_old_events_unchanged_shape(app, st, client, crew):
     assert car['helpers'] == [] and car['alone'] is False and car['drivers'] == ['Արամ']
     assert [f['helper_name'] for f in out['flagged']] == [None]
 
+
+@pytest.mark.skipif(not OWNER_COURIER.exists(), reason='нет courier.db владельца')
+def test_courier_owner_copy_migrates_to_v7(app, st, client, tmp_path):
+    """КОПИЯ courier.db владельца (схема 6): миграция только добавляет — строки всех таблиц как были; на копии сессия
+    действует и /crew работает. Оригинал открывается только на чтение (резервная копия SQLite — согласованная и при
+    работающем сервере), в него ничего не пишется."""
+    copy = tmp_path / 'owner_courier.db'
+    with closing(sqlite3.connect(f'file:{OWNER_COURIER.as_posix()}?mode=ro', uri=True)) as src, \
+            closing(sqlite3.connect(str(copy))) as dst:
+        src.backup(dst)
+    with closing(sqlite3.connect(str(copy))) as conn:
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' "
+                                             "AND name != 'sqlite_sequence'")]
+        before = {t: conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in tables}
+        version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
+    if version != '6':
+        pytest.skip(f'courier.db владельца схемы {version}, не 6')
+    st.store = Store(str(copy))
+    st.store.list_terminals()
+    with closing(sqlite3.connect(str(copy))) as conn:
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == '7'
+        assert {t: conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in tables} == before
+        assert conn.execute('SELECT COUNT(*) FROM crew_log').fetchone() == (0,)
+        assert conn.execute('SELECT COUNT(*) FROM events WHERE helper_id IS NOT NULL').fetchone() == (0,)
+    # сессия на копии: новый терминал и человек без PIN (PIN владельца и перец не нужны) — /crew работает
+    did = st.store.save_driver(None, 'Թեստ Կրկնօրինակ', True, None, 'test')
+    terminal, token = st.store.create_terminal('Copy test', 'TEST', 'test')
+    session = st.store.open_session(terminal.id, did, clock.session_expiry(clock.now()))
+    s = {'Authorization': f'Bearer {token}', 'X-Courier-Session': session}
+    assert client.get(f'{API}/crew', headers=s).get_json()['decided'] is False
+    r = post_crew(client, s, {'alone': True})
+    assert r.status_code == 200 and r.get_json()['decided'] is True and r.get_json()['helper'] is None

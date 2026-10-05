@@ -164,6 +164,7 @@
 .cr-crew-p.is-alone .cr-avatar { color: var(--rt-fg-mute); background: var(--rt-panel-2); box-shadow: inset 0 0 0 1px var(--rt-line); }
 .cr-crew-p.is-alone b { color: var(--rt-fg-dim); font-weight: 500; }
 .cr-crew-sep { color: var(--rt-fg-mute); font-weight: 700; }
+.cr-crew-note { font-weight: 400; font-size: .8125rem; color: var(--rt-fg-mute); white-space: nowrap; }
 /* առաքիչ в таблицах событий — второй строкой под водителем */
 .cr-with { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: .8125rem; color: var(--rt-fg-mute); white-space: nowrap; }
 .cr-with i { color: var(--rt-acc); font-size: .85em; }

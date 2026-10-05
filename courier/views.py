@@ -397,8 +397,9 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
     дат вызывающий передаёт False — только сохранённые снимки), статус, due и оплачено точки по правилу §5 п. 12,
     «հանված» точки со своими событиями (removed), действующая тара, события с флагами и фото. Счётчики событий
     (водители, связь, флаги) — по машине терминала. Экипаж (v1.4 §8): водители — из событий и решений экипажа
-    (crew_log) дня, помощники (helpers) — подтверждённые в событиях и crew_log; alone — экипаж решался, а помощника не
-    было весь день (старый APK экипаж не сообщает — ни helpers, ни alone)."""
+    (crew_log) дня, помощники (helpers) — подтверждённые в событиях и crew_log; helper_until — помощник → момент, когда
+    офис его снял (последнее решение по нему — 'revoked'); alone — экипаж решался, а помощника не было весь день
+    (старый APK экипаж не сообщает — ни helpers, ни alone)."""
     st = state()
     ds = day.isoformat()
     terminals = st.store.list_terminals()
@@ -420,7 +421,7 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
     def car_row(code: str) -> dict[str, Any]:
         return by_car.setdefault(code, {'car_code': code, 'stops': [], 'removed': [], 'total': 0,
                                         **{x: 0 for x in STATUSES}, 'unreadable': 0, 'foreign': 0, 'flagged': 0,
-                                        'drivers': set(), 'helpers': set(), 'crew_known': False,
+                                        'drivers': set(), 'helpers': set(), 'helper_until': {}, 'crew_known': False,
                                         'last_contact': None, 'error': errors.get(code), 'gps': None, 'refuels': []})
 
     refuels = st.store.refuels()
@@ -470,12 +471,19 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
             'liters': p.get('liters'), 'odometer_km': p.get('odometer_km'), 'full_tank': p.get('full_tank'),
             'amount_amd': p.get('amount_amd'), 'flags': rflags[r['id']], 'superseded': r['superseded'],
             'photos': rphotos.get(r['id'], [])})
+    last_kind: dict[tuple[str, str], tuple[str, str]] = {}   # (машина, помощник) → последнее (helper|revoked, момент)
     for c in st.store.crew_for_day(ds):   # решения экипажа: водитель вошёл и решил, даже если событий ещё нет
         row = car_row(c['car_code'])
         row['drivers'].add(c['driver_name'] or f'#{c["driver_id"]}')
         row['crew_known'] = True
-        if c['kind'] == 'helper':
-            row['helpers'].add(c['helper_name'] or f'#{c["helper_id"]}')
+        if c['kind'] in ('helper', 'revoked'):
+            name = c['helper_name'] or f'#{c["helper_id"]}'
+            if c['kind'] == 'helper':
+                row['helpers'].add(name)
+            last_kind[(c['car_code'], name)] = (c['kind'], c['at_utc'])
+    for (code, name), (kind, at_utc) in last_kind.items():   # офис снял помощника — «до ЧЧ:ММ»
+        if kind == 'revoked' and name in by_car[code]['helpers']:
+            by_car[code]['helper_until'][name] = clock.iso(datetime.fromisoformat(at_utc))
     for t in terminals:
         if t.car_code in by_car and t.last_seen_at and (by_car[t.car_code]['last_contact'] is None
                                                          or t.last_seen_at > by_car[t.car_code]['last_contact']):
@@ -543,21 +551,24 @@ def crew_mismatches(day: date, cars: Iterable[Mapping[str, Any]]) -> dict[str, A
     """«План ≠ факт» по экипажу (v1.4 §8): для машин дня (day_overview) — водитель и առաքիչ плана «Развоза»
     (routes_link.planned_crew) против фактических. Сравниваются только известные стороны: водитель — если в плане есть
     водитель, а у машины есть водители дня (ни один не он); առաքիչ — если в плане есть առաքիչ, а экипаж на терминале
-    решался (fact пусто — «մենակ»). Плана нет (раздела нет, сбой) — available False."""
+    решался (fact пусто — «մենակ»). planned — экипаж плана машин дня (офис показывает помощника, которого нет в плане,
+    как сведение, а не предупреждение). Плана нет (раздела нет, сбой) — available False."""
     plan = planned_crew(_routes_state(), day)
     if plan is None:
         return {'available': False, 'items': []}
     items = []
+    planned = {}
     for row in cars:
         p = plan.get(row['car_code'])
         if not p:
             continue
+        planned[row['car_code']] = p
         if p['driver'] and row['drivers'] and _crew_name(p['driver']) not in {_crew_name(x) for x in row['drivers']}:
             items.append({'car_code': row['car_code'], 'role': 'driver', 'planned': p['driver'], 'fact': row['drivers']})
         if p['helper'] and (row['helpers'] or row['alone']) \
                 and _crew_name(p['helper']) not in {_crew_name(x) for x in row['helpers']}:
             items.append({'car_code': row['car_code'], 'role': 'helper', 'planned': p['helper'], 'fact': row['helpers']})
-    return {'available': True, 'items': items}
+    return {'available': True, 'items': items, 'planned': planned}
 
 
 def _plan_coverage(day: date, view: RoutesView) -> list[dict[str, Any]]:
