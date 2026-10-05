@@ -12,6 +12,9 @@ C отметить A001 → «Տանում ենք՝ 2 պատվեր», подск
 D «Կազմել երթերը» → запрос сборки с agents_off [2], в плане нет магазинов 102 и 104, «Կիրառել» скрыта;
 E после сборки отметить A002 → «Կիրառել» видна; «Չեղարկել» → снова снят, «Կիրառել» скрыта;
 F отметить A002 → «Կիրառել» → правка agents, план без фильтра, 102 и 104 — «ещё не в рейсах»;
+S настройки (№69): карточка «Որ մենեջերների…» — два менеджера, снять A002, «Պահպանել» → dispatch_agents_off [2];
+R «Начать заново», день без плана: A002 снят правилом, пометка «Կանոնը՝ կարգավորումներից» со ссылкой на карточку,
+  выбор дня отличается от правила — пометки нет;
 H телефон 390×860: с раскрытым блоком нет горизонтальной прокрутки.
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
 """
@@ -122,6 +125,35 @@ def main() -> int:
             d = data()
             check(d['agents_off'] == [] and {u['customer_id'] for u in d['plan']['unassigned']} == {102, 104},
                   'F filter cleared, 102/104 unassigned')
+
+            # S — правило в настройках (№69): карточка «Որ մենեջերների…», снять менеджера 2, «Պահպանել»
+            page.goto(f'{BASE}/routes/settings#agents')
+            page.wait_for_selector('#rsAgentsList', state='visible', timeout=30000)
+            rule = page.locator('#rsAgentsList input[type="checkbox"]')
+            check(rule.count() == 2 and all(rule.nth(i).is_checked() for i in range(2)), 'S settings card: two managers, both checked')
+            page.locator('#rsAgentsList input[value="2"]').uncheck()
+            check('1 / 2' in page.locator('#rsStAgents').inner_text() and 'is-dirty' in page.locator('#rsDirty').get_attribute('class'),
+                  'S state «1 / 2», form dirty')
+            page.screenshot(path=str(SHOTS / 's-settings.png'), full_page=False)
+            page.locator('#rsSaveBtn').click()
+            page.wait_for_function("() => document.getElementById('rsDirty').textContent === 'Փոփոխություններ չկան'", timeout=15000)
+            saved = page.evaluate("() => fetch('/api/routes/settings').then(r => r.json())")
+            check(saved['settings']['dispatch_agents_off'] == [2], 'S saved dispatch_agents_off [2]')
+
+            # R — день без плана: выбор из правила, пометка «Կանոնը՝ կարգավորումներից» со ссылкой на карточку
+            page.evaluate("() => fetch('/api/routes/dispatch/reset', {method: 'POST', headers: {'Content-Type': 'application/json'},"
+                          " body: JSON.stringify({date: '" + DAY + "'})})")
+            page.goto(f'{BASE}/routes/dispatch?date={DAY}')
+            page.wait_for_selector('#dpBody', state='visible', timeout=30000)
+            page.wait_for_function("() => !document.getElementById('dpBuild').disabled", timeout=15000)
+            if page.locator('#dpAgents').get_attribute('open') is None:
+                page.locator('#dpAgents > summary').click()
+            check(checked() == [True, False], 'R day without plan: manager 2 unchecked by rule')
+            note = page.locator('#dpAgentsRule')
+            check(note.is_visible() and note.locator('a').get_attribute('href') == '/routes/settings#agents',
+                  'R note «Կանոնը՝ կարգավորումներից» links to settings card')
+            page.locator('#dpAgentsList label', has_text='A002').locator('input').check()
+            check(not note.is_visible(), 'R note hidden once the day choice differs from the rule')
 
             # H
             page.set_viewport_size({'width': 390, 'height': 860})

@@ -126,6 +126,12 @@ def holidays_of(settings: Mapping[str, Any]) -> frozenset[date]:
     return frozenset(date.fromisoformat(d) for d in settings.get('holidays') or ())
 
 
+def agents_off_of(draft: Draft | None, settings: Mapping[str, Any]) -> set[int]:
+    """Менеджеры, чьи заказы дня не везём (№69): у дня есть черновик — его выбор (Draft.agents_off, меняется на
+    «Развозе»), нет — правило настроек dispatch_agents_off: с него начинается и первый черновик дня (сборка)."""
+    return set(draft.agents_off) if draft is not None else set(settings.get('dispatch_agents_off') or ())
+
+
 def is_workday(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> bool:
     """Рабочий день: день недели (1 = пн … 7 = вс) отмечен рабочим и даты нет среди нерабочих (№64)."""
     return day.isoweekday() in (set(workdays) or set(range(1, 8))) and day not in holidays

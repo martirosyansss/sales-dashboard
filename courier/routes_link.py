@@ -87,15 +87,17 @@ def routes_view(state: Any, day: date) -> RoutesView:
         logger.warning('[Courier] План «Развоза» на %s не прочитан', day, exc_info=True)
         return base
     if stored is None:
+        # плана нет — менеджеры, чьи заказы не везём, по правилу настроек «Развоза» (№69)
         return RoutesView(depot=base.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
-                          carried=frozenset(carried), roads=roads)
+                          carried=frozenset(carried), agents_off=frozenset(dp.agents_off_of(None, bundle.settings)),
+                          roads=roads)
     draft = dp.Draft.from_json(stored[0])
     return RoutesView(depot=bundle.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                       plan_exists=bool(draft.trips),
                       trips=tuple((t.truck, tuple(t.stops)) for t in draft.trips),
                       excluded=frozenset(draft.excluded), added=frozenset(draft.added),
                       carried=frozenset(carried), dropped=frozenset(draft.dropped),
-                      agents_off=frozenset(draft.agents_off), roads=roads)
+                      agents_off=frozenset(dp.agents_off_of(draft, bundle.settings)), roads=roads)
 
 
 def routes_depot(state: Any) -> Point | None:

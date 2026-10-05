@@ -752,6 +752,8 @@
         }
         if (plan && dirty && st.kept) sum += (sum ? ' ' : '') + 'Սեղմեք «Կիրառել»՝ երթերը կթարմացվեն։';
         $('dpAgentsSum').textContent = sum;
+        // у дня нет плана и выбор не меняли — он из правила настроек (№69)
+        $('dpAgentsRule').hidden = !(state.data.agents_from_settings && !dirty);
         $('dpAgentsApplyBox').hidden = !(plan && dirty);
         $('dpAgentsApply').disabled = state.busy || !st.kept;
     }

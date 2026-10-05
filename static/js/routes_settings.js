@@ -23,7 +23,7 @@
     // 403 CSRF дашборда («сессия формы устарела») — не запрет доступа (как routes_learning.js и routes_garage.js)
     const CSRF_HY = 'Էջը հնացել է՝ թարմացրեք այն և կրկնեք։';
     const authText = (resp, data) => (resp.status === 403 && data && data.error === 'csrf' ? CSRF_HY : AUTH_HY[resp.status]);
-    const SECTIONS = ['depot', 'trucks', 'fuel', 'days', 'managers', 'center', 'yerevan', 'norms', 'season', 'calibration'];
+    const SECTIONS = ['depot', 'trucks', 'fuel', 'days', 'managers', 'center', 'yerevan', 'agents', 'norms', 'season', 'calibration'];
     const ZONE_MAX = 200;   // точек границы малого центра и зоны Еревана — как store.CENTER_ZONE_VERTICES
     const BIG_AUTO_T = 5;   // «большая машина» по умолчанию — тоннаж от 5 т (store.BIG_TRUCK_AUTO_KG, №68)
     // Сила приоритета малых машин в Ереване (№68, big_truck_yerevan_km): ступени ползунка — замеренные варианты
@@ -344,6 +344,7 @@
         d.trucks = Array.isArray(d.trucks) ? d.trucks : [];
         d.expeditors = Array.isArray(d.expeditors) ? d.expeditors : [];
         d.managers = Array.isArray(d.managers) ? d.managers : [];
+        d.dispatch_agents = Array.isArray(d.dispatch_agents) ? d.dispatch_agents : [];
         d.customer_groups = Array.isArray(d.customer_groups) ? d.customer_groups : [];
         d.season = (d.season && typeof d.season === 'object') ? d.season : {};
         return d;
@@ -368,6 +369,7 @@
         renderManagers();
         renderZone('center');
         renderYerevan();
+        renderDispatchAgents();
         renderNorms();
         renderSeason();
         renderCalib();
@@ -1209,6 +1211,35 @@
         });
     }
 
+    // ---------- «Развоз»: чьи заказы везём (№69) — правило для каждого дня без плана; день меняют на «Առաքում» ----------
+    // Галочка — везём; в настройки уходят снятые (dispatch_agents_off): новый менеджер ERP по умолчанию в развозе
+    function renderDispatchAgents() {
+        const box = $('rsAgents'), s = state.data.settings;
+        box.textContent = '';
+        const off = new Set((Array.isArray(s.dispatch_agents_off) ? s.dispatch_agents_off : []).map(Number));
+        const list = state.data.dispatch_agents;
+        if (!list.length) {
+            box.append(h('p', { class: 'rt-field-hint', text: 'Մենեջերների ցուցակը դեռ բեռնված չէ ERP-ից։' }));
+            return;
+        }
+        const err = errNode();
+        const group = h('div', { class: 'rt-wd', role: 'group', 'aria-labelledby': 'rsHAgents', id: 'rsAgentsList' });
+        list.forEach(a => group.append(h('label', { title: [a.code, a.area].filter(Boolean).join(' · ') || null },
+            h('input', { type: 'checkbox', value: String(a.agent_id), checked: !off.has(Number(a.agent_id)), dataset: { agentKeep: '1' } }),
+            a.name || a.code || ('մենեջեր ' + a.agent_id))));
+        reg(['settings.dispatch_agents_off'], group, err, 'Որ մենեջերների պատվերներն ենք տանում');
+        const setAll = (on, msg) => {
+            group.querySelectorAll('[data-agent-keep]').forEach(cb => { cb.checked = on; });
+            updateDirty();
+            renderProgress();
+            announce(msg);
+        };
+        const all = h('button', { type: 'button', class: 'rt-linkbtn', on: { click: () => setAll(true, 'Բոլոր մենեջերները նշված են — սեղմեք «Պահպանել»') } }, 'Նշել բոլորին');
+        const none = h('button', { type: 'button', class: 'rt-linkbtn', on: { click: () => setAll(false, 'Նշումները հանված են — նշեք այն մենեջերներին, որոնց պատվերներն ենք տանում') } }, 'Հանել բոլոր նշումները');
+        box.append(h('div', { class: 'rt-field' },
+            h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px 18px;margin-bottom:8px' }, all, none), group, err));
+    }
+
     // ---------- 04 · Нормы ----------
     function renderNorms() {
         const box = $('rsNorms'), fuel = $('rsFuel');
@@ -1322,6 +1353,11 @@
         const soon = [...state.holidays].filter(d => d >= todayIso()).length;
         set('rsStDays', wdOn ? 'ok' : 'todo', wdOn ? 'շաբաթական՝ ' + wdOn + NB + 'օր' + (soon ? ' · առաջիկա տոներ՝ ' + soon : '')
             : 'նշեք գոնե մեկ աշխատանքային օր');
+
+        // чьи заказы везём (№69): все или сколько из скольких
+        const keep = [...document.querySelectorAll('#rsForm [data-agent-keep]')], kept = keep.filter(cb => cb.checked).length;
+        set('rsStAgents', !keep.length || kept ? 'ok' : 'todo', !keep.length ? 'տանում ենք բոլորի պատվերները'
+            : kept === keep.length ? 'բոլորը՝ ' + kept : !kept ? 'նշեք գոնե մեկ մենեջեր' : 'տանում ենք՝ ' + kept + ' / ' + keep.length);
 
         // дома менеджеров в расчёте
         const noHome = inCalc.filter(tr => tr.querySelector('.rs-home .b-warn')).length;
@@ -1617,6 +1653,12 @@
         s.center_zone = zoneValue('center');
         s.yerevan_zone = zoneValue('yerevan');
         if ($('rsYerevanKm')) s.big_truck_yerevan_km = YEREVAN_KM[+$('rsYerevanKm').value][0];
+        // чьи заказы везём (№69): списка нет (ERP не прочитана) — правило как было
+        const keep = [...document.querySelectorAll('#rsForm [data-agent-keep]')];
+        if (keep.length) {
+            s.dispatch_agents_off = keep.filter(cb => !cb.checked).map(cb => Number(cb.value)).sort((a, b) => a - b);
+            if (!keep.some(cb => cb.checked)) errors['settings.dispatch_agents_off'] = 'Նշեք գոնե մեկ մենեջեր, որի պատվերներն ենք տանում';
+        }
         const manual = state.season.mode === 'manual';
         s.low_months = manual ? [...state.season.low].sort((a, b) => a - b) : null;
         s.peak_months = manual ? [...state.season.peak].sort((a, b) => a - b) : null;

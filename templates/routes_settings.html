@@ -237,6 +237,18 @@
                     </div>
                     <div class="rt-ferr" id="rsYerevanErr"></div>
                 </section>
+
+                <!-- «Развоз»: чьи заказы везём (№69) — правило для каждого дня без плана -->
+                <section class="rt-card" id="agents" aria-labelledby="rsHAgents">
+                    <div class="rt-card-head">
+                        <h3 class="rt-card-title" id="rsHAgents"><i class="fas fa-user-tie" aria-hidden="true"></i>Որ մենեջերների պատվերներն ենք տանում</h3>
+                        <span class="rt-card-state" id="rsStAgents"></span>
+                    </div>
+                    <p class="rt-card-lead">Նշված մենեջերների պատվերները «Առաքում» էջը տանում է ամեն օր ինքնաբերաբար՝ ամեն օր նորից նշել պետք չէ։
+                        Առանձին օրվա համար ընտրությունը կարելի է փոխել «Առաքում» էջում։ Նոր մենեջերը նշված է լռելյայն, որ նրա պատվերները չկորչեն։
+                        Պահպանելու համար սեղմեք «Պահպանել» կոճակը էջի ներքևում։</p>
+                    <div id="rsAgents"></div>
+                </section>
             </div>
         </section>
 
@@ -312,7 +324,7 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=28"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=29"></script>
 <script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=11"></script>
 <script src="{{ url_for('static', filename='js/routes_measurements.js') }}?v=4"></script>
 {% endblock %}
