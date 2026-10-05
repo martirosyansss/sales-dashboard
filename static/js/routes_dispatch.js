@@ -23,7 +23,10 @@
    по дню, сервер отвечает по тем же цифрам дня и ничего не меняет; переводы её ошибок — здесь, в SERVER_HY.
    «Բեռնագիր» у каждой машины (ответ владельца №57) — GET /api/routes/dispatch/waybill?date=…&truck=…&rev=…: товары рейсов
    машины на загрузку; печать и Excel только этой машины. Водитель машины (№62) — кнопка «Վարորդ» у карточки,
-   POST /api/routes/dispatch/driver: с выбранного дня до следующей смены; имя — в шапке карточки и в накладной. */
+   POST /api/routes/dispatch/driver: с выбранного дня до следующей смены; имя — в шапке карточки и в накладной.
+   Новые заказы дня (ответ владельца №72): заказ, принятый сегодня, — развоз завтра; на странице сегодняшнего дня плашка
+   «Այսօր եկել է N նոր պատվեր» (same_day в ответе дня и в /status — без перезагрузки) и диалог: варианты «как везти сегодня»
+   (POST /api/routes/dispatch/same-day), выбор — правка same_day, «Թողնել վաղվան». */
 (function () {
     'use strict';
 
@@ -90,6 +93,7 @@
         open: new Set(),                    // раскрытые карточки машин (код машины)
         driverCar: null,                    // «Վարորդ»: машина открытого диалога
         agentsPick: null,                   // «Մենեջերներ»: выбор, ещё не применённый к плану дня {day, off: Set agent_id}
+        sd: null,                           // диалог новых заказов дня (№72): {pick: Set fISN, options, blocked, forIsns, busy}
         ai: { chats: new Map(), busy: false, shownDay: null },   // «Հարցրու AI-ին»: разговор по каждому дню [{role, text}]
     };
 
@@ -330,6 +334,8 @@
         $('dpBuild').disabled = !d.trucks.some(t => t.ready) || !d.depot;
         $('dpBuildNote').textContent = plan ? 'Ամրացված երթերը կմնան ինչպես կան, մնացածը ծրագիրը կբաշխի նորից։' : 'Մոտ 5 վայրկյան։';
         renderSteps();
+        renderSameDay();
+        if ($('dpSameDayDlg').open) { if (sdData()) renderSdDialog(); else $('dpSameDayDlg').close(); }
         $('dpStep3').hidden = !plan;
         if (plan) renderPlan(plan);
         $('dpAnalysis').hidden = !plan && !d.is_past;
@@ -453,6 +459,7 @@
     const interacting = () => {
         const a = document.activeElement;
         return state.pickCid !== null || state.dragging || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
+            || $('dpSameDayDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
     async function poll() {
@@ -464,7 +471,10 @@
         try { s = await api('GET', '/api/routes/dispatch/status?date=' + encodeURIComponent(day)); } catch (e) { return; }
         if (state.day !== day || state.data !== d || state.busy) return;     // пока ждали, сменили дату или правили
         const before = d.new_since_build ? d.new_since_build.count : 0;
-        if ((s.orders_sig !== d.orders_sig || s.rev !== d.rev) && !interacting()) {
+        // новые заказы дня (№72): пришли или ушли — перечитать день, плашка появится без перезагрузки страницы
+        const sdBefore = d.same_day ? d.same_day.count : 0;
+        const sdChanged = isObj(s.same_day) && isObj(d.same_day) && s.same_day.sig !== d.same_day.sig;
+        if ((s.orders_sig !== d.orders_sig || s.rev !== d.rev || sdChanged) && !interacting()) {
             const picked = trucksChanged() ? selectedTrucks() : null;
             try { await reloadQuiet(); } catch (e) { return; }
             if (picked && state.day === day) {
@@ -480,6 +490,324 @@
         }
         const after = state.data.new_since_build ? state.data.new_since_build.count : 0;
         if (after > before) announce('Վերջին կազմումից հետո եկել է ' + pl(after, 'նոր պատվեր'));
+        const sdAfter = state.data.same_day ? state.data.same_day.count : 0;
+        if (sdAfter > sdBefore) announce('Այսօր եկել է ' + pl(sdAfter, 'նոր պատվեր'));
+    }
+
+    // ---------- Новые заказы дня (ответ владельца №72) ----------
+    // Заказ, принятый сегодня, — по правилу развоз следующего дня. Плашка сообщает о нём (и при автообновлении), диалог
+    // предлагает, как везти сегодня (POST /api/routes/dispatch/same-day — варианты сервера, самый дешёвый первым); выбор —
+    // POST /api/routes/dispatch/edit {action: same_day, orders, option, rev}; «Թողնել վաղվան» у взятого — same_day_drop.
+    // «Թողնել վաղվան» у нового ничего не меняет на сервере: заказ остаётся завтрашним, плашка о нём больше не напоминает
+    // (localStorage этого браузера, по дню; новый заказ — снова плашка).
+    const SD_KIND = {
+        same_stop: ['fa-store', 'Նույն խանութին՝ նույն երթով', 'Խանութն արդեն այսօրվա երթում է, որը դեռ չի բեռնվում'],
+        insert: ['fa-route', 'Ավելացնել երթին', 'Երթը դեռ չի սկսել բեռնվել, մյուս խանութների հերթականությունը չի փոխվում'],
+        trip: ['fa-rotate-left', 'Նոր երթ՝ պահեստ վերադառնալուց հետո', 'Մեքենան վերադառնում է պահեստ, բեռնվում և նորից դուրս գալիս'],
+        idle: ['fa-truck', 'Նոր երթ՝ ազատ մեքենայով', 'Մեքենան աշխատող է նշված, բայց այսօր երթ չունի'],
+        extra: ['fa-plus', 'Լրացուցիչ մեքենա', 'Այս մեքենան 1-ին քայլում աշխատող նշված չէ — ընտրելիս կնշվի'],
+    };
+    const SD_BLOCKED = {
+        started: 'խանութն արդեն այն երթում է, որի մեքենան բեռնվում է կամ ճանապարհին է — նոր պատվերը՝ վաղը',
+        no_coords: 'խանութի տեղը քարտեզում չկա — նոր պատվերը՝ վաղը',
+    };
+    const SD_LATER = 'dpSdLater:';
+    function sdLater(day) {
+        try {
+            const v = JSON.parse(window.localStorage.getItem(SD_LATER + day) || '[]');
+            return new Set(Array.isArray(v) ? v.filter(x => typeof x === 'string') : []);
+        } catch (e) { return new Set(); }
+    }
+    function setSdLater(day, isns) {
+        try {
+            // помним только сегодняшний выбор: прошлые дни больше не нужны
+            for (let i = window.localStorage.length - 1; i >= 0; i--) {
+                const k = window.localStorage.key(i);
+                if (k && k.startsWith(SD_LATER) && k !== SD_LATER + day) window.localStorage.removeItem(k);
+            }
+            window.localStorage.setItem(SD_LATER + day, JSON.stringify([...isns]));
+        } catch (e) { /* хранилище браузера недоступно — плашка просто напомнит снова */ }
+    }
+    const sdData = () => (state.data && isObj(state.data.same_day) && Array.isArray(state.data.same_day.orders)) ? state.data.same_day : null;
+    const sdOpenOrders = () => { const sd = sdData(); return sd && sd.today ? sd.orders.filter(o => !o.taken) : []; };
+    const sdTaken = () => { const sd = sdData(); return sd ? sd.orders.filter(o => o.taken) : []; };
+    const sdTotals = (os) => ({ kg: os.reduce((a, o) => a + (num(o.kg) || 0), 0), revenue: os.reduce((a, o) => a + (num(o.revenue) || 0), 0) });
+    const sdTruck = (code, name) => (name ? name + ' · ' : '') + code;
+    function sdTruckName(code) {
+        const t = (state.data.trucks || []).find(x => x.car_code === code);
+        return sdTruck(code, t && t.name);
+    }
+
+    function renderSameDay() {
+        const box = $('dpSameDay');
+        const sd = sdData();
+        const open = sdOpenOrders(), taken = sdTaken();
+        const later = sd ? sdLater(state.day) : new Set();
+        const fresh = open.filter(o => !later.has(o.isn));
+        if (!sd || (!open.length && !taken.length)) { box.hidden = true; box.innerHTML = ''; return; }
+        let tone = 'is-info', ico = 'fa-bolt', title, btn = null;
+        const lines = [];
+        if (fresh.length) {
+            const tot = sdTotals(fresh);
+            tone = 'is-warn';
+            title = 'Այսօր եկել է ' + pl(fresh.length, 'նոր պատվեր') + ' · ' + kgText(tot.kg) + ' · ' + money(tot.revenue);
+            lines.push('Ըստ կանոնի դրանք վաղվա առաքման մեջ են։ Կարող եք տանել նաև այսօր՝ ծրագիրը կառաջարկի ամենաէժան տարբերակը, նույնիսկ եթե մեքենաներն արդեն դուրս են եկել։');
+            btn = 'Ի՞նչ անել դրանց հետ';
+        } else if (open.length) {
+            title = pl(open.length, 'նոր պատվեր') + ' թողնված է վաղվան';
+            btn = 'Դիտել';
+        } else {
+            tone = 'is-ok'; ico = 'fa-circle-check';
+            title = (sd.today ? 'Այսօր' : 'Այդ օրը') + ' ընդունված պատվերներից ' + pl(taken.length, 'պատվեր') + ' տարվում է նույն օրը';
+            btn = 'Դիտել';
+        }
+        if (taken.length && (fresh.length || open.length)) lines.push('Արդեն տանում ենք այսօր՝ ' + pl(taken.length, 'պատվեր') + '։');
+        box.className = 'dp-todo dp-sameday ' + tone;
+        box.innerHTML = '<div class="dp-todo-ico" aria-hidden="true"><i class="fas ' + ico + '"></i></div>'
+            + '<div class="dp-todo-body"><p class="dp-todo-k">Այսօրվա նոր պատվերներ</p><h2 class="dp-todo-t"></h2>'
+            + '<div class="dp-todo-lines"></div><div class="dp-todo-btns"></div></div>';
+        box.querySelector('.dp-todo-t').textContent = title;
+        lines.forEach(t => { const p = document.createElement('p'); p.textContent = t; box.querySelector('.dp-todo-lines').appendChild(p); });
+        if (btn) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.id = 'dpSdOpen';
+            b.className = 'rt-btn ' + (fresh.length ? 'rt-btn-primary' : 'rt-btn-ghost');
+            b.innerHTML = '<i class="fas fa-list-check" aria-hidden="true"></i><span></span>';
+            b.lastChild.textContent = btn;
+            b.addEventListener('click', () => openSameDay());
+            box.querySelector('.dp-todo-btns').appendChild(b);
+        }
+        box.hidden = false;
+    }
+
+    function openSameDay() {
+        if (state.busy || !sdData()) return;
+        const later = sdLater(state.day);
+        const can = sdOpenOrders().filter(o => !o.no_coords);
+        const fresh = can.filter(o => !later.has(o.isn));
+        state.sd = { pick: new Set((fresh.length ? fresh : can).map(o => o.isn)), options: null, blocked: [], forIsns: null, busy: false };
+        $('dpSdErr').textContent = '';
+        renderSdDialog();
+        if (!$('dpSameDayDlg').open) $('dpSameDayDlg').showModal();
+    }
+
+    function sdRow(o, checkable) {
+        const li = document.createElement('li');
+        li.className = 'dp-sd-row' + (o.no_coords ? ' is-off' : '');
+        const lead = document.createElement(checkable ? 'input' : 'span');
+        if (checkable) {
+            lead.type = 'checkbox';
+            lead.checked = state.sd.pick.has(o.isn);
+            lead.disabled = o.no_coords || state.sd.busy;
+            lead.setAttribute('aria-label', 'Տանել այսօր՝ ' + (o.name || o.code));
+            lead.addEventListener('change', () => {
+                if (lead.checked) state.sd.pick.add(o.isn); else state.sd.pick.delete(o.isn);
+                state.sd.options = null;      // варианты — для прежнего выбора
+                renderSdDialog();
+            });
+        } else {
+            lead.innerHTML = '<i class="fas fa-truck-fast" aria-hidden="true"></i>';
+        }
+        const main = document.createElement('div');
+        main.className = 'dp-sd-main';
+        const b = document.createElement('b');
+        b.textContent = o.name || o.code || ('#' + o.customer_id);
+        const sub = document.createElement('span');
+        sub.className = 'dp-sd-sub';
+        sub.textContent = [o.code, o.agent_name || o.agent_code, o.created ? 'ընդունվել է ժամը ' + o.created : '', o.doc_num ? '№' + o.doc_num : '']
+            .filter(Boolean).join(' · ');
+        main.append(b, sub);
+        const tags = document.createElement('span');
+        tags.className = 'dp-sd-tags';
+        const tag = (cls, text) => { const t = document.createElement('span'); t.className = 'rt-badge ' + cls; t.textContent = text; tags.appendChild(t); };
+        if (o.taken) tag('b-ok', 'Տանում է՝ ' + (o.trucks || []).map(sdTruckName).join(', '));
+        if (o.invoiced) tag('b-gps', 'Հաշիվ-ապրանքագիրն արդեն գրված է');
+        if (o.no_coords) tag('b-danger', 'Տեղը քարտեզում չկա');
+        if (!o.taken && sdLater(state.day).has(o.isn)) tag('b-warn', 'Թողնված է վաղվան');
+        if (tags.children.length) main.appendChild(tags);
+        const n = document.createElement('span');
+        n.className = 'dp-sd-num';
+        n.textContent = kgText(o.kg) + ' · ' + money(o.revenue);
+        li.append(lead, main, n);
+        if (o.taken && sdData().today) {
+            const drop = document.createElement('button');
+            drop.type = 'button';
+            drop.className = 'rt-btn rt-btn-ghost rt-btn-sm';
+            drop.textContent = 'Թողնել վաղվան';
+            drop.disabled = state.sd.busy;
+            drop.setAttribute('aria-label', 'Թողնել վաղվան՝ ' + (o.name || o.code));
+            drop.addEventListener('click', () => dropSameDay(o));
+            li.appendChild(drop);
+        }
+        return li;
+    }
+
+    function sdOption(o, i, names) {
+        const li = document.createElement('li');
+        li.className = 'dp-sd-opt' + (i === 0 ? ' is-best' : '');
+        const kind = SD_KIND[o.kind] || ['fa-truck', o.kind, ''];
+        const t = document.createElement('p');
+        t.className = 'dp-sd-opt-t';
+        t.innerHTML = '<i class="fas ' + kind[0] + '" aria-hidden="true"></i><span></span>';
+        t.lastChild.textContent = (i === 0 ? 'Ամենաէժանը՝ ' : '') + kind[1] + ' — ' + sdTruck(o.truck, o.name);
+        const when = document.createElement('p');
+        when.textContent = 'Բեռնում՝ ' + o.loading_start + ' · մեկնում՝ ' + o.depart + ' · վերադարձ՝ ' + o.return;
+        const at = document.createElement('p');
+        at.textContent = o.stops.map(s => (names.get(s.customer_id) || '#' + s.customer_id) + '՝ ժամը ' + s.eta).join(' · ');
+        const cost = document.createElement('p');
+        cost.className = 'dp-sd-cost';
+        cost.textContent = '+' + fmt(o.km, 1) + NB + 'կմ · +' + fmt(o.minutes) + NB + 'րոպե · +' + money(o.amd);
+        const hint = document.createElement('p');
+        hint.className = 'dp-sd-sub';
+        hint.textContent = kind[2];
+        const pick = document.createElement('button');
+        pick.type = 'button';
+        pick.className = 'rt-btn ' + (i === 0 ? 'rt-btn-primary' : 'rt-btn-ghost');
+        pick.textContent = 'Ընտրել';
+        pick.disabled = state.sd.busy;
+        pick.setAttribute('aria-label', 'Ընտրել՝ ' + t.lastChild.textContent);
+        pick.addEventListener('click', () => takeSameDay(o));
+        li.append(t, when, at, cost, hint, pick);
+        return li;
+    }
+
+    function renderSdDialog() {
+        const sd = sdData();
+        if (!sd || !state.sd) return;
+        const box = $('dpSdBody');
+        const open = sdOpenOrders(), taken = sdTaken();
+        $('dpSdLead').textContent = sd.today
+            ? 'Ժամը ' + sd.now + ' է։ Այս պատվերներն ընդունվել են այսօր և ըստ կանոնի վաղվա առաքման մեջ են։ Նշեք, որոնք տանել այսօր, և սեղմեք «Ցույց տալ տարբերակները»։ '
+              + 'Ճանապարհին գտնվող մեքենան նոր պատվեր չի վերցնում՝ նախ վերադառնում է պահեստ և բեռնվում։'
+            : 'Այս պատվերներն ընդունվել են այդ օրը և տարվել նույն օրը։';
+        box.innerHTML = '';
+        if (open.length) {
+            const ul = document.createElement('ul');
+            ul.className = 'dp-sd-list';
+            ul.setAttribute('aria-label', 'Նոր պատվերներ');
+            open.forEach(o => ul.appendChild(sdRow(o, true)));
+            box.appendChild(ul);
+            const acts = document.createElement('div');
+            acts.className = 'dp-sd-acts';
+            const go = document.createElement('button');
+            go.type = 'button';
+            go.id = 'dpSdPropose';
+            go.className = 'rt-btn rt-btn-primary';
+            go.disabled = state.sd.busy || !state.sd.pick.size;
+            go.innerHTML = '<i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i><span></span>';
+            go.lastChild.textContent = state.sd.busy && !state.sd.options ? 'Հաշվում եմ…'
+                : 'Ցույց տալ տարբերակները' + (state.sd.pick.size ? ' (' + pl(state.sd.pick.size, 'պատվեր') + ')' : '');
+            go.addEventListener('click', proposeSameDay);
+            const later = document.createElement('button');
+            later.type = 'button';
+            later.id = 'dpSdLaterBtn';
+            later.className = 'rt-btn rt-btn-ghost';
+            later.disabled = state.sd.busy;
+            later.innerHTML = '<i class="fas fa-calendar-day" aria-hidden="true"></i><span>Թողնել վաղվան</span>';
+            later.addEventListener('click', leaveForTomorrow);
+            acts.append(go, later);
+            box.appendChild(acts);
+        }
+        if (state.sd.options) {
+            const names = new Map(open.map(o => [o.customer_id, o.name || o.code]));
+            const h = document.createElement('h3');
+            h.className = 'dp-sd-h';
+            h.textContent = state.sd.options.length ? 'Ինչպես տանել այսօր՝ ամենաէժանը վերևում' : 'Այսօր տանել չի ստացվում';
+            box.appendChild(h);
+            if (state.sd.options.length) {
+                const ul = document.createElement('ul');
+                ul.className = 'dp-sd-opts';
+                state.sd.options.forEach((o, i) => ul.appendChild(sdOption(o, i, names)));
+                box.appendChild(ul);
+            } else {
+                const p = document.createElement('p');
+                p.className = 'dp-note';
+                p.textContent = 'Ոչ մի մեքենա չի հասցնում մինչև աշխատանքային օրվա ավարտը կամ բեռը չի տեղավորվում։ Փորձեք ընտրել ավելի քիչ պատվեր կամ թողեք վաղվան։';
+                box.appendChild(p);
+            }
+            (state.sd.blocked || []).forEach(x => {
+                const p = document.createElement('p');
+                p.className = 'dp-note';
+                p.textContent = '«' + (names.get(x.customer_id) || '#' + x.customer_id) + '»՝ ' + (SD_BLOCKED[x.reason] || x.reason) + '։';
+                box.appendChild(p);
+            });
+        }
+        if (taken.length) {
+            const h = document.createElement('h3');
+            h.className = 'dp-sd-h';
+            h.textContent = sd.today ? 'Արդեն տանում ենք այսօր' : 'Տարվել են նույն օրը';
+            box.appendChild(h);
+            const ul = document.createElement('ul');
+            ul.className = 'dp-sd-list';
+            taken.forEach(o => ul.appendChild(sdRow(o, false)));
+            box.appendChild(ul);
+        }
+    }
+
+    async function proposeSameDay() {
+        if (!state.sd || state.sd.busy || !state.sd.pick.size) return;
+        const isns = [...state.sd.pick];
+        state.sd.busy = true;
+        state.sd.options = null;
+        $('dpSdErr').textContent = '';
+        renderSdDialog();
+        try {
+            const r = await api('POST', '/api/routes/dispatch/same-day', { date: state.day, orders: isns });
+            if (!state.sd) return;
+            Object.assign(state.sd, { options: r.options || [], blocked: r.blocked || [], forIsns: r.orders || isns });
+        } catch (e) {
+            if (state.sd) $('dpSdErr').textContent = e.message;
+        } finally {
+            if (state.sd) { state.sd.busy = false; renderSdDialog(); }
+        }
+        const best = $('dpSdBody').querySelector('.dp-sd-opt .rt-btn');
+        if (best) best.focus();
+    }
+
+    async function sdEdit(body) {
+        state.sd.busy = true;
+        $('dpSdErr').textContent = '';
+        renderSdDialog();
+        try {
+            const data = await api('POST', '/api/routes/dispatch/edit', { date: state.day, rev: state.data.rev, ...body });
+            state.sd.busy = false;
+            setData(data);
+            return data;
+        } catch (e) {
+            if (state.sd) { state.sd.busy = false; $('dpSdErr').textContent = e.message; renderSdDialog(); }
+            return null;
+        }
+    }
+
+    async function takeSameDay(o) {
+        if (!state.sd || state.sd.busy || !state.sd.forIsns) return;
+        const n = state.sd.forIsns.length;
+        const data = await sdEdit({ action: 'same_day', orders: state.sd.forIsns, option: o.key });
+        if (!data) return;
+        $('dpSameDayDlg').close();
+        toast(pl(n, 'պատվեր') + ' ավելացվեց այսօրվա առաքմանը՝ ' + sdTruck(o.truck, o.name)
+            + (data.delta_km !== undefined && data.delta_km !== null ? ' — ' + deltaText(data.delta_km) : '') + '։');
+    }
+
+    async function dropSameDay(o) {
+        if (!state.sd || state.sd.busy) return;
+        const data = await sdEdit({ action: 'same_day_drop', orders: [o.isn] });
+        if (data) toast('«' + (o.name || o.code) + '»՝ նոր պատվերը թողնված է վաղվան։');
+    }
+
+    function leaveForTomorrow() {
+        if (!state.sd || state.sd.busy) return;
+        const open = sdOpenOrders();
+        // отмеченные (ничего не отмечено — все) и те, что сегодня не взять: без точки на карте
+        const isns = [...new Set([...(state.sd.pick.size ? state.sd.pick : open.map(o => o.isn)),
+            ...open.filter(o => o.no_coords).map(o => o.isn)])];
+        const later = sdLater(state.day);
+        isns.forEach(x => later.add(x));
+        setSdLater(state.day, [...later].filter(x => open.some(o => o.isn === x)));
+        $('dpSameDayDlg').close();
+        renderSameDay();
+        toast(pl(isns.length, 'պատվեր') + ' կմնա վաղվա առաքման մեջ։');
     }
 
     const PROBLEM_HY = { no_depot: 'Նշեք պահեստը՝ որտեղից են մեկնում մեքենաները', no_trucks: 'Նշեք մեքենաների բեռնատարողությունը և ծախսը' };
@@ -1770,6 +2098,9 @@
             (stop.vehicle_miss ? 'Մեքենան չի կարող սպասարկել · ' : '') + vehicleText(stop.vehicle_access, true), 'fa-truck');
         const src = COORD_HY[stop.coord_source];
         if (src) tag(src[0], src[1], 'fa-location-dot');
+        // новый заказ дня, взятый в сегодняшний развоз (№72)
+        const sdIsns = new Set(sdTaken().map(o => o.isn));
+        if ((stop.orders || []).some(o => sdIsns.has(o.isn))) tag('b-ok', 'Այսօրվա նոր պատվեր', 'fa-bolt');
         if (tags.children.length) main.appendChild(tags);
         const kg = document.createElement('span');
         kg.className = 'dp-stop-kg';
@@ -3288,6 +3619,8 @@
         });
         $('dpDriverSave').addEventListener('click', () => saveDriver());
         $('dpDriverCancel').addEventListener('click', () => $('dpDriverDlg').close());
+        $('dpSdClose').addEventListener('click', () => $('dpSameDayDlg').close());
+        $('dpSameDayDlg').addEventListener('close', () => { state.sd = null; });
         $('dpDriverDlg').addEventListener('close', () => {
             const card = [...$('dpTruckCards').querySelectorAll('.dp-tcard')].find(c => c.dataset.truck === state.driverCar);
             state.driverCar = null;

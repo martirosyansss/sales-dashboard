@@ -594,6 +594,42 @@
 .dp-dlg-btns { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
 .dp-dlg-btns [hidden] { display: none; }
 
+/* Новые заказы дня (ответ владельца №72): плашка — как «Ի՞նչ անել հիմա», диалог — список, варианты и выбор */
+.dp-sameday[hidden] { display: none; }
+.dp-sd-dlg { width: min(820px, calc(100vw - 32px)); }
+.dp-sd-h { margin: 16px 0 8px; font-size: 1rem; font-weight: 700; }
+.dp-sd-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.dp-sd-row {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: center;
+    padding: 10px 12px; border: 1px solid var(--rt-line-soft); border-radius: var(--rt-radius-sm); background: var(--rt-inset);
+}
+.dp-sd-row.is-off { opacity: .6; }
+.dp-sd-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--rt-acc); }
+.dp-sd-main { min-width: 0; display: grid; gap: 2px; }
+.dp-sd-main b { overflow-wrap: anywhere; }
+.dp-sd-sub { color: var(--rt-fg-mute); font-size: .875rem; }
+.dp-sd-num { font-family: var(--rt-mono); text-align: right; white-space: nowrap; }
+.dp-sd-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.dp-sd-acts { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.dp-sd-acts .rt-btn, .dp-sd-opt .rt-btn { max-width: 100%; white-space: normal; text-align: left; }
+.dp-sd-opts { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.dp-sd-opt {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 14px; align-items: center;
+    padding: 12px 14px; border: 1px solid var(--rt-line); border-radius: var(--rt-radius-sm); background: var(--rt-panel-2);
+}
+.dp-sd-opt.is-best { border-color: var(--rt-ok-line); }
+.dp-sd-opt-t { margin: 0; font-weight: 700; }
+.dp-sd-opt-t i { color: var(--rt-acc); margin-right: 6px; }
+.dp-sd-opt p { margin: 0; color: var(--rt-fg-dim); line-height: 1.45; }
+.dp-sd-cost { display: flex; flex-wrap: wrap; gap: 6px; font-family: var(--rt-mono); }
+.dp-sd-opt .rt-btn { grid-column: 2; grid-row: 1 / span 4; }
+@media (max-width: 640px) {
+    .dp-sd-row { grid-template-columns: auto minmax(0, 1fr); }
+    .dp-sd-row .dp-sd-num, .dp-sd-row .rt-btn { grid-column: 2; text-align: left; }
+    .dp-sd-opt { grid-template-columns: minmax(0, 1fr); }
+    .dp-sd-opt .rt-btn { grid-column: 1; grid-row: auto; justify-self: start; }
+}
+
 #rtDispatch .dp-toast { border-radius: 14px; border-color: var(--rt-acc-dim); background: var(--rt-panel-2); box-shadow: 0 18px 44px rgba(0, 0, 0, .5); }
 
 /* ==========================================================================

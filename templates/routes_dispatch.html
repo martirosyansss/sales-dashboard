@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=22">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=39">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=40">
 {% endblock %}
 
 {% block content %}
@@ -89,6 +89,9 @@
     <div id="dpBody" hidden>
         <!-- ЧТО ДЕЛАТЬ СЕЙЧАС: одна подсказка и главная кнопка по состоянию дня -->
         <section id="dpTodo" class="dp-todo" aria-live="polite"></section>
+
+        <!-- НОВЫЕ ЗАКАЗЫ ДНЯ (ответ владельца №72): пришли сегодня — плашка и «что с ними делать» (диалог dpSameDayDlg) -->
+        <section id="dpSameDay" class="dp-todo dp-sameday" aria-live="polite" hidden></section>
 
         <div id="dpActionError" class="rt-alert d-none" role="alert" tabindex="-1">
             <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
@@ -358,6 +361,16 @@
             <button type="button" id="dpUnloadCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
         </div>
     </dialog>
+    <!-- Новые заказы дня (ответ владельца №72): список, варианты «как везти сегодня» и «Թողնել վաղվան» -->
+    <dialog id="dpSameDayDlg" class="dp-dlg dp-sd-dlg" aria-labelledby="dpSdTitle" aria-describedby="dpSdLead">
+        <h2 class="dp-dlg-t" id="dpSdTitle">Այսօրվա նոր պատվերները</h2>
+        <p class="dp-dlg-lead" id="dpSdLead"></p>
+        <div id="dpSdBody"></div>
+        <div class="rt-ferr" id="dpSdErr" role="alert"></div>
+        <div class="dp-dlg-btns">
+            <button type="button" id="dpSdClose" class="rt-btn rt-btn-ghost">Փակել</button>
+        </div>
+    </dialog>
     <!-- водитель машины для «Բեռնագիր» (ответ владельца №62): с дня на странице и до следующей смены -->
     <dialog id="dpDriverDlg" class="dp-dlg dp-unload-dlg" aria-labelledby="dpDriverTitle" aria-describedby="dpDriverLead dpDriverHint">
         <h2 class="dp-dlg-t" id="dpDriverTitle">Վարորդ և առաքիչ</h2>
@@ -394,5 +407,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=71"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=72"></script>
 {% endblock %}
