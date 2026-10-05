@@ -22,7 +22,7 @@ from .evaluate import (ACTIVE_WINDOW_DAYS, CALIB_WINDOW_DAYS, FACT_WINDOW_DAYS, 
 from .geo import (GPS_MIN_VISITS, Fix, HomeGuess, Point, default_point_keys, guess_home,
                   is_valid_point, median_point, point_key)
 from .plan import CurrentPlan, build_plan
-from .store import RefData
+from .store import TRUCK_CAPACITY_KG, RefData
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,14 @@ class Snapshot:
     def ref_data(self) -> RefData:
         return RefData(car_codes=frozenset(self.cars), agent_ids=frozenset(self.plan.agent_ids),
                        group_codes=frozenset(self.customer_groups), van_agent_ids=frozenset(self.expeditors))
+
+    @property
+    def car_capacity(self) -> dict[str, float]:
+        """Машина → грузоподъёмность из карточки ERP, кг: тоннаж машины, у которой в настройках пусто. Только заданные и
+        в пределах поля настроек (TRUCK_CAPACITY_KG): кг вместо тонн в карточке не превратят машину в 3500 т."""
+        lo, hi = TRUCK_CAPACITY_KG
+        return {code: car.capacity_kg for code, car in self.cars.items()
+                if car.capacity_kg is not None and lo <= car.capacity_kg <= hi}
 
     @property
     def active_cars(self) -> frozenset[str]:

@@ -561,9 +561,36 @@
         const code = String(t.car_code ?? '');
         const who = 'մեքենա ' + code;
         const capE = errNode(), fuelE = errNode(), actE = errNode();
+        // Тоннаж из карточки ERP (CARS): своё поле пусто — в расчёте он (store.Bundle.resolved_trucks); заполнено и
+        // отличается — подсказка с кнопкой «взять из ERP». Сохранённое значение само не меняется.
+        const erpCap = manual ? null : num(t.erp_capacity_kg);
         const cap = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 0.1, max: 30, step: 0.1,
             value: num(t.capacity_kg) === null ? '' : String(round(num(t.capacity_kg) / 1000, 3)),
-            placeholder: '—', 'aria-label': 'Տոննաժ, տոննա — ' + who, dataset: { f: 'cap' } });
+            placeholder: erpCap === null ? '—' : fmt(erpCap / 1000, 3), 'aria-label': 'Տոննաժ, տոննա — ' + who, dataset: { f: 'cap' } });
+        if (erpCap !== null) cap.dataset.erp = '1';   // пустое поле — в расчёте тоннаж ERP (renderProgress)
+        const capErp = h('span', { class: 'rs-cap-erp', role: 'note' });
+        const syncCapErp = () => {
+            capErp.textContent = '';
+            const c = readNum(cap, true).value, erpT = erpCap === null ? null : erpCap / 1000;
+            capErp.classList.toggle('is-diff', erpT !== null && c !== null && c !== undefined && Math.abs(c - erpT) > 1e-6);
+            if (erpT === null || c === undefined) {
+                // нет тоннажа в ERP или в поле не число
+            } else if (c === null) {
+                capErp.append('հաշվարկում՝ ' + fmt(erpT, 3) + NB + 'տ ըստ ERP-ի');
+            } else if (capErp.classList.contains('is-diff')) {
+                const take = h('button', { type: 'button', class: 'rt-hintbtn', 'aria-label': 'Վերցնել տոննաժը ERP-ից — ' + who }, 'վերցնել ERP-ից');
+                take.addEventListener('click', () => {
+                    cap.value = String(round(erpT, 3));
+                    cap.dispatchEvent(new Event('input', { bubbles: true }));
+                    cap.focus();
+                    announce(code + '՝ տոննաժը վերցված է ERP-ից (' + fmt(erpT, 3) + NB + 'տ)');
+                });
+                capErp.append('ERP-ում՝ ' + fmt(erpT, 3) + NB + 'տ ', take);
+            }
+            capErp.hidden = !capErp.textContent;
+        };
+        syncCapErp();
+        cap.addEventListener('input', syncCapErp);
         const fuel = h('input', { class: 'rt-input', type: 'number', inputmode: 'decimal', min: 1, max: 80, step: 0.1,
             value: num(t.fuel_l_per_100km) === null ? '' : String(t.fuel_l_per_100km),
             placeholder: '—', 'aria-label': 'Ծախս, լիտր 100 կմ-ի վրա — ' + who, dataset: { f: 'fuel' } });
@@ -637,8 +664,9 @@
             dataset: { f: 'big' } }, bigAutoOpt,
             h('option', { value: 'yes', text: 'այո', selected: bigMode === 'yes' }),
             h('option', { value: 'no', text: 'ոչ', selected: bigMode === 'no' }));
-        const syncBigAuto = () => {   // «авто» следует за тоннажем в поле, как его посчитает сервер (store.big_auto)
-            const c = readNum(cap, true).value;
+        const syncBigAuto = () => {   // «авто» следует за тоннажем в поле (пусто — ERP), как сервер (Bundle.truck_big)
+            const typed = readNum(cap, true).value;
+            const c = typed === null && erpCap !== null ? erpCap / 1000 : typed;
             const on = c !== null && c !== undefined && c >= BIG_AUTO_T;
             big.dataset.auto = on ? '1' : '0';
             bigAutoOpt.textContent = 'ավտոմատ՝ ' + (on ? 'այո' : 'ոչ');
@@ -652,7 +680,7 @@
             manual ? h('span', { class: 'rt-badge b-manual mt-1', text: 'ավելացված է ձեռքով' }) : null);
         const tr = h('tr', { class: t.erp_closed ? 'is-closed' : null, dataset: manual ? { mk: t.key } : { i: String(i) } },
             nameCell,
-            h('td', { class: 'w-num w-half', dataset: { label: 'Տոննաժ, տ' } }, cap, capE),
+            h('td', { class: 'w-num w-half', dataset: { label: 'Տոննաժ, տ' } }, cap, capE, capErp),
             h('td', { class: 'w-num w-half', dataset: { label: 'Ծախս, լ/100 կմ' } }, fuel, fuelE, costs),
             h('td', { class: 'rs-erp-cell', dataset: { label: manual ? 'Առաքիչ' : 'Ըստ ERP ապրանքագրերի' } }, manual ? vanHint(t) : erpHint(t), idle),
             h('td', { class: 'w-sel', dataset: { label: 'Կենտրոն' } }, center, centerE),
@@ -1285,7 +1313,8 @@
         $('rsTrucks').querySelectorAll('tbody tr').forEach(tr => {
             const q = (f) => tr.querySelector('[data-f="' + f + '"]');
             if (!q('active').checked) return;
-            if (String(q('cap').value).trim() !== '' && String(q('fuel').value).trim() !== '') full += 1;
+            const cap = q('cap');
+            if ((String(cap.value).trim() !== '' || cap.dataset.erp) && String(q('fuel').value).trim() !== '') full += 1;
             else noData += 1;
         });
         const trucksOk = full > 0 && !noData;

@@ -1074,7 +1074,7 @@ def evaluate_plan(snap: Snapshot, bundle: Bundle, calib: Calibration | None = No
     evals = tuple(_evaluate_manager(snap, bundle, a, a in included_ids, models, visit_minutes,
                                     norms, coords)
                   for a in all_ids if a in wanted)
-    trucks, incomplete = fl.fleet_trucks(bundle.resolved_trucks(snap.active_cars),
+    trucks, incomplete = fl.fleet_trucks(bundle.resolved_trucks(snap.active_cars, snap.car_capacity),
                                          {code: car.name for code, car in snap.cars.items()})
     fleet = None
     if bundle.depot is not None and trucks:

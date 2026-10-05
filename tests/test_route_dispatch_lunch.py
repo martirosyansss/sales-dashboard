@@ -364,7 +364,7 @@ def test_lunch_settings_validation(store):
 def test_settings_page_has_lunch_fields():
     js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     assert all(f"key: '{k}'" in js for k in ('truck_lunch_min', 'truck_lunch_from', 'truck_lunch_to'))
-    assert "routes_settings.js') }}?v=28" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
+    assert "routes_settings.js') }}?v=30" in (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
     page = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
     assert "routes_dispatch.js') }}?v=75" in page and "routes_dispatch.css') }}?v=42" in page
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')

@@ -278,7 +278,7 @@ WHERE p.fDATETIME >= ? AND p.fDATETIME < ?
 """
 
 SQL_CARS = """
-SELECT LTRIM(RTRIM(c.fCODE)), c.fNAME, c.fISCLOSED
+SELECT LTRIM(RTRIM(c.fCODE)), c.fNAME, c.fISCLOSED, c.fMAXCAPACITYBYWEIGHT
 FROM CARS c WITH (NOLOCK)
 """
 
@@ -433,6 +433,7 @@ class Car:
     code: str
     name: str
     closed: bool
+    capacity_kg: float | None = None   # грузоподъёмность из карточки ERP (fMAXCAPACITYBYWEIGHT, тонны); 0 — не задана
 
 
 def agents(conn: Any) -> dict[int, Agent]:
@@ -509,8 +510,13 @@ def tracks(conn: Any, since: datetime, until: datetime) -> dict[int, list[Fix]]:
 
 # --- Машины ---
 
+def _capacity_kg(tonnes: Any) -> float | None:
+    """Грузоподъёмность ERP (тонны, money — 4 знака) → целые кг, как сохраняет страница; NULL, 0 и меньше — не задана."""
+    return float(round(tonnes * 1000)) if tonnes is not None and tonnes > 0 else None
+
+
 def cars(conn: Any) -> dict[str, Car]:
-    return {_str(r[0]): Car(_str(r[0]), _str(r[1]), bool(r[2])) for r in _select(conn, SQL_CARS)}
+    return {_str(r[0]): Car(_str(r[0]), _str(r[1]), bool(r[2]), _capacity_kg(r[3])) for r in _select(conn, SQL_CARS)}
 
 
 def car_last_used(conn: Any) -> dict[str, date]:

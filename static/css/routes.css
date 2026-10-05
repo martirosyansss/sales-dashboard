@@ -707,6 +707,9 @@
 .rs-idle { display: block; margin-top: 6px; font-size: .8125rem; line-height: 1.4; color: var(--rt-warn); }
 .rs-idle[hidden] { display: none; }
 .rs-idle.is-soft { color: var(--rt-fg-dim); font-style: italic; }
+.rs-cap-erp { display: block; margin-top: 4px; font-size: .75rem; line-height: 1.35; color: var(--rt-fg-mute); }
+.rs-cap-erp.is-diff { color: var(--rt-warn); }
+.rs-cap-erp[hidden] { display: none; }
 /* «В центр» у машины и граница малого центра на карте (окна приёма и малый центр, №39–41) */
 .rs-center-sel { min-width: 112px; }
 .rs-load-costs { margin-top: 8px; min-width: 0; max-width: 220px; font-size: 12px; }

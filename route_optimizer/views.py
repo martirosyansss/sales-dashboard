@@ -591,13 +591,15 @@ def _trucks_json(snap: Snapshot, bundle: Bundle, prices: Mapping[str, garage.Pri
     manual — выбор владельца, auto — решают накладные (auto_active: возила за CAR_IDLE_DAYS дней).
     «Можно в центр» (center_ok) — так же: center_ok_source, auto_center_ok — по названию (машины JAC). «Большая машина»
     (big, №68) — так же: big_source, auto_big — по тоннажу (store.big_auto; страница пересчитывает при правке тоннажа).
+    Тоннаж: capacity_kg — из настроек (его и сохраняет страница), erp_capacity_kg — из карточки ERP (CARS): в расчёте,
+    когда своё поле пусто (Bundle.resolved_trucks), и по нему «большая машина» авто.
     Износ: wear_amd_per_km — ручное значение (его и сохраняет страница); garage — ремонт ֏/км журнала гаража на
     сегодня (только чтение), garage_prior — средняя модели или парка машине без своей цены журнала (garage.Prior),
     wear_source — какое значение в расчёте (garage | manual | garage_avg | None)."""
     prices, priors = prices or {}, priors or {}
     used = _garage_bundle(bundle, prices, priors)
     out = []
-    active_cars = snap.active_cars
+    active_cars, erp_capacity = snap.active_cars, snap.car_capacity
     for code, car in sorted(snap.cars.items()):
         t = bundle.trucks.get(code)
         if t is not None and t.manual:
@@ -610,6 +612,7 @@ def _trucks_json(snap: Snapshot, bundle: Bundle, prices: Mapping[str, garage.Pri
             'manual': False,
             'erp_closed': car.closed,
             'capacity_kg': t.capacity_kg if t else None,
+            'erp_capacity_kg': erp_capacity.get(code),   # карточка ERP: в расчёте, когда своё поле пусто (resolved_trucks)
             'fuel_l_per_100km': t.fuel_l_per_100km if t else None,
             **profile_fields(t),
             'active': bundle.truck_active(code, active_cars),
@@ -618,8 +621,9 @@ def _trucks_json(snap: Snapshot, bundle: Bundle, prices: Mapping[str, garage.Pri
             'center_ok': bundle.truck_center_ok(code, car.name),
             'center_ok_source': 'auto' if t is None or t.center_ok is None else 'manual',
             'auto_center_ok': center_auto(car.name),
-            'big': bundle.truck_big(code), 'big_source': 'auto' if t is None or t.big is None else 'manual',
-            'auto_big': big_auto(t.capacity_kg if t else None),
+            'big': bundle.truck_big(code, erp_capacity),
+            'big_source': 'auto' if t is None or t.big is None else 'manual',
+            'auto_big': big_auto(bundle.truck_capacity(code, erp_capacity)),
             'garage': _garage_price_json(prices.get(code)), 'wear_source': used.wear_source(code),
             'garage_prior': _garage_prior_json(priors.get(code)),
             'last_used': last.isoformat() if last else None,
@@ -1030,19 +1034,26 @@ def _same_day_now() -> datetime:
     return _yerevan_now().replace(tzinfo=None)
 
 
+def _peek_car_capacity(state: RoutesState) -> dict[str, float] | None:
+    """Тоннаж машин из карточек ERP по снимку в памяти (SnapshotCache.peek: ERP здесь не читается) — для отчётов,
+    чтобы загрузка считалась от того же тоннажа, что и в расчёте; снимка нет — только тоннаж из настроек."""
+    snap = state.snapshots.peek()
+    return snap.car_capacity if snap is not None else None
+
+
 def _ready_trucks(snap: Snapshot, bundle: Bundle, active_only: bool = True) -> dict[str, fl.FleetTruck]:
     """Машины, готовые к расчёту: тоннаж и расход заданы (и активны — для плана); с правом въезда в центр и признаком
     «большая машина» (№68); износ — как в расчёте (Bundle.resolved_trucks: журнал гаража или ручной)."""
     names = {code: car.name for code, car in snap.cars.items()}
-    resolved = bundle.resolved_trucks(snap.active_cars)
+    resolved = bundle.resolved_trucks(snap.active_cars, snap.car_capacity)
     if active_only:
         ready, _ = fl.fleet_trucks(resolved, names)
         return {t.car_code: replace(t, center_ok=bundle.truck_center_ok(t.car_code, names.get(t.car_code)),
-                                    big=bundle.truck_big(t.car_code))
+                                    big=bundle.truck_big(t.car_code, snap.car_capacity))
                 for t in ready}
     return {code: fl.FleetTruck(code, names.get(code) or t.name, float(t.capacity_kg), float(t.fuel_l_per_100km),
                                 bundle.truck_center_ok(code, names.get(code)), **profile_fields(t),
-                                big=bundle.truck_big(code))
+                                big=bundle.truck_big(code, snap.car_capacity))
             for code, t in sorted(resolved.items())
             if t.capacity_kg is not None and t.fuel_l_per_100km is not None}
 
@@ -3173,11 +3184,11 @@ def api_learning() -> Any:
     since = (rng[0] - timedelta(days=60)).isoformat()
     intervals = learning.fuel_intervals([r for r in refuels if (r.get('eff_date') or r.get('date') or '') >= since])
     rows = []
+    erp_capacity = _peek_car_capacity(state)
     for car, day, stops, actual, draft, plan_trips, plan_stops in days:
-        truck = bundle.trucks.get(car)
         prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
         rows.append(learning.day_report(car, day, actual, stops, prediction, plan_trips, plan_stops,
-                                        truck.capacity_kg if truck is not None else None,
+                                        bundle.truck_capacity(car, erp_capacity),
                                         learning.daily_l100(intervals, car, day)))
     rows.sort(key=lambda r: (r['day'], r['car_code']), reverse=True)
     return jsonify({'success': True, 'from': rng[0].isoformat(), 'to': rng[1].isoformat(),
@@ -3309,7 +3320,8 @@ def _garage_admin() -> bool:
 
 def _garage_trucks(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]:
     """Машины раздела (таблица trucks): номер, название (ERP CARS, у ручной — своё), в работе ли — машина расчёта
-    (работает, тоннаж и расход заданы). ERP недоступна — названия только у ручных, «работает» — не выключена."""
+    (работает, тоннаж — свой или из карточки ERP — и расход заданы). ERP недоступна — названия только у ручных,
+    «работает» — не выключена, тоннаж — только свой."""
     try:
         snap, _ = state.snapshots.cached()
     except ErpError:
@@ -3319,8 +3331,9 @@ def _garage_trucks(state: RoutesState, bundle: Bundle) -> list[dict[str, Any]]:
     for code, t in sorted(bundle.trucks.items()):
         car = snap.cars.get(code) if snap is not None and not t.manual else None
         active = bundle.truck_active(code, snap.active_cars) if snap is not None else t.active is not False
+        capacity = bundle.truck_capacity(code, snap.car_capacity if snap is not None else None)
         out.append({'car_code': code, 'name': (car.name if car is not None else t.name) or '',
-                    'active': bool(active and t.capacity_kg is not None and t.fuel_l_per_100km is not None)})
+                    'active': bool(active and capacity is not None and t.fuel_l_per_100km is not None)})
     return out
 
 
@@ -3611,11 +3624,11 @@ def api_garage_norm() -> Any:
     rejected: list[learning.Interval] = []
     intervals = learning.fuel_intervals(refuels, rejected)
     reports: dict[str, list[dict[str, Any]]] = {}
+    erp_capacity = _peek_car_capacity(state)
     for car, day, stops, actual, draft, plan_trips, plan_stops in days:
-        truck = bundle.trucks.get(car)
         prediction = (((draft or {}).get('prediction') or {}).get('trucks') or {}).get(car)
         reports.setdefault(car, []).append(learning.day_report(
-            car, day, actual, stops, prediction, plan_trips, plan_stops, truck.capacity_kg if truck is not None else None,
+            car, day, actual, stops, prediction, plan_trips, plan_stops, bundle.truck_capacity(car, erp_capacity),
             learning.daily_l100(intervals, car, day)))
     ends: dict[str, list[tuple[date, float, float]]] = {}
     for iv in intervals:

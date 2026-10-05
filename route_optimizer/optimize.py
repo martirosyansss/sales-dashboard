@@ -655,7 +655,7 @@ def _fleet_setup(ctx: _Ctx, run_ids: Sequence[int]) -> _Fleet | None:
     snap, bundle, before = ctx.snap, ctx.bundle, ctx.before
     s = bundle.settings
     norms = before.norms
-    trucks, _ = fl.fleet_trucks(bundle.resolved_trucks(snap.active_cars),
+    trucks, _ = fl.fleet_trucks(bundle.resolved_trucks(snap.active_cars, snap.car_capacity),
                                 {code: car.name for code, car in snap.cars.items()})
     if bundle.depot is None or not trucks:
         return None
@@ -987,7 +987,7 @@ class _FullFleet:
     def __init__(self, ctx: _Ctx):
         snap, s = ctx.snap, ctx.bundle.settings
         self.ctx = ctx
-        self.trucks, _ = fl.fleet_trucks(ctx.bundle.resolved_trucks(snap.active_cars),
+        self.trucks, _ = fl.fleet_trucks(ctx.bundle.resolved_trucks(snap.active_cars, snap.car_capacity),
                                          {code: car.name for code, car in snap.cars.items()})
         self.tn = fl.TruckNorms.from_settings(s)
         self.coords = dict(ctx.before.coords)
