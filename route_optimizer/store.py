@@ -957,14 +957,19 @@ class Bundle:
             return code in active_cars
         return t.active
 
-    def resolved_trucks(self, active_cars: Collection[str]) -> dict[str, Truck]:
+    def resolved_trucks(self, active_cars: Collection[str],
+                        erp_capacity: Mapping[str, float] | None = None) -> dict[str, Truck]:
         """Машины расчёта парка и развоза — единственная точка, где запись машины становится нормами расчёта:
-        действующее «активна» (bool) и «Износ, драм/км» — по журналу гаража, если его цена готова (garage_wear), иначе
-        ручной из настроек, а пустой ручной (None; 0 — задано) — средняя модели или парка (garage_prior)."""
+        действующее «активна» (bool), тоннаж — из настроек, а пустой (None) у машины ERP — из её карточки ERP
+        (erp_capacity, Snapshot.car_capacity), и «Износ, драм/км» — по журналу гаража, если его цена готова
+        (garage_wear), иначе ручной из настроек, а пустой ручной (None; 0 — задано) — средняя модели или парка
+        (garage_prior)."""
         out = {}
         for code, t in self.trucks.items():
             if t.active is None:
                 t = replace(t, active=code in active_cars)
+            if t.capacity_kg is None:
+                t = replace(t, capacity_kg=self.truck_capacity(code, erp_capacity))
             if code in self.garage_wear:
                 t = replace(t, wear_amd_per_km=self.garage_wear[code])
             elif t.wear_amd_per_km is None and code in self.garage_prior:
@@ -990,12 +995,23 @@ class Bundle:
             return center_auto(name if name is not None or t is None else t.name)
         return t.center_ok
 
-    def truck_big(self, code: str) -> bool:
-        """Большая ли машина (№68): выбор владельца; «авто» (записи нет или big NULL) — big_auto по тоннажу записи."""
+    def truck_big(self, code: str, erp_capacity: Mapping[str, float] | None = None) -> bool:
+        """Большая ли машина (№68): выбор владельца; «авто» (записи нет или big NULL) — big_auto по тоннажу в расчёте
+        (truck_capacity: из настроек, пустой у машины ERP — из её карточки ERP)."""
         t = self.trucks.get(code)
         if t is None:
             return False
-        return big_auto(t.capacity_kg) if t.big is None else t.big
+        return big_auto(self.truck_capacity(code, erp_capacity)) if t.big is None else t.big
+
+    def truck_capacity(self, code: str, erp_capacity: Mapping[str, float] | None = None) -> float | None:
+        """Тоннаж машины в расчёте, кг: из настроек, а пустой у машины ERP — из её карточки ERP (erp_capacity,
+        Snapshot.car_capacity); у ручной машины карточки ERP нет. Записи нет — None."""
+        t = self.trucks.get(code)
+        if t is None:
+            return None
+        if t.capacity_kg is None and not t.manual and erp_capacity:
+            return erp_capacity.get(code)
+        return t.capacity_kg
 
     def van_trucks(self) -> dict[int, str]:
         """Экспедитор → ручная машина: его накладные без машины в ERP — рейсы этой машины."""

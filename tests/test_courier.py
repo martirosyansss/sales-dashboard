@@ -284,7 +284,7 @@ class FakeErp:
         if sql == erp.SQL_AGENTS:
             return [(7, 'A7', 'Մենեջեր', False, 'Կենտրոն')]
         if sql == erp.SQL_CARS:
-            return [('991AT61', 'HOWO', False)]
+            return [('991AT61', 'HOWO', False, None)]
         if sql.startswith(ed.SQL_DEBIT_BEFORE.split('{')[0]):
             assert params[-1] == date(2026, 10, 2)      # долг — на утро дня, без накладных дня
             return [(11, 50000), (12, 1000)]
