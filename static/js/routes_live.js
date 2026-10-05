@@ -26,7 +26,7 @@
     const NET = { wifi: 'Wi-Fi', cell: 'բջջային', none: 'չկա' };
     const GPS = { on: 'միացված', off: 'անջատված', no_permission: 'թույլտվություն չկա' };
 
-    const state = { date: '', data: null, detail: null, selected: null, timer: null, busy: false, fitted: false,
+    const state = { date: '', data: null, detail: null, selected: null, timer: null, busy: false, again: false, fitted: false,
         map: null, markers: new Map(), layer: null, zone: null };
 
     function h(tag, props, ...kids) {
@@ -297,7 +297,7 @@
     const query = () => (state.date ? '?date=' + encodeURIComponent(state.date) : '');
 
     async function refresh() {
-        if (state.busy) return;
+        if (state.busy) { state.again = true; return; }   // дата/выбор сменились во время запроса — один повтор после него
         state.busy = true;
         try {
             const data = await api('/api/routes/live' + query());
@@ -323,6 +323,7 @@
             showError(e.message);
         } finally {
             state.busy = false;
+            if (state.again) { state.again = false; refresh(); }
         }
     }
 

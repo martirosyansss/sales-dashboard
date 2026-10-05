@@ -15,12 +15,19 @@ from __future__ import annotations
 
 import math
 import os
+import threading
+import time
 from datetime import datetime
 from typing import Any, Mapping
 
 from . import clock, merge as mg
 from .facts import delivered_share
 from .store import Store
+
+TTL_TODAY_S = 10.0     # расчёт флота за сегодня переиспользуется столько секунд (опрос карты — раз в 15 с на зрителя)
+TTL_PAST_S = 600.0     # за прошлый день данные почти не меняются (доезжают пачки старых APK)
+CACHE_DAYS = 8         # дней в кэше (дальше вытесняется самый старый)
+_monotonic = time.monotonic   # подмена в тестах
 
 DONE = ('full', 'partial', 'refused', 'covered')   # точка закрыта водителем (N из «N/M»)
 
@@ -62,16 +69,51 @@ def _share(sid: str, stop: Mapping[str, Any], status: str, deliveries: Mapping[s
     return None, None
 
 
+class _Entry:
+    """Расчёт флота за один день: свой замок — одно вычисление на день, остальные ждут и берут его результат."""
+    __slots__ = ('lock', 'value', 'fingerprint', 'expires')
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.value: dict[str, dict[str, Any]] | None = None
+        self.fingerprint: tuple[Any, ...] | None = None
+        self.expires = 0.0
+
+
 class LiveSource:
-    """Факт машин за день для «Маршрутов» (протокол route_optimizer.live.LiveFacts)."""
+    """Факт машин за день для «Маршрутов» (протокол route_optimizer.live.LiveFacts). Расчёт дня кэшируется в процессе
+    (опрос карты каждые 15 с у каждого зрителя + /truck): TTL_TODAY_S / TTL_PAST_S; после TTL — отпечаток данных
+    (Store.day_fingerprint): не менялся — тот же расчёт, иначе пересчёт. Возвращаемое — только для чтения."""
 
     def __init__(self, store: Store):
         self.store = store
+        self._guard = threading.Lock()
+        self._entries: dict[str, _Entry] = {}
 
     def _exists(self) -> bool:
         return os.path.exists(self.store.path)   # нет базы — не создаём её чтением
 
     def fleet(self, day: str) -> dict[str, dict[str, Any]]:
+        """Машина → факт дня (с кэшем — см. класс; состав — _compute)."""
+        if not self._exists():
+            return {}
+        with self._guard:
+            entry = self._entries.get(day)
+            if entry is None:
+                if len(self._entries) >= CACHE_DAYS:
+                    self._entries.pop(next(iter(self._entries)))
+                entry = self._entries[day] = _Entry()
+        with entry.lock:
+            if entry.value is not None and _monotonic() < entry.expires:
+                return entry.value
+            fingerprint = self.store.day_fingerprint(day)   # до расчёта: изменение во время него поймает следующий вызов
+            if entry.value is None or fingerprint != entry.fingerprint:
+                entry.value = self._compute(day)
+                entry.fingerprint = fingerprint
+            entry.expires = _monotonic() + (TTL_TODAY_S if day >= clock.today().isoformat() else TTL_PAST_S)
+            return entry.value
+
+    def _compute(self, day: str) -> dict[str, dict[str, Any]]:
         """Машина → факт дня (рабочий день day, YYYY-MM-DD):
         - stops — точки последнего /day машины: stop_id, customer_id, name, lat, lon, seq, weight_kg, unweighed (строк
           без веса), status (§5 п. 12), share (доля доставленного или None), delivered_at (ISO или None);
@@ -83,17 +125,16 @@ class LiveSource:
         - devices — [(at ISO, gps)] всех состояний по порядку: когда GPS был выключен;
         - closed_at — момент последнего day_closed (ISO) или None.
         Машины — с событиями или точками /day на этот день."""
-        if not self._exists():
-            return {}
-        from .views import day_model   # views импортирует facts; здесь — только в запросе (без цикла при импорте)
-        events = self.store.events_for_day(day)
+        from .views import _moment, day_model   # views импортирует facts; здесь — только в запросе (без цикла при импорте)
+        events = self.store.events_for_day(day, skip_track=True)   # heartbeat-ы трека правилу дня не нужны
+        beats = self.store.heartbeats_for_day(day)
         model = day_model(day, events)
         inputs_by_id = {e['id']: e for e in model.inputs}
         deliveries = mg.latest_by_stop(model.inputs, 'delivery')
         absorbed: dict[str, list[str]] = {}
         for x, owner in model.absorbed_by.items():
             absorbed.setdefault(owner, []).append(x)
-        cars = sorted(set(model.current) | {e['car_code'] for e in events})
+        cars = sorted(set(model.current) | {e['car_code'] for e in events + beats})
         out: dict[str, dict[str, Any]] = {}
         for car in cars:
             stops = []
@@ -111,25 +152,25 @@ class LiveSource:
                               'share': share, 'delivered_at': clock.iso(at) if at is not None else None})
             out[car] = {'stops': stops, 'track': self.store.track(car, day), 'drivers': [], 'last_contact': None,
                         'contacts': [], 'device': None, 'devices': [], 'closed_at': None}
-        for e in sorted(events, key=lambda e: e['received_at']):
+        for e in sorted(events + beats, key=lambda e: e['received_at']):
             row = out[e['car_code']]
             row['contacts'].append(e['received_at'])
             name = e['driver_name'] or f'#{e["driver_id"]}'
             row['drivers'] = [name] + [n for n in row['drivers'] if n != name]
         for e in events:   # по моменту события (at_utc)
-            row = out[e['car_code']]
             if e['type'] == 'day_closed' and e['id'] in inputs_by_id:
-                row['closed_at'] = clock.iso(inputs_by_id[e['id']]['at'])
-            device = e['payload'].get('device') if e['type'] == 'track' else None
-            if isinstance(device, dict) and e['id'] in inputs_by_id:
-                at = clock.iso(inputs_by_id[e['id']]['at'])
-                row['device'] = {**device, 'at': at}
-                row['devices'].append((at, device.get('gps')))
+                out[e['car_code']]['closed_at'] = clock.iso(inputs_by_id[e['id']]['at'])
+        for e in beats:
+            at = _moment(e)
+            if e['device'] is not None and at is not None:
+                row = out[e['car_code']]
+                row['device'] = {**e['device'], 'at': clock.iso(at)}
+                row['devices'].append((clock.iso(at), e['device'].get('gps')))
         for row in out.values():
             row['last_contact'] = row['contacts'][-1] if row['contacts'] else None
         for t in self.store.list_terminals():
             row = out.get(t.car_code)
-            if row is not None and not t.revoked and t.last_seen_at \
+            if row is not None and not t.revoked and t.last_seen_at and t.last_seen_at[:10] == day \
                     and (row['last_contact'] is None or t.last_seen_at > row['last_contact']):
                 row['last_contact'] = t.last_seen_at
         return out

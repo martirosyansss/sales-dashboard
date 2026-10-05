@@ -7,7 +7,9 @@
 Синтетические данные, без ERP; базы — временные. Запуск из корня проекта:  python -m pytest tests/test_route_live.py -q
 """
 import math
+import sqlite3
 import sys
+from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -344,19 +346,47 @@ def test_no_contact_current_and_journal():
     tr = Track().park(DEPOT, 5).drive(A)
     contacts = [T0, T0 + timedelta(minutes=3), T0 + timedelta(minutes=11), T0 + timedelta(minutes=12)]
     now = T0 + timedelta(minutes=18)
-    card = view(facts(tr.pts, [stop('S:A', 1, A, 100.0)], contacts), now, detail=True)
+    card = view(facts(tr.pts, [stop('S:A', 1, A, 100.0)], contacts, NEW_APK), now, detail=True)
     nc = [a for a in card['alerts_log'] if a['kind'] == 'no_contact']
     assert [(a['minutes'], a['active']) for a in nc] == [(8, False), (6, True)]
     assert card['state'] == 'offline' and card['contact_age_s'] == 360
     # 5 мин ровно — ещё на связи
-    card = view(facts(tr.pts, [stop('S:A', 1, A, 100.0)], contacts), T0 + timedelta(minutes=17), detail=True)
+    card = view(facts(tr.pts, [stop('S:A', 1, A, 100.0)], contacts, NEW_APK), T0 + timedelta(minutes=17), detail=True)
     assert 'no_contact' not in card['alerts']['active']
     # день закрыт (day_closed) — «нет связи» после закрытия не тревога
-    card = view(facts(tr.pts, [stop('S:A', 1, A, 100.0)], contacts, closed_at=T0 + timedelta(minutes=12)), now)
+    card = view(facts(tr.pts, [stop('S:A', 1, A, 100.0)], contacts, NEW_APK, closed_at=T0 + timedelta(minutes=12)), now)
     assert card['alerts']['active'] == [] and card['state'] == 'closed'
     # прошлый день — тревог «сейчас» нет
-    card = view(facts(tr.pts, [stop('S:A', 1, A, 100.0)], contacts), now + timedelta(days=1))
+    card = view(facts(tr.pts, [stop('S:A', 1, A, 100.0)], contacts, NEW_APK), now + timedelta(days=1))
     assert 'no_contact' not in card['alerts']['active'] and card['next'] is None
+
+
+NEW_APK = {'battery': 50, 'charging': False, 'gps': 'on', 'net': 'cell', 'app': '2.2.0'}
+
+
+def test_no_contact_alarm_only_for_new_apk_before_20_and_within_3h():
+    tr = Track().park(DEPOT, 5).drive(A)
+    st = [stop('S:A', 1, A, 100.0)]
+    contacts = [T0, T0 + timedelta(minutes=3)]
+    t = lambda m: T0 + timedelta(minutes=m)   # noqa: E731
+    # APK 2.2.0 (есть device): 10 мин тишины — тревога
+    card = view(facts(tr.pts, st, contacts, NEW_APK), t(13))
+    assert 'no_contact' in card['alerts']['active'] and card['state'] == 'offline'
+    # старый APK (пачки раз в 2-17 мин): состояние «կապ չկա», но ни тревоги, ни записей перерывов в журнале
+    old = view(facts(tr.pts, st, [T0, t(3), t(20), t(22)]), t(30), detail=True)
+    assert old['state'] == 'offline' and old['alerts']['active'] == []
+    assert not [a for a in old['alerts_log'] if a['kind'] == 'no_contact']
+    # больше 3 ч без связи — «կապ չկա» без тревоги
+    card = view(facts(tr.pts, st, contacts, NEW_APK), t(3 + 181))
+    assert card['state'] == 'offline' and 'no_contact' not in card['alerts']['active']
+    assert view(facts(tr.pts, st, contacts, NEW_APK), t(3 + 179))['alerts']['active'].count('no_contact') == 1
+    # после 20:00 по Еревану — без тревоги (APK остановил запись)
+    late = datetime(2026, 10, 5, 20, 10, tzinfo=Y)
+    f = facts(tr.pts, st, [late - timedelta(minutes=30)], NEW_APK)
+    card = view(f, late)
+    assert card['state'] == 'offline' and card['alerts']['active'] == []
+    f = facts(tr.pts, st, [datetime(2026, 10, 5, 19, 40, tzinfo=Y)], NEW_APK)
+    assert 'no_contact' in view(f, datetime(2026, 10, 5, 19, 50, tzinfo=Y))['alerts']['active']
 
 
 def test_gps_off_alert_from_device_and_old_apk_without_device():
@@ -500,6 +530,70 @@ def test_live_source_fleet(courier_app):
     with courier_app.app_context():
         car1 = LiveSource(store).fleet(ds)['CAR1']
     assert car1['device']['at'] == t(20).isoformat() and car1['closed_at'] == t(5).isoformat()
+
+
+def test_live_source_cache_ttl_and_fingerprint(courier_app, monkeypatch):
+    """Опрос карты не пересчитывает флот: внутри TTL — без обращения к базе; после TTL без новых данных — только отпечаток;
+    новое событие после TTL — пересчёт."""
+    import threading
+    from courier import events as ev
+    from courier import live as cl
+    from courier.live import LiveSource
+    store = courier_app.extensions['courier'].store
+    ds = DAY.isoformat()
+    store.save_day(ds, 'CAR1', [_day_stop(SID1, 1, A, [('l1', 10, 12.0)], 1)], 'v1', LIVE_NOW.isoformat())
+    who = _who(store, 'CAR1', 'Արամ', '1111')
+    pt = {'at': (LIVE_NOW - timedelta(minutes=3)).isoformat(), 'lat': A[0], 'lon': A[1], 'acc': 8.0, 'spd': 0.0,
+          'brg': None}
+    assert ev.ingest(store, who, [_ev('track', None, {'points': [pt], 'device': NEW_APK},
+                                      LIVE_NOW - timedelta(minutes=3))]).json()['accepted']
+    clock = [1000.0]
+    monkeypatch.setattr(cl, '_monotonic', lambda: clock[0])
+    calls = []
+    real = LiveSource._compute
+    monkeypatch.setattr(LiveSource, '_compute', lambda self, day: calls.append(day) or real(self, day))
+    source = LiveSource(store)
+    with courier_app.app_context():
+        first = source.fleet(ds)
+        assert source.fleet(ds) is first and calls == [ds]                    # внутри TTL — тот же расчёт
+        ev.ingest(store, who, [_ev('track', None, {'points': [], 'device': NEW_APK}, LIVE_NOW - timedelta(minutes=1))])
+        clock[0] += cl.TTL_TODAY_S - 1
+        assert source.fleet(ds) is first and calls == [ds]                    # новое событие, но TTL не вышел
+        clock[0] += 2
+        second = source.fleet(ds)
+        assert calls == [ds, ds] and len(second['CAR1']['contacts']) == 2     # после TTL новое событие — пересчёт
+        clock[0] += cl.TTL_TODAY_S + 1
+        assert source.fleet(ds) is second and calls == [ds, ds]               # данных нет — отпечаток тот же, без расчёта
+        # параллельные зрители: пересчёт один
+        ev.ingest(store, who, [_ev('track', None, {'points': [], 'device': NEW_APK}, LIVE_NOW - timedelta(seconds=5))])
+        clock[0] += cl.TTL_TODAY_S + 1
+        got = []
+
+        def viewer():
+            with courier_app.app_context():
+                got.append(source.fleet(ds))
+        threads = [threading.Thread(target=viewer) for _ in range(5)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        assert len(calls) == 3 and all(g is got[0] for g in got)
+
+
+def test_live_source_last_contact_only_within_requested_day(courier_app):
+    from courier.live import LiveSource
+    store = courier_app.extensions['courier'].store
+    who = _who(store, 'CAR1', 'Արամ', '1111')
+    store.save_day('2026-10-04', 'CAR1', [_day_stop(SID1, 1, A, [('l1', 1, 1.0)], 1)], 'v1', LIVE_NOW.isoformat())
+    store.save_day(DAY.isoformat(), 'CAR1', [_day_stop(SID1, 1, A, [('l1', 1, 1.0)], 1)], 'v1', LIVE_NOW.isoformat())
+    seen = '2026-10-05T11:00:00+04:00'
+    with closing(sqlite3.connect(store.path)) as conn, conn:
+        conn.execute('UPDATE terminals SET last_seen_at = ? WHERE id = ?', (seen, who.terminal_id))
+    with courier_app.app_context():
+        today = LiveSource(store).fleet(DAY.isoformat())['CAR1']
+        past = LiveSource(store).fleet('2026-10-04')['CAR1']
+    assert past['last_contact'] is None   # терминал был на связи сегодня, вчерашний день его последней связью не считает
+    assert today['last_contact'] == seen
 
 
 def test_live_source_no_db(tmp_path):

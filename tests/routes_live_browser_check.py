@@ -38,6 +38,7 @@ import courier  # noqa: E402
 import route_optimizer  # noqa: E402
 from courier import clock, events as ev  # noqa: E402
 from route_optimizer import dispatch as dp  # noqa: E402
+from route_optimizer import live  # noqa: E402
 from route_optimizer.geo import haversine_km  # noqa: E402
 
 PORT = 8771
@@ -250,7 +251,9 @@ def main() -> int:
                 page.locator(f'.lv-item[data-car="{cars[2]}"]').click()
                 page.wait_for_timeout(1200)
                 act = page.inner_text('#lvActive')
-                check('Կապ չկա' in act and 'GPS' in act, f'машина 3: «нет связи» и «GPS выключен» ({act!r})')
+                late = clock.now().hour >= live.NO_CONTACT_END_H   # после 20:00 «нет связи» — не тревога (ревью №76)
+                check(('Կապ չկա' in act) != late and 'GPS' in act,
+                      f'машина 3: «нет связи» {"не " if late else ""}тревога и «GPS выключен» ({act!r})')
                 n = len(polls)
                 page.wait_for_timeout(16000)
                 check(len(polls) > n, f'опрос раз в 15 с ({n} → {len(polls)})')

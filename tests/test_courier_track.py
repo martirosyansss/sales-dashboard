@@ -138,17 +138,39 @@ def test_track_empty_points_heartbeat_and_device(cs):
         assert ev.track_device({'battery': battery})['battery'] is None
     assert ev.track_device({'battery': 0, 'gps': 'no_permission', 'net': None})['battery'] == 0
     assert ev.track_device('x') is None and ev.track_device(None) is None
-    e3 = {**_track([]), 'payload': {'points': [], 'device': 'x'}}          # device не объект — его нет
-    assert ev.ingest(cs, who, [e3]).json()['accepted'] == [e3['id']] and 'device' not in _event_row(cs, e3['id'])[2]
-    e4 = {**_track([]), 'payload': {'points': []}}                          # старый APK: пустой список — тоже принят
-    assert ev.ingest(cs, who, [e4]).json()['accepted'] == [e4['id']]
-    # точки были, ни одной годной: без device — отказ (как раньше), с device — принято (состояние терминала нужно)
+    for dev in ('x', {}, {'gps': 'ON', 'battery': 101}, None):   # device нет или ни одного верного поля — отказ
+        e3 = {**_track([]), 'payload': {'points': [], 'device': dev}}
+        r = ev.ingest(cs, who, [e3]).json()
+        assert r['accepted'] == [] and 'GPS' in r['rejected'][0]['message'], dev
+    e4 = {**_track([]), 'payload': {'points': []}}                          # старый APK: пустой список — отказ
+    assert ev.ingest(cs, who, [e4]).json()['accepted'] == []
+    # точки были, ни одной годной: без верного device — отказ, с device — принято (состояние терминала нужно)
     junk = [_pt(1, acc=0)]
     r = ev.ingest(cs, who, [{**_track(junk), 'payload': {'points': junk}}]).json()
     assert r['accepted'] == [] and 'GPS' in r['rejected'][0]['message']
-    e5 = {**_track(junk), 'payload': {'points': junk, 'device': {'gps': 'on'}}}
+    r = ev.ingest(cs, who, [{**_track(junk), 'payload': {'points': junk, 'device': {'gps': 'ON'}}}]).json()
+    assert r['accepted'] == []
+    e5 = {**_track(junk, at=f'{DAY}T11:30:00+04:00'), 'payload': {'points': junk, 'device': {'gps': 'on'}}}
     assert ev.ingest(cs, who, [e5]).json()['accepted'] == [e5['id']]
     assert _event_row(cs, e5['id'])[2]['dropped'] == {'acc': 1} and len(_points(cs)) == 1
+
+
+def test_track_empty_heartbeat_within_gap_is_accepted_but_not_stored(cs):
+    """№76: пустой heartbeat не позже 20 с после предыдущего события track терминала — принят, строка не пишется."""
+    who = _who(cs)
+    dev = {'gps': 'off', 'battery': 50}
+
+    def beat(sec, points=()):
+        return {**_track(list(points), at=f'{DAY}T10:00:{sec:02d}+04:00'),
+                'payload': {'points': list(points), 'device': dev}}
+    first, soon, later = beat(0), beat(10), beat(30)
+    r = ev.ingest(cs, who, [first, soon, later]).json()
+    assert r['accepted'] == [first['id'], soon['id'], later['id']] and r['rejected'] == []
+    assert _event_row(cs, first['id']) is not None and _event_row(cs, later['id']) is not None
+    assert _event_row(cs, soon['id']) is None
+    withpts = beat(35, [_pt(1)])                                             # с точками — пишется всегда
+    assert ev.ingest(cs, who, [withpts]).json()['accepted'] == [withpts['id']]
+    assert _event_row(cs, withpts['id']) is not None
 
 
 def test_track_stop_id_not_required_and_date_suspicious(cs):

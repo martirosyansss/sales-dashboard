@@ -61,6 +61,8 @@ STALE_S = 120                       # последняя точка старше
 MOVING_MS = ac.STOP_MS              # скорость терминала не ниже — машина едет (как стоянка у магазина, №60)
 SPEED_GAP = timedelta(seconds=60)   # перерыв трека дольше — превышение скорости прерывается
 CENTER_MIN_POINTS = 2               # в малом центре — не меньше 2 точек подряд (одна — может быть погрешность GPS)
+NO_CONTACT_END_H = 20               # APK останавливает запись в 20:00 — после этого «нет связи» не тревога (№76, ревью)
+NO_CONTACT_MAX = timedelta(hours=3)  # связи нет дольше — машина закончила день: состояние «կապ չկա», без тревоги
 TRACK_LINE_POINTS = 1500            # линия трека на карте (actuals.simplify)
 
 
@@ -343,14 +345,14 @@ def stop_alerts(actual: ac.DayActual, day: date, rules: Rules, since: datetime |
 def contact_alerts(contacts: Sequence[datetime], last_contact: datetime | None, now: datetime | None,
                    start: datetime | None, end: datetime | None, rules: Rules) -> list[dict[str, Any]]:
     """Нет связи: перерывы между получениями событий длиннее no_contact_min в открытом дне [start, end]; now (день
-    открыт сейчас) — и с последней связи до сейчас."""
+    открыт сейчас) — и с последней связи до сейчас, но не после 20:00 по Еревану и не дольше NO_CONTACT_MAX."""
     if start is None:
         return []
     limit = timedelta(minutes=rules.no_contact_min)
     inside = sorted(t for t in contacts if t >= start and (end is None or t <= end))
     out = [_alert('no_contact', a, b, False, minutes=round((b - a).total_seconds() / 60))
            for a, b in zip(inside, inside[1:]) if b - a > limit]
-    if now is not None and last_contact is not None and now - last_contact > limit:
+    if now is not None and last_contact is not None and limit < now - last_contact <= NO_CONTACT_MAX             and now.astimezone(YEREVAN).hour < NO_CONTACT_END_H:
         out.append(_alert('no_contact', last_contact, None, True,
                           minutes=round((now - last_contact).total_seconds() / 60)))
     return out
@@ -490,7 +492,8 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     first_dep = deps[0] if deps else None
     alerts = (speed_alerts(pts, rules, live and age is not None and age <= STALE_S)   # type: ignore[arg-type]
               + stop_alerts(actual, day, rules, first_dep, end, last.at if last else None, open_now)
-              + contact_alerts(contacts, last_contact, now if open_now else None, started, end, rules)
+              + (contact_alerts(contacts, last_contact, now if open_now else None, started, end, rules)
+                 if facts.get('device') is not None else [])   # старый APK (<2.2.0) шлёт пачками раз в 2–17 мин
               + gps_alerts(devices, open_now)
               + center_alerts(pts, rules, truck, live and age is not None and age <= STALE_S))
     alerts.sort(key=lambda a: a['from'] or '')
@@ -500,8 +503,9 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         state = 'nodata'
     elif finished:
         state = 'closed'
-    elif 'no_contact' in active:
-        state = 'offline'
+    elif 'no_contact' in active or (open_now and last_contact is not None
+                                    and now - last_contact > timedelta(minutes=rules.no_contact_min)):
+        state = 'offline'   # «կապ չկա»; тревогой — только у APK 2.2.0 и в пределах дня (contact_alerts)
     elif active:
         state = 'alert'
     elif last is not None and age is not None and age <= STALE_S and last.spd is not None \
