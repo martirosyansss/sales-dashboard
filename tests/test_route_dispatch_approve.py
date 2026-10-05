@@ -175,3 +175,89 @@ def test_api_new_trip_by_edit_while_approved_is_pinned(client, monkeypatch):
     r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': r.get_json()['rev'], 'action': 'unapprove'})
     solo = [tr for t in r.get_json()['plan']['trucks'] for tr in t['trips'] if [s['customer_id'] for s in tr['stops']] == [101]]
     assert solo[0]['pinned'] is False                                           # закрепило утверждение — открепило снятие
+
+
+# ============================== ревью №73: вставка в рейс утверждения, правка конца рейса, AI, прошедший день ==============
+
+def test_insert_into_approved_trip_survives_unapproval():
+    ctx, base, orders, new, _ = _base((FORD, HOWO))
+    draft = dp.Draft([FORD.car_code, HOWO.car_code], trips=[dp.DraftTrip(1, FORD.car_code, [101, 102]),
+                                                            dp.DraftTrip(2, HOWO.car_code, [103])], next_id=3)
+    dp.approve(draft, 'at', 'u')
+    stops = _with(orders, new, {_isn(50)})
+    out = dp.take_same_day(ctx, base, stops, dp.Draft.from_json(draft.to_json()), {201}, {_isn(50)}, 'insert:1', -30.0)
+    assert out.same_day_trips == {1} and out.approved['pinned'] == [2]
+    dp.unapprove(out)
+    assert {t.id: t.pinned for t in out.trips} == {1: True, 2: False}          # рейс с новым заказом дня остался закреплён
+
+
+def _resize_setup(approve):
+    from test_route_dispatch_resize import _setup
+    ctx, stops, draft, ids = _setup()
+    if approve:
+        dp.approve(draft, 'at', 'u')
+    return ctx, stops, draft, ids
+
+
+def _ret(ctx, stops, draft, tid):
+    from test_route_dispatch_resize import _ret as ret
+    return ret(ctx, stops, draft, tid)
+
+
+def test_approved_shrink_uses_existing_trips_like_unapproved():
+    plain = _resize_setup(False)
+    ctx, stops, draft, ids = _resize_setup(True)
+    target = _ret(ctx, stops, draft, 1) - 30
+    a = dp.apply_edit(*plain[:3], {'action': 'resize', 'trip': 1, 'return': target}, plain[3])
+    b = dp.apply_edit(ctx, stops, draft, {'action': 'resize', 'trip': 1, 'return': target}, ids)
+    # утверждение не мешает: магазины ушли в существующий рейс FORD, лишних рейсов со склада нет
+    assert [(t.id, t.truck, t.stops) for t in b.trips] == [(t.id, t.truck, t.stops) for t in a.trips]
+    assert len([t for t in b.trips if t.truck == FORD.car_code]) == 1
+
+
+def test_approved_grow_takes_from_existing_trips_like_unapproved():
+    plain = _resize_setup(False)
+    ctx, stops, draft, ids = _resize_setup(True)
+    target = _ret(ctx, stops, draft, 2) + 40
+    a = dp.apply_edit(*plain[:3], {'action': 'resize', 'trip': 2, 'return': target}, plain[3])
+    b = dp.apply_edit(ctx, stops, draft, {'action': 'resize', 'trip': 2, 'return': target}, ids)
+    assert [(t.id, t.stops) for t in b.trips] == [(t.id, t.stops) for t in a.trips] and len(b.trips[1].stops) > 3
+
+
+def test_resize_never_touches_started_trips_or_logist_pins():
+    ctx, stops, draft, ids = _resize_setup(True)
+    target = _ret(ctx, stops, draft, 1) - 30
+    # рейс FORD уже грузится (сейчас — начало дня): магазины уходят новым рейсом, а не в него
+    out = dp.apply_edit(ctx, stops, dp.Draft.from_json(draft.to_json()), {'action': 'resize', 'trip': 1, 'return': target},
+                        ids, now_min=0.0)
+    assert next(t for t in out.trips if t.id == 2).stops == [301, 302, 303]
+    assert len([t for t in out.trips if t.truck == FORD.car_code]) == 2
+    # рейс FORD закрепил сам логист (до утверждения) — тоже не трогается
+    from test_route_dispatch_resize import _setup
+    ctx, stops, draft, ids = _setup(pinned=True)
+    dp.approve(draft, 'at', 'u')
+    out = dp.apply_edit(ctx, stops, draft, {'action': 'resize', 'trip': 1, 'return': target}, ids)
+    assert next(t for t in out.trips if t.id == 2).stops == [301, 302, 303]
+
+
+def test_approver_name_goes_to_page_but_not_to_ai(client, monkeypatch):
+    state, _ = _page_setup(client, monkeypatch, now=datetime(2026, 10, 1, 8, 0, tzinfo=ac.YEREVAN))
+    d = _build(client)
+    with client.session_transaction() as s:
+        s['username'] = 'Արամ'
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'approve'}).get_json()
+    assert d['approved'] == {'at': '2026-10-01T08:00:00', 'by': 'Արամ'}
+    with client.application.test_request_context():
+        dd = views._load_day(state, state.store.load(), datetime(2026, 10, 1).date())
+        body = views._dispatch_body(dd)
+    assert body['approved'] == {'at': '2026-10-01T08:00:00'} and 'Արամ' not in json.dumps(body, ensure_ascii=False)
+
+
+def test_approve_past_day_by_yerevan_date(client, monkeypatch):
+    """Сервер ещё 30.09 (часы сервера), а в Ереване уже 01.10: прошедший день 30.09 — по Еревану."""
+    _page_setup(client, monkeypatch, now=datetime(2026, 9, 30, 8, 0, tzinfo=ac.YEREVAN))
+    d = client.post('/api/routes/dispatch/build', json={'date': '2026-09-30', 'trucks': ['CAR2']}).get_json()
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 1, 0, 30, tzinfo=ac.YEREVAN))
+    monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 9, 30, 20, 30))
+    r = client.post('/api/routes/dispatch/edit', json={'date': '2026-09-30', 'rev': d['rev'], 'action': 'approve'})
+    assert r.status_code == 400 and 'Անցած օրվա' in r.get_json()['error']

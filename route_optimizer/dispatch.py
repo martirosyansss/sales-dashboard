@@ -852,13 +852,20 @@ def _take(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trips: list[
                 t.stops = was
 
 
-def _shrink(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: DraftTrip, target: float) -> None:
+def _movable(draft: Draft, t: DraftTrip, frozen: Collection[int]) -> bool:
+    """Рейс, который правка конца другого рейса может менять (_shrink, _grow): не закреплён логистом — закреплённый
+    взятием заказов дня или утверждением плана (№72–73, _insertable) — да, и ещё не грузится (frozen — начатые рейсы)."""
+    return _insertable(draft, t) and t.id not in frozen
+
+
+def _shrink(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: DraftTrip, target: float,
+            frozen: Collection[int] = ()) -> None:
     """Рейс trip должен вернуться к target: его магазины по одному уходят в рейсы других машин (или новым рейсом
     отмеченной машине), пока не вернётся. Каждый раз — перенос с наименьшим ростом км всего плана на минуту, которую рейс
     выигрывает (выигрыш сверх нужного до target не в счёт; переносы без роста км — первыми). Принимающая машина
     не позже конца дня (или своего прежнего конца), окна приёма у неё не нарушаются, груз — в пределе сборки;
-    закреплённые рейсы не трогаются. Некуда — остаётся сколько успели. Км — с платой за точки Еревана на больших машинах
-    (№68, _yerevan_km: как в сборке, малые машины — первыми)."""
+    закреплённые логистом и начатые (frozen) рейсы не трогаются (_movable). Некуда — остаётся сколько успели. Км — с платой за
+    точки Еревана на больших машинах (№68, _yerevan_km: как в сборке, малые машины — первыми)."""
     sel = _selected(ctx, draft.trucks)
     limit = ctx.overtime_minutes if draft.overtime_ok and ctx.overtime_minutes is not None else ctx.tn.work_minutes
     others = [t.car_code for t in sel if t.car_code != trip.truck]
@@ -872,7 +879,7 @@ def _shrink(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: Draf
         now = ends.get(trip.id)
         if now is None or now <= target + _EPS:
             return
-        receivers = [t for t in draft.trips if t.truck in others and not t.pinned]
+        receivers = [t for t in draft.trips if t.truck in others and _movable(draft, t, frozen)]
         base_km = _closed_km(ctx, trip.stops, stops)
         cands = []
         for cid in trip.stops:
@@ -911,12 +918,13 @@ def _shrink(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: Draf
             return
 
 
-def _grow(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: DraftTrip, target: float) -> None:
+def _grow(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: DraftTrip, target: float,
+          frozen: Collection[int] = ()) -> None:
     """Машина рейса trip работает до target: в рейс берутся магазины «ещё не в рейсах» (сначала — их надо везти), затем
     из рейсов других машин — каждый раз тот, с которым км всего плана растут меньше всего, пока рейс успевает к target.
     Рейс полон (предел сборки) и он у машины последний — после него новый рейс этой машины. Окна приёма машины не
     нарушаются; позже конца дня — только если сам конец рейса тянут за него (не позже предела переработки); закреплённые
-    рейсы других машин не трогаются. Км — с платой за точки Еревана на больших машинах (№68, _yerevan_km, как в _shrink)."""
+    логистом и начатые (frozen) рейсы других машин не трогаются (_movable). Км — с платой за точки Еревана на больших машинах (№68, _yerevan_km, как в _shrink)."""
     sel = _selected(ctx, draft.trucks)
     code = trip.truck
     limit = ctx.overtime_minutes if draft.overtime_ok and ctx.overtime_minutes is not None else ctx.tn.work_minutes
@@ -941,7 +949,8 @@ def _grow(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: DraftT
         if last and follow not in by_id:
             dests.append(DraftTrip(draft.next_id, code, []))
         pool = [(cid, None) for cid in sorted(stops) if cid not in shares]
-        pool += [(cid, t) for t in draft.trips if t.truck != code and not t.pinned for cid in t.stops if shares[cid] == 1]
+        pool += [(cid, t) for t in draft.trips if t.truck != code and _movable(draft, t, frozen)
+                 for cid in t.stops if shares[cid] == 1]
         base = {t.id: _closed_km(ctx, t.stops, stops) for t in draft.trips if t.truck != code}
         cands = []
         for cid, src in pool:
@@ -966,9 +975,11 @@ def _grow(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: DraftT
             return
 
 
-def _resize(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], edit: Mapping[str, Any]) -> Draft:
+def _resize(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], edit: Mapping[str, Any],
+            now_min: float | None = None) -> Draft:
     """{"action": "resize", "trip": id, "return": минут от полуночи} — конец полосы рейса на шкале дня потянули мышью:
-    раньше — магазины уходят другим машинам (_shrink), позже — машина берёт магазины других и «ещё не в рейсах» (_grow)."""
+    раньше — магазины уходят другим машинам (_shrink), позже — машина берёт магазины других и «ещё не в рейсах» (_grow).
+    now_min — сейчас (минуты от начала дня машины; сегодняшний день): рейсы, которые уже грузятся, не меняются."""
     trip = _trip(draft, edit.get('trip'))
     at = edit.get('return')
     if not _is_num(at) or not 0 <= at <= 2 * 24 * 60:
@@ -979,17 +990,19 @@ def _resize(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], edit: Mapp
     ends, _, _ = _truck_day(ctx, draft.trips, stops, _shares(draft.trips), trip.truck)
     if trip.id not in ends:
         return draft
+    frozen = started_trips(ctx, list(stops.values()), draft, now_min) if now_min is not None else set()
     if target < ends[trip.id] - _EPS:
-        _shrink(ctx, draft, stops, trip, target)
+        _shrink(ctx, draft, stops, trip, target, frozen)
     elif target > ends[trip.id] + _EPS:
-        _grow(ctx, draft, stops, trip, target)
+        _grow(ctx, draft, stops, trip, target, frozen)
     return draft
 
 
 def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mapping[str, Any],
                order_ids: set[str], backlog_ids: set[str] = frozenset(), defer_since: date | None = None,
-               carried: Collection[str] = ()) -> Draft:
-    """Правка логиста (§3) поверх черновика; затронутые рейсы пересчитываются (порядок — 2-opt).
+               carried: Collection[str] = (), now_min: float | None = None) -> Draft:
+    """Правка логиста (§3) поверх черновика; затронутые рейсы пересчитываются (порядок — 2-opt). now_min — сейчас (минуты от
+    начала дня машины; только сегодня): resize не меняет рейсы, которые уже грузятся.
     edit:
       {"action": "move", "customer_id", "from_trip": id|null, "to_trip": id|null, "truck": код|null}
           — перенести клиента в другой рейс; to_trip = null и truck — новый рейс этой машины;
@@ -1077,7 +1090,7 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
         return draft
     if action == 'resize':
         before = {k: v for k, v in draft.to_json().items() if k not in ('prediction', 'undo')}
-        draft = _resize(ctx, draft, routable, edit)
+        draft = _resize(ctx, draft, routable, edit, now_min)
         draft.undo = before
         return draft
     if action != 'move':
@@ -1317,10 +1330,16 @@ def take_same_day(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], 
         raise DispatchError('Այս առաջարկն այլևս հնարավոր չէ — թարմացրեք առաջարկները')
     draft.undo = None
     draft.trips = plan.trips
+    approved = set(draft.approved['pinned']) if draft.approved is not None else set()
     for t in draft.trips:
-        if t.id in plan.changed and not t.pinned:
+        if t.id not in plan.changed:
+            continue
+        if not t.pinned:
             t.pinned = True
             draft.same_day_trips.add(t.id)
+        elif t.id in approved:   # №73: рейс утверждения с новым заказом дня — теперь рейс взятия: снятие его не открепит
+            draft.same_day_trips.add(t.id)
+            draft.approved = {**draft.approved, 'pinned': [i for i in draft.approved['pinned'] if i != t.id]}
     draft.next_id = max(draft.next_id, *(t.id + 1 for t in plan.trips))
     if plan.kind == 'extra':
         draft.trucks = sorted({*draft.trucks, plan.truck})

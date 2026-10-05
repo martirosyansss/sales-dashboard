@@ -1459,9 +1459,8 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         'defer_to': _defer_target(dd.day, s['workdays'], holidays)[0].isoformat(),
         'overtime_days_month': _overtime_days(_state().store, dd.day),
         'geo_suggestions': _geo_suggestions(_state(), dd),
-        # №73: план дня утверждён — когда и кем (пересборка запрещена, правки — можно)
-        **({'approved': {'at': draft.approved['at'], 'by': draft.approved['by']}}
-           if draft is not None and draft.approved is not None else {}),
+        # №73: план дня утверждён — когда (кем — только странице: _dispatch_page_body)
+        **({'approved': {'at': draft.approved['at']}} if draft is not None and draft.approved is not None else {}),
         # №72: план прошлого дня не прочитан — заказы, взятые в его развоз, могли попасть и сюда
         **({'same_day_unread': True} if dd.same_day_unread else {}),
         **_freshness(dd.day, dd.bundle, dd.data, dd.deliver, dd.backlog, draft, dd.carried),
@@ -1484,7 +1483,10 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
     модели ничего бы не сказали. Водители (№62, _drivers_json) — тоже только странице: имена людей модели не отправляются."""
     return {**_dispatch_body(dd), 'store_unload': {st.customer_id: dd.bundle.unload_min[st.customer_id]
                                                    for st in dd.stops if st.customer_id in dd.bundle.unload_min},
-            **_drivers_json(_state(), dd.day), **_same_day_json(dd)}
+            **_drivers_json(_state(), dd.day), **_same_day_json(dd),
+            # №73: кто утвердил план — имя человека, только странице
+            **({'approved': {'at': dd.draft.approved['at'], 'by': dd.draft.approved['by']}}
+               if dd.draft is not None and dd.draft.approved is not None else {})}
 
 
 # --- Новые заказы дня (ответ владельца №72) ---
@@ -1512,6 +1514,12 @@ def _same_day_summary(orders: Sequence[dp.DispatchOrder]) -> dict[str, Any]:
     return {**_totals_of([o for o in orders if o.shipped is None]),
             'invoiced': _totals_of([o for o in orders if o.shipped is not None]),
             'sig': hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]}
+
+
+def _today_min(dd: _DispatchDay) -> float | None:
+    """Сейчас (минуты от начала дня машины), если день — сегодняшний по Еревану; иначе None (правки без «уже грузится»)."""
+    now = _same_day_now()
+    return _now_min(dd.ctx, now) if dd.ctx is not None and dd.day == now.date() else None
 
 
 def _now_min(ctx: dp.DayContext, now: datetime) -> float:
@@ -1634,7 +1642,7 @@ PAST_DAY_APPROVE = 'Անցած օրվա պլանը չի հաստատվում և 
 
 def _approve_edit(dd: _DispatchDay, payload: Mapping[str, Any]) -> dp.Draft:
     """«Հաստատել օրվա պլանը» / «Չեղարկել հաստատումը» (№73): прошедший день — DispatchError."""
-    if dd.day < _clock().date():
+    if dd.day < _same_day_now().date():
         raise dp.DispatchError(PAST_DAY_APPROVE)
     if payload.get('action') == 'approve':
         # время утверждения — по Еревану, как «сегодня» и «сейчас» новых заказов дня
@@ -1953,7 +1961,7 @@ def api_dispatch_edit() -> Any:
             draft = dp.apply_edit(dd.ctx, dd.stops, dd.draft, payload, {o.isn for o in dd.deliver},
                                   {o.isn for o in dd.backlog},
                                   defer_since=_defer_target(day, workdays, dp.holidays_of(bundle.settings))[1],
-                                  carried=dd.carried)
+                                  carried=dd.carried, now_min=_today_min(dd))
     except dp.DispatchError as e:
         return _bad_request({'_': str(e)})
     if day < _clock().date() and draft.deferred != deferred_before:
@@ -2007,7 +2015,7 @@ def _resize_preview(dd: _DispatchDay, payload: Mapping[str, Any], info: Callable
     """Подсказка во время перетаскивания конца рейса: тот же resize на копии черновика, без сохранения."""
     trial = dp.Draft.from_json(dd.draft.to_json())
     try:
-        trial = dp.apply_edit(dd.ctx, dd.stops, trial, payload, {o.isn for o in dd.deliver})
+        trial = dp.apply_edit(dd.ctx, dd.stops, trial, payload, {o.isn for o in dd.deliver}, now_min=_today_min(dd))
     except dp.DispatchError as e:
         return _bad_request({'_': str(e)})
     view = dp.plan_view(dd.ctx, dd.stops, trial, info, explain=False)
