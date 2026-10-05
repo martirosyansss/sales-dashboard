@@ -1223,18 +1223,31 @@ class Store:
         return [{'id': r[0], 'message': r[1], 'type': r[2], 'received_at': r[3]} for r in rows]
 
     def rejected_for_day(self, day: str) -> list[dict[str, Any]]:
-        """Отказы даты; helper_name — помощник из тела отказа, если он подтверждён по тому же правилу, что helper_id
-        принятого события (_HELPER_OK_SQL); тело обрезано или битое, даты нет — помощника нет."""
-        rows = self._read(lambda c: c.execute(
-            'SELECT r.id, r.message, r.type, r.received_at, r.driver_id, d.name, r.terminal_id, h.name '
-            'FROM rejected_events r LEFT JOIN drivers d ON d.id = r.driver_id '
-            "LEFT JOIN drivers h ON r.date IS NOT NULL AND json_valid(r.body) "
-            "AND json_type(r.body, '$.helper_id') = 'integer' AND h.id = json_extract(r.body, '$.helper_id') AND "
-            + _HELPER_OK_SQL.format(terminal='r.terminal_id', driver='r.driver_id', helper='h.id', date='r.date')
-            + ' WHERE r.date = ? OR (r.date IS NULL AND substr(r.received_at, 1, 10) = ?) ORDER BY r.received_at',
-            (day, day)).fetchall())
-        return [{'id': r[0], 'message': r[1], 'type': r[2], 'received_at': r[3], 'driver_id': r[4],
-                 'driver_name': r[5], 'terminal_id': r[6], 'helper_name': r[7]} for r in rows]
+        """Отказы даты; helper_name — помощник из тела отказа по тому же правилу, что helper_id принятого события:
+        подтверждён (_HELPER_OK_SQL) и не снят офисом к моменту события (_HELPER_REVOKED_SQL; момент — `at` тела, нет
+        или не разобрать — момент получения отказа). Тело обрезано или битое, даты нет — помощника нет."""
+        def query(c: sqlite3.Connection) -> list[dict[str, Any]]:
+            rows = c.execute(
+                'SELECT r.id, r.message, r.type, r.received_at, r.driver_id, d.name, r.terminal_id, h.name, h.id, '
+                'r.body FROM rejected_events r LEFT JOIN drivers d ON d.id = r.driver_id '
+                "LEFT JOIN drivers h ON r.date IS NOT NULL AND json_valid(r.body) "
+                "AND json_type(r.body, '$.helper_id') = 'integer' AND h.id = json_extract(r.body, '$.helper_id') AND "
+                + _HELPER_OK_SQL.format(terminal='r.terminal_id', driver='r.driver_id', helper='h.id', date='r.date')
+                + ' WHERE r.date = ? OR (r.date IS NULL AND substr(r.received_at, 1, 10) = ?) ORDER BY r.received_at',
+                (day, day)).fetchall()
+            out = []
+            for r in rows:
+                helper = r[7]
+                if r[8] is not None:
+                    at = _rejected_at_utc(r[9], r[3])
+                    if c.execute('SELECT ' + _HELPER_REVOKED_SQL.format(terminal='?', helper='?', at='?'),
+                                 (r[6], r[8], at, at)).fetchone()[0]:
+                        helper = None
+                out.append({'id': r[0], 'message': r[1], 'type': r[2], 'received_at': r[3], 'driver_id': r[4],
+                            'driver_name': r[5], 'terminal_id': r[6], 'helper_name': helper})
+            return out
+
+        return self._read(query)
 
     def photos_for_events(self, event_ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
         out: dict[str, list[dict[str, Any]]] = {}
@@ -1493,11 +1506,22 @@ _HELPER_OK_SQL = ("EXISTS (SELECT 1 FROM crew_log c WHERE c.kind = 'helper' AND 
                   "AND c.driver_id = {driver} AND c.helper_id = {helper} "
                   "AND c.date IN (date({date}, '-1 day'), {date}, date({date}, '+1 day')))")
 # …и не снят офисом к моменту события: строки 'revoked' этого терминала и помощника не позже момента события (at, ключ
-# clock.utc_key), после которой его не подтверждали заново. Событие, сделанное до снятия и пришедшее позже, — с ним.
+# clock.utc_key), после которой его не подтверждали заново до этого момента. Событие, сделанное до снятия и пришедшее
+# позже, — с ним; сделанное между снятием и новым подтверждением — без него.
 _HELPER_REVOKED_SQL = ("EXISTS (SELECT 1 FROM crew_log r WHERE r.kind = 'revoked' AND r.terminal_id = {terminal} "
                        "AND r.helper_id = {helper} AND r.at_utc <= {at} AND NOT EXISTS (SELECT 1 FROM crew_log h "
                        "WHERE h.kind = 'helper' AND h.terminal_id = r.terminal_id AND h.helper_id = r.helper_id "
-                       "AND (h.at_utc > r.at_utc OR (h.at_utc = r.at_utc AND h.id > r.id))))")
+                       "AND (h.at_utc > r.at_utc OR (h.at_utc = r.at_utc AND h.id > r.id)) AND h.at_utc <= {at}))")
+
+
+def _rejected_at_utc(body: str, received_at: str) -> str:
+    """Момент отклонённого события (clock.utc_key): `at` его тела; нет или не разобрать — момент получения отказа."""
+    try:
+        raw = json.loads(body)
+    except (TypeError, ValueError):
+        raw = None
+    at = clock.parse_moment(raw.get('at')) if isinstance(raw, dict) else None
+    return clock.utc_key(at or clock.parse_moment(received_at) or clock.now())
 
 
 def _revoke_helper(conn: sqlite3.Connection, helper_id: int) -> None:
@@ -1662,7 +1686,7 @@ class EventTx:
         return self.conn.execute(
             'SELECT ' + _HELPER_OK_SQL.format(terminal='?', driver='?', helper='?', date='?')
             + ' AND NOT ' + _HELPER_REVOKED_SQL.format(terminal='?', helper='?', at='?'),
-            (terminal_id, driver_id, helper_id, day, day, day, terminal_id, helper_id, at_utc)).fetchone()[0] == 1
+            (terminal_id, driver_id, helper_id, day, day, day, terminal_id, helper_id, at_utc, at_utc)).fetchone()[0] == 1
 
     # --- трек и заправки (контракт v1.3 §7) ---
 

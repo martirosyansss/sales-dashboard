@@ -474,12 +474,14 @@ def test_revoke_events_after_flagged_before_kept_and_reconfirm(st, client, crew,
     assert stored_event(st, at_revoke['id'])[1:] == (None, ['helper_unconfirmed'])
     assert client.get(f'{API}/crew', headers=crew.s).get_json()['revoked']['id'] == crew.helper_id
     now['t'] = NOW + timedelta(minutes=10)
+    between = day_event(helper=crew.helper_id, at='09:05:00')                # между снятием и новым подтверждением
     r = post_crew(client, crew.s, {'helper_pin': '8765'}).get_json()
     assert r['decided'] is True and r['revoked'] is None and r['helper']['id'] == crew.helper_id
     assert client.get(f'{API}/crew', headers=crew.s).get_json()['revoked'] is None
     again = day_event(helper=crew.helper_id, at='09:40:00')
-    _post(client, crew.s, again)
+    _post(client, crew.s, again, between)                                    # оба пришли после подтверждения
     assert stored_event(st, again['id'])[1:] == (crew.helper_id, [])
+    assert stored_event(st, between['id'])[1:] == (None, ['helper_unconfirmed'])
     assert [r[-1] for r in crew_rows(st)] == ['helper', 'revoked', 'helper']
 
 
@@ -569,6 +571,29 @@ def test_rejected_shows_confirmed_helper_only(app, st, client, crew):
     with app.test_request_context():
         rej = {r['id']: r['helper_name'] for r in st.store.rejected_for_day(DAY)}
     assert rej == {bad[0]['id']: 'Բաբկեն', bad[1]['id']: None, bad[2]['id']: None}
+
+
+def test_rejected_helper_respects_revoke(app, st, client, crew, now):
+    """Отказ — по тому же правилу снятия, что принятое событие: момент — `at` тела (до снятия — с помощником, после —
+    без); `at` не разобрать — момент получения отказа; между снятием и новым подтверждением — без помощника."""
+    now['t'] = NOW - timedelta(hours=1)                                      # 08:00 подтвердился
+    post_crew(client, crew.s, {'helper_pin': '5678'})
+    now['t'] = NOW                                                           # 09:00 офис сменил PIN
+    st.store.save_driver(crew.helper_id, 'Բաբկեն', True, '8765', 'admin')
+    before = day_event('nope', helper=crew.helper_id, at='08:30:00')
+    after = day_event('nope', helper=crew.helper_id, at='09:30:00')
+    bad_at = {**day_event('nope', helper=crew.helper_id), 'at': 'вчера'}    # получен в 09:20 — после снятия
+    now['t'] = NOW + timedelta(minutes=20)
+    assert len(_post(client, crew.s, before, after, bad_at)['rejected']) == 3
+    now['t'] = NOW + timedelta(minutes=40)                                   # 09:40 подтвердился заново
+    post_crew(client, crew.s, {'helper_pin': '8765'})
+    between = day_event('nope', helper=crew.helper_id, at='09:35:00')
+    later = day_event('nope', helper=crew.helper_id, at='09:45:00')
+    _post(client, crew.s, between, later)
+    with app.test_request_context():
+        rej = {r['id']: r['helper_name'] for r in st.store.rejected_for_day(DAY)}
+    assert rej == {before['id']: 'Բաբկեն', after['id']: None, bad_at['id']: None, between['id']: None,
+                   later['id']: 'Բաբկեն'}
 
 
 def test_crew_plan_mismatch(app, st, client, crew):
