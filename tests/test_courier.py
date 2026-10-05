@@ -336,7 +336,7 @@ def test_day_payload_from_erp(fake_erp, tmp_path, now):
     store = Store(str(tmp_path / 'c.db'))
     store.save_mark_settings([MarkSetting(200, False, None), MarkSetting(135, True, 6)], 'admin')
     view = rl.RoutesView(depot=YEREVAN, geo_overrides={12: (40.15, 44.45)})
-    svc = dy.DayService(store, lambda car, d, w, pick: ed.load_day('cs', car, d, w, pick), lambda d: view)
+    svc = dy.DayService(store, lambda car, d, w, pick, owner: ed.load_day('cs', car, d, w, pick, owner), lambda d: view)
     body = svc.get('991AT61', date(2026, 10, 2))
     s1 = next(s for s in body['stops'] if s['customer']['id'] == 11)
     s2 = next(s for s in body['stops'] if s['customer']['id'] == 12)
@@ -937,6 +937,14 @@ def test_plan_mismatch(app, st, monkeypatch):
     assert out['no_car'] == 1
     # A: в плане клиенты 1 и 2, до терминала дошёл 1; у B снимка /day нет — не показывается
     assert out['coverage'] == [{'car_code': 'A', 'plan': 2, 'terminal': 1}]
+    # B запросил день и получил 0 точек (как 123AV61 05.10) — видно; клиент 3 в двух машинах — накладная без машины ничья
+    st.store.save_day('2026-10-02', 'B', [], 'v0', '2026-10-02T08:00:00+04:00')
+    view = rl.RoutesView(plan_exists=True, trips=(('A', (1, 2, 3)), ('B', (3,))))
+    with app.test_request_context():
+        out = cv.plan_mismatches(date(2026, 10, 2))
+    assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('002', 'B', ['A']), ('003', None, ['A', 'B'])]
+    assert out['no_car'] == 0
+    assert out['coverage'] == [{'car_code': 'A', 'plan': 3, 'terminal': 1}, {'car_code': 'B', 'plan': 1, 'terminal': 0}]
 
 
 # ============================== хранилище ==============================
@@ -1348,7 +1356,8 @@ def test_load_day_plan_invoice_without_car(fake_erp):
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2]),
                            ((ISN[4], '000318004', 13, 7, '1', 900), ISN[3])]
     fake_erp.parents = [(ISN[0], ISN[2]), (ISN[4], ISN[3])]
-    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: [o for o in orders if o.customer_id == 11])
+    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: [o for o in orders if o.customer_id == 11],
+                       lambda cid: True)
     assert [(x.stop_id, x.source, x.amount, x.replaces) for x in data.docs] == [
         (f'S:{ISN[0]}', 'invoice', 18000, (f'O:{ISN[2]}',))]
     i = next(i for i, sql in enumerate(fake_erp.calls) if sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]))
@@ -1362,12 +1371,46 @@ def test_load_day_plan_invoice_not_doubled_and_skipped_without_shipped(fake_erp)
     fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
     fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0)]
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2])]   # подмена не фильтрует машину
-    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: list(orders))
+    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: list(orders), lambda cid: True)
     assert [x.stop_id for x in data.docs] == [f'S:{ISN[0]}']
     fake_erp.calls.clear()
     fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0)]
-    ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: list(orders))
+    ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: list(orders), lambda cid: True)
     assert not any(sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]) for sql in fake_erp.calls)
+
+
+def test_load_day_plan_invoice_customer_on_two_trucks_is_nobodys(fake_erp):
+    """Клиент в рейсах двух машин (тяжёлый заказ разделён) — накладная без машины ничья: иначе одну сумму
+    потребовали бы два водителя. Клиент одной машины — накладная её; без invoice_owner накладные без машины не берутся."""
+    d = date(2026, 10, 2)
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0)]
+    fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2])]
+    fake_erp.parents = [(ISN[0], ISN[2])]
+    split = rl.RoutesView(plan_exists=True, trips=(('A', (11,)), ('B', (11, 12))))
+    for car in ('A', 'B'):
+        data = ed.load_day('cs', car, d, (date(2026, 9, 29), d), lambda o, car=car: rl.pick_orders(o, d, split, car),
+                           rl.invoice_owner(split, car))
+        assert data.docs == ()
+    alone = rl.RoutesView(plan_exists=True, trips=(('A', (11,)), ('B', (12,))))
+    got = {car: [x.stop_id for x in ed.load_day('cs', car, d, (date(2026, 9, 29), d),
+                                                   lambda o, car=car: rl.pick_orders(o, d, alone, car),
+                                                   rl.invoice_owner(alone, car)).docs] for car in ('A', 'B')}
+    assert got == {'A': [f'S:{ISN[0]}'], 'B': []}
+    assert ed.load_day('cs', 'A', d, (date(2026, 9, 29), d), lambda o: rl.pick_orders(o, d, alone, 'A')).docs == ()
+    assert rl.invoice_owner(rl.RoutesView(), 'A')(11) is True        # плана нет — заказ отобран по своей машине
+
+
+def test_load_day_plan_invoice_from_two_orders_in_two_chunks(fake_erp, monkeypatch):
+    """Накладная из двух заказов машины, попавших в разные чанки запроса, — одна точка с обоими replaces."""
+    d = date(2026, 10, 2)
+    monkeypatch.setattr(ed, '_chunks', lambda ids, size=1: (ids[i:i + 1] for i in range(len(ids))))
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 9000, 5, d, 0),
+                       (ISN[3], 'Z0012', date(2026, 10, 1), 11, 7, '', 9000, 5, d, 0)]
+    row = (ISN[0], '000318001', 11, 7, '1', 18000)
+    fake_erp.plan_sales = [(row, ISN[2]), (row, ISN[3])]
+    fake_erp.parents = [(ISN[0], ISN[2]), (ISN[0], ISN[3])]
+    data = ed.load_day('cs', 'A', d, (date(2026, 9, 29), d), lambda o: list(o), lambda cid: True)
+    assert [(x.stop_id, x.replaces) for x in data.docs] == [(f'S:{ISN[0]}', (f'O:{ISN[2]}', f'O:{ISN[3]}'))]
 
 
 ORDER_ISN = '0000000A-0000-4000-8000-00000000000A'

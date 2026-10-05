@@ -36,7 +36,8 @@
 Накладная машины — fDELIVERYCAR = машина ИЛИ fDELIVERYCAR пуст и накладная сделана из заказа, который «Развоз»
 отдал этой машине (SQL_PLAN_SALES): машину в накладной офис ставит не всегда (05.10.2026 — у 141 из 151, обычно у
 ~25 %), а без этого заказ уже отгружен (O: нет), накладной «чужая» машина тоже не нашлась — и точка пропадала у
-всех. Машина, указанная в накладной, главнее плана (накладная на другой машине — точка той машины).
+всех. Машина, указанная в накладной, главнее плана (накладная на другой машине — точка той машины). Клиент в
+рейсах нескольких машин — накладная без машины ничья (routes_link.invoice_owner): одну сумму не берут два водителя.
 
 Справочники (тара, «дефолтные» точки, менеджеры, машины) кэшируются на REF_TTL_SECONDS — они меняются редко,
 а /day каждой машины перечитывался бы каждую минуту.
@@ -488,17 +489,19 @@ OrdersPick = Callable[[Sequence[DispatchOrder]], list[DispatchOrder]]
 
 
 def load_day(connection_string: str, car_code: str, day: date, orders_window: tuple[date, date],
-             pick_orders: OrdersPick) -> DayData:
+             pick_orders: OrdersPick, invoice_owner: Callable[[int], bool] | None = None) -> DayData:
     """Всё для /day машины на дату — одним read-only соединением.
 
     Точки — по клиенту (docstring модуля): проведённые накладные машины на дату (с машиной в накладной или без
-    машины из заказов, которые pick_orders отдаёт этой машине; с `replaces` — их заказами) + заказы окна
+    машины из заказов, которые pick_orders отдаёт этой машине, у клиентов, для которых invoice_owner — да
+    (routes_link.invoice_owner; None — накладные без машины не берутся); с `replaces` — их заказами) + заказы окна
     orders_window, которые pick_orders отдаёт этой машине, у клиентов без накладной машины и без накладной вообще."""
     conn = erp.connect(connection_string)
     try:
         sales = day_sales(conn, car_code, day)
         picked = pick_orders(erp.dispatch_orders(conn, *orders_window))
-        shipped = [o.isn for o in picked if o.shipped is not None]
+        shipped = [o.isn for o in picked if o.shipped is not None
+                   and invoice_owner is not None and invoice_owner(o.customer_id)]
         if shipped:
             own = {d.isn for d in sales}
             sales += [d for d in plan_sales(conn, shipped, day) if d.isn not in own]

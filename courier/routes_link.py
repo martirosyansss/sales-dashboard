@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any, Collection, Mapping, Sequence
+from typing import Any, Callable, Collection, Mapping, Sequence
 
 from route_optimizer import dispatch as dp
 from route_optimizer.dispatch import DispatchOrder
@@ -140,6 +140,16 @@ def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, ca
         mine = set(view.car_customers(car_code))
         return [o for o in active if o.customer_id in mine]
     return [o for o in active if o.car_code == car_code]
+
+
+def invoice_owner(view: RoutesView, car_code: str) -> Callable[[int], bool]:
+    """Клиент, чью накладную без машины (fDELIVERYCAR пуст) везёт машина: план есть — клиент только в рейсах этой
+    машины (клиент в рейсах нескольких машин — накладная ничья, иначе одну сумму взяли бы два водителя; офис ставит
+    машину в ERP, plan_mismatches это показывает); плана нет — заказ и так отобран по своей машине (ORDERS.fDELIVERYCAR)."""
+    if not view.plan_exists:
+        return lambda cid: True
+    owners = view.plan_trucks()
+    return lambda cid: owners.get(cid) == {car_code}
 
 
 def distance_fn(view: RoutesView, points: Sequence[Point]) -> Distance | None:

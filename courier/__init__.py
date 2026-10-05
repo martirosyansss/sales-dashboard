@@ -51,7 +51,7 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
     url = os.environ.get('COURIER_PUBLIC_URL') or f'https://{host}/api/courier/v1'
     demo = os.environ.get('COURIER_DEMO') == '1'
     store = Store(path)
-    days = DayService(store, lambda car, day, window, pick: erp_day.load_day(cs, car, day, window, pick),
+    days = DayService(store, lambda car, day, window, pick, owner: erp_day.load_day(cs, car, day, window, pick, owner),
                       lambda day: routes_view(app.extensions.get(ROUTES_EXTENSION), day), demo=demo)
     app.extensions[EXTENSION_KEY] = CourierState(
         store=store, days=days, public_host=host, public_url=url, demo=demo,

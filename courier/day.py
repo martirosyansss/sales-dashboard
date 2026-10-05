@@ -32,7 +32,7 @@ from . import clock
 from .erp_day import (ContainerLink, CustomerInfo, DayData, Doc, Line, OrdersPick, Product, collect_for,
                       expected_tare)
 from .order import order_customers
-from .routes_link import RoutesView, distance_fn, orders_window, pick_orders
+from .routes_link import RoutesView, distance_fn, invoice_owner, orders_window, pick_orders
 from .store import MarkSetting, Store
 
 DAY_TTL_SECONDS = 60
@@ -41,7 +41,7 @@ DAY_CACHE_MAX = 64
 DEMO_CAR = 'TEST'
 DEMO_DAY = date(2000, 1, 1)
 
-DayLoader = Callable[[str, date, tuple[date, date], OrdersPick], DayData]
+DayLoader = Callable[[str, date, tuple[date, date], OrdersPick, Callable[[int], bool]], DayData]
 
 
 def _num(x: float) -> float | int:
@@ -242,5 +242,5 @@ class DayService:
         view = self.routes(day)
         loaded = clock.now()
         data = self.loader(car_code, day, orders_window(day, view),
-                           lambda orders: pick_orders(orders, day, view, car_code))
+                           lambda orders: pick_orders(orders, day, view, car_code), invoice_owner(view, car_code))
         return day_payload(data, view, self.store, loaded)

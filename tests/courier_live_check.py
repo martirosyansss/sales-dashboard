@@ -63,7 +63,7 @@ def main() -> int:
 
     tmp = tempfile.mkdtemp(prefix='courier_live_')
     store = Store(os.path.join(tmp, 'courier.db'))
-    svc = DayService(store, lambda car, d, w, pick: erp_day.load_day(cs, car, d, w, pick), lambda d: RoutesView())
+    svc = DayService(store, lambda car, d, w, pick, owner: erp_day.load_day(cs, car, d, w, pick, owner), lambda d: RoutesView())
     head = f"{'Дата':<11} {'Машина':<10} {'ERP':>4} {'S:':>4} {'O:':>4} {'repl':>4} {'сумма ERP':>12} {'сумма S:':>12} " \
            f"{'коорд.':>6} {'долг':>5} {'с':>5}  итог"
     print(head)
