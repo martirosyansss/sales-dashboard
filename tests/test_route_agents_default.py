@@ -53,11 +53,14 @@ def test_setting_default_and_validation():
     del raw['dispatch_agents_off']
     out, errors = st.validate_settings(raw, None)
     assert errors == {} and out['dispatch_agents_off'] == []
-    for bad in ('2', 2, None, [1, '2'], [True], [2.0], list(range(st.MAX_AGENTS_OFF + 1))):
+    for bad in ('2', 2, None, [1, '2'], [True], [False], [2.0], [0], [-1], [2 ** 31], [10 ** 30],
+                list(range(1, st.MAX_AGENTS_OFF + 2))):
         _, errors = st.validate_settings({**st.DEFAULT_SETTINGS, 'dispatch_agents_off': bad}, None)
         assert set(errors) == {'dispatch_agents_off'}, bad
-    assert st.validate_settings({**st.DEFAULT_SETTINGS, 'dispatch_agents_off': list(range(st.MAX_AGENTS_OFF))},
+    assert st.validate_settings({**st.DEFAULT_SETTINGS, 'dispatch_agents_off': list(range(1, st.MAX_AGENTS_OFF + 1))},
                                 None)[1] == {}
+    assert st.validate_settings({**st.DEFAULT_SETTINGS, 'dispatch_agents_off': [1, 2 ** 31 - 1]},
+                                None)[0]['dispatch_agents_off'] == [1, 2 ** 31 - 1]
 
 
 def test_agents_off_of_prefers_draft():
@@ -134,6 +137,28 @@ def test_day_with_plan_keeps_its_choice_when_rule_changes(client):
     # «Начать заново» — день снова без плана, правило настроек
     d = client.post('/api/routes/dispatch/reset', json={'date': DAY}).get_json()
     assert d['agents_off'] == [1] and d['agents_from_settings'] is True
+
+
+def test_build_with_stale_page_choice_stores_what_page_showed(client):
+    # страница открыта при правиле [2]; правило сменили на [1] в другой вкладке — сборка сохраняет выбор страницы
+    _dispatch_setup(client, ORDERS)
+    _rule(client, [2])
+    shown = client.get('/api/routes/dispatch?date=' + DAY).get_json()['agents_off']
+    _rule(client, [1])
+    d = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2'], 'agents_off': shown}).get_json()
+    assert d['agents_off'] == [2] and _plan_customers(d['plan']) == {101}
+    assert dp.Draft.from_json(_state(client).store.load_dispatch(DAY)[0]).agents_off == {2}
+
+
+def test_status_on_planned_day_uses_draft_after_rule_change(client):
+    _dispatch_setup(client, ORDERS)
+    _rule(client, [2])
+    client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']})
+    _rule(client, [])
+    status = client.get('/api/routes/dispatch/status?date=' + DAY).get_json()
+    assert (status['orders']['count'], status['orders']['kg']) == (2, 450)            # менеджер 2 снят планом дня
+    client.post('/api/routes/dispatch/reset', json={'date': DAY})                    # без плана — по правилу (пусто)
+    assert client.get('/api/routes/dispatch/status?date=' + DAY).get_json()['orders']['count'] == 4
 
 
 def test_edit_before_build_creates_no_draft(client):

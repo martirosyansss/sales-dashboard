@@ -660,7 +660,7 @@
             + (added ? ', որից ' + added + '-ը ավելացրել եք այսօրվա առաքմանը' : '') + '։ Ստուգեք՝ պե՞տք է դրանք տանել այսօր։', 'Դիտել', 'dpBacklog');
         if (o.excluded) add('', 'fa-ban', pl(o.excluded, 'պատվեր') + ' նշել եք «այսօր չենք տանում»։', 'Դիտել', 'dpExcluded');
         const ag = agentStats();
-        if (ag.off.size) add('', 'fa-user-tie', 'Տանում ենք միայն ' + pl(ag.kept, 'մենեջերի') + ' պատվերները'
+        if (ag.shown) add('', 'fa-user-tie', 'Տանում ենք միայն ' + pl(ag.kept, 'մենեջերի') + ' պատվերները'
             + (ag.offCount ? ', ' + pl(ag.offCount, 'պատվեր') + ' (' + kgText(ag.offKg) + ') այսօր չենք տանում' : '')
             + (agentsDirty() ? ' (ընտրությունը դեռ կիրառված չէ)' : '') + '։', 'Դիտել', 'dpAgents');
         const gs = geoSug();
@@ -684,13 +684,20 @@
         const p = state.agentsPick;
         return !!p && p.day === state.day && !sameSet(p.off, new Set(state.data.agents_off || []));
     }
+    // off может держать и менеджеров без заказов этого дня (правило настроек, №69): показ и проверки — только по списку
+    // дня (shown — сколько снятых в нём), сам набор не меняется
     function agentStats() {
         const off = agentsOff(), list = state.data.agents || [];
-        const st = { off, total: list.length, kept: 0, keptCount: 0, keptKg: 0, offCount: 0, offKg: 0 };
+        const st = { off, shown: 0, total: list.length, kept: 0, keptCount: 0, keptKg: 0, offCount: 0, offKg: 0 };
         list.forEach(a => {
-            if (off.has(a.agent_id)) { st.offCount += a.count; st.offKg += a.kg; } else { st.kept++; st.keptCount += a.count; st.keptKg += a.kg; }
+            if (off.has(a.agent_id)) { st.shown++; st.offCount += a.count; st.offKg += a.kg; } else { st.kept++; st.keptCount += a.count; st.keptKg += a.kg; }
         });
         return st;
+    }
+    // «Նշել բոլորին» / «Հանել բոլոր նշումները» — только менеджеры списка; снятые без заказов дня остаются снятыми
+    function pickAllAgents(on) {
+        const listed = new Set((state.data.agents || []).map(a => a.agent_id));
+        pickAgents(new Set([...[...agentsOff()].filter(id => !listed.has(id)), ...(on ? [] : listed)]));
     }
     function pickAgents(off) {
         state.agentsPick = { day: state.day, off };
@@ -703,10 +710,10 @@
         const box = $('dpAgents');
         const st = agentStats();
         // один менеджер — выбирать нечего; фильтр уже снял кого-то — список нужен, чтобы вернуть
-        box.hidden = list.length < 2 && !st.off.size;
+        box.hidden = list.length < 2 && !st.shown;
         if (box.hidden) return;
         if (agentsDirty()) box.open = true;
-        $('dpAgentsNote').textContent = st.off.size ? st.kept + ' / ' + st.total : 'բոլորը՝ ' + st.total;
+        $('dpAgentsNote').textContent = st.shown ? st.kept + ' / ' + st.total : 'բոլորը՝ ' + st.total;
         const fs = $('dpAgentsList');
         fs.querySelectorAll('.dp-truck').forEach(x => x.remove());
         list.forEach(a => {
@@ -744,7 +751,7 @@
         });
         const plan = !!state.data.plan, dirty = agentsDirty();
         let sum = '';
-        if (st.off.size) {
+        if (st.shown) {
             sum = 'Տանում ենք՝ ' + pl(st.keptCount, 'պատվեր') + ' · ' + kgText(st.keptKg)
                 + '։ Այսօր չենք տանում՝ ' + pl(st.offCount, 'պատվեր') + ' · ' + kgText(st.offKg) + '։';
             if (!st.kept) sum += ' Նշեք գոնե մեկ մենեջեր։';
@@ -3262,8 +3269,8 @@
         $('dpRefresh').addEventListener('click', () => load(state.day, true));
         $('dpRetry').addEventListener('click', () => load(state.day || day));
         $('dpBuild').addEventListener('click', build);
-        $('dpAgentsAll').addEventListener('click', () => pickAgents(new Set()));
-        $('dpAgentsNone').addEventListener('click', () => pickAgents(new Set((state.data.agents || []).map(a => a.agent_id))));
+        $('dpAgentsAll').addEventListener('click', () => pickAllAgents(true));
+        $('dpAgentsNone').addEventListener('click', () => pickAllAgents(false));
         $('dpAgentsApply').addEventListener('click', applyAgents);
         $('dpAgentsUndo').addEventListener('click', () => { state.agentsPick = null; renderAgents(); renderOrders(); });
         $('dpReset').addEventListener('click', reset);

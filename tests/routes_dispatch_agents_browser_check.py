@@ -15,6 +15,8 @@ F отметить A002 → «Կիրառել» → правка agents, план
 S настройки (№69): карточка «Որ մենեջերների…» — два менеджера, снять A002, «Պահպանել» → dispatch_agents_off [2];
 R «Начать заново», день без плана: A002 снят правилом, пометка «Կանոնը՝ կարգավորումներից» со ссылкой на карточку,
   выбор дня отличается от правила — пометки нет;
+T правило снимает менеджера 99 без заказов дня: «բոլորը՝ 2», без «չենք տանում՝ 0», «Նշել բոլորին» не делает выбор
+  изменённым, сборка шлёт [99]; после сборки «Նշել բոլորին» не предлагает «Կիրառել»;
 H телефон 390×860: с раскрытым блоком нет горизонтальной прокрутки.
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
 """
@@ -154,6 +156,37 @@ def main() -> int:
                   'R note «Կանոնը՝ կարգավորումներից» links to settings card')
             page.locator('#dpAgentsList label', has_text='A002').locator('input').check()
             check(not note.is_visible(), 'R note hidden once the day choice differs from the rule')
+
+            # T — правило снимает менеджера без заказов этого дня (99): на странице он не виден и ничего не меняет
+            page.evaluate("() => fetch('/api/routes/settings', {method: 'POST', headers: {'Content-Type': 'application/json'},"
+                          " body: JSON.stringify({settings: {dispatch_agents_off: [99]}})})")
+            page.goto(f'{BASE}/routes/dispatch?date={DAY}')
+            page.wait_for_selector('#dpBody', state='visible', timeout=30000)
+            page.wait_for_function("() => !document.getElementById('dpBuild').disabled", timeout=15000)
+            if page.locator('#dpAgents').get_attribute('open') is None:
+                page.locator('#dpAgents > summary').click()
+            check(checked() == [True, True] and page.locator('#dpAgentsNote').inner_text() == 'բոլորը՝ 2',
+                  'T hidden rule manager: both listed checked, note «բոլորը՝ 2»')
+            check(page.locator('#dpAgentsSum').inner_text() == '' and 'Տանում ենք միայն' not in page.locator('#dpAttn').inner_text(),
+                  'T no «չենք տանում՝ 0» summary, no step-2 filter hint')
+            page.locator('#dpAgentsAll').click()
+            check(note.is_visible(), 'T «Նշել բոլորին» keeps the rule (not dirty)')
+            page.locator('#dpAgentsNone').click()
+            page.locator('#dpAgentsAll').click()
+            n = len(posts)
+            page.locator('#dpBuild').click()
+            page.wait_for_selector('#dpStep3', state='visible', timeout=30000)
+            build = [p[1] for p in posts[n:] if p[0] == 'build']
+            check(len(build) == 1 and build[0].get('agents_off') == [99], 'T build keeps hidden rule id: ' + str(build))
+            if not page.locator('#dpAgentsList').is_visible():
+                page.locator('#dpStep2Tog').click()
+            if page.locator('#dpAgents').get_attribute('open') is None:
+                page.locator('#dpAgents > summary').click()
+            page.locator('#dpAgentsAll').click()
+            check(not page.locator('#dpAgentsApplyBox').is_visible(), 'T planned day: «Նշել բոլորին» does not offer «Կիրառել»')
+            page.locator('#dpAgentsNone').click()
+            check(page.locator('#dpAgentsApplyBox').is_visible(), 'T planned day: «Հանել բոլոր նշումները» does offer it')
+            page.locator('#dpAgentsUndo').click()
 
             # H
             page.set_viewport_size({'width': 390, 'height': 860})

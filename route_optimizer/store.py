@@ -1205,12 +1205,13 @@ def validate_settings(values: Mapping[str, Any],
     else:
         out['holidays'] = holidays
 
-    # «Развоз» (№69): agent_id менеджеров, чьи заказы не везём; повторы схлопываются, порядок — по возрастанию
+    # «Развоз» (№69): agent_id менеджеров, чьи заказы не везём (int ERP: 1 … 2³¹−1); повторы схлопываются, порядок — по
+    # возрастанию
     off = values.get('dispatch_agents_off', [])
     if not isinstance(off, list) or len(off) > MAX_AGENTS_OFF:
         errors['dispatch_agents_off'] = f'սպասվում էր մենեջերների ցուցակ (ոչ ավելի, քան {MAX_AGENTS_OFF})'
-    elif not all(isinstance(x, int) and not isinstance(x, bool) for x in off):
-        errors['dispatch_agents_off'] = 'մենեջերների համարները՝ ամբողջ թվեր'
+    elif not all(isinstance(x, int) and not isinstance(x, bool) and 1 <= x < 2 ** 31 for x in off):
+        errors['dispatch_agents_off'] = 'մենեջերների համարները՝ դրական ամբողջ թվեր'
     else:
         out['dispatch_agents_off'] = sorted(set(off))
 
