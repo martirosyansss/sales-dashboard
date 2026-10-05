@@ -9,7 +9,7 @@ import math
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from statistics import median
-from typing import Iterable, Sequence
+from typing import Iterable, Iterator, Sequence
 
 Point = tuple[float, float]  # (широта, долгота)
 
@@ -162,16 +162,25 @@ def usable_fixes(fixes: Iterable[Fix], max_accuracy: float = GPS_MAX_ACCURACY_M)
 
 def track_km(fixes: Iterable[Fix], *, anchor_km: float = TRACK_ANCHOR_KM,
              max_speed_kmh: float = TRACK_MAX_SPEED_KMH) -> float:
-    """Км по GPS-треку.
+    """Км по GPS-треку — сумма засчитанных сегментов track_steps (правила — там)."""
+    total = 0.0
+    for _, d in track_steps(fixes, anchor_km=anchor_km, max_speed_kmh=max_speed_kmh):
+        total += d
+    return total
+
+
+def track_steps(fixes: Iterable[Fix], *, anchor_km: float = TRACK_ANCHOR_KM,
+                max_speed_kmh: float = TRACK_MAX_SPEED_KMH) -> Iterator[tuple[Fix, float]]:
+    """Засчитанные сегменты GPS-трека: (точка конца сегмента, км). Их сумма — track_km; по моменту конца сегмента
+    расход по загрузке (№76) берёт груз на борту.
 
     - точки по времени, погрешность > 100 м отброшена;
     - скачок GPS: переход от предыдущей принятой точки быстрее 150 км/ч — точка отбрасывается
       (скорость — от предыдущей точки, а не от якоря: иначе после долгой стоянки
       «разрешённый» скачок рос бы как 150 км/ч × длительность стоянки);
     - якорный фильтр: в км засчитывается точка не ближе 50 м от якоря (гасит джиттер на месте);
-    - сумма haversine по засчитанным сегментам (по прямой между якорями).
+    - сегмент — haversine от якоря до засчитанной точки (по прямой между якорями).
     """
-    total = 0.0
     anchor: Fix | None = None
     prev: Fix | None = None
     for f in usable_fixes(fixes):
@@ -186,9 +195,8 @@ def track_km(fixes: Iterable[Fix], *, anchor_km: float = TRACK_ANCHOR_KM,
         d = haversine_km(anchor.point, f.point)
         if d < anchor_km:
             continue
-        total += d
+        yield f, d
         anchor = f
-    return total
 
 
 @dataclass(frozen=True)

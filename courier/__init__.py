@@ -29,6 +29,7 @@ from . import api, erp_day, views
 from .day import DayService
 from .facts import FactsSource
 from .geo import DriverSource
+from .live import LiveSource
 from .routes_link import routes_view
 from .state import API_PREFIX, EXTENSION_KEY, CourierState
 from .store import Store
@@ -39,7 +40,8 @@ DB_FILENAME = 'courier.db'
 DEFAULT_PUBLIC_HOST = 'araqich.orix.am'
 ROUTES_EXTENSION = 'route_optimizer'
 
-__all__ = ['API_PREFIX', 'driver_geo', 'fleet_facts', 'init_app', 'is_public_request', 'not_found', 'public_guard']
+__all__ = ['API_PREFIX', 'driver_geo', 'fleet_facts', 'init_app', 'is_public_request', 'live_facts', 'not_found',
+           'public_guard']
 
 
 def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
@@ -77,6 +79,12 @@ def fleet_facts(app: Flask) -> FactsSource:
     """Трек, точки дня и заправки машин для обучения «Развоза» (контракт v1.3 §7) — после init_app:
     route_optimizer.attach_fleet_facts(app, courier.fleet_facts(app))."""
     return FactsSource(app.extensions[EXTENSION_KEY].store)
+
+
+def live_facts(app: Flask) -> LiveSource:
+    """Факт терминалов за день для «Մեքենաները առցանց» (№76) — после init_app:
+    route_optimizer.attach_live_facts(app, courier.live_facts(app))."""
+    return LiveSource(app.extensions[EXTENSION_KEY].store)
 
 
 def is_public(request: Request, public_host: str) -> bool:

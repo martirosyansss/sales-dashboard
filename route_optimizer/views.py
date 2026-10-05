@@ -27,7 +27,7 @@ from flask import (Blueprint, Response, current_app, g, has_app_context, has_req
 from . import actuals as ac
 from . import ai_chat
 from . import dispatch as dp
-from . import evaluate, garage, learning, optimize
+from . import evaluate, garage, learning, live, optimize
 from . import fleet as fl
 from . import waybill as wb
 from .running_costs import profile_fields
@@ -158,6 +158,8 @@ class RoutesState:
     driver_cache: tuple[float, dict[int, Point]] | None = None   # (time.monotonic(), точки) — DRIVER_TTL_SECONDS
     # факт машин (трек, точки дня, заправки) из «Առաքիչ» — обучение «Развоза»; None — без обучения, всё как раньше
     fleet_facts: learning.FleetFacts | None = None
+    # факт терминалов за день для «Մեքենաները առցանց» (№76, courier.live); None — карта пуста, всё как раньше
+    live_facts: live.LiveFacts | None = None
     learning_lock: threading.Lock = field(default_factory=threading.Lock)   # прогон обучения — один за раз
     learning_job: dict[str, Any] = field(default_factory=dict)              # последний прогон: статус, время, ошибка
     learning_warning: dict[str, str] | None = None   # выученные нормы не применились (битый журнал) — для страницы
@@ -3289,6 +3291,134 @@ def api_learning_auto() -> Any:
     state = _state()
     state.store.save_learning_auto(kind, auto, session.get('username'))
     return jsonify({'success': True, **_status_body(state)})
+
+
+# --- «Մեքենաները առցանց» (№76, docs/plans/live-map-plan.md) ---
+# Машины на карте сейчас: администратор и роль «Гараж» (и из интернета, как «Ավտոտնակ» — app_v2._garage_path_allowed,
+# _public_path_allowed). Факт — из «Առաքիչ» (state.live_facts), расчёт — live.car_view. ERP не читается: имена машин и
+# калибровка дорог — из снимка в памяти (SnapshotCache.peek), его нет — без имён и с нормами дорог по умолчанию.
+
+LIVE_CAR_MAX = 20   # номер машины в ?car=
+
+
+@bp.get('/routes/live')
+def live_page() -> str:
+    # Подложка — OpenStreetMap и при ключе Яндекса: условия Tiles API запрещают мониторинг транспорта в реальном времени
+    return render_template('routes_live.html')
+
+
+def _live_day() -> tuple[date | None, Any]:
+    """(день ?date=, по умолчанию сегодня по Еревану; None и ответ 400 — дата неверна)."""
+    raw = request.args.get('date')
+    day = _parse_day(raw) if raw else _yerevan_now().date()
+    if day is None:
+        return None, _bad_request({'date': 'Ամսաթիվը՝ ՏՏՏՏ-ԱԱ-ՕՕ'})
+    return day, None
+
+
+@dataclass(frozen=True)
+class _LiveContext:
+    rules: live.Rules
+    road: live.Road
+    depot: Point | None
+    plans: dict[str, list[live.PlanTrip]]
+    trucks: dict[str, live.TruckSpec]
+    names: dict[str, str]
+    crew: dict[str, dict[str, str]]       # машина → {'driver': имя, 'helper': имя} по «Վարորդ» / «Առաքիչ» (№62)
+    planned: tuple[str, ...]               # машины плана дня
+
+
+def _live_context(state: RoutesState, day: date) -> _LiveContext:
+    """Настройки, нормы машин, план «Развоза» на день и экипажи — для live.car_view (ERP не читается)."""
+    bundle = state.store.load()
+    s = bundle.settings
+    snap = state.snapshots.peek()
+    calib = _calibration(state, snap, s) if snap is not None else None
+    norms = evaluate.road_norms(s, calib)
+    road = live.Road(norms['detour_factor'][0], norms['speed_city_kmh'][0], norms['speed_region_kmh'][0],
+                     (float(s['city_center_lat']), float(s['city_center_lon'])), float(s['city_radius_km']))
+    names = {code: car.name for code, car in snap.cars.items()} if snap is not None else {}
+    trucks = {}
+    for code, t in bundle.trucks.items():
+        name = (t.name if t.manual else names.get(code)) or None
+        if t.name and code not in names:
+            names[code] = t.name
+        known = t.center_ok is not None or name is not None   # «авто» без названия (ERP не в памяти) — неизвестно
+        trucks[code] = live.TruckSpec(t.capacity_kg, t.fuel_l_per_100km, t.fuel_empty_l_per_100km,
+                                      t.fuel_full_l_per_100km, bundle.truck_center_ok(code, name) if known else None)
+    stored = state.store.load_dispatch(day.isoformat())
+    plans: dict[str, list[live.PlanTrip]] = {}
+    planned: list[str] = []
+    if stored is not None:
+        draft = dp.Draft.from_json(stored[0])
+        by_truck: dict[str, list[list[int]]] = {}
+        for t in draft.trips:
+            by_truck.setdefault(t.truck, []).append(list(t.stops))
+        pred = (draft.prediction or {}).get('trucks') or {}
+        plans = {car: live.plan_trips(trips, pred.get(car), day) for car, trips in by_truck.items()}
+        planned = list(by_truck)
+    ds = day.isoformat()
+    drivers, helpers = state.store.truck_drivers(ds)[0], state.store.truck_drivers(ds, 'helper')[0]
+    crew = {car: {'driver': drivers.get(car), 'helper': helpers.get(car)} for car in set(drivers) | set(helpers)}
+    return _LiveContext(live.Rules.from_settings(s), road, bundle.depot, plans, trucks, names, crew, tuple(planned))
+
+
+def _live_card(ctx: _LiveContext, day: date, now: datetime, car: str, facts: Mapping[str, Any] | None,
+               detail: bool) -> dict[str, Any]:
+    crew = ctx.crew.get(car, {})
+    return {'car_code': car, 'name': ctx.names.get(car), 'driver': crew.get('driver'), 'helper': crew.get('helper'),
+            'planned': car in ctx.planned,
+            **live.car_view(day, now, facts or {}, ctx.plans.get(car, []), ctx.trucks.get(car, live.TruckSpec()),
+                            ctx.depot, ctx.rules, ctx.road, detail)}
+
+
+def _live_head(ctx: _LiveContext, day: date, now: datetime) -> dict[str, Any]:
+    r = ctx.rules
+    return {'success': True, 'date': day.isoformat(), 'now': now.isoformat(timespec='seconds'),
+            'depot': list(ctx.depot) if ctx.depot else None,
+            'thresholds': {'speed_kmh': r.speed_kmh, 'speed_sec': r.speed_sec, 'stop_min': r.stop_min,
+                           'no_contact_min': r.no_contact_min, 'stale_s': live.STALE_S},
+            'center_zone': [list(p) for p in r.center_zone]}
+
+
+@bp.get('/api/routes/live')
+@_api
+def api_live() -> Any:
+    """Все машины дня ?date= (по умолчанию сегодня): карточка каждой (live.car_view без трека). Машины — с данными
+    терминала за день и машины плана «Развоза»."""
+    day, error = _live_day()
+    if error is not None:
+        return error
+    state = _state()
+    if state.live_facts is None:
+        return _bad_request({'_': '«Առաքիչ» բաժինը միացված չէ — տվյալներ չկան'})
+    now = _yerevan_now()
+    ctx = _live_context(state, day)
+    fleet = state.live_facts.fleet(day.isoformat())
+    cars = sorted(set(fleet) | set(ctx.planned))
+    return jsonify({**_live_head(ctx, day, now),
+                    'trucks': [_live_card(ctx, day, now, car, fleet.get(car), False) for car in cars]})
+
+
+@bp.get('/api/routes/live/truck')
+@_api
+def api_live_truck() -> Any:
+    """Одна машина ?car=&date=: карточка + трек дня (упрощённый), точки дня со статусами и журнал тревог."""
+    day, error = _live_day()
+    if error is not None:
+        return error
+    car = request.args.get('car')
+    if not isinstance(car, str) or not car or len(car) > LIVE_CAR_MAX:
+        return _bad_request({'car': 'Անհրաժեշտ է car'})
+    state = _state()
+    if state.live_facts is None:
+        return _bad_request({'_': '«Առաքիչ» բաժինը միացված չէ — տվյալներ չկան'})
+    now = _yerevan_now()
+    ctx = _live_context(state, day)
+    fleet = state.live_facts.fleet(day.isoformat())
+    if car not in fleet and car not in ctx.planned:
+        return jsonify({'success': False, 'error': 'Այս մեքենան այս օրը տվյալներ չունի'}), 404
+    return jsonify({**_live_head(ctx, day, now), 'truck': _live_card(ctx, day, now, car, fleet.get(car), True)})
 
 
 # --- Журнал гаража «Ավտոտնակ» (№53, docs/plans/garage-journal-plan.md) ---

@@ -412,15 +412,20 @@ def _restricted_path_allowed(path: str, method: str) -> bool:
     return False
 
 
-# ---- Роль 'garage': только журнал гаража (default-deny) ---------------------------
-# Страница (GET) и её API (GET и POST); статика и выход пропускаются раньше. Всё прочее — 403 JSON или
-# переход на страницу гаража. Границы пути — по сегменту: '/api/routes/garage-x' не совпадает.
+# ---- Роль 'garage': только журнал гаража и карта машин (default-deny) ---------------------------
+# Страница журнала (GET) и её API (GET и POST); карта «Մեքենաները առցանց» (№76) и её API — только GET; статика и выход
+# пропускаются раньше. Всё прочее — 403 JSON или переход на страницу гаража. Границы пути — по сегменту:
+# '/api/routes/garage-x' и '/api/routes/live-x' не совпадают.
 _GARAGE_PAGE = '/routes/garage'
 _GARAGE_API = '/api/routes/garage'
+_LIVE_PAGE = '/routes/live'
+_LIVE_API = '/api/routes/live'
 
 
 def _garage_path_allowed(path: str, method: str) -> bool:
-    if method in ('GET', 'HEAD') and path == _GARAGE_PAGE:
+    if method in ('GET', 'HEAD') and path in (_GARAGE_PAGE, _LIVE_PAGE):
+        return True
+    if method in ('GET', 'HEAD') and (path == _LIVE_API or path.startswith(_LIVE_API + '/')):
         return True
     return method in ('GET', 'HEAD', 'POST') and (path == _GARAGE_API or path.startswith(_GARAGE_API + '/'))
 
@@ -444,9 +449,11 @@ _PUBLIC_STATIC = frozenset((
     '/static/css/tokens.css', '/static/css/base.css', '/static/js/base.js',                    # base_v2.html
     '/static/css/routes.css', '/static/css/routes_garage.css', '/static/js/routes_garage.js',  # routes_garage.html
     '/static/js/routes_basemap.js',   # routes_garage.html: подложка карты дня «Նորմ և փաստ» (без ключа Яндекса)
+    '/static/css/routes_live.css', '/static/js/routes_live.js',                               # routes_live.html (№76)
 ))
-# API журнала снаружи — только простые сегменты (путь уже раскодирован сервером): без '..', '//', '%', '\', регистра.
-_PUBLIC_GARAGE_API_RE = re.compile(r'/api/routes/garage(?:/[a-z0-9_-]+)*')
+# API журнала и карты машин (№76) снаружи — только простые сегменты (путь уже раскодирован сервером): без '..',
+# '//', '%', '\', регистра.
+_PUBLIC_GARAGE_API_RE = re.compile(r'/api/routes/(?:garage|live)(?:/[a-z0-9_-]+)*')
 
 
 def _public_path_allowed(path: str, method: str) -> bool:
@@ -456,7 +463,7 @@ def _public_path_allowed(path: str, method: str) -> bool:
         return method in ('GET', 'HEAD', 'POST')
     if path == '/logout':
         return method == 'POST'
-    if path == _GARAGE_PAGE or _PUBLIC_GARAGE_API_RE.fullmatch(path):
+    if path in (_GARAGE_PAGE, _LIVE_PAGE) or _PUBLIC_GARAGE_API_RE.fullmatch(path):
         return _garage_path_allowed(path, method)
     return False
 
@@ -13288,6 +13295,8 @@ courier.init_app(app, db)
 route_optimizer.attach_driver_geo(app, courier.driver_geo(app))
 # трек и заправки машин «Առաքիչ» — обучение «Развоза» и «план — факт» (learning-loop-plan.md)
 route_optimizer.attach_fleet_facts(app, courier.fleet_facts(app))
+# машины на карте сейчас «Մեքենաները առցանց» (№76, live-map-plan.md)
+route_optimizer.attach_live_facts(app, courier.live_facts(app))
 
 from courier.web_security import init_web_security
 init_web_security(app, courier.API_PREFIX)
