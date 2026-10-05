@@ -34,6 +34,9 @@
 - Утверждение плана дня (ответ владельца №73, «Հաստատել օրվա պլանը»): все рейсы закреплены (approve), пересборка
   запрещена (views), ручные правки и новые заказы дня — можно; новые рейсы, пока план утверждён, тоже закреплены
   (keep_approved). Снятие (unapprove) открепляет ровно то, что закрепило утверждение.
+- Водителей меньше, чем машин (ответ владельца №77, build_crewed): машин в рейсах не больше, чем вышло водителей; свой
+  водитель — на своей машине, свободные — на машинах невышедших, лишние машины выбирает сборка по ֏ дня. Машины без
+  водителя (Draft.unmanned) — не машины дня: ни правки, ни новые заказы дня (№72), ни совет (№54) их не берут.
 """
 from __future__ import annotations
 
@@ -41,6 +44,8 @@ import math
 import re
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
+from itertools import combinations
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
 
 from . import fleet as fl
@@ -333,6 +338,13 @@ class Draft:
     # план дня утверждён (№73): {'at': когда (ISO), 'by': кто, 'pinned': [рейсы, которые закрепило утверждение —
     # до него они не были закреплены]}; None — не утверждён
     approved: dict[str, Any] | None = None
+    # водителей меньше, чем машин (№77, build_crewed): seats — машина → водитель, которого сборка посадила вместо её
+    # водителя (свой водитель машины — не здесь, его берут из «Վարորդ»); unmanned — отмеченные машины, которые сегодня не
+    # выходят без водителя: машина → 'absent' (её водитель не вышел) | 'moved' (её водитель на другой машине — так день
+    # лучше, _gain); absent — кто из водителей дня не вышел при сборке. Имена людей — только странице, не в AI (как №62)
+    seats: dict[str, str] = field(default_factory=dict)
+    unmanned: dict[str, str] = field(default_factory=dict)
+    absent: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -350,7 +362,10 @@ class Draft:
                 **({'same_day': sorted(self.same_day)} if self.same_day else {}),
                 **({'same_day_trips': sorted(self.same_day_trips)} if self.same_day_trips else {}),
                 **({'same_day_trucks': sorted(self.same_day_trucks)} if self.same_day_trucks else {}),
-                **({'approved': dict(self.approved)} if self.approved is not None else {})}
+                **({'approved': dict(self.approved)} if self.approved is not None else {}),
+                **({'seats': dict(sorted(self.seats.items()))} if self.seats else {}),
+                **({'unmanned': dict(sorted(self.unmanned.items()))} if self.unmanned else {}),
+                **({'absent': sorted(self.absent)} if self.absent else {})}
 
     @classmethod
     def from_json(cls, raw: Any) -> Draft:
@@ -390,7 +405,10 @@ class Draft:
                    same_day_trips=cids('same_day_trips'),
                    same_day_trucks={x for x in (raw.get('same_day_trucks') or [])[:MAX_TRIPS] if isinstance(x, str)}
                    if isinstance(raw.get('same_day_trucks'), list) else set(),
-                   approved=_approved(raw.get('approved')))
+                   approved=_approved(raw.get('approved')), seats=_str_map(raw.get('seats')),
+                   unmanned={k: v for k, v in _str_map(raw.get('unmanned')).items() if v in UNMANNED},
+                   absent=sorted({x for x in (raw.get('absent') or [])[:MAX_TRIPS] if isinstance(x, str) and x})
+                   if isinstance(raw.get('absent'), list) else [])
 
 
 def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
@@ -412,6 +430,13 @@ def _approved(raw: Any) -> dict[str, Any] | None:
     by = raw.get('by')
     return {'at': raw['at'], 'by': by if isinstance(by, str) else None,
             'pinned': sorted({x for x in raw['pinned'][:MAX_TRIPS] if _is_int(x)})}
+
+
+def _str_map(raw: Any) -> dict[str, str]:
+    """Словарь «код машины → строка» из черновика (№77: seats, unmanned); битые пары — мимо."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in list(raw.items())[:MAX_TRIPS] if isinstance(k, str) and isinstance(v, str) and v}
 
 
 def _is_num(v: Any) -> bool:
@@ -616,11 +641,11 @@ def _by_departure(old: list[DraftTrip], old_departs: Mapping[int, float], new: l
 # --- Сборка рейсов ---
 
 def _plan_around(ctx: DayContext, sel: Sequence[fl.FleetTruck], routable: Mapping[int, Stop], keep: list[DraftTrip],
-                 was: Mapping[int, tuple[float, float, list[float]]], next_id: int
+                 was: Mapping[int, tuple[float, float, list[float]]], next_id: int, iterations: int = vrp.ITERATIONS
                  ) -> tuple[list[DraftTrip], list[Stop], dict[int, str], int]:
     """Раскладка с окнами и центром вокруг готовых рейсов keep (fleet.route_day, fixed): их машина и состав не
     меняются, время — их выезд в прежнем плане (was), если там свободно; остальные магазины раскладываются вокруг.
-    (рейсы по времени выезда, магазины вне keep, причины неназначенных — номер в них, следующий id)."""
+    (рейсы по времени выезда, магазины вне keep, причины неназначенных — номер в них, следующий id). iterations — как у build."""
     shares = _shares(keep)
     rest = [routable[c] for c in sorted(routable) if c not in shares]
     pts, kgs, revs = [s.point for s in rest], [s.kg for s in rest], [s.revenue for s in rest]
@@ -639,7 +664,7 @@ def _plan_around(ctx: DayContext, sel: Sequence[fl.FleetTruck], routable: Mappin
             access.append(_allowed_trucks(ctx, c))
     reasons: dict[int, str] = {}
     trips = fl.route_day(pts, kgs, revs, ctx.depot, sel, ctx.norms, ctx.tn, overflow=False, windows=wins, center=cen,
-                         reasons=reasons, fixed=fixed, balance=True, solver=True, allowed_trucks=access)
+                         reasons=reasons, fixed=fixed, balance=True, solver=True, allowed_trucks=access, iterations=iterations)
     own = {tuple(idx): t for t, (_, idx, _) in zip(keep, fixed)}
     out: list[DraftTrip] = []
     for t in trips:
@@ -652,7 +677,7 @@ def _plan_around(ctx: DayContext, sel: Sequence[fl.FleetTruck], routable: Mappin
 
 
 def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Sequence[str],
-          now: str) -> Draft:
+          now: str, iterations: int = vrp.ITERATIONS) -> Draft:
     """«Собрать рейсы»: заказы с координатами (кроме исключённых) → рейсы выбранных машин.
     Закреплённые логистом рейсы прежнего черновика остаются как есть (если их машина работает), их время
     машина уже занята; остальное раскладывается заново. За конец рабочего дня машин рейсы не планируются:
@@ -662,7 +687,8 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     времени, если там свободно и окна соблюдаются («после 15:00» — в конце дня, утро — другим рейсам), иначе — в
     самый ранний промежуток, где укладываются; остальное раскладывается заново вокруг них.
     Как и раньше: закреплён один рейс тяжёлого заказа на несколько поездок — в его рейсе заказ показывается
-    целиком (доля считается по рейсам черновика, остальные поездки при пересборке не закреплены)."""
+    целиком (доля считается по рейсам черновика, остальные поездки при пересборке не закреплены).
+    iterations — итераций решателя PyVRP: меньше vrp.ITERATIONS — быстрая проба набора машин (build_crewed, №77)."""
     old = old or Draft()
     routable = {s.customer_id: s for s in stops if s.point is not None}
     sel = _selected(ctx, trucks)
@@ -682,7 +708,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     timed = timed or any(t.not_before is not None for t in pinned)
     if timed and pinned and sel:
         was = _timeline(ctx, old.trips, routable, _shares(old.trips))
-        draft.trips, rest, reasons, draft.next_id = _plan_around(ctx, sel, routable, pinned, was, draft.next_id)
+        draft.trips, rest, reasons, draft.next_id = _plan_around(ctx, sel, routable, pinned, was, draft.next_id, iterations)
     else:
         shares = _shares(pinned)
         rest = [routable[c] for c in sorted(routable) if c not in shares]
@@ -693,7 +719,8 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
                              ctx.depot, sel, ctx.norms, ctx.tn, used, overflow=False,
                              windows=[_span(ctx, s.customer_id) for s in rest], center=[_central(ctx, s) for s in rest],
                              reasons=reasons, balance=True, solver=True,
-                             allowed_trucks=[_allowed_trucks(ctx, s.customer_id) for s in rest], fed=fed) if rest and sel else []
+                             allowed_trucks=[_allowed_trucks(ctx, s.customer_id) for s in rest], fed=fed,
+                             iterations=iterations) if rest and sel else []
         draft.trips = list(pinned)
         for t in trips:
             draft.trips.append(DraftTrip(draft.next_id, t.truck, [rest[i].customer_id for i in t.items]))
@@ -706,6 +733,179 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
                 {'window': draft.no_window, 'center': draft.no_center, 'vehicle': draft.no_vehicle}.get(
                     reasons.get(i), draft.no_room).add(s.customer_id)
     return draft
+
+
+# --- Водителей меньше, чем машин (ответ владельца №77) ---
+
+UNMANNED = ('absent', 'moved')   # почему отмеченная машина сегодня без водителя (Draft.unmanned)
+# Проба набора машин — сборка с коротким решателем (итераций как у самого малого дня, vrp.MIN_ITERATIONS). Замер на копии
+# базы (01–05.10.2026, 4 дня × 7 наборов): проба 1,2–3,4 с против 10–90 с итога; магазинов вне рейсов — как у итога во
+# всех 28 наборах (сборка без решателя теряла 6–33 магазина, которые итог развозит, и выбирала машину до +11,9% ֏ дня).
+SEAT_TRIAL_ITERATIONS = vrp.MIN_ITERATIONS
+# Наборов машин для свободных водителей не больше — перебор всех, больше — по одной машине (жадно): ≤ 20 проб — ≤ ~1 мин.
+SEAT_EXHAUSTIVE_MAX = 20
+# Водитель пересаживается со своей машины на машину без водителя, только если день (֏ расхода по пробе) дешевле хотя бы
+# на столько. Тот же замер: разница ֏ двух наборов по пробе и по итогу расходится в медиане на 2,9% (шум решателя), в
+# 90% пар — не больше 7,6%, максимум 9,2%; меньший выигрыш — шум, а пересадка — неудобство людям.
+SWAP_MIN_GAIN = 0.08
+
+
+@dataclass(frozen=True)
+class Crew:
+    """Водители дня для сборки (№77). own — машина → её водитель на день (store.truck_drivers: постоянный или подмена дня);
+    manual — машины, чей водитель на этот день выбран логистом (подмена в «Վարորդ»): сборка его оттуда не снимает;
+    absent — водители дня, которые не вышли (store.driver_absences). Машина без водителя в own — едет, как до №77."""
+    own: Mapping[str, str] = field(default_factory=dict)
+    manual: frozenset[str] = frozenset()
+    absent: frozenset[str] = frozenset()
+
+
+def seating(crew: Crew, codes: Collection[str]) -> tuple[dict[str, str], list[str], list[str]]:
+    """Кто за рулём машин codes без пересадок: (машина → свой водитель; машины, чей водитель не вышел или уже за рулём
+    другой из codes; свободные водители — вышли, но ни одной их машины среди codes нет). Человек ведёт одну машину:
+    первой — та, куда его поставил логист (manual), затем по коду. Машина без водителя в own — ни там, ни там: едет."""
+    own: dict[str, str] = {}
+    orphans: list[str] = []
+    for code in sorted(codes, key=lambda c: (c not in crew.manual, c)):
+        name = crew.own.get(code)
+        if not name:
+            continue
+        if name in crew.absent or name in own.values():
+            orphans.append(code)
+        else:
+            own[code] = name
+    free = sorted({n for n in crew.own.values() if n and n not in crew.absent} - set(own.values()))
+    return own, sorted(orphans), free
+
+
+def _shortfall(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft) -> tuple[int, float, float]:
+    """Чем build_crewed сравнивает наборы машин: (магазинов вне рейсов, их кг до 0,5 кг, ֏ расхода рейсов — дизель и
+    износ, как operating_cost_amd плана). Меньше — лучше: сначала всё увезти, потом дешевле."""
+    left = draft.no_room | draft.no_window | draft.no_center | draft.no_vehicle
+    shares = _shares(draft.trips)
+    amd = math.fsum(_trip_amd(ctx, t.stops, routable, shares, t.truck) for t in draft.trips if t.truck in ctx.trucks)
+    return len(left), round(math.fsum(routable[c].kg for c in left) * 2) / 2, amd
+
+
+def _profile(ctx: DayContext, routable: Mapping[int, Stop], code: str) -> tuple[Any, ...]:
+    """Всё, чем машина code отличается в сборке, кроме кода: тоннаж, расход, износ, центр, «большая» (№68), выученный темп
+    (№66), надбавка в Ереване и допуск к магазинам дня. Одинаковые машины build_crewed пробует один раз."""
+    t = ctx.trucks[code]
+    return (replace(t, car_code='', name=None), ctx.tn.pace_of(code), ctx.tn.yerevan_of(code),
+            tuple(_vehicle_ok(ctx, c, code) for c in sorted(routable) if c in ctx.vehicle_access))
+
+
+def _gain(new: tuple[int, float, float], cur: tuple[int, float, float]) -> bool:
+    """Пересадка выгодна: увозит больше (магазинов, затем кг) или столько же, а ֏ дня меньше хотя бы на SWAP_MIN_GAIN."""
+    return new[:2] < cur[:2] if new[:2] != cur[:2] else new[2] <= cur[2] * (1.0 - SWAP_MIN_GAIN)
+
+
+def build_crewed(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Sequence[str], now: str,
+                 crew: Crew, timing: dict[str, Any] | None = None) -> Draft:
+    """«Собрать рейсы» с водителями дня (ответ владельца №77: «Система сама», «Своя машина + подмена»): машин в рейсах не
+    больше, чем вышло водителей. trucks — отмеченные машины (исправны и могут выйти, №70–71), crew — водители дня.
+    - отмеченная машина, чей водитель вышел, едет с ним (seating); машина без водителя в «Վարորդ» — едет, как до №77;
+    - свободные водители (вышли, а их машины не отмечены) садятся на отмеченные машины, чей водитель не вышел: сначала на
+      машины с закреплёнными рейсами (рейсы остаются; водителя не хватило — машина едет, страница предупреждает), затем на
+      лучшие для заказов дня — по пробной сборке с коротким решателем (SEAT_TRIAL_ITERATIONS): меньше магазинов вне
+      рейсов, затем меньше ֏ расхода (_shortfall). Наборов (одинаковые машины — один, _profile) не больше SEAT_EXHAUSTIVE_MAX — перебор
+      всех, иначе по одной машине; водители по именам садятся на выбранные машины по кодам;
+    - «выгоднее оставить свою»: водитель своей машины (не поставленный логистом, без закреплённых рейсов) пересаживается на
+      отмеченную машину без водителя, только если день так заметно лучше (_gain); его машина — 'moved';
+    - итог — сборка (build) выбранными машинами с решателем. Draft.seats — пересаженные, Draft.unmanned — отмеченные
+      машины без водителя, Draft.absent — кто не вышел. Машин без водителя нет — сборка ровно отмеченными, как build, до
+      байта. timing — сюда {'trials': проб, 'seconds': время до итоговой сборки} (замер).
+    Детерминированно: кандидаты, ничьи и рассадка — по коду и имени."""
+    started = perf_counter()
+    old = old or Draft()
+    codes = sorted(set(trucks) & set(ctx.trucks))
+    own, orphans, free = seating(crew, codes)
+    pinned = {t.truck for t in old.trips if t.pinned}
+    forced = [c for c in orphans if c in pinned]
+    rest = [c for c in orphans if c not in pinned]
+    seats = dict(zip(forced, free))
+    pool = free[len(forced):]
+    fleet = [c for c in codes if c not in orphans] + forced
+    routable = {s.customer_id: s for s in stops if s.point is not None}
+    tried: dict[tuple[str, ...], tuple[int, float, float]] = {}
+
+    def trial(fleet_: Sequence[str]) -> tuple[int, float, float]:
+        key = tuple(sorted(fleet_))
+        if key not in tried:
+            tried[key] = _shortfall(ctx, routable, build(ctx, stops, old, key, now, SEAT_TRIAL_ITERATIONS))
+        return tried[key]
+
+    k = min(len(pool), len(rest))
+    chosen = list(rest) if k == len(rest) else []
+    if 0 < k < len(rest):
+        kinds: dict[tuple[Any, ...], list[str]] = {}
+        for c in rest:
+            kinds.setdefault(_profile(ctx, routable, c), []).append(c)
+        groups = list(kinds.values())
+
+        def canon(pick: Sequence[str]) -> tuple[str, ...]:   # из одинаковых машин — первые по коду
+            return tuple(sorted(c for g in groups for c in g[:sum(1 for x in pick if x in g)]))
+
+        sets = sorted({canon(pick) for pick in combinations(rest, k)})
+        if len(sets) == 1:                   # выбирать не из чего — без пробы
+            chosen = list(sets[0])
+        elif len(sets) <= SEAT_EXHAUSTIVE_MAX:
+            chosen = list(min(sets, key=lambda pick: (trial([*fleet, *pick]), pick)))
+        else:
+            for _ in range(k):
+                heads = [g[0] for g in ([c for c in g if c not in chosen] for g in groups) if g]
+                chosen.append(min(heads, key=lambda c: (trial([*fleet, *chosen, c]), c)))
+    seats.update(zip(sorted(chosen), pool))
+    fleet += chosen
+    unmanned = {c: 'absent' for c in rest if c not in chosen}
+    movable = [c for c in own if c not in crew.manual and c not in pinned]
+    if unmanned and movable:
+        cur = trial(fleet)
+        while movable:
+            pairs: dict[tuple[Any, ...], tuple[str, str]] = {}
+            for a in movable:
+                for b in sorted(unmanned):
+                    pa, pb = _profile(ctx, routable, a), _profile(ctx, routable, b)
+                    if pa != pb:                 # одинаковые машины — пересадка ничего не меняет
+                        pairs.setdefault((pa, pb), (a, b))
+            best = None
+            for a, b in sorted(pairs.values()):
+                got = trial([b if c == a else c for c in fleet])
+                if _gain(got, cur) and (best is None or (got, a, b) < best):
+                    best = (got, a, b)
+            if best is None:
+                break
+            cur, a, b = best
+            fleet = [b if c == a else c for c in fleet]
+            seats[b] = own.pop(a)
+            movable.remove(a)
+            del unmanned[b]
+            unmanned[a] = 'moved'
+    if timing is not None:
+        timing.update(trials=len(tried), seconds=perf_counter() - started)
+    draft = build(ctx, stops, old, fleet if orphans else trucks, now)
+    draft.seats, draft.unmanned, draft.absent = seats, unmanned, sorted(crew.absent)
+    return draft
+
+
+def crew_view(draft: Draft, crew: Crew) -> dict[str, dict[str, Any]]:
+    """Кто ведёт машины дня (№77) — только странице и Բեռնագիր: машина → {'name': водитель или None, 'seat': его посадила
+    сборка вместо водителя машины («փոխարինում»), 'warn': None | 'none' — водитель не указан | 'absent' — водитель не вышел
+    (закреплённые рейсы машины остались) | 'twice' — этот человек ведёт и другую машину дня (водителя поменяли в «Վարորդ»
+    после сборки)}. Выбор логиста на этот день (crew.manual) главнее посадки сборки."""
+    out: dict[str, dict[str, Any]] = {}
+    for code in sorted({*draft.trucks, *(t.truck for t in draft.trips)}):
+        name = crew.own.get(code)
+        seat = code in draft.seats and not (code in crew.manual and name not in crew.absent)
+        out[code] = {'name': (draft.seats[code] if seat else name) or None, 'seat': seat}
+    count: dict[str, int] = {}
+    for v in out.values():
+        if v['name']:
+            count[v['name']] = count.get(v['name'], 0) + 1
+    for v in out.values():
+        v['warn'] = ('none' if not v['name'] else 'absent' if v['name'] in crew.absent
+                     else 'twice' if count[v['name']] > 1 else None)
+    return out
 
 
 def overtime(ctx: DayContext, stops: Sequence[Stop], draft: Draft) -> Draft:
@@ -1291,7 +1491,7 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
             try_plan(f'insert:{t.id}', 'insert', t.truck, t.id, trial, sel)
         ones = {c: 1 for c in free}
         working = sorted(set(draft.trucks) & set(ctx.trucks))
-        for code in working + sorted(set(ctx.trucks) - set(draft.trucks)):
+        for code in working + sorted(set(ctx.trucks) - set(draft.trucks) - set(draft.unmanned)):   # без водителя — нет (№77)
             extra = code not in draft.trucks
             busy = any(t.truck == code for t in trips0)
             start = max(now_min, _truck_day(ctx, trips0, routable0, shares0, code)[1])
@@ -1562,7 +1762,7 @@ def _advice(ctx: DayContext, draft: Draft, trips_json: Sequence[Mapping[str, Any
       с меньшим расходом (затем вместительнее, затем код), иначе самая вместительная — need_kg в совете: тоннаж меньше —
       страница пишет «возьмёт часть груза». Свободной машины нет (или опаздывают только закреплённые) — None;
     - no_free — беда есть и сверх закреплённых рейсов, а свободной машины нет: страница пишет «все машины уже отмечены»
-      (только закреплённые — False: прежние тексты страницы).
+      (только закреплённые — False: прежние тексты страницы); no_drivers — машины есть, но без водителей (№77, unmanned).
     Это оценка без расчёта рейсов (дёшево и детерминированно): что на самом деле поместится, покажет пересборка."""
     late = [t for t in trips_json if t['over_time']]
     pinned_late = [t['id'] for t in late if t['pinned']]
@@ -1576,7 +1776,8 @@ def _advice(ctx: DayContext, draft: Draft, trips_json: Sequence[Mapping[str, Any
         return {'rebuild': idle, 'add': None, 'pinned_late': pinned_late, 'no_free': False}
     if not late and not left:                   # опаздывают только закреплённые рейсы
         return {'rebuild': [], 'add': None, 'pinned_late': pinned_late, 'no_free': False}
-    free = [t for c, t in sorted(ctx.trucks.items()) if c not in draft.trucks]
+    # машины без водителя сегодня (№77) не предлагаются; есть такие — свободных водителей нет, предлагать некого
+    free = [t for c, t in sorted(ctx.trucks.items()) if c not in draft.trucks] if not draft.unmanned else []
     center_ok = {c for c, t in ctx.trucks.items() if t.center_ok}
     need_center = any(u['no_center'] for u in left) or any(
         t['truck'] in center_ok and any(s['center'] for s in t['stops']) for t in late)
@@ -1586,7 +1787,8 @@ def _advice(ctx: DayContext, draft: Draft, trips_json: Sequence[Mapping[str, Any
     cids = [u['customer_id'] for u in left] + [s['customer_id'] for t in late for s in t['stops']]
     pool = [t for t in pool if all(_vehicle_ok(ctx, c, t.car_code) for c in cids)] or pool
     if not pool:
-        return {'rebuild': [], 'add': None, 'pinned_late': pinned_late, 'no_free': True}
+        return {'rebuild': [], 'add': None, 'pinned_late': pinned_late, 'no_free': True,
+                **({'no_drivers': True} if draft.unmanned else {})}
     need_kg = max([t['kg'] for t in late] + [sum(u['kg'] for u in left)])
     fits = [t for t in pool if t.capacity_kg >= need_kg]
     pick = (min(fits, key=lambda t: (t.l100, -t.capacity_kg, t.car_code)) if fits

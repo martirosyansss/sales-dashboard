@@ -1520,7 +1520,8 @@ def _better(new: Sequence[Trip], old: Sequence[Trip], tn: TruckNorms | None = No
 
 def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[FleetTruck],
             tn: TruckNorms, used: Mapping[str, float] | None,
-            fixed: Sequence[tuple[str, Sequence[int], float]] | None, fed: Collection[str] = ()) -> list[Trip] | None:
+            fixed: Sequence[tuple[str, Sequence[int], float]] | None, fed: Collection[str] = (),
+            iterations: int = vrp.ITERATIONS) -> list[Trip] | None:
     """Рейсы дня решателем PyVRP (vrp.solve: цель — литры, рейс не тяжелее LOAD_CAP; если так всё не помещается — без
     предела) со стартом от сборки trips. None — решателя нет или его рейсы не проходят проверку «Развоза»: каждый
     заказ сборки — в рейсах целиком (те же поездки), повторов нет, тоннаж, центр, окна и конец рабочего дня (рейсы
@@ -1606,6 +1607,7 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
     begin = sorted(start.items())
     loading: dict[str, float] = ({'load_fixed_min': tn.warehouse_load_fixed_min,
                                   'load_tonne_min': tn.warehouse_load_min_per_tonne} if tn.load(1000) > 0 else {})
+    loading['iterations'] = iterations
     tries: list[dict[str, float]] = [loading]
     if tn.buffer_c > 0:   # запас на рейс (№66): касательная к c·√D в типичном рейсе сборки (см. выше)
         plain = []
@@ -1711,7 +1713,8 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
               departs: list[float] | None = None,
               fixed: Sequence[tuple[str, Sequence[int], float]] | None = None,
               balance: bool = False, solver: bool = False, load_cap: float | None = None,
-              allowed_trucks: Sequence[Collection[str] | None] | None = None, fed: Collection[str] = ()) -> list[Trip]:
+              allowed_trucks: Sequence[Collection[str] | None] | None = None, fed: Collection[str] = (),
+              iterations: int = vrp.ITERATIONS) -> list[Trip]:
     """Рейсы дня по известным заказам — тот же расчёт, что у пробы Монте-Карло (plan_trips):
     заказ i — точка points[i], kgs[i] кг; Trip.items — номера заказов по порядку объезда.
     Тяжелее самой большой машины — несколько поездок к одному заказу поровну. overflow=False (план
@@ -1722,7 +1725,8 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
     reasons — причины неназначенных заказов: window | center | vehicle | time; busy, departs, fixed
     (номера заказов закреплённых рейсов — в points) — как у plan_trips. Сборка плана развоза (overflow=False, без busy
     и departs): balance — выровнять загрузку рейсов (_balance, ответ №44); solver — рейсы решателем PyVRP поверх
-    сборки (_solver, ответ №45), берутся, если прошли проверку и лучше (_better), иначе — рейсы сборки. Обед (tn с
+    сборки (_solver, ответ №45; iterations — итераций поиска, меньше — быстрая проба набора машин, №77), берутся, если
+    прошли проверку и лучше (_better), иначе — рейсы сборки. Обед (tn с
     обедом, №61) — во всех шагах по одному правилу; fed — машины, чей обед уже в занятом времени used / busy."""
     if (balance or solver) and (overflow or busy is not None or departs is not None):
         raise ValueError('balance и solver — только для сборки плана развоза: overflow=False, без busy и departs')
@@ -1781,7 +1785,7 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
             if not valid_load(best):
                 best = trips
         best = _polish_orders(best, stops, d, m, trucks, tn, used, fixed, fed)
-        alt = _solver(trips, stops, d, m, trucks, tn, used, fixed, fed) if solver else None
+        alt = _solver(trips, stops, d, m, trucks, tn, used, fixed, fed, iterations) if solver else None
         if alt is not None:
             balanced = _balance(alt, stops, d, m, trucks, tn, used, fixed, fed) if balance else alt
             alt = balanced if not solver or valid_load(balanced) else alt

@@ -18,7 +18,7 @@ import re
 import sqlite3
 import unicodedata
 from dataclasses import asdict, dataclass, field, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Collection, Literal, Mapping, Sequence
 
@@ -28,7 +28,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -169,6 +169,12 @@ _TRUCK_DRIVER_TABLE = (
 # та же структура и те же правила срока, что у водителя.
 _TRUCK_HELPER_TABLE = _TRUCK_DRIVER_TABLE.replace('truck_driver(', 'truck_helper(', 1)
 CREW_TABLES = {'driver': 'truck_driver', 'helper': 'truck_helper'}   # роль → таблица (только эти имена идут в SQL)
+# Схема 23 (ответ владельца №77): водитель не вышел — дни с from_day по to_day включительно («только сегодня» — from_day =
+# to_day). Имя — как в truck_driver (check_driver_name, непустое). Только для «Развоза»: сколько машин выходит в день.
+_DRIVER_ABSENCE_TABLE = (
+    "CREATE TABLE IF NOT EXISTS driver_absence(name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 60), "
+    "from_day TEXT NOT NULL, to_day TEXT NOT NULL CHECK (to_day >= from_day), updated_at TEXT NOT NULL, updated_by TEXT, "
+    "PRIMARY KEY (name, from_day))")
 
 _CUSTOMER_VEHICLES_TABLE = (
     "CREATE TABLE IF NOT EXISTS customer_vehicle_access(customer_id INTEGER PRIMARY KEY, "
@@ -251,6 +257,7 @@ _SCHEMA = (
     _GARAGE_ONE_ODOMETER,
     _TRUCK_DRIVER_TABLE,
     _TRUCK_HELPER_TABLE,
+    _DRIVER_ABSENCE_TABLE,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -395,6 +402,8 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "ALTER TABLE trucks_v22 RENAME TO trucks",
         _TRUCKS_ONE_VAN,
     ),
+    # 22 → 23 (№77): только добавляем — отсутствие водителей; прежние таблицы и значения не меняются.
+    22: (_DRIVER_ABSENCE_TABLE,),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -2313,6 +2322,42 @@ class Store:
                     conn.execute(drop_sub, (car_code, day))
 
         self._transaction(write, 'не удалось сохранить водителя машины')
+
+    def driver_absences(self, day: str) -> dict[str, str]:
+        """Водители, которые не вышли в день YYYY-MM-DD (№77): имя → по какой день (включительно) их нет — самый поздний
+        конец среди записей, куда попадает day."""
+        rows = self._read(lambda conn: conn.execute(
+            'SELECT name, MAX(to_day) FROM driver_absence WHERE from_day <= ? AND to_day >= ? GROUP BY name',
+            (day, day)).fetchall())
+        return dict(rows)
+
+    def save_driver_absence(self, name: str, day: str, until: str | None, user: str | None) -> None:
+        """Водитель name не выходит (№77): until=None — только в day, иначе с day по until включительно (отпуск, болезнь).
+        Запись с тем же началом заменяется (исправить срок)."""
+        until = day if until is None else until
+        if check_driver_name(name) != (name, None) or not name:
+            raise ValueError('имя водителя не прошло проверку')
+        if not all(isinstance(d, str) and _ISO_DAY_RE.match(d) for d in (day, until)) or until < day:
+            raise ValueError('day, until: даты YYYY-MM-DD, until не раньше day')
+        self._transaction(lambda conn: conn.execute(
+            'INSERT INTO driver_absence(name, from_day, to_day, updated_at, updated_by) VALUES(?, ?, ?, ?, ?) '
+            'ON CONFLICT(name, from_day) DO UPDATE SET to_day = excluded.to_day, updated_at = excluded.updated_at, '
+            'updated_by = excluded.updated_by', (name, day, until, _now(), user)), 'не удалось сохранить отсутствие водителя')
+
+    def save_driver_present(self, name: str, day: str, user: str | None) -> None:
+        """Водитель name вышел с дня day (№77). Отсутствие, которое накрывает day: начатое раньше — кончается накануне
+        (прошлые дни не переписываются), начатое в day — удаляется; отдельные будущие отсутствия остаются."""
+        if not isinstance(day, str) or not _ISO_DAY_RE.match(day):
+            raise ValueError('day: дата YYYY-MM-DD')
+        before = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
+
+        def write(conn: sqlite3.Connection) -> None:
+            cover = 'name = ? AND from_day <= ? AND to_day >= ?'
+            conn.execute(f'DELETE FROM driver_absence WHERE {cover} AND from_day = ?', (name, day, day, day))
+            conn.execute(f'UPDATE driver_absence SET to_day = ?, updated_at = ?, updated_by = ? WHERE {cover}',
+                         (before, _now(), user, name, day, day))
+
+        self._transaction(write, 'не удалось сохранить отсутствие водителя')
 
     def load_dispatch(self, day: str) -> tuple[dict[str, Any], int] | None:
         """Черновик плана развоза на дату (YYYY-MM-DD): (данные, номер правки) или None."""

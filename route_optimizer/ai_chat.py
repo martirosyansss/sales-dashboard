@@ -87,6 +87,9 @@ small trucks lack capacity or time); yerevan_min on a stop = minutes added to it
 store inside the Yerevan zone (parking, maneuvering); yerevan_km in explain (and explain.others[]) = how many km \
 of its own path the planner counted as a penalty for Yerevan stops on that big truck (the owner's priority \
 strength setting); \
+trucks[].unmanned = the truck is ticked in step 1 but does not go out today because it has no driver (fewer drivers \
+than trucks): absent = its driver did not come and no free driver was left for it, moved = its driver drives another \
+truck because the day is better so; such a truck has no trips and cannot be added in a "what if" until a driver comes; \
 work_start/work_end = normal truck day, overtime_end = force-majeure limit; late = trip runs after work_end; over_time = \
 cannot return even by the limit; poor = trip revenue below min_trip_revenue (could move to defer_to day); pinned = locked \
 by the logist; coord_source = where the store point comes from (erp, gps of the manager, driver, manual); unassigned flags \

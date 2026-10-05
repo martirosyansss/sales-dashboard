@@ -1384,7 +1384,9 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     info = _stop_info(dd)
     draft = dd.draft
     excluded = draft.excluded if draft is not None else set()
-    selected = set(draft.trucks) if draft is not None else set(dd.ready)
+    # отмеченные: машины дня и отмеченные, которые сегодня без водителя (№77, unmanned — почему; имён здесь нет)
+    selected = set(draft.trucks) | set(draft.unmanned) if draft is not None else set(dd.ready)
+    unmanned = draft.unmanned if draft is not None else {}
     problems = []
     if dd.bundle.depot is None:
         problems.append({'code': 'no_depot', 'text': 'Укажите склад — откуда выезжают машины',
@@ -1406,6 +1408,7 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
                        # большая машина (№68) — только при заданной зоне Еревана
                        **({'big': True} if dd.ctx is not None and dp.big_shown(dd.ctx, ready) else {}),
                        'ready': ready is not None, 'selected': ready is not None and code in selected,
+                       **({'unmanned': unmanned[code]} if code in unmanned else {}),
                        # износ в расчёте дня: garage — ремонт ֏/км журнала гаража, manual — из настроек, garage_avg —
                        # средняя модели или парка по журналу (ручное пусто; №53)
                        'wear_amd_per_km': ready.wear_amd_per_km if ready else None,
@@ -1491,10 +1494,11 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
     """Ответ дня для страницы: _dispatch_body и store_unload — своё время у магазинов дня, где оно задано (№50; клиент →
     мин, плашка у точки; у остальных — норма). Отдельно от plan (unload_min точки рейса — разгрузка, посчитанная планом)
     и не в данных «Հարցրու AI-ին»: /ask берёт _dispatch_body, а ai_chat убирает customer_id у точек — номера клиентов
-    модели ничего бы не сказали. Водители (№62, _drivers_json) — тоже только странице: имена людей модели не отправляются."""
+    модели ничего бы не сказали. Водители (№62, _drivers_json; №77, _crew_json) — тоже только странице: имена людей модели не
+    отправляются."""
     return {**_dispatch_body(dd), 'store_unload': {st.customer_id: dd.bundle.unload_min[st.customer_id]
                                                    for st in dd.stops if st.customer_id in dd.bundle.unload_min},
-            **_drivers_json(_state(), dd.day), **_same_day_json(dd),
+            **_drivers_json(_state(), dd.day), **_crew_json(_state(), dd.day, dd.draft), **_same_day_json(dd),
             # №73: кто утвердил план — имя человека, только странице
             **({'approved': {'at': dd.draft.approved['at'], 'by': dd.draft.approved['by']}}
                if dd.draft is not None and dd.draft.approved is not None else {})}
@@ -1730,6 +1734,70 @@ def _drivers_json(state: RoutesState, day: date) -> dict[str, Any]:
             'driver_list': [{'name': n, 'erp': True} for n in erp_names] + [{'name': n, 'erp': False} for n in own]}
 
 
+def _crew(state: RoutesState, day: date) -> dp.Crew:
+    """Водители дня для сборки (№77): машина → водитель на день (№62), машины с подменой логиста на этот день и кто из
+    этих водителей не вышел."""
+    own, subs = state.store.truck_drivers(day.isoformat())
+    away = state.store.driver_absences(day.isoformat())
+    return dp.Crew(own, subs, frozenset(n for n in set(own.values()) if n in away))
+
+
+def _crew_json(state: RoutesState, day: date, draft: dp.Draft | None) -> dict[str, Any]:
+    """Водители дня для страницы (№77) — только ей (имена людей): crew.drivers — [{name, trucks — машины, где он водитель
+    на день, absent, until — по какой день его нет}] по имени; crew.trucks — кто ведёт машины плана (dispatch.crew_view);
+    crew.stale — после сборки изменилось, кто не вышел, или у машины без водителя появился свободный водитель: пересобрать."""
+    crew = _crew(state, day)
+    away = state.store.driver_absences(day.isoformat())
+    names: dict[str, list[str]] = {}
+    for code, name in sorted(crew.own.items()):
+        names.setdefault(name, []).append(code)
+    view = dp.crew_view(draft, crew) if draft is not None else {}
+    driving = {v['name'] for v in view.values()}
+    stale = draft is not None and draft.built_at is not None and (
+        set(draft.absent) != crew.absent
+        or any(crew.own.get(c) and crew.own[c] not in crew.absent and crew.own[c] not in driving for c in draft.unmanned))
+    return {'crew': {'drivers': [{'name': n, 'trucks': codes, 'absent': n in crew.absent,
+                                  **({'until': away[n]} if n in crew.absent else {})} for n, codes in sorted(names.items())],
+                     'trucks': view, 'stale': stale}}
+
+
+DRIVER_ABSENCE_MAX_DAYS = 366   # «до даты» — не дальше года: отпуск и болезнь
+ABSENCE_BAD_UNTIL = 'Նշեք օրը, մինչև որը վարորդը չի աշխատի'
+ABSENCE_UNKNOWN = 'Այս վարորդն այդ օրը մեքենա չունի — թարմացրեք էջը'
+
+
+@bp.post('/api/routes/dispatch/absence')
+@_api
+def api_dispatch_absence() -> Any:
+    """Вышел ли водитель (ответ владельца №77): {"date", "name", "absent": true, "until"?: "ГГГГ-ММ-ДД"} — не вышел только
+    в этот день (по умолчанию) или с этого дня по until включительно (отпуск, болезнь; не дальше DRIVER_ABSENCE_MAX_DAYS);
+    {"date", "name", "absent": false} — вышел: отсутствие, куда попадает день, кончается накануне. name — водитель машины на
+    этот день (№62). План не меняется — пересобирает логист (crew.stale). Ответ — водители дня (_crew_json)."""
+    payload, day, error = _dispatch_request()
+    if error is not None:
+        return error
+    name, absent, until = payload.get('name'), payload.get('absent'), payload.get('until')
+    errors = {}
+    if not isinstance(absent, bool):
+        errors['absent'] = BAD_ONLY_DAY
+    if until is not None:
+        until = _parse_day(until)
+        if absent is not True or until is None or not day <= until <= day + timedelta(days=DRIVER_ABSENCE_MAX_DAYS):
+            errors['until'] = ABSENCE_BAD_UNTIL
+    state = _state()
+    if not isinstance(name, str) or name not in set(state.store.truck_drivers(day.isoformat())[0].values()):
+        errors['name'] = ABSENCE_UNKNOWN
+    if errors:
+        return _bad_request(errors)
+    if absent:
+        state.store.save_driver_absence(name, day.isoformat(), until.isoformat() if until else None, session.get('username'))
+    else:
+        state.store.save_driver_present(name, day.isoformat(), session.get('username'))
+    logger.info('[Routes] Водитель на %s: %s%s (%s)', day, 'не вышел' if absent else 'вышел',
+                f' по {until}' if until else '', session.get('username'))
+    return jsonify({'success': True, 'day': day.isoformat(), **_crew_json(state, day, _stored_draft(state, day)[0])})
+
+
 SETTINGS_TRUCKS_URL = '/routes/settings#trucks'
 GEO_SUGGESTIONS_MAX = 50   # предложений водителей в ответе «Развоза»
 
@@ -1892,7 +1960,8 @@ def _conflict(text: str) -> Any:
 def api_dispatch_build() -> Any:
     """«Собрать рейсы»: {"date", "trucks": [коды машин дня], "agents_off"?: [agent_id]}. Закреплённые рейсы и
     исключённые заказы прежнего черновика сохраняются, остальное раскладывается заново; agents_off — фильтр
-    «Մենեջերներ» (чьи заказы не везём), без него — фильтр прежнего черновика."""
+    «Մենեջերներ» (чьи заказы не везём), без него — фильтр прежнего черновика. Машин в рейсах — не больше вышедших водителей
+    (№77, dispatch.build_crewed): отмеченные машины без водителя сегодня — в unmanned."""
     payload, day, error = _dispatch_request()
     if error is not None:
         return error
@@ -1921,16 +1990,18 @@ def api_dispatch_build() -> Any:
             base.agents_off = off
             dd = _load_day(state, bundle, day, draft=base, rev=dd.rev)
     started = time.perf_counter()
-    # первая сборка дня: перенесённые сюда заказы прошлого дня — сразу в развозе
-    draft = dp.build(dd.ctx, dd.stops, dd.draft, codes, _now())
+    # первая сборка дня: перенесённые сюда заказы прошлого дня — сразу в развозе; машин — не больше вышедших водителей (№77)
+    timing: dict[str, Any] = {}
+    draft = dp.build_crewed(dd.ctx, dd.stops, dd.draft, codes, _now(), _crew(state, day), timing)
     # отметка сборки: все заказы дня (и исключённые — они не «новые») + добавленные заказы прошлых дней
     inside = _backlog_in(draft, dd.carried)
     draft.built_orders = dp.order_marks([*dd.deliver, *(o for o in dd.backlog if o.isn in inside)])
     draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     _capture_prediction(dd, draft)
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'))
-    logger.info('[Routes] Развоз на %s собран (%s) за %.1f с: точек %d, рейсов %d, машин %d', day,
-                session.get('username'), time.perf_counter() - started, len(dd.stops), len(draft.trips), len(codes))
+    logger.info('[Routes] Развоз на %s собран (%s) за %.1f с: точек %d, рейсов %d, машин %d (без водителя %d, проб %d)', day,
+                session.get('username'), time.perf_counter() - started, len(dd.stops), len(draft.trips), len(codes),
+                len(draft.unmanned), timing.get('trials', 0))
     dd.draft, dd.rev = draft, rev or 0
     return jsonify({'success': True, **_dispatch_page_body(dd)})
 
@@ -2242,7 +2313,8 @@ def api_dispatch_waybill() -> Any:
     """Բեռնագիր машины (ответ владельца №57): ?date=ГГГГ-ММ-ДД&truck=код&rev=номер плана на странице → её рейсы по
     порядку плана, в каждом — что грузить на складе (waybill.truck_waybill; строки накладных и заказов — из ERP, только
     чтение). rev не совпал с черновиком или машины нет в плане — 409 stale: накладная разошлась бы с планом на экране
-    (состав рейсов страница сверяет сама по basis). Ничего не сохраняет."""
+    (состав рейсов страница сверяет сама по basis). Водитель — кто сегодня за рулём (№77, dispatch.crew_view). Ничего не
+    сохраняет."""
     state = _state()
     day = _parse_day(request.args.get('date'))
     car = (request.args.get('truck') or '').strip()
@@ -2271,8 +2343,10 @@ def api_dispatch_waybill() -> Any:
         raise ErpError('Загрузчик строк заказов не подключён')
     lines = state.waybill_loader([o['isn'] for tr in truck['trips'] for s in tr['stops'] for o in s['orders']])
     logger.info('[Routes] Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
+    seat = dp.crew_view(dd.draft, _crew(state, day)).get(car, {'name': None, 'seat': False})
+    # водитель — кто сегодня за рулём (№77: посаженный сборкой вместо водителя машины — с пометкой driver_seat)
     return jsonify({'success': True, 'day': day.isoformat(), 'rev': dd.rev, **wb.truck_waybill(plan, car, lines),
-                    'driver': state.store.truck_drivers(day.isoformat())[0].get(car),
+                    'driver': seat['name'], **({'driver_seat': True} if seat['seat'] else {}),
                     'helper': state.store.truck_drivers(day.isoformat(), 'helper')[0].get(car)})
 
 
@@ -2291,7 +2365,8 @@ def api_dispatch_driver() -> Any:
     на этот день; прошедший день — всегда подмена (store.save_truck_crew). Водитель и առաքիչ — не один человек. В ответе
     only_day — {роль: подмена ли} по сохранённым ролям.
     Машина — из настроенных (store.trucks). Ответ — водители машин на этот день и все имена (как в ответе дня),
-    only_day — изменён только этот день. План не меняется."""
+    only_day — изменён только этот день, crew — водители дня (№77, _crew_json). План не меняется: выбор логиста на этот день
+    главнее посадки сборки (dispatch.crew_view), пересборка его не меняет."""
     payload, day, error = _dispatch_request()
     if error is not None:
         return error
@@ -2330,7 +2405,8 @@ def api_dispatch_driver() -> Any:
                 ', '.join(f'{role} {"на день" if one_day else "с дня"}' for role, (_, one_day) in people.items()),
                 session.get('username'))
     return jsonify({'success': True, 'day': day.isoformat(),
-                    'only_day': {role: one_day for role, (_, one_day) in people.items()}, **_drivers_json(state, day)})
+                    'only_day': {role: one_day for role, (_, one_day) in people.items()}, **_drivers_json(state, day),
+                    **_crew_json(state, day, _stored_draft(state, day)[0])})
 
 
 @bp.get('/api/routes/measurements')

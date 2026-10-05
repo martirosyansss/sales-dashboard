@@ -474,7 +474,11 @@ def test_api_driver_saved_from_day_and_printed(client, day, monkeypatch):
     assert page['drivers'] == {} and page['substitutes'] == [] and page['driver_list'] == erp_list
     r = _post_driver(client, name='  Վարդանյան  Գարիկ ')
     assert r.status_code == 200, r.get_json()
-    assert r.get_json() == {'success': True, 'day': '2026-10-01', 'only_day': {'driver': False}, 'drivers': {'CAR1': 'Վարդանյան Գարիկ'},
+    body = r.get_json()
+    assert body.pop('crew') == {'drivers': [{'name': 'Վարդանյան Գարիկ', 'trucks': ['CAR1'], 'absent': False}], 'stale': False,
+                                'trucks': {'CAR1': {'name': 'Վարդանյան Գարիկ', 'seat': False, 'warn': None},   # №77
+                                           'CAR2': {'name': None, 'seat': False, 'warn': 'none'}}}
+    assert body == {'success': True, 'day': '2026-10-01', 'only_day': {'driver': False}, 'drivers': {'CAR1': 'Վարդանյան Գարիկ'},
                             'substitutes': [], 'helpers': {}, 'helper_substitutes': [], 'driver_list': erp_list}            # из ERP — в «своих» не дублируется
     get = lambda d: client.get(f'/api/routes/dispatch?date={d}').get_json()         # noqa: E731
     assert get('2026-10-01')['drivers'] == get('2026-10-02')['drivers'] == {'CAR1': 'Վարդանյան Գարիկ'}

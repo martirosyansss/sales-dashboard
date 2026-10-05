@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=23">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=42">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=43">
 {% endblock %}
 
 {% block content %}
@@ -64,6 +64,7 @@
                     Դուք ստուգում եք և տպում թերթիկները վարորդների համար։ ERP-ում ոչինչ չի փոխվում։</p>
                 <ol>
                     <li><b>Մեքենաներ։</b> Հանեք նշումը այն մեքենաներից, որոնք այսօր դուրս չեն գալիս։</li>
+                    <li><b>Վարորդներ։</b> Հանեք նշումը այն վարորդից, որն այսօր չի եկել (միայն այսօր կամ մինչև որոշ օր)։ Ծրագիրը կընտրի այնքան մեքենա, որքան վարորդ կա, և ազատ վարորդներին կնստեցնի չեկածների մեքենաներին։</li>
                     <li><b>Պատվերներ։</b> Եթե կան դեղին նշումներ (օրինակ՝ խանութի տեղը քարտեզում չկա), ուղղեք դրանք։</li>
                     <li><b>Կազմել երթերը։</b> Սեղմեք կանաչ կոճակը՝ ծրագիրը կբաշխի պատվերները մեքենաներով։</li>
                     <li><b>Տպել։</b> Սեղմեք «Տպել վարորդների համար»՝ յուրաքանչյուր մեքենայի համար կտպվի առանձին թերթ։</li>
@@ -116,6 +117,13 @@
                     <p class="dp-steplead">Հանեք նշումը, եթե մեքենան այսօր դուրս չի գալիս։</p>
                     <fieldset class="dp-trucks" id="dpTrucks">
                         <legend class="rt-sr-only">Աշխատող մեքենաները</legend>
+                    </fieldset>
+                    <!-- Водители дня (ответ владельца №77): по умолчанию все вышли; сняли отметку — сборка возьмёт столько машин,
+                         сколько водителей, свободных посадит на машины невышедших -->
+                    <fieldset class="dp-crew" id="dpCrew" hidden>
+                        <legend class="dp-crew-t">Վարորդներ <span class="dp-chip" id="dpCrewCount"></span></legend>
+                        <p class="dp-steplead">Հանեք նշումը, եթե վարորդն այսօր չի եկել․ ծրագիրը կընտրի այնքան մեքենա, որքան վարորդ կա։</p>
+                        <div class="dp-trucks dp-crew-list" id="dpCrewList"></div>
                     </fieldset>
                     <p class="dp-note">Մեքենայի բեռնատարողությունը փոխվում է <a href="/routes/settings#trucks">կարգավորումներում</a>։</p>
                 </div>
@@ -373,6 +381,24 @@
             <button type="button" id="dpSdClose" class="rt-btn rt-btn-ghost">Փակել</button>
         </div>
     </dialog>
+    <!-- водитель не вышел (ответ владельца №77): только этот день (по умолчанию) или до даты — отпуск, болезнь -->
+    <dialog id="dpAbsentDlg" class="dp-dlg dp-unload-dlg" aria-labelledby="dpAbsentTitle" aria-describedby="dpAbsentLead dpAbsentHint">
+        <h2 class="dp-dlg-t" id="dpAbsentTitle">Վարորդը չի եկել</h2>
+        <p class="dp-dlg-lead" id="dpAbsentLead"></p>
+        <fieldset class="dp-absent-opts">
+            <legend class="rt-sr-only">Որքա՞ն ժամանակ</legend>
+            <label class="dp-crew-day"><input type="radio" name="dpAbsentSpan" id="dpAbsentOne" checked><span id="dpAbsentOneT"></span></label>
+            <label class="dp-crew-day"><input type="radio" name="dpAbsentSpan" id="dpAbsentLong"><span>Մինչև (ներառյալ)</span></label>
+            <label for="dpAbsentUntil" class="rt-sr-only">Մինչև որ օրը</label>
+            <input type="date" id="dpAbsentUntil" class="rt-input dp-date dp-absent-until" aria-describedby="dpAbsentErr">
+        </fieldset>
+        <p class="dp-unload-hint" id="dpAbsentHint">Ծրագիրը կընտրի այնքան մեքենա, որքան վարորդ կա․ հետո վերակազմեք երթերը։</p>
+        <div class="rt-ferr" id="dpAbsentErr" role="alert"></div>
+        <div class="dp-dlg-btns">
+            <button type="button" id="dpAbsentSave" class="rt-btn rt-btn-primary"><i class="fas fa-check" aria-hidden="true"></i><span>Պահպանել</span></button>
+            <button type="button" id="dpAbsentCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
+        </div>
+    </dialog>
     <!-- водитель машины для «Բեռնագիր» (ответ владельца №62): с дня на странице и до следующей смены -->
     <dialog id="dpDriverDlg" class="dp-dlg dp-unload-dlg" aria-labelledby="dpDriverTitle" aria-describedby="dpDriverLead dpDriverHint">
         <h2 class="dp-dlg-t" id="dpDriverTitle">Վարորդ և առաքիչ</h2>
@@ -409,5 +435,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=75"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=76"></script>
 {% endblock %}

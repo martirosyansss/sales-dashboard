@@ -859,3 +859,17 @@
     color: var(--rt-acc); font: 700 .875rem var(--rt-font); cursor: pointer;
 }
 .dp-toast-act:hover, .dp-toast-act:focus-visible { background: var(--rt-acc-glow); }
+
+/* --- Водители дня (№77): список в шаге 1 — те же плитки, что у машин; машины без водителя — серой карточкой --- */
+.dp-crew { margin: 18px 0 0; padding: 0; border: 0; min-width: 0; }
+.dp-crew[hidden] { display: none; }
+.dp-crew-t { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; padding: 0; font-size: 1rem; font-weight: 700; color: var(--rt-fg); }
+#rtDispatch .dp-truck-sub.is-warn { color: var(--rt-warn); font-weight: 600; }
+#rtDispatch .dp-driver::before { background: var(--rt-acc-dim); }
+.dp-crew-warn { color: var(--rt-fg-mute); }
+.dp-crew-warn.is-bad { color: var(--rt-warn); font-weight: 600; }
+#rtDispatch .dp-tcard.is-unmanned { opacity: .6; border-style: dashed; }
+#rtDispatch .dp-tcard.is-unmanned .dp-thead { cursor: default; grid-template-columns: minmax(0, 1fr); }
+#rtDispatch .dp-tcard.is-unmanned .dp-thead:hover { background: none; }
+.dp-absent-opts { margin: 4px 0 0; padding: 0; border: 0; min-width: 0; }
+.dp-absent-opts .dp-absent-until { margin: 8px 0 0 26px; }
