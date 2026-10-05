@@ -1506,7 +1506,8 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     rule = dp.fleet_rule_of(draft, s)
     place = dp.place_of(dd.data.customers, dd.data.addresses)
     differ: dict[str, bool] = {}
-    if draft is not None:
+    # прошедшему дню «Կիրառել կարգավորումները» не предлагаем — сервер его отклонит (PAST_DAY_SETTINGS)
+    if draft is not None and dd.day >= _same_day_now().date():
         differ = {k: v for k, v in (('agents', draft.agents_off != set(s['dispatch_agents_off'])),
                                     ('fleet', not rule.same_as(dp.FleetRule.from_settings(s)))) if v}
 

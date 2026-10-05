@@ -106,7 +106,8 @@ def test_city_match_real_spellings_city_field_and_aliases():
           ('Երևան, Վանաձոր փողոց 4', ''), ('Վանաձոր փողոց 4, Երևան', ''), ('ԳՅՈՒՄՐԻ-ԵՐԵՎԱՆ ԽՃՂ., Աշտարակ', ''),
           ('Գորիս-Կապան մայրուղի, Սիսիան', ''), ('', 'Gyumri-Market LLC, Yerevan'), ('Gyumri-Market LLC, Yerevan', ''),
           ('Երևան, Կապանի փող. 3', ''), ('Կապանցի 3, Երևան', ''), ('Երևան, Աջափնյակ, Հալաբյան փ. 16', ''), ('', ''),
-          ('', 'Կապան Մարկետ ՍՊԸ'), ('Կոտայք, Աբովյան, Գյումրու խճ. 2', ''), ('Արարատ, Մասիս, Կապանի 1', '')]
+          ('', 'Կապան Մարկետ ՍՊԸ'), ('Կոտայք, Աբովյան, Գյումրու խճ. 2', ''), ('Արարատ, Մասիս, Կապանի 1', ''),
+          ('Կապան Մարկետ ՍՊԸ\nԵրևան, Կոմիտաս 1', '')]                  # ре-ревью: в адресе строка с названием
     assert {k: r.matched_city(k) for k in yes} == yes
     assert [k for k in no if r.matched_city(k)] == []
     assert dp.FleetRule(cities=('Սիսիան',)).matched_city(('ՍՅՈՒՆԻՔ, ՍԻՍԻԱՆ, 5', '')) == 'Սիսիան'   # не из словаря — как ввели
@@ -117,6 +118,7 @@ def test_city_match_real_spellings_city_field_and_aliases():
                                                                  'Գեղարքունիք, Սեվան, 1'))
     assert dp.FleetRule(cities=('ՍԵՎԱՆ',)).matched_city(('Գեղարքունիք, Սևան, 1', '')) == 'ՍԵՎԱՆ'
     assert dp.city_field('Երևան, Աջափնյակ, Հալաբյան 16') == dp.fold_text('Երևան') and dp.city_field('Բաբայան 2/17') is None
+    assert dp.city_field('Ա/Ձ Մարկետ\nՍյունիք, Կապան, 5\n') == dp.fold_text('Կապան')            # последняя непустая строка
 
 
 def test_kind_precedence():
@@ -474,8 +476,9 @@ def _built(client, state):
     return d, dp.Draft.from_json(state.store.load_dispatch(DAY)[0])
 
 
-def test_built_day_keeps_its_rule_when_settings_change(client):
+def test_built_day_keeps_its_rule_when_settings_change(client, monkeypatch):
     state = _setup(client)
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 9, 30, 18, 0, tzinfo=YEREVAN))   # накануне
     assert client.post('/api/routes/geo-override', json={'customer_id': 105, 'lat': 40.2, 'lon': 44.55}).status_code == 200
     _settings(client, **RULE)
     d, draft = _built(client, state)
@@ -535,6 +538,7 @@ def test_apply_settings_button(client, monkeypatch):
     # прошедший день — нельзя
     monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 2, 9, 0, tzinfo=YEREVAN))
     _settings(client, dispatch_customers_off=[])
+    assert 'settings_differ' not in client.get('/api/routes/dispatch?date=' + DAY).get_json()   # прошедшему — не предлагаем
     r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'apply_settings'})
     assert r.status_code == 400 and r.get_json()['error'] == views.PAST_DAY_SETTINGS
 
