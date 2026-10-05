@@ -447,6 +447,12 @@ def big_shown(ctx: DayContext, truck: fl.FleetTruck | None) -> bool:
     return truck is not None and truck.big and len(ctx.tn.yerevan_zone) >= 3
 
 
+def _yerevan_km(ctx: DayContext, code: str, s: Stop) -> float:
+    """Плата за точку s на машине code (№68, приоритет малых машин): точка в зоне Еревана на большой машине — как
+    ctx.tn.yerevan_km км пути (как в сборке, fleet._yerevan_bias); иначе 0.0."""
+    return ctx.tn.yerevan_km if big_shown(ctx, ctx.trucks.get(code)) and _yerevan(ctx, s) else 0.0
+
+
 def _allowed_trucks(ctx: DayContext, cid: int) -> frozenset[str] | None:
     rule = ctx.vehicle_access.get(cid)
     return None if rule is None else frozenset(code for code in ctx.trucks if rule.allows(code))
@@ -778,7 +784,8 @@ def _shrink(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: Draf
     отмеченной машине), пока не вернётся. Каждый раз — перенос с наименьшим ростом км всего плана на минуту, которую рейс
     выигрывает (выигрыш сверх нужного до target не в счёт; переносы без роста км — первыми). Принимающая машина
     не позже конца дня (или своего прежнего конца), окна приёма у неё не нарушаются, груз — в пределе сборки;
-    закреплённые рейсы не трогаются. Некуда — остаётся сколько успели."""
+    закреплённые рейсы не трогаются. Некуда — остаётся сколько успели. Км — с платой за точки Еревана на больших машинах
+    (№68, _yerevan_km: как в сборке, малые машины — первыми)."""
     sel = _selected(ctx, draft.trucks)
     limit = ctx.overtime_minutes if draft.overtime_ok and ctx.overtime_minutes is not None else ctx.tn.work_minutes
     others = [t.car_code for t in sel if t.car_code != trip.truck]
@@ -813,7 +820,8 @@ def _shrink(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: Draf
                 if not _can_carry(ctx, sel, r.truck, [*r.stops, cid], stops, shares):
                     continue
                 net = (_closed_km(ctx, _insert_cheapest(ctx, r.stops, cid, stops), stops)
-                       - _closed_km(ctx, r.stops, stops) - saved_km)
+                       - _closed_km(ctx, r.stops, stops) - saved_km
+                       + _yerevan_km(ctx, r.truck, stops[cid]) - _yerevan_km(ctx, trip.truck, stops[cid]))
                 cands.append(((0, -useful) if net <= 0 else (1, net / useful), cid, r.id, r))
         state: dict[str, tuple[float, int]] = {}
         for _, cid, _, r in sorted(cands, key=lambda x: (x[0], x[1], x[2])):
@@ -835,7 +843,7 @@ def _grow(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: DraftT
     из рейсов других машин — каждый раз тот, с которым км всего плана растут меньше всего, пока рейс успевает к target.
     Рейс полон (предел сборки) и он у машины последний — после него новый рейс этой машины. Окна приёма машины не
     нарушаются; позже конца дня — только если сам конец рейса тянут за него (не позже предела переработки); закреплённые
-    рейсы других машин не трогаются."""
+    рейсы других машин не трогаются. Км — с платой за точки Еревана на больших машинах (№68, _yerevan_km, как в _shrink)."""
     sel = _selected(ctx, draft.trucks)
     code = trip.truck
     limit = ctx.overtime_minutes if draft.overtime_ok and ctx.overtime_minutes is not None else ctx.tn.work_minutes
@@ -865,6 +873,7 @@ def _grow(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], trip: DraftT
         cands = []
         for cid, src in pool:
             saved_km = 0.0 if src is None else base[src.id] - _closed_km(ctx, [c for c in src.stops if c != cid], stops)
+            saved_km -= _yerevan_km(ctx, code, stops[cid]) - (0.0 if src is None else _yerevan_km(ctx, src.truck, stops[cid]))
             for r in dests:
                 if not _can_carry(ctx, sel, code, [*r.stops, cid], stops, shares):
                     continue
@@ -1065,7 +1074,8 @@ def _alternatives(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, cids
                   routable: Mapping[int, Stop], kgs: Sequence[float]) -> list[dict[str, Any]]:
     """Другие машины дня на этот же рейс (те же точки, тот же порядок): могла бы она его везти по правилам сборки —
     тоннаж и предел загрузки (fl.load_limit), центр, допуск магазина — и сколько литров у неё вышло бы на тех же км.
-    Занятость машины своими рейсами здесь не учитывается: сборка ищет меньше дизеля за весь день, а не за один рейс."""
+    Занятость машины своими рейсами здесь не учитывается: сборка ищет меньше дизеля за весь день, а не за один рейс.
+    Большая машина (№68) — big; с точками Еревана — плата приоритета малых машин yerevan_km (км её пути, как в сборке)."""
     kg = math.fsum(kgs)
     pts = [routable[c].point for c in cids]
     center = [_central(ctx, routable[c]) for c in cids]
@@ -1084,9 +1094,11 @@ def _alternatives(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, cids
         denied = sum(1 for c in cids if not _vehicle_ok(ctx, c, o.car_code))
         if denied:
             why.append('vehicle')
+        penalty = math.fsum(_yerevan_km(ctx, o.car_code, routable[c]) for c in cids)
         out.append({'car_code': o.car_code, 'name': o.name, 'capacity_kg': o.capacity_kg, 'center_ok': o.center_ok,
                     'load_pct': round(kg / o.capacity_kg * 100.0), 'reasons': why, 'vehicle_denied': denied,
-                    'liters': _r(fl.trip_running_cost(pts, kgs, ctx.depot, ctx.norms, o).liters)})
+                    'liters': _r(fl.trip_running_cost(pts, kgs, ctx.depot, ctx.norms, o).liters),
+                    **({'big': True} if big_shown(ctx, o) else {}), **({'yerevan_km': _r(penalty)} if penalty else {})})
     return out
 
 
@@ -1106,6 +1118,7 @@ def _trip_explain(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, truc
     heavy = (truck is not None and limit is not None and len(cids) == 1
              and limit > fl.LOAD_CAP * truck.capacity_kg + _EPS and kg > fl.LOAD_CAP * truck.capacity_kg + _EPS)
     city = ctx.tn.yerevan_of(code) * sum(1 for c in cids if _yerevan(ctx, routable[c]))   # №68: уже в unload_min
+    penalty = math.fsum(_yerevan_km(ctx, code, routable[c]) for c in cids)                  # №68: плата приоритета, км
     return {
         'loading_min': _r(parts['loading']), 'drive_min': _r(math.fsum(x for x, _, _ in legs)),
         'unload_min': _r(math.fsum(x for _, _, x in legs)), 'wait_min': _r(math.fsum(x for _, x, _ in legs)),
@@ -1124,6 +1137,7 @@ def _trip_explain(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, truc
         **({'lunch_min': _r(brk.added if brk.stop is not None else 0.0)} if brk is not None else {}),
         **({'buffer_min': _r(parts['buffer'])} if 'buffer' in parts else {}),   # запас на рейс (№66)
         **({'yerevan_min': _r(city)} if city else {}),   # большая машина в Ереване (№68)
+        **({'yerevan_km': _r(penalty)} if penalty else {}),
     }
 
 
@@ -1144,7 +1158,7 @@ def _day_explain(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft, se
                     'center_ok': x.center_ok, 'trips': trips_of.get(x.car_code, 0),
                     **({'big': True} if big_shown(ctx, x) else {})} for x in sel],
         **({'yerevan': {'stores': city, 'big': big, 'minutes': max(tn.yerevan_of(c) for c in big),
-                        'penalty_km': fl.BIG_YEREVAN_KM}} if city and big else {}),
+                        'penalty_km': tn.yerevan_km}} if city and big else {}),
         'zone': len(ctx.center_zone) >= 3,
         'center_stores': sum(1 for s in routable.values() if _central(ctx, s)),
         'window_stores': sum(1 for c in routable if c in ctx.windows),

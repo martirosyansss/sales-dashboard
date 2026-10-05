@@ -41,6 +41,7 @@ def test_default_zone_is_yerevan_admin_boundary():
     assert all(geo.in_polygon(p, YZONE) for p in CITY)
     assert not any(geo.in_polygon(p, YZONE) for p in [DP_DEPOT, *OUTSIDE])
     assert st.DEFAULT_SETTINGS['big_truck_yerevan_min'] == 10
+    assert st.DEFAULT_SETTINGS['big_truck_yerevan_km'] == fl.BIG_YEREVAN_KM == TN.yerevan_km == 3
     assert TNY.in_yerevan(CITY[0]) and not TN.in_yerevan(CITY[0]) and not replace(TNY, yerevan_zone=YZONE[:2]).in_yerevan(CITY[0])
     assert (TNY.yerevan_of(BIG.car_code), TNY.yerevan_of(SMALL.car_code), TNY.yerevan_of(None)) == (10.0, 0.0, 0.0)
 
@@ -232,7 +233,12 @@ def test_plan_view_shows_extra_minutes_on_big_truck_stops():
     by = {s['customer_id']: s for t in v['trucks'] for tr in t['trips'] for s in tr['stops']}
     assert by[101]['yerevan_min'] == 10 and 'yerevan_min' not in by[102] and 'yerevan_min' not in by[103]
     big_trip = next(tr for t in v['trucks'] for tr in t['trips'] if tr['truck'] == BIG.car_code)
-    assert big_trip['explain']['yerevan_min'] == 10
+    assert big_trip['explain']['yerevan_min'] == 10 and big_trip['explain']['yerevan_km'] == fl.BIG_YEREVAN_KM
+    # «другие машины» на рейс малой машины (магазин Еревана): большая — с платой приоритета, км её пути
+    small_trip = next(tr for t in v['trucks'] for tr in t['trips'] if tr['truck'] == SMALL.car_code)
+    other = next(o for o in small_trip['explain']['others'] if o['car_code'] == BIG.car_code)
+    assert other['big'] is True and other['yerevan_km'] == fl.BIG_YEREVAN_KM and 'yerevan_km' not in small_trip['explain']
+    assert all('big' not in o for o in big_trip['explain']['others'])
     assert v['explain']['yerevan'] == {'stores': 2, 'big': [BIG.car_code], 'minutes': 10.0,
                                        'penalty_km': fl.BIG_YEREVAN_KM}
     assert next(t for t in v['trucks'] if t['car_code'] == BIG.car_code)['big'] is True
@@ -264,6 +270,12 @@ def test_dispatch_api_big_truck_in_yerevan(client):
     stops0 = {s['customer_id']: s for t in plain['trucks'] for tr in t['trips'] for s in tr['stops']}
     assert stops0[101]['unload_min'] == pytest.approx(stops[101]['unload_min'] - 10, abs=0.11)
     assert 'yerevan' not in plain['explain'] and 'yerevan_min' not in stops0[101]
+    # сила приоритета — настройка (ползунок): 10 км — в пояснении дня; вне 0–20 — ошибка
+    assert client.post('/api/routes/settings', json={'settings': {
+        'yerevan_zone': st.DEFAULT_SETTINGS['yerevan_zone'], 'big_truck_yerevan_km': 10}}).status_code == 200
+    assert _build(client, ('CAR1',))['plan']['explain']['yerevan']['penalty_km'] == 10
+    r = client.post('/api/routes/settings', json={'settings': {'big_truck_yerevan_km': 21}})
+    assert r.status_code == 400 and 'settings.big_truck_yerevan_km' in r.get_json()['errors']
 
 
 # ============================== обучение: надбавка не учится второй раз ==============================
@@ -277,11 +289,13 @@ def test_learning_subtracts_big_truck_extra_from_unload_and_forecasts_it(client,
     from test_learning_loop import TODAY, _learning_client
     state = _learning_client(client, monkeypatch)
     seen = {}
-    real_unload, real_buffer = lr.fit_unload, lr.fit_buffer
+    real_unload, real_buffer, real_lunch = lr.fit_unload, lr.fit_buffer, lr.lunch_obs
+    monkeypatch.setattr(lr, 'lunch_obs', lambda *a, **kw: seen.__setitem__('lunch_norm', a[5]) or real_lunch(*a, **kw))
     monkeypatch.setattr(lr, 'fit_unload', lambda obs, *a, **kw: seen.__setitem__('unload', list(obs)) or real_unload(obs, *a, **kw))
     monkeypatch.setattr(lr, 'fit_buffer', lambda obs, *a, **kw: seen.__setitem__('trips', list(obs)) or real_buffer(obs, *a, **kw))
     views.run_learning(state, TODAY)
     plain = seen.copy()
+    assert 'lunch_norm' in plain
     assert client.post('/api/routes/settings', json={'settings': {
         'yerevan_zone': st.DEFAULT_SETTINGS['yerevan_zone']}}).status_code == 200
     views.run_learning(state, TODAY)
@@ -289,8 +303,145 @@ def test_learning_subtracts_big_truck_extra_from_unload_and_forecasts_it(client,
     before = {key(o): o.minutes for o in plain['unload']}
     after = {key(o): o.minutes for o in seen['unload']}
     assert before and all(o.car == 'CAR1' for o in seen['unload'])
-    expect = {k: m - 10.0 * len(k[1]) for k, m in before.items() if m - 10.0 * len(k[1]) >= lr.UNLOAD_MIN_OBS}
-    assert after == pytest.approx(expect)
+    # вышло меньше минимума — наблюдение остаётся с минимумом (не выпадает: иначе выученное сместилось бы вверх)
+    expect = {k: max(lr.UNLOAD_MIN_OBS, m - 10.0 * len(k[1])) for k, m in before.items()}
+    assert after == pytest.approx(expect) and any(v == lr.UNLOAD_MIN_OBS for v in after.values())
+    # норма разгрузки для обеда у магазина (lunch_obs) — тоже с надбавкой, как в плане
+    probe = lr.UnloadObs(TODAY, 1, 0.5, 0.0, (101,))
+    assert seen['lunch_norm'](probe) == pytest.approx(plain['lunch_norm'](probe) + 10.0)
     trips0 = {(o.day, o.minutes): o.predicted for o in plain['trips']}
     trips1 = {(o.day, o.minutes): o.predicted for o in seen['trips']}
     assert trips0.keys() == trips1.keys() and all(trips1[k] > trips0[k] + 9.0 for k in trips0)
+
+
+# ============================== сила приоритета и все места, где действуют приоритет и надбавка ==============================
+
+def test_strength_setting_drives_priority():
+    """Сила 0 — только надбавка (большая берёт Ереван, как без правила при той же цене), 3 — малая."""
+    pts, kgs = CITY[:4], [300.0] * 4
+    zero, _ = _day(pts, kgs, [BIG, SMALL], replace(TNY, yerevan_km=0.0, yerevan_min={}))
+    three, _ = _day(pts, kgs, [BIG, SMALL], replace(TNY, yerevan_min={}))
+    assert _items(zero, BIG.car_code) == [0, 1, 2, 3] and _items(three, SMALL.car_code) == [0, 1, 2, 3]
+
+
+def test_plan_trips_plain_path_priority_and_extra_minutes():
+    """Прежний путь plan_trips (overflow=True, без окон): выбор машины — с платой (№68), минуты рейса — с надбавкой."""
+    pts, kgs = CITY[:4], [300.0] * 4
+    run = lambda trucks, tn: fl.route_day(pts, kgs, [1.0] * 4, DP_DEPOT, trucks, DP_NORMS, tn, overflow=True)  # noqa: E731
+    assert [t.truck for t in run([BIG, SMALL], TN)] == [BIG.car_code]
+    assert [t.truck for t in run([BIG, SMALL], TNY)] == [SMALL.car_code]
+    (off,), (on,) = run([BIG], TN), run([BIG], TNY)
+    assert on.items == off.items and on.minutes == pytest.approx(off.minutes + 40.0)
+
+
+def test_earliest_mode_prefers_small_truck_for_yerevan():
+    """«Везти после конца дня» (earliest): малая машина берёт рейс Еревана, если успевает, хотя большая кончит раньше."""
+    pts, kgs, used = CITY[:2], [300.0] * 2, {SMALL.car_code: 200.0, BIG.car_code: 0.0}
+    tn_on = replace(TNY, yerevan_min={})
+    for kw in ({'overflow': True}, {'overflow': False, 'windows': [(0.0, 1e6)] * 2}):   # прежний путь и _plan_timed
+        off = fl.route_day(pts, kgs, [1.0] * 2, DP_DEPOT, [BIG, SMALL], DP_NORMS, TN, used, earliest=True, **kw)
+        on = fl.route_day(pts, kgs, [1.0] * 2, DP_DEPOT, [BIG, SMALL], DP_NORMS, tn_on, used, earliest=True, **kw)
+        assert [t.truck for t in off] == [BIG.car_code] and [t.truck for t in on] == [SMALL.car_code], kw
+
+
+def test_plan_timed_no_room_reason_counts_extra_minutes():
+    """Одиночная точка Еревана, которую большая машина с надбавкой не успевает (а без неё — успела бы): причина — время,
+    а не окно (plain_gap — с надбавкой)."""
+    off = fl.route_day(CITY[:1], [300.0], [1.0], DP_DEPOT, [BIG], DP_NORMS, TN, overflow=True)[0].minutes
+    reasons = {}
+    trips = fl.route_day(CITY[:1], [300.0], [1.0], DP_DEPOT, [BIG], DP_NORMS, replace(TNY, work_minutes=off + 5.0),
+                         overflow=False, windows=[(0.0, 1e6)], reasons=reasons)
+    assert not trips and reasons == {0: 'time'}
+
+
+def test_time_head_counts_extra_minutes():
+    """Рейс не успевает до конца дня — голова рейса (_time_head) считается с надбавкой большой машины."""
+    pts = [(40.1970, 44.5132), (40.1673, 44.5206), (40.1880, 44.5371), (40.1963, 44.5050)]
+    reasons = {}
+    trips = fl.route_day(pts, [800.0, 800.0, 200.0, 200.0], [1.0] * 4, DP_DEPOT, [BIG], DP_NORMS,
+                         replace(TNY, work_minutes=114.0), overflow=False, reasons=reasons)
+    assert [t.items for t in trips] == [(2, 3, 0)] and reasons == {1: 'time'}
+
+
+def test_route_trip_window_guard_counts_extra_minutes():
+    """2-opt рейса с окнами (route_trip) бережёт окна с надбавкой большой машины: порядок, который соблюдает окна только без
+    неё, не считается допустимым."""
+    import math
+    cases = [([(40.1675, 44.5236), (40.1779, 44.5074), (40.1829, 44.5364), (40.1907, 44.5301)], 2, 97, [0, 1, 2, 3]),
+             ([(40.1693, 44.4826), (40.1995, 44.4891), (40.1518, 44.5007)], 2, 83, [1, 0, 2])]
+    for pts, k, late, want in cases:
+        wins = [(-math.inf, math.inf)] * len(pts)
+        wins[k] = (-math.inf, late)
+        seq, _, _ = fl.route_trip(pts, [300.0] * len(pts), DP_DEPOT, DP_NORMS, TNY, True, wins, 0.0, BIG.car_code)
+        assert seq == want
+
+
+def _matrix(n):
+    """Склад и n точек: до склада 10 км (20 мин), между точками 0 — перенос магазина км не меняет."""
+    d = [[0.0 if a == b or (a and b) else 10.0 for b in range(n + 1)] for a in range(n + 1)]
+    return d, [[2.0 * x for x in row] for row in d]
+
+
+def _trips(spec, stops, d):
+    return [fl.Trip(t.car_code, len(seq), sum(stops[i].kg for i in seq), 0.0, fl._closed(seq, stops, d), 0.0, t.capacity_kg,
+                    0.0, False, tuple(seq)) for t, seq in spec]
+
+
+@pytest.mark.parametrize('city', [True, False])
+def test_balance_does_not_move_yerevan_stop_from_small_to_big(city):
+    """Ровная загрузка: малая машина 92% (два магазина Еревана), большая — 10%. Без зоны магазин переходит на большую,
+    с зоной — нет (№68)."""
+    d, m = _matrix(3)
+    stops = [fl._Stop(1, 1200.0, 0.0, 10.0, yerevan=city), fl._Stop(2, 1100.0, 0.0, 10.0, yerevan=city),
+             fl._Stop(3, 500.0, 0.0, 10.0)]
+    trips = _trips([(SMALL, [0, 1]), (BIG, [2])], stops, d)
+    got = fl._balance(trips, stops, d, m, [BIG, SMALL], TN, None, None)
+    assert (got == trips) is city
+
+
+@pytest.mark.parametrize('city', [True, False])
+def test_balance_does_not_swap_yerevan_stop_onto_big(city):
+    """Обмен: большая 92% (вне Еревана), малая с магазином Еревана; ровнее только обмен — он переносит магазин Еревана на
+    большую: с зоной — нельзя."""
+    d, m = _matrix(3)
+    stops = [fl._Stop(1, 2400.0, 0.0, 10.0), fl._Stop(2, 2200.0, 0.0, 10.0), fl._Stop(3, 1500.0, 0.0, 10.0, yerevan=city)]
+    trips = _trips([(BIG, [0, 1]), (SMALL, [2])], stops, d)
+    got = fl._balance(trips, stops, d, m, [BIG, SMALL], TN, None, None)
+    assert (got == trips) is city
+    if not city:
+        assert 2 in got[0].items
+
+
+def test_days_wait_does_not_count_extra_minutes():
+    """Рейсы машины подряд (_days): ожидание у окна — только ожидание, надбавка Еревана в нём не считается."""
+    d, m = _matrix(2)
+    m[1][2] = m[2][1] = 10.0
+    vs = [fl._Stop(1, 300.0, 0.0, 10.0, yerevan=True), fl._Stop(2, 300.0, 0.0, 10.0, early=60.0)]
+    trip = fl.Trip(BIG.car_code, 2, 600.0, 0.0, 0.0, 0.0, BIG.capacity_kg, 0.0, False, (0, 1))
+    (_, dep, minutes, wait), = fl._days([trip], vs, m, {BIG.car_code: 0.0}, TNY)[BIG.car_code]
+    assert (dep, minutes, wait) == (0.0, 90.0, 10.0)       # 20 + 20 (разгрузка 10 + 10) + 10 + 10 ожидания + 10 + 20
+
+
+# ============================== перетаскивание конца рейса (№59) ==============================
+
+def test_resize_tools_apply_yerevan_priority():
+    """«Короче» (_shrink): магазин Еревана уходит малой машине, а не большой (км одинаковы). «Длиннее» (_grow): большая
+    берёт магазин вне Еревана, хотя магазин Еревана на 1 км ближе (плата — 3 км)."""
+    small2 = replace(SMALL, car_code='A2')
+    y, x, o, y2 = (40.19, 44.59), (40.216, 44.60), (40.200, 44.640), CITY[0]
+    stops, _ = _dp_stops([(201, o, 300.0), (202, y, 300.0), (203, x, 300.0), (204, y2, 300.0)])
+    routable = {s.customer_id: s for s in stops}
+    got = {}
+    for name, tn in (('off', TN), ('on', replace(TNY, yerevan_min={}))):
+        ctx = dp.DayContext(DP_DAY, DP_DEPOT, {t.car_code: t for t in (BIG, SMALL, small2)}, DP_NORMS, tn, START)
+        draft = dp.Draft(trucks=[BIG.car_code, SMALL.car_code, 'A2'], trips=[dp.DraftTrip(1, SMALL.car_code, [202, 204])],
+                         next_id=2)
+        end = dp._truck_day(ctx, draft.trips, routable, dp._shares(draft.trips), SMALL.car_code)[0][1]
+        dp._shrink(ctx, draft, routable, draft.trips[0], end - 5.0)
+        grow = dp.Draft(trucks=[BIG.car_code, SMALL.car_code], trips=[dp.DraftTrip(1, BIG.car_code, [201])], next_id=2)
+        part = {c: s for c, s in routable.items() if c != 204}
+        end = dp._truck_day(ctx, grow.trips, part, dp._shares(grow.trips), BIG.car_code)[0][1]
+        dp._grow(ctx, grow, part, grow.trips[0], end + 20.0)
+        got[name] = ([(t.truck, t.stops) for t in draft.trips], grow.trips[0].stops)
+    assert got['off'] == ([(SMALL.car_code, [204]), (BIG.car_code, [202])], [202, 201])
+    assert got['on'] == ([(SMALL.car_code, [204]), ('A2', [202])], [203, 201])

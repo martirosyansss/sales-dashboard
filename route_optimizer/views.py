@@ -1059,7 +1059,7 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
     yerevan = tuple((lat, lon) for lat, lon in s['yerevan_zone'])
     if len(yerevan) >= 3:   # большая машина в Ереване (№68): зона и надбавка больших машин; пустая зона — правила нет
         extra = float(s['big_truck_yerevan_min'])
-        tn = replace(tn, yerevan_zone=yerevan,
+        tn = replace(tn, yerevan_zone=yerevan, yerevan_km=float(s['big_truck_yerevan_km']),
                      yerevan_min={code: extra for code, t in trucks.items() if t.big and extra > 0})
     # learned=False — журнала нет: выученных норм нет (eff пуст), только введённое время магазинов
     norms, tn, trucks, eff = _with_learned(state, norms, tn, trucks, customers or {}, journal, bundle.unload_min)
@@ -2564,14 +2564,12 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         # обед по плану (№61): визит магазина и стоянка на складе с обедом — не в разгрузку и загрузку; обед по факту —
         # и там, где он по плану (излишек над действующей нормой разгрузки), и в стороне
         # большая машина в Ереване (№68): надбавка стоит в плане сверху — из стоянки её визитов в зоне она вычитается
-        # (меньше UNLOAD_MIN_OBS после вычета — не разгрузка, как в unload_obs): иначе своё время магазина и темп машины
-        # выучили бы её, и план прибавил бы её дважды
+        # (иначе своё время магазина и темп машины выучили бы её, и план прибавил бы её дважды); вышло меньше
+        # UNLOAD_MIN_OBS — наблюдение остаётся с этим минимумом, а не выпадает: отбрасывать короткие стоянки — смещать
+        # выученное вверх (остались бы только длинные)
         for o in learning.unload_obs(day, actual, stops, learning.lunch_customers(plan), car):
             extra = city_extra(car, o.customers)
-            if not extra:
-                unload.append(o)
-            elif o.minutes - extra >= learning.UNLOAD_MIN_OBS:
-                unload.append(replace(o, minutes=o.minutes - extra))
+            unload.append(replace(o, minutes=max(learning.UNLOAD_MIN_OBS, o.minutes - extra)) if extra else o)
         loads += learning.load_obs(day, actual, stops, plan)
         meal = learning.lunch_obs(day, actual, lunch_window, stops, plan,   # type: ignore[arg-type]
                                   lambda o, car=car: unload_norm(o) + city_extra(car, o.customers))

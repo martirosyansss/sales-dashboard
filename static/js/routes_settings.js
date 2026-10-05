@@ -26,6 +26,14 @@
     const SECTIONS = ['depot', 'trucks', 'fuel', 'days', 'managers', 'center', 'yerevan', 'norms', 'season', 'calibration'];
     const ZONE_MAX = 200;   // точек границы малого центра и зоны Еревана — как store.CENTER_ZONE_VERTICES
     const BIG_AUTO_T = 5;   // «большая машина» по умолчанию — тоннаж от 5 т (store.BIG_TRUCK_AUTO_KG, №68)
+    // Сила приоритета малых машин в Ереване (№68, big_truck_yerevan_km): ступени ползунка — замеренные варианты
+    // (01.09–03.10: дизель к плану без правила); магазин Еревана на большой машине стоит как столько км её пути
+    const YEREVAN_KM = [
+        [0, 'միայն րոպեներ', 'Առաջնահերթություն չկա՝ մեծ մեքենային միայն ավելանում են րոպեներ (դիզել՝ +1,6%)'],
+        [1, 'թույլ', 'Երևանի խանութը մեծ մեքենային, եթե փոքրով զգալիորեն ավելի շատ կիլոմետր է (դիզել՝ +2,2%)'],
+        [3, 'միջին', 'Երևանի խանութները նախ փոքր մեքենաներին, մեծին՝ հազվադեպ (դիզել՝ +2,4%)'],
+        [10, 'ուժեղ', 'Երևանի խանութները մեծ մեքենային՝ միայն եթե փոքրերը չեն հասցնում (դիզել՝ +4,6%)'],
+    ];
     const RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     // Нормы: ключ настроек → подпись простыми словами и пояснение в одну строку. min/max — подсказка браузеру,
@@ -1097,6 +1105,26 @@
         box.textContent = '';
         box.append(normField({ key: 'big_truck_yerevan_min', label: 'Մեծ մեքենան Երևանում՝ լրացուցիչ րոպե յուրաքանչյուր խանութում',
             min: 0, max: 120, step: 1, hint: 'կայանում, մանևր, ապրանքը հեռվից տանել․ 0՝ առանց լրացուցիչ ժամանակի (հերթականությունը մնում է)' }, state.data.settings));
+        // ползунок силы приоритета: ступени YEREVAN_KM; значение не на ступени (задано не со страницы) — ближайшая ступень
+        const km = num(state.data.settings.big_truck_yerevan_km), want = km === null ? 3 : km;
+        const at = YEREVAN_KM.reduce((b, x, i) => (Math.abs(x[0] - want) < Math.abs(YEREVAN_KM[b][0] - want) ? i : b), 0);
+        const id = 'rsYerevanKm', err = errNode();
+        const range = h('input', { type: 'range', class: 'form-range', id, min: 0, max: YEREVAN_KM.length - 1, step: 1, value: at,
+            'aria-describedby': id + '_h', style: 'max-width:320px' });
+        const level = h('b', { id: id + '_l' });
+        const hint = h('div', { class: 'rt-field-hint', id: id + '_h' });
+        const show = () => {
+            const [v, name, text] = YEREVAN_KM[+range.value];
+            level.textContent = name + ' · ' + v + NB + 'կմ';
+            hint.textContent = text;
+            range.setAttribute('aria-valuetext', name);
+        };
+        range.addEventListener('input', show);
+        show();
+        reg(['settings.big_truck_yerevan_km'], range, err, 'Փոքր մեքենաների առաջնահերթությունը Երևանում');
+        box.append(h('div', { class: 'rt-field mt-2' },
+            h('label', { for: id, text: 'Փոքր մեքենաների առաջնահերթությունը Երևանում' }),
+            h('div', { style: 'display:flex;align-items:center;gap:12px;flex-wrap:wrap' }, range, level), hint, err));
         renderZone('yerevan');
     }
 
@@ -1588,6 +1616,7 @@
         s.chain_groups = [...document.querySelectorAll('#rsForm [data-chain]:checked')].map(i => i.value);
         s.center_zone = zoneValue('center');
         s.yerevan_zone = zoneValue('yerevan');
+        if ($('rsYerevanKm')) s.big_truck_yerevan_km = YEREVAN_KM[+$('rsYerevanKm').value][0];
         const manual = state.season.mode === 'manual';
         s.low_months = manual ? [...state.season.low].sort((a, b) => a - b) : null;
         s.peak_months = manual ? [...state.season.peak].sort((a, b) => a - b) : null;

@@ -62,10 +62,12 @@ PyVRP пауз и запаса не знает: запас — линейной 
 (TruckNorms.yerevan_zone → _Stop.yerevan) на большой машине (FleetTruck.big):
   - время — к её разгрузке TruckNorms.yerevan_of(машина) минут (парковка, манёвры, нести дальше): в том же правиле дня
     машины (_schedule, после темпа), PyVRP — профилем машины (минуты рёбер из такой точки);
-  - приоритет — мягкий: каждая такая точка стоит как BIG_YEREVAN_KM км пути этой машины (_yerevan_bias, драмы по её
-    расходу) — при выборе машины рейса, в PyVRP (метры рёбер в такую точку в профиле машины) и при сравнении решений
-    (_better); выравнивание (_balance) не перекладывает такие точки с малой машины на большую. Запрета нет: малым
-    машинам не хватает тоннажа или времени — точку везёт большая.
+  - приоритет — мягкий: каждая такая точка стоит как TruckNorms.yerevan_km км пути этой машины (сила приоритета —
+    настройка big_truck_yerevan_km, по умолчанию BIG_YEREVAN_KM; _yerevan_bias, драмы по её расходу) — при выборе машины
+    рейса, в PyVRP (метры рёбер в такую точку в профиле машины) и при сравнении решений (_better); «Везти после конца дня»
+    (earliest) — раньше времени окончания: такой рейс берёт малая машина, если успевает к пределу; выравнивание (_balance)
+    не перекладывает такие точки с малой машины на большую. Запрета нет: малым машинам не хватает тоннажа или времени —
+    точку везёт большая. Сила 0 — только надбавка времени.
 Пустая граница — точек в зоне нет: расчёт байт в байт прежний (модель парка менеджеров зоны не знает).
 """
 from __future__ import annotations
@@ -91,7 +93,7 @@ FLEET_SAMPLES = 30          # проб Монте-Карло на день до�
 _EPS = 1e-9
 BUFFER_CAP_REL = 0.40       # запас на рейс (№66) — не больше 40% минут рейса
 NO_PACE = (1.0, 1.0)        # темп машины без выученных множителей: (разгрузка, путь)
-BIG_YEREVAN_KM = 3.0        # приоритет малых машин в Ереване (№68): точка зоны на большой машине — как 3 км её пути
+BIG_YEREVAN_KM = 3.0        # приоритет малых машин в Ереване (№68) по умолчанию: точка зоны на большой — как 3 км её пути
 
 Matrix = list[list[float]]
 
@@ -142,6 +144,7 @@ class TruckNorms:
     # машина → минут к разгрузке каждой её точки в зоне (только большие машины; нет машины — 0)
     yerevan_zone: tuple[Point, ...] = field(default=(), compare=False)
     yerevan_min: Mapping[str, float] = field(default_factory=dict, compare=False)
+    yerevan_km: float = BIG_YEREVAN_KM   # сила приоритета малых машин: точка зоны на большой — как столько км её пути
 
     @classmethod
     def from_settings(cls, s: Mapping[str, Any], lunch: bool = False) -> TruckNorms:
@@ -276,11 +279,11 @@ def _yerevan_extra(seq: Sequence[int], stops: Sequence[_Stop], tn: TruckNorms, c
 
 
 def _yerevan_bias(seq: Sequence[int], stops: Sequence[_Stop], truck: FleetTruck, tn: TruckNorms) -> float:
-    """Плата за точки рейса seq в зоне Еревана на большой машине (№68, приоритет малых машин): BIG_YEREVAN_KM км её
+    """Плата за точки рейса seq в зоне Еревана на большой машине (№68, приоритет малых машин): tn.yerevan_km км её
     пути за точку — дизель и износ, как стоимость км в PyVRP (vrp.unit_cost), драм; малая машина или точек в зоне нет —
     0.0."""
     n = sum(1 for v in seq if stops[v].yerevan) if truck.big else 0
-    return n * BIG_YEREVAN_KM * (truck.l100 / 100.0 * tn.fuel_price + (truck.wear_amd_per_km or 0.0)) if n else 0.0
+    return n * tn.yerevan_km * (truck.l100 / 100.0 * tn.fuel_price + (truck.wear_amd_per_km or 0.0)) if n else 0.0
 
 
 def _vehicle_allowed(stop: _Stop, truck: FleetTruck) -> bool:
@@ -774,10 +777,9 @@ def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[Fl
             # рейс за пределами дня: везёт машина, которая поднимет груз и освободится раньше всех
             fits = [t for t in trucks if t.capacity_kg >= kg - _EPS]
             truck = min(fits, key=lambda t: (used[t.car_code], _sequence_cost(seq, vs, d, t).total_amd(tn.fuel_price), t.car_code))
-        elif earliest:
-            truck = min(fits, key=lambda t: (used[t.car_code] + occupy(t.car_code, seq, minutes),
-                                             _sequence_cost(seq, vs, d, t).total_amd(tn.fuel_price)
-                                             + _yerevan_bias(seq, vs, t, tn), t.car_code))
+        elif earliest:   # приоритет малых в Ереване (№68) — раньше времени окончания: кто из подходящих не большая
+            truck = min(fits, key=lambda t: (_yerevan_bias(seq, vs, t, tn) > 0, used[t.car_code] + occupy(t.car_code, seq, minutes),
+                                             _sequence_cost(seq, vs, d, t).total_amd(tn.fuel_price), t.car_code))
         else:
             truck = min(fits, key=lambda t: (_sequence_cost(seq, vs, d, t).total_amd(tn.fuel_price)
                                              + _yerevan_bias(seq, vs, t, tn), -t.capacity_kg, t.car_code))
@@ -1140,9 +1142,9 @@ def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[F
         else:
             # машину с правом въезда бережём для центровых рейсов, пока они есть в очереди
             spare_center = plain_order and any(not q[1] for q in queue)
-            if earliest:
-                truck = min(fit, key=lambda t: (spare_center and t.center_ok, spots[t.car_code][0] + spots[t.car_code][2],
-                                                _yerevan_bias(seq, vs, t, tn), t.l100, t.car_code))
+            if earliest:   # приоритет малых в Ереване (№68) — раньше времени окончания (как в plan_trips)
+                truck = min(fit, key=lambda t: (spare_center and t.center_ok, _yerevan_bias(seq, vs, t, tn) > 0,
+                                                spots[t.car_code][0] + spots[t.car_code][2], t.l100, t.car_code))
             else:
                 truck = min(fit, key=lambda t: (spare_center and t.center_ok,
                                                _sequence_cost(seq, vs, d, t).total_amd(tn.fuel_price)
@@ -1576,11 +1578,11 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
             pieces.append(vrp.Piece(s.node, s.kg, s.unload, bound(s.early), due(s.late), s.center, False, s.allowed_trucks,
                                     s.yerevan))
             origin.append(i)
-    # большая машина в Ереване (№68): надбавка к разгрузке и плата BIG_YEREVAN_KM км — профилем машины
+    # большая машина в Ереване (№68): надбавка к разгрузке и плата tn.yerevan_km км — профилем машины
     yer = any(p.yerevan for p in pieces)
     vehicles = [vrp.Vehicle(t.car_code, t.capacity_kg, t.l100, t.center_ok, t.wear_amd_per_km, tn.fuel_price,
                             tn.pace_of(t.car_code), tn.yerevan_of(t.car_code) if yer else 0.0,
-                            round(BIG_YEREVAN_KM * 1000) if yer and t.big else 0) for t in trucks]
+                            round(tn.yerevan_km * 1000) if yer and t.big else 0) for t in trucks]
     begin = sorted(start.items())
     loading: dict[str, float] = ({'load_fixed_min': tn.warehouse_load_fixed_min,
                                   'load_tonne_min': tn.warehouse_load_min_per_tonne} if tn.load(1000) > 0 else {})
