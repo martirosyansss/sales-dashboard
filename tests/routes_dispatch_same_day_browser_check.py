@@ -14,6 +14,10 @@ D плашка: остались 2 новых, «Արդեն տանում ենք 
 E диалог → «Թողնել վաղվան» (отмечен 104; 999 без точки — тоже) → запроса нет, плашка «2 նոր պատվեր թողնված է վաղվան»;
 F в ERP пришёл новый заказ (105) → автообновление (status) без перезагрузки страницы: плашка «Այսօր եկել է 1 նոր պատվեր»;
 G «Թողնել վաղվան» у взятого 103 → правка same_day_drop, 103 ушёл из рейсов;
+I 10:00 (первые рейсы грузятся), пришли заказ 102 (его рейс уже уехал) и заказ 103 с накладной на сегодня: плашка
+  называет накладную, в диалоге — группа «Հաշիվ-ապրանքագիրն արդեն գրված է — գնում է այսօր» (отмечен); отметить 102 и
+  103 → варианты: 102 снят и помечен «մնում է վաղվան — երթն արդեն մեկնել է», «Ընտրել» шлёт только то, что можно взять;
+  машина не из шага 1 не выделяется «Ամենաէժանը»; «Վերակազմել երթերը» после начала дня — предупреждение (confirm);
 H телефон 390×860: с открытым диалогом нет горизонтальной прокрутки.
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
 """
@@ -78,7 +82,8 @@ def main() -> int:
             page = browser.new_context(viewport={'width': 1440, 'height': 950}).new_page()
             page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
             page.on('console', lambda m: errors.append('console: ' + m.text) if m.type == 'error' and not is_ignorable(m) else None)
-            page.on('dialog', lambda d: d.accept())
+            confirms = []
+            page.on('dialog', lambda d: (confirms.append(d.message), d.accept()))
             page.on('request', lambda r: posts.append((r.url.rsplit('/', 1)[-1], json.loads(r.post_data or '{}')))
                     if r.method == 'POST' and '/api/routes/dispatch/' in r.url else None)
             for pat in ('https://tiles.api-maps.yandex.ru/**', 'https://*.tile.openstreetmap.org/**'):
@@ -169,12 +174,59 @@ def main() -> int:
             page.wait_for_selector('#dpSameDayDlg[open]', timeout=5000)
             n = len(posts)
             dlg.locator('.dp-sd-row', has_text='Տանում է՝').locator('button').click()
-            page.wait_for_function("() => !document.querySelector('#dpSameDayDlg .dp-sd-row button:not([disabled])')"
-                                   " || document.querySelectorAll('#dpSameDayDlg .dp-sd-row').length === 4", timeout=15000)
+            page.wait_for_function("() => document.querySelectorAll('#dpSameDayDlg .dp-sd-row').length === 4"
+                                   " && !document.querySelector('#dpSameDayDlg .dp-sd-row button')", timeout=15000)
             drops = [p[1] for p in posts[n:] if p[0] == 'edit']
             check(len(drops) == 1 and drops[0].get('action') == 'same_day_drop' and drops[0].get('orders') == [_isn(10)],
                   'G edit same_day_drop: ' + str(drops))
             check(103 not in plan_cids(), 'G 103 left the plan')
+
+            # I
+            page.keyboard.press('Escape')
+            later = datetime(2026, 10, 1, 10, 0, tzinfo=ac.YEREVAN)
+            views._yerevan_now = lambda: later
+            views._clock = lambda: later.replace(tzinfo=None)
+            new.extend([_dorder(14, 102, 50.0, day=D), _dorder(16, 103, 20.0, day=D, shipped=D)])
+            state.same_day_cache.clear()
+            page.goto(f'{BASE}/routes/dispatch?date={DAY}')
+            page.wait_for_selector('#dpStep3', state='visible', timeout=30000)
+            check('հաշիվ-ապրանքագիրն արդեն գրված է' in banner.inner_text(), 'I banner names the invoiced order: ' + banner.inner_text())
+            page.locator('#dpSdOpen').click()
+            page.wait_for_selector('#dpSameDayDlg[open]', timeout=5000)
+            check('Հաշիվ-ապրանքագիրն արդեն գրված է — գնում է այսօր' in dlg.inner_text(), 'I invoiced group heading')
+            inv_row = dlg.locator('ul[aria-label="Հաշիվ-ապրանքագիրն արդեն գրված է"] .dp-sd-row')
+            check(inv_row.locator('input').is_checked(), 'I invoiced order checked by default')
+            row_102 = dlg.locator('.dp-sd-row', has_text='C102')
+            check('մնում է վաղվան — երթն արդեն մեկնել է' in row_102.inner_text().replace('\u00a0', ' ')
+                  and not row_102.locator('input').is_checked() and row_102.locator('input').is_disabled(),
+                  'I 102 on a departed trip: unchecked, disabled and marked')
+            box = dlg.locator('ul[aria-label="Նոր պատվերներ"] .dp-sd-row', has_text='C103').locator('input')
+            if not box.is_checked():
+                box.check()
+            n = len(posts)
+            page.locator('#dpSdPropose').click()
+            page.wait_for_selector('#dpSameDayDlg .dp-sd-opt', timeout=30000)
+            check(inv_row.count() == 1 and 'C103' in inv_row.inner_text(), 'I invoiced row is store 103')
+            best = dlg.locator('.dp-sd-opt.is-best')
+            check(all('այսօր նշված չէ' not in best.nth(i).inner_text() for i in range(best.count())),
+                  'I unmarked truck never highlighted as cheapest')
+            dlg.locator('.dp-sd-opt').first.locator('button').click()
+            page.wait_for_function("() => !document.getElementById('dpSameDayDlg').open", timeout=30000)
+            took = [p[1] for p in posts[n:] if p[0] == 'edit']
+            check(len(took) == 1 and sorted(took[0].get('orders', [])) == sorted([_isn(10), _isn(16)]),
+                  'I take sent only takeable orders: ' + str(took))
+            d = data()
+            rows = {o['isn']: o for o in d['same_day']['orders']}
+            check(rows[_isn(16)]['taken'] and not rows[_isn(14)]['taken'], 'I invoiced taken, 102 stays for tomorrow')
+            confirms.clear()
+            n = len(posts)
+            page.locator('#dpBuild').click()
+            page.wait_for_function("() => document.getElementById('dpBuildText').textContent === 'Վերակազմել երթերը'", timeout=30000)
+            check(any('արդեն բեռնվում են կամ ճանապարհին են' in m for m in confirms) and any(p[0] == 'build' for p in posts[n:]),
+                  'I rebuild after day start asks for confirmation: ' + str(confirms))
+            page.screenshot(path=str(SHOTS / 'i-after.png'), full_page=False)
+            page.locator('#dpSdOpen').click()
+            page.wait_for_selector('#dpSameDayDlg[open]', timeout=5000)
 
             # H
             page.set_viewport_size({'width': 390, 'height': 860})

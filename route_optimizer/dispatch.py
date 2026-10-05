@@ -174,6 +174,7 @@ class Selection:
     shipped_before: int                  # заказов дня уже отгружено раньше дня развоза
     self_delivery: list[DispatchOrder]   # заказы дня, которые менеджер развозит сам
     same_day_taken: int = 0              # заказов дня, взятых в развоз дня их приёма (№72, views._day_orders)
+    same_day_unread: bool = False        # план прошлого дня не прочитан: взятые в нём заказы могут прийти сюда повторно
 
 
 def to_deliver(orders: Sequence[DispatchOrder], day: date, since: date) -> Selection:
@@ -1087,6 +1088,9 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
 SAME_DAY_SHOWN = 8     # вариантов в ответе — самые дешёвые
 # вид варианта при равной цене: в ту же точку / в рейс, затем новый рейс отмеченной машины, затем машина не из шага 1
 _SAME_DAY_RANK = {'same_stop': 0, 'insert': 0, 'trip': 1, 'idle': 1, 'extra': 2}
+# машина не из шага 1 (extra) — после всех вариантов отмеченных машин, при любой цене: «все работающие машины всегда
+# отмечены» (№71) — неотмеченная, скорее всего, сегодня не выходит. Пока владелец не решил (№72); False — по цене со всеми
+SAME_DAY_EXTRA_LAST = True
 
 
 @dataclass
@@ -1095,6 +1099,7 @@ class _SameDayPlan:
     kind: str
     truck: str
     trips: list[DraftTrip]       # рейсы черновика с новыми заказами
+    changed: set[int]            # рейсы, которые вариант меняет или добавляет
     view: dict[str, Any]
 
 
@@ -1106,6 +1111,40 @@ def _trip_amd(ctx: DayContext, cids: Sequence[int], routable: Mapping[int, Stop]
     return cost.total_amd(ctx.tn.fuel_price)
 
 
+def _same_day_base(ctx: DayContext, base: Sequence[Stop], draft: Draft, now_min: float
+                   ) -> tuple[list[DraftTrip], dict[int, Stop], dict[int, int], dict[int, tuple[float, float, list[float]]],
+                              set[int]]:
+    """План дня без новых заказов: (копии рейсов по точкам base, точки, доли, время рейсов, начатые рейсы — начало загрузки
+    по плану не позже now_min, минуты от начала дня машины)."""
+    routable0 = {s.customer_id: s for s in base if s.point is not None}
+    tmp = Draft(trips=[replace(t, stops=list(t.stops)) for t in draft.trips])
+    _clean(tmp, routable0)
+    shares0 = _shares(tmp.trips)
+    tl0 = _timeline(ctx, tmp.trips, routable0, shares0)
+    return tmp.trips, routable0, shares0, tl0, {tid for tid, (depart, _, _) in tl0.items() if depart <= now_min + _EPS}
+
+
+def started_trips(ctx: DayContext, base: Sequence[Stop], draft: Draft, now_min: float) -> set[int]:
+    """Рейсы, чья загрузка по плану уже началась (начало загрузки не позже now_min): машина в рейсе новый заказ не берёт и
+    взятый заказ из него уже не вернуть на завтра (№72)."""
+    return _same_day_base(ctx, base, draft, now_min)[4]
+
+
+def same_day_blocked(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], draft: Draft, cids: Collection[int],
+                     now_min: float) -> dict[int, str]:
+    """Клиенты cids, чьи новые заказы сегодня не взять: 'no_coords' — нет точки (stops — точки дня с новыми заказами);
+    'started' — клиент уже в рейсе, чья загрузка началась (base — точки дня без новых заказов)."""
+    trips0, _, _, _, started = _same_day_base(ctx, base, draft, now_min)
+    routable = {s.customer_id for s in stops if s.point is not None}
+    blocked: dict[int, str] = {}
+    for c in sorted(set(cids)):
+        if c not in routable:
+            blocked[c] = 'no_coords'
+        elif any(c in t.stops for t in trips0 if t.id in started):
+            blocked[c] = 'started'
+    return blocked
+
+
 def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], draft: Draft, cids: Collection[int],
                     now_min: float) -> tuple[list[_SameDayPlan], dict[int, str]]:
     """Как взять новые заказы дня клиентов cids в развоз сегодня — все варианты, самые дешёвые первыми, и клиенты, которых
@@ -1114,27 +1153,18 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
     минуты от начала дня машины. Рейс «начат», если начало его загрузки по плану (_timeline) не позже now_min: его машина
     и точки не меняются — машина в рейсе новый заказ не берёт (ответ «Բ»). Клиент уже в рейсе, который ещё не грузится, —
     заказ едет в ту же точку того же рейса; остальные (новые точки) — все вместе одним из способов:
-    - insert — вставкой (по одной, на место с наименьшим объездом) в рейс отмеченной машины, чья загрузка не началась;
+    - insert — вставкой (по одной, на место с наименьшим объездом) в рейс отмеченной машины, чья загрузка не началась
+      (закреплённый рейс — нет: его состав логист уже решил);
     - trip / idle — новым рейсом отмеченной машины после её последнего рейса (idle — сегодня рейсов у неё нет);
     - extra — новым рейсом готовой машины, не отмеченной в шаге 1.
     Новый рейс грузится не раньше «сейчас» (not_before), порядок его точек — 2-opt с окнами приёма. Вариант годится, если
-    груз изменённого рейса — в пределе сборки (_can_carry: тоннаж, центр, допуск машин), машина возвращается до конца
-    рабочего дня и окна приёма у неё не нарушаются чаще, чем сейчас. Порядок точек плана не переставляется. Цена — рост
-    расхода в драмах (как operating_cost_amd плана), км и минут работы изменённых и новых рейсов."""
-    routable0 = {s.customer_id: s for s in base if s.point is not None}
+    груз изменённого рейса — в пределе сборки (_can_carry: тоннаж, центр, допуск машин), машина возвращается не позже
+    конца рабочего дня (принятая переработка — её предела; машина и так позже — не позже, чем сейчас) и окна приёма у неё
+    не нарушаются чаще, чем сейчас. Порядок точек плана не переставляется. Цена — рост расхода в драмах (как
+    operating_cost_amd плана), км и минут работы изменённых и новых рейсов; extra — после остальных (SAME_DAY_EXTRA_LAST)."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
-    tmp = Draft(trips=[replace(t, stops=list(t.stops)) for t in draft.trips])
-    _clean(tmp, routable0)
-    trips0 = tmp.trips
-    shares0 = _shares(trips0)
-    tl0 = _timeline(ctx, trips0, routable0, shares0)
-    started = {tid for tid, (depart, _, _) in tl0.items() if depart <= now_min + _EPS}
-    blocked: dict[int, str] = {}
-    for c in sorted(set(cids)):
-        if c not in routable:
-            blocked[c] = 'no_coords'
-        elif any(c in t.stops for t in trips0 if t.id in started):
-            blocked[c] = 'started'
+    trips0, routable0, shares0, tl0, started = _same_day_base(ctx, base, draft, now_min)
+    blocked = same_day_blocked(ctx, base, stops, draft, cids, now_min)
     want = [c for c in sorted(set(cids)) if c not in blocked]
     if not want:
         return [], blocked
@@ -1142,7 +1172,8 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
     free = [c for c in want if c not in shares0]
     same_trips = {t.id for t in trips0 if any(c in t.stops for c in same)}
     sel = _selected(ctx, draft.trucks)
-    day0: dict[str, int] = {}
+    limit = ctx.overtime_minutes if draft.overtime_ok and ctx.overtime_minutes is not None else ctx.tn.work_minutes
+    day0: dict[str, tuple[float, int]] = {}
     old = {t.id: t for t in trips0}
     out: list[_SameDayPlan] = []
 
@@ -1156,9 +1187,10 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
         codes = {t.truck for t in trial if t.id in ids}
         for code in codes:
             if code not in day0:
-                day0[code] = _truck_day(ctx, trips0, routable0, shares0, code)[2]
+                day0[code] = _truck_day(ctx, trips0, routable0, shares0, code)[1:]
+            end0, miss0 = day0[code]
             _, end1, miss1 = _truck_day(ctx, trial, routable, shares, code)
-            if end1 > ctx.tn.work_minutes + _EPS or miss1 > day0[code]:
+            if end1 > max(limit, end0) + _EPS or miss1 > miss0:
                 return
         tl = _timeline(ctx, [t for t in trial if t.truck in codes], routable, shares)
         km = amd = minutes = 0.0
@@ -1178,7 +1210,7 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
         depart, trip_min, _ = tl[trip]
         carried = next(t for t in trial if t.id == trip).stops
         load = ctx.tn.load(math.fsum(routable[c].kg / shares[c] for c in carried))
-        out.append(_SameDayPlan(key, kind, truck, trial, {
+        out.append(_SameDayPlan(key, kind, truck, trial, ids, {
             'key': key, 'kind': kind, 'truck': truck, 'name': ctx.trucks[truck].name, 'trip': trip if trip in old else None,
             'km': _r(km), 'minutes': round(minutes), 'amd': round(amd),
             'loading_start': _hhmm(ctx.work_start_min + depart), 'depart': _hhmm(ctx.work_start_min + depart + load),
@@ -1192,7 +1224,7 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
         try_plan('same_stop', 'same_stop', first.truck, first.id, copy(), sel)
     else:
         for t in trips0:
-            if t.id in started or t.truck not in draft.trucks or t.truck not in ctx.trucks:
+            if t.id in started or t.pinned or t.truck not in draft.trucks or t.truck not in ctx.trucks:
                 continue
             trial = copy()
             dst = next(x for x in trial if x.id == t.id)
@@ -1209,7 +1241,8 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
             trial = [*copy(), DraftTrip(draft.next_id, code, order, not_before=float(ctx.work_start_min + now_min))]
             try_plan(f'{"extra" if extra else "trip"}:{code}', 'extra' if extra else 'trip' if busy else 'idle', code,
                      draft.next_id, trial, [*sel, ctx.trucks[code]] if extra else sel)
-    out.sort(key=lambda p: (p.view['amd'], p.view['km'], _SAME_DAY_RANK[p.kind], p.key))
+    out.sort(key=lambda p: (SAME_DAY_EXTRA_LAST and p.kind == 'extra', p.view['amd'], p.view['km'],
+                            _SAME_DAY_RANK[p.kind], p.key))
     return out, blocked
 
 
@@ -1228,7 +1261,8 @@ def take_same_day(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], 
                   isns: Collection[str], key: Any, now_min: float) -> Draft:
     """Взять новые заказы дня isns (их клиенты — cids) в развоз сегодня вариантом key (_same_day_plans). Варианты считаются
     заново на «сейчас»: пока логист выбирал, рейс мог начать грузиться. Варианта нет или клиента взять нельзя —
-    DispatchError. Рейсы черновика — рейсы варианта; машина не из шага 1 (extra) становится машиной дня."""
+    DispatchError. Рейсы черновика — рейсы варианта; изменённые и новые рейсы закрепляются (пересборка их не трогает и
+    новый рейс не уйдёт раньше «сейчас»); машина не из шага 1 (extra) становится машиной дня."""
     plans, blocked = _same_day_plans(ctx, base, stops, draft, cids, now_min)
     if blocked:
         raise DispatchError('Այս պատվերներից մեկի մեքենան արդեն բեռնվում է կամ խանութի տեղը քարտեզում չկա — '
@@ -1238,6 +1272,9 @@ def take_same_day(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], 
         raise DispatchError('Այս առաջարկն այլևս հնարավոր չէ — թարմացրեք առաջարկները')
     draft.undo = None
     draft.trips = plan.trips
+    for t in draft.trips:
+        if t.id in plan.changed:
+            t.pinned = True
     draft.next_id = max(draft.next_id, *(t.id + 1 for t in plan.trips))
     if plan.kind == 'extra':
         draft.trucks = sorted({*draft.trucks, plan.truck})

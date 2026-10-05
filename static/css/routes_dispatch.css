@@ -610,6 +610,7 @@
 .dp-sd-sub { color: var(--rt-fg-mute); font-size: .875rem; }
 .dp-sd-num { font-family: var(--rt-mono); text-align: right; white-space: nowrap; }
 .dp-sd-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.dp-sd-tags .rt-badge { white-space: normal; max-width: 100%; }
 .dp-sd-acts { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
 .dp-sd-acts .rt-btn, .dp-sd-opt .rt-btn { max-width: 100%; white-space: normal; text-align: left; }
 .dp-sd-opts { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }

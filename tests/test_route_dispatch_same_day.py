@@ -236,7 +236,7 @@ def _page_setup(client, monkeypatch, *, now=NOW, same=True, extra_orders=()):
         def same_loader(day):
             loads.append(day)
             return dp.SameDayData(tuple(o for o in every if o.order_date == day),
-                                  {_isn(10): datetime(2026, 10, 1, 8, 41), _isn(12): datetime(2026, 10, 1, 9, 5)},
+                                  {_isn(10): datetime(2026, 10, 1, 8, 41), _isn(12): datetime(2026, 9, 30, 18, 5)},
                                   {103: ('C103', 'Клиент 103')}, {103: 'Ереван, 3'}, datetime(2026, 10, 1, 12, 0))
         state.same_day_loader = same_loader
     else:
@@ -266,6 +266,7 @@ def test_page_lists_new_orders_of_today_with_time_and_manager_filter(client, mon
     assert (rows[103]['created'], rows[103]['name'], rows[103]['taken'], rows[103]['no_coords']) == \
         ('08:41', 'Клиент 103', False, False)
     assert rows[999]['no_coords'] is True and rows[999]['created'] is None and rows[104]['agent_code'] == 'A002'
+    assert rows[104]['created'] == '30.09 18:05'                                # заведён накануне — с датой
     assert 103 not in _plan_stops(d) and d['orders']['count'] == 3                # в плане их нет, пока логист не взял
     # фильтр «Մենեջերներ»: заказы менеджера 2 — ни в развозе, ни в новых заказах
     d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'agents', 'off': [2]}).get_json()
@@ -374,7 +375,9 @@ def test_options_request_validation(client, monkeypatch):
         r = client.post('/api/routes/dispatch/same-day', json={'date': DAY, 'orders': bad})
         assert r.status_code == 400, bad
     r = client.post('/api/routes/dispatch/same-day', json={'date': DAY, 'orders': [_isn(11)]})   # без точки
-    assert r.status_code == 200 and r.get_json()['blocked'] == [{'customer_id': 999, 'reason': 'no_coords'}]
+    assert r.status_code == 200 and r.get_json()['blocked'] == [{'customer_id': 999, 'reason': 'no_coords',
+                                                                 'orders': [_isn(11)]}]
+    assert r.get_json()['orders'] == [] and r.get_json()['options'] == []
 
 
 # ============================== приложение водителя ==============================
@@ -405,3 +408,139 @@ def test_driver_app_gets_taken_orders_and_next_day_skips_them(client, monkeypatc
     # без взятых заказов дня окно и отбор — прежние
     plain = rl.RoutesView()
     assert rl.orders_window(D, plain)[1] == D
+
+
+# ============================== ревью: смешанный выбор, накладные, пересборка, переработка ==============================
+
+def test_options_mixed_batch_blocked_and_takeable_end_to_end(client, monkeypatch):
+    """Магазин 102 уже в рейсе, который грузится с 09:00: его новый заказ остаётся на завтра, а 103 берётся — варианты и
+    «Ընտրել» только для того, что можно взять (иначе любой выбор отказывал бы навсегда)."""
+    _page_setup(client, monkeypatch, now=datetime(2026, 10, 1, 10, 0, tzinfo=ac.YEREVAN),
+                extra_orders=[_dorder(14, 102, 50.0, day=D)])
+    d = _build(client, ('CAR1', 'CAR2'))
+    assert _plan_stops(d)[102]
+    res = client.post('/api/routes/dispatch/same-day', json={'date': DAY, 'orders': [_isn(10), _isn(14)]}).get_json()
+    assert res['orders'] == [_isn(10)] and res['options']
+    assert res['blocked'] == [{'customer_id': 102, 'reason': 'started', 'orders': [_isn(14)]}]
+    assert all(s['customer_id'] == 103 for o in res['options'] for s in o['stops'])
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'same_day',
+                                                       'orders': res['orders'], 'option': res['options'][0]['key']})
+    assert r.status_code == 200, r.get_json()
+    d = r.get_json()
+    rows = {o['isn']: o for o in d['same_day']['orders']}
+    assert rows[_isn(10)]['taken'] is True and rows[_isn(14)]['taken'] is False and 103 in _plan_stops(d)
+    assert rows[_isn(14)]['started'] is True                                    # страница сразу не даёт его отметить
+    # все выбранные — в уехавших рейсах: вариантов нет, взять нечего
+    res = client.post('/api/routes/dispatch/same-day', json={'date': DAY, 'orders': [_isn(14)]}).get_json()
+    assert (res['orders'], res['options'], res['blocked'][0]['reason']) == ([], [], 'started')
+    stale = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'same_day',
+                                                           'orders': [_isn(14)], 'option': 'trip:CAR1'})
+    assert stale.status_code == 400 and 'թարմացրեք առաջարկները' in stale.get_json()['error']
+
+
+def test_invoiced_today_is_a_separate_group_not_new(client, monkeypatch):
+    """Накладная на сегодня уже есть (офис решил, что везут сегодня): не «новый» в плашке, отдельная группа — на завтра он
+    не останется (для D+1 он «отгружен раньше»)."""
+    _page_setup(client, monkeypatch, extra_orders=[_dorder(15, 102, 70.0, day=D, shipped=D, rev=5000.0)])
+    d = _build(client)
+    sd = d['same_day']
+    assert (sd['count'], sd['kg'], sd['revenue']) == (3, 380, 20000)
+    assert sd['invoiced'] == {'count': 1, 'kg': 70, 'revenue': 5000}
+    assert next(o for o in sd['orders'] if o['isn'] == _isn(15))['invoiced'] is True
+    s = client.get('/api/routes/dispatch/status?date=' + DAY).get_json()['same_day']
+    assert s['invoiced'] == sd['invoiced'] and s['count'] == 3 and s['sig'] == sd['sig']
+
+
+def test_take_pins_trip_and_rebuild_keeps_it():
+    ctx, base, orders, new, draft = _base()
+    stops = _with(orders, new, {_isn(50)})
+    out = dp.take_same_day(ctx, base, stops, dp.Draft.from_json(draft.to_json()), {201}, {_isn(50)},
+                           f'trip:{FORD.car_code}', 200.0)
+    trip = out.trips[-1]
+    assert (trip.stops, trip.pinned, trip.not_before) == ([201], True, 9 * 60 + 200.0)
+    assert out.trips[0].pinned is False                                         # рейс плана не тронут
+    again = dp.build(ctx, stops, out, [FORD.car_code], 'now')
+    kept = next(t for t in again.trips if t.id == trip.id)
+    assert (kept.stops, kept.not_before) == ([201], 9 * 60 + 200.0)
+    assert all(201 not in t.stops for t in again.trips if t.id != trip.id)
+    ins = dp.take_same_day(ctx, base, stops, dp.Draft.from_json(draft.to_json()), {201}, {_isn(50)}, 'insert:1', -30.0)
+    assert ins.trips[0].pinned is True
+    # в закреплённый рейс новые заказы не вставляются (его состав логист уже решил)
+    keys = [o['key'] for o in dp.same_day_options(ctx, base, _with(orders, new, {_isn(51)}), ins, {202}, -30.0)['options']]
+    assert 'insert:1' not in keys and f'trip:{FORD.car_code}' in keys
+
+
+def test_accepted_overtime_allows_proposals():
+    ctx, base, orders, new, draft = _base()
+    routable = {s.customer_id: s for s in base}
+    end = dp._truck_day(ctx, draft.trips, routable, dp._shares(draft.trips), FORD.car_code)[1]
+    # день машины уже кончился раньше её рейса (принятая переработка): без неё — ни одного варианта на FORD
+    over = replace(ctx, tn=replace(TN, work_minutes=end - 10.0), overtime_minutes=end + 200.0)
+    stops = _with(orders, new, {_isn(50)})
+    keys = lambda d: [o['key'] for o in dp.same_day_options(over, base, stops, d, {201}, -30.0)['options']]  # noqa: E731
+    assert not [k for k in keys(draft) if FORD.car_code in k]
+    ok = dp.Draft.from_json(draft.to_json())
+    ok.overtime_ok = True
+    assert 'insert:1' in keys(ok) and f'trip:{FORD.car_code}' in keys(ok)
+
+
+def test_unmarked_truck_ranked_after_marked_even_if_cheaper(monkeypatch):
+    cheap = fl.FleetTruck('CHEAP', 'Cheap', 3500.0, 4.0)
+    ctx, base, orders, new, draft = _base()
+    ctx = replace(ctx, trucks={**ctx.trucks, 'CHEAP': cheap})
+    stops = _with(orders, new, {_isn(50)})
+    opts = dp.same_day_options(ctx, base, stops, draft, {201}, 30.0)['options']
+    assert [o['key'] for o in opts] == [f'trip:{FORD.car_code}', 'extra:CHEAP', f'extra:{HOWO.car_code}']
+    assert opts[1]['amd'] < opts[0]['amd']
+    monkeypatch.setattr(dp, 'SAME_DAY_EXTRA_LAST', False)                        # решение владельца — один флажок
+    assert dp.same_day_options(ctx, base, stops, draft, {201}, 30.0)['options'][0]['key'] == 'extra:CHEAP'
+
+
+def test_taken_order_on_started_trip_cannot_go_back_to_tomorrow(client, monkeypatch):
+    _page_setup(client, monkeypatch, now=datetime(2026, 10, 1, 8, 0, tzinfo=ac.YEREVAN))
+    d = _build(client, ('CAR1', 'CAR2'))
+    key = client.post('/api/routes/dispatch/same-day', json={'date': DAY, 'orders': [_isn(10)]}).get_json()['options'][0]
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'same_day',
+                                                       'orders': [_isn(10)], 'option': key['key']}).get_json()
+    assert next(o for o in d['same_day']['orders'] if o['isn'] == _isn(10))['started'] is False
+    later = datetime(2026, 10, 1, 17, 0, tzinfo=ac.YEREVAN)                      # рейс с 103 уже грузится / в пути
+    monkeypatch.setattr(views, '_yerevan_now', lambda: later)
+    monkeypatch.setattr(views, '_clock', lambda: later.replace(tzinfo=None))
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    assert next(o for o in d['same_day']['orders'] if o['isn'] == _isn(10))['started'] is True
+    for body in ({'action': 'same_day_drop', 'orders': [_isn(10)]}, {'action': 'exclude', 'order': _isn(10)}):
+        r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], **body})
+        assert r.status_code == 400 and 'վաղվան թողնել չի կարելի' in r.get_json()['error'], body
+    assert 103 in _plan_stops(client.get('/api/routes/dispatch?date=' + DAY).get_json())
+
+
+def test_unreadable_previous_plan_is_flagged(client, monkeypatch, caplog):
+    state, _ = _page_setup(client, monkeypatch, now=datetime(2026, 10, 2, 8, 0, tzinfo=ac.YEREVAN))
+    real = state.store.load_dispatch
+
+    def broken(day):
+        if day == DAY:
+            raise views.StoreError('битая база')
+        return real(day)
+    monkeypatch.setattr(state.store, 'load_dispatch', broken)
+    d = client.get('/api/routes/dispatch?date=' + NEXT).get_json()
+    assert d['same_day_unread'] is True and 'не прочитан' in caplog.text
+    monkeypatch.setattr(state.store, 'load_dispatch', real)
+    assert 'same_day_unread' not in client.get('/api/routes/dispatch?date=' + NEXT).get_json()
+
+
+def test_truck_already_past_end_of_day_may_take_work_that_does_not_move_its_end():
+    """Машина и так кончает позже конца дня (второй рейс ждёт окна 13:00–14:00): вставка в первый рейс её конец не
+    сдвигает — вариант есть; новый рейс после второго сдвинул бы — его нет."""
+    ctx, _, orders, new, _ = _base()
+    orders = [*orders, _dorder(40, 202, 100.0)]
+    base = dp.build_stops(orders, _coord_of(POINTS))
+    draft = dp.Draft([FORD.car_code], trips=[dp.DraftTrip(1, FORD.car_code, [101, 102, 103]),
+                                              dp.DraftTrip(2, FORD.car_code, [202])], next_id=3)
+    win = replace(ctx, windows={202: (13 * 60.0, 14 * 60.0)})
+    routable = {s.customer_id: s for s in base}
+    end0 = dp._truck_day(win, draft.trips, routable, dp._shares(draft.trips), FORD.car_code)[1]
+    late = replace(win, tn=replace(TN, work_minutes=end0 - 30.0))              # уже позже конца дня
+    stops = dp.build_stops([*orders, new[0]], _coord_of(POINTS))
+    keys = [o['key'] for o in dp.same_day_options(late, base, stops, draft, {201}, -30.0)['options']]
+    assert 'insert:1' in keys and f'trip:{FORD.car_code}' not in keys
