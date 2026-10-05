@@ -1083,6 +1083,7 @@
         if (bl.length) add('', 'fa-clock-rotate-left', 'Նախորդ օրերից մնացել է ' + pl(bl.length, 'չառաքված պատվեր')
             + (added ? ', որից ' + added + '-ը ավելացրել եք այսօրվա առաքմանը' : '') + '։ Ստուգեք՝ պե՞տք է դրանք տանել այսօր։', 'Դիտել', 'dpBacklog');
         if (o.excluded) add('', 'fa-ban', pl(o.excluded, 'պատվեր') + ' նշել եք «այսօր չենք տանում»։', 'Դիտել', 'dpExcluded');
+        if (o.other_vehicle) add('', 'fa-truck-arrow-right', pl(o.other_vehicle, 'պատվեր') + ' գնում է այլ մեքենայով (կարգավորումներով)։', 'Դիտել', 'dpOther');
         const ag = agentStats();
         if (ag.shown) add('', 'fa-user-tie', 'Տանում ենք միայն ' + pl(ag.kept, 'մենեջերի') + ' պատվերները'
             + (ag.offCount ? ', ' + pl(ag.offCount, 'պատվեր') + ' (' + kgText(ag.offKg) + ') այսօր չենք տանում' : '')
@@ -1098,6 +1099,9 @@
         if (o.other_vehicle) info.push(pl(o.other_vehicle, 'պատվեր') + ' (' + kgText(o.other_vehicle_kg) + ') գնում է այլ մեքենայով');
         if (o.customers_off) info.push(pl(o.customers_off, 'պատվեր') + ' (' + kgText(o.customers_off_kg) + ') չենք տանում՝ կարգավորումներով');
         $('dpOrdersInfo').textContent = info.length ? 'Առաքման մեջ չեն մտնում՝ ' + info.join(', ') + '։' : '';
+        // день с планом выбран не по нынешним настройкам (№69, №74)
+        $('dpRuleDiff').hidden = !state.data.settings_differ;
+        $('dpRuleApply').disabled = state.busy;
     }
 
     // ---------- «Մենեջերներ»: чьи заказы везём ----------
@@ -1618,14 +1622,17 @@
             + ' · ' + kgText(o.kg) + ' · ' + money(o.revenue)
             + (o.deferred ? ' · կտարվի ' + dayHuman(state.data.defer_to, true) : '')
             + (o.carried ? ' · տեղափոխված է նախորդ օրից' : '')
-            + (o.agent_off ? ' · մենեջերը հանված է «Որ մենեջերների պատվերներն ենք տանում» ցուցակից' : '');
+            + (o.agent_off ? ' · մենեջերը հանված է «Որ մենեջերների պատվերներն ենք տանում» ցուցակից' : '')
+            + (o.agent_name ? ' · ' + o.agent_name : '') + (o.city ? ' · ' + o.city : '');
         t.append(b, s);
+        li.append(t);
+        if (!btnText) return li;   // только строка — без кнопки («գնում է այլ մեքենայով»)
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'rt-btn rt-btn-ghost rt-btn-sm';
         btn.textContent = btnText;
         btn.addEventListener('click', onClick);
-        li.append(t, btn);
+        li.append(btn);
         return li;
     }
     function needPlan() {
@@ -1647,6 +1654,13 @@
         const ul2 = $('dpExcludedList');
         ul2.textContent = '';
         ex.forEach(o => ul2.appendChild(orderLine(o, 'Վերադարձնել', () => edit({ action: 'include', order: o.isn }, 'Պատվերը վերադարձվեց — կետը «Դեռ երթերում չեն» ցուցակում է կամ իր երթում'))));
+        // №74: везут другие машины — менеджер и город; вернуть можно только в настройках
+        const ov = state.data.other_vehicle || [];
+        $('dpOther').hidden = !ov.length;
+        $('dpOtherNote').textContent = ov.length ? pl(ov.length, 'պատվեր') : '';
+        const ul3 = $('dpOtherList');
+        ul3.textContent = '';
+        ov.forEach(o => ul3.appendChild(orderLine(o)));
     }
 
     // ---------- Рейсы ----------
@@ -3717,6 +3731,7 @@
         $('dpAgentsAll').addEventListener('click', () => pickAllAgents(true));
         $('dpAgentsNone').addEventListener('click', () => pickAllAgents(false));
         $('dpAgentsApply').addEventListener('click', applyAgents);
+        $('dpRuleApply').addEventListener('click', () => edit({ action: 'apply_settings' }, 'Օրվա ընտրությունը համապատասխանեցվեց կարգավորումներին'));
         $('dpAgentsUndo').addEventListener('click', () => { state.agentsPick = null; renderAgents(); renderOrders(); });
         $('dpReset').addEventListener('click', reset);
         $('dpPrint').addEventListener('click', printSheets);

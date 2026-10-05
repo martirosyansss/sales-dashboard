@@ -26,6 +26,7 @@ from courier import routes_link as rl  # noqa: E402
 from route_optimizer import dispatch as dp  # noqa: E402
 from route_optimizer import erp  # noqa: E402
 from route_optimizer import store as st  # noqa: E402
+from route_optimizer import views  # noqa: E402
 from route_optimizer.actuals import YEREVAN  # noqa: E402
 from test_courier import fake_erp  # noqa: E402,F401
 from test_route_dispatch_same_day import D, DAY, _build, _page_setup  # noqa: E402
@@ -89,25 +90,41 @@ CITIES = ['Գյումրի', 'Կապան', 'Գորիս', 'Վանաձոր']
 ROCARM = 2      # в синтетике «Rocarm» — менеджер 2: экспедитор его заказов «везёт сам» — он сам (van=2)
 
 
-def test_city_match_real_spellings_whole_word_and_aliases():
+def test_city_match_real_spellings_city_field_and_aliases():
     r = dp.FleetRule(frozenset({ROCARM}), tuple(CITIES))
-    yes = ['ՍՅՈՒՆԻՔ, ԿԱՊԱՆ,Լեռնագործների 4-րդ նրբանցք\xa0թիվ\xa029/1', 'Շիրակ, Գյումրի, Արագած փ. 1ա բն. 21',
-           dp.place_text('', 'Տռովիքս ՍՊԸ/ԳՅՈՒՄՐԻ'), dp.place_text('Լոռի, Վանաձոր, Թումանյան փ. 12', 'Էմ Պլյուս ՍՊԸ/վանաձոր'),
-           'Սյունիքի մարզ, ք.Գորիս Բակունցի 21', 'Սյունիքի մարզ, ք․ Կապան Շինարարների 1', 'г. Капан', 'GYUMRI', 'Լենինական',
-           'Ղափան', 'г.  Ванадзор', 'Гюмри']
-    no = ['Երևան, Կապանի փող. 3', 'Կապանցի', 'Երևան, Աջափնյակ, Հալաբյան փ. 16', '', 'Գյումրիից']
-    assert [t for t in yes if not r.in_cities(t)] == []
-    assert [t for t in no if r.in_cities(t)] == []
-    assert dp.FleetRule(cities=('Սիսիան',)).in_cities('ՍՅՈՒՆԻՔ, ՍԻՍԻԱՆ, 5')        # город не из словаря — как ввели
-    assert not dp.FleetRule(cities=()).in_cities('Կապան')
+    yes = {('ՍՅՈՒՆԻՔ, ԿԱՊԱՆ,Լեռնագործների 4-րդ նրբանցք\xa0թիվ\xa029/1', 'Արա Աբգարյան ԱՁ'): 'Կապան',
+           ('Շիրակ, Գյումրի, Արագած փ. 1ա բն. 21', 'Տռովիքս ՍՊԸ/ԳՅՈՒՄՐԻ'): 'Գյումրի',
+           ('', 'Տռովիքս ՍՊԸ/ԳՅՈՒՄՐԻ'): 'Գյումրի',                                   # адреса нет — название после «/»
+           ('Լոռի, Վանաձոր, Թումանյան փ. 12', 'Էմ Պլյուս ՍՊԸ/վանաձոր'): 'Վանաձոր',
+           ('Սյունիքի մարզ, ք.Գորիս Բակունցի 21', 'Ա/Ձ Բաղդասարյան Հայրապետ Գավրուշի/գորիս'): 'Գորիս',
+           ('Սյունիքի մարզ, ք․ Կապան Շինարարների 1', 'Գանձասար ֆուտբոլային ակումբ ՀԿ'): 'Կապան',
+           ('ՀՀ, Սյունիք, Կապան, Շահումյան 5', ''): 'Կապան', ('г. Капан, ул. Шаумяна 5', ''): 'Կապան',
+           ('Gyumri, Rustaveli 1', ''): 'Գյումրի', ('Լենինական, 5', ''): 'Գյումրի', ('Ղափան, 1', ''): 'Կապան',
+           ('г.  Ванадзор', ''): 'Վանաձոր', ('Гюмри, 3', ''): 'Գյումրի', ('Բաբայան 2/17', 'Խանութ/ԿԱՊԱՆ'): 'Կապան'}
+    no = [('Երևան, Կոմիտաս 1', 'Կապան Մարկետ ՍՊԸ'),                 # ревью M2: адрес — Ереван, город в названии не важен
+          ('Երևան, Կոմիտաս 1', 'Մարկետ ՍՊԸ/Կապան'),
+          ('Երևան, Վանաձոր փողոց 4', ''), ('Վանաձոր փողոց 4, Երևան', ''), ('ԳՅՈՒՄՐԻ-ԵՐԵՎԱՆ ԽՃՂ., Աշտարակ', ''),
+          ('Գորիս-Կապան մայրուղի, Սիսիան', ''), ('', 'Gyumri-Market LLC, Yerevan'), ('Gyumri-Market LLC, Yerevan', ''),
+          ('Երևան, Կապանի փող. 3', ''), ('Կապանցի 3, Երևան', ''), ('Երևան, Աջափնյակ, Հալաբյան փ. 16', ''), ('', ''),
+          ('', 'Կապան Մարկետ ՍՊԸ'), ('Կոտայք, Աբովյան, Գյումրու խճ. 2', ''), ('Արարատ, Մասիս, Կապանի 1', '')]
+    assert {k: r.matched_city(k) for k in yes} == yes
+    assert [k for k in no if r.matched_city(k)] == []
+    assert dp.FleetRule(cities=('Սիսիան',)).matched_city(('ՍՅՈՒՆԻՔ, ՍԻՍԻԱՆ, 5', '')) == 'Սիսիան'   # не из словаря — как ввели
+    assert dp.FleetRule(cities=()).matched_city(('Սյունիք, Կապան', '')) is None
+    # «և» = «եւ» = «ԵՎ» (ревью L2)
+    sevan = dp.FleetRule(cities=('Սևան',))
+    assert all(sevan.matched_city((a, '')) == 'Սևան' for a in ('Գեղարքունիք, ՍԵՎԱՆ, 1', 'Գեղարքունիք, Սեւան, 1',
+                                                                 'Գեղարքունիք, Սեվան, 1'))
+    assert dp.FleetRule(cities=('ՍԵՎԱՆ',)).matched_city(('Գեղարքունիք, Սևան, 1', '')) == 'ՍԵՎԱՆ'
+    assert dp.city_field('Երևան, Աջափնյակ, Հալաբյան 16') == dp.fold_text('Երևան') and dp.city_field('Բաբայան 2/17') is None
 
 
 def test_kind_precedence():
-    where = {105: 'ՍՅՈՒՆԻՔ, ԿԱՊԱՆ', 104: 'Երևան'}
+    where = {105: ('ՍՅՈՒՆԻՔ, ԿԱՊԱՆ, 1', ''), 104: ('Երևան, 1', '')}
     r = dp.FleetRule(frozenset({ROCARM}), tuple(CITIES), frozenset({108}))
 
     def k(o):
-        return r.kind(o, lambda c: where.get(c, ''))
+        return r.kind(o, lambda c: where.get(c, ('', '')))
     assert k(_dorder(1, 104, 1.0, agent=ROCARM, van=ROCARM)) == dp.FLEET            # «ինքն է տանում» — машинами
     assert k(_dorder(2, 105, 1.0, agent=ROCARM, van=ROCARM)) == dp.OTHER_VEHICLE    # город-исключение
     assert k(_dorder(3, 105, 1.0, agent=1)) == dp.FLEET                              # исключение — только «ինքն է տանում»
@@ -116,8 +133,8 @@ def test_kind_precedence():
     assert k(_dorder(6, 108, 1.0)) == dp.CUSTOMER_OFF
     # место спрашивается только когда нужно
     asked = []
-    r.kind(_dorder(7, 104, 1.0), lambda c: asked.append(c) or '')
-    r.kind(_dorder(8, 104, 1.0, agent=3, van=3), lambda c: asked.append(c) or '')
+    r.kind(_dorder(7, 104, 1.0), lambda c: asked.append(c) or ('', ''))
+    r.kind(_dorder(8, 104, 1.0, agent=3, van=3), lambda c: asked.append(c) or ('', ''))
     assert asked == []
     assert dp.NO_RULE.kind(_dorder(9, 104, 1.0, agent=ROCARM, van=ROCARM)) == dp.SELF_DELIVERY
 
@@ -223,6 +240,9 @@ def test_dispatch_page_counters_and_byte_identical_without_rule(client):
     assert ROCARM in {a['agent_id'] for a in d['agents']}
     s = client.get('/api/routes/dispatch/status?date=' + DAY).get_json()
     assert (s['orders']['count'], s['orders']['kg']) == (4, 860)
+    # «այլ մեքենայով» — списком: магазин, менеджер, город (ревью M2)
+    assert [(x['customer_id'], x['agent_code'], x['city']) for x in d['other_vehicle']] == \
+        [(105, 'A002', 'Կապան'), (107, 'A002', 'Գյումրի')]
     # сборка: магазин 104 (Rocarm, Ереван) в развозе, 107, 108, 109 — нет
     d = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).get_json()
     planned = {s['customer_id'] for t in d['plan']['trucks'] for tr in t['trips'] for s in tr['stops']} \
@@ -234,10 +254,13 @@ def test_missing_coordinates_list_follows_rule(client):
     # «магазины без точки» — только те, что повезут машины: клиент «не везём» из списка уходит
     _setup(client)
     rows = lambda: [ln.split(';')[0] for ln in client.get('/api/routes/coordinates/missing.csv')   # noqa: E731
-                    .get_data(as_text=True).lstrip('﻿').splitlines()[1:]]
+                    .get_data(as_text=True).lstrip('\ufeff').splitlines()[1:]]
     assert rows() == ['105', '108']
     _settings(client, **RULE)
     assert rows() == ['105']
+    # ревью L6: и правило менеджеров (№69) — снятый менеджер 1 (заказы 105 и 108) — не наши магазины
+    _settings(client, dispatch_agents_off=[1], dispatch_customers_off=[])
+    assert rows() == []
 
 
 def test_rule_and_manager_filter_interplay(client):
@@ -253,19 +276,28 @@ def test_new_orders_of_today_follow_rule_and_next_day_skips_taken(client, monkey
     state, _ = _page_setup(client, monkeypatch, now=datetime(2026, 10, 1, 8, 0, tzinfo=YEREVAN))
     d = _build(client, ('CAR1', 'CAR2'))
     assert _isn(13) not in {o['isn'] for o in d['same_day']['orders']}             # без правила — не для машин
+
+    def apply():
+        r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'apply_settings'})
+        assert r.status_code == 200, r.get_json()
+        return r.get_json()
+    # правило включили после сборки: собранный день — со своим правилом, пока логист не применит настройки
     _settings(client, dispatch_fleet_agents=[ROCARM])
     d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    assert _isn(13) not in {o['isn'] for o in d['same_day']['orders']} and d['settings_differ'] == {'fleet': True}
+    d = apply()
     assert _isn(13) in {o['isn'] for o in d['same_day']['orders']}
     # клиент 101 в Гюмри — заказ уходит «այլ մեքենայով», с плашки пропадает; клиент 103 — в списке «не везём»
     loader = state.same_day_loader
     state.same_day_loader = lambda day: replace(loader(day), addresses={**loader(day).addresses, 101: 'Շիրակ, Գյումրի'})
     state.same_day_cache.clear()
     _settings(client, dispatch_customers_off=[103])
-    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    d = apply()
     rows = {o['isn'] for o in d['same_day']['orders']}
     assert _isn(13) not in rows and _isn(10) not in rows and _isn(11) in rows
     # Гюмри убрали из городов: заказ Rocarm везём — берём его в развоз сегодня; завтра его нет (D и D+1)
     _settings(client, dispatch_other_cities=['Կապան'], dispatch_customers_off=[])
+    d = apply()
     opts = client.post('/api/routes/dispatch/same-day', json={'date': DAY, 'orders': [_isn(13)]}).get_json()
     assert opts['orders'] == [_isn(13)], opts
     r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'same_day',
@@ -291,7 +323,7 @@ def test_courier_selection_follows_rule(client):
 
     def places(ids):
         asked.append(list(ids))
-        return {c: dp.place_text(ADDRESSES.get(c, ''), NAMES[c][1]) for c in ids}
+        return {c: (ADDRESSES.get(c, ''), NAMES[c][1]) for c in ids}
     with_car = [replace(o, car_code='CAR1') for o in ORDERS]
     assert _nums(rl.pick_orders(with_car, D, view, 'CAR1', places)) == [1, 2, 5, 11]    # как «Развоз» без плана
     assert asked == [[104, 105, 107]]                                                # ERP — только про Rocarm «сам»
@@ -308,14 +340,14 @@ def test_courier_selection_follows_rule(client):
 
 def test_erp_day_passes_place_lookup_to_pick(fake_erp, monkeypatch):
     calls = []
-    monkeypatch.setattr(erp, 'place_texts', lambda conn, ids: calls.append(list(ids)) or {12: 'Կապան'})
+    monkeypatch.setattr(erp, 'place_texts', lambda conn, ids: calls.append(list(ids)) or {12: ('Կապան', '')})
     seen = []
 
     def pick(orders, places):
         seen.append(places([12]))
         return []
     ed.load_day('cs', '991AT61', date(2026, 10, 2), (date(2026, 9, 29), date(2026, 10, 2)), pick)
-    assert calls == [[12]] and seen == [{12: 'Կապան'}]
+    assert calls == [[12]] and seen == [{12: ('Կապան', '')}]
 
 
 def test_erp_place_texts_and_hint_reason(monkeypatch):
@@ -326,7 +358,7 @@ def test_erp_place_texts_and_hint_reason(monkeypatch):
             return [(105, 'Շիրակ, Գյումրի, 1')]
         raise AssertionError(sql[:60])
     monkeypatch.setattr(erp, '_select', fake)
-    assert erp.place_texts(object(), [105, 106]) == {105: 'Շիրակ, Գյումրի, 1\nՏռովիքս ՍՊԸ/ԳՅՈՒՄՐԻ', 106: '\n'}
+    assert erp.place_texts(object(), [105, 106]) == {105: ('Շիրակ, Գյումրի, 1', 'Տռովիքս ՍՊԸ/ԳՅՈՒՄՐԻ'), 106: ('', '')}
     hr = dp.hint_reason
     assert hr([], []) == dp.NO_ADDRESS and hr(['  '], [(0, 0)]) == dp.NO_ADDRESS
     assert hr([''], [(40.16, 44.27)]) is None and hr(['Երևան, 1'], []) is None
@@ -334,6 +366,9 @@ def test_erp_place_texts_and_hint_reason(monkeypatch):
     assert hr(['ՌԴ, Մոսկվայի մարզ, ք. Վիդնոե'], []) == dp.ABROAD
     assert hr(['Երևան'], [(45.03, 38.97)]) == dp.ABROAD                              # точка — Краснодар
     assert hr(['г. Ереван, ул. Абовяна 1, Երևան'], []) is None                        # кириллица с армянским — не за границей
+    # ревью L3: по-русски, но в Армении
+    assert [a for a in ('г. Ереван, ул. Абовяна 1', 'Армения, Армавир, ул. Мира 2', 'г. Гюмри, ул. Ширакаци 3',
+                        'Республика Армения, Котайк') if hr([a], [])] == []
 
 
 def test_erp_customer_hints_and_find(monkeypatch):
@@ -385,8 +420,10 @@ def test_settings_api_customer_search_and_hints(client):
     assert calls == [('7092', []), ('', [5, 29793])]
     assert client.get('/api/routes/settings/customers').get_json()['customers'] == [] and len(calls) == 2
     for bad in ('ids=x', 'ids=0', 'ids=1,,2', 'ids=-1', 'ids=99999999999', 'q=' + 'a' * 101,
-                'ids=' + ','.join(['1'] * (st.MAX_CUSTOMERS_OFF + 1))):
+                'ids=' + ','.join(map(str, range(1, 202)))):
         assert client.get('/api/routes/settings/customers?' + bad).status_code == 400, bad
+    assert client.get('/api/routes/settings/customers?ids=' + ','.join(map(str, range(1, 201)))).status_code == 200
+    calls.pop()
     got = []
     hint = erp.CustomerHint(29793, '7092', 'Վարչական/ ռոքարմ', '', dp.NO_ADDRESS, 31, 271076.4, date(2026, 10, 5), (1, 77))
     state.customer_hint_loader = lambda since, until: got.append((since, until)) or [hint]
@@ -421,9 +458,113 @@ def test_settings_and_dispatch_pages_have_rule_texts():
     js = (ROOT / 'static' / 'js' / 'routes_settings.js').read_text(encoding='utf-8')
     djs = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
     assert 'id="fleet"' in page and 'id="custoff"' in page and "routes_settings.js') }}?v=29" in page
+    dpage = (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    assert 'id="dpRuleDiff"' in dpage and 'Կիրառել կարգավորումները' in dpage and 'id="dpOther"' in dpage
+    assert "action: 'apply_settings'" in djs and 'other_vehicle' in djs
     assert "'agents', 'fleet', 'custoff'" in js and '/api/routes/settings/customer-hints' in js
     assert 'գնում է այլ մեքենայով' in djs and 'չենք տանում՝ կարգավորումներով' in djs
-    assert "routes_dispatch.js') }}?v=76" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    assert "routes_dispatch.js') }}?v=77" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+
+
+
+# ============================== ревью M1/M3: собранный день держит свои правила ==============================
+
+def _built(client, state):
+    d = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).get_json()
+    return d, dp.Draft.from_json(state.store.load_dispatch(DAY)[0])
+
+
+def test_built_day_keeps_its_rule_when_settings_change(client):
+    state = _setup(client)
+    assert client.post('/api/routes/geo-override', json={'customer_id': 105, 'lat': 40.2, 'lon': 44.55}).status_code == 200
+    _settings(client, **RULE)
+    d, draft = _built(client, state)
+    assert draft.fleet == {'agents': [ROCARM], 'cities': CITIES, 'customers_off': [108]}
+    assert 'settings_differ' not in d
+    plan_before = d['plan']['trucks']
+    view_before = rl.routes_view(state, D)
+    # настройки поменяли днём: Rocarm снят, Капан и 108 — снова наши; собранный день — как был
+    _settings(client, dispatch_fleet_agents=[], dispatch_customers_off=[], dispatch_agents_off=[1])
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    assert d['plan']['trucks'] == plan_before and (d['orders']['count'], d['orders']['other_vehicle']) == (4, 2)
+    assert d['settings_differ'] == {'agents': True, 'fleet': True}
+    assert d['new_since_build'] == {'count': 0, 'kg': 0, 'revenue': 0} and d['removed_since_build']['count'] == 0
+    view = rl.routes_view(state, D)
+    assert view.fleet == view_before.fleet and view.agents_off == frozenset()
+    places = lambda ids: {c: (ADDRESSES.get(c, ''), NAMES[c][1]) for c in ids}   # noqa: E731
+    for car in ('CAR1', 'CAR2'):
+        assert rl.pick_orders(ORDERS, D, view, car, places) == rl.pick_orders(ORDERS, D, view_before, car, places)
+    # день без плана — уже по новым настройкам
+    nxt = client.get('/api/routes/dispatch?date=2026-10-02').get_json()
+    assert 'settings_differ' not in nxt and nxt['agents_off'] == [1]
+    assert rl.routes_view(state, date(2026, 10, 2)).fleet == dp.FleetRule(cities=tuple(CITIES))
+
+
+def test_draft_without_rule_is_byte_identical(client):
+    state = _setup(client)
+    _built(client, state)
+    stored = state.store.load_dispatch(DAY)[0]
+    assert 'fleet' not in stored and dp.Draft.from_json(stored).to_json() == dp.Draft.from_json(stored).to_json()
+    raw = dp.Draft.from_json(stored).to_json()
+    assert 'fleet' not in raw
+    # битое правило черновика — пустое
+    assert dp.Draft.from_json({**raw, 'fleet': 'x'}).fleet is None
+    assert dp.Draft.from_json({**raw, 'fleet': {'agents': ['x', True], 'customers_off': []}}).fleet is None
+    assert dp.Draft.from_json({**raw, 'fleet': {'agents': [2], 'cities': ['Կապան', 5]}}).fleet == \
+        {'agents': [2], 'cities': ['Կապան'], 'customers_off': []}
+
+
+def test_apply_settings_button(client, monkeypatch):
+    state = _setup(client)
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 9, 30, 18, 0, tzinfo=YEREVAN))   # накануне
+    d, _ = _built(client, state)
+    _settings(client, **RULE, dispatch_agents_off=[3])
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    assert d['settings_differ'] == {'agents': True, 'fleet': True}
+    stale = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'] - 1, 'action': 'apply_settings'})
+    assert stale.status_code == 409
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'apply_settings'})
+    assert r.status_code == 200, r.get_json()
+    d = r.get_json()
+    assert 'settings_differ' not in d and d['agents_off'] == [3] and d['orders']['other_vehicle'] == 2
+    draft = dp.Draft.from_json(state.store.load_dispatch(DAY)[0])
+    assert draft.fleet == {'agents': [ROCARM], 'cities': CITIES, 'customers_off': [108]} and draft.agents_off == {3}
+    planned = {s['customer_id'] for t in d['plan']['trucks'] for tr in t['trips'] for s in tr['stops']}
+    assert 108 not in planned                                                     # клиент «не везём» ушёл из рейсов
+    assert d['removed_since_build']['count'] == 0                                 # убраны правилом — не «убраны после сборки»
+    # прошедший день — нельзя
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 2, 9, 0, tzinfo=YEREVAN))
+    _settings(client, dispatch_customers_off=[])
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'apply_settings'})
+    assert r.status_code == 400 and r.get_json()['error'] == views.PAST_DAY_SETTINGS
+
+
+def test_apply_settings_keeps_started_trips_and_works_on_approved_plan(client, monkeypatch):
+    state = _setup(client)
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 9, 30, 18, 0, tzinfo=YEREVAN))
+    assert client.post('/api/routes/geo-override', json={'customer_id': 108, 'lat': 40.2, 'lon': 44.55}).status_code == 200
+    d, _ = _built(client, state)
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'approve'}).get_json()
+    assert d.get('approved')
+    owner = {s['customer_id']: tr for t in d['plan']['trucks'] for tr in t['trips'] for s in tr['stops']}
+    assert 108 in owner                                                            # внутренний счёт — пока в рейсе
+    _settings(client, dispatch_customers_off=[108])
+    # утверждённый план — ручная правка разрешена (рейсы ещё не грузятся)
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'apply_settings'})
+    assert r.status_code == 200, r.get_json()
+    d = r.get_json()
+    assert d.get('approved') and 108 not in {s['customer_id'] for t in d['plan']['trucks'] for tr in t['trips']
+                                            for s in tr['stops']}
+    # снова собрать с 108 и «сейчас» — в разгаре дня: рейс с 108 уже в пути — его заказы настройки не снимают
+    client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'unapprove'})
+    client.post('/api/routes/dispatch/reset', json={'date': DAY})
+    _settings(client, dispatch_customers_off=[])
+    d, _ = _built(client, state)
+    _settings(client, dispatch_customers_off=[108])
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 1, 17, 0, tzinfo=YEREVAN))
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'apply_settings'})
+    assert r.status_code == 400 and r.get_json()['error'] == views.SETTINGS_ON_STARTED
+    assert 'fleet' not in state.store.load_dispatch(DAY)[0]                       # план не тронут
 
 
 if __name__ == '__main__':

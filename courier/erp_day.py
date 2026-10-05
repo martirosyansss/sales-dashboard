@@ -486,7 +486,7 @@ def morning_debts(conn: Any, ids: Sequence[int], day: date) -> dict[int, float]:
 
 
 # заказы окна и ERP-справочник «клиенты → адрес и название» (routes_link.Places, №74) → заказы машины
-OrdersPick = Callable[[Sequence[DispatchOrder], Callable[[Sequence[int]], dict[int, str]]], list[DispatchOrder]]
+OrdersPick = Callable[[Sequence[DispatchOrder], Callable[[Sequence[int]], dict[int, tuple[str, str]]]], list[DispatchOrder]]
 
 
 def load_day(connection_string: str, car_code: str, day: date, orders_window: tuple[date, date],

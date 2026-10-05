@@ -136,6 +136,11 @@
                     <p class="dp-steplead" id="dpOrdersEmpty" hidden>Այս օրվա համար պատվերներ դեռ չկան։</p>
                     <ul class="dp-attn" id="dpAttn" aria-label="Ինչին ուշադրություն դարձնել"></ul>
                     <p class="dp-note" id="dpOrdersInfo"></p>
+                    <!-- день с планом выбран не по нынешним настройкам (№69, №74): применить их одной кнопкой -->
+                    <div class="dp-agents-apply" id="dpRuleDiff" hidden>
+                        <span class="dp-note">Այս օրվա ընտրությունը տարբերվում է <a href="/routes/settings#agents">կարգավորումներից</a>։</span>
+                        <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="dpRuleApply">Կիրառել կարգավորումները</button>
+                    </div>
 
                     <!-- Фильтр «Մենեջերներ»: чьи заказы везём сегодня (до сборки — применяется со сборкой, после — кнопкой) -->
                     <details class="rt-fold" id="dpAgents" hidden>
@@ -222,6 +227,16 @@
                         <div class="rt-fold-body">
                             <p class="rt-fold-lead">Այս պատվերները դուք հանել եք այսօրվա առաքումից։ Եթե սխալմամբ, սեղմեք «Վերադարձնել»։</p>
                             <ul class="dp-olist" id="dpExcludedList"></ul>
+                        </div>
+                    </details>
+
+                    <!-- №74: заказы менеджеров правила в городах-исключениях — их везут другие машины -->
+                    <details class="rt-fold" id="dpOther" hidden>
+                        <summary><span class="rt-fold-t"><i class="fas fa-truck-arrow-right" aria-hidden="true"></i>Գնում է այլ մեքենայով</span>
+                            <span class="rt-fold-note" id="dpOtherNote"></span></summary>
+                        <div class="rt-fold-body">
+                            <p class="rt-fold-lead">Այս մենեջերների պատվերները տանում են մեր մեքենաները, բացի <a href="/routes/settings#fleet">կարգավորումներում</a> նշված քաղաքներից․ այս պատվերները գնում են այլ մեքենայով։</p>
+                            <ul class="dp-olist" id="dpOtherList"></ul>
                         </div>
                     </details>
                 </div>
@@ -411,5 +426,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=76"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=77"></script>
 {% endblock %}

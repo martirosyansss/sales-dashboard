@@ -1346,8 +1346,9 @@
         drawCustOff();
         // названия уже отмеченных — из ERP (страница работает и без них: «հաճախորդ #id»)
         const missing = [...state.customersOff.values()].filter(c => c.name === undefined).map(c => c.customer_id);
-        if (missing.length) {
-            getJson('/api/routes/settings/customers?ids=' + missing.join(',')).then(d => {
+        // по 200 id в запросе: адрес не длиннее буфера заголовков nginx (8 КБ)
+        for (let i = 0; i < missing.length; i += 200) {
+            getJson('/api/routes/settings/customers?ids=' + missing.slice(i, i + 200).join(',')).then(d => {
                 d.customers.forEach(c => { if (state.customersOff.has(c.customer_id)) state.customersOff.set(c.customer_id, c); });
                 drawCustOff();
             }).catch(() => {});

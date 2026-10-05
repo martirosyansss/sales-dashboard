@@ -21,7 +21,7 @@ from typing import Any, Iterator, Sequence
 import pyodbc
 
 from .demand import SaleDoc
-from .dispatch import DispatchData, DispatchOrder, FactData, SameDayData, ShippedDoc, hint_reason, place_text
+from .dispatch import DispatchData, DispatchOrder, FactData, Place, SameDayData, ShippedDoc, hint_reason
 from .evaluate import ActualVisit
 from .geo import Fix
 from .plan import TemplateRow
@@ -604,11 +604,11 @@ def address_texts(conn: Any, ids: Sequence[int]) -> dict[int, str]:
     return out
 
 
-def place_texts(conn: Any, ids: Sequence[int]) -> dict[int, str]:
-    """Клиент → dispatch.place_text (адрес по умолчанию и название) — города-исключения правила «Развоза» (№74)."""
+def place_texts(conn: Any, ids: Sequence[int]) -> dict[int, Place]:
+    """Клиент → (адрес по умолчанию, название) — города-исключения правила «Развоза» (№74, dispatch.FleetRule)."""
     names = {c.id: c.name for c in customers(conn, ids).values()}
     addresses = address_texts(conn, ids)
-    return {cid: place_text(addresses.get(cid, ''), names.get(cid, '')) for cid in sorted(set(ids))}
+    return {cid: (addresses.get(cid, ''), names.get(cid, '')) for cid in sorted(set(ids))}
 
 
 def agent_cars(conn: Any, since: date, until: date) -> dict[int, tuple[str | int, ...]]:

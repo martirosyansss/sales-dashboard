@@ -17,7 +17,10 @@ S6 «Պահպանել» → dispatch_fleet_agents [2], dispatch_other_cities б�
 S7 перезагрузка: в списке название клиента (из ERP по id), а не «հաճախորդ #…»;
 P  телефон 390×860: на настройках нет горизонтальной прокрутки;
 D1 «Развоз»: «Առաքման մեջ չեն մտնում՝ … գնում է այլ մեքենայով, … չենք տանում՝ կարգավորումներով», заказов в развозе 4;
-D2 №72 L2: менеджер 3, у которого сегодня только новый заказ, — в фильтре «Մենեջերներ» с «այսօրվա նոր՝ 1 պատվեր».
+D2 №72 L2: менеджер 3, у которого сегодня только новый заказ, — в фильтре «Մենեջերներ» с «այսօրվա նոր՝ 1 պատվեր»;
+D3 список «Գնում է այլ մեքենայով»: магазины Капана и Гюмри с менеджером и городом, без кнопок;
+D4 собрать рейсы, сменить настройки: собранный день держит своё правило, пометка «Այս օրվա ընտրությունը տարբերվում է
+   կարգավորումներից», «Կիրառել կարգավորումները» — день по новым настройкам, пометка исчезает.
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
 """
 from __future__ import annotations
@@ -47,6 +50,7 @@ PORT = 8769
 BASE = f'http://127.0.0.1:{PORT}'
 DAY = '2026-10-01'
 SHOTS = Path(tempfile.gettempdir()) / 'dispatch-settings-check'
+NBSP = chr(0xa0)
 R = 2
 ORDERS = [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=R), _dorder(5, 104, 100.0, agent=R, van=R),
           _dorder(7, 105, 200.0, agent=R, van=R), _dorder(8, 107, 150.0, agent=R, van=R), _dorder(9, 108, 50.0),
@@ -184,6 +188,34 @@ def main() -> int:
             check(lab.count() == 1 and 'այսօրվա նոր՝ 1' in lab.inner_text(), 'D2 manager 3 listed with new order of today: '
                   + (lab.inner_text() if lab.count() else '-'))
             page.screenshot(path=str(SHOTS / 'd-dispatch.png'), full_page=False)
+
+            # D3 — «Գնում է այլ մեքենայով» списком: магазин, менеджер, город (ревью M2)
+            other = page.locator('#dpOther')
+            check(other.is_visible() and page.locator('#dpOtherNote').inner_text() == '2' + NBSP + 'պատվեր',
+                  'D3 other-vehicle fold visible with 2 orders')
+            other.locator('summary').click()
+            txt = page.locator('#dpOtherList').inner_text()
+            check('Կապան' in txt and 'Գյումրի' in txt and 'Менеджер 2' in txt and page.locator('#dpOtherList button').count() == 0,
+                  'D3 rows show manager and city, no buttons')
+
+            # D4 — день собран, настройки поменяли: пометка и «Կիրառել կարգավորումները» (ревью M3)
+            page.locator('#dpBuild').click()
+            page.wait_for_selector('#dpStep3', state='visible', timeout=30000)
+            check(not page.locator('#dpRuleDiff').is_visible(), 'D4 no note right after build')
+            page.evaluate("() => fetch('/api/routes/settings', {method: 'POST', headers: {'Content-Type': 'application/json'},"
+                          " body: JSON.stringify({settings: {dispatch_customers_off: []}})})")
+            page.reload()
+            page.wait_for_selector('#dpStep3', state='visible', timeout=30000)
+            if not page.locator('#dpRuleDiff').is_visible() and page.locator('#dpStep2Tog').is_visible():
+                page.locator('#dpStep2Tog').click()
+            note = page.locator('#dpRuleDiff')
+            check(note.is_visible() and 'տարբերվում է' in note.inner_text(), 'D4 note: day differs from settings')
+            d = page.evaluate("() => fetch('/api/routes/dispatch?date=" + DAY + "').then(r => r.json())")
+            check(d['orders']['customers_off'] == 1, 'D4 built day still keeps its never-carry customer')
+            page.locator('#dpRuleApply').click()
+            page.wait_for_function("() => document.getElementById('dpRuleDiff').hidden", timeout=15000)
+            d = page.evaluate("() => fetch('/api/routes/dispatch?date=" + DAY + "').then(r => r.json())")
+            check('settings_differ' not in d and 'customers_off' not in d['orders'], 'D4 applied: day follows settings now')
             browser.close()
     finally:
         server.shutdown()
