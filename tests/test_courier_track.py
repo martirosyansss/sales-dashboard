@@ -107,7 +107,7 @@ def test_track_bad_points_dropped_rest_kept(cs):
 
 
 @pytest.mark.parametrize('payload, message', [
-    ({'points': []}, 'points'), ({'points': None}, 'points'), ({}, 'points'), ({'points': 'x'}, 'points'),
+    ({'points': None}, 'points'), ({}, 'points'), ({'points': 'x'}, 'points'),
     ({'points': [_pt(i % 60, sec=i // 60) for i in range(101)]}, 'points'),
     ({'points': [_pt(1, acc=0), _pt(2, lat=1.0)]}, 'GPS'),
 ])
@@ -117,6 +117,38 @@ def test_track_rejected_whole(cs, payload, message):
     r = ev.ingest(cs, who, [e]).json()
     assert r['accepted'] == [] and message in r['rejected'][0]['message']
     assert _points(cs) == []
+
+
+def test_track_empty_points_heartbeat_and_device(cs):
+    """№76 (APK 2.2.0): пустой points — «на связи» без GPS-фикса; device — состояние терминала: проверенные поля, лишние
+    ключи не хранятся, неверное значение — null; без device (старый APK) — как раньше."""
+    who = _who(cs)
+    device = {'battery': 57.6, 'charging': True, 'gps': 'off', 'net': 'cell', 'app': '2.2.0', 'imei': '123'}
+    e = {**_track([]), 'payload': {'points': [], 'device': device}}
+    assert ev.ingest(cs, who, [e]).json()['accepted'] == [e['id']]
+    assert _event_row(cs, e['id'])[2] == {'points': 0, 'kept': 0, 'new': 0, 'dropped': {},
+                                         'device': {'battery': 58, 'charging': True, 'gps': 'off', 'net': 'cell',
+                                                    'app': '2.2.0'}}
+    bad = {'battery': 101, 'charging': 'yes', 'gps': 'ON', 'net': 5, 'app': '2.2.0; drop table'}
+    e2 = {**_track([_pt(1)]), 'payload': {'points': [_pt(1)], 'device': bad}}
+    assert ev.ingest(cs, who, [e2]).json()['accepted'] == [e2['id']]
+    assert _event_row(cs, e2['id'])[2]['device'] == {'battery': None, 'charging': None, 'gps': None, 'net': None,
+                                                     'app': None}
+    for battery in (True, -1, float('nan'), '50'):
+        assert ev.track_device({'battery': battery})['battery'] is None
+    assert ev.track_device({'battery': 0, 'gps': 'no_permission', 'net': None})['battery'] == 0
+    assert ev.track_device('x') is None and ev.track_device(None) is None
+    e3 = {**_track([]), 'payload': {'points': [], 'device': 'x'}}          # device не объект — его нет
+    assert ev.ingest(cs, who, [e3]).json()['accepted'] == [e3['id']] and 'device' not in _event_row(cs, e3['id'])[2]
+    e4 = {**_track([]), 'payload': {'points': []}}                          # старый APK: пустой список — тоже принят
+    assert ev.ingest(cs, who, [e4]).json()['accepted'] == [e4['id']]
+    # точки были, ни одной годной: без device — отказ (как раньше), с device — принято (состояние терминала нужно)
+    junk = [_pt(1, acc=0)]
+    r = ev.ingest(cs, who, [{**_track(junk), 'payload': {'points': junk}}]).json()
+    assert r['accepted'] == [] and 'GPS' in r['rejected'][0]['message']
+    e5 = {**_track(junk), 'payload': {'points': junk, 'device': {'gps': 'on'}}}
+    assert ev.ingest(cs, who, [e5]).json()['accepted'] == [e5['id']]
+    assert _event_row(cs, e5['id'])[2]['dropped'] == {'acc': 1} and len(_points(cs)) == 1
 
 
 def test_track_stop_id_not_required_and_date_suspicious(cs):
