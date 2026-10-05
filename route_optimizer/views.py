@@ -1459,6 +1459,9 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
         'defer_to': _defer_target(dd.day, s['workdays'], holidays)[0].isoformat(),
         'overtime_days_month': _overtime_days(_state().store, dd.day),
         'geo_suggestions': _geo_suggestions(_state(), dd),
+        # №73: план дня утверждён — когда и кем (пересборка запрещена, правки — можно)
+        **({'approved': {'at': draft.approved['at'], 'by': draft.approved['by']}}
+           if draft is not None and draft.approved is not None else {}),
         # №72: план прошлого дня не прочитан — заказы, взятые в его развоз, могли попасть и сюда
         **({'same_day_unread': True} if dd.same_day_unread else {}),
         **_freshness(dd.day, dd.bundle, dd.data, dd.deliver, dd.backlog, draft, dd.carried),
@@ -1623,6 +1626,20 @@ def _same_day_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay, payload
         raise dp.DispatchError('Մեքենան արդեն բեռնվում է կամ ճանապարհին է՝ այս պատվերով — այն այսօր է գնում, '
                                'վաղվան թողնել չի կարելի')
     return dp.drop_same_day(dd.draft, isns)
+
+
+PLAN_APPROVED = 'Պլանը հաստատված է։ Ամբողջական վերակազմման համար նախ չեղարկեք հաստատումը։'   # №73: пересборка утверждённого плана
+PAST_DAY_APPROVE = 'Անցած օրվա պլանը չի հաստատվում և չի չեղարկվում'
+
+
+def _approve_edit(dd: _DispatchDay, payload: Mapping[str, Any]) -> dp.Draft:
+    """«Հաստատել օրվա պլանը» / «Չեղարկել հաստատումը» (№73): прошедший день — DispatchError."""
+    if dd.day < _clock().date():
+        raise dp.DispatchError(PAST_DAY_APPROVE)
+    if payload.get('action') == 'approve':
+        # время утверждения — по Еревану, как «сегодня» и «сейчас» новых заказов дня
+        return dp.approve(dd.draft, _same_day_now().isoformat(timespec='seconds'), session.get('username'))
+    return dp.unapprove(dd.draft)
 
 
 def _check_defer_same_day(dd: _DispatchDay, trip_id: Any) -> None:
@@ -1868,6 +1885,8 @@ def api_dispatch_build() -> Any:
     dd = _load_day(state, bundle, day)
     if dd.ctx is None:
         return _bad_request({'_': 'Сначала укажите склад и тоннаж с расходом машин в настройках'})
+    if dd.draft is not None and dd.draft.approved is not None:   # №73: полная пересборка — только после снятия
+        return _bad_request({'_': PLAN_APPROVED})
     unknown = sorted(set(codes) - set(dd.ready))
     if unknown:
         return _bad_request({'trucks': 'машина не готова к расчёту: ' + ', '.join(unknown)})
@@ -1922,10 +1941,13 @@ def api_dispatch_edit() -> Any:
         return _resize_preview(dd, payload, info, view_before)
     workdays = bundle.settings['workdays']
     deferred_before = set(dd.draft.deferred)
+    trips_before = {t.id for t in dd.draft.trips}   # №73: рейсы, появившиеся при правке утверждённого плана, — закрепить
     try:
         if payload.get('action') == 'defer_trip':
             _check_defer_same_day(dd, payload.get('trip'))
-        if _is_same_day_edit(dd, payload):    # новые заказы дня (№72)
+        if payload.get('action') in ('approve', 'unapprove'):   # утверждение плана дня (№73)
+            draft = _approve_edit(dd, payload)
+        elif _is_same_day_edit(dd, payload):    # новые заказы дня (№72)
             draft = _same_day_edit(state, bundle, dd, payload)
         else:
             draft = dp.apply_edit(dd.ctx, dd.stops, dd.draft, payload, {o.isn for o in dd.deliver},
@@ -1943,6 +1965,7 @@ def api_dispatch_edit() -> Any:
     dd = _load_day(state, bundle, day, draft=draft, rev=dd.rev)
     dp.prune(draft, dd.stops)
     dp.release_same_day_trucks(draft)   # №72: машина, отмеченная взятием заказа дня, без рейсов — снова не отмечена
+    dp.keep_approved(draft, trips_before)   # №73: пока план утверждён, новые рейсы тоже закреплены
     draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     _capture_prediction(dd, draft)
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)
@@ -2015,7 +2038,9 @@ def api_dispatch_overtime() -> Any:
         return _conflict('Сначала соберите рейсы')
     if payload.get('rev') != dd.rev:
         return _conflict('План изменили в другой вкладке — обновите страницу')
+    trips_before = {t.id for t in dd.draft.trips}
     draft = dp.overtime(dd.ctx, dd.stops, dd.draft)
+    dp.keep_approved(draft, trips_before)   # №73: пока план утверждён, новые рейсы тоже закреплены
     draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     _capture_prediction(dd, draft)
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)
@@ -2035,6 +2060,9 @@ def api_dispatch_reset() -> Any:
     if error is not None:
         return error
     state = _state()
+    draft, _ = _stored_draft(state, day)
+    if draft is not None and draft.approved is not None:   # №73: утверждённый план не стирается — сначала снять
+        return _bad_request({'_': PLAN_APPROVED})
     state.store.delete_dispatch(day.isoformat())
     dd = _load_day(state, _bundle(state), day)
     return jsonify({'success': True, **_dispatch_page_body(dd)})

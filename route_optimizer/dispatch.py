@@ -31,6 +31,9 @@
   машиной, которая сегодня не выезжала (same_day_options; машина в рейсе новый заказ не берёт — ответ «Բ»). Рейс, чья
   загрузка по плану уже началась, не меняется; прочие рейсы и точки плана не переставляются. Новый рейс не грузится
   раньше «сейчас» (DraftTrip.not_before). Взятые в D заказы D+1 не везёт (views._same_day_taken).
+- Утверждение плана дня (ответ владельца №73, «Հաստատել օրվա պլանը»): все рейсы закреплены (approve), пересборка
+  запрещена (views), ручные правки и новые заказы дня — можно; новые рейсы, пока план утверждён, тоже закреплены
+  (keep_approved). Снятие (unapprove) открепляет ровно то, что закрепило утверждение.
 """
 from __future__ import annotations
 
@@ -327,6 +330,9 @@ class Draft:
     same_day_trips: set[int] = field(default_factory=set)
     # машины не из шага 1, отмеченные взятием заказов дня: без рейсов — снова не отмечены (release_same_day_trucks)
     same_day_trucks: set[str] = field(default_factory=set)
+    # план дня утверждён (№73): {'at': когда (ISO), 'by': кто, 'pinned': [рейсы, которые закрепило утверждение —
+    # до него они не были закреплены]}; None — не утверждён
+    approved: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -343,7 +349,8 @@ class Draft:
                 **({'undo': self.undo} if self.undo is not None else {}),
                 **({'same_day': sorted(self.same_day)} if self.same_day else {}),
                 **({'same_day_trips': sorted(self.same_day_trips)} if self.same_day_trips else {}),
-                **({'same_day_trucks': sorted(self.same_day_trucks)} if self.same_day_trucks else {})}
+                **({'same_day_trucks': sorted(self.same_day_trucks)} if self.same_day_trucks else {}),
+                **({'approved': dict(self.approved)} if self.approved is not None else {})}
 
     @classmethod
     def from_json(cls, raw: Any) -> Draft:
@@ -382,7 +389,8 @@ class Draft:
                    undo=raw.get('undo') if isinstance(raw.get('undo'), dict) else None, same_day=isns('same_day'),
                    same_day_trips=cids('same_day_trips'),
                    same_day_trucks={x for x in (raw.get('same_day_trucks') or [])[:MAX_TRIPS] if isinstance(x, str)}
-                   if isinstance(raw.get('same_day_trucks'), list) else set())
+                   if isinstance(raw.get('same_day_trucks'), list) else set(),
+                   approved=_approved(raw.get('approved')))
 
 
 def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
@@ -395,6 +403,15 @@ def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
                 and all(_is_num(x) for x in v):
             out[k] = (float(v[0]), float(v[1]))
     return out
+
+
+def _approved(raw: Any) -> dict[str, Any] | None:
+    """Отметка утверждения плана из черновика (№73); битая — не утверждён."""
+    if not isinstance(raw, dict) or not isinstance(raw.get('at'), str) or not isinstance(raw.get('pinned'), list):
+        return None
+    by = raw.get('by')
+    return {'at': raw['at'], 'by': by if isinstance(by, str) else None,
+            'pinned': sorted({x for x in raw['pinned'][:MAX_TRIPS] if _is_int(x)})}
 
 
 def _is_num(v: Any) -> bool:
@@ -458,6 +475,9 @@ def prune(draft: Draft, stops: Sequence[Stop]) -> None:
     уходит из рейсов, пустой рейс — тоже (как _clean перед расчётом, но для сохраняемого черновика)."""
     _clean(draft, {s.customer_id: s for s in stops if s.point is not None})
     draft.same_day_trips &= {t.id for t in draft.trips}   # отметки рейсов, которых больше нет, — не хранятся (№72)
+    if draft.approved is not None:                        # и рейсов, закреплённых утверждением (№73)
+        draft.approved = {**draft.approved, 'pinned': [i for i in draft.approved['pinned']
+                                                       if any(t.id == i for t in draft.trips)]}
 
 
 def _clean(draft: Draft, routable: Mapping[int, Stop]) -> None:
@@ -1052,6 +1072,8 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
             draft.trips.append(trip)
         trip.pinned = True
         draft.same_day_trips.discard(trip.id)   # закрепил сам логист — состав решён (№72: в него не вставляются)
+        if draft.approved is not None and trip.id in draft.approved['pinned']:   # №73: и снятие утверждения его не открепит
+            draft.approved = {**draft.approved, 'pinned': [i for i in draft.approved['pinned'] if i != trip.id]}
         return draft
     if action == 'resize':
         before = {k: v for k, v in draft.to_json().items() if k not in ('prediction', 'undo')}
@@ -1139,6 +1161,13 @@ def _same_day_base(ctx: DayContext, base: Sequence[Stop], draft: Draft, now_min:
     return tmp.trips, routable0, shares0, tl0, {tid for tid, (depart, _, _) in tl0.items() if depart <= now_min + _EPS}
 
 
+def _insertable(draft: Draft, t: DraftTrip) -> bool:
+    """В рейс можно вставить новые заказы дня: не закреплён или закреплён не логистом — взятием заказов дня
+    (same_day_trips) или утверждением плана (№73, approved['pinned'])."""
+    return (not t.pinned or t.id in draft.same_day_trips
+            or (draft.approved is not None and t.id in draft.approved['pinned']))
+
+
 def started_trips(ctx: DayContext, base: Sequence[Stop], draft: Draft, now_min: float) -> set[int]:
     """Рейсы, чья загрузка по плану уже началась (начало загрузки не позже now_min): машина в рейсе новый заказ не берёт и
     взятый заказ из него уже не вернуть на завтра (№72)."""
@@ -1169,7 +1198,8 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
     и точки не меняются — машина в рейсе новый заказ не берёт (ответ «Բ»). Клиент уже в рейсе, который ещё не грузится, —
     заказ едет в ту же точку того же рейса; остальные (новые точки) — все вместе одним из способов:
     - insert — вставкой (по одной, на место с наименьшим объездом) в рейс отмеченной машины, чья загрузка не началась
-      (закреплённый логистом — нет: его состав решён; закреплённый взятием новых заказов — да, same_day_trips);
+      (закреплённый логистом — нет: его состав решён; закреплённый взятием новых заказов или утверждением плана (№73) —
+      да: _insertable);
     - trip / idle — новым рейсом отмеченной машины после её последнего рейса (idle — сегодня рейсов у неё нет);
     - extra — новым рейсом готовой машины, не отмеченной в шаге 1.
     Новый рейс грузится не раньше «сейчас» (not_before), порядок его точек — 2-opt с окнами приёма. Вариант годится, если
@@ -1239,8 +1269,7 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
         try_plan('same_stop', 'same_stop', first.truck, first.id, copy(), sel)
     else:
         for t in trips0:
-            if (t.id in started or (t.pinned and t.id not in draft.same_day_trips) or t.truck not in draft.trucks
-                    or t.truck not in ctx.trucks):
+            if t.id in started or not _insertable(draft, t) or t.truck not in draft.trucks or t.truck not in ctx.trucks:
                 continue
             trial = copy()
             dst = next(x for x in trial if x.id == t.id)
@@ -1300,6 +1329,49 @@ def take_same_day(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], 
     for left in (draft.no_room, draft.no_window, draft.no_center, draft.no_vehicle):
         left.difference_update(cids)
     return draft
+
+
+# --- Утверждение плана дня (ответ владельца №73) ---
+
+def approve(draft: Draft, at: str, by: str | None) -> Draft:
+    """«Հաստատել օրվա պլանը»: все рейсы закрепляются, утверждение помнит, какие из них закрепило само (не были
+    закреплены) — снятие открепит ровно их. Уже утверждён или рейсов нет — DispatchError."""
+    if draft.approved is not None:
+        raise DispatchError('Պլանն արդեն հաստատված է — թարմացրեք էջը')
+    if not draft.trips:
+        raise DispatchError('Հաստատելու երթ չկա — նախ կազմեք երթերը')
+    ids = sorted(t.id for t in draft.trips if not t.pinned)
+    for t in draft.trips:
+        t.pinned = True
+    draft.undo = None
+    draft.approved = {'at': at, 'by': by, 'pinned': ids}
+    return draft
+
+
+def unapprove(draft: Draft) -> Draft:
+    """«Չեղարկել հաստատումը»: открепляются рейсы, закреплённые утверждением (и новые рейсы, закреплённые, пока план был
+    утверждён); закрепления логиста и взятия заказов дня остаются. Не утверждён — DispatchError."""
+    if draft.approved is None:
+        raise DispatchError('Պլանը հաստատված չէ — թարմացրեք էջը')
+    mine = set(draft.approved['pinned'])
+    for t in draft.trips:
+        if t.id in mine:
+            t.pinned = False
+    draft.undo = None
+    draft.approved = None
+    return draft
+
+
+def keep_approved(draft: Draft, before: Collection[int]) -> None:
+    """Пока план утверждён, день остаётся закреплённым: рейсы, появившиеся при правке (их не было среди before), и не
+    закреплённые — закрепляются, как утверждением (снятие утверждения их открепит)."""
+    if draft.approved is None:
+        return
+    new = [t for t in draft.trips if t.id not in before and not t.pinned]
+    for t in new:
+        t.pinned = True
+    if new:
+        draft.approved = {**draft.approved, 'pinned': sorted({*draft.approved['pinned'], *(t.id for t in new)})}
 
 
 def release_same_day_trucks(draft: Draft) -> None:

@@ -19,7 +19,9 @@ I 10:00 (первые рейсы грузятся), пришли заказ 102 
   103 → варианты: 102 снят и помечен «մնում է վաղվան — երթն արդեն մեկնել է», «Ընտրել» шлёт только то, что можно взять;
   машина не из шага 1 не выделяется «Ամենաէժանը»; «Վերակազմել երթերը» после начала дня — предупреждение (confirm);
 H телефон 390×860: с открытым диалогом нет горизонтальной прокрутки;
-J без данных о новых заказах (загрузчика нет) — плашки нет, но «Վերակազմել երթերը» в 10:00 всё равно спрашивает.
+J без данных о новых заказах (загрузчика нет) — плашки нет, но «Վերակազմել երթերը» в 10:00 всё равно спрашивает;
+K «Հաստատել օրվա պլանը» (№73) → правка approve, отметка «Պլանը հաստատված է · ժ. …», все рейсы закреплены, «Վերակազմել»
+  недоступна с пояснением, «Ջնջել երթերը» скрыта; «Չեղարկել հաստատումը» (confirm) → unapprove, пересборка снова доступна.
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
 """
 from __future__ import annotations
@@ -230,6 +232,27 @@ def main() -> int:
             check(any('արդեն բեռնվում են կամ ճանապարհին են' in m for m in confirms) and any(p[0] == 'build' for p in posts[n:]),
                   'I rebuild after day start asks for confirmation: ' + str(confirms))
             page.screenshot(path=str(SHOTS / 'i-after.png'), full_page=False)
+
+            # K утверждение плана дня (№73)
+            check(page.locator('#dpApproveBtn').is_visible(), 'K «Հաստատել օրվա պլանը» visible')
+            n = len(posts)
+            page.locator('#dpApproveBtn').click()
+            page.wait_for_selector('#dpApprovedBadge', timeout=15000)
+            sent = [p[1].get('action') for p in posts[n:] if p[0] == 'edit']
+            badge = page.locator('#dpApprovedBadge').inner_text()
+            check(sent == ['approve'] and 'Պլանը հաստատված է · ժ. ' in badge, 'K approve sent, badge: ' + badge)
+            d = data()
+            check(all(tr['pinned'] for t in d['plan']['trucks'] for tr in t['trips']), 'K all trips pinned')
+            check(page.locator('#dpBuild').is_disabled() and 'նախ չեղարկեք հաստատումը' in page.locator('#dpBuildNote').inner_text()
+                  and not page.locator('#dpReset').is_visible(), 'K rebuild disabled and explained, reset hidden')
+            page.screenshot(path=str(SHOTS / 'k-approved.png'), full_page=False)
+            confirms.clear()
+            n = len(posts)
+            page.locator('#dpUnapprove').click()
+            page.wait_for_selector('#dpApproveBtn', timeout=15000)
+            sent = [p[1].get('action') for p in posts[n:] if p[0] == 'edit']
+            check(sent == ['unapprove'] and any('Չեղարկե՞լ' in m for m in confirms) and not page.locator('#dpBuild').is_disabled(),
+                  'K unapprove with confirmation, rebuild enabled again')
             page.locator('#dpSdOpen').click()
             page.wait_for_selector('#dpSameDayDlg[open]', timeout=5000)
 

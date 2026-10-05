@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=22">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=41">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=42">
 {% endblock %}
 
 {% block content %}
@@ -247,6 +247,8 @@
                         <button type="button" id="dpExcel" class="rt-btn rt-btn-ghost"><i class="fas fa-file-excel" aria-hidden="true"></i><span>Excel</span></button>
                     </div>
                 </div>
+                <!-- Утверждение плана дня (ответ владельца №73): «Հաստատել օրվա պլանը» / отметка и «Չեղարկել հաստատումը» -->
+                <div class="dp-approve" id="dpApprove" hidden></div>
                 <div class="dp-stats dp-bigstats" id="dpPlanStats"></div>
                 <div class="dp-summary-lead" id="dpMainLead"></div>
             </section>
@@ -407,5 +409,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=74"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=75"></script>
 {% endblock %}

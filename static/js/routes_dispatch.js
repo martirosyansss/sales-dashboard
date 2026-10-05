@@ -26,7 +26,10 @@
    POST /api/routes/dispatch/driver: с выбранного дня до следующей смены; имя — в шапке карточки и в накладной.
    Новые заказы дня (ответ владельца №72): заказ, принятый сегодня, — развоз завтра; на странице сегодняшнего дня плашка
    «Այսօր եկել է N նոր պատվեր» (same_day в ответе дня и в /status — без перезагрузки) и диалог: варианты «как везти сегодня»
-   (POST /api/routes/dispatch/same-day), выбор — правка same_day, «Թողնել վաղվան». */
+   (POST /api/routes/dispatch/same-day), выбор — правка same_day, «Թողնել վաղվան».
+   Утверждение плана дня (ответ владельца №73): «Հաստատել օրվա պլանը» — правка approve (все рейсы закреплены), отметка
+   «Պլանը հաստատված է · ժ. ЧЧ:ММ · кто»; пока утверждён, «Վերակազմել երթերը» и «Ջնջել երթերը» недоступны (сервер — 400),
+   «Չեղարկել հաստատումը» — правка unapprove. */
 (function () {
     'use strict';
 
@@ -330,9 +333,11 @@
         renderOrderLists();
         const plan = d.plan;
         $('dpBuildText').textContent = plan ? 'Վերակազմել երթերը' : 'Կազմել երթերը';
-        $('dpReset').hidden = !plan;
-        $('dpBuild').disabled = !d.trucks.some(t => t.ready) || !d.depot;
-        $('dpBuildNote').textContent = plan ? 'Ամրացված երթերը կմնան ինչպես կան, մնացածը ծրագիրը կբաշխի նորից։' : 'Մոտ 5 վայրկյան։';
+        $('dpReset').hidden = !plan || !!d.approved;
+        $('dpBuild').disabled = !d.trucks.some(t => t.ready) || !d.depot || !!d.approved;
+        $('dpBuildNote').textContent = d.approved ? APPROVED_HY
+            : plan ? 'Ամրացված երթերը կմնան ինչպես կան, մնացածը ծրագիրը կբաշխի նորից։' : 'Մոտ 5 վայրկյան։';
+        renderApprove();
         renderSteps();
         renderSameDay();
         if ($('dpSameDayDlg').open) { if (sdData()) renderSdDialog(); else $('dpSameDayDlg').close(); }
@@ -372,7 +377,8 @@
         const d = state.data, plan = d.plan, box = $('dpTodo');
         const o = d.live_orders || d.orders;
         let tone = 'is-info', ico = 'fa-hand-point-right', title = '';
-        const lines = [], btns = [];
+        const lines = [];
+        let btns = [];
         const coming = d.orders_still_coming ? 'Պատվերները դեռ ընդունվում են՝ մինչև ' + d.ready_time + '-ը։' : '';
         const n = d.new_since_build, r = d.removed_since_build;
         const gone = r && r.count ? pl(r.count, 'պատվեր') + ' չեղարկվել կամ արդեն առաքվել է — երթերից դրանք հանված են։' : '';
@@ -429,6 +435,10 @@
             if (gone) lines.push(gone);
             btns.push({ act: printSheets, text: 'Տպել վարորդների համար', ico: 'fa-print' });
             btns.push({ act: exportExcel, text: 'Ներբեռնել Excel', ico: 'fa-file-excel' });
+        }
+        if (d.approved && btns.some(b => b.act === build)) {
+            btns = btns.filter(b => b.act !== build);
+            lines.push(APPROVED_HY);
         }
         // магазины без точки на карте в рейсы не попадают — напоминаем, пока они есть
         if (plan && d.orders.no_coords && !problems.length) lines.push('Ուշադրություն՝ ' + pl(d.orders.no_coords, 'խանութի') + ' տեղը քարտեզում նշված չէ, դրանք երթերում չեն (տես 2-րդ քայլը)։');
@@ -493,6 +503,51 @@
         if (after > before) announce('Վերջին կազմումից հետո եկել է ' + pl(after, 'նոր պատվեր'));
         const sdAfter = state.data.same_day ? state.data.same_day.count : 0;
         if (sdAfter > sdBefore) announce('Այսօր եկել է ' + pl(sdAfter, 'նոր պատվեր'));
+    }
+
+    // ---------- Утверждение плана дня (ответ владельца №73) ----------
+    // Одна кнопка закрепляет все рейсы; пока план утверждён, полной пересборки нет (правки и новые заказы дня — есть)
+    const APPROVED_HY = 'Պլանը հաստատված է։ Ամբողջական վերակազմման համար նախ չեղարկեք հաստատումը։';
+    function renderApprove() {
+        const d = state.data, box = $('dpApprove');
+        box.innerHTML = '';
+        if (!d.plan || (d.is_past && !d.approved)) { box.hidden = true; return; }
+        box.hidden = false;
+        const a = d.approved;
+        if (a) {
+            const badge = document.createElement('span');
+            badge.className = 'rt-badge b-ok';
+            badge.id = 'dpApprovedBadge';
+            badge.innerHTML = '<i class="fas fa-lock" aria-hidden="true"></i>';
+            const at = typeof a.at === 'string' && a.at.length >= 16
+                ? (a.at.slice(0, 10) === d.day ? '' : dayHuman(a.at.slice(0, 10)) + ' ') + 'ժ. ' + a.at.slice(11, 16) : '';
+            badge.appendChild(document.createTextNode(['Պլանը հաստատված է', at, a.by || ''].filter(Boolean).join(' · ')));
+            box.appendChild(badge);
+            if (!d.is_past) {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.id = 'dpUnapprove';
+                b.className = 'rt-btn rt-btn-ghost rt-btn-sm';
+                b.innerHTML = '<i class="fas fa-lock-open" aria-hidden="true"></i><span>Չեղարկել հաստատումը</span>';
+                b.addEventListener('click', () => {
+                    if (!window.confirm('Չեղարկե՞լ օրվա պլանի հաստատումը։ Հաստատմամբ ամրացված երթերը կապամրացվեն, '
+                        + 'ձեր ամրացրածները կմնան։ Դրանից հետո կարելի է վերակազմել երթերը։')) return;
+                    edit({ action: 'unapprove' }, 'Պլանի հաստատումը չեղարկված է');
+                });
+                box.appendChild(b);
+            }
+            return;
+        }
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.id = 'dpApproveBtn';
+        b.className = 'rt-btn rt-btn-ghost';
+        b.innerHTML = '<i class="fas fa-lock" aria-hidden="true"></i><span>Հաստատել օրվա պլանը</span>';
+        b.addEventListener('click', () => edit({ action: 'approve' }, 'Օրվա պլանը հաստատված է՝ բոլոր երթերն ամրացված են'));
+        const note = document.createElement('p');
+        note.className = 'dp-approve-note';
+        note.textContent = 'Բոլոր երթերը կամրացվեն։ Հետո՝ միայն ձեռքով փոփոխություններ և այսօրվա նոր պատվերներ, ամբողջական վերակազմում՝ միայն հաստատումը չեղարկելուց հետո։';
+        box.append(b, note);
     }
 
     // ---------- Новые заказы дня (ответ владельца №72) ----------
@@ -3117,6 +3172,7 @@
 
     async function build() {
         if (state.busy) return;
+        if (state.data.approved) { showActionError(new Error(APPROVED_HY)); return; }   // №73: сначала снять утверждение
         const trucks = selectedTrucks();
         if (!trucks.length) { showActionError(new Error('Նշեք գոնե մեկ մեքենա 1-ին քայլում։')); return; }
         if (agentsNoneLeft()) { showActionError(new Error('Նշեք գոնե մեկ մենեջեր «Որ մենեջերների պատվերներն ենք տանում» ցուցակում։')); return; }

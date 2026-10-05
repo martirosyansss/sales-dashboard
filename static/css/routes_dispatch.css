@@ -631,6 +631,11 @@
     .dp-sd-opt .rt-btn { grid-column: 1; grid-row: auto; justify-self: start; }
 }
 
+/* Утверждение плана дня (ответ владельца №73) */
+.dp-approve { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 12px 0 0; }
+.dp-approve[hidden] { display: none; }
+.dp-approve-note { margin: 0; color: var(--rt-fg-dim); flex: 1 1 260px; }
+
 #rtDispatch .dp-toast { border-radius: 14px; border-color: var(--rt-acc-dim); background: var(--rt-panel-2); box-shadow: 0 18px 44px rgba(0, 0, 0, .5); }
 
 /* ==========================================================================
