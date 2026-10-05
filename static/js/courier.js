@@ -308,19 +308,27 @@
             + '</ul></span></div>';
     }
     // Մեքենայի անձնակազմը՝ «Վարորդ՝ A · Առաքիչ՝ B» կամ «մենակ»։ Հին տերմինալը անձնակազմ չի հաղորդում՝ միայն վարորդը։
-    // Գրասենյակը հանել է առաքիչին՝ «(մինչև ԺԺ:ՐՐ)»; պլանում առաքիչ չկա՝ չեզոք նշում (ոչ նախազգուշացում)
+    // Անձնակազմ՝ վարորդ և յուրաքանչյուր առաքիչ առանձին՝ առաջին հաստատման հերթականությամբ, իր նշումներով.
+    // «ԺԺ:ՐՐ-ից» (օրվա ոչ առաջինը), «մինչև ԺԺ:ՐՐ» (գրասենյակը հանել է՝ մոխրագույն), «պլանում չկա» (միայն նրա մոտ, ով չկա պլանում)
+    const crewName = (n) => String(n || '').trim().split(/\s+/).join(' ').toLocaleLowerCase('hy');
     function crewStrip(c, plan) {
-        const person = (role, names, cls, note) => '<span class="cr-crew-p ' + cls + '"><span class="cr-avatar" aria-hidden="true">' + esc(initials(names[0])) + '</span>'
-            + '<span class="cr-crew-t"><small>' + role + '</small><b>' + names.map(n => esc(n)
-                + (c.helper_until && c.helper_until[n] && cls === 'is-helper' ? ' <span class="cr-crew-note">(մինչև ' + esc(timeOf(c.helper_until[n])) + ')</span>' : '')).join(', ')
-            + (note ? ' <span class="cr-crew-note">' + esc(note) + '</span>' : '') + '</b></span></span>';
-        const drivers = c.drivers || [], helpers = c.helpers || [];
-        const notPlanned = plan && !(plan[c.car_code] || {}).helper ? '(պլանում չկա)' : '';
-        const second = helpers.length ? person('Առաքիչ՝', helpers, 'is-helper', notPlanned)
-            : c.alone ? '<span class="cr-crew-p is-alone"><span class="cr-avatar" aria-hidden="true"><i class="fas fa-user"></i></span><span class="cr-crew-t"><small>Առաքիչ՝</small><b>մենակ</b></span></span>' : '';
-        if (!drivers.length && !second) return '';
-        return '<div class="cr-crew" aria-label="Անձնակազմ">' + (drivers.length ? person('Վարորդ՝', drivers, '') : '')
-            + (drivers.length && second ? '<span class="cr-crew-sep" aria-hidden="true">·</span>' : '') + second + '</div>';
+        const person = (role, name, cls, notes) => '<span class="cr-crew-p ' + cls + '"><span class="cr-avatar" aria-hidden="true">' + esc(initials(name)) + '</span>'
+            + '<span class="cr-crew-t"><small>' + role + '</small><b>' + esc(name) + '</b>'
+            + (notes.length ? '<span class="cr-crew-note">' + notes.map(esc).join(' · ') + '</span>' : '') + '</span></span>';
+        const drivers = c.drivers || [];
+        const info = c.helper_info || (c.helpers || []).map(n => ({ name: n, since: null, until: null }));
+        const planned = plan ? crewName((plan[c.car_code] || {}).helper) : null;
+        const helpers = info.map((h, i) => person('Առաքիչ՝', h.name, h.until ? 'is-helper is-revoked' : 'is-helper', [
+            i > 0 && h.since ? timeOf(h.since) + '-ից' : '',
+            h.until ? 'մինչև ' + timeOf(h.until) : '',
+            planned !== null && crewName(h.name) !== planned ? 'պլանում չկա' : '',
+        ].filter(Boolean)));
+        if (!helpers.length && c.alone) {
+            helpers.push('<span class="cr-crew-p is-alone"><span class="cr-avatar" aria-hidden="true"><i class="fas fa-user"></i></span><span class="cr-crew-t"><small>Առաքիչ՝</small><b>մենակ</b></span></span>');
+        }
+        if (!drivers.length && !helpers.length) return '';
+        return '<div class="cr-crew" aria-label="Անձնակազմ">' + (drivers.length ? person('Վարորդ՝', drivers.join(', '), '', []) : '')
+            + (drivers.length && helpers.length ? '<span class="cr-crew-sep" aria-hidden="true">·</span>' : '') + helpers.join('') + '</div>';
     }
     function carCard(c, plan) {
         const stat = (v, label, cls) => '<div class="cr-stat ' + (v ? cls : '') + '"><b>' + fmt(v) + '</b><span>' + esc(label) + '</span></div>';

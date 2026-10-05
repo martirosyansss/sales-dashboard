@@ -398,7 +398,8 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
     «հանված» точки со своими событиями (removed), действующая тара, события с флагами и фото. Счётчики событий
     (водители, связь, флаги) — по машине терминала. Экипаж (v1.4 §8): водители — из событий и решений экипажа
     (crew_log) дня, помощники (helpers) — подтверждённые в событиях и crew_log; helper_until — помощник → момент, когда
-    офис его снял (последнее решение по нему — 'revoked'); alone — экипаж решался, а помощника не было весь день
+    офис его снял (последнее решение по нему — 'revoked'); helper_info — [{name, since, until}] в порядке первого
+    подтверждения за день (офис — отдельная «персона» на каждого); alone — экипаж решался, а помощника не было весь день
     (старый APK экипаж не сообщает — ни helpers, ни alone)."""
     st = state()
     ds = day.isoformat()
@@ -472,6 +473,7 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
             'amount_amd': p.get('amount_amd'), 'flags': rflags[r['id']], 'superseded': r['superseded'],
             'photos': rphotos.get(r['id'], [])})
     last_kind: dict[tuple[str, str], tuple[str, str]] = {}   # (машина, помощник) → последнее (helper|revoked, момент)
+    first_seen: dict[tuple[str, str], str] = {}               # (машина, помощник) → первое подтверждение за день
     for c in st.store.crew_for_day(ds):   # решения экипажа: водитель вошёл и решил, даже если событий ещё нет
         row = car_row(c['car_code'])
         row['drivers'].add(c['driver_name'] or f'#{c["driver_id"]}')
@@ -480,6 +482,7 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
             name = c['helper_name'] or f'#{c["helper_id"]}'
             if c['kind'] == 'helper':
                 row['helpers'].add(name)
+                first_seen.setdefault((c['car_code'], name), c['at_utc'])
             last_kind[(c['car_code'], name)] = (c['kind'], c['at_utc'])
     for (code, name), (kind, at_utc) in last_kind.items():   # офис снял помощника — «до ЧЧ:ММ»
         if kind == 'revoked' and name in by_car[code]['helpers']:
@@ -494,6 +497,13 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
         row['drivers'] = sorted(row['drivers'])
         row['helpers'] = sorted(row['helpers'])
         row['alone'] = row.pop('crew_known') and not row['helpers']
+        # по помощнику — с какого момента (первое подтверждение дня) и до какого (снят офисом); в порядке появления,
+        # помощники только из событий (без решения экипажа этого дня) — в конце
+        since = {n: clock.iso(datetime.fromisoformat(first_seen[(code, n)])) for n in row['helpers']
+                 if (code, n) in first_seen}
+        row['helper_info'] = sorted(({'name': n, 'since': since.get(n), 'until': row['helper_until'].get(n)}
+                                     for n in row['helpers']),
+                                    key=lambda h: (h['since'] is None, h['since'] or '', h['name']))
         cars.append(row)
 
     def brief(e: Mapping[str, Any]) -> dict[str, Any]:

@@ -563,6 +563,21 @@ def test_day_overview_helper_until_revoke(app, st, client, crew, now):
     assert _overview(app)['cars'][0]['helper_until'] == {}
 
 
+def test_day_overview_helper_info_per_person_in_order(app, st, client, crew, now):
+    """Каждый առաքիչ дня — отдельно, в порядке первого подтверждения: Կարեն с 09:00, снят в 10:15; Բաբկեն с 10:25."""
+    karen = st.store.save_driver(None, 'Կարեն Ավետիսյան', True, '6666', 'admin')
+    post_crew(client, crew.s, {'helper_pin': '6666'})                       # 09:00
+    now['t'] = NOW + timedelta(hours=1, minutes=15)
+    st.store.save_driver(karen, 'Կարեն Ավետիսյան', False, None, 'admin')     # 10:15 — офис выключил
+    now['t'] = NOW + timedelta(hours=1, minutes=25)
+    post_crew(client, crew.s, {'helper_pin': '5678'})                       # 10:25 — Բաբկեն
+    (car,) = _overview(app)['cars']
+    assert car['helpers'] == ['Բաբկեն', 'Կարեն Ավետիսյան']                  # алфавит — как раньше
+    assert car['helper_info'] == [
+        {'name': 'Կարեն Ավետիսյան', 'since': f'{DAY}T09:00:00+04:00', 'until': f'{DAY}T10:15:00+04:00'},
+        {'name': 'Բաբկեն', 'since': f'{DAY}T10:25:00+04:00', 'until': None}]
+
+
 def test_rejected_shows_confirmed_helper_only(app, st, client, crew):
     post_crew(client, crew.s, {'helper_pin': '5678'})
     other = st.store.save_driver(None, 'Դավիթ', True, '4321', 'admin')
@@ -631,7 +646,7 @@ def test_office_page_hint_and_asset_versions(app, client):
     app.add_url_rule('/logout', 'logout', lambda: '')
     html = client.get('/courier').data.decode('utf-8')
     assert 'Առաքիչը' in html and 'իր PIN-ով' in html
-    assert 'js/courier.js?v=11' in html and 'css/courier.css?v=8' in html
+    assert 'js/courier.js?v=12' in html and 'css/courier.css?v=9' in html
 
 
 def test_today_old_events_unchanged_shape(app, st, client, crew):
