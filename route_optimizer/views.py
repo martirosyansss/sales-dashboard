@@ -1625,6 +1625,20 @@ def _same_day_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay, payload
     return dp.drop_same_day(dd.draft, isns)
 
 
+def _check_defer_same_day(dd: _DispatchDay, trip_id: Any) -> None:
+    """«Везти завтра» рейса, который уже грузится или в пути, с взятыми сегодня заказами дня (№72) — нельзя: они снова
+    стали бы заказами завтра и их отвезли бы дважды (DispatchError)."""
+    now = _same_day_now()
+    if dd.draft is None or dd.ctx is None or not dd.draft.same_day or dd.day != now.date():
+        return
+    trip = next((t for t in dd.draft.trips if t.id == trip_id), None)
+    taken = {o.customer_id for o in dd.same_day if o.isn in dd.draft.same_day}
+    if trip is not None and taken & set(trip.stops) \
+            and trip.id in dp.started_trips(dd.ctx, dd.stops, dd.draft, _now_min(dd.ctx, now)):
+        raise dp.DispatchError('Մեքենան արդեն բեռնվում է կամ ճանապարհին է՝ այսօրվա նոր պատվերներով — երթը վաղվան '
+                               'տեղափոխել չի կարելի')
+
+
 def _is_same_day_edit(dd: _DispatchDay, payload: Mapping[str, Any]) -> bool:
     """Правка новых заказов дня: свои действия или «не везём сегодня» для взятого заказа дня (он не в заказах окна дня)."""
     action = payload.get('action')
@@ -1909,6 +1923,8 @@ def api_dispatch_edit() -> Any:
     workdays = bundle.settings['workdays']
     deferred_before = set(dd.draft.deferred)
     try:
+        if payload.get('action') == 'defer_trip':
+            _check_defer_same_day(dd, payload.get('trip'))
         if _is_same_day_edit(dd, payload):    # новые заказы дня (№72)
             draft = _same_day_edit(state, bundle, dd, payload)
         else:
@@ -1926,6 +1942,7 @@ def api_dispatch_edit() -> Any:
     # отметка дня и прогноз
     dd = _load_day(state, bundle, day, draft=draft, rev=dd.rev)
     dp.prune(draft, dd.stops)
+    dp.release_same_day_trucks(draft)   # №72: машина, отмеченная взятием заказа дня, без рейсов — снова не отмечена
     draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     _capture_prediction(dd, draft)
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)

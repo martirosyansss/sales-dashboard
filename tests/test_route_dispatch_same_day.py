@@ -459,15 +459,64 @@ def test_take_pins_trip_and_rebuild_keeps_it():
     trip = out.trips[-1]
     assert (trip.stops, trip.pinned, trip.not_before) == ([201], True, 9 * 60 + 200.0)
     assert out.trips[0].pinned is False                                         # рейс плана не тронут
+    assert out.same_day_trips == {trip.id}
     again = dp.build(ctx, stops, out, [FORD.car_code], 'now')
     kept = next(t for t in again.trips if t.id == trip.id)
-    assert (kept.stops, kept.not_before) == ([201], 9 * 60 + 200.0)
+    assert (kept.stops, kept.not_before) == ([201], 9 * 60 + 200.0) and again.same_day_trips == {trip.id}
     assert all(201 not in t.stops for t in again.trips if t.id != trip.id)
+    # утренний рейс машины — по-прежнему с начала дня, до закреплённого (машина свободна и до его «не раньше»)
+    routable = {s.customer_id: s for s in stops}
+    tl = dp._timeline(ctx, again.trips, routable, dp._shares(again.trips))
+    morning = next(t for t in again.trips if t.id != trip.id and t.truck == FORD.car_code)
+    assert tl[morning.id][0] == 0.0 and tl[morning.id][0] + tl[morning.id][1] <= tl[trip.id][0]
+    assert [t.id for t in again.trips if t.truck == FORD.car_code] == [morning.id, trip.id]
     ins = dp.take_same_day(ctx, base, stops, dp.Draft.from_json(draft.to_json()), {201}, {_isn(50)}, 'insert:1', -30.0)
-    assert ins.trips[0].pinned is True
-    # в закреплённый рейс новые заказы не вставляются (его состав логист уже решил)
-    keys = [o['key'] for o in dp.same_day_options(ctx, base, _with(orders, new, {_isn(51)}), ins, {202}, -30.0)['options']]
-    assert 'insert:1' not in keys and f'trip:{FORD.car_code}' in keys
+    assert ins.trips[0].pinned is True and ins.same_day_trips == {1}
+    # следующие новые заказы — в рейс, закреплённый взятием, можно (пока не грузится); закреплённый логистом — нет
+    stops2 = _with(orders, new, {_isn(50), _isn(51)})
+    keys = [o['key'] for o in dp.same_day_options(ctx, stops, stops2, ins, {202}, -30.0)['options']]
+    assert 'insert:1' in keys
+    ins = dp.apply_edit(ctx, stops, ins, {'action': 'pin', 'trip': 1, 'truck': FORD.car_code}, {o.isn for o in orders})
+    keys = [o['key'] for o in dp.same_day_options(ctx, stops, stops2, ins, {202}, -30.0)['options']]
+    assert ins.same_day_trips == set() and 'insert:1' not in keys and f'trip:{FORD.car_code}' in keys
+
+
+def test_extra_truck_unmarked_when_its_orders_go_back():
+    ctx, base, orders, new, draft = _base()
+    stops = _with(orders, new, {_isn(50)})
+    out = dp.take_same_day(ctx, base, stops, dp.Draft.from_json(draft.to_json()), {201}, {_isn(50)},
+                           f'extra:{HOWO.car_code}', 30.0)
+    assert HOWO.car_code in out.trucks and out.same_day_trucks == {HOWO.car_code}
+    raw = json.loads(json.dumps(out.to_json()))
+    assert dp.Draft.from_json(raw) == out
+    dp.release_same_day_trucks(out)                                             # рейс есть — машина остаётся
+    assert HOWO.car_code in out.trucks
+    dp.drop_same_day(out, {_isn(50)})
+    dp.prune(out, base)
+    dp.release_same_day_trucks(out)
+    assert out.trucks == [FORD.car_code] and out.same_day_trucks == set()
+    # пересборка — выбор машин логиста: отметка «добавлена взятием» снимается
+    again = dp.take_same_day(ctx, base, stops, dp.Draft.from_json(draft.to_json()), {201}, {_isn(50)},
+                             f'extra:{HOWO.car_code}', 30.0)
+    assert dp.build(ctx, stops, again, [FORD.car_code, HOWO.car_code], 'now').same_day_trucks == set()
+
+
+def test_defer_started_trip_with_taken_orders_refused(client, monkeypatch):
+    _page_setup(client, monkeypatch, now=datetime(2026, 10, 1, 8, 0, tzinfo=ac.YEREVAN))
+    d = _build(client, ('CAR1', 'CAR2'))
+    key = client.post('/api/routes/dispatch/same-day', json={'date': DAY, 'orders': [_isn(10)]}).get_json()['options'][0]
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'same_day',
+                                                       'orders': [_isn(10)], 'option': key['key']}).get_json()
+    trip = next(tr['id'] for t in d['plan']['trucks'] for tr in t['trips'] if any(s['customer_id'] == 103 for s in tr['stops']))
+    later = datetime(2026, 10, 1, 17, 0, tzinfo=ac.YEREVAN)
+    monkeypatch.setattr(views, '_yerevan_now', lambda: later)
+    monkeypatch.setattr(views, '_clock', lambda: later.replace(tzinfo=None))
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'defer_trip', 'trip': trip})
+    assert r.status_code == 400 and 'վաղվան տեղափոխել չի կարելի' in r.get_json()['error']
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 1, 8, 0, tzinfo=ac.YEREVAN))   # ещё не грузится
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'defer_trip', 'trip': trip})
+    assert r.status_code == 200, r.get_json()
+    assert next(o for o in r.get_json()['same_day']['orders'] if o['isn'] == _isn(10))['taken'] is False
 
 
 def test_accepted_overtime_allows_proposals():

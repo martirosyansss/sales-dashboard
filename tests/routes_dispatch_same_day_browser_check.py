@@ -18,7 +18,8 @@ I 10:00 (первые рейсы грузятся), пришли заказ 102 
   называет накладную, в диалоге — группа «Հաշիվ-ապրանքագիրն արդեն գրված է — գնում է այսօր» (отмечен); отметить 102 и
   103 → варианты: 102 снят и помечен «մնում է վաղվան — երթն արդեն մեկնել է», «Ընտրել» шлёт только то, что можно взять;
   машина не из шага 1 не выделяется «Ամենաէժանը»; «Վերակազմել երթերը» после начала дня — предупреждение (confirm);
-H телефон 390×860: с открытым диалогом нет горизонтальной прокрутки.
+H телефон 390×860: с открытым диалогом нет горизонтальной прокрутки;
+J без данных о новых заказах (загрузчика нет) — плашки нет, но «Վերակազմել երթերը» в 10:00 всё равно спрашивает.
 Ошибки страницы и консоли — провал (кроме внешних ресурсов, как в основной проверке).
 """
 from __future__ import annotations
@@ -186,7 +187,8 @@ def main() -> int:
             later = datetime(2026, 10, 1, 10, 0, tzinfo=ac.YEREVAN)
             views._yerevan_now = lambda: later
             views._clock = lambda: later.replace(tzinfo=None)
-            new.extend([_dorder(14, 102, 50.0, day=D), _dorder(16, 103, 20.0, day=D, shipped=D)])
+            new.extend([_dorder(14, 102, 50.0, day=D), _dorder(16, 103, 20.0, day=D, shipped=D),
+                        _dorder(17, 102, 30.0, day=D, shipped=D)])
             state.same_day_cache.clear()
             page.goto(f'{BASE}/routes/dispatch?date={DAY}')
             page.wait_for_selector('#dpStep3', state='visible', timeout=30000)
@@ -194,9 +196,12 @@ def main() -> int:
             page.locator('#dpSdOpen').click()
             page.wait_for_selector('#dpSameDayDlg[open]', timeout=5000)
             check('Հաշիվ-ապրանքագիրն արդեն գրված է — գնում է այսօր' in dlg.inner_text(), 'I invoiced group heading')
-            inv_row = dlg.locator('ul[aria-label="Հաշիվ-ապրանքագիրն արդեն գրված է"] .dp-sd-row')
+            inv_row = dlg.locator('ul[aria-label="Հաշիվ-ապրանքագիրն արդեն գրված է"] .dp-sd-row', has_text='C103')
+            out_row = dlg.locator('ul[aria-label="Հաշիվ-ապրանքագիրն արդեն գրված է"] .dp-sd-row', has_text='C102')
+            check(out_row.count() == 1 and 'պլանից դուրս' in out_row.inner_text() and out_row.locator('input').is_disabled()
+                  and 'մնում է վաղվան' not in out_row.inner_text(), 'I invoiced on a departed trip: «outside the plan», no checkbox')
             check(inv_row.locator('input').is_checked(), 'I invoiced order checked by default')
-            row_102 = dlg.locator('.dp-sd-row', has_text='C102')
+            row_102 = dlg.locator('ul[aria-label="Նոր պատվերներ"] .dp-sd-row', has_text='C102')
             check('մնում է վաղվան — երթն արդեն մեկնել է' in row_102.inner_text().replace('\u00a0', ' ')
                   and not row_102.locator('input').is_checked() and row_102.locator('input').is_disabled(),
                   'I 102 on a departed trip: unchecked, disabled and marked')
@@ -206,7 +211,7 @@ def main() -> int:
             n = len(posts)
             page.locator('#dpSdPropose').click()
             page.wait_for_selector('#dpSameDayDlg .dp-sd-opt', timeout=30000)
-            check(inv_row.count() == 1 and 'C103' in inv_row.inner_text(), 'I invoiced row is store 103')
+            check(inv_row.count() == 1 and inv_row.locator('input').is_checked(), 'I invoiced row of store 103 checked')
             best = dlg.locator('.dp-sd-opt.is-best')
             check(all('այսօր նշված չէ' not in best.nth(i).inner_text() for i in range(best.count())),
                   'I unmarked truck never highlighted as cheapest')
@@ -235,6 +240,20 @@ def main() -> int:
             dlg_over = page.evaluate("() => { const d = document.getElementById('dpSameDayDlg'); return d.scrollWidth - d.clientWidth; }")
             check(over <= 0 and dlg_over <= 0, f'H phone: no horizontal scroll (page {over}px, dialog {dlg_over}px)')
             page.screenshot(path=str(SHOTS / 'h-phone.png'), full_page=False)
+
+            # J без данных о новых заказах (ERP не ответила) — подтверждение пересборки всё равно спрашивается по дню и часам
+            page.keyboard.press('Escape')
+            page.set_viewport_size({'width': 1440, 'height': 950})
+            state.same_day_loader = None
+            state.same_day_cache.clear()
+            page.clock.set_system_time(datetime(2026, 10, 1, 10, 0))
+            page.goto(f'{BASE}/routes/dispatch?date={DAY}')
+            page.wait_for_selector('#dpStep3', state='visible', timeout=30000)
+            check(not page.locator('#dpSameDay').is_visible(), 'J no same-day data: no banner')
+            confirms.clear()
+            page.locator('#dpBuild').click()
+            page.wait_for_function("() => document.getElementById('dpBuildText').textContent === 'Վերակազմել երթերը'", timeout=30000)
+            check(any('արդեն բեռնվում են կամ ճանապարհին են' in m for m in confirms), 'J rebuild confirmation without same-day data')
             browser.close()
     finally:
         server.shutdown()

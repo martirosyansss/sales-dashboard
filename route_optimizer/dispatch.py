@@ -323,6 +323,10 @@ class Draft:
     undo: dict[str, Any] | None = None
     # заказы (fISN) с датой этого дня, которые логист взял в развоз этого же дня (№72); следующий день их не везёт
     same_day: set[str] = field(default_factory=set)
+    # рейсы, закреплённые взятием заказов дня (не логистом): в них можно добавить и следующие новые заказы, пока не грузятся
+    same_day_trips: set[int] = field(default_factory=set)
+    # машины не из шага 1, отмеченные взятием заказов дня: без рейсов — снова не отмечены (release_same_day_trucks)
+    same_day_trucks: set[str] = field(default_factory=set)
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -337,7 +341,9 @@ class Draft:
                 'no_window': sorted(self.no_window), 'no_center': sorted(self.no_center), 'prediction': self.prediction,
                 'no_vehicle': sorted(self.no_vehicle), 'agents_off': sorted(self.agents_off),
                 **({'undo': self.undo} if self.undo is not None else {}),
-                **({'same_day': sorted(self.same_day)} if self.same_day else {})}
+                **({'same_day': sorted(self.same_day)} if self.same_day else {}),
+                **({'same_day_trips': sorted(self.same_day_trips)} if self.same_day_trips else {}),
+                **({'same_day_trucks': sorted(self.same_day_trucks)} if self.same_day_trucks else {})}
 
     @classmethod
     def from_json(cls, raw: Any) -> Draft:
@@ -373,7 +379,10 @@ class Draft:
                    no_vehicle=cids('no_vehicle'),
                    agents_off={x for x in (raw.get('agents_off') or [])[:MAX_AGENTS] if _is_int(x)}
                    if isinstance(raw.get('agents_off'), list) else set(),
-                   undo=raw.get('undo') if isinstance(raw.get('undo'), dict) else None, same_day=isns('same_day'))
+                   undo=raw.get('undo') if isinstance(raw.get('undo'), dict) else None, same_day=isns('same_day'),
+                   same_day_trips=cids('same_day_trips'),
+                   same_day_trucks={x for x in (raw.get('same_day_trucks') or [])[:MAX_TRIPS] if isinstance(x, str)}
+                   if isinstance(raw.get('same_day_trucks'), list) else set())
 
 
 def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
@@ -639,7 +648,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     codes = {t.car_code for t in sel}
     draft = Draft(trucks=sorted(codes), excluded=set(old.excluded), added=set(old.added), next_id=old.next_id,
                   built_at=now, deferred=set(old.deferred), dropped=set(old.dropped), agents_off=set(old.agents_off),
-                  same_day=set(old.same_day))
+                  same_day=set(old.same_day), same_day_trips=set(old.same_day_trips))
     pinned = [DraftTrip(t.id, t.truck, list(t.stops), True, t.not_before) for t in old.trips if t.pinned and t.truck in codes]
     tmp = Draft(trips=pinned)
     _clean(tmp, routable)
@@ -647,6 +656,9 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     for trip in pinned:
         _require_vehicle(ctx, trip.stops, trip.truck)
     timed = any(c in ctx.windows or _central(ctx, s) for c, s in routable.items())
+    # закреплённый рейс с заказами дня (№72) грузится не раньше «сейчас»: машина свободна и до него — раскладка вокруг его
+    # времени (иначе машина была бы занята с утра до его конца и утренние рейсы ушли бы за него)
+    timed = timed or any(t.not_before is not None for t in pinned)
     if timed and pinned and sel:
         was = _timeline(ctx, old.trips, routable, _shares(old.trips))
         draft.trips, rest, reasons, draft.next_id = _plan_around(ctx, sel, routable, pinned, was, draft.next_id)
@@ -1037,6 +1049,7 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
             trip.truck = truck
             draft.trips.append(trip)
         trip.pinned = True
+        draft.same_day_trips.discard(trip.id)   # закрепил сам логист — состав решён (№72: в него не вставляются)
         return draft
     if action == 'resize':
         before = {k: v for k, v in draft.to_json().items() if k not in ('prediction', 'undo')}
@@ -1154,7 +1167,7 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
     и точки не меняются — машина в рейсе новый заказ не берёт (ответ «Բ»). Клиент уже в рейсе, который ещё не грузится, —
     заказ едет в ту же точку того же рейса; остальные (новые точки) — все вместе одним из способов:
     - insert — вставкой (по одной, на место с наименьшим объездом) в рейс отмеченной машины, чья загрузка не началась
-      (закреплённый рейс — нет: его состав логист уже решил);
+      (закреплённый логистом — нет: его состав решён; закреплённый взятием новых заказов — да, same_day_trips);
     - trip / idle — новым рейсом отмеченной машины после её последнего рейса (idle — сегодня рейсов у неё нет);
     - extra — новым рейсом готовой машины, не отмеченной в шаге 1.
     Новый рейс грузится не раньше «сейчас» (not_before), порядок его точек — 2-opt с окнами приёма. Вариант годится, если
@@ -1224,7 +1237,8 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
         try_plan('same_stop', 'same_stop', first.truck, first.id, copy(), sel)
     else:
         for t in trips0:
-            if t.id in started or t.pinned or t.truck not in draft.trucks or t.truck not in ctx.trucks:
+            if (t.id in started or (t.pinned and t.id not in draft.same_day_trips) or t.truck not in draft.trucks
+                    or t.truck not in ctx.trucks):
                 continue
             trial = copy()
             dst = next(x for x in trial if x.id == t.id)
@@ -1273,15 +1287,25 @@ def take_same_day(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], 
     draft.undo = None
     draft.trips = plan.trips
     for t in draft.trips:
-        if t.id in plan.changed:
+        if t.id in plan.changed and not t.pinned:
             t.pinned = True
+            draft.same_day_trips.add(t.id)
     draft.next_id = max(draft.next_id, *(t.id + 1 for t in plan.trips))
     if plan.kind == 'extra':
         draft.trucks = sorted({*draft.trucks, plan.truck})
+        draft.same_day_trucks.add(plan.truck)
     draft.same_day |= set(isns)
     for left in (draft.no_room, draft.no_window, draft.no_center, draft.no_vehicle):
         left.difference_update(cids)
     return draft
+
+
+def release_same_day_trucks(draft: Draft) -> None:
+    """Машины не из шага 1, отмеченные взятием заказов дня, без рейсов — снова не отмечены (после правки и prune)."""
+    idle = {c for c in draft.same_day_trucks if all(t.truck != c for t in draft.trips)}
+    if idle:
+        draft.trucks = [c for c in draft.trucks if c not in idle]
+        draft.same_day_trucks -= idle
 
 
 def drop_same_day(draft: Draft, isns: Collection[str]) -> Draft:

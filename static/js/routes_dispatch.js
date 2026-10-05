@@ -535,6 +535,9 @@
     // отгруженным), поэтому он не «новый» и «Թողնել վաղվան» его не касается: его надо поставить в рейс
     const sdNew = () => sdOpenOrders().filter(o => !o.invoiced);
     const sdInvoiced = () => sdOpenOrders().filter(o => o.invoiced);
+    // с накладной, но в рейс не поставить (рейс магазина уехал, нет точки): офис везёт сам — сведение, не предупреждение
+    const sdOutside = (o) => o.invoiced && (o.no_coords || o.started);
+    const SD_OUTSIDE = 'գնում է այսօր պլանից դուրս (գրասենյակի որոշում)';
     const sdTaken = () => { const sd = sdData(); return sd ? sd.orders.filter(o => o.taken) : []; };
     const sdTotals = (os) => ({ kg: os.reduce((a, o) => a + (num(o.kg) || 0), 0), revenue: os.reduce((a, o) => a + (num(o.revenue) || 0), 0) });
     const sdTruck = (code, name) => (name ? name + ' · ' : '') + code;
@@ -546,10 +549,11 @@
     function renderSameDay() {
         const box = $('dpSameDay');
         const sd = sdData();
-        const open = sdNew(), inv = sdInvoiced(), taken = sdTaken();
+        const open = sdNew(), all = sdInvoiced(), taken = sdTaken();
+        const inv = all.filter(o => !sdOutside(o)), outside = all.filter(sdOutside);
         const later = sd ? sdLater(state.day) : new Set();
         const fresh = open.filter(o => !later.has(o.isn));
-        if (!sd || (!open.length && !inv.length && !taken.length)) { box.hidden = true; box.innerHTML = ''; return; }
+        if (!sd || (!open.length && !all.length && !taken.length)) { box.hidden = true; box.innerHTML = ''; return; }
         let tone = 'is-info', ico = 'fa-bolt', title, btn = null;
         const lines = [];
         const invLine = inv.length ? pl(inv.length, 'պատվերի') + ' հաշիվ-ապրանքագիրն արդեն գրված է՝ գնում է այսօր (' + kgText(sdTotals(inv).kg)
@@ -569,11 +573,16 @@
         } else if (open.length) {
             title = pl(open.length, 'նոր պատվեր') + ' թողնված է վաղվան';
             btn = 'Դիտել';
+        } else if (!taken.length) {
+            title = pl(outside.length, 'պատվեր') + ' ' + SD_OUTSIDE;
+            btn = 'Դիտել';
         } else {
             tone = 'is-ok'; ico = 'fa-circle-check';
             title = (sd.today ? 'Այսօր' : 'Այդ օրը') + ' ընդունված պատվերներից ' + pl(taken.length, 'պատվեր') + ' տարվում է նույն օրը';
             btn = 'Դիտել';
         }
+        if (outside.length && (fresh.length || open.length || inv.length || taken.length))
+            lines.push(pl(outside.length, 'պատվեր') + ' ' + SD_OUTSIDE + '։');
         if (taken.length && (fresh.length || open.length || inv.length)) lines.push('Արդեն տանում ենք այսօր՝ ' + pl(taken.length, 'պատվեր') + '։');
         box.className = 'dp-todo dp-sameday ' + tone;
         box.innerHTML = '<div class="dp-todo-ico" aria-hidden="true"><i class="fas ' + ico + '"></i></div>'
@@ -642,7 +651,8 @@
         if (o.taken && o.started) tag('b-warn', 'Մեքենան արդեն ճանապարհին է');
         if (o.invoiced && !o.taken) tag('b-gps', 'Հաշիվ-ապրանքագիրն արդեն գրված է');
         const left = state.sd.left.get(o.isn) || (!o.taken && o.started && !o.no_coords ? 'started' : null);
-        if (left) tag('b-danger', SD_BLOCKED[left] || left);
+        if (!o.taken && sdOutside(o)) tag('b-gps', SD_OUTSIDE);   // на завтра он не останется — не «մնում է վաղվան»
+        else if (left) tag('b-danger', SD_BLOCKED[left] || left);
         if (o.no_coords) tag('b-danger', 'Տեղը քարտեզում չկա');
         if (!o.taken && !o.invoiced && sdLater(state.day).has(o.isn)) tag('b-warn', 'Թողնված է վաղվան');
         if (tags.children.length) main.appendChild(tags);
@@ -2467,6 +2477,9 @@
             if (!window.confirm(pl(tr.stops.length, 'խանութ') + ' կստանա առաքումը ' + dayHuman(state.data.defer_to, true) + '։ Շարունակե՞լ։')) return;
             edit({ action: 'defer_trip', trip: tr.id }, 'Երթը տեղափոխվեց վաղվան');
         });
+        // №72: рейс уже в пути с взятыми сегодня заказами дня — на завтра нельзя (отвезли бы дважды)
+        const moving = new Set(sdTaken().filter(o => o.started).map(o => o.isn));
+        if (tr.stops.some(s => (s.orders || []).some(o => moving.has(o.isn)))) { box.append(p); return box; }
         box.append(p, btn);
         return box;
     }
@@ -3108,7 +3121,9 @@
         if (!trucks.length) { showActionError(new Error('Նշեք գոնե մեկ մեքենա 1-ին քայլում։')); return; }
         if (agentsNoneLeft()) { showActionError(new Error('Նշեք գոնե մեկ մենեջեր «Որ մենեջերների պատվերներն ենք տանում» ցուցակում։')); return; }
         // сегодня после начала дня машин (№72): пересборка раскладывает заново и рейсы, которые уже грузятся или в пути
-        const sdNow = sdData() && sdData().today ? sdData().now : null;
+        const clock = new Date();
+        const sdNow = sdData() && sdData().today ? sdData().now
+            : state.data.day === state.data.today ? String(clock.getHours()).padStart(2, '0') + ':' + String(clock.getMinutes()).padStart(2, '0') : null;
         if (state.data.plan && sdNow && sdNow >= state.data.work_start
             && !window.confirm('Ժամը ' + sdNow + ' է։ Վերակազմելիս ծրագիրը նորից կբաշխի նաև այն երթերը, որոնք արդեն բեռնվում են կամ ճանապարհին են '
                 + '(ամրացված երթերը կմնան)։ Շարունակե՞լ։')) return;
