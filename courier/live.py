@@ -100,8 +100,9 @@ class LiveSource:
         with self._guard:
             entry = self._entries.get(day)
             if entry is None:
-                if len(self._entries) >= CACHE_DAYS:
-                    self._entries.pop(next(iter(self._entries)))
+                if len(self._entries) >= CACHE_DAYS:   # вытесняется самый старый, но не сегодняшний
+                    today = clock.today().isoformat()
+                    self._entries.pop(next(k for k in self._entries if k != today))
                 entry = self._entries[day] = _Entry()
         with entry.lock:
             if entry.value is not None and _monotonic() < entry.expires:

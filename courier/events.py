@@ -667,6 +667,13 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who
     return row, scan_row, track
 
 
+def _same_state(new: Mapping[str, Any] | None, last: Mapping[str, Any] | None) -> bool:
+    """№76: состояние терминала то же, что в последнем событии (gps, net, charging, app; заряд батареи не в счёт).
+    Любая смена (в первую очередь gps) или отсутствие device у одного из них — не то же."""
+    keys = ('gps', 'net', 'charging', 'app')
+    return new is not None and last is not None and all(new.get(k) == last.get(k) for k in keys)
+
+
 def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
     """Принять пачку (≤ MAX_BATCH — проверяет вызывающий). Порядок в ответе — порядок пачки."""
     result = Result()
@@ -703,11 +710,12 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
                                    who.terminal_id, REJECTED_PER_DAY)
                 result.rejected.append({'id': raw_id, 'error': 'bad_request', 'message': str(e)})
                 continue
-            if track is not None and not track and tx.heartbeat_between(
-                    who.terminal_id, row['date'],
-                    clock.utc_key(datetime.fromisoformat(row['at_utc']) - HEARTBEAT_GAP), row['at_utc']):
-                result.accepted.append(raw_id)   # №76: пустой heartbeat не позже HEARTBEAT_GAP после предыдущего
-                continue                          # (по моменту события) — принят, чтобы APK не повторял, но не пишется
+            if track is not None and not track and _same_state(
+                    row['payload'].get('device'), tx.last_track_device(
+                        who.terminal_id, row['date'],
+                        clock.utc_key(datetime.fromisoformat(row['at_utc']) - HEARTBEAT_GAP), row['at_utc'])):
+                result.accepted.append(raw_id)   # №76: пустой heartbeat с тем же состоянием не позже HEARTBEAT_GAP после
+                continue                          # предыдущего события track — принят (APK не повторяет), но не пишется
             if track is not None:   # точки — до события: в нём число новых (пачка — одна транзакция)
                 row['payload']['new'] = tx.insert_track(who.car_code, row['date'], track)
                 tx.purge_track(clock.today().isoformat())

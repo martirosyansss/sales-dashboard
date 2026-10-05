@@ -1482,11 +1482,17 @@ class EventTx:
             self.conn.execute('DELETE FROM rejected_events WHERE id = ?', (row['id'],))
         return n == 1
 
-    def heartbeat_between(self, terminal_id: int, day: str, since_utc: str, until_utc: str) -> bool:
-        """Есть ли у терминала событие `track` даты с моментом (at_utc) в [since_utc, until_utc] (индекс events_day)."""
-        return self.conn.execute("SELECT 1 FROM events WHERE date = ? AND type = 'track' AND terminal_id = ? "
-                                 'AND at_utc >= ? AND at_utc <= ? LIMIT 1',
-                                 (day, terminal_id, since_utc, until_utc)).fetchone() is not None
+    def last_track_device(self, terminal_id: int, day: str, since_utc: str, until_utc: str) -> dict[str, Any] | None:
+        """`device` последнего события `track` терминала за дату с моментом (at_utc) в [since_utc, until_utc];
+        нет такого события или в нём нет device — None (индекс events_day)."""
+        r = self.conn.execute("SELECT json_extract(payload, '$.device') FROM events WHERE date = ? AND type = 'track' "
+                              'AND terminal_id = ? AND at_utc >= ? AND at_utc <= ? ORDER BY at_utc DESC LIMIT 1',
+                              (day, terminal_id, since_utc, until_utc)).fetchone()
+        try:
+            device = json.loads(r[0]) if r and r[0] else None
+        except ValueError:
+            return None
+        return device if isinstance(device, dict) else None
 
     def rejected_today(self, terminal_id: int) -> int:
         """Сохранённых отказов терминала за сегодня (Ереван) — предел REJECTED_PER_DAY."""

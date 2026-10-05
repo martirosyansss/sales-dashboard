@@ -62,6 +62,7 @@ MOVING_MS = ac.STOP_MS              # скорость терминала не �
 SPEED_GAP = timedelta(seconds=60)   # перерыв трека дольше — превышение скорости прерывается
 CENTER_MIN_POINTS = 2               # в малом центре — не меньше 2 точек подряд (одна — может быть погрешность GPS)
 NO_CONTACT_END_H = 20               # APK останавливает запись в 20:00 — после этого «нет связи» не тревога (№76, ревью)
+OLD_APK_SILENT_MIN = 20              # старый APK (без device) шлёт пачками раз в 2–17 мин: «կապ չկա» — после 20 мин
 NO_CONTACT_MAX = timedelta(hours=3)  # связи нет дольше — машина закончила день: состояние «կապ չկա», без тревоги
 TRACK_LINE_POINTS = 1500            # линия трека на карте (actuals.simplify)
 
@@ -352,7 +353,8 @@ def contact_alerts(contacts: Sequence[datetime], last_contact: datetime | None, 
     inside = sorted(t for t in contacts if t >= start and (end is None or t <= end))
     out = [_alert('no_contact', a, b, False, minutes=round((b - a).total_seconds() / 60))
            for a, b in zip(inside, inside[1:]) if b - a > limit]
-    if now is not None and last_contact is not None and limit < now - last_contact <= NO_CONTACT_MAX             and now.astimezone(YEREVAN).hour < NO_CONTACT_END_H:
+    if (now is not None and last_contact is not None and limit < now - last_contact <= NO_CONTACT_MAX
+            and now.astimezone(YEREVAN).hour < NO_CONTACT_END_H):
         out.append(_alert('no_contact', last_contact, None, True,
                           minutes=round((now - last_contact).total_seconds() / 60)))
     return out
@@ -503,11 +505,11 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
         state = 'nodata'
     elif finished:
         state = 'closed'
-    elif 'no_contact' in active or (open_now and last_contact is not None
-                                    and now - last_contact > timedelta(minutes=rules.no_contact_min)):
+    elif any(k != 'no_contact' for k in active):
+        state = 'alert'   # другая активная тревога важнее «կապ չկա»
+    elif 'no_contact' in active or (open_now and last_contact is not None and now - last_contact > timedelta(
+            minutes=rules.no_contact_min if facts.get('device') is not None else OLD_APK_SILENT_MIN)):
         state = 'offline'   # «կապ չկա»; тревогой — только у APK 2.2.0 и в пределах дня (contact_alerts)
-    elif active:
-        state = 'alert'
     elif last is not None and age is not None and age <= STALE_S and last.spd is not None \
             and last.spd >= MOVING_MS:   # type: ignore[attr-defined]
         state = 'moving'

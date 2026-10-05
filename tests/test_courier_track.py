@@ -155,22 +155,29 @@ def test_track_empty_points_heartbeat_and_device(cs):
     assert _event_row(cs, e5['id'])[2]['dropped'] == {'acc': 1} and len(_points(cs)) == 1
 
 
-def test_track_empty_heartbeat_within_gap_is_accepted_but_not_stored(cs):
-    """№76: пустой heartbeat не позже 20 с после предыдущего события track терминала — принят, строка не пишется."""
+def test_track_empty_heartbeat_dropped_only_when_state_unchanged(cs):
+    """№76: пустой heartbeat не позже 20 с после предыдущего события track принят, но не пишется — только если состояние
+    терминала то же (батарея не в счёт); смена gps (выключили GPS) пишется всегда."""
     who = _who(cs)
-    dev = {'gps': 'off', 'battery': 50}
+    on = {'battery': 50, 'charging': False, 'gps': 'on', 'net': 'cell', 'app': '2.2.0'}
 
-    def beat(sec, points=()):
+    def beat(sec, device, points=()):
         return {**_track(list(points), at=f'{DAY}T10:00:{sec:02d}+04:00'),
-                'payload': {'points': list(points), 'device': dev}}
-    first, soon, later = beat(0), beat(10), beat(30)
-    r = ev.ingest(cs, who, [first, soon, later]).json()
-    assert r['accepted'] == [first['id'], soon['id'], later['id']] and r['rejected'] == []
-    assert _event_row(cs, first['id']) is not None and _event_row(cs, later['id']) is not None
-    assert _event_row(cs, soon['id']) is None
-    withpts = beat(35, [_pt(1)])                                             # с точками — пишется всегда
-    assert ev.ingest(cs, who, [withpts]).json()['accepted'] == [withpts['id']]
-    assert _event_row(cs, withpts['id']) is not None
+                'payload': {'points': list(points), 'device': device}}
+    withpts = beat(0, on, [_pt(1)])                                          # пачка точек
+    off = beat(5, {**on, 'gps': 'off'})                                      # сразу после неё — GPS выключили
+    same = beat(10, {**on, 'gps': 'off', 'battery': 49})                     # то же состояние, другой заряд
+    changed = beat(12, {**on, 'gps': 'off', 'net': 'wifi'})                  # сменилась сеть
+    later = beat(40, {**on, 'gps': 'off', 'net': 'wifi'})                    # позже 20 с — пишется
+    r = ev.ingest(cs, who, [withpts, off, same, changed, later]).json()
+    assert r['accepted'] == [e['id'] for e in (withpts, off, same, changed, later)] and r['rejected'] == []
+    assert [_event_row(cs, e['id']) is not None for e in (withpts, off, same, changed, later)] == [
+        True, True, False, True, True]
+    assert _event_row(cs, off['id'])[2]['device']['gps'] == 'off'
+    # повтор уже принятого id — дубликат; повтор отброшенного — снова принят без записи
+    again = ev.ingest(cs, who, [off, same]).json()
+    assert again['duplicates'] == [off['id']] and again['accepted'] == [same['id']]
+    assert _event_row(cs, same['id']) is None
 
 
 def test_track_stop_id_not_required_and_date_suspicious(cs):

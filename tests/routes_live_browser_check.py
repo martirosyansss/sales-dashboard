@@ -228,8 +228,9 @@ def main() -> int:
                 check(items.count() == 4, f'в списке 4 машины ({items.count()})')
                 check(page.locator('.lv-marker').count() == 4, 'на карте 4 маркера')
                 states = page.eval_on_selector_all('.lv-item .lv-dot', 'els => els.map(e => e.className)')
-                check(any('is-alert' in s for s in states) and any('is-offline' in s for s in states),
-                      f'состояния «ահազանգ» и «կապ չկա» есть: {states}')
+                # машина 3: GPS выключен и связи нет — активная тревога GPS важнее «կապ չկա» (повторное ревью №76)
+                check(sum('is-alert' in s for s in states) >= 3 and not any('is-offline' in s for s in states),
+                      f'состояния: у машин 1-3 «ահազանգ», «կապ չկա» только без других тревог: {states}')
                 page.locator(f'.lv-item[data-car="{cars[0]}"]').click()
                 page.wait_for_selector('#lvCard:not([hidden]) .lv-grid dt')
                 page.wait_for_timeout(800)

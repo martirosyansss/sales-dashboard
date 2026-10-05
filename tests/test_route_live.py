@@ -373,7 +373,7 @@ def test_no_contact_alarm_only_for_new_apk_before_20_and_within_3h():
     card = view(facts(tr.pts, st, contacts, NEW_APK), t(13))
     assert 'no_contact' in card['alerts']['active'] and card['state'] == 'offline'
     # старый APK (пачки раз в 2-17 мин): состояние «կապ չկա», но ни тревоги, ни записей перерывов в журнале
-    old = view(facts(tr.pts, st, [T0, t(3), t(20), t(22)]), t(30), detail=True)
+    old = view(facts(tr.pts, st, [T0, t(3), t(20), t(22)]), t(45), detail=True)
     assert old['state'] == 'offline' and old['alerts']['active'] == []
     assert not [a for a in old['alerts_log'] if a['kind'] == 'no_contact']
     # больше 3 ч без связи — «կապ չկա» без тревоги
@@ -387,6 +387,21 @@ def test_no_contact_alarm_only_for_new_apk_before_20_and_within_3h():
     assert card['state'] == 'offline' and card['alerts']['active'] == []
     f = facts(tr.pts, st, [datetime(2026, 10, 5, 19, 40, tzinfo=Y)], NEW_APK)
     assert 'no_contact' in view(f, datetime(2026, 10, 5, 19, 50, tzinfo=Y))['alerts']['active']
+
+
+def test_state_alert_over_offline_and_old_apk_silent_threshold():
+    tr = Track().park(DEPOT, 5)
+    st = [stop('S:A', 1, A, 100.0)]
+    t = lambda m: T0 + timedelta(minutes=m)   # noqa: E731
+    # APK 2.2.0: GPS выключен и связи нет — другая активная тревога («ահազանգ») важнее «կապ չկա»
+    gps_off = [(t(2), 'off')]
+    card = view(facts(tr.pts, st, [T0, t(2)], {**NEW_APK, 'gps': 'off'}, gps_off), t(12))
+    assert {'gps', 'no_contact'} <= set(card['alerts']['active']) and card['state'] == 'alert'
+    # старый APK: до 20 мин тишины — не «կապ չկա», после — да (тревоги нет в обоих случаях)
+    old = facts(tr.pts, st, [T0, t(3)])
+    assert view(old, t(3 + 19))['state'] != 'offline'
+    card = view(old, t(3 + 21))
+    assert card['state'] == 'offline' and card['alerts']['active'] == []
 
 
 def test_gps_off_alert_from_device_and_old_apk_without_device():
@@ -432,7 +447,7 @@ def test_empty_facts_and_unknown_truck():
     assert card['state'] == 'standing' and card['stores'] == {'done': 0, 'total': 1, 'in_progress': 0}
     assert card['track'] == [] and card['stops'][0]['status'] == 'pending'
     # только сигнал «на связи» без GPS (points: []) — позиции нет, связь есть
-    card = view(facts([], [], [T0, T0 + timedelta(minutes=1)]), T0 + timedelta(minutes=10))
+    card = view(facts([], [], [T0, T0 + timedelta(minutes=1)], NEW_APK), T0 + timedelta(minutes=10))
     assert card['position'] is None and card['state'] == 'offline'
 
 
