@@ -1168,7 +1168,11 @@
             }
             const sub = document.createElement('span');
             sub.className = 'dp-truck-sub';
-            sub.textContent = (a.name && a.code ? a.code + ' · ' : '') + pl(a.count, 'պատվեր') + ' · ' + kgText(a.kg);
+            // новые заказы дня, которые ещё решать (№72, same_day) — отдельно: в заказы развоза они не входят
+            const parts = [];
+            if (a.count || !a.same_day) parts.push(pl(a.count, 'պատվեր') + ' · ' + kgText(a.kg));
+            if (a.same_day) parts.push('այսօրվա նոր՝ ' + pl(a.same_day.count, 'պատվեր') + ' · ' + kgText(a.same_day.kg));
+            sub.textContent = (a.name && a.code ? a.code + ' · ' : '') + parts.join(' · ');
             txt.appendChild(sub);
             lab.append(cb, txt);
             fs.appendChild(lab);

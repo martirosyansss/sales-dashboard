@@ -1419,18 +1419,30 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
     active = _active_orders(dd.deliver, dd.backlog, draft, dd.carried, s, dd.same_day)
     excl = [o for o in dd.deliver if o.isn in excluded]
     off = dp.agents_off_of(draft, s)
-    # фильтр «Մենեջերներ»: менеджеры заказов развоза дня (заказы дня без «не везём сегодня» и прошлых дней в развозе,
-    # и снятые фильтром — менеджер в списке, пока у него есть такие заказы)
+    # фильтр «Մենեջերներ»: менеджеры заказов развоза дня (заказы дня без «не везём сегодня», прошлых дней в развозе и
+    # новые заказы дня, взятые в него, №72; и снятые фильтром — менеджер в списке, пока у него есть такие заказы) и
+    # менеджеры новых заказов дня, которые ещё решать (ревью №72 L2: у кого только они, тоже можно снять или вернуть) —
+    # их число и вес отдельно (same_day), в заказы развоза не входят
+    taken = draft.same_day if draft is not None else set()
     by_agent: dict[int, list[dp.DispatchOrder]] = {}
-    for o in [*(o for o in dd.deliver if o.isn not in excluded), *(o for o in dd.backlog if o.isn in added)]:
+    for o in [*(o for o in dd.deliver if o.isn not in excluded), *(o for o in dd.backlog if o.isn in added),
+              *(o for o in dd.same_day if o.isn in taken)]:
         by_agent.setdefault(o.agent_id, []).append(o)
+    pending: dict[int, list[dp.DispatchOrder]] = {}
+    if dd.day == _same_day_now().date():
+        for o in dd.same_day:
+            if o.isn not in taken and o.isn not in excluded:
+                pending.setdefault(o.agent_id, []).append(o)
     agents_json = []
-    for aid, orders in by_agent.items():
+    for aid in [*by_agent, *(a for a in pending if a not in by_agent)]:
+        orders = by_agent.get(aid, [])
         agent = dd.snap.agents.get(aid)
         agents_json.append({'agent_id': aid, 'code': agent.code if agent else '', 'name': agent.name if agent else '',
                             'area': agent.area if agent else '',
                             'count': len(orders), 'kg': round(sum(o.kg for o in orders)),
-                            'revenue': round(sum(o.revenue for o in orders)), 'off': aid in off})
+                            'revenue': round(sum(o.revenue for o in orders)), 'off': aid in off,
+                            **({'same_day': {'count': len(pending[aid]), 'kg': round(sum(o.kg for o in pending[aid]))}}
+                               if aid in pending else {})})
     agents_json.sort(key=lambda a: (a['name'] or a['code'] or '~', a['agent_id']))
     hidden = [o for os_ in (by_agent.get(a, []) for a in off) for o in os_]
 
@@ -1511,12 +1523,14 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
 SAME_DAY_MAX_ORDERS = 500   # заказов в одном запросе «Առաջարկներ» / «Ընտրել» — защита от битого запроса
 
 
-def _same_day_open(orders: Sequence[dp.DispatchOrder], draft: dp.Draft | None) -> list[dp.DispatchOrder]:
-    """Новые заказы дня, которые ещё решать: не взятые сегодня, не «не везём сегодня», не менеджеров, снятых фильтром."""
+def _same_day_open(orders: Sequence[dp.DispatchOrder], draft: dp.Draft | None,
+                   settings: Mapping[str, Any]) -> list[dp.DispatchOrder]:
+    """Новые заказы дня, которые ещё решать: не взятые сегодня, не «не везём сегодня», не менеджеров, снятых фильтром
+    (dp.agents_off_of: у дня без плана — правило настроек, №69)."""
+    off = dp.agents_off_of(draft, settings)
     if draft is None:
-        return list(orders)
-    return [o for o in orders if o.isn not in draft.same_day and o.isn not in draft.excluded
-            and o.agent_id not in draft.agents_off]
+        return [o for o in orders if o.agent_id not in off]
+    return [o for o in orders if o.isn not in draft.same_day and o.isn not in draft.excluded and o.agent_id not in off]
 
 
 def _totals_of(orders: Sequence[dp.DispatchOrder]) -> dict[str, Any]:
@@ -1557,7 +1571,7 @@ def _same_day_json(dd: _DispatchDay) -> dict[str, Any]:
     draft = dd.draft
     now = _same_day_now()
     is_today = dd.day == now.date()
-    open_ = _same_day_open(dd.same_day, draft) if is_today else []
+    open_ = _same_day_open(dd.same_day, draft, dd.bundle.settings) if is_today else []
     taken = [o for o in dd.same_day if draft is not None and o.isn in draft.same_day]
     trucks: dict[int, set[str]] = {}
     for t in (draft.trips if draft is not None else ()):
@@ -1603,7 +1617,7 @@ def _same_day_pick(state: RoutesState, bundle: Bundle, dd: _DispatchDay, raw: An
             or not all(isinstance(x, str) and dp.ISN_RE.match(x.upper()) for x in raw):
         raise dp.DispatchError('Պատվերների ցուցակը չընդունվեց — թարմացրեք էջը')
     isns = {x.upper() for x in raw}
-    picked = [o for o in _same_day_open(dd.same_day, dd.draft) if o.isn in isns]
+    picked = [o for o in _same_day_open(dd.same_day, dd.draft, bundle.settings) if o.isn in isns]
     if len(picked) != len(isns):
         raise dp.DispatchError('Պատվերներից մեկն այլևս նոր չէ կամ արդեն վերցված է — թարմացրեք էջը')
     def load(take: Collection[str]) -> _DispatchDay:
@@ -1834,7 +1848,7 @@ def api_dispatch_status() -> Any:
         if sd is not None:
             today = dp.same_day_candidates(sd.orders, day)
             if day == _same_day_now().date():
-                same = {'same_day': _same_day_summary(_same_day_open(today, draft))}
+                same = {'same_day': _same_day_summary(_same_day_open(today, draft, bundle.settings))}
     active = _active_orders(sel.main, sel.backlog, draft, carried, bundle.settings, today)
     return jsonify({'success': True, 'day': day.isoformat(), 'rev': rev,
                     'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
