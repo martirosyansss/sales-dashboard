@@ -21,6 +21,7 @@ from route_optimizer.tsp import Distance
 logger = logging.getLogger(__name__)
 
 DEFAULT_WORKDAYS = (1, 2, 3, 4, 5, 6)
+Places = Callable[[Sequence[int]], Mapping[int, str]]   # клиенты → dp.place_text (адрес и название из ERP, №74)
 DETOUR = 1.3   # участок без дороги — по прямой × извилистость (как evaluate.road_norms без калибровки)
 
 
@@ -39,6 +40,7 @@ class RoutesView:
     agents_off: frozenset[int] = frozenset()               # менеджеры, чьи заказы не везём (фильтр «Մենեջերներ»)
     same_day: frozenset[str] = frozenset()                 # заказы с датой дня, взятые в его развоз (№72)
     taken: frozenset[str] = frozenset()                    # взятые в развоз дня их приёма в прошлые дни — не везём
+    fleet: dp.FleetRule = dp.NO_RULE                       # чьи заказы везут машины — правило настроек «Развоза» (№74)
     roads: Any = None                                      # RoadDistances | None
 
     def car_customers(self, car_code: str) -> list[int]:
@@ -81,7 +83,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
     except Exception:   # карта дорог — необязательна: сбой → по прямой
         logger.warning('[Courier] Карта дорог недоступна — порядок по прямой', exc_info=True)
     base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
-                      holidays=holidays, roads=roads)
+                      holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads)
     try:
         stored = state.store.load_dispatch(day.isoformat())
         carried = _carried(state, day, workdays, holidays)
@@ -93,7 +95,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
         # плана нет — менеджеры, чьи заказы не везём, по правилу настроек «Развоза» (№69)
         return RoutesView(depot=base.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                           carried=frozenset(carried), agents_off=frozenset(dp.agents_off_of(None, bundle.settings)),
-                          taken=frozenset(taken), roads=roads)
+                          taken=frozenset(taken), fleet=base.fleet, roads=roads)
     draft = dp.Draft.from_json(stored[0])
     return RoutesView(depot=bundle.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                       plan_exists=bool(draft.trips),
@@ -101,7 +103,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       excluded=frozenset(draft.excluded), added=frozenset(draft.added),
                       carried=frozenset(carried), dropped=frozenset(draft.dropped),
                       agents_off=frozenset(dp.agents_off_of(draft, bundle.settings)), same_day=frozenset(draft.same_day),
-                      taken=frozenset(taken), roads=roads)
+                      taken=frozenset(taken), fleet=base.fleet, roads=roads)
 
 
 def routes_depot(state: Any) -> Point | None:
@@ -146,13 +148,18 @@ def orders_window(day: date, view: RoutesView) -> tuple[date, date]:
     return dp.backlog_since(since, view.workdays, holidays=view.holidays), until + timedelta(days=1 if view.same_day else 0)
 
 
-def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, car_code: str) -> list[DispatchOrder]:
+def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, car_code: str,
+                places: Places | None = None) -> list[DispatchOrder]:
     """Заказы, которые «Развоз» отдал машине: отбор как на странице «Развоз» (заказы дня без «не везём
     сегодня» и без взятых в развоз дня их приёма в прошлые дни + добавленные и перенесённые прошлых дней + заказы
-    самого дня, взятые в его развоз (№72), без заказов менеджеров, снятых фильтром); план на дату есть — клиенты рейсов
-    машины, нет — машина в самом заказе (ORDERS.fDELIVERYCAR)."""
+    самого дня, взятые в его развоз (№72), без заказов менеджеров, снятых фильтром; только заказы для машин парка по
+    правилу настроек, №74 — places: клиенты → dp.place_text для городов-исключений, спрашивается только когда нужен;
+    None — города не проверяются); план на дату есть — клиенты рейсов машины, нет — машина в самом заказе
+    (ORDERS.fDELIVERYCAR)."""
     since, _ = dp.order_window(day, view.workdays, view.holidays)
-    sel = dp.to_deliver(orders, day, since)
+    need = sorted({o.customer_id for o in orders if view.fleet.needs_place(o)})
+    texts = places(need) if need and places is not None else {}
+    sel = dp.to_deliver(orders, day, since, view.fleet, lambda cid: texts.get(cid, ''))
     inside = set(view.added) | (set(view.carried) - set(view.dropped))
     active = [o for o in sel.main if o.isn not in view.excluded and o.isn not in view.taken
               and (o.order_date < day or o.isn in view.same_day)] + [o for o in sel.backlog if o.isn in inside]

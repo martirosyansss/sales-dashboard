@@ -21,7 +21,7 @@ from typing import Any, Iterator, Sequence
 import pyodbc
 
 from .demand import SaleDoc
-from .dispatch import DispatchData, DispatchOrder, FactData, SameDayData, ShippedDoc
+from .dispatch import DispatchData, DispatchOrder, FactData, SameDayData, ShippedDoc, hint_reason, place_text
 from .evaluate import ActualVisit
 from .geo import Fix
 from .plan import TemplateRow
@@ -371,6 +371,36 @@ FROM CUSTOMERDELIVERYADDRESSES a WITH (NOLOCK)
 WHERE a.fDEFAULT = 1 AND a.fCUSTOMERID IN ({ph})
 """
 
+# Клиенты списка «машины не везут» (№74, настройки «Маршрутов»): поиск — код с начала или часть названия (! — escape
+# для % _ [ в тексте поиска), точный код — первым; по id — для уже отмеченных. Код, название, адрес по умолчанию
+SQL_CUSTOMER_FIND = """
+SELECT TOP 30 c.fID, RTRIM(c.fCODE), c.fNAME, ad.fADDRESS
+FROM CUSTOMERS c WITH (NOLOCK)
+OUTER APPLY (SELECT TOP 1 a.fADDRESS FROM CUSTOMERDELIVERYADDRESSES a WITH (NOLOCK)
+             WHERE a.fCUSTOMERID = c.fID AND a.fDEFAULT = 1 ORDER BY a.fROWNUM) ad
+WHERE c.fCODE LIKE ? ESCAPE '!' OR c.fNAME LIKE ? ESCAPE '!'
+ORDER BY CASE WHEN RTRIM(c.fCODE) = ? THEN 0 ELSE 1 END, c.fNAME, c.fID
+"""
+SQL_CUSTOMER_REFS = """
+SELECT c.fID, RTRIM(c.fCODE), c.fNAME, ad.fADDRESS
+FROM CUSTOMERS c WITH (NOLOCK)
+OUTER APPLY (SELECT TOP 1 a.fADDRESS FROM CUSTOMERDELIVERYADDRESSES a WITH (NOLOCK)
+             WHERE a.fCUSTOMERID = c.fID AND a.fDEFAULT = 1 ORDER BY a.fROWNUM) ad
+WHERE c.fID IN ({ph})
+"""
+# Подсказка к этому списку: заказы периода по клиенту и менеджеру и адреса по умолчанию клиентов (текст и точка)
+SQL_CUSTOMER_ORDERS = """
+SELECT o.fCUSTOMERID, o.fSALESAGENTID, COUNT(*), SUM(o.fTOTALSUM), MAX(CAST(o.fDATE AS date))
+FROM ORDERS o WITH (NOLOCK)
+WHERE o.fSTATE = 2 AND o.fDATE >= ? AND o.fDATE < ?
+GROUP BY o.fCUSTOMERID, o.fSALESAGENTID
+"""
+SQL_DEFAULT_PLACES = """
+SELECT a.fCUSTOMERID, a.fADDRESS, a.fLATITUDE, a.fLONGITUDE
+FROM CUSTOMERDELIVERYADDRESSES a WITH (NOLOCK)
+WHERE a.fDEFAULT = 1 AND a.fCUSTOMERID IN ({ph})
+"""
+
 # Какие машины везли заказы менеджера (сравнение «по менеджерам»): документов за период. Накладная без
 # машины, которую вёз экспедитор (не сам менеджер), — строка с пустой машиной и id экспедитора: за ним может
 # быть закреплена ручная машина (store.Truck.van_agent_id).
@@ -574,6 +604,13 @@ def address_texts(conn: Any, ids: Sequence[int]) -> dict[int, str]:
     return out
 
 
+def place_texts(conn: Any, ids: Sequence[int]) -> dict[int, str]:
+    """Клиент → dispatch.place_text (адрес по умолчанию и название) — города-исключения правила «Развоза» (№74)."""
+    names = {c.id: c.name for c in customers(conn, ids).values()}
+    addresses = address_texts(conn, ids)
+    return {cid: place_text(addresses.get(cid, ''), names.get(cid, '')) for cid in sorted(set(ids))}
+
+
 def agent_cars(conn: Any, since: date, until: date) -> dict[int, tuple[str | int, ...]]:
     """Менеджер → кто везли его заказы за период, от самого частого (ничьи — машины по коду, потом
     экспедиторы по id): код машины ERP (str) или id экспедитора, возившего без машины (int) —
@@ -620,6 +657,95 @@ def load_same_day_data(connection_string: str, day: date) -> SameDayData:
         names = {c.id: (c.code, c.name) for c in customers(conn, ids).values()}
         return SameDayData(orders=tuple(orders), created=created, customers=names, addresses=address_texts(conn, ids),
                            loaded_at=datetime.now().replace(microsecond=0))
+    finally:
+        close_quietly(conn)
+
+
+# --- Клиенты «машины не везут» (№74) ---
+
+CUSTOMER_FIND_MAX_LEN = 100   # символов в тексте поиска
+
+
+@dataclass(frozen=True)
+class CustomerRef:
+    customer_id: int
+    code: str
+    name: str
+    address: str
+
+
+@dataclass(frozen=True)
+class CustomerHint:
+    """Клиент подсказки: почему (dispatch.hint_reason), заказов и сумма за период, последний день, менеджеры."""
+    customer_id: int
+    code: str
+    name: str
+    address: str
+    reason: str
+    orders: int
+    revenue: float
+    last_day: date
+    agents: tuple[int, ...]
+
+
+def _ref(r: Sequence[Any]) -> CustomerRef:
+    return CustomerRef(int(r[0]), _str(r[1]), _str(r[2]), _str(r[3]))
+
+
+def find_customers(conn: Any, query: str) -> list[CustomerRef]:
+    """До 30 клиентов: код начинается с query или название его содержит (точный код — первым)."""
+    q = query.strip()[:CUSTOMER_FIND_MAX_LEN]
+    if not q:
+        return []
+    like = q.replace('!', '!!').replace('%', '!%').replace('_', '!_').replace('[', '![')
+    return [_ref(r) for r in _select(conn, SQL_CUSTOMER_FIND, (like + '%', '%' + like + '%', q))]
+
+
+def customer_refs(conn: Any, ids: Sequence[int]) -> list[CustomerRef]:
+    out: list[CustomerRef] = []
+    for chunk in _chunks(sorted(set(ids))):
+        out += [_ref(r) for r in _select(conn, SQL_CUSTOMER_REFS.format(ph=_placeholders(len(chunk))), chunk)]
+    return sorted(out, key=lambda c: (c.name, c.customer_id))
+
+
+def customer_hints(conn: Any, since: date, until: date) -> list[CustomerHint]:
+    """Клиенты с заказами в [since, until) без адреса или вне Армении (dispatch.hint_reason) — по сумме, большие первыми."""
+    by: dict[int, list[tuple[int, int, float, date]]] = {}
+    for r in _select(conn, SQL_CUSTOMER_ORDERS, (since, until)):
+        by.setdefault(int(r[0]), []).append((int(r[1] or 0), int(r[2]), float(r[3] or 0), _day(r[4])))
+    texts: dict[int, list[str]] = {}
+    points: dict[int, list[tuple[float, float]]] = {}
+    for chunk in _chunks(sorted(by)):
+        for r in _select(conn, SQL_DEFAULT_PLACES.format(ph=_placeholders(len(chunk))), chunk):
+            texts.setdefault(int(r[0]), []).append(_str(r[1]))
+            if r[2] is not None and r[3] is not None:
+                points.setdefault(int(r[0]), []).append((float(r[2]), float(r[3])))
+    reasons = {c: why for c in by if (why := hint_reason(texts.get(c, ()), points.get(c, ()))) is not None}
+    names = customers(conn, sorted(reasons)) if reasons else {}
+    out = []
+    for cid, why in reasons.items():
+        rows = by[cid]
+        c = names.get(cid)
+        out.append(CustomerHint(cid, c.code if c else '', c.name if c else '',
+                                next((t for t in texts.get(cid, ()) if t), ''), why, sum(n for _, n, _, _ in rows),
+                                sum(s for _, _, s, _ in rows), max(d for _, _, _, d in rows),
+                                tuple(sorted({a for a, _, _, _ in rows if a}))))
+    return sorted(out, key=lambda h: (-h.revenue, h.customer_id))
+
+
+def load_customer_refs(connection_string: str, query: str, ids: Sequence[int]) -> list[CustomerRef]:
+    """Поиск клиентов (query) или клиенты по id — одним соединением, только чтение."""
+    conn = connect(connection_string)
+    try:
+        return find_customers(conn, query) if query.strip() else customer_refs(conn, ids)
+    finally:
+        close_quietly(conn)
+
+
+def load_customer_hints(connection_string: str, since: date, until: date) -> list[CustomerHint]:
+    conn = connect(connection_string)
+    try:
+        return customer_hints(conn, since, until)
     finally:
         close_quietly(conn)
 

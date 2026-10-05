@@ -31,13 +31,13 @@ from . import evaluate, garage, learning, optimize
 from . import fleet as fl
 from . import waybill as wb
 from .running_costs import profile_fields
-from .erp import ErpError
+from .erp import CUSTOMER_FIND_MAX_LEN, CustomerHint, CustomerRef, ErpError
 from .geo import Point, haversine_km, is_valid_point
 from .roads import SNAP_MAX_KM, CenterBypassRoads, RoadDistances, RoadProvider, roads_version
 from .snapshot import CAR_IDLE_DAYS, MIN_REFRESH_SECONDS, ResultCache, Snapshot, SnapshotCache
 from .store import (CREW_TABLES, DEFAULT_MANAGER_FUEL, DEFAULT_SETTINGS, KEEP, Bundle, Decision, GarageError, Store, StoreError,
-                    big_auto, center_auto, check_driver_name, check_garage_entry, check_unload_min, check_window,
-                    validate_payload)
+                    MAX_CUSTOMERS_OFF, big_auto, center_auto, check_driver_name, check_garage_entry, check_unload_min,
+                    check_window, validate_payload)
 from .valhalla_engine import TRUCK_TIME_MODEL, TRUCK_TIME_VALHALLA, ValhallaProvider, ValhallaRoads, truck_time_source
 from .vehicle_access import check_access
 
@@ -149,6 +149,10 @@ class RoutesState:
     driver_list_loader: Callable[[date, date], list[str]] | None = None
     # клиенты → код группы (CustGrp) из ERP — сети для сглаживания времени магазина в обучении (№66); None — только снимок
     group_loader: Callable[[Sequence[int]], dict[int, str]] | None = None
+    # клиенты для списка «машины не везут» (№74): (поиск, id) → клиенты ERP; (с, по) → подсказка «без адреса / вне
+    # Армении»; None — без ERP (поиск пуст)
+    customer_ref_loader: Callable[[str, Sequence[int]], list[CustomerRef]] | None = None
+    customer_hint_loader: Callable[[date, date], list[CustomerHint]] | None = None
     driver_list_cache: tuple[float, list[str]] | None = None
     driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
     dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
@@ -681,11 +685,57 @@ def _expeditors_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
             for a in sorted(snap.expeditors, key=lambda a: (-snap.expeditors[a][0], a))]
 
 
+CUSTOMER_HINT_DAYS = 60    # подсказка к списку «машины не везут» (№74): заказы за 60 дней
+CUSTOMER_HINT_MAX = 200    # клиентов в подсказке — самые большие по сумме
+
+
+@bp.get('/api/routes/settings/customers')
+@_api
+def api_settings_customers() -> Any:
+    """Клиенты для списка «машины не везут» (№74): ?q= — поиск в ERP по коду (с начала) или названию (часть), до 30;
+    ?ids=1,2 — клиенты по id (названия уже отмеченных). Только чтение ERP; без загрузчика — пусто."""
+    query = request.args.get('q', '')
+    if len(query) > CUSTOMER_FIND_MAX_LEN:
+        return _bad_request({'q': f'Որոնում՝ առավելագույնը {CUSTOMER_FIND_MAX_LEN} նիշ'})
+    raw = request.args.get('ids', '')
+    parts = raw.split(',') if raw else []
+    if len(parts) > MAX_CUSTOMERS_OFF or not all(
+            p.isascii() and p.isdigit() and len(p) <= 10 and 0 < int(p) < 2 ** 31 for p in parts):
+        return _bad_request({'ids': 'Սպասվում էր հաճախորդների համարներ'})
+    state = _state()
+    if state.customer_ref_loader is None or not (query.strip() or parts):
+        return jsonify({'success': True, 'customers': []})
+    refs = state.customer_ref_loader(query, sorted({int(p) for p in parts}))
+    return jsonify({'success': True, 'customers': [
+        {'customer_id': c.customer_id, 'code': c.code, 'name': c.name, 'address': c.address} for c in refs]})
+
+
+@bp.get('/api/routes/settings/customer-hints')
+@_api
+def api_settings_customer_hints() -> Any:
+    """Подсказка к списку «машины не везут» (№74): клиенты с заказами за CUSTOMER_HINT_DAYS дней без адреса или вне
+    Армении (erp.customer_hints) — с менеджерами, заказами и суммой. Только чтение ERP."""
+    state = _state()
+    today = _clock().date()
+    if state.customer_hint_loader is None:
+        return jsonify({'success': True, 'days': CUSTOMER_HINT_DAYS, 'customers': []})
+    hints = state.customer_hint_loader(today - timedelta(days=CUSTOMER_HINT_DAYS), today + timedelta(days=1))
+    snap, _ = state.snapshots.get(allow_stale=True)
+
+    def agent(aid: int) -> dict[str, Any]:
+        a = snap.agents.get(aid)
+        return {'agent_id': aid, 'code': a.code if a else '', 'name': a.name if a else ''}
+    return jsonify({'success': True, 'days': CUSTOMER_HINT_DAYS, 'customers': [
+        {'customer_id': h.customer_id, 'code': h.code, 'name': h.name, 'address': h.address, 'reason': h.reason,
+         'orders': h.orders, 'revenue': round(h.revenue), 'last_day': h.last_day.isoformat(),
+         'agents': [agent(a) for a in h.agents]} for h in hints[:CUSTOMER_HINT_MAX]]})
+
+
 def _dispatch_agents_json(snap: Snapshot, bundle: Bundle) -> list[dict[str, Any]]:
     """Менеджеры карточки «чьи заказы везём» (№69): с заказами или визитами за 8 недель (кроме закрытых в ERP) и все,
     кого правило уже снимает, — их можно вернуть, даже если работы больше нет. По имени, неизвестные ERP — в конце."""
     ids = {a for a in snap.active_agents if not (a in snap.agents and snap.agents[a].closed)}
-    ids |= set(bundle.settings['dispatch_agents_off'])
+    ids |= set(bundle.settings['dispatch_agents_off']) | set(bundle.settings['dispatch_fleet_agents'])   # и правило №74
     out = []
     for agent_id in ids:
         agent = snap.agents.get(agent_id)
@@ -1182,16 +1232,20 @@ class _DispatchDay:
     same_day_data: dp.SameDayData | None = None
     same_day_taken: int = 0   # заказов окна дня, взятых в развоз дня их приёма (их не везём: _same_day_taken)
     same_day_unread: bool = False   # план прошлого дня не прочитан — взятые в нём заказы могли не исключиться
+    # №74: заказы дня, которые везут другие машины (менеджер правила, город-исключение) и клиентов «машины не везут»
+    other_vehicle: list[dp.DispatchOrder] = field(default_factory=list)
+    customers_off: list[dp.DispatchOrder] = field(default_factory=list)
 
 
 def _day_orders(state: RoutesState, bundle: Bundle, day: date,
                 refresh: bool) -> tuple[date, date, dp.DispatchData, dp.Selection]:
-    """Окно заказов дня, заказы ERP (кэш _dispatch_data) и отбор к доставке — без заказов, взятых в развоз дня их приёма
-    (№72, _same_day_taken)."""
+    """Окно заказов дня, заказы ERP (кэш _dispatch_data) и отбор к доставке по правилу настроек «чьи заказы везут машины»
+    (№74, dp.FleetRule) — без заказов, взятых в развоз дня их приёма (№72, _same_day_taken)."""
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     since, until = dp.order_window(day, workdays, off)
     data = _dispatch_data(state, dp.backlog_since(since, workdays, holidays=off), until, day, refresh)
-    sel = dp.to_deliver(data.orders, day, since)
+    sel = dp.to_deliver(data.orders, day, since, dp.FleetRule.from_settings(bundle.settings),
+                        dp.place_of(data.customers, data.addresses))
     taken, unread = _same_day_taken(state, day, workdays, off)
     if unread:
         sel = replace(sel, same_day_unread=True)
@@ -1330,7 +1384,9 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
             if taken:
                 raise
             logger.warning('[Routes] Новые заказы дня %s не прочитаны — без подсказки', day, exc_info=True)
-    today = dp.same_day_candidates(same_data.orders, day) if same_data is not None else []
+    today = dp.same_day_candidates(same_data.orders, day, dp.FleetRule.from_settings(bundle.settings),
+                                   dp.place_of(same_data.customers, same_data.addresses)) \
+        if same_data is not None else []
     if same_data is not None:   # клиенты новых заказов — в справочниках дня (данные окна дня главнее)
         data = replace(data, customers={**same_data.customers, **data.customers},
                        addresses={**same_data.addresses, **data.addresses})
@@ -1347,7 +1403,7 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
                         {s.customer_id: s.point for s in stops if s.point is not None})
     return _DispatchDay(day, since, until, data, deliver, backlog, sel.shipped_before, sel.self_delivery, draft,
                         rev or 0, stops, ctx, ready, snap, bundle, carried, today, same_data, sel.same_day_taken,
-                        sel.same_day_unread)
+                        sel.same_day_unread, other_vehicle=sel.other_vehicle, customers_off=sel.customers_off)
 
 
 def _day_stops(dd: _DispatchDay, draft: dp.Draft) -> list[dp.Stop]:
@@ -1470,6 +1526,12 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
                    'agents_off': len(hidden), 'agents_off_kg': round(sum(o.kg for o in hidden)),
                    'self_delivery': len(dd.self_delivery),
                    'self_delivery_kg': round(sum(o.kg for o in dd.self_delivery)),
+                   # №74: везут другие машины (менеджер правила, город-исключение) и клиенты «машины не везут» — как
+                   # «везёт сам», вне развоза; правила нет — ключей нет (ответ — прежний до байта)
+                   **({'other_vehicle': len(dd.other_vehicle),
+                       'other_vehicle_kg': round(sum(o.kg for o in dd.other_vehicle))} if dd.other_vehicle else {}),
+                   **({'customers_off': len(dd.customers_off),
+                       'customers_off_kg': round(sum(o.kg for o in dd.customers_off))} if dd.customers_off else {}),
                    'no_coords': len(no_coords), 'no_coords_kg': round(sum(x.kg for x in no_coords)),
                    # взяты в развоз дня их приёма (№72) — сегодня их не везём
                    **({'same_day_taken': dd.same_day_taken} if dd.same_day_taken else {})},
@@ -1846,7 +1908,8 @@ def api_dispatch_status() -> Any:
             logger.warning('[Routes] Новые заказы дня %s не прочитаны — без подсказки', day, exc_info=True)
             sd = None
         if sd is not None:
-            today = dp.same_day_candidates(sd.orders, day)
+            today = dp.same_day_candidates(sd.orders, day, dp.FleetRule.from_settings(bundle.settings),
+                                           dp.place_of(sd.customers, sd.addresses))
             if day == _same_day_now().date():
                 same = {'same_day': _same_day_summary(_same_day_open(today, draft, bundle.settings))}
     active = _active_orders(sel.main, sel.backlog, draft, carried, bundle.settings, today)
@@ -2368,10 +2431,11 @@ def _missing_coordinates(state, snap, bundle):
     day = since
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     last_day = dp.next_workday(snap.today, workdays, off)
+    rule, place = dp.FleetRule.from_settings(bundle.settings), dp.place_of(data.customers, data.addresses)
     while day <= last_day:
         if dp.is_workday(day, workdays, off):
             lo, hi = dp.order_window(day, workdays, off)
-            selected = dp.to_deliver([o for o in data.orders if lo <= o.order_date < hi], day, lo)
+            selected = dp.to_deliver([o for o in data.orders if lo <= o.order_date < hi], day, lo, rule, place)
             ids.update(o.customer_id for o in selected.main)
         day += timedelta(days=1)
     rows = []

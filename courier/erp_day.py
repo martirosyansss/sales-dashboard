@@ -485,7 +485,8 @@ def morning_debts(conn: Any, ids: Sequence[int], day: date) -> dict[int, float]:
     return compose_debts(sorted(set(ids)), debit, rest)
 
 
-OrdersPick = Callable[[Sequence[DispatchOrder]], list[DispatchOrder]]
+# заказы окна и ERP-справочник «клиенты → адрес и название» (routes_link.Places, №74) → заказы машины
+OrdersPick = Callable[[Sequence[DispatchOrder], Callable[[Sequence[int]], dict[int, str]]], list[DispatchOrder]]
 
 
 def load_day(connection_string: str, car_code: str, day: date, orders_window: tuple[date, date],
@@ -499,7 +500,7 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
     conn = erp.connect(connection_string)
     try:
         sales = day_sales(conn, car_code, day)
-        picked = pick_orders(erp.dispatch_orders(conn, *orders_window))
+        picked = pick_orders(erp.dispatch_orders(conn, *orders_window), lambda ids: erp.place_texts(conn, ids))
         shipped = [o.isn for o in picked if o.shipped is not None
                    and invoice_owner is not None and invoice_owner(o.customer_id)]
         if shipped:

@@ -307,7 +307,7 @@ def test_load_day_invoices(fake_erp):
     fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000), (ISN[1], '000318002', 12, 7, '', 3600)]
     fake_erp.parents = [(ISN[0], ISN[5])]
     data = ed.load_day('cs', '991AT61', date(2026, 10, 2), (date(2026, 9, 29), date(2026, 10, 2)),
-                       lambda orders: [])
+                       lambda orders, places: [])
     assert [d.stop_id for d in data.docs] == [f'S:{ISN[0]}', f'S:{ISN[1]}']
     assert data.docs[0].replaces == (f'O:{ISN[5]}',) and data.docs[1].replaces == ()
     assert data.car_name == 'HOWO'
@@ -323,7 +323,7 @@ def test_load_day_falls_back_to_orders(fake_erp):
     fake_erp.orders = [(ISN[1], 'Z0002', date(2026, 10, 1), 12, 7, '991AT61', 3600, 58.5, None, 0)]
     picked = []
 
-    def pick(orders):
+    def pick(orders, places):
         picked.extend(orders)
         return list(orders)
     data = ed.load_day('cs', '991AT61', date(2026, 10, 2), (date(2026, 9, 29), date(2026, 10, 2)), pick)
@@ -1338,7 +1338,7 @@ def test_m3_load_day_per_customer_source(fake_erp, tmp_path):
     fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0),     # стал накладной
                        (ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0),    # накладной нет
                        (ISN[3], 'Z0013', date(2026, 10, 1), 13, 7, '991AT61', 900, 1, d, 0)]        # накладная у другой
-    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: list(orders))
+    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders))
     assert [(x.stop_id, x.replaces) for x in data.docs] == [(f'S:{ISN[0]}', (f'O:{ISN[2]}',)), (f'O:{ISN[1]}', ())]
     view = rl.RoutesView(depot=YEREVAN)
     body = dy.day_payload(data, view, Store(str(tmp_path / 'c.db')), datetime(2026, 10, 2, 8, 0, tzinfo=clock.YEREVAN))
@@ -1356,7 +1356,7 @@ def test_load_day_plan_invoice_without_car(fake_erp):
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2]),
                            ((ISN[4], '000318004', 13, 7, '1', 900), ISN[3])]
     fake_erp.parents = [(ISN[0], ISN[2]), (ISN[4], ISN[3])]
-    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: [o for o in orders if o.customer_id == 11],
+    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: [o for o in orders if o.customer_id == 11],
                        lambda cid: True)
     assert [(x.stop_id, x.source, x.amount, x.replaces) for x in data.docs] == [
         (f'S:{ISN[0]}', 'invoice', 18000, (f'O:{ISN[2]}',))]
@@ -1371,11 +1371,11 @@ def test_load_day_plan_invoice_not_doubled_and_skipped_without_shipped(fake_erp)
     fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
     fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0)]
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2])]   # подмена не фильтрует машину
-    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: list(orders), lambda cid: True)
+    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders), lambda cid: True)
     assert [x.stop_id for x in data.docs] == [f'S:{ISN[0]}']
     fake_erp.calls.clear()
     fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0)]
-    ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: list(orders), lambda cid: True)
+    ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders), lambda cid: True)
     assert not any(sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]) for sql in fake_erp.calls)
 
 
@@ -1388,15 +1388,15 @@ def test_load_day_plan_invoice_customer_on_two_trucks_is_nobodys(fake_erp):
     fake_erp.parents = [(ISN[0], ISN[2])]
     split = rl.RoutesView(plan_exists=True, trips=(('A', (11,)), ('B', (11, 12))))
     for car in ('A', 'B'):
-        data = ed.load_day('cs', car, d, (date(2026, 9, 29), d), lambda o, car=car: rl.pick_orders(o, d, split, car),
+        data = ed.load_day('cs', car, d, (date(2026, 9, 29), d), lambda o, places, car=car: rl.pick_orders(o, d, split, car, places),
                            rl.invoice_owner(split, car))
         assert data.docs == ()
     alone = rl.RoutesView(plan_exists=True, trips=(('A', (11,)), ('B', (12,))))
     got = {car: [x.stop_id for x in ed.load_day('cs', car, d, (date(2026, 9, 29), d),
-                                                   lambda o, car=car: rl.pick_orders(o, d, alone, car),
+                                                   lambda o, places, car=car: rl.pick_orders(o, d, alone, car, places),
                                                    rl.invoice_owner(alone, car)).docs] for car in ('A', 'B')}
     assert got == {'A': [f'S:{ISN[0]}'], 'B': []}
-    assert ed.load_day('cs', 'A', d, (date(2026, 9, 29), d), lambda o: rl.pick_orders(o, d, alone, 'A')).docs == ()
+    assert ed.load_day('cs', 'A', d, (date(2026, 9, 29), d), lambda o, places: rl.pick_orders(o, d, alone, 'A', places)).docs == ()
     assert rl.invoice_owner(rl.RoutesView(), 'A')(11) is True        # плана нет — заказ отобран по своей машине
 
 
@@ -1409,7 +1409,7 @@ def test_load_day_plan_invoice_from_two_orders_in_two_chunks(fake_erp, monkeypat
     row = (ISN[0], '000318001', 11, 7, '1', 18000)
     fake_erp.plan_sales = [(row, ISN[2]), (row, ISN[3])]
     fake_erp.parents = [(ISN[0], ISN[2]), (ISN[0], ISN[3])]
-    data = ed.load_day('cs', 'A', d, (date(2026, 9, 29), d), lambda o: list(o), lambda cid: True)
+    data = ed.load_day('cs', 'A', d, (date(2026, 9, 29), d), lambda o, places: list(o), lambda cid: True)
     assert [(x.stop_id, x.replaces) for x in data.docs] == [(f'S:{ISN[0]}', (f'O:{ISN[2]}', f'O:{ISN[3]}'))]
 
 
@@ -1639,7 +1639,7 @@ def test_l8_daily_limits(term, client, st, monkeypatch):
 def test_l11_reference_data_cached(fake_erp):
     fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
     for _ in range(2):
-        ed.load_day('cs', '991AT61', date(2026, 10, 2), (date(2026, 9, 29), date(2026, 10, 2)), lambda o: [])
+        ed.load_day('cs', '991AT61', date(2026, 10, 2), (date(2026, 9, 29), date(2026, 10, 2)), lambda o, places: [])
     for sql in (ed.SQL_CONTAINERS, ed.SQL_DEFAULT_POINTS, erp.SQL_AGENTS, erp.SQL_CARS):
         assert fake_erp.calls.count(sql) == 1
     assert fake_erp.calls.count(ed.SQL_DAY_SALES) == 2                   # данные дня — каждый раз

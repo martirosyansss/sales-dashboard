@@ -1094,6 +1094,9 @@
         const info = [];
         if (o.shipped_before) info.push(pl(o.shipped_before, 'պատվեր') + ' արդեն առաքվել է');
         if (o.self_delivery) info.push(pl(o.self_delivery, 'պատվեր') + ' (' + kgText(o.self_delivery_kg) + ') մենեջերն ինքն է տանում');
+        // №74: правила настроек — везут другие машины (город-исключение) и клиенты, которых машины не везут
+        if (o.other_vehicle) info.push(pl(o.other_vehicle, 'պատվեր') + ' (' + kgText(o.other_vehicle_kg) + ') գնում է այլ մեքենայով');
+        if (o.customers_off) info.push(pl(o.customers_off, 'պատվեր') + ' (' + kgText(o.customers_off_kg) + ') չենք տանում՝ կարգավորումներով');
         $('dpOrdersInfo').textContent = info.length ? 'Առաքման մեջ չեն մտնում՝ ' + info.join(', ') + '։' : '';
     }
 
