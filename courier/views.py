@@ -34,7 +34,7 @@ from route_optimizer.erp import ErpError
 
 from . import clock, events as ev, merge as mg
 from .facts import gps_summary, office_window, refuel_flags
-from .routes_link import routes_depot, routes_view
+from .routes_link import RoutesView, routes_depot, routes_view
 from .state import state
 from .store import MarkSetting, PinConflict, PinPepperMissing, PinUnverifiable, Release, StoreError
 
@@ -490,8 +490,12 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
 
 
 def plan_mismatches(day: date) -> dict[str, Any]:
-    """Накладные ERP, которые везёт не та машина, которой их отдал план «Развоза» (только чтение). Прошлые даты
-    (Ереван) не сравниваются: ERP и route_optimizer за прошлое не читаются (`past`)."""
+    """Сверка с планом «Развоза» (только чтение). Прошлые даты (Ереван) не сравниваются: ERP и route_optimizer за
+    прошлое не читаются (`past`).
+    - items — накладные ERP с машиной, которая не та, что в плане (точка уйдёт машине накладной);
+    - no_car — накладных без машины у клиентов плана (точка уходит машине плана, erp_day.SQL_PLAN_SALES);
+    - coverage — по машине плана с выдачей /day на дату: клиентов в плане и сколько из них дошло до терминала
+      (последний снимок /day); машины без снимка (терминала нет / не запрашивал) не показываются."""
     st = state()
     if day < clock.today():
         return {'plan_exists': None, 'items': [], 'past': True}
@@ -501,13 +505,34 @@ def plan_mismatches(day: date) -> dict[str, Any]:
     invoices, names = st.invoice_loader(day)
     plan = view.plan_trucks()
     items = []
+    no_car = 0
     for inv in sorted(invoices, key=lambda x: (x.customer_id, x.doc_number)):
         trucks = plan.get(inv.customer_id)
-        if trucks and inv.car_code not in trucks:
+        if not trucks:
+            continue
+        if not inv.car_code:
+            no_car += 1
+        elif inv.car_code not in trucks:
             code, name = names.get(inv.customer_id, (str(inv.customer_id), ''))
             items.append({'doc_number': inv.doc_number, 'customer_code': code, 'customer_name': name,
-                          'erp_car': inv.car_code or None, 'plan_cars': sorted(trucks)})
-    return {'plan_exists': True, 'items': items}
+                          'erp_car': inv.car_code, 'plan_cars': sorted(trucks)})
+    return {'plan_exists': True, 'items': items, 'no_car': no_car, 'coverage': _plan_coverage(day, view)}
+
+
+def _plan_coverage(day: date, view: RoutesView) -> list[dict[str, Any]]:
+    """Машина плана → клиентов в плане и дошедших до терминала (последний снимок /day машины на дату)."""
+    got: dict[str, set[int]] = {}
+    for s in state().store.day_stops(day.isoformat()):
+        cid = (s.get('customer') or {}).get('id')
+        if cid is not None:
+            got.setdefault(s['car_code'], set()).add(int(cid))
+    out = []
+    for car in sorted({truck for truck, _ in view.trips}):
+        if car not in got:
+            continue
+        planned = set(view.car_customers(car))
+        out.append({'car_code': car, 'plan': len(planned), 'terminal': len(planned & got[car])})
+    return out
 
 
 def _routes_state() -> Any:

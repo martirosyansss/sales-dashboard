@@ -256,11 +256,17 @@
     }
     function renderToday(d) {
         const mm = d.mismatch || {};
-        $('crMismatch').innerHTML = (mm.items && mm.items.length)
+        const short = (mm.coverage || []).filter(c => c.terminal < c.plan);
+        $('crMismatch').innerHTML = (short.length
+            ? '<div class="rt-alert is-warn"><i class="fas fa-triangle-exclamation" aria-hidden="true"></i><span class="rt-alert-text"><b>Պլանի ոչ բոլոր խանութներն են հասել տերմինալին</b><ul>'
+              + short.map(c => '<li>' + esc(c.car_code) + '՝ պլանում ' + fmt(c.plan) + ', տերմինալին հասել է ' + fmt(c.terminal) + '</li>').join('') + '</ul></span></div>'
+            : '')
+            + ((mm.items && mm.items.length)
             ? '<div class="rt-alert is-warn"><i class="fas fa-triangle-exclamation" aria-hidden="true"></i><span class="rt-alert-text"><b>ERP-ում ապրանքագիրը այլ մեքենայի վրա է, քան «Առաքում» պլանում</b><ul>'
-              + mm.items.map(x => '<li>' + esc(x.customer_name || x.customer_code) + ' · ' + esc(x.doc_number) + ' — ERP՝ ' + esc(x.erp_car || 'առանց մեքենայի')
+              + mm.items.map(x => '<li>' + esc(x.customer_name || x.customer_code) + ' · ' + esc(x.doc_number) + ' — ERP՝ ' + esc(x.erp_car)
               + ', պլան՝ ' + esc(x.plan_cars.join(', ')) + '</li>').join('') + '</ul></span></div>'
-            : (mm.error ? '<p class="cr-lead">Համեմատել պլանի հետ չհաջողվեց՝ ' + esc(mm.error) + '</p>' : '');
+            : (mm.error ? '<p class="cr-lead">Համեմատել պլանի հետ չհաջողվեց՝ ' + esc(mm.error) + '</p>' : ''))
+            + (mm.no_car ? '<p class="cr-lead">ERP-ում առանց մեքենայի ապրանքագրեր՝ ' + fmt(mm.no_car) + '։ Տրվում են պլանի մեքենային։</p>' : '');
         $('crTodayCars').innerHTML = d.cars.length ? d.cars.map(carCard).join('')
             : '<p class="rt-empty">Այս օրվա համար տվյալներ չկան։ Տերմինալ ունեցող մեքենաների կետերը կերևան այստեղ։</p>';
         $('crFlaggedBox').hidden = !d.flagged.length;

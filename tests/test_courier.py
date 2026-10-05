@@ -244,13 +244,19 @@ class FakeErp:
         self.sales = list(sales)
         self.orders = list(orders)
         self.parents = list(parents)
+        self.plan_sales = []      # (строка SQL_DAY_SALES накладной без машины, ISN заказа-родителя)
         self.calls = []
+        self.params = []
 
     def __call__(self, conn, sql, params=()):
         erp.check_sql(sql)
         self.calls.append(sql)
+        self.params.append(params)
         if sql == ed.SQL_DAY_SALES:
             return self.sales
+        if sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]):
+            assert "ISNULL(s.fDELIVERYCAR, ''))) = ''" in sql and 'fPARENTDOCTYPE = 1' in sql
+            return [row for row, parent in self.plan_sales if parent in params[2:]]
         if sql == erp.SQL_DISPATCH_ORDERS:
             return self.orders
         if sql.startswith(ed.SQL_SALE_PARENTS.split('{')[0]):
@@ -921,10 +927,16 @@ def test_plan_mismatch(app, st, monkeypatch):
     st.invoice_loader = lambda d: ([ed.InvoiceCar(ISN[0], '001', 1, 'A'), ed.InvoiceCar(ISN[1], '002', 2, 'B'),
                                     ed.InvoiceCar(ISN[2], '003', 3, ''), ed.InvoiceCar(ISN[3], '004', 4, 'A')],
                                    {1: ('C1', 'Մեկ'), 2: ('C2', 'Երկու'), 3: ('C3', 'Երեք')})
+    st.store.save_day('2026-10-02', 'A', [{'stop_id': 'S:1', 'seq': 1, 'customer': {'id': 1}, 'lines': []}], 'v1',
+                      '2026-10-02T08:00:00+04:00')
     with app.test_request_context():
         out = cv.plan_mismatches(date(2026, 10, 2))
     assert out['plan_exists'] is True
-    assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('002', 'B', ['A']), ('003', None, ['B'])]
+    # накладная без машины (003) — не «не та машина»: её везёт машина плана; считается в no_car
+    assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('002', 'B', ['A'])]
+    assert out['no_car'] == 1
+    # A: в плане клиенты 1 и 2, до терминала дошёл 1; у B снимка /day нет — не показывается
+    assert out['coverage'] == [{'car_code': 'A', 'plan': 2, 'terminal': 1}]
 
 
 # ============================== хранилище ==============================
@@ -1325,6 +1337,37 @@ def test_m3_load_day_per_customer_source(fake_erp, tmp_path):
     stops = {s['stop_id']: s for s in body['stops']}
     assert stops[f'S:{ISN[0]}']['replaces'] == [f'O:{ISN[2]}'] and 'replaces' not in stops[f'O:{ISN[1]}']
     assert stops[f'O:{ISN[1]}']['source'] == 'order'
+
+
+def test_load_day_plan_invoice_without_car(fake_erp):
+    """05.10.2026: офис не поставил машину в накладной (fDELIVERYCAR пуст) — заказ уже отгружен (O: нет), и точка
+    пропадала у всех. Накладная без машины из заказа, который «Развоз» отдал машине, — точка S: этой машины."""
+    d = date(2026, 10, 2)
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0),       # отгружен, без машины
+                       (ISN[3], 'Z0013', date(2026, 10, 1), 13, 7, '', 900, 1, d, 0)]           # не отдан этой машине
+    fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2]),
+                           ((ISN[4], '000318004', 13, 7, '1', 900), ISN[3])]
+    fake_erp.parents = [(ISN[0], ISN[2]), (ISN[4], ISN[3])]
+    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: [o for o in orders if o.customer_id == 11])
+    assert [(x.stop_id, x.source, x.amount, x.replaces) for x in data.docs] == [
+        (f'S:{ISN[0]}', 'invoice', 18000, (f'O:{ISN[2]}',))]
+    i = next(i for i, sql in enumerate(fake_erp.calls) if sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]))
+    assert fake_erp.params[i] == (d, date(2026, 10, 3), ISN[2])   # только накладные дня и только заказы машины
+
+
+def test_load_day_plan_invoice_not_doubled_and_skipped_without_shipped(fake_erp):
+    """Накладная машины уже есть (fDELIVERYCAR = машина) — та же накладная из плана не дублируется; нет
+    отгруженных заказов машины — запроса накладных без машины нет."""
+    d = date(2026, 10, 2)
+    fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0)]
+    fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2])]   # подмена не фильтрует машину
+    data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: list(orders))
+    assert [x.stop_id for x in data.docs] == [f'S:{ISN[0]}']
+    fake_erp.calls.clear()
+    fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0)]
+    ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders: list(orders))
+    assert not any(sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]) for sql in fake_erp.calls)
 
 
 ORDER_ISN = '0000000A-0000-4000-8000-00000000000A'

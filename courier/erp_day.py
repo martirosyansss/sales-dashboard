@@ -33,6 +33,11 @@
 отдал машине (routes_link.pick_orders) и по которым накладной ещё нет нигде (DispatchOrder.shipped пуст:
 накладная на другой машине — это точка той машины).
 
+Накладная машины — fDELIVERYCAR = машина ИЛИ fDELIVERYCAR пуст и накладная сделана из заказа, который «Развоз»
+отдал этой машине (SQL_PLAN_SALES): машину в накладной офис ставит не всегда (05.10.2026 — у 141 из 151, обычно у
+~25 %), а без этого заказ уже отгружен (O: нет), накладной «чужая» машина тоже не нашлась — и точка пропадала у
+всех. Машина, указанная в накладной, главнее плана (накладная на другой машине — точка той машины).
+
 Справочники (тара, «дефолтные» точки, менеджеры, машины) кэшируются на REF_TTL_SECONDS — они меняются редко,
 а /day каждой машины перечитывался бы каждую минуту.
 """
@@ -203,6 +208,17 @@ FROM SALES s WITH (NOLOCK)
 WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) = ?
 """
 
+# Накладные дня БЕЗ машины, сделанные из данных заказов (DOCPARENTS, fPARENTDOCTYPE = 1) — те же столбцы, что
+# SQL_DAY_SALES; параметры: день, день + 1, ISN заказов
+SQL_PLAN_SALES = """
+SELECT CAST(s.fISN AS nvarchar(36)), RTRIM(s.fDOCNUM), s.fCUSTOMERID, s.fSALESAGENTID,
+       LTRIM(RTRIM(ISNULL(s.fPAYTYPE, ''))), s.fTOTALSUM
+FROM SALES s WITH (NOLOCK)
+WHERE s.fSTATE = 2 AND s.fDATE >= ? AND s.fDATE < ? AND LTRIM(RTRIM(ISNULL(s.fDELIVERYCAR, ''))) = ''
+  AND s.fISN IN (SELECT p.fISN FROM DOCPARENTS p WITH (NOLOCK)
+                 WHERE p.fPARENTDOCTYPE = 1 AND p.fPARENTISN IN ({ph}))
+"""
+
 # Заказы, из которых сделаны накладные (см. docstring модуля: fISN — накладная, fPARENTISN — заказ)
 SQL_SALE_PARENTS = """
 SELECT CAST(p.fISN AS nvarchar(36)), CAST(p.fPARENTISN AS nvarchar(36))
@@ -310,12 +326,23 @@ def _f(x: Any) -> float:
     return float(x or 0)
 
 
+def _sale_doc(r: Sequence[Any]) -> Doc:
+    isn = _str(r[0]).upper()
+    return Doc(f'S:{isn}', 'invoice', isn, _str(r[1]), int(r[2]), int(r[3] or 0), _str(r[4]), _f(r[5]))
+
+
 def day_sales(conn: Any, car_code: str, day: date) -> list[Doc]:
-    out = []
-    for r in _select(conn, SQL_DAY_SALES, (day, day + timedelta(days=1), car_code)):
-        isn = _str(r[0]).upper()
-        out.append(Doc(f'S:{isn}', 'invoice', isn, _str(r[1]), int(r[2]), int(r[3] or 0), _str(r[4]), _f(r[5])))
-    return out
+    return [_sale_doc(r) for r in _select(conn, SQL_DAY_SALES, (day, day + timedelta(days=1), car_code))]
+
+
+def plan_sales(conn: Any, order_isns: Sequence[str], day: date) -> list[Doc]:
+    """Накладные дня без машины, сделанные из данных заказов (заказы, которые «Развоз» отдал машине)."""
+    out: dict[str, Doc] = {}
+    for chunk in _chunks(sorted(set(order_isns))):
+        for r in _select(conn, SQL_PLAN_SALES.format(ph=_ph(len(chunk))), (day, day + timedelta(days=1), *chunk)):
+            doc = _sale_doc(r)
+            out[doc.isn] = doc   # накладная из нескольких заказов разных чанков — одна точка
+    return sorted(out.values(), key=lambda d: (d.customer_id, d.doc_number))
 
 
 def sale_parents(conn: Any, isns: Sequence[str]) -> dict[str, tuple[str, ...]]:
@@ -464,17 +491,21 @@ def load_day(connection_string: str, car_code: str, day: date, orders_window: tu
              pick_orders: OrdersPick) -> DayData:
     """Всё для /day машины на дату — одним read-only соединением.
 
-    Точки — по клиенту (docstring модуля): проведённые накладные машины на дату (с `replaces` — их заказами) +
-    заказы окна orders_window, которые pick_orders отдаёт этой машине, у клиентов без накладной машины и без
-    накладной вообще."""
+    Точки — по клиенту (docstring модуля): проведённые накладные машины на дату (с машиной в накладной или без
+    машины из заказов, которые pick_orders отдаёт этой машине; с `replaces` — их заказами) + заказы окна
+    orders_window, которые pick_orders отдаёт этой машине, у клиентов без накладной машины и без накладной вообще."""
     conn = erp.connect(connection_string)
     try:
         sales = day_sales(conn, car_code, day)
+        picked = pick_orders(erp.dispatch_orders(conn, *orders_window))
+        shipped = [o.isn for o in picked if o.shipped is not None]
+        if shipped:
+            own = {d.isn for d in sales}
+            sales += [d for d in plan_sales(conn, shipped, day) if d.isn not in own]
         parents = sale_parents(conn, [d.isn for d in sales]) if sales else {}
         sales = [Doc(d.stop_id, d.source, d.isn, d.doc_number, d.customer_id, d.agent_id, d.pay_type, d.amount,
                      parents.get(d.isn, ())) for d in sales]
         invoiced = {d.customer_id for d in sales}
-        picked = pick_orders(erp.dispatch_orders(conn, *orders_window))
         pending = [o for o in picked if o.shipped is None and o.customer_id not in invoiced]
         docs = sales + (order_docs(conn, pending) if pending else [])
         lines = doc_lines(conn, [d.isn for d in docs]) if docs else {}
