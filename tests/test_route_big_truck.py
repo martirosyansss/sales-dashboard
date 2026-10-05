@@ -274,8 +274,11 @@ def test_dispatch_api_big_truck_in_yerevan(client):
     assert client.post('/api/routes/settings', json={'settings': {
         'yerevan_zone': st.DEFAULT_SETTINGS['yerevan_zone'], 'big_truck_yerevan_km': 10}}).status_code == 200
     assert _build(client, ('CAR1',))['plan']['explain']['yerevan']['penalty_km'] == 10
-    r = client.post('/api/routes/settings', json={'settings': {'big_truck_yerevan_km': 21}})
-    assert r.status_code == 400 and 'settings.big_truck_yerevan_km' in r.get_json()['errors']
+    for bad in (21, 5, 2.5, -1):     # только ступени ползунка 0 / 1 / 3 / 10
+        r = client.post('/api/routes/settings', json={'settings': {'big_truck_yerevan_km': bad}})
+        assert r.status_code == 400 and 'settings.big_truck_yerevan_km' in r.get_json()['errors'], bad
+    for ok in st.YEREVAN_KM_STEPS:
+        assert client.post('/api/routes/settings', json={'settings': {'big_truck_yerevan_km': ok}}).status_code == 200
 
 
 # ============================== обучение: надбавка не учится второй раз ==============================
@@ -342,6 +345,38 @@ def test_earliest_mode_prefers_small_truck_for_yerevan():
         off = fl.route_day(pts, kgs, [1.0] * 2, DP_DEPOT, [BIG, SMALL], DP_NORMS, TN, used, earliest=True, **kw)
         on = fl.route_day(pts, kgs, [1.0] * 2, DP_DEPOT, [BIG, SMALL], DP_NORMS, tn_on, used, earliest=True, **kw)
         assert [t.truck for t in off] == [BIG.car_code] and [t.truck for t in on] == [SMALL.car_code], kw
+
+
+def test_earliest_mode_small_truck_only_within_normal_day():
+    """«Везти после конца дня»: малая машина свободна только под конец дня — с рейсом Еревана она ушла бы в переработку, а
+    большая успевает в обычный день: рейс — большой (приоритет малых — только в пределах обычного дня). Предел переработки
+    600, обычный день 480 (как dispatch.overtime: work_minutes — предел, normal_minutes — конец дня)."""
+    pts, kgs, used = CITY[:2], [300.0] * 2, {BIG.car_code: 200.0, SMALL.car_code: 470.0}
+    tn = replace(TNY, work_minutes=600.0, normal_minutes=480.0, yerevan_min={})
+    assert tn.day_end == 480.0 and TN.day_end == TN.work_minutes
+    for kw in ({'overflow': True}, {'overflow': False, 'windows': [(0.0, 1e6)] * 2}):
+        trips = fl.route_day(pts, kgs, [1.0] * 2, DP_DEPOT, [BIG, SMALL], DP_NORMS, tn, used, earliest=True, **kw)
+        assert [t.truck for t in trips] == [BIG.car_code], kw
+        # без конца обычного дня (весь предел — «обычный») малая успевает — она
+        wide = fl.route_day(pts, kgs, [1.0] * 2, DP_DEPOT, [BIG, SMALL], DP_NORMS, replace(tn, normal_minutes=None), used,
+                            earliest=True, **kw)
+        assert [t.truck for t in wide] == [SMALL.car_code], kw
+
+
+def test_dispatch_overtime_passes_normal_day_end():
+    """dispatch.overtime: предел переработки — work_minutes, конец обычного дня — normal_minutes (для приоритета №68)."""
+    seen = []
+    real = fl.route_day
+    stops, _ = _dp_stops([(101, CITY[0], 300.0), (102, CITY[1], 300.0)])
+    ctx = dp.DayContext(DP_DAY, DP_DEPOT, {t.car_code: t for t in (BIG, SMALL)}, DP_NORMS, TNY, START,
+                        overtime_minutes=660.0)
+    draft = dp.Draft(trucks=[BIG.car_code, SMALL.car_code], no_room={101, 102})
+    try:
+        fl.route_day = lambda *a, **kw: seen.append(a[6]) or real(*a, **kw)
+        dp.overtime(ctx, stops, draft)
+    finally:
+        fl.route_day = real
+    assert [(t.work_minutes, t.day_end) for t in seen] == [(660.0, TNY.work_minutes)]
 
 
 def test_plan_timed_no_room_reason_counts_extra_minutes():

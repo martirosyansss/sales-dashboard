@@ -558,7 +558,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'truck_lunch_min': (0, 120, False),
     'dispatch_buffer_pct': (50, 95, False),
     'big_truck_yerevan_min': (0, 120, False),
-    'big_truck_yerevan_km': (0, 20, False),
+    'big_truck_yerevan_km': (0, 10, False),     # и только ступени YEREVAN_KM_STEPS
     'warehouse_load_fixed_min': (0, 240, True),
     'warehouse_load_min_per_tonne': (0, 120, True),
 }
@@ -573,6 +573,7 @@ _MAX_LIST = 500
 MAX_HOLIDAYS = 400      # нерабочих дат в настройках: с запасом на год вперёд и прошлый (№64)
 CENTER_ZONE_VERTICES = (3, 200)      # и у зоны Еревана (№68; она ещё может быть пустой — правило выключено)
 BIG_TRUCK_AUTO_KG = 5000             # «большая машина» по умолчанию (№68): тоннаж от 5 т
+YEREVAN_KM_STEPS = (0, 1, 3, 10)     # сила приоритета малых машин в Ереване (№68) — ступени ползунка страницы
 WINDOW_KINDS = ('before', 'after', 'between', 'at')
 WINDOW_TOL_MAX = 120
 DEFAULT_WINDOW_TOL = 15     # «в 11:00 ± 15 мин» — допуск по умолчанию (№37)
@@ -1256,6 +1257,11 @@ def validate_settings(values: Mapping[str, Any],
         errors['center_zone'] = 'կենտրոնի սահմանի կետերը՝ [լայնություն, երկայնություն] Հայաստանում'
     else:
         out['center_zone'] = [[float(p[0]), float(p[1])] for p in zone]
+    # сила приоритета (№68): только ступени ползунка — значение не на ступени страница не показала бы и сменила бы при
+    # любом сохранении
+    if 'big_truck_yerevan_km' in out and out['big_truck_yerevan_km'] not in YEREVAN_KM_STEPS:
+        errors['big_truck_yerevan_km'] = 'ընտրեք ' + ', '.join(map(str, YEREVAN_KM_STEPS[:-1])) + f' կամ {YEREVAN_KM_STEPS[-1]}'
+        del out['big_truck_yerevan_km']
     # зона Еревана (№68): как граница центра, но может быть пустой — правило «большая машина в Ереване» выключено
     zone = values.get('yerevan_zone')
     if not isinstance(zone, list) or not (not zone or lo <= len(zone) <= hi):

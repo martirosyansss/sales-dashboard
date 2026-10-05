@@ -654,7 +654,9 @@ def overtime(ctx: DayContext, stops: Sequence[Stop], draft: Draft) -> Draft:
         return draft
     fed: set[str] = set()
     used, busy, day_departs = _occupied(ctx, draft.trips, routable, shares, fed)
-    limit = replace(ctx.tn, work_minutes=ctx.overtime_minutes) if ctx.overtime_minutes is not None else ctx.tn
+    # предел переработки; конец обычного дня — для приоритета малых машин в Ереване (№68, fleet._earliest_key)
+    limit = (replace(ctx.tn, work_minutes=ctx.overtime_minutes, normal_minutes=ctx.tn.work_minutes)
+             if ctx.overtime_minutes is not None else ctx.tn)
     reasons: dict[int, str] = {}
     departs: list[float] = []
     trips = fl.route_day([s.point for s in rest], [s.kg for s in rest], [s.revenue for s in rest],
