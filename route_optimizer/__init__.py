@@ -58,6 +58,7 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         valhalla=valhalla,
         dispatch_loader=lambda since, until, day: erp.load_dispatch_data(connection_string, since, until, day),
         fact_loader=lambda day: erp.load_fact_data(connection_string, day),
+        same_day_loader=lambda day: erp.load_same_day_data(connection_string, day),
         waybill_loader=lambda isns: waybill.load_lines(connection_string, isns),
         driver_list_loader=lambda since, until: waybill.load_drivers(connection_string, since, until),
         group_loader=lambda ids: erp.load_customer_groups(connection_string, ids),

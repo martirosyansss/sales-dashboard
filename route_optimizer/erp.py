@@ -21,7 +21,7 @@ from typing import Any, Iterator, Sequence
 import pyodbc
 
 from .demand import SaleDoc
-from .dispatch import DispatchData, DispatchOrder, FactData, ShippedDoc
+from .dispatch import DispatchData, DispatchOrder, FactData, SameDayData, ShippedDoc
 from .evaluate import ActualVisit
 from .geo import Fix
 from .plan import TemplateRow
@@ -355,6 +355,15 @@ OUTER APPLY (SELECT MIN(CAST(s.fDATE AS date)) AS shipped
 WHERE o.fSTATE = 2 AND o.fDATE >= ? AND o.fDATE < ?
 """
 
+# Когда завели заказы дня (новые заказы дня, ответ владельца №72; проверено 05.10.2026): DOCUMENTS.fCREATIONDATE того же
+# fISN — дата и время ввода заказа (в ORDERS времени нет)
+SQL_ORDER_CREATED = """
+SELECT CAST(o.fISN AS nvarchar(36)), d.fCREATIONDATE
+FROM ORDERS o WITH (NOLOCK)
+JOIN DOCUMENTS d WITH (NOLOCK) ON d.fISN = o.fISN
+WHERE o.fSTATE = 2 AND o.fDATE >= ? AND o.fDATE < ?
+"""
+
 # Адрес доставки клиента текстом (по умолчанию) — для карточки рейса и листа водителю
 SQL_ADDRESS_TEXT = """
 SELECT a.fCUSTOMERID, a.fADDRESS
@@ -596,6 +605,21 @@ def load_dispatch_data(connection_string: str, since: date, until: date, day: da
         return DispatchData(orders=tuple(orders), customers=names, addresses=address_texts(conn, ids),
                             agent_cars=agent_cars(conn, day - timedelta(days=AGENT_CARS_DAYS), day),
                             loaded_at=datetime.now().replace(microsecond=0))
+    finally:
+        close_quietly(conn)
+
+
+def load_same_day_data(connection_string: str, day: date) -> SameDayData:
+    """Заказы с датой day (новые заказы дня, №72), когда их завели и справочники к ним — одним соединением."""
+    conn = connect(connection_string)
+    try:
+        orders = dispatch_orders(conn, day, day + timedelta(days=1))
+        created = {_str(r[0]).upper(): r[1] for r in _select(conn, SQL_ORDER_CREATED, (day, day + timedelta(days=1)))
+                   if isinstance(r[1], datetime)}
+        ids = sorted({o.customer_id for o in orders})
+        names = {c.id: (c.code, c.name) for c in customers(conn, ids).values()}
+        return SameDayData(orders=tuple(orders), created=created, customers=names, addresses=address_texts(conn, ids),
+                           loaded_at=datetime.now().replace(microsecond=0))
     finally:
         close_quietly(conn)
 

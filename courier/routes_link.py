@@ -37,6 +37,8 @@ class RoutesView:
     carried: frozenset[str] = frozenset()                  # «Везти завтра» прошлых дней
     dropped: frozenset[str] = frozenset()                  # перенесённые сюда, но убранные логистом
     agents_off: frozenset[int] = frozenset()               # менеджеры, чьи заказы не везём (фильтр «Մենեջերներ»)
+    same_day: frozenset[str] = frozenset()                 # заказы с датой дня, взятые в его развоз (№72)
+    taken: frozenset[str] = frozenset()                    # взятые в развоз дня их приёма в прошлые дни — не везём
     roads: Any = None                                      # RoadDistances | None
 
     def car_customers(self, car_code: str) -> list[int]:
@@ -83,19 +85,21 @@ def routes_view(state: Any, day: date) -> RoutesView:
     try:
         stored = state.store.load_dispatch(day.isoformat())
         carried = _carried(state, day, workdays, holidays)
+        taken = _taken(state, day, workdays, holidays)
     except RoutesStoreError:
         logger.warning('[Courier] План «Развоза» на %s не прочитан', day, exc_info=True)
         return base
     if stored is None:
         return RoutesView(depot=base.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
-                          carried=frozenset(carried), roads=roads)
+                          carried=frozenset(carried), taken=frozenset(taken), roads=roads)
     draft = dp.Draft.from_json(stored[0])
     return RoutesView(depot=bundle.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                       plan_exists=bool(draft.trips),
                       trips=tuple((t.truck, tuple(t.stops)) for t in draft.trips),
                       excluded=frozenset(draft.excluded), added=frozenset(draft.added),
                       carried=frozenset(carried), dropped=frozenset(draft.dropped),
-                      agents_off=frozenset(draft.agents_off), roads=roads)
+                      agents_off=frozenset(draft.agents_off), same_day=frozenset(draft.same_day),
+                      taken=frozenset(taken), roads=roads)
 
 
 def routes_depot(state: Any) -> Point | None:
@@ -121,20 +125,35 @@ def _carried(state: Any, day: date, workdays: Sequence[int], holidays: Collectio
     return out
 
 
+def _taken(state: Any, day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> set[str]:
+    """Взятые в развоз дня их приёма (№72) в планах с прошлого рабочего дня по вчера (как views._same_day_taken)."""
+    out: set[str] = set()
+    d = dp.previous_workday(day, workdays, holidays)
+    while d < day:
+        stored = state.store.load_dispatch(d.isoformat())
+        if stored is not None:
+            out |= dp.Draft.from_json(stored[0]).same_day
+        d += timedelta(days=1)
+    return out
+
+
 def orders_window(day: date, view: RoutesView) -> tuple[date, date]:
-    """Даты заказов, которые смотрит «Развоз» для дня (с «не отгружены с прошлых дней»)."""
+    """Даты заказов, которые смотрит «Развоз» для дня (с «не отгружены с прошлых дней»); логист взял в развоз заказы
+    самого дня (№72) — и его дата."""
     since, until = dp.order_window(day, view.workdays, view.holidays)
-    return dp.backlog_since(since, view.workdays, holidays=view.holidays), until
+    return dp.backlog_since(since, view.workdays, holidays=view.holidays), until + timedelta(days=1 if view.same_day else 0)
 
 
 def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, car_code: str) -> list[DispatchOrder]:
     """Заказы, которые «Развоз» отдал машине: отбор как на странице «Развоз» (заказы дня без «не везём
-    сегодня» + добавленные и перенесённые прошлых дней, без заказов менеджеров, снятых фильтром); план на
-    дату есть — клиенты рейсов машины, нет — машина в самом заказе (ORDERS.fDELIVERYCAR)."""
+    сегодня» и без взятых в развоз дня их приёма в прошлые дни + добавленные и перенесённые прошлых дней + заказы
+    самого дня, взятые в его развоз (№72), без заказов менеджеров, снятых фильтром); план на дату есть — клиенты рейсов
+    машины, нет — машина в самом заказе (ORDERS.fDELIVERYCAR)."""
     since, _ = dp.order_window(day, view.workdays, view.holidays)
     sel = dp.to_deliver(orders, day, since)
     inside = set(view.added) | (set(view.carried) - set(view.dropped))
-    active = [o for o in sel.main if o.isn not in view.excluded] + [o for o in sel.backlog if o.isn in inside]
+    active = [o for o in sel.main if o.isn not in view.excluded and o.isn not in view.taken
+              and (o.order_date < day or o.isn in view.same_day)] + [o for o in sel.backlog if o.isn in inside]
     active = [o for o in active if o.agent_id not in view.agents_off]
     if view.plan_exists:
         mine = set(view.car_customers(car_code))

@@ -141,6 +141,8 @@ class RoutesState:
     # план развоза: заказы ERP на дату (since, until, day) → DispatchData; факт развоза за дату → FactData
     dispatch_loader: Callable[[date, date, date], dp.DispatchData] | None = None
     fact_loader: Callable[[date], dp.FactData] | None = None
+    # новые заказы дня (№72): заказы ERP с датой дня и время их ввода → SameDayData; None — без них, всё как раньше
+    same_day_loader: Callable[[date], dp.SameDayData] | None = None
     # Բեռնագիր (№57): fISN заказов точек машины → их строки (из проведённой накладной заказа, если она есть) и товары
     waybill_loader: Callable[[Sequence[str]], wb.Lines] | None = None
     # водители-экспедиторы ERP за [since, until) для выбора в «Վարորդ» (№62); кэш — (time.monotonic() до, имена)
@@ -151,6 +153,7 @@ class RoutesState:
     driver_list_lock: threading.Lock = field(default_factory=threading.Lock)   # перечитывает один запрос
     dispatch_cache: dict[tuple[date, date, date], tuple[float, dp.DispatchData]] = field(default_factory=dict)
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
+    same_day_cache: dict[date, tuple[float, dp.SameDayData]] = field(default_factory=dict)   # под dispatch_lock
     driver_geo: DriverGeo | None = None   # None — раздела «Առաքիչ» нет: точек водителей нет, всё как раньше
     driver_cache: tuple[float, dict[int, Point]] | None = None   # (time.monotonic(), точки) — DRIVER_TTL_SECONDS
     # факт машин (трек, точки дня, заправки) из «Առաքիչ» — обучение «Развоза»; None — без обучения, всё как раньше
@@ -1003,6 +1006,30 @@ def _dispatch_data(state: RoutesState, since: date, until: date, day: date, refr
     return data
 
 
+def _same_day_data(state: RoutesState, day: date, refresh: bool) -> dp.SameDayData | None:
+    """Заказы ERP с датой day (новые заказы дня, №72) — по правилам кэша _dispatch_data; загрузчика нет — None."""
+    if state.same_day_loader is None:
+        return None
+    now = time.monotonic()
+    with state.dispatch_lock:
+        hit = state.same_day_cache.get(day)
+    if hit is not None:
+        age = now - hit[0]
+        if age < MIN_REFRESH_SECONDS or (age < DISPATCH_TTL_SECONDS and not refresh):
+            return hit[1]
+    data = state.same_day_loader(day)
+    with state.dispatch_lock:
+        state.same_day_cache[day] = (time.monotonic(), data)
+        while len(state.same_day_cache) > DISPATCH_CACHE_DAYS:
+            state.same_day_cache.pop(next(iter(state.same_day_cache)))
+    return data
+
+
+def _same_day_now() -> datetime:
+    """Сейчас по Еревану без пояса — «сегодня» и «сейчас» новых заказов дня (№72): какие рейсы уже грузятся."""
+    return _yerevan_now().replace(tzinfo=None)
+
+
 def _ready_trucks(snap: Snapshot, bundle: Bundle, active_only: bool = True) -> dict[str, fl.FleetTruck]:
     """Машины, готовые к расчёту: тоннаж и расход заданы (и активны — для плана); с правом въезда в центр и признаком
     «большая машина» (№68); износ — как в расчёте (Bundle.resolved_trucks: журнал гаража или ручной)."""
@@ -1134,15 +1161,27 @@ class _DispatchDay:
     snap: Snapshot
     bundle: Bundle
     carried: set[str] = field(default_factory=set)   # перенесённые на этот день «Везти завтра» прошлых дней
+    # новые заказы дня (№72): заказы с датой этого дня (кандидаты; взятые — в draft.same_day) и их данные ERP; день не
+    # сегодняшний и взятых нет — пусто и None
+    same_day: list[dp.DispatchOrder] = field(default_factory=list)
+    same_day_data: dp.SameDayData | None = None
+    same_day_taken: int = 0   # заказов окна дня, взятых в развоз дня их приёма (их не везём: _same_day_taken)
 
 
 def _day_orders(state: RoutesState, bundle: Bundle, day: date,
                 refresh: bool) -> tuple[date, date, dp.DispatchData, dp.Selection]:
-    """Окно заказов дня, заказы ERP (кэш _dispatch_data) и отбор к доставке."""
+    """Окно заказов дня, заказы ERP (кэш _dispatch_data) и отбор к доставке — без заказов, взятых в развоз дня их приёма
+    (№72, _same_day_taken)."""
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     since, until = dp.order_window(day, workdays, off)
     data = _dispatch_data(state, dp.backlog_since(since, workdays, holidays=off), until, day, refresh)
-    return since, until, data, dp.to_deliver(data.orders, day, since)
+    sel = dp.to_deliver(data.orders, day, since)
+    taken = _same_day_taken(state, day, workdays, off)
+    if taken & {o.isn for o in sel.main}:
+        # взятые в развоз дня их приёма (№72) уже везли — даже если накладной ещё нет
+        main = [o for o in sel.main if o.isn not in taken]
+        sel = replace(sel, main=main, same_day_taken=len(sel.main) - len(main))
+    return since, until, data, sel
 
 
 def _stored_draft(state: RoutesState, day: date) -> tuple[dp.Draft | None, int]:
@@ -1159,13 +1198,18 @@ def _backlog_in(draft: dp.Draft | None, carried: Collection[str]) -> set[str]:
 
 
 def _active_orders(deliver: list[dp.DispatchOrder], backlog: list[dp.DispatchOrder],
-                   draft: dp.Draft | None, carried: Collection[str] = ()) -> list[dp.DispatchOrder]:
-    """Заказы в развозе: заказы дня без «не везём сегодня» + заказы прошлых дней в развозе (_backlog_in);
-    заказы менеджеров, снятых фильтром «Մենեջերներ» (agents_off), — ни те, ни другие."""
+                   draft: dp.Draft | None, carried: Collection[str] = (),
+                   today: Sequence[dp.DispatchOrder] = ()) -> list[dp.DispatchOrder]:
+    """Заказы в развозе: заказы дня без «не везём сегодня» + заказы прошлых дней в развозе (_backlog_in) + новые заказы
+    дня today, взятые логистом в развоз сегодня (№72, draft.same_day); заказы менеджеров, снятых фильтром «Մենեջերներ»
+    (agents_off), — ни те, ни другие."""
     excluded = draft.excluded if draft is not None else set()
     off = draft.agents_off if draft is not None else set()
     inside = _backlog_in(draft, carried)
-    return [o for o in deliver if o.isn not in excluded and o.agent_id not in off]         + [o for o in backlog if o.isn in inside and o.agent_id not in off]
+    same = draft.same_day if draft is not None else set()
+    return [o for o in deliver if o.isn not in excluded and o.agent_id not in off] \
+        + [o for o in backlog if o.isn in inside and o.agent_id not in off] \
+        + [o for o in today if o.isn in same and o.agent_id not in off]
 
 
 def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: list[dp.DispatchOrder],
@@ -1183,6 +1227,22 @@ def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: li
             out |= dp.Draft.from_json(stored[0]).deferred
         d += timedelta(days=1)
     return out & {o.isn for o in backlog}
+
+
+def _same_day_taken(state: RoutesState, day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> set[str]:
+    """Заказы, которые логист взял в развоз дня их приёма (№72, Draft.same_day) в планах с прошлого рабочего дня по вчера
+    (и нерабочего дня между ними): их уже везли — этот день их не везёт, даже без накладной. Битый черновик — без них."""
+    out: set[str] = set()
+    d = dp.previous_workday(day, workdays, holidays)
+    while d < day:
+        try:
+            stored = state.store.load_dispatch(d.isoformat())
+        except StoreError:
+            stored = None
+        if stored is not None:
+            out |= dp.Draft.from_json(stored[0]).same_day
+        d += timedelta(days=1)
+    return out
 
 
 def _defer_target(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> tuple[date, date]:
@@ -1236,6 +1296,21 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
     if draft is None:
         draft, rev = _stored_draft(state, day)
     carried = _carried(state, day, bundle.settings['workdays'], backlog, dp.holidays_of(bundle.settings))
+    # новые заказы дня (№72): сегодня — кандидаты; другой день — только если в нём есть взятые (их точки в плане). Взятых
+    # нет — ERP не ответила: день без подсказки о новых заказах (план от них не зависит); есть — ошибка, как у заказов дня
+    taken = draft is not None and bool(draft.same_day)
+    same_data = None
+    if taken or day == _same_day_now().date():
+        try:
+            same_data = _same_day_data(state, day, refresh)
+        except ErpError:
+            if taken:
+                raise
+            logger.warning('[Routes] Новые заказы дня %s не прочитаны — без подсказки', day, exc_info=True)
+    today = dp.same_day_candidates(same_data.orders, day) if same_data is not None else []
+    if same_data is not None:   # клиенты новых заказов — в справочниках дня (данные окна дня главнее)
+        data = replace(data, customers={**same_data.customers, **data.customers},
+                       addresses={**same_data.addresses, **data.addresses})
     coords: dict[int, Any] = {}
 
     def coord(cid: int) -> Any:
@@ -1243,17 +1318,17 @@ def _load_day(state: RoutesState, bundle: Bundle, day: date, refresh: bool = Fal
             coords[cid] = evaluate.visit_coord(snap, cid, 0, bundle.geo_overrides, bundle.driver_points)
         return coords[cid]
 
-    stops = dp.build_stops(_active_orders(deliver, backlog, draft, carried), coord)
+    stops = dp.build_stops(_active_orders(deliver, backlog, draft, carried, today), coord)
     ready = _ready_trucks(snap, bundle)
     ctx = _dispatch_ctx(state, snap, bundle, day, ready, [s.point for s in stops if s.point is not None],
                         {s.customer_id: s.point for s in stops if s.point is not None})
     return _DispatchDay(day, since, until, data, deliver, backlog, sel.shipped_before, sel.self_delivery, draft,
-                        rev or 0, stops, ctx, ready, snap, bundle, carried)
+                        rev or 0, stops, ctx, ready, snap, bundle, carried, today, same_data, sel.same_day_taken)
 
 
 def _day_stops(dd: _DispatchDay, draft: dp.Draft) -> list[dp.Stop]:
     """Точки развоза дня для черновика draft (его «не везём сегодня» и добавленные заказы)."""
-    return dp.build_stops(_active_orders(dd.deliver, dd.backlog, draft, dd.carried),
+    return dp.build_stops(_active_orders(dd.deliver, dd.backlog, draft, dd.carried, dd.same_day),
                           lambda cid: evaluate.visit_coord(dd.snap, cid, 0, dd.bundle.geo_overrides,
                                                            dd.bundle.driver_points))
 
@@ -1317,7 +1392,7 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
                        'wear_source': dd.bundle.wear_source(code)})
     added = _backlog_in(draft, dd.carried)
     no_coords = [s for s in dd.stops if s.point is None]
-    active = _active_orders(dd.deliver, dd.backlog, draft, dd.carried)
+    active = _active_orders(dd.deliver, dd.backlog, draft, dd.carried, dd.same_day)
     excl = [o for o in dd.deliver if o.isn in excluded]
     off = draft.agents_off if draft is not None else set()
     # фильтр «Մենեջերներ»: менеджеры заказов развоза дня (заказы дня без «не везём сегодня» и прошлых дней в развозе,
@@ -1359,7 +1434,9 @@ def _dispatch_body(dd: _DispatchDay) -> dict[str, Any]:
                    'agents_off': len(hidden), 'agents_off_kg': round(sum(o.kg for o in hidden)),
                    'self_delivery': len(dd.self_delivery),
                    'self_delivery_kg': round(sum(o.kg for o in dd.self_delivery)),
-                   'no_coords': len(no_coords), 'no_coords_kg': round(sum(x.kg for x in no_coords))},
+                   'no_coords': len(no_coords), 'no_coords_kg': round(sum(x.kg for x in no_coords)),
+                   # взяты в развоз дня их приёма (№72) — сегодня их не везём
+                   **({'same_day_taken': dd.same_day_taken} if dd.same_day_taken else {})},
         'stops_no_coords': [info(x) | {'kg': round(x.kg)} for x in no_coords],
         'excluded': [order_json(o) for o in excl],
         'agents': agents_json, 'agents_off': sorted(off),
@@ -1393,7 +1470,112 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
     модели ничего бы не сказали. Водители (№62, _drivers_json) — тоже только странице: имена людей модели не отправляются."""
     return {**_dispatch_body(dd), 'store_unload': {st.customer_id: dd.bundle.unload_min[st.customer_id]
                                                    for st in dd.stops if st.customer_id in dd.bundle.unload_min},
-            **_drivers_json(_state(), dd.day)}
+            **_drivers_json(_state(), dd.day), **_same_day_json(dd)}
+
+
+# --- Новые заказы дня (ответ владельца №72) ---
+
+SAME_DAY_MAX_ORDERS = 500   # заказов в одном запросе «Առաջարկներ» / «Ընտրել» — защита от битого запроса
+
+
+def _same_day_open(orders: Sequence[dp.DispatchOrder], draft: dp.Draft | None) -> list[dp.DispatchOrder]:
+    """Новые заказы дня, которые ещё решать: не взятые сегодня, не «не везём сегодня», не менеджеров, снятых фильтром."""
+    if draft is None:
+        return list(orders)
+    return [o for o in orders if o.isn not in draft.same_day and o.isn not in draft.excluded
+            and o.agent_id not in draft.agents_off]
+
+
+def _same_day_summary(orders: Sequence[dp.DispatchOrder]) -> dict[str, Any]:
+    """Сколько новых заказов (кг, ֏) и их отпечаток: изменился — странице есть что показать."""
+    raw = repr(sorted((o.isn, round(o.kg, 3), round(o.revenue, 2)) for o in orders))
+    return {'count': len(orders), 'kg': round(sum(o.kg for o in orders)), 'revenue': round(sum(o.revenue for o in orders)),
+            'sig': hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]}
+
+
+def _same_day_json(dd: _DispatchDay) -> dict[str, Any]:
+    """Новые заказы дня для страницы (№72): сегодня — сколько их ещё решать (count, kg, revenue, sig — плашка вверху) и
+    список: магазин, менеджер, кг, ֏, когда завели (ERP, created — «ЧЧ:ММ»), взят ли сегодня и какими машинами, есть ли уже
+    накладная (invoiced: офис сам решил), нет точки (no_coords). Другой день — только взятые. Данных нет — пусто (ответ —
+    прежний до байта)."""
+    sd = dd.same_day_data
+    if sd is None:
+        return {}
+    draft = dd.draft
+    now = _same_day_now()
+    is_today = dd.day == now.date()
+    open_ = _same_day_open(dd.same_day, draft) if is_today else []
+    taken = [o for o in dd.same_day if draft is not None and o.isn in draft.same_day]
+    trucks: dict[int, set[str]] = {}
+    for t in (draft.trips if draft is not None else ()):
+        for c in t.stops:
+            trucks.setdefault(c, set()).add(t.truck)
+    agents = dd.snap.agents
+    point = {s.customer_id: s.point for s in dd.stops}
+
+    def item(o: dp.DispatchOrder, took: bool) -> dict[str, Any]:
+        code, name = dd.data.customers.get(o.customer_id) or ('', '')
+        agent = agents.get(o.agent_id)
+        at = sd.created.get(o.isn)
+        p = point[o.customer_id] if o.customer_id in point else evaluate.visit_coord(
+            dd.snap, o.customer_id, 0, dd.bundle.geo_overrides, dd.bundle.driver_points).point
+        return {'isn': o.isn, 'doc_num': o.doc_num, 'customer_id': o.customer_id, 'code': code, 'name': name,
+                'address': dd.data.addresses.get(o.customer_id, ''), 'agent_id': o.agent_id,
+                'agent_name': agent.name if agent else '', 'agent_code': agent.code if agent else '',
+                'kg': round(o.kg), 'revenue': round(o.revenue),
+                'created': at.strftime('%H:%M') if at is not None else None,
+                'taken': took, 'trucks': sorted(trucks.get(o.customer_id, ())) if took else [],
+                'invoiced': o.shipped is not None, 'no_coords': p is None}
+
+    return {'same_day': {'today': is_today, 'now': now.strftime('%H:%M'), **_same_day_summary(open_),
+                         'taken': {k: v for k, v in _same_day_summary(taken).items() if k != 'sig'},
+                         'orders': [item(o, False) for o in open_] + [item(o, True) for o in taken]}}
+
+
+def _same_day_pick(state: RoutesState, bundle: Bundle, dd: _DispatchDay, raw: Any
+                   ) -> tuple[_DispatchDay, set[str], set[int], float]:
+    """Новые заказы дня из запроса (fISN) — что считать: (день с ними в развозе — точки и контекст расчёта с их точками,
+    заказы, их клиенты, «сейчас» — минуты от начала дня машины). Не сегодня, битый список или заказ уже не новый —
+    DispatchError (текст — логисту)."""
+    now = _same_day_now()
+    if dd.day != now.date():
+        raise dp.DispatchError('Նոր պատվերները կարելի է վերցնել միայն այսօրվա առաքման մեջ')
+    if not isinstance(raw, list) or not raw or len(raw) > SAME_DAY_MAX_ORDERS \
+            or not all(isinstance(x, str) and dp.ISN_RE.match(x.upper()) for x in raw):
+        raise dp.DispatchError('Պատվերների ցուցակը չընդունվեց — թարմացրեք էջը')
+    isns = {x.upper() for x in raw}
+    picked = [o for o in _same_day_open(dd.same_day, dd.draft) if o.isn in isns]
+    if len(picked) != len(isns):
+        raise dp.DispatchError('Պատվերներից մեկն այլևս նոր չէ կամ արդեն վերցված է — թարմացրեք էջը')
+    trial = dp.Draft.from_json(dd.draft.to_json())
+    trial.same_day |= isns
+    with_new = _load_day(state, bundle, dd.day, draft=trial, rev=dd.rev)
+    now_min = now.hour * 60 + now.minute + now.second / 60.0 - with_new.ctx.work_start_min
+    return with_new, isns, {o.customer_id for o in picked}, now_min
+
+
+def _same_day_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay, payload: Mapping[str, Any]) -> dp.Draft:
+    """Правка новых заказов дня (№72): same_day — взять заказы orders вариантом option (dispatch.take_same_day);
+    same_day_drop — вернуть взятые orders в развоз следующего дня; exclude взятого заказа — то же. Только сегодня."""
+    action = payload.get('action')
+    if action == 'same_day':
+        with_new, isns, cids, now_min = _same_day_pick(state, bundle, dd, payload.get('orders'))
+        return dp.take_same_day(with_new.ctx, dd.stops, with_new.stops, dd.draft, cids, isns, payload.get('option'),
+                                now_min)
+    if dd.day != _same_day_now().date():
+        raise dp.DispatchError('Նոր պատվերները կարելի է փոխել միայն այսօրվա առաքման մեջ')
+    raw = [payload.get('order')] if action == 'exclude' else payload.get('orders')
+    if not isinstance(raw, list) or len(raw) > SAME_DAY_MAX_ORDERS or not all(isinstance(x, str) for x in raw):
+        raise dp.DispatchError('Պատվերների ցուցակը չընդունվեց — թարմացրեք էջը')
+    return dp.drop_same_day(dd.draft, {x.upper() for x in raw})
+
+
+def _is_same_day_edit(dd: _DispatchDay, payload: Mapping[str, Any]) -> bool:
+    """Правка новых заказов дня: свои действия или «не везём сегодня» для взятого заказа дня (он не в заказах окна дня)."""
+    action = payload.get('action')
+    order = payload.get('order')
+    return action in ('same_day', 'same_day_drop') or (
+        action == 'exclude' and isinstance(order, str) and dd.draft is not None and order.upper() in dd.draft.same_day)
 
 
 DRIVER_LIST_DAYS = 90        # водители ERP и свои — кто встречался за 90 дней
@@ -1529,11 +1711,24 @@ def api_dispatch_status() -> Any:
     _, _, data, sel = _day_orders(state, bundle, day, refresh=False)
     draft, rev = _stored_draft(state, day)
     carried = _carried(state, day, bundle.settings['workdays'], sel.backlog, dp.holidays_of(bundle.settings))
-    active = _active_orders(sel.main, sel.backlog, draft, carried)
+    # новые заказы дня (№72): сегодня — сколько их ещё решать (плашка без перезагрузки); ERP не ответила — без них
+    today: list[dp.DispatchOrder] = []
+    same: dict[str, Any] = {}
+    if day == _same_day_now().date() or (draft is not None and draft.same_day):
+        try:
+            sd = _same_day_data(state, day, refresh=False)
+        except ErpError:
+            logger.warning('[Routes] Новые заказы дня %s не прочитаны — без подсказки', day, exc_info=True)
+            sd = None
+        if sd is not None:
+            today = dp.same_day_candidates(sd.orders, day)
+            if day == _same_day_now().date():
+                same = {'same_day': _same_day_summary(_same_day_open(today, draft))}
+    active = _active_orders(sel.main, sel.backlog, draft, carried, today)
     return jsonify({'success': True, 'day': day.isoformat(), 'rev': rev,
                     'orders': {'count': len(active), 'kg': round(sum(o.kg for o in active)),
                                'revenue': round(sum(o.revenue for o in active))},
-                    **_freshness(day, bundle, data, sel.main, sel.backlog, draft, carried)})
+                    **_freshness(day, bundle, data, sel.main, sel.backlog, draft, carried), **same})
 
 
 def _dispatch_request() -> tuple[Any, Any, Any]:
@@ -1659,10 +1854,13 @@ def api_dispatch_edit() -> Any:
     workdays = bundle.settings['workdays']
     deferred_before = set(dd.draft.deferred)
     try:
-        draft = dp.apply_edit(dd.ctx, dd.stops, dd.draft, payload, {o.isn for o in dd.deliver},
-                              {o.isn for o in dd.backlog},
-                              defer_since=_defer_target(day, workdays, dp.holidays_of(bundle.settings))[1],
-                              carried=dd.carried)
+        if _is_same_day_edit(dd, payload):    # новые заказы дня (№72)
+            draft = _same_day_edit(state, bundle, dd, payload)
+        else:
+            draft = dp.apply_edit(dd.ctx, dd.stops, dd.draft, payload, {o.isn for o in dd.deliver},
+                                  {o.isn for o in dd.backlog},
+                                  defer_since=_defer_target(day, workdays, dp.holidays_of(bundle.settings))[1],
+                                  carried=dd.carried)
     except dp.DispatchError as e:
         return _bad_request({'_': str(e)})
     if day < _clock().date() and draft.deferred != deferred_before:
@@ -1682,6 +1880,28 @@ def api_dispatch_edit() -> Any:
     body = _dispatch_page_body(dd)
     body['delta_km'] = round(body['plan']['summary']['km'] - km_before, 1) if body['plan'] else None
     return jsonify({'success': True, **body})
+
+
+@bp.post('/api/routes/dispatch/same-day')
+@_api
+def api_dispatch_same_day() -> Any:
+    """Новые заказы дня (№72): {"date" — сегодня, "orders": [fISN, …]} — как взять их в развоз сегодня все вместе
+    (dispatch.same_day_options: самые дешёвые варианты и кого взять нельзя). Ничего не сохраняет; выбор — POST
+    /api/routes/dispatch/edit {"action": "same_day", "orders", "option": key, "rev"}."""
+    payload, day, error = _dispatch_request()
+    if error is not None:
+        return error
+    state = _state()
+    bundle = _bundle(state)
+    dd = _load_day(state, bundle, day)
+    if dd.draft is None or dd.ctx is None:
+        return _conflict('Сначала соберите рейсы')
+    try:
+        with_new, isns, cids, now_min = _same_day_pick(state, bundle, dd, payload.get('orders'))
+    except dp.DispatchError as e:
+        return _bad_request({'_': str(e)})
+    found = dp.same_day_options(with_new.ctx, dd.stops, with_new.stops, dd.draft, cids, now_min)
+    return jsonify({'success': True, 'rev': dd.rev, 'orders': sorted(isns), **found})
 
 
 def _resize_preview(dd: _DispatchDay, payload: Mapping[str, Any], info: Callable[[dp.Stop], dict[str, Any]],
