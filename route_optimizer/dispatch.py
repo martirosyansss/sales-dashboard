@@ -457,6 +457,7 @@ def prune(draft: Draft, stops: Sequence[Stop]) -> None:
     """Рейсы черновика — по точкам дня stops (после правки, меняющей заказы дня): клиент без заказов или без точки
     уходит из рейсов, пустой рейс — тоже (как _clean перед расчётом, но для сохраняемого черновика)."""
     _clean(draft, {s.customer_id: s for s in stops if s.point is not None})
+    draft.same_day_trips &= {t.id for t in draft.trips}   # отметки рейсов, которых больше нет, — не хранятся (№72)
 
 
 def _clean(draft: Draft, routable: Mapping[int, Stop]) -> None:
@@ -678,6 +679,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
             draft.trips.append(DraftTrip(draft.next_id, t.truck, [rest[i].customer_id for i in t.items]))
             draft.next_id += 1
     placed = {c for t in draft.trips for c in t.stops}
+    draft.same_day_trips &= {t.id for t in draft.trips}   # рейс взятия, ушедший при пересборке, — без отметки (№72)
     if sel:
         for i, s in enumerate(rest):
             if s.customer_id not in placed:

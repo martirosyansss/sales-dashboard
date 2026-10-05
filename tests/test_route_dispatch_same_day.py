@@ -491,14 +491,18 @@ def test_extra_truck_unmarked_when_its_orders_go_back():
     assert dp.Draft.from_json(raw) == out
     dp.release_same_day_trucks(out)                                             # рейс есть — машина остаётся
     assert HOWO.car_code in out.trucks
+    assert out.same_day_trips == {out.trips[-1].id}
     dp.drop_same_day(out, {_isn(50)})
     dp.prune(out, base)
     dp.release_same_day_trucks(out)
     assert out.trucks == [FORD.car_code] and out.same_day_trucks == set()
+    assert out.same_day_trips == set()                                          # рейса больше нет — и отметки нет
     # пересборка — выбор машин логиста: отметка «добавлена взятием» снимается
     again = dp.take_same_day(ctx, base, stops, dp.Draft.from_json(draft.to_json()), {201}, {_isn(50)},
                              f'extra:{HOWO.car_code}', 30.0)
     assert dp.build(ctx, stops, again, [FORD.car_code, HOWO.car_code], 'now').same_day_trucks == set()
+    # пересборка без машины рейса взятия: рейс ушёл — отметки рейса тоже нет
+    assert dp.build(ctx, stops, again, [FORD.car_code], 'now').same_day_trips == set()
 
 
 def test_defer_started_trip_with_taken_orders_refused(client, monkeypatch):
