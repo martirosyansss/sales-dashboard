@@ -41,7 +41,7 @@ from .security import (PEPPER_ENV, PEPPER_OLD_ENV, SCHEME_PLAIN, Pepper, check_p
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 PIN_MAX_FAILS = 5
 PIN_LOCK = timedelta(minutes=15)
@@ -88,6 +88,18 @@ _TRACK_SCHEMA = (
     "CREATE INDEX IF NOT EXISTS events_car_type ON events(car_code, type, at_utc)",
 )
 
+# Второй человек в машине — «Առաքիչ» (crew-helper-plan.md, контракт v1.4 §8): каждое решение экипажа на терминале
+# (подтвердил помощника своим PIN / «один» / снял помощника) — строка crew_log; date — рабочий день решения (Ереван),
+# at_utc — момент сервера (clock.utc_key). По ней сервер проверяет helper_id событий и «решён ли экипаж» сессии.
+_CREW_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS crew_log(id INTEGER PRIMARY KEY AUTOINCREMENT, terminal_id INTEGER NOT NULL, "
+    "car_code TEXT NOT NULL, date TEXT NOT NULL, driver_id INTEGER NOT NULL, helper_id INTEGER, at_utc TEXT NOT NULL, "
+    "kind TEXT NOT NULL CHECK (kind IN ('helper','alone')))",
+    "CREATE INDEX IF NOT EXISTS crew_log_terminal ON crew_log(terminal_id, date)",
+    "CREATE INDEX IF NOT EXISTS crew_log_day ON crew_log(date, car_code)",
+    "CREATE INDEX IF NOT EXISTS events_helper ON events(helper_id, date)",
+)
+
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     # pin_hash — хеш секрета PIN схемы pin_scheme ('plain' | 'pepper:<id>'); pin_tag — детерминированный хеш PIN
@@ -101,16 +113,18 @@ _SCHEMA = (
     "car_code TEXT NOT NULL, token_sha256 TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, created_by TEXT, "
     "revoked_at TEXT, revoked_by TEXT, failed_pin_count INTEGER NOT NULL DEFAULT 0, pin_window_start TEXT, "
     "locked_until TEXT, last_seen_at TEXT, admin_pin_hash TEXT)",
-    # одна действующая сессия на терминал (новая отменяет старую — open_session)
+    # одна действующая сессия на терминал (новая отменяет старую — open_session); helper_id — առաքիչ, подтверждённый
+    # своим PIN на этом терминале (NULL — водитель один), v7
     "CREATE TABLE IF NOT EXISTS sessions(token_sha256 TEXT PRIMARY KEY, terminal_id INTEGER NOT NULL, "
-    "driver_id INTEGER NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)",
+    "driver_id INTEGER NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, helper_id INTEGER)",
     "CREATE INDEX IF NOT EXISTS sessions_terminal ON sessions(terminal_id)",
     # события терминала: id — uuid4 от терминала (идемпотентность); только принятые.
-    # snapshot_id — снимок дня, по версии точки в котором событие проверено (цены для «Գումար»)
+    # snapshot_id — снимок дня, по версии точки в котором событие проверено (цены для «Գումար»); helper_id —
+    # подтверждённый առաքիչ события (v7; NULL — один или не подтверждён)
     "CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY, terminal_id INTEGER NOT NULL, "
     "driver_id INTEGER NOT NULL, car_code TEXT NOT NULL, date TEXT NOT NULL, stop_id TEXT, type TEXT NOT NULL, "
     "at_device TEXT NOT NULL, at_utc TEXT NOT NULL, received_at TEXT NOT NULL, payload TEXT NOT NULL, "
-    "flags TEXT NOT NULL DEFAULT '[]', snapshot_id INTEGER)",
+    "flags TEXT NOT NULL DEFAULT '[]', snapshot_id INTEGER, helper_id INTEGER)",
     "CREATE INDEX IF NOT EXISTS events_day ON events(date, car_code)",
     "CREATE INDEX IF NOT EXISTS events_stop ON events(stop_id, type)",
     "CREATE INDEX IF NOT EXISTS events_driver ON events(driver_id, date)",
@@ -167,6 +181,7 @@ _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS app_release(version_code INTEGER PRIMARY KEY, version_name TEXT NOT NULL, "
     "sha256 TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL, uploaded_at TEXT NOT NULL, uploaded_by TEXT)",
     *_TRACK_SCHEMA,
+    *_CREW_SCHEMA,
 )
 
 _SEED = (
@@ -243,6 +258,13 @@ _MIGRATIONS: dict[int, tuple[str | Callable[[sqlite3.Connection], None], ...]] =
     # v5 → v6 (только добавляет, контракт v1.3 §7): трек машины и индекс событий по машине и типу (заправки машины
     # по порядку — проверка одометра, обучение расхода).
     5: _TRACK_SCHEMA,
+    # v6 → v7 (только добавляет, контракт v1.4 §8): второй человек в машине — помощник сессии, помощник события,
+    # журнал решений экипажа. Шаги повторяемы.
+    6: (
+        lambda conn: _add_column(conn, 'sessions', 'helper_id', 'INTEGER'),
+        lambda conn: _add_column(conn, 'events', 'helper_id', 'INTEGER'),
+        *_CREW_SCHEMA,
+    ),
 }
 
 
@@ -440,6 +462,8 @@ class Session:
     driver_id: int
     driver_name: str
     expires_at: str
+    created_at: str = ''
+    helper_id: int | None = None     # առաքիչ сессии (v7): подтверждён своим PIN на этом терминале; None — один
 
 
 @dataclass(frozen=True)
@@ -687,7 +711,8 @@ class Store:
         сравнить нечем). PIN другого активного водителя не проверить (перца его tag или хеша нет в среде) — он может
         совпасть: PinPepperMissing, пока офис не восстановит перец или явно не сбросит PIN таких водителей
         (reset_unverifiable: их PIN и сессии удаляются в той же транзакции, офис задаёт им новый PIN). Новый PIN — хеш
-        и tag текущей схемы. Новый PIN или выключение отменяют сессии водителя."""
+        и tag текущей схемы. Новый PIN или выключение отменяют сессии водителя и снимают его как առաքիչ с чужих
+        сессий (v7)."""
         name = _clean_name(name, 'Имя водителя')
         if pin is not None and not valid_pin(pin):
             raise ValueError('PIN — 4–6 цифр')
@@ -708,6 +733,7 @@ class Store:
                 conn.execute('UPDATE drivers SET pin_hash = NULL, pin_tag = NULL, pin_scheme = NULL, updated_at = ?, '
                              'updated_by = ? WHERE id = ?', (now, user, oid))
                 conn.execute('DELETE FROM sessions WHERE driver_id = ?', (oid,))
+                conn.execute('UPDATE sessions SET helper_id = NULL WHERE helper_id = ?', (oid,))
             if lost:
                 logger.warning('[Courier] PIN водителей %s сброшен офисом (%s): перца их PIN нет в среде',
                                [d for d, _ in lost], user)
@@ -747,8 +773,10 @@ class Store:
                 args += [pin_hash, tag, scheme]
             if conn.execute(f'UPDATE drivers SET {sets} WHERE id = ?', (*args, driver_id)).rowcount != 1:
                 raise LookupError('Водитель не найден')
-            if not active or pin_hash is not None:   # выключен или сменён PIN — прежние сессии недействительны
+            if not active or pin_hash is not None:   # выключен или сменён PIN — прежние сессии недействительны,
                 conn.execute('DELETE FROM sessions WHERE driver_id = ?', (driver_id,))
+                # и առաքիչ с чужих сессий снимается (сессия водителя остаётся — экипаж он решает заново)
+                conn.execute('UPDATE sessions SET helper_id = NULL WHERE helper_id = ?', (driver_id,))
             return driver_id
 
         return self._transaction(write, 'не удалось сохранить водителя')
@@ -929,16 +957,56 @@ class Store:
         """Действующая сессия этого терминала с активным водителем; чужая, просроченная — None."""
         now = _now()
         r = self._read(lambda c: c.execute(
-            'SELECT s.terminal_id, s.driver_id, d.name, s.expires_at, s.token_sha256 FROM sessions s '
-            'JOIN drivers d ON d.id = s.driver_id WHERE s.token_sha256 = ? AND d.active = 1',
+            'SELECT s.terminal_id, s.driver_id, d.name, s.expires_at, s.token_sha256, s.created_at, s.helper_id '
+            'FROM sessions s JOIN drivers d ON d.id = s.driver_id WHERE s.token_sha256 = ? AND d.active = 1',
             (digest,)).fetchone())
         if r is None or not same_hash(r[4], digest) or int(r[0]) != terminal_id or r[3] <= now:
             return None
-        return Session(int(r[0]), int(r[1]), r[2], r[3])
+        return Session(int(r[0]), int(r[1]), r[2], r[3], r[5], None if r[6] is None else int(r[6]))
 
     def close_session(self, digest: str) -> None:
         self._transaction(lambda c: c.execute('DELETE FROM sessions WHERE token_sha256 = ?', (digest,)),
                           'не удалось закрыть сессию')
+
+    # --- экипаж: второй человек в машине (v7, контракт v1.4 §8) ---
+
+    def set_crew(self, digest: str, terminal_id: int, car_code: str, driver_id: int, helper_id: int | None) -> bool:
+        """Решение экипажа сессии одной транзакцией: sessions.helper_id = helper_id (None — водитель один) и строка
+        crew_log (kind 'helper' / 'alone'; date — рабочий день решения по Еревану). Сессия водителя не меняется (не
+        open_session). False — сессии уже нет или помощник за это время выключен (решение не записано)."""
+        now = clock.now()
+
+        def write(conn: sqlite3.Connection) -> bool:
+            if helper_id is not None and conn.execute('SELECT 1 FROM drivers WHERE id = ? AND active = 1',
+                                                      (helper_id,)).fetchone() is None:
+                return False
+            if conn.execute('UPDATE sessions SET helper_id = ? WHERE token_sha256 = ? AND terminal_id = ? '
+                            'AND driver_id = ?', (helper_id, digest, terminal_id, driver_id)).rowcount != 1:
+                return False
+            conn.execute('INSERT INTO crew_log(terminal_id, car_code, date, driver_id, helper_id, at_utc, kind) '
+                         'VALUES(?, ?, ?, ?, ?, ?, ?)',
+                         (terminal_id, car_code, now.date().isoformat(), driver_id, helper_id, clock.utc_key(now),
+                          'alone' if helper_id is None else 'helper'))
+            return True
+
+        return self._transaction(write, 'не удалось сохранить экипаж')
+
+    def crew_decided(self, terminal_id: int, driver_id: int, since_utc: str) -> bool:
+        """Экипаж сессии решён: в crew_log есть решение этого водителя на этом терминале не раньше since_utc
+        (начало сессии, clock.utc_key)."""
+        return self._read(lambda c: c.execute(
+            'SELECT 1 FROM crew_log WHERE terminal_id = ? AND driver_id = ? AND at_utc >= ? LIMIT 1',
+            (terminal_id, driver_id, since_utc)).fetchone()) is not None
+
+    def crew_for_day(self, day: str) -> list[dict[str, Any]]:
+        """Решения экипажа за рабочий день (офис): [{car_code, terminal_id, driver_id, driver_name, helper_id,
+        helper_name, kind, at_utc}] по моменту."""
+        rows = self._read(lambda c: c.execute(
+            'SELECT c.car_code, c.terminal_id, c.driver_id, d.name, c.helper_id, h.name, c.kind, c.at_utc FROM crew_log c '
+            'LEFT JOIN drivers d ON d.id = c.driver_id LEFT JOIN drivers h ON h.id = c.helper_id '
+            'WHERE c.date = ? ORDER BY c.at_utc, c.id', (day,)).fetchall())
+        keys = ('car_code', 'terminal_id', 'driver_id', 'driver_name', 'helper_id', 'helper_name', 'kind', 'at_utc')
+        return [dict(zip(keys, r)) for r in rows]
 
     # --- точки дня (как их получил терминал) ---
 
@@ -1021,8 +1089,8 @@ class Store:
         """События даты (etype — только этого типа, по индексу events_type)."""
         rows = self._read(lambda c: c.execute(
             'SELECT e.id, e.terminal_id, e.driver_id, d.name, e.car_code, e.date, e.stop_id, e.type, e.at_device, '
-            'e.at_utc, e.received_at, e.payload, e.flags, e.snapshot_id FROM events e '
-            'LEFT JOIN drivers d ON d.id = e.driver_id '
+            'e.at_utc, e.received_at, e.payload, e.flags, e.snapshot_id, e.helper_id, h.name FROM events e '
+            'LEFT JOIN drivers d ON d.id = e.driver_id LEFT JOIN drivers h ON h.id = e.helper_id '
             'WHERE e.date = ?' + (' AND e.type = ?' if etype else '') + ' ORDER BY e.at_utc, e.received_at, e.id',
             (day, etype) if etype else (day,)).fetchall())
         return [_event_json(r, self._name()) for r in rows]
@@ -1149,13 +1217,18 @@ class Store:
         return [{'id': r[0], 'message': r[1], 'type': r[2], 'received_at': r[3]} for r in rows]
 
     def rejected_for_day(self, day: str) -> list[dict[str, Any]]:
+        """Отказы даты; helper_name — помощник из тела отказа, если он подтверждён по тому же правилу, что helper_id
+        принятого события (_HELPER_OK_SQL); тело обрезано или битое, даты нет — помощника нет."""
         rows = self._read(lambda c: c.execute(
-            'SELECT r.id, r.message, r.type, r.received_at, r.driver_id, d.name, r.terminal_id FROM rejected_events r '
-            'LEFT JOIN drivers d ON d.id = r.driver_id '
-            'WHERE r.date = ? OR (r.date IS NULL AND substr(r.received_at, 1, 10) = ?) ORDER BY r.received_at',
+            'SELECT r.id, r.message, r.type, r.received_at, r.driver_id, d.name, r.terminal_id, h.name '
+            'FROM rejected_events r LEFT JOIN drivers d ON d.id = r.driver_id '
+            "LEFT JOIN drivers h ON r.date IS NOT NULL AND json_valid(r.body) "
+            "AND json_type(r.body, '$.helper_id') = 'integer' AND h.id = json_extract(r.body, '$.helper_id') AND "
+            + _HELPER_OK_SQL.format(terminal='r.terminal_id', driver='r.driver_id', helper='h.id', date='r.date')
+            + ' WHERE r.date = ? OR (r.date IS NULL AND substr(r.received_at, 1, 10) = ?) ORDER BY r.received_at',
             (day, day)).fetchall())
         return [{'id': r[0], 'message': r[1], 'type': r[2], 'received_at': r[3], 'driver_id': r[4],
-                 'driver_name': r[5], 'terminal_id': r[6]} for r in rows]
+                 'driver_name': r[5], 'terminal_id': r[6], 'helper_name': r[7]} for r in rows]
 
     def photos_for_events(self, event_ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
         out: dict[str, list[dict[str, Any]]] = {}
@@ -1408,6 +1481,13 @@ def _suggestion(r: Sequence[Any]) -> dict[str, Any] | None:
             'note': payload.get('note'), 'driver_name': r[3], 'date': r[1], 'at': r[2]}
 
 
+# Правило помощника события (контракт v1.4 §8): помощник подтверждён своим PIN на этом терминале у этого водителя в
+# день события или накануне (сессия живёт до 04:00 следующего дня; офлайн-очередь уходит позже смены помощника).
+_HELPER_OK_SQL = ("EXISTS (SELECT 1 FROM crew_log c WHERE c.kind = 'helper' AND c.terminal_id = {terminal} "
+                  "AND c.driver_id = {driver} AND c.helper_id = {helper} "
+                  "AND c.date IN ({date}, date({date}, '-1 day')))")
+
+
 def _event_json(r: Sequence[Any], name: str) -> dict[str, Any]:
     try:
         payload, flags = json.loads(r[11]), json.loads(r[12])
@@ -1416,7 +1496,8 @@ def _event_json(r: Sequence[Any], name: str) -> dict[str, Any]:
     return {'id': r[0], 'terminal_id': r[1], 'driver_id': r[2], 'driver_name': r[3], 'car_code': r[4],
             'date': r[5], 'stop_id': r[6], 'type': r[7], 'at': r[8], 'at_utc': r[9], 'received_at': r[10],
             'payload': payload if isinstance(payload, dict) else {}, 'flags': flags if isinstance(flags, list) else [],
-            'snapshot_id': r[13] if len(r) > 13 else None}
+            'snapshot_id': r[13] if len(r) > 13 else None,
+            'helper_id': r[14] if len(r) > 14 else None, 'helper_name': r[15] if len(r) > 15 else None}
 
 
 class EventTx:
@@ -1444,11 +1525,12 @@ class EventTx:
         """Принятое событие; False — id уже был (гонка двух пачек). Отказ с тем же id удаляется."""
         n = self.conn.execute(
             'INSERT OR IGNORE INTO events(id, terminal_id, driver_id, car_code, date, stop_id, type, at_device, at_utc, '
-            'received_at, payload, flags, snapshot_id) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'received_at, payload, flags, snapshot_id, helper_id) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (row['id'], row['terminal_id'], row['driver_id'], row['car_code'], row['date'], row['stop_id'],
              row['type'], row['at_device'], row['at_utc'], row['received_at'],
              json.dumps(row['payload'], ensure_ascii=False, sort_keys=True),
-             json.dumps(sorted(set(row['flags'])), ensure_ascii=False), row.get('snapshot_id'))).rowcount
+             json.dumps(sorted(set(row['flags'])), ensure_ascii=False), row.get('snapshot_id'),
+             row.get('helper_id'))).rowcount
         if n:
             self.conn.execute('DELETE FROM rejected_events WHERE id = ?', (row['id'],))
         return n == 1
@@ -1547,6 +1629,13 @@ class EventTx:
     def driver_name(self, driver_id: int) -> str | None:
         r = self.conn.execute('SELECT name FROM drivers WHERE id = ?', (driver_id,)).fetchone()
         return r[0] if r else None
+
+    def helper_confirmed(self, terminal_id: int, driver_id: int, helper_id: int, day: str) -> bool:
+        """helper_id события рабочего дня day подтверждён (_HELPER_OK_SQL: crew_log kind='helper' того же терминала и
+        водителя сессии, дата решения — day или накануне)."""
+        return self.conn.execute(
+            'SELECT ' + _HELPER_OK_SQL.format(terminal='?', driver='?', helper='?', date='?'),
+            (terminal_id, driver_id, helper_id, day, day)).fetchone()[0] == 1
 
     # --- трек и заправки (контракт v1.3 §7) ---
 

@@ -269,7 +269,7 @@ def test_courier_migration_v5_to_v6_keeps_data(cs):
     s = Store(cs.path)
     assert [r['id'] for r in s.refuels()] == [e['id']]                       # событие на месте
     with closing(sqlite3.connect(cs.path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION) == '6'
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION)   # 5 → 6 → … → текущая
         names = {r[0] for r in conn.execute('SELECT name FROM sqlite_master')}
         assert {'track_points', 'track_points_day', 'events_car_type'} <= names
     t = _track([_pt(1)])
@@ -292,7 +292,7 @@ def test_courier_owner_copy_migrates_to_v6(tmp_path):
     s = Store(str(copy))
     s.refuels()
     with closing(sqlite3.connect(str(copy))) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == '6'
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION)
         assert {t: conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in tables} == before
         assert conn.execute('SELECT COUNT(*) FROM track_points').fetchone() == (0,)
 

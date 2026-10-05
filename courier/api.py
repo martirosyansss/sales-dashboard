@@ -15,7 +15,7 @@ from datetime import date, timedelta
 from functools import wraps
 from typing import Any, Callable
 
-from flask import Blueprint, Response, g, jsonify, request, send_file
+from flask import Blueprint, Response, current_app, g, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
 
 from route_optimizer.erp import ErpError
@@ -23,9 +23,10 @@ from route_optimizer.erp import ErpError
 from . import clock, events as ev
 from .day import DEMO_DAY
 from .photos import MAX_PHOTO_BYTES, PHOTO_KINDS, image_ext, save_photo
+from .routes_link import planned_crew
 from .security import token_hash, token_shape_ok, valid_pin
 from .state import state
-from .store import PHOTO_BYTES_PER_DAY, PHOTOS_PER_DAY, PhotoLimit, PinReset, StoreError
+from .store import PHOTO_BYTES_PER_DAY, PHOTOS_PER_DAY, Driver, PhotoLimit, PinReset, Session, StoreError, Terminal
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ MSG = {
     'too_large': 'Չափազանց մեծ հարցում',
     'server': 'Սերվերի սխալ',
     'erp': 'ERP-ն հասանելի չէ, փորձեք մի փոքր ուշ',
+    'same_person': 'Սա վարորդի PIN-ն է։ Առաքիչը պետք է մուտքագրի իր PIN-ը։',
 }
 
 
@@ -180,37 +182,49 @@ def login() -> Any:
     неверная."""
     st, t = state(), g.courier_terminal
     body = _json_body()
-    pin = body.get('pin') if body else None
     now = clock.now()
-    if t.locked_until and t.locked_until > clock.iso(now):
-        return _locked(t.locked_until)
+    driver, failure = _pin_driver(t, body.get('pin') if body else None)
+    if driver is None:
+        return failure
+    expires = clock.session_expiry(now)
+    token = st.store.open_session(t.id, driver.id, expires)
+    return jsonify({'session': token, 'expires_at': clock.iso(expires),
+                    'driver': {'id': driver.id, 'name': driver.name},
+                    'car': {'code': t.car_code, 'name': _car_name(t.car_code)},
+                    'helper': None, 'planned': _planned(t.car_code)})   # v1.4 §8: экипаж новой сессии не решён
+
+
+def _pin_driver(t: Terminal, pin: Any) -> tuple[Driver | None, Any]:
+    """PIN на терминале — одна проверка для /login и /crew (тот же бюджет попыток и блокировка терминала):
+    (водитель, None) или (None, ответ-ошибка). Терминал заблокирован — 429; PIN неверного формата — 400, не попытка;
+    проверка на терминале — по одной (параллельная → 429); попытка резервируется в базе до проверки, верный PIN
+    снимает резерв; PinReset — 403 «неверный PIN или задать заново»; один PIN у нескольких активных — 403."""
+    st = state()
+    if t.locked_until and t.locked_until > clock.iso(clock.now()):
+        return None, _locked(t.locked_until)
     if not valid_pin(pin):
-        return error(400, 'bad_request', 'PIN-ը 4–6 թվանշան է')
+        return None, error(400, 'bad_request', 'PIN-ը 4–6 թվանշան է')
     lock = _login_lock(t.id)
     if not lock.acquire(blocking=False):
-        return error(429, 'locked', 'Մուտքն արդեն ստուգվում է, փորձեք մի քանի վայրկյանից', retry_after=LOGIN_BUSY_RETRY)
+        return None, error(429, 'locked', 'Մուտքն արդեն ստուգվում է, փորձեք մի քանի վայրկյանից',
+                           retry_after=LOGIN_BUSY_RETRY)
     try:
         attempt = st.store.pin_attempt(t.id)
         if isinstance(attempt, str):
-            return _locked(attempt)
+            return None, _locked(attempt)
         try:
             drivers, failure = st.store.match_pin(pin), MSG['pin']
         except PinReset:
             drivers, failure = [], MSG['pin_reset']
         if not drivers:
-            return _locked(attempt.locked_until) if attempt.locked_until else error(403, 'pin', failure)
+            return None, _locked(attempt.locked_until) if attempt.locked_until else error(403, 'pin', failure)
         st.store.pin_release(t.id, attempt)   # PIN верный — попытка не в счёт
     finally:
         lock.release()
     if len(drivers) > 1:
         logger.warning('[Courier] Один PIN у нескольких активных водителей: %s', [d.id for d in drivers])
-        return error(403, 'pin', 'Այս PIN-ը կրկնվում է․ դիմեք ադմինիստրատորին')
-    driver = drivers[0]
-    expires = clock.session_expiry(now)
-    token = st.store.open_session(t.id, driver.id, expires)
-    return jsonify({'session': token, 'expires_at': clock.iso(expires),
-                    'driver': {'id': driver.id, 'name': driver.name},
-                    'car': {'code': t.car_code, 'name': _car_name(t.car_code)}})
+        return None, error(403, 'pin', 'Այս PIN-ը կրկնվում է․ դիմեք ադմինիստրատորին')
+    return drivers[0], None
 
 
 def _locked(until: str) -> Any:
@@ -218,6 +232,62 @@ def _locked(until: str) -> Any:
     retry = max(1, int((left - clock.now()).total_seconds())) if left else 900
     return error(429, 'locked', f'Չափազանց շատ սխալ փորձ։ Փորձեք {max(1, (retry + 59) // 60)} րոպեից',
                  retry_after=retry)
+
+
+# --- экипаж: второй человек в машине (v1.4 §8) ---
+
+def _planned(car_code: str) -> dict[str, str | None] | None:
+    """Экипаж машины по плану «Развоза» на сегодня; «Маршрутов» нет или сбой — None."""
+    crew = planned_crew(current_app.extensions.get('route_optimizer'), clock.today())
+    return None if crew is None else crew.get(car_code, {'driver': None, 'helper': None})
+
+
+def _crew(t: Terminal, s: Session, helper: Driver | None) -> dict[str, Any]:
+    """Crew: водитель сессии, առաքիչ, решён ли экипаж этой сессии (решение в crew_log после входа), план."""
+    since = clock.parse_moment(s.created_at)
+    return {'driver': {'id': s.driver_id, 'name': s.driver_name},
+            'helper': {'id': helper.id, 'name': helper.name} if helper else None,
+            'decided': state().store.crew_decided(t.id, s.driver_id, clock.utc_key(since) if since else ''),
+            'planned': _planned(t.car_code)}
+
+
+def _session_helper(s: Session) -> Driver | None:
+    """Առաքիչ сессии; выключенный — не он (save_driver снимает его с сессий; здесь — на случай гонки)."""
+    helper = state().store.driver(s.helper_id) if s.helper_id is not None else None
+    return helper if helper is not None and helper.active else None
+
+
+@bp.get('/crew')
+@_api
+def get_crew() -> Any:
+    return jsonify(_crew(g.courier_terminal, g.courier_session, _session_helper(g.courier_session)))
+
+
+@bp.post('/crew')
+@_api
+def post_crew() -> Any:
+    """{"helper_pin": "1234"} — առաքիչ подтверждает себя своим PIN на терминале водителя (проверка как у /login,
+    _pin_driver: тот же бюджет попыток и блокировка терминала); PIN самого водителя — 409 same_person.
+    {"alone": true} — водитель один (снять помощника). Сессия водителя не меняется: sessions.helper_id и строка
+    crew_log. Ответ — Crew."""
+    st, t, s = state(), g.courier_terminal, g.courier_session
+    body = _json_body() or {}
+    alone, pin = body.get('alone'), body.get('helper_pin')
+    if not (alone is None or alone is True) or (alone is True) == (pin is not None):
+        return error(400, 'bad_request', 'Սպասվում է {"helper_pin": "..."} կամ {"alone": true}')
+    helper = None
+    if pin is not None:
+        helper, failure = _pin_driver(t, pin)
+        if helper is None:
+            return failure
+        if helper.id == s.driver_id:
+            return error(409, 'same_person')
+    digest = token_hash(request.headers.get('X-Courier-Session', '').strip())
+    if not st.store.set_crew(digest, t.id, t.car_code, s.driver_id, helper.id if helper else None):
+        if st.store.session(digest, t.id) is None:   # сессию закрыли (выход, новый вход, водитель выключен)
+            return error(401, 'session')
+        return error(403, 'pin')                     # помощника выключили, пока проверялся PIN
+    return jsonify(_crew(t, s, helper))
 
 
 @bp.post('/logout')
@@ -299,7 +369,8 @@ def _photo_limit(kind: str) -> Any:
 @bp.get('/status')
 @_api
 def status() -> Any:
-    """Деньги водителя за день (по его событиям payment) и отметка кассира; отклонённые события."""
+    """Деньги водителя за день (по его событиям payment) и отметка кассира; отклонённые события; экипаж сессии
+    (crew, v1.4 §8). Деньги — только водителя сессии, не помощника."""
     d = _day_arg()
     if d is None:
         return error(400, 'bad_request', 'date՝ ՏՏՏՏ-ԱԱ-ՕՕ ձևաչափով')
@@ -314,7 +385,8 @@ def status() -> Any:
                              'handed_at': hand['handed_at'] if hand else None,
                              'handed_by': hand['handed_by'] if hand else None},
                     'rejected_events': [{'id': r['id'], 'message': r['message']}
-                                        for r in st.store.rejected_for(s.driver_id, day)]})
+                                        for r in st.store.rejected_for(s.driver_id, day)],
+                    'crew': _crew(g.courier_terminal, s, _session_helper(s))})
 
 
 @bp.get('/app-version')

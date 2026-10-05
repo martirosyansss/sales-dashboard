@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=22">
 <!-- «Առաքիչ» — офис терминалов водителей (docs/plans/courier-app-plan.md §4), армянский, «для чайников» -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=5">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=6">
 {% endblock %}
 
 {% block content %}
@@ -47,6 +47,9 @@
                     <span class="cr-count" id="crDriversCount"></span>
                 </div>
                 <p class="rt-card-lead">Յուրաքանչյուր վարորդ մտնում է տերմինալ իր PIN-ով (4–6 թվանշան)։ PIN-ը չի կարող կրկնվել։</p>
+                <!-- второй человек в машине (crew-helper-plan.md): առաքիչ — такая же запись здесь, со своим PIN -->
+                <p class="cr-tip"><i class="fas fa-user-group" aria-hidden="true"></i><span><b>Առաքիչը</b> (վարորդի օգնականը) նույնպես ավելացվում է այստեղ՝ իր անունով և իր PIN-ով։
+                    Տերմինալում վարորդի մուտքից հետո առաքիչը մուտքագրում է իր PIN-ը, և օրվա բոլոր նշումները գրանցվում են երկուսի անունով։ Գումարը մնում է վարորդի վրա։</span></p>
                 <ul class="cr-rows" id="crDriverRows" aria-labelledby="crDriversTitle"></ul>
                 <form id="crDriverForm" class="cr-add" autocomplete="off">
                     <h3 class="cr-add-t"><i class="fas fa-user-plus" aria-hidden="true"></i><span id="crDriverFormTitle">Նոր վարորդ</span></h3>
@@ -236,5 +239,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/courier.js') }}?v=9"></script>
+<script src="{{ url_for('static', filename='js/courier.js') }}?v=10"></script>
 {% endblock %}

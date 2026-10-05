@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Связь с разделом «Маршруты»: склад, ручные точки клиентов, рабочие дни, план «Развоза» на дату, дороги.
+"""Связь с разделом «Маршруты»: склад, ручные точки клиентов, рабочие дни, план «Развоза» на дату, экипаж машин, дороги.
 
-Только чтение через публичный API route_optimizer (Store.load, Store.load_dispatch, Draft.from_json,
+Только чтение через публичный API route_optimizer (Store.load, Store.load_dispatch, Store.truck_drivers, Draft.from_json,
 RoadProvider.get) — файлы route_optimizer/ не меняются. Раздела нет или его база битая — пустой вид:
 порядок «auto» от склада не строится (склада нет), точки без ручных координат.
 """
@@ -111,6 +111,20 @@ def routes_depot(state: Any) -> Point | None:
     except RoutesStoreError:
         logger.warning('[Courier] База «Маршрутов» недоступна — склад не учтён', exc_info=True)
         return None
+
+
+def planned_crew(state: Any, day: date) -> dict[str, dict[str, str | None]] | None:
+    """Экипаж машин по плану «Развоза» на дату (№62, Store.truck_drivers): машина → {'driver': имя | None, 'helper':
+    имя | None}; машины без записей — нет в словаре. Раздела нет или его база битая — None (не ошибка запроса)."""
+    if state is None:
+        return None
+    try:
+        drivers, _ = state.store.truck_drivers(day.isoformat(), 'driver')
+        helpers, _ = state.store.truck_drivers(day.isoformat(), 'helper')
+    except Exception:   # экипаж плана — подсказка: любой сбой «Маршрутов» не роняет терминал и офис
+        logger.warning('[Courier] Экипаж плана «Развоза» на %s не прочитан', day, exc_info=True)
+        return None
+    return {car: {'driver': drivers.get(car), 'helper': helpers.get(car)} for car in sorted({*drivers, *helpers})}
 
 
 def _carried(state: Any, day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> set[str]:

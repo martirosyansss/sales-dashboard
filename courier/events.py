@@ -42,7 +42,10 @@
   в самую длинную согласованную цепочку заправок машины (learning.odometer_plausible: не убывает, прирост не больше
   learning.REFUEL_KM_PER_DAY км за сутки); заправка принимается. Флаг ставится один раз при приёме и потом не меняется — офис и
   обучение пересчитывают правило сами по всем действующим заправкам машины (опоздавшее событие или исправление меняют
-  их вывод, а не сохранённый флаг).
+  их вывод, а не сохранённый флаг);
+- `helper_id` (v1.4 §8, необязательное поле события): второй человек в машине. Кто был помощником, решает терминал в
+  момент события; сервер только проверяет подтверждение PIN на этом терминале (_helper). Не подтверждён — событие
+  принимается без помощника с флагом `helper_unconfirmed`. Деньги, сканы и их отмена — по-прежнему по водителю сессии.
 """
 from __future__ import annotations
 
@@ -636,10 +639,26 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who
     elif etype == 'refuel':
         flags += _refuel(tx, payload, at, who.car_code, supersedes, event_id)
         stored.setdefault('full_tank', True)   # §7 п. 2: по умолчанию «до полного бака»
+    helper_id = _helper(tx, raw, ev['date'], who, flags)
     row = {'id': event_id, 'terminal_id': who.terminal_id, 'driver_id': who.driver_id, 'car_code': who.car_code,
            'date': ev['date'], 'stop_id': stop_id, 'type': etype, 'at_device': raw['at'], 'at_utc': clock.utc_key(at),
-           'received_at': clock.iso(clock.now()), 'payload': stored, 'flags': flags, 'snapshot_id': stop.snapshot_id}
+           'received_at': clock.iso(clock.now()), 'payload': stored, 'flags': flags, 'snapshot_id': stop.snapshot_id,
+           'helper_id': helper_id}
     return row, scan_row, track
+
+
+def _helper(tx: EventTx, raw: Mapping[str, Any], day: str, who: Who, flags: list[str]) -> int | None:
+    """helper_id события (v1.4 §8): нет поля или null — водитель один (старый APK); подтверждён (crew_log kind='helper'
+    того же терминала и водителя сессии, решение в день события или накануне) — он; иначе (не подтверждён, не целое) —
+    None и флаг helper_unconfirmed: событие не отклоняется, доставка важнее."""
+    helper_id = raw.get('helper_id')
+    if helper_id is None:
+        return None
+    if isinstance(helper_id, int) and not isinstance(helper_id, bool) \
+            and tx.helper_confirmed(who.terminal_id, who.driver_id, helper_id, day):
+        return helper_id
+    flags.append('helper_unconfirmed')
+    return None
 
 
 def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
