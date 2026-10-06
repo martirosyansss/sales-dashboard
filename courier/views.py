@@ -552,8 +552,10 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
             row['flagged'] += 1
     # трек и заправки (контракт v1.3 §7): км движения по GPS за рабочий день (стоянки у точек дня и склада — 0 км);
     # заправки дня исходной заправки (исправление — у неё, а не в день исправления), и вытесненные (superseded)
-    depot = routes_depot(_routes_state()) if any(e['type'] == 'track' for e in events) else None
-    for code in sorted({e['car_code'] for e in events if e['type'] == 'track'}):
+    # машины трека — по точкам дня (точки события после смены машины — у машины своего момента), и по событиям track
+    tracked = {e['car_code'] for e in events if e['type'] == 'track'} | set(st.store.track_cars(ds))
+    depot = routes_depot(_routes_state()) if tracked else None
+    for code in sorted(tracked):
         car_row(code)['gps'] = gps_summary(st.store.track(code, ds), model.current.get(code, []), depot)
     shown = sorted((r for r in refuels if r['eff_date'] == ds), key=lambda r: (r['car_code'], r['eff_at_utc'], r['at_utc']))
     rphotos = st.store.photos_for_events([r['id'] for r in shown])
@@ -579,12 +581,12 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
     for (code, name), (kind, at_utc) in last_kind.items():   # офис снял помощника — «до ЧЧ:ММ»
         if kind == 'revoked' and name in by_car[code]['helpers']:
             by_car[code]['helper_until'][name] = clock.iso(datetime.fromisoformat(at_utc))
-    since = st.store.car_since()
+    car_since = st.store.car_since()
     for t in terminals:
         # связь действующего терминала — у машины, на которой он сейчас: только в своей дате и не раньше, чем его
         # поставили на эту машину (раньше — связь прежней машины), как live.py
         seen = t.last_seen_at
-        if not t.revoked and t.car_code in by_car and seen and seen[:10] == ds and seen >= since.get(t.id, '') and (
+        if not t.revoked and t.car_code in by_car and seen and seen[:10] == ds and seen >= car_since.get(t.id, '') and (
                 by_car[t.car_code]['last_contact'] is None or seen > by_car[t.car_code]['last_contact']):
             by_car[t.car_code]['last_contact'] = seen
     cars = []

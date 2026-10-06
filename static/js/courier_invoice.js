@@ -48,6 +48,7 @@
         collected_by_other: 'Վերցրել է այլ վարորդ', split_order: 'Մասնակի է՝ բաժանված պատվեր',
         merge_conflict: 'Ստուգել՝ պատվերով և ապրանքագրով նշումները չեն համընկնում',
         helper_unconfirmed: 'Առաքիչը PIN-ով հաստատված չէ',
+        car_by_time: 'Մեքենան որոշվել է տերմինալի ժամով (մեքենան փոխվել էր)՝ ստուգել',
     };
     const BAD_FLAGS = ['no_payment', 'merge_conflict', 'paid_collect_none', 'scan_short', 'duplicate_elsewhere'];
     const badge = (text, cls) => '<span class="rt-badge ' + cls + '">' + esc(text) + '</span>';

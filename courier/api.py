@@ -110,6 +110,7 @@ def _authenticate() -> Any:
         if terminal is None or terminal.revoked:
             return error(401, 'unauthorized')
         g.courier_terminal = terminal
+        g.courier_token_digest = token_hash(token)
         g.courier_session = None
         if request.endpoint not in NO_SESSION:
             sess = request.headers.get('X-Courier-Session', '').strip()
@@ -190,8 +191,8 @@ def login() -> Any:
     if driver is None:
         return failure
     expires = clock.session_expiry(now)
-    token = st.store.open_session(t.id, driver.id, expires, t.car_code)
-    if token is None:   # офис сменил машину или отозвал терминал после проверки токена — вход заново узнает новое
+    token = st.store.open_session(t.id, driver.id, expires, t.car_code, g.courier_token_digest)
+    if token is None:   # после проверки токена офис сменил машину, выдал «Նոր QR» или отозвал терминал
         current = st.store.terminal(t.id)
         if current is None or current.revoked:
             return error(401, 'unauthorized')

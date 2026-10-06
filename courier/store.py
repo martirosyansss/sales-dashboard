@@ -277,13 +277,36 @@ _MIGRATIONS: dict[int, tuple[str | Callable[[sqlite3.Connection], None], ...]] =
         *_CREW_SCHEMA,
     ),
     # v7 → v8 (только добавляет): журнал терминала; каждому терминалу — строка created с его машиной на момент создания
-    # (машину до v8 не меняли). Шаги повторяемы.
+    # (машину до v8 не меняли); журнал, разошедшийся с машиной терминала (откат на 7 и повтор), — строка car «сейчас».
+    # Шаги повторяемы.
     7: (
         *_TERMINAL_LOG_SCHEMA,
         "INSERT INTO terminal_log(terminal_id, kind, car_code, at, by) SELECT t.id, 'created', t.car_code, t.created_at, "
         "t.created_by FROM terminals t WHERE NOT EXISTS (SELECT 1 FROM terminal_log l WHERE l.terminal_id = t.id)",
+        lambda conn: _heal_terminal_log(conn),
     ),
 }
+
+
+def _log_ms(at: str) -> float:
+    """Момент строки журнала терминала, мс UTC (порядок — по моменту, а не по строке); не момент — −∞."""
+    moment = clock.parse_moment(at)
+    return moment.timestamp() * 1000 if moment is not None else -math.inf
+
+
+def _heal_terminal_log(conn: sqlite3.Connection) -> None:
+    """Миграция v7 → v8: последняя (по моменту) строка created/car терминала — не его машина → строка car «сейчас»
+    (by 'auto: migration'): машина по журналу совпадает с машиной терминала."""
+    last: dict[int, tuple[tuple[float, int], str]] = {}
+    for tid, car, at, rid in conn.execute("SELECT terminal_id, car_code, at, id FROM terminal_log "
+                                          "WHERE kind IN ('created','car')").fetchall():
+        key = (_log_ms(at), rid)
+        if tid not in last or key > last[tid][0]:
+            last[tid] = (key, car)
+    now = _now()
+    for tid, car in conn.execute('SELECT id, car_code FROM terminals ORDER BY id').fetchall():
+        if tid in last and last[tid][1] != car:
+            _log_terminal(conn, tid, 'car', car, now, 'auto: migration')
 
 
 def _stop_hash(text: str) -> bytes:
@@ -955,6 +978,13 @@ class Store:
 
         return self._transaction(write, 'не удалось сменить машину терминала')
 
+    def track_cars(self, day: str) -> list[str]:
+        """Машины терминалов (журнал терминалов), у которых есть точки трека за рабочий день day — по индексу
+        (машина, день): точки события, пришедшего после смены машины, могут быть у прежней машины."""
+        return [r[0] for r in self._read(lambda c: c.execute(
+            'SELECT l.car_code FROM (SELECT DISTINCT car_code FROM terminal_log) l WHERE EXISTS (SELECT 1 FROM '
+            'track_points p WHERE p.car_code = l.car_code AND p.date = ?) ORDER BY l.car_code', (day,)).fetchall())]
+
     def car_since(self) -> dict[int, str]:
         """Терминал, которому меняли машину → момент (clock.iso) последней смены: «последняя связь» раньше — связь
         прежней машины. Терминала без смены нет в словаре (до создания связи не бывает)."""
@@ -1025,18 +1055,20 @@ class Store:
         self._transaction(write, 'не удалось записать вход')
 
     def open_session(self, terminal_id: int, driver_id: int, expires_at: datetime,
-                     car_code: str | None = None) -> str | None:
+                     car_code: str | None = None, token_digest: str | None = None) -> str | None:
         """Новая сессия водителя на терминале: прежние сессии терминала отменяются, просроченные сессии всех
         терминалов удаляются. Счётчик ошибок PIN НЕ сбрасывается (см. pin_attempt). Токен — один раз. car_code —
-        машина, которую вход сообщит терминалу: офис сменил машину или отозвал терминал после проверки токена — None
-        (сессия не открыта, терминал войдёт заново)."""
+        машина, которую вход сообщит терминалу, token_digest — sha256 токена, по которому он вошёл: офис сменил машину,
+        выдал «Նոր QR» или отозвал терминал после проверки токена — None (сессия не открыта, терминал войдёт заново)."""
         token = new_token()
         now = _now()
 
         def write(conn: sqlite3.Connection) -> bool:
-            if car_code is not None and conn.execute(
-                    'SELECT 1 FROM terminals WHERE id = ? AND car_code = ? AND revoked_at IS NULL',
-                    (terminal_id, car_code)).fetchone() is None:
+            row = conn.execute('SELECT car_code, token_sha256, revoked_at FROM terminals WHERE id = ?',
+                               (terminal_id,)).fetchone()
+            if car_code is not None and (row is None or row[2] is not None or row[0] != car_code):
+                return False
+            if token_digest is not None and (row is None or not same_hash(row[1], token_digest)):
                 return False
             conn.execute('DELETE FROM sessions WHERE terminal_id = ? OR expires_at <= ?', (terminal_id, now))
             conn.execute('INSERT INTO sessions(token_sha256, terminal_id, driver_id, created_at, expires_at) '
@@ -1883,14 +1915,12 @@ class EventTx:
     # --- трек и заправки (контракт v1.3 §7) ---
 
     def terminal_cars(self, terminal_id: int) -> list[tuple[int, str]]:
-        """Машины терминала по журналу (created/car): [(с момента, мс UTC; машина)] по возрастанию — events.car_at."""
-        out = []
-        for at, car in self.conn.execute("SELECT at, car_code FROM terminal_log WHERE terminal_id = ? "
-                                         "AND kind IN ('created','car') ORDER BY at, id", (terminal_id,)).fetchall():
-            moment = clock.parse_moment(at)
-            if moment is not None:
-                out.append((round(moment.timestamp() * 1000), car))
-        return out
+        """Машины терминала по журналу (created/car): [(с момента, мс UTC; машина)] по возрастанию момента (затем по
+        порядку записи) — events.car_at. Строка без момента пропускается."""
+        rows = sorted((_log_ms(at), rid, car) for rid, at, car in self.conn.execute(
+            "SELECT id, at, car_code FROM terminal_log WHERE terminal_id = ? AND kind IN ('created','car')",
+            (terminal_id,)).fetchall())
+        return [(round(ms), car) for ms, _, car in rows if ms != -math.inf]
 
     def insert_track(self, car_code: str, day: str,
                      points: Sequence[tuple[int, float, float, float, float | None, float | None]]) -> int:

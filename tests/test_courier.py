@@ -1118,7 +1118,7 @@ def test_courier_money_page_renders(app, client):
     assert r.status_code == 200 and r.headers['Cache-Control'] == 'no-store'
     html = r.data.decode('utf-8')
     assert 'Վարորդների գումարը' in html and 'id="cmPrintSheet"' in html   # акт сдачи для печати заполняет JS
-    assert 'js/courier_money.js?v=3' in html and 'css/courier_money.css?v=3' in html and 'js/courier.js' not in html
+    assert 'js/courier_money.js?v=4' in html and 'css/courier_money.css?v=3' in html and 'js/courier.js' not in html
     assert 'id="cmReceipt"' in html                                        # квитанция водителю (A4, 2 экземпляра)
 
 
@@ -1128,7 +1128,7 @@ def test_courier_invoice_page_renders(app, client):
     assert r.status_code == 200 and r.headers['Cache-Control'] == 'no-store'
     html = r.data.decode('utf-8')
     assert 'id="ciForm"' in html and 'id="ciCard"' in html                 # список и карточку заполняет JS
-    assert 'js/courier_invoice.js?v=1' in html and 'css/courier_invoice.css?v=1' in html and 'js/courier.js' not in html
+    assert 'js/courier_invoice.js?v=2' in html and 'css/courier_invoice.css?v=1' in html and 'js/courier.js' not in html
 
 
 def test_plan_mismatch(app, st, monkeypatch):
@@ -3246,6 +3246,8 @@ def test_track_batch_spanning_rebind_splits_by_point_moment(term, client, st, no
     assert rows == [('991AT61', 2), ('TEST', 2)]
     e = next(x for x in st.store.events_for_day(DEMO) if x['id'] == track['id'])
     assert e['car_code'] == '991AT61' and e['payload']['new'] == 4
+    gps = {c['car_code']: c.get('gps') for c in client.get(f'/api/courier/admin/today?date={DEMO}').get_json()['cars']}
+    assert gps['TEST']['points'] == 2 and gps['991AT61']['points'] == 2     # км дня — по точкам каждой машины
 
 
 def test_car_at_rule():
@@ -3327,3 +3329,111 @@ def test_migration_v7_to_v8_keeps_rows_and_backfills_terminal_log(tmp_path, now)
     assert migrated.terminal_log(t2.id) == [{'kind': 'created', 'car_code': 'CAR2', 'at': t2.created_at, 'by': 'boss'}]
     Store(path).list_terminals()                                       # повторное открытие — без второй строки
     assert len(migrated.terminal_log(t1.id)) == 1
+
+
+def _switch_day(st, client, now):
+    """Терминал на TEST с точкой S дня 2026-10-02 у TEST; в 09:10 офис ставит его на 991AT61."""
+    did, terminal, h = make_terminal(st)
+    sid = 'S:' + str(uuid.uuid4()).upper()
+    stop = _stop(sid, [('l1', 2, 100.0)])
+    st.store.save_day('2026-10-02', 'TEST', [stop], 'v1', _at(NOW))
+    now['t'] = NOW + timedelta(minutes=10)
+    st.store.set_terminal_car(terminal.id, '991AT61', 'admin')
+    return terminal, h, stop
+
+
+def test_clock_skew_stop_event_goes_to_car_whose_day_has_the_stop(st, client, now):
+    """Часы терминала спешат: доставка точки дня TEST помечена 09:30 (после смены машины в 09:10) — машина события по
+    точке (она только в /day TEST этой даты), а не по часам; флага нет. Событие без точки — по часам: прежняя машина
+    и флаг car_by_time, если пришло позже CAR_BY_TIME_LAG; свежее — без флага."""
+    terminal, h, stop = _switch_day(st, client, now)
+    now['t'] = NOW + timedelta(minutes=11)
+    s = login(client, h)
+    day = '2026-10-02'
+    skewed = event('delivery', stop['stop_id'], {'lines': full_lines(stop), 'reason_id': None},
+                   at=_at(NOW + timedelta(minutes=30)), date_=day)
+    old = event('day_closed', None, {'summary': {}}, at=_at(NOW + timedelta(minutes=5)), date_=day)
+    now['t'] = NOW + timedelta(minutes=12)                                 # пришло через 7 минут после события
+    fresh = event('day_closed', None, {'summary': {}}, at=_at(NOW + timedelta(minutes=5)), date_=day)
+    assert post(client, s, fresh)['accepted'] == [fresh['id']]
+    now['t'] = NOW + timedelta(minutes=31)
+    assert len(post(client, s, skewed, old)['accepted']) == 2
+    got = {e['id']: (e['car_code'], e['flags']) for e in st.store.events_for_day(day)}
+    assert got[skewed['id']] == ('TEST', [])
+    assert got[old['id']] == ('TEST', ['car_by_time'])
+    assert got[fresh['id']] == ('TEST', [])
+    later = event('day_closed', None, {'summary': {}}, at=_at(NOW + timedelta(minutes=15)), date_=day)
+    post(client, s, later)
+    assert {e['id']: e['car_code'] for e in st.store.events_for_day(day)}[later['id']] == '991AT61'
+
+
+def test_clock_skew_stop_in_both_cars_days_falls_back_to_time(st, client, now):
+    """Точка в /day обеих машин этой даты (неоднозначно) или неизвестна — машина по часам события."""
+    terminal, h, stop = _switch_day(st, client, now)
+    st.store.save_day('2026-10-02', '991AT61', [stop], 'v1', _at(NOW + timedelta(minutes=10)))
+    now['t'] = NOW + timedelta(minutes=31)
+    s = login(client, h)
+    a = event('arrived', stop['stop_id'], {'lat': 40.1, 'lon': 44.5}, at=_at(NOW + timedelta(minutes=5)), date_='2026-10-02')
+    b = event('arrived', 'S:' + str(uuid.uuid4()).upper(), {'lat': 40.1, 'lon': 44.5}, at=_at(NOW + timedelta(minutes=20)),
+              date_='2026-10-02')
+    post(client, s, a, b)
+    got = {e['id']: (e['car_code'], e['flags']) for e in st.store.events_for_day('2026-10-02')}
+    assert got[a['id']] == ('TEST', ['car_by_time']) and got[b['id']] == ('991AT61', ['unknown_stop'])
+
+
+def test_cars_on_day():
+    start = round(datetime(2026, 10, 2, tzinfo=clock.YEREVAN).timestamp() * 1000)
+    log = [(start - 1000, 'A'), (start + 5000, 'B')]
+    assert ev.cars_on(log, date(2026, 10, 2), 'X') == {'A', 'B'}
+    assert ev.cars_on(log, date(2026, 10, 3), 'X') == {'B'} and ev.cars_on(log, date(2026, 10, 1), 'X') == {'A'}
+    assert ev.cars_on([], date(2026, 10, 2), 'X') == {'X'}
+
+
+def test_terminal_log_heals_on_migration_and_ingest_warns(tmp_path, now, caplog):
+    """Журнал разошёлся с машиной терминала (правка базы вручную): ingest пишет предупреждение; повтор миграции 7 → 8
+    (откат на 7 и снова 8) добавляет строку car «сейчас» — и только один раз."""
+    path = str(tmp_path / 'c.db')
+    store = Store(path)
+    did = store.save_driver(None, 'Ա', True, '1234', 'admin')
+    t, _ = store.create_terminal('T1', 'CAR1', 'admin')
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE terminals SET car_code = 'CAR2' WHERE id = ?", (t.id,))
+        conn.commit()
+    with caplog.at_level('WARNING', logger='courier.events'):
+        ev.ingest(store, ev.Who(t.id, 'CAR2', did, 'Ա'), [])
+    assert 'по журналу — CAR1' in caplog.text
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE meta SET value = '7' WHERE key = 'schema_version'")
+        conn.commit()
+    now['t'] = NOW + timedelta(hours=1)
+    healed = Store(path)
+    assert [(r['kind'], r['car_code'], r['by']) for r in healed.terminal_log(t.id)] == [
+        ('created', 'CAR1', 'admin'), ('car', 'CAR2', 'auto: migration')]
+    assert healed.terminal_log(t.id)[1]['at'] == _at(NOW + timedelta(hours=1))
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE meta SET value = '7' WHERE key = 'schema_version'")
+        conn.commit()
+    assert len(Store(path).terminal_log(t.id)) == 2                     # журнал сходится — новой строки нет
+
+
+def test_terminal_cars_sorted_by_instant_not_text(tmp_path, now):
+    """Порядок журнала — по моменту: строка с другим смещением зоны раньше по времени, хотя позже по тексту."""
+    path = str(tmp_path / 'c.db')
+    store = Store(path)
+    t, _ = store.create_terminal('T1', 'CAR1', 'admin')                   # 2026-10-02T09:00:00+04:00
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("INSERT INTO terminal_log(terminal_id, kind, car_code, at) VALUES(?, 'car', 'CAR0', "
+                     "'2026-10-02T09:30:00+05:00')", (t.id,))                 # 08:30 по Еревану
+        conn.commit()
+    with store.batch() as conn:
+        from courier.store import EventTx
+        assert [c for _, c in EventTx(conn).terminal_cars(t.id)] == ['CAR0', 'CAR1']
+
+
+def test_open_session_refused_after_reissue(term, st):
+    """Вход проверил старый токен, а офис тем временем выдал «Նոր QR»: сессия по старому токену не открывается."""
+    tid = term['terminal'].id
+    old = term['h']['Authorization'][7:]
+    from courier.security import token_hash
+    st.store.reissue_terminal(tid, '123456', 'admin')
+    assert st.store.open_session(tid, term['driver_id'], NOW + timedelta(hours=1), 'TEST', token_hash(old)) is None

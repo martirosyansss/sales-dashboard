@@ -37,6 +37,7 @@
         merge_conflict: 'Ստուգել՝ պատվերով և ապրանքագրով նշումները չեն համընկնում',
         odometer_suspicious: 'Օդոմետրի ցուցմունքը կասկածելի է',
         helper_unconfirmed: 'Առաքիչը PIN-ով հաստատված չէ',
+        car_by_time: 'Մեքենան որոշվել է տերմինալի ժամով (մեքենան փոխվել էր)՝ ստուգել',
     };
     const statusBadge = (s) => (s.status ? badge(...(STATUS[s.status] || [s.status, 'b-none'])) : '—') + (s.removed ? ' ' + badge('Հանված է', 'b-none') : '');
     const tareText = (t) => (t && t.length ? ' <span class="cr-muted">Տարա՝ ' + fmt(t.reduce((a, x) => a + (num(x.qty) || 0), 0), 2) + '</span>' : '');
