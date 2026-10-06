@@ -199,12 +199,16 @@ schtasks /Change /TN SalesDashboard-AutoUpdate /DISABLE   # включить: /E
 индекс `garage_one_odometer` создаётся заново. База на 16 проходит оба шага подряд (одной транзакцией).
 Машины терминалов «Առաքիչ» (06.10, «Նոր QR», «Փոխել մեքենան»): `courier.db` 7 → 8 — только добавляет журнал
 терминала `terminal_log` (создан / сменил машину / новый QR; каждому терминалу — строка «создан»). Остальные таблицы не
-меняются. **Откат только этого изменения — без восстановления из копии:** остановить дашборд, вернуть прежний код,
-вернуть номер схемы и запустить:
+меняются. **Откат только этого изменения — без восстановления из копии** (по порядку: иначе автообновление вернёт
+новый код раньше времени):
 
 ```powershell
-schtasks /End /TN SalesDashboard-Server
+schtasks /Change /TN SalesDashboard-AutoUpdate /DISABLE   # 1. выключить автообновление
+schtasks /End /TN SalesDashboard-Server                   # 2. остановить дашборд
+cd "C:\Sales Dashboard"; git reset --hard <прежний коммит>  # 3. вернуть прежний код
 python -c "import sqlite3; c = sqlite3.connect(r'C:\Sales Dashboard\courier.db'); c.execute(\"UPDATE meta SET value = '7' WHERE key = 'schema_version'\"); c.commit()"
+schtasks /Run /TN SalesDashboard-Server                   # 4. запустить
+# автообновление включать (/ENABLE) только после того, как исправленный код будет в main
 ```
 
 `terminal_log` можно оставить: прежняя программа её не читает, а при новом обновлении 7 → 8 журнал дополнится

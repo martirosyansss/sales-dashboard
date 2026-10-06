@@ -193,8 +193,8 @@ def login() -> Any:
     expires = clock.session_expiry(now)
     token = st.store.open_session(t.id, driver.id, expires, t.car_code, g.courier_token_digest)
     if token is None:   # после проверки токена офис сменил машину, выдал «Նոր QR» или отозвал терминал
-        current = st.store.terminal(t.id)
-        if current is None or current.revoked:
+        current = st.store.terminal_by_token_hash(g.courier_token_digest)
+        if current is None or current.revoked:   # «Նոր QR» или отозван: старый QR больше не действует
             return error(401, 'unauthorized')
         return error(401, 'session', 'Մեքենան փոխվել է․ մուտք գործեք PIN-ով նորից')
     return jsonify({'session': token, 'expires_at': clock.iso(expires),

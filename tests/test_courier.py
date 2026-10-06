@@ -3389,7 +3389,7 @@ def test_cars_on_day():
     assert ev.cars_on([], date(2026, 10, 2), 'X') == {'X'}
 
 
-def test_terminal_log_heals_on_migration_and_ingest_warns(tmp_path, now, caplog):
+def test_terminal_log_heals_on_migration_and_ingest_warns(tmp_path, now, caplog, monkeypatch):
     """Журнал разошёлся с машиной терминала (правка базы вручную): ingest пишет предупреждение; повтор миграции 7 → 8
     (откат на 7 и снова 8) добавляет строку car «сейчас» — и только один раз."""
     path = str(tmp_path / 'c.db')
@@ -3399,9 +3399,11 @@ def test_terminal_log_heals_on_migration_and_ingest_warns(tmp_path, now, caplog)
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("UPDATE terminals SET car_code = 'CAR2' WHERE id = ?", (t.id,))
         conn.commit()
+    monkeypatch.setattr(ev, '_LOG_WARNED', set())
     with caplog.at_level('WARNING', logger='courier.events'):
         ev.ingest(store, ev.Who(t.id, 'CAR2', did, 'Ա'), [])
-    assert 'по журналу — CAR1' in caplog.text
+        ev.ingest(store, ev.Who(t.id, 'CAR2', did, 'Ա'), [])
+    assert caplog.text.count('по журналу — CAR1') == 1                   # раз на терминал за процесс
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("UPDATE meta SET value = '7' WHERE key = 'schema_version'")
         conn.commit()
@@ -3437,3 +3439,38 @@ def test_open_session_refused_after_reissue(term, st):
     from courier.security import token_hash
     st.store.reissue_terminal(tid, '123456', 'admin')
     assert st.store.open_session(tid, term['driver_id'], NOW + timedelta(hours=1), 'TEST', token_hash(old)) is None
+
+
+def test_late_track_before_rebind_has_no_car_by_time_flag(term, client, st, now):
+    """Трек, снятый до смены машины и пришедший позже, — у прежней машины, но без флага car_by_time (фон, не отметка)."""
+    tid = term['terminal'].id
+    pts = [{'at': _at(NOW + timedelta(minutes=m)), 'lat': 40.18, 'lon': 44.51, 'acc': 8.0} for m in (5, 10)]
+    track = event('track', None, {'points': pts}, at=_at(NOW + timedelta(minutes=10)))
+    now['t'] = NOW + timedelta(minutes=30)
+    st.store.set_terminal_car(tid, '991AT61', 'admin')
+    now['t'] = NOW + timedelta(hours=1)
+    post(client, login(client, term['h']), track)
+    e = next(x for x in st.store.events_for_day(DEMO) if x['id'] == track['id'])
+    assert e['car_code'] == 'TEST' and 'car_by_time' not in e['flags']
+
+
+def test_login_with_reissued_token_is_unauthorized(term, client, st, monkeypatch):
+    """Вход проверил старый токен, а офис тем временем выдал «Նոր QR»: 401 unauthorized (старый QR не действует), а не
+    «машина сменилась»."""
+    tid = term['terminal'].id
+    stale = st.store.terminal(tid)
+    real = st.store.terminal_by_token_hash
+    calls = []
+
+    def first_stale(digest):
+        calls.append(digest)
+        if len(calls) == 1:                                   # проверка токена в _authenticate — до «Նոր QR»
+            st.store.reissue_terminal(tid, '123456', 'admin')
+            return stale
+        return real(digest)
+    monkeypatch.setattr(st.store, 'terminal_by_token_hash', first_stale)
+    r = client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=term['h'])
+    assert r.status_code == 401 and r.get_json()['error'] == 'unauthorized'
+    assert st.store.open_session(tid, term['driver_id'], NOW + timedelta(hours=1)) is not None   # без проверок — можно
+    st.store.revoke_terminal(tid, 'admin')
+    assert st.store.open_session(tid, term['driver_id'], NOW + timedelta(hours=1)) is None       # отозван — никогда

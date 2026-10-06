@@ -1059,16 +1059,17 @@ class Store:
         """Новая сессия водителя на терминале: прежние сессии терминала отменяются, просроченные сессии всех
         терминалов удаляются. Счётчик ошибок PIN НЕ сбрасывается (см. pin_attempt). Токен — один раз. car_code —
         машина, которую вход сообщит терминалу, token_digest — sha256 токена, по которому он вошёл: офис сменил машину,
-        выдал «Նոր QR» или отозвал терминал после проверки токена — None (сессия не открыта, терминал войдёт заново)."""
+        выдал «Նոր QR» или отозвал терминал после проверки токена — None (сессия не открыта, терминал войдёт заново);
+        отозванный или удалённый терминал — None всегда."""
         token = new_token()
         now = _now()
 
         def write(conn: sqlite3.Connection) -> bool:
             row = conn.execute('SELECT car_code, token_sha256, revoked_at FROM terminals WHERE id = ?',
                                (terminal_id,)).fetchone()
-            if car_code is not None and (row is None or row[2] is not None or row[0] != car_code):
+            if row is None or row[2] is not None or (car_code is not None and row[0] != car_code):
                 return False
-            if token_digest is not None and (row is None or not same_hash(row[1], token_digest)):
+            if token_digest is not None and not same_hash(row[1], token_digest):
                 return False
             conn.execute('DELETE FROM sessions WHERE terminal_id = ? OR expires_at <= ?', (terminal_id, now))
             conn.execute('INSERT INTO sessions(token_sha256, terminal_id, driver_id, created_at, expires_at) '

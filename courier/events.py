@@ -89,6 +89,7 @@ QTY_MAX = 1e6
 DATE_SUSPICIOUS_DAYS = 2
 DAY_MS = 86_400_000
 CAR_BY_TIME_LAG = timedelta(minutes=10)   # машина по часам терминала у события старше — флаг car_by_time
+_LOG_WARNED: set[int] = set()   # терминалы, о расхождении журнала которых уже предупредили (раз на процесс)
 SUGGEST_MAX_ACCURACY_M = 100.0   # geo_suggest: точность обязательна и не хуже 100 м
 SUGGEST_NOTE_MAX = 200
 SUPERSEDES_MAX = 64
@@ -662,7 +663,7 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who, cars: C
     day_version = _text(payload.get('day_version'), DAY_VERSION_MAX, 'day_version') \
         if etype in ('delivery', 'tare') else None
     stop, flags = _stop_ctx(tx, stop_id, ev['date'], who.car_code, day_version)
-    if by_time:
+    if by_time and etype != 'track':   # трек — фон: его точки делятся по машинам сами, флаг офису не нужен
         flags.append('car_by_time')
     if abs((day - at.astimezone(clock.YEREVAN).date()).days) > DATE_SUSPICIOUS_DAYS:
         flags.append('date_suspicious')
@@ -752,7 +753,8 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
     with store.batch() as conn:
         tx = EventTx(conn)
         cars = tx.terminal_cars(who.terminal_id)   # в транзакции пачки: смена машины офисом — до или после всей пачки
-        if cars and cars[-1][1] != who.car_code:   # журнал разошёлся с терминалом (правка базы вручную) — видно в логе
+        if cars and cars[-1][1] != who.car_code and who.terminal_id not in _LOG_WARNED:
+            _LOG_WARNED.add(who.terminal_id)   # журнал разошёлся с терминалом (правка базы вручную) — раз на процесс
             logger.warning('[Courier] Терминал %s: машина %s, а по журналу — %s', who.terminal_id, who.car_code,
                            cars[-1][1])
         rejected_room: int | None = None   # сколько отказов ещё можно сохранить сегодня (считается при первом)
