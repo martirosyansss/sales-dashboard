@@ -1826,11 +1826,13 @@ def _check_defer_same_day(dd: _DispatchDay, trip_id: Any) -> None:
 
 
 def _is_same_day_edit(dd: _DispatchDay, payload: Mapping[str, Any]) -> bool:
-    """Правка новых заказов дня: свои действия или «не везём сегодня» для взятого заказа дня (он не в заказах окна дня)."""
+    """Правка новых заказов дня: свои действия или «не везём сегодня» для взятого заказа дня (он не в заказах окна дня;
+    взятый до правила №79 заказ, заведённый заранее, — уже в них: его «не везём» — обычное)."""
     action = payload.get('action')
     order = payload.get('order')
     return action in ('same_day', 'same_day_drop') or (
-        action == 'exclude' and isinstance(order, str) and dd.draft is not None and order.upper() in dd.draft.same_day)
+        action == 'exclude' and isinstance(order, str) and dd.draft is not None and order.upper() in dd.draft.same_day
+        and all(o.isn != order.upper() for o in dd.deliver))
 
 
 DRIVER_LIST_DAYS = 90        # водители ERP и свои — кто встречался за 90 дней
