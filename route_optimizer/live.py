@@ -99,11 +99,11 @@ class Rules:
     unload_min_per_tonne: float = 6.0
     load_min: float = 0.0                # загрузка на складе перед рейсом: фиксированные минуты и на тонну (настройки)
     load_min_per_tonne: float = 0.0
-    preload: bool = False                # №78: вне сезона утренней погрузки первый рейс загружен с вечера (views)
     # тревоги в Telegram (live_alerts): какие виды слать, тихие часы (минуты от полуночи: с — до; None — нет), повтор
     alert_kinds: tuple[str, ...] = LIVE_ALERT_KINDS
     quiet: tuple[float, float] | None = (1200.0, 480.0)
     repeat_min: float = 30.0
+    preload: bool = False                # №78: вне сезона утренней погрузки первый рейс загружен с вечера (views)
 
     @classmethod
     def from_settings(cls, s: Mapping[str, Any]) -> Rules:

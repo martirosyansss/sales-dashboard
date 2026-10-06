@@ -59,8 +59,11 @@ def _build(client, trucks=('CAR1',)):
 
 
 def _plan(body):
-    """План без отметки времени сборки."""
-    return {k: v for k, v in body['plan'].items() if k != 'built_at'}
+    """План без отметки времени сборки и без полей сводки №78 (погрузка по сезону, запас дня): отпечатки golden — по
+    рейсам и цифрам, как до них."""
+    plan = {k: v for k, v in body['plan'].items() if k != 'built_at'}
+    plan['summary'] = {k: v for k, v in plan['summary'].items() if k not in ('preload', 'end_reserve_min')}
+    return plan
 
 
 # ============================== проверка значения и хранение ==============================
