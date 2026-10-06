@@ -106,3 +106,5 @@ main:has(> #whPage) { padding-top: 12px !important; }
     .wh-days button, .wh-load { transition: none; }
     .wh-load:active { transform: none; }
 }
+/* №81: рейс водителей логист изменил и не отправил — без кнопки «Բեռնված է» */
+.wh-changing { display: inline-flex; align-items: center; gap: 8px; color: var(--rt-warn, #ffb03a); font-weight: 600; }

@@ -4419,18 +4419,21 @@ def _warehouse_body(state: RoutesState, bundle: Bundle, day: date) -> dict[str, 
     if dd.ctx is None:
         raise dp.DispatchError(WAREHOUSE_NO_SETUP)
     plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
-    seats = dp.crew_view(draft, _crew(state, day, bundle.trucks)[0])
+    seats = dp.crew_view(dd.draft, _crew(state, day, bundle.trucks)[0])   # водители — плана водителей, как и рейсы
     by_id = {t.id: t for t in dd.draft.trips}
     marks = {t.id: t.loaded for t in draft.trips}
     trucks = []
     for t in plan['trucks']:
         trips = []
         for no, tr in enumerate(t['trips'], 1):
-            mark = marks.get(tr['id']) if tr['id'] in marks else by_id[tr['id']].loaded
+            # №81: рейса водителей нет в черновике — логист его убрал или переложил и ещё не отправил: отметку не ставить
+            changing = tr['id'] not in marks
+            mark = None if changing else marks[tr['id']]
             loaded = {'at': mark['at'][11:16], 'by': mark['by']} if mark is not None else None
             trips.append({'id': tr['id'], 'no': no, 'of': len(t['trips']), 'kg': tr['kg'], 'stops': len(tr['stops']),
                           'loading_start': tr['loading_start'], 'depart': tr['depart'],
-                          'preloaded': bool(tr.get('preloaded')), 'loaded': loaded})
+                          'preloaded': bool(tr.get('preloaded')), 'loaded': loaded,
+                          **({'changing': True} if changing else {})})
         trucks.append({'car_code': t['car_code'], 'name': t['name'], 'capacity_kg': t['capacity_kg'],
                        'driver': (seats.get(t['car_code']) or {}).get('name'), 'trips': trips})
     return {**head, 'approved': True, 'planned': True, 'trucks': trucks}
@@ -4483,6 +4486,9 @@ def api_warehouse_goods() -> Any:
     return jsonify({'success': True, 'kg': got['kg'], 'rows': [{k: r[k] for k in keys} for r in got['rows']]})
 
 
+WAREHOUSE_CHANGING = 'Լոգիստը փոխել է այս երթը և դեռ չի ուղարկել վարորդին — զանգահարեք լոգիստին'
+
+
 @bp.post('/api/routes/warehouse/loaded')
 @_api
 def api_warehouse_loaded() -> Any:
@@ -4504,6 +4510,9 @@ def api_warehouse_loaded() -> Any:
         return _conflict(WAREHOUSE_NO_PLAN)
     if payload.get('rev') != rev:
         return _conflict(WAREHOUSE_STALE)
+    if all(t.id != payload.get('trip') for t in draft.trips) \
+            and any(t.id == payload.get('trip') for t in draft.for_drivers().trips):
+        return _conflict(WAREHOUSE_CHANGING)   # №81: рейс водителей логист изменил и ещё не отправил
     me = session.get('username')
     now = _same_day_now()
     try:

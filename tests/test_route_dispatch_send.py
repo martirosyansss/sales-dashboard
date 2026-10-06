@@ -351,3 +351,20 @@ def test_discard_refused_when_loaded_trip_is_not_in_sent_plan():
     draft.next_id += 1
     with pytest.raises(dp.DispatchError, match='բեռնված'):
         dp.discard(draft)
+
+def test_warehouse_trip_changed_by_logist_and_not_sent_cannot_be_marked(client, monkeypatch):
+    """Рейс водителей, которого в черновике уже нет (логист переложил и не отправил): склад видит его «changing», отметка — 409."""
+    _page_setup(client, monkeypatch, now=NOW)
+    d = _build(client, ('CAR1', 'CAR2'))
+    d = _edit(client, d, action='approve')
+    first = d['plan']['trucks'][0]['trips'][0]
+    for s in first['stops']:                                       # все магазины рейса — в новый рейс той же машины
+        d = _edit(client, d, action='move', customer_id=s['customer_id'], from_trip=first['id'], to_trip=None,
+                  truck=d['plan']['trucks'][0]['car_code'])
+        if all(tr['id'] != first['id'] for t in d['plan']['trucks'] for tr in t['trips']):
+            break
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    tr = next(tr for t in w['trucks'] for tr in t['trips'] if tr['id'] == first['id'])
+    assert tr.get('changing') is True and tr['loaded'] is None
+    r = client.post('/api/routes/warehouse/loaded', json={'date': DAY, 'rev': w['rev'], 'trip': first['id'], 'loaded': True})
+    assert r.status_code == 409 and r.get_json()['error'] == views.WAREHOUSE_CHANGING
