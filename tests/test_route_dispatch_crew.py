@@ -42,15 +42,16 @@ def _crew(own, absent=(), manual=()):
 def test_seating_own_absent_free_and_no_driver():
     crew = _crew({'A': 'Արամ', 'B': 'Կարեն', 'C': 'Լևոն', 'D': 'Գոռ'}, absent={'Կարեն'})
     # A — свой водитель; B — водитель не вышел; E — водителя нет в «Վարորդ» (едет, как до №77); C не отмечена — Լևոն свободен
-    assert dp.seating(crew, ['A', 'B', 'E', 'D']) == ({'A': 'Արամ', 'D': 'Գոռ'}, ['B'], ['Լևոն'])
-    assert dp.seating(_crew({}), ['A', 'B']) == ({}, [], [])
+    assert dp.seating(crew, ['A', 'B', 'E', 'D']) == ({'A': 'Արամ', 'D': 'Գոռ'}, {'B': 'absent'}, ['Լևոն'])
+    assert dp.seating(_crew({}), ['A', 'B']) == ({}, {}, [])
 
 
 def test_seating_one_person_one_truck_logist_choice_first():
-    """Логист поставил Արամ на B на этот день (подмена), а постоянно Արամ — на A: ведёт B, A — без водителя."""
+    """Логист поставил Արամ на B на этот день (подмена), а постоянно Արամ — на A: ведёт B, A — без водителя: «ведёт
+    другую машину» ('busy'), а не «не вышел»."""
     crew = _crew({'A': 'Արամ', 'B': 'Արամ'}, manual={'B'})
-    assert dp.seating(crew, ['A', 'B']) == ({'B': 'Արամ'}, ['A'], [])
-    assert dp.seating(_crew({'A': 'Արամ', 'B': 'Արամ'}), ['A', 'B']) == ({'A': 'Արամ'}, ['B'], [])   # без выбора — по коду
+    assert dp.seating(crew, ['A', 'B']) == ({'B': 'Արամ'}, {'A': 'busy'}, [])
+    assert dp.seating(_crew({'A': 'Արամ', 'B': 'Արամ'}), ['A', 'B']) == ({'A': 'Արամ'}, {'B': 'busy'}, [])   # по коду
 
 
 # ============================== сборка с водителями дня ==============================
@@ -93,6 +94,59 @@ def test_more_trucks_than_drivers_picks_cheapest_by_day_cost():
     assert d.trucks == sorted([FORD.car_code, JAC.car_code]) and d.seats == {FORD.car_code: 'Լևոն'}
     assert d.unmanned == {HOWO.car_code: 'absent'} and timing['trials'] >= 2
     assert {t.truck for t in d.trips} <= set(d.trucks)
+
+
+def test_busy_driver_truck_reason():
+    """Логист поставил водителя FORD на HOWO на этот день: FORD — без водителя, причина «ведёт другую машину» ('busy')."""
+    stops, _ = _dp_stops(EAST)
+    ctx = _ctx((HOWO, FORD))
+    crew = _crew({HOWO.car_code: 'Կարեն', FORD.car_code: 'Կարեն'}, manual={HOWO.car_code})
+    d = dp.build_crewed(ctx, stops, None, [HOWO.car_code, FORD.car_code], 'now', crew)
+    assert d.trucks == [HOWO.car_code] and d.unmanned == {FORD.car_code: 'busy'} and d.seats == {}
+
+
+def test_greedy_picks_two_of_three(monkeypatch):
+    """Жадный выбор (наборов больше SEAT_EXHAUSTIVE_MAX) при двух свободных водителях из трёх машин без водителя."""
+    monkeypatch.setattr(dp, 'SEAT_EXHAUSTIVE_MAX', 0)
+    stops, _ = _dp_stops(EAST + WEST)
+    ctx = _ctx((HOWO, FORD, JAC))
+    crew = _crew({HOWO.car_code: 'Արամ', FORD.car_code: 'Կարեն', JAC.car_code: 'Գոռ', 'X': 'Լևոն', 'Y': 'Սոս'},
+                 absent={'Արամ', 'Կարեն', 'Գոռ'})
+    timing = {}
+    d = dp.build_crewed(ctx, stops, None, [HOWO.car_code, FORD.car_code, JAC.car_code], 'now', crew, timing)
+    assert len(d.seats) == 2 and sorted(d.seats.values()) == ['Լևոն', 'Սոս'] and len(d.unmanned) == 1
+    assert set(d.trucks) == set(d.seats) and HOWO.car_code in d.unmanned       # дорогая машина — без водителя
+    assert timing['trials'] == 3 + 2       # шаг 1 — три машины, шаг 2 — две оставшиеся
+
+
+def test_two_rounds_of_swaps():
+    """Две машины со своими водителями, две без них, магазин 101 принимает только FORD, 104 — только FORD2: каждая пересадка
+    увозит ещё магазин — за два хода оба водителя пересаживаются ('moved')."""
+    howo2 = fl.FleetTruck('991AT62', 'HOWO', 10000.0, 30.0)
+    stops, _ = _dp_stops(EAST + WEST)
+    ctx = _ctx((HOWO, howo2, FORD, FORD2), access={101: VehicleAccess('allow', (FORD.car_code,)),
+                                                  104: VehicleAccess('allow', (FORD2.car_code,))})
+    crew = _crew({HOWO.car_code: 'Արամ', howo2.car_code: 'Գոռ', FORD.car_code: 'Կարեն', FORD2.car_code: 'Լևոն'},
+                 absent={'Կարեն', 'Լևոն'})
+    d = dp.build_crewed(ctx, stops, None, [HOWO.car_code, howo2.car_code, FORD.car_code, FORD2.car_code], 'now', crew)
+    assert sorted(d.trucks) == sorted([FORD.car_code, FORD2.car_code])
+    assert d.unmanned == {HOWO.car_code: 'moved', howo2.car_code: 'moved'} and sorted(d.seats.values()) == ['Արամ', 'Գոռ']
+    assert not (d.no_room | d.no_vehicle)
+
+
+def test_trial_budget_keeps_best_found(monkeypatch):
+    """Проб не больше SEAT_TRIALS_MAX: кончились — машины выбора по коду, пересадок без пробы нет; план собран."""
+    monkeypatch.setattr(dp, 'SEAT_TRIALS_MAX', 1)
+    stops, _ = _dp_stops(EAST)
+    ctx = _ctx((HOWO, FORD, JAC))
+    crew = _crew({HOWO.car_code: 'Արամ', FORD.car_code: 'Կարեն', 'OFF': 'Լևոն'}, absent={'Արամ', 'Կարեն'})
+    timing = {}
+    d = dp.build_crewed(ctx, stops, None, [HOWO.car_code, FORD.car_code, JAC.car_code], 'now', crew, timing)
+    assert timing['trials'] == 1 and len(d.seats) == 1 and len(d.unmanned) == 1 and d.trips
+    monkeypatch.setattr(dp, 'SEAT_TRIALS_MAX', 0)
+    d = dp.build_crewed(ctx, stops, None, [HOWO.car_code, FORD.car_code, JAC.car_code], 'now', crew, timing)
+    first = min(HOWO.car_code, FORD.car_code)
+    assert timing['trials'] == 0 and d.seats == {first: 'Լևոն'} and d.trips
 
 
 def test_more_trucks_than_drivers_needs_the_allowed_truck():
@@ -175,7 +229,7 @@ def test_pinned_trip_of_absent_driver_stays():
     assert FORD.car_code in d.trucks and d.unmanned == {} and d.seats == {}
     assert any(t.pinned and t.truck == FORD.car_code and t.stops == [101] for t in d.trips)
     view = dp.crew_view(d, crew)
-    assert view[FORD.car_code] == {'name': 'Կարեն', 'seat': False, 'warn': 'absent'}
+    assert view[FORD.car_code] == {'name': 'Կարեն', 'seat': False, 'warn': 'absent', 'stale': False}
     free = _crew({HOWO.car_code: 'Արամ', FORD.car_code: 'Կարեն', 'OFF': 'Լևոն'}, absent={'Կարեն'})
     d = dp.build_crewed(ctx, stops, old, [HOWO.car_code, FORD.car_code], 'now', free)
     assert d.seats == {FORD.car_code: 'Լևոն'} and dp.crew_view(d, free)[FORD.car_code]['warn'] is None
@@ -186,13 +240,28 @@ def test_pinned_trip_of_absent_driver_stays():
 def test_crew_view_logist_choice_twice_and_none():
     d = dp.Draft(trucks=['A', 'B', 'C'], seats={'A': 'Լևոն'})
     assert dp.crew_view(d, _crew({'A': 'Արամ', 'B': 'Կարեն'}, absent={'Արամ'})) == {
-        'A': {'name': 'Լևոն', 'seat': True, 'warn': None}, 'B': {'name': 'Կարեն', 'seat': False, 'warn': None},
-        'C': {'name': None, 'seat': False, 'warn': 'none'}}
+        'A': {'name': 'Լևոն', 'seat': True, 'warn': None, 'stale': False},
+        'B': {'name': 'Կարեն', 'seat': False, 'warn': None, 'stale': False},
+        'C': {'name': None, 'seat': False, 'warn': 'none', 'stale': False}}
     # после сборки логист поставил на A Գոռ (подмена дня) — главнее посадки сборки; Լևոն на B тоже — на двух машинах
     view = dp.crew_view(d, _crew({'A': 'Գոռ', 'B': 'Լևոն'}, absent={'Արամ'}, manual={'A', 'B'}))
-    assert view['A'] == {'name': 'Գոռ', 'seat': False, 'warn': None} and view['B']['warn'] is None
+    assert view['A'] == {'name': 'Գոռ', 'seat': False, 'warn': None, 'stale': False} and view['B']['warn'] is None
     d2 = dp.Draft(trucks=['A', 'B'], seats={'A': 'Լևոն'})
     assert dp.crew_view(d2, _crew({'A': 'Արամ', 'B': 'Լևոն'}, absent={'Արամ'}))['B']['warn'] == 'twice'
+    # подмена логиста на A — тоже не вышла: посадка сборки остаётся
+    assert dp.crew_view(d, _crew({'A': 'Գոռ'}, absent={'Գոռ'}, manual={'A'}))['A'] == \
+        {'name': 'Լևոն', 'seat': True, 'warn': None, 'stale': False}
+
+
+def test_crew_view_own_driver_changed_after_build():
+    """Посадка сборки — пока свой водитель машины не вышел или ведёт другую машину дня. Постоянного водителя машины
+    сменили после сборки (новый вышел и свободен) — карточка и Բեռնագիր с ним, план «пересобрать» (stale)."""
+    d = dp.Draft(trucks=['A', 'B'], seats={'A': 'Լևոն'})
+    assert dp.crew_view(d, _crew({'A': 'Գոռ', 'B': 'Կարեն'}))['A'] == {'name': 'Գոռ', 'seat': False, 'warn': None,
+                                                                       'stale': True}
+    # свой водитель A ведёт B (его поставили туда) — посадка нужна
+    assert dp.crew_view(d, _crew({'A': 'Կարեն', 'B': 'Կարեն'}))['A'] == {'name': 'Լևոն', 'seat': True, 'warn': None,
+                                                                          'stale': False}
 
 
 def test_draft_json_roundtrip_and_old_drafts():
@@ -205,6 +274,26 @@ def test_draft_json_roundtrip_and_old_drafts():
     assert (old.seats, old.unmanned, old.absent) == ({}, {}, []) and not {'seats', 'unmanned', 'absent'} & set(old.to_json())
     bad = dp.Draft.from_json({'seats': {'A': 5, 'B': ''}, 'unmanned': {'A': 'gone', 'B': 'moved'}, 'absent': 'x'})
     assert (bad.seats, bad.unmanned, bad.absent) == ({}, {'B': 'moved'}, [])
+
+
+def test_spare_trucks_need_a_free_driver():
+    """Совет «добавить машину» (№54) и новые заказы дня (№72) не предлагают машину, чей водитель не вышел или ведёт
+    машину дня; машину без водителя в «Վարորդ» и со свободным вышедшим водителем — предлагают."""
+    stops, _ = _dp_stops(EAST)
+    ctx = _ctx((HOWO, FORD, JAC, FORD2))
+    crew = _crew({HOWO.car_code: 'Արամ', FORD.car_code: 'Կարեն', JAC.car_code: 'Արամ', FORD2.car_code: 'Լևոն'},
+                 absent={'Կարեն'})
+    d = dp.build_crewed(ctx, stops, None, [HOWO.car_code], 'now', crew)
+    assert dp.spare_trucks(ctx, d, crew) == [FORD2.car_code]             # FORD — не вышел, JAC — Արամ на HOWO
+    assert dp.spare_trucks(ctx, d, _crew({})) == sorted([FORD.car_code, JAC.car_code, FORD2.car_code])
+    new, _ = _dp_stops(EAST + [(110, (40.21, 44.66), 50.0)])
+    extras = {o['truck'] for o in dp.same_day_options(ctx, stops, new, d, [110], 0.0, crew)['options'] if o['kind'] == 'extra'}
+    assert extras <= {FORD2.car_code}
+    left = [{'customer_id': 101, 'kg': 10, 'no_room': True, 'no_center': False, 'no_vehicle': False}]
+    assert dp._advice(ctx, d, [], left, crew)['add']['car_code'] == FORD2.car_code
+    gone = _crew({**crew.own}, absent={'Կարեն', 'Լևոն'})
+    advice = dp._advice(ctx, d, [], left, gone)
+    assert advice['add'] is None and advice['no_free'] and advice['no_drivers']
 
 
 def test_unmanned_not_offered_for_same_day_and_advice():
@@ -294,7 +383,8 @@ def test_api_absence_rebuild_and_waybill(client, crew_day, monkeypatch):
     assert page['crew'] == {'drivers': [{'name': 'Արամ', 'trucks': ['CAR1'], 'absent': False},
                                         {'name': 'Կարեն', 'trucks': ['CAR2'], 'absent': False}], 'trucks': {}, 'stale': False}
     built = _build(client)
-    assert built['crew']['stale'] is False and built['crew']['trucks']['CAR1'] == {'name': 'Արամ', 'seat': False, 'warn': None}
+    assert built['crew']['stale'] is False and \
+        built['crew']['trucks']['CAR1'] == {'name': 'Արամ', 'seat': False, 'warn': None, 'stale': False}
     r = _absence(client, name='Արամ', absent=True)
     assert r.status_code == 200, r.get_json()
     crew = r.get_json()['crew']
@@ -303,7 +393,7 @@ def test_api_absence_rebuild_and_waybill(client, crew_day, monkeypatch):
     # магазины только в центре, куда въезжает лишь CAR1: Կարեն пересаживается на CAR1 (увозит всё), CAR2 — без водителя
     page = _build(client)
     assert page['crew']['stale'] is False
-    assert page['crew']['trucks'] == {'CAR1': {'name': 'Կարեն', 'seat': True, 'warn': None}}
+    assert page['crew']['trucks'] == {'CAR1': {'name': 'Կարեն', 'seat': True, 'warn': None, 'stale': False}}
     assert [(t['car_code'], t['selected'], t.get('unmanned')) for t in page['trucks']] == \
         [('CAR1', True, None), ('CAR2', True, 'moved')]
     assert [t['car_code'] for t in page['plan']['trucks']] == ['CAR1'] and page['plan']['unassigned'] == []
@@ -322,7 +412,7 @@ def test_api_absence_rebuild_and_waybill(client, crew_day, monkeypatch):
     assert r.get_json()['crew']['drivers'][0]['absent'] is False and r.get_json()['crew']['stale'] is True
     page = _build(client)
     assert page['crew']['stale'] is False and [t.get('unmanned') for t in page['trucks']] == [None, None]
-    assert page['crew']['trucks']['CAR1'] == {'name': 'Արամ', 'seat': False, 'warn': None}
+    assert page['crew']['trucks']['CAR1'] == {'name': 'Արամ', 'seat': False, 'warn': None, 'stale': False}
 
 
 def test_api_absence_until_and_bad_requests(client, crew_day):
@@ -349,4 +439,42 @@ def test_api_logist_choice_after_build_wins(client, crew_day, monkeypatch):
     r = client.post('/api/routes/dispatch/driver', json={'date': '2026-10-01', 'car_code': 'CAR1', 'name': 'Գոռ',
                                                          'only_day': True})
     assert r.status_code == 200, r.get_json()
-    assert r.get_json()['crew']['trucks']['CAR1'] == {'name': 'Գոռ', 'seat': False, 'warn': None}
+    assert r.get_json()['crew']['trucks']['CAR1'] == {'name': 'Գոռ', 'seat': False, 'warn': None, 'stale': False}
+
+
+def test_api_stale_when_crew_changes_after_build(client, crew_day, monkeypatch):
+    """После сборки: у машины без водителя снова есть свой (сменили в «Վարորդ») — пересобрать; у неотмеченной машины
+    появился свободный водитель, а машины без водителя стоят — тоже; машины, удалённой из настроек, нет в счёте."""
+    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 9, 30, 18, 0))
+    assert _absence(client, name='Արամ', absent=True).status_code == 200
+    page = _build(client)
+    assert page['crew']['stale'] is False and [t.get('unmanned') for t in page['trucks']] == [None, 'moved']
+    crew_day.store.save_truck_driver('CAR2', '2026-10-01', 'Գոռ', 'qa')      # у CAR2 новый постоянный водитель
+    assert client.get('/api/routes/dispatch?date=2026-10-01').get_json()['crew']['stale'] is True
+    crew_day.store.save_truck_driver('CAR2', '2026-10-01', 'Կարեն', 'qa')
+    crew_day.store.save_truck_driver('CAR3', '2026-10-01', 'Լևոն', 'qa')      # в настройках CAR3 нет
+    draft, _ = views._stored_draft(crew_day, views.date(2026, 10, 1))
+    with client.application.test_request_context():
+        day = views.date(2026, 10, 1)
+        assert views._crew_json(crew_day, day, draft, {'CAR1', 'CAR2'})['crew']['stale'] is False
+        got = views._crew_json(crew_day, day, draft, {'CAR1', 'CAR2', 'CAR3'})['crew']   # CAR3 есть: Լևոն свободен
+        assert got['stale'] is True and [d['name'] for d in got['drivers']] == sorted(['Արամ', 'Կարեն', 'Լևոն'])
+
+
+def test_api_waybill_blank_for_absent_driver_of_pinned_truck(client, crew_day, monkeypatch):
+    """Закреплённый рейс машины, чей водитель не вышел, остаётся; в Բեռնագիր строка водителя пустая (вписать от руки)."""
+    monkeypatch.setattr(views, '_clock', lambda: views.datetime(2026, 9, 30, 18, 0))
+    page = _build(client)
+    trip = page['plan']['trucks'][0]['trips'][0]
+    truck = page['plan']['trucks'][0]['car_code']
+    r = client.post('/api/routes/dispatch/edit', json={'date': '2026-10-01', 'rev': page['rev'], 'action': 'pin',
+                                                       'trip': trip['id'], 'truck': truck})
+    assert r.status_code == 200, r.get_json()
+    name = {'CAR1': 'Արամ', 'CAR2': 'Կարեն'}[truck]
+    assert _absence(client, name=name, absent=True).status_code == 200
+    page = _build(client)
+    assert page['crew']['trucks'][truck]['warn'] == 'absent' and not page['trucks'][0].get('unmanned')
+    client.application.extensions['route_optimizer'].waybill_loader = lambda isns: views.wb.Lines({}, frozenset(), {})
+    w = client.get('/api/routes/dispatch/waybill', query_string={'date': '2026-10-01', 'truck': truck,
+                                                                  'rev': page['rev']}).get_json()
+    assert w['driver'] is None and 'driver_seat' not in w

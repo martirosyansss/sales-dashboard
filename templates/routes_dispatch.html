@@ -11,7 +11,7 @@
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- Страница на армянском (ответ владельца №31). Редизайн: тёмная спокойная тема (ответ владельца №51), свои стили поверх routes.css -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=45">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_dispatch.css') }}?v=46">
 {% endblock %}
 
 {% block content %}
@@ -64,7 +64,7 @@
                     Դուք ստուգում եք և տպում թերթիկները վարորդների համար։ ERP-ում ոչինչ չի փոխվում։</p>
                 <ol>
                     <li><b>Մեքենաներ։</b> Հանեք նշումը այն մեքենաներից, որոնք այսօր դուրս չեն գալիս։</li>
-                    <li><b>Վարորդներ։</b> Հանեք նշումը այն վարորդից, որն այսօր չի եկել (միայն այսօր կամ մինչև որոշ օր)։ Ծրագիրը կընտրի այնքան մեքենա, որքան վարորդ կա, և ազատ վարորդներին կնստեցնի չեկածների մեքենաներին։</li>
+                    <li><b>Վարորդներ։</b> Հանեք նշումը այն վարորդից, որը չի եկել (միայն այդ օրը կամ մինչև որոշ օր)։ Ծրագիրը կընտրի այնքան մեքենա, որքան վարորդ կա, և ազատ վարորդներին կնստեցնի չեկածների մեքենաներին։</li>
                     <li><b>Պատվերներ։</b> Եթե կան դեղին նշումներ (օրինակ՝ խանութի տեղը քարտեզում չկա), ուղղեք դրանք։</li>
                     <li><b>Կազմել երթերը։</b> Սեղմեք կանաչ կոճակը՝ ծրագիրը կբաշխի պատվերները մեքենաներով։</li>
                     <li><b>Տպել։</b> Սեղմեք «Տպել վարորդների համար»՝ յուրաքանչյուր մեքենայի համար կտպվի առանձին թերթ։</li>
@@ -90,6 +90,12 @@
     <div id="dpBody" hidden>
         <!-- ЧТО ДЕЛАТЬ СЕЙЧАС: одна подсказка и главная кнопка по состоянию дня -->
         <section id="dpTodo" class="dp-todo" aria-live="polite"></section>
+
+        <!-- машины без водителя в «Վարորդ» (ответ владельца №77, 4): одна строка вместо предупреждения у каждой карточки -->
+        <div id="dpNoDriver" class="dp-nodriver" hidden>
+            <i class="fas fa-id-card" aria-hidden="true"></i><span id="dpNoDriverText"></span>
+            <button type="button" id="dpNoDriverBtn" class="rt-btn rt-btn-ghost rt-btn-sm"><i class="fas fa-user-pen" aria-hidden="true"></i><span>Նշել</span></button>
+        </div>
 
         <!-- НОВЫЕ ЗАКАЗЫ ДНЯ (ответ владельца №72): пришли сегодня — плашка и «что с ними делать» (диалог dpSameDayDlg) -->
         <section id="dpSameDay" class="dp-todo dp-sameday" aria-live="polite" hidden></section>
@@ -122,7 +128,7 @@
                          сколько водителей, свободных посадит на машины невышедших -->
                     <fieldset class="dp-crew" id="dpCrew" hidden>
                         <legend class="dp-crew-t">Վարորդներ <span class="dp-chip" id="dpCrewCount"></span></legend>
-                        <p class="dp-steplead">Հանեք նշումը, եթե վարորդն այսօր չի եկել․ ծրագիրը կընտրի այնքան մեքենա, որքան վարորդ կա։</p>
+                        <p class="dp-steplead">Հանեք նշումը, եթե վարորդը չի եկել․ ծրագիրը կընտրի այնքան մեքենա, որքան վարորդ կա։</p>
                         <div class="dp-trucks dp-crew-list" id="dpCrewList"></div>
                     </fieldset>
                     <p class="dp-note">Մեքենայի բեռնատարողությունը փոխվում է <a href="/routes/settings#trucks">կարգավորումներում</a>։</p>
@@ -452,5 +458,5 @@
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
 <script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=80"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=81"></script>
 {% endblock %}

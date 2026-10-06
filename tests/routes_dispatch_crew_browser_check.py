@@ -16,6 +16,8 @@ D пересборка: магазины только в центре, куда 
   карточка с причиной, в шаге 1 у CAR2 «վարորդը նստել է այլ մեքենա», в подсказке «Առանց վարորդի…»;
 E Բեռնագիր CAR1 — «Վարորդ՝ Կարեն (փոխարինում)»;
 F Արամ снова отмечен → подсказка пересобрать; пересборка — серой карточки нет, CAR1 снова с Արամ;
+N (ответ владельца №77, 4) у всех машин водитель есть — строки «վարորդ նշված չէ» нет, у карточек предупреждения нет; у CAR2
+  водителя убрали → строка «1 մեքենայի վարորդ նշված չէ» и «Նշել» → диалог «Վարորդ» машины CAR2 → новый водитель → строки нет;
 H телефон 390×860: нет горизонтальной прокрутки;
 ошибки страницы (pageerror) и консоли — провал (кроме сетевых для внешних ресурсов и road-lines).
 """
@@ -131,7 +133,7 @@ def main() -> int:
             open_step1()
             step = page.locator('#dpTrucks .dp-truck', has_text='CAR2').inner_text()
             todo = page.inner_text('#dpTodo')
-            check('վարորդը նստել է այլ մեքենա' in step and 'Առանց վարորդի այսօր դուրս չեն գալիս՝ FORD · CAR2' in todo
+            check('վարորդը նստել է այլ մեքենա' in step and 'Առանց վարորդի 1 հոկտեմբերին դուրս չեն գալիս՝ FORD · CAR2' in todo
                   and 'Վարորդները փոխվել են' not in todo, 'D step 1 and the hint name CAR2')
 
             page.screenshot(path=str(Path(tempfile.gettempdir()) / 'crew-check-desktop.png'), full_page=True)
@@ -154,6 +156,25 @@ def main() -> int:
                                    timeout=60000)
             check(tile('Արամ').locator('input').is_checked() and 'Վարորդները փոխվել են' not in page.inner_text('#dpTodo'),
                   'F back: no greyed card, CAR1 with Արամ again')
+
+            # N
+            check(page.is_hidden('#dpNoDriver') and page.locator('#dpTruckCards .dp-crew-warn').count() == 0,
+                  'N every truck has a driver: no line, no card warnings')
+            page.request.post(f'{BASE}/api/routes/dispatch/driver', data={'date': DAY, 'car_code': 'CAR2', 'name': '',
+                                                                          'only_day': False})
+            page.reload()
+            page.wait_for_selector('#dpNoDriver:not([hidden])', timeout=30000)
+            check(page.inner_text('#dpNoDriverText').startswith('1\u00a0մեքենայի վարորդ նշված չէ՝ FORD · CAR2'),
+                  f'N line: {page.inner_text("#dpNoDriverText")!r}')
+            page.click('#dpNoDriverBtn')
+            page.wait_for_selector('#dpDriverDlg[open]', timeout=5000)
+            check('CAR2' in page.inner_text('#dpDriverLead'), 'N «Նշել» opens the driver dialog of CAR2')
+            page.select_option('#dpDriverPick', '__new__')
+            page.fill('#dpDriverName', 'Սոս')
+            page.click('#dpDriverSave')
+            page.wait_for_function("() => !document.getElementById('dpDriverDlg').open", timeout=10000)
+            check(page.is_hidden('#dpNoDriver') and page.evaluate("() => document.activeElement && document.activeElement.id") != 'body',
+                  'N saved: the line is gone')
 
             # H
             page.set_viewport_size({'width': 390, 'height': 860})

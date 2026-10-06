@@ -873,3 +873,10 @@
 #rtDispatch .dp-tcard.is-unmanned .dp-thead:hover { background: none; }
 .dp-absent-opts { margin: 4px 0 0; padding: 0; border: 0; min-width: 0; }
 .dp-absent-opts .dp-absent-until { margin: 8px 0 0 26px; }
+.dp-nodriver {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 14px; padding: 10px 14px;
+    border: 1px solid var(--rt-line); border-radius: 12px; background: var(--rt-panel); color: var(--rt-fg-dim); font-size: .9375rem;
+}
+.dp-nodriver[hidden] { display: none; }
+.dp-nodriver > i { color: var(--rt-fg-mute); }
+.dp-nodriver > span { flex: 1 1 200px; min-width: 0; }

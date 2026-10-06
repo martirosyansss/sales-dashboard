@@ -476,8 +476,8 @@ def test_api_driver_saved_from_day_and_printed(client, day, monkeypatch):
     assert r.status_code == 200, r.get_json()
     body = r.get_json()
     assert body.pop('crew') == {'drivers': [{'name': 'Վարդանյան Գարիկ', 'trucks': ['CAR1'], 'absent': False}], 'stale': False,
-                                'trucks': {'CAR1': {'name': 'Վարդանյան Գարիկ', 'seat': False, 'warn': None},   # №77
-                                           'CAR2': {'name': None, 'seat': False, 'warn': 'none'}}}
+                                'trucks': {'CAR1': {'name': 'Վարդանյան Գարիկ', 'seat': False, 'warn': None, 'stale': False},   # №77
+                                           'CAR2': {'name': None, 'seat': False, 'warn': 'none', 'stale': False}}}
     assert body == {'success': True, 'day': '2026-10-01', 'only_day': {'driver': False}, 'drivers': {'CAR1': 'Վարդանյան Գարիկ'},
                             'substitutes': [], 'helpers': {}, 'helper_substitutes': [], 'driver_list': erp_list}            # из ERP — в «своих» не дублируется
     get = lambda d: client.get(f'/api/routes/dispatch?date={d}').get_json()         # noqa: E731

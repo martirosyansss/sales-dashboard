@@ -326,6 +326,7 @@
         $('dpTomorrow').hidden = d.day === d.default_day;
         renderDateNote();
         renderTrucks();
+        renderNoDriver();
         renderOrders();
         renderAgents();
         renderNoCoords();
@@ -449,7 +450,7 @@
         if (plan && d.orders.no_coords && !problems.length) lines.push('Ուշադրություն՝ ' + pl(d.orders.no_coords, 'խանութի') + ' տեղը քարտեզում նշված չէ, դրանք երթերում չեն (տես 2-րդ քայլը)։');
         // №77: отмеченные машины, которые сегодня без водителя, — в рейсах их нет
         const idle = plan ? d.trucks.filter(t => t.unmanned && t.selected) : [];
-        if (idle.length) lines.push('Առանց վարորդի այսօր դուրս չեն գալիս՝ ' + idle.map(truckLabel).join(', ') + '։');
+        if (idle.length) lines.push('Առանց վարորդի ' + dayHuman(d.day) + 'ն դուրս չեն գալիս՝ ' + idle.map(truckLabel).join(', ') + '։');
         if (d.same_day_unread) lines.push('Ուշադրություն՝ նախորդ օրվա պլանը չկարդացվեց․ պատվերները, որոնք այդ օրը տարվել են նույն օրը, կարող են կրկին լինել այստեղ։ Ստուգեք ցուցակը։');
         if (d.is_past) lines.unshift('Սա անցած օր է՝ դիտելու և համեմատելու համար։');
         if (d.day_off) lines.unshift('Կարգավորումներում այս օրը նշված է որպես ոչ աշխատանքային․ սովորաբար այս օրը առաքում չկա։');
@@ -976,7 +977,7 @@
         renderTruckCount();
         renderCrew();
     }
-    const UNMANNED_HY = { absent: 'այսօր առանց վարորդի', moved: 'վարորդը նստել է այլ մեքենա' };
+    const UNMANNED_HY = { absent: 'առանց վարորդի', busy: 'վարորդը վարում է այլ մեքենա', moved: 'վարորդը նստել է այլ մեքենա' };
     const selectedTrucks = () => [...$('dpTrucks').querySelectorAll('input[type="checkbox"]:checked')].map(x => x.value);
     function renderTruckCount() {
         const ready = state.data.trucks.filter(t => t.ready).length;
@@ -2450,7 +2451,8 @@
             // водитель — кто сегодня за рулём (№77: посаженный сборкой — «փոխարինում»), и առաքիչ — каждый своей строкой
             const seat = crewTruck(t.car_code);
             const crew = ROLES.filter(r => (r === 'driver' && seat ? seat.name : driverOf(t.car_code, r)));
-            if (crew.length || (seat && seat.warn)) {
+            const warn = seat && seat.warn !== 'none' ? seat.warn : null;   // «не указан» — одной строкой вверху (renderNoDriver)
+            if (crew.length || warn) {
                 const dr = document.createElement('span');
                 dr.className = 'dp-tdriver';
                 crew.forEach(r => {
@@ -2460,10 +2462,10 @@
                         : CREW[r].word + '՝ ' + driverOf(t.car_code, r) + (isSub(t.car_code, r) ? ' (փոխարինող)' : '');
                     dr.appendChild(p);
                 });
-                if (seat && seat.warn) {
+                if (warn) {
                     const w = document.createElement('span');
-                    w.className = 'dp-tperson dp-crew-warn' + (seat.warn === 'none' ? '' : ' is-bad');
-                    w.textContent = CREW_WARN_HY[seat.warn] || '';
+                    w.className = 'dp-tperson dp-crew-warn is-bad';
+                    w.textContent = CREW_WARN_HY[warn] || '';
                     dr.appendChild(w);
                 }
                 head.querySelector('.dp-thead-name').appendChild(dr);
@@ -2506,17 +2508,25 @@
         });
         syncFocus();
     }
-    const CREW_WARN_HY = { none: 'Վարորդ նշված չէ', absent: 'Վարորդն այսօր չի եկել — նշեք այլ վարորդ («Վարորդ»)',
+    const CREW_WARN_HY = { absent: 'Վարորդը չի եկել — նշեք այլ վարորդ («Վարորդ»)',
         twice: 'Այս վարորդը նշված է նաև այլ մեքենայում — վերակազմեք երթերը' };
-    // «Այսօր դուրս չի գալիս՝ …» — почему отмеченная машина без водителя (№77)
+    // «Դուրս չի գալիս՝ …» — почему отмеченная машина без водителя в день плана (№77)
     function unmannedText(t) {
-        const own = driverOf(t.car_code);
-        if (t.unmanned === 'moved') {
-            const where = Object.keys(crewOf().trucks).find(c => crewOf().trucks[c].name === own);
-            return 'Այսօր դուրս չի գալիս՝ վարորդը' + (own ? ' (' + own + ')' : '') + ' նստել է '
-                + (where ? truckLabel(truckBy(where)) + ' մեքենան' : 'այլ մեքենա') + '․ այդպես օրն ավելի ձեռնտու է։';
-        }
-        return 'Այսօր դուրս չի գալիս՝ վարորդը' + (own ? ' (' + own + ')' : '') + ' չի եկել, իսկ ազատ վարորդ չմնաց։';
+        const own = driverOf(t.car_code), who = 'վարորդը' + (own ? ' (' + own + ')' : '');
+        const where = Object.keys(crewOf().trucks).find(c => crewOf().trucks[c].name === own);
+        const there = where ? truckLabel(truckBy(where)) + ' մեքենան' : 'այլ մեքենա';
+        if (t.unmanned === 'moved') return 'Դուրս չի գալիս՝ ' + who + ' նստել է ' + there + '․ այդպես օրն ավելի ձեռնտու է։';
+        if (t.unmanned === 'busy') return 'Դուրս չի գալիս՝ ' + who + ' այդ օրը վարում է ' + there + '։';
+        return 'Դուրս չի գալիս՝ ' + who + ' չի եկել, իսկ ազատ վարորդ չմնաց։';
+    }
+    // Владелец (№77, ответ 4): машины без водителя в «Վարորդ» — не предупреждение у каждой карточки, а одна строка вверху
+    // «N մեքենայի վարորդ նշված չէ» и «Նշել» — диалог «Վարորդ» первой такой машины (сохранили — следующая)
+    const noDriver = () => (state.data ? state.data.trucks.filter(t => t.ready && t.selected && !driverOf(t.car_code)) : []);
+    function renderNoDriver() {
+        const list = noDriver(), box = $('dpNoDriver');
+        box.hidden = !list.length || !!state.data.is_past;
+        $('dpNoDriverText').textContent = list.length ? list.length + NB + 'մեքենայի վարորդ նշված չէ՝ '
+            + list.slice(0, 4).map(truckLabel).join(', ') + (list.length > 4 ? '…' : '') : '';
     }
     function toggleTruck(code) {
         const t = state.data.plan.trucks.find(x => x.car_code === code);
@@ -3480,7 +3490,7 @@
         .map(r => CREW[r].word + '՝ ' + driverOf(code, r) + (isSub(code, r) ? ' (փոխարինող)' : '')).join(' · ');
     function openDriver(code) {
         if (state.busy) return;
-        const t = wbTruck(state.data, code);
+        const t = wbTruck(state.data, code) || state.data.trucks.find(x => x.car_code === code);
         if (!t) return;
         state.driverCar = code;
         $('dpDriverLead').textContent = truckLabel(t);
@@ -3591,9 +3601,10 @@
             ['drivers', 'substitutes', 'helpers', 'helper_substitutes', 'driver_list', 'crew'].forEach(k => { state.data[k] = r[k]; });
             if (state.data.plan) renderTruckCards(state.data.plan);
             renderCrew();
+            renderNoDriver();
             renderFresh();
         }
-        const t = wbTruck(state.data, code);
+        const t = wbTruck(state.data, code) || truckBy(code);
         toast((t ? truckLabel(t) : code) + '՝ ' + (crewText(code) || 'վարորդ նշված չէ') + '։');
     }
     // ---------- Водители дня (ответ владельца №77) ----------
@@ -3624,7 +3635,7 @@
             if (x.absent) {
                 const off = document.createElement('span');
                 off.className = 'dp-truck-sub is-warn';
-                off.textContent = x.until && x.until !== state.data.day ? 'չի աշխատում մինչև ' + dateRu(x.until) + ' ներառյալ' : 'այսօր չի եկել';
+                off.textContent = x.until && x.until !== state.data.day ? 'չի աշխատում մինչև ' + dateRu(x.until) + ' ներառյալ' : 'չի եկել';
                 txt.appendChild(off);
             }
             lab.append(cb, txt);
@@ -3638,6 +3649,7 @@
         $('dpAbsentOneT').textContent = 'Միայն ' + dayHuman(state.day) + 'ն';
         $('dpAbsentOne').checked = true;
         $('dpAbsentUntil').min = state.day;
+        $('dpAbsentUntil').max = shiftDay(state.day, 366);      // как сервер: не дальше года (DRIVER_ABSENCE_MAX_DAYS)
         $('dpAbsentUntil').value = shiftDay(state.day, 1);
         $('dpAbsentErr').textContent = '';
         $('dpAbsentUntil').removeAttribute('aria-invalid');
@@ -3664,7 +3676,7 @@
         const a = state.absent;
         if (!a || state.busy) return;
         const long = $('dpAbsentLong').checked, until = $('dpAbsentUntil').value;
-        if (long && !(/^\d{4}-\d{2}-\d{2}$/.test(until) && until >= state.day)) {
+        if (long && !(/^\d{4}-\d{2}-\d{2}$/.test(until) && until >= state.day && until <= $('dpAbsentUntil').max)) {
             $('dpAbsentErr').textContent = 'Նշեք օրը, մինչև որը վարորդը չի աշխատի (ոչ շուտ, քան ' + dateRu(state.day) + ')';
             $('dpAbsentUntil').setAttribute('aria-invalid', 'true');
             $('dpAbsentUntil').focus();
@@ -3684,7 +3696,7 @@
         a.saved = true;
         $('dpAbsentDlg').close();
         crewSaved(r);
-        toast(a.name + '՝ ' + (long ? 'չի աշխատում մինչև ' + dateRu(until) + ' ներառյալ' : 'այսօր չի եկել') + '։' + (state.data.plan ? ' Վերակազմեք երթերը։' : ''));
+        toast(a.name + '՝ ' + (long ? 'չի աշխատում մինչև ' + dateRu(until) + ' ներառյալ' : dayHuman(state.day) + 'ն չի եկել') + '։' + (state.data.plan ? ' Վերակազմեք երթերը։' : ''));
     }
     async function savePresence(name, cb) {
         if (state.busy) { cb.checked = false; return; }
@@ -3916,6 +3928,7 @@
         });
         $('dpDriverSave').addEventListener('click', () => saveDriver());
         $('dpAbsentSave').addEventListener('click', () => saveAbsent());
+        $('dpNoDriverBtn').addEventListener('click', () => { const t = noDriver()[0]; if (t) openDriver(t.car_code); });
         $('dpAbsentCancel').addEventListener('click', () => $('dpAbsentDlg').close());
         $('dpAbsentDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
         $('dpAbsentDlg').addEventListener('close', () => {
@@ -3930,8 +3943,10 @@
         $('dpSameDayDlg').addEventListener('close', () => { state.sd = null; });
         $('dpDriverDlg').addEventListener('close', () => {
             const card = [...$('dpTruckCards').querySelectorAll('.dp-tcard')].find(c => c.dataset.truck === state.driverCar);
+            const btn = card && card.querySelector('.dp-drvbtn');
             state.driverCar = null;
-            if (card) card.querySelector('.dp-drvbtn').focus();      // фокус — обратно на кнопку «Վարորդ» этой машины
+            // фокус — обратно на кнопку «Վարորդ» этой машины или на «Նշել» строки «վարորդ նշված չէ» (№77)
+            if (btn) btn.focus(); else if (!$('dpNoDriver').hidden) $('dpNoDriverBtn').focus();
         });
         $('dpDriverDlg').addEventListener('cancel', (e) => { if (state.busy) e.preventDefault(); });
         // поле нового человека — без перевода фокуса: стрелки по закрытому списку тоже дают change (WCAG 3.2.2)
