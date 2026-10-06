@@ -30,7 +30,7 @@ def test_one_renderer_for_both_pages():
     tpl = (ROOT / 'templates' / 'base_v2.html').read_text(encoding='utf-8')
     assert "filename='js/base.js') }}?v=2\"" in tpl                                    # новый base.js — мимо кэша
     page = (ROOT / 'templates' / 'routes_warehouse.html').read_text(encoding='utf-8')
-    assert "routes_warehouse.js') }}?v=4" in page and "routes_warehouse.css') }}?v=3" in page
+    assert "routes_warehouse.js') }}?v=5" in page and "routes_warehouse.css') }}?v=4" in page
 
 
 NODE = r'''

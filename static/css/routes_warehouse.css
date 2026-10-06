@@ -68,6 +68,8 @@ main:has(> #whPage) { padding-top: 12px !important; }
 .wh-print:hover { border-color: var(--rt-acc-dim); }
 .wh-print:focus-visible { outline: 2px solid var(--rt-acc-hover); outline-offset: 2px; }
 .wh-print[aria-busy="true"] { opacity: .6; cursor: progress; }
+.wh-print:disabled { opacity: .5; cursor: not-allowed; }
+.wh-truck-meta .wh-changing { flex-basis: 100%; }
 
 .wh-trip { padding: 12px 0; border-top: 1px solid var(--rt-line-soft); }
 .wh-trip-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }

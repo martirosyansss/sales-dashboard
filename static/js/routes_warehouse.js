@@ -64,7 +64,7 @@
         try { data = await resp.json(); } catch (e) { data = null; }
         if (resp.ok && data && data.success === true) return data;
         if (resp.status === 401) { location.href = '/login?next=' + encodeURIComponent(location.pathname); }
-        throw Object.assign(new Error(errorText(resp.status, data)), { status: resp.status });
+        throw Object.assign(new Error(errorText(resp.status, data)), { status: resp.status, body: data });
     }
 
     // «06.10» и подпись дня: сегодня / завтра / день недели
@@ -152,9 +152,10 @@
     // ---------- Բեռնագիր машины (тот же документ, что печатает логист на «Развозе») ----------
     // Окно — сразу по нажатию (открытое после ответа сервера браузер счёл бы всплывающим). Не открылось (телефон,
     // блокировщик) — лист на этой же странице и печать её (printHere). Ответ сверяется с планом на экране после запроса:
-    // rev и рейсы машины не те — «план изменился, обновите», а не лист по другому плану.
+    // rev и рейсы машины не те — «план изменился, обновите», а не лист по другому плану. У машины неотправленные правки
+    // логиста (unsent, ответ владельца 07.10 «Запретить до отправки») — кнопка выключена, сервер тоже откажет (409 unsent).
     async function printWaybill(truck, btn) {
-        if (state.busy || state.stale || !state.data || btn.getAttribute('aria-busy') === 'true') return;
+        if (truck.unsent || state.busy || state.stale || !state.data || btn.getAttribute('aria-busy') === 'true') return;
         const d = state.data;
         let w = null;
         try { w = window.open('', '_blank'); } catch (e) { w = null; }
@@ -175,7 +176,8 @@
             if (!same) throw Object.assign(new Error('Պլանը փոխվել է — թարմացրեք էջը'), { status: 409 });
         } catch (e) {
             if (w) { try { w.close(); } catch (x) { /* уже закрыто */ } }
-            if (e.status === 409) markStale(); else showAlert(e.message, false);
+            if (e.status === 409 && e.body && e.body.unsent) showAlert(e.message, true);   // правки после открытия страницы
+            else if (e.status === 409) markStale(); else showAlert(e.message, false);
             return;
         } finally {
             btn.removeAttribute('aria-busy');
@@ -228,15 +230,18 @@
         const trips = d.trucks.flatMap(t => t.trips);
         const done = trips.filter(t => t.loaded).length;
         $('whSummary').textContent = d.trucks.length + NB + 'մեքենա · ' + trips.length + NB + 'երթ · բեռնված՝ ' + done + ' / ' + trips.length;
-        d.trucks.forEach(t => {
-            const pr = h('button', { type: 'button', class: 'wh-print', 'aria-label': 'Տպել բեռնագիրը՝ ' + (t.name || t.car_code) },
-                icon('fa-print'), 'Տպել բեռնագիրը');
+        d.trucks.forEach((t, k) => {
+            // неотправленные правки логиста — та же подсказка, что вместо «Բեռնված է» (№81)
+            const hint = t.unsent ? h('span', { class: 'wh-changing', id: 'whUnsent' + k }, icon('fa-phone'),
+                'Լոգիստը փոխում է երթը՝ զանգահարեք') : null;
+            const pr = h('button', { type: 'button', class: 'wh-print', 'aria-label': 'Տպել բեռնագիրը՝ ' + (t.name || t.car_code),
+                disabled: !!t.unsent, 'aria-describedby': hint ? hint.id : null }, icon('fa-print'), 'Տպել բեռնագիրը');
             pr.addEventListener('click', () => printWaybill(t, pr));
             list.append(h('section', { class: 'wh-truck', 'aria-label': t.name || t.car_code },
                 h('div', { class: 'wh-truck-head' }, h('h2', { class: 'wh-truck-name', text: t.name || t.car_code }),
                     t.name ? h('span', { class: 'wh-truck-code', text: t.car_code }) : null),
                 h('div', { class: 'wh-truck-meta' },
-                    h('p', { class: 'wh-driver' }, icon('fa-id-card'), t.driver ? t.driver : 'վարորդը նշված չէ'), pr),
+                    h('p', { class: 'wh-driver' }, icon('fa-id-card'), t.driver ? t.driver : 'վարորդը նշված չէ'), pr, hint),
                 t.trips.map(tr => tripRow(d, t, tr))));
         });
     }

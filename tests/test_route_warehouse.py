@@ -294,26 +294,81 @@ def test_warehouse_waybill_is_dispatch_waybill_of_approved_plan(client, monkeypa
     assert get(rev=d['rev']).status_code == 409 and asked == []
 
 
-def test_warehouse_waybill_follows_sent_plan_like_the_page(client, monkeypatch):
-    """№81: склад видит план, отправленный водителям, — и Բեռնագիր склада по нему же (не по неотправленной правке
-    логиста; рейсы те же, что на странице склада, — её сверка после ответа сходится)."""
-    from test_route_dispatch_send import _move_one
+def _sent_day(client, monkeypatch):
+    """План 01.10 двумя машинами утверждён (= отправлен водителям, №81); строки заказов — подделка, вызовы — в asked."""
     state = _setup(client, monkeypatch)
+    asked = []
     products = {10: wb.Product(10, '0101', 'Կաթ 1լ', 'հատ', 1.05, 12)}
-    state.waybill_loader = lambda isns: wb.Lines({i.upper(): ((10, 30.0),) for i in isns}, frozenset(), products)
+
+    def loader(isns):
+        asked.append(sorted(isns))
+        return wb.Lines({i.upper(): ((10, 30.0),) for i in isns}, frozenset(), products)
+
+    state.waybill_loader = loader
     d = _build(client, ('CAR1', 'CAR2'))
     d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'approve'}).get_json()
-    before = {t['car_code']: client.get('/api/routes/warehouse/waybill', query_string={
-        'date': DAY, 'truck': t['car_code'], 'rev': d['rev']}).get_json() for t in d['plan']['trucks']}
-    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], **_move_one(d)}).get_json()
-    assert d['unsent'] is not None
-    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
-    for t in w['trucks']:
-        got = client.get('/api/routes/warehouse/waybill', query_string={'date': DAY, 'truck': t['car_code'],
-                                                                        'rev': w['rev']}).get_json()
-        assert [x['id'] for x in got['trips']] == [x['id'] for x in t['trips']]
-        assert ([x['basis'] for x in got['trips']], [x['kg'] for x in got['trips']]) ==             ([x['basis'] for x in before[t['car_code']]['trips']], [x['kg'] for x in before[t['car_code']]['trips']])
+    assert d['sent'] and d['unsent'] is None
+    return state, d, asked
 
+
+def _wb(client, car, rev):
+    return client.get('/api/routes/warehouse/waybill', query_string={'date': DAY, 'truck': car, 'rev': rev})
+
+
+def test_warehouse_waybill_refused_until_logist_sends_edits(client, monkeypatch):
+    """Ответ владельца 07.10 «Запретить до отправки»: у машины неотправленные правки логиста (№81) — на странице склада
+    признак unsent (кнопка выключена), Բեռնագիր — 409 с unsent, ERP не читается; после «Ուղարկել» — печатается, по
+    отправленному плану, тот же ответ, что у «Развоза»."""
+    from test_route_dispatch_send import _move_one
+    state, d, asked = _sent_day(client, monkeypatch)
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    assert all('unsent' not in t for t in w['trucks'])
+    assert all(_wb(client, t['car_code'], w['rev']).status_code == 200 for t in w['trucks'])
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], **_move_one(d)}).get_json()
+    assert d['unsent'] is not None and not d['unsent']['orders']
+    changed = set(d['unsent']['trucks'])
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    assert changed and {t['car_code'] for t in w['trucks'] if t.get('unsent')} == changed
+    asked.clear()
+    for car in changed:
+        r = _wb(client, car, w['rev'])
+        assert r.status_code == 409 and r.get_json() == {'success': False, 'error': views.WAREHOUSE_WAYBILL_UNSENT,
+                                                         'conflict': True, 'unsent': True}
+    assert asked == []                                                  # отказ — до чтения ERP
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'send'}).get_json()
+    assert d['unsent'] is None
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    assert all('unsent' not in t for t in w['trucks'])
+    for t in w['trucks']:
+        r = _wb(client, t['car_code'], w['rev'])
+        assert r.status_code == 200, r.get_json()
+        got = r.get_json()
+        assert [x['id'] for x in got['trips']] == [x['id'] for x in t['trips']]
+        same = client.get('/api/routes/dispatch/waybill', query_string={'date': DAY, 'truck': t['car_code'],
+                                                                        'rev': w['rev']}).get_json()
+        assert got == {**same, 'weekday': date.fromisoformat(DAY).isoweekday()}
+    assert asked
+
+
+def test_warehouse_waybill_unsent_rules():
+    """_waybill_unsent: не отправляли — нет; рейс машины другой (точки, их порядок; рейс «changing» — номера у водителей
+    нет в черновике) — да, только у этой машины; изменён отбор заказов дня — у всех."""
+    *_, draft = _two_trips()                     # FORD — рейсы 1 и 3, HOWO — рейс 2 [102, 103]
+    cars = (FORD.car_code, HOWO.car_code)
+    assert draft.sent is None and not any(views._waybill_unsent(draft, c) for c in cars)
+    dp.approve(draft, 'at', 'logist')            # утверждение отправляет план водителям (№81)
+    assert draft.sent is not None and not any(views._waybill_unsent(draft, c) for c in cars)
+
+    def edited(change):
+        out = dp.Draft.from_json(draft.to_json())
+        change(out)
+        return out
+    rev = edited(lambda x: setattr(dp.trip_of(x, 2), 'stops', [103, 102]))
+    assert views._waybill_unsent(rev, HOWO.car_code) and not views._waybill_unsent(rev, FORD.car_code)
+    renum = edited(lambda x: setattr(dp.trip_of(x, 1), 'id', x.next_id))   # тот же состав под новым номером
+    assert views._waybill_unsent(renum, FORD.car_code) and not views._waybill_unsent(renum, HOWO.car_code)
+    excl = edited(lambda x: x.excluded.add('X1'))                            # «այսօր չենք տանում» — груз любой машины
+    assert all(views._waybill_unsent(excl, c) for c in cars)
 
 def test_reset_race_with_warehouse_mark_is_409(client, monkeypatch):
     """«Ջնջել երթերը» стирает ровно прочитанный черновик: склад успел отметить — 409, отметка цела."""
