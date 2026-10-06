@@ -226,7 +226,7 @@ def test_spare_solo_truck_drops_extra_truck_when_everything_fits():
     lone = dp.Draft(trucks=sorted(CODES), trips=[dp.DraftTrip(1, '333DO33', [RAMADA]),
                                                  dp.DraftTrip(2, '991AT61', [101, 102, 103])], next_id=3)
     assert dp._solo_only(ctx, lone) == {'333DO33'}
-    got = dp._spare_solo_truck(ctx, ss, dp.Draft(), lone, CODES, 'now')
+    got = dp._spare_solo_truck(ctx, ss, dp.Draft(), lone, 'now')
     assert [t.truck for t in got.trips] == ['333DO33', '333DO33'] and got.trucks == sorted(CODES) and not got.no_room
     assert [t.stops for t in got.trips if RAMADA in t.stops] == [[RAMADA]]           # второй рейс — обычные магазины
 

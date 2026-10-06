@@ -1266,7 +1266,7 @@ def build_crewed(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, truc
         timing.update(trials=len(tried), seconds=perf_counter() - started)
     codes = fleet if orphans else trucks
     draft = build(ctx, stops, old, codes, now)
-    draft = _spare_solo_truck(ctx, stops, old, draft, codes, now)
+    draft = _spare_solo_truck(ctx, stops, old, draft, now)
     draft.seats, draft.unmanned, draft.absent = seats, unmanned, sorted(crew.absent)
     return draft
 
@@ -1279,44 +1279,60 @@ def _solo_only(ctx: DayContext, draft: Draft) -> set[str]:
     return {c for c, ts in by.items() if all(len(t.stops) == 1 and t.stops[0] in ctx.solo for t in ts)}
 
 
-def _spare_solo_truck(ctx: DayContext, stops: Sequence[Stop], old: Draft, draft: Draft, codes: Sequence[str],
-                      now: str) -> Draft:
-    """Ответ владельца №78, 18: машина отдельного рейса («Ռամադա» на 333NO33) после него возвращается и везёт обычные
-    магазины — лишнюю машину без нужды не брать. Пока у плана есть машина только с отдельными рейсами — проба сборки
-    машинами плана без одной из них (не с закреплёнными рейсами; SEAT_TRIAL_ITERATIONS); годится, если машин в рейсах
-    меньше, а вне рейсов не больше магазинов и кг, чем в исходном плане (_shortfall); из годных — меньше ֏; проб — не больше
-    SEAT_TRIALS_MAX. Итог — полная сборка последним годным набором, если и она такая же. Машины без рейсов остаются
-    отмеченными (Draft.trucks — прежний). Ничего не годится — план как есть."""
+def _spare_solo_truck(ctx: DayContext, stops: Sequence[Stop], old: Draft, draft: Draft, now: str) -> Draft:
+    """Ответ владельца №78, 18: машина отдельного рейса («Ռամադա» на 333NO33) после него возвращается, грузится и везёт
+    обычные магазины — лишнюю машину без нужды не брать. У плана есть машина только с отдельными рейсами (_solo_only) —
+    пробы сборки машинами плана без одной из них (не с закреплёнными рейсами; SEAT_TRIAL_ITERATIONS, не больше
+    SEAT_TRIALS_MAX); годится, если машин в рейсах меньше, а вне рейсов не больше магазинов и кг, чем в плане (_shortfall);
+    из годных — где машина отдельного рейса везёт и обычные магазины, затем меньше ֏; таких нет — следующая машина снимается
+    с лучшей годной. Найден набор, где машина отдельного рейса не простаивает, — полная сборка им; если полный решатель
+    снова оставил её только с отдельным рейсом (дешевле, но машина простаивает), — её рейсы из пробы закрепляются на время
+    полной сборки остальных (потом открепляются), не вышло — план пробы. Машины без рейсов
+    остаются отмеченными (Draft.trucks — прежний). Ничего не годится — план как есть."""
     lone = _solo_only(ctx, draft) if ctx.solo else set()
     if not lone:
         return draft
     routable = {s.customer_id: s for s in stops if s.point is not None}
     base = _shortfall(ctx, routable, draft)
-    used0 = len({t.truck for t in draft.trips})
     held = {t.truck for t in old.trips if t.pinned}
 
     def fewer(d: Draft, than: int) -> bool:
         return len({t.truck for t in d.trips}) < than and _shortfall(ctx, routable, d)[:2] <= base[:2]
-    cur, trials, pick = draft, 0, None
-    while lone and trials < SEAT_TRIALS_MAX:
+    cur, trials, found = draft, 0, None
+    while trials < SEAT_TRIALS_MAX:
         used = sorted({t.truck for t in cur.trips})
         best = None
-        for code in sorted(set(used) - lone - held):
+        for code in sorted(set(used) - _solo_only(ctx, cur) - held):
             if trials >= SEAT_TRIALS_MAX:
                 break
             trials += 1
             got = build(ctx, stops, old, [c for c in used if c != code], now, SEAT_TRIAL_ITERATIONS)
-            if fewer(got, len(used)) and (best is None or (_shortfall(ctx, routable, got)[2], code) < best[:2]):
-                best = (_shortfall(ctx, routable, got)[2], code, got)
+            key = (len(_solo_only(ctx, got)), _shortfall(ctx, routable, got)[2], code)
+            if fewer(got, len(used)) and (best is None or key < best[0]):
+                best = (key, got)
         if best is None:
             break
-        cur, pick = best[2], [c for c in used if c != best[1]]
-        lone = _solo_only(ctx, cur)
-    if pick is None:
+        cur = best[1]
+        if not best[0][0]:
+            found = cur
+            break
+    if found is None:
         return draft
-    final = build(ctx, stops, old, pick, now)
-    if not fewer(final, used0):
-        return draft
+    codes = sorted({t.truck for t in found.trips})
+    final = build(ctx, stops, old, codes, now)
+    if not (fewer(final, len({t.truck for t in draft.trips})) and not _solo_only(ctx, final)):
+        # полный решатель снова оставил машину отдельного рейса простаивать: её рейсы — как в пробе (закреплены на время
+        # сборки), остальное — полным решателем
+        mine = {t.truck for t in found.trips if any(c in ctx.solo for c in t.stops)}
+        keep = Draft(trips=[replace(t, stops=list(t.stops), pinned=True) for t in found.trips if t.pinned or t.truck in mine],
+                     next_id=found.next_id)
+        final = build(ctx, stops, replace(old, trips=keep.trips, next_id=keep.next_id), codes, now)
+        was = {t.id for t in old.trips if t.pinned}
+        for t in final.trips:
+            if t.truck in mine and t.id not in was and t.loaded is None:
+                t.pinned = False
+        if not (fewer(final, len({t.truck for t in draft.trips})) and not _solo_only(ctx, final)):
+            final = found
     final.trucks = list(draft.trucks)
     return final
 
