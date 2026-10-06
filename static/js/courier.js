@@ -50,6 +50,10 @@
     const flagText = (f) => (f || []).map(x => FLAG[x] || x).join(', ');
     const badge = (text, cls) => '<span class="rt-badge ' + cls + '">' + esc(text) + '</span>';
     // Վարորդ և առաքիչ (պայմանագիր v1.4 §8)՝ առաքիչը վարորդի անվան տակ
+    // «Ապրանքագիր» — карточка накладной (/courier/invoice): номер документа точки дня — ссылка
+    const docLink = (date, stopId, text) => (date && stopId && text
+        ? '<a class="cr-doc-link" href="/courier/invoice?date=' + encodeURIComponent(date) + '&stop=' + encodeURIComponent(stopId) + '">' + esc(text) + '</a>'
+        : esc(text || ''));
     const whoCell = (driver, helper) => esc(driver || '') + (helper ? '<span class="cr-with"><i class="fas fa-user-group" aria-hidden="true"></i>Առաքիչ՝ ' + esc(helper) + '</span>' : '');
 
     // ---------- Сервер ----------
@@ -274,7 +278,7 @@
             + (mm.no_car ? '<p class="cr-lead">Պլանի խանութների ' + fmt(mm.no_car) + ' ապրանքագիր ERP-ում առանց մեքենայի է։ Մեքենան որոշվում է ըստ պլանի։</p>' : '')
             + crewMismatch(d.crew_mismatch);
         const plan = d.crew_mismatch && d.crew_mismatch.available ? (d.crew_mismatch.planned || {}) : null;
-        $('crTodayCars').innerHTML = d.cars.length ? d.cars.map(c => carCard(c, plan)).join('')
+        $('crTodayCars').innerHTML = d.cars.length ? d.cars.map(c => carCard(c, plan, d.date)).join('')
             : '<p class="rt-empty">Այս օրվա համար տվյալներ չկան։ Տերմինալ ունեցող մեքենաների կետերը կերևան այստեղ։</p>';
         $('crFlaggedBox').hidden = !d.flagged.length;
         $('crFlaggedNote').textContent = d.flagged.length ? String(d.flagged.length) : '';
@@ -332,7 +336,7 @@
         return '<div class="cr-crew" aria-label="Անձնակազմ">' + (drivers.length ? person('Վարորդ՝', drivers.join(', '), '', []) : '')
             + (drivers.length && helpers.length ? '<span class="cr-crew-sep" aria-hidden="true">·</span>' : '') + helpers.join('') + '</div>';
     }
-    function carCard(c, plan) {
+    function carCard(c, plan, date) {
         const stat = (v, label, cls) => '<div class="cr-stat ' + (v ? cls : '') + '"><b>' + fmt(v) + '</b><span>' + esc(label) + '</span></div>';
         const done = c.full + c.partial + c.refused + c.covered;
         const rows = [...c.stops, ...c.removed];
@@ -350,7 +354,7 @@
             + refuelsBlock(c.refuels || [])
             + (rows.length ? '<details class="rt-fold" style="margin-top:10px"><summary><span class="rt-fold-t">Կետերը</span></summary><div class="rt-fold-body"><div class="rt-table-scroll"><table class="rt-table cr-small">'
               + '<thead><tr><th scope="col">№</th><th scope="col">Հաճախորդ</th><th scope="col">Ապրանքագիր</th><th scope="col">Վճարում</th><th scope="col">Վճարելու է</th><th scope="col">Վճարված է</th><th scope="col">Վիճակ</th></tr></thead><tbody>'
-              + rows.map(s => '<tr class="' + ((s.flags || []).includes('merge_conflict') ? 'cr-row-warn' : s.removed ? 'is-closed' : '') + '"><td>' + (s.removed ? '—' : fmt(s.seq)) + '</td><td>' + esc(s.customer) + '</td><td>' + esc(s.doc_number) + '</td><td>' + esc(COLLECT[s.collect] || '')
+              + rows.map(s => '<tr class="' + ((s.flags || []).includes('merge_conflict') ? 'cr-row-warn' : s.removed ? 'is-closed' : '') + '"><td>' + (s.removed ? '—' : fmt(s.seq)) + '</td><td>' + esc(s.customer) + '</td><td>' + docLink(date, s.stop_id, s.doc_number) + '</td><td>' + esc(COLLECT[s.collect] || '')
                 + '</td><td class="cr-num-cell" title="Ապրանքագիր՝ ' + esc(money(s.amount_due)) + '">' + money(s.due) + '</td><td class="cr-num-cell">' + money(s.paid) + '</td><td>' + statusBadge(s) + tareText(s.tare)
                 + ((s.flags || []).length ? ' <span class="cr-muted">' + esc(flagText(s.flags)) + '</span>' : '') + '</td></tr>').join('')
               + '</tbody></table></div></div></details>' : '')
@@ -377,7 +381,7 @@
                 + '<td class="cr-mono">' + esc((r.raw || '').replace(/\u001d/g, '<GS>')) + (r.duplicate_elsewhere ? ' ' + badge('կրկնված', 'b-danger') : '') + (r.cancelled ? ' ' + badge('չեղարկված', 'b-none') : '') + '</td>'
                 + '<td class="cr-mono">' + esc(r.gtin || '') + '<br>' + esc(r.serial || '') + '</td><td>' + esc(r.product_name || '') + '</td>'
                 + '<td>' + esc(r.customer_name || '') + (r.tax_id ? '<br><span class="cr-muted">ՀՎՀՀ ' + esc(r.tax_id) + '</span>' : '') + '</td>'
-                + '<td>' + esc(r.doc_number || '') + (r.split ? ' ' + badge('բաժանված', 'b-warn') : '') + (r.order_number ? '<br><span class="cr-muted">պատվեր ' + esc(r.order_number) + '</span>' : '')
+                + '<td>' + docLink(r.known ? r.date : null, r.stop_id, r.doc_number) + (r.split ? ' ' + badge('բաժանված', 'b-warn') : '') + (r.order_number ? '<br><span class="cr-muted">պատվեր ' + esc(r.order_number) + '</span>' : '')
                     + (r.old_invoice_number ? '<br><span class="cr-muted">նախկին ապրանքագիր ' + esc(r.old_invoice_number) + '</span>' : '') + '</td><td>' + esc(r.driver_name || '') + '<br><span class="cr-muted">' + esc(r.car_code) + '</span></td>'
                 + '<td>' + (r.kind === 'return' ? 'վերադարձ' : 'վաճառք') + (r.is_group ? ', տուփ (' + fmt(r.units) + ')' : '') + '</td></tr>').join('');
         } catch (e) { showError(e.message); }

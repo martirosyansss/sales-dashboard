@@ -1,0 +1,51 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Ապրանքագիր — Sales Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
+<!-- «Ապրանքագիր» — одна накладная: деньги, доставка, сканы маркировки, фото и подпись (API /api/courier/admin/invoice) -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/courier_invoice.css') }}?v=1">
+{% endblock %}
+
+{% block content %}
+<div class="rt-page ci-page" id="ciPage" lang="hy">
+
+    <header class="rt-head ci-head">
+        <a class="ci-back" href="/courier"><i class="fas fa-arrow-left" aria-hidden="true"></i>Առաքիչ</a>
+        <h1 class="rt-title">Ապրանքագիր</h1>
+        <p class="ci-sub">Մեկ ապրանքագրի ամբողջ պատմությունը տերմինալից՝ գումար, առաքում, մակնշման սկաններ, լուսանկարներ և ստորագրություն։ ERP-ում ոչինչ չի փոխվում։</p>
+    </header>
+
+    <form id="ciForm" class="ci-find" role="search" autocomplete="off">
+        <div class="ci-search">
+            <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+            <label for="ciQ" class="rt-sr-only">Որոնում</label>
+            <input id="ciQ" class="rt-input" type="search" maxlength="200" placeholder="Ապրանքագրի համար, հաճախորդ, կոդ կամ ՀՎՀՀ">
+        </div>
+        <div class="ci-range">
+            <label for="ciFrom">Սկսած</label><input type="date" id="ciFrom" class="rt-input ci-date">
+            <label for="ciTo">մինչև</label><input type="date" id="ciTo" class="rt-input ci-date">
+        </div>
+        <button type="submit" class="rt-btn rt-btn-primary rt-btn-sm" id="ciGo"><i class="fas fa-magnifying-glass" aria-hidden="true"></i>Գտնել</button>
+        <button type="button" class="rt-iconbtn ci-iconbtn" id="ciPrint" aria-label="Տպել քարտը" title="Տպել քարտը" hidden><i class="fas fa-print" aria-hidden="true"></i></button>
+    </form>
+
+    <div id="ciStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+    <div id="ciError" class="rt-alert d-none" role="alert">
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        <span id="ciErrorText" class="rt-alert-text"></span>
+    </div>
+
+    <!-- JS: список найденных (/api/courier/admin/invoices) или карточка одной накладной (/api/courier/admin/invoice) -->
+    <div id="ciResults"></div>
+    <div id="ciCard"></div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/courier_invoice.js') }}?v=1"></script>
+{% endblock %}
