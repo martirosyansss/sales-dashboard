@@ -54,6 +54,7 @@
 """
 from __future__ import annotations
 
+import copy
 import math
 import re
 from dataclasses import dataclass, field, replace
@@ -756,7 +757,7 @@ def _sent(raw: Any) -> dict[str, Any] | None:
             or not isinstance(raw['plan'].get('trips'), list):
         return None
     by = raw.get('by')
-    return {'at': raw['at'], 'by': by if isinstance(by, str) else None, 'plan': raw['plan']}
+    return {'at': raw['at'], 'by': by if isinstance(by, str) else None, 'plan': copy.deepcopy(raw['plan'])}
 
 
 def sent_json(raw: Any) -> Any:
@@ -1982,6 +1983,18 @@ def send(draft: Draft, at: str, by: str | None) -> Draft:
         raise DispatchError('Նախ հաստատեք օրվա պլանը')
     draft.sent = {'at': at, 'by': by, 'plan': draft.sent_plan()}
     return draft
+
+
+def discard(draft: Draft) -> Draft:
+    """«Չեղարկել փոփոխությունները» (№81): черновик — снова отправленный водителям план (всё, что правили после отправки,
+    уходит: переносы, заказы дня, пересборка, утверждение и закрепления — как были в момент отправки). Не выпущен —
+    DispatchError: отменять нечего."""
+    if draft.sent is None:
+        raise DispatchError('Վարորդներին ուղարկված պլան չկա — չեղարկելու բան չկա')
+    restored = Draft.from_json(draft.sent['plan'], snapshot=True)
+    restored.released, restored.sent = draft.released, draft.sent
+    restored.next_id = max(restored.next_id, draft.next_id)   # номера выброшенных рейсов не повторяются (started_customers)
+    return restored
 
 
 def _drivers_key(plan: Draft) -> tuple[dict[str, list[int]], tuple[Any, ...]]:

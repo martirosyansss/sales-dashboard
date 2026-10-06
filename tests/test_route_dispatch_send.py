@@ -252,6 +252,40 @@ def test_started_customers_follow_the_sent_trip():
     assert cid in dp.started_customers(ctx, base, draft, late) - {c for t in draft.trips if t.id == first.id for c in t.stops}
 
 
+def test_discard_returns_to_sent_plan(client, monkeypatch):
+    """«Չեղարկել փոփոխությունները»: черновик — снова отправленный план; до выпуска и в прошлом дне — нельзя."""
+    state, _ = _page_setup(client, monkeypatch, now=NOW)
+    d = _build(client, ('CAR1', 'CAR2'))
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'discard'})
+    assert r.status_code == 400 and 'չեղարկելու' in r.get_json()['errors']['_']
+    d = _edit(client, d, action='approve')
+
+    def trips(day):
+        return [(t['car_code'], [s['customer_id'] for s in tr['stops']]) for t in day['plan']['trucks'] for tr in t['trips']]
+    sent = trips(d)
+    d = _edit(client, d, **_move_one(d))
+    assert d['unsent'] is not None and trips(d) != sent
+    d = _edit(client, d, action='discard')
+    assert d['unsent'] is None and trips(d) == sent and 'approved' in d
+    assert d['sent']['at'] == '2026-10-01T08:00:00'
+    assert all(tr['pinned'] for t in d['plan']['trucks'] for tr in t['trips'])
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 2, 9, 0, tzinfo=ac.YEREVAN))
+    r = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'discard'})
+    assert r.status_code == 400
+
+
+def test_unsent_on_road_lists_changed_trucks_already_loading(client, monkeypatch):
+    """Машина с неотправленной правкой, чей рейс по отправленному плану уже грузится, — в on_road (предупреждение)."""
+    _page_setup(client, monkeypatch, now=NOW)
+    d = _build(client, ('CAR1', 'CAR2'))
+    d = _edit(client, d, action='approve')
+    d = _edit(client, d, **_move_one(d))
+    assert d['unsent']['on_road'] == []                        # 08:00 — ещё никто не грузится
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 1, 17, 0, tzinfo=ac.YEREVAN))
+    u = client.get('/api/routes/dispatch?date=' + DAY).get_json()['unsent']
+    assert u['on_road'] and set(u['on_road']) <= set(u['trucks'])
+
+
 def test_sent_json_and_snapshot_without_trips():
     *_, draft = _base((FORD,))
     raw = draft.to_json()
@@ -263,3 +297,10 @@ def test_sent_json_and_snapshot_without_trips():
     broken = {**raw, 'sent': {'at': 'a', 'by': 'u', 'plan': {}}}            # снимок без рейсов — битый
     assert dp.sent_json(broken) is broken
     assert dp.Draft.from_json(broken).sent['plan']['agents_off'] == [5]     # выпущен — отправлен сам черновик
+
+def test_discard_keeps_next_id_growing():
+    """Номера рейсов, выброшенных «Չեղարկել փոփոխությունները», не достаются новым рейсам."""
+    *_, draft = _base((FORD,))
+    dp.approve(draft, 'a', 'u')
+    draft.next_id += 5
+    assert dp.discard(draft).next_id == draft.next_id

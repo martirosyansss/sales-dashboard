@@ -894,6 +894,7 @@
 .dp-sendpill.is-sent { color: var(--rt-ok); border-color: var(--rt-ok-line); background: var(--rt-ok-bg); }
 .dp-sendpill.is-unsent { color: var(--rt-warn); border-color: var(--rt-warn-line); background: var(--rt-warn-bg); }
 .dp-sendpill.is-unsent i { font-size: .55em; }
+.dp-discard { font-size: .875rem; color: var(--rt-fg-mute); }
 
 /* требует внимания: счётчики одной строкой под «Ի՞նչ անել հիմա» */
 .dp-inbox { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 14px; }

@@ -31,7 +31,9 @@
    «Պլանը հաստատված է · ժ. ЧЧ:ММ · кто»; пока утверждён, «Վերակազմել երթերը» и «Ջնջել երթերը» недоступны (сервер — 400),
    «Չեղարկել հաստատումը» — правка unapprove.
    Отправка водителям (ответ владельца №81, как «Publish changes» у Routific): утверждение отправляет план на терминалы;
-   правки после него копятся — у даты метка «N մեքենայի փոփոխությունը չի ուղարկվել» и кнопка «Ուղարկել» (правка send).
+   правки после него копятся — у даты метка «N մեքենայի փոփոխությունը չի ուղարկվել», кнопка «Ուղարկել» (правка send) и
+   «Չեղարկել փոփոխությունները» (правка discard — назад к отправленному); бумага при неотправленных правках — после
+   «Ուղարկել և շարունակել» (dpSendFirstDlg), чтобы лист и «Բեռնագիր» совпадали с терминалом водителя.
    Как у профессиональных систем (№81): всё, что требует внимания, — строкой счётчиков под «Ի՞նչ անել հիմա» (dpInbox);
    рейсы и карта — рабочий экран на высоту окна со своей прокруткой; магазин можно перетащить мышью на полосу рейса
    шкалы или в рейс карточки (правка move); на телефоне — вкладки внизу «Օր · Երթեր · Քարտեզ» (dpTabs). */
@@ -508,7 +510,7 @@
     const interacting = () => {
         const a = document.activeElement;
         return state.pickCid !== null || state.dragging || $('dpGeoDlg').open || $('dpUnloadDlg').open || $('dpDriverDlg').open
-            || $('dpSameDayDlg').open || $('dpAbsentDlg').open
+            || $('dpSameDayDlg').open || $('dpAbsentDlg').open || $('dpSendFirstDlg').open
             || (!!a && $('dpBody').contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName));
     };
     async function poll() {
@@ -596,14 +598,30 @@
     // ---------- Что видят водители (ответ владельца №81, как «Publish changes» у Routific) ----------
     // Утверждение отправляет план на терминалы «Առաքիչ»; правки после него копятся в черновике (unsent ответа дня), пока
     // логист не нажмёт «Ուղարկել» — тогда водители получают план целиком в нынешнем виде (правка send)
-    const sendPlan = () => edit({ action: 'send' }, 'Փոփոխություններն ուղարկվեցին վարորդներին');
+    const SENT_OK = 'Փոփոխություններն ուղարկվեցին վարորդներին';
+    const onRoad = (u) => (u && Array.isArray(u.on_road) ? u.on_road : []).map(c => { const t = truckBy(c); return t ? truckLabel(t) : c; });
+    function sendPlan() {
+        const road = onRoad(state.data.unsent);
+        if (road.length && !window.confirm(road.join(', ') + (road.length > 1 ? ' մեքենաներն' : ' մեքենան') + ' արդեն բեռնվում է կամ '
+            + 'ճանապարհին է՝ վարորդը փոփոխությունը կտեսնի «Առաքիչ»-ում ճանապարհին։ Զանգահարեք նրան։ Ուղարկե՞լ։')) return;
+        edit({ action: 'send' }, SENT_OK);
+    }
+    // «Չեղարկել փոփոխությունները»: черновик — снова тот план, что у водителей (правка discard)
+    function discardPlan() {
+        const d = state.data;
+        if (!window.confirm('Չեղարկե՞լ բոլոր չուղարկված փոփոխությունները։ Պլանը կվերադառնա վարորդներին ուղարկված վիճակին ('
+            + builtWhen(d.sent.at) + ')՝ ներառյալ հաստատումը և ամրացումները։')) return;
+        edit({ action: 'discard' }, 'Պլանը վերադարձավ վարորդներին ուղարկված վիճակին');
+    }
     function unsentTitle(u) {
         return u.trucks.length ? pl(u.trucks.length, 'մեքենայի') + ' փոփոխությունը չի ուղարկվել' : 'Պատվերների փոփոխությունը չի ուղարկվել';
     }
     function unsentDetail(u) {
         const names = u.trucks.map(c => { const t = truckBy(c); return t ? truckLabel(t) : c; });
+        const road = onRoad(u);
         return (names.length ? 'Փոխվել են՝ ' + names.join(', ') + '։' : '')
-            + (u.orders ? (names.length ? ' ' : '') + 'Փոխվել է պատվերների ընտրությունը։' : '');
+            + (u.orders ? (names.length ? ' ' : '') + 'Փոխվել է պատվերների ընտրությունը։' : '')
+            + (road.length ? ' Արդեն ճանապարհին են՝ ' + road.join(', ') + '․ ուղարկելուց հետո զանգահարեք վարորդին։' : '');
     }
     function renderSendState() {
         const d = state.data, box = $('dpSendState');
@@ -629,7 +647,13 @@
         b.innerHTML = '<i class="fas fa-paper-plane" aria-hidden="true"></i><span>Ուղարկել</span>';
         b.setAttribute('aria-label', 'Ուղարկել փոփոխությունները վարորդներին');
         b.addEventListener('click', sendPlan);
-        box.appendChild(b);
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.id = 'dpDiscardBtn';
+        x.className = 'rt-linkbtn dp-discard';
+        x.textContent = 'Չեղարկել փոփոխությունները';
+        x.addEventListener('click', discardPlan);
+        box.append(b, x);
     }
 
     // ---------- Требует внимания (№81): счётчики одной строкой, нажатие — к месту на странице ----------
@@ -3617,7 +3641,7 @@
         document.body.dataset.dpTab = state.tab;
         $('dpTabs').querySelectorAll('.dp-tab').forEach(b => { if (b.dataset.tab !== 'ai') b.setAttribute('aria-pressed', String(b.dataset.tab === state.tab)); });
         const ai = $('dpTabAi'), fab = $('dpAiOpen');
-        if (ai) ai.hidden = !fab || fab.hidden;
+        if (ai) ai.hidden = !fab || (fab.hidden && $('dpAi').hidden);
     }
     function setTab(tab) {
         state.tab = tab;
@@ -3639,22 +3663,50 @@
         }
         // кнопка AI (routes_dispatch_ai.js) появляется и прячется сама — вкладка AI вслед за ней
         const fab = $('dpAiOpen');
-        if (fab && typeof window.MutationObserver !== 'undefined')
-            new MutationObserver(() => { if (state.data) renderTabs(); }).observe(fab, { attributes: true, attributeFilter: ['hidden'] });
+        if (fab && typeof window.MutationObserver !== 'undefined') {
+            const mo = new MutationObserver(() => { if (state.data) renderTabs(); });
+            mo.observe(fab, { attributes: true, attributeFilter: ['hidden'] });
+            mo.observe($('dpAi'), { attributes: true, attributeFilter: ['hidden'] });
+        }
     }
 
     // ---------- Печать и Excel ----------
-    // №81: правки не отправлены — бумага (лист, Excel, накладная) разойдётся с терминалом водителя; спросить
-    function unsentOk(code) {
+    // №81: бумага (лист водителей, Excel, «Բեռնագիր») должна совпадать с терминалом водителя. Есть неотправленные правки
+    // (у машины code или в отборе заказов) — сначала окно «Ուղարկել և շարունակել»: отправка, затем сама бумага. Окно —
+    // на странице, не confirm(): клик по его кнопке — действие пользователя, после него браузер ещё даст открыть печать
+    function unsentFor(code) {
         const d = state.data, u = d.sent && !d.is_past ? d.unsent : null;
-        if (!u || (code && !u.trucks.includes(code) && !u.orders)) return true;
-        return window.confirm('Կան չուղարկված փոփոխություններ՝ թղթում կլինի նոր պլանը, իսկ վարորդների ծրագրում՝ նախկինը։ '
-            + 'Շարունակե՞լ առանց ուղարկելու։');
+        return !!u && (!code || u.trucks.includes(code) || u.orders);
     }
-    function printSheets() {
+    let paperNext = null;
+    function paper(code, go) {
+        if (state.busy) return;
+        if (!unsentFor(code)) { go(false); return; }
+        paperNext = go;
+        $('dpSfLead').textContent = 'Վարորդների «Առաքիչ» ծրագրում դեռ ' + builtWhen(state.data.sent.at) + '-ի պլանն է։ '
+            + unsentDetail(state.data.unsent) + ' Որպեսզի թուղթը համընկնի վարորդի ծրագրի հետ, նախ ուղարկեք փոփոխությունները։';
+        $('dpSendFirstDlg').showModal();
+    }
+    const sendForPaper = async () => !!(await edit({ action: 'send' }, SENT_OK));
+    const POPUP_HY = 'Զննարկիչը թույլ չտվեց բացել տպման պատուհանը — թույլատրեք թռուցիկ պատուհանները այս կայքի համար։';
+    function printSheets() { paper(null, printSheetsGo); }
+    async function printSheetsGo(send) {
+        if (!state.data.plan) return;
+        // окно — сразу по нажатию: открытое после ответа сервера браузер счёл бы всплывающим
+        const w = window.open('', '_blank');
+        if (!w) { showActionError(new Error(POPUP_HY)); return; }
+        if (send) {
+            w.document.write('<!doctype html><html lang="hy"><head><meta charset="utf-8"><title>Առաքում</title></head>'
+                + '<body style="font-family:Segoe UI,Sylfaen,Arial,sans-serif;padding:24px">Ուղարկում եմ փոփոխությունները…</body></html>');
+            w.document.close();
+            if (!(await sendForPaper())) { try { w.close(); } catch (e) { /* уже закрыто */ } return; }
+            if (w.closed) return;
+        }
+        printSheetsTo(w);
+    }
+    function printSheetsTo(w) {
         const d = state.data, plan = d.plan;
         if (!plan) return;
-        if (!unsentOk(null)) return;
         const dayText = (WD_NAME[d.weekday] || '') + ', ' + dateRu(d.day);
         let html = '<!doctype html><html lang="hy"><head><meta charset="utf-8"><title>Առաքում ' + esc(dateRu(d.day)) + '</title><style>'
             + 'body{font-family:"Segoe UI",Sylfaen,"Noto Sans Armenian",Arial,sans-serif;color:#000;margin:0;padding:12mm;font-size:15px}'
@@ -3685,8 +3737,6 @@
             html += '</section>';
         });
         html += '</body></html>';
-        const w = window.open('', '_blank');
-        if (!w) { showActionError(new Error('Զննարկիչը թույլ չտվեց բացել տպման պատուհանը — թույլատրեք թռուցիկ պատուհանները այս կայքի համար։')); return; }
         w.document.open();
         w.document.write(html);
         w.document.close();
@@ -3694,10 +3744,11 @@
         setTimeout(() => { try { w.print(); } catch (e) { /* окно закрыли раньше */ } }, 300);
     }
 
-    function exportExcel() {
+    function exportExcel() { paper(null, exportExcelGo); }
+    async function exportExcelGo(send) {
+        if (send && !(await sendForPaper())) return;
         const d = state.data, plan = d.plan;
         if (!plan) return;
-        if (!unsentOk(null)) return;
         if (typeof window.XLSX === 'undefined') { showActionError(new Error('Excel-ի գրադարանը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ)։')); return; }
         const rows = [['Մեքենա', 'Երթ', 'Մեկնում', 'Վերադարձ', '№', 'Ժամանում', 'Ընդունման ժամ', 'Կենտրոն', 'Կոդ', 'Խանութ', 'Հասցե', 'Մենեջեր',
             'Բեռ, կգ', 'Գումար, դրամ', 'Լայնություն', 'Երկայնություն']];
@@ -3744,8 +3795,8 @@
         };
         const drv = mk('fa-user-pen', 'Վարորդ', 'Վարորդ և առաքիչ՝ ', openDriver);
         drv.classList.add('dp-drvbtn');
-        box.append(drv, mk('fa-print', 'Բեռնագիր', 'Տպել բեռնագիրը՝ ', (c, b) => { if (unsentOk(c)) printWaybill(c, b); }),
-            mk('fa-file-excel', 'Excel', 'Բեռնագիրը Excel-ով՝ ', (c, b) => { if (unsentOk(c)) excelWaybill(c, b); }));
+        box.append(drv, mk('fa-print', 'Բեռնագիր', 'Տպել բեռնագիրը՝ ', (c, b) => paper(c, (send) => printWaybill(c, b, send))),
+            mk('fa-file-excel', 'Excel', 'Բեռնագիրը Excel-ով՝ ', (c, b) => paper(c, (send) => excelWaybill(c, b, send))));
         return box;
     }
 
@@ -4076,7 +4127,7 @@
         });
         return html + '</body></html>';
     }
-    async function printWaybill(code, btn) {
+    async function printWaybill(code, btn, send) {
         if (wbBusy(btn) || state.busy) return;
         hideActionError();
         // окно — сразу по нажатию: открытое после ответа сервера браузер счёл бы всплывающим и заблокировал
@@ -4085,6 +4136,8 @@
         w.document.write('<!doctype html><html lang="hy"><head><meta charset="utf-8"><title>Բեռնագիր</title></head>'
             + '<body style="font-family:Segoe UI,Sylfaen,Arial,sans-serif;padding:24px">Բեռնագիրը պատրաստվում է…</body></html>');
         w.document.close();
+        // №81: сначала отправить правки водителям — накладная по плану, который у водителя
+        if (send && !(await sendForPaper())) { try { w.close(); } catch (e) { /* уже закрыто */ } return; }
         let res;
         try { res = await fetchWaybill(code, btn); } catch (e) {
             try { w.close(); } catch (x) { /* уже закрыто */ }
@@ -4098,8 +4151,9 @@
         w.focus();
         setTimeout(() => { try { w.print(); } catch (e) { /* окно закрыли раньше */ } }, 300);
     }
-    async function excelWaybill(code, btn) {
+    async function excelWaybill(code, btn, send) {
         if (wbBusy(btn) || state.busy) return;
+        if (send && !(await sendForPaper())) return;
         hideActionError();
         if (typeof window.XLSX === 'undefined') { showActionError(new Error('Excel-ի գրադարանը չբեռնվեց (cdn.jsdelivr.net-ը հասանելի չէ)։')); return; }
         let res;
@@ -4255,6 +4309,14 @@
         $('dpMapBox').addEventListener('toggle', () => { if ($('dpMapBox').open && state.data && state.data.plan) drawMap(); });
         initTabs();
         dropStops();
+        $('dpSfSend').addEventListener('click', () => {
+            const go = paperNext;
+            paperNext = null;
+            $('dpSendFirstDlg').close();
+            if (go) go(true);
+        });
+        $('dpSfCancel').addEventListener('click', () => $('dpSendFirstDlg').close());
+        $('dpSendFirstDlg').addEventListener('close', () => { paperNext = null; });
         try { state.boardFolded = window.localStorage.getItem('dpBoardFolded') === '1'; } catch (e) { /* хранилище недоступно */ }
         $('dpStep1Tog').addEventListener('click', () => toggleStep('dpStep1'));
         $('dpStep2Tog').addEventListener('click', () => toggleStep('dpStep2'));

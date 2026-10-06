@@ -501,11 +501,30 @@ def main() -> int:
             check(page.locator('#dpSendBtn').is_visible() and 'չեն ուղարկվել' in page.inner_text('#dpTodo')
                   and api_day['unsent'] and api_day['unsent']['trucks'],
                   f'X edit after approval: «չի ուղարկվել» pill + «Ուղարկել», server unsent={api_day["unsent"]}')
-            page.click('#dpSendBtn')
+            sent_stops = {t['car_code']: [s['customer_id'] for tr in t['trips'] for s in tr['stops']]
+                          for t in page.request.get(f'{BASE}/api/routes/dispatch?date={DAY3}').json()['plan']['trucks']}
+            # «Չեղարկել փոփոխությունները» → план снова как у водителей (confirm принимается обработчиком dialog выше)
+            page.click('#dpDiscardBtn')
+            page.wait_for_selector('#dpSendState .dp-sendpill.is-sent', timeout=15000)
+            api_day = page.request.get(f'{BASE}/api/routes/dispatch?date={DAY3}').json()
+            back = {t['car_code']: [s['customer_id'] for tr in t['trips'] for s in tr['stops']] for t in api_day['plan']['trucks']}
+            check(api_day['unsent'] is None and back != sent_stops, f'X «Չեղարկել փոփոխությունները» → plan as sent, nothing unsent')
+            # снова правка → Excel: сначала окно «Ուղարկել և շարունակել», после него план отправлен
+            if page.locator('#dpTruckCards .dp-trip.is-editing').count() == 0:   # «Փոփոխել» мог остаться открытым
+                page.locator('#dpTruckCards .dp-editbtn').first.click()
+            sel = page.locator('#dpTruckCards .dp-trip.is-editing .dp-move').first
+            opts = sel.locator('option').evaluate_all("os => os.map(o => o.value)")
+            sel.select_option(next((v for v in opts if v.startswith('t:')), None) or next(v for v in opts if v.startswith('n:')))
+            page.wait_for_selector('#dpSendState .dp-sendpill.is-unsent', timeout=15000)
+            page.click('#dpExcel')
+            page.wait_for_selector('#dpSendFirstDlg[open]', timeout=5000)
+            check('չուղարկված' in page.inner_text('#dpSfTitle') and 'Փոխվել են' in page.inner_text('#dpSfLead'),
+                  'X Excel with unsent changes → «Ուղարկել և շարունակել» dialog first')
+            page.click('#dpSfSend')
             page.wait_for_selector('#dpSendState .dp-sendpill.is-sent', timeout=15000)
             api_day = page.request.get(f'{BASE}/api/routes/dispatch?date={DAY3}').json()
             check(api_day['unsent'] is None and 'Պլանն ուղարկված է' in page.inner_text('#dpTodo'),
-                  f'X «Ուղարկել» → sent, nothing unsent ({api_day["unsent"]})')
+                  f'X «Ուղարկել և շարունակել» → sent, nothing unsent ({api_day["unsent"]})')
             views._clock, views._yerevan_now = real_clock, real_yerevan
 
             check(not errors, 'no pageerror / console errors' + ('' if not errors else ': ' + ' | '.join(errors[:5])))

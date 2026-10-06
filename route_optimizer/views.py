@@ -1638,8 +1638,23 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
             # №80: план выпущен на терминалы — «Ջնջել երթերը» не показывается (сервер и так откажет)
             **({'released': True} if dd.draft is not None and dd.draft.released is not None else {}),
             # №81: когда план ушёл водителям (кто — имя человека, только странице) и что с тех пор не отправлено
-            **({'sent': {'at': dd.draft.sent['at'], 'by': dd.draft.sent['by']}, 'unsent': dp.unsent(dd.draft)}
+            **({'sent': {'at': dd.draft.sent['at'], 'by': dd.draft.sent['by']}, 'unsent': _unsent_json(dd)}
                if dd.draft is not None and dd.draft.sent is not None else {})}
+
+
+def _unsent_json(dd: _DispatchDay) -> dict[str, Any] | None:
+    """Неотправленные правки (№81, dp.unsent) и on_road — машины из них, чей рейс по отправленному плану уже грузится или
+    в пути (сегодня): водитель увидит правку в дороге — страница предупреждает перед «Ուղարկել»."""
+    out = dp.unsent(dd.draft)
+    if out is None:
+        return None
+    now = _same_day_now()
+    road: set[str] = set()
+    if dd.ctx is not None and dd.day == now.date() and out['trucks']:
+        sent = dd.draft.for_drivers()
+        started = dp.started_trips(dd.ctx, dd.stops, sent, _now_min(dd.ctx, now))
+        road = {t.truck for t in sent.trips if t.id in started}
+    return {**out, 'on_road': sorted(road & set(out['trucks']))}
 
 
 # --- Новые заказы дня (ответ владельца №72) ---
@@ -1804,6 +1819,8 @@ def _approve_edit(dd: _DispatchDay, payload: Mapping[str, Any]) -> dp.Draft:
         if dd.draft.released is None:
             raise dp.DispatchError('Նախ հաստատեք օրվա պլանը')
         return dd.draft
+    if payload.get('action') == 'discard':   # №81: назад к отправленному водителям плану
+        return dp.discard(dd.draft)
     if payload.get('action') == 'approve':
         # время утверждения — по Еревану, как «сегодня» и «сейчас» новых заказов дня
         return dp.approve(dd.draft, _same_day_now().isoformat(timespec='seconds'), session.get('username'))
@@ -1849,7 +1866,9 @@ def _check_defer_same_day(dd: _DispatchDay, trip_id: Any) -> None:
     trip = next((t for t in dd.draft.trips if t.id == trip_id), None)
     taken = {o.customer_id for o in dd.same_day if o.isn in dd.draft.same_day}
     if trip is not None and taken & set(trip.stops) \
-            and trip.id in dp.started_trips(dd.ctx, dd.stops, dd.draft, _now_min(dd.ctx, now)):
+            and (trip.id in dp.started_trips(dd.ctx, dd.stops, dd.draft, _now_min(dd.ctx, now))
+                 # №81: заказ дня уже едет по отправленному плану в другом рейсе — тоже нельзя
+                 or taken & set(trip.stops) & dp.started_customers(dd.ctx, dd.stops, dd.draft, _now_min(dd.ctx, now))):
         raise dp.DispatchError('Մեքենան արդեն բեռնվում է կամ ճանապարհին է՝ այսօրվա նոր պատվերներով — երթը վաղվան '
                                'տեղափոխել չի կարելի')
 
@@ -2225,8 +2244,10 @@ def api_dispatch_edit() -> Any:
     try:
         if payload.get('action') == 'defer_trip':
             _check_defer_same_day(dd, payload.get('trip'))
-        if payload.get('action') in ('approve', 'unapprove', 'send'):   # утверждение плана дня (№73), отправка (№81)
+        if payload.get('action') in ('approve', 'unapprove', 'send', 'discard'):   # утверждение (№73), отправка (№81)
             draft = _approve_edit(dd, payload)
+            if payload.get('action') == 'discard':   # рейсы снимка — не «новые рейсы утверждённого плана» (keep_approved)
+                trips_before = {t.id for t in draft.trips}
         elif payload.get('action') == 'apply_settings':   # день — по нынешним правилам настроек (№69, №74)
             draft = _apply_settings_edit(state, bundle, dd)
         elif _is_same_day_edit(dd, payload):    # новые заказы дня (№72)

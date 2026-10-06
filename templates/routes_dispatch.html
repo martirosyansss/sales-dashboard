@@ -417,6 +417,15 @@
             <button type="button" id="dpSdClose" class="rt-btn rt-btn-ghost">Փակել</button>
         </div>
     </dialog>
+    <!-- №81: бумага при неотправленных правках — сначала отправить водителям, потом печать / Excel / «Բեռնագիր» -->
+    <dialog id="dpSendFirstDlg" class="dp-dlg dp-unload-dlg" aria-labelledby="dpSfTitle" aria-describedby="dpSfLead">
+        <h2 class="dp-dlg-t" id="dpSfTitle">Կան չուղարկված փոփոխություններ</h2>
+        <p class="dp-dlg-lead" id="dpSfLead"></p>
+        <div class="dp-dlg-btns">
+            <button type="button" id="dpSfSend" class="rt-btn rt-btn-primary"><i class="fas fa-paper-plane" aria-hidden="true"></i><span>Ուղարկել և շարունակել</span></button>
+            <button type="button" id="dpSfCancel" class="rt-btn rt-btn-ghost">Չեղարկել</button>
+        </div>
+    </dialog>
     <!-- водитель не вышел (ответ владельца №77): только этот день (по умолчанию) или до даты — отпуск, болезнь -->
     <dialog id="dpAbsentDlg" class="dp-dlg dp-unload-dlg" aria-labelledby="dpAbsentTitle" aria-describedby="dpAbsentLead dpAbsentHint">
         <h2 class="dp-dlg-t" id="dpAbsentTitle">Վարորդը չի եկել</h2>
@@ -470,6 +479,6 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
 <!-- панель «Հարցրու AI-ին» — до страницы: init подключает её (RoutesDispatchAI.attach) -->
-<script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='js/routes_dispatch_ai.js') }}?v=2"></script>
 <script src="{{ url_for('static', filename='js/routes_dispatch.js') }}?v=85"></script>
 {% endblock %}
