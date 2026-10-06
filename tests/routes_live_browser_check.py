@@ -8,6 +8,10 @@
 доставки, состояние терминала): в пути с превышением скорости, долгая стоянка не у магазина, нет связи и GPS выключен,
 на складе до выезда. Порт 8771 на 127.0.0.1. Снимки — в _shots/ (ПК 1440×900 и телефон 390×860).
 
+Этап 2 (06.10): у машины 1 — возврат товара и две заправки (интервал «полный бак → полный бак» против расчёта),
+у неё же карточка показывает «բեռնված այս երթում», возврат на борту, сверку топлива, источник ETA («ճանապարհներով» /
+«մոտավոր» — карты дорог в проверке нет, значит «մոտավոր») и ETA оставшихся магазинов.
+
 Проверяется: список и маркеры всех машин, состояние и счётчик тревог, карточка выбранной машины (поля №76), путь и
 магазины на карте, нет горизонтальной прокрутки на телефоне, опрос раз в 15 с, нет ошибок страницы и консоли (кроме сетевых
 ошибок внешних ресурсов: шрифты, CDN, плитки).
@@ -159,8 +163,14 @@ def seed(app: Flask) -> list[str]:
     mid = ((s[1]['lat'] + s[2]['lat']) / 2, (s[1]['lon'] + s[2]['lon']) / 2)
     f, t = path([(s[1]['lat'], s[1]['lon']), mid], now - timedelta(minutes=4))
     f = [x for x in f if x[0] <= now]
-    send(cars[0], a + b + c + d + e + f, [delivery(s[0]['stop_id'], t_a - timedelta(minutes=2)),
-                                          delivery(s[1]['stop_id'], t_b - timedelta(minutes=2), 0.5)], dev)
+    extra = [delivery(s[0]['stop_id'], t_a - timedelta(minutes=2)), delivery(s[1]['stop_id'], t_b - timedelta(minutes=2), 0.5),
+             # этап 2: возврат 3 пачек товара 1 в магазине 2 и две заправки «до полного бака» (400 км по одометру, 80 л)
+             {'id': str(uuid.uuid4()), 'type': 'return', 'stop_id': s[1]['stop_id'], 'date': day,
+              'at': (t_b - timedelta(minutes=1)).isoformat(), 'payload': {'product_id': 1, 'qty': 3}},
+             {'id': str(uuid.uuid4()), 'type': 'refuel', 'stop_id': None, 'date': day,
+              'at': (now - timedelta(minutes=110)).isoformat(),
+              'payload': {'liters': 80.0, 'odometer_km': 10400, 'full_tank': True}}]
+    send(cars[0], a + b + c + d + e + f, extra, dev)
     # 2) долгая стоянка не у магазина (идёт сейчас), батарея низкая
     s = stops_of[cars[1]]
     away = (40.1725, 44.5390)
@@ -241,6 +251,12 @@ def main() -> int:
                 grid = page.inner_text('#lvGrid')
                 check('2 / 3' in grid and '≈' in grid and 'տող առանց քաշի' in grid and 'APK 2.2.0' in grid,
                       'карточка: магазины 2/3, топливо ≈, строки без веса, версия APK')
+                check('բեռնված այս երթում' in grid and 'վերադարձ՝' in grid and 'մեքենայում' in grid,
+                      'этап 2: «загружено в этом рейсе», возврат на борту')
+                check('լիցքավորում' in grid and '80' in grid, 'этап 2: сверка топлива с заправкой')
+                check('(մոտավոր)' in grid or '(ճանապարհներով)' in grid, 'этап 2: источник ETA подписан')
+                page.locator('#lvStopsBox summary').click()
+                check('≈' in page.inner_text('#lvStops'), 'этап 2: у оставшегося магазина — ETA')
                 check(page.locator('.leaflet-overlay-pane path').count() >= 4, 'путь и магазины выбранной машины на карте')
                 page.locator('#lvLogBox summary').click()
                 check('Արագության գերազանցում' in page.inner_text('#lvLog'), 'журнал: превышение скорости')

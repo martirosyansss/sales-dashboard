@@ -275,7 +275,7 @@
             t.stores.in_progress ? 'ընթացքի մեջ՝ ' + t.stores.in_progress : null));
         rows.push(field('Այսօր, կմ (GPS)', fmt(t.km, 1)));
         rows.push(field('Վառելիք', t.fuel_l === null ? '—' : ['≈ ' + fmt(t.fuel_l, 1) + ' լ', h('span', { class: 'lv-est', text: 'հաշվարկ' })],
-            t.fuel_l === null ? 'մեքենայի ծախսը նշված չէ կարգավորումներում' : fuelCheckText(t.fuel_check)));
+            [t.fuel_l === null ? 'մեքենայի ծախսը նշված չէ կարգավորումներում' : null, fuelCheckText(t.fuel_check)].filter(Boolean).join(' · ')));
         const ld = t.load;
         rows.push(field('Բեռի մնացորդ', fmt(ld.remaining_kg) + ' կգ',
             [ld.trips_gone ? 'բեռնված այս երթում՝ ' + fmt(ld.trip_kg) + ' կգ, առաքված՝ ' + fmt(ld.delivered_kg) + ' կգ'
