@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="{{ 'hy' if is_garage else 'ru' }}" data-bs-theme="dark">
+<html lang="{{ 'hy' if is_public_role else 'ru' }}" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="{% block viewport %}width=device-width, initial-scale=1.0{% endblock %}">
@@ -48,7 +48,7 @@
     <!-- Font Awesome 6.4 -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0" crossorigin="anonymous">
     
-    {% if not is_garage %}{# роль «Гараж» видит только журнал гаража — ему эти библиотеки не нужны (телефон, интернет) #}
+    {% if not is_public_role %}{# роли «Гараж» и «Склад» (№78) видят только свою страницу — им эти библиотеки не нужны (телефон, интернет) #}
     <!-- Chart.js 4.4 -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g" crossorigin="anonymous"></script>
     
@@ -81,8 +81,8 @@
     {% block extra_css %}{% endblock %}
 </head>
 <body>
-    {% if is_garage %}
-    <!-- Роль «Гараж» (№53): только журнал гаража, с телефона — короткая шапка без меню: кто вошёл и выход -->
+    {% if is_public_role %}
+    <!-- Роли «Гараж» (№53) и «Склад» (№78): только своя страница, с телефона — короткая шапка без меню: кто вошёл и выход -->
     <header class="navbar navbar-dark gj-nav">
         <div class="container-fluid">
             <span class="gj-nav-user"><i class="fas fa-circle-user" aria-hidden="true"></i>
@@ -225,7 +225,7 @@
         {% block content %}{% endblock %}
     </main>
 
-    {% if not is_garage %}
+    {% if not is_public_role %}
     <footer class="text-center py-3 mt-5" style="border-top: 1px solid var(--border-color);">
         <div class="container">
             <p class="text-muted mb-0">

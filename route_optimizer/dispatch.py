@@ -51,6 +51,12 @@
 - Погрузка по сезону (ответ владельца №78, morning_loading, fl.TruckNorms.preload): вне сезона утренней погрузки первый
   рейс машины загружен с вечера и выезжает в начале дня (_timeline, правило — fleet); второй и следующие рейсы, новый
   рейс с заказами дня (№72) — с загрузкой. На странице у такого рейса loading_minutes 0 и preloaded.
+- «Բեռնված է» (ответ владельца №78, 9–12, 15; DraftTrip.loaded): склад или логист отмечает рейс загруженным — только по
+  утверждённому плану (mark_loaded). Инвариант: загруженный рейс закреплён — пересборка его не трогает (ни состав, ни
+  машину), снятие утверждения его не открепляет (держит отметка: loaded['pin']), логист не открепляет его кнопкой,
+  новые заказы дня (№72) и перенос конца рейса (№59) в него не вставляют; ручная правка, меняющая его состав, — только с
+  подтверждением (LoadedEdit). Снятие отметки (unmark_loaded) открепляет рейс, если его держала только она; держит
+  утверждение — закрепление переходит утверждению (снятие утверждения откроет).
 """
 from __future__ import annotations
 
@@ -85,6 +91,10 @@ WEEKDAY_FULL = {1: 'понедельник', 2: 'вторник', 3: 'среда
 
 class DispatchError(ValueError):
     """Правка логиста не применима (текст — для пользователя)."""
+
+
+class LoadedEdit(DispatchError):
+    """Правка меняет загруженный рейс (№78): товар уже в машине — повторить с подтверждением логиста."""
 
 
 # --- Данные ERP ---
@@ -565,6 +575,9 @@ class DraftTrip:
     pinned: bool = False
     # новый рейс с заказами дня (№72): загрузка не раньше этого времени (минуты от полуночи); None — как обычно
     not_before: float | None = None
+    # «Բեռնված է» (№78): {'at': ISO, 'by': логин, 'pin': закрепление держит отметка (не логист и не утверждение)};
+    # None — не загружен
+    loaded: dict[str, Any] | None = None
 
 
 @dataclass
@@ -626,7 +639,8 @@ class Draft:
             k: [round(kg, 3), round(rev, 2)] for k, (kg, rev) in sorted(self.built_orders.items())}
         return {'trucks': list(self.trucks), 'excluded': sorted(self.excluded), 'added': sorted(self.added),
                 'trips': [{'id': t.id, 'truck': t.truck, 'stops': list(t.stops), 'pinned': t.pinned,
-                           **({'not_before': t.not_before} if t.not_before is not None else {})}
+                           **({'not_before': t.not_before} if t.not_before is not None else {}),
+                           **({'loaded': dict(t.loaded)} if t.loaded is not None else {})}
                           for t in self.trips],
                 'next_id': self.next_id, 'built_at': self.built_at, 'built_orders': built,
                 'no_room': sorted(self.no_room), 'overtime': self.overtime, 'overtime_ok': self.overtime_ok,
@@ -661,8 +675,9 @@ class Draft:
                 continue
             seen.add(tid)
             nb = t.get('not_before')
-            trips.append(DraftTrip(tid, truck, [c for c in stops if _is_int(c)], t.get('pinned') is True,
-                                   float(nb) if _is_num(nb) and 0 <= nb <= 2 * 24 * 60 else None))
+            loaded = _loaded(t.get('loaded'))
+            trips.append(DraftTrip(tid, truck, [c for c in stops if _is_int(c)], t.get('pinned') is True or loaded is not None,
+                                   float(nb) if _is_num(nb) and 0 <= nb <= 2 * 24 * 60 else None, loaded))
         next_id = raw.get('next_id')
         next_id = max([next_id if _is_int(next_id) else 1, *(t.id + 1 for t in trips)])
         built = raw.get('built_at') if isinstance(raw.get('built_at'), str) else None
@@ -707,6 +722,14 @@ def _approved(raw: Any) -> dict[str, Any] | None:
     by = raw.get('by')
     return {'at': raw['at'], 'by': by if isinstance(by, str) else None,
             'pinned': sorted({x for x in raw['pinned'][:MAX_TRIPS] if _is_int(x)})}
+
+
+def _loaded(raw: Any) -> dict[str, Any] | None:
+    """Отметка «Բեռնված է» рейса из черновика (№78); битая — не загружен."""
+    if not isinstance(raw, dict) or not isinstance(raw.get('at'), str):
+        return None
+    by = raw.get('by')
+    return {'at': raw['at'], 'by': by if isinstance(by, str) else None, 'pin': raw.get('pin') is True}
 
 
 def _str_map(raw: Any) -> dict[str, str]:
@@ -995,7 +1018,8 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
                   built_at=now, deferred=set(old.deferred), dropped=set(old.dropped), agents_off=set(old.agents_off),
                   same_day=set(old.same_day), same_day_trips=set(old.same_day_trips),
                   fleet=dict(old.fleet) if old.fleet is not None else None)
-    pinned = [DraftTrip(t.id, t.truck, list(t.stops), True, t.not_before) for t in old.trips if t.pinned and t.truck in codes]
+    pinned = [DraftTrip(t.id, t.truck, list(t.stops), True, t.not_before, t.loaded)
+              for t in old.trips if t.pinned and t.truck in codes]
     tmp = Draft(trips=pinned)
     _clean(tmp, routable)
     pinned = tmp.trips
@@ -1300,6 +1324,9 @@ def _trip(draft: Draft, tid: Any) -> DraftTrip:
     raise DispatchError('Рейс не найден — обновите страницу')
 
 
+trip_of = _trip   # рейс черновика по id (views: склад, №78); нет — DispatchError
+
+
 def _insert_cheapest(ctx: DayContext, cids: list[int], cid: int, stops: Mapping[int, Stop]) -> list[int]:
     """Вставить клиента в рейс там, где объезд удлиняется меньше всего."""
     km = ctx.norms.km
@@ -1530,11 +1557,43 @@ def _resize(ctx: DayContext, draft: Draft, stops: Mapping[int, Stop], edit: Mapp
     return draft
 
 
+LOADED_EDIT = 'Այս երթի ապրանքն արդեն բեռնված է մեքենայում։ Միևնույն է փոխե՞լ երթը։'   # №78: правка загруженного рейса
+LOADED_UNPIN = 'Երթը բեռնված է — նախ հանեք «Բեռնված է» նշումը'
+
+
+def _guard_loaded(draft: Draft, edit: Mapping[str, Any], routable: Mapping[int, Stop], ok: bool) -> None:
+    """Правка, меняющая состав или машину загруженного рейса (№78): без подтверждения логиста (ok) — LoadedEdit;
+    открепить загруженный рейс нельзя — сначала снять отметку."""
+    loaded = {t.id: t for t in draft.trips if t.loaded is not None}
+    if not loaded:
+        return
+    action = edit.get('action')
+    if action == 'unpin' and edit.get('trip') in loaded:
+        raise DispatchError(LOADED_UNPIN)
+    if ok:
+        return
+    touched = False
+    if action in ('defer_trip', 'resize'):
+        touched = edit.get('trip') in loaded
+    elif action == 'pin':
+        touched = edit.get('trip') in loaded and edit.get('truck') != loaded[edit.get('trip')].truck
+    elif action == 'move':
+        touched = edit.get('from_trip') in loaded or edit.get('to_trip') in loaded
+    elif action == 'exclude':
+        isn = edit.get('order')
+        isn = isn.upper() if isinstance(isn, str) else None
+        cids = {c for c, s in routable.items() if any(o.isn == isn for o in s.orders)}
+        touched = any(cids & set(t.stops) for t in loaded.values())
+    if touched:
+        raise LoadedEdit(LOADED_EDIT)
+
+
 def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mapping[str, Any],
                order_ids: set[str], backlog_ids: set[str] = frozenset(), defer_since: date | None = None,
-               carried: Collection[str] = (), now_min: float | None = None) -> Draft:
+               carried: Collection[str] = (), now_min: float | None = None, loaded_ok: bool = False) -> Draft:
     """Правка логиста (§3) поверх черновика; затронутые рейсы пересчитываются (порядок — 2-opt). now_min — сейчас (минуты от
-    начала дня машины; только сегодня): resize не меняет рейсы, которые уже грузятся.
+    начала дня машины; только сегодня): resize не меняет рейсы, которые уже грузятся. Загруженный рейс (№78, _guard_loaded)
+    меняется только с loaded_ok — логист подтвердил, что товар уже в машине.
     edit:
       {"action": "move", "customer_id", "from_trip": id|null, "to_trip": id|null, "truck": код|null}
           — перенести клиента в другой рейс; to_trip = null и truck — новый рейс этой машины;
@@ -1555,6 +1614,7 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
     Ошибка — DispatchError с текстом для логиста."""
     routable = {s.customer_id: s for s in stops if s.point is not None}
     _clean(draft, routable)
+    _guard_loaded(draft, edit, routable, loaded_ok)
     action = edit.get('action')
     if action == 'undo':
         if draft.undo is None:
@@ -1616,6 +1676,8 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
             trip.truck = truck
             draft.trips.append(trip)
         trip.pinned = True
+        if trip.loaded is not None:   # №78: закрепление теперь держит логист — снятие отметки рейс не открепит
+            trip.loaded = {**trip.loaded, 'pin': False}
         draft.same_day_trips.discard(trip.id)   # закрепил сам логист — состав решён (№72: в него не вставляются)
         if draft.approved is not None and trip.id in draft.approved['pinned']:   # №73: и снятие утверждения его не открепит
             draft.approved = {**draft.approved, 'pinned': [i for i in draft.approved['pinned'] if i != trip.id]}
@@ -1707,10 +1769,10 @@ def _same_day_base(ctx: DayContext, base: Sequence[Stop], draft: Draft, now_min:
 
 
 def _insertable(draft: Draft, t: DraftTrip) -> bool:
-    """В рейс можно вставить новые заказы дня: не закреплён или закреплён не логистом — взятием заказов дня
-    (same_day_trips) или утверждением плана (№73, approved['pinned'])."""
-    return (not t.pinned or t.id in draft.same_day_trips
-            or (draft.approved is not None and t.id in draft.approved['pinned']))
+    """В рейс можно вставить новые заказы дня: не загружен (№78) и не закреплён или закреплён не логистом — взятием
+    заказов дня (same_day_trips) или утверждением плана (№73, approved['pinned'])."""
+    return t.loaded is None and (not t.pinned or t.id in draft.same_day_trips
+                                 or (draft.approved is not None and t.id in draft.approved['pinned']))
 
 
 def started_trips(ctx: DayContext, base: Sequence[Stop], draft: Draft, now_min: float) -> set[int]:
@@ -1908,9 +1970,49 @@ def unapprove(draft: Draft) -> Draft:
     mine = set(draft.approved['pinned'])
     for t in draft.trips:
         if t.id in mine:
-            t.pinned = False
+            if t.loaded is not None:   # №78: загруженный не открепляется — закрепление переходит отметке
+                t.loaded = {**t.loaded, 'pin': True}
+            else:
+                t.pinned = False
     draft.undo = None
     draft.approved = None
+    return draft
+
+
+# --- «Բեռնված է» (ответ владельца №78) ---
+
+NOT_APPROVED_LOAD = 'Պլանը դեռ հաստատված չէ — բեռնված նշել կարելի է միայն «Հաստատել»-ից հետո'
+ALREADY_LOADED = 'Երթն արդեն նշված է բեռնված — թարմացրեք էջը'
+NOT_LOADED = 'Երթը նշված չէ բեռնված — թարմացրեք էջը'
+
+
+def mark_loaded(draft: Draft, tid: Any, at: str, by: str | None) -> Draft:
+    """«Բեռնված է»: рейс tid загружен (at — когда, ISO; by — кто). Только по утверждённому плану (ответ 15) — иначе
+    DispatchError; рейс уже закреплён утверждением или логистом, отметка закрепления не берёт (pin False)."""
+    if draft.approved is None:
+        raise DispatchError(NOT_APPROVED_LOAD)
+    trip = _trip(draft, tid)
+    if trip.loaded is not None:
+        raise DispatchError(ALREADY_LOADED)
+    trip.pinned = True
+    trip.loaded = {'at': at, 'by': by, 'pin': False}
+    draft.undo = None
+    return draft
+
+
+def unmark_loaded(draft: Draft, tid: Any) -> Draft:
+    """«Հանել բեռնված նշումը»: отметка снимается; закрепление, которое держала она (pin), — открепляется, а если план
+    утверждён — переходит утверждению (снятие утверждения откроет рейс; утверждённый план закреплён целиком)."""
+    trip = _trip(draft, tid)
+    if trip.loaded is None:
+        raise DispatchError(NOT_LOADED)
+    if trip.loaded['pin']:
+        if draft.approved is not None:
+            draft.approved = {**draft.approved, 'pinned': sorted({*draft.approved['pinned'], trip.id})}
+        else:
+            trip.pinned = False
+    trip.loaded = None
+    draft.undo = None
     return draft
 
 
@@ -2213,6 +2315,8 @@ def plan_view(ctx: DayContext, stops: Sequence[Stop], draft: Draft,
             'depart': _hhmm(ctx.work_start_min + depart + load_min), 'return': _hhmm(ctx.work_start_min + slot['used']),
             'over_time': slot['used'] > limit + _EPS, 'late': slot['used'] > window + _EPS,
             **({'preloaded': True} if preloaded else {}),
+            # №78: «Բեռնված է ժ. HH:MM (ով)» — время по Еревану из отметки, кто — логин (только странице, не в AI)
+            **({'loaded': {'at': t.loaded['at'][11:16], 'by': t.loaded['by']}} if t.loaded is not None else {}),
             **({'in_reserve': True} if _in_reserve(ctx, slot['used']) else {}),
             # бедный — по полной выручке точек: тяжёлый заказ на несколько поездок перенос не объединит
             'poor': ctx.min_trip_revenue > 0

@@ -2506,10 +2506,17 @@ class Store:
             (since, until)).fetchone())
         return int(row[0]) if row else 0
 
-    def delete_dispatch(self, day: str) -> None:
-        """«Начать заново»: черновик на дату удаляется."""
-        self._transaction(lambda conn: conn.execute('DELETE FROM dispatch_plan WHERE day = ?', (day,)),
-                          'не удалось удалить план развоза')
+    def delete_dispatch(self, day: str, expected_rev: int | None = None) -> bool:
+        """«Начать заново»: черновик на дату удаляется. expected_rev — номер прочитанного черновика: с тех пор изменён
+        (склад отметил погрузку, №78; другая вкладка) — False, ничего не удалено."""
+        def drop(conn: sqlite3.Connection) -> bool:
+            if expected_rev is not None:
+                row = conn.execute('SELECT rev FROM dispatch_plan WHERE day = ?', (day,)).fetchone()
+                if (row[0] if row is not None else 0) != expected_rev:
+                    return False
+            conn.execute('DELETE FROM dispatch_plan WHERE day = ?', (day,))
+            return True
+        return self._transaction(drop, 'не удалось удалить план развоза')
 
     # --- обучение по факту машин (learning-loop-plan.md, этап 4) ---
 

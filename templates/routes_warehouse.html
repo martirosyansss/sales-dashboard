@@ -1,0 +1,45 @@
+{% extends "base_v2.html" %}
+
+{# «Պահեստ» (ответ владельца №78): склад с телефона отмечает погрузку рейсов утверждённого плана; снаружи (роль «Склад»,
+   araqich.orix.am) — без названия программы, как страница входа #}
+{% block title %}Պահեստ{% if not is_public_role %} — Sales Dashboard{% endif %}{% endblock %}
+{% block viewport %}width=device-width, initial-scale=1.0, viewport-fit=cover{% endblock %}
+
+{% block extra_css %}
+<meta name="theme-color" content="#0e1116">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes_warehouse.css') }}?v=1">
+{% endblock %}
+
+{% block content %}
+<div class="rt-page" id="whPage" lang="hy">
+    <header class="rt-head">
+        <h1 class="rt-title">Պահեստ</h1>
+        <p class="rt-head-lead">Նշեք «Բեռնված է», երբ մեքենան բեռնված է։ Երթերը՝ միայն հաստատված պլանից։
+            Բեռնված երթը ծրագիրն այլևս չի փոխում։</p>
+    </header>
+
+    <div id="whStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+
+    <div class="wh-days" id="whDays" role="tablist" aria-label="Օր"></div>
+
+    <div id="whAlert" class="rt-alert is-warn wh-alert" role="alert" hidden>
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        <span id="whAlertText" class="rt-alert-text"></span>
+        <button id="whReload" type="button" class="rt-btn rt-btn-primary rt-btn-sm" hidden>
+            <i class="fas fa-rotate" aria-hidden="true"></i>Թարմացնել</button>
+    </div>
+
+    <p id="whSummary" class="wh-summary"></p>
+    <div id="whList" class="wh-list" aria-busy="true">
+        <p class="wh-empty">Բեռնվում է…</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/routes_warehouse.js') }}?v=1"></script>
+{% endblock %}

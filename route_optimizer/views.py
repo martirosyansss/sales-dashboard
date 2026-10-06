@@ -403,6 +403,12 @@ def garage_page() -> str:
     return render_template('routes_garage.html')
 
 
+@bp.get('/routes/warehouse')
+def warehouse_page() -> str:
+    """«Պահեստ» (№78): склад с телефона отмечает погрузку рейсов утверждённого плана."""
+    return render_template('routes_warehouse.html')
+
+
 # --- API ---
 
 @bp.get('/api/routes/overview')
@@ -1789,6 +1795,8 @@ def _same_day_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay, payload
     return dp.drop_same_day(dd.draft, isns)
 
 
+PLAN_LOADED = 'Պլանում կան բեռնված երթեր — այն չի ջնջվում։ Նախ հանեք «Բեռնված է» նշումները։'
+LOADED_TRUCK_OFF = 'Բեռնված երթերի մեքենաները պետք է նշված լինեն՝ '   # №78: + коды машин
 PLAN_APPROVED = 'Պլանը հաստատված է։ Ամբողջական վերակազմման համար նախ չեղարկեք հաստատումը։'   # №73: пересборка утверждённого плана
 PAST_DAY_APPROVE = 'Անցած օրվա պլանը չի հաստատվում և չի չեղարկվում'
 
@@ -1801,6 +1809,15 @@ def _approve_edit(dd: _DispatchDay, payload: Mapping[str, Any]) -> dp.Draft:
         # время утверждения — по Еревану, как «сегодня» и «сейчас» новых заказов дня
         return dp.approve(dd.draft, _same_day_now().isoformat(timespec='seconds'), session.get('username'))
     return dp.unapprove(dd.draft)
+
+
+def _loaded_edit(dd: _DispatchDay, payload: Mapping[str, Any]) -> dp.Draft:
+    """«Բեռնված է» / «Հանել բեռնված նշումը» логистом на «Развозе» (№78): отметить — только по утверждённому плану
+    (dispatch.mark_loaded), снять — без срока (склад снимает только свою и недолго, api_warehouse_loaded)."""
+    if payload.get('action') == 'loaded':
+        return dp.mark_loaded(dd.draft, payload.get('trip'), _same_day_now().isoformat(timespec='seconds'),
+                              session.get('username'))
+    return dp.unmark_loaded(dd.draft, payload.get('trip'))
 
 
 SETTINGS_ON_STARTED = ('Մեքենան արդեն բեռնվում է կամ ճանապարհին է այն խանութների պատվերներով, որոնք կարգավորումները '
@@ -2158,6 +2175,10 @@ def api_dispatch_build() -> Any:
         return _bad_request({'trucks': 'машина не готова к расчёту: ' + ', '.join(unknown)})
     if not codes:
         return _bad_request({'trucks': 'отметьте хотя бы одну машину'})
+    # №78: загруженный рейс пересборка не трогает — его машина обязана остаться в плане
+    gone = sorted({t.truck for t in (dd.draft.trips if dd.draft is not None else ()) if t.loaded is not None} - set(codes))
+    if gone:
+        return _bad_request({'trucks': LOADED_TRUCK_OFF + ', '.join(gone)})
     # первая сборка дня: черновик начинается с правила менеджеров из настроек (№69) — по нему и точки дня без черновика
     base = dd.draft if dd.draft is not None else dp.Draft(agents_off=dp.agents_off_of(None, bundle.settings),
                                                           fleet=dp.FleetRule.from_settings(bundle.settings).to_json())
@@ -2178,7 +2199,11 @@ def api_dispatch_build() -> Any:
     draft.built_orders = dp.order_marks([*dd.deliver, *(o for o in dd.backlog if o.isn in inside)])
     draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     _capture_prediction(dd, draft)
-    rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'))
+    # сборка идёт секунды: черновик, изменённый тем временем в другой вкладке (утверждён — №80: выпущен на терминалы),
+    # не затирается старой основой — 409, как у правок
+    rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)
+    if rev is None:
+        return _conflict('План изменили в другой вкладке — обновите страницу')
     logger.info('[Routes] Развоз на %s собран (%s) за %.1f с: точек %d, рейсов %d, машин %d (без водителя %d, проб %d)', day,
                 session.get('username'), time.perf_counter() - started, len(dd.stops), len(draft.trips), len(codes),
                 len(draft.unmanned), timing.get('trials', 0))
@@ -2217,6 +2242,8 @@ def api_dispatch_edit() -> Any:
             _check_defer_same_day(dd, payload.get('trip'))
         if payload.get('action') in ('approve', 'unapprove'):   # утверждение плана дня (№73)
             draft = _approve_edit(dd, payload)
+        elif payload.get('action') in ('loaded', 'unloaded'):   # «Բեռնված է» логистом (№78)
+            draft = _loaded_edit(dd, payload)
         elif payload.get('action') == 'apply_settings':   # день — по нынешним правилам настроек (№69, №74)
             draft = _apply_settings_edit(state, bundle, dd)
         elif _is_same_day_edit(dd, payload):    # новые заказы дня (№72)
@@ -2225,7 +2252,10 @@ def api_dispatch_edit() -> Any:
             draft = dp.apply_edit(dd.ctx, dd.stops, dd.draft, payload, {o.isn for o in dd.deliver},
                                   {o.isn for o in dd.backlog},
                                   defer_since=_defer_target(day, workdays, dp.holidays_of(bundle.settings))[1],
-                                  carried=dd.carried, now_min=_today_min(dd))
+                                  carried=dd.carried, now_min=_today_min(dd),
+                                  loaded_ok=payload.get('confirm_loaded') is True)
+    except dp.LoadedEdit as e:   # №78: товар уже в машине — страница спрашивает и повторяет с confirm_loaded
+        return jsonify({'success': False, 'error': str(e), 'errors': {'_': str(e)}, 'loaded_confirm': True}), 400
     except dp.DispatchError as e:
         return _bad_request({'_': str(e)})
     if day < _clock().date() and draft.deferred != deferred_before:
@@ -2333,10 +2363,14 @@ def api_dispatch_reset() -> Any:
     if error is not None:
         return error
     state = _state()
-    draft, _ = _stored_draft(state, day)
+    draft, rev = _stored_draft(state, day)
     if draft is not None and draft.approved is not None:   # №73: утверждённый план не стирается — сначала снять
         return _bad_request({'_': PLAN_APPROVED})
-    state.store.delete_dispatch(day.isoformat())
+    if draft is not None and any(t.loaded is not None for t in draft.trips):   # №78: отметки склада не стираются
+        return _bad_request({'_': PLAN_LOADED})
+    # склад мог отметить рейс, пока читали: стирается ровно прочитанный черновик (№78)
+    if not state.store.delete_dispatch(day.isoformat(), expected_rev=rev):
+        return _conflict('План изменили в другой вкладке — обновите страницу')
     dd = _load_day(state, _bundle(state), day)
     return jsonify({'success': True, **_dispatch_page_body(dd)})
 
@@ -4261,3 +4295,161 @@ def api_garage_day() -> Any:
     плановым и фактическим временем, плановые рейсы). Линии плана по дорогам странице гаража не строятся (road-lines —
     API администратора): по прямой между точками."""
     return _day_map()
+
+
+# --- «Պահեստ»: склад отмечает погрузку с телефона (ответ владельца №78, 9–12, 15) ---
+# Роль «warehouse» (app_v2: default-deny, из интернета — как «Гараж») видит только страницу /routes/warehouse и этот API.
+# Дни — сегодня и следующий рабочий (вечером грузят на завтра); машины и рейсы — только утверждённого плана (ответ 15).
+# Отметку склад снимает сам только свою и в течение WAREHOUSE_UNDO_MIN минут (опечатка пальцем); позже и чужую — только
+# логист на «Развозе» (_loaded_edit): снятие открепляет рейс, а это решение логиста, не склада.
+
+WAREHOUSE_UNDO_MIN = 10
+WAREHOUSE_STALE = 'Պլանը փոխվել է — թարմացրեք էջը'
+WAREHOUSE_NO_PLAN = 'Այս օրվա պլանը դեռ կազմված չէ'
+WAREHOUSE_NO_SETUP = 'Պլանի ժամերը հաշվել չի հաջողվում — դիմեք լոգիստին'
+WAREHOUSE_BAD_DAY = 'Ընտրեք այսօրը կամ հաջորդ աշխատանքային օրը'
+WAREHOUSE_UNDO_LATE = f'Նշումը կարող եք հանել միայն {WAREHOUSE_UNDO_MIN} րոպեի ընթացքում — հետո՝ միայն լոգիստը'
+WAREHOUSE_UNDO_OTHER = 'Այս նշումը դրել է ուրիշը — հանել կարող է միայն լոգիստը'
+
+
+def _warehouse_days(bundle: Bundle) -> list[date]:
+    """Дни склада: сегодня (по Еревану) и следующий рабочий."""
+    today = _same_day_now().date()
+    return [today, dp.next_workday(today, bundle.settings['workdays'], dp.holidays_of(bundle.settings))]
+
+
+def _warehouse_day(bundle: Bundle, raw: Any) -> date | None:
+    """День запроса склада: нет — сегодня; не сегодня и не следующий рабочий — None."""
+    days = _warehouse_days(bundle)
+    if raw is None:
+        return days[0]
+    day = _parse_day(raw)
+    return day if day in days else None
+
+
+def _warehouse_body(state: RoutesState, bundle: Bundle, day: date) -> dict[str, Any]:
+    """Машины и рейсы утверждённого плана дня для склада: машина, водитель, рейс N, кг, точки, загрузка/выезд, отметка
+    «Բեռնված է» (время по Еревану, кто, своя ли и до какого времени её можно снять). Не утверждён — без машин."""
+    draft, rev = _stored_draft(state, day)   # без утверждённого плана заказы ERP не нужны — не читаются
+    head = {'success': True, 'day': day.isoformat(), 'days': [d.isoformat() for d in _warehouse_days(bundle)],
+            'rev': rev, 'undo_min': WAREHOUSE_UNDO_MIN}
+    if draft is None or not draft.trips:
+        return {**head, 'approved': False, 'planned': False, 'trucks': []}
+    if draft.approved is None:
+        return {**head, 'approved': False, 'planned': True, 'trucks': []}
+    dd = _load_day(state, bundle, day, draft=draft, rev=rev)
+    if dd.ctx is None:
+        raise dp.DispatchError(WAREHOUSE_NO_SETUP)
+    plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
+    seats = dp.crew_view(dd.draft, _crew(state, day, bundle.trucks)[0])
+    by_id = {t.id: t for t in dd.draft.trips}
+    me = session.get('username')
+    now = _same_day_now()
+    trucks = []
+    for t in plan['trucks']:
+        trips = []
+        for no, tr in enumerate(t['trips'], 1):
+            mark = by_id[tr['id']].loaded
+            loaded = None
+            if mark is not None:
+                until = datetime.fromisoformat(mark['at']) + timedelta(minutes=WAREHOUSE_UNDO_MIN)
+                mine = mark['by'] is not None and mark['by'] == me and now <= until
+                loaded = {'at': mark['at'][11:16], 'by': mark['by'], 'undo': mine,
+                          'until': until.strftime('%H:%M') if mine else None}
+            trips.append({'id': tr['id'], 'no': no, 'of': len(t['trips']), 'kg': tr['kg'], 'stops': len(tr['stops']),
+                          'loading_start': tr['loading_start'], 'depart': tr['depart'],
+                          'preloaded': bool(tr.get('preloaded')), 'loaded': loaded})
+        trucks.append({'car_code': t['car_code'], 'name': t['name'], 'capacity_kg': t['capacity_kg'],
+                       'driver': (seats.get(t['car_code']) or {}).get('name'), 'trips': trips})
+    return {**head, 'approved': True, 'planned': True, 'trucks': trucks}
+
+
+@bp.get('/api/routes/warehouse')
+@_api
+def api_warehouse() -> Any:
+    """Машины дня склада (?date= — сегодня или следующий рабочий; нет — сегодня), _warehouse_body."""
+    state = _state()
+    bundle = _bundle(state)
+    day = _warehouse_day(bundle, request.args.get('date'))
+    if day is None:
+        return _bad_request({'date': WAREHOUSE_BAD_DAY})
+    try:
+        return jsonify(_warehouse_body(state, bundle, day))
+    except dp.DispatchError as e:
+        return _bad_request({'_': str(e)})
+
+
+@bp.get('/api/routes/warehouse/goods')
+@_api
+def api_warehouse_goods() -> Any:
+    """Товар рейса машины для склада (?date=&truck=&trip=&rev=): строки Բեռնագիր этого рейса (waybill.truck_waybill —
+    код, товар, количество, упаковки, кг; ERP — только чтение). Только утверждённый план; rev или рейс не те — 409."""
+    state = _state()
+    bundle = _bundle(state)
+    day = _warehouse_day(bundle, request.args.get('date'))
+    car = (request.args.get('truck') or '').strip()
+    trip, rev = request.args.get('trip') or '', request.args.get('rev') or ''
+    if day is None:
+        return _bad_request({'date': WAREHOUSE_BAD_DAY})
+    if not car or len(car) > 64 or not _REV_RE.match(trip) or not _REV_RE.match(rev):
+        return _bad_request({'_': WAREHOUSE_STALE})
+    dd = _load_day(state, bundle, day)
+    if int(rev) != dd.rev or dd.draft is None or dd.draft.approved is None:
+        return _conflict(WAREHOUSE_STALE)
+    if dd.ctx is None:
+        return _bad_request({'_': WAREHOUSE_NO_SETUP})
+    plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
+    truck = next((t for t in plan['trucks'] if t['car_code'] == car), None)
+    if truck is None or all(tr['id'] != int(trip) for tr in truck['trips']):
+        return _conflict(WAREHOUSE_STALE)
+    if state.waybill_loader is None:
+        raise ErpError('Загрузчик строк заказов не подключён')
+    lines = state.waybill_loader([o['isn'] for tr in truck['trips'] for s in tr['stops'] for o in s['orders']])
+    got = next(x for x in wb.truck_waybill(plan, car, lines)['trips'] if x['id'] == int(trip))
+    keys = ('code', 'name', 'unit', 'qty', 'pack', 'packs', 'loose', 'kg', 'unknown')
+    return jsonify({'success': True, 'kg': got['kg'], 'rows': [{k: r[k] for k in keys} for r in got['rows']]})
+
+
+@bp.post('/api/routes/warehouse/loaded')
+@_api
+def api_warehouse_loaded() -> Any:
+    """«Բեռնված է» со склада: {"date", "rev", "trip", "loaded": true | false}. Отметить — только по утверждённому плану
+    (иначе 409, dispatch.mark_loaded); снять — только свою и не позже WAREHOUSE_UNDO_MIN минут (иначе 403). rev — номер
+    плана на странице: план изменился — 409 «թարմացրեք էջը» (как у правок «Развоза»). В ответе — день склада заново."""
+    payload, error = _json_body()
+    if error is not None:
+        return error
+    if not isinstance(payload, dict) or not isinstance(payload.get('loaded'), bool):
+        return _bad_request({'_': WAREHOUSE_STALE})
+    state = _state()
+    bundle = _bundle(state)
+    day = _warehouse_day(bundle, payload.get('date')) if payload.get('date') is not None else None
+    if day is None:
+        return _bad_request({'date': WAREHOUSE_BAD_DAY})
+    draft, rev = _stored_draft(state, day)
+    if draft is None:
+        return _conflict(WAREHOUSE_NO_PLAN)
+    if payload.get('rev') != rev:
+        return _conflict(WAREHOUSE_STALE)
+    me = session.get('username')
+    now = _same_day_now()
+    try:
+        if payload['loaded']:
+            dp.mark_loaded(draft, payload.get('trip'), now.isoformat(timespec='seconds'), me)
+        else:
+            mark = dp.trip_of(draft, payload.get('trip')).loaded
+            if mark is not None and mark['by'] != me:
+                return jsonify({'success': False, 'error': WAREHOUSE_UNDO_OTHER}), 403
+            if mark is not None and now > datetime.fromisoformat(mark['at']) + timedelta(minutes=WAREHOUSE_UNDO_MIN):
+                return jsonify({'success': False, 'error': WAREHOUSE_UNDO_LATE}), 403
+            dp.unmark_loaded(draft, payload.get('trip'))
+    except dp.DispatchError as e:
+        return _conflict(str(e))
+    if state.store.save_dispatch(day.isoformat(), draft.to_json(), me, expected_rev=rev) is None:
+        return _conflict(WAREHOUSE_STALE)
+    logger.info('[Routes] Склад: рейс %s на %s — %s (%s)', payload.get('trip'), day,
+                'загружен' if payload['loaded'] else 'отметка снята', me)
+    try:
+        return jsonify(_warehouse_body(state, bundle, day))
+    except dp.DispatchError as e:
+        return _bad_request({'_': str(e)})

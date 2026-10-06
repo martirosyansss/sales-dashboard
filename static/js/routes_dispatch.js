@@ -336,8 +336,11 @@
         $('dpBuildText').textContent = plan ? 'Վերակազմել երթերը' : 'Կազմել երթերը';
         $('dpReset').hidden = !plan || !!d.approved;
         $('dpBuild').disabled = !d.trucks.some(t => t.ready) || !d.depot || !!d.approved;
+        // №78: загруженные рейсы закреплены — пересборка их не трогает
+        const loadedN = plan ? plan.trucks.reduce((n, t) => n + t.trips.filter(tr => tr.loaded).length, 0) : 0;
         $('dpBuildNote').textContent = d.approved ? APPROVED_HY
-            : plan ? 'Ամրացված երթերը կմնան ինչպես կան, մնացածը ծրագիրը կբաշխի նորից։' : 'Մոտ 5 վայրկյան։';
+            : plan ? 'Ամրացված երթերը կմնան ինչպես կան, մնացածը ծրագիրը կբաշխի նորից։'
+                + (loadedN ? ' Բեռնված երթերը (' + loadedN + ') չեն փոխվի։' : '') : 'Մոտ 5 վայրկյան։';
         renderApprove();
         renderSteps();
         renderSameDay();
@@ -2576,6 +2579,20 @@
         tog.setAttribute('aria-label', (editing ? 'Ավարտել փոփոխությունը՝ ' : 'Փոփոխել՝ ') + truckLabel(t) + ', երթ ' + (i + 1));
         tog.addEventListener('click', () => toggleEdit(tr.id));
         acts.append(onMap, tog);
+        // «Բեռնված է» (№78): логист отмечает по утверждённому плану, снимает — с подтверждением (рейс открепится)
+        if (tr.loaded || (state.data.approved && !state.data.is_past)) {
+            const ld = document.createElement('button');
+            ld.type = 'button';
+            ld.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-loadbtn';
+            ld.innerHTML = '<i class="fas ' + (tr.loaded ? 'fa-box-open' : 'fa-truck-ramp-box') + '" aria-hidden="true"></i><span></span>';
+            ld.lastChild.textContent = tr.loaded ? 'Հանել բեռնված նշումը' : 'Բեռնված է';
+            ld.setAttribute('aria-label', ld.lastChild.textContent + '՝ ' + truckLabel(t) + ', երթ ' + (i + 1));
+            ld.addEventListener('click', () => {
+                if (tr.loaded && !window.confirm('Հանե՞լ «Բեռնված է» նշումը։ Երթն այլևս ամրացված չի լինի բեռնման պատճառով։')) return;
+                edit({ action: tr.loaded ? 'unloaded' : 'loaded', trip: tr.id }, tr.loaded ? 'Նշումը հանված է' : 'Նշված է՝ բեռնված է');
+            });
+            acts.append(ld);
+        }
         // строка под заголовком: загрузка машины полоской, км, литры, пометки
         const line = document.createElement('div');
         line.className = 'dp-trip-line';
@@ -2602,6 +2619,8 @@
         if (tr.vehicle_miss) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">մեքենան չի կարող սպասարկել՝ ' + esc(fmt(tr.vehicle_miss)) + '</span>');
         if (tr.poor) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn">' + esc(fmt(state.data.min_trip_revenue)) + NB + 'դրամից պակաս</span>');
         if (tr.pinned) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-ok"><i class="fas fa-lock" aria-hidden="true"></i>ամրացված</span>');
+        if (tr.loaded) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-ok"><i class="fas fa-check" aria-hidden="true"></i>Բեռնված է ժ.' + NB + esc(tr.loaded.at)
+            + (tr.loaded.by ? ' (' + esc(tr.loaded.by) + ')' : '') + '</span>');   // №78
         line.append(load, meta, flags);
         head.append(title, time, acts, line);
         div.appendChild(head);
@@ -3317,6 +3336,10 @@
             return data;
         } catch (e) {
             setBusy(false);
+            // №78: правка загруженного рейса — товар уже в машине: спросить и повторить с подтверждением
+            if (e.data && e.data.loaded_confirm === true && !body.confirm_loaded && window.confirm(e.message)) {
+                return edit({ ...body, confirm_loaded: true }, okText);
+            }
             render();
             showActionError(e);
             return null;
