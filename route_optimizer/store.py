@@ -264,10 +264,10 @@ _SCHEMA = (
     _TRUCK_DRIVER_TABLE,
     _TRUCK_HELPER_TABLE,
     _DRIVER_ABSENCE_TABLE,
+    _CUSTOMER_SOLO_TABLE,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
-    _CUSTOMER_SOLO_TABLE,
 )
 
 # Миграции: версия → DDL перехода на следующую. Выполняются в одной транзакции с записью версии.

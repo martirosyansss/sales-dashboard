@@ -14,6 +14,7 @@ def render(path, role):
     app = Flask(__name__, template_folder=str(ROOT / 'templates'), static_folder=str(ROOT / 'static'))
     app.add_url_rule('/logout', 'logout', lambda: '', methods=['POST'])
     app.context_processor(lambda: {'is_admin': role == 'admin', 'is_garage': role == 'garage',
+                                   'is_public_role': role in ('garage', 'warehouse'),   # роли из интернета (№53, №78)
                                    'current_user': None, 'current_username': 'qa', 'csrf_token': lambda: 'x'})
     with app.test_request_context(path):
         return render_template_string(PAGE)
@@ -64,3 +65,10 @@ def test_garage_sees_no_pages_but_can_log_out():
         assert f'href="{href}' not in html
     assert 'app-nav' not in html                                  # у «Гаража» своя короткая шапка (№53)
     assert 'gj-logout' in html and 'action="/logout"' in html
+
+
+def test_warehouse_sees_no_pages_but_can_log_out():
+    html = render('/routes/warehouse', 'warehouse')                 # склад (№78) — та же короткая шапка
+    for href in ('/customers-grid', '/areas', '/routes"', '/settings'):
+        assert f'href="{href}' not in html
+    assert 'app-nav' not in html and 'gj-logout' in html and 'lang="hy"' in html
