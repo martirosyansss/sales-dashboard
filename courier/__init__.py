@@ -30,7 +30,7 @@ from .day import DayService
 from .facts import FactsSource
 from .geo import DriverSource
 from .live import LiveSource
-from .routes_link import routes_view
+from .routes_link import routes_bundle, routes_view
 from .state import API_PREFIX, EXTENSION_KEY, CourierState
 from .store import Store
 
@@ -58,7 +58,7 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
     app.extensions[EXTENSION_KEY] = CourierState(
         store=store, days=days, public_host=host, public_url=url, demo=demo,
         catalog_loader=lambda today: erp_day.product_catalog(cs, today),
-        cars_loader=lambda today: erp_day.cars_seen(cs, today),
+        cars_loader=lambda today: erp_day.terminal_cars(cs, today, routes_bundle(app.extensions.get(ROUTES_EXTENSION))),
         invoice_loader=lambda day: erp_day.invoice_cars(cs, day),
     )
     app.register_blueprint(api.bp)

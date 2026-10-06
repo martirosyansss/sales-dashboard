@@ -53,7 +53,7 @@ def main() -> int:
     cs = app_v2.db.connection_string
     today = date.today()
     days = workdays_back(today, n)
-    cars = [c['code'] for c in erp_day.cars_seen(cs, today)]
+    cars = [c['code'] for c in erp_day.terminal_cars(cs, today, None) if c['docs']]   # машины накладных за 90 дней
     conn = erp.connect(cs)
     try:
         facts = {d: {r[0].strip(): (int(r[1]), float(r[2] or 0)) for r in erp._select(conn, SQL_FACT, (d, d + timedelta(days=1)))}

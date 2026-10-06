@@ -21,6 +21,7 @@ from typing import Any, Callable, Collection, Mapping, Sequence
 from route_optimizer import dispatch as dp
 from route_optimizer.dispatch import DispatchOrder
 from route_optimizer.geo import Point, haversine_km
+from route_optimizer.store import Bundle
 from route_optimizer.store import StoreError as RoutesStoreError
 from route_optimizer.tsp import Distance
 
@@ -117,6 +118,18 @@ def routes_depot(state: Any) -> Point | None:
         return state.store.load().depot
     except RoutesStoreError:
         logger.warning('[Courier] База «Маршрутов» недоступна — склад не учтён', exc_info=True)
+        return None
+
+
+def routes_bundle(state: Any) -> Bundle | None:
+    """Настройки «Маршрутов» (Store.load: таблица парка, вкл. ручные машины) для списка машин терминалов
+    (erp_day.merge_cars). Раздела нет или любой сбой «Маршрутов» — None (сбой — в лог): список строится по ERP."""
+    if state is None:
+        return None
+    try:
+        return state.store.load()
+    except Exception:   # парк — подсказка списка машин: сбой «Маршрутов» не закрывает регистрацию терминала
+        logger.warning('[Courier] Парк «Маршрутов» не прочитан — машины терминалов только по ERP', exc_info=True)
         return None
 
 

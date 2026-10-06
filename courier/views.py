@@ -37,7 +37,7 @@ from . import clock, events as ev, merge as mg
 from .facts import gps_summary, office_window, refuel_flags
 from .routes_link import RoutesView, planned_crew, routes_depot, routes_view
 from .state import state
-from .store import MarkSetting, PinConflict, PinPepperMissing, PinUnverifiable, Release, StoreError
+from .store import MarkSetting, PinConflict, PinPepperMissing, PinUnverifiable, Release, StoreError, Terminal
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,9 @@ def invoice_page() -> str:
 # --- «Վարորդներ»: водители и терминалы ---
 
 def _cars(today: date) -> tuple[list[dict[str, Any]], bool]:
-    """Машины для терминала (SALES.fDELIVERYCAR за 90 дней); (машины, ERP недоступна)."""
+    """Машины для терминала (erp_day.merge_cars: ERP CARS, накладные за 90 дней, парк «Маршрутов»); закрытая в ERP —
+    только если к ней уже привязан действующий терминал. (машины, ERP недоступна). Тот же список — проверка машины
+    при регистрации и смене машины (_car_listed) и название машины в /login (api._car_name)."""
     st = state()
     cars: list[dict[str, Any]] = []
     failed = False
@@ -131,9 +133,19 @@ def _cars(today: date) -> tuple[list[dict[str, Any]], bool]:
         except ErpError:
             logger.warning('[Courier] Машины ERP не прочитаны', exc_info=True)
             failed = True
+    if any(c.get('closed') for c in cars):
+        bound = {t.car_code for t in st.store.list_terminals() if not t.revoked}
+        cars = [c for c in cars if not c.get('closed') or c['code'] in bound]
     if st.demo:
-        cars.append({'code': 'TEST', 'name': 'Թեստ (COURIER_DEMO)', 'docs': 0, 'last': None})
+        cars.append({'code': 'TEST', 'name': 'Թեստ (COURIER_DEMO)', 'docs': 0, 'last': None, 'fleet': False,
+                     'closed': False, 'capacity_kg': None})
     return cars, failed
+
+
+def _car_listed(car: Any) -> bool:
+    """Машина из списка _cars; список пуст (ERP недоступна) — любая строка (форму проверяет store)."""
+    cars, _ = _cars(clock.today())
+    return isinstance(car, str) and (not cars or car in {c['code'] for c in cars})
 
 
 @bp.get('/api/courier/admin/drivers')
@@ -219,20 +231,79 @@ def terminals_create() -> Any:
     if body is None:
         return _bad('Սպասվում է JSON')
     car = body.get('car_code')
-    cars, _ = _cars(clock.today())
-    if not isinstance(car, str) or (cars and car not in {c['code'] for c in cars}):
+    if not _car_listed(car):
         return _bad('Ընտրեք մեքենան ցուցակից')
-    url = body.get('url')
-    base = st.public_url if url in (None, 'public') else request.host_url.rstrip('/') + '/api/courier/v1'
-    admin_pin = f'{secrets.randbelow(10 ** 6):06d}'   # PIN скрытых настроек терминала (§5 п. 11), свой у каждого
+    admin_pin = _admin_pin()
     try:
         terminal, token = st.store.create_terminal(body.get('name'), car, _user(), admin_pin)
     except ValueError as e:
         return _bad(_hy(str(e)))
+    return _qr_reply(terminal, token, admin_pin, body.get('url'))
+
+
+def _admin_pin() -> str:
+    """PIN скрытых настроек терминала (§5 п. 11): свой у каждого терминала и у каждого его QR."""
+    return f'{secrets.randbelow(10 ** 6):06d}'
+
+
+def _qr_reply(terminal: Terminal, token: str, admin_pin: str, url: Any) -> Any:
+    """Ответ с QR регистрации (новый терминал и «Նոր QR»): url 'public' (по умолчанию) — туннель, иначе адрес этого
+    сервера."""
+    base = state().public_url if url in (None, 'public') else request.host_url.rstrip('/') + '/api/courier/v1'
     qr_text = json.dumps({'araqich': 1, 'url': base, 'token': token, 'terminal': terminal.name, 'admin_pin': admin_pin},
                          ensure_ascii=False, separators=(',', ':'))
     return jsonify({'success': True, 'terminal': {'id': terminal.id, 'name': terminal.name, 'car_code': terminal.car_code},
                     'qr_text': qr_text, 'qr_svg': qr_svg(qr_text), 'admin_pin': admin_pin})
+
+
+@bp.post('/api/courier/admin/terminals/<int:terminal_id>/reissue')
+@_api
+def terminals_reissue(terminal_id: int) -> Any:
+    """«Նոր QR»: устройство потеряло регистрацию — новый QR тому же терминалу (имя, машина и история прежние); прежний
+    QR и сессия водителя сразу недействительны. Отозванный терминал — нет (вместо него создают новый)."""
+    body = _body()
+    if body is None:
+        return _bad('Սպասվում է JSON')
+    st = state()
+    t = st.store.terminal(terminal_id)
+    if t is None:
+        return _bad('Տերմինալը չի գտնվել', 404)
+    admin_pin = _admin_pin()
+    issued = None if t.revoked else st.store.reissue_terminal(terminal_id, admin_pin)
+    if issued is None:   # отозван (и между чтением и записью)
+        return _bad('Տերմինալն անջատված է․ ստեղծեք նոր տերմինալ')
+    logger.info('[Courier] Терминал %s «%s» (%s): новый QR, выдал %s', t.id, t.name, t.car_code, _user())
+    return _qr_reply(issued[0], issued[1], admin_pin, body.get('url'))
+
+
+@bp.post('/api/courier/admin/terminals/<int:terminal_id>/car')
+@_api
+def terminals_car(terminal_id: int) -> Any:
+    """«Փոխել մեքենան»: действующий терминал — на другую машину списка (_car_listed). Прошлое остаётся у прежней машины:
+    события, снимки /day, экипаж и треки хранят машину на момент записи. Сессия водителя закрывается — вход по PIN
+    сообщит терминалу новую машину; /day терминала с этого момента — день новой машины."""
+    body = _body()
+    if body is None:
+        return _bad('Սպասվում է JSON')
+    st = state()
+    car = body.get('car_code')
+    t = st.store.terminal(terminal_id)
+    if t is None:
+        return _bad('Տերմինալը չի գտնվել', 404)
+    if t.revoked:
+        return _bad('Տերմինալն անջատված է')
+    if isinstance(car, str) and car.strip() == t.car_code:
+        return _bad('Տերմինալն արդեն այս մեքենայի վրա է')
+    if not _car_listed(car):
+        return _bad('Ընտրեք մեքենան ցուցակից')
+    try:
+        changed = st.store.set_terminal_car(terminal_id, car)
+    except ValueError as e:
+        return _bad(_hy(str(e)))
+    if not changed:   # отозван между чтением и записью
+        return _bad('Տերմինալն անջատված է')
+    logger.info('[Courier] Терминал %s «%s»: машина %s → %s, сменил %s', t.id, t.name, t.car_code, car, _user())
+    return jsonify({'success': True, 'terminal': {'id': t.id, 'name': t.name, 'car_code': car.strip()}})
 
 
 @bp.post('/api/courier/admin/terminals/<int:terminal_id>/revoke')
@@ -508,8 +579,10 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
         if kind == 'revoked' and name in by_car[code]['helpers']:
             by_car[code]['helper_until'][name] = clock.iso(datetime.fromisoformat(at_utc))
     for t in terminals:
-        if t.car_code in by_car and t.last_seen_at and (by_car[t.car_code]['last_contact'] is None
-                                                         or t.last_seen_at > by_car[t.car_code]['last_contact']):
+        # связь терминала — у машины, на которой он сейчас, и только в своей дате (как live.py): после смены машины
+        # прошлые даты не получают связь другого дня
+        if t.car_code in by_car and t.last_seen_at and t.last_seen_at[:10] == ds and (
+                by_car[t.car_code]['last_contact'] is None or t.last_seen_at > by_car[t.car_code]['last_contact']):
             by_car[t.car_code]['last_contact'] = t.last_seen_at
     cars = []
     for code in sorted(by_car):

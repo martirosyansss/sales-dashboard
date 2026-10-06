@@ -1864,6 +1864,8 @@ def test_role_user_blocked_from_courier_office(dashboard, monkeypatch):
                  '/api/courier/admin/invoices?q=1', f'/api/courier/admin/invoice?date={DEMO}&stop=S:1'):
         assert client.get(path, headers=lan).status_code == 403, path
     assert client.post('/api/courier/admin/drivers', json={'name': 'x', 'pin': '1234'}, headers=lan).status_code == 403
+    for path in ('/api/courier/admin/terminals/1/reissue', '/api/courier/admin/terminals/1/car'):
+        assert client.post(path, json={'car_code': 'TEST'}, headers=lan).status_code == 403, path
     with client.session_transaction() as sess:
         app_v2._stamp_session(sess, 'boss', users['boss'])
     assert client.get('/api/courier/admin/drivers', headers=lan).status_code == 200
@@ -2998,3 +3000,181 @@ def test_pepper_missing_tag_falls_back_to_plain_hash(tmp_path, monkeypatch, now)
     s.save_driver(None, 'B', True, '5678', 'x')
     assert [d.id for d in s.match_pin('1234')] == [a]
     assert len(_pin_row(path, a)[1]) == 64                              # tag — без перца, как в среде
+
+# ============================== машины терминалов, «Նոր QR», смена машины (06.10) ==============================
+
+TODAY = date(2026, 10, 6)
+
+
+def _fleet_bundle():
+    from route_optimizer.store import Bundle, Truck
+    return Bundle(settings={}, depot=None, managers={}, trucks={
+        'A1': Truck('A1', capacity_kg=None, fuel_l_per_100km=20, active=None),          # «авто»: возила 5 дней назад
+        'D4': Truck('D4', capacity_kg=3000, fuel_l_per_100km=20, active=False),         # выключена владельцем
+        'E5': Truck('E5', capacity_kg=3000, fuel_l_per_100km=20, active=None),          # «авто», но не возила 60 дней
+        'M9': Truck('M9', capacity_kg=1500, fuel_l_per_100km=12, active=True, manual=True, name='Ford'),
+        'N8': Truck('N8', capacity_kg=None, fuel_l_per_100km=None, active=True, manual=True, name='Gazel'),  # без норм
+    })
+
+
+def _erp_cars():
+    return {'A1': erp.Car('A1', 'HOWO', False, 3500.0), 'B2': erp.Car('B2', 'JAC', False, None),
+            'C3': erp.Car('C3', 'Старая', True, None), 'D4': erp.Car('D4', 'Isuzu', False, None),
+            'E5': erp.Car('E5', 'Kia', False, 50.0)}   # 50 кг — вне TRUCK_CAPACITY_KG: карточку не берём
+
+
+_SEEN = {'A1': (40, TODAY - timedelta(days=5)), 'C3': (3, TODAY - timedelta(days=10)),
+         'D4': (12, TODAY - timedelta(days=1)), 'E5': (1, TODAY - timedelta(days=70)), 'S5': (2, TODAY - timedelta(days=3))}
+
+
+def test_merge_cars_union_fleet_and_order():
+    """Список машин терминалов — ERP CARS ∪ накладные 90 дней ∪ парк «Маршрутов» (вкл. ручные): парк «Развоза» (как
+    _ready_trucks: активна, тоннаж и расход заданы) сверху, дальше по коду; тоннаж — расчёта или карточки ERP."""
+    cars = {c['code']: c for c in ed.merge_cars(_erp_cars(), _SEEN, _fleet_bundle(), TODAY)}
+    assert list(cars) == ['A1', 'M9', 'B2', 'C3', 'D4', 'E5', 'N8', 'S5']
+    assert {k for k, c in cars.items() if c['fleet']} == {'A1', 'M9'}
+    assert cars['A1'] == {'code': 'A1', 'name': 'HOWO', 'docs': 40, 'last': '2026-10-01', 'fleet': True, 'closed': False,
+                          'capacity_kg': 3500.0}                                       # пустой тоннаж — из карточки ERP
+    assert (cars['M9']['name'], cars['M9']['capacity_kg'], cars['M9']['docs'], cars['M9']['last']) == ('Ford', 1500, 0, None)
+    assert cars['B2']['docs'] == 0 and not cars['B2']['fleet']                         # в накладных нет — всё равно в списке
+    assert cars['C3']['closed'] and not cars['C3']['fleet']
+    assert cars['S5']['name'] == '' and not cars['S5']['closed']                     # машина накладных без карточки CARS
+    assert cars['E5']['capacity_kg'] == 3000 and cars['N8']['capacity_kg'] is None
+    # «Маршрутов» нет / база не читается — парк только «авто» по ERP: не закрыта и возила за CAR_IDLE_DAYS дней
+    erp_only = ed.merge_cars(_erp_cars(), _SEEN, None, TODAY)
+    assert [c['code'] for c in erp_only] == ['A1', 'D4', 'B2', 'C3', 'E5', 'S5']
+    assert [c['code'] for c in erp_only if c['fleet']] == ['A1', 'D4'] and erp_only[0]['capacity_kg'] == 3500.0
+
+
+def test_terminal_cars_loader_routes_failure_falls_back_to_erp(tmp_path, monkeypatch, now, caplog):
+    """Загрузчик машин init_app: ERP (накладные + CARS) и парк «Маршрутов»; сбой «Маршрутов» — в лог, список по ERP."""
+    from flask import Flask
+    from route_optimizer.store import StoreError as RoutesError
+
+    def fake(conn, sql, params=()):
+        if sql == ed.SQL_CARS_SEEN:
+            assert params == (TODAY - timedelta(days=ed.CARS_WINDOW_DAYS),)
+            return [('A1', 40, datetime(2026, 10, 1, 9, 30)), ('S5', 2, date(2026, 10, 3))]
+        if sql == erp.SQL_CARS:
+            return [('A1', 'HOWO', False, 3.5), ('B2', 'JAC', False, 0), ('C3', 'Старая', True, None)]
+        raise AssertionError(sql[:60])
+    monkeypatch.setattr(erp, '_select', fake)
+    monkeypatch.setattr(ed, '_select', fake)
+    monkeypatch.setattr(erp, 'connect', lambda cs, **kw: object())
+    monkeypatch.setattr(erp, 'close_quietly', lambda conn: None)
+    app = Flask(__name__)
+    courier.init_app(app, FakeDb(), db_path=str(tmp_path / 'courier.db'))
+    load = app.extensions['courier'].cars_loader
+
+    class Routes:
+        def __init__(self, bundle=None):
+            self.bundle = bundle
+
+        def load(self):
+            if self.bundle is None:
+                raise RoutesError('битая база')
+            return self.bundle
+
+    app.extensions['route_optimizer'] = SimpleNamespace(store=Routes())
+    with caplog.at_level('WARNING', logger='courier.routes_link'):
+        cars = load(TODAY)
+    assert [(c['code'], c['fleet']) for c in cars] == [('A1', True), ('B2', False), ('C3', False), ('S5', False)]
+    assert 'Парк «Маршрутов» не прочитан' in caplog.text
+    app.extensions['route_optimizer'] = SimpleNamespace(store=Routes(_fleet_bundle()))
+    assert [(c['code'], c['fleet']) for c in load(TODAY)][:2] == [('A1', True), ('M9', True)]
+    assert rl.routes_bundle(None) is None
+    app.extensions['route_optimizer'] = SimpleNamespace(store=SimpleNamespace(load=lambda: 1 / 0))   # любой сбой
+    assert [c['code'] for c in load(TODAY)] == ['A1', 'B2', 'C3', 'S5']
+
+
+def test_office_cars_closed_only_when_bound(client, st):
+    """Закрытая в ERP машина — в списке и проверке только пока к ней привязан действующий терминал."""
+    st.cars_loader = lambda today: [
+        {'code': '991AT61', 'name': 'HOWO', 'docs': 40, 'last': '2026-10-01', 'fleet': True, 'closed': False, 'capacity_kg': None},
+        {'code': 'OLD1', 'name': 'Old', 'docs': 0, 'last': None, 'fleet': False, 'closed': True, 'capacity_kg': None}]
+    codes = lambda: [c['code'] for c in client.get('/api/courier/admin/drivers').get_json()['cars']]   # noqa: E731
+    assert codes() == ['991AT61', 'TEST']
+    assert client.post('/api/courier/admin/terminals', json={'name': 'X', 'car_code': 'OLD1'}).status_code == 400
+    t, _ = st.store.create_terminal('Старый', 'OLD1', 'admin')
+    assert codes() == ['991AT61', 'OLD1', 'TEST']
+    assert client.post('/api/courier/admin/terminals', json={'name': 'Y', 'car_code': 'OLD1'}).status_code == 200
+    st.store.revoke_terminal(t.id, 'admin')
+    assert 'OLD1' in codes()                                                           # второй терминал ещё на ней
+    for x in st.store.list_terminals():
+        st.store.revoke_terminal(x.id, 'admin')
+    assert codes() == ['991AT61', 'TEST']
+
+
+def test_terminal_reissue(client, st):
+    """«Նոր QR»: тот же терминал (id, имя, машина) с новым токеном и PIN настроек; прежний токен — 401 unauthorized,
+    сессия водителя удалена, блокировка PIN снята; отозванный — нельзя."""
+    st.store.save_driver(None, 'Արամ', True, '1234', 'admin')
+    r = client.post('/api/courier/admin/terminals', json={'name': 'Urovo HOWO', 'car_code': '991AT61'}).get_json()
+    tid, old = r['terminal']['id'], {'Authorization': 'Bearer ' + json.loads(r['qr_text'])['token']}
+    s = login(client, old)
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        conn.execute("UPDATE terminals SET failed_pin_count = 3, locked_until = '2099-01-01T00:00:00+04:00' WHERE id = ?", (tid,))
+        conn.commit()
+        old_pin_hash = conn.execute('SELECT admin_pin_hash FROM terminals WHERE id = ?', (tid,)).fetchone()[0]
+    assert client.post(f'/api/courier/admin/terminals/{tid}/reissue', data='x').status_code == 400      # только JSON
+    n = client.post(f'/api/courier/admin/terminals/{tid}/reissue', json={'url': 'lan'})
+    assert n.status_code == 200
+    body = n.get_json()
+    qr = json.loads(body['qr_text'])
+    assert body['terminal'] == {'id': tid, 'name': 'Urovo HOWO', 'car_code': '991AT61'}
+    assert qr['url'] == 'http://localhost/api/courier/v1' and qr['terminal'] == 'Urovo HOWO' and qr['admin_pin'] == body['admin_pin']
+    assert len(body['admin_pin']) == 6 and (body['qr_svg'] is None or body['qr_svg'].lstrip().startswith('<svg'))
+    r = client.get('/api/courier/v1/ping', headers=old)
+    assert r.status_code == 401 and r.get_json()['error'] == 'unauthorized'
+    new = {'Authorization': 'Bearer ' + qr['token']}
+    assert client.get('/api/courier/v1/ping', headers=new).get_json()['car_code'] == '991AT61'
+    r = client.get(f'/api/courier/v1/day?date={DEMO}', headers={**new, 'X-Courier-Session': s['X-Courier-Session']})
+    assert r.status_code == 401 and r.get_json()['error'] == 'session'                 # сессия устройства удалена
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM sessions WHERE terminal_id = ?', (tid,)).fetchone()[0] == 0
+        row = conn.execute('SELECT failed_pin_count, locked_until, admin_pin_hash FROM terminals WHERE id = ?', (tid,)).fetchone()
+    assert row[:2] == (0, None) and row[2] != old_pin_hash
+    login(client, new)                                                                # блокировка снята — вход по PIN
+    assert [t.id for t in st.store.list_terminals()] == [tid]
+    assert client.post('/api/courier/admin/terminals/999/reissue', json={}).status_code == 404
+    client.post(f'/api/courier/admin/terminals/{tid}/revoke', json={})
+    r = client.post(f'/api/courier/admin/terminals/{tid}/reissue', json={})
+    assert r.status_code == 400 and r.get_json()['success'] is False
+    assert client.get('/api/courier/v1/ping', headers=new).status_code == 401
+    assert st.store.reissue_terminal(tid, '123456') is None
+
+
+def test_terminal_change_car_keeps_history(term, client, st):
+    """«Փոխել մեքենան»: проверка по списку машин; события, деньги и снимки прошлого остаются у прежней машины (хранят
+    машину на момент записи); сессия закрыта — вход по PIN сообщает новую машину, /day — день новой машины."""
+    tid = term['terminal'].id
+    cash = next(x for x in term['day']['stops'] if x['collect'] == 'cash')
+    paid = event('payment', cash['stop_id'], {'amount': 12000.0, 'kind': 'invoice', 'ecr_receipt': '7'})
+    done = event('delivery', cash['stop_id'], {'lines': full_lines(cash), 'reason_id': None})
+    post(client, term['s'], paid, done)
+    before = client.get(f'/api/courier/admin/today?date={DEMO}').get_json()
+    money_before = client.get(f'/api/courier/admin/money?date={DEMO}').get_json()['drivers']
+    url = f'/api/courier/admin/terminals/{tid}/car'
+    assert client.post(url, data='car_code=991AT61').status_code == 400               # только JSON
+    for bad in ({'car_code': 'NOPE'}, {'car_code': 'TEST'}, {'car_code': None}, {}):
+        assert client.post(url, json=bad).status_code == 400, bad
+    assert client.post('/api/courier/admin/terminals/999/car', json={'car_code': '991AT61'}).status_code == 404
+    r = client.post(url, json={'car_code': '991AT61'})
+    assert r.get_json() == {'success': True, 'terminal': {'id': tid, 'name': 'Urovo 1', 'car_code': '991AT61'}}
+    assert st.store.terminal(tid).car_code == '991AT61'
+    assert client.get(f'/api/courier/v1/day?date={DEMO}', headers=term['s']).get_json()['error'] == 'session'
+    assert client.get('/api/courier/v1/ping', headers=term['h']).get_json()['car_code'] == '991AT61'
+    r = client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=term['h']).get_json()
+    assert r['car'] == {'code': '991AT61', 'name': 'HOWO'}
+    # прошлое — у прежней машины: события, снимки /day, деньги и офис даты
+    assert {(e['id'], e['car_code']) for e in st.store.events_for_day(DEMO)} == {(paid['id'], 'TEST'), (done['id'], 'TEST')}
+    assert set(st.store.day_snapshots(DEMO).latest) == {'TEST'}
+    assert client.get(f'/api/courier/admin/money?date={DEMO}').get_json()['drivers'] == money_before
+    after = client.get(f'/api/courier/admin/today?date={DEMO}').get_json()
+    pick = lambda d: [(c['car_code'], c['full'], c['pending'], c['last_contact']) for c in d['cars'] if c['car_code'] == 'TEST']   # noqa: E731
+    assert pick(after) == pick(before) and pick(before)[0][:2] == ('TEST', 1)
+    client.post(f'/api/courier/admin/terminals/{tid}/revoke', json={})
+    assert client.post(url, json={'car_code': 'TEST'}).status_code == 400              # отозванный — нельзя
+    assert st.store.set_terminal_car(tid, 'TEST') is False
+    with pytest.raises(ValueError):
+        st.store.set_terminal_car(tid, ' ')

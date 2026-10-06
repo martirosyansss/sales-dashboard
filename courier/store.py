@@ -883,6 +883,44 @@ class Store:
 
         return self._transaction(write, 'не удалось отозвать терминал')
 
+    def reissue_terminal(self, terminal_id: int, admin_pin: str) -> tuple[Terminal, str] | None:
+        """«Նոր QR»: новый токен и PIN настроек тому же терминалу (имя, машина, история — прежние). Одной транзакцией:
+        прежний токен сразу недействителен, сессии терминала удалены, блокировка входа по PIN снята (новое устройство
+        не наследует чужие ошибки). Токен возвращается ОДИН раз. Нет терминала или он отозван — None."""
+        token = new_token()
+        admin_hash = hash_pin(admin_pin)
+
+        def write(conn: sqlite3.Connection) -> bool:
+            n = conn.execute('UPDATE terminals SET token_sha256 = ?, admin_pin_hash = ?, failed_pin_count = 0, '
+                             'pin_window_start = NULL, locked_until = NULL WHERE id = ? AND revoked_at IS NULL',
+                             (token_hash(token), admin_hash, terminal_id)).rowcount
+            if n == 1:
+                conn.execute('DELETE FROM sessions WHERE terminal_id = ?', (terminal_id,))
+            return n == 1
+
+        if not self._transaction(write, 'не удалось выдать новый QR терминалу'):
+            return None
+        terminal = self.terminal(terminal_id)
+        assert terminal is not None
+        return terminal, token
+
+    def set_terminal_car(self, terminal_id: int, car_code: Any) -> bool:
+        """«Փոխել մեքենան»: действующий терминал — на другую машину. История не переносится: события, снимки /day,
+        экипаж и треки хранят машину на момент записи. Сессия водителя удаляется (одной транзакцией): терминал узнаёт
+        машину заново при входе по PIN (/login), а экипаж решается уже для новой машины. Нет терминала или он
+        отозван — False."""
+        if not isinstance(car_code, str) or not car_code.strip() or len(car_code.strip()) > 20:
+            raise ValueError('Машина не выбрана')
+
+        def write(conn: sqlite3.Connection) -> bool:
+            n = conn.execute('UPDATE terminals SET car_code = ? WHERE id = ? AND revoked_at IS NULL',
+                             (car_code.strip(), terminal_id)).rowcount
+            if n == 1:
+                conn.execute('DELETE FROM sessions WHERE terminal_id = ?', (terminal_id,))
+            return n == 1
+
+        return self._transaction(write, 'не удалось сменить машину терминала')
+
     def touch_terminal(self, terminal_id: int) -> bool:
         """Последняя связь терминала (для «Առաքում այսօր») — best-effort: короткое ожидание блокировки, любая
         ошибка базы только в лог (запрос терминала из-за неё не падает). True — записано."""

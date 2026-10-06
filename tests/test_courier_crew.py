@@ -646,7 +646,7 @@ def test_office_page_hint_and_asset_versions(app, client):
     app.add_url_rule('/logout', 'logout', lambda: '')
     html = client.get('/courier').data.decode('utf-8')
     assert 'Առաքիչը' in html and 'իր PIN-ով' in html
-    assert 'js/courier.js?v=16' in html and 'css/courier.css?v=11' in html
+    assert 'js/courier.js?v=17' in html and 'css/courier.css?v=12' in html
 
 
 def test_today_old_events_unchanged_shape(app, st, client, crew):

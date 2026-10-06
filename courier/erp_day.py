@@ -41,6 +41,9 @@
 План дня не утверждён ни разу или его нет (ответ владельца №80) — pick_orders пуст: ни точек O:, ни накладных без машины
 по плану; остаются только накладные с fDELIVERYCAR = машина (их машину поставил офис — это документ, а не план).
 
+Машины терминалов (merge_cars) — ERP CARS ∪ машины накладных ∪ парк «Маршрутов»: fDELIVERYCAR офис часто не
+заполняет, и по одним накладным в списке была треть машин (06.10.2026: 6 из 15 открытых).
+
 Справочники (тара, «дефолтные» точки, менеджеры, машины) кэшируются на REF_TTL_SECONDS — они меняются редко,
 а /day каждой машины перечитывался бы каждую минуту.
 """
@@ -55,9 +58,12 @@ from datetime import date, timedelta
 from typing import Any, Callable, Mapping, Sequence
 
 from route_optimizer import erp
+from route_optimizer import fleet as rf
 from route_optimizer.dispatch import DispatchOrder
 from route_optimizer.geo import Point, is_valid_point, median_point, point_key
 from route_optimizer.geo import GPS_MAX_ACCURACY_M, GPS_MIN_VISITS
+from route_optimizer.snapshot import CAR_IDLE_DAYS
+from route_optimizer.store import TRUCK_CAPACITY_KG, Bundle
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +74,7 @@ _str = erp._str
 
 GPS_WINDOW_DAYS = 365
 SOLD_WINDOW_DAYS = 90
-CARS_WINDOW_DAYS = 90
+CARS_WINDOW_DAYS = 90   # не меньше CAR_IDLE_DAYS: по этим же накладным merge_cars считает «авто» парка «Развоза»
 REF_TTL_SECONDS = 600
 
 # --- Способ оплаты (контракт §2, решение владельца №12) ---
@@ -566,16 +572,52 @@ def product_catalog(connection_string: str, today: date) -> list[CatalogItem]:
                    for r in rows), key=lambda x: (x.code, x.id))
 
 
-def cars_seen(connection_string: str, today: date) -> list[dict[str, Any]]:
-    """Машины из SALES.fDELIVERYCAR за 90 дней (для регистрации терминала): код, название, накладных, последний день."""
+def terminal_cars(connection_string: str, today: date, bundle: Bundle | None) -> list[dict[str, Any]]:
+    """Машины терминалов (регистрация, смена машины, название в /login) — merge_cars по ERP CARS, накладным
+    SALES.fDELIVERYCAR за CARS_WINDOW_DAYS дней и парку «Маршрутов» (bundle — Store.load; None — раздела нет или его
+    база не читается: парк — по ERP)."""
     conn = erp.connect(connection_string)
     try:
         rows = _select(conn, SQL_CARS_SEEN, (today - timedelta(days=CARS_WINDOW_DAYS),))
-        names = erp.cars(conn)
+        cars = erp.cars(conn)
     finally:
         erp.close_quietly(conn)
-    return sorted(({'code': _str(r[0]), 'name': names[_str(r[0])].name if _str(r[0]) in names else '',
-                    'docs': int(r[1]), 'last': erp._day(r[2]).isoformat()} for r in rows), key=lambda c: c['code'])
+    return merge_cars(cars, {_str(r[0]): (int(r[1]), erp._day(r[2])) for r in rows}, bundle, today)
+
+
+def merge_cars(cars: Mapping[str, erp.Car], seen: Mapping[str, tuple[int, date]], bundle: Bundle | None,
+               today: date) -> list[dict[str, Any]]:
+    """Список машин терминалов: {code, name, docs, last, fleet, closed, capacity_kg} — объединение (docstring модуля):
+    - все машины ERP CARS; закрытые — с closed (на странице — только та, к которой уже привязан терминал: views._cars);
+    - машины накладных (seen: код → (накладных, последний день)) без карточки CARS — name пусто;
+    - машины таблицы парка «Маршрутов», которых нет в CARS (ручные: владелец добавил сам) — name своё.
+    fleet — машина в расчёте «Развоза», как views._ready_trucks «Маршрутов»: «активна» — выбор владельца, «авто» — не
+    закрыта и возила за CAR_IDLE_DAYS дней (Snapshot.active_cars), тоннаж и расход заданы; bundle None — только «авто».
+    capacity_kg — тоннаж расчёта (Bundle.truck_capacity: свой, пустой — карточка ERP), машины без записи парка —
+    карточка ERP. Порядок: парк, затем остальные; внутри — по коду."""
+    lo, hi = TRUCK_CAPACITY_KG
+    erp_capacity = {code: c.capacity_kg for code, c in cars.items()
+                    if c.capacity_kg is not None and lo <= c.capacity_kg <= hi}   # как Snapshot.car_capacity
+    active = frozenset(code for code, c in cars.items()
+                       if not c.closed and code in seen and (today - seen[code][1]).days <= CAR_IDLE_DAYS)
+    own: dict[str, str] = {}
+    if bundle is None:
+        fleet = set(active)
+    else:
+        ready, _ = rf.fleet_trucks(bundle.resolved_trucks(active, erp_capacity),
+                                   {code: c.name for code, c in cars.items()})
+        fleet = {t.car_code for t in ready}
+        own = {code: t.name or '' for code, t in bundle.trucks.items() if code not in cars}
+    out = []
+    for code in set(cars) | set(seen) | set(own):
+        car = cars.get(code)
+        docs, last = seen.get(code, (0, None))
+        in_bundle = bundle is not None and code in bundle.trucks
+        out.append({'code': code, 'name': car.name if car is not None else own.get(code, ''), 'docs': docs,
+                    'last': last.isoformat() if last is not None else None, 'fleet': code in fleet,
+                    'closed': car is not None and car.closed,
+                    'capacity_kg': bundle.truck_capacity(code, erp_capacity) if in_bundle else erp_capacity.get(code)})
+    return sorted(out, key=lambda c: (not c['fleet'], c['code']))
 
 
 @dataclass(frozen=True)
