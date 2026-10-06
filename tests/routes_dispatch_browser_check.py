@@ -529,6 +529,8 @@ def main() -> int:
             views._clock, views._yerevan_now = real_clock, real_yerevan
 
             # Y (№82, вариант А): рабочий экран — карта, машины и шкала с номерами, панель машины, шаги в выдвижной панели
+            views._clock = lambda: fixed                    # день V — будущий (в прошедших днях магазины не перетаскиваются)
+            views._yerevan_now = lambda: fixed.replace(tzinfo=ZoneInfo('Asia/Yerevan'))
             ws = ctx.new_page()
             ws.add_init_script("try { localStorage.setItem('dpLayout', 'ws'); } catch (e) {}")
             ws_errors = []
@@ -546,8 +548,19 @@ def main() -> int:
             ws.locator('#dpBoard .dp-blabel').first.click()
             ws.wait_for_selector('#dpWsSide:not([hidden]) .dp-tcard.is-focus', timeout=5000)
             check(ws.locator('#dpWsSide .dp-tcard.is-focus .dp-editbtn').first.is_visible(), 'Y truck click → its card on the right with «Փոփոխել»')
+            src = ws.locator('#dpWsSide .dp-tcard.is-focus .dp-trip .dp-stop[draggable="true"]').first
+            own = ws.evaluate("(document.querySelector('#dpWsSide .dp-tcard.is-focus .dp-trip') || {}).dataset?.trip || ''")
+            tgt = ws.locator(f'#dpBoard .dp-bar:not([data-trip="{own}"])').first
+            moves = []
+            ws.on('request', lambda r: moves.append(r.post_data) if r.method == 'POST' and r.url.endswith('/dispatch/edit') else None)
+            check(src.count() > 0 and tgt.count() > 0, f'Y drag source/target present ({src.count()}, {tgt.count()})')
+            if src.count() and tgt.count():
+                src.drag_to(tgt)
+                ws.wait_for_timeout(1500)
+                check(any('"move"' in (m or '') for m in moves), f'Y drag a stop from the truck card onto another bar → move ({len(moves)} edit)')
             ws.click('#dpWsClose')
-            check(ws.locator('#dpWsSide').is_hidden(), 'Y side closed')
+            check(ws.locator('#dpWsSide').is_hidden() and ws.evaluate("document.activeElement && document.activeElement.classList.contains('dp-blabel')"),
+                  'Y side closed, focus back on the truck row')
             ws.click('#dpPrepOpen')
             check(ws.locator('#dpDrawer #dpStep1').is_visible() and ws.locator('#dpDrawer #dpBuild').is_visible(),
                   'Y «Մեքենաներ, պատվերներ»: steps 1–2 and rebuild in the drawer')
@@ -564,6 +577,7 @@ def main() -> int:
             check(ws.locator('#rtDispatch.is-ws').count() == 0, 'Y narrow window: no workspace')
             check(not ws_errors, f'Y no page errors {ws_errors[:2]}')
             ws.close()
+            views._clock, views._yerevan_now = real_clock, real_yerevan
 
             check(not errors, 'no pageerror / console errors' + ('' if not errors else ': ' + ' | '.join(errors[:5])))
             browser.close()

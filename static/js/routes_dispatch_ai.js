@@ -39,7 +39,11 @@
                 if (open) { aiRender(); $('dpAiInput').focus(); return; }
                 // на телефоне (№81) кнопки нет — AI во вкладках внизу: фокус возвращается на вкладку
                 const tab = document.getElementById('dpTabAi');
-                if ($('dpAiOpen').offsetParent === null && tab && !tab.hidden) tab.focus(); else $('dpAiOpen').focus();
+                const wsAi = document.getElementById('dpWsAi');
+                const shown = (el) => !!el && el.getClientRects().length > 0;   // кнопка AI — position: fixed, offsetParent не годится
+                if (shown($('dpAiOpen'))) $('dpAiOpen').focus();
+                else if (shown(tab)) tab.focus();
+                else if (shown(wsAi)) wsAi.focus();   // №82: рабочий экран — кнопка AI в шапке
             }
             // Ответ AI — абзацы и строки-пункты «• …» (без разметки: всё через textContent)
             function aiText(box, text) {

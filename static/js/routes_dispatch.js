@@ -581,6 +581,7 @@
                 b.id = 'dpUnapprove';
                 b.className = 'rt-btn rt-btn-ghost rt-btn-sm';
                 b.innerHTML = '<i class="fas fa-lock-open" aria-hidden="true"></i><span>Չեղարկել հաստատումը</span>';
+                b.title = badge.textContent;
                 b.addEventListener('click', () => {
                     if (!window.confirm('Չեղարկե՞լ օրվա պլանի հաստատումը։ Հաստատմամբ ամրացված երթերը կապամրացվեն, '
                         + 'ձեր ամրացրածները կմնան։ Դրանից հետո կարելի է վերակազմել երթերը։')) return;
@@ -713,7 +714,7 @@
         const bl = d.backlog || [];
         if (bl.length) add('', 'fa-clock-rotate-left', 'Նախորդ օրերից', bl.length, () => openFold('dpBacklog'));
         const nd = noDriver();
-        if (nd.length && !d.is_past) add('is-warn', 'fa-id-card', 'Առանց վարորդի', nd.length, () => openDriver(nd[0].car_code));
+        if (nd.length && !d.is_past && wsOn()) add('is-warn', 'fa-id-card', 'Առանց վարորդի', nd.length, () => openDriver(nd[0].car_code));
         if (o.excluded) add('', 'fa-ban', 'Այսօր չենք տանում', o.excluded, () => openFold('dpExcluded'));
         // нормы погрузки, расхода и износа не заполнены — цифры дня приблизительные (раньше — только серым текстом под сводкой)
         const sm = plan.summary;
@@ -1180,7 +1181,7 @@
     function renderSteps() {
         const d = state.data, plan = !!d.plan, o = d.orders;
         [['dpStep1', 'dpStep1Tog'], ['dpStep2', 'dpStep2Tog']].forEach(([id, tog]) => {
-            const open = !plan || state.stepsOpen.has(id);
+            const open = !plan || state.stepsOpen.has(id) || !$('dpDrawer').hidden;   // №82: в панели шаги открыты
             $(id).classList.toggle('is-done', plan);
             $(id).classList.toggle('is-folded', !open);
             $(tog).hidden = !plan;
@@ -2245,7 +2246,7 @@
         $('dpBoard').querySelectorAll('.dp-blabel').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.truck === b.dataset.truck && f.trip == null)));
         $('dpBoard').querySelectorAll('.dp-bar').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.trip != null && String(f.trip) === b.dataset.trip)));
         $('dpTruckCards').querySelectorAll('.dp-tcard').forEach(c => c.classList.toggle('is-focus', !!f && f.truck === c.dataset.truck));
-        if ($('rtDispatch').classList.contains('is-ws')) $('dpWsSide').hidden = !f;
+        if ($('rtDispatch').classList.contains('is-ws')) { $('dpWsSide').hidden = !f; $('dpWs').classList.toggle('has-side', !!f); }
     }
 
     // Нажали машину или рейс на шкале: он же на карте, карточка машины раскрыта и видна рядом с картой
@@ -2517,7 +2518,7 @@
             state.dragStop = null;
             li.classList.remove('is-dragged');
             $('rtDispatch').classList.remove('is-dragstop');
-            document.querySelectorAll('#dpStep3 .is-drop').forEach(x => x.classList.remove('is-drop'));
+            document.querySelectorAll('#dpBody .is-drop').forEach(x => x.classList.remove('is-drop'));
         });
     }
     // цель — полоса рейса на шкале, рейс в раскрытой карточке или шапка карточки машины: у машины один рейс — он,
@@ -2547,7 +2548,7 @@
         if (head) head.setAttribute('aria-expanded', 'true');
     }
     function dropStops() {
-        const root = $('dpStep3');
+        const root = $('dpBody');   // №82: шкала и карточки на рабочем экране — вне #dpStep3
         let spring = null;
         const stopSpring = () => { if (spring) { clearTimeout(spring.timer); spring = null; } };
         root.addEventListener('dragover', (e) => {
@@ -3593,7 +3594,7 @@
     // ---------- Действия ----------
     function setBusy(on) {
         state.busy = on;
-        document.querySelectorAll('#dpBody button, #dpBody select, #dpAgentsList input, #dpSendState button').forEach(x => {
+        document.querySelectorAll('#dpBody button, #dpBody select, #dpAgentsList input, #dpSendState button, #dpWsActs button').forEach(x => {
             if (on) { x.dataset.wasDisabled = x.disabled ? '1' : ''; x.disabled = true; } else if (x.dataset.wasDisabled !== undefined) { x.disabled = x.dataset.wasDisabled === '1'; delete x.dataset.wasDisabled; }
         });
         $('rtDispatch').setAttribute('aria-busy', String(on));
@@ -3630,6 +3631,7 @@
             setBusy(false);
             setData(data);
             toast('Երթերը կազմված են՝ ' + pl(data.plan.summary.trips, 'երթ') + ', ≈ ' + fmt(data.plan.summary.km) + NB + 'կմ');
+            if (!$('dpDrawer').hidden) { $('dpDrawer').hidden = true; $('dpPrepOpen').setAttribute('aria-expanded', 'false'); renderSteps(); }
             if ($('rtDispatch').classList.contains('is-ws')) { window.scrollTo(0, 0); $('dpBoard').querySelector('.dp-blabel')?.focus({ preventScroll: true }); }
             else $('dpStep3Title').focus();
         } catch (e) {
@@ -3755,7 +3757,12 @@
         const fab = $('dpAiOpen');
         $('dpWsAi').hidden = !fab || (fab.hidden && $('dpAi').hidden);
         if (on) sizeWs();
-        if (on !== was && state.map) setTimeout(() => state.map.invalidateSize({ pan: false }), 0);
+        if (on !== was && state.map) setTimeout(() => {
+            state.map.invalidateSize({ pan: false });
+            if (state.mapBounds && !state.mapUserMoved) fitMap(state.map, state.mapBounds);
+        }, 0);
+        // M3: подписи Яндекса / Leaflet справа внизу — не под карточкой машины
+        $('dpWs').classList.toggle('has-side', on && !!state.mapFocus);
     }
     // высота рабочего экрана — до низа окна от его верха (шапка дашборда, день, подсказка и счётчики — выше)
     function sizeWs() {
@@ -3767,19 +3774,25 @@
     function openDrawer(open) {
         $('dpDrawer').hidden = !open;
         $('dpPrepOpen').setAttribute('aria-expanded', String(open));
+        renderSteps();   // в панели шаги открыты (renderSteps смотрит на панель), закрыли — снова свёрнуты в строку
         if (open) {
-            // в панели шаги открыты (свёрнутые в строку после сборки — для страницы, не для панели)
-            state.stepsOpen.add('dpStep1');
-            state.stepsOpen.add('dpStep2');
-            renderSteps();
+            if ($('dpNoCoords').open) ensurePickMap();
+            if ($('dpGeoSug').open) renderGeoSug();
             $('dpDrawerClose').focus();
-        } else $('dpPrepOpen').focus();
+        } else if (!$('dpPrepOpen').closest('[hidden]')) $('dpPrepOpen').focus();
     }
     function initWs() {
         $('dpPrepOpen').addEventListener('click', () => openDrawer($('dpDrawer').hidden));
         $('dpDrawerClose').addEventListener('click', () => openDrawer(false));
         $('dpDrawer').addEventListener('keydown', (e) => { if (e.key === 'Escape') openDrawer(false); });
-        $('dpWsClose').addEventListener('click', () => { if (state.data && state.data.plan) setMapFocus(null); });
+        const closeSide = () => {
+            const code = state.mapFocus && state.mapFocus.truck;
+            if (state.data && state.data.plan) setMapFocus(null);
+            const lab = code && [...$('dpBoard').querySelectorAll('.dp-blabel')].find(b => b.dataset.truck === code);
+            if (lab) lab.focus({ preventScroll: true });
+        };
+        $('dpWsClose').addEventListener('click', closeSide);
+        $('dpWsSide').addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.target.closest('select')) closeSide(); });
         $('dpWsAi').addEventListener('click', () => { const fab = $('dpAiOpen'); if (fab) fab.click(); });
         $('dpViewList').addEventListener('click', () => setView('list'));
         $('dpViewWs').addEventListener('click', () => setView('ws'));
@@ -3791,7 +3804,7 @@
         // шапка, подсказка и счётчики меняют высоту после отрисовки (шрифты, переносы) — высота рабочего экрана следом
         if (typeof window.ResizeObserver !== 'undefined') {
             const ro = new ResizeObserver(() => { if ($('rtDispatch').classList.contains('is-ws')) sizeWs(); });
-            [document.querySelector('#rtDispatch .dp-mast'), $('dpTodo'), $('dpInbox'), $('dpSameDay')].forEach(el => el && ro.observe(el));
+            [document.querySelector('#rtDispatch .dp-mast'), $('dpTodo'), $('dpInbox'), $('dpSameDay'), $('dpActionError')].forEach(el => el && ro.observe(el));
         }
     }
 
