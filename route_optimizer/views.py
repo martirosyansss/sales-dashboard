@@ -168,7 +168,8 @@ class RoutesState:
     # «Մեքենաները առցանց»: дорожная модель ETA (views._LiveRoads) и карточки флота на 10 с (views._live_cards)
     live_roads: _LiveRoads = field(default_factory=lambda: _LiveRoads())
     live_cards: dict[date, tuple[Any, float, Any, datetime, dict[str, dict[str, Any]]]] = field(default_factory=dict)
-    live_lock: threading.Lock = field(default_factory=threading.Lock)
+    live_lock: threading.Lock = field(default_factory=threading.Lock)   # только словари кэша: расчёт под ним не идёт
+    live_flight: dict[date, threading.Lock] = field(default_factory=dict)   # пересчёт флота — один на день
     learning_lock: threading.Lock = field(default_factory=threading.Lock)   # прогон обучения — один за раз
     learning_job: dict[str, Any] = field(default_factory=dict)              # последний прогон: статус, время, ошибка
     learning_warning: dict[str, str] | None = None   # выученные нормы не применились (битый журнал) — для страницы
@@ -3489,6 +3490,11 @@ def _live_day() -> tuple[date | None, Any]:
 _monotonic = time.monotonic   # подмена в тестах
 LIVE_ROAD_TTL_S = 300.0     # дорожная модель ETA пересобирается не чаще (нормы, выученное, Valhalla дошёл до готовности)
 LIVE_ROAD_BACKGROUND = True  # собирать модель в фоне (тесты — сразу)
+LIVE_BUDGET_S = 2.0         # на один пересчёт флота: дальше участки «от машины» — запасная модель (без запросов Valhalla)
+LIVE_HERE_TTL_S = 60.0      # участок от машины: по (машина, точка ~100 м, магазин) — столько секунд
+LIVE_FAIL_TTL_S = 10.0      # …а «не получилось» (Valhalla занят) — недолго
+LIVE_ROAD_FAIL_TTL_S = 300.0   # сбой сборки дорожной модели не повторяется на каждом опросе
+_budget = threading.local()  # until — момент, после которого пересчёт флота Valhalla не спрашивает
 LIVE_CARDS_TTL_S = 10.0     # карточки флота за сегодня — как кэш флота (courier.live.TTL_TODAY_S): опрос 15 с у каждого зрителя
 
 
@@ -3499,13 +3505,13 @@ class _LiveRoads:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._items: dict[Any, tuple[float, live.Road]] = {}
+        self._items: dict[Any, tuple[float, live.Road | None]] = {}   # None — сборка не удалась (на LIVE_ROAD_FAIL_TTL_S)
         self._building: set[Any] = set()
 
     def get(self, key: Any, build: Callable[[], live.Road], fallback: live.Road) -> live.Road:
         with self._lock:
             hit = self._items.get(key)
-            stale = hit is None or _monotonic() - hit[0] > LIVE_ROAD_TTL_S
+            stale = hit is None or _monotonic() - hit[0] > (LIVE_ROAD_TTL_S if hit[1] is not None else LIVE_ROAD_FAIL_TTL_S)
             start = stale and key not in self._building
             if start:
                 self._building.add(key)
@@ -3519,6 +3525,8 @@ class _LiveRoads:
                         self._items.pop(next(iter(self._items)))
             except Exception:
                 logger.exception('[Routes] Карта машин: дорожная модель ETA не собрана — запасная модель')
+                with self._lock:
+                    self._items[key] = (_monotonic(), None)   # не повторять на каждом опросе
             finally:
                 with self._lock:
                     self._building.discard(key)
@@ -3529,7 +3537,7 @@ class _LiveRoads:
                 run()
         with self._lock:
             hit = self._items.get(key)
-        return hit[1] if hit is not None else fallback
+        return hit[1] if hit is not None and hit[1] is not None else fallback
 
 
 @dataclass(frozen=True)
@@ -3564,20 +3572,38 @@ def _live_road_build(state: RoutesState, bundle: Bundle, snap: Any, calib: Any, 
     tn = fl.TruckNorms.from_settings(s, lunch=True)
     norms, tn, _, _ = _with_learned(state, norms, tn, {}, customers, journal, bundle.unload_min)
 
+    here_cache: dict[Any, tuple[float, float | None]] = {}   # (точка ~100 м, магазин) → (когда, минуты или None)
+
+    def here_leg(r: Any, a: Point, b: Point, city: bool, minute: float) -> float | None:
+        """Участок от машины: не в таблицах — прямой запрос Valhalla без ожидания (занят пул или вышел бюджет пересчёта —
+        None, запасная модель); результат помнится по (точка ~100 м, магазин) LIVE_HERE_TTL_S."""
+        if not isinstance(r, ValhallaRoads):
+            return None
+        key = (round(a[0], 3), round(a[1], 3), b)
+        hit = here_cache.get(key)
+        if hit is not None and _monotonic() - hit[0] < (LIVE_HERE_TTL_S if hit[1] is not None else LIVE_FAIL_TTL_S):
+            return hit[1]
+        if _monotonic() > getattr(_budget, 'until', math.inf):
+            return None
+        got = r.route(a, b, city)
+        out = None
+        if got is not None:
+            km, raw = got
+            speed = km / raw * 60.0 if truck_time else (norms.speed_city_kmh if city else norms.speed_region_kmh)
+            out = km / speed * 60.0 if norms.traffic is None else norms.traffic.travel(km, speed, city, norms.traffic_weekday,
+                                                                                     minute)
+        if len(here_cache) > 500:
+            here_cache.clear()
+        here_cache[key] = (_monotonic(), out)
+        return out
+
     def legs(a: Point, b: Point, minute: float, here: bool) -> float | None:
         r = norms.roads
         if r is None:
             return None
         city = in_city(a, norms.city_center, norms.city_radius_km) and in_city(b, norms.city_center, norms.city_radius_km)
-        if here:   # положение машины: не в таблицах — прямой запрос Valhalla (минуты с поправкой, км для пробок)
-            got = r.route(a, b, city) if isinstance(r, ValhallaRoads) else None
-            if got is None:
-                return None
-            km, raw = got
-            speed = km / raw * 60.0 if truck_time else (norms.speed_city_kmh if city else norms.speed_region_kmh)
-            if norms.traffic is None:
-                return km / speed * 60.0
-            return norms.traffic.travel(km, speed, city, norms.traffic_weekday, minute)
+        if here:
+            return here_leg(r, a, b, city, minute)
         if r.km(a, b) is None:   # пары в дорогах нет — по прямой это та же запасная модель, не «дороги»
             return None
         leg = truck_leg_minutes(norms, a, b, minute)
@@ -3600,7 +3626,7 @@ def _live_context(state: RoutesState, day: date,
     customers = {x['customer_id']: (x['lat'], x['lon']) for facts in (fleet or {}).values()
                  for x in facts.get('stops') or () if isinstance(x.get('customer_id'), int)
                  and x.get('lat') is not None and x.get('lon') is not None}
-    if customers:
+    if customers and day == _yerevan_now().date():   # прошлые дни: ETA нет (live=False) — модель не собираем
         key = (day, frozenset(customers.items()), bundle.depot)
         road = state.live_roads.get(key, lambda: _live_road_build(state, bundle, snap, calib, day, road, customers), road)
     names = {code: car.name for code, car in snap.cars.items()} if snap is not None else {}
@@ -3646,18 +3672,44 @@ def _live_cards(state: RoutesState, day: date) -> tuple[_LiveContext, datetime, 
     тревог дня (API флота его не отдаёт)."""
     fleet = state.live_facts.fleet(day.isoformat())   # type: ignore[union-attr]
     today = _yerevan_now().date()
-    with state.live_lock:
-        hit = state.live_cards.get(day)
-        if hit is not None and hit[0] is fleet and (day != today or _monotonic() - hit[1] < LIVE_CARDS_TTL_S):
+
+    def cached(stale_ok: bool) -> tuple[Any, ...] | None:
+        with state.live_lock:
+            hit = state.live_cards.get(day)
+        if hit is None:
+            return None
+        if hit[0] is fleet and (day != today or _monotonic() - hit[1] < LIVE_CARDS_TTL_S):
             return hit[2], hit[3], fleet, hit[4]
+        return (hit[2], hit[3], hit[0], hit[4]) if stale_ok else None
+    got = cached(False)
+    if got is not None:
+        return got   # type: ignore[return-value]
+    with state.live_lock:
+        flight = state.live_flight.setdefault(day, threading.Lock())
+    if not flight.acquire(blocking=False):   # пересчёт уже идёт: берём прежний результат, а прежнего нет — ждём этот
+        got = cached(True)
+        if got is not None:
+            return got   # type: ignore[return-value]
+        flight.acquire()
+    try:
+        got = cached(False)   # пока ждали — уже пересчитали
+        if got is not None:
+            return got   # type: ignore[return-value]
         now = _yerevan_now()
-        ctx = _live_context(state, day, fleet)
-        cars = sorted(set(fleet) | set(ctx.planned))
-        cards = {car: _live_card(ctx, day, now, car, fleet.get(car), False) for car in cars}
-        state.live_cards[day] = (fleet, _monotonic(), ctx, now, cards)
-        while len(state.live_cards) > 4:
-            state.live_cards.pop(next(iter(state.live_cards)))
+        _budget.until = _monotonic() + LIVE_BUDGET_S   # дальше Valhalla не спрашиваем: участки «от машины» — запасная модель
+        try:
+            ctx = _live_context(state, day, fleet)
+            cars = sorted(set(fleet) | set(ctx.planned))
+            cards = {car: _live_card(ctx, day, now, car, fleet.get(car), False) for car in cars}
+        finally:
+            _budget.until = math.inf
+        with state.live_lock:
+            state.live_cards[day] = (fleet, _monotonic(), ctx, now, cards)
+            while len(state.live_cards) > 4:
+                state.live_cards.pop(next(iter(state.live_cards)))
         return ctx, now, fleet, cards
+    finally:
+        flight.release()
 
 
 def _live_head(ctx: _LiveContext, day: date, now: datetime) -> dict[str, Any]:

@@ -17,6 +17,9 @@ CT115, и сообщений ПК не нужно.
   повторяет), недельные хвосты сами уходят. Тревога, которой не было видно в этот момент и которая кончилась больше
   RECENT_MIN назад, не рассылается задним числом (после простоя сервера и при первом запуске);
 - сбой отправки (сеть, Telegram) — в журнал без токена, повтор со всё большей паузой (до BACKOFF_MAX_S); поток не падает.
+  Тайм-аут ответа не значит «не доставлено»: сообщение, дошедшее без ответа, при повторе придёт второй раз (редкий дубль
+  принят — потерять тревогу хуже). CLIENT_ERRORS_MAX ошибок 4xx подряд (токен отозван, бота убрали из группы) — рассылка
+  останавливается до перезапуска или смены настроек тревог, в журнале одна понятная строка.
 Сообщения — по-армянски (глоссарий раздела), ссылка на карту Яндекса: https://yandex.ru/maps/?pt=<lon>,<lat>&z=16&l=map.
 """
 from __future__ import annotations
@@ -48,6 +51,7 @@ BACKOFF_MAX_S = 600.0
 RECENT_MIN = 10.0                 # кончившаяся тревога старше — не рассылается задним числом
 STATE_FILE = 'route_live_alerts.json'
 STATE_KEEP = timedelta(hours=48)
+CLIENT_ERRORS_MAX = 5             # ошибок 4xx подряд (кроме 429) — дальше не шлём, пока не перезапустят или не сменят настройки
 END_KINDS = ('no_contact', 'gps')   # окончание сообщается только у них
 MAP_URL = 'https://yandex.ru/maps/?pt={lon},{lat}&z=16&l=map'
 
@@ -67,7 +71,11 @@ def config_from_env(env: Mapping[str, str] | None = None) -> tuple[str, str] | N
 
 
 class TelegramError(RuntimeError):
-    """Сбой отправки; текст — без токена (он в адресе запроса)."""
+    """Сбой отправки; текст — без токена (он в адресе запроса). status — код HTTP, если он был."""
+
+    def __init__(self, text: str, status: int | None = None):
+        super().__init__(text)
+        self.status = status
 
 
 def send_telegram(token: str, chat: str, text: str, timeout: float = HTTP_TIMEOUT_S,
@@ -80,11 +88,20 @@ def send_telegram(token: str, chat: str, text: str, timeout: float = HTTP_TIMEOU
         with opener(req, timeout=timeout) as resp:
             body = json.load(resp)
     except urllib.error.HTTPError as e:
-        raise TelegramError(f'HTTP {e.code}') from None
+        raise TelegramError(f'HTTP {e.code}', e.code) from None
     except (urllib.error.URLError, OSError, ValueError) as e:   # сеть, тайм-аут, не JSON
         raise TelegramError(type(e).__name__) from None
     if not isinstance(body, dict) or not body.get('ok'):
         raise TelegramError(str((body or {}).get('description', 'ok=false'))[:120] if isinstance(body, dict) else 'ответ')
+
+
+def _moment(raw: Any) -> datetime | None:
+    """ISO-момент с часовым поясом или None (битые значения файла состояния отбрасываются)."""
+    try:
+        t = datetime.fromisoformat(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+    return t if t is not None and t.utcoffset() is not None else None
 
 
 # --- что уже отправлено ---
@@ -100,8 +117,10 @@ class AlertState:
         try:
             with open(path, encoding='utf-8') as f:
                 raw = json.load(f)
-            self.sent = {k: v for k, v in (raw.get('sent') or {}).items() if isinstance(v, dict)}
-            self.last = {k: v for k, v in (raw.get('last') or {}).items() if isinstance(v, str)}
+            self.sent = {k: v for k, v in (raw.get('sent') or {}).items()
+                         if isinstance(v, dict) and _moment(v.get('at')) is not None
+                         and all(v.get(x) is None or isinstance(v.get(x), str) for x in ('start', 'end'))}
+            self.last = {k: v for k, v in (raw.get('last') or {}).items() if _moment(v) is not None}
         except FileNotFoundError:
             pass
         except (OSError, ValueError, AttributeError):
@@ -190,6 +209,42 @@ def build_text(card: Mapping[str, Any], a: Mapping[str, Any], phase: str, rules:
     return '\n'.join(lines)
 
 
+def _plan_car(car: str, card: Mapping[str, Any], rules: Rules, now: datetime, state: AlertState, quiet: bool,
+              repeat: timedelta, out: list[Message]) -> bool:
+    """Решения по тревогам одной машины (plan_messages); True — состояние менялось."""
+    changed = False
+    for a in card.get('alerts_log') or ():
+        kind = a.get('kind')
+        if kind not in rules.alert_kinds or not a.get('from'):
+            continue
+        key = f'{car}|{kind}|{a["from"]}'
+        rec = state.sent.get(key)
+        if rec is None:
+            why = None
+            ended = a.get('to')
+            if not a.get('active') and (not ended or now - datetime.fromisoformat(ended) > timedelta(minutes=RECENT_MIN)):
+                why = 'old'
+            elif quiet:
+                why = 'quiet'
+            else:
+                last = state.last.get(f'{car}|{kind}')
+                if last is not None and now - datetime.fromisoformat(last) < repeat:
+                    why = 'repeat'
+            if why is not None:
+                state.sent[key] = {'at': now.isoformat(), 'start': None, 'end': None, 'skipped': why}
+                changed = True
+            else:
+                out.append(Message(key, 'start', car, kind, build_text(card, a, 'start', rules)))
+        elif kind in END_KINDS and rec.get('start') and not rec.get('end') and not a.get('active') and a.get('to'):
+            if quiet:
+                rec['end'] = 'quiet'
+                changed = True
+            else:
+                out.append(Message(key, 'end', car, kind, build_text(card, a, 'end', rules)))
+
+    return changed
+
+
 def plan_messages(cards: Mapping[str, Mapping[str, Any]], rules: Rules, now: datetime,
                   state: AlertState) -> tuple[list[Message], bool]:
     """Что слать сейчас: (сообщения по порядку, менялось ли состояние — пропущенные тревоги отмечаются сразу).
@@ -200,34 +255,10 @@ def plan_messages(cards: Mapping[str, Mapping[str, Any]], rules: Rules, now: dat
     quiet = in_quiet(rules, now)
     repeat = timedelta(minutes=rules.repeat_min)
     for car, card in cards.items():
-        for a in card.get('alerts_log') or ():
-            kind = a.get('kind')
-            if kind not in rules.alert_kinds or not a.get('from'):
-                continue
-            key = f'{car}|{kind}|{a["from"]}'
-            rec = state.sent.get(key)
-            if rec is None:
-                why = None
-                ended = a.get('to')
-                if not a.get('active') and (not ended or now - datetime.fromisoformat(ended) > timedelta(minutes=RECENT_MIN)):
-                    why = 'old'
-                elif quiet:
-                    why = 'quiet'
-                else:
-                    last = state.last.get(f'{car}|{kind}')
-                    if last is not None and now - datetime.fromisoformat(last) < repeat:
-                        why = 'repeat'
-                if why is not None:
-                    state.sent[key] = {'at': now.isoformat(), 'start': None, 'end': None, 'skipped': why}
-                    changed = True
-                else:
-                    out.append(Message(key, 'start', car, kind, build_text(card, a, 'start', rules)))
-            elif kind in END_KINDS and rec.get('start') and not rec.get('end') and not a.get('active') and a.get('to'):
-                if quiet:
-                    rec['end'] = 'quiet'
-                    changed = True
-                else:
-                    out.append(Message(key, 'end', car, kind, build_text(card, a, 'end', rules)))
+        try:
+            changed |= _plan_car(car, card, rules, now, state, quiet, repeat, out)
+        except Exception:   # битые данные одной машины не должны остановить тревоги остальных
+            logger.exception('[Routes] Тревоги в Telegram: машина %s пропущена', car)
     return out, changed
 
 
@@ -242,6 +273,8 @@ class LiveAlerter:
         self.state = AlertState(state_path)
         self.failures = 0
         self.retry_at = 0.0
+        self.client_errors = 0                       # подряд ошибок 4xx
+        self.halted: tuple[Any, ...] | None = None   # настройки тревог, при которых рассылка остановлена
 
     def tick(self, monotonic: Callable[[], float] = time.monotonic) -> int:
         """Отправленных сообщений за проход. Пауза после сбоя отправки — до retry_at."""
@@ -251,6 +284,11 @@ class LiveAlerter:
         if got is None:
             return 0
         rules, now, cards = got
+        sig = (rules.alert_kinds, rules.quiet, rules.repeat_min)
+        if self.halted is not None:
+            if self.halted == sig:
+                return 0
+            self.halted, self.client_errors = None, 0   # настройки тревог сменили — пробуем снова
         messages, changed = plan_messages(cards, rules, now, self.state)
         sent = 0
         for m in messages:
@@ -258,12 +296,21 @@ class LiveAlerter:
                 self.send(m.text)
             except Exception as e:   # сеть, Telegram: не падаем, повтор позже
                 self.failures += 1
+                status = getattr(e, 'status', None)
+                self.client_errors = self.client_errors + 1 if isinstance(status, int) and 400 <= status < 500 \
+                    and status != 429 else 0
+                if self.client_errors >= CLIENT_ERRORS_MAX:
+                    self.halted = sig
+                    logger.error('[Routes] Тревоги в Telegram ОСТАНОВЛЕНЫ: %d ошибок %s подряд (токен или чат неверны, бота '
+                                 'убрали из группы?). Исправьте .env и перезапустите сервер или смените настройки тревог',
+                                 self.client_errors, e)
+                    break
                 pause = min(INTERVAL_S * 2 ** self.failures, BACKOFF_MAX_S)
                 self.retry_at = monotonic() + pause
                 logger.warning('[Routes] Тревоги в Telegram: не отправлено (%s: %s), повтор через %.0f с',
                                type(e).__name__, e, pause)
                 break
-            self.failures = 0
+            self.failures = self.client_errors = 0
             rec = self.state.sent.setdefault(m.key, {'at': now.isoformat(), 'start': None, 'end': None})
             rec['end' if m.phase == 'end' else 'start'] = now.isoformat()
             if m.phase == 'start':

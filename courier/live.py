@@ -58,7 +58,8 @@ def _return_kg(payload: Mapping[str, Any], stop: Mapping[str, Any] | None, lines
     if qty <= 0:
         return None
     for ln in (stop or {}).get('lines') or ():
-        if isinstance(ln, dict) and ln.get('product_id') == pid and _number(ln.get('qty')) > 0                 and _number(ln.get('weight_kg')) > 0:
+        if isinstance(ln, dict) and ln.get('product_id') == pid and _number(ln.get('qty')) > 0 \
+                and _number(ln.get('weight_kg')) > 0:
             return qty * _number(ln['weight_kg']) / _number(ln['qty'])
     unit = lines.get(pid)
     return qty * unit if unit else None

@@ -1131,7 +1131,7 @@ def test_live_roads_builds_in_background_and_serves_fallback(monkeypatch):
     cache2 = views._LiveRoads()
     monkeypatch.setattr(views, 'LIVE_ROAD_BACKGROUND', False)
     assert cache2.get('x', lambda: 1 / 0, base) is base
-    assert cache2.get('x', lambda: built, base) is built
+    assert cache2.get('x', lambda: built, base) is base   # сбой помнится LIVE_ROAD_FAIL_TTL_S — не повторяется на каждом опросе
 
 
 def test_live_cards_cached_per_fleet_for_ten_seconds(client, live_app, monkeypatch):
@@ -1157,3 +1157,175 @@ def test_live_cards_cached_per_fleet_for_ten_seconds(client, live_app, monkeypat
     assert len(calls) == first + 4
     body = client.get('/api/routes/live', base_url=LAN).get_json()
     assert all('alerts_log' not in t for t in body['trucks'])   # журнал тревог — только в деталях и для Telegram
+
+
+# ============================== по ревью этапа 2 ==============================
+
+class FakeValhallaRoads(FakeRoads):
+    """Подмена views.ValhallaRoads: route — отдельный запрос Valhalla (считает вызовы)."""
+
+    def __init__(self, km=10.0):
+        super().__init__(km)
+        self.calls = []
+        self.answer = (5.0, 6.0)
+
+    def route(self, a, b, city):
+        self.calls.append((a, b))
+        return self.answer
+
+
+def _here_road(live_app, monkeypatch, fake):
+    from route_optimizer import views
+    state = live_app.app.extensions['route_optimizer']
+    bundle = replace(state.store.load(), depot=DEPOT)
+    base = live.Road(1.3, 25.0, 45.0, (40.1792, 44.4991), 12.0)
+    monkeypatch.setattr(views, '_roads', lambda *a, **k: fake)
+    monkeypatch.setattr(views, 'ValhallaRoads', FakeValhallaRoads)
+    return views._live_road_build(state, bundle, object(), None, DAY, base, {7: A, 8: B})
+
+
+def test_here_leg_cached_by_rounded_position_and_failures_briefly(live_app, monkeypatch):
+    from route_optimizer import views
+    fake = FakeValhallaRoads()
+    road = _here_road(live_app, monkeypatch, fake)
+    clock = [1000.0]
+    monkeypatch.setattr(views, '_monotonic', lambda: clock[0])
+    here = (40.1600, 44.4600)
+    assert road.legs(here, B, 600.0, True) == pytest.approx(5.0 / 25.0 * 60.0)   # км Valhalla / скорость города (модель)
+    near = (here[0] + 0.0002, here[1] + 0.0002)                                    # ~25 м — тот же ключ (~100 м)
+    assert road.legs(near, B, 600.0, True) == pytest.approx(12.0) and len(fake.calls) == 1
+    assert road.legs((40.1700, 44.4700), B, 600.0, True) is not None and len(fake.calls) == 2   # другое место — запрос
+    clock[0] += views.LIVE_HERE_TTL_S + 1
+    road.legs(here, B, 600.0, True)
+    assert len(fake.calls) == 3                                                    # через 60 с — заново
+    fake.answer = None                                                             # занят пул — запасная модель
+    other = (40.1650, 44.4650)
+    assert road.legs(other, B, 600.0, True) is None and road.legs(other, B, 600.0, True) is None
+    assert len(fake.calls) == 4                                                    # «не получилось» помнится недолго
+    clock[0] += views.LIVE_FAIL_TTL_S + 1
+    road.legs(other, B, 600.0, True)
+    assert len(fake.calls) == 5
+
+
+def test_here_leg_over_budget_does_not_ask_valhalla(live_app, monkeypatch):
+    from route_optimizer import views
+    fake = FakeValhallaRoads()
+    road = _here_road(live_app, monkeypatch, fake)
+    views._budget.until = time.monotonic() - 1                                     # бюджет пересчёта флота вышел
+    try:
+        assert road.legs((40.1600, 44.4600), B, 600.0, True) is None and fake.calls == []
+        assert road.legs(A, B, 600.0, False) == pytest.approx(10.0 / 25.0 * 60.0)   # участки между магазинами — не затронуты
+    finally:
+        views._budget.until = float('inf')
+
+
+def test_live_cards_single_flight_never_waits_on_slow_recompute(live_app, monkeypatch):
+    """Пока один поток пересчитывает флот (хоть и долго), остальные берут прежний результат, а не встают в очередь."""
+    from route_optimizer import views
+    state = live_app.app.extensions['route_optimizer']
+    day = API_NOW.date()
+    first = views._live_cards(state, day)
+    state.live_facts.data['2026-10-03'] = dict(state.live_facts.data['2026-10-03'])   # новый факт — нужен пересчёт
+    started, release = threading.Event(), threading.Event()
+    real = views._live_context
+
+    def slow(*a, **k):
+        started.set()
+        release.wait(10)
+        return real(*a, **k)
+    monkeypatch.setattr(views, '_live_context', slow)
+    owner = threading.Thread(target=lambda: views._live_cards(state, day))
+    owner.start()
+    assert started.wait(5)
+    t0 = time.monotonic()
+    again = views._live_cards(state, day)
+    assert time.monotonic() - t0 < 1.0 and again[3] is first[3]                    # прежние карточки, мгновенно
+    release.set()
+    owner.join(5)
+    assert views._live_cards(state, day)[3] is not first[3]                        # владелец закончил — новый расчёт
+    # прежнего результата нет — ждём чужой пересчёт и берём его, а не считаем второй раз
+    state.live_cards.clear()
+    state.live_facts.data['2026-10-03'] = dict(state.live_facts.data['2026-10-03'])
+    started.clear()
+    release.clear()
+    calls = []
+    monkeypatch.setattr(views, '_live_context', lambda *a, **k: calls.append(1) or slow(*a, **k))
+    got = []
+    t1 = threading.Thread(target=lambda: got.append(views._live_cards(state, day)))
+    t1.start()
+    assert started.wait(5)
+    t2 = threading.Thread(target=lambda: got.append(views._live_cards(state, day)))
+    t2.start()
+    time.sleep(0.2)
+    release.set()
+    t1.join(5)
+    t2.join(5)
+    assert len(got) == 2 and got[0][3] is got[1][3] and len(calls) == 1
+
+
+def test_live_roads_failed_build_not_retried_every_poll_and_past_days_skipped(live_app, monkeypatch):
+    from route_optimizer import views
+    monkeypatch.setattr(views, 'LIVE_ROAD_BACKGROUND', False)
+    cache = views._LiveRoads()
+    base = live.Road()
+    clock = [100.0]
+    monkeypatch.setattr(views, '_monotonic', lambda: clock[0])
+    calls = []
+
+    def boom():
+        calls.append(1)
+        raise RuntimeError('graph is broken')
+    for _ in range(3):
+        assert cache.get('k', boom, base) is base
+    assert len(calls) == 1                                                         # сбой не повторяется на каждом опросе
+    clock[0] += views.LIVE_ROAD_FAIL_TTL_S + 1
+    cache.get('k', boom, base)
+    assert len(calls) == 2
+    # прошлый день: ETA нет — дорожную модель не собираем; сегодня — собираем
+    state = live_app.app.extensions['route_optimizer']
+    built = []
+    state.live_roads = views._LiveRoads()   # кэш общий у процесса — чистый
+    monkeypatch.setattr(views, '_live_road_build', lambda *a, **k: built.append(a[4]) or live.Road())
+    fleet = state.live_facts.data['2026-10-03']
+    views._live_context(state, date(2026, 10, 2), fleet)
+    assert built == []
+    views._live_context(state, API_NOW.date(), fleet)
+    assert built == [API_NOW.date()]
+
+
+def test_eta_lunch_not_inserted_after_window_end_and_ongoing_stay_counts():
+    road = _road(lambda a, b, minute, here: 5.0, unload=lambda p, kg: 10.0)
+    rules = live.Rules(lunch_min=30.0)    # окно 12:30–14:30
+    late = datetime(2026, 10, 5, 15, 0, tzinfo=Y)
+    assert _lunch_eta(late, road, rules) == _lunch_eta(late, road, live.Rules(lunch_min=0.0))   # окно кончилось — обеда нет
+    # идущая сейчас стоянка не по плану, начавшаяся в окне (6 мин < половины обеда), — обед уже идёт: второй не добавляем
+    start = datetime(2026, 10, 5, 13, 0, tzinfo=Y)
+    tr = Track(start).park((40.1600, 44.4600), 6)
+    stops = [stop('S:A', 1, A, 100.0, seq=1), stop('S:B', 2, B, 100.0, seq=2)]
+    with_l = {x['stop_id']: x['eta'] for x in _view_eta(tr, stops, road, rules)['stops']}
+    without = {x['stop_id']: x['eta'] for x in _view_eta(tr, stops, road, live.Rules(lunch_min=0.0))['stops']}
+    assert with_l == without
+    # та же стоянка, но короткая и уже закончилась — обеда не было, он ещё впереди
+    tr2 = Track(start).park((40.1600, 44.4600), 3).drive(_mid(DEPOT, A))
+    a = {x['stop_id']: x['eta'] for x in _view_eta(tr2, stops, road, rules)['stops']}
+    b = {x['stop_id']: x['eta'] for x in _view_eta(tr2, stops, road, live.Rules(lunch_min=0.0))['stops']}
+    assert a != b
+
+
+def _lunch_eta(start, road, rules):
+    tr = Track(start).park(DEPOT, 2).drive(_mid(DEPOT, A))
+    stops = [stop('S:A', 1, A, 100.0, seq=1), stop('S:B', 2, B, 100.0, seq=2)]
+    return [x['eta'] for x in _view_eta(tr, stops, road, rules)['stops']]
+
+
+def test_unknown_delivered_share_is_not_counted_as_aboard():
+    """Закрытая точка, а сколько отдали неизвестно (share None): неизвестное ≠ 0 — её вес не «в машине» и не «выгружено»."""
+    tr = Track().park(DEPOT, 10).drive(A)
+    at_a = tr.t
+    tr.park(A, 8).drive(B)
+    tr.park(B, 8)
+    stops = [stop('S:A', 1, A, 600.0, 'partial', None, at_a + timedelta(minutes=2), seq=1),
+             stop('S:B', 2, B, 400.0, 'full', 1.0, tr.t - timedelta(minutes=6), seq=2)]
+    ld = view(facts(tr.pts, stops, [T0, tr.t]), tr.t, [live.PlanTrip((1, 2), {})])['load']
+    assert ld['remaining_kg'] == 0 and ld['refused_kg'] == 0 and ld['loaded_kg'] == 1000 and ld['trip_kg'] == 1000
+    assert ld['delivered_kg'] == 400 and ld['unloaded_kg'] == 0

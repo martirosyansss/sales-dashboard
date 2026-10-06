@@ -1274,3 +1274,27 @@ def test_plan_export_shift_gate_uses_road_minutes():
     assert opt.plan_export(make_snapshot(), bundle, [], distance=distance)['time_gate']['ok']
     slow = opt.plan_export(make_snapshot(), bundle, [], distance=distance, roads=SlowRoads())
     assert not slow['time_gate']['ok'] and slow['time_gate']['days']
+
+
+def test_route_never_waits_for_busy_actor_pool(tmp_path, fake):
+    """Все Actor заняты (фоновая сборка матриц) — опрос карты не встаёт в очередь: route отвечает None сразу."""
+    r = _view(tmp_path)
+    r.ensure(P)
+    engine = r._m.engine
+    held = []
+    ctxs = [engine.actor() for _ in range(ve.WORKERS)]
+    for c in ctxs:
+        held.append(c.__enter__())
+    try:
+        out = []
+        th = threading.Thread(target=lambda: out.append(r.route((40.1912, 44.5133), P[1], True)))
+        th.start()
+        th.join(2.0)
+        assert not th.is_alive() and out == [None]            # не ждёт, запасная модель
+        with pytest.raises(ve.EngineBusy):
+            with engine.actor(wait=False):
+                pass
+    finally:
+        for c in ctxs:
+            c.__exit__(None, None, None)
+    assert r.route((40.1912, 44.5133), P[1], True) is not None   # освободились — снова отвечает

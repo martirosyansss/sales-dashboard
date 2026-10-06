@@ -408,3 +408,87 @@ def test_real_cards_flow_into_message(live_app):
     gps = next(m for m in msgs if m.kind == 'gps')
     assert gps.text.startswith('GPS-ն անջատված է\nՄեքենա՝ CAR1') and 'Վարորդ՝ Արամ' in gps.text
     assert 'yandex.ru/maps/?pt=44.47,40.17&z=16&l=map' in gps.text
+
+
+# ============================== по ревью этапа 2 ==============================
+
+def test_corrupt_state_values_are_dropped_on_load_and_one_bad_car_does_not_stop_others(tmp_path):
+    good_key = f'CAR2|gps|{at(5)}'
+    (tmp_path / 'alerts.json').write_text(json.dumps({
+        'sent': {'CAR1|gps|x': {'at': 'garbage', 'start': None, 'end': None},          # битый момент
+                 'CAR1|speed|y': {'at': '2026-10-06T10:00:00', 'start': None},          # без часового пояса
+                 'CAR1|stop|z': {'at': at(3), 'start': 5, 'end': None},                  # start — не строка
+                 good_key: {'at': at(3), 'start': at(3), 'end': None}},
+        'last': {'CAR1|speed': 'oops', 'CAR2|gps': at(3)}}), encoding='utf-8')
+    state = la.AlertState(str(tmp_path / 'alerts.json'))
+    assert list(state.sent) == [good_key] and list(state.last) == ['CAR2|gps']
+    # у CAR1 тревога с битым «до» — машину пропускаем с записью в журнал, CAR3 получает своё сообщение
+    bad = {**alert('gps', 4, 3, gps='off'), 'to': 'not-a-date'}
+    cards = {'CAR1': card(bad), 'CAR3': card(alert('gps', 1, gps='off'), car='CAR3')}
+    alerter, sender, _ = make(tmp_path, cards, name='other.json')
+    assert alerter.tick() == 1 and 'CAR3' in sender.sent[0]
+    # битое «последнее начало» в памяти (файл правили вручную после загрузки) — та же защита
+    alerter.state.last['CAR3|stop'] = 'junk'
+    cards['CAR3']['alerts_log'].append(alert('stop', 20, minutes=20, lat=1.0, lon=1.0))
+    assert alerter.tick() == 0
+
+
+def test_no_restored_message_when_no_contact_alert_just_disappears():
+    """«Կապը վերականգնվեց» — только при настоящем возвращении связи: тревога «нет связи» может пропасть из журнала и без
+    неё (день закрыт, 20:00, дольше NO_CONTACT_MAX) — сообщения об окончании не будет."""
+    from route_optimizer import live as lv
+    from test_route_live import DEPOT, T0, Track, facts, stop, A, TRUCK, ROAD
+
+    tr = Track().park(DEPOT, 5).drive(A).park(A, 2)
+    stops = [stop('S:A', 1, A, 100.0, seq=1)]
+    last = T0 + timedelta(minutes=5)
+    dev = {'battery': 50, 'charging': False, 'gps': 'on', 'net': 'cell', 'app': '2.2.0'}
+
+    def card_at(now, closed_at=None):
+        f = facts(tr.pts, stops, [T0, last], dev, last_contact=last, closed_at=closed_at)
+        c = lv.car_view(T0.date(), now, f, [lv.PlanTrip((1,), {})], TRUCK, DEPOT, live.Rules(), ROAD, False)
+        return {'CAR1': {**c, 'car_code': 'CAR1', 'name': 'JAC', 'driver': 'Արամ'}}
+    now = last + timedelta(minutes=12)
+    cards = card_at(now)
+    assert [a['kind'] for a in cards['CAR1']['alerts_log'] if a['active']] == ['no_contact']
+    state = la.AlertState('nonexistent-dir/none.json')
+    msgs, _ = la.plan_messages(cards, live.Rules(), now, state)
+    assert [m.kind for m in msgs if m.kind == 'no_contact'] == ['no_contact']
+    key = msgs[0].key
+    state.sent[key] = {'at': now.isoformat(), 'start': now.isoformat(), 'end': None}
+    # тревога пропала не из-за возвращения связи
+    for later, closed in ((datetime(2026, 10, 5, 20, 5, tzinfo=Y), None),                    # после 20:00
+                          (last + timedelta(hours=4), None),                                 # дольше NO_CONTACT_MAX
+                          (now, last + timedelta(minutes=8))):                               # день закрыт
+        c = card_at(later, closed)
+        assert not any(a['kind'] == 'no_contact' and a['active'] for a in c['CAR1']['alerts_log'])
+        out, _ = la.plan_messages(c, live.Rules(), later, state)
+        assert [m for m in out if m.phase == 'end' and m.kind == 'no_contact'] == [], later
+
+
+def test_halts_after_five_client_errors_until_settings_change(tmp_path, caplog):
+    cards = {'CAR1': card(alert('gps', 1, gps='off'))}
+    alerter, sender, box = make(tmp_path, cards)
+
+    def forbidden(text):
+        raise la.TelegramError('HTTP 403', 403)
+    alerter.send = forbidden
+    clock = [0.0]
+    for _ in range(la.CLIENT_ERRORS_MAX):
+        clock[0] += la.BACKOFF_MAX_S + 1
+        alerter.tick(lambda: clock[0])
+    assert alerter.halted is not None and 'ОСТАНОВЛЕНЫ' in caplog.text
+    n = caplog.text.count('ОСТАНОВЛЕНЫ')
+    alerter.send = sender
+    clock[0] += la.BACKOFF_MAX_S + 1
+    assert alerter.tick(lambda: clock[0]) == 0 and sender.sent == []          # остановлено: Telegram не дёргаем
+    assert caplog.text.count('ОСТАНОВЛЕНЫ') == n                              # и в журнал не пишем снова
+    box['rules'] = live.Rules(repeat_min=45.0)                                # настройки тревог сменили — пробуем
+    assert alerter.tick(lambda: clock[0]) == 1 and alerter.halted is None
+    # 429 и сетевые сбои «4xx подряд» не копят
+    a2, s2, _ = make(tmp_path, {'CAR1': card(alert('gps', 1, gps='off'))}, name='b.json')
+    a2.send = lambda text: (_ for _ in ()).throw(la.TelegramError('HTTP 429', 429))
+    for _ in range(la.CLIENT_ERRORS_MAX + 2):
+        clock[0] += la.BACKOFF_MAX_S + 1
+        a2.tick(lambda: clock[0])
+    assert a2.halted is None

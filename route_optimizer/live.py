@@ -358,15 +358,20 @@ def load_of(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int], gone: 
         if share is None or share < 1.0:
             unweighed += int(s.get('unweighed') or 0)
         done = kg * min(1.0, float(share)) if share is not None and share > 0 else 0.0
+        unknown = False
         if done > 0:
             delivered += done
             events.append((max(touches.get(s['stop_id'], gone[k]), gone[k]), -done))
+        elif share is None and s.get('status') not in OPEN:
+            # закрыта, а сколько отдали — неизвестно (неизвестное ≠ 0): не считаем весь вес точки лежащим в машине
+            events.append((max(touches.get(s['stop_id'], gone[k]), gone[k]), -kg))
+            unknown = True
         if s.get('status') in OPEN:
             closed[k] = False
         acc = per_trip.setdefault(k, [0.0, 0.0, 0.0])
         acc[0] += kg
-        acc[1] += done
-        if s.get('status') not in OPEN:
+        acc[1] += kg if unknown else done
+        if s.get('status') not in OPEN and not unknown:
             acc[2] += kg - done
     touched: dict[int, datetime] = {}
     for s in stops:
@@ -569,14 +574,21 @@ class EtaPlan:
     lunch_at: datetime | None = None
 
 
-def lunch_taken(actual: ac.DayActual, day: date, rules: Rules) -> bool:
+def lunch_taken(actual: ac.DayActual, day: date, rules: Rules, last_at: datetime | None = None) -> bool:
     """Обед уже был: стоянка не по плану не короче половины обеда, начавшаяся в окне начала обеда ± час (обед могли
-    взять раньше или позже — окно только правило сборки). Обеда в настройках нет — считается взятым."""
+    взять раньше или позже — окно только правило сборки); стоянка, начавшаяся в окне и идущая сейчас (last_at — последняя
+    точка трека), — обед уже идёт, второй не добавляется. Обеда в настройках нет — считается взятым."""
     if rules.lunch_min <= 0:
         return True
     lo, hi = rules.lunch_window
-    return any(s.kind == 'other' and s.minutes >= rules.lunch_min / 2
-               and lo - 60 <= ac.day_minutes(day, s.arrive) <= hi + 60 for s in actual.stays)
+    for s in actual.stays:
+        if s.kind != 'other':
+            continue
+        m = ac.day_minutes(day, s.arrive)
+        ongoing = last_at is not None and s.leave >= last_at
+        if (s.minutes >= rules.lunch_min / 2 and lo - 60 <= m <= hi + 60) or (ongoing and lo <= m <= hi):
+            return True
+    return False
 
 
 def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Sequence[Mapping[str, Any]]]],
@@ -589,11 +601,13 @@ def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Se
     t, live_pos, by_road = now, True, True
     arrive: dict[str, tuple[datetime, bool]] = {}
     back: tuple[datetime, bool] | None = None
-    pending, lunch_at = lunch_pending, None
     lo, hi = rules.lunch_window
+    pending, lunch_at = lunch_pending and ac.day_minutes(day, now) <= hi, None   # окно кончилось — обеда уже не будет
+    left_at = ac.day_minutes(day, now)   # когда выехали на текущий участок
 
     def move(a: Point, b: Point) -> None:
-        nonlocal t, live_pos, by_road
+        nonlocal t, live_pos, by_road, left_at
+        left_at = ac.day_minutes(day, t)
         m, ok = road.leg(a, b, ac.day_minutes(day, t) % 1440.0, live_pos)
         by_road = by_road and ok
         live_pos = False
@@ -605,7 +619,7 @@ def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Se
         if not pending:
             return
         m = ac.day_minutes(day, t)
-        if m >= lo if boundary else m > hi:
+        if (lo <= m <= hi) if boundary else (m > hi and left_at <= hi):   # в дороге — только если выехали до конца окна
             lunch_at, pending = t, False
             t += timedelta(minutes=rules.lunch_min)
 
@@ -719,7 +733,7 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
             here = (nxt, max(0.0, (now - arrived).total_seconds() / 60.0) if arrived is not None else 0.0)
             queue = [(k, [x for x in xs if x['stop_id'] != nxt['stop_id']]) for k, xs in queue]
         eta = eta_plan(day, now, last.point, queue, gone, current if gone else None, plan, depot, road, rules,
-                       not lunch_taken(actual, day, rules), at_depot, here)
+                       not lunch_taken(actual, day, rules, last.at), at_depot, here)
         etas = dict(eta.arrive)
         if eta.back is not None and gone and not at_depot:
             return_eta, return_source = eta.back[0], 'road' if eta.back[1] else 'model'
