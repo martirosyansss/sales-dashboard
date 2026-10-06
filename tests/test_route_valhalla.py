@@ -204,6 +204,24 @@ def test_valhalla_km_and_minutes_are_directed(tmp_path, fake):
     assert r.unsnapped(P) == 0 and r.size == (len(P), len(P))
 
 
+def test_route_single_leg_without_growing_the_table(tmp_path, fake):
+    """Положение машины для ETA карты (№76): участок отдельным запросом, точка в таблицу не попадает; пути нет, сбой
+    движка и движок выключен — None."""
+    r = _view(tmp_path)
+    r.ensure(P)
+    here = (40.1912, 44.5133)                                 # точки нет в таблице
+    km, minutes = r.route(here, P[1], True)
+    want = _metric(here, P[1])
+    assert km == pytest.approx(want[0], abs=2e-3) and minutes == pytest.approx(want[1] / 60 * ve.TIME_FACTOR[True], abs=0.05)
+    assert r.size == (len(P), len(P)) and r.km(here, P[1]) is None   # таблица не выросла, пары в ней нет
+    assert r.route(P[0], ISLAND, False) is None               # пути нет
+    fake.fail = True
+    assert r.route(here, P[1], True) is None                  # сбой движка — запасная модель, не исключение
+    fake.fail = False
+    r.active = False
+    assert r.route(here, P[1], True) is None
+
+
 def test_valhalla_cache_reread_incremental_equals_full_other_build_and_costing(tmp_path, fake, monkeypatch):
     monkeypatch.setattr(ve, 'BATCH', 2)                     # несколько блоков — расчёт в потоках
     full = _view(tmp_path / 'full')
@@ -1256,3 +1274,46 @@ def test_plan_export_shift_gate_uses_road_minutes():
     assert opt.plan_export(make_snapshot(), bundle, [], distance=distance)['time_gate']['ok']
     slow = opt.plan_export(make_snapshot(), bundle, [], distance=distance, roads=SlowRoads())
     assert not slow['time_gate']['ok'] and slow['time_gate']['days']
+
+
+def test_route_creates_first_actor_when_none_exist_yet(tmp_path, fake):
+    """После перезапуска с кэшем матриц Actor ещё нет: запрос без ожидания создаёт его, а не отвечает «занят» вечно."""
+    r = _view(tmp_path)
+    assert fake.created == 0
+    assert r.route((40.1912, 44.5133), P[1], True) is not None and fake.created == 1
+
+
+def test_route_swallows_any_engine_exception(tmp_path, fake, monkeypatch):
+    r = _view(tmp_path)
+    r.ensure(P)
+    fake.fail = True
+    assert r.route((40.1912, 44.5133), P[1], True) is None
+    for exc in (OSError('disk'), MemoryError()):
+        def bad(body, exc=exc):
+            raise exc
+        monkeypatch.setattr(fake, 'matrix', lambda self, body, bad=bad: bad(body))
+        assert r.route((40.1912, 44.5133), P[1], True) is None
+
+
+def test_route_never_waits_for_busy_actor_pool(tmp_path, fake):
+    """Все Actor заняты (фоновая сборка матриц) — опрос карты не встаёт в очередь: route отвечает None сразу."""
+    r = _view(tmp_path)
+    r.ensure(P)
+    engine = r._m.engine
+    held = []
+    ctxs = [engine.actor() for _ in range(ve.WORKERS)]
+    for c in ctxs:
+        held.append(c.__enter__())
+    try:
+        out = []
+        th = threading.Thread(target=lambda: out.append(r.route((40.1912, 44.5133), P[1], True)))
+        th.start()
+        th.join(2.0)
+        assert not th.is_alive() and out == [None]            # не ждёт, запасная модель
+        with pytest.raises(ve.EngineBusy):
+            with engine.actor(wait=False):
+                pass
+    finally:
+        for c in ctxs:
+            c.__exit__(None, None, None)
+    assert r.route((40.1912, 44.5133), P[1], True) is not None   # освободились — снова отвечает

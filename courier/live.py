@@ -17,7 +17,7 @@ import math
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Mapping
 
 from . import clock, merge as mg
@@ -26,6 +26,7 @@ from .store import Store
 
 TTL_TODAY_S = 10.0     # расчёт флота за сегодня переиспользуется столько секунд (опрос карты — раз в 15 с на зрителя)
 TTL_PAST_S = 600.0     # за прошлый день данные почти не меняются (доезжают пачки старых APK)
+REFUEL_DAYS = 30       # заправки за столько дней до дня карты — интервалы «полный бак → полный бак» для сверки топлива
 CACHE_DAYS = 8         # дней в кэше (дальше вытесняется самый старый)
 _monotonic = time.monotonic   # подмена в тестах
 
@@ -48,6 +49,20 @@ def _point(stop: Mapping[str, Any]) -> tuple[float, float] | None:
             and not isinstance(lon, bool):
         return float(lat), float(lon)
     return None
+
+
+def _return_kg(payload: Mapping[str, Any], stop: Mapping[str, Any] | None, lines: Mapping[Any, float]) -> float | None:
+    """Вес возврата, кг: количество × вес единицы товара — по строкам точки возврата, нет — по любой точке машины за
+    день; товара нигде нет (или у строки нет веса) — None: вес неизвестен."""
+    qty, pid = _number(payload.get('qty')), payload.get('product_id')
+    if qty <= 0:
+        return None
+    for ln in (stop or {}).get('lines') or ():
+        if isinstance(ln, dict) and ln.get('product_id') == pid and _number(ln.get('qty')) > 0 \
+                and _number(ln.get('weight_kg')) > 0:
+            return qty * _number(ln['weight_kg']) / _number(ln['qty'])
+    unit = lines.get(pid)
+    return qty * unit if unit else None
 
 
 def _share(sid: str, stop: Mapping[str, Any], status: str, deliveries: Mapping[str, Mapping[str, Any]],
@@ -124,10 +139,15 @@ class LiveSource:
         - contacts — моменты получения событий машины (ISO, по возрастанию): перерывы связи за день;
         - device — последнее состояние терминала (track.device) + at — момент события; None — терминал не присылает;
         - devices — [(at ISO, gps)] всех состояний по порядку: когда GPS был выключен;
-        - closed_at — момент последнего day_closed (ISO) или None.
+        - closed_at — момент последнего day_closed (ISO) или None;
+        - returns — возвраты товара машины за день (событие return, №76 этап 2): [{at ISO, kg или None — вес неизвестен,
+          stop_id}] по возрастанию момента;
+        - refuels — заправки машины за последние REFUEL_DAYS дней (Store.refuels: id, car_code, date, at_utc, payload,
+          superseded, eff_at_utc) — сверка расчёта топлива с фактом.
         Машины — с событиями или точками /day на этот день."""
         from .views import _moment, day_model   # views импортирует facts; здесь — только в запросе (без цикла при импорте)
         events = self.store.events_for_day(day, skip_track=True)   # heartbeat-ы трека правилу дня не нужны
+        refuels = self.store.refuels((date.fromisoformat(day) - timedelta(days=REFUEL_DAYS)).isoformat())
         beats = self.store.heartbeats_for_day(day)
         model = day_model(day, events)
         inputs_by_id = {e['id']: e for e in model.inputs}
@@ -137,6 +157,7 @@ class LiveSource:
             absorbed.setdefault(owner, []).append(x)
         cars = sorted(set(model.current) | {e['car_code'] for e in events + beats})
         out: dict[str, dict[str, Any]] = {}
+        units: dict[str, dict[Any, float]] = {}   # машина → вес единицы товара по product_id (из строк её точек)
         for car in cars:
             stops = []
             for s in model.current.get(car, []):
@@ -151,8 +172,20 @@ class LiveSource:
                               'lon': point[1] if point else None, 'seq': s.get('seq'),
                               'weight_kg': _number(s.get('weight_kg')), 'unweighed': _unweighed(s), 'status': status,
                               'share': share, 'delivered_at': clock.iso(at) if at is not None else None})
+            units[car] = {ln.get('product_id'): _number(ln['weight_kg']) / _number(ln['qty'])
+                          for s in model.current.get(car, []) for ln in s.get('lines') or ()
+                          if isinstance(ln, dict) and _number(ln.get('qty')) > 0 and _number(ln.get('weight_kg')) > 0}
             out[car] = {'stops': stops, 'track': self.store.track(car, day), 'drivers': [], 'last_contact': None,
-                        'contacts': [], 'device': None, 'devices': [], 'closed_at': None}
+                        'contacts': [], 'device': None, 'devices': [], 'closed_at': None,
+                        'returns': [],
+                        'refuels': [r for r in refuels if r['car_code'] == car]}
+        for e in events:   # возвраты: вес — по строкам точки возврата, нет — по любой точке машины (_return_kg)
+            if e['type'] == 'return' and e['car_code'] in out and e['id'] in inputs_by_id:
+                kg = _return_kg(e['payload'], model.data.get(e['stop_id']), units[e['car_code']])
+                out[e['car_code']]['returns'].append({'at': clock.iso(inputs_by_id[e['id']]['at']),
+                                                      'stop_id': e['stop_id'], 'kg': round(kg, 3) if kg else None})
+        for row in out.values():
+            row['returns'].sort(key=lambda r: r['at'])
         for e in sorted(events + beats, key=lambda e: e['received_at']):
             row = out[e['car_code']]
             row['contacts'].append(e['received_at'])

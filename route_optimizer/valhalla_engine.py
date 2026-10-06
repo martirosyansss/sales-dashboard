@@ -444,6 +444,10 @@ def _cleanup(base: str, keep: str) -> None:
 
 # --- Движок и матрицы ---
 
+class EngineBusy(RuntimeError):
+    """Свободного Actor сейчас нет (запрос без ожидания)."""
+
+
 class _Engine:
     """Сборка и общий пул Actor (≤ WORKERS на сборку): одному Actor потокобезопасность не обещана — запрос берёт
     свободный из пула и возвращает его; новых не больше WORKERS, сколько бы потоков ни считало."""
@@ -462,8 +466,12 @@ class _Engine:
             self._created = 0
 
     @contextmanager
-    def actor(self) -> Iterator[Any]:
+    def actor(self, wait: bool = True) -> Iterator[Any]:
+        """Свободный Actor из пула. wait=False — свободный сейчас или новый (пока создано меньше WORKERS: после перезапуска с
+        кэшем матриц Actor ещё нет), иначе EngineBusy сразу (карта машин: опрос не встаёт в очередь за фоновой сборкой)."""
         with self._cond:
+            if not wait and not self._idle and self._created >= WORKERS:   # свободного нет и новый не создать
+                raise EngineBusy('все Actor заняты')
             while not self._idle and self._created >= WORKERS:
                 self._cond.wait()
             actor = self._idle.pop() if self._idle else None
@@ -904,6 +912,27 @@ class ValhallaRoads:
             return None
         m = t.minutes.item(ia, ib)
         return m * TIME_FACTOR[city] * self._detour(a, b) if math.isfinite(m) else None
+
+    def route(self, a: Point, b: Point, city: bool) -> tuple[float, float] | None:
+        """(км, минуты) участка A → B отдельным запросом к Valhalla — для точек, которых нет в таблице (положение машины на
+        карте «сейчас» — №76: таблицу такими точками не растим). Минуты — × поправка зоны, как valhalla_minutes; км — путь
+        Valhalla без привязки к дороге. Движка нет, сбой запроса, пути нет или все Actor заняты сейчас (ждать нельзя) — None."""
+        if not self.active:
+            return None
+        body = {'sources': [{'lat': a[0], 'lon': a[1]}], 'targets': [{'lat': b[0], 'lon': b[1]}],
+                'costing': self.profile, 'verbose': False}
+        if self._m.costing:
+            body['costing_options'] = {self.profile: self._m.costing}
+        try:
+            with self._m.engine.actor(wait=False) as actor:   # занят пул — сразу запасная модель, очереди нет
+                res = actor.matrix(body)['sources_to_targets']
+            k, m = res['distances'][0][0], res['durations'][0][0]
+            k, m = float(k), float(m) / 60.0
+        except Exception:   # лучшая попытка: занят пул, ValhallaError, OSError, MemoryError… — запасная модель, не отказ флота
+            return None
+        if not (math.isfinite(k) and math.isfinite(m)) or k <= 0 or m <= 0:
+            return None
+        return k * self._detour(a, b), m * TIME_FACTOR[city] * self._detour(a, b)
 
     def minutes(self, a: Point, b: Point, city: bool) -> float | None:
         """Минуты езды A → B для расчёта; None — скорость зоны (прежняя модель)."""
