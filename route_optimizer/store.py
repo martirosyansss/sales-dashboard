@@ -28,7 +28,7 @@ from .patterns import parse_freq_key, parse_pattern_key, parse_plan_freq_key, pa
 from .running_costs import LOAD_COST_FIELDS, profile_fields
 from .vehicle_access import VehicleAccess, check_access
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 # manager_profile.included: 1/0 — выбор владельца, NULL — «авто» (в расчёте, если есть работа за 8 недель)
 _MANAGER_PROFILE_COLUMNS = (
@@ -181,6 +181,14 @@ _CUSTOMER_VEHICLES_TABLE = (
     "mode TEXT NOT NULL CHECK(mode IN ('allow', 'deny')), trucks TEXT NOT NULL, "
     "updated_at TEXT NOT NULL, updated_by TEXT)")
 
+# Схема 24 (ответ владельца №78, 16–17): правила магазина «Развоза» — solo: везут отдельным рейсом, без других магазинов
+# («Ռամադա» — всегда отдельно); center: машины его допуска «только выбранные» въезжают в малый центр ради него. Строка — хоть
+# одно правило; оба сняты — строки нет (dispatch.DayContext.solo, center_allow).
+_CUSTOMER_RULE_TABLE = (
+    "CREATE TABLE IF NOT EXISTS customer_rule(customer_id INTEGER PRIMARY KEY CHECK (customer_id > 0), "
+    "solo INTEGER NOT NULL CHECK (solo IN (0, 1)), center INTEGER NOT NULL CHECK (center IN (0, 1)), "
+    "updated_at TEXT NOT NULL, updated_by TEXT)")
+
 _MEASUREMENT_TABLE = (
     'CREATE TABLE IF NOT EXISTS route_measurement(day TEXT NOT NULL, car_code TEXT NOT NULL, '
     'data TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT, PRIMARY KEY(day, car_code))')
@@ -258,6 +266,7 @@ _SCHEMA = (
     _TRUCK_DRIVER_TABLE,
     _TRUCK_HELPER_TABLE,
     _DRIVER_ABSENCE_TABLE,
+    _CUSTOMER_RULE_TABLE,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -404,6 +413,8 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     ),
     # 22 → 23 (№77): только добавляем — отсутствие водителей; прежние таблицы и значения не меняются.
     22: (_DRIVER_ABSENCE_TABLE,),
+    # 23 → 24 (№78): только добавляем — магазины «отдельным рейсом»; прежние таблицы и значения не меняются.
+    23: (_CUSTOMER_RULE_TABLE,),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -468,6 +479,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'truck_work_end': '18:00',
     # Форс-мажор (ответ владельца №32): «Везти после конца дня» в «Развозе» — машины возвращаются не позже
     'truck_overtime_end': '20:00',
+    # Запас в конце дня (ответ владельца №78): сборка «Развоза» возвращает машины не позже truck_work_end минус столько
+    # минут; рейс в запасе не опаздывает. 0 — без запаса (как до №78). Нет ключа — значение по умолчанию
+    'truck_end_reserve_min': 30,
+    # Машина отдельного рейса (ответы владельца №78, 18 и 20): лишнюю машину снимаем, чтобы она везла и обычные магазины,
+    # только если дизель + износ дня растут не больше чем на столько %; иначе лишняя машина остаётся
+    'solo_spare_max_pct': 5,
+    # Погрузка по сезону (ответ владельца №78): с morning_loading_from по morning_loading_to (ММ-ДД, включительно, может
+    # переходить через Новый год) машины грузят утром — первый рейс с загрузкой; вне сезона загружены с вечера и выезжают
+    # в начале дня. 01-01 … 12-31 — всегда утром (как до №78)
+    'morning_loading_from': '11-15',
+    'morning_loading_to': '03-15',
     # Обед водителей (ответ владельца №61): в пути, гибко — «Развоз» сам вставляет паузу в рейс; truck_lunch_from …
     # truck_lunch_to — когда обед начинается; 0 минут — без обеда. Модель парка менеджеров его не знает
     'truck_lunch_min': 30,
@@ -589,6 +611,8 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'unload_min_per_stop': (0, 120, False),
     'unload_min_per_tonne': (0, 120, False),
     'truck_lunch_min': (0, 120, False),
+    'truck_end_reserve_min': (0, 120, False),
+    'solo_spare_max_pct': (0, 100, False),
     'dispatch_buffer_pct': (50, 95, False),
     'big_truck_yerevan_min': (0, 120, False),
     'big_truck_yerevan_km': (0, 10, False),     # и только ступени YEREVAN_KM_STEPS
@@ -631,6 +655,7 @@ GARAGE_KM_PER_DAY = KM_PER_DAY_MAX   # спидометр не прираста�
 _DAY_MINUTES = 24 * 60
 
 _HHMM_RE = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
+_MMDD_RE = re.compile(r'^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$')   # день года ММ-ДД (сезон погрузки, №78)
 _ISO_DAY_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 
@@ -966,6 +991,9 @@ class Bundle:
     # перекрывают ERP и GPS, уступают ручной точке
     driver_points: dict[int, Point] = field(default_factory=dict)
     vehicle_access: dict[int, VehicleAccess] = field(default_factory=dict)
+    # правила магазинов «Развоза» (№78, customer_rule): отдельный рейс; въезд в центр машинам допуска allow ради магазина
+    solo: frozenset[int] = frozenset()
+    center_allow: frozenset[int] = frozenset()
     # время у магазина (customer_unload, №50): клиент → постоянная часть разгрузки, мин — только «Развоз»; в отпечаток
     # не входит, как и окна: модель парка менеджеров его не знает
     unload_min: dict[int, float] = field(default_factory=dict)
@@ -1228,6 +1256,17 @@ def validate_settings(values: Mapping[str, Any],
         v = values.get(key)
         if not isinstance(v, str) or not _HHMM_RE.match(v):
             errors[key] = 'ժամը՝ ԺԺ:ՐՐ ձևաչափով'
+        else:
+            out[key] = v
+    # сезон утренней погрузки (№78): ММ-ДД существующего дня (29.02 — да, год високосный)
+    for key in ('morning_loading_from', 'morning_loading_to'):
+        v = values.get(key, DEFAULT_SETTINGS[key])
+        try:
+            if not isinstance(v, str) or not _MMDD_RE.match(v):
+                raise ValueError
+            date(2024, int(v[:2]), int(v[3:]))
+        except ValueError:
+            errors[key] = 'ամսաթիվը՝ ՕՕ.ԱԱ ձևաչափով, օրինակ՝ 15.11'
         else:
             out[key] = v
     for start, end in (('work_start', 'work_end'), ('truck_work_start', 'truck_work_end')):
@@ -1888,6 +1927,7 @@ class Store:
                     access_rows = conn.execute(
                         'SELECT customer_id, mode, trucks FROM customer_vehicle_access').fetchall()
                     unload_rows = conn.execute('SELECT customer_id, fixed_min FROM customer_unload').fetchall()
+                    rule_rows = conn.execute('SELECT customer_id, solo, center FROM customer_rule').fetchall()
                     conn.execute('COMMIT')
                 except BaseException:
                     if conn.in_transaction:
@@ -1965,7 +2005,10 @@ class Store:
             if minutes is None or not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
                 raise StoreError(f'{self._name()}: վնասված է {customer_id!r} խանութում ժամանակի արժեքը{_FIX_HINT}')
             unload[customer_id] = minutes
-        return Bundle(settings, depot, trucks, managers, geo, windows, vehicle_access=access, unload_min=unload)
+        if any(not _is_int(c) or not 0 < c < 2 ** 31 or a not in (0, 1) or b not in (0, 1) for c, a, b in rule_rows):
+            raise StoreError(f'{self._name()}: վնասված են խանութների առաքման կանոնները{_FIX_HINT}')
+        return Bundle(settings, depot, trucks, managers, geo, windows, vehicle_access=access, unload_min=unload,
+                      solo=frozenset(c for c, a, _ in rule_rows if a), center_allow=frozenset(c for c, _, b in rule_rows if b))
 
     def load_copy(self) -> tuple[Bundle, int | None]:
         """Настройки, не меняя саму базу: её копия (sqlite backup из соединения только на чтение) во временной папке,
@@ -2292,9 +2335,12 @@ class Store:
 
     def save_customer_constraints(self, customer_id: int, access: VehicleAccess | None,
                                   window: CustomerWindow | None, user: str | None,
-                                  unload_min: float | None | Literal[_Keep.KEEP] = KEEP) -> None:
-        """Машины, время доставки и время у магазина (unload_min, №50; KEEP — не менять, None — убрать) из одной
-        карточки: единая транзакция, без частичного сохранения."""
+                                  unload_min: float | None | Literal[_Keep.KEEP] = KEEP,
+                                  solo: bool | Literal[_Keep.KEEP] = KEEP,
+                                  center: bool | Literal[_Keep.KEEP] = KEEP) -> None:
+        """Машины, время доставки, время у магазина (unload_min, №50; KEEP — не менять, None — убрать), «отдельный рейс» и
+        «в центр машинам допуска» (solo, center, №78; KEEP — не менять) из одной карточки: единая транзакция, без
+        частичного сохранения."""
         if not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
             raise ValueError('customer_id: положительное целое')
         if access is not None and (not isinstance(access, VehicleAccess) or check_access(access.to_json())[1]):
@@ -2304,13 +2350,33 @@ class Store:
         if unload_min is not KEEP and unload_min is not None and check_unload_min(unload_min)[1]:
             raise ValueError('время у магазина не прошло проверку')
 
+        if any(f is not KEEP and not isinstance(f, bool) for f in (solo, center)):
+            raise ValueError('solo, center: true или false')
+
         def write(conn: sqlite3.Connection) -> None:
             self._write_customer_vehicles(conn, customer_id, access, user)
             self._write_customer_window(conn, customer_id, window, user)
             if unload_min is not KEEP:
                 self._write_customer_unload(conn, customer_id, unload_min, user)
+            if solo is not KEEP or center is not KEEP:
+                self._write_customer_rule(conn, customer_id, solo, center, user)
 
         self._transaction(write, 'չհաջողվեց պահպանել խանութի առաքման պայմանները')
+
+    @staticmethod
+    def _write_customer_rule(conn: sqlite3.Connection, customer_id: int, solo: bool | Literal[_Keep.KEEP],
+                             center: bool | Literal[_Keep.KEEP], user: str | None) -> None:
+        """Правила магазина (№78): KEEP — как было; оба сняты — строки нет."""
+        row = conn.execute('SELECT solo, center FROM customer_rule WHERE customer_id = ?', (customer_id,)).fetchone()
+        was = (bool(row[0]), bool(row[1])) if row is not None else (False, False)
+        new = (was[0] if solo is KEEP else solo, was[1] if center is KEEP else center)
+        if not any(new):
+            conn.execute('DELETE FROM customer_rule WHERE customer_id = ?', (customer_id,))
+            return
+        conn.execute('INSERT INTO customer_rule(customer_id, solo, center, updated_at, updated_by) VALUES(?, ?, ?, ?, ?) '
+                     'ON CONFLICT(customer_id) DO UPDATE SET solo = excluded.solo, center = excluded.center, '
+                     'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                     (customer_id, int(new[0]), int(new[1]), _now(), user))
 
     def save_customer_unload(self, customer_id: int, unload_min: float | None, user: str | None) -> None:
         """Только время у магазина (№50; проверенное check_unload_min, None — убрать: по норме) своей транзакцией —
@@ -2485,10 +2551,17 @@ class Store:
             (since, until)).fetchone())
         return int(row[0]) if row else 0
 
-    def delete_dispatch(self, day: str) -> None:
-        """«Начать заново»: черновик на дату удаляется."""
-        self._transaction(lambda conn: conn.execute('DELETE FROM dispatch_plan WHERE day = ?', (day,)),
-                          'не удалось удалить план развоза')
+    def delete_dispatch(self, day: str, expected_rev: int | None = None) -> bool:
+        """«Начать заново»: черновик на дату удаляется. expected_rev — номер прочитанного черновика: с тех пор изменён
+        (склад отметил погрузку, №78; другая вкладка) — False, ничего не удалено."""
+        def drop(conn: sqlite3.Connection) -> bool:
+            if expected_rev is not None:
+                row = conn.execute('SELECT rev FROM dispatch_plan WHERE day = ?', (day,)).fetchone()
+                if (row[0] if row is not None else 0) != expected_rev:
+                    return False
+            conn.execute('DELETE FROM dispatch_plan WHERE day = ?', (day,))
+            return True
+        return self._transaction(drop, 'не удалось удалить план развоза')
 
     # --- обучение по факту машин (learning-loop-plan.md, этап 4) ---
 

@@ -1,0 +1,108 @@
+/* «Պահեստ» /routes/warehouse — склад отмечает погрузку рейсов с телефона (ответ владельца №78).
+   Поверх routes.css: те же токены (--rt-*), только классы этой страницы (.wh-*) и шапка ролей из интернета (.gj-nav,
+   base_v2.html — как у «Ավտոտնակ»). Телефон (360–430 px): кнопки ≥ 48 px, карточки машин во всю ширину. Новых файлов
+   статики сверх этих двух нет: снаружи открыт только их список (app_v2._PUBLIC_STATIC, deploy/COURIER_TUNNEL.md). */
+
+#whPage {
+    max-width: 760px; margin: 0 auto; color-scheme: dark;
+    padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+#whPage .rt-title { font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.125rem); }
+main:has(> #whPage) { padding-top: 12px !important; }
+
+/* Шапка ролей из интернета (base_v2.html, .gj-nav): кто вошёл и «Ելք» — как у «Ավտոտնակ» */
+.gj-nav { padding: 6px max(12px, env(safe-area-inset-right, 0px)) 6px max(12px, env(safe-area-inset-left, 0px)); backdrop-filter: none; }
+.gj-nav > .container-fluid { flex-wrap: nowrap; gap: 12px; padding: 0; }
+.gj-nav form { margin: 0; flex: 0 0 auto; }
+.gj-nav-user {
+    display: inline-flex; align-items: center; gap: 9px; min-width: 0;
+    color: #e8edf4; font: 600 1rem/1.3 'Google Sans', 'Noto Sans Armenian', system-ui, sans-serif;
+}
+.gj-nav-user > i { color: #38bdf8; font-size: 1.25rem; }
+.gj-nav-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gj-logout {
+    display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border-radius: 999px;
+    border: 1px solid #283140; background: #1e2530; color: #e8edf4; cursor: pointer;
+    font: 600 .9375rem 'Google Sans', 'Noto Sans Armenian', system-ui, sans-serif;
+}
+.gj-logout:hover { color: #38bdf8; border-color: #2287b8; }
+.gj-logout:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
+
+/* Выбор дня: сегодня / следующий рабочий — прилипает к верху */
+.wh-days {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
+    display: flex; gap: 4px; padding: 4px; margin: 14px 0 12px;
+    background: var(--rt-inset); border: 1px solid var(--rt-line); border-radius: 12px;
+}
+.wh-days button {
+    flex: 1 1 0; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+    min-height: 52px; padding: 4px 10px; border: 0; border-radius: 9px; background: transparent; color: var(--rt-fg-dim);
+    font: 600 1rem var(--rt-font); cursor: pointer; transition: background .15s, color .15s;
+}
+.wh-days button small { font: 500 .8125rem var(--rt-mono); opacity: .85; }
+.wh-days button:hover { color: var(--rt-fg); background: var(--rt-panel-2); }
+.wh-days button[aria-selected="true"] { background: var(--rt-acc); color: var(--rt-acc-ink); }
+.wh-days button:focus-visible { outline: 2px solid var(--rt-acc-hover); outline-offset: 2px; }
+
+.wh-alert { margin-bottom: 12px; }
+.wh-summary { margin: 0 0 10px; color: var(--rt-fg-dim); font-size: .9375rem; }
+.wh-summary:empty { display: none; }
+.wh-list { display: grid; gap: 12px; }
+.wh-empty { margin: 18px 0; color: var(--rt-fg-dim); font-size: 1rem; text-align: center; }
+
+/* Карточка машины: название, номер, водитель; рейсы — строками с большой кнопкой */
+.wh-truck { padding: 14px 14px 6px; border: 1px solid var(--rt-line); border-radius: var(--rt-radius); background: var(--rt-panel); }
+.wh-truck-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.wh-truck-name { margin: 0; font: 700 1.125rem/1.3 var(--rt-font); color: var(--rt-fg); }
+.wh-truck-code { font: 600 .9375rem var(--rt-mono); color: var(--rt-fg-dim); }
+.wh-driver { margin: 2px 0 6px; color: var(--rt-fg-dim); font-size: .9375rem; }
+.wh-driver i { margin-right: 6px; color: var(--rt-fg-mute); }
+
+.wh-trip { padding: 12px 0; border-top: 1px solid var(--rt-line-soft); }
+.wh-trip-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.wh-trip-t { margin: 0; font: 700 1rem var(--rt-font); color: var(--rt-fg); }
+.wh-trip-meta { margin: 3px 0 0; color: var(--rt-fg-dim); font-size: .9375rem; }
+.wh-trip-meta b { font-family: var(--rt-mono); font-weight: 600; color: var(--rt-fg); }
+
+.wh-load {
+    display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 52px; min-width: 168px;
+    padding: 0 20px; border-radius: 12px; border: 1px solid var(--rt-acc-dim); background: var(--rt-acc); color: var(--rt-acc-ink);
+    font: 700 1.0625rem var(--rt-font); cursor: pointer; transition: background .15s, transform .08s;
+}
+.wh-load:hover { background: var(--rt-acc-hover); }
+.wh-load:active { transform: scale(.98); }
+.wh-load:focus-visible { outline: 2px solid var(--rt-acc-hover); outline-offset: 3px; }
+.wh-load:disabled { opacity: .55; cursor: progress; }
+.wh-done {
+    display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; border-radius: 12px;
+    border: 1px solid var(--rt-ok-line); background: var(--rt-ok-bg); color: var(--rt-ok); font: 700 1rem var(--rt-font);
+}
+.wh-done small { color: var(--rt-fg-dim); font-weight: 500; }
+.wh-undo {
+    min-height: 44px; padding: 0 12px; border: 0; background: transparent; color: var(--rt-fg-dim);
+    font: 600 .9375rem var(--rt-font); text-decoration: underline; text-underline-offset: 3px; cursor: pointer;
+}
+.wh-undo:hover { color: var(--rt-fg); }
+.wh-undo:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; border-radius: 6px; }
+
+/* Товар рейса: свёрнут, грузится по нажатию */
+.wh-goods > summary {
+    display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; list-style: none;
+    color: var(--rt-acc); font-size: .9375rem; font-weight: 600;
+}
+.wh-goods > summary::-webkit-details-marker { display: none; }
+.wh-goods > summary:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; border-radius: 6px; }
+.wh-goods ul { list-style: none; margin: 0 0 6px; padding: 0; }
+.wh-goods li {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 8px 0;
+    border-top: 1px dashed var(--rt-line-soft); font-size: .9375rem;
+}
+.wh-goods li span:first-child { color: var(--rt-fg); overflow-wrap: anywhere; }
+.wh-goods li span:last-child { font-family: var(--rt-mono); color: var(--rt-fg); text-align: right; white-space: nowrap; }
+.wh-goods li small { grid-column: 1 / -1; color: var(--rt-fg-mute); font-family: var(--rt-mono); }
+.wh-goods p { margin: 4px 0 8px; color: var(--rt-fg-dim); font-size: .9375rem; }
+
+@media (prefers-reduced-motion: reduce) {
+    .wh-days button, .wh-load { transition: none; }
+    .wh-load:active { transform: none; }
+}

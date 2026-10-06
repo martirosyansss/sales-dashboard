@@ -304,3 +304,50 @@ def test_discard_keeps_next_id_growing():
     dp.approve(draft, 'a', 'u')
     draft.next_id += 5
     assert dp.discard(draft).next_id == draft.next_id
+
+# ============================== склад «Բեռնված է» (№78) и отправленный план ==============================
+
+def test_warehouse_sees_sent_plan_and_discard_keeps_loaded_marks(client, monkeypatch):
+    """Склад грузит то, что отправлено водителям: неотправленная правка на складе не видна; «Չեղարկել
+    փոփոխությունները» не снимает отметку «Բեռնված է»."""
+    _page_setup(client, monkeypatch, now=NOW)
+    d = _build(client, ('CAR1', 'CAR2'))
+    d = _edit(client, d, action='approve')
+
+    def wh():
+        w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+        return w, sorted((t['car_code'], tr['id'], tr['stops']) for t in w['trucks'] for tr in t['trips'])
+    w, sent_view = wh()
+    d = _edit(client, d, **_move_one(d))                          # правка — новый рейс или другой рейс
+    assert d['unsent'] is not None
+    w, now_view = wh()
+    assert now_view == sent_view                                  # склад — по отправленному плану
+    trip = w['trucks'][0]['trips'][0]['id']
+    r = client.post('/api/routes/warehouse/loaded', json={'date': DAY, 'rev': w['rev'], 'trip': trip, 'loaded': True})
+    assert r.status_code == 200, r.get_json()
+    d = client.get('/api/routes/dispatch?date=' + DAY).get_json()
+    d = _edit(client, d, action='discard')
+    assert d['unsent'] is None
+    w, back = wh()
+    assert back == sent_view
+    assert next(tr for t in w['trucks'] for tr in t['trips'] if tr['id'] == trip)['loaded'] is not None
+
+
+def test_send_changing_loaded_trip_needs_confirmation():
+    *_, draft = _base((FORD,))
+    dp.approve(draft, 'a', 'u')
+    assert not dp.loaded_changed(draft)
+    trip = draft.trips[0]
+    trip.loaded = {'at': '2026-10-01T09:00:00', 'by': 'u', 'pin': False}
+    assert not dp.loaded_changed(draft)                       # отметка без правки состава — отправлять можно
+    trip.stops = list(reversed(trip.stops))
+    assert dp.loaded_changed(draft)
+
+
+def test_discard_refused_when_loaded_trip_is_not_in_sent_plan():
+    *_, draft = _base((FORD,))
+    dp.approve(draft, 'a', 'u')
+    draft.trips.append(dp.DraftTrip(draft.next_id, FORD.car_code, [], True, None, {'at': '2026-10-01T09:00:00', 'by': 'u', 'pin': False}))
+    draft.next_id += 1
+    with pytest.raises(dp.DispatchError, match='բեռնված'):
+        dp.discard(draft)

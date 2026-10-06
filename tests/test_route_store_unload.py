@@ -59,8 +59,11 @@ def _build(client, trucks=('CAR1',)):
 
 
 def _plan(body):
-    """План без отметки времени сборки."""
-    return {k: v for k, v in body['plan'].items() if k != 'built_at'}
+    """План без отметки времени сборки и без полей сводки №78 (погрузка по сезону, запас дня): отпечатки golden — по
+    рейсам и цифрам, как до них."""
+    plan = {k: v for k, v in body['plan'].items() if k != 'built_at'}
+    plan['summary'] = {k: v for k, v in plan['summary'].items() if k not in ('preload', 'end_reserve_min')}
+    return plan
 
 
 # ============================== проверка значения и хранение ==============================
@@ -205,7 +208,7 @@ def test_api_unload_norms_follow_learned_row_in_effect(client):
 def test_settings_page_has_field_and_bumped_assets():
     html = (ROOT / 'templates' / 'routes_settings.html').read_text(encoding='utf-8')
     assert 'id="rcsUnload"' in html and 'Ժամանակ խանութում, րոպե' in html
-    assert 'routes_customer_settings.js\') }}?v=11' in html and 'routes_customer_settings.css\') }}?v=3' in html
+    assert 'routes_customer_settings.js\') }}?v=13' in html and 'routes_customer_settings.css\') }}?v=3' in html
     js = (ROOT / 'static' / 'js' / 'routes_customer_settings.js').read_text(encoding='utf-8')
     assert 'unload_min: unloadMin' in js and 'Բեռի ժամանակը (' in js and 'Դատարկ՝ ' in js
     assert 'input.validity.badInput' in js                  # нечисло в поле — ошибка, а не «пусто» (стёрло бы время)

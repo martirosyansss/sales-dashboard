@@ -346,8 +346,11 @@
         $('dpBuildText').textContent = plan ? 'Վերակազմել երթերը' : 'Կազմել երթերը';
         $('dpReset').hidden = !plan || !!d.approved || !!d.released;   // №80: план у водителей не стирается
         $('dpBuild').disabled = !d.trucks.some(t => t.ready) || !d.depot || !!d.approved;
+        // №78: загруженные рейсы закреплены — пересборка их не трогает
+        const loadedN = plan ? plan.trucks.reduce((n, t) => n + t.trips.filter(tr => tr.loaded).length, 0) : 0;
         $('dpBuildNote').textContent = d.approved ? APPROVED_HY
-            : plan ? 'Ամրացված երթերը կմնան ինչպես կան, մնացածը ծրագիրը կբաշխի նորից։' : 'Մոտ 5 վայրկյան։';
+            : plan ? 'Ամրացված երթերը կմնան ինչպես կան, մնացածը ծրագիրը կբաշխի նորից։'
+                + (loadedN ? ' Բեռնված երթերը (' + loadedN + ') չեն փոխվի։' : '') : 'Մոտ 5 վայրկյան։';
         renderApprove();
         renderSendState();
         renderSteps();
@@ -1034,6 +1037,10 @@
             setData(data);
             return data;
         } catch (e) {
+            // №78: заказ дня меняет груз загруженного рейса — спросить и повторить с подтверждением
+            if (state.sd && e.data && e.data.loaded_confirm === true && !body.confirm_loaded && window.confirm(e.message)) {
+                return sdEdit({ ...body, confirm_loaded: true });
+            }
             if (state.sd) { state.sd.busy = false; $('dpSdErr').textContent = e.message; renderSdDialog(); }
             return null;
         }
@@ -1881,6 +1888,10 @@
             : 'արագությունը միջին է, ընթացիկ խցանումները հայտնի չեն');
         if (sm.traffic && sm.traffic.reason) costNotes.push('Յանդեքսի տվյալները հասանելի չեն․ օգտագործվում է միջին արագությունը');
         if (sm.loading_minutes) costNotes.push('պահեստում բեռնումը՝ ' + fmt(sm.loading_minutes) + ' րոպե');
+        // №78: погрузка по сезону — одна строка; запас в конце дня
+        if (sm.preload === true) costNotes.push('մեքենաները բեռնված են նախորդ երեկոյան՝ առաջին երթն առանց առավոտյան բեռնման');
+        else if (sm.preload === false) costNotes.push('ձմեռային սեզոն — բեռնում առավոտյան');
+        if (sm.end_reserve_min) costNotes.push('մեքենաները վերադառնում են ոչ ուշ, քան օրվա ավարտից ' + fmt(sm.end_reserve_min) + ' րոպե առաջ');
         if (sm.loading_configured === false) costNotes.push('պահեստում բեռնման ժամանակը դեռ ամբողջությամբ նշված չէ');
         if (sm.fuel_load_unconfigured) costNotes.push(fmt(sm.fuel_load_unconfigured) + ' երթի համար բեռից կախված վառելիքի նորմերը նշված չեն');
         if (sm.wear_unconfigured) costNotes.push(fmt(sm.wear_unconfigured) + ' երթի մաշվածքի արժեքը նշված չէ');
@@ -2812,6 +2823,7 @@
         const time = document.createElement('span');
         time.className = 'dp-time';
         if (tr.loading_minutes) time.insertAdjacentHTML('beforeend', '<small>բեռնում ' + esc(tr.loading_start) + ' ·</small>');
+        else if (tr.preloaded) time.insertAdjacentHTML('beforeend', '<small>բեռնված է երեկոյան ·</small>');   // №78
         time.insertAdjacentHTML('beforeend', '<span class="rt-sr-only">մեկնում </span>' + esc(tr.depart)
             + '<span class="dp-arrow" aria-hidden="true">→</span><span class="rt-sr-only"> վերադարձ </span>' + esc(tr.return));
         const acts = document.createElement('div');
@@ -2832,6 +2844,20 @@
         tog.setAttribute('aria-label', (editing ? 'Ավարտել փոփոխությունը՝ ' : 'Փոփոխել՝ ') + truckLabel(t) + ', երթ ' + (i + 1));
         tog.addEventListener('click', () => toggleEdit(tr.id));
         acts.append(onMap, tog);
+        // «Բեռնված է» (№78): логист отмечает по утверждённому плану, снимает — с подтверждением (рейс открепится)
+        if (tr.loaded || (state.data.approved && !state.data.is_past)) {
+            const ld = document.createElement('button');
+            ld.type = 'button';
+            ld.className = 'rt-btn rt-btn-ghost rt-btn-sm dp-loadbtn';
+            ld.innerHTML = '<i class="fas ' + (tr.loaded ? 'fa-box-open' : 'fa-truck-ramp-box') + '" aria-hidden="true"></i><span></span>';
+            ld.lastChild.textContent = tr.loaded ? 'Հանել բեռնված նշումը' : 'Բեռնված է';
+            ld.setAttribute('aria-label', ld.lastChild.textContent + '՝ ' + truckLabel(t) + ', երթ ' + (i + 1));
+            ld.addEventListener('click', () => {
+                if (tr.loaded && !window.confirm('Հանե՞լ «Բեռնված է» նշումը։ Երթն այլևս ամրացված չի լինի բեռնման պատճառով։')) return;
+                edit({ action: tr.loaded ? 'unloaded' : 'loaded', trip: tr.id }, tr.loaded ? 'Նշումը հանված է' : 'Նշված է՝ բեռնված է');
+            });
+            acts.append(ld);
+        }
         // строка под заголовком: загрузка машины полоской, км, литры, пометки
         const line = document.createElement('div');
         line.className = 'dp-trip-line';
@@ -2851,12 +2877,15 @@
         flags.className = 'dp-trip-flags';
         if (tr.over_time) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">ուշանում է</span>');
         else if (tr.late) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn"><i class="fas fa-moon" aria-hidden="true"></i>արտաժամյա</span>');
+        else if (tr.in_reserve) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn" title="Վերադառնում է օրվա վերջի պահուստի ժամին՝ ուշացում չէ">առանց պահուստի</span>');   // №78
         if (tr.over_capacity) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">գերբեռնված</span>');
         if (tr.window_miss) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">ընդունման ժամից դուրս՝ ' + esc(fmt(tr.window_miss)) + '</span>');
         if (tr.center_miss) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">կենտրոն՝ առանց թույլտվության</span>');
         if (tr.vehicle_miss) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">մեքենան չի կարող սպասարկել՝ ' + esc(fmt(tr.vehicle_miss)) + '</span>');
         if (tr.poor) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn">' + esc(fmt(state.data.min_trip_revenue)) + NB + 'դրամից պակաս</span>');
         if (tr.pinned) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-ok"><i class="fas fa-lock" aria-hidden="true"></i>ամրացված</span>');
+        if (tr.loaded) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-ok"><i class="fas fa-check" aria-hidden="true"></i>Բեռնված է ժ.' + NB + esc(tr.loaded.at)
+            + ((state.data.loaded_by || {})[tr.id] ? ' (' + esc(state.data.loaded_by[tr.id]) + ')' : '') + '</span>');   // №78
         line.append(load, meta, flags);
         head.append(title, time, acts, line);
         div.appendChild(head);
@@ -3287,6 +3316,10 @@
             const p = document.createElement('p');
             p.textContent = 'Բեռնում պահեստում՝ ' + tr.loading_start + ' → ' + tr.depart + ' (' + minText(x.loading_min) + ')։';
             body.appendChild(p);
+        } else if (x.preloaded) {   // №78: вне сезона первый рейс загружен с вечера
+            const p = document.createElement('p');
+            p.textContent = 'Մեքենան բեռնված է նախորդ երեկոյան՝ առավոտյան բեռնում չկա, մեկնում է ' + tr.depart + '։';
+            body.appendChild(p);
         }
         const heads = ['Խանութ', 'Հասնում է', 'Ճանապարհ, րոպե', 'Սպասում, րոպե', 'Բեռնաթափում, րոպե', 'Ընդունման ժամ'];
         const table = document.createElement('table');
@@ -3399,6 +3432,15 @@
             ['Ընդունման ժամեր', [e.window_stores ? pl(e.window_stores, 'խանութ') + ' ունի ընդունման ժամ՝ երթերը կազմվում են այնպես, որ հասնենք ժամանակին, իսկ վաղ հասնելու դեպքում մեքենան սպասում է։'
                 : 'Այս օրվա խանութներից ոչ մեկն ընդունման ժամ չունի։']],
             ['Մեքենաների սահմանափակումներ', [e.access_stores ? pl(e.access_stores, 'խանութ') + ' ունի մեքենաների սահմանափակում՝ դրանք տանում են միայն թույլատրված մեքենաները։' : '']],
+            // №78, ответы 18 и 20: машина отдельного рейса — снята ли лишняя машина и на сколько вырос ծախս дня
+            ['Առանձին երթ', e.solo_spare ? [e.solo_spare.truck
+                ? 'Առանձին երթի մեքենան վերադառնում է և տանում է նաև սովորական խանութներ․ ' + truckLabel(truckBy(e.solo_spare.truck))
+                    + '-ն այսօր պետք չէ (օրվա դիզելը և մաշվածքը' + (num(e.solo_spare.delta_pct) > 0 ? ' աճում են ' + fmt(e.solo_spare.delta_pct, 1) + '%-ով' : ' չեն աճում')
+                    + ', թույլատրված է մինչև ' + fmt(e.solo_spare.limit_pct) + '%)։'
+                : num(e.solo_spare.delta_pct) !== null
+                    ? 'Առանձին երթի մեքենան տանում է միայն իր խանութը՝ առանց լրացուցիչ մեքենայի օրվա դիզելը և մաշվածքը կաճեին ' + fmt(e.solo_spare.delta_pct, 1)
+                        + '%-ով (թույլատրված է մինչև ' + fmt(e.solo_spare.limit_pct) + '%)։'
+                    : 'Առանձին երթի մեքենան տանում է միայն իր խանութը՝ առանց լրացուցիչ մեքենայի բոլոր խանութները չեն տեղավորվում։'] : []],
             ['Ցածր արժեքով երթեր', [num(d.min_trip_revenue) > 0 ? 'Երթը, որի ապրանքի արժեքը ' + fmt(d.min_trip_revenue) + NB + 'դրամից պակաս է, նշվում է՝ այն կարելի է տանել հաջորդ օրը։' : '']],
             ['Ճանապարհներ', [kmSource(m) ? capFirst(kmSource(m)) + '։' : '',
                 m.unsnapped ? pl(m.unsnapped, 'խանութ') + ' ճանապարհից ' + fmt(m.snap_km, 1) + NB + 'կմ-ից հեռու է՝ դրանց հեռավորությունը հաշվվում է ուղիղ գծով × ' + fmt(m.detour, 2) + '։' : '']],
@@ -3545,7 +3587,12 @@
             // фильтр — только свой (до сборки или изменённый тут): иначе сервер берёт фильтр плана, а не копию этой вкладки
             const body = { date: state.day, trucks };
             if (!state.data.plan || agentsDirty()) body.agents_off = [...agentsOff()];
-            const data = await api('POST', '/api/routes/dispatch/build', body);
+            let data;
+            try { data = await api('POST', '/api/routes/dispatch/build', body); } catch (e) {
+                // №78: новый фильтр менеджеров снял бы точки загруженного рейса — спросить и собрать с подтверждением
+                if (!(e.data && e.data.loaded_confirm === true && window.confirm(e.message))) throw e;
+                data = await api('POST', '/api/routes/dispatch/build', { ...body, confirm_loaded: true });
+            }
             state.geoChanged = null;
             state.agentsPick = null;
             setBusy(false);
@@ -3571,6 +3618,10 @@
             return data;
         } catch (e) {
             setBusy(false);
+            // №78: правка загруженного рейса — товар уже в машине: спросить и повторить с подтверждением
+            if (e.data && e.data.loaded_confirm === true && !body.confirm_loaded && window.confirm(e.message)) {
+                return edit({ ...body, confirm_loaded: true }, okText);
+            }
             render();
             showActionError(e);
             return null;

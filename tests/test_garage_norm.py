@@ -365,7 +365,8 @@ def test_public_allowlist_covers_norm_and_basemap_only():
         '/favicon.ico', '/static/css/tokens.css', '/static/css/base.css', '/static/js/base.js', '/static/css/routes.css',
         '/static/css/routes_garage.css', '/static/js/routes_garage.js', '/static/js/routes_basemap.js',
         '/static/css/routes_live.css', '/static/js/routes_live.js',    # карта машин «Մեքենաները առցանց» (№76)
-        '/static/img/yandex_maps_logo_ru.svg'))                         # её подложка — Яндекс, логотип обязателен
+        '/static/img/yandex_maps_logo_ru.svg',                          # её подложка — Яндекс, логотип обязателен
+        '/static/css/routes_warehouse.css', '/static/js/routes_warehouse.js'))   # склад «Պահեստ» (№78)
 
 
 def test_garage_page_tab_and_basemap_without_yandex_key(dashboard, monkeypatch):

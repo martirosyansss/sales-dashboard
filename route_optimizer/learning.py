@@ -1667,16 +1667,20 @@ def unload_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop],
 
 
 def load_obs(day: date, actual: ac.DayActual, stops: Sequence[ac.PlanStop] = (),
-             plan: Sequence[PlanTrip] = ()) -> list[LoadObs]:
+             plan: Sequence[PlanTrip] = (), preloaded: bool = False) -> list[LoadObs]:
     """Стоянка на складе перед рейсом (видно прибытие, не дольше actuals.MAX_LOAD_MIN и не короче LOAD_MIN_STAY — проезд
     через склад) без собственного ожидания плана (planned_wait по плановому рейсу _planned_trip); после вычета — тоже
-    не короче LOAD_MIN_STAY. Рейс, перед загрузкой которого по плану обед на складе, не учитывается (обед — в стоянке)."""
+    не короче LOAD_MIN_STAY. Рейс, перед загрузкой которого по плану обед на складе, не учитывается (обед — в стоянке).
+    preloaded — день вне сезона утренней погрузки (№78): первый рейс дня загружен с вечера, стоянка перед ним — не загрузка
+    (учатся только рейсы, у которых по правилу была загрузка)."""
     by_key = {s.key: s for s in stops}
     served = dict(actual.served)
     out = []
     for n, t in enumerate(actual.trips):
         arrive = t.arrive_depot
         if arrive is None or t.depart is None or t.loaded_kg <= 0 or t.load_min < LOAD_MIN_STAY:   # type: ignore[operator]
+            continue
+        if preloaded and n == 0:
             continue
         cids = {by_key[k].customer_id for k, i in served.items() if i in t.visits and k in by_key
                 and by_key[k].customer_id is not None}

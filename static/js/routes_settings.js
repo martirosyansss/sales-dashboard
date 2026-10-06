@@ -57,6 +57,17 @@
         { title: 'Առաքման մեքենաներ', items: [
             { key: 'truck_work_start', label: 'Մեքենան մեկնում է', type: 'time' },
             { key: 'truck_work_end', label: 'Մեքենան վերադառնում է մինչև', type: 'time', hint: 'չհասցնող երթերի համար՝ «անհրաժեշտ է ևս մեկ մեքենա»' },
+            // запас в конце дня (ответ владельца №78): сборка возвращает машины на столько раньше конца дня
+            { key: 'truck_end_reserve_min', label: 'Պահուստ օրվա վերջում, րոպե', min: 0, max: 120, step: 1,
+                hint: 'Երթերը կազմելիս մեքենան վերադառնում է ավարտից այսքան րոպե շուտ (18:00 և 30՝ մինչև 17:30)։ Պահուստի ժամին վերադարձը ուշացում չէ։ 0՝ առանց պահուստի' },
+            // погрузка по сезону (№78): в сезон первый рейс грузится утром, вне сезона машины загружены с вечера
+            // машина отдельного рейса (№78, ответ 20): снять лишнюю машину — только если ֏ дня растёт не больше
+            { key: 'solo_spare_max_pct', label: 'Առանձին երթի մեքենա՝ լրացուցիչ մեքենայից հրաժարվել, եթե ծախսն աճում է ոչ ավելի, քան, %', min: 0, max: 100, step: 1,
+                hint: 'Առանձին երթից հետո մեքենան վերադառնում է, բեռնվում և տանում է սովորական խանութներ, եթե այդպես օրվա դիզելը և մաշվածքը աճում են ոչ ավելի, քան այսքան տոկոս։ Հակառակ դեպքում լրացուցիչ մեքենան մնում է' },
+            { key: 'morning_loading_from', label: 'Առավոտյան բեռնման սեզոն՝ սկսած', type: 'mmdd',
+                hint: 'ՕՕ.ԱԱ, օրինակ՝ 15.11։ Սեզոնին առաջին երթը բեռնվում է առավոտյան, սեզոնից դուրս մեքենաները բեռնված են նախորդ երեկոյան և մեկնում են օրվա սկզբին։ Երկրորդ երթը միշտ բեռնվում է' },
+            { key: 'morning_loading_to', label: 'Առավոտյան բեռնման սեզոն՝ մինչև (ներառյալ)', type: 'mmdd',
+                hint: 'օրինակ՝ 15.03։ 01.01-ից 31.12՝ միշտ առավոտյան' },
             { key: 'truck_overtime_end', label: 'Բացառիկ դեպքում մեքենան վերադառնում է ոչ ուշ, քան', type: 'time',
               hint: '«Առաքում» էջի «Տանել …-ից հետո» կոճակը — միայն բացառիկ օրերին' },
             // обед водителей в пути (ответ владельца №61): программа сама вставляет паузу в рейс
@@ -210,6 +221,13 @@
         if (!inArmenia(a, b) && inArmenia(b, a)) { [a, b] = [b, a]; swapped = true; }
         if (!inArmenia(a, b)) return { error: 'Կետը Հայաստանից դուրս է՝ լայնությունը պետք է լինի 38.8-ից մինչև 41.4, երկայնությունը՝ 43.4-ից մինչև 46.7' };
         return { lat: round(a, 6), lon: round(b, 6), swapped };
+    }
+
+    // день года (сезон погрузки, №78): в поле — «15.11» (ՕՕ.ԱԱ), в настройках — «11-15» (ММ-ДД)
+    const mdShow = (v) => /^\d{2}-\d{2}$/.test(String(v || '')) ? v.slice(3) + '.' + v.slice(0, 2) : '';
+    function mdRead(v) {
+        const m = /^\s*(\d{1,2})\s*[./\-]\s*(\d{1,2})\s*$/.exec(String(v || ''));
+        return m ? m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0') : null;
     }
 
     function normTime(v) {
@@ -1490,6 +1508,14 @@
             return h('div', { class: 'rt-field' }, h('label', { for: id, text: it.label }), inp, err);
         }
         if (it.kind === 'kinds') return kindsField(it, s, err);
+        if (it.type === 'mmdd') {
+            const md = h('input', { class: 'rt-input rt-num', id, type: 'text', inputmode: 'numeric', autocomplete: 'off', maxlength: 5,
+                value: mdShow(s[it.key]), placeholder: '15.11', dataset: { norm: it.key, md: '1' } });
+            const mdHint = it.hint ? h('div', { class: 'rt-field-hint', id: id + '_h', text: it.hint }) : null;
+            if (mdHint) md.setAttribute('aria-describedby', mdHint.id);
+            reg(['settings.' + it.key], md, err, it.label);
+            return h('div', { class: 'rt-field' }, h('div', { class: 'rt-field-row' }, h('label', { for: id, text: it.label }), md), mdHint, err);
+        }
         const isTime = it.type === 'time';
         const inp = h('input', {
             class: 'rt-input' + (isTime ? ' rt-num' : ''), id, type: isTime ? 'text' : 'number',
@@ -1864,6 +1890,12 @@
         if ($('rsTrafficMode')) s.traffic_mode = $('rsTrafficMode').value;
         document.querySelectorAll('#rsForm [data-norm]').forEach(inp => {
             const key = inp.dataset.norm;
+            if (inp.dataset.md) {   // №78: «15.11» → «11-15»; несуществующую дату отсечёт сервер
+                const v = mdRead(inp.value);
+                if (!v) errors['settings.' + key] = 'Գրեք ամսաթիվը ՕՕ.ԱԱ ձևաչափով, օրինակ՝ 15.11';
+                else s[key] = v;
+                return;
+            }
             if (inp.dataset.time) {
                 const v = normTime(inp.value);
                 if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) errors['settings.' + key] = 'Գրեք ժամը ԺԺ:ՐՐ ձևաչափով, օրինակ՝ 09:00';

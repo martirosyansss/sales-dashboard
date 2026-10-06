@@ -34,7 +34,8 @@
   нет — запасная по прямой × извилистость, и ETA помечен eta_source «model»); у каждого магазина — время №50/№60
   (Road.stay: введённое/выученное по GPS, иначе норма на точку + на тонну; у магазина, где машина уже стоит, — остаток);
   обед (№61), если ещё не был: после разгрузки не раньше начала окна, а если перегон кончается позже конца окна —
-  в дороге; рейс ещё не уехал — через склад, загрузка (настройки) и не раньше планового выезда. Машина в STOP_RADIUS_M от
+  в дороге; рейс ещё не уехал — через склад, загрузка (настройки; первый рейс вне сезона утренней погрузки, №78, — без
+  неё: загружен с вечера) и не раньше планового выезда. Машина в STOP_RADIUS_M от
   магазина — «на месте», ETA = сейчас. Опоздание = ETA − плановое ETA (прогноз сборки «Развоза»);
 - возвращение на склад — ETA прихода на склад после оставшихся точек рейса, на котором машина сейчас (тот же расчёт);
 
@@ -135,6 +136,8 @@ class TruckSpec:
     empty_l100: float | None = None
     full_l100: float | None = None
     center_ok: bool | None = None
+    # магазины плана этой машины, куда она въезжает в малый центр по правилу магазина (№78): у них тревоги «центр» нет
+    center_customers: frozenset[int] = frozenset()
 
     @property
     def norm_l100(self) -> float | None:
@@ -197,12 +200,15 @@ class PlanTrip:
     customers: tuple[int, ...]
     etas: Mapping[int, datetime]
     depart: datetime | None = None
+    preloaded: bool = False   # №78: загружен с вечера (вне сезона первый рейс машины, не рейс заказов дня) — без загрузки
 
 
-def plan_trips(draft_trips: Sequence[Sequence[int]], prediction: Mapping[str, Any] | None, day: date) -> list[PlanTrip]:
+def plan_trips(draft_trips: Sequence[Sequence[int]], prediction: Mapping[str, Any] | None, day: date,
+               preloaded: bool = False) -> list[PlanTrip]:
     """Рейсы машины из черновика «Развоза» (клиенты по порядку) и прогноза сборки (prediction['trucks'][машина]:
     trips — depart «HH:MM», stops — [[клиент, ETA]]). ETA клиента — из прогноза (первое появление); выезд рейса — из
-    прогноза, если число рейсов то же (логист не менял рейсы после сборки), иначе неизвестен."""
+    прогноза, если число рейсов то же (логист не менял рейсы после сборки), иначе неизвестен. preloaded — первый рейс
+    загружен с вечера (№78, правило — dispatch._timeline)."""
     midnight = datetime(day.year, day.month, day.day, tzinfo=YEREVAN)
 
     def at(text: Any) -> datetime | None:
@@ -216,7 +222,8 @@ def plan_trips(draft_trips: Sequence[Sequence[int]], prediction: Mapping[str, An
                     and (e := at(c[1])) is not None:
                 etas[c[0]] = e
     same = len(pred) == len(draft_trips)
-    return [PlanTrip(tuple(stops), {c: etas[c] for c in stops if c in etas}, at(pred[j].get('depart')) if same else None)
+    return [PlanTrip(tuple(stops), {c: etas[c] for c in stops if c in etas}, at(pred[j].get('depart')) if same else None,
+                     preloaded and j == 0)
             for j, stops in enumerate(draft_trips)]
 
 
@@ -532,15 +539,24 @@ def gps_alerts(devices: Sequence[tuple[datetime, Any]], live: bool) -> list[dict
     return out
 
 
-def center_alerts(pts: Sequence[Fix], rules: Rules, truck: TruckSpec, live: bool) -> list[dict[str, Any]]:
-    """Машина без права въезда (center_ok False) в границе малого центра: подряд не меньше CENTER_MIN_POINTS точек."""
+def center_alerts(pts: Sequence[Fix], rules: Rules, truck: TruckSpec, live: bool,
+                  stops: Sequence[Mapping[str, Any]] = ()) -> list[dict[str, Any]]:
+    """Машина без права въезда (center_ok False) в границе малого центра: подряд не меньше CENTER_MIN_POINTS точек. Заезд,
+    в котором машина была у магазина с правилом «в центр машинам допуска» (№78, truck.center_customers; в STOP_RADIUS_M его
+    точки), — по правилу, без тревоги: заезд — все точки подряд в зоне, т.е. и подъезд по центру к магазину, и выезд из
+    него; другие заезды в центр в тот же день — тревога."""
     if truck.center_ok is not False or len(rules.center_zone) < 3:
         return []
+    ok = [(s['lat'], s['lon']) for s in stops if s.get('customer_id') in truck.center_customers
+          and s.get('lat') is not None and s.get('lon') is not None]
     out = []
     run: list[Fix] = []
     for i, f in enumerate(pts + [None]):   # type: ignore[operator]
         if f is not None and in_polygon(f.point, rules.center_zone):
             run.append(f)
+            continue
+        if ok and any(_near(x.point, p, ac.STOP_RADIUS_M) for x in run for p in ok):
+            run = []
             continue
         if len(run) >= CENTER_MIN_POINTS:
             out.append(_alert('center', run[0].at, run[-1].at, live and f is None, lat=run[0].lat, lon=run[0].lon))
@@ -635,7 +651,9 @@ def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Se
                 move(pos, depot)
             pos, at_depot = depot, True
             kg = math.fsum(float(x.get('weight_kg') or 0.0) for x in stops)
-            ready = t + timedelta(minutes=rules.load_min + rules.load_min_per_tonne * kg / 1000.0)
+            # №78: рейс, загруженный с вечера (вне сезона первый рейс машины), — без загрузки
+            load = 0.0 if k < len(plan) and plan[k].preloaded else rules.load_min + rules.load_min_per_tonne * kg / 1000.0
+            ready = t + timedelta(minutes=load)
             dep = plan[k].depart if k < len(plan) else None
             t = max(ready, dep) if dep is not None else ready
             rest(True)
@@ -753,7 +771,7 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
               + (contact_alerts(contacts, last_contact, now if open_now else None, started, end, rules)
                  if facts.get('device') is not None else [])   # старый APK (<2.2.0) шлёт пачками раз в 2–17 мин
               + gps_alerts(devices, open_now)
-              + center_alerts(pts, rules, truck, live and age is not None and age <= STALE_S))
+              + center_alerts(pts, rules, truck, live and age is not None and age <= STALE_S, stops))
     alerts.sort(key=lambda a: a['from'] or '')
     active = sorted({a['kind'] for a in alerts if a['active']})
 

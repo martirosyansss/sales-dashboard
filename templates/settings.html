@@ -797,8 +797,8 @@
                                         <td x-text="u.display_name || '—'"></td>
                                         <td>
                                             <span class="badge"
-                                                  :class="u.role === 'admin' ? 'bg-primary' : (u.role === 'garage' ? 'bg-info' : 'bg-secondary')"
-                                                  x-text="u.role === 'admin' ? 'Администратор' : (u.role === 'garage' ? 'Гараж' : 'Пользователь')"></span>
+                                                  :class="u.role === 'admin' ? 'bg-primary' : (u.role === 'garage' || u.role === 'warehouse' ? 'bg-info' : 'bg-secondary')"
+                                                  x-text="u.role === 'admin' ? 'Администратор' : (u.role === 'garage' ? 'Гараж' : (u.role === 'warehouse' ? 'Склад' : 'Пользователь'))"></span>
                                         </td>
                                         <td>
                                             <template x-if="u.role === 'admin'">
@@ -807,7 +807,10 @@
                                             <template x-if="u.role === 'garage'">
                                                 <span class="text-muted">— (только журнал гаража)</span>
                                             </template>
-                                            <template x-if="u.role !== 'admin' && u.role !== 'garage'">
+                                            <template x-if="u.role === 'warehouse'">
+                                                <span class="text-muted">— (только отметки погрузки «Պահեստ»)</span>
+                                            </template>
+                                            <template x-if="u.role !== 'admin' && u.role !== 'garage' && u.role !== 'warehouse'">
                                                 <span>
                                                     <template x-for="code in u.areas" :key="code">
                                                         <span class="badge bg-info bg-opacity-75 me-1" x-text="code"></span>
@@ -868,6 +871,7 @@
                             <select class="form-select" x-model="userForm.role">
                                 <option value="user">Пользователь (по территориям)</option>
                                 <option value="garage">Гараж (только журнал ремонтов и пробега)</option>
+                                <option value="warehouse">Склад (только отметки погрузки «Պահեստ»)</option>
                                 <option value="admin">Администратор (полный доступ)</option>
                             </select>
                         </div>
@@ -879,7 +883,7 @@
                             </label>
                             <input type="password" class="form-control" x-model="userForm.password"
                                    autocomplete="new-password" placeholder="Пароль">
-                            <div class="form-text" x-show="userForm.role === 'garage'">Для роли «Гараж» — не короче 10 символов (вход из интернета).</div>
+                            <div class="form-text" x-show="userForm.role === 'garage' || userForm.role === 'warehouse'">Для ролей «Гараж» и «Склад» — не короче 10 символов (вход из интернета).</div>
                         </div>
                         <div class="col-12" x-show="userForm.role === 'user'">
                             <label class="form-label d-flex justify-content-between align-items-center">

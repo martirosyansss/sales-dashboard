@@ -89,6 +89,12 @@
         <p id="rcsChoicesTitle" class="rcs-label" hidden></p>
         <div id="rcsVehicles" class="rcs-choices" role="group" aria-labelledby="rcsChoicesTitle" hidden></div>
         <p id="rcsVehicleHint" class="rt-field-hint"></p>
+        <!-- №78 (Ռամադա): выбранные машины допуска въезжают в малый центр ради этого магазина — только при «Միայն ընտրված» -->
+        <label id="rcsCenterRow" class="rcs-choice rcs-solo" hidden><input id="rcsCenter" type="checkbox" aria-describedby="rcsCenterHint"><span>Կենտրոն՝ թույլատրված մեքենաներին</span></label>
+        <p id="rcsCenterHint" class="rt-field-hint" hidden>Եթե խանութը փոքր կենտրոնում է, ընտրված մեքենաները կարող են մտնել կենտրոն միայն այս խանութի համար։ Մյուս խանութների համար կենտրոնի կանոնը նույնն է։</p>
+        <!-- №78 (Ռամադա): заказы магазина — отдельным рейсом, без других магазинов -->
+        <label class="rcs-choice rcs-solo"><input id="rcsSolo" type="checkbox" aria-describedby="rcsSoloHint"><span>Առանձին երթ</span></label>
+        <p id="rcsSoloHint" class="rt-field-hint">Այս խանութի պատվերները գնում են առանձին երթով՝ պահեստ → խանութ → պահեստ, առանց այլ խանութների։ Մեքենան այդ օրը կարող է կատարել նաև այլ երթեր։</p>
         <p class="rt-field-hint">Պահպանեք պայմաններն այստեղ, ապա «Առաքում» էջում սեղմեք «Վերակազմել երթերը», որ երթերը վերահաշվվեն։</p>
         <p id="rcsError" class="rt-ferr" role="alert"></p>
         <div class="rcs-actions">
@@ -348,7 +354,7 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=33"></script>
-<script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=11"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=35"></script>
+<script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=13"></script>
 <script src="{{ url_for('static', filename='js/routes_measurements.js') }}?v=4"></script>
 {% endblock %}

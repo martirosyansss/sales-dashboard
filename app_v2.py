@@ -185,10 +185,14 @@ db = DatabaseConnection()
 #               территории недоступны даже прямым запросом к API.
 #   - 'garage' — начальник гаража (ответ владельца №53): только журнал ремонтов и пробега
 #               «Ավտոտնակ» /routes/garage и его API (см. _enforce_garage); территорий нет.
+#   - 'warehouse' — склад (ответ владельца №78, 11–12): только отметки погрузки «Պահեստ» /routes/warehouse и её API
+#               (см. _enforce_warehouse); территорий нет; входит из интернета, как «Гараж».
 USERS_FILE = 'users.json'
-USER_ROLES = ('admin', 'user', 'garage')
+USER_ROLES = ('admin', 'user', 'garage', 'warehouse')
 GARAGE_ROLE = 'garage'
-GARAGE_MIN_PASSWORD = 10   # роль «Гараж» входит из интернета (№53): пароль не короче 10 символов
+WAREHOUSE_ROLE = 'warehouse'
+PUBLIC_ROLES = (GARAGE_ROLE, WAREHOUSE_ROLE)   # входят из интернета (туннель), видят только свою страницу
+GARAGE_MIN_PASSWORD = 10   # роли из интернета (№53, №78): пароль не короче 10 символов
 # Весь доступ к users.json — под одной блокировкой процесса (waitress — потоки одного процесса): load_users, save_users
 # и каждое «прочитать → изменить → записать» (API пользователей, выход «Гаража», пересчёт хэша) целиком внутри неё —
 # иначе параллельная запись вернула бы удалённого пользователя или потеряла чужое изменение. Долгое (PBKDF2) — снаружи.
@@ -335,6 +339,8 @@ def _inject_auth_context():
         'current_username': current_username(),
         'is_admin': bool(u) and u.get('role') == 'admin',
         'is_garage': bool(u) and u.get('role') == GARAGE_ROLE,
+        # «Гараж» и «Склад» (№78) — с телефона: короткая шапка без меню, армянский, без библиотек дашборда
+        'is_public_role': bool(u) and u.get('role') in PUBLIC_ROLES,
     }
 
 
@@ -439,6 +445,29 @@ def _enforce_garage():
     return redirect(_GARAGE_PAGE)
 
 
+# ---- Роль 'warehouse': только отметки погрузки «Պահեստ» (№78, default-deny) ---------------------------
+# Страница (GET) и её API (GET и POST) — больше ничего: ни «Развоза», ни Բեռնագիր дашборда, ни карты машин. Границы пути —
+# по сегменту ('/api/routes/warehouse-x' не совпадает). Всё прочее — 403 JSON или переход на страницу склада.
+_WAREHOUSE_PAGE = '/routes/warehouse'
+_WAREHOUSE_API = '/api/routes/warehouse'
+ROLE_HOME = {GARAGE_ROLE: _GARAGE_PAGE, WAREHOUSE_ROLE: _WAREHOUSE_PAGE}   # куда ведёт вход роли из интернета
+
+
+def _warehouse_path_allowed(path: str, method: str) -> bool:
+    if method in ('GET', 'HEAD') and path == _WAREHOUSE_PAGE:
+        return True
+    return method in ('GET', 'HEAD', 'POST') and (path == _WAREHOUSE_API or path.startswith(_WAREHOUSE_API + '/'))
+
+
+def _enforce_warehouse():
+    """Запрос роли 'warehouse': разрешённое — дальше, остальное — 403 (API) или на страницу склада."""
+    if _warehouse_path_allowed(request.path, request.method):
+        return None
+    if _wants_json():
+        return jsonify({'success': False, 'error': 'Մուտքն արգելված է'}), 403
+    return redirect(_WAREHOUSE_PAGE)
+
+
 # ---- Журнал гаража из интернета (№53): что открыто на публичном хосте туннеля ----------------------------
 # Снаружи (courier.is_public: Host araqich.orix.am или заголовок Cloudflare) кроме API терминалов — только вход и
 # выход, страница журнала гаража, её API и ровно та статика, которую грузят routes_garage.html и base_v2.html
@@ -451,10 +480,12 @@ _PUBLIC_STATIC = frozenset((
     '/static/js/routes_basemap.js',   # routes_garage.html: подложка карты дня «Նորմ և փաստ» (без ключа Яндекса)
     '/static/css/routes_live.css', '/static/js/routes_live.js',                               # routes_live.html (№76)
     '/static/img/yandex_maps_logo_ru.svg',   # логотип Яндекса на карте машин (подложка Яндекса, обязателен по условиям)
+    '/static/css/routes_warehouse.css', '/static/js/routes_warehouse.js',                     # routes_warehouse.html (№78)
 ))
 # API журнала и карты машин (№76) снаружи — только простые сегменты (путь уже раскодирован сервером): без '..',
 # '//', '%', '\', регистра.
 _PUBLIC_GARAGE_API_RE = re.compile(r'/api/routes/(?:garage|live)(?:/[a-z0-9_-]+)*')
+_PUBLIC_WAREHOUSE_API_RE = re.compile(r'/api/routes/warehouse(?:/[a-z0-9_-]+)*')   # склад (№78) — так же
 
 
 def _public_path_allowed(path: str, method: str) -> bool:
@@ -466,6 +497,8 @@ def _public_path_allowed(path: str, method: str) -> bool:
         return method == 'POST'
     if path in (_GARAGE_PAGE, _LIVE_PAGE) or _PUBLIC_GARAGE_API_RE.fullmatch(path):
         return _garage_path_allowed(path, method)
+    if path == _WAREHOUSE_PAGE or _PUBLIC_WAREHOUSE_API_RE.fullmatch(path):
+        return _warehouse_path_allowed(path, method)
     return False
 
 
@@ -555,14 +588,17 @@ def _auth_and_scope_gate():
         return _reject_unauthenticated()
 
     role = user.get('role')
-    # Снаружи — только сессия «Гаража»; любая другая (например, роль сменили после входа) — 404, дашборд не виден.
-    if role != GARAGE_ROLE and courier.is_public_request(request):
+    # Снаружи — только сессии «Гаража» и «Склада» (№78); любая другая (например, роль сменили после входа) — 404, дашборд не
+    # виден. Чужая страница своей роли снаружи — запрет её роли ниже (403 / на свою страницу).
+    if role not in PUBLIC_ROLES and courier.is_public_request(request):
         return courier.not_found()
     g.user_role = role   # роль вошедшего — разделам (route_optimizer: удалённые записи журнала гаража — администратору)
     if role == 'admin':
         return None  # полный доступ
     if role == GARAGE_ROLE:
         return _enforce_garage()
+    if role == WAREHOUSE_ROLE:
+        return _enforce_warehouse()
 
     return _enforce_restricted(user)
 
@@ -765,10 +801,10 @@ def login():
             password_ok = check_password_hash(stored_hash, password)
         # Снаружи входит только «Гараж» с паролем не короче GARAGE_MIN_PASSWORD; прочим — та же общая ошибка, что и
         # при неверном пароле (хэш уже проверен — время то же), и попытка идёт в счёт блокировки.
-        if public and user and (user.get('role') != GARAGE_ROLE or len(password) < GARAGE_MIN_PASSWORD):
+        if public and user and (user.get('role') not in PUBLIC_ROLES or len(password) < GARAGE_MIN_PASSWORD):
             logger.warning('[Auth] Вход из интернета не разрешён: %.64r (роль %s, пароль %s%s), IP %s', username,
                            user.get('role'), 'верный' if password_ok else 'неверный',
-                           '' if user.get('role') != GARAGE_ROLE else ', короче 10 символов', ip)
+                           '' if user.get('role') not in PUBLIC_ROLES else ', короче 10 символов', ip)
             user = None
 
         if user and password_ok:
@@ -776,8 +812,8 @@ def login():
             user = _rehash_if_outdated(username, user, password)
             _stamp_session(session, username, user)
             logger.info('[Auth] Вход: %.64r (роль %s), IP %s, %s', username, user.get('role'), ip, where)
-            if user.get('role') == GARAGE_ROLE:
-                target = _GARAGE_PAGE   # начальник гаража видит только журнал гаража
+            if user.get('role') in ROLE_HOME:
+                target = ROLE_HOME[user['role']]   # гараж — только журнал гаража, склад — только отметки погрузки
             elif user.get('role') != 'admin':
                 # Ограниченного пользователя всегда ведём на его территориальную страницу.
                 target = '/areas'
@@ -794,8 +830,8 @@ def login():
     u = current_user()
     if u and not public:
         return redirect('/')
-    if u and u.get('role') == GARAGE_ROLE:
-        return redirect(_GARAGE_PAGE)   # снаружи '/' закрыт; прочие сессии снаружи — просто форма входа
+    if u and u.get('role') in ROLE_HOME:
+        return redirect(ROLE_HOME[u['role']])   # снаружи '/' закрыт; прочие сессии снаружи — просто форма входа
     return render_template('login.html', next=next_url, public=public)
 
 
@@ -808,7 +844,7 @@ def logout():
     uname = current_username() if user else None
     where = 'интернет' if courier.is_public_request(request) else 'офис'
     revoked = True
-    if uname and user.get('role') == GARAGE_ROLE:
+    if uname and user.get('role') in PUBLIC_ROLES:
         with _USERS_LOCK:
             users = load_users()
             if uname in users:
@@ -8835,7 +8871,8 @@ def api_users_list():
 def api_users_save():
     """Создать или обновить пользователя.
 
-    Тело: {username, password?, role, areas[], display_name}. Роль: admin | user | garage (у гаража территорий нет).
+    Тело: {username, password?, role, areas[], display_name}. Роль: admin | user | garage | warehouse (у гаража и склада
+    территорий нет).
     Для нового пользователя пароль обязателен; при обновлении — только если задан.
     """
     if not is_admin():
@@ -8846,7 +8883,7 @@ def api_users_save():
         return jsonify({'success': False, 'error': 'Не указан логин'}), 400
 
     role = data.get('role') if data.get('role') in USER_ROLES else 'user'
-    raw_areas = [] if role == GARAGE_ROLE else (data.get('areas') or [])   # у гаража территорий нет
+    raw_areas = [] if role in PUBLIC_ROLES else (data.get('areas') or [])   # у гаража и склада территорий нет
     if not isinstance(raw_areas, list):
         raw_areas = []
     areas = []
@@ -8860,17 +8897,18 @@ def api_users_save():
     if role == 'user' and not areas:
         return jsonify({'success': False,
                         'error': 'Для пользователя нужно выбрать хотя бы одну территорию'}), 400
-    if role == GARAGE_ROLE and password and len(password) < GARAGE_MIN_PASSWORD:
-        return jsonify({'success': False, 'error': f'Пароль для роли «Гараж» — не короче {GARAGE_MIN_PASSWORD} '
+    title = {GARAGE_ROLE: '«Гараж»', WAREHOUSE_ROLE: '«Склад»'}.get(role)
+    if role in PUBLIC_ROLES and password and len(password) < GARAGE_MIN_PASSWORD:
+        return jsonify({'success': False, 'error': f'Пароль для роли {title} — не короче {GARAGE_MIN_PASSWORD} '
                                                    'символов (вход из интернета)'}), 400
 
     new_hash = generate_password_hash(password, method='pbkdf2:sha256') if password else None   # ≈ 0,3 с — вне блокировки
     with _USERS_LOCK:   # прочитать → изменить → записать — целиком под блокировкой users.json
         users = load_users()
         existing = users.get(username)
-        # Стал «Гаражом» без нового пароля — длину прежнего не проверить: нужен новый.
-        if existing is not None and role == GARAGE_ROLE and existing.get('role') != GARAGE_ROLE and not password:
-            return jsonify({'success': False, 'error': f'При смене роли на «Гараж» задайте новый пароль — не короче '
+        # Стал «Гаражом» или «Складом» без нового пароля — длину прежнего не проверить: нужен новый.
+        if existing is not None and role in PUBLIC_ROLES and existing.get('role') != role and not password:
+            return jsonify({'success': False, 'error': f'При смене роли на {title} задайте новый пароль — не короче '
                                                        f'{GARAGE_MIN_PASSWORD} символов (вход из интернета)'}), 400
 
         if existing is None:
