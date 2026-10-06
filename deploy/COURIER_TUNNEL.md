@@ -215,7 +215,7 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
 | `/static/css/routes_live.css`, `/static/js/routes_live.js`, `/static/img/yandex_maps_logo_ru.svg` | GET | статика карты машин (№76; подложка Яндекса — логотип обязателен) |
 | `/favicon.ico`, `/static/css/tokens.css`, `/static/css/base.css`, `/static/css/routes.css`, `/static/css/routes_garage.css`, `/static/js/base.js`, `/static/js/routes_garage.js`, `/static/js/routes_basemap.js` | GET | статика страницы журнала (у страницы входа своей нет — CDN; Leaflet карты дня «Նորմ և փաստ» — тоже CDN) |
 | `/routes/warehouse` | GET | склад «Պահեստ» (№78): отметки «Բեռնված է» по утверждённому плану (сессия роли «Склад»; без входа — на `/login`) |
-| `/api/routes/warehouse`, `/api/routes/warehouse/…` | GET, POST | API склада (POST — с CSRF, как в офисе) |
+| `/api/routes/warehouse`, `/api/routes/warehouse/…` | GET, POST | API склада (POST — с CSRF, как в офисе); Բեռնագիր машины — `/api/routes/warehouse/waybill`, лист рисует общий `base.js` — новых правил не нужно |
 | `/static/css/routes_warehouse.css`, `/static/js/routes_warehouse.js` | GET | статика страницы склада (прочая — общая с журналом: tokens, base, routes) |
 | `/api/courier/v1/…` | как раньше | API терминалов |
 

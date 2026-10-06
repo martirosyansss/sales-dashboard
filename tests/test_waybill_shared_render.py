@@ -1,0 +1,61 @@
+# -*- coding: utf-8 -*-
+"""Лист «Բեռնագիր» — один рендер на две страницы: window.RtWaybill в static/js/base.js (его грузят base_v2.html обеих и он
+открыт снаружи, araqich.orix.am) печатает и «Развоз», и склад «Պահեստ» (ответ владельца после №78). Своей копии рендера ни
+у одной страницы нет; склад берёт данные только своим API. Рендер — в node, если он есть (без node — пропуск).
+
+Запуск:  python -m pytest tests/test_waybill_shared_render.py -q
+"""
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+JS = ROOT / 'static' / 'js'
+
+
+def _read(name):
+    return (JS / name).read_text(encoding='utf-8')
+
+
+def test_one_renderer_for_both_pages():
+    base, dispatch, warehouse = _read('base.js'), _read('routes_dispatch.js'), _read('routes_warehouse.js')
+    assert base.count('window.RtWaybill = ') == 1 and 'function waybillHtml(t, d, wb)' in base
+    for page in (dispatch, warehouse):
+        assert 'function waybillHtml' not in page and 'ԲԵՌՆԱԳԻՐ' not in page and 'window.RtWaybill.html(' in page
+    assert 'const { name: wbName, notes: wbNotes } = window.RtWaybill;' in dispatch       # Excel — те же строки
+    assert '/api/routes/warehouse/waybill?' in warehouse and '/api/routes/dispatch' not in warehouse
+    tpl = (ROOT / 'templates' / 'base_v2.html').read_text(encoding='utf-8')
+    assert "filename='js/base.js') }}?v=2\"" in tpl                                    # новый base.js — мимо кэша
+    page = (ROOT / 'templates' / 'routes_warehouse.html').read_text(encoding='utf-8')
+    assert "routes_warehouse.js') }}?v=4" in page and "routes_warehouse.css') }}?v=3" in page
+
+
+NODE = r'''
+global.window = {};
+require(process.argv[1]);
+const W = window.RtWaybill;
+const row = { code: '0101', name: 'Կաթ <1լ>', unit: 'հատ', qty: 30, pack: 12, packs: 2, loose: 6, kg: 31.5, unknown: false };
+const wb = { rev: 7, driver: 'Արամ', helper: null, trips: [
+    { id: 4, no: 1, loading_start: '08:10', depart: '08:40', stops: 3, kg: 31.5, orders: 2, invoiced: 2, rows: [row] },
+    { id: 9, no: 2, loading_start: '12:00', depart: '12:20', stops: 1, kg: 0, orders: 1, invoiced: 0, rows: [] }] };
+process.stdout.write(JSON.stringify({ html: W.html({ car_code: 'CAR1', name: 'HOWO' }, { day: '2026-10-06', weekday: 2 }, wb),
+    unknown: W.name({ unknown: true, product_id: 77 }), notes: W.notes(wb.trips[1]) }));
+'''
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='нет node')
+def test_renderer_output():
+    out = subprocess.run(['node', '-e', NODE, str(JS / 'base.js')], capture_output=True, check=True, timeout=60)
+    got = json.loads(out.stdout.decode('utf-8'))
+    html = got['html']
+    assert html.startswith('<!doctype html><html lang="hy">') and html.endswith('</body></html>')
+    assert html.count('<section class="sheet"><h1>ԲԵՌՆԱԳԻՐ</h1>') == 2
+    assert '<b>HOWO · CAR1</b> · երեքշաբթի, 06.10.2026 · Երթ 1 / 2' in html
+    assert 'Կաթ &lt;1լ&gt;' in html and '<1լ>' not in html                              # с сервера — через esc
+    assert '2 փաթեթ + 6 հատ' in html and 'Վարորդ՝ <b>Արամ</b>' in html and 'պլան № 7' in html
+    assert 'Ապրանքներ չկան' in html
+    assert got['unknown'] == 'ERP-ում անհայտ ապրանք (ID 77)'
+    assert got['notes'] == ['Քանակները՝ պատվերներից․ ապրանքագրեր դեռ չկան։']

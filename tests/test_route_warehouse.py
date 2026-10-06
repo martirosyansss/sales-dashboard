@@ -252,6 +252,48 @@ def test_warehouse_goods_rows_of_trip(client, monkeypatch):
     assert client.get(f"/api/routes/warehouse/goods?date={DAY}&truck=CAR1&trip=x&rev=1").status_code == 400
 
 
+def test_warehouse_waybill_is_dispatch_waybill_of_approved_plan(client, monkeypatch):
+    """«Տպել բեռնագիրը» склада: ровно ответ Բեռնագիր «Развоза» той же машины и дня (общий _waybill_body; страница печатает
+    тем же рендером) плюс день недели; только утверждённый план (ответ 15), rev плана на странице; ERP до проверок не
+    читается."""
+    state = _setup(client, monkeypatch)
+    asked = []
+    products = {10: wb.Product(10, '0101', 'Կաթ 1լ', 'հատ', 1.05, 12)}
+
+    def loader(isns):
+        asked.append(sorted(isns))
+        return wb.Lines({i.upper(): ((10, 30.0),) for i in isns}, frozenset(), products)
+
+    state.waybill_loader = loader
+    d = _build(client, ('CAR1', 'CAR2'))
+    code = d['plan']['trucks'][0]['car_code']
+    get = lambda **q: client.get('/api/routes/warehouse/waybill', query_string={'date': DAY, 'truck': code, **q})  # noqa
+    r = get(rev=d['rev'])
+    assert r.status_code == 409 and r.get_json()['error'] == views.WAREHOUSE_STALE      # не утверждён
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'approve'}).get_json()
+    r = get(rev=d['rev'])
+    assert r.status_code == 200, r.get_json()
+    got = r.get_json()
+    same = client.get('/api/routes/dispatch/waybill', query_string={'date': DAY, 'truck': code, 'rev': d['rev']}).get_json()
+    assert got == {**same, 'weekday': date.fromisoformat(DAY).isoweekday()}
+    truck = next(t for t in d['plan']['trucks'] if t['car_code'] == code)
+    assert (got['rev'], got['day'], [x['id'] for x in got['trips']]) == (d['rev'], DAY, [x['id'] for x in truck['trips']])
+    assert got['trips'][0]['rows'] and got['trips'][0]['rows'][0]['code'] == '0101'
+    asked.clear()
+    for q, status in (({'rev': d['rev'] - 1}, 409), ({'rev': d['rev'] + 1}, 409), ({'rev': d['rev'], 'truck': 'ZZZ'}, 409),
+                      ({}, 400), ({'rev': 'x'}, 400), ({'rev': '-1'}, 400), ({'rev': d['rev'], 'truck': ' '}, 400),
+                      ({'rev': d['rev'], 'truck': 'X' * 65}, 400), ({'rev': d['rev'], 'date': '2026-10-05'}, 400),
+                      ({'rev': d['rev'], 'date': 'x'}, 400)):
+        r = get(**q)
+        assert r.status_code == status, (q, r.get_json())
+        if status == 409:
+            assert r.get_json()['error'] == views.WAREHOUSE_STALE, q
+    assert asked == []                                                  # отказы — без чтения ERP
+    # утверждение сняли после открытия страницы — тот же rev уже не тот, а и с новым rev — 409 (план не утверждён)
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'unapprove'}).get_json()
+    assert get(rev=d['rev']).status_code == 409 and asked == []
+
+
 def test_reset_race_with_warehouse_mark_is_409(client, monkeypatch):
     """«Ջնջել երթերը» стирает ровно прочитанный черновик: склад успел отметить — 409, отметка цела."""
     state = _setup(client, monkeypatch)

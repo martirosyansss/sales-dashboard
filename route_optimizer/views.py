@@ -2582,18 +2582,26 @@ def api_dispatch_waybill() -> Any:
     truck = next((t for t in plan['trucks'] if t['car_code'] == car), None)
     if truck is None:
         return jsonify({'success': False, 'error': WAYBILL_NO_TRUCK, 'stale': True}), 409
+    logger.info('[Routes] Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
+    return jsonify(_waybill_body(state, dd, plan, truck))
+
+
+def _waybill_body(state: RoutesState, dd: _DispatchDay, plan: Mapping[str, Any],
+                  truck: Mapping[str, Any]) -> dict[str, Any]:
+    """Ответ Բեռնագիր машины плана дня (общий у «Развоза» и склада): рейсы с товаром (waybill.truck_waybill; строки
+    накладных и заказов — из ERP, только чтение), водитель и առաքիչ дня."""
     if state.waybill_loader is None:
         raise ErpError('Загрузчик строк заказов не подключён')
+    car = truck['car_code']
     lines = state.waybill_loader([o['isn'] for tr in truck['trips'] for s in tr['stops'] for o in s['orders']])
-    logger.info('[Routes] Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
-    seat = dp.crew_view(dd.draft, _crew(state, day, dd.bundle.trucks)[0]).get(car) or {'name': None, 'seat': False,
-                                                                                      'warn': None}
+    seat = dp.crew_view(dd.draft, _crew(state, dd.day, dd.bundle.trucks)[0]).get(car) or {'name': None, 'seat': False,
+                                                                                         'warn': None}
     # водитель — кто в этот день за рулём (№77: посаженный сборкой вместо водителя машины — с пометкой driver_seat); не
     # вышел (закреплённый рейс остался) — строка пустая, вписать от руки
-    return jsonify({'success': True, 'day': day.isoformat(), 'rev': dd.rev, **wb.truck_waybill(plan, car, lines),
-                    'driver': seat['name'] if seat['warn'] != 'absent' else None,
-                    **({'driver_seat': True} if seat['seat'] else {}),
-                    'helper': state.store.truck_drivers(day.isoformat(), 'helper')[0].get(car)})
+    return {'success': True, 'day': dd.day.isoformat(), 'rev': dd.rev, **wb.truck_waybill(plan, car, lines),
+            'driver': seat['name'] if seat['warn'] != 'absent' else None,
+            **({'driver_seat': True} if seat['seat'] else {}),
+            'helper': state.store.truck_drivers(dd.day.isoformat(), 'helper')[0].get(car)}
 
 
 DRIVER_NO_TRUCK = 'Մեքենան չի գտնվել — թարմացրեք էջը'
@@ -4445,6 +4453,34 @@ def api_warehouse_goods() -> Any:
     got = next(x for x in wb.truck_waybill(plan, car, lines)['trips'] if x['id'] == int(trip))
     keys = ('code', 'name', 'unit', 'qty', 'pack', 'packs', 'loose', 'kg', 'unknown')
     return jsonify({'success': True, 'kg': got['kg'], 'rows': [{k: r[k] for k in keys} for r in got['rows']]})
+
+
+@bp.get('/api/routes/warehouse/waybill')
+@_api
+def api_warehouse_waybill() -> Any:
+    """Բեռնագիր машины для склада (?date=&truck=&rev=): тот же ответ, что у «Развоза» (_waybill_body), — страница печатает
+    тот же документ; плюс weekday (у склада дня недели нет). Только утверждённый план (ответ 15); rev не тот или машины
+    нет — 409. API «Развоза» складу закрыт (app_v2: default-deny) — Բեռնագիր только здесь."""
+    state = _state()
+    bundle = _bundle(state)
+    day = _warehouse_day(bundle, request.args.get('date'))
+    car = (request.args.get('truck') or '').strip()
+    rev = request.args.get('rev') or ''
+    if day is None:
+        return _bad_request({'date': WAREHOUSE_BAD_DAY})
+    if not car or len(car) > 64 or not _REV_RE.match(rev):
+        return _bad_request({'_': WAREHOUSE_STALE})
+    dd = _load_day(state, bundle, day)
+    if int(rev) != dd.rev or dd.draft is None or dd.draft.approved is None:
+        return _conflict(WAREHOUSE_STALE)
+    if dd.ctx is None:
+        return _bad_request({'_': WAREHOUSE_NO_SETUP})
+    plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
+    truck = next((t for t in plan['trucks'] if t['car_code'] == car), None)
+    if truck is None:
+        return _conflict(WAREHOUSE_STALE)
+    logger.info('[Routes] Склад: Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
+    return jsonify({**_waybill_body(state, dd, plan, truck), 'weekday': day.isoweekday()})
 
 
 @bp.post('/api/routes/warehouse/loaded')

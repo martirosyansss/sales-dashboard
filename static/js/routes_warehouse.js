@@ -1,8 +1,10 @@
 /* «Պահեստ» /routes/warehouse — склад отмечает погрузку рейсов с телефона (ответ владельца №78).
    API: GET /api/routes/warehouse?date= (сегодня или следующий рабочий день: машины и рейсы утверждённого плана),
    GET /api/routes/warehouse/goods?date=&truck=&trip=&rev= (товар рейса), POST /api/routes/warehouse/loaded
-   {date, rev, trip, loaded}. rev — номер плана на странице: план изменился — 409, страница просит обновить.
-   Ответы сервера — по-армянски; всё с сервера выводится только через textContent. CSRF к fetch добавляет base_v2.html. */
+   {date, rev, trip, loaded}, GET /api/routes/warehouse/waybill?date=&truck=&rev= (Բեռնագիր машины — тот же лист, что у
+   «Развоза»: рендер window.RtWaybill из base.js). rev — номер плана на странице: план изменился — 409, страница просит
+   обновить. Ответы сервера — по-армянски; всё с сервера выводится только через textContent (лист Բեռնագիր — через esc
+   рендера). CSRF к fetch добавляет base_v2.html. */
 (function () {
     'use strict';
 
@@ -144,6 +146,70 @@
             goods(d, truck, tr));
     }
 
+    // ---------- Բեռնագիր машины (тот же документ, что печатает логист на «Развозе») ----------
+    // Окно — сразу по нажатию (открытое после ответа сервера браузер счёл бы всплывающим). Не открылось (телефон,
+    // блокировщик) — лист на этой же странице и печать её (printHere). Ответ сверяется с планом на экране после запроса:
+    // rev и рейсы машины не те — «план изменился, обновите», а не лист по другому плану.
+    async function printWaybill(truck, btn) {
+        if (state.busy || state.stale || !state.data || btn.getAttribute('aria-busy') === 'true') return;
+        const d = state.data;
+        let w = null;
+        try { w = window.open('', '_blank'); } catch (e) { w = null; }
+        if (w) {
+            w.document.write('<!doctype html><html lang="hy"><head><meta charset="utf-8"><title>Բեռնագիր</title></head>'
+                + '<body style="font-family:Segoe UI,Sylfaen,Arial,sans-serif;padding:24px">Բեռնագիրը պատրաստվում է…</body></html>');
+            w.document.close();
+        }
+        btn.setAttribute('aria-busy', 'true');
+        let wb, t;
+        try {
+            const q = new URLSearchParams({ date: d.day, truck: truck.car_code, rev: String(d.rev) });
+            wb = await api('GET', '/api/routes/warehouse/waybill?' + q);
+            const cur = state.data;
+            t = cur && cur.day === d.day ? cur.trucks.find(x => x.car_code === truck.car_code) : null;
+            const same = !!t && cur.rev === wb.rev && Array.isArray(wb.trips) && wb.trips.length === t.trips.length
+                && wb.trips.every((x, i) => x.id === t.trips[i].id);
+            if (!same) throw Object.assign(new Error('Պլանը փոխվել է — թարմացրեք էջը'), { status: 409 });
+        } catch (e) {
+            if (w) { try { w.close(); } catch (x) { /* уже закрыто */ } }
+            if (e.status === 409) markStale(); else showAlert(e.message, false);
+            return;
+        } finally {
+            btn.removeAttribute('aria-busy');
+        }
+        const html = window.RtWaybill.html({ car_code: t.car_code, name: t.name }, { day: wb.day, weekday: wb.weekday }, wb);
+        if (w && w.closed) return;            // окно закрыли, пока шёл запрос
+        if (w) {
+            w.document.open();
+            w.document.write(html);
+            w.document.close();
+            w.focus();
+            setTimeout(() => { try { w.print(); } catch (e) { /* окно закрыли раньше */ } }, 300);
+            return;
+        }
+        printHere(html);
+    }
+
+    // Печать без окна: лист — в теневом DOM узла #whPrint прямо в body (стили листа и страницы не смешиваются: body листа
+    // — :host узла), при печати виден только он (routes_warehouse.css, body.wh-printing). Узел остаётся до следующего листа:
+    // на телефоне print() не ждёт диалога, убрать лист сразу — напечатался бы пустой.
+    function printHere(html) {
+        let host = $('whPrint');
+        if (!host) {
+            host = h('div', { id: 'whPrint' });
+            host.attachShadow({ mode: 'open' });
+            document.body.append(host);
+        }
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const style = document.createElement('style');
+        style.textContent = Array.from(doc.querySelectorAll('style'), s => s.textContent).join('')
+            .replace(/(^|[{}])body\{/g, '$1:host{');
+        host.shadowRoot.replaceChildren(style, ...Array.from(doc.body.childNodes));
+        document.body.classList.add('wh-printing');
+        announce('Բեռնագիրը պատրաստ է տպելու');
+        setTimeout(() => window.print(), 50);
+    }
+
     function render() {
         renderDays();
         const d = state.data, list = $('whList');
@@ -160,10 +226,14 @@
         const done = trips.filter(t => t.loaded).length;
         $('whSummary').textContent = d.trucks.length + NB + 'մեքենա · ' + trips.length + NB + 'երթ · բեռնված՝ ' + done + ' / ' + trips.length;
         d.trucks.forEach(t => {
+            const pr = h('button', { type: 'button', class: 'wh-print', 'aria-label': 'Տպել բեռնագիրը՝ ' + (t.name || t.car_code) },
+                icon('fa-print'), 'Տպել բեռնագիրը');
+            pr.addEventListener('click', () => printWaybill(t, pr));
             list.append(h('section', { class: 'wh-truck', 'aria-label': t.name || t.car_code },
                 h('div', { class: 'wh-truck-head' }, h('h2', { class: 'wh-truck-name', text: t.name || t.car_code }),
                     t.name ? h('span', { class: 'wh-truck-code', text: t.car_code }) : null),
-                h('p', { class: 'wh-driver' }, icon('fa-id-card'), t.driver ? t.driver : 'վարորդը նշված չէ'),
+                h('div', { class: 'wh-truck-meta' },
+                    h('p', { class: 'wh-driver' }, icon('fa-id-card'), t.driver ? t.driver : 'վարորդը նշված չէ'), pr),
                 t.trips.map(tr => tripRow(d, t, tr))));
         });
     }

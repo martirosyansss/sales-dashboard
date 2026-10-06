@@ -12,11 +12,14 @@ from test_route_optimizer import _no_road_map  # noqa: E402,F401
 WH_PW = 'warehouse-pass-1'
 ALLOWED = [('/routes/warehouse', 'GET'), ('/routes/warehouse', 'HEAD'), ('/api/routes/warehouse', 'GET'),
            ('/api/routes/warehouse/goods', 'GET'), ('/api/routes/warehouse/loaded', 'POST'),
+           ('/api/routes/warehouse/waybill', 'GET'),
            ('/static/css/routes_warehouse.css', 'GET'), ('/static/js/routes_warehouse.js', 'GET')]
 DENIED = ['/routes/warehouse/', '/routes/warehouse-x', '/routes/warehousex', '/ROUTES/WAREHOUSE', '/routes//warehouse',
           '/api/routes/warehouse/', '/api/routes/warehouse-x', '/api/routes/warehousex/loaded',
           '/api/routes/warehouse/../dispatch', '/api/routes/warehouse/./loaded', '/api/routes/warehouse//loaded',
           '/api/routes/warehouse/Loaded', '/api/routes/warehouse/loaded\x00', '/api/routes/warehouse\\..\\users',
+          '/api/routes/warehouse/waybill/', '/api/routes/warehouse/Waybill', '/api/routes/warehouse/waybill.html',
+          '/api/routes/warehouse/../dispatch/waybill', '/api/routes/dispatch/waybill',
           '/static/css/routes_warehouse.css/', '/static/js/routes_warehouse.js\x00']
 
 
@@ -120,3 +123,20 @@ def test_users_api_accepts_warehouse_role(client, users, app_v2):
     assert r.status_code == 400 and '«Склад»' in r.get_json()['error']
     r = post({'username': 'u', 'role': 'warehouse'})                  # сменить роль на «Склад» без нового пароля — нет
     assert r.status_code == 400 and users['u']['role'] == 'user'
+
+
+@pytest.mark.parametrize('base', [LAN, PUBLIC])
+def test_warehouse_waybill_only_through_its_api(client, users, base):
+    """Բեռնագիր складу — только /api/routes/warehouse/waybill: запрос доходит до раздела (без машины — его 400, без плана —
+    его 409, не 403/404 гейта); /api/routes/dispatch/waybill закрыт, как и весь «Развоз»; чужая сессия снаружи — 404
+    (у «Гаража» — 403)."""
+    _session_as(client, 'wh1', base)
+    r = client.get('/api/routes/warehouse/waybill', base_url=base)
+    assert r.status_code == 400 and r.get_json()['success'] is False
+    r = client.get('/api/routes/warehouse/waybill?truck=CAR1&rev=1', base_url=base)
+    assert r.status_code == 409 and r.get_json()['conflict'] is True
+    r = client.get('/api/routes/dispatch/waybill?date=2026-10-03&truck=CAR1&rev=1', base_url=base)
+    assert r.status_code == (403 if base == LAN else 404)
+    for who, code in (('boss', 404), ('u', 404), ('garage1', 403)):   # «Гараж» снаружи свой, но склад ему — 403
+        _session_as(client, who, PUBLIC)
+        assert client.get('/api/routes/warehouse/waybill?truck=CAR1&rev=1', base_url=PUBLIC).status_code == code, who

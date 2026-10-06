@@ -3784,63 +3784,8 @@
         if (!same) throw wbStale();
         return { t, d: cur, wb };
     }
-    const wbName = (r) => r.unknown ? 'ERP-ում անհայտ ապրանք (ID ' + r.product_id + ')' : (r.name || '—');
-    const wbQty = (r) => fmt(r.qty, 4) + (r.unit ? NB + r.unit : '');
-    // «12 փաթեթ + 3 հատ» — для склада: упаковка «փաթեթ» из доп. единицы товара ERP
-    const wbPacks = (r) => !r.pack || r.packs === null ? '' : [r.packs ? fmt(r.packs) + NB + 'փաթեթ' : '',
-        r.loose ? fmt(r.loose) + NB + (r.unit || 'հատ') : ''].filter(Boolean).join(' + ');
-    function wbNotes(tr) {
-        const out = [];
-        if (tr.orders && tr.invoiced === tr.orders) out.push('Քանակները՝ ERP-ի ապրանքագրերից։');
-        else if (!tr.invoiced) out.push('Քանակները՝ պատվերներից․ ապրանքագրեր դեռ չկան։');
-        else out.push('Քանակները՝ ' + pl(tr.invoiced, 'պատվեր') + '՝ ապրանքագրից, ' + fmt(tr.orders - tr.invoiced) + '՝ պատվերից (ապրանքագիր դեռ չկա)։');
-        if (tr.split) out.push('Ներառում է ' + fmt(tr.split) + NB + 'խանութի մեծ պատվերի մասը․ այդ պատվերները տարվում են մի քանի երթով։');
-        if (tr.mixed) out.push('Ուշադրություն՝ ' + fmt(tr.mixed) + NB + 'պատվերի ապրանքագրում կա նաև պատվեր, որը այս երթերում չէ'
-            + ' (օրինակ՝ «այսօր չենք տանում»)․ ապրանքագրի ամբողջ ապրանքը հաշվված է այստեղ — ստուգեք քանակները։');
-        if (tr.unknown) out.push('Ուշադրություն՝ ' + pl(tr.unknown, 'ապրանք') + ' ERP-ի ցուցակում չի գտնվել (նշված է ID-ով)։');
-        return out;
-    }
-    function waybillHtml(t, d, wb) {
-        const dayText = (WD_NAME[d.weekday] || '') + ', ' + dateRu(d.day);
-        const made = new Date();
-        const madeText = dateRu(made.getFullYear() + '-' + String(made.getMonth() + 1).padStart(2, '0') + '-' + String(made.getDate()).padStart(2, '0'))
-            + ' ' + hhmm(made.getHours() * 60 + made.getMinutes());
-        let html = '<!doctype html><html lang="hy"><head><meta charset="utf-8"><title>Բեռնագիր ' + esc(t.car_code) + ' ' + esc(dateRu(d.day)) + '</title><style>'
-            + 'body{font-family:"Segoe UI",Sylfaen,"Noto Sans Armenian",Arial,sans-serif;color:#000;margin:0;padding:12mm;font-size:15px}'
-            + '.sheet{page-break-after:always;break-after:page}.sheet:last-child{page-break-after:auto;break-after:auto}'
-            + 'h1{font-size:24px;margin:0 0 4px;letter-spacing:.04em}.sub{font-size:15px;margin:0 0 4px}.sub b{font-size:17px}'
-            + 'table{width:100%;border-collapse:collapse;margin-top:10px}th,td{border:1px solid #000;padding:6px 8px;vertical-align:top;text-align:left}'
-            + 'th{font-size:13px;background:#eee}td.n{width:30px;text-align:center}td.c{width:64px;white-space:nowrap}'
-            + 'td.q{font-size:17px;font-weight:700;white-space:nowrap;text-align:right}td.p{white-space:nowrap}td.p small{color:#444}'
-            + 'td.kg{white-space:nowrap;text-align:right;width:80px}td.ok{width:34px}tfoot td{font-weight:700}'
-            + '.notes{margin:10px 0 0;padding-left:18px;font-size:13px}.sign{display:flex;gap:40px;margin-top:28px;font-size:15px}'
-            + '.sign div{flex:1;display:flex;flex-direction:column;justify-content:flex-end}.sign span{display:block;border-bottom:1px solid #000;height:26px}.made{margin-top:14px;font-size:12px;color:#444}'
-            + '.blank{display:inline-block;width:260px;border-bottom:1px solid #000;height:15px;vertical-align:bottom}'
-            + '@media screen{body{background:#fff}}'
-            + '</style></head><body>';
-        wb.trips.forEach(tr => {
-            html += '<section class="sheet"><h1>ԲԵՌՆԱԳԻՐ</h1>'
-                + '<p class="sub"><b>' + esc(truckLabel(t)) + '</b> · ' + esc(dayText) + ' · Երթ ' + tr.no + (wb.trips.length > 1 ? ' / ' + wb.trips.length : '') + '</p>'
-                + '<p class="sub">Բեռնում՝ ' + esc(tr.loading_start) + ' · մեկնում՝ ' + esc(tr.depart) + ' · ' + esc(pl(tr.stops, 'խանութ')) + '</p>'
-                + '<p class="sub">Վարորդ՝ ' + (wb.driver ? '<b>' + esc(wb.driver) + '</b>' + (wb.driver_seat ? ' (փոխարինում)' : '') : '<span class="blank"></span>')
-                + (wb.helper ? ' · Առաքիչ՝ <b>' + esc(wb.helper) + '</b>' : '') + '</p>'
-                + '<table><thead><tr><th>№</th><th>Կոդ</th><th>Ապրանք</th><th>Քանակ</th><th>Փաթեթ</th><th>Քաշ, կգ</th><th>✓</th></tr></thead><tbody>';
-            tr.rows.forEach((r, i) => {
-                html += '<tr><td class="n">' + (i + 1) + '</td><td class="c">' + esc(r.code) + '</td><td>' + esc(wbName(r)) + '</td>'
-                    + '<td class="q">' + esc(wbQty(r)) + '</td><td class="p">' + esc(wbPacks(r))
-                    + (r.pack && r.packs !== null ? ' <small>(' + esc(r.pack) + '-ական)</small>' : '') + '</td>'
-                    + '<td class="kg">' + esc(fmt(r.kg, 1)) + '</td><td class="ok"></td></tr>';
-            });
-            if (!tr.rows.length) html += '<tr><td colspan="7">Ապրանքներ չկան՝ պատվերներում տողեր չեն գտնվել։</td></tr>';
-            html += '</tbody><tfoot><tr><td colspan="5">Ընդամենը՝ ' + esc(pl(tr.rows.length, 'ապրանք')) + '</td><td class="kg">' + esc(fmt(tr.kg))
-                + '</td><td></td></tr></tfoot></table><ul class="notes">' + wbNotes(tr).map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>'
-                + '<div class="sign"><div>Բաց թողեց (պահեստապետ)<span></span></div><div>Ընդունեց (վարորդ)'
-                + (wb.driver ? '՝ ' + esc(wb.driver) : '') + '<span></span></div>'
-                + (wb.helper ? '<div>Ընդունեց (առաքիչ)՝ ' + esc(wb.helper) + '<span></span></div>' : '') + '</div>'
-                + '<p class="made">Կազմվել է՝ ' + esc(madeText) + ' · պլան № ' + esc(wb.rev) + '</p></section>';
-        });
-        return html + '</body></html>';
-    }
+    // лист печати, имя товара и примечания — общий рендер base.js (тот же документ у склада «Պահեստ»)
+    const { name: wbName, notes: wbNotes } = window.RtWaybill;
     async function printWaybill(code, btn) {
         if (wbBusy(btn) || state.busy) return;
         hideActionError();
@@ -3858,7 +3803,7 @@
         }
         if (w.closed) return;
         w.document.open();
-        w.document.write(waybillHtml(res.t, res.d, res.wb));
+        w.document.write(window.RtWaybill.html(res.t, res.d, res.wb));
         w.document.close();
         w.focus();
         setTimeout(() => { try { w.print(); } catch (e) { /* окно закрыли раньше */ } }, 300);

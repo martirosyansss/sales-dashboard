@@ -446,7 +446,8 @@ def _enforce_garage():
 
 
 # ---- Роль 'warehouse': только отметки погрузки «Պահեստ» (№78, default-deny) ---------------------------
-# Страница (GET) и её API (GET и POST) — больше ничего: ни «Развоза», ни Բեռնագիր дашборда, ни карты машин. Границы пути —
+# Страница (GET) и её API (GET и POST) — больше ничего: ни «Развоза» (Բեռնագիր машины — только своим API
+# /api/routes/warehouse/waybill), ни карты машин. Границы пути —
 # по сегменту ('/api/routes/warehouse-x' не совпадает). Всё прочее — 403 JSON или переход на страницу склада.
 _WAREHOUSE_PAGE = '/routes/warehouse'
 _WAREHOUSE_API = '/api/routes/warehouse'
@@ -475,7 +476,7 @@ def _enforce_warehouse():
 # (deploy/COURIER_TUNNEL.md). Всё прочее — 404 (courier.public_guard); сессия не «Гаража» снаружи — тоже 404.
 _PUBLIC_STATIC = frozenset((
     '/favicon.ico',
-    '/static/css/tokens.css', '/static/css/base.css', '/static/js/base.js',                    # base_v2.html
+    '/static/css/tokens.css', '/static/css/base.css', '/static/js/base.js',   # base_v2.html (base.js — и лист Բեռնագիր)
     '/static/css/routes.css', '/static/css/routes_garage.css', '/static/js/routes_garage.js',  # routes_garage.html
     '/static/js/routes_basemap.js',   # routes_garage.html: подложка карты дня «Նորմ և փաստ» (без ключа Яндекса)
     '/static/css/routes_live.css', '/static/js/routes_live.js',                               # routes_live.html (№76)
