@@ -190,9 +190,14 @@ def test_reserve_build_returns_by_horizon_and_pinned_late_trip_is_soft():
     if 17 * 60 + 30 < ret <= 18 * 60:
         assert t['in_reserve'] is True and t['trips'][0]['in_reserve'] is True and not t['late']
     else:   # нагрузка рейса не попала в окно запаса — проверка правила напрямую
-        assert dp._in_reserve(_ctx(end_reserve_min=30.0), 520.0) and not dp._in_reserve(_ctx(end_reserve_min=30.0), 541.0)
-    assert dp._in_reserve(_ctx(end_reserve_min=30.0), 525.0) and not dp._in_reserve(_ctx(end_reserve_min=30.0), 505.0)
-    assert not dp._in_reserve(_ctx(), 525.0)                      # без запаса пометки нет
+        assert dp._in_reserve(_ctx(end_reserve_min=30.0), 520.0, 0.0)
+        assert not dp._in_reserve(_ctx(end_reserve_min=30.0), 541.0, 0.0)
+    r30 = _ctx(end_reserve_min=30.0)
+    assert dp._in_reserve(r30, 525.0, 0.0) and not dp._in_reserve(r30, 505.0, 0.0)
+    assert not dp._in_reserve(_ctx(), 525.0, 0.0)                 # без запаса пометки нет
+    # запас рейса 20 мин (в его минутах) — от запаса дня остаётся 10: возврат 535 — в запасе, 528 — нет (max, не сумма)
+    assert dp._in_reserve(r30, 535.0, 20.0) and not dp._in_reserve(r30, 528.0, 20.0)
+    assert not dp._in_reserve(r30, 539.0, 45.0)                   # запас рейса больше запаса дня — запаса дня не видно
 
 
 def test_reserve_and_season_together():
@@ -213,13 +218,38 @@ def test_live_eta_before_first_trip_without_loading_off_season():
     road = live.Road(1.3, 25.0, 45.0, (40.1792, 44.4991), 12.0, legs=lambda a, b, minute, here: 6.0,
                      unload=lambda p, kg: 10.0)
 
-    def eta(rules):
+    rules = live.Rules(load_min=60.0, load_min_per_tonne=10.0)
+
+    def eta(plan):
         card = live.car_view(date(2026, 10, 5), now, facts(tr.pts, stops, [T0, now]), plan, TRUCK, LDEPOT, rules,
                              road, True)
         return next(x for x in card['stops'] if x['stop_id'] == 'S:A')['eta']
-    morning = live.Rules(load_min=60.0, load_min_per_tonne=10.0)
-    assert eta(morning) == (now + timedelta(minutes=60 + 6 + 6)).isoformat(timespec='seconds')
-    assert eta(replace(morning, preload=True)) == (now + timedelta(minutes=6)).isoformat(timespec='seconds')
+    assert eta(plan) == (now + timedelta(minutes=60 + 6 + 6)).isoformat(timespec='seconds')
+    assert eta([replace(plan[0], preloaded=True)]) == (now + timedelta(minutes=6)).isoformat(timespec='seconds')
+    # отметка — из плана: вне сезона только первый рейс; первый рейс — рейс заказов дня (not_before) — views не помечает
+    got = live.plan_trips([[1], [2]], None, date(2026, 10, 5), preloaded=True)
+    assert [t.preloaded for t in got] == [True, False]
+    assert [t.preloaded for t in live.plan_trips([[1]], None, date(2026, 10, 5))] == [False]
+
+
+def test_reserve_and_trip_buffer_take_max_not_sum():
+    """Запас рейса №66 (b) и запас дня 30 не складываются: последний рейс возвращается не позже 18:00 − max(0, 30 − b)."""
+    r = replace(TN, end_reserve=30.0)
+    assert (r.end_limit(40.0), r.end_limit(10.0), r.end_limit(0.0)) == (540.0, 520.0, 510.0)
+    assert TN.end_limit(40.0) == 540.0 and TN.tail(100.0) == TN.reserve(100.0) == 0.0     # без запаса дня — прежнее
+    b = replace(TN, buffer_c=2.6)
+    assert replace(b, end_reserve=30.0).tail(100.0) == 30.0 and replace(b, end_reserve=30.0).tail(400.0) == b.reserve(400.0)
+    # рейс ≈ 480 мин + запас рейса 2·√480 ≈ 44: по max (18:00 − 0) помещается, по сумме (18:00 − 30) — нет; с окном
+    # приёма и без (часовая модель и прежний путь сборки)
+    one = replace(TN, unload_min_per_stop=470.0, buffer_c=2.0, warehouse_load_fixed_min=0.0,
+                  warehouse_load_min_per_tonne=0.0, lunch_minutes=0.0)
+    p = (DEPOT[0] + 0.01, DEPOT[1])
+    for windows in (None, [(1.0, 600.0)]):
+        def fit(tn):
+            return fl.route_day([p], [100.0], [1.0], DEPOT, [HOWO], NORMS, tn, overflow=False, windows=windows)
+        assert len(fit(replace(one, end_reserve=30.0))) == 1, windows
+        assert fit(replace(one, work_minutes=510.0)) == [], windows
+        assert fit(replace(one, end_reserve=90.0)) == [], windows      # запас дня больше запаса рейса — решает он
 
 
 def test_load_obs_skips_first_trip_off_season():
@@ -247,3 +277,20 @@ def test_settings_season_and_reserve_validation():
     for bad in (-1, 121, None, '30'):
         _, errors = st.validate_settings({**base, 'truck_end_reserve_min': bad}, None)
         assert 'truck_end_reserve_min' in errors, bad
+
+
+def test_same_day_option_card_first_trip_off_season_without_loading():
+    """Карточка варианта новых заказов дня (№72): вставка в первый рейс вне сезона — выезд 09:00 без загрузки (как в плане),
+    новый рейс после — с загрузкой."""
+    ss = _stops()
+    base, extra = ss[:3], ss[3]
+    ctx = _ctx(tn=replace(TN, preload=True))
+    draft = dp.Draft(trucks=['333DO33'], trips=[dp.DraftTrip(1, '333DO33', [s.customer_id for s in base])], next_id=2)
+    # в 06:00 первый рейс ещё «не грузится» (загружен с вечера = загрузка до 09:00); с 08:00 — уже начат, вставки нет
+    assert all(o['kind'] != 'insert' for o in dp.same_day_options(ctx, base, ss[:4], draft, [extra.customer_id],
+                                                                   -60.0)['options'])
+    got = dp.same_day_options(ctx, base, ss[:4], draft, [extra.customer_id], -180.0)['options']
+    ins = next(o for o in got if o['kind'] == 'insert')
+    assert ins['loading_start'] == ins['depart'] == '09:00'
+    trip = next(o for o in got if o['kind'] in ('trip', 'idle'))
+    assert _clock(trip['depart']) - _clock(trip['loading_start']) >= 60

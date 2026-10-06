@@ -89,7 +89,7 @@
                 title.textContent = nameOf(item) + ' · ' + (item.code || item.customer_id);
                 note.textContent = windowText(item.window) + ' · ' + vehicleText(item.vehicle_access)
                     + (item.unload_min ? ' · Ժամանակ խանութում՝ ' + minutes(item.unload_min) + '\u00a0րոպե' : '')
-                    + (item.solo ? ' · Առանձին երթ' : '');   // №78: отдельный рейс
+                    + (item.solo ? ' · Առանձին երթ' : '') + (item.center ? ' · Կենտրոն՝ թույլատրված մեքենաներին' : '');   // №78
                 button.append(title, note); button.addEventListener('click', () => open(item));
                 li.append(button); list.append(li);
             });
@@ -113,6 +113,7 @@
         $('rcsUnloadHint').textContent = unloadHint(item);
         $('rcsVehicleMode').value = item.vehicle_access ? item.vehicle_access.mode : '';
         $('rcsSolo').checked = !!item.solo;   // №78: отдельный рейс
+        $('rcsCenter').checked = !!item.center;   // №78: в центр — машинам допуска, ради этого магазина
         const checked = new Set(item.vehicle_access ? item.vehicle_access.trucks : []);
         const choices = [...vehicles];
         checked.forEach(code => {
@@ -140,9 +141,9 @@
         const mode = $('rcsVehicleMode').value;
         $('rcsVehicles').hidden = !mode; $('rcsChoicesTitle').hidden = !mode;
         $('rcsChoicesTitle').textContent = mode === 'allow' ? 'Կարող են սպասարկել' : 'Չեն կարող սպասարկել';
+        $('rcsCenterRow').hidden = $('rcsCenterHint').hidden = mode !== 'allow';   // №78: только с «Միայն ընտրված»
         $('rcsVehicleHint').textContent = mode === 'allow'
             ? 'Ընտրեք թույլատրված մեքենաները։ Եթե ոչ մեկն ընտրված չէ կամ այդ օրը չի աշխատում, խանութը կմնա առանց մեքենայի։'
-                + ' Եթե խանութը փոքր կենտրոնում է, ընտրված մեքենաները կարող են մտնել կենտրոն այս խանութի համար։'
             : mode === 'deny' ? 'Ընտրված մեքենաները չեն կարող սպասարկել այս խանութը։ Մնացածը կարող են։'
             : 'Կարող են սպասարկել բոլոր մեքենաները՝ հաշվի առնելով բեռնատարողությունը և մյուս սահմանափակումները։';
         $('rcsError').textContent = '';
@@ -183,7 +184,8 @@
         $('rcsError').textContent = '';
         try {
             await api('POST', '/api/routes/customer-vehicles',
-                { customer_id: customerId, access, window, unload_min: unloadMin, solo: $('rcsSolo').checked });
+                { customer_id: customerId, access, window, unload_min: unloadMin, solo: $('rcsSolo').checked,
+                  center: mode === 'allow' && $('rcsCenter').checked });
             $('rcsDialog').close();
             $('rcsSaved').textContent = '«' + name + '»՝ պայմանները պահպանվեցին բոլոր օրերի համար։ Վերակազմեք երթերը «Առաքում» էջում։';
             await search();

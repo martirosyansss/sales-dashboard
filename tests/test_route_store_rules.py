@@ -92,13 +92,17 @@ def test_can_carry_and_vrp_keep_solo_alone():
     assert sorted(len(t) for _, ts in apart for t in ts) == [1, 1]
 
 
-def test_allow_rule_lets_listed_truck_into_center_for_that_store_only():
+def test_center_flag_with_allow_rule_lets_listed_truck_in_for_that_store_only():
     ss = _ramada_stops()
     inside = [s.customer_id for s in ss if s.point is not None and fl.in_polygon(s.point, ZONE)]
     assert RAMADA in inside and len(inside) > 1
     rule = {RAMADA: VehicleAccess('allow', ('333DO33',))}
-    ctx = replace(_ctx(solo=frozenset({RAMADA})), center_zone=ZONE, vehicle_access=rule)
     by = {s.customer_id: s for s in ss}
+    # допуск allow без флажка — прежний смысл: правило центра действует; флажок без допуска allow — тоже ничего
+    plain = replace(_ctx(), center_zone=ZONE, vehicle_access=rule)
+    assert dp._central(plain, by[RAMADA])
+    assert dp._central(replace(plain, vehicle_access={}, center_allow=frozenset({RAMADA})), by[RAMADA])
+    ctx = replace(_ctx(solo=frozenset({RAMADA})), center_zone=ZONE, vehicle_access=rule, center_allow=frozenset({RAMADA}))
     assert not dp._central(ctx, by[RAMADA]) and dp._central(ctx, by[inside[1] if inside[0] == RAMADA else inside[0]])
     draft = dp.build(ctx, ss, None, CODES, 'now')
     assert [(t.truck, t.stops) for t in _trips_with(draft, RAMADA)] == [('333DO33', [RAMADA])]   # FORD без права въезда
@@ -118,23 +122,28 @@ def test_allow_rule_lets_listed_truck_into_center_for_that_store_only():
     assert dp._central(deny, by[RAMADA])
 
 
-def test_store_schema_24_solo_roundtrip_and_migration(tmp_path):
+def test_store_schema_24_rules_roundtrip_and_migration(tmp_path):
     path = str(tmp_path / 'r.db')
     s = st.Store(path)
-    assert s.load().solo == frozenset()
-    s.save_customer_constraints(26500, VehicleAccess('allow', ('333NO33',)), None, 'qa', solo=True)
+    assert (s.load().solo, s.load().center_allow) == (frozenset(), frozenset())
+    s.save_customer_constraints(26500, VehicleAccess('allow', ('333NO33',)), None, 'qa', solo=True, center=True)
     b = s.load()
-    assert b.solo == frozenset({26500}) and b.vehicle_access[26500].trucks == ('333NO33',)
+    assert b.solo == b.center_allow == frozenset({26500}) and b.vehicle_access[26500].trucks == ('333NO33',)
     s.save_customer_constraints(26500, VehicleAccess('allow', ('333NO33',)), None, 'qa')   # KEEP — не меняется
-    assert s.load().solo == frozenset({26500})
-    s.save_customer_constraints(26500, None, None, 'qa', solo=False)
-    assert s.load().solo == frozenset()
+    assert s.load().solo == s.load().center_allow == frozenset({26500})
+    s.save_customer_constraints(26500, None, None, 'qa', solo=False)                      # центр остаётся
+    assert (s.load().solo, s.load().center_allow) == (frozenset(), frozenset({26500}))
+    s.save_customer_constraints(26500, None, None, 'qa', center=False)                    # оба сняты — строки нет
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM customer_rule').fetchone() == (0,)
     with pytest.raises(ValueError):
         s.save_customer_constraints(26500, None, None, 'qa', solo='yes')
+    with pytest.raises(ValueError):
+        s.save_customer_constraints(26500, None, None, 'qa', center=1)
     # 23 → 24: только новая таблица, прежние строки как были
     s.save_customer_constraints(101, VehicleAccess('deny', ('X',)), None, 'qa')
     with closing(sqlite3.connect(path)) as conn:
-        conn.execute('DROP TABLE customer_solo')
+        conn.execute('DROP TABLE customer_rule')
         conn.execute("UPDATE meta SET value = '23' WHERE key = 'schema_version'")
         conn.commit()
         before = conn.execute('SELECT * FROM customer_vehicle_access').fetchall()
@@ -143,7 +152,7 @@ def test_store_schema_24_solo_roundtrip_and_migration(tmp_path):
     with closing(sqlite3.connect(path)) as conn:
         assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('24',)
         assert conn.execute('SELECT * FROM customer_vehicle_access').fetchall() == before
-    assert 23 in st._MIGRATIONS and st._MIGRATIONS[23] == (st._CUSTOMER_SOLO_TABLE,)
+    assert 23 in st._MIGRATIONS and st._MIGRATIONS[23] == (st._CUSTOMER_RULE_TABLE,)
 
 
 def test_customer_card_api_saves_solo(client):
@@ -154,13 +163,92 @@ def test_customer_card_api_saves_solo(client):
     assert client.post('/api/routes/customer-vehicles', json={**body, 'solo': True}).status_code == 200
     assert state.store.load().solo == frozenset({cid})
     got = client.get(f'/api/routes/customer-vehicles?customer_id={cid}').get_json()['customers'][0]
-    assert got['solo'] is True
+    assert got['solo'] is True and got['center'] is False
+    assert client.post('/api/routes/customer-vehicles', json={**body, 'center': True}).status_code == 200
+    assert state.store.load().center_allow == frozenset({cid}) and state.store.load().solo == frozenset({cid})
+    assert client.post('/api/routes/customer-vehicles', json={**body, 'center': 'x'}).status_code == 400
+    assert client.post('/api/routes/customer-vehicles', json={**body, 'solo': False, 'center': False}).status_code == 200
+    assert client.post('/api/routes/customer-vehicles', json={**body, 'solo': True}).status_code == 200
     assert client.post('/api/routes/customer-vehicles', json={**body, 'solo': 'x'}).status_code == 400
     assert client.post('/api/routes/customer-vehicles', json={'customer_id': cid, 'access': None, 'solo': True}).status_code == 400
     assert client.post('/api/routes/customer-vehicles', json=body).status_code == 200          # без solo — не меняется
     assert state.store.load().solo == frozenset({cid})
     assert client.post('/api/routes/customer-vehicles', json={**body, 'solo': False}).status_code == 200
     assert state.store.load().solo == frozenset()
+
+
+
+
+def test_pinned_trip_with_solo_store_and_others_keeps_solver():
+    """Закреплённый (загруженный) рейс, где отдельный магазин едет с другими (правка логиста), — как есть: проверка
+    отдельного рейса его не касается, решатель PyVRP не отключается на весь день (№78, ревью п. 4)."""
+    if not vrp.available():
+        pytest.skip('PyVRP не установлен')
+    import unittest.mock as um
+    ss = _ramada_stops()
+    ctx = _ctx(solo=frozenset({RAMADA}))
+    seen = []
+    real = fl._solver_try
+
+    def spy(*a, **k):
+        got = real(*a, **k)
+        seen.append(got[1] if got[0] is None else 'ok')
+        return got
+    old = dp.Draft(trips=[dp.DraftTrip(1, '991AT61', [RAMADA, 101, 102], pinned=True)], next_id=2)
+    with um.patch.object(fl, '_solver_try', spy):
+        draft = dp.build(ctx, ss, old, CODES, 'now')
+    assert dp.trip_of(draft, 1).stops == [RAMADA, 101, 102] and 'load' not in seen and 'ok' in seen
+
+
+def test_solo_truck_does_second_trip_instead_of_extra_truck():
+    """Ответ владельца №78, 18: лишняя машина без нужды не берётся (_spare_solo_truck): машин в плане не больше, чем без
+    правила, все магазины в рейсах; без нужды — см. test_spare_solo_truck_drops_extra_truck_when_everything_fits."""
+    ss = _ramada_stops()
+    rule = {RAMADA: VehicleAccess('allow', ('333DO33',))}
+    plain = dp.build_crewed(replace(_ctx(), vehicle_access=rule), ss, None, CODES, 'now', dp.Crew())
+    ctx = replace(_ctx(solo=frozenset({RAMADA})), vehicle_access=rule)
+    draft = dp.build_crewed(ctx, ss, None, CODES, 'now', dp.Crew())
+    assert len({t.truck for t in draft.trips}) <= len({t.truck for t in plain.trips}) and draft.trucks == sorted(CODES)
+    assert not (draft.no_room | draft.no_window | draft.no_center | draft.no_vehicle)
+    assert [t.stops for t in _trips_with(draft, RAMADA)] == [[RAMADA]]
+    # здесь без любой из двух других машин магазины не помещаются (окна, тоннаж) — третья машина нужна, план как есть
+    for drop in ('991AT61', '475DD61'):
+        d2 = dp.build(ctx, ss, None, [c for c in CODES if c != drop], 'now', dp.SEAT_TRIAL_ITERATIONS)
+        assert d2.no_room | d2.no_window | d2.no_center | d2.no_vehicle
+
+
+def test_spare_solo_truck_drops_extra_truck_when_everything_fits():
+    """Машина только с отдельным рейсом и лишняя машина: проба без лишней — всё помещается, итог без неё; Draft.trucks
+    прежний (машина остаётся отмеченной)."""
+    ss = [s for s in _ramada_stops() if s.customer_id in (RAMADA, 101, 102, 103)]
+    rule = {RAMADA: VehicleAccess('allow', ('333DO33',))}
+    ctx = replace(_ctx(solo=frozenset({RAMADA})), vehicle_access=rule, windows={})
+    lone = dp.Draft(trucks=sorted(CODES), trips=[dp.DraftTrip(1, '333DO33', [RAMADA]),
+                                                 dp.DraftTrip(2, '991AT61', [101, 102, 103])], next_id=3)
+    assert dp._solo_only(ctx, lone) == {'333DO33'}
+    got = dp._spare_solo_truck(ctx, ss, dp.Draft(), lone, CODES, 'now')
+    assert [t.truck for t in got.trips] == ['333DO33', '333DO33'] and got.trucks == sorted(CODES) and not got.no_room
+    assert [t.stops for t in got.trips if RAMADA in t.stops] == [[RAMADA]]           # второй рейс — обычные магазины
+
+
+def test_live_center_alarm_only_off_the_flagged_store():
+    """Карта машин: заезд в центр к магазину с правилом — без тревоги, другой заезд той же машины в центр — тревога."""
+    from datetime import datetime, timedelta
+    from route_optimizer import live
+    from route_optimizer.geo import Fix
+    zone = ((40.17, 44.50), (40.19, 44.50), (40.19, 44.52), (40.17, 44.52))
+    rules = live.Rules(center_zone=zone)
+    t0 = datetime(2026, 10, 6, 10, 0, tzinfo=live.YEREVAN)
+    store, other, out = (40.18, 44.51), (40.175, 44.505), (40.16, 44.49)
+
+    def run(p, k0):
+        return [Fix(t0 + timedelta(minutes=k0 + i), p[0], p[1], 5.0) for i in range(3)]
+    pts = run(store, 0) + run(out, 10) + run(other, 20) + run(out, 30)
+    stops = [{'customer_id': 26500, 'lat': store[0], 'lon': store[1]}]
+    assert len(live.center_alerts(pts, rules, live.TruckSpec(center_ok=False), False, stops)) == 2
+    flagged = live.TruckSpec(center_ok=False, center_customers=frozenset({26500}))
+    got = live.center_alerts(pts, rules, flagged, False, stops)
+    assert len(got) == 1 and got[0]['lat'] == other[0]
 
 
 from test_route_optimizer import client  # noqa: E402,F401

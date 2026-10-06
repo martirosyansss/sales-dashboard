@@ -14,7 +14,7 @@
 """
 import json
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 
 from route_optimizer import actuals as ac  # noqa: E402
 from route_optimizer import dispatch as dp  # noqa: E402
+from route_optimizer import store as st  # noqa: E402
 from route_optimizer import views  # noqa: E402
 from route_optimizer import waybill as wb  # noqa: E402
 from test_route_dispatch_approve import _two_trips  # noqa: E402
@@ -138,7 +139,7 @@ def _as(client, user):
         s['username'] = user
 
 
-def test_warehouse_flow_approval_rev_undo_window(client, monkeypatch):
+def test_warehouse_flow_approval_rev_and_unmark_any_time(client, monkeypatch):
     state = _setup(client, monkeypatch)
     w = client.get('/api/routes/warehouse').get_json()
     assert (w['day'], w['days'], w['approved'], w['planned'], w['trucks']) == (DAY, [DAY, '2026-10-02'], False, False, [])
@@ -161,25 +162,25 @@ def test_warehouse_flow_approval_rev_undo_window(client, monkeypatch):
     assert r.status_code == 200, r.get_json()
     w = r.get_json()
     got = w['trucks'][0]['trips'][0]['loaded']
-    assert got == {'at': '08:00', 'by': 'sklad', 'undo': True, 'until': '08:10'}
+    assert got == {'at': '08:00', 'by': 'sklad'}
     assert state.store.load_dispatch(DAY)[0]['trips'][0]['loaded']['by'] == 'sklad'
-    # «Развоз»: значок «Բեռնված է ժ. 08:00 (sklad)»; правка с прежним rev — 409
+    # «Развоз»: значок «Բեռնված է ժ. 08:00 (sklad)» — кто — только странице (loaded_by), в плане и в AI его нет
     d2 = client.get('/api/routes/dispatch?date=' + DAY).get_json()
     tr = next(x for t in d2['plan']['trucks'] for x in t['trips'] if x['id'] == first['id'])
-    assert tr['loaded'] == {'at': '08:00', 'by': 'sklad'} and tr['pinned']
+    assert tr['loaded'] == {'at': '08:00'} and tr['pinned'] and d2['loaded_by'] == {str(first['id']): 'sklad'}
+    from route_optimizer import ai_chat
+    with client.application.test_request_context():
+        body = views._dispatch_body(views._load_day(state, views._bundle(state), date.fromisoformat(DAY)))
+    assert 'sklad' not in json.dumps(ai_chat._prune(body), ensure_ascii=False)
+    # правка с прежним rev — 409
     assert client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'unapprove'}).status_code == 409
-    # снять: чужую — нет; свою позже 10 минут — нет; свою вовремя — да
+    # ответ 19: снять — в любое время и любой пользователь склада (не только тот, кто отметил)
     _as(client, 'other')
-    r = client.post('/api/routes/warehouse/loaded', json={'date': DAY, 'rev': w['rev'], 'trip': first['id'], 'loaded': False})
-    assert r.status_code == 403 and r.get_json()['error'] == views.WAREHOUSE_UNDO_OTHER
-    assert client.get('/api/routes/warehouse?date=' + DAY).get_json()['trucks'][0]['trips'][0]['loaded']['undo'] is False
-    _as(client, 'sklad')
-    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 1, 8, 11, tzinfo=ac.YEREVAN))
-    r = client.post('/api/routes/warehouse/loaded', json={'date': DAY, 'rev': w['rev'], 'trip': first['id'], 'loaded': False})
-    assert r.status_code == 403 and r.get_json()['error'] == views.WAREHOUSE_UNDO_LATE
-    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 1, 8, 9, tzinfo=ac.YEREVAN))
+    monkeypatch.setattr(views, '_yerevan_now', lambda: datetime(2026, 10, 1, 17, 30, tzinfo=ac.YEREVAN))
     r = client.post('/api/routes/warehouse/loaded', json={'date': DAY, 'rev': w['rev'], 'trip': first['id'], 'loaded': False})
     assert r.status_code == 200 and r.get_json()['trucks'][0]['trips'][0]['loaded'] is None
+    trip_now = next(t for t in state.store.load_dispatch(DAY)[0]['trips'] if t['id'] == first['id'])
+    assert trip_now['pinned'] is True                                  # держит утверждение — закреплён, как и было
     assert 'loaded' not in state.store.load_dispatch(DAY)[0]['trips'][0]
     # следующий рабочий день — плана нет
     w = client.get('/api/routes/warehouse?date=2026-10-02').get_json()
@@ -209,7 +210,7 @@ def test_dispatch_logist_marks_unmarks_and_loaded_trip_survives_rebuild(client, 
     d = _build(client, ('CAR1', 'CAR2'))
     tr = next(x for t in d['plan']['trucks'] for x in t['trips'] if x['id'] == trip['id'])
     assert [s['customer_id'] for s in tr['stops']] == [s['customer_id'] for s in trip['stops']]
-    assert tr['truck'] == loaded_truck and tr['pinned'] and tr['loaded']['by'] == 'logist'
+    assert tr['truck'] == loaded_truck and tr['pinned'] and d['loaded_by'][str(tr['id'])] == 'logist'
     # «Ջնջել երթերը» — нет, пока есть отметки
     r = client.post('/api/routes/dispatch/reset', json={'date': DAY})
     assert r.status_code == 400 and r.get_json()['errors']['_'] == views.PLAN_LOADED
@@ -257,3 +258,82 @@ def test_reset_race_with_warehouse_mark_is_409(client, monkeypatch):
     monkeypatch.setattr(state.store, 'delete_dispatch', lambda day, expected_rev=None: real(day, expected_rev - 1))
     r = client.post('/api/routes/dispatch/reset', json={'date': DAY})
     assert r.status_code == 409 and state.store.load_dispatch(DAY) is not None
+
+
+# ============================== ревью: любая правка, меняющая груз загруженного рейса, — с подтверждением ==============
+
+
+def _loaded_day(client, monkeypatch):
+    """План 01.10 двумя машинами, утверждён, первый рейс CAR1 отмечен «Բեռնված է»; (state, ответ дня, рейс)."""
+    state = _setup(client, monkeypatch, user='logist')
+    d = _build(client, ('CAR1', 'CAR2'))
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'approve'}).get_json()
+    tr = next(x for t in d['plan']['trucks'] for x in t['trips'])
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'loaded',
+                                                       'trip': tr['id']}).get_json()
+    return state, d, tr
+
+
+def _edit(client, d, **body):
+    return client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], **body})
+
+
+def test_agents_filter_that_drops_loaded_stop_needs_confirmation(client, monkeypatch):
+    state, d, tr = _loaded_day(client, monkeypatch)
+    before = state.store.load_dispatch(DAY)
+    r = _edit(client, d, action='agents', off=[1, 2])
+    assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True and r.get_json()['error'] == dp.LOADED_EDIT
+    assert state.store.load_dispatch(DAY) == before                    # ничего не сохранено
+    r = _edit(client, d, action='agents', off=[1, 2], confirm_loaded=True)
+    assert r.status_code == 200, r.get_json()
+
+
+def test_apply_settings_and_same_day_paths_check_loaded_cargo(client, monkeypatch):
+    state, d, tr = _loaded_day(client, monkeypatch)
+    # настройки дня: менеджеры 1 и 2 сняты правилом — «Կիրառել կարգավորումները» снимет точки загруженного рейса
+    state.store.save(st.Changes({**state.store.load().settings, 'dispatch_agents_off': [1, 2]}, False, None, (), ()),
+                     'qa')
+    before = state.store.load_dispatch(DAY)
+    r = _edit(client, d, action='apply_settings')
+    assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
+    assert state.store.load_dispatch(DAY) == before
+    assert _edit(client, d, action='apply_settings', confirm_loaded=True).status_code == 200
+
+
+def test_exclude_order_and_defer_neighbour_with_heavy_order_need_confirmation(client, monkeypatch):
+    state, d, tr = _loaded_day(client, monkeypatch)
+    order = tr['stops'][0]['orders'][0]['isn']
+    r = _edit(client, d, action='exclude', order=order)
+    assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
+    # «везти завтра» другого рейса, где тот же клиент (тяжёлый заказ на два рейса), снял бы точку и с загруженного
+    ctx, base, orders, new, draft = _two_trips()
+    dp.approve(draft, 'at', 'logist')
+    draft.trips.append(dp.DraftTrip(4, HOWO.car_code, [102], pinned=True))
+    dp.mark_loaded(draft, 4, AT, 'sklad')
+    cargo = dp.loaded_cargo(draft, base)
+    got = dp.apply_edit(ctx, base, dp.Draft.from_json(draft.to_json()), {'action': 'defer_trip', 'trip': 2},
+                        {o.isn for o in orders})
+    assert dp.loaded_cargo(got, base, cargo) != cargo                 # views ответит loaded_confirm
+
+
+def test_same_day_drop_of_order_in_loaded_trip_needs_confirmation(client, monkeypatch):
+    state = _setup(client, monkeypatch, user='logist')
+    d = _build(client, ('CAR1', 'CAR2'))
+    res = client.post('/api/routes/dispatch/same-day', json={'date': DAY, 'orders': [_isn(10)]}).get_json()
+    d = _edit(client, d, action='same_day', orders=[_isn(10)], option=res['options'][0]['key']).get_json()
+    d = _edit(client, d, action='approve').get_json()
+    tr = next(x for t in d['plan']['trucks'] for x in t['trips'] if any(s['customer_id'] == 103 for s in x['stops']))
+    d = _edit(client, d, action='loaded', trip=tr['id']).get_json()
+    r = _edit(client, d, action='same_day_drop', orders=[_isn(10)])
+    assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
+    assert _edit(client, d, action='same_day_drop', orders=[_isn(10)], confirm_loaded=True).status_code == 200
+
+
+def test_bad_mark_time_and_build_without_loaded_truck():
+    t = dp.Draft.from_json({'trips': [{'id': 1, 'truck': 'A', 'stops': [1], 'loaded': {'at': 'вчера'}}]}).trips[0]
+    assert t.loaded is None                                            # не ISO — не загружен (страница склада не падает)
+    ctx, base, orders, new, draft = _two_trips()
+    dp.approve(draft, 'at', 'logist')
+    dp.mark_loaded(draft, 2, AT, 'sklad')
+    with pytest.raises(dp.DispatchError, match='Բեռնված երթերի մեքենաները'):
+        dp.build(ctx, base, draft, [FORD.car_code], 'now')             # и путь «что если» AI — тот же отказ

@@ -882,6 +882,10 @@
             setData(data);
             return data;
         } catch (e) {
+            // №78: заказ дня меняет груз загруженного рейса — спросить и повторить с подтверждением
+            if (state.sd && e.data && e.data.loaded_confirm === true && !body.confirm_loaded && window.confirm(e.message)) {
+                return sdEdit({ ...body, confirm_loaded: true });
+            }
             if (state.sd) { state.sd.busy = false; $('dpSdErr').textContent = e.message; renderSdDialog(); }
             return null;
         }
@@ -2620,7 +2624,7 @@
         if (tr.poor) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn">' + esc(fmt(state.data.min_trip_revenue)) + NB + 'դրամից պակաս</span>');
         if (tr.pinned) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-ok"><i class="fas fa-lock" aria-hidden="true"></i>ամրացված</span>');
         if (tr.loaded) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-ok"><i class="fas fa-check" aria-hidden="true"></i>Բեռնված է ժ.' + NB + esc(tr.loaded.at)
-            + (tr.loaded.by ? ' (' + esc(tr.loaded.by) + ')' : '') + '</span>');   // №78
+            + ((state.data.loaded_by || {})[tr.id] ? ' (' + esc(state.data.loaded_by[tr.id]) + ')' : '') + '</span>');   // №78
         line.append(load, meta, flags);
         head.append(title, time, acts, line);
         div.appendChild(head);

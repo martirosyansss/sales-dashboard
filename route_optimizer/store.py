@@ -181,10 +181,12 @@ _CUSTOMER_VEHICLES_TABLE = (
     "mode TEXT NOT NULL CHECK(mode IN ('allow', 'deny')), trucks TEXT NOT NULL, "
     "updated_at TEXT NOT NULL, updated_by TEXT)")
 
-# Схема 24 (ответ владельца №78, 16–17): магазин везут отдельным рейсом — без других магазинов («Ռամադա» — всегда
-# отдельно). Строка есть — правило есть; только «Развоз» (dispatch.DayContext.solo).
-_CUSTOMER_SOLO_TABLE = (
-    "CREATE TABLE IF NOT EXISTS customer_solo(customer_id INTEGER PRIMARY KEY CHECK (customer_id > 0), "
+# Схема 24 (ответ владельца №78, 16–17): правила магазина «Развоза» — solo: везут отдельным рейсом, без других магазинов
+# («Ռամադա» — всегда отдельно); center: машины его допуска «только выбранные» въезжают в малый центр ради него. Строка — хоть
+# одно правило; оба сняты — строки нет (dispatch.DayContext.solo, center_allow).
+_CUSTOMER_RULE_TABLE = (
+    "CREATE TABLE IF NOT EXISTS customer_rule(customer_id INTEGER PRIMARY KEY CHECK (customer_id > 0), "
+    "solo INTEGER NOT NULL CHECK (solo IN (0, 1)), center INTEGER NOT NULL CHECK (center IN (0, 1)), "
     "updated_at TEXT NOT NULL, updated_by TEXT)")
 
 _MEASUREMENT_TABLE = (
@@ -264,7 +266,7 @@ _SCHEMA = (
     _TRUCK_DRIVER_TABLE,
     _TRUCK_HELPER_TABLE,
     _DRIVER_ABSENCE_TABLE,
-    _CUSTOMER_SOLO_TABLE,
+    _CUSTOMER_RULE_TABLE,
     _GEO_OVERRIDE_TABLE,
     _DISPATCH_TABLE,
     _TRUCKS_ONE_VAN,
@@ -412,7 +414,7 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     # 22 → 23 (№77): только добавляем — отсутствие водителей; прежние таблицы и значения не меняются.
     22: (_DRIVER_ABSENCE_TABLE,),
     # 23 → 24 (№78): только добавляем — магазины «отдельным рейсом»; прежние таблицы и значения не меняются.
-    23: (_CUSTOMER_SOLO_TABLE,),
+    23: (_CUSTOMER_RULE_TABLE,),
 }
 
 FUEL_TYPES = ('diesel', 'petrol', 'lpg')
@@ -985,7 +987,9 @@ class Bundle:
     # перекрывают ERP и GPS, уступают ручной точке
     driver_points: dict[int, Point] = field(default_factory=dict)
     vehicle_access: dict[int, VehicleAccess] = field(default_factory=dict)
-    solo: frozenset[int] = frozenset()   # магазины «отдельным рейсом» (№78, customer_solo)
+    # правила магазинов «Развоза» (№78, customer_rule): отдельный рейс; въезд в центр машинам допуска allow ради магазина
+    solo: frozenset[int] = frozenset()
+    center_allow: frozenset[int] = frozenset()
     # время у магазина (customer_unload, №50): клиент → постоянная часть разгрузки, мин — только «Развоз»; в отпечаток
     # не входит, как и окна: модель парка менеджеров его не знает
     unload_min: dict[int, float] = field(default_factory=dict)
@@ -1919,7 +1923,7 @@ class Store:
                     access_rows = conn.execute(
                         'SELECT customer_id, mode, trucks FROM customer_vehicle_access').fetchall()
                     unload_rows = conn.execute('SELECT customer_id, fixed_min FROM customer_unload').fetchall()
-                    solo_rows = conn.execute('SELECT customer_id FROM customer_solo').fetchall()
+                    rule_rows = conn.execute('SELECT customer_id, solo, center FROM customer_rule').fetchall()
                     conn.execute('COMMIT')
                 except BaseException:
                     if conn.in_transaction:
@@ -1997,10 +2001,10 @@ class Store:
             if minutes is None or not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
                 raise StoreError(f'{self._name()}: վնասված է {customer_id!r} խանութում ժամանակի արժեքը{_FIX_HINT}')
             unload[customer_id] = minutes
-        solo = frozenset(r[0] for r in solo_rows)
-        if any(not _is_int(c) or not 0 < c < 2 ** 31 for c in solo):
-            raise StoreError(f'{self._name()}: վնասված է «առանձին երթ» խանութների ցուցակը{_FIX_HINT}')
-        return Bundle(settings, depot, trucks, managers, geo, windows, vehicle_access=access, unload_min=unload, solo=solo)
+        if any(not _is_int(c) or not 0 < c < 2 ** 31 or a not in (0, 1) or b not in (0, 1) for c, a, b in rule_rows):
+            raise StoreError(f'{self._name()}: վնասված են խանութների առաքման կանոնները{_FIX_HINT}')
+        return Bundle(settings, depot, trucks, managers, geo, windows, vehicle_access=access, unload_min=unload,
+                      solo=frozenset(c for c, a, _ in rule_rows if a), center_allow=frozenset(c for c, _, b in rule_rows if b))
 
     def load_copy(self) -> tuple[Bundle, int | None]:
         """Настройки, не меняя саму базу: её копия (sqlite backup из соединения только на чтение) во временной папке,
@@ -2328,9 +2332,11 @@ class Store:
     def save_customer_constraints(self, customer_id: int, access: VehicleAccess | None,
                                   window: CustomerWindow | None, user: str | None,
                                   unload_min: float | None | Literal[_Keep.KEEP] = KEEP,
-                                  solo: bool | Literal[_Keep.KEEP] = KEEP) -> None:
-        """Машины, время доставки, время у магазина (unload_min, №50; KEEP — не менять, None — убрать) и «отдельный рейс»
-        (solo, №78; KEEP — не менять) из одной карточки: единая транзакция, без частичного сохранения."""
+                                  solo: bool | Literal[_Keep.KEEP] = KEEP,
+                                  center: bool | Literal[_Keep.KEEP] = KEEP) -> None:
+        """Машины, время доставки, время у магазина (unload_min, №50; KEEP — не менять, None — убрать), «отдельный рейс» и
+        «в центр машинам допуска» (solo, center, №78; KEEP — не менять) из одной карточки: единая транзакция, без
+        частичного сохранения."""
         if not _is_int(customer_id) or not 0 < customer_id < 2 ** 31:
             raise ValueError('customer_id: положительное целое')
         if access is not None and (not isinstance(access, VehicleAccess) or check_access(access.to_json())[1]):
@@ -2340,27 +2346,33 @@ class Store:
         if unload_min is not KEEP and unload_min is not None and check_unload_min(unload_min)[1]:
             raise ValueError('время у магазина не прошло проверку')
 
-        if solo is not KEEP and not isinstance(solo, bool):
-            raise ValueError('solo: true или false')
+        if any(f is not KEEP and not isinstance(f, bool) for f in (solo, center)):
+            raise ValueError('solo, center: true или false')
 
         def write(conn: sqlite3.Connection) -> None:
             self._write_customer_vehicles(conn, customer_id, access, user)
             self._write_customer_window(conn, customer_id, window, user)
             if unload_min is not KEEP:
                 self._write_customer_unload(conn, customer_id, unload_min, user)
-            if solo is not KEEP:
-                self._write_customer_solo(conn, customer_id, solo, user)
+            if solo is not KEEP or center is not KEEP:
+                self._write_customer_rule(conn, customer_id, solo, center, user)
 
         self._transaction(write, 'չհաջողվեց պահպանել խանութի առաքման պայմանները')
 
     @staticmethod
-    def _write_customer_solo(conn: sqlite3.Connection, customer_id: int, solo: bool, user: str | None) -> None:
-        if solo:
-            conn.execute('INSERT INTO customer_solo(customer_id, updated_at, updated_by) VALUES(?, ?, ?) '
-                         'ON CONFLICT(customer_id) DO UPDATE SET updated_at = excluded.updated_at, '
-                         'updated_by = excluded.updated_by', (customer_id, _now(), user))
-        else:
-            conn.execute('DELETE FROM customer_solo WHERE customer_id = ?', (customer_id,))
+    def _write_customer_rule(conn: sqlite3.Connection, customer_id: int, solo: bool | Literal[_Keep.KEEP],
+                             center: bool | Literal[_Keep.KEEP], user: str | None) -> None:
+        """Правила магазина (№78): KEEP — как было; оба сняты — строки нет."""
+        row = conn.execute('SELECT solo, center FROM customer_rule WHERE customer_id = ?', (customer_id,)).fetchone()
+        was = (bool(row[0]), bool(row[1])) if row is not None else (False, False)
+        new = (was[0] if solo is KEEP else solo, was[1] if center is KEEP else center)
+        if not any(new):
+            conn.execute('DELETE FROM customer_rule WHERE customer_id = ?', (customer_id,))
+            return
+        conn.execute('INSERT INTO customer_rule(customer_id, solo, center, updated_at, updated_by) VALUES(?, ?, ?, ?, ?) '
+                     'ON CONFLICT(customer_id) DO UPDATE SET solo = excluded.solo, center = excluded.center, '
+                     'updated_at = excluded.updated_at, updated_by = excluded.updated_by',
+                     (customer_id, int(new[0]), int(new[1]), _now(), user))
 
     def save_customer_unload(self, customer_id: int, unload_min: float | None, user: str | None) -> None:
         """Только время у магазина (№50; проверенное check_unload_min, None — убрать: по норме) своей транзакцией —

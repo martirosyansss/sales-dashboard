@@ -125,14 +125,14 @@
         const title = h('h3', { class: 'wh-trip-t', text: tr.of > 1 ? 'Երթ ' + tr.no + ' / ' + tr.of : 'Երթ' });
         let act;
         if (tr.loaded) {
+            // №78, ответ 19: снять отметку можно в любое время — с вопросом (рейс снова может поменяться при պլանի վերակազմում)
+            const u = h('button', { type: 'button', class: 'wh-undo', text: 'Հանել նշումը' });
+            u.addEventListener('click', () => {
+                if (window.confirm('Հանե՞լ «Բեռնված է» նշումը։ Լոգիստը կարող է նորից փոխել այս երթը։')) mark(tr, false, u);
+            });
             act = h('div', { class: 'wh-trip-row' },
                 h('span', { class: 'wh-done' }, icon('fa-check'), 'Բեռնված է ժ.' + NB + tr.loaded.at,
-                    tr.loaded.by && !tr.loaded.undo ? h('small', { text: '(' + tr.loaded.by + ')' }) : null));
-            if (tr.loaded.undo) {
-                const u = h('button', { type: 'button', class: 'wh-undo', text: 'Չեղարկել (մինչև ' + tr.loaded.until + ')' });
-                u.addEventListener('click', () => mark(tr, false, u));
-                act.append(u);
-            }
+                    tr.loaded.by ? h('small', { text: '(' + tr.loaded.by + ')' }) : null), u);
         } else {
             const b = h('button', { type: 'button', class: 'wh-load' }, icon('fa-truck-ramp-box'), 'Բեռնված է');
             b.setAttribute('aria-label', 'Բեռնված է՝ ' + (truck.name || truck.car_code) + ', ' + title.textContent);
