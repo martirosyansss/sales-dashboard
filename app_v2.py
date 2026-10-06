@@ -13352,6 +13352,7 @@ if __name__ == '__main__':
     print("=" * 80)
     
     route_optimizer.start_learning_scheduler(app)   # ночное обучение «Развоза» (03:00, Ереван)
+    route_optimizer.start_live_alerts(app)   # тревоги карты машин в Telegram: только ROUTES_LIVE_ALERTS=1 (CT115), №76
     if not _serve_waitress():
         debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() in ('1', 'true', 'yes')
         app.run(debug=debug_mode, use_reloader=False, host='0.0.0.0', port=5000)

@@ -94,7 +94,9 @@
                 <ul class="lv-log" id="lvLog"></ul>
             </details>
             <p class="lv-note">Վառելիքը՝ հաշվարկ (≈)․ կմ × ծախս ըստ բեռնվածության (դատարկ / լրիվ բեռնված մեքենայի նորմ), ոչ թե
-                տվիչի ցուցմունք։ Ժամանման ժամը՝ ուղիղ գծով × ճանապարհների ոլորունություն և միջին արագություն։</p>
+                տվիչի ցուցմունք։ Բեռի մնացորդը՝ առանց առաքվածի․ չառաքվածն ու վերադարձը մնում են մեքենայում՝ մինչև պահեստ մտնելը։
+                Ժամանման ժամը՝ ճանապարհների մոդելով (ճանապարհներով) կամ մոտավոր՝ ուղիղ գծով × ոլորունություն, գումարած
+                խանութում կանգառի ժամանակը և ճաշը․ մեքենայի դիրքից առաջին հատվածը՝ Valhalla-ով, եթե այն պատրաստ է։</p>
         </section>
     </div>
 </div>
@@ -105,5 +107,5 @@
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <!-- подложка — Яндекс, как на остальных картах (решение владельца 06.10, см. live_page) -->
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='js/routes_live.js') }}?v=3"></script>
 {% endblock %}

@@ -514,6 +514,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'live_speed_sec': 30,
     'live_stop_min': 15,
     'live_no_contact_min': 5,
+    # тревоги карты в Telegram-группу (этап 2): какие слать, тихие часы (с — до, по Еревану; одинаковые — без тихих
+    # часов), не чаще раза в столько минут на тревогу того же вида у машины
+    'live_alert_kinds': ['speed', 'stop', 'no_contact', 'gps', 'center'],
+    'live_quiet_from': '20:00',
+    'live_quiet_to': '08:00',
+    'live_repeat_min': 30,
     'yerevan_zone': [[40.2173, 44.3948], [40.2129, 44.4031], [40.2021, 44.4052], [40.1964, 44.4102], [40.1936, 44.4029],
                     [40.1912, 44.4067], [40.19, 44.4042], [40.1853, 44.4078], [40.1748, 44.4063], [40.17, 44.4111],
                     [40.1671, 44.4196], [40.1694, 44.4271], [40.1675, 44.4303], [40.1599, 44.429], [40.1578, 44.4373],
@@ -592,6 +598,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'live_speed_sec': (5, 600, False),
     'live_stop_min': (1, 240, False),
     'live_no_contact_min': (1, 120, False),
+    'live_repeat_min': (1, 1440, False),
 }
 
 TRUCK_CAPACITY_KG = (100, 30000)
@@ -614,6 +621,7 @@ WINDOW_KINDS = ('before', 'after', 'between', 'at')
 WINDOW_TOL_MAX = 120
 DEFAULT_WINDOW_TOL = 15     # «в 11:00 ± 15 мин» — допуск по умолчанию (№37)
 UNLOAD_MIN_RANGE = (1, 120)  # время у магазина (№50), целые минуты
+LIVE_ALERT_KINDS = ('speed', 'stop', 'no_contact', 'gps', 'center')   # виды тревог карты (live.py) — переключатели настроек
 GARAGE_KINDS = ('repair', 'accident', 'fixed', 'odometer')   # журнал гаража (№53), как garage.KINDS
 GARAGE_TEXT_MAX = 300
 GARAGE_AMOUNT_MAX = 100_000_000
@@ -1216,7 +1224,7 @@ def validate_settings(values: Mapping[str, Any],
         out['traffic_mode'] = mode
 
     for key in ('work_start', 'work_end', 'truck_work_start', 'truck_work_end', 'truck_overtime_end',
-                'dispatch_ready_time', 'truck_lunch_from', 'truck_lunch_to'):
+                'dispatch_ready_time', 'truck_lunch_from', 'truck_lunch_to', 'live_quiet_from', 'live_quiet_to'):
         v = values.get(key)
         if not isinstance(v, str) or not _HHMM_RE.match(v):
             errors[key] = 'ժամը՝ ԺԺ:ՐՐ ձևաչափով'
@@ -1239,6 +1247,15 @@ def validate_settings(values: Mapping[str, Any],
     elif ('truck_lunch_from' in out and 'truck_lunch_to' in out
             and _minutes(out['truck_lunch_to']) <= _minutes(out['truck_lunch_from'])):
         errors['truck_lunch_to'] = 'Միջակայքի վերջը պետք է լինի սկզբից ուշ'
+
+    # какие тревоги карты слать в Telegram: только известные виды; пустой список — не слать ничего; порядок — канонический
+    kinds = values.get('live_alert_kinds')
+    if not isinstance(kinds, list) or not all(isinstance(k, str) for k in kinds):
+        errors['live_alert_kinds'] = 'սպասվում էր ահազանգերի տեսակների ցուցակ'
+    elif any(k not in LIVE_ALERT_KINDS for k in kinds):
+        errors['live_alert_kinds'] = 'ահազանգի անհայտ տեսակ՝ ' + ', '.join(k for k in kinds if k not in LIVE_ALERT_KINDS)
+    else:
+        out['live_alert_kinds'] = [k for k in LIVE_ALERT_KINDS if k in kinds]
 
     days, err = _check_int_set(values.get('workdays'), 1, 7, 'շաբաթվա օրերի')
     if err:

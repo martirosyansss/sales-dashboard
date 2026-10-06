@@ -79,6 +79,25 @@
         if (n > th.no_contact_min * 60) return 'is-bad';
         return n > th.stale_s ? 'is-mute' : '';
     };
+    // сверка расчёта топлива с заправками (этап 2): последняя заправка, интервал «полный бак → полный бак», расчёт после неё
+    const fuelCheckText = (c) => {
+        if (!c) return null;
+        const parts = [];
+        if (c.last && c.last.liters !== null) {
+            parts.push('վերջին լիցքավորում՝ ' + fmt(c.last.liters, 1) + ' լ, ' + (c.last.today ? hm(c.last.at) : c.last.at.slice(5, 10).split('-').reverse().join('.'))
+                + (c.last.full ? '' : ' (ոչ լրիվ բաք)'));
+        }
+        if (c.since_l !== null && c.since_l !== undefined) parts.push('լիցքավորումից հետո՝ ≈ ' + fmt(c.since_l, 1) + ' լ');
+        const iv = c.interval;
+        if (iv) {
+            parts.push('լրիվ բաքից լրիվ բաք (' + fmt(iv.km) + ' կմ)՝ լցրել են ' + fmt(iv.liters, 1) + ' լ'
+                + (iv.calc_l !== null ? ', նորմով՝ ' + fmt(iv.calc_l, 1) + ' լ (' + (iv.delta_pct > 0 ? '+' : '') + fmt(iv.delta_pct, 1) + '%)' : ''));
+        }
+        return parts.join(' · ');
+    };
+    // откуда ETA: по дорожной модели (Valhalla / граф дорог, время у магазина, обед) или запасная — по прямой × извилистость
+    const SRC = { road: 'ճանապարհներով', model: 'մոտավոր' };
+    const srcText = (v) => (SRC[v] ? ' (' + SRC[v] + ')' : '');
     const delayText = (d) => {
         const n = num(d);
         if (n === null) return null;
@@ -256,19 +275,22 @@
             t.stores.in_progress ? 'ընթացքի մեջ՝ ' + t.stores.in_progress : null));
         rows.push(field('Այսօր, կմ (GPS)', fmt(t.km, 1)));
         rows.push(field('Վառելիք', t.fuel_l === null ? '—' : ['≈ ' + fmt(t.fuel_l, 1) + ' լ', h('span', { class: 'lv-est', text: 'հաշվարկ' })],
-            t.fuel_l === null ? 'մեքենայի ծախսը նշված չէ կարգավորումներում' : null));
+            [t.fuel_l === null ? 'մեքենայի ծախսը նշված չէ կարգավորումներում' : null, fuelCheckText(t.fuel_check)].filter(Boolean).join(' · ')));
         const ld = t.load;
         rows.push(field('Բեռի մնացորդ', fmt(ld.remaining_kg) + ' կգ',
-            [ld.trips_gone ? 'բեռնված՝ ' + fmt(ld.loaded_kg) + ' կգ, առաքված՝ ' + fmt(ld.delivered_kg) + ' կգ'
+            [ld.trips_gone ? 'բեռնված այս երթում՝ ' + fmt(ld.trip_kg) + ' կգ, առաքված՝ ' + fmt(ld.delivered_kg) + ' կգ'
                 + (ld.trips > 1 ? ' · երթ ' + ld.trips_gone + '/' + ld.trips : '') : 'մեքենան դեռ չի մեկնել պահեստից',
+            ld.refused_kg ? 'չառաքված՝ ' + fmt(ld.refused_kg) + ' կգ (մեքենայում՝ մինչև պահեստ)' : null,
+            ld.returns_kg ? 'վերադարձ՝ ' + fmt(ld.returns_kg) + ' կգ (մեքենայում)' : null,
+            ld.returns_unweighed ? ld.returns_unweighed + ' վերադարձ առանց քաշի' : null,
             ld.unweighed_lines ? ld.unweighed_lines + ' տող առանց քաշի' : null].filter(Boolean).join(' · ')));
         if (t.next) {
             const d = delayText(t.next.delay_min);
             rows.push(field('Հաջորդ խանութը', t.next.name || t.next.stop_id,
-                (t.next.here ? 'տեղում է' : 'ժամանում ≈ ' + hm(t.next.eta)) + (t.next.planned_eta ? ' · պլան՝ ' + hm(t.next.planned_eta) : '')
+                (t.next.here ? 'տեղում է' : 'ժամանում ≈ ' + hm(t.next.eta) + srcText(t.next.eta_source)) + (t.next.planned_eta ? ' · պլան՝ ' + hm(t.next.planned_eta) : '')
                 + (d ? ' · ' + d[0] : ''), d && d[1] !== 'is-ok' ? d[1] : null, true));
         }
-        rows.push(field('Վերադարձ պահեստ', t.return_eta ? '≈ ' + hm(t.return_eta) : '—'));
+        rows.push(field('Վերադարձ պահեստ', t.return_eta ? '≈ ' + hm(t.return_eta) : '—', t.return_eta ? srcText(t.return_source).trim().slice(1, -1) : null));
         rows.push(field('Վերջին կապը', t.last_contact ? hms(t.last_contact) : '—', t.contact_age_s !== null ? ago(t.contact_age_s) : null,
             ageClass(t.contact_age_s)));
         const dv = t.device;
@@ -283,7 +305,7 @@
             const dot = h('span', { class: 'lv-dot' });
             dot.style.background = color;
             return h('li', { title: lab }, dot, h('span', { text: (s.name || s.stop_id) + ' · ' + lab }),
-                h('span', { class: 'when', text: (s.arrive ? hm(s.arrive) : '') + (s.planned_eta ? ' (պլան՝ ' + hm(s.planned_eta) + ')' : '') }));
+                h('span', { class: 'when', text: (s.arrive ? hm(s.arrive) : (s.eta ? '≈ ' + hm(s.eta) : '')) + (s.planned_eta ? ' (պլան՝ ' + hm(s.planned_eta) + ')' : '') }));
         }));
         const log = t.alerts_log || [];
         $('lvLogBox').hidden = !t.stops;
