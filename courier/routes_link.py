@@ -157,7 +157,7 @@ def _taken(state: Any, day: date, workdays: Sequence[int], holidays: Collection[
 
 def orders_window(day: date, view: RoutesView) -> tuple[date, date]:
     """Даты заказов, которые смотрит «Развоз» для дня (с «не отгружены с прошлых дней») и сам день: заказы, заведённые
-    заранее на него (№78), и заказы дня, взятые логистом в его развоз (№72)."""
+    заранее на него (№79), и заказы дня, взятые логистом в его развоз (№72)."""
     since, until = dp.order_window(day, view.workdays, view.holidays)
     return dp.backlog_since(since, view.workdays, holidays=view.holidays), until + timedelta(days=1)
 

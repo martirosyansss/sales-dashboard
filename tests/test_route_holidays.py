@@ -71,7 +71,7 @@ def test_api_dispatch_skips_holiday(client, monkeypatch):
     assert d['day'] == '2026-10-03' and d['default_day'] == '2026-10-03' and d['day_off'] is False
     assert d['order_dates'] == {'since': '2026-10-01', 'until': '2026-10-02'}       # заказы чт и пт-праздника
     assert d['orders']['count'] == 1
-    assert calls[-1][1:] == (date(2026, 10, 4), date(2026, 10, 3))   # ERP — и за сам день: заведённые заранее (№78)
+    assert calls[-1][1:] == (date(2026, 10, 4), date(2026, 10, 3))   # ERP — и за сам день: заведённые заранее (№79)
     h = client.get('/api/routes/dispatch?date=2026-10-02').get_json()
     assert h['day_off'] is True
     assert client.get('/api/routes/dispatch?date=2026-10-04').get_json()['day_off'] is True   # воскресенье
@@ -101,7 +101,7 @@ def test_courier_orders_window_skips_holidays():
     thu, fri, mon = date(2026, 10, 1), date(2026, 10, 2), date(2026, 10, 5)
     view = rl.RoutesView(workdays=(1, 2, 3, 4, 5), holidays=frozenset({fri}))
     since, until = rl.orders_window(mon, view)
-    assert since == dp.backlog_since(thu, (1, 2, 3, 4, 5), holidays={fri}) and until == date(2026, 10, 6)   # и сам пн (№78)
+    assert since == dp.backlog_since(thu, (1, 2, 3, 4, 5), holidays={fri}) and until == date(2026, 10, 6)   # и сам пн (№79)
     assert rl.orders_window(mon, rl.RoutesView(workdays=(1, 2, 3, 4, 5)))[0] == dp.backlog_since(fri, (1, 2, 3, 4, 5))
     picked = rl.pick_orders([_dorder(1, 101, 10.0, day=thu, car='C1'), _dorder(2, 102, 10.0, day=fri, car='C1')],
                             mon, view, 'C1')

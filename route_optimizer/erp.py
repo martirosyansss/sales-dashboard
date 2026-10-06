@@ -340,7 +340,7 @@ GROUP BY LTRIM(RTRIM(s.fDELIVERYCAR)), CAST(s.fDATE AS date)
 #   у заказа бывают и другие дочерние документы — берём только SALES;
 # - fVANAGENTID = fSALESAGENTID — менеджер развозит сам (A000, A008/6 «19 литров»): не для машин парка;
 # - день ввода заказа — DOCUMENTS.fCREATIONDATE того же fISN (SQL_ORDER_CREATED): заведён раньше своей даты — заказ на
-#   эту дату (ответ владельца №78, dispatch.DispatchOrder.predated); документа нет — NULL, заказ как обычный.
+#   эту дату (ответ владельца №79, dispatch.DispatchOrder.predated); документа нет — NULL, заказ как обычный.
 SQL_DISPATCH_ORDERS = """
 SELECT CAST(o.fISN AS nvarchar(36)), RTRIM(o.fDOCNUM), CAST(o.fDATE AS date), o.fCUSTOMERID,
        o.fSALESAGENTID, LTRIM(RTRIM(ISNULL(o.fDELIVERYCAR, ''))), o.fTOTALSUM, ISNULL(k.kg, 0), sh.shipped,

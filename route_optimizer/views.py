@@ -1255,7 +1255,7 @@ def _day_orders(state: RoutesState, bundle: Bundle, day: date, refresh: bool,
                 rule: dp.FleetRule) -> tuple[date, date, dp.DispatchData, dp.Selection]:
     """Окно заказов дня, заказы ERP (кэш _dispatch_data) и отбор к доставке по правилу дня «чьи заказы везут машины»
     (№74, dp.fleet_rule_of) — без заказов, взятых в развоз дня их приёма (№72, _same_day_taken). ERP читается и за сам
-    день: заказы, заведённые заранее на него (№78), — его заказы; прочие заказы с датой дня — новые заказы дня (№72,
+    день: заказы, заведённые заранее на него (№79), — его заказы; прочие заказы с датой дня — новые заказы дня (№72,
     _same_day_data), из данных дня они убраны."""
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     since, until = dp.order_window(day, workdays, off)
@@ -2581,7 +2581,7 @@ def _missing_coordinates(state, snap, bundle):
     since = (snap.today.replace(day=1) - timedelta(days=1)).replace(day=1)
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     last_day = dp.next_workday(snap.today, workdays, off)
-    # по последний день включительно: заказы, заведённые заранее (№78), везут в их дату
+    # по последний день включительно: заказы, заведённые заранее (№79), везут в их дату
     data = _dispatch_data(state, since - timedelta(days=10), last_day + timedelta(days=1), snap.today, False)
     ids = set(snap.plan.customer_ids)
     day = since

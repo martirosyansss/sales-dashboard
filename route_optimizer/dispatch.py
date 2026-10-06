@@ -6,7 +6,7 @@
 - Заказы к доставке в день D — проведённые заказы ERP с датой от предыдущего рабочего дня до D
   (правило владельца №5/№19: заказы дня везут на следующий рабочий день, субботние и воскресные —
   в понедельник), кроме уже отгруженных до D (реализация SALES с датой раньше D). Заказ, заведённый в ERP раньше
-  своей даты (ответ владельца №78, DispatchOrder.predated), — заказ на эту дату: его везут в неё (в нерабочую — в первый
+  своей даты (ответ владельца №79, DispatchOrder.predated), — заказ на эту дату: его везут в неё (в нерабочую — в первый
   рабочий день после), а не на следующий рабочий день; в «новые заказы дня» он не входит.
 - «Не отгружены с прошлых дней» — заказы ещё BACKLOG_WORKDAYS рабочих дней раньше, без реализации
   до D: по данным сентября около половины их везут в D, остальные не везут вовсе — поэтому в план
@@ -102,7 +102,7 @@ class DispatchOrder:
 
     @property
     def predated(self) -> bool:
-        """Заведён раньше своей даты — заказ на эту дату (ответ владельца №78): 8 недель до 06.10.2026 таких 305 из 8018
+        """Заведён раньше своей даты — заказ на эту дату (ответ владельца №79): 8 недель до 06.10.2026 таких 305 из 8018
         (292 — линия A008), у прочих менеджеров с июня 20 из 31 отгружены в саму дату."""
         return self.entered is not None and self.entered < self.order_date
 
@@ -182,13 +182,13 @@ def next_workday(day: date, workdays: Sequence[int], holidays: Collection[date] 
 
 def order_window(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> tuple[date, date]:
     """Даты заказов, которые везут в day: [предыдущий рабочий день, day). В понедельник — заказы
-    субботы и воскресенья; после праздника — и заказы праздника. Заказы, заведённые заранее (№78), сдвинуты на день
+    субботы и воскресенья; после праздника — и заказы праздника. Заказы, заведённые заранее (№79), сдвинуты на день
     позже — (предыдущий рабочий день, day]: of_day."""
     return previous_workday(day, workdays, holidays), day
 
 
 def of_day(o: DispatchOrder, since: date, day: date) -> bool:
-    """Заказ везут в day (since — начало окна order_window). Заведённый заранее (№78) — в свою дату или, если она
+    """Заказ везут в day (since — начало окна order_window). Заведённый заранее (№79) — в свою дату или, если она
     нерабочая, в первый рабочий день после: дата в (since, day] (since — рабочий день, между ним и day — нерабочие)."""
     return since < o.order_date <= day if o.predated else since <= o.order_date < day
 
@@ -410,7 +410,7 @@ class Selection:
 
 def to_deliver(orders: Sequence[DispatchOrder], day: date, since: date, rule: FleetRule = NO_RULE,
                place: Callable[[int], str] = _no_place) -> Selection:
-    """Заказы к доставке в day: заказы дня (of_day: с даты since, заведённые заранее — в свою дату, №78) и раньше —
+    """Заказы к доставке в day: заказы дня (of_day: с даты since, заведённые заранее — в свою дату, №79) и раньше —
     «не отгружены с прошлых дней» (before_day); заказы дат позже (сам day — кроме заведённых заранее) — не этого дня.
     Отгруженные в day и позже — к доставке: для прошедшей даты это и есть то, что везли (или должны
     были везти). Машинам парка — только заказы FLEET правила rule (№74; place — клиент → place_text): заказы, которые
@@ -434,7 +434,7 @@ def same_day_candidates(orders: Sequence[DispatchOrder], day: date, rule: FleetR
                         place: Callable[[int], str] = _no_place) -> list[DispatchOrder]:
     """Новые заказы дня day (№72): с датой day, не отгруженные раньше day, только для машин парка (FleetRule.kind, №74:
     не «везёт сам», не город-исключение, не клиент «машины не везут»). Это заказы развоза следующего рабочего дня — в
-    развоз day только по выбору логиста (Draft.same_day). Заведённые заранее (№78) — не новые: они и так заказы day."""
+    развоз day только по выбору логиста (Draft.same_day). Заведённые заранее (№79) — не новые: они и так заказы day."""
     key = lambda o: (o.customer_id, o.order_date, o.isn)   # noqa: E731
     return sorted((o for o in orders if o.order_date == day and not o.predated
                    and (o.shipped is None or o.shipped >= day) and rule.kind(o, place) == FLEET), key=key)
