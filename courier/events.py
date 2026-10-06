@@ -6,6 +6,8 @@
   и ничего не меняется; повтор внутри одной пачки — тоже `duplicates`;
 - пачка — одна транзакция (Store.batch): проверки видят события этой же пачки (payment → его отмена,
   scan → scan_cancel), а повтор той же пачки параллельно ждёт и получает `duplicates`;
+- машина события — машина терминала в момент события `at` по журналу терминала (car_at; точка трека — в свой
+  момент), а не машина сейчас: очередь офлайн, отправленная после смены машины офисом, остаётся у прежней машины;
 - `rejected` — только нарушения формы и правил таблицы контракта (тип, дата, момент с зоной, qty < 0 или
   сверх накладной, amount ≤ 0, неизвестная строка накладной…); отказ хранится в rejected_events (не больше
   store.REJECTED_PER_DAY на терминал в день — дальше только в ответе) — его видят /status и офис;
@@ -58,7 +60,7 @@ import logging
 import math
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -109,7 +111,7 @@ class Reject(Exception):
 
 @dataclass(frozen=True)
 class Who:
-    """Кто прислал: терминал (и его машина) и водитель сессии."""
+    """Кто прислал: терминал (и его машина сейчас) и водитель сессии. Машина события — на момент события (car_at)."""
     terminal_id: int
     car_code: str
     driver_id: int
@@ -583,9 +585,30 @@ def _refuel(tx: EventTx, p: Mapping[str, Any], at: datetime, car_code: str, supe
 
 # --- одна запись ---
 
-def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who
+CarLog = Sequence[tuple[int, str]]   # машины терминала: (с момента, мс UTC; машина) по возрастанию — EventTx.terminal_cars
+
+
+def car_at(log: CarLog, at_ms: int, current: str) -> str:
+    """Машина терминала в момент at_ms (мс UTC) по журналу: последняя запись не позже момента; момент раньше первой
+    записи — машина первой (часы терминала); журнала нет (база до v8 без даты создания) — current (машина сейчас).
+    Очередь офлайн, отправленная после смены машины офисом, так остаётся у прежней машины: доставки, деньги, трек,
+    заправки (цепочка одометра) и закрытие дня."""
+    car = log[0][1] if log else current
+    for since, code in log:
+        if since > at_ms:
+            break
+        car = code
+    return car
+
+
+def _ms(at: datetime) -> int:
+    return round(at.timestamp() * 1000)
+
+
+def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who, cars: CarLog = ()
            ) -> tuple[dict[str, Any], dict[str, Any] | None, list[TrackPoint] | None]:
-    """Проверить событие: (строка events, строка scans или None, точки трека или None) или Reject."""
+    """Проверить событие: (строка events, строка scans или None, точки трека или None) или Reject. Машина события —
+    на момент at (car_at по журналу терминала cars)."""
     etype = raw.get('type')
     if etype not in EVENT_TYPES:
         raise Reject('Անհայտ իրադարձության տեսակ')
@@ -595,6 +618,7 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who
     at = clock.parse_moment(raw.get('at'))
     if at is None:
         raise Reject('at՝ ISO-8601 ժամային գոտիով')
+    who = replace(who, car_code=car_at(cars, _ms(at), who.car_code))
     payload = raw.get('payload')
     if not isinstance(payload, dict):
         raise Reject('payload՝ պետք է լինի օբյեկտ')
@@ -700,6 +724,7 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
     result = Result()
     with store.batch() as conn:
         tx = EventTx(conn)
+        cars = tx.terminal_cars(who.terminal_id)   # в транзакции пачки: смена машины офисом — до или после всей пачки
         rejected_room: int | None = None   # сколько отказов ещё можно сохранить сегодня (считается при первом)
         for raw in events:
             raw_id = raw.get('id') if isinstance(raw, dict) else None
@@ -713,7 +738,7 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
                 continue
             try:
                 try:
-                    row, scan_row, track = _check(tx, raw, event_id, who)
+                    row, scan_row, track = _check(tx, raw, event_id, who, cars)
                 except (TypeError, ValueError, OverflowError, KeyError) as e:   # странное значение — отказ
                     raise Reject('Սխալ տվյալներ') from e                         # события, а не 500 на всю пачку
             except Reject as e:
@@ -738,10 +763,13 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
                 result.accepted.append(raw_id)   # №76: пустой heartbeat с тем же состоянием не позже HEARTBEAT_GAP после
                 continue                          # предыдущего события track — принят (APK не повторяет), но не пишется
             if track is not None:   # точки — до события: в нём число новых (пачка — одна транзакция)
-                row['payload']['new'] = tx.insert_track(who.car_code, row['date'], track)
+                by_car: dict[str, list[TrackPoint]] = {}   # каждая точка — машине терминала в её момент
+                for point in track:
+                    by_car.setdefault(car_at(cars, point[0], who.car_code), []).append(point)
+                row['payload']['new'] = sum(tx.insert_track(car, row['date'], points) for car, points in by_car.items())
                 tx.purge_track(clock.today().isoformat())
                 if row['payload']['dropped']:
-                    logger.info('[Courier] Трек %s машины %s: отброшено точек %s', event_id, who.car_code,
+                    logger.info('[Courier] Трек %s машины %s: отброшено точек %s', event_id, row['car_code'],
                                 row['payload']['dropped'])
             if not tx.insert_event(row):
                 result.duplicates.append(raw_id)

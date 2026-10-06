@@ -226,7 +226,7 @@
     #crPage .cr-tabs a { flex: 0 0 auto; scroll-snap-align: start; }
 }
 @media (max-width: 640px) {
-    .cr-kpis { gap: 8px; }
+    .rt-kpis.is-4.cr-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }   /* 2 × 2 и на телефоне */
     .cr-kpis .rt-kpi { padding: 10px; gap: 4px; }
     .cr-kpis .rt-kpi-label { font-size: .75rem; overflow-wrap: anywhere; }
     .cr-kpis .rt-kpi-label i { display: none; }   /* две плитки в ряд на 390 px — подписи без значков */

@@ -3162,7 +3162,7 @@ def test_terminal_reissue(client, st):
     r = client.post(f'/api/courier/admin/terminals/{tid}/reissue', json={})
     assert r.status_code == 400 and r.get_json()['success'] is False
     assert client.get('/api/courier/v1/ping', headers=new).status_code == 401
-    assert st.store.reissue_terminal(tid, '123456') is None
+    assert st.store.reissue_terminal(tid, '123456', 'admin') is None
 
 
 def test_terminal_change_car_keeps_history(term, client, st):
@@ -3196,6 +3196,134 @@ def test_terminal_change_car_keeps_history(term, client, st):
     assert pick(after) == pick(before) and pick(before)[0][:2] == ('TEST', 1)
     client.post(f'/api/courier/admin/terminals/{tid}/revoke', json={})
     assert client.post(url, json={'car_code': 'TEST'}).status_code == 400              # отозванный — нельзя
-    assert st.store.set_terminal_car(tid, 'TEST') is False
+    assert st.store.set_terminal_car(tid, 'TEST', 'admin') is False
     with pytest.raises(ValueError):
-        st.store.set_terminal_car(tid, ' ')
+        st.store.set_terminal_car(tid, ' ', 'admin')
+
+
+# --- смена машины: очередь офлайн, журнал терминала (v8), вход во время смены ---
+
+def _at(dt):
+    return clock.iso(dt)
+
+
+def test_offline_queue_after_rebind_stays_with_previous_car(term, client, st, now):
+    """Терминал офлайн на машине TEST копит события → офис ставит его на 991AT61 → водитель входит заново → очередь
+    уходит: события с моментом до смены — машины TEST (без `foreign`, деньги и закрытие дня — TEST), после — 991AT61."""
+    tid = term['terminal'].id
+    cash = next(x for x in term['day']['stops'] if x['collect'] == 'cash')
+    before = NOW - timedelta(minutes=30)
+    paid = event('payment', cash['stop_id'], {'amount': 12000.0, 'kind': 'invoice', 'ecr_receipt': '7'}, at=_at(before))
+    done = event('delivery', cash['stop_id'], {'lines': full_lines(cash), 'reason_id': None}, at=_at(before))
+    closed = event('day_closed', None, {'summary': {}}, at=_at(before + timedelta(minutes=1)))
+    now['t'] = NOW + timedelta(minutes=10)
+    assert client.post(f'/api/courier/admin/terminals/{tid}/car', json={'car_code': '991AT61'}).status_code == 200
+    now['t'] = NOW + timedelta(minutes=20)
+    s = login(client, term['h'])
+    later = event('day_closed', None, {'summary': {}}, at=_at(NOW + timedelta(minutes=15)))
+    assert len(post(client, s, paid, done, closed, later)['accepted']) == 4
+    got = {e['id']: (e['car_code'], e['flags']) for e in st.store.events_for_day(DEMO)}
+    assert got[paid['id']][0] == got[done['id']][0] == got[closed['id']][0] == 'TEST'
+    assert 'foreign' not in got[done['id']][1] and 'foreign' not in got[paid['id']][1]
+    assert got[later['id']][0] == '991AT61'
+    car = next(c for c in client.get(f'/api/courier/admin/today?date={DEMO}').get_json()['cars'] if c['car_code'] == 'TEST')
+    assert car['full'] == 1
+
+
+def test_track_batch_spanning_rebind_splits_by_point_moment(term, client, st, now):
+    """Трек, пришедший после смены машины, — каждая точка машине терминала в её момент; событие — по своему at."""
+    tid = term['terminal'].id
+    switch = NOW + timedelta(minutes=30)
+    pts = [{'at': _at(NOW + timedelta(minutes=m)), 'lat': 40.18, 'lon': 44.51, 'acc': 8.0} for m in (10, 20, 40, 50)]
+    track = event('track', None, {'points': pts}, at=_at(NOW + timedelta(minutes=50)))
+    now['t'] = switch
+    assert client.post(f'/api/courier/admin/terminals/{tid}/car', json={'car_code': '991AT61'}).status_code == 200
+    now['t'] = NOW + timedelta(hours=1)
+    s = login(client, term['h'])
+    assert post(client, s, track)['accepted'] == [track['id']]
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        rows = conn.execute('SELECT car_code, COUNT(*) FROM track_points GROUP BY car_code ORDER BY car_code').fetchall()
+    assert rows == [('991AT61', 2), ('TEST', 2)]
+    e = next(x for x in st.store.events_for_day(DEMO) if x['id'] == track['id'])
+    assert e['car_code'] == '991AT61' and e['payload']['new'] == 4
+
+
+def test_car_at_rule():
+    log = [(1000, 'A'), (2000, 'B'), (2000, 'C'), (3000, 'D')]
+    assert [ev.car_at(log, t, 'X') for t in (0, 999, 1000, 1999, 2000, 2999, 3000, 9999)] == \
+        ['A', 'A', 'A', 'A', 'C', 'C', 'D', 'D']
+    assert ev.car_at([], 5, 'X') == 'X'
+
+
+def test_terminal_log_audit(client, st, now):
+    """Журнал терминала: создан, «Նոր QR», смена машины — кто и когда, в той же транзакции; момент для «последней связи»."""
+    with client.session_transaction() as sess:
+        sess['username'] = 'boss'
+    tid = client.post('/api/courier/admin/terminals', json={'name': 'U', 'car_code': 'TEST'}).get_json()['terminal']['id']
+    now['t'] = NOW + timedelta(minutes=5)
+    client.post(f'/api/courier/admin/terminals/{tid}/reissue', json={})
+    now['t'] = NOW + timedelta(minutes=9)
+    client.post(f'/api/courier/admin/terminals/{tid}/car', json={'car_code': '991AT61'})
+    assert st.store.terminal_log(tid) == [
+        {'kind': 'created', 'car_code': 'TEST', 'at': _at(NOW), 'by': 'boss'},
+        {'kind': 'reissue', 'car_code': 'TEST', 'at': _at(NOW + timedelta(minutes=5)), 'by': 'boss'},
+        {'kind': 'car', 'car_code': '991AT61', 'at': _at(NOW + timedelta(minutes=9)), 'by': 'boss'}]
+    assert st.store.car_since() == {tid: _at(NOW + timedelta(minutes=9))}
+
+
+def test_login_refused_when_car_changed_after_auth(term, client, st, monkeypatch):
+    """Вход проверил токен, а офис тем временем сменил машину (или отозвал терминал): сессия не открывается — терминал
+    не получит старую машину; вход заново — с новой."""
+    tid = term['terminal'].id
+    stale = st.store.terminal(tid)
+    st.store.set_terminal_car(tid, '991AT61', 'admin')
+    real = st.store.terminal_by_token_hash
+    monkeypatch.setattr(st.store, 'terminal_by_token_hash', lambda digest: stale if real(digest) else None)
+    r = client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=term['h'])
+    assert r.status_code == 401 and r.get_json()['error'] == 'session'
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM sessions WHERE terminal_id = ?', (tid,)).fetchone()[0] == 0
+    monkeypatch.setattr(st.store, 'terminal_by_token_hash', real)
+    assert client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=term['h']).get_json()['car']['code'] == '991AT61'
+    st.store.revoke_terminal(tid, 'admin')
+    assert st.store.open_session(tid, term['driver_id'], NOW + timedelta(hours=1), '991AT61') is None
+
+
+def test_login_survives_car_list_failure(term, client, st):
+    """Название машины во входе — подпись: любой сбой списка машин (не только ERP) не роняет /login."""
+    st.cars_loader = lambda today: 1 / 0
+    r = client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=term['h'])
+    assert r.status_code == 200 and r.get_json()['car']['code'] == 'TEST'
+
+
+def test_merge_cars_routes_rules_failure_falls_back_to_erp():
+    broken = SimpleNamespace(trucks={'M9': None}, resolved_trucks=lambda *a: 1 / 0)
+    assert ed.merge_cars(_erp_cars(), _SEEN, broken, TODAY) == ed.merge_cars(_erp_cars(), _SEEN, None, TODAY)
+
+
+def test_migration_v7_to_v8_keeps_rows_and_backfills_terminal_log(tmp_path, now):
+    """База схемы 7 (как сейчас на сервере: без журнала терминала) → 8: все строки на месте, у каждого терминала —
+    строка created с его машиной, моментом и автором создания; события после миграции — у машины терминала."""
+    path = str(tmp_path / 'c.db')
+    store = Store(path)
+    did = store.save_driver(None, 'Ա', True, '1234', 'admin')
+    t1, _ = store.create_terminal('T1', 'CAR1', 'admin')
+    t2, _ = store.create_terminal('T2', 'CAR2', 'boss')
+    store.revoke_terminal(t2.id, 'admin')
+    store.open_session(t1.id, did, NOW + timedelta(hours=1))
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute('DROP TABLE terminal_log')
+        conn.execute("UPDATE meta SET value = '7' WHERE key = 'schema_version'")
+        conn.commit()
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' "
+                                             "AND name NOT LIKE 'sqlite_%'")]
+        counts = {t: conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in tables if t != 'meta'}
+    migrated = Store(path)
+    assert [t.id for t in migrated.list_terminals()] == [t1.id, t2.id]
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION) == '8'
+        assert {t: conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in counts} == counts
+    assert migrated.terminal_log(t1.id) == [{'kind': 'created', 'car_code': 'CAR1', 'at': t1.created_at, 'by': 'admin'}]
+    assert migrated.terminal_log(t2.id) == [{'kind': 'created', 'car_code': 'CAR2', 'at': t2.created_at, 'by': 'boss'}]
+    Store(path).list_terminals()                                       # повторное открытие — без второй строки
+    assert len(migrated.terminal_log(t1.id)) == 1

@@ -270,7 +270,7 @@ def terminals_reissue(terminal_id: int) -> Any:
     if t is None:
         return _bad('Տերմինալը չի գտնվել', 404)
     admin_pin = _admin_pin()
-    issued = None if t.revoked else st.store.reissue_terminal(terminal_id, admin_pin)
+    issued = None if t.revoked else st.store.reissue_terminal(terminal_id, admin_pin, _user())
     if issued is None:   # отозван (и между чтением и записью)
         return _bad('Տերմինալն անջատված է․ ստեղծեք նոր տերմինալ')
     logger.info('[Courier] Терминал %s «%s» (%s): новый QR, выдал %s', t.id, t.name, t.car_code, _user())
@@ -298,7 +298,7 @@ def terminals_car(terminal_id: int) -> Any:
     if not _car_listed(car):
         return _bad('Ընտրեք մեքենան ցուցակից')
     try:
-        changed = st.store.set_terminal_car(terminal_id, car)
+        changed = st.store.set_terminal_car(terminal_id, car, _user())
     except ValueError as e:
         return _bad(_hy(str(e)))
     if not changed:   # отозван между чтением и записью
@@ -579,12 +579,14 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
     for (code, name), (kind, at_utc) in last_kind.items():   # офис снял помощника — «до ЧЧ:ММ»
         if kind == 'revoked' and name in by_car[code]['helpers']:
             by_car[code]['helper_until'][name] = clock.iso(datetime.fromisoformat(at_utc))
+    since = st.store.car_since()
     for t in terminals:
-        # связь терминала — у машины, на которой он сейчас, и только в своей дате (как live.py): после смены машины
-        # прошлые даты не получают связь другого дня
-        if t.car_code in by_car and t.last_seen_at and t.last_seen_at[:10] == ds and (
-                by_car[t.car_code]['last_contact'] is None or t.last_seen_at > by_car[t.car_code]['last_contact']):
-            by_car[t.car_code]['last_contact'] = t.last_seen_at
+        # связь действующего терминала — у машины, на которой он сейчас: только в своей дате и не раньше, чем его
+        # поставили на эту машину (раньше — связь прежней машины), как live.py
+        seen = t.last_seen_at
+        if not t.revoked and t.car_code in by_car and seen and seen[:10] == ds and seen >= since.get(t.id, '') and (
+                by_car[t.car_code]['last_contact'] is None or seen > by_car[t.car_code]['last_contact']):
+            by_car[t.car_code]['last_contact'] = seen
     cars = []
     for code in sorted(by_car):
         row = by_car[code]

@@ -320,9 +320,11 @@
     async function reissueTerminal(id) {
         const t = drv.data.terminals.find(v => v.id === id);
         if (!t || !window.confirm('Նոր QR «' + t.name + '» տերմինալի համար (' + t.car_code + ')։\n\nՀին QR-ը անմիջապես կդադարի աշխատել, '
-            + 'վարորդը պետք է նորից մտնի PIN-ով։ Տերմինալի պատմությունը մնում է։ Շարունակե՞լ։')) return;
+            + 'վարորդը պետք է նորից մտնի PIN-ով։ Տերմինալի պատմությունը մնում է։\n\nԵթե սարքը փոխարինում եք նորով, հին սարքում '
+            + 'չուղարկված տվյալները (առաքումներ, գումար) կկորեն։ Շարունակե՞լ։')) return;
         try {
-            const r = await api('/api/courier/admin/terminals/' + id + '/reissue', { json: { url: 'public' } });
+            // адрес в QR — как выбран в форме нового терминала («Որտեղից է միանալու»; по умолчанию — интернет)
+            const r = await api('/api/courier/admin/terminals/' + id + '/reissue', { json: { url: $('crTermUrl').value } });
             showQr(r, true);
             announce('Նոր QR-ը պատրաստ է — հինն այլևս չի աշխատում');
             await loadDrivers();

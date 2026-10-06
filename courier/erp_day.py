@@ -600,23 +600,26 @@ def merge_cars(cars: Mapping[str, erp.Car], seen: Mapping[str, tuple[int, date]]
                     if c.capacity_kg is not None and lo <= c.capacity_kg <= hi}   # как Snapshot.car_capacity
     active = frozenset(code for code, c in cars.items()
                        if not c.closed and code in seen and (today - seen[code][1]).days <= CAR_IDLE_DAYS)
+    fleet: set[str] = set(active)
     own: dict[str, str] = {}
-    if bundle is None:
-        fleet = set(active)
-    else:
-        ready, _ = rf.fleet_trucks(bundle.resolved_trucks(active, erp_capacity),
-                                   {code: c.name for code, c in cars.items()})
-        fleet = {t.car_code for t in ready}
-        own = {code: t.name or '' for code, t in bundle.trucks.items() if code not in cars}
+    capacity = dict(erp_capacity)
+    if bundle is not None:
+        try:   # правила парка «Маршрутов» — подсказка списка: любой их сбой — список по ERP, как без «Маршрутов»
+            ready, _ = rf.fleet_trucks(bundle.resolved_trucks(active, erp_capacity),
+                                       {code: c.name for code, c in cars.items()})
+            fleet = {t.car_code for t in ready}
+            own = {code: t.name or '' for code, t in bundle.trucks.items() if code not in cars}
+            capacity.update({code: bundle.truck_capacity(code, erp_capacity) for code in bundle.trucks})
+        except Exception:
+            logger.warning('[Courier] Парк «Маршрутов» не разобран — машины терминалов только по ERP', exc_info=True)
+            fleet, own, capacity = set(active), {}, dict(erp_capacity)
     out = []
     for code in set(cars) | set(seen) | set(own):
         car = cars.get(code)
         docs, last = seen.get(code, (0, None))
-        in_bundle = bundle is not None and code in bundle.trucks
         out.append({'code': code, 'name': car.name if car is not None else own.get(code, ''), 'docs': docs,
                     'last': last.isoformat() if last is not None else None, 'fleet': code in fleet,
-                    'closed': car is not None and car.closed,
-                    'capacity_kg': bundle.truck_capacity(code, erp_capacity) if in_bundle else erp_capacity.get(code)})
+                    'closed': car is not None and car.closed, 'capacity_kg': capacity.get(code)})
     return sorted(out, key=lambda c: (not c['fleet'], c['code']))
 
 

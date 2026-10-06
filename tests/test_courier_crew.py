@@ -143,7 +143,8 @@ def test_migration_v6_to_v7_with_data(st, client, tmp_path):
     r = client.get(f'{API}/crew', headers=s)                                 # прежняя сессия действует
     assert r.status_code == 200 and r.get_json()['helper'] is None and r.get_json()['decided'] is False
     with closing(sqlite3.connect(st.store.path)) as conn:
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION) == '7'
+        version = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0]
+        assert version == str(SCHEMA_VERSION) == '8'                          # 6 → 7 → 8 (журнал терминала)
         assert conn.execute('SELECT driver_id, helper_id FROM sessions').fetchall() == [(did, None)]
     fresh = Store(str(tmp_path / 'fresh.db'))
     fresh.list_drivers()
@@ -646,7 +647,7 @@ def test_office_page_hint_and_asset_versions(app, client):
     app.add_url_rule('/logout', 'logout', lambda: '')
     html = client.get('/courier').data.decode('utf-8')
     assert 'Առաքիչը' in html and 'իր PIN-ով' in html
-    assert 'js/courier.js?v=17' in html and 'css/courier.css?v=12' in html
+    assert 'js/courier.js?v=18' in html and 'css/courier.css?v=13' in html
 
 
 def test_today_old_events_unchanged_shape(app, st, client, crew):

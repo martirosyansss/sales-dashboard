@@ -41,7 +41,7 @@ from .security import (PEPPER_ENV, PEPPER_OLD_ENV, SCHEME_PLAIN, Pepper, check_p
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 PIN_MAX_FAILS = 5
 PIN_LOCK = timedelta(minutes=15)
@@ -99,6 +99,15 @@ _CREW_SCHEMA = (
     "CREATE INDEX IF NOT EXISTS crew_log_terminal ON crew_log(terminal_id, date)",
     "CREATE INDEX IF NOT EXISTS crew_log_day ON crew_log(date, car_code)",
     "CREATE INDEX IF NOT EXISTS events_helper ON events(helper_id, date)",
+)
+
+# Журнал терминала (v8): создан, сменил машину, получил новый QR — момент сервера (clock.iso), машина после записи, кто.
+# По строкам created/car событие, пришедшее после смены машины (очередь офлайн), относится к машине, на которой терминал
+# был в момент события (at), а не к текущей (events.ingest); reissue — аудит «Նոր QR».
+_TERMINAL_LOG_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS terminal_log(id INTEGER PRIMARY KEY AUTOINCREMENT, terminal_id INTEGER NOT NULL, "
+    "kind TEXT NOT NULL CHECK (kind IN ('created','car','reissue')), car_code TEXT NOT NULL, at TEXT NOT NULL, by TEXT)",
+    "CREATE INDEX IF NOT EXISTS terminal_log_terminal ON terminal_log(terminal_id, at, id)",
 )
 
 _SCHEMA = (
@@ -183,6 +192,7 @@ _SCHEMA = (
     "sha256 TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL, uploaded_at TEXT NOT NULL, uploaded_by TEXT)",
     *_TRACK_SCHEMA,
     *_CREW_SCHEMA,
+    *_TERMINAL_LOG_SCHEMA,
 )
 
 _SEED = (
@@ -265,6 +275,13 @@ _MIGRATIONS: dict[int, tuple[str | Callable[[sqlite3.Connection], None], ...]] =
         lambda conn: _add_column(conn, 'sessions', 'helper_id', 'INTEGER'),
         lambda conn: _add_column(conn, 'events', 'helper_id', 'INTEGER'),
         *_CREW_SCHEMA,
+    ),
+    # v7 → v8 (только добавляет): журнал терминала; каждому терминалу — строка created с его машиной на момент создания
+    # (машину до v8 не меняли). Шаги повторяемы.
+    7: (
+        *_TERMINAL_LOG_SCHEMA,
+        "INSERT INTO terminal_log(terminal_id, kind, car_code, at, by) SELECT t.id, 'created', t.car_code, t.created_at, "
+        "t.created_by FROM terminals t WHERE NOT EXISTS (SELECT 1 FROM terminal_log l WHERE l.terminal_id = t.id)",
     ),
 }
 
@@ -502,6 +519,12 @@ def _clean_name(name: Any, what: str) -> str:
     if len(name) > NAME_MAX:
         raise ValueError(f'{what}: не длиннее {NAME_MAX} символов')
     return name
+
+
+def _log_terminal(conn: sqlite3.Connection, terminal_id: int, kind: str, car_code: str, at: str,
+                  user: str | None) -> None:
+    conn.execute('INSERT INTO terminal_log(terminal_id, kind, car_code, at, by) VALUES(?, ?, ?, ?, ?)',
+                 (terminal_id, kind, car_code, at, user))
 
 
 def _terminal(row: Sequence[Any]) -> Terminal:
@@ -849,7 +872,9 @@ class Store:
             cur = conn.execute('INSERT INTO terminals(name, car_code, token_sha256, created_at, created_by, '
                                'admin_pin_hash) VALUES(?, ?, ?, ?, ?, ?)',
                                (name, car_code.strip(), token_hash(token), now, user, admin_hash))
-            return int(cur.lastrowid)
+            tid = int(cur.lastrowid)
+            _log_terminal(conn, tid, 'created', car_code.strip(), now, user)
+            return tid
 
         tid = self._transaction(write, 'не удалось создать терминал')
         terminal = self.terminal(tid)
@@ -883,20 +908,26 @@ class Store:
 
         return self._transaction(write, 'не удалось отозвать терминал')
 
-    def reissue_terminal(self, terminal_id: int, admin_pin: str) -> tuple[Terminal, str] | None:
+    def reissue_terminal(self, terminal_id: int, admin_pin: str, user: str | None) -> tuple[Terminal, str] | None:
         """«Նոր QR»: новый токен и PIN настроек тому же терминалу (имя, машина, история — прежние). Одной транзакцией:
         прежний токен сразу недействителен, сессии терминала удалены, блокировка входа по PIN снята (новое устройство
-        не наследует чужие ошибки). Токен возвращается ОДИН раз. Нет терминала или он отозван — None."""
+        не наследует чужие ошибки), строка reissue в журнале терминала (кто, когда). Токен возвращается ОДИН раз. Нет
+        терминала или он отозван — None."""
         token = new_token()
         admin_hash = hash_pin(admin_pin)
+        now = _now()
 
         def write(conn: sqlite3.Connection) -> bool:
-            n = conn.execute('UPDATE terminals SET token_sha256 = ?, admin_pin_hash = ?, failed_pin_count = 0, '
-                             'pin_window_start = NULL, locked_until = NULL WHERE id = ? AND revoked_at IS NULL',
-                             (token_hash(token), admin_hash, terminal_id)).rowcount
-            if n == 1:
-                conn.execute('DELETE FROM sessions WHERE terminal_id = ?', (terminal_id,))
-            return n == 1
+            row = conn.execute('SELECT car_code FROM terminals WHERE id = ? AND revoked_at IS NULL',
+                               (terminal_id,)).fetchone()
+            if row is None:
+                return False
+            conn.execute('UPDATE terminals SET token_sha256 = ?, admin_pin_hash = ?, failed_pin_count = 0, '
+                         'pin_window_start = NULL, locked_until = NULL WHERE id = ?',
+                         (token_hash(token), admin_hash, terminal_id))
+            conn.execute('DELETE FROM sessions WHERE terminal_id = ?', (terminal_id,))
+            _log_terminal(conn, terminal_id, 'reissue', row[0], now, user)
+            return True
 
         if not self._transaction(write, 'не удалось выдать новый QR терминалу'):
             return None
@@ -904,22 +935,37 @@ class Store:
         assert terminal is not None
         return terminal, token
 
-    def set_terminal_car(self, terminal_id: int, car_code: Any) -> bool:
+    def set_terminal_car(self, terminal_id: int, car_code: Any, user: str | None) -> bool:
         """«Փոխել մեքենան»: действующий терминал — на другую машину. История не переносится: события, снимки /day,
-        экипаж и треки хранят машину на момент записи. Сессия водителя удаляется (одной транзакцией): терминал узнаёт
-        машину заново при входе по PIN (/login), а экипаж решается уже для новой машины. Нет терминала или он
-        отозван — False."""
+        экипаж и треки хранят машину на момент записи, а события, пришедшие позже из очереди терминала, относятся к
+        машине на момент события (строка car журнала терминала, events.ingest). Одной транзакцией: машина, строка
+        журнала, сессия водителя удаляется — терминал узнаёт машину заново при входе по PIN (/login), экипаж решается
+        уже для новой машины. Нет терминала или он отозван — False."""
         if not isinstance(car_code, str) or not car_code.strip() or len(car_code.strip()) > 20:
             raise ValueError('Машина не выбрана')
+        now = _now()
 
         def write(conn: sqlite3.Connection) -> bool:
             n = conn.execute('UPDATE terminals SET car_code = ? WHERE id = ? AND revoked_at IS NULL',
                              (car_code.strip(), terminal_id)).rowcount
             if n == 1:
                 conn.execute('DELETE FROM sessions WHERE terminal_id = ?', (terminal_id,))
+                _log_terminal(conn, terminal_id, 'car', car_code.strip(), now, user)
             return n == 1
 
         return self._transaction(write, 'не удалось сменить машину терминала')
+
+    def car_since(self) -> dict[int, str]:
+        """Терминал, которому меняли машину → момент (clock.iso) последней смены: «последняя связь» раньше — связь
+        прежней машины. Терминала без смены нет в словаре (до создания связи не бывает)."""
+        return dict(self._read(lambda c: c.execute(
+            "SELECT terminal_id, MAX(at) FROM terminal_log WHERE kind = 'car' GROUP BY terminal_id").fetchall()))
+
+    def terminal_log(self, terminal_id: int) -> list[dict[str, Any]]:
+        """Журнал терминала по порядку: [{kind, car_code, at, by}]."""
+        rows = self._read(lambda c: c.execute('SELECT kind, car_code, at, by FROM terminal_log WHERE terminal_id = ? '
+                                              'ORDER BY at, id', (terminal_id,)).fetchall())
+        return [{'kind': r[0], 'car_code': r[1], 'at': r[2], 'by': r[3]} for r in rows]
 
     def touch_terminal(self, terminal_id: int) -> bool:
         """Последняя связь терминала (для «Առաքում այսօր») — best-effort: короткое ожидание блокировки, любая
@@ -978,19 +1024,26 @@ class Store:
 
         self._transaction(write, 'не удалось записать вход')
 
-    def open_session(self, terminal_id: int, driver_id: int, expires_at: datetime) -> str:
+    def open_session(self, terminal_id: int, driver_id: int, expires_at: datetime,
+                     car_code: str | None = None) -> str | None:
         """Новая сессия водителя на терминале: прежние сессии терминала отменяются, просроченные сессии всех
-        терминалов удаляются. Счётчик ошибок PIN НЕ сбрасывается (см. pin_attempt). Токен — один раз."""
+        терминалов удаляются. Счётчик ошибок PIN НЕ сбрасывается (см. pin_attempt). Токен — один раз. car_code —
+        машина, которую вход сообщит терминалу: офис сменил машину или отозвал терминал после проверки токена — None
+        (сессия не открыта, терминал войдёт заново)."""
         token = new_token()
         now = _now()
 
-        def write(conn: sqlite3.Connection) -> None:
+        def write(conn: sqlite3.Connection) -> bool:
+            if car_code is not None and conn.execute(
+                    'SELECT 1 FROM terminals WHERE id = ? AND car_code = ? AND revoked_at IS NULL',
+                    (terminal_id, car_code)).fetchone() is None:
+                return False
             conn.execute('DELETE FROM sessions WHERE terminal_id = ? OR expires_at <= ?', (terminal_id, now))
             conn.execute('INSERT INTO sessions(token_sha256, terminal_id, driver_id, created_at, expires_at) '
                          'VALUES(?, ?, ?, ?, ?)', (token_hash(token), terminal_id, driver_id, now, clock.iso(expires_at)))
+            return True
 
-        self._transaction(write, 'не удалось открыть сессию')
-        return token
+        return token if self._transaction(write, 'не удалось открыть сессию') else None
 
     def session(self, digest: str, terminal_id: int) -> Session | None:
         """Действующая сессия этого терминала с активным водителем; чужая, просроченная — None."""
@@ -1828,6 +1881,16 @@ class EventTx:
             (terminal_id, driver_id, helper_id, day, day, day, terminal_id, helper_id, at_utc, at_utc)).fetchone()[0] == 1
 
     # --- трек и заправки (контракт v1.3 §7) ---
+
+    def terminal_cars(self, terminal_id: int) -> list[tuple[int, str]]:
+        """Машины терминала по журналу (created/car): [(с момента, мс UTC; машина)] по возрастанию — events.car_at."""
+        out = []
+        for at, car in self.conn.execute("SELECT at, car_code FROM terminal_log WHERE terminal_id = ? "
+                                         "AND kind IN ('created','car') ORDER BY at, id", (terminal_id,)).fetchall():
+            moment = clock.parse_moment(at)
+            if moment is not None:
+                out.append((round(moment.timestamp() * 1000), car))
+        return out
 
     def insert_track(self, car_code: str, day: str,
                      points: Sequence[tuple[int, float, float, float, float | None, float | None]]) -> int:
