@@ -4123,7 +4123,7 @@
     }
     // лист печати, имя товара и примечания — общий рендер base.js (тот же документ у склада «Պահեստ»)
     const { name: wbName, notes: wbNotes } = window.RtWaybill;
-    async function printWaybill(code, btn) {
+    async function printWaybill(code, btn, send) {
         if (wbBusy(btn) || state.busy) return;
         hideActionError();
         // окно — сразу по нажатию: открытое после ответа сервера браузер счёл бы всплывающим и заблокировал
