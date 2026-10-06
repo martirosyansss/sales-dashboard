@@ -1254,10 +1254,14 @@ class _DispatchDay:
 def _day_orders(state: RoutesState, bundle: Bundle, day: date, refresh: bool,
                 rule: dp.FleetRule) -> tuple[date, date, dp.DispatchData, dp.Selection]:
     """Окно заказов дня, заказы ERP (кэш _dispatch_data) и отбор к доставке по правилу дня «чьи заказы везут машины»
-    (№74, dp.fleet_rule_of) — без заказов, взятых в развоз дня их приёма (№72, _same_day_taken)."""
+    (№74, dp.fleet_rule_of) — без заказов, взятых в развоз дня их приёма (№72, _same_day_taken). ERP читается и за сам
+    день: заказы, заведённые заранее на него (№78), — его заказы; прочие заказы с датой дня — новые заказы дня (№72,
+    _same_day_data), из данных дня они убраны."""
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     since, until = dp.order_window(day, workdays, off)
-    data = _dispatch_data(state, dp.backlog_since(since, workdays, holidays=off), until, day, refresh)
+    data = _dispatch_data(state, dp.backlog_since(since, workdays, holidays=off), until + timedelta(days=1), day,
+                          refresh)
+    data = replace(data, orders=tuple(o for o in data.orders if o.order_date < until or o.predated))
     sel = dp.to_deliver(data.orders, day, since, rule, dp.place_of(data.customers, data.addresses))
     taken, unread = _same_day_taken(state, day, workdays, off)
     if unread:
@@ -2575,11 +2579,12 @@ def api_measurements_get() -> Any:
 
 def _missing_coordinates(state, snap, bundle):
     since = (snap.today.replace(day=1) - timedelta(days=1)).replace(day=1)
-    data = _dispatch_data(state, since - timedelta(days=10), snap.today + timedelta(days=1), snap.today, False)
-    ids = set(snap.plan.customer_ids)
-    day = since
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     last_day = dp.next_workday(snap.today, workdays, off)
+    # по последний день включительно: заказы, заведённые заранее (№78), везут в их дату
+    data = _dispatch_data(state, since - timedelta(days=10), last_day + timedelta(days=1), snap.today, False)
+    ids = set(snap.plan.customer_ids)
+    day = since
     place = dp.place_of(data.customers, data.addresses)
     while day <= last_day:
         if dp.is_workday(day, workdays, off):
@@ -2588,7 +2593,7 @@ def _missing_coordinates(state, snap, bundle):
                 draft, _ = _stored_draft(state, day)
             except StoreError:
                 draft = None
-            selected = dp.to_deliver([o for o in data.orders if lo <= o.order_date < hi], day, lo,
+            selected = dp.to_deliver([o for o in data.orders if lo <= o.order_date <= hi], day, lo,
                                      dp.fleet_rule_of(draft, bundle.settings), place)
             agents_off = dp.agents_off_of(draft, bundle.settings)
             ids.update(o.customer_id for o in selected.main if o.agent_id not in agents_off)

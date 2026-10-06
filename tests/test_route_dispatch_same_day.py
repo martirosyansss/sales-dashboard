@@ -402,12 +402,12 @@ def test_driver_app_gets_taken_orders_and_next_day_skips_them(client, monkeypatc
     assert _isn(10) in by_car and not {_isn(11), _isn(12)} & by_car
     assert rl.invoice_owner(view, key['truck'])(103) is True
     nxt = rl.routes_view(state, date(2026, 10, 2))
-    assert nxt.taken == frozenset({_isn(10)}) and rl.orders_window(date(2026, 10, 2), nxt)[1] == date(2026, 10, 2)
+    assert nxt.taken == frozenset({_isn(10)}) and rl.orders_window(date(2026, 10, 2), nxt)[1] == date(2026, 10, 3)
     picked = rl.pick_orders(every, date(2026, 10, 2), replace(nxt, plan_exists=False), '')
     assert _isn(10) not in {o.isn for o in picked}
-    # без взятых заказов дня окно и отбор — прежние
+    # без взятых заказов дня окно ERP — тоже и за сам день: заказы, заведённые заранее на него (№78)
     plain = rl.RoutesView()
-    assert rl.orders_window(D, plain)[1] == D
+    assert rl.orders_window(D, plain)[1] == date(2026, 10, 2)
 
 
 # ============================== ревью: смешанный выбор, накладные, пересборка, переработка ==============================

@@ -156,10 +156,10 @@ def _taken(state: Any, day: date, workdays: Sequence[int], holidays: Collection[
 
 
 def orders_window(day: date, view: RoutesView) -> tuple[date, date]:
-    """Даты заказов, которые смотрит «Развоз» для дня (с «не отгружены с прошлых дней»); логист взял в развоз заказы
-    самого дня (№72) — и его дата."""
+    """Даты заказов, которые смотрит «Развоз» для дня (с «не отгружены с прошлых дней») и сам день: заказы, заведённые
+    заранее на него (№78), и заказы дня, взятые логистом в его развоз (№72)."""
     since, until = dp.order_window(day, view.workdays, view.holidays)
-    return dp.backlog_since(since, view.workdays, holidays=view.holidays), until + timedelta(days=1 if view.same_day else 0)
+    return dp.backlog_since(since, view.workdays, holidays=view.holidays), until + timedelta(days=1)
 
 
 def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, car_code: str,
@@ -173,10 +173,12 @@ def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, ca
     since, _ = dp.order_window(day, view.workdays, view.holidays)
     need = sorted({o.customer_id for o in orders if view.fleet.needs_place(o)})
     texts = places(need) if need and places is not None else {}
-    sel = dp.to_deliver(orders, day, since, view.fleet, lambda cid: texts.get(cid, ('', '')))
+    place = lambda cid: texts.get(cid, ('', ''))   # noqa: E731
+    sel = dp.to_deliver(orders, day, since, view.fleet, place)
     inside = set(view.added) | (set(view.carried) - set(view.dropped))
-    active = [o for o in sel.main if o.isn not in view.excluded and o.isn not in view.taken
-              and (o.order_date < day or o.isn in view.same_day)] + [o for o in sel.backlog if o.isn in inside]
+    same = [o for o in dp.same_day_candidates(orders, day, view.fleet, place) if o.isn in view.same_day]
+    active = [o for o in sel.main + same if o.isn not in view.excluded and o.isn not in view.taken] \
+        + [o for o in sel.backlog if o.isn in inside]
     active = [o for o in active if o.agent_id not in view.agents_off]
     if view.plan_exists:
         mine = set(view.car_customers(car_code))

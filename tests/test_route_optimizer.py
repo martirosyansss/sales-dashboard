@@ -5332,7 +5332,7 @@ def test_api_dispatch_flow(client):
     r = client.get('/api/routes/dispatch?date=2026-10-01')
     assert r.status_code == 200 and r.headers['Cache-Control'].startswith('no-cache')
     d = r.get_json()
-    assert calls == [(date(2026, 9, 28), date(2026, 10, 1), DP_DAY)]     # окно с запасом на прошлые дни
+    assert calls == [(date(2026, 9, 28), date(2026, 10, 2), DP_DAY)]     # с запасом на прошлые дни и сам день (№78)
     assert (d['day'], d['weekday'], d['order_dates'], d['plan'], d['rev']) == \
         ('2026-10-01', 4, {'since': '2026-09-30', 'until': '2026-09-30'}, None, 0)
     assert d['orders'] == {'count': 4, 'kg': 1950, 'revenue': 40000, 'customers': 4, 'shipped_before': 0,
