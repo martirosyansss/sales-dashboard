@@ -534,7 +534,9 @@ def plan_mismatches(day: date) -> dict[str, Any]:
       машины у клиента в рейсах нескольких машин (ничьи — routes_link.invoice_owner; erp_car None);
     - no_car — накладных без машины у клиентов одной машины плана (машину берёт план, erp_day.SQL_PLAN_SALES);
     - coverage — по машине плана с выдачей /day на дату: клиентов в плане и сколько из них дошло до терминала
-      (последний снимок /day, пустой — 0); машины без снимка (терминала нет / не запрашивал) не показываются."""
+      (последний снимок /day, пустой — 0); машины без снимка (терминала нет / не запрашивал) не показываются;
+    - released — план выпущен на терминалы (утверждён хотя бы раз, №80); до этого терминалы точек плана не получают —
+      сверка накладных с планом есть, а coverage пуст (недошедшие точки — не сбой, а ожидание утверждения)."""
     st = state()
     if day < clock.today():
         return {'plan_exists': None, 'items': [], 'past': True}
@@ -555,7 +557,8 @@ def plan_mismatches(day: date) -> dict[str, Any]:
             code, name = names.get(inv.customer_id, (str(inv.customer_id), ''))
             items.append({'doc_number': inv.doc_number, 'customer_code': code, 'customer_name': name,
                           'erp_car': inv.car_code or None, 'plan_cars': sorted(trucks)})
-    return {'plan_exists': True, 'items': items, 'no_car': no_car, 'coverage': _plan_coverage(day, view)}
+    return {'plan_exists': True, 'released': view.released, 'items': items, 'no_car': no_car,
+            'coverage': _plan_coverage(day, view) if view.released else []}
 
 
 def _crew_name(name: str) -> str:

@@ -19,9 +19,10 @@ sys.path.insert(0, str(ROOT))
 from route_optimizer import actuals as ac  # noqa: E402
 from route_optimizer import dispatch as dp  # noqa: E402
 from route_optimizer import views  # noqa: E402
-from test_route_dispatch_same_day import (DAY, FORD, HOWO, _base, _build, _page_setup, _plan_stops,  # noqa: E402,F401
+from courier import routes_link as rl  # noqa: E402
+from test_route_dispatch_same_day import (DAY, FORD, HOWO, D, _base, _build, _page_setup, _plan_stops,  # noqa: E402,F401
                                           _with, client)
-from test_route_optimizer import _isn  # noqa: E402
+from test_route_optimizer import _dorder, _isn  # noqa: E402
 
 APPROVED = 'Պլանը հաստատված է։ Ամբողջական վերակազմման համար նախ չեղարկեք հաստատումը։'
 
@@ -49,7 +50,9 @@ def test_approve_unapprove_round_trip_restores_pins_exactly():
     with pytest.raises(dp.DispatchError, match='արդեն հաստատված'):
         dp.approve(draft, 'x', None)
     dp.unapprove(draft)
-    assert draft.to_json() == before                       # закрепление логиста и взятия — как было, отметки нет
+    # закрепление логиста и взятия — как было, отметки утверждения нет; план остаётся выпущенным на терминалы (№80)
+    assert {k: v for k, v in draft.to_json().items() if k != 'released'} == before
+    assert draft.released == {'at': '2026-10-01T08:30:00', 'by': 'logist'}
     with pytest.raises(dp.DispatchError, match='հաստատված չէ'):
         dp.unapprove(draft)
     with pytest.raises(dp.DispatchError, match='նախ կազմեք'):
@@ -261,3 +264,70 @@ def test_approve_past_day_by_yerevan_date(client, monkeypatch):
     monkeypatch.setattr(views, '_clock', lambda: datetime(2026, 9, 30, 20, 30))
     r = client.post('/api/routes/dispatch/edit', json={'date': '2026-09-30', 'rev': d['rev'], 'action': 'approve'})
     assert r.status_code == 400 and 'Անցած օրվա' in r.get_json()['error']
+
+
+# ============================== план выпущен на терминалы (№80) ==============================
+
+def test_released_is_sticky_through_unapprove_rebuild_and_undo():
+    """Первое утверждение выпускает план на терминалы; снятие, повторное утверждение, пересборка и «Չեղարկել» отметку не
+    снимают и не подменяют (машины уже в пути). «Չեղարկել» и не воскрешает её у невыпущенного плана."""
+    ctx, base, *_, draft = _two_trips()
+    assert draft.released is None and 'released' not in draft.to_json()
+    dp.approve(draft, '2026-10-01T08:30:00', 'logist')
+    first = {'at': '2026-10-01T08:30:00', 'by': 'logist'}
+    assert draft.released == first and draft.to_json()['released'] == first
+    dp.unapprove(draft)
+    assert draft.approved is None and draft.released == first
+    dp.approve(draft, '2026-10-01T12:00:00', 'other')
+    dp.unapprove(draft)
+    assert draft.released == first                                  # первое утверждение — не последнее
+    rebuilt = dp.build(ctx, base, draft, [FORD.car_code, HOWO.car_code], 'now')
+    assert rebuilt.released == first and rebuilt.approved is None
+    # снимок «Չեղարկել» без отметки (сделан до выпуска) — отметка остаётся
+    rebuilt.undo = {k: v for k, v in rebuilt.to_json().items() if k not in ('released', 'prediction', 'undo')}
+    assert dp.apply_edit(ctx, base, rebuilt, {'action': 'undo'}, set()).released == first
+    # и наоборот: план не выпущен — снимок с отметкой её не воскрешает
+    plain = dp.build(ctx, base, None, [FORD.car_code], 'now')
+    plain.undo = {**plain.to_json(), 'released': first}
+    assert dp.apply_edit(ctx, base, plain, {'action': 'undo'}, set()).released is None
+
+
+def test_released_from_json_garbage_and_legacy_approval():
+    for junk in ('x', 1, [1], {'at': 1}, {'by': 'u'}, {'at': None}):
+        assert dp.Draft.from_json({'released': junk}).released is None
+    assert dp.Draft.from_json({'released': {'at': 'x', 'by': 5, 'extra': 1}}).released == {'at': 'x', 'by': None}
+    # утверждён до №80 (отметки нет) — выпущен этим утверждением
+    legacy = dp.Draft.from_json({'approved': {'at': 'a', 'by': 'u', 'pinned': [1]}})
+    assert legacy.released == {'at': 'a', 'by': 'u'}
+    raw = json.loads(json.dumps(legacy.to_json()))
+    assert dp.Draft.from_json(raw) == legacy
+
+
+def test_terminal_gets_plan_only_after_first_approval(client, monkeypatch):
+    """«Развоз» → приложение водителя (courier.routes_link): собранный план не идёт на терминал, пока его не утвердили;
+    после снятия утверждения и пересборки — идёт; «Ջնջել» — плана нет, ничего."""
+    state, _ = _page_setup(client, monkeypatch, now=datetime(2026, 10, 1, 8, 0, tzinfo=ac.YEREVAN))
+    orders = [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2), _dorder(3, 104, 600.0, agent=2)]
+
+    def terminal():
+        view = rl.routes_view(state, D)
+        return view, {car: [o.isn for o in rl.pick_orders(orders, D, view, car)] for car in ('CAR1', 'CAR2')}
+
+    d = _build(client, ('CAR1', 'CAR2'))
+    view, got = terminal()
+    assert view.plan_exists and not view.released and got == {'CAR1': [], 'CAR2': []}
+    assert not any(rl.invoice_owner(view, car)(cid) for car in ('CAR1', 'CAR2') for cid in (101, 102, 104))
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'approve'}).get_json()
+    view, got = terminal()
+    owner = _plan_stops(d)
+    expected = {car: [o.isn for o in orders if owner.get(o.customer_id) == car] for car in ('CAR1', 'CAR2')}
+    assert view.released and got == expected and sum(map(len, got.values())) == 3
+    d = client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'unapprove'}).get_json()
+    assert 'approved' not in d and state.store.load_dispatch(DAY)[0]['released']['at'] == '2026-10-01T08:00:00'
+    assert terminal()[1] == expected                                 # снятие утверждения — машины уже в пути
+    assert client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).status_code == 200
+    view, got = terminal()
+    assert view.released and sorted(sum(got.values(), [])) == sorted(o.isn for o in orders)
+    assert client.post('/api/routes/dispatch/reset', json={'date': DAY}).status_code == 200
+    view, got = terminal()
+    assert not view.plan_exists and not view.released and got == {'CAR1': [], 'CAR2': []}

@@ -151,10 +151,11 @@ def test_courier_pick_orders_skips_filtered_managers():
     orders = [dp.DispatchOrder(isn[0], 'N1', date(2026, 10, 1), 2, 7, '', 1000.0, 10.0, None),
               dp.DispatchOrder(isn[1], 'N2', date(2026, 10, 1), 2, 8, '', 1000.0, 10.0, None),
               dp.DispatchOrder(isn[2], 'N3', date(2026, 9, 25), 3, 8, '', 1000.0, 10.0, None)]
-    plan = rl.RoutesView(plan_exists=True, trips=(('A', (2, 3)),), added=frozenset({isn[2]}))
+    plan = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (2, 3)),), added=frozenset({isn[2]}))
     assert [o.isn for o in rl.pick_orders(orders, d, plan, 'A')] == isn
     # магазин 2 в рейсе ради заказа менеджера 7: заказ менеджера 8 там же и его заказ прошлых дней водитель не везёт
-    off = rl.RoutesView(plan_exists=True, trips=(('A', (2, 3)),), added=frozenset({isn[2]}), agents_off=frozenset({8}))
+    off = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (2, 3)),), added=frozenset({isn[2]}),
+                        agents_off=frozenset({8}))
     assert [o.isn for o in rl.pick_orders(orders, d, off, 'A')] == [isn[0]]
 
 

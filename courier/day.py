@@ -13,7 +13,11 @@
 - точка S: может нести `replaces` — точки O: заказов, из которых сделана накладная (контракт §5 п. 2);
   поле есть только у таких точек;
 - строка точки несёт `weight_kg` — вес строки (№65; добавочное поле, как `gtin_units`: приложение любой версии
-  неизвестные ключи игнорирует — Json { ignoreUnknownKeys = true }); по нему обучение «Развоза» считает доставленные кг.
+  неизвестные ключи игнорирует — Json { ignoreUnknownKeys = true }); по нему обучение «Развоза» считает доставленные кг;
+- план «Развоза» — только выпущенный (ответ владельца №80, routes_link.RoutesView.released): до первого утверждения дня
+  точки — лишь накладные ERP с машиной, порядок — не по плану; `plan` ответа — 'approved' | 'pending' (добавочное поле,
+  как `weight_kg`: будущий APK покажет «Պլանը դեռ հաստատված չէ»). Утверждение доходит до терминала не позже
+  DAY_TTL_SECONDS кэша + его опрос /day.
 """
 from __future__ import annotations
 
@@ -129,7 +133,8 @@ def stops_version(stops: list[dict[str, Any]]) -> str:
 def day_payload(data: DayData, view: RoutesView, store: Store, loaded_at: datetime) -> dict[str, Any]:
     points = _resolve_points(data, view)
     dist = distance_fn(view, [p for p in points.values() if p is not None] + ([view.depot] if view.depot else []))
-    order, source = order_customers(points, view.depot, view.car_customers(data.car_code), dist)
+    # №80: порядок плана — только выпущенного (до утверждения — как без плана)
+    order, source = order_customers(points, view.depot, view.car_customers(data.car_code) if view.released else [], dist)
     stops = build_stops(data, order, points, store.mark_settings())
     tare_types = [{'tare_id': f'erp:{tid}', 'name': name} for tid, name in sorted(data.tare_names.items())]
     tare_types += [{'tare_id': f'custom:{t["id"]}', 'name': t['name']} for t in store.tare_custom()]
@@ -144,6 +149,7 @@ def day_payload(data: DayData, view: RoutesView, store: Store, loaded_at: dateti
         'tare_types': tare_types,
         'refuse_reasons': [{'id': r['id'], 'text': r['text']} for r in store.reasons('refuse')],
         'return_reasons': [{'id': r['id'], 'text': r['text']} for r in store.reasons('return')],
+        'plan': 'approved' if view.released else 'pending',   # №80: план дня ещё не утверждён — точек из плана нет
     }
 
 
@@ -184,7 +190,8 @@ def demo_data() -> tuple[DayData, RoutesView, datetime]:
                    customers=customers, agents={1: 'Թեստ մենեջեր'},
                    containers=(ContainerLink(990019, 990202, 1.0, 1.0),), tare_names={990202: 'Պոլիմերային տարա 20լ'},
                    gps={}, debts={900001: 5000.0, 900002: 0.0, 900003: 15000.0})
-    return data, RoutesView(depot=(40.18, 44.51)), datetime(2000, 1, 1, 8, 0, tzinfo=clock.YEREVAN)
+    # демо-день — обычный рабочий день: «план утверждён» (№80), точки — накладные демо, плана нет
+    return data, RoutesView(depot=(40.18, 44.51), released=True), datetime(2000, 1, 1, 8, 0, tzinfo=clock.YEREVAN)
 
 
 # --- Сервис с кэшем ---

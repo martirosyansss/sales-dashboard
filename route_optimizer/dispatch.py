@@ -37,6 +37,9 @@
 - Утверждение плана дня (ответ владельца №73, «Հաստատել օրվա պլանը»): все рейсы закреплены (approve), пересборка
   запрещена (views), ручные правки и новые заказы дня — можно; новые рейсы, пока план утверждён, тоже закреплены
   (keep_approved). Снятие (unapprove) открепляет ровно то, что закрепило утверждение.
+- План дня «выпущен» (ответ владельца №80, Draft.released): первое утверждение ставит отметку, снятие утверждения, правки,
+  пересборка и «Չեղարկել» её не снимают — машины уже в пути, их точки не пропадают. Только выпущенный план идёт на
+  терминалы «Առաքիչ» (courier.routes_link); удаление плана удаляет и отметку.
 - Водителей меньше, чем машин (ответ владельца №77, build_crewed): машин в рейсах не больше, чем вышло водителей; свой
   водитель — на своей машине, свободные — на машинах невышедших, лишние машины выбирает сборка по ֏ дня. Машины без
   водителя (Draft.unmanned) — не машины дня: ни правки, ни новые заказы дня (№72), ни совет (№54) их не берут.
@@ -549,6 +552,9 @@ class Draft:
     # план дня утверждён (№73): {'at': когда (ISO), 'by': кто, 'pinned': [рейсы, которые закрепило утверждение —
     # до него они не были закреплены]}; None — не утверждён
     approved: dict[str, Any] | None = None
+    # план дня выпущен на терминалы (№80): {'at': первое утверждение (ISO), 'by': кто}; ставит approve, не снимает ничто —
+    # ни unapprove, ни пересборка (build переносит), ни «Չեղարկել» (apply_edit «undo»); None — ни разу не утверждён
+    released: dict[str, Any] | None = None
     # правило «чьи заказы везут машины», с которым день собран (№74, FleetRule.to_json); None — пустое правило
     fleet: dict[str, Any] | None = None
     # водителей меньше, чем машин (№77, build_crewed): seats — машина → водитель, которого сборка посадила вместо её
@@ -576,6 +582,7 @@ class Draft:
                 **({'same_day_trips': sorted(self.same_day_trips)} if self.same_day_trips else {}),
                 **({'same_day_trucks': sorted(self.same_day_trucks)} if self.same_day_trucks else {}),
                 **({'approved': dict(self.approved)} if self.approved is not None else {}),
+                **({'released': dict(self.released)} if self.released is not None else {}),
                 **({'fleet': dict(self.fleet)} if self.fleet is not None else {}),
                 **({'seats': dict(sorted(self.seats.items()))} if self.seats else {}),
                 **({'unmanned': dict(sorted(self.unmanned.items()))} if self.unmanned else {}),
@@ -609,6 +616,9 @@ class Draft:
 
         def isns(key: str) -> set[str]:
             return {x for x in (raw.get(key) or [])[:MAX_BUILT_ORDERS] if isinstance(x, str) and ISN_RE.match(x)}
+        approved, released = _approved(raw.get('approved')), _released(raw.get('released'))
+        if released is None and approved is not None:   # утверждён до №80 — выпущен этим утверждением
+            released = {'at': approved['at'], 'by': approved['by']}
         return cls(trucks, excluded, added, trips, next_id, built, _built_orders(raw.get('built_orders')), cids('no_room'),
                    raw.get('overtime') is True, raw.get('overtime_ok') is True, isns('deferred'), isns('dropped'),
                    cids('no_window'), cids('no_center'), raw.get('prediction') if isinstance(raw.get('prediction'), dict) else None,
@@ -619,7 +629,7 @@ class Draft:
                    same_day_trips=cids('same_day_trips'),
                    same_day_trucks={x for x in (raw.get('same_day_trucks') or [])[:MAX_TRIPS] if isinstance(x, str)}
                    if isinstance(raw.get('same_day_trucks'), list) else set(),
-                   approved=_approved(raw.get('approved')), fleet=FleetRule.from_json(raw.get('fleet')).to_json(),
+                   approved=approved, released=released, fleet=FleetRule.from_json(raw.get('fleet')).to_json(),
                    seats=_str_map(raw.get('seats')),
                    unmanned={k: v for k, v in _str_map(raw.get('unmanned')).items() if v in UNMANNED},
                    absent=sorted({x for x in (raw.get('absent') or [])[:MAX_TRIPS] if isinstance(x, str) and x})
@@ -645,6 +655,14 @@ def _approved(raw: Any) -> dict[str, Any] | None:
     by = raw.get('by')
     return {'at': raw['at'], 'by': by if isinstance(by, str) else None,
             'pinned': sorted({x for x in raw['pinned'][:MAX_TRIPS] if _is_int(x)})}
+
+
+def _released(raw: Any) -> dict[str, Any] | None:
+    """Отметка «план выпущен на терминалы» из черновика (№80); битая — не выпущен (терминалы ждут утверждения)."""
+    if not isinstance(raw, dict) or not isinstance(raw.get('at'), str):
+        return None
+    by = raw.get('by')
+    return {'at': raw['at'], 'by': by if isinstance(by, str) else None}
 
 
 def _str_map(raw: Any) -> dict[str, str]:
@@ -911,6 +929,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     draft = Draft(trucks=sorted(codes), excluded=set(old.excluded), added=set(old.added), next_id=old.next_id,
                   built_at=now, deferred=set(old.deferred), dropped=set(old.dropped), agents_off=set(old.agents_off),
                   same_day=set(old.same_day), same_day_trips=set(old.same_day_trips),
+                  released=dict(old.released) if old.released is not None else None,   # №80: пересборка не прячет день
                   fleet=dict(old.fleet) if old.fleet is not None else None)
     pinned = [DraftTrip(t.id, t.truck, list(t.stops), True, t.not_before) for t in old.trips if t.pinned and t.truck in codes]
     tmp = Draft(trips=pinned)
@@ -1476,7 +1495,9 @@ def apply_edit(ctx: DayContext, stops: Sequence[Stop], draft: Draft, edit: Mappi
     if action == 'undo':
         if draft.undo is None:
             raise DispatchError('Չեղարկելու բան չկա՝ պլանը դրանից հետո արդեն փոխվել է')
-        return Draft.from_json(draft.undo)
+        restored = Draft.from_json(draft.undo)
+        restored.released = draft.released   # №80: отметка только копится — нынешняя не старее снимка
+        return restored
     draft.undo = None
     if action in ('exclude', 'include'):
         isn = edit.get('order')
@@ -1803,7 +1824,8 @@ def take_same_day(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop], 
 
 def approve(draft: Draft, at: str, by: str | None) -> Draft:
     """«Հաստատել օրվա պլանը»: все рейсы закрепляются, утверждение помнит, какие из них закрепило само (не были
-    закреплены) — снятие открепит ровно их. Уже утверждён или рейсов нет — DispatchError."""
+    закреплены) — снятие открепит ровно их; первое утверждение выпускает план на терминалы (№80, released). Уже утверждён
+    или рейсов нет — DispatchError."""
     if draft.approved is not None:
         raise DispatchError('Պլանն արդեն հաստատված է — թարմացրեք էջը')
     if not draft.trips:
@@ -1813,12 +1835,15 @@ def approve(draft: Draft, at: str, by: str | None) -> Draft:
         t.pinned = True
     draft.undo = None
     draft.approved = {'at': at, 'by': by, 'pinned': ids}
+    if draft.released is None:   # №80: с первого утверждения план дня идёт на терминалы — и после снятия
+        draft.released = {'at': at, 'by': by}
     return draft
 
 
 def unapprove(draft: Draft) -> Draft:
     """«Չեղարկել հաստատումը»: открепляются рейсы, закреплённые утверждением (и новые рейсы, закреплённые, пока план был
-    утверждён); закрепления логиста и взятия заказов дня остаются. Не утверждён — DispatchError."""
+    утверждён); закрепления логиста и взятия заказов дня остаются; план остаётся выпущенным на терминалы (№80: машины уже
+    в пути). Не утверждён — DispatchError."""
     if draft.approved is None:
         raise DispatchError('Պլանը հաստատված չէ — թարմացրեք էջը')
     mine = set(draft.approved['pinned'])

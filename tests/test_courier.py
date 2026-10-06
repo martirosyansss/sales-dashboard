@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import uuid
 from contextlib import closing
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -221,11 +222,14 @@ def test_pick_orders_by_plan_or_car():
     d = date(2026, 10, 2)
     orders = [_order(ISN[0], 1, 'A'), _order(ISN[1], 2, 'B'), _order(ISN[2], 3, 'A', shipped=date(2026, 10, 1)),
               _order(ISN[3], 4, 'A', agent=5, van=5), _order(ISN[4], 5, 'A', when=date(2026, 9, 25))]
-    no_plan = rl.RoutesView()
-    assert [o.isn for o in rl.pick_orders(orders, d, no_plan, 'A')] == [ISN[0]]   # отгружен, сам везёт, старый — нет
-    plan = rl.RoutesView(plan_exists=True, trips=(('A', (2, 5)), ('B', (1,))), added=frozenset({ISN[4]}))
+    # №80: плана нет — ничего (прежний отбор по машине заказа снят): терминал ждёт утверждения
+    assert rl.pick_orders(orders, d, rl.RoutesView(), 'A') == []
+    every = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (1, 2, 3, 4, 5)),))
+    assert [o.isn for o in rl.pick_orders(orders, d, every, 'A')] == [ISN[0], ISN[1]]   # отгружен, сам везёт, старый — нет
+    plan = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (2, 5)), ('B', (1,))), added=frozenset({ISN[4]}))
     assert [o.isn for o in rl.pick_orders(orders, d, plan, 'A')] == [ISN[1], ISN[4]]
-    excluded = rl.RoutesView(plan_exists=True, trips=(('A', (2,)),), excluded=frozenset({ISN[1]}))
+    assert rl.pick_orders(orders, d, replace(plan, released=False), 'A') == []      # план не утверждён — ничего
+    excluded = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (2,)),), excluded=frozenset({ISN[1]}))
     assert rl.pick_orders(orders, d, excluded, 'A') == []
 
 
@@ -371,7 +375,8 @@ LINE_KEYS = {'line_id', 'product_id', 'code', 'name', 'qty', 'unit', 'price', 's
 def test_demo_day_matches_contract(term):
     body = term['day']
     assert set(body) == {'date', 'version', 'loaded_at', 'car', 'depot', 'order_source', 'stops', 'tare_types',
-                         'refuse_reasons', 'return_reasons'}
+                         'refuse_reasons', 'return_reasons', 'plan'}
+    assert body['plan'] == 'approved'                    # №80: демо-день — обычный рабочий день, без плашки ожидания
     assert body['date'] == DEMO and isinstance(body['version'], str) and len(body['version']) == 40
     assert clock.parse_moment(body['loaded_at']) is not None
     assert body['car'] == {'code': 'TEST', 'name': 'Թեստ'}
@@ -933,7 +938,7 @@ def test_courier_money_page_renders(app, client):
 
 def test_plan_mismatch(app, st, monkeypatch):
     from courier import views as cv
-    view = rl.RoutesView(plan_exists=True, trips=(('A', (1, 2)), ('B', (3,))))
+    view = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (1, 2)), ('B', (3,))))
     monkeypatch.setattr(cv, 'routes_view', lambda state, d: view)
     st.invoice_loader = lambda d: ([ed.InvoiceCar(ISN[0], '001', 1, 'A'), ed.InvoiceCar(ISN[1], '002', 2, 'B'),
                                     ed.InvoiceCar(ISN[2], '003', 3, ''), ed.InvoiceCar(ISN[3], '004', 4, 'A')],
@@ -942,7 +947,7 @@ def test_plan_mismatch(app, st, monkeypatch):
                       '2026-10-02T08:00:00+04:00')
     with app.test_request_context():
         out = cv.plan_mismatches(date(2026, 10, 2))
-    assert out['plan_exists'] is True
+    assert out['plan_exists'] is True and out['released'] is True
     # накладная без машины (003) — не «не та машина»: её везёт машина плана; считается в no_car
     assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('002', 'B', ['A'])]
     assert out['no_car'] == 1
@@ -950,7 +955,7 @@ def test_plan_mismatch(app, st, monkeypatch):
     assert out['coverage'] == [{'car_code': 'A', 'plan': 2, 'terminal': 1}]
     # B запросил день и получил 0 точек (как 123AV61 05.10) — видно; клиент 3 в двух машинах — накладная без машины ничья
     st.store.save_day('2026-10-02', 'B', [], 'v0', '2026-10-02T08:00:00+04:00')
-    view = rl.RoutesView(plan_exists=True, trips=(('A', (1, 2, 3)), ('B', (3,))))
+    view = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (1, 2, 3)), ('B', (3,))))
     with app.test_request_context():
         out = cv.plan_mismatches(date(2026, 10, 2))
     assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('002', 'B', ['A']), ('003', None, ['A', 'B'])]
@@ -1399,18 +1404,86 @@ def test_load_day_plan_invoice_customer_on_two_trucks_is_nobodys(fake_erp):
     fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0)]
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2])]
     fake_erp.parents = [(ISN[0], ISN[2])]
-    split = rl.RoutesView(plan_exists=True, trips=(('A', (11,)), ('B', (11, 12))))
+    split = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (11,)), ('B', (11, 12))))
     for car in ('A', 'B'):
         data = ed.load_day('cs', car, d, (date(2026, 9, 29), d), lambda o, places, car=car: rl.pick_orders(o, d, split, car, places),
                            rl.invoice_owner(split, car))
         assert data.docs == ()
-    alone = rl.RoutesView(plan_exists=True, trips=(('A', (11,)), ('B', (12,))))
+    alone = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (11,)), ('B', (12,))))
     got = {car: [x.stop_id for x in ed.load_day('cs', car, d, (date(2026, 9, 29), d),
                                                    lambda o, places, car=car: rl.pick_orders(o, d, alone, car, places),
                                                    rl.invoice_owner(alone, car)).docs] for car in ('A', 'B')}
     assert got == {'A': [f'S:{ISN[0]}'], 'B': []}
     assert ed.load_day('cs', 'A', d, (date(2026, 9, 29), d), lambda o, places: rl.pick_orders(o, d, alone, 'A', places)).docs == ()
-    assert rl.invoice_owner(rl.RoutesView(), 'A')(11) is True        # плана нет — заказ отобран по своей машине
+    assert rl.invoice_owner(rl.RoutesView(), 'A')(11) is False       # плана нет — накладная без машины ничья (№80)
+    assert rl.invoice_owner(replace(alone, released=False), 'A')(11) is False   # план не утверждён — тоже
+
+
+# ============================== план дня — только после утверждения (№80) ==============================
+
+def _gate_erp(fake_erp):
+    """Накладная с машиной (клиент 11), заказ машины (клиент 12, ещё не отгружен) и накладная без машины из заказа
+    клиента 13 — две последние приходят на терминал только по плану «Развоза»."""
+    d = date(2026, 10, 2)
+    fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
+    fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0),
+                       (ISN[2], 'Z0013', date(2026, 10, 1), 13, 7, '', 9000, 10, d, 0)]
+    fake_erp.plan_sales = [((ISN[3], '000318003', 13, 7, '1', 9000), ISN[2])]
+    return d
+
+
+def _gate_service(tmp_path, views):
+    loader = lambda car, day, window, pick, owner: ed.load_day('cs', car, day, window, pick, owner)   # noqa: E731
+    return dy.DayService(Store(str(tmp_path / 'c.db')), loader, lambda day: views[0], ttl=60)
+
+
+def test_day_before_approval_has_only_erp_car_invoices(fake_erp, tmp_path):
+    """№80: план есть, но не утверждён, или плана нет — на терминале только накладные ERP с машиной; ни заказов (O:), ни
+    накладных без машины по плану, порядок — не по плану; `plan` — 'pending'. Утверждён — как раньше, `plan` — 'approved'."""
+    d = _gate_erp(fake_erp)
+    plan = rl.RoutesView(plan_exists=True, trips=(('991AT61', (13, 12, 11)),))
+    views = [plan]
+    body = _gate_service(tmp_path, views).get('991AT61', d)
+    assert [s['stop_id'] for s in body['stops']] == [f'S:{ISN[0]}']
+    assert body['plan'] == 'pending' and body['order_source'] == 'auto'
+    assert not any(sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]) for sql in fake_erp.calls)
+    views[0] = rl.RoutesView()                                       # плана нет: и заказ с машиной в ORDERS — не точка
+    body = _gate_service(tmp_path, views).get('991AT61', d)
+    assert [s['stop_id'] for s in body['stops']] == [f'S:{ISN[0]}'] and body['plan'] == 'pending'
+    views[0] = replace(plan, released=True)
+    body = _gate_service(tmp_path, views).get('991AT61', d)
+    assert {s['stop_id'] for s in body['stops']} == {f'S:{ISN[0]}', f'O:{ISN[1]}', f'S:{ISN[3]}'}
+    assert body['plan'] == 'approved' and body['order_source'] == 'dispatch'
+    assert [s['customer']['id'] for s in body['stops']][:2] == [12, 11]   # порядок плана (у 13 нет точки — в конце)
+
+
+def test_day_cache_bounds_approval_delay(fake_erp, tmp_path, monkeypatch):
+    """Утверждение доходит до терминала не позже DAY_TTL_SECONDS: правки «Развоза» кэш /day не сбрасывают."""
+    d = _gate_erp(fake_erp)
+    views = [rl.RoutesView(plan_exists=True, trips=(('991AT61', (12, 11)),))]
+    svc = _gate_service(tmp_path, views)
+    now = [1000.0]
+    monkeypatch.setattr(dy.time, 'monotonic', lambda: now[0])
+    assert svc.get('991AT61', d)['plan'] == 'pending'
+    views[0] = replace(views[0], released=True)
+    now[0] += svc.ttl - 1
+    assert svc.get('991AT61', d)['plan'] == 'pending'                 # ещё в кэше
+    now[0] += 1
+    assert svc.get('991AT61', d)['plan'] == 'approved'
+
+
+def test_plan_mismatch_before_approval_keeps_plan_without_coverage(app, st, monkeypatch):
+    """Офис видит план и до утверждения (сверка накладных с машинами), но «не дошло до терминала» не показывает: точки
+    плана терминалы ещё и не должны получать (№80)."""
+    from courier import views as cv
+    view = rl.RoutesView(plan_exists=True, trips=(('A', (1, 2)), ('B', (3,))))
+    monkeypatch.setattr(cv, 'routes_view', lambda state, d: view)
+    st.invoice_loader = lambda d: ([ed.InvoiceCar(ISN[1], '002', 2, 'B')], {2: ('C2', 'Երկու')})
+    st.store.save_day('2026-10-02', 'A', [], 'v0', '2026-10-02T08:00:00+04:00')
+    with app.test_request_context():
+        out = cv.plan_mismatches(date(2026, 10, 2))
+    assert out['plan_exists'] is True and out['released'] is False and out['coverage'] == []
+    assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('002', 'B', ['A'])]
 
 
 def test_load_day_plan_invoice_from_two_orders_in_two_chunks(fake_erp, monkeypatch):
