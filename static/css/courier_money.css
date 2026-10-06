@@ -194,7 +194,8 @@
 .cm-terms dt { font-weight: 600; color: var(--rt-fg); }
 .cm-terms dd { margin: 0; color: var(--rt-fg-dim); line-height: 1.55; }
 
-.cm-print { display: none; }
+.cm-print, .cm-receipt { display: none; }
+.cm-hand .cm-rcpt { width: 38px; height: 38px; }
 
 /* ---------- адаптив ---------- */
 @media (max-width: 1240px) {
@@ -231,10 +232,29 @@
     .cm-terms dd { margin-bottom: 8px; }
 }
 
-/* ---------- печать: только акт сдачи ---------- */
+/* ---------- печать: акт сдачи за день (A4 альбом) или квитанция водителя (A4 книжный, 2 экземпляра) ---------- */
+@page receipt { size: A4 portrait; margin: 10mm; }
 @media print {
     @page { size: A4 landscape; margin: 12mm; }
-    body { background: #fff !important; }
+    body.cm-printing-receipt .cm-print { display: none !important; }
+    body.cm-printing-receipt .cm-receipt { display: block !important; page: receipt; color: #000; font-family: var(--rt-font); font-size: 10.5pt; }
+    .cm-receipt .rc { height: 128mm; box-sizing: border-box; padding: 4mm 2mm; break-inside: avoid; display: flex; flex-direction: column; }
+    .cm-receipt .rc-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; border-bottom: 2px solid #000; padding-bottom: 3px; }
+    .cm-receipt h2 { color: #000 !important; font-size: 14pt; font-weight: 700; margin: 0; }
+    .cm-receipt .rc-copy { font-size: 9pt; font-weight: 600; border: 1px solid #000; padding: 1px 8px; border-radius: 3px; white-space: nowrap; }
+    .cm-receipt .rc-no { margin: 4px 0 8px; font-size: 9.5pt; }
+    .cm-receipt .rc-who { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin: 0 0 8px; }
+    .cm-receipt .rc-who dt { color: #444; font-weight: 400; }
+    .cm-receipt .rc-who dd { margin: 0; font-weight: 600; }
+    .cm-receipt table { width: 100%; border-collapse: collapse; }
+    .cm-receipt th, .cm-receipt td { border: 1px solid #666; padding: 4px 8px; text-align: left; font-weight: 400; color: #000; }
+    .cm-receipt td.n { text-align: right; font-family: var(--rt-mono); white-space: nowrap; width: 42%; }
+    .cm-receipt tr.b th, .cm-receipt tr.b td { font-weight: 700; }
+    .cm-receipt tr.big td { font-size: 12.5pt; }
+    .cm-receipt .rc-com, .cm-receipt .rc-acc { margin: 6px 0 0; font-size: 9.5pt; }
+    .cm-receipt .rc-signs { display: flex; justify-content: space-between; gap: 24px; margin-top: auto; padding-top: 10mm; font-size: 9.5pt; }
+    .cm-receipt .rc-cut { border-top: 1px dashed #777; text-align: center; font-size: 8pt; color: #777; line-height: 1; padding-top: 2px; height: 8mm; box-sizing: border-box; }
+    html, body { background: #fff !important; }
     .app-nav, nav.navbar, body > footer, .cm-screen, .rt-page::before { display: none !important; }
     .rt-page { color: #000; }
     .cm-page { max-width: none; padding: 0; }

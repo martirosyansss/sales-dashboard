@@ -247,6 +247,7 @@
             + '<label for="cmHand' + id + '">Հանձնել է</label>'
             + '<span class="cm-money-in"><input id="cmHand' + id + '" class="rt-input" inputmode="decimal" autocomplete="off" placeholder="0" title="Հանձնելու է՝ ' + esc(money(x.collected)) + '" value="' + (x.handed === null ? '' : esc(fmt(x.handed, 2))) + '"><span aria-hidden="true">֏</span></span>'
             + '<button type="submit" class="rt-btn rt-btn-primary rt-btn-sm">Պահպանել</button>'
+            + (x.handed !== null ? '<button type="button" class="rt-iconbtn cm-iconbtn cm-rcpt" data-receipt="' + id + '" aria-label="Տպել անդորրագիրը" title="Տպել անդորրագիրը (2 օրինակ՝ վարորդին և դրամարկղին)"><i class="fas fa-receipt" aria-hidden="true"></i></button>' : '')
             + '</form>'
             + '<span class="cm-verdict ' + v.cls + '"><i class="fas ' + v.icon + '" aria-hidden="true"></i>' + esc(v.text) + '</span>'
             + '</div>'
@@ -310,6 +311,33 @@
             + '<td class="n">' + esc(money(sum(handed, x => x.handed))) + '</td><td class="n">' + (handed.length ? esc(signed(sum(handed, x => x.diff))) : '') + '</td><td></td></tr></tfoot></table>'
             + '<div class="signs"><span>Գանձապահ՝ ____________________</span><span>Ստուգեց՝ ____________________</span></div>'
             + '<p class="pf">Տպված է ' + esc(dateTime(iso(now) + 'T' + now.toTimeString().slice(0, 5))) + ' · Sales Dashboard · Առաքիչ</p>';
+    }
+
+    // ---------- Квитанция водителю (A4: экземпляр водителя + экземпляр кассы) ----------
+    function receiptCopy(x, copy) {
+        const cs = cars(x), cash = x.rows.filter(r => (r.expected || 0) > 0).length;
+        const row = (label, value, cls = '') => '<tr class="' + cls + '"><th>' + esc(label) + '</th><td class="n">' + esc(value) + '</td></tr>';
+        const diff = zero(x.diff) ? 'Համընկնում է' : signed(x.diff) + ' (' + (x.diff < 0 ? 'պակաս' : 'ավել') + ')';
+        return '<div class="rc"><div class="rc-top"><h2>Կանխիկի ընդունման անդորրագիր</h2><span class="rc-copy">' + esc(copy) + '</span></div>'
+            + '<p class="rc-no">№ ' + esc(st.data.date.replace(/-/g, '')) + '-' + Number(x.driver_id) + ' · ' + esc(dayName(st.data.date)) + '</p>'
+            + '<dl class="rc-who"><dt>Վարորդ</dt><dd>' + esc(x.name) + '</dd><dt>Մեքենա</dt><dd>' + esc(cs.join(', ') || '—') + '</dd>'
+            + '<dt>Կետեր</dt><dd>' + fmt(x.rows.length) + ' (կանխիկ վճարմամբ՝ ' + fmt(cash) + ')</dd></dl>'
+            + '<table>' + row('Պետք էր վերցնել', money(x.expected)) + row('Վերցրել է ապրանքագրերով', money(x.collected_invoice))
+            + row('Վերցրել է պարտքի դիմաց', money(x.collected_debt)) + row('Հանձնելու է', money(x.collected), 'b')
+            + row('Հանձնել է', money(x.handed), 'b big') + row('Տարբերություն', diff, 'b')
+            + '</table>'
+            + (x.comment ? '<p class="rc-com">Մեկնաբանություն՝ ' + esc(x.comment) + '</p>' : '')
+            + '<p class="rc-acc">Ընդունել է՝ ' + esc(x.handed_by || '—') + ', ' + esc(dateTime(x.handed_at)) + '</p>'
+            + '<div class="rc-signs"><span>Հանձնեց (վարորդ)՝ ____________________</span><span>Ընդունեց (գանձապահ)՝ ____________________</span></div></div>';
+    }
+    function printReceipt(id) {
+        const x = st.data && st.data.drivers.find(d => d.driver_id === id);
+        if (!x || x.handed === null) return;
+        if (st.dirty.has(id)) { showError('Նախ պահպանեք գումարը, հետո տպեք անդորրագիրը'); return; }
+        $('cmReceipt').innerHTML = receiptCopy(x, 'Վարորդի օրինակ') + '<div class="rc-cut" aria-hidden="true">✂ կտրել այստեղ</div>' + receiptCopy(x, 'Դրամարկղի օրինակ');
+        document.body.classList.add('cm-printing-receipt');
+        window.addEventListener('afterprint', () => document.body.classList.remove('cm-printing-receipt'), { once: true });
+        window.print();
     }
 
     // ---------- Excel ----------
@@ -401,12 +429,14 @@
         $('cmNext').addEventListener('click', () => shiftDay(1));
         $('cmToday').addEventListener('click', () => setDay(today()));
         $('cmRefresh').addEventListener('click', () => { if (!st.busy) load(); });
-        $('cmPrint').addEventListener('click', () => window.print());
+        $('cmPrint').addEventListener('click', () => { document.body.classList.remove('cm-printing-receipt'); window.print(); });
         $('cmExcel').addEventListener('click', exportExcel);
         $('cmQ').addEventListener('input', () => { st.q = $('cmQ').value.trim(); if (st.data) render(); });
         document.addEventListener('click', (ev) => {
             const f = ev.target.closest('[data-filter]');
             if (f) { setFilter(f.dataset.filter); return; }
+            const rc = ev.target.closest('[data-receipt]');
+            if (rc) { printReceipt(Number(rc.dataset.receipt)); return; }
             const t = ev.target.closest('[data-toggle]');
             if (t) toggle(Number(t.dataset.toggle));
         });

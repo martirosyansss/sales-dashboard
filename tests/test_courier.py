@@ -927,7 +927,8 @@ def test_courier_money_page_renders(app, client):
     assert r.status_code == 200 and r.headers['Cache-Control'] == 'no-store'
     html = r.data.decode('utf-8')
     assert 'Վարորդների գումարը' in html and 'id="cmPrintSheet"' in html   # акт сдачи для печати заполняет JS
-    assert 'js/courier_money.js?v=1' in html and 'css/courier_money.css?v=1' in html and 'js/courier.js' not in html
+    assert 'js/courier_money.js?v=2' in html and 'css/courier_money.css?v=2' in html and 'js/courier.js' not in html
+    assert 'id="cmReceipt"' in html                                        # квитанция водителю (A4, 2 экземпляра)
 
 
 def test_plan_mismatch(app, st, monkeypatch):
