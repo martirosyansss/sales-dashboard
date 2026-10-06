@@ -543,7 +543,8 @@ def center_alerts(pts: Sequence[Fix], rules: Rules, truck: TruckSpec, live: bool
                   stops: Sequence[Mapping[str, Any]] = ()) -> list[dict[str, Any]]:
     """Машина без права въезда (center_ok False) в границе малого центра: подряд не меньше CENTER_MIN_POINTS точек. Заезд,
     в котором машина была у магазина с правилом «в центр машинам допуска» (№78, truck.center_customers; в STOP_RADIUS_M его
-    точки), — по правилу, без тревоги; другие заезды в центр в тот же день — тревога."""
+    точки), — по правилу, без тревоги: заезд — все точки подряд в зоне, т.е. и подъезд по центру к магазину, и выезд из
+    него; другие заезды в центр в тот же день — тревога."""
     if truck.center_ok is not False or len(rules.center_zone) < 3:
         return []
     ok = [(s['lat'], s['lon']) for s in stops if s.get('customer_id') in truck.center_customers

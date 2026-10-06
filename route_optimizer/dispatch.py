@@ -642,6 +642,10 @@ class Draft:
     seats: dict[str, str] = field(default_factory=dict)
     unmanned: dict[str, str] = field(default_factory=dict)
     absent: list[str] = field(default_factory=list)
+    # машина отдельного рейса (№78, ответы 18 и 20, _spare_solo_truck): {'truck': снятая машина или None — оставлена,
+    # 'delta_pct': рост ֏ дня (дизель + износ) без неё, % (None — без неё всё не помещается), 'limit_pct': порог настроек};
+    # None — правило не понадобилось
+    solo_spare: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         built = None if self.built_orders is None else {
@@ -664,7 +668,8 @@ class Draft:
                 **({'fleet': dict(self.fleet)} if self.fleet is not None else {}),
                 **({'seats': dict(sorted(self.seats.items()))} if self.seats else {}),
                 **({'unmanned': dict(sorted(self.unmanned.items()))} if self.unmanned else {}),
-                **({'absent': sorted(self.absent)} if self.absent else {})}
+                **({'absent': sorted(self.absent)} if self.absent else {}),
+                **({'solo_spare': dict(self.solo_spare)} if self.solo_spare is not None else {})}
 
     @classmethod
     def from_json(cls, raw: Any) -> Draft:
@@ -709,7 +714,8 @@ class Draft:
                    seats=_str_map(raw.get('seats')),
                    unmanned={k: v for k, v in _str_map(raw.get('unmanned')).items() if v in UNMANNED},
                    absent=sorted({x for x in (raw.get('absent') or [])[:MAX_TRIPS] if isinstance(x, str) and x})
-                   if isinstance(raw.get('absent'), list) else [])
+                   if isinstance(raw.get('absent'), list) else [],
+                   solo_spare=raw.get('solo_spare') if isinstance(raw.get('solo_spare'), dict) else None)
 
 
 def _built_orders(raw: Any) -> dict[str, tuple[float, float]] | None:
@@ -789,6 +795,9 @@ class DayContext:
     solo: frozenset[int] = frozenset()   # магазины «отдельным рейсом» (№78)
     # магазины, куда выбранные машины их допуска (allow) въезжают в малый центр (№78, флажок карточки магазина)
     center_allow: frozenset[int] = frozenset()
+    # машина отдельного рейса везёт и обычные магазины, если ֏ дня без лишней машины растёт не больше чем на столько % (№78,
+    # ответ 20, настройка solo_spare_max_pct)
+    solo_spare_max_pct: float = 5.0
 
 
 def morning_loading(day: date, settings: Mapping[str, Any]) -> bool:
@@ -1266,7 +1275,12 @@ def build_crewed(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, truc
         timing.update(trials=len(tried), seconds=perf_counter() - started)
     codes = fleet if orphans else trucks
     draft = build(ctx, stops, old, codes, now)
-    draft = _spare_solo_truck(ctx, stops, old, draft, now)
+    t0 = perf_counter()
+    draft, n = _spare_solo_truck(ctx, stops, old, draft, now)
+    if timing is not None:
+        timing.update(solo_trials=n, solo_seconds=perf_counter() - t0)
+    # машина, снятая ради второго рейса машины отдельного рейса, — без посадки сборки (водитель в ней не нужен)
+    seats = {c: name for c, name in seats.items() if not (draft.solo_spare and draft.solo_spare.get('truck') == c)}
     draft.seats, draft.unmanned, draft.absent = seats, unmanned, sorted(crew.absent)
     return draft
 
@@ -1279,62 +1293,75 @@ def _solo_only(ctx: DayContext, draft: Draft) -> set[str]:
     return {c for c, ts in by.items() if all(len(t.stops) == 1 and t.stops[0] in ctx.solo for t in ts)}
 
 
-def _spare_solo_truck(ctx: DayContext, stops: Sequence[Stop], old: Draft, draft: Draft, now: str) -> Draft:
-    """Ответ владельца №78, 18: машина отдельного рейса («Ռամադա» на 333NO33) после него возвращается, грузится и везёт
-    обычные магазины — лишнюю машину без нужды не брать. У плана есть машина только с отдельными рейсами (_solo_only) —
-    пробы сборки машинами плана без одной из них (не с закреплёнными рейсами; SEAT_TRIAL_ITERATIONS, не больше
-    SEAT_TRIALS_MAX); годится, если машин в рейсах меньше, а вне рейсов не больше магазинов и кг, чем в плане (_shortfall);
-    из годных — где машина отдельного рейса везёт и обычные магазины, затем меньше ֏; таких нет — следующая машина снимается
-    с лучшей годной. Найден набор, где машина отдельного рейса не простаивает, — полная сборка им; если полный решатель
-    снова оставил её только с отдельным рейсом (дешевле, но машина простаивает), — её рейсы из пробы закрепляются на время
-    полной сборки остальных (потом открепляются), не вышло — план пробы. Машины без рейсов
-    остаются отмеченными (Draft.trucks — прежний). Ничего не годится — план как есть."""
+SOLO_SPARE_TRIALS_MAX = 4   # проб без одной машины (№78, ответ 18): на данных CT115 — ≈ 3 с проба, итог ≤ ≈ 30 с сверх сборки
+
+
+def _spare_solo_truck(ctx: DayContext, stops: Sequence[Stop], old: Draft, draft: Draft, now: str) -> tuple[Draft, int]:
+    """Ответы владельца №78, 18 и 20: машина отдельного рейса («Ռամադա» на 333NO33) после него возвращается, грузится и
+    везёт обычные магазины — лишнюю машину не брать, если ֏ дня (дизель + износ, как operating_cost_amd) без неё растёт не
+    больше чем на ctx.solo_spare_max_pct %; иначе лишняя машина остаётся, машина отдельного рейса везёт только свой магазин.
+    У плана есть машина только с отдельными рейсами (_solo_only), и она может везти хоть один обычный магазин дня (допуск
+    машин, центр) — пробы сборки без одной машины плана (не машины отдельного рейса и не с закреплёнными рейсами), от самой
+    лёгкой (кг в плане), с коротким решателем (SEAT_TRIAL_ITERATIONS), не больше SOLO_SPARE_TRIALS_MAX. Годится набор, где
+    машин в рейсах меньше, вне рейсов магазинов не больше и кг не больше, а ֏ — в пределах порога (_fits_spare); первая
+    годная, где машина отдельного рейса уже не простаивает, — итог проб, иначе — лучшая годная. Итог — одна полная сборка
+    этим набором (машина отдельного рейса в пробе не простаивает — её рейсы из пробы закреплены на время сборки остальных,
+    потом открепляются); не годится она — план пробы. Время сверх сборки (замер 06.10, копия CT115): ≈ 4 пробы × ≈ 5 с +
+    одна полная сборка ≈ 10 с ≤ ≈ 30 с; nginx CT115 ждёт ответ 180 с. Машины без рейсов остаются отмеченными
+    (Draft.trucks — прежний). Draft.solo_spare — что решено и рост ֏ (пояснение дня). (план, проб)."""
     lone = _solo_only(ctx, draft) if ctx.solo else set()
     if not lone:
-        return draft
+        return draft, 0
     routable = {s.customer_id: s for s in stops if s.point is not None}
+    if not any(c not in ctx.solo and _can_carry(ctx, _selected(ctx, draft.trucks), code, [c], routable, {})
+               for code in lone for c in routable):
+        return draft, 0                                  # машина отдельного рейса другие магазины дня не возит
     base = _shortfall(ctx, routable, draft)
+    used = sorted({t.truck for t in draft.trips})
     held = {t.truck for t in old.trips if t.pinned}
+    kg = {c: math.fsum(routable[x].kg for t in draft.trips if t.truck == c for x in t.stops if x in routable) for c in used}
+    limit = base[2] * (1.0 + ctx.solo_spare_max_pct / 100.0)
+    trials, best, best_pct = 0, None, None
+    for code in sorted(set(used) - lone - held, key=lambda c: (kg[c], c))[:SOLO_SPARE_TRIALS_MAX]:
+        trials += 1
+        got = build(ctx, stops, old, [c for c in used if c != code], now, SEAT_TRIAL_ITERATIONS)
+        short = _shortfall(ctx, routable, got)
+        if len({t.truck for t in got.trips}) < len(used) and short[0] <= base[0] and short[1] <= base[1] + _EPS:
+            pct = (short[2] / base[2] - 1.0) * 100.0 if base[2] > 0 else 0.0
+            best_pct = pct if best_pct is None else min(best_pct, pct)
+            if short[2] <= limit + _EPS and (best is None or (bool(_solo_only(ctx, got)), short[2]) < best[0]):
+                best = ((bool(_solo_only(ctx, got)), short[2]), code, got)
+                if not best[0][0]:
+                    break
+    if best is None:
+        draft.solo_spare = {'truck': None, 'delta_pct': _r(best_pct) if best_pct is not None else None,
+                            'limit_pct': ctx.solo_spare_max_pct}
+        return draft, trials
+    code, found = best[1], best[2]
+    codes = [c for c in used if c != code]
 
-    def fewer(d: Draft, than: int) -> bool:
-        return len({t.truck for t in d.trips}) < than and _shortfall(ctx, routable, d)[:2] <= base[:2]
-    cur, trials, found = draft, 0, None
-    while trials < SEAT_TRIALS_MAX:
-        used = sorted({t.truck for t in cur.trips})
-        best = None
-        for code in sorted(set(used) - _solo_only(ctx, cur) - held):
-            if trials >= SEAT_TRIALS_MAX:
-                break
-            trials += 1
-            got = build(ctx, stops, old, [c for c in used if c != code], now, SEAT_TRIAL_ITERATIONS)
-            key = (len(_solo_only(ctx, got)), _shortfall(ctx, routable, got)[2], code)
-            if fewer(got, len(used)) and (best is None or key < best[0]):
-                best = (key, got)
-        if best is None:
-            break
-        cur = best[1]
-        if not best[0][0]:
-            found = cur
-            break
-    if found is None:
-        return draft
-    codes = sorted({t.truck for t in found.trips})
-    final = build(ctx, stops, old, codes, now)
-    if not (fewer(final, len({t.truck for t in draft.trips})) and not _solo_only(ctx, final)):
-        # полный решатель снова оставил машину отдельного рейса простаивать: её рейсы — как в пробе (закреплены на время
-        # сборки), остальное — полным решателем
+    def fits(d: Draft) -> bool:
+        short = _shortfall(ctx, routable, d)
+        return (len({t.truck for t in d.trips}) < len(used) and short[0] <= base[0] and short[1] <= base[1] + _EPS
+                and short[2] <= limit + _EPS)
+    if _solo_only(ctx, found):
+        final = build(ctx, stops, old, codes, now)
+    else:
+        # машина отдельного рейса в пробе уже везёт и обычные магазины: её рейсы — как в пробе (закреплены на время
+        # сборки: полный решатель, дешевле на литры, снова оставил бы её простаивать), остальное — полным решателем
         mine = {t.truck for t in found.trips if any(c in ctx.solo for c in t.stops)}
-        keep = Draft(trips=[replace(t, stops=list(t.stops), pinned=True) for t in found.trips if t.pinned or t.truck in mine],
-                     next_id=found.next_id)
-        final = build(ctx, stops, replace(old, trips=keep.trips, next_id=keep.next_id), codes, now)
+        keep = [replace(t, stops=list(t.stops), pinned=True) for t in found.trips if t.pinned or t.truck in mine]
+        final = build(ctx, stops, replace(old, trips=keep, next_id=found.next_id), codes, now)
         was = {t.id for t in old.trips if t.pinned}
         for t in final.trips:
             if t.truck in mine and t.id not in was and t.loaded is None:
                 t.pinned = False
-        if not (fewer(final, len({t.truck for t in draft.trips})) and not _solo_only(ctx, final)):
-            final = found
+    if not fits(final) or (_solo_only(ctx, final) and not _solo_only(ctx, found)):
+        final = found
     final.trucks = list(draft.trucks)
-    return final
+    final.solo_spare = {'truck': code, 'delta_pct': _r((_shortfall(ctx, routable, final)[2] / base[2] - 1.0) * 100.0)
+                        if base[2] > 0 else 0.0, 'limit_pct': ctx.solo_spare_max_pct}
+    return final, trials
 
 
 def crew_view(draft: Draft, crew: Crew) -> dict[str, dict[str, Any]]:
@@ -2313,6 +2340,8 @@ def _day_explain(ctx: DayContext, routable: Mapping[int, Stop], draft: Draft, se
         'erp_gps_gap_km': ERP_GPS_MAX_GAP_KM,
         'solver': vrp.available(), 'solver_iterations': vrp.ITERATIONS,
         'model': dict(ctx.model),
+        # №78, ответы 18 и 20: машина отдельного рейса — снята ли лишняя машина и на сколько % вырос ֏ дня без неё
+        **({'solo_spare': dict(draft.solo_spare)} if draft.solo_spare is not None else {}),
     }
 
 

@@ -1189,7 +1189,7 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
                          vehicle_access=bundle.vehicle_access,
                          model=_model_note(s, calib, norms, eff, [p for p in points if p is not None], trucks),
                          end_reserve_min=float(s['truck_end_reserve_min']), solo=bundle.solo,
-                         center_allow=bundle.center_allow)
+                         center_allow=bundle.center_allow, solo_spare_max_pct=float(s['solo_spare_max_pct']))
 
 
 def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, eff: learning.InEffect,
@@ -2191,6 +2191,7 @@ def api_dispatch_build() -> Any:
     # первая сборка дня: черновик начинается с правила менеджеров из настроек (№69) — по нему и точки дня без черновика
     base = dd.draft if dd.draft is not None else dp.Draft(agents_off=dp.agents_off_of(None, bundle.settings),
                                                           fleet=dp.FleetRule.from_settings(bundle.settings).to_json())
+    cargo = dp.loaded_cargo(base, dd.stops)   # №78: что уже в машинах — до смены фильтра менеджеров
     if 'agents_off' in payload:
         # фильтр «Մենեջերներ» до первой сборки живёт на странице — приходит со сборкой; точки дня — по нему
         off = dp.parse_agents(payload['agents_off'])
@@ -2203,6 +2204,9 @@ def api_dispatch_build() -> Any:
     # первая сборка дня: перенесённые сюда заказы прошлого дня — сразу в развозе; машин — не больше вышедших водителей (№77)
     timing: dict[str, Any] = {}
     draft = dp.build_crewed(dd.ctx, dd.stops, base, codes, _now(), _crew(state, day, bundle.trucks)[0], timing)
+    # №78: новый фильтр менеджеров снял точки загруженного рейса — только с подтверждением логиста, без него не сохраняется
+    if payload.get('confirm_loaded') is not True and dp.loaded_cargo(draft, dd.stops, cargo) != cargo:
+        return _loaded_confirm()
     # отметка сборки: все заказы дня (и исключённые — они не «новые») + добавленные заказы прошлых дней
     inside = _backlog_in(draft, dd.carried)
     draft.built_orders = dp.order_marks([*dd.deliver, *(o for o in dd.backlog if o.isn in inside)])
@@ -2213,9 +2217,10 @@ def api_dispatch_build() -> Any:
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)
     if rev is None:
         return _conflict('План изменили в другой вкладке — обновите страницу')
-    logger.info('[Routes] Развоз на %s собран (%s) за %.1f с: точек %d, рейсов %d, машин %d (без водителя %d, проб %d)', day,
-                session.get('username'), time.perf_counter() - started, len(dd.stops), len(draft.trips), len(codes),
-                len(draft.unmanned), timing.get('trials', 0))
+    logger.info('[Routes] Развоз на %s собран (%s) за %.1f с: точек %d, рейсов %d, машин %d (без водителя %d, проб %d; '
+                'отдельный рейс: проб %d, %.1f с)', day, session.get('username'), time.perf_counter() - started, len(dd.stops),
+                len(draft.trips), len(codes), len(draft.unmanned), timing.get('trials', 0), timing.get('solo_trials', 0),
+                timing.get('solo_seconds', 0.0))
     dd.draft, dd.rev = draft, rev or 0
     return jsonify({'success': True, **_dispatch_page_body(dd)})
 
@@ -2850,10 +2855,10 @@ def api_customer_vehicles() -> Any:
         return error
     # "solo", "center" (№78: отдельный рейс; въезд в центр машинам допуска allow ради магазина; true | false) —
     # необязательны, только вместе с "window" (карточка «Условий магазина»)
-    if not isinstance(payload, dict) or set(payload) - CUSTOMER_FLAGS not in ({'customer_id', 'access'},
-                                                                        {'customer_id', 'access', 'window'},
-                                                                        {'customer_id', 'access', 'window', 'unload_min'},
-                                                                        {'customer_id', 'unload_min'})             or any(k in payload and ('window' not in payload or not isinstance(payload[k], bool)) for k in CUSTOMER_FLAGS):
+    shapes = ({'customer_id', 'access'}, {'customer_id', 'access', 'window'}, {'customer_id', 'access', 'window', 'unload_min'},
+              {'customer_id', 'unload_min'})
+    if not isinstance(payload, dict) or set(payload) - CUSTOMER_FLAGS not in shapes or any(
+            k in payload and ('window' not in payload or not isinstance(payload[k], bool)) for k in CUSTOMER_FLAGS):
         return _bad_request({'_': 'Սերվերը չընդունեց հարցումը'})
     cid = payload['customer_id']
     if isinstance(cid, bool) or not isinstance(cid, int) or not 0 < cid < 2 ** 31:

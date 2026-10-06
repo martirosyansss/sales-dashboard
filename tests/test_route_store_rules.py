@@ -226,9 +226,24 @@ def test_spare_solo_truck_drops_extra_truck_when_everything_fits():
     lone = dp.Draft(trucks=sorted(CODES), trips=[dp.DraftTrip(1, '333DO33', [RAMADA]),
                                                  dp.DraftTrip(2, '991AT61', [101, 102, 103])], next_id=3)
     assert dp._solo_only(ctx, lone) == {'333DO33'}
-    got = dp._spare_solo_truck(ctx, ss, dp.Draft(), lone, 'now')
+    got = dp._spare_solo_truck(ctx, ss, dp.Draft(), dp.Draft.from_json(lone.to_json()), 'now')
+    got, n = got
     assert [t.truck for t in got.trips] == ['333DO33', '333DO33'] and got.trucks == sorted(CODES) and not got.no_room
     assert [t.stops for t in got.trips if RAMADA in t.stops] == [[RAMADA]]           # второй рейс — обычные магазины
+    assert n == 1 and got.solo_spare['truck'] == '991AT61' and got.solo_spare['limit_pct'] == 5.0
+    assert dp.Draft.from_json(got.to_json()).solo_spare == got.solo_spare
+    assert dp.plan_view(ctx, ss, got, _info)['explain']['solo_spare'] == got.solo_spare
+    # ответ 20: ֏ дня без лишней машины растёт больше порога — лишняя машина остаётся, машина отдельного рейса — свой магазин
+    dear = replace(ctx, solo_spare_max_pct=0.0, trucks={**ctx.trucks, '333DO33': replace(FORD, l100=80.0)})
+    assert got.solo_spare['delta_pct'] < 0                         # здесь без HOWO даже дешевле (FORD экономнее)
+    kept, _ = dp._spare_solo_truck(dear, ss, dp.Draft(), dp.Draft.from_json(lone.to_json()), 'now')
+    assert [t.truck for t in kept.trips] == ['333DO33', '991AT61'] and kept.solo_spare['truck'] is None
+    assert kept.solo_spare['delta_pct'] > 0 and kept.solo_spare['limit_pct'] == 0.0
+    # машина отдельного рейса другие магазины не возит (допуск) — без проб
+    deny = {**rule, **{c: VehicleAccess('deny', ('333DO33',)) for c in (101, 102, 103)}}
+    same, n = dp._spare_solo_truck(replace(ctx, vehicle_access=deny), ss, dp.Draft(), dp.Draft.from_json(lone.to_json()),
+                                   'now')
+    assert n == 0 and same.solo_spare is None and [t.truck for t in same.trips] == ['333DO33', '991AT61']
 
 
 def test_live_center_alarm_only_off_the_flagged_store():
@@ -252,3 +267,19 @@ def test_live_center_alarm_only_off_the_flagged_store():
 
 
 from test_route_optimizer import client  # noqa: E402,F401
+
+
+def test_spare_solo_truck_removed_truck_keeps_no_seat_and_settings():
+    """Снятая машина — без посадки сборки (№77) у неё; настройка порога — 0…100, по умолчанию 5."""
+    ss = [s for s in _ramada_stops() if s.customer_id in (RAMADA, 101, 102, 103)]
+    rule = {RAMADA: VehicleAccess('allow', ('333DO33',))}
+    ctx = replace(_ctx(solo=frozenset({RAMADA})), vehicle_access=rule, windows={})
+    crew = dp.Crew({'333DO33': 'Ա', '991AT61': 'Բ', '475DD61': 'Գ'}, frozenset(), frozenset({'Ա'}))
+    draft = dp.build_crewed(ctx, ss, None, CODES, 'now', crew, timing := {})
+    assert 'solo_trials' in timing and 'solo_seconds' in timing
+    if draft.solo_spare and draft.solo_spare['truck']:
+        assert draft.solo_spare['truck'] not in draft.seats
+    base = dict(st.DEFAULT_SETTINGS)
+    assert st.validate_settings(base, None)[0]['solo_spare_max_pct'] == 5
+    for bad in (-1, 101, None, '5'):
+        assert 'solo_spare_max_pct' in st.validate_settings({**base, 'solo_spare_max_pct': bad}, None)[1], bad

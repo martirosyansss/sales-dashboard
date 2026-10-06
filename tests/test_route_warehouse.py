@@ -337,3 +337,19 @@ def test_bad_mark_time_and_build_without_loaded_truck():
     dp.mark_loaded(draft, 2, AT, 'sklad')
     with pytest.raises(dp.DispatchError, match='Բեռնված երթերի մեքենաները'):
         dp.build(ctx, base, draft, [FORD.car_code], 'now')             # и путь «что если» AI — тот же отказ
+
+
+def test_build_with_new_manager_filter_dropping_loaded_stop_needs_confirmation(client, monkeypatch):
+    """«Վերակազմել» с изменённым на странице фильтром менеджеров (agents_off сборки): точки загруженного рейса — только с
+    подтверждением; без него ничего не сохраняется (ревью: probe_build_cargo)."""
+    state, d, tr = _loaded_day(client, monkeypatch)
+    d = _edit(client, d, action='unapprove').get_json()
+    before = state.store.load_dispatch(DAY)
+    body = {'date': DAY, 'trucks': ['CAR1', 'CAR2'], 'agents_off': [1, 2]}
+    r = client.post('/api/routes/dispatch/build', json=body)
+    assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
+    assert state.store.load_dispatch(DAY) == before
+    r = client.post('/api/routes/dispatch/build', json={**body, 'confirm_loaded': True})
+    assert r.status_code == 200, r.get_json()
+    # тот же фильтр, что у плана, — без вопроса
+    assert client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).status_code == 200

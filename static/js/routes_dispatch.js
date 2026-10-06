@@ -3168,6 +3168,15 @@
             ['Ընդունման ժամեր', [e.window_stores ? pl(e.window_stores, 'խանութ') + ' ունի ընդունման ժամ՝ երթերը կազմվում են այնպես, որ հասնենք ժամանակին, իսկ վաղ հասնելու դեպքում մեքենան սպասում է։'
                 : 'Այս օրվա խանութներից ոչ մեկն ընդունման ժամ չունի։']],
             ['Մեքենաների սահմանափակումներ', [e.access_stores ? pl(e.access_stores, 'խանութ') + ' ունի մեքենաների սահմանափակում՝ դրանք տանում են միայն թույլատրված մեքենաները։' : '']],
+            // №78, ответы 18 и 20: машина отдельного рейса — снята ли лишняя машина и на сколько вырос ծախս дня
+            ['Առանձին երթ', e.solo_spare ? [e.solo_spare.truck
+                ? 'Առանձին երթի մեքենան վերադառնում է և տանում է նաև սովորական խանութներ․ ' + truckLabel(truckBy(e.solo_spare.truck))
+                    + '-ն այսօր պետք չէ (օրվա դիզելը և մաշվածքը' + (num(e.solo_spare.delta_pct) > 0 ? ' աճում են ' + fmt(e.solo_spare.delta_pct, 1) + '%-ով' : ' չեն աճում')
+                    + ', թույլատրված է մինչև ' + fmt(e.solo_spare.limit_pct) + '%)։'
+                : num(e.solo_spare.delta_pct) !== null
+                    ? 'Առանձին երթի մեքենան տանում է միայն իր խանութը՝ առանց լրացուցիչ մեքենայի օրվա դիզելը և մաշվածքը կաճեին ' + fmt(e.solo_spare.delta_pct, 1)
+                        + '%-ով (թույլատրված է մինչև ' + fmt(e.solo_spare.limit_pct) + '%)։'
+                    : 'Առանձին երթի մեքենան տանում է միայն իր խանութը՝ առանց լրացուցիչ մեքենայի բոլոր խանութները չեն տեղավորվում։'] : []],
             ['Ցածր արժեքով երթեր', [num(d.min_trip_revenue) > 0 ? 'Երթը, որի ապրանքի արժեքը ' + fmt(d.min_trip_revenue) + NB + 'դրամից պակաս է, նշվում է՝ այն կարելի է տանել հաջորդ օրը։' : '']],
             ['Ճանապարհներ', [kmSource(m) ? capFirst(kmSource(m)) + '։' : '',
                 m.unsnapped ? pl(m.unsnapped, 'խանութ') + ' ճանապարհից ' + fmt(m.snap_km, 1) + NB + 'կմ-ից հեռու է՝ դրանց հեռավորությունը հաշվվում է ուղիղ գծով × ' + fmt(m.detour, 2) + '։' : '']],
@@ -3314,7 +3323,12 @@
             // фильтр — только свой (до сборки или изменённый тут): иначе сервер берёт фильтр плана, а не копию этой вкладки
             const body = { date: state.day, trucks };
             if (!state.data.plan || agentsDirty()) body.agents_off = [...agentsOff()];
-            const data = await api('POST', '/api/routes/dispatch/build', body);
+            let data;
+            try { data = await api('POST', '/api/routes/dispatch/build', body); } catch (e) {
+                // №78: новый фильтр менеджеров снял бы точки загруженного рейса — спросить и собрать с подтверждением
+                if (!(e.data && e.data.loaded_confirm === true && window.confirm(e.message))) throw e;
+                data = await api('POST', '/api/routes/dispatch/build', { ...body, confirm_loaded: true });
+            }
             state.geoChanged = null;
             state.agentsPick = null;
             setBusy(false);
