@@ -918,6 +918,16 @@ def test_courier_page_renders(app, client):
     assert r.status_code == 200
     html = r.data.decode('utf-8')
     assert 'Վարորդներ' in html and 'Առաքում այսօր' in html and 'Մակնշում' in html and 'js/courier.js' in html
+    assert 'href="/courier/money"' in html and 'crPane-money' not in html     # «Գումար» — отдельная страница
+
+
+def test_courier_money_page_renders(app, client):
+    app.add_url_rule('/logout', 'logout', lambda: '')
+    r = client.get('/courier/money')
+    assert r.status_code == 200 and r.headers['Cache-Control'] == 'no-store'
+    html = r.data.decode('utf-8')
+    assert 'Վարորդների գումարը' in html and 'id="cmPrintSheet"' in html   # акт сдачи для печати заполняет JS
+    assert 'js/courier_money.js?v=1' in html and 'css/courier_money.css?v=1' in html and 'js/courier.js' not in html
 
 
 def test_plan_mismatch(app, st, monkeypatch):
@@ -992,7 +1002,8 @@ def test_public_host_guard(dashboard):
     client, state = dashboard
     public = {'Host': 'araqich.orix.am'}
     # вход и журнал гаража снаружи (№53) — tests/test_garage_public.py; всё остальное закрыто
-    for path in ('/', '/settings', '/routes', '/courier', '/api/customers', '/static/css/courier.css', '/static/favicon.ico'):
+    for path in ('/', '/settings', '/routes', '/courier', '/courier/money', '/api/customers', '/static/css/courier.css',
+                 '/static/favicon.ico'):
         assert client.get(path, headers=public).status_code == 404, path
     assert client.get('/courier', headers={'Host': '192.168.1.10:5000', 'Cf-Connecting-Ip': '1.2.3.4'}).status_code == 404
     assert client.get('/courier', headers={'Host': 'ARAQICH.ORIX.AM:443'}).status_code == 404
@@ -1008,8 +1019,9 @@ def test_lan_access_unaffected(dashboard):
     client, _ = dashboard
     lan = {'Host': '192.168.1.10:5000'}
     assert client.get('/login', headers=lan).status_code == 200
-    r = client.get('/courier', headers=lan)
-    assert r.status_code == 302 and '/login' in r.headers['Location']        # офис — только после входа
+    for path in ('/courier', '/courier/money'):
+        r = client.get(path, headers=lan)
+        assert r.status_code == 302 and '/login' in r.headers['Location'], path   # офис — только после входа
     assert client.get('/api/courier/admin/today', headers=lan).status_code == 401
     assert client.get('/api/courier/v1/ping', headers=lan).status_code == 401  # API — токен, не сессия
 
@@ -1525,8 +1537,9 @@ def test_role_user_blocked_from_courier_office(dashboard, monkeypatch):
     lan = {}   # localhost: внутренняя сеть (cookie сессии теста — на localhost)
     with client.session_transaction() as sess:
         app_v2._stamp_session(sess, 'u', users['u'])
-    r = client.get('/courier', headers=lan)
-    assert r.status_code in (302, 403) and '/courier' not in r.headers.get('Location', '')
+    for path in ('/courier', '/courier/money'):
+        r = client.get(path, headers=lan)
+        assert r.status_code in (302, 403) and '/courier' not in r.headers.get('Location', ''), path
     for path in ('/api/courier/admin/today', '/api/courier/admin/drivers', '/api/courier/admin/money',
                  f'/api/courier/admin/photos/{uuid.uuid4()}', '/api/courier/admin/marks.csv'):
         assert client.get(path, headers=lan).status_code == 403, path

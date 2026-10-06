@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- «Առաքիչ» — офис терминалов водителей (docs/plans/courier-app-plan.md §4), армянский, «для чайников» -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=9">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=10">
 {% endblock %}
 
 {% block content %}
@@ -24,7 +24,7 @@
     <nav class="cr-tabs" role="tablist" aria-label="Առաքիչի բաժիններ">
         <a href="#drivers" role="tab" id="crTab-drivers" aria-controls="crPane-drivers"><i class="fas fa-id-card" aria-hidden="true"></i>Վարորդներ</a>
         <a href="#today" role="tab" id="crTab-today" aria-controls="crPane-today"><i class="fas fa-route" aria-hidden="true"></i>Առաքում այսօր</a>
-        <a href="#money" role="tab" id="crTab-money" aria-controls="crPane-money"><i class="fas fa-coins" aria-hidden="true"></i>Գումար</a>
+        <a href="/courier/money" class="cr-tab-link" role="tab" aria-selected="false"><i class="fas fa-coins" aria-hidden="true"></i>Գումար<i class="fas fa-arrow-up-right-from-square cr-tab-out" aria-hidden="true"></i></a>
         <a href="#marks" role="tab" id="crTab-marks" aria-controls="crPane-marks"><i class="fas fa-barcode" aria-hidden="true"></i>Մակնշում</a>
         <a href="#settings" role="tab" id="crTab-settings" aria-controls="crPane-settings"><i class="fas fa-sliders" aria-hidden="true"></i>Կարգավորումներ</a>
     </nav>
@@ -140,19 +140,6 @@
         </details>
     </section>
 
-    <!-- ДЕНЬГИ ВОДИТЕЛЕЙ -->
-    <section class="cr-pane" id="crPane-money" role="tabpanel" aria-labelledby="crTab-money" hidden>
-        <div class="cr-toolbar">
-            <label for="crMoneyDate">Օր</label>
-            <input type="date" id="crMoneyDate" class="rt-input cr-date">
-            <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="crMoneyRefresh"><i class="fas fa-rotate" aria-hidden="true"></i>Թարմացնել</button>
-        </div>
-        <p class="cr-lead">Որքան պետք է վերցներ վարորդը (առաքված ապրանքի գինը՝ կանխիկ վճարման կետերում) և որքան է վերցրել՝ ապրանքագրերով և պարտքի դիմաց։
-            Գանձապահը գրում է «Հանձնել է փաստացի»՝ տարբերությունը կերևա։ «Ընթացքում»՝ կետը դեռ ավարտված չէ, գումարը վերջնական չէ։
-            Դեղին տողը՝ պատվերով և ապրանքագրով նշումները չեն համընկնում, ստուգեք վարորդի հետ։</p>
-        <div id="crMoneyList"></div>
-    </section>
-
     <!-- МАРКИРОВКА -->
     <section class="cr-pane" id="crPane-marks" role="tabpanel" aria-labelledby="crTab-marks" hidden>
         <form id="crMarksForm" class="cr-toolbar" role="search">
@@ -239,5 +226,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/courier.js') }}?v=12"></script>
+<script src="{{ url_for('static', filename='js/courier.js') }}?v=13"></script>
 {% endblock %}
