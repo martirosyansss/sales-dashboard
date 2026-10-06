@@ -2,8 +2,9 @@
 """Связь с разделом «Маршруты»: склад, ручные точки клиентов, рабочие дни, план «Развоза» на дату, экипаж машин, дороги.
 
 Только чтение через публичный API route_optimizer (Store.load, Store.load_dispatch, Store.truck_drivers, Draft.from_json,
-RoadProvider.get) — файлы route_optimizer/ не меняются. Раздела нет или его база битая — пустой вид:
-порядок «auto» от склада не строится (склада нет), точки без ручных координат.
+RoadProvider.get) — файлы route_optimizer/ не меняются. Раздела нет — пустой вид: порядок «auto» от склада не строится
+(склада нет), точки без ручных координат. База раздела не читается — RoutesStoreError (№80): пустой вид значил бы «плана
+нет» — терминалы потеряли бы точки плана и /day сохранил бы урезанный снимок; ошибка оставляет терминалу прежний день.
 
 План «Развоза» идёт на терминал только выпущенный (ответ владельца №80): утверждён «Հաստատել օրվա պլանը» хотя бы раз за
 день (Draft.released). До этого и без плана терминал не получает из плана ничего — ни заказов (O:), ни накладных без
@@ -73,14 +74,11 @@ class RoutesView:
 
 
 def routes_view(state: Any, day: date) -> RoutesView:
-    """Вид на «Маршруты» для даты; state — app.extensions['route_optimizer'] (RoutesState) или None."""
+    """Вид на «Маршруты» для даты; state — app.extensions['route_optimizer'] (RoutesState) или None (раздела нет — пустой
+    вид). База «Маршрутов» не читается — RoutesStoreError (№80)."""
     if state is None:
         return RoutesView()
-    try:
-        bundle = state.store.load()
-    except RoutesStoreError:
-        logger.warning('[Courier] База «Маршрутов» недоступна — склад, ручные точки и план не учтены', exc_info=True)
-        return RoutesView()
+    bundle = state.store.load()   # RoutesStoreError — наружу (№80, docstring модуля)
     workdays = tuple(bundle.settings.get('workdays') or DEFAULT_WORKDAYS)
     holidays = dp.holidays_of(bundle.settings)
     roads = None
@@ -90,13 +88,9 @@ def routes_view(state: Any, day: date) -> RoutesView:
         logger.warning('[Courier] Карта дорог недоступна — порядок по прямой', exc_info=True)
     base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
                       holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads)
-    try:
-        stored = state.store.load_dispatch(day.isoformat())
-        carried = _carried(state, day, workdays, holidays)
-        taken = _taken(state, day, workdays, holidays)
-    except RoutesStoreError:
-        logger.warning('[Courier] План «Развоза» на %s не прочитан', day, exc_info=True)
-        return base
+    stored = state.store.load_dispatch(day.isoformat())   # RoutesStoreError — наружу (№80): не «плана нет»
+    carried = _carried(state, day, workdays, holidays)
+    taken = _taken(state, day, workdays, holidays)
     if stored is None:
         # плана нет — менеджеры, чьи заказы не везём, по правилу настроек «Развоза» (№69)
         return RoutesView(depot=base.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,

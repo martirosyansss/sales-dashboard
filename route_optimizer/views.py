@@ -1616,7 +1616,9 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
             **_drivers_json(_state(), dd.day), **_crew_json(_state(), dd.day, dd.draft, dd.bundle.trucks), **_same_day_json(dd),
             # №73: кто утвердил план — имя человека, только странице
             **({'approved': {'at': dd.draft.approved['at'], 'by': dd.draft.approved['by']}}
-               if dd.draft is not None and dd.draft.approved is not None else {})}
+               if dd.draft is not None and dd.draft.approved is not None else {}),
+            # №80: план выпущен на терминалы — «Ջնջել երթերը» не показывается (сервер и так откажет)
+            **({'released': True} if dd.draft is not None and dd.draft.released is not None else {})}
 
 
 # --- Новые заказы дня (ответ владельца №72) ---
@@ -1769,6 +1771,8 @@ def _same_day_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay, payload
 
 
 PLAN_APPROVED = 'Պլանը հաստատված է։ Ամբողջական վերակազմման համար նախ չեղարկեք հաստատումը։'   # №73: пересборка утверждённого плана
+# №80: выпущенный план (утверждён хотя бы раз) не стирается — водители уже везут его точки; пересборка — можно
+PLAN_RELEASED = 'Պլանն արդեն ուղարկված է վարորդներին․ ամբողջը նորից կազմելու համար օգտագործեք «Վերակազմել երթերը»։'
 PAST_DAY_APPROVE = 'Անցած օրվա պլանը չի հաստատվում և չի չեղարկվում'
 
 
@@ -2155,7 +2159,11 @@ def api_dispatch_build() -> Any:
     draft.built_orders = dp.order_marks([*dd.deliver, *(o for o in dd.backlog if o.isn in inside)])
     draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     _capture_prediction(dd, draft)
-    rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'))
+    # сборка идёт секунды: черновик, изменённый тем временем в другой вкладке (утверждён — №80: выпущен на терминалы),
+    # не затирается старой основой — 409, как у правок
+    rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)
+    if rev is None:
+        return _conflict('План изменили в другой вкладке — обновите страницу')
     logger.info('[Routes] Развоз на %s собран (%s) за %.1f с: точек %d, рейсов %d, машин %d (без водителя %d, проб %d)', day,
                 session.get('username'), time.perf_counter() - started, len(dd.stops), len(draft.trips), len(codes),
                 len(draft.unmanned), timing.get('trials', 0))
@@ -2305,7 +2313,8 @@ def api_dispatch_overtime() -> Any:
 @bp.post('/api/routes/dispatch/reset')
 @_api
 def api_dispatch_reset() -> Any:
-    """«Начать заново»: черновик на дату удаляется (исключения и закрепления — тоже)."""
+    """«Начать заново»: черновик на дату удаляется (исключения и закрепления — тоже). Утверждённый (№73) и выпущенный на
+    терминалы (№80) — нет."""
     payload, day, error = _dispatch_request()
     if error is not None:
         return error
@@ -2313,6 +2322,8 @@ def api_dispatch_reset() -> Any:
     draft, _ = _stored_draft(state, day)
     if draft is not None and draft.approved is not None:   # №73: утверждённый план не стирается — сначала снять
         return _bad_request({'_': PLAN_APPROVED})
+    if draft is not None and draft.released is not None:   # №80: план у водителей — стереть значит снять их точки
+        return _bad_request({'_': PLAN_RELEASED})
     state.store.delete_dispatch(day.isoformat())
     dd = _load_day(state, _bundle(state), day)
     return jsonify({'success': True, **_dispatch_page_body(dd)})

@@ -14,6 +14,7 @@ from contextlib import closing
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import werkzeug.security as wz
@@ -27,6 +28,7 @@ from courier.state import CourierState  # noqa: E402
 from courier.store import SCHEMA_VERSION, MarkSetting, PinConflict, PinReset, Store, StoreError  # noqa: E402
 from route_optimizer import erp  # noqa: E402
 from route_optimizer.dispatch import DispatchOrder  # noqa: E402
+from route_optimizer.store import StoreError as RoutesStoreError  # noqa: E402
 
 DEMO = '2000-01-01'
 NOW = datetime(2026, 10, 2, 9, 0, tzinfo=clock.YEREVAN)
@@ -1472,6 +1474,52 @@ def test_day_cache_bounds_approval_delay(fake_erp, tmp_path, monkeypatch):
     assert svc.get('991AT61', d)['plan'] == 'approved'
 
 
+class _BrokenRoutesStore:
+    """База «Маршрутов» не читается (route_optimizer.Store): load / load_dispatch — StoreError."""
+
+    def __init__(self, plan_only=False):
+        self.plan_only = plan_only
+
+    def load(self):
+        if self.plan_only:
+            return SimpleNamespace(settings={}, depot=None, geo_overrides={})
+        raise RoutesStoreError('битая база')
+
+    def load_dispatch(self, day):
+        raise RoutesStoreError('битая база')
+
+
+def test_routes_db_down_is_an_error_not_an_empty_plan(fake_erp, app, st, client, monkeypatch):
+    """№80: база «Маршрутов» не читается — не «плана нет»: /day отвечает ошибкой (приложение остаётся с прежним днём),
+    снимок не пишется, кэш не держит урезанный день; офис показывает сбой у машины и в сверке. Раздела нет — пустой вид."""
+    from courier import views as cv
+    d = _gate_erp(fake_erp)
+    ds = d.isoformat()
+    for broken in (_BrokenRoutesStore(), _BrokenRoutesStore(plan_only=True)):
+        with pytest.raises(RoutesStoreError):
+            rl.routes_view(SimpleNamespace(store=broken), d)
+    assert rl.routes_view(None, d) == rl.RoutesView()
+    _, _, h = make_terminal(st, car='991AT61')
+    s = login(client, h)
+    body = client.get(f'/api/courier/v1/day?date={ds}', headers=s).get_json()     # раздела нет — только накладные с машиной
+    assert [x['stop_id'] for x in body['stops']] == [f'S:{ISN[0]}'] and body['plan'] == 'pending'
+    assert set(st.store.day_snapshots(ds).latest) == {'991AT61'}
+    saved = []
+    monkeypatch.setattr(st.store, 'save_day', lambda *a: saved.append(a))
+    tick = [10_000.0]
+    monkeypatch.setattr(dy.time, 'monotonic', lambda: tick[0])
+    app.extensions['route_optimizer'] = SimpleNamespace(store=_BrokenRoutesStore(plan_only=True))
+    st.days.invalidate()
+    r = client.get(f'/api/courier/v1/day?date={ds}', headers=s)
+    assert r.status_code == 500 and r.get_json()['error'] == 'server' and saved == []
+    tick[0] += 1                                                                    # кэш не запомнил пустой день
+    assert client.get(f'/api/courier/v1/day?date={ds}', headers=s).status_code == 500 and saved == []
+    st.invoice_loader = lambda day: ([], {})
+    today = client.get(f'/api/courier/admin/today?date={ds}').get_json()
+    assert today['mismatch']['error'] == cv.ROUTES_DOWN and today['mismatch']['plan_exists'] is None
+    assert [c['error'] for c in today['cars'] if c['car_code'] == '991AT61'] == [cv.ROUTES_DOWN]
+
+
 def test_plan_mismatch_before_approval_keeps_plan_without_coverage(app, st, monkeypatch):
     """Офис видит план и до утверждения (сверка накладных с машинами), но «не дошло до терминала» не показывает: точки
     плана терминалы ещё и не должны получать (№80)."""
@@ -1483,6 +1531,9 @@ def test_plan_mismatch_before_approval_keeps_plan_without_coverage(app, st, monk
     with app.test_request_context():
         out = cv.plan_mismatches(date(2026, 10, 2))
     assert out['plan_exists'] is True and out['released'] is False and out['coverage'] == []
+    js = (ROOT / 'static' / 'js' / 'courier.js').read_text(encoding='utf-8')
+    assert 'mm.plan_exists && mm.released === false' in js        # плашка «պլանը դեռ հաստատված չէ»
+    assert 'mm.no_car && mm.released !== false' in js             # «машину берёт план» — только выпущенный
     assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('002', 'B', ['A'])]
 
 

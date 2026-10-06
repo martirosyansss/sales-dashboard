@@ -334,7 +334,7 @@
         renderOrderLists();
         const plan = d.plan;
         $('dpBuildText').textContent = plan ? 'Վերակազմել երթերը' : 'Կազմել երթերը';
-        $('dpReset').hidden = !plan || !!d.approved;
+        $('dpReset').hidden = !plan || !!d.approved || !!d.released;   // №80: план у водителей не стирается
         $('dpBuild').disabled = !d.trucks.some(t => t.ready) || !d.depot || !!d.approved;
         $('dpBuildNote').textContent = d.approved ? APPROVED_HY
             : plan ? 'Ամրացված երթերը կմնան ինչպես կան, մնացածը ծրագիրը կբաշխի նորից։' : 'Մոտ 5 վայրկյան։';

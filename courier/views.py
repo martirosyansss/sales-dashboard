@@ -31,6 +31,7 @@ from flask import Blueprint, Response, jsonify, render_template, request, send_f
 from werkzeug.exceptions import HTTPException
 
 from route_optimizer.erp import ErpError
+from route_optimizer.store import StoreError as RoutesStoreError
 
 from . import clock, events as ev, merge as mg
 from .facts import gps_summary, office_window, refuel_flags
@@ -43,6 +44,7 @@ logger = logging.getLogger(__name__)
 bp = Blueprint('courier', __name__)
 
 APK_MAX_BYTES = 200 * 1024 * 1024
+ROUTES_DOWN = '«Առաքում» պլանը հասանելի չէ'   # база «Маршрутов» не читается (№80)
 PACK_QTY_MAX = 10000
 PHOTO_REQUIRED = ('return', 'unreadable')   # + delivery «частично»/«отказ» (№18)
 MARKS_LIMIT = 20000
@@ -417,6 +419,9 @@ def day_overview(day: date, load: bool = True) -> dict[str, Any]:
                 st.days.get(car, day)
             except ErpError:
                 errors[car] = 'ERP-ն հասանելի չէ'
+            except RoutesStoreError:   # №80: план дня не прочитан — /day не собран, терминал остаётся с прежним днём
+                logger.warning('[Courier] /day %s: база «Маршрутов» недоступна', car, exc_info=True)
+                errors[car] = ROUTES_DOWN
     events = st.store.events_for_day(ds)
     model = day_model(ds, events)
     other = sorted({e['stop_id'] for e in events if e['stop_id'] and e['stop_id'] not in model.data})
@@ -627,6 +632,9 @@ def today_view() -> Any:
     except ErpError:
         logger.warning('[Courier] Сравнение с планом «Развоза» не выполнено', exc_info=True)
         body['mismatch'] = {'plan_exists': None, 'items': [], 'error': 'ERP-ն հասանելի չէ'}
+    except RoutesStoreError:
+        logger.warning('[Courier] Сравнение с планом «Развоза» не выполнено: база «Маршрутов» недоступна', exc_info=True)
+        body['mismatch'] = {'plan_exists': None, 'items': [], 'error': ROUTES_DOWN}
     return jsonify({'success': True, **body})
 
 

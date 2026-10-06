@@ -305,7 +305,7 @@ def test_released_from_json_garbage_and_legacy_approval():
 
 def test_terminal_gets_plan_only_after_first_approval(client, monkeypatch):
     """«Развоз» → приложение водителя (courier.routes_link): собранный план не идёт на терминал, пока его не утвердили;
-    после снятия утверждения и пересборки — идёт; «Ջնջել» — плана нет, ничего."""
+    после снятия утверждения и пересборки — идёт; стереть выпущенный план («Ջնջել երթերը») нельзя."""
     state, _ = _page_setup(client, monkeypatch, now=datetime(2026, 10, 1, 8, 0, tzinfo=ac.YEREVAN))
     orders = [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2), _dorder(3, 104, 600.0, agent=2)]
 
@@ -328,6 +328,39 @@ def test_terminal_gets_plan_only_after_first_approval(client, monkeypatch):
     assert client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).status_code == 200
     view, got = terminal()
     assert view.released and sorted(sum(got.values(), [])) == sorted(o.isn for o in orders)
-    assert client.post('/api/routes/dispatch/reset', json={'date': DAY}).status_code == 200
+    assert client.get('/api/routes/dispatch?date=' + DAY).get_json()['released'] is True   # странице: «Ջնջել» не показывать
+    r = client.post('/api/routes/dispatch/reset', json={'date': DAY})
+    assert r.status_code == 400 and r.get_json()['errors']['_'] == views.PLAN_RELEASED
     view, got = terminal()
-    assert not view.plan_exists and not view.released and got == {'CAR1': [], 'CAR2': []}
+    assert view.released and sorted(sum(got.values(), [])) == sorted(o.isn for o in orders)
+
+
+def test_reset_only_while_never_released(client, monkeypatch):
+    """«Ջնջել երթերը»: не утверждённый ни разу план стирается, как раньше; страница прячет кнопку у выпущенного."""
+    state, _ = _page_setup(client, monkeypatch, now=datetime(2026, 10, 1, 8, 0, tzinfo=ac.YEREVAN))
+    d = _build(client, ('CAR1', 'CAR2'))
+    assert 'released' not in d
+    assert client.post('/api/routes/dispatch/reset', json={'date': DAY}).status_code == 200
+    assert state.store.load_dispatch(DAY) is None
+    js = (ROOT / 'static' / 'js' / 'routes_dispatch.js').read_text(encoding='utf-8')
+    assert "$('dpReset').hidden = !plan || !!d.approved || !!d.released;" in js
+
+
+def test_build_does_not_overwrite_approval_made_meanwhile(client, monkeypatch):
+    """Сборка идёт секунды: другая вкладка тем временем утвердила план (№80: выпустила его на терминалы) — сборка не
+    затирает черновик старой основой, а отвечает 409, как правки."""
+    state, _ = _page_setup(client, monkeypatch, now=datetime(2026, 10, 1, 8, 0, tzinfo=ac.YEREVAN))
+    _build(client, ('CAR1', 'CAR2'))
+    real = dp.build_crewed
+
+    def slow(*args, **kw):
+        out = real(*args, **kw)
+        raw, rev = state.store.load_dispatch(DAY)                     # вкладка Б: «Հաստատել օրվա պլանը»
+        other = dp.approve(dp.Draft.from_json(raw), '2026-10-01T08:00:00', 'b')
+        assert state.store.save_dispatch(DAY, other.to_json(), 'b', expected_rev=rev) is not None
+        return out
+    monkeypatch.setattr(views.dp, 'build_crewed', slow)
+    r = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']})
+    assert r.status_code == 409 and r.get_json()['conflict'] is True
+    stored = state.store.load_dispatch(DAY)[0]
+    assert stored['approved']['by'] == 'b' and stored['released']['by'] == 'b'

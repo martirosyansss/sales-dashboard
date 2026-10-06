@@ -272,7 +272,7 @@
               + ', պլան՝ ' + esc(x.plan_cars.join(', ')) + '</li>').join('') + '</ul></span></div>'
             : (mm.error ? '<p class="cr-lead">Համեմատել պլանի հետ չհաջողվեց՝ ' + esc(mm.error) + '</p>' : ''))
             + (mm.plan_exists && mm.released === false ? '<p class="cr-lead">«Առաքում» պլանը դեռ հաստատված չէ․ տերմինալները պլանի խանութները կստանան հաստատելուց հետո (ERP-ում մեքենայով ապրանքագրերը՝ հիմա)։</p>' : '')
-            + (mm.no_car ? '<p class="cr-lead">Պլանի խանութների ' + fmt(mm.no_car) + ' ապրանքագիր ERP-ում առանց մեքենայի է։ Մեքենան որոշվում է ըստ պլանի։</p>' : '')
+            + (mm.no_car && mm.released !== false ? '<p class="cr-lead">Պլանի խանութների ' + fmt(mm.no_car) + ' ապրանքագիր ERP-ում առանց մեքենայի է։ Մեքենան որոշվում է ըստ պլանի։</p>' : '')
             + crewMismatch(d.crew_mismatch);
         const plan = d.crew_mismatch && d.crew_mismatch.available ? (d.crew_mismatch.planned || {}) : null;
         $('crTodayCars').innerHTML = d.cars.length ? d.cars.map(c => carCard(c, plan)).join('')

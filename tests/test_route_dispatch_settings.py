@@ -470,7 +470,7 @@ def test_settings_and_dispatch_pages_have_rule_texts():
     assert "action: 'apply_settings'" in djs and 'other_vehicle' in djs
     assert "'agents', 'fleet', 'custoff'" in js and '/api/routes/settings/customer-hints' in js
     assert 'գնում է այլ մեքենայով' in djs and 'չենք տանում՝ կարգավորումներով' in djs
-    assert "routes_dispatch.js') }}?v=81" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    assert "routes_dispatch.js') }}?v=82" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
 
 
 
@@ -566,7 +566,7 @@ def test_apply_settings_keeps_started_trips_and_works_on_approved_plan(client, m
                                             for s in tr['stops']}
     # снова собрать с 108 и «сейчас» — в разгаре дня: рейс с 108 уже в пути — его заказы настройки не снимают
     client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'unapprove'})
-    client.post('/api/routes/dispatch/reset', json={'date': DAY})
+    state.store.delete_dispatch(DAY)   # с чистого листа: выпущенный план «Ջնջել երթերը» не стирает (№80)
     _settings(client, dispatch_customers_off=[])
     d, _ = _built(client, state)
     _settings(client, dispatch_customers_off=[108])
