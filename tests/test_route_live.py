@@ -742,6 +742,8 @@ def test_live_from_internet_only_garage(client, live_app):
     for m in re.findall(r'<(?:script|link)[^>]+(?:src|href)="(/static/[^"?]+)', html):
         assert m in live_app._PUBLIC_STATIC, m                         # вся своя статика страницы открыта снаружи
     assert 'data-yandex-key=""' in html                               # без ключа в окружении — OpenStreetMap
+    with client.get('/static/img/yandex_maps_logo_ru.svg', base_url=PUBLIC) as r:   # логотип грузит routes_basemap.js
+        assert r.status_code == 200
     assert client.get('/api/routes/live', base_url=PUBLIC).status_code == 200
     for who in ('boss', 'u'):
         _session_as(client, who)
@@ -760,6 +762,8 @@ def test_live_page_yandex_key_own_first(client, live_app, monkeypatch):
     assert f'data-yandex-key="{own}"' in client.get('/routes/live', base_url=LAN).get_data(as_text=True)
     monkeypatch.setenv('ROUTES_YANDEX_LIVE_KEY', 'not a key!')
     assert f'data-yandex-key="{main}"' in client.get('/routes/live', base_url=LAN).get_data(as_text=True)
+    monkeypatch.setenv('ROUTES_YANDEX_TILES_KEY', 'bad key?')
+    assert 'data-yandex-key=""' in client.get('/routes/live', base_url=LAN).get_data(as_text=True)
 
 
 def test_live_thresholds_in_settings():

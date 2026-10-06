@@ -450,6 +450,7 @@ _PUBLIC_STATIC = frozenset((
     '/static/css/routes.css', '/static/css/routes_garage.css', '/static/js/routes_garage.js',  # routes_garage.html
     '/static/js/routes_basemap.js',   # routes_garage.html: подложка карты дня «Նորմ և փաստ» (без ключа Яндекса)
     '/static/css/routes_live.css', '/static/js/routes_live.js',                               # routes_live.html (№76)
+    '/static/img/yandex_maps_logo_ru.svg',   # логотип Яндекса на карте машин (подложка Яндекса, обязателен по условиям)
 ))
 # API журнала и карты машин (№76) снаружи — только простые сегменты (путь уже раскодирован сервером): без '..',
 # '//', '%', '\', регистра.
