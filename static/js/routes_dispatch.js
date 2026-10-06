@@ -1728,6 +1728,10 @@
             : 'արագությունը միջին է, ընթացիկ խցանումները հայտնի չեն');
         if (sm.traffic && sm.traffic.reason) costNotes.push('Յանդեքսի տվյալները հասանելի չեն․ օգտագործվում է միջին արագությունը');
         if (sm.loading_minutes) costNotes.push('պահեստում բեռնումը՝ ' + fmt(sm.loading_minutes) + ' րոպե');
+        // №78: погрузка по сезону — одна строка; запас в конце дня
+        if (sm.preload === true) costNotes.push('մեքենաները բեռնված են նախորդ երեկոյան՝ առաջին երթն առանց առավոտյան բեռնման');
+        else if (sm.preload === false) costNotes.push('ձմեռային սեզոն — բեռնում առավոտյան');
+        if (sm.end_reserve_min) costNotes.push('մեքենաները վերադառնում են ոչ ուշ, քան օրվա ավարտից ' + fmt(sm.end_reserve_min) + ' րոպե առաջ');
         if (sm.loading_configured === false) costNotes.push('պահեստում բեռնման ժամանակը դեռ ամբողջությամբ նշված չէ');
         if (sm.fuel_load_unconfigured) costNotes.push(fmt(sm.fuel_load_unconfigured) + ' երթի համար բեռից կախված վառելիքի նորմերը նշված չեն');
         if (sm.wear_unconfigured) costNotes.push(fmt(sm.wear_unconfigured) + ' երթի մաշվածքի արժեքը նշված չէ');
@@ -2551,6 +2555,7 @@
         const time = document.createElement('span');
         time.className = 'dp-time';
         if (tr.loading_minutes) time.insertAdjacentHTML('beforeend', '<small>բեռնում ' + esc(tr.loading_start) + ' ·</small>');
+        else if (tr.preloaded) time.insertAdjacentHTML('beforeend', '<small>բեռնված է երեկոյան ·</small>');   // №78
         time.insertAdjacentHTML('beforeend', '<span class="rt-sr-only">մեկնում </span>' + esc(tr.depart)
             + '<span class="dp-arrow" aria-hidden="true">→</span><span class="rt-sr-only"> վերադարձ </span>' + esc(tr.return));
         const acts = document.createElement('div');
@@ -2590,6 +2595,7 @@
         flags.className = 'dp-trip-flags';
         if (tr.over_time) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">ուշանում է</span>');
         else if (tr.late) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn"><i class="fas fa-moon" aria-hidden="true"></i>արտաժամյա</span>');
+        else if (tr.in_reserve) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-warn" title="Վերադառնում է օրվա վերջի պահուստի ժամին՝ ուշացում չէ">առանց պահուստի</span>');   // №78
         if (tr.over_capacity) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">գերբեռնված</span>');
         if (tr.window_miss) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">ընդունման ժամից դուրս՝ ' + esc(fmt(tr.window_miss)) + '</span>');
         if (tr.center_miss) flags.insertAdjacentHTML('beforeend', '<span class="rt-badge b-danger">կենտրոն՝ առանց թույլտվության</span>');
@@ -3022,6 +3028,10 @@
         if (x.loading_min >= 0.5) {
             const p = document.createElement('p');
             p.textContent = 'Բեռնում պահեստում՝ ' + tr.loading_start + ' → ' + tr.depart + ' (' + minText(x.loading_min) + ')։';
+            body.appendChild(p);
+        } else if (x.preloaded) {   // №78: вне сезона первый рейс загружен с вечера
+            const p = document.createElement('p');
+            p.textContent = 'Մեքենան բեռնված է նախորդ երեկոյան՝ առավոտյան բեռնում չկա, մեկնում է ' + tr.depart + '։';
             body.appendChild(p);
         }
         const heads = ['Խանութ', 'Հասնում է', 'Ճանապարհ, րոպե', 'Սպասում, րոպե', 'Բեռնաթափում, րոպե', 'Ընդունման ժամ'];

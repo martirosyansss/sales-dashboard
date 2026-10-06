@@ -29,7 +29,8 @@
     (Vehicle.yerevan_min) — на рёбрах из него, плата за такой заказ (Vehicle.yerevan_penalty_m, метры её пути) — на рёбрах
     в него. Заказов в зоне нет — профили те же, что без неё.
 Минуты и километры — вверх до целых секунд и метров с запасом (время — вверх, окна — внутрь): решение,
-допустимое для PyVRP, допустимо и для расчёта «Развоза» в float.
+допустимое для PyVRP, допустимо и для расчёта «Развоза» в float. Промежуток может начинаться раньше начала дня (№78: вне
+сезона загрузка первого рейса — до него, fleet._solver): время PyVRP сдвинуто на это опережение, без него — прежнее.
 """
 from __future__ import annotations
 
@@ -138,7 +139,8 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
     by_code = {v.code: v for v in vehicles}
     model = Model()
     loc0 = model.add_location(0.0, 0.0)
-    horizon = max(_sec_down(s.end) for s in shifts)
+    off = max(0, -min(_sec_up(s.start) for s in shifts))   # №78: промежуток раньше начала дня — время PyVRP сдвинуто
+    horizon = max(_sec_down(s.end) for s in shifts) + off
     depot = model.add_depot(loc0, tw_early=0, tw_late=horizon)
     locs = [model.add_location(0.0, 0.0) for _ in pieces]
 
@@ -153,8 +155,8 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
         delivery = [grams]
         if load_cap is not None:
             delivery.append(grams if p.kg <= load_cap * top(p) + 1e-9 else 0)
-        early = 0 if p.early is None else max(0, _sec_up(p.early))
-        late = horizon if p.late is None else min(horizon, _sec_down(p.late))
+        early = 0 if p.early is None else max(0, _sec_up(p.early) + off)
+        late = horizon if p.late is None else min(horizon, _sec_down(p.late) + off)
         service = _sec_up(p.unload * (1.0 + reserve_slope) if reserve_slope else p.unload)
         model.add_client(loc, delivery=delivery, service_duration=service, tw_early=early,
                          tw_late=max(early, late), required=p.required, prize=0 if p.required else PRIZE)
@@ -201,7 +203,7 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
         cap = [int(math.floor(v.capacity_kg * 1000.0 + 1e-6))]
         if load_cap is not None:
             cap.append(int(math.floor(v.capacity_kg * 1000.0 * load_cap + 1e-6)))
-        t0, t1 = _sec_up(s.start), _sec_down(s.end)
+        t0, t1 = _sec_up(s.start) + off, _sec_down(s.end) + off
         model.add_vehicle_type(1, capacity=cap, start_depot=depot, end_depot=depot, tw_early=t0, tw_late=max(t0, t1),
                                shift_duration=max(0, t1 - t0), unit_distance_cost=unit_cost(v),
                                profile=profiles[keys[v.code]], reload_depots=[depot],

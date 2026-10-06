@@ -468,6 +468,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'truck_work_end': '18:00',
     # Форс-мажор (ответ владельца №32): «Везти после конца дня» в «Развозе» — машины возвращаются не позже
     'truck_overtime_end': '20:00',
+    # Запас в конце дня (ответ владельца №78): сборка «Развоза» возвращает машины не позже truck_work_end минус столько
+    # минут; рейс в запасе не опаздывает. 0 — без запаса (как до №78). Нет ключа — значение по умолчанию
+    'truck_end_reserve_min': 30,
+    # Погрузка по сезону (ответ владельца №78): с morning_loading_from по morning_loading_to (ММ-ДД, включительно, может
+    # переходить через Новый год) машины грузят утром — первый рейс с загрузкой; вне сезона загружены с вечера и выезжают
+    # в начале дня. 01-01 … 12-31 — всегда утром (как до №78)
+    'morning_loading_from': '11-15',
+    'morning_loading_to': '03-15',
     # Обед водителей (ответ владельца №61): в пути, гибко — «Развоз» сам вставляет паузу в рейс; truck_lunch_from …
     # truck_lunch_to — когда обед начинается; 0 минут — без обеда. Модель парка менеджеров его не знает
     'truck_lunch_min': 30,
@@ -589,6 +597,7 @@ _NUMERIC: dict[str, tuple[float, float, bool]] = {
     'unload_min_per_stop': (0, 120, False),
     'unload_min_per_tonne': (0, 120, False),
     'truck_lunch_min': (0, 120, False),
+    'truck_end_reserve_min': (0, 120, False),
     'dispatch_buffer_pct': (50, 95, False),
     'big_truck_yerevan_min': (0, 120, False),
     'big_truck_yerevan_km': (0, 10, False),     # и только ступени YEREVAN_KM_STEPS
@@ -631,6 +640,7 @@ GARAGE_KM_PER_DAY = KM_PER_DAY_MAX   # спидометр не прираста�
 _DAY_MINUTES = 24 * 60
 
 _HHMM_RE = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
+_MMDD_RE = re.compile(r'^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$')   # день года ММ-ДД (сезон погрузки, №78)
 _ISO_DAY_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 
@@ -1228,6 +1238,17 @@ def validate_settings(values: Mapping[str, Any],
         v = values.get(key)
         if not isinstance(v, str) or not _HHMM_RE.match(v):
             errors[key] = 'ժամը՝ ԺԺ:ՐՐ ձևաչափով'
+        else:
+            out[key] = v
+    # сезон утренней погрузки (№78): ММ-ДД существующего дня (29.02 — да, год високосный)
+    for key in ('morning_loading_from', 'morning_loading_to'):
+        v = values.get(key, DEFAULT_SETTINGS[key])
+        try:
+            if not isinstance(v, str) or not _MMDD_RE.match(v):
+                raise ValueError
+            date(2024, int(v[:2]), int(v[3:]))
+        except ValueError:
+            errors[key] = 'ամսաթիվը՝ ՕՕ.ԱԱ ձևաչափով, օրինակ՝ 15.11'
         else:
             out[key] = v
     for start, end in (('work_start', 'work_end'), ('truck_work_start', 'truck_work_end')):

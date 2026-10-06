@@ -34,7 +34,8 @@
   нет — запасная по прямой × извилистость, и ETA помечен eta_source «model»); у каждого магазина — время №50/№60
   (Road.stay: введённое/выученное по GPS, иначе норма на точку + на тонну; у магазина, где машина уже стоит, — остаток);
   обед (№61), если ещё не был: после разгрузки не раньше начала окна, а если перегон кончается позже конца окна —
-  в дороге; рейс ещё не уехал — через склад, загрузка (настройки) и не раньше планового выезда. Машина в STOP_RADIUS_M от
+  в дороге; рейс ещё не уехал — через склад, загрузка (настройки; первый рейс вне сезона утренней погрузки, №78, — без
+  неё: загружен с вечера) и не раньше планового выезда. Машина в STOP_RADIUS_M от
   магазина — «на месте», ETA = сейчас. Опоздание = ETA − плановое ETA (прогноз сборки «Развоза»);
 - возвращение на склад — ETA прихода на склад после оставшихся точек рейса, на котором машина сейчас (тот же расчёт);
 
@@ -98,6 +99,7 @@ class Rules:
     unload_min_per_tonne: float = 6.0
     load_min: float = 0.0                # загрузка на складе перед рейсом: фиксированные минуты и на тонну (настройки)
     load_min_per_tonne: float = 0.0
+    preload: bool = False                # №78: вне сезона утренней погрузки первый рейс загружен с вечера (views)
     # тревоги в Telegram (live_alerts): какие виды слать, тихие часы (минуты от полуночи: с — до; None — нет), повтор
     alert_kinds: tuple[str, ...] = LIVE_ALERT_KINDS
     quiet: tuple[float, float] | None = (1200.0, 480.0)
@@ -635,7 +637,9 @@ def eta_plan(day: date, now: datetime, pos: Point, queue: Sequence[tuple[int, Se
                 move(pos, depot)
             pos, at_depot = depot, True
             kg = math.fsum(float(x.get('weight_kg') or 0.0) for x in stops)
-            ready = t + timedelta(minutes=rules.load_min + rules.load_min_per_tonne * kg / 1000.0)
+            # №78: первый рейс вне сезона загружен с вечера — без загрузки
+            load = 0.0 if rules.preload and k == 0 else rules.load_min + rules.load_min_per_tonne * kg / 1000.0
+            ready = t + timedelta(minutes=load)
             dep = plan[k].depart if k < len(plan) else None
             t = max(ready, dep) if dep is not None else ready
             rest(True)

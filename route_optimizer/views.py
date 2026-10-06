@@ -1175,11 +1175,14 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
                      yerevan_min={code: extra for code, t in trucks.items() if t.big and extra > 0})
     # learned=False — журнала нет: выученных норм нет (eff пуст), только введённое время магазинов
     norms, tn, trucks, eff = _with_learned(state, norms, tn, trucks, customers or {}, journal, bundle.unload_min)
+    # №78: вне сезона утренней погрузки первые рейсы загружены с вечера; запас в конце дня — горизонт сборки
+    tn = replace(tn, preload=not dp.morning_loading(day, s))
     return dp.DayContext(day, bundle.depot, trucks, norms, tn, h * 60 + m,
                          float(h2 * 60 + m2 - (h * 60 + m)), float(s['min_trip_revenue']),
                          {cid: w.span() for cid, w in bundle.windows.items()}, zone,
                          vehicle_access=bundle.vehicle_access,
-                         model=_model_note(s, calib, norms, eff, [p for p in points if p is not None], trucks))
+                         model=_model_note(s, calib, norms, eff, [p for p in points if p is not None], trucks),
+                         end_reserve_min=float(s['truck_end_reserve_min']))
 
 
 def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, eff: learning.InEffect,
@@ -3179,7 +3182,8 @@ def run_learning(state: RoutesState, today: date) -> list[learning.Outcome]:
         for o in learning.unload_obs(day, actual, stops, learning.lunch_customers(plan), car):
             extra = city_extra(car, o.customers)
             unload.append(replace(o, minutes=max(learning.UNLOAD_MIN_OBS, o.minutes - extra)) if extra else o)
-        loads += learning.load_obs(day, actual, stops, plan)
+        # вне сезона утренней погрузки (№78) первый рейс загружен с вечера: стоянка перед ним — не загрузка
+        loads += learning.load_obs(day, actual, stops, plan, preloaded=not dp.morning_loading(day, s))
         meal = learning.lunch_obs(day, actual, lunch_window, stops, plan,   # type: ignore[arg-type]
                                   lambda o, car=car: unload_norm(o) + city_extra(car, o.customers))
         if meal is not None:
@@ -3762,7 +3766,9 @@ def _live_context(state: RoutesState, day: date,
     ds = day.isoformat()
     drivers, helpers = state.store.truck_drivers(ds)[0], state.store.truck_drivers(ds, 'helper')[0]
     crew = {car: {'driver': drivers.get(car), 'helper': helpers.get(car)} for car in set(drivers) | set(helpers)}
-    return _LiveContext(live.Rules.from_settings(s), road, bundle.depot, plans, trucks, names, crew, tuple(planned))
+    # №78: вне сезона утренней погрузки первый рейс загружен с вечера — ETA до выезда без загрузки
+    rules = replace(live.Rules.from_settings(s), preload=not dp.morning_loading(day, s))
+    return _LiveContext(rules, road, bundle.depot, plans, trucks, names, crew, tuple(planned))
 
 
 def _live_card(ctx: _LiveContext, day: date, now: datetime, car: str, facts: Mapping[str, Any] | None,

@@ -70,6 +70,14 @@ PyVRP пауз и запаса не знает: запас — линейной 
     не перекладывает такие точки с малой машины на большую. Запрета нет: малым машинам не хватает тоннажа или времени —
     точку везёт большая. Сила 0 — только надбавка времени.
 Пустая граница — точек в зоне нет: расчёт байт в байт прежний (модель парка менеджеров зоны не знает).
+
+Погрузка по сезону (ответ владельца №78, TruckNorms.preload) — тоже только в плане развоза: вне сезона утренней погрузки
+машины загружены с вечера. Правило одно: загрузка рейса, пришедшаяся на время до начала дня машины, не в счёт — рейс,
+который машина везёт первым с начала дня, «грузится» с −загрузка (_day_start) и выезжает в начале дня; у следующих рейсов
+промежуток начинается после возвращения — загрузка в дне машины. Рейс, поставленный в промежуток до чужого первого рейса
+(тот выезжает позже под окно), сам становится первым — у того загрузка уже в его отрезке. PyVRP — промежуток с начала дня
+начинается раньше на постоянную часть загрузки (на тонну — с запасом); решает точная проверка (_days). Без preload — байт
+в байт прежний расчёт.
 """
 from __future__ import annotations
 
@@ -148,6 +156,8 @@ class TruckNorms:
     yerevan_km: float = BIG_YEREVAN_KM   # сила приоритета малых машин: точка зоны на большой — как столько км её пути
     # конец обычного дня, когда work_minutes — предел переработки («Везти после конца дня», dispatch.overtime); None — он же
     normal_minutes: float | None = None
+    # погрузка по сезону (№78, правило — в шапке модуля): вне сезона утренней погрузки первый рейс машины загружен с вечера
+    preload: bool = False
 
     @classmethod
     def from_settings(cls, s: Mapping[str, Any], lunch: bool = False) -> TruckNorms:
@@ -210,6 +220,12 @@ def trip_reserve(c: float, minutes: float) -> float:
     if c <= 0 or minutes <= 0:
         return 0.0
     return min(c * math.sqrt(minutes), BUFFER_CAP_REL * minutes)
+
+
+def _day_start(seq: Sequence[int], stops: Sequence['_Stop'], m: Matrix, tn: TruckNorms) -> float:
+    """Начало дня машины для её первого рейса seq (№78): вне сезона (tn.preload) — минус его загрузка (загружен с вечера,
+    выезжает в начале дня), иначе 0.0."""
+    return 0.0 - m.load(math.fsum(stops[v].kg for v in seq)) if tn.preload and hasattr(m, 'load') else 0.0
 
 
 def fleet_trucks(trucks: Mapping[str, Any], names: Mapping[str, str | None]) -> tuple[list[FleetTruck], list[str]]:
@@ -910,11 +926,13 @@ def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[F
         return any(vs[v].center for v in seq)
 
     def ok_at_start(seq: list[int]) -> bool:
-        minutes, ok = _schedule(seq, vs, m, 0.0, buffer=tn.buffer_c)
-        if lunch and minutes >= tn.lunch_from - _EPS:      # с начала дня рейс заходит в окно обеда — с обедом
-            dep, mins, ok, _ = _lunch_trip(seq, vs, m, 0.0, tn, True, True)
-            minutes = dep + mins
-        return ok and minutes <= window + _EPS
+        z = _day_start(seq, vs, m, tn)                      # №78: вне сезона рейс с начала дня загружен с вечера
+        minutes, ok = _schedule(seq, vs, m, z, buffer=tn.buffer_c)
+        end = z + minutes
+        if lunch and end >= tn.lunch_from - _EPS:      # с начала дня рейс заходит в окно обеда — с обедом
+            dep, mins, ok, _ = _lunch_trip(seq, vs, m, z, tn, True, True)
+            end = dep + mins
+        return ok and end <= window + _EPS
 
     def first_wait(seq: Sequence[int], start: float, code: str | None = None) -> float:
         """Ожидание у первой точки: его убирает поздний выезд (code — машина: её темп)."""
@@ -1006,20 +1024,23 @@ def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[F
         rest = tn.lunch_minutes if tail and brk is None and dep + mins >= tn.lunch_from - _EPS else 0.0
         return dep - g0, dep + mins + rest - g0, ok, brk is not None or rest > 0
 
-    def gaps(code: str) -> list[tuple[float, float]]:
-        """Свободные промежутки машины по порядку; последний — до конца рабочего дня."""
+    def gaps(code: str, start: float = 0.0) -> list[tuple[float, float]]:
+        """Свободные промежутки машины по порядку; последний — до конца рабочего дня. start — начало дня для рейса
+        (№78, _day_start): промежуток с начала дня (до первого рейса машины) начинается с него."""
         out, end = [], 0.0
         for a, b in slots[code]:
             if a > end + _EPS:
                 out.append((end, a))
             end = max(end, b)
         out.append((end, max(end, window)))
+        if start < 0.0 and out[0][0] == 0.0:
+            out[0] = (start, out[0][1])
         return out
 
     def place(seq: Sequence[int], code: str) -> tuple[float, float, float, bool] | None:
         """Самый ранний промежуток машины, где рейс укладывается с окнами: (начало промежутка, ожидание у первой
         точки — на столько позже выезд, минуты от начала промежутка до возвращения, обед в отрезке)."""
-        gs = gaps(code)
+        gs = gaps(code, _day_start(seq, vs, m, tn))
         for n, (g0, g1) in enumerate(gs):
             if lunch:
                 wait, minutes, ok, has = run(seq, code, g0, n + 1 < len(gs))
@@ -1034,7 +1055,7 @@ def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[F
 
     def at_end(seq: Sequence[int], code: str) -> tuple[float, float, float, bool]:
         """Рейс в конец дня машины (за рабочий день или переработку) — без проверки окон и конца дня."""
-        g0 = last_end(code)
+        g0 = last_end(code) if slots[code] else _day_start(seq, vs, m, tn)
         if lunch:
             wait, minutes, _, has = run(seq, code, g0, False)
             return g0, wait, minutes, has
@@ -1070,7 +1091,8 @@ def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[F
 
         def meal(g0: float) -> float:   # день машины с рейсом заходит в окно обеда, а обед впереди — с обедом
             return tn.lunch_minutes if pending(t.car_code, g0) and g0 + plain > tn.lunch_from + _EPS else 0.0
-        return next((g0 for g0, g1 in gaps(t.car_code) if g0 + plain + meal(g0) <= g1 + _EPS), None)
+        return next((g0 for g0, g1 in gaps(t.car_code, _day_start(seq, vs, m, tn)) if g0 + plain + meal(g0) <= g1 + _EPS),
+                    None)
 
     def head(seq: Sequence[int], allowed: Sequence[FleetTruck]) -> int:
         """Сколько первых точек рейса успевает хоть одна допустимая машина: тоннаж, окна, конец дня."""
@@ -1099,8 +1121,8 @@ def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[F
             truck.car_code, len(seq), kg, math.fsum(vs[v].revenue for v in seq), km, minutes - wait,
             truck.capacity_kg, cost.liters, extra, tuple(origin[v] for v in seq), cost.wear_amd, cost.payload_tonne_km)))
 
-    def free_at(a: float, b: float, code: str) -> bool:
-        return any(g0 <= a + _EPS and b <= g1 + _EPS for g0, g1 in gaps(code))
+    def free_at(a: float, b: float, code: str, start: float = 0.0) -> bool:
+        return any(g0 <= a + _EPS and b <= g1 + _EPS for g0, g1 in gaps(code, start))
 
     by_code = {t.car_code: t for t in trucks}
     for code, idx, start in sorted((f for f in (fixed or ()) if f[1] and f[0] in by_code), key=lambda f: f[2]):
@@ -1114,7 +1136,8 @@ def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[F
             minutes, ok = _schedule(seq, vs, m, start, buffer=tn.buffer_c, pace=tn.pace_of(code),
                                     yerevan=tn.yerevan_of(code))
             spot = (start, first_wait(seq, start, code), minutes, False)
-        if not (ok and start + minutes <= window + _EPS and free_at(start + spot[1], start + minutes, code)):
+        if not (ok and start + minutes <= window + _EPS
+                and free_at(start + spot[1], start + minutes, code, _day_start(seq, vs, m, tn))):
             spot = place(seq, code)
         extra = spot is None
         if extra:   # не помещается — всё равно везёт его машина: в конец её дня (нарушение видно в плане)
@@ -1239,6 +1262,8 @@ def _balance(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tr
         plain = tn.buffer_c <= 0 and pace == NO_PACE and not yer   # без запаса, темпа и надбавки — прежний расчёт до байта
         for n, k in enumerate(order[code]):
             seq = alt.get(k, seqs[k])
+            if n == 0 and t == 0.0:   # первый рейс машины, свободной с начала дня (№78: вне сезона загружен с вечера)
+                t = _day_start(seq, vs, m, tn)
             parts: dict[str, Any] = {}
             if tn.lunch_minutes > 0:
                 depart, minutes, ok, brk = _lunch_trip(seq, vs, m, t, tn, not eaten, n + 1 < len(order[code]),
@@ -1405,13 +1430,16 @@ def _days(trips: Sequence[Trip], vs: Sequence[_Stop], m: Matrix, start0: Mapping
         parts: dict[str, Any] = {}
         pace = tn.pace_of(t.truck) if tn is not None else NO_PACE
         yer = tn.yerevan_of(t.truck) if tn is not None else 0.0
+        start = free.get(t.truck, 0.0)
+        if t.truck not in out and start == 0.0 and tn is not None:   # первый рейс машины с начала дня (№78)
+            start = _day_start(seq, vs, m, tn)
         if lunch:
-            dep, minutes, ok, brk = _lunch_trip(seq, vs, m, free.get(t.truck, 0.0), tn, t.truck not in eaten,
+            dep, minutes, ok, brk = _lunch_trip(seq, vs, m, start, tn, t.truck not in eaten,
                                                 k != last[t.truck], arrivals, parts, t.truck)
             if brk is not None:
                 eaten.add(t.truck)
         else:
-            dep = _departure(seq, vs, m, free.get(t.truck, 0.0), pace)
+            dep = _departure(seq, vs, m, start, pace)
             minutes, ok = _schedule(seq, vs, m, dep, arrivals, parts, buffer=tn.buffer_c if tn is not None else 0.0,
                                     pace=pace, yerevan=yer)
         if not ok:
@@ -1560,6 +1588,8 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
         if c in locked:
             continue
         t = start0[c]
+        if t == 0.0 and tn.preload and hasattr(m, 'load'):   # №78: первый рейс — постоянная часть загрузки до начала дня
+            t = 0.0 - m.load(0.0)
         for a, b in sorted(when[k] for k in keep if trips[k].truck == c) + [(window, window)]:
             if a > t + _EPS:
                 end = a - meal if c in hungry and a > tn.lunch_from else a
@@ -1588,8 +1618,9 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
                                     s.yerevan))
             origin.append(i)
         dep, end = when[k]
-        at = next((n for n, s in enumerate(shifts) if s.truck == t.truck and s.start - _EPS <= dep and end <= until[n] + _EPS),
-                  None)
+        # промежуток с начала дня вне сезона (№78) начинается раньше: первый рейс сборки — в нём, хоть «грузится» раньше
+        at = next((n for n, s in enumerate(shifts) if s.truck == t.truck and (s.start - _EPS <= dep or s.start < 0.0)
+                   and end <= until[n] + _EPS), None)
         if at is not None:
             start.setdefault(at, []).append(seq)
     placed = Counter(i for t in trips for i in t.items)
