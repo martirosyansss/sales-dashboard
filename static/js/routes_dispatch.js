@@ -4121,8 +4121,10 @@
         if (!same) throw wbStale();
         return { t, d: cur, wb };
     }
-    // лист печати, имя товара и примечания — общий рендер base.js (тот же документ у склада «Պահեստ»)
-    const { name: wbName, notes: wbNotes } = window.RtWaybill;
+    // лист печати, имя товара и примечания — общий рендер base.js (тот же документ у склада «Պահեստ»); берётся при вызове:
+    // base.js не загрузился — ломаются только Բեռնագիր и Excel, а не вся страница
+    const wbName = (r) => window.RtWaybill.name(r);
+    const wbNotes = (tr) => window.RtWaybill.notes(tr);
     async function printWaybill(code, btn, send) {
         if (wbBusy(btn) || state.busy) return;
         hideActionError();

@@ -25,12 +25,13 @@ def test_one_renderer_for_both_pages():
     assert base.count('window.RtWaybill = ') == 1 and 'function waybillHtml(t, d, wb)' in base
     for page in (dispatch, warehouse):
         assert 'function waybillHtml' not in page and 'ԲԵՌՆԱԳԻՐ' not in page and 'window.RtWaybill.html(' in page
-    assert 'const { name: wbName, notes: wbNotes } = window.RtWaybill;' in dispatch       # Excel — те же строки
+    assert 'const wbName = (r) => window.RtWaybill.name(r);' in dispatch                   # Excel — те же строки,
+    assert 'const wbNotes = (tr) => window.RtWaybill.notes(tr);' in dispatch               # при вызове, не при загрузке
     assert '/api/routes/warehouse/waybill?' in warehouse and '/api/routes/dispatch' not in warehouse
     tpl = (ROOT / 'templates' / 'base_v2.html').read_text(encoding='utf-8')
     assert "filename='js/base.js') }}?v=2\"" in tpl                                    # новый base.js — мимо кэша
     page = (ROOT / 'templates' / 'routes_warehouse.html').read_text(encoding='utf-8')
-    assert "routes_warehouse.js') }}?v=5" in page and "routes_warehouse.css') }}?v=4" in page
+    assert "routes_warehouse.js') }}?v=6" in page and "routes_warehouse.css') }}?v=4" in page
 
 
 NODE = r'''

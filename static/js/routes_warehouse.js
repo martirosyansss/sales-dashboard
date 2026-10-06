@@ -196,8 +196,9 @@
     }
 
     // Печать без окна: лист — в теневом DOM узла #whPrint прямо в body (стили листа и страницы не смешиваются: body листа
-    // — :host узла), при печати виден только он (routes_warehouse.css, body.wh-printing). Узел остаётся до следующего листа:
-    // на телефоне print() не ждёт диалога, убрать лист сразу — напечатался бы пустой.
+    // — :host узла, унаследованное от страницы сброшено all:initial — как в отдельном окне), при печати виден только он
+    // (routes_warehouse.css, body.wh-printing; после печати класс снимается). Лист остаётся до следующего: на телефоне
+    // print() не ждёт диалога, убрать его сразу — напечатался бы пустой.
     function printHere(html) {
         let host = $('whPrint');
         if (!host) {
@@ -207,8 +208,8 @@
         }
         const doc = new DOMParser().parseFromString(html, 'text/html');
         const style = document.createElement('style');
-        style.textContent = Array.from(doc.querySelectorAll('style'), s => s.textContent).join('')
-            .replace(/(^|[{}])body\{/g, '$1:host{');
+        style.textContent = ':host{all:initial;display:block}' + Array.from(doc.querySelectorAll('style'), s => s.textContent)
+            .join('').replace(/(^|[{}])body\{/g, '$1:host{');
         host.shadowRoot.replaceChildren(style, ...Array.from(doc.body.childNodes));
         document.body.classList.add('wh-printing');
         announce('Բեռնագիրը պատրաստ է տպելու');
@@ -288,6 +289,7 @@
         }
     }
 
+    window.addEventListener('afterprint', () => document.body.classList.remove('wh-printing'));
     $('whReload').addEventListener('click', () => load(state.day));
     // план меняет логист: раз в минуту, пока страница видна, — свежий план (без прыжка, если что-то открыто)
     setInterval(() => {

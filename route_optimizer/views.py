@@ -4450,18 +4450,34 @@ def _warehouse_body(state: RoutesState, bundle: Bundle, day: date) -> dict[str, 
 
 def _waybill_unsent(draft: dp.Draft, car: str) -> bool:
     """У машины неотправленные правки логиста (№81) — Բեռնագիր складу не печатать до «Ուղարկել» (ответ владельца 07.10
-    «Запретить до отправки»): рейсы машины (номер и точки по порядку) у водителей и в черновике разные — сюда входит и
-    рейс «changing», который прячет «Բեռնված է», — или изменился отбор заказов дня (dp.unsent: orders — груз любой машины).
+    «Запретить до отправки»). Правка — если у водителей и в черновике разные:
+    - рейсы машины (номер и точки по порядку) — сюда входит и рейс «changing», который прячет «Բեռնված է»;
+    - рейсы, где бывает клиент этой машины, по порядку черновика (и на других машинах): от них его доля
+      (waybill.truck_waybill: частей — сколько рейсов, своя — по порядку) — убрали магазин из рейса другой машины, и доля
+      здесь стала целой;
+    - отбор заказов дня (dp.unsent: orders) — груз любой машины.
     План не отправляли — водители увидят сам черновик, правок «до отправки» нет."""
     if draft.sent is None:
         return False
     out = dp.unsent(draft)
     if out is not None and (out['orders'] or car in out['trucks']):
         return True
+    sent = draft.for_drivers()
 
     def trips(d: dp.Draft) -> list[tuple[int, tuple[int, ...]]]:
         return sorted((t.id, tuple(t.stops)) for t in d.trips if t.truck == car)
-    return trips(draft) != trips(draft.for_drivers())
+
+    def visits(d: dp.Draft, cids: Collection[int]) -> dict[int, list[tuple[str, int]]]:
+        seen: dict[int, list[tuple[str, int]]] = {}
+        for t in d.trips:
+            for c in t.stops:
+                if c in cids:
+                    seen.setdefault(c, []).append((t.truck, t.id))
+        return seen
+    if trips(draft) != trips(sent):
+        return True
+    mine = {c for d in (draft, sent) for t in d.trips if t.truck == car for c in t.stops}
+    return visits(draft, mine) != visits(sent, mine)
 
 
 @bp.get('/api/routes/warehouse')
@@ -4517,8 +4533,8 @@ def api_warehouse_waybill() -> Any:
     """Բեռնագիր машины для склада (?date=&truck=&rev=): тот же ответ, что у «Развоза» (_waybill_body), — страница печатает
     тот же документ; плюс weekday (у склада дня недели нет). План — как у всей страницы склада: утверждённый (ответ 15),
     отправленный водителям (№81; не отправляли — он и есть черновик «Развоза»). rev не тот или машины нет — 409; у машины
-    неотправленные правки логиста — 409 с unsent (ответ владельца 07.10, _waybill_unsent). API «Развоза» складу закрыт
-    (app_v2: default-deny) — Բեռնագիր только здесь."""
+    неотправленные правки логиста — 409 с unsent (ответ владельца 07.10, _waybill_unsent); отказы — без ERP. Без basis
+    (сверка «Развоза»: номера заказов ERP). API «Развоза» складу закрыт (app_v2: default-deny) — Բեռնագիր только здесь."""
     state = _state()
     bundle = _bundle(state)
     day = _warehouse_day(bundle, request.args.get('date'))
@@ -4528,12 +4544,14 @@ def api_warehouse_waybill() -> Any:
         return _bad_request({'date': WAREHOUSE_BAD_DAY})
     if not car or len(car) > 64 or not _REV_RE.match(rev):
         return _bad_request({'_': WAREHOUSE_STALE})
-    dd = _load_day(state, bundle, day)
-    if int(rev) != dd.rev or dd.draft is None or dd.draft.approved is None:
+    draft, cur = _stored_draft(state, day)   # проверки — по сохранённому черновику, до заказов и строк ERP
+    if int(rev) != cur or draft is None or draft.approved is None:
         return _conflict(WAREHOUSE_STALE)
-    if _waybill_unsent(dd.draft, car):     # ответ владельца 07.10: до «Ուղարկել» — не печатать (ERP не читается)
+    if _waybill_unsent(draft, car):          # ответ владельца 07.10: до «Ուղարկել» — не печатать
         return jsonify({'success': False, 'error': WAREHOUSE_WAYBILL_UNSENT, 'conflict': True, 'unsent': True}), 409
-    dd = _load_day(state, bundle, day, draft=dd.draft.for_drivers(), rev=dd.rev)   # №81: как страница — план водителей
+    if all(t.truck != car for t in draft.for_drivers().trips):
+        return _conflict(WAREHOUSE_STALE)
+    dd = _load_day(state, bundle, day, draft=draft.for_drivers(), rev=cur)   # №81: как страница — план водителей
     if dd.ctx is None:
         return _bad_request({'_': WAREHOUSE_NO_SETUP})
     plan = dp.plan_view(dd.ctx, dd.stops, dd.draft, _stop_info(dd), explain=False)
@@ -4541,7 +4559,10 @@ def api_warehouse_waybill() -> Any:
     if truck is None:
         return _conflict(WAREHOUSE_STALE)
     logger.info('[Routes] Склад: Բեռնագիր %s на %s (%s)', car, day, session.get('username'))
-    return jsonify({**_waybill_body(state, dd, plan, truck), 'weekday': day.isoweekday()})
+    body = _waybill_body(state, dd, plan, truck)
+    # basis (номера заказов ERP, доли) — сверка «Развоза»; на лист не нужен, роли из интернета не отдаётся
+    return jsonify({**body, 'trips': [{k: v for k, v in tr.items() if k != 'basis'} for tr in body['trips']],
+                    'weekday': day.isoweekday()})
 
 
 WAREHOUSE_CHANGING = 'Լոգիստը փոխել է այս երթը և դեռ չի ուղարկել վարորդին — զանգահարեք լոգիստին'
