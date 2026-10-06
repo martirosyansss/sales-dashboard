@@ -145,3 +145,19 @@ def test_exclude_of_predated_taken_before_rule_is_plain_exclude():
     dd = SimpleNamespace(draft=dp.Draft(same_day={_isn(20), _isn(21)}), deliver=[early])
     assert not views._is_same_day_edit(dd, {'action': 'exclude', 'order': _isn(20).lower()})
     assert views._is_same_day_edit(dd, {'action': 'exclude', 'order': _isn(21)})
+
+
+def test_unreadable_plan_of_its_date_keeps_order_and_flags_page(client, monkeypatch):
+    """План 01.10 не прочитан: заказ, заведённый заранее на 01.10, едет 02.10 (не теряется), страница предупреждает."""
+    early = _early(_dorder(20, 101, 120.0, day=D), date(2026, 9, 29))
+    state, _ = _page_setup(client, monkeypatch, extra_orders=[early])
+    _build(client)
+    real = state.store.load_dispatch
+
+    def broken(day):
+        if day == D.isoformat():
+            raise views.StoreError('битая база')
+        return real(day)
+    monkeypatch.setattr(state.store, 'load_dispatch', broken)
+    nxt = client.get('/api/routes/dispatch?date=' + NEXT).get_json()
+    assert nxt['orders']['count'] == 4 and nxt['same_day_unread'] is True

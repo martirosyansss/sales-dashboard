@@ -1263,9 +1263,10 @@ def _day_orders(state: RoutesState, bundle: Bundle, day: date, refresh: bool,
                           refresh)
     data = replace(data, orders=tuple(o for o in data.orders if o.order_date < until or o.predated))
     sel = dp.to_deliver(data.orders, day, since, rule, dp.place_of(data.customers, data.addresses))
-    sel = dp.settle_predated(sel, since, _plan_seen(state, since))
+    seen = _plan_seen(state, since)
+    sel = dp.settle_predated(sel, since, seen if seen is not None else dp.PlanSeen())
     taken, unread = _same_day_taken(state, day, workdays, off)
-    if unread:
+    if unread or seen is None:   # план прошлого дня не прочитан — страница предупреждает о возможном повторе
         sel = replace(sel, same_day_unread=True)
     if taken & {o.isn for o in sel.main}:
         # взятые в развоз дня их приёма (№72) уже везли — даже если накладной ещё нет
@@ -1319,15 +1320,15 @@ def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: li
     return out & {o.isn for o in backlog}
 
 
-def _plan_seen(state: RoutesState, day: date) -> dp.PlanSeen:
-    """Что видел план дня day (№79, dp.settle_predated); плана нет или не прочитан — ничего: заказ, заведённый заранее
-    на day, едет и на следующий рабочий день (не теряется)."""
+def _plan_seen(state: RoutesState, day: date) -> dp.PlanSeen | None:
+    """Что видел план дня day (№79, dp.settle_predated); плана нет — ничего: заказ, заведённый заранее на day, едет и
+    на следующий рабочий день (не теряется); не прочитан — None (так же, и страница предупреждает)."""
     try:
         draft, _ = _stored_draft(state, day)
     except StoreError:
         logger.warning('[Routes] План развоза на %s не прочитан — заказы, заведённые заранее на него, едут и дальше',
                        day, exc_info=True)
-        return dp.PlanSeen()
+        return None
     return dp.PlanSeen.of(draft)
 
 
