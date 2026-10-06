@@ -701,7 +701,9 @@ def test_api_live_without_courier_section(client, live_app, monkeypatch):
     assert client.get('/api/routes/live', base_url=LAN).status_code == 400
 
 
-def test_live_access_garage_user_anonymous(client, live_app):
+def test_live_access_garage_user_anonymous(client, live_app, monkeypatch):
+    monkeypatch.delenv('ROUTES_YANDEX_TILES_KEY', raising=False)
+    monkeypatch.delenv('ROUTES_YANDEX_LIVE_KEY', raising=False)
     # без входа: API — 401, страница — на вход
     assert client.get('/api/routes/live', base_url=LAN).status_code == 401
     r = client.get('/routes/live', base_url=LAN)
@@ -739,12 +741,25 @@ def test_live_from_internet_only_garage(client, live_app):
     import re
     for m in re.findall(r'<(?:script|link)[^>]+(?:src|href)="(/static/[^"?]+)', html):
         assert m in live_app._PUBLIC_STATIC, m                         # вся своя статика страницы открыта снаружи
-    assert 'data-yandex-key' not in html                               # подложка без ключа Яндекса (условия Tiles API)
+    assert 'data-yandex-key=""' in html                               # без ключа в окружении — OpenStreetMap
     assert client.get('/api/routes/live', base_url=PUBLIC).status_code == 200
     for who in ('boss', 'u'):
         _session_as(client, who)
         assert client.get('/routes/live', base_url=PUBLIC).status_code == 404
         assert client.get('/api/routes/live', base_url=PUBLIC).status_code == 404
+
+
+def test_live_page_yandex_key_own_first(client, live_app, monkeypatch):
+    # владелец 06.10: подложка — Яндекс; свой ключ страницы важнее общего, неверный свой — общий
+    main, own = 'a' * 36, 'b' * 36
+    _session_as(client, 'boss', base=LAN)
+    monkeypatch.delenv('ROUTES_YANDEX_LIVE_KEY', raising=False)
+    monkeypatch.setenv('ROUTES_YANDEX_TILES_KEY', main)
+    assert f'data-yandex-key="{main}"' in client.get('/routes/live', base_url=LAN).get_data(as_text=True)
+    monkeypatch.setenv('ROUTES_YANDEX_LIVE_KEY', own)
+    assert f'data-yandex-key="{own}"' in client.get('/routes/live', base_url=LAN).get_data(as_text=True)
+    monkeypatch.setenv('ROUTES_YANDEX_LIVE_KEY', 'not a key!')
+    assert f'data-yandex-key="{main}"' in client.get('/routes/live', base_url=LAN).get_data(as_text=True)
 
 
 def test_live_thresholds_in_settings():
