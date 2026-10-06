@@ -1,0 +1,93 @@
+{% extends "base_v2.html" %}
+
+{% block title %}Վարորդների գումարը — Sales Dashboard{% endblock %}
+
+{% block extra_css %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
+<!-- «Վարորդների գումարը» — отдельная страница кассы: деньги водителей за день и «сдал фактически» (API /api/courier/admin/money) -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/courier_money.css') }}?v=2">
+{% endblock %}
+
+{% block content %}
+<div class="rt-page cm-page" id="cmPage" lang="hy">
+<div class="cm-screen">
+
+    <header class="rt-head cm-head">
+        <a class="cm-back" href="/courier"><i class="fas fa-arrow-left" aria-hidden="true"></i>Առաքիչ</a>
+        <div class="cm-head-row">
+            <div class="cm-head-title">
+                <h1 class="rt-title">Վարորդների գումարը</h1>
+                <p class="cm-sub">Օրվա սերտում՝ որքան պետք է վերցներ վարորդը, որքան է վերցրել և որքան է հանձնել դրամարկղ։ ERP-ում ոչինչ չի փոխվում։</p>
+            </div>
+            <div class="cm-tools">
+                <div class="cm-datebar" role="group" aria-label="Օր">
+                    <button type="button" class="cm-datebtn" id="cmPrev" aria-label="Նախորդ օր" title="Նախորդ օր"><i class="fas fa-chevron-left" aria-hidden="true"></i></button>
+                    <label for="cmDate" class="rt-sr-only">Օր</label>
+                    <input type="date" id="cmDate" class="cm-date">
+                    <button type="button" class="cm-datebtn" id="cmNext" aria-label="Հաջորդ օր" title="Հաջորդ օր"><i class="fas fa-chevron-right" aria-hidden="true"></i></button>
+                </div>
+                <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="cmToday">Այսօր</button>
+                <button type="button" class="rt-iconbtn cm-iconbtn" id="cmRefresh" aria-label="Թարմացնել" title="Թարմացնել"><i class="fas fa-rotate" aria-hidden="true"></i></button>
+                <button type="button" class="rt-iconbtn cm-iconbtn" id="cmPrint" aria-label="Տպել հանձնման ակտը" title="Տպել հանձնման ակտը"><i class="fas fa-print" aria-hidden="true"></i></button>
+                <button type="button" class="rt-iconbtn cm-iconbtn" id="cmExcel" aria-label="Ներբեռնել Excel" title="Ներբեռնել Excel"><i class="fas fa-file-excel" aria-hidden="true"></i></button>
+            </div>
+        </div>
+        <p class="cm-dayline"><span id="cmDayName"></span><span class="cm-updated" id="cmUpdated"></span></p>
+    </header>
+
+    <div id="cmStatus" class="rt-sr-only" role="status" aria-live="polite"></div>
+    <div id="cmError" class="rt-alert d-none" role="alert">
+        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+        <span id="cmErrorText" class="rt-alert-text"></span>
+    </div>
+
+    <!-- итог дня: JS заполняет по /api/courier/admin/money -->
+    <section class="cm-kpis" id="cmKpis" aria-label="Օրվա ամփոփում"></section>
+    <div id="cmAttention"></div>
+
+    <div class="cm-bar">
+        <div class="cm-seg" role="radiogroup" aria-label="Ցույց տալ">
+            <button type="button" role="radio" data-filter="all" aria-checked="true">Բոլորը <span class="cm-seg-n" id="cmNAll"></span></button>
+            <button type="button" role="radio" data-filter="issues" aria-checked="false">Խնդիրներով <span class="cm-seg-n" id="cmNIssues"></span></button>
+            <button type="button" role="radio" data-filter="open" aria-checked="false">Չհանձնված <span class="cm-seg-n" id="cmNOpen"></span></button>
+        </div>
+        <div class="cm-search">
+            <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+            <label for="cmQ" class="rt-sr-only">Որոնում</label>
+            <input id="cmQ" class="rt-input" type="search" placeholder="Վարորդ, հաճախորդ կամ ապրանքագիր" maxlength="80" autocomplete="off">
+        </div>
+        <button type="button" class="rt-btn rt-btn-ghost rt-btn-sm" id="cmExpand"><i class="fas fa-up-right-and-down-left-from-center" aria-hidden="true"></i><span>Բացել բոլորը</span></button>
+    </div>
+
+    <div id="cmList" class="cm-list" aria-live="polite">
+        <div class="rt-loading"><div class="rt-spinner"></div>Բեռնվում է…</div>
+    </div>
+
+    <details class="rt-fold cm-howto">
+        <summary><span class="rt-fold-t"><i class="fas fa-circle-info" aria-hidden="true"></i>Ինչպես է հաշվվում</span></summary>
+        <div class="rt-fold-body">
+            <dl class="cm-terms">
+                <dt>Պետք էր վերցնել</dt><dd>Առաքված ապրանքի արժեքը կանխիկ վճարման կետերում (Կանխիկ, Կանխիկ ՀԴՄ)։ Մասնակի առաքման դեպքում՝ միայն առաքվածի դիմաց։</dd>
+                <dt>Վերցրել է</dt><dd>Վարորդի նշած վճարումները տերմինալում՝ ապրանքագրերով և պարտքի դիմաց (չեղարկվածները հանված են)։</dd>
+                <dt>Պակաս</dt><dd>Պետք էր վերցնել − վերցրել են ապրանքագրով (բոլոր վարորդները միասին)։ Եթե վճարումը վերցրել է այլ վարորդ, կետը նշվում է «Վերցրել է այլ վարորդ»։</dd>
+                <dt>Հանձնելու է</dt><dd>Ինչ վերցրել է վարորդը՝ ապրանքագրերով + պարտքի դիմաց։ Գանձապահը գրում է «Հանձնել է»՝ տարբերությունը հաշվվում է ինքնաբերաբար։</dd>
+                <dt>Ընթացքում</dt><dd>Կետը դեռ ավարտված չէ, գումարը վերջնական չէ։</dd>
+                <dt>Դեղին նշում</dt><dd>Պատվերով և ապրանքագրով նշումները չեն համընկնում՝ ստուգեք վարորդի հետ։</dd>
+            </dl>
+        </div>
+    </details>
+</div>
+
+<!-- «Կանխիկի հանձնման ակտ» — видна только при печати; JS заполняет вместе со списком -->
+<section class="cm-print" id="cmPrintSheet" aria-hidden="true"></section>
+<!-- «Կանխիկի ընդունման անդորրագիր» одного водителя — 2 экземпляра на A4 (водителю и в кассу), только при печати -->
+<section class="cm-receipt" id="cmReceipt" aria-hidden="true"></section>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/courier_money.js') }}?v=2"></script>
+{% endblock %}

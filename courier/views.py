@@ -101,6 +101,12 @@ def page() -> str:
     return render_template('courier.html')
 
 
+@bp.get('/courier/money')
+def money_page() -> str:
+    """«Վարորդների գումարը» — касса отдельной страницей (была вкладка «Գումար» на /courier)."""
+    return render_template('courier_money.html')
+
+
 # --- «Վարորդներ»: водители и терминалы ---
 
 def _cars(today: date) -> tuple[list[dict[str, Any]], bool]:

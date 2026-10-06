@@ -90,7 +90,7 @@ def test_garage_role_denied_api(dashboard, path):
 
 
 @pytest.mark.parametrize('path', ['/', '/routes', '/routes/settings', '/routes/dispatch', '/areas', '/customers-grid',
-                                  '/settings', '/courier', '/routes/garage/', '/routes/garage/x'])
+                                  '/settings', '/courier', '/courier/money', '/routes/garage/', '/routes/garage/x'])
 def test_garage_role_pages_redirect_to_garage(dashboard, path):
     _login_as(dashboard, 'garage1')
     r = dashboard.get(path)

@@ -360,14 +360,14 @@ _YANDEX_KEY_RE = re.compile(r'[0-9A-Za-z-]{16,64}')
 _yandex_key_warned: set[str] = set()
 
 
-def _yandex_tiles_key() -> str:
-    """Ключ Yandex Tiles API для подложки карт (№47) или '' — тогда карты на OpenStreetMap."""
+def _yandex_tiles_key(env: str = 'ROUTES_YANDEX_TILES_KEY') -> str:
+    """Ключ Yandex Tiles API для подложки карт (№47) из переменной env или '' — тогда карты на OpenStreetMap."""
     import os
-    key = os.environ.get('ROUTES_YANDEX_TILES_KEY', '').strip()
+    key = os.environ.get(env, '').strip()
     if key and not _YANDEX_KEY_RE.fullmatch(key):
         if key not in _yandex_key_warned:       # один раз на значение, а не на каждый показ страницы
             _yandex_key_warned.add(key)
-            logger.warning('ROUTES_YANDEX_TILES_KEY не похож на ключ Яндекса — карты на OpenStreetMap')
+            logger.warning('%s не похож на ключ Яндекса — карты на OpenStreetMap', env)
         return ''
     return key
 
@@ -3552,8 +3552,10 @@ LIVE_CAR_MAX = 20   # номер машины в ?car=
 
 @bp.get('/routes/live')
 def live_page() -> str:
-    # Подложка — OpenStreetMap и при ключе Яндекса: условия Tiles API запрещают мониторинг транспорта в реальном времени
-    return render_template('routes_live.html')
+    # Подложка — Яндекс (владелец 06.10, «на свой риск»: бесплатный Tiles API, п. 5.1.3, мониторинг транспорта
+    # запрещает). Свой ключ ROUTES_YANDEX_LIVE_KEY — чтобы блокировка ключа этой страницы не выключила остальные карты.
+    return render_template('routes_live.html',
+                           yandex_tiles_key=_yandex_tiles_key('ROUTES_YANDEX_LIVE_KEY') or _yandex_tiles_key())
 
 
 def _live_day() -> tuple[date | None, Any]:

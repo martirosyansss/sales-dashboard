@@ -357,14 +357,15 @@ def test_public_allowlist_covers_norm_and_basemap_only():
         assert app_v2._public_path_allowed(path, 'GET'), path
     assert not app_v2._public_path_allowed('/static/js/routes_basemap.js', 'POST')
     for path in ('/api/routes/learning/day', '/api/routes/learning', '/api/routes/road-lines',
-                 '/static/js/routes_learning.js', '/static/js/routes_dispatch.js', '/static/img/yandex_maps_logo_ru.svg',
+                 '/static/js/routes_learning.js', '/static/js/routes_dispatch.js',
                  '/static/js/routes_basemap.js/', '/static/js/Routes_basemap.js', '/api/routes/garage/norm/',
                  '/api/routes/garage/Norm'):
         assert not app_v2._public_path_allowed(path, 'GET'), path
     assert app_v2._PUBLIC_STATIC == frozenset((
         '/favicon.ico', '/static/css/tokens.css', '/static/css/base.css', '/static/js/base.js', '/static/css/routes.css',
         '/static/css/routes_garage.css', '/static/js/routes_garage.js', '/static/js/routes_basemap.js',
-        '/static/css/routes_live.css', '/static/js/routes_live.js'))   # карта машин «Մեքենաները առցանց» (№76)
+        '/static/css/routes_live.css', '/static/js/routes_live.js',    # карта машин «Մեքենաները առցանց» (№76)
+        '/static/img/yandex_maps_logo_ru.svg'))                         # её подложка — Яндекс, логотип обязателен
 
 
 def test_garage_page_tab_and_basemap_without_yandex_key(dashboard, monkeypatch):

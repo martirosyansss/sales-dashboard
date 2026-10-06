@@ -1,6 +1,7 @@
 /* «Առաքիչ» /courier — офис терминалов водителей (docs/plans/courier-app-plan.md §4).
-   Вкладки: «Վարորդներ» (водители, PIN, терминалы и QR), «Առաքում այսօր» (по машинам), «Գումար» (деньги водителей,
-   «сдал фактически»), «Մակնշում» (коды маркировки, CSV/Excel), «Կարգավորումներ» (маркируемые товары, тара, причины, APK).
+   Вкладки: «Վարորդներ» (водители, PIN, терминалы и QR), «Առաքում այսօր» (по машинам), «Մակնշում» (коды маркировки,
+   CSV/Excel), «Կարգավորումներ» (маркируемые товары, тара, причины, APK). «Գումար» — отдельная страница /courier/money
+   (courier_money.js); старая ссылка /courier#money ведёт туда.
    API: /api/courier/admin/* (только admin; POST — JSON). Всё, что пришло с сервера (имена, коды, магазины), выводится
    только через esc() или textContent. QR — SVG, построенный сервером (segno), вставляется как есть.
    Фото — только с /api/courier/admin/photos/<uuid> (id проверяется по шаблону uuid до вставки). */
@@ -84,9 +85,10 @@
     }
 
     // ---------- Вкладки ----------
-    const TABS = ['drivers', 'today', 'money', 'marks', 'settings'];
+    const TABS = ['drivers', 'today', 'marks', 'settings'];
     const loaded = new Set();
     function showTab(name) {
+        if (name === 'money') { location.replace('/courier/money'); return; }   // вкладка стала отдельной страницей
         if (!TABS.includes(name)) name = 'drivers';
         TABS.forEach(t => {
             $('crPane-' + t).hidden = t !== name;
@@ -355,60 +357,6 @@
             + '</section>';
     }
 
-    // ---------- Деньги ----------
-    async function loadMoney() {
-        try {
-            const d = await api('/api/courier/admin/money?date=' + encodeURIComponent($('crMoneyDate').value || today()));
-            renderMoney(d);
-        } catch (e) { showError(e.message); }
-    }
-    function renderMoney(d) {
-        const list = $('crMoneyList');
-        if (!d.drivers.length) { list.innerHTML = '<p class="rt-empty">Այս օրը վարորդները գումար չեն վերցրել։</p>'; return; }
-        list.innerHTML = d.drivers.map(x => {
-            const diff = x.diff === null ? '' : '<span class="cr-diff ' + (Math.abs(x.diff) < 0.005 ? 'is-ok">Համընկնում է' : 'is-bad">Տարբերություն՝ ' + money(x.diff)) + '</span>';
-            return '<section class="rt-card" data-driver="' + x.driver_id + '"><div class="rt-card-head"><h2 class="rt-card-title"><i class="fas fa-user" aria-hidden="true"></i>' + esc(x.name) + '</h2></div>'
-                + '<div class="rt-table-scroll"><table class="rt-table cr-small"><thead><tr><th scope="col">Ապրանքագիր</th><th scope="col">Հաճախորդ</th><th scope="col">Վճարում</th>'
-                + '<th scope="col">Վիճակ</th><th scope="col">Վճարելու է</th><th scope="col">Պետք է վերցներ</th><th scope="col">Ապրանքագրով</th><th scope="col">Պակաս</th>'
-                + '<th scope="col">Պարտքի դիմաց</th><th scope="col">ՀԴՄ կտրոն</th><th scope="col">Նշում</th></tr></thead><tbody>'
-                + x.rows.map(r => {
-                    const short = r.short === null || r.short === undefined ? '—'
-                        : (Math.abs(r.short) < 0.005 ? '0' : '<b class="' + (r.short > 0 ? 'cr-bad' : 'cr-muted') + '">' + money(r.short) + '</b>');
-                    // «Ընթացքում»՝ կետը դեռ ավարտված չէ, գումարը՝ առայժմ առաքվածի դիմաց
-                    const expected = r.expected === null || r.expected === undefined ? '—'
-                        : money(r.expected) + (r.status === 'in_progress' ? ' <span class="cr-muted">(դեռ վերջնական չէ)</span>' : '');
-                    const cls = r.flags.includes('no_payment') ? 'cr-row-bad' : r.flags.includes('merge_conflict') ? 'cr-row-warn' : '';
-                    return '<tr class="' + cls + '"><td>' + esc(r.doc_number || r.stop_id) + '</td><td>' + esc(r.customer || '') + '</td><td>' + esc(COLLECT[r.collect] || '') + '</td>'
-                        + '<td>' + statusBadge(r) + '</td>'
-                        + '<td class="cr-num-cell" title="Ապրանքագիր՝ ' + esc(r.invoice_amount === null || r.invoice_amount === undefined ? '—' : money(r.invoice_amount)) + '">' + (r.due === null || r.due === undefined ? '—' : money(r.due)) + '</td>'
-                        + '<td class="cr-num-cell">' + expected + '</td>'
-                        + '<td class="cr-num-cell"' + (Math.abs((r.invoice_all || 0) - r.invoice) >= 0.005 ? ' title="Բոլոր վարորդները՝ ' + esc(money(r.invoice_all)) + '"' : '') + '>' + money(r.invoice) + '</td><td class="cr-num-cell">' + short + '</td><td class="cr-num-cell">' + money(r.debt) + '</td>'
-                        + '<td>' + esc(r.receipts.join(', ')) + '</td><td>' + (r.flags.includes('no_payment') ? badge('Վճարում չկա', 'b-danger') + ' ' : '')
-                        + esc(flagText(r.flags.filter(f => f !== 'no_payment'))) + '</td></tr>';
-                }).join('')
-                + '</tbody></table></div>'
-                + '<div class="cr-money-foot"><span class="cr-total">Պետք է վերցներ՝ <b>' + money(x.expected) + '</b></span>'
-                + (x.no_payment ? '<span class="cr-diff is-bad">Վճարում չկա՝ ' + fmt(x.no_payment) + ' կետ</span>' : '')
-                + '<span class="cr-total">Ապրանքագրերով՝ <b>' + money(x.collected_invoice) + '</b></span>'
-                + '<span class="cr-total">Պարտքի դիմաց՝ <b>' + money(x.collected_debt) + '</b></span>'
-                + '<span class="cr-total">Ընդամենը հանձնելու՝ <b>' + money(x.collected) + '</b></span>'
-                + '<label for="crHand' + x.driver_id + '">Հանձնել է փաստացի</label>'
-                + '<input id="crHand' + x.driver_id + '" class="rt-input" inputmode="decimal" value="' + (x.handed === null ? '' : esc(x.handed)) + '">'
-                + '<button type="button" class="rt-btn rt-btn-primary rt-btn-sm" data-hand="' + x.driver_id + '">Պահպանել</button>' + diff
-                + (x.handed_by ? '<span class="cr-muted">' + esc(x.handed_by) + ', ' + esc(dateTime(x.handed_at)) + '</span>' : '') + '</div></section>';
-        }).join('');
-    }
-    async function saveHandover(driverId) {
-        const raw = $('crHand' + driverId).value.replace(/\s/g, '').replace(',', '.');
-        const handed = raw === '' ? null : Number(raw);
-        if (handed !== null && (!Number.isFinite(handed) || handed < 0)) { showError('Գրեք գումարը թվով'); return; }
-        try {
-            await api('/api/courier/admin/money/handover', { json: { date: $('crMoneyDate').value || today(), driver_id: driverId, handed } });
-            announce('Պահպանված է');
-            await loadMoney();
-        } catch (e) { showError(e.message); }
-    }
-
     // ---------- Маркировка ----------
     const marks = { rows: [] };
     function marksQuery() {
@@ -535,11 +483,11 @@
         } catch (e) { $('crApkErr').textContent = e.message; }
     }
 
-    const LOADERS = { drivers: loadDrivers, today: loadToday, money: loadMoney, marks: loadMarks, settings: loadSettings };
+    const LOADERS = { drivers: loadDrivers, today: loadToday, marks: loadMarks, settings: loadSettings };
 
     // ---------- События ----------
     function init() {
-        ['crTodayDate', 'crMoneyDate'].forEach(id => { $(id).value = today(); });
+        $('crTodayDate').value = today();
         $('crDriverForm').addEventListener('submit', saveDriver);
         $('crDriverNew').addEventListener('click', resetDriverForm);
         $('crTermForm').addEventListener('submit', createTerminal);
@@ -552,9 +500,6 @@
         });
         $('crTodayRefresh').addEventListener('click', loadToday);
         $('crTodayDate').addEventListener('change', loadToday);
-        $('crMoneyRefresh').addEventListener('click', loadMoney);
-        $('crMoneyDate').addEventListener('change', loadMoney);
-        $('crMoneyList').addEventListener('click', (ev) => { const b = ev.target.closest('[data-hand]'); if (b) saveHandover(Number(b.dataset.hand)); });
         $('crMarksForm').addEventListener('submit', loadMarks);
         $('crMarksXlsx').addEventListener('click', exportMarksExcel);
         ['crProdQ', 'crProdSold', 'crProdMarked'].forEach(id => $(id).addEventListener('input', renderProducts));
