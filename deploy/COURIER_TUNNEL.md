@@ -212,7 +212,7 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
 | `/routes/garage` | GET | страница журнала (сессия «Гаража»; без входа — на `/login`) |
 | `/api/routes/garage`, `/api/routes/garage/…` | GET, POST | API журнала (POST — с CSRF, как в офисе) |
 | `/routes/live`, `/api/routes/live`, `/api/routes/live/…` | GET | машины на карте сейчас «Մեքենաները առցանց» (№76; сессия «Гаража», только чтение) |
-| `/static/css/routes_live.css`, `/static/js/routes_live.js` | GET | статика карты машин (№76) |
+| `/static/css/routes_live.css`, `/static/js/routes_live.js`, `/static/img/yandex_maps_logo_ru.svg` | GET | статика карты машин (№76; подложка Яндекса — логотип обязателен) |
 | `/favicon.ico`, `/static/css/tokens.css`, `/static/css/base.css`, `/static/css/routes.css`, `/static/css/routes_garage.css`, `/static/js/base.js`, `/static/js/routes_garage.js`, `/static/js/routes_basemap.js` | GET | статика страницы журнала (у страницы входа своей нет — CDN; Leaflet карты дня «Նորմ և փաստ» — тоже CDN) |
 | `/api/courier/v1/…` | как раньше | API терминалов |
 
@@ -367,6 +367,7 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
    location ^~ /api/routes/live/            { include snippets/araqich-garage-public.conf; }
    location = /static/css/routes_live.css   { include snippets/araqich-garage-public.conf; }
    location = /static/js/routes_live.js     { include snippets/araqich-garage-public.conf; }
+   location = /static/img/yandex_maps_logo_ru.svg { include snippets/araqich-garage-public.conf; }
 
    # Не от туннеля или без заголовка Cloudflare (офис по старой ссылке http://192.168.1.24:5000/login, прочие
    # процессы на 192.168.1.11, curl на CT115 без заголовка) — ровно как location /.
@@ -388,7 +389,7 @@ curl.exe -i https://araqich.orix.am/api/courier/v1/ping
        path: '^/api/routes/(garage|live)(/[a-z0-9_-]+)*$'
        service: <как у правила ^/api/courier/v1/>
      - hostname: araqich.orix.am
-       path: '^/static/(css/(tokens|base|routes|routes_garage|routes_live)\.css|js/(base|routes_garage|routes_basemap|routes_live)\.js)$'
+       path: '^/static/(css/(tokens|base|routes|routes_garage|routes_live)\.css|js/(base|routes_garage|routes_basemap|routes_live)\.js|img/yandex_maps_logo_ru\.svg)$'
        service: <как у правила ^/api/courier/v1/>
    ```
    Проверка и перезапуск: `cloudflared tunnel --config <config.yml> ingress validate`;
