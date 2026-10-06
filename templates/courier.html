@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- «Առաքիչ» — офис терминалов водителей (docs/plans/courier-app-plan.md §4), армянский, «для чайников» -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=10">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=11">
 {% endblock %}
 
 {% block content %}
@@ -25,6 +25,7 @@
         <a href="#drivers" role="tab" id="crTab-drivers" aria-controls="crPane-drivers"><i class="fas fa-id-card" aria-hidden="true"></i>Վարորդներ</a>
         <a href="#today" role="tab" id="crTab-today" aria-controls="crPane-today"><i class="fas fa-route" aria-hidden="true"></i>Առաքում այսօր</a>
         <a href="/courier/money" class="cr-tab-link" role="tab" aria-selected="false"><i class="fas fa-coins" aria-hidden="true"></i>Գումար<i class="fas fa-arrow-up-right-from-square cr-tab-out" aria-hidden="true"></i></a>
+        <a href="/courier/invoice" class="cr-tab-link" role="tab" aria-selected="false"><i class="fas fa-file-invoice" aria-hidden="true"></i>Ապրանքագիր<i class="fas fa-arrow-up-right-from-square cr-tab-out" aria-hidden="true"></i></a>
         <a href="#marks" role="tab" id="crTab-marks" aria-controls="crPane-marks"><i class="fas fa-barcode" aria-hidden="true"></i>Մակնշում</a>
         <a href="#settings" role="tab" id="crTab-settings" aria-controls="crPane-settings"><i class="fas fa-sliders" aria-hidden="true"></i>Կարգավորումներ</a>
     </nav>
@@ -226,5 +227,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/courier.js') }}?v=15"></script>
+<script src="{{ url_for('static', filename='js/courier.js') }}?v=16"></script>
 {% endblock %}

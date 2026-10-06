@@ -47,6 +47,7 @@ class RoutesView:
     agents_off: frozenset[int] = frozenset()               # менеджеры, чьи заказы не везём (фильтр «Մենեջերներ»)
     same_day: frozenset[str] = frozenset()                 # заказы с датой дня, взятые в его развоз (№72)
     taken: frozenset[str] = frozenset()                    # взятые в развоз дня их приёма в прошлые дни — не везём
+    seen: dp.PlanSeen = dp.PlanSeen()                      # что видел план прошлого рабочего дня (№79)
     fleet: dp.FleetRule = dp.NO_RULE                       # чьи заказы везут машины — правило настроек «Развоза» (№74)
     roads: Any = None                                      # RoadDistances | None
 
@@ -91,11 +92,13 @@ def routes_view(state: Any, day: date) -> RoutesView:
     stored = state.store.load_dispatch(day.isoformat())   # RoutesStoreError — наружу (№80): не «плана нет»
     carried = _carried(state, day, workdays, holidays)
     taken = _taken(state, day, workdays, holidays)
+    prev = state.store.load_dispatch(dp.previous_workday(day, workdays, holidays).isoformat())
+    seen = dp.PlanSeen.of(dp.Draft.from_json(prev[0]) if prev is not None else None)
     if stored is None:
         # плана нет — менеджеры, чьи заказы не везём, по правилу настроек «Развоза» (№69)
         return RoutesView(depot=base.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                           carried=frozenset(carried), agents_off=frozenset(dp.agents_off_of(None, bundle.settings)),
-                          taken=frozenset(taken), fleet=base.fleet, roads=roads)
+                          taken=frozenset(taken), fleet=base.fleet, roads=roads, seen=seen)
     draft = dp.Draft.from_json(stored[0])   # правило №74 — то, с которым день собран: заказы рейсов не пропадут
     return RoutesView(depot=bundle.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
                       plan_exists=bool(draft.trips), released=bool(draft.trips) and draft.released is not None,
@@ -103,7 +106,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
                       excluded=frozenset(draft.excluded), added=frozenset(draft.added),
                       carried=frozenset(carried), dropped=frozenset(draft.dropped),
                       agents_off=frozenset(dp.agents_off_of(draft, bundle.settings)), same_day=frozenset(draft.same_day),
-                      taken=frozenset(taken), fleet=dp.fleet_rule_of(draft, bundle.settings), roads=roads)
+                      taken=frozenset(taken), fleet=dp.fleet_rule_of(draft, bundle.settings), roads=roads, seen=seen)
 
 
 def routes_depot(state: Any) -> Point | None:
@@ -156,10 +159,10 @@ def _taken(state: Any, day: date, workdays: Sequence[int], holidays: Collection[
 
 
 def orders_window(day: date, view: RoutesView) -> tuple[date, date]:
-    """Даты заказов, которые смотрит «Развоз» для дня (с «не отгружены с прошлых дней»); логист взял в развоз заказы
-    самого дня (№72) — и его дата."""
+    """Даты заказов, которые смотрит «Развоз» для дня (с «не отгружены с прошлых дней») и сам день: заказы, заведённые
+    заранее на него (№79), и заказы дня, взятые логистом в его развоз (№72)."""
     since, until = dp.order_window(day, view.workdays, view.holidays)
-    return dp.backlog_since(since, view.workdays, holidays=view.holidays), until + timedelta(days=1 if view.same_day else 0)
+    return dp.backlog_since(since, view.workdays, holidays=view.holidays), until + timedelta(days=1)
 
 
 def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, car_code: str,
@@ -175,10 +178,12 @@ def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, ca
     since, _ = dp.order_window(day, view.workdays, view.holidays)
     need = sorted({o.customer_id for o in orders if view.fleet.needs_place(o)})
     texts = places(need) if need and places is not None else {}
-    sel = dp.to_deliver(orders, day, since, view.fleet, lambda cid: texts.get(cid, ('', '')))
+    place = lambda cid: texts.get(cid, ('', ''))   # noqa: E731
+    sel = dp.settle_predated(dp.to_deliver(orders, day, since, view.fleet, place), since, view.seen)
     inside = set(view.added) | (set(view.carried) - set(view.dropped))
-    active = [o for o in sel.main if o.isn not in view.excluded and o.isn not in view.taken
-              and (o.order_date < day or o.isn in view.same_day)] + [o for o in sel.backlog if o.isn in inside]
+    same = [o for o in dp.same_day_candidates(orders, day, view.fleet, place) if o.isn in view.same_day]
+    active = [o for o in sel.main + same if o.isn not in view.excluded and o.isn not in view.taken] \
+        + [o for o in sel.backlog if o.isn in inside]
     active = [o for o in active if o.agent_id not in view.agents_off]
     mine = set(view.car_customers(car_code))
     return [o for o in active if o.customer_id in mine]

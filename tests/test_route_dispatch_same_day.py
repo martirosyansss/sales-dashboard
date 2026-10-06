@@ -402,12 +402,14 @@ def test_driver_app_gets_taken_orders_and_next_day_skips_them(client, monkeypatc
     assert rl.pick_orders(window, D, replace(view, released=False), key['truck']) == []
     assert rl.invoice_owner(view, key['truck'])(103) is True
     nxt = rl.routes_view(state, date(2026, 10, 2))
-    assert nxt.taken == frozenset({_isn(10)}) and rl.orders_window(date(2026, 10, 2), nxt)[1] == date(2026, 10, 2)
-    picked = rl.pick_orders(every, date(2026, 10, 2), replace(nxt, plan_exists=False), '')
-    assert _isn(10) not in {o.isn for o in picked}
-    # без взятых заказов дня окно и отбор — прежние
+    assert nxt.taken == frozenset({_isn(10)}) and rl.orders_window(date(2026, 10, 2), nxt)[1] == date(2026, 10, 3)
+    # утверждённый план D+1 с клиентом 103 (№80): взятый в D заказ ему второй раз не отдаётся
+    nxt = replace(nxt, plan_exists=True, released=True, trips=(('X', (101, 102, 103, 104)),))
+    picked = rl.pick_orders(every, date(2026, 10, 2), nxt, 'X')
+    assert picked and _isn(10) not in {o.isn for o in picked}
+    # без взятых заказов дня окно ERP — тоже и за сам день: заказы, заведённые заранее на него (№79)
     plain = rl.RoutesView()
-    assert rl.orders_window(D, plain)[1] == D
+    assert rl.orders_window(D, plain)[1] == date(2026, 10, 2)
 
 
 # ============================== ревью: смешанный выбор, накладные, пересборка, переработка ==============================

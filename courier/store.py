@@ -1069,6 +1069,59 @@ class Store:
                                                  'data': _stop_json(r[3], r[4], self._name())})
         return out
 
+    def find_stops(self, query: str = '', date_from: str | None = None, date_to: str | None = None,
+                   max_days: int = 31, max_rows: int = 500) -> tuple[list[tuple[str, str]], bool]:
+        """Точки снимков /day для «Ապրանքագիր»: (дата, stop_id), у которых номер документа, имя, код или ՀՎՀՀ клиента
+        содержат query (пусто — все точки дат). Только max_days самых новых подходящих дат (офис строит правило дня по
+        каждой дате), внутри — по дате (новые первыми), машине и seq; не больше max_rows. Второе значение — обрезано ли.
+        Условие по query проверяется один раз на содержимое точки (stop_data), а не на каждый снимок."""
+        where, args = ['1 = 1'], []
+        if date_from:
+            where.append('s.date >= ?')
+            args.append(date_from)
+        if date_to:
+            where.append('s.date <= ?')
+            args.append(date_to)
+        q = query.strip()
+        if q:
+            like = '%' + q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+            where.append("s.data_hash IN (SELECT hash FROM stop_data WHERE "
+                         "json_extract(data, '$.doc_number') LIKE ? ESCAPE '\\' "
+                         "OR json_extract(data, '$.customer.name') LIKE ? ESCAPE '\\' "
+                         "OR json_extract(data, '$.customer.code') LIKE ? ESCAPE '\\' "
+                         "OR json_extract(data, '$.customer.tax_id') LIKE ? ESCAPE '\\')")
+            args.extend([like] * 4)
+        cond = ' AND '.join(where)
+
+        def query_(c: sqlite3.Connection) -> tuple[list[Any], bool]:
+            days = [r[0] for r in c.execute(f'SELECT DISTINCT s.date FROM snapshot_stops s WHERE {cond} '
+                                            'ORDER BY s.date DESC LIMIT ?', (*args, max_days + 1)).fetchall()]
+            more = len(days) > max_days
+            days = days[:max_days]
+            if not days:
+                return [], more
+            rows = c.execute(
+                f'SELECT s.date, s.stop_id FROM snapshot_stops s WHERE {cond} '
+                f"AND s.date IN ({','.join('?' * len(days))}) GROUP BY s.date, s.stop_id "
+                'ORDER BY s.date DESC, MIN(s.car_code), MIN(s.seq), s.stop_id LIMIT ?',
+                (*args, *days, max_rows + 1)).fetchall()
+            return rows, more or len(rows) > max_rows
+
+        rows, more = self._read(query_)
+        return [(r[0], r[1]) for r in rows[:max_rows]], more
+
+    def unreadable_by_product(self, day: str, stop_ids: Sequence[str]) -> dict[int, float]:
+        """«Код не читается» за день на точках: товар → штук (строка → товар — line_max, как covered_by_product)."""
+        ids = [s for s in stop_ids if isinstance(s, str)]
+        if not ids:
+            return {}
+        rows = self._read(lambda c: c.execute(
+            "SELECT m.product_id, COALESCE(SUM(json_extract(e.payload, '$.qty')), 0) FROM events e JOIN line_max m "
+            "ON m.stop_id = e.stop_id AND m.line_id = json_extract(e.payload, '$.line_id') "
+            f"WHERE e.date = ? AND e.type = 'unreadable' AND e.stop_id IN ({','.join('?' * len(ids))}) "
+            'GROUP BY m.product_id', (day, *ids)).fetchall())
+        return {int(r[0]): float(r[1] or 0) for r in rows if r[0] is not None}
+
     def day_snapshots(self, day: str) -> DaySnapshots:
         """Все снимки /day на дату: последний снимок каждой машины и версии точек всех снимков (по возрастанию снимка,
         по seq). Офис строит из них точки (машина, дата) для правила §5 п. 12: снимки других дат день не меняют."""
@@ -1332,8 +1385,15 @@ class Store:
     # --- сканы (поиск и выгрузка «Մակնշում») ---
 
     def search_scans(self, query: str = '', date_from: str | None = None, date_to: str | None = None,
-                     limit: int = 5000) -> list[dict[str, Any]]:
+                     limit: int = 5000, stop_ids: Sequence[str] | None = None) -> list[dict[str, Any]]:
+        """Сканы маркировки (stop_ids — только этих точек)."""
         where, args = ['1 = 1'], []
+        if stop_ids is not None:
+            ids = [x for x in stop_ids if isinstance(x, str)]
+            if not ids:
+                return []
+            where.append(f"s.stop_id IN ({','.join('?' * len(ids))})")
+            args.extend(ids)
         if date_from:
             where.append('s.date >= ?')
             args.append(date_from)

@@ -106,7 +106,7 @@ DENIED_PATHS = [
     '/static/css/routes_dispatch.css', '/static/js/routes_dispatch.js', '/static/js/settings.js', '/static/css/style.css',
     '/static/css/../js/settings.js', '/static/css/routes.css/', '/static/CSS/routes.css', '/static/css/routes.css\x00',
     '/static//css/routes.css', '/static/css/./routes.css', '/favicon.ico/', '/static/favicon.ico', '/static/',
-    '/settings', '/api/users', '/api/courier/admin/today', '/courier', '/courier/money', '/routes/settings', '/api/routes/settings',
+    '/settings', '/api/users', '/api/courier/admin/today', '/courier', '/courier/money', '/courier/invoice', '/routes/settings', '/api/routes/settings',
     '/api/routes/dispatch', '/areas', '/customers-grid', '/api/customers', '/test-db',
 ]
 DENIED_METHODS = [('/logout', 'GET'), ('/logout', 'HEAD'), ('/login', 'PUT'), ('/login', 'DELETE'), ('/login', 'OPTIONS'),

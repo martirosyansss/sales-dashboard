@@ -326,7 +326,7 @@ def test_load_day_invoices(fake_erp):
 
 
 def test_load_day_falls_back_to_orders(fake_erp):
-    fake_erp.orders = [(ISN[1], 'Z0002', date(2026, 10, 1), 12, 7, '991AT61', 3600, 58.5, None, 0)]
+    fake_erp.orders = [(ISN[1], 'Z0002', date(2026, 10, 1), 12, 7, '991AT61', 3600, 58.5, None, 0, None)]
     picked = []
 
     def pick(orders, places):
@@ -872,6 +872,189 @@ def test_marks_search_and_csv(term, client):
     assert "'=HYPERLINK" in text and ';=' not in text and ';"=' not in text      # защита от формул (CSV injection)
 
 
+def test_invoice_search_and_card(term, client):
+    stops = {s['doc_number']: s for s in term['day']['stops']}
+    cash, marked = stops['DEMO-0001'], stops['DEMO-0002']          # cash 12 000 ֏; 0.33լ маркируется (24 шт, упаковка 6)
+    line = next(ln for ln in marked['lines'] if ln['marked'])
+    d_cash = event('delivery', cash['stop_id'], {'lines': full_lines(cash, 0.5), 'reason_id': 'x'},
+                   at='2000-01-01T10:00:00+04:00')
+    pay = event('payment', cash['stop_id'], {'amount': 5000.0, 'kind': 'invoice', 'ecr_receipt': '77'},
+                at='2000-01-01T10:01:00+04:00')
+    debt = event('payment', cash['stop_id'], {'amount': 300.0, 'kind': 'debt'}, at='2000-01-01T10:02:00+04:00')
+    packs = [event('scan', marked['stop_id'], {'raw': f'PACK-{i}', 'line_id': line['line_id'], 'kind': 'sale',
+                                               'gtin': None, 'serial': None, 'is_group': True, 'units': 6},
+                   at=f'2000-01-01T11:0{i}:00+04:00') for i in range(3)]
+    d_marked = event('delivery', marked['stop_id'], {'lines': full_lines(marked)}, at='2000-01-01T11:10:00+04:00')
+    post(client, term['s'], d_cash, pay, debt, *packs, d_marked)
+    form = photo_form(PNG, kind='signature', event_id=d_marked['id'])
+    assert client.post('/api/courier/v1/photos', data=form, headers=term['s'],
+                       content_type='multipart/form-data').status_code == 200
+
+    # поиск: по части номера, по клиенту; без номера — только с днём
+    rows = client.get('/api/courier/admin/invoices?q=0001').get_json()['rows']
+    assert [(r['doc_number'], r['date'], r['status'], r['paid']) for r in rows] == [('DEMO-0001', DEMO, 'partial', 5000.0)]
+    assert [r['doc_number'] for r in client.get('/api/courier/admin/invoices?q=Թեստ խանութ 2').get_json()['rows']] == ['DEMO-0002']
+    day_rows = client.get(f'/api/courier/admin/invoices?from={DEMO}&to={DEMO}').get_json()['rows']
+    assert sorted(r['doc_number'] for r in day_rows) == ['DEMO-0001', 'DEMO-0002', 'DEMO-0003']
+    assert client.get('/api/courier/admin/invoices?q=0001&from=2001-01-01').get_json()['rows'] == []
+    assert client.get('/api/courier/admin/invoices').status_code == 400
+    assert client.get('/api/courier/admin/invoices?q=1&from=bad').status_code == 400
+
+    # деньги — как на /courier/money: взять за половину (6 000), взято 5 000 по накладной + 300 в счёт долга
+    c = client.get(f'/api/courier/admin/invoice?date={DEMO}&stop={cash["stop_id"]}').get_json()
+    assert c['stop']['doc_number'] == 'DEMO-0001' and c['stop']['status'] == 'partial' and c['stop']['due'] == 6000.0
+    assert c['stop']['customer']['tax_id'] == '00000001' and c['drivers'] == ['Արամ']
+    (m,) = c['money']
+    assert (m['expected'], m['invoice'], m['short'], m['debt'], m['receipts']) == (6000.0, 5000.0, 1000.0, 300.0, ['77'])
+    assert [(p['amount'], p['kind'], p['receipt']) for p in c['payments']] == [(5000.0, 'invoice', '77'), (300.0, 'debt', None)]
+    assert [ln['delivered'] for ln in c['lines']] == [5.0]
+    assert [t['type'] for t in c['timeline']] == ['delivery', 'payment', 'payment']
+    assert c['timeline'][0]['info']['status'] == 'partial' and 'no_photo' in c['timeline'][0]['flags']   # частично — фото (№18)
+
+    # сканы и подпись: 18 из 24 по маркируемой строке; подпись — у доставки
+    c = client.get(f'/api/courier/admin/invoice?date={DEMO}&stop={marked["stop_id"]}').get_json()
+    assert [s['raw'] for s in c['scans']] == ['PACK-0', 'PACK-1', 'PACK-2']
+    by_line = {ln['line_id']: ln for ln in c['lines']}
+    assert by_line[line['line_id']]['scanned'] == 18.0 and by_line[line['line_id']]['delivered'] == 24.0
+    assert all(ln['scanned'] is None for ln in c['lines'] if not ln['marked'])
+    assert c['money'] == [] and c['payments'] == []                # collect none, оплат нет
+    sig = next(t for t in c['timeline'] if t['id'] == d_marked['id'])
+    assert [p['kind'] for p in sig['photos']] == ['signature'] and sig['info']['actual']
+
+    assert client.get(f'/api/courier/admin/invoice?date={DEMO}&stop=S:nope').status_code == 404
+    assert client.get(f'/api/courier/admin/invoice?date=bad&stop={cash["stop_id"]}').status_code == 400
+    assert client.get(f'/api/courier/admin/invoice?date={DEMO}&stop=' + 'x' * 81).status_code == 400
+
+
+def test_invoice_card_absorbed_order_opens_owner(term, client, st):
+    """Работали по заказу O:, потом выписана накладная S: (replaces) — поиск по номеру заказа и карточка заказа
+    открывают накладную; доставка, оплата и скан заказа — у неё (§5 п. 12, как «Գումար» и «Մակնշում»)."""
+    v1 = term['day']['stops']
+    cash = next(s for s in v1 if s['collect'] == 'cash')
+    order = json.loads(json.dumps(cash))
+    order.update(stop_id=f'O:{ORDER_ISN}', source='order', doc_number='Z-77')
+    order['lines'] = [{**order['lines'][0], 'line_id': f'{ORDER_ISN}:1'}]
+    others = [s for s in v1 if s['stop_id'] != cash['stop_id']]
+    st.store.save_day(DEMO, 'TEST', [order, *others], 'with-order', '2000-01-01T08:00:00+04:00')
+    d = event('delivery', order['stop_id'], {'lines': [{'line_id': f'{ORDER_ISN}:1', 'qty': 10.0}]})
+    pay = event('payment', order['stop_id'], {'amount': 12000.0, 'kind': 'invoice'}, at='2000-01-01T10:05:00+04:00')
+    sc = event('scan', order['stop_id'], {'raw': 'ORDER-CODE-1', 'line_id': f'{ORDER_ISN}:1', 'kind': 'sale', 'gtin': None,
+                                          'serial': None, 'is_group': False, 'units': 1}, at='2000-01-01T10:06:00+04:00')
+    assert len(post(client, term['s'], d, pay, sc)['accepted']) == 3
+    invoice = {**json.loads(json.dumps(cash)), 'replaces': [order['stop_id']]}
+    st.store.save_day(DEMO, 'TEST', [invoice, *others], 'with-invoice', '2000-01-01T09:00:00+04:00')
+
+    rows = client.get('/api/courier/admin/invoices?q=Z-77').get_json()['rows']
+    assert [(r['stop_id'], r['doc_number'], r['found_as']) for r in rows] == [(cash['stop_id'], cash['doc_number'], 'Z-77')]
+    c = client.get(f'/api/courier/admin/invoice?date={DEMO}&stop={order["stop_id"]}').get_json()
+    assert c['stop']['stop_id'] == cash['stop_id'] and c['opened_as'] == 'Z-77' and c['stop']['status'] == 'full'
+    assert c['related']['absorbed'] == [{'stop_id': order['stop_id'], 'doc_number': 'Z-77', 'source': 'order'}]
+    assert [(p['amount'], p['doc_number']) for p in c['payments']] == [(12000.0, 'Z-77')]
+    assert (c['money'][0]['expected'], c['money'][0]['short']) == (12000.0, 0.0)
+    assert [s['raw'] for s in c['scans']] == ['ORDER-CODE-1']
+    # заявление записано на заказе — строки накладной без «доставлено», заявление заказа — отдельно
+    assert c['lines'][0]['delivered'] is None
+    assert [(x['doc_number'], x['lines'][0]['delivered']) for x in c['statements']] == [('Z-77', 10.0)]
+    assert {t['doc_number'] for t in c['timeline']} == {'Z-77'}
+
+
+def test_invoice_card_marking_counts_unreadable_like_terminal(term, client, st):
+    """«Մակնշում» карточки — как флаг терминала scan_short: сканы продажи + «код не читается» этого товара."""
+    stop = next(s for s in term['day']['stops'] if any(ln['marked'] for ln in s['lines']))
+    line = next(ln for ln in stop['lines'] if ln['marked'])     # 24 шт
+    packs = [event('scan', stop['stop_id'], {'raw': f'PACK-{i}', 'line_id': line['line_id'], 'kind': 'sale',
+                                             'gtin': None, 'serial': None, 'is_group': True, 'units': 6})
+             for i in range(3)]
+    unread = event('unreadable', stop['stop_id'], {'line_id': line['line_id'], 'qty': 6.0, 'reason': 'x'})
+    d = event('delivery', stop['stop_id'], {'lines': full_lines(stop)}, at='2000-01-01T10:20:00+04:00')
+    post(client, term['s'], *packs, unread, d)
+    assert 'scan_short' not in {e['id']: e['flags'] for e in st.store.events_for_day(DEMO)}[d['id']]
+    c = client.get(f'/api/courier/admin/invoice?date={DEMO}&stop={stop["stop_id"]}').get_json()
+    assert next(x for x in c['lines'] if x['line_id'] == line['line_id'])['scanned'] == 24.0 and c['unreadable'] == 6.0
+
+
+def test_invoice_card_lines_from_statement_version(term, client, st):
+    """Офис добавил строку в накладную после доставки — строки и «доставлено» карточки из версии заявления (как due
+    правила), а не новая строка с «0 доставлено»; `lines_changed` — версия изменилась."""
+    v1 = term['day']['stops']
+    cash = next(s for s in v1 if s['collect'] == 'cash')
+    post(client, term['s'], event('delivery', cash['stop_id'], {'lines': full_lines(cash)}))
+    new = json.loads(json.dumps(cash))
+    new['lines'].append({**new['lines'][0], 'line_id': new['lines'][0]['line_id'] + 'b', 'qty': 3.0, 'sum': 300.0})
+    others = [s for s in v1 if s['stop_id'] != cash['stop_id']]
+    st.store.save_day(DEMO, 'TEST', [new, *others], 'v2', '2000-01-01T12:00:00+04:00')
+    c = client.get(f'/api/courier/admin/invoice?date={DEMO}&stop={cash["stop_id"]}').get_json()
+    assert c['stop']['status'] == 'full' and c['stop']['due'] == 12000.0 and c['stop']['lines_changed']
+    assert [(x['line_id'], x['qty'], x['delivered']) for x in c['lines']] == [(cash['lines'][0]['line_id'], 10.0, 10.0)]
+
+
+def test_invoice_card_split_order_sister_pays_to_owner(term, client, st):
+    """Заказ разделён на две накладные; covered-сестра: её оплата показана у неё, деньги — у владельца (paid_to),
+    как на /courier/money."""
+    v1 = term['day']['stops']
+    cash = next(s for s in v1 if s['collect'] == 'cash')
+    others = [s for s in v1 if s['stop_id'] != cash['stop_id']]
+    order = json.loads(json.dumps(cash))
+    order.update(stop_id=f'O:{ORDER_ISN}', source='order', doc_number='Z-77')
+    order['lines'] = [{**order['lines'][0], 'line_id': 'o:1'}]
+    st.store.save_day(DEMO, 'TEST', [order, *others], 'with-order', '2000-01-01T08:00:00+04:00')
+    post(client, term['s'], event('delivery', order['stop_id'], {'lines': [{'line_id': 'o:1', 'qty': 10.0}]}))
+    owner = {**json.loads(json.dumps(cash)), 'replaces': [order['stop_id']]}
+    sister = json.loads(json.dumps(owner))
+    sister.update(stop_id='S:FFFFFFFF-0000-4000-8000-0000000000B2', doc_number='DEMO-SIS')
+    sister['lines'] = [{**sister['lines'][0], 'line_id': 's2:1'}]
+    st.store.save_day(DEMO, 'TEST', [owner, sister, *others], 'split', '2000-01-01T09:00:00+04:00')
+    post(client, term['s'], event('payment', sister['stop_id'], {'amount': 700.0, 'kind': 'invoice'},
+                                  at='2000-01-01T10:05:00+04:00'))
+    c2 = client.get(f'/api/courier/admin/invoice?date={DEMO}&stop={sister["stop_id"]}').get_json()
+    assert c2['stop']['status'] == 'covered' and c2['money'] == []
+    assert c2['related']['paid_to'] == {'stop_id': owner['stop_id'], 'doc_number': owner['doc_number']}
+    assert [p['amount'] for p in c2['payments']] == [700.0]
+    c1 = client.get(f'/api/courier/admin/invoice?date={DEMO}&stop={owner["stop_id"]}').get_json()
+    assert c1['stop']['paid'] == 700.0 and [p['doc_number'] for p in c1['payments']] == ['DEMO-SIS']
+    money = {r['stop_id']: r for d in client.get(f'/api/courier/admin/money?date={DEMO}').get_json()['drivers']
+             for r in d['rows']}
+    assert c1['money'][0]['short'] == money[owner['stop_id']]['short']
+
+
+def test_invoice_search_escape_found_as_and_known(term, client, st):
+    """LIKE-символы — буквально; совпала и сама накладная, и поглощённый ею заказ — без «найдено по»; known у строк
+    «Գումար» и «Մակնշում» — точка есть в снимках даты (на неё ведёт ссылка на карточку)."""
+    assert client.get('/api/courier/admin/invoices?q=%25').get_json()['rows'] == []
+    assert client.get('/api/courier/admin/invoices?q=_').get_json()['rows'] == []
+    v1 = term['day']['stops']
+    cash = next(s for s in v1 if s['collect'] == 'cash')
+    order = json.loads(json.dumps(cash))
+    order.update(stop_id=f'O:{ORDER_ISN}', source='order', doc_number='Z-77')
+    order['lines'] = [{**order['lines'][0], 'line_id': f'{ORDER_ISN}:1'}]
+    others = [s for s in v1 if s['stop_id'] != cash['stop_id']]
+    st.store.save_day(DEMO, 'TEST', [order, *others], 'with-order', '2000-01-01T08:00:00+04:00')
+    sc = event('scan', order['stop_id'], {'raw': 'ORDER-CODE-1', 'line_id': f'{ORDER_ISN}:1', 'kind': 'sale',
+                                          'gtin': None, 'serial': None, 'is_group': False, 'units': 1})
+    assert not post(client, term['s'], sc, event('payment', order['stop_id'], {'amount': 100.0, 'kind': 'invoice'}),
+         event('payment', 'S:FFFFFFFF-0000-4000-8000-0000000000C9', {'amount': 50.0, 'kind': 'invoice'}))['rejected']
+    st.store.save_day(DEMO, 'TEST', [{**json.loads(json.dumps(cash)), 'replaces': [order['stop_id']]}, *others],
+                      'with-invoice', '2000-01-01T09:00:00+04:00')
+    rows = client.get('/api/courier/admin/invoices?q=' + cash['customer']['name']).get_json()['rows']
+    assert [(r['stop_id'], r['found_as']) for r in rows] == [(cash['stop_id'], None)]
+    known = {r['stop_id']: r['known'] for d in client.get(f'/api/courier/admin/money?date={DEMO}').get_json()['drivers']
+             for r in d['rows']}
+    assert known[cash['stop_id']] and not known['S:FFFFFFFF-0000-4000-8000-0000000000C9']
+    assert [r['known'] for r in client.get('/api/courier/admin/marks?q=ORDER-CODE').get_json()['rows']] == [True]
+
+
+def test_find_stops_limits_dates_then_rows(st):
+    for i in range(3):
+        st.store.save_day(f'2000-01-0{i + 1}', 'TEST', [
+            {'stop_id': f'S:{i}-{k}', 'seq': k + 1, 'doc_number': f'N-{i}{k}', 'customer': {'name': 'Խանութ'}, 'lines': []}
+            for k in range(2)], 'v1', '2000-01-01T08:00:00+04:00')
+    hits, more = st.store.find_stops('Խանութ', max_days=2, max_rows=10)
+    assert sorted({d for d, _ in hits}) == ['2000-01-02', '2000-01-03'] and more     # самые новые даты
+    hits, more = st.store.find_stops('N-2', max_days=5, max_rows=1)
+    assert hits == [('2000-01-03', 'S:2-0')] and more
+    assert st.store.find_stops('N-00', date_from='2000-01-01', date_to='2000-01-01') == ([('2000-01-01', 'S:0-0')], False)
+
+
 def test_settings_products_and_reasons(app, client, st):
     st.catalog_loader = lambda today: [
         ed.CatalogItem(1, '2101', 'Գառնի 0.33', 'հատ', True, 6.0, False, False, 120.0),
@@ -926,6 +1109,7 @@ def test_courier_page_renders(app, client):
     html = r.data.decode('utf-8')
     assert 'Վարորդներ' in html and 'Առաքում այսօր' in html and 'Մակնշում' in html and 'js/courier.js' in html
     assert 'href="/courier/money"' in html and 'crPane-money' not in html     # «Գումար» — отдельная страница
+    assert 'href="/courier/invoice"' in html                                  # «Ապրանքագիր» — карточка накладной
 
 
 def test_courier_money_page_renders(app, client):
@@ -934,8 +1118,17 @@ def test_courier_money_page_renders(app, client):
     assert r.status_code == 200 and r.headers['Cache-Control'] == 'no-store'
     html = r.data.decode('utf-8')
     assert 'Վարորդների գումարը' in html and 'id="cmPrintSheet"' in html   # акт сдачи для печати заполняет JS
-    assert 'js/courier_money.js?v=2' in html and 'css/courier_money.css?v=2' in html and 'js/courier.js' not in html
+    assert 'js/courier_money.js?v=3' in html and 'css/courier_money.css?v=3' in html and 'js/courier.js' not in html
     assert 'id="cmReceipt"' in html                                        # квитанция водителю (A4, 2 экземпляра)
+
+
+def test_courier_invoice_page_renders(app, client):
+    app.add_url_rule('/logout', 'logout', lambda: '')
+    r = client.get('/courier/invoice?date=2000-01-01&stop=S:1')
+    assert r.status_code == 200 and r.headers['Cache-Control'] == 'no-store'
+    html = r.data.decode('utf-8')
+    assert 'id="ciForm"' in html and 'id="ciCard"' in html                 # список и карточку заполняет JS
+    assert 'js/courier_invoice.js?v=1' in html and 'css/courier_invoice.css?v=1' in html and 'js/courier.js' not in html
 
 
 def test_plan_mismatch(app, st, monkeypatch):
@@ -1010,7 +1203,8 @@ def test_public_host_guard(dashboard):
     client, state = dashboard
     public = {'Host': 'araqich.orix.am'}
     # вход и журнал гаража снаружи (№53) — tests/test_garage_public.py; всё остальное закрыто
-    for path in ('/', '/settings', '/routes', '/courier', '/courier/money', '/api/customers', '/static/css/courier.css',
+    for path in ('/', '/settings', '/routes', '/courier', '/courier/money', '/courier/invoice', '/api/courier/admin/invoices?q=1',
+                 '/api/customers', '/static/css/courier.css',
                  '/static/favicon.ico'):
         assert client.get(path, headers=public).status_code == 404, path
     assert client.get('/courier', headers={'Host': '192.168.1.10:5000', 'Cf-Connecting-Ip': '1.2.3.4'}).status_code == 404
@@ -1027,7 +1221,7 @@ def test_lan_access_unaffected(dashboard):
     client, _ = dashboard
     lan = {'Host': '192.168.1.10:5000'}
     assert client.get('/login', headers=lan).status_code == 200
-    for path in ('/courier', '/courier/money'):
+    for path in ('/courier', '/courier/money', '/courier/invoice'):
         r = client.get(path, headers=lan)
         assert r.status_code == 302 and '/login' in r.headers['Location'], path   # офис — только после входа
     assert client.get('/api/courier/admin/today', headers=lan).status_code == 401
@@ -1355,9 +1549,9 @@ def test_m3_load_day_per_customer_source(fake_erp, tmp_path):
     d = date(2026, 10, 2)
     fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
     fake_erp.parents = [(ISN[0], ISN[2])]
-    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0),     # стал накладной
-                       (ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0),    # накладной нет
-                       (ISN[3], 'Z0013', date(2026, 10, 1), 13, 7, '991AT61', 900, 1, d, 0)]        # накладная у другой
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0, None),     # стал накладной
+                       (ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0, None),    # накладной нет
+                       (ISN[3], 'Z0013', date(2026, 10, 1), 13, 7, '991AT61', 900, 1, d, 0, None)]        # накладная у другой
     data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders))
     assert [(x.stop_id, x.replaces) for x in data.docs] == [(f'S:{ISN[0]}', (f'O:{ISN[2]}',)), (f'O:{ISN[1]}', ())]
     view = rl.RoutesView(depot=YEREVAN)
@@ -1371,8 +1565,8 @@ def test_load_day_plan_invoice_without_car(fake_erp):
     """05.10.2026: офис не поставил машину в накладной (fDELIVERYCAR пуст) — заказ уже отгружен (O: нет), и точка
     пропадала у всех. Накладная без машины из заказа, который «Развоз» отдал машине, — точка S: этой машины."""
     d = date(2026, 10, 2)
-    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0),       # отгружен, без машины
-                       (ISN[3], 'Z0013', date(2026, 10, 1), 13, 7, '', 900, 1, d, 0)]           # не отдан этой машине
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0, None),       # отгружен, без машины
+                       (ISN[3], 'Z0013', date(2026, 10, 1), 13, 7, '', 900, 1, d, 0, None)]           # не отдан этой машине
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2]),
                            ((ISN[4], '000318004', 13, 7, '1', 900), ISN[3])]
     fake_erp.parents = [(ISN[0], ISN[2]), (ISN[4], ISN[3])]
@@ -1389,12 +1583,12 @@ def test_load_day_plan_invoice_not_doubled_and_skipped_without_shipped(fake_erp)
     отгруженных заказов машины — запроса накладных без машины нет."""
     d = date(2026, 10, 2)
     fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
-    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0)]
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '991AT61', 18000, 10, d, 0, None)]
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2])]   # подмена не фильтрует машину
     data = ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders), lambda cid: True)
     assert [x.stop_id for x in data.docs] == [f'S:{ISN[0]}']
     fake_erp.calls.clear()
-    fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0)]
+    fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0, None)]
     ed.load_day('cs', '991AT61', d, (date(2026, 9, 29), d), lambda orders, places: list(orders), lambda cid: True)
     assert not any(sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]) for sql in fake_erp.calls)
 
@@ -1403,7 +1597,7 @@ def test_load_day_plan_invoice_customer_on_two_trucks_is_nobodys(fake_erp):
     """Клиент в рейсах двух машин (тяжёлый заказ разделён) — накладная без машины ничья: иначе одну сумму
     потребовали бы два водителя. Клиент одной машины — накладная её; без invoice_owner накладные без машины не берутся."""
     d = date(2026, 10, 2)
-    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0)]
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0, None)]
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2])]
     fake_erp.parents = [(ISN[0], ISN[2])]
     split = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (11,)), ('B', (11, 12))))
@@ -1428,8 +1622,8 @@ def _gate_erp(fake_erp):
     клиента 13 — две последние приходят на терминал только по плану «Развоза»."""
     d = date(2026, 10, 2)
     fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
-    fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0),
-                       (ISN[2], 'Z0013', date(2026, 10, 1), 13, 7, '', 9000, 10, d, 0)]
+    fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0, None),
+                       (ISN[2], 'Z0013', date(2026, 10, 1), 13, 7, '', 9000, 10, d, 0, None)]
     fake_erp.plan_sales = [((ISN[3], '000318003', 13, 7, '1', 9000), ISN[2])]
     return d
 
@@ -1541,8 +1735,8 @@ def test_load_day_plan_invoice_from_two_orders_in_two_chunks(fake_erp, monkeypat
     """Накладная из двух заказов машины, попавших в разные чанки запроса, — одна точка с обоими replaces."""
     d = date(2026, 10, 2)
     monkeypatch.setattr(ed, '_chunks', lambda ids, size=1: (ids[i:i + 1] for i in range(len(ids))))
-    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 9000, 5, d, 0),
-                       (ISN[3], 'Z0012', date(2026, 10, 1), 11, 7, '', 9000, 5, d, 0)]
+    fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 9000, 5, d, 0, None),
+                       (ISN[3], 'Z0012', date(2026, 10, 1), 11, 7, '', 9000, 5, d, 0, None)]
     row = (ISN[0], '000318001', 11, 7, '1', 18000)
     fake_erp.plan_sales = [(row, ISN[2]), (row, ISN[3])]
     fake_erp.parents = [(ISN[0], ISN[2]), (ISN[0], ISN[3])]
@@ -1662,11 +1856,12 @@ def test_role_user_blocked_from_courier_office(dashboard, monkeypatch):
     lan = {}   # localhost: внутренняя сеть (cookie сессии теста — на localhost)
     with client.session_transaction() as sess:
         app_v2._stamp_session(sess, 'u', users['u'])
-    for path in ('/courier', '/courier/money'):
+    for path in ('/courier', '/courier/money', '/courier/invoice'):
         r = client.get(path, headers=lan)
         assert r.status_code in (302, 403) and '/courier' not in r.headers.get('Location', ''), path
     for path in ('/api/courier/admin/today', '/api/courier/admin/drivers', '/api/courier/admin/money',
-                 f'/api/courier/admin/photos/{uuid.uuid4()}', '/api/courier/admin/marks.csv'):
+                 f'/api/courier/admin/photos/{uuid.uuid4()}', '/api/courier/admin/marks.csv',
+                 '/api/courier/admin/invoices?q=1', f'/api/courier/admin/invoice?date={DEMO}&stop=S:1'):
         assert client.get(path, headers=lan).status_code == 403, path
     assert client.post('/api/courier/admin/drivers', json={'name': 'x', 'pin': '1234'}, headers=lan).status_code == 403
     with client.session_transaction() as sess:

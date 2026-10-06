@@ -1260,13 +1260,19 @@ class _DispatchDay:
 def _day_orders(state: RoutesState, bundle: Bundle, day: date, refresh: bool,
                 rule: dp.FleetRule) -> tuple[date, date, dp.DispatchData, dp.Selection]:
     """Окно заказов дня, заказы ERP (кэш _dispatch_data) и отбор к доставке по правилу дня «чьи заказы везут машины»
-    (№74, dp.fleet_rule_of) — без заказов, взятых в развоз дня их приёма (№72, _same_day_taken)."""
+    (№74, dp.fleet_rule_of) — без заказов, взятых в развоз дня их приёма (№72, _same_day_taken). ERP читается и за сам
+    день: заказы, заведённые заранее на него (№79), — его заказы; прочие заказы с датой дня — новые заказы дня (№72,
+    _same_day_data), из данных дня они убраны."""
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     since, until = dp.order_window(day, workdays, off)
-    data = _dispatch_data(state, dp.backlog_since(since, workdays, holidays=off), until, day, refresh)
+    data = _dispatch_data(state, dp.backlog_since(since, workdays, holidays=off), until + timedelta(days=1), day,
+                          refresh)
+    data = replace(data, orders=tuple(o for o in data.orders if o.order_date < until or o.predated))
     sel = dp.to_deliver(data.orders, day, since, rule, dp.place_of(data.customers, data.addresses))
+    seen = _plan_seen(state, since)
+    sel = dp.settle_predated(sel, since, seen if seen is not None else dp.PlanSeen())
     taken, unread = _same_day_taken(state, day, workdays, off)
-    if unread:
+    if unread or seen is None:   # план прошлого дня не прочитан — страница предупреждает о возможном повторе
         sel = replace(sel, same_day_unread=True)
     if taken & {o.isn for o in sel.main}:
         # взятые в развоз дня их приёма (№72) уже везли — даже если накладной ещё нет
@@ -1318,6 +1324,18 @@ def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: li
             out |= dp.Draft.from_json(stored[0]).deferred
         d += timedelta(days=1)
     return out & {o.isn for o in backlog}
+
+
+def _plan_seen(state: RoutesState, day: date) -> dp.PlanSeen | None:
+    """Что видел план дня day (№79, dp.settle_predated); плана нет — ничего: заказ, заведённый заранее на day, едет и
+    на следующий рабочий день (не теряется); не прочитан — None (так же, и страница предупреждает)."""
+    try:
+        draft, _ = _stored_draft(state, day)
+    except StoreError:
+        logger.warning('[Routes] План развоза на %s не прочитан — заказы, заведённые заранее на него, едут и дальше',
+                       day, exc_info=True)
+        return None
+    return dp.PlanSeen.of(draft)
 
 
 def _same_day_taken(state: RoutesState, day: date, workdays: Sequence[int],
@@ -1832,11 +1850,13 @@ def _check_defer_same_day(dd: _DispatchDay, trip_id: Any) -> None:
 
 
 def _is_same_day_edit(dd: _DispatchDay, payload: Mapping[str, Any]) -> bool:
-    """Правка новых заказов дня: свои действия или «не везём сегодня» для взятого заказа дня (он не в заказах окна дня)."""
+    """Правка новых заказов дня: свои действия или «не везём сегодня» для взятого заказа дня (он не в заказах окна дня;
+    взятый до правила №79 заказ, заведённый заранее, — уже в них: его «не везём» — обычное)."""
     action = payload.get('action')
     order = payload.get('order')
     return action in ('same_day', 'same_day_drop') or (
-        action == 'exclude' and isinstance(order, str) and dd.draft is not None and order.upper() in dd.draft.same_day)
+        action == 'exclude' and isinstance(order, str) and dd.draft is not None and order.upper() in dd.draft.same_day
+        and all(o.isn != order.upper() for o in dd.deliver))
 
 
 DRIVER_LIST_DAYS = 90        # водители ERP и свои — кто встречался за 90 дней
@@ -2592,11 +2612,12 @@ def api_measurements_get() -> Any:
 
 def _missing_coordinates(state, snap, bundle):
     since = (snap.today.replace(day=1) - timedelta(days=1)).replace(day=1)
-    data = _dispatch_data(state, since - timedelta(days=10), snap.today + timedelta(days=1), snap.today, False)
-    ids = set(snap.plan.customer_ids)
-    day = since
     workdays, off = bundle.settings['workdays'], dp.holidays_of(bundle.settings)
     last_day = dp.next_workday(snap.today, workdays, off)
+    # по последний день включительно: заказы, заведённые заранее (№79), везут в их дату
+    data = _dispatch_data(state, since - timedelta(days=10), last_day + timedelta(days=1), snap.today, False)
+    ids = set(snap.plan.customer_ids)
+    day = since
     place = dp.place_of(data.customers, data.addresses)
     while day <= last_day:
         if dp.is_workday(day, workdays, off):
@@ -2605,7 +2626,7 @@ def _missing_coordinates(state, snap, bundle):
                 draft, _ = _stored_draft(state, day)
             except StoreError:
                 draft = None
-            selected = dp.to_deliver([o for o in data.orders if lo <= o.order_date < hi], day, lo,
+            selected = dp.to_deliver([o for o in data.orders if lo <= o.order_date <= hi], day, lo,
                                      dp.fleet_rule_of(draft, bundle.settings), place)
             agents_off = dp.agents_off_of(draft, bundle.settings)
             ids.update(o.customer_id for o in selected.main if o.agent_id not in agents_off)

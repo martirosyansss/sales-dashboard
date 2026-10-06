@@ -5,7 +5,11 @@
 Чистая логика — без Flask, БД и ERP. Единицы: км, минуты, кг, драмы.
 - Заказы к доставке в день D — проведённые заказы ERP с датой от предыдущего рабочего дня до D
   (правило владельца №5/№19: заказы дня везут на следующий рабочий день, субботние и воскресные —
-  в понедельник), кроме уже отгруженных до D (реализация SALES с датой раньше D).
+  в понедельник), кроме уже отгруженных до D (реализация SALES с датой раньше D). Заказ, заведённый в ERP раньше
+  своей даты (ответ владельца №79, DispatchOrder.predated), — заказ и на эту дату: его везут уже в неё, не отгрузили — на
+  следующий рабочий день, как обычный, если план его даты его не видел (завели после сборки — не теряется); видел —
+  решён там (отвезли без накладной, исключили, перенесли): «не отгружены с прошлых дней» (settle_predated, PlanSeen).
+  В «новые заказы дня» он не входит.
 - «Не отгружены с прошлых дней» — заказы ещё BACKLOG_WORKDAYS рабочих дней раньше, без реализации
   до D: по данным сентября около половины их везут в D, остальные не везут вовсе — поэтому в план
   они не входят, пока логист не добавит их сам (Draft.added).
@@ -84,7 +88,7 @@ class DispatchError(ValueError):
 @dataclass(frozen=True)
 class DispatchOrder:
     """Заказ ERP (ORDERS): кг — строки заказа × вес товара; shipped — дата первой проведённой
-    реализации по заказу (None — ещё не отгружен)."""
+    реализации по заказу (None — ещё не отгружен); entered — день ввода в ERP (DOCUMENTS.fCREATIONDATE; None — нет)."""
     isn: str
     doc_num: str
     order_date: date
@@ -95,10 +99,17 @@ class DispatchOrder:
     kg: float
     shipped: date | None
     van_agent_id: int = 0  # кто везёт (ORDERS.fVANAGENTID): сам менеджер — не для машин парка
+    entered: date | None = None
 
     @property
     def self_delivery(self) -> bool:
         return self.van_agent_id != 0 and self.van_agent_id == self.agent_id
+
+    @property
+    def predated(self) -> bool:
+        """Заведён раньше своей даты — заказ на эту дату (ответ владельца №79): 8 недель до 06.10.2026 таких 305 из 8018
+        (292 — линия A008), у прочих менеджеров с июня 20 из 31 отгружены в саму дату."""
+        return self.entered is not None and self.entered < self.order_date
 
 
 @dataclass(frozen=True)
@@ -176,8 +187,21 @@ def next_workday(day: date, workdays: Sequence[int], holidays: Collection[date] 
 
 def order_window(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> tuple[date, date]:
     """Даты заказов, которые везут в day: [предыдущий рабочий день, day). В понедельник — заказы
-    субботы и воскресенья; после праздника — и заказы праздника."""
+    субботы и воскресенья; после праздника — и заказы праздника. Заказы, заведённые заранее (№79), — и заказы самого
+    day: of_day."""
     return previous_workday(day, workdays, holidays), day
+
+
+def of_day(o: DispatchOrder, since: date, day: date) -> bool:
+    """Заказ дня day (since — начало окна order_window): дата в [since, day); заведённый заранее (№79) — и с датой day.
+    Он заказ и своей даты, и следующего рабочего дня: не отгружен в свою дату — едет на следующий, как обычный (заведён
+    после сборки плана и в рейс не попал — не теряется), отгружен — ни там, ни дальше (shipped)."""
+    return since <= o.order_date <= day if o.predated else since <= o.order_date < day
+
+
+def before_day(o: DispatchOrder, since: date) -> bool:
+    """Заказ везли (должны были везти) раньше дня с окном от since: «не отгружены с прошлых дней», если не отгружен."""
+    return o.order_date < since
 
 
 def backlog_since(since: date, workdays: Sequence[int], n: int = BACKLOG_WORKDAYS,
@@ -392,7 +416,8 @@ class Selection:
 
 def to_deliver(orders: Sequence[DispatchOrder], day: date, since: date, rule: FleetRule = NO_RULE,
                place: Callable[[int], str] = _no_place) -> Selection:
-    """Заказы к доставке в day: с датой от since — заказы дня, раньше — «не отгружены с прошлых дней».
+    """Заказы к доставке в day: заказы дня (of_day: с даты since, заведённые заранее — в свою дату, №79) и раньше —
+    «не отгружены с прошлых дней» (before_day); заказы дат позже (сам day — кроме заведённых заранее) — не этого дня.
     Отгруженные в day и позже — к доставке: для прошедшей даты это и есть то, что везли (или должны
     были везти). Машинам парка — только заказы FLEET правила rule (№74; place — клиент → place_text): заказы, которые
     менеджер развозит сам, везут другие машины или не везём вовсе, — отдельными списками (только заказы дня)."""
@@ -401,24 +426,54 @@ def to_deliver(orders: Sequence[DispatchOrder], day: date, since: date, rule: Fl
     kinds = [(o, rule.kind(o, place)) for o in pending]
     trucks = [o for o, k in kinds if k == FLEET]
 
-    def of_day(kind: str) -> list[DispatchOrder]:
-        return sorted((o for o, k in kinds if k == kind and o.order_date >= since), key=key)
-    return Selection(main=sorted((o for o in trucks if o.order_date >= since), key=key),
-                     backlog=sorted((o for o in trucks if o.order_date < since), key=key),
-                     shipped_before=sum(1 for o in orders if o.order_date >= since) - len(
-                         [o for o in pending if o.order_date >= since]),
-                     self_delivery=of_day(SELF_DELIVERY), other_vehicle=of_day(OTHER_VEHICLE),
-                     customers_off=of_day(CUSTOMER_OFF))
+    def of_kind(kind: str) -> list[DispatchOrder]:
+        return sorted((o for o, k in kinds if k == kind and of_day(o, since, day)), key=key)
+    return Selection(main=sorted((o for o in trucks if of_day(o, since, day)), key=key),
+                     backlog=sorted((o for o in trucks if before_day(o, since)), key=key),
+                     shipped_before=sum(1 for o in orders if of_day(o, since, day)) - len(
+                         [o for o in pending if of_day(o, since, day)]),
+                     self_delivery=of_kind(SELF_DELIVERY), other_vehicle=of_kind(OTHER_VEHICLE),
+                     customers_off=of_kind(CUSTOMER_OFF))
+
+
+@dataclass(frozen=True)
+class PlanSeen:
+    """Что видел план прошлого рабочего дня (№79): заказы его сборки, исключённые и перенесённые логистом, клиенты его
+    рейсов (остановка — все заказы клиента дня)."""
+    orders: frozenset[str] = frozenset()
+    customers: frozenset[int] = frozenset()
+
+    @classmethod
+    def of(cls, draft: Draft | None) -> PlanSeen:
+        if draft is None:
+            return cls()
+        return cls(frozenset(draft.built_orders or ()) | frozenset(draft.excluded) | frozenset(draft.deferred),
+                   frozenset(c for t in draft.trips for c in t.stops))
+
+    def has(self, o: DispatchOrder) -> bool:
+        return o.isn in self.orders or o.customer_id in self.customers
+
+
+def settle_predated(sel: Selection, since: date, seen: PlanSeen) -> Selection:
+    """Не отгруженный заказ, заведённый заранее на since (прошлый рабочий день, №79), который план since видел (seen), —
+    решён там: отвезли без накладной, исключили или перенесли («Везти завтра» вернёт его переносом) — в «не отгружены с
+    прошлых дней», а не в развоз дня: иначе его повезли бы второй раз, пока нет накладной. Не видел — едет (of_day)."""
+    done = [o for o in sel.main if o.predated and o.order_date == since and seen.has(o)]
+    if not done:
+        return sel
+    ids = {o.isn for o in done}
+    key = lambda o: (o.customer_id, o.order_date, o.isn)   # noqa: E731
+    return replace(sel, main=[o for o in sel.main if o.isn not in ids], backlog=sorted([*sel.backlog, *done], key=key))
 
 
 def same_day_candidates(orders: Sequence[DispatchOrder], day: date, rule: FleetRule = NO_RULE,
                         place: Callable[[int], str] = _no_place) -> list[DispatchOrder]:
     """Новые заказы дня day (№72): с датой day, не отгруженные раньше day, только для машин парка (FleetRule.kind, №74:
     не «везёт сам», не город-исключение, не клиент «машины не везут»). Это заказы развоза следующего рабочего дня — в
-    развоз day только по выбору логиста (Draft.same_day)."""
+    развоз day только по выбору логиста (Draft.same_day). Заведённые заранее (№79) — не новые: они и так заказы day."""
     key = lambda o: (o.customer_id, o.order_date, o.isn)   # noqa: E731
-    return sorted((o for o in orders if o.order_date == day and (o.shipped is None or o.shipped >= day)
-                   and rule.kind(o, place) == FLEET), key=key)
+    return sorted((o for o in orders if o.order_date == day and not o.predated
+                   and (o.shipped is None or o.shipped >= day) and rule.kind(o, place) == FLEET), key=key)
 
 
 @dataclass(frozen=True)
