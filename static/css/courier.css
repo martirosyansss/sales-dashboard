@@ -21,10 +21,9 @@
 .cr-tabs a .cr-tab-out { font-size: .7em; opacity: .6; margin-left: -2px; }   /* «Գումար» — отдельная страница */
 .cr-pane { padding-top: 14px; }
 
-/* «Վարորդներ»: итог, списки водителей и терминалов, формы добавления */
+/* «Վարորդներ»: итог, водители, машины и их терминалы, формы добавления */
 .cr-kpis:empty { display: none; }
-/* три короткие плитки — в ряд на любой ширине (routes.css на ≤ 991 px ставит их столбиком) */
-.cr-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* четыре плитки — .rt-kpis.is-4 (routes.css: 2 × 2 на узком экране), содержимое плитки — столбиком */
 .cr-kpis .rt-kpi { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
 .cr-kpis .rt-kpi-label i { color: var(--rt-fg-mute); }
 .cr-kpis .rt-kpi.is-good .rt-kpi-label i { color: var(--rt-ok); }
@@ -75,6 +74,28 @@
 }
 .cr-empty i { color: var(--rt-fg-mute); }
 
+/* «Մեքենաներ և տերմինալներ»: машина — карточка-строка, под ней её терминалы с действиями */
+.cr-car { border: 1px solid var(--rt-line-soft); border-radius: var(--rt-radius-sm); background: var(--rt-inset); transition: border-color .15s; }
+.cr-car:hover { border-color: var(--rt-line); }
+.cr-car-head { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; align-items: center; gap: 4px 12px; padding: 10px 10px 10px 12px; }
+.cr-car.is-free .cr-car-head .cr-avatar { color: var(--rt-fg-mute); }
+.cr-terms { list-style: none; margin: 0; padding: 0 10px 10px 64px; display: grid; gap: 6px; }
+.cr-term {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 10px;
+    border: 1px solid var(--rt-line-soft); border-radius: var(--rt-radius-sm); background: var(--rt-panel-2);
+}
+.cr-term-main { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; flex: 1 1 220px; min-width: 0; font-size: .875rem; color: var(--rt-fg-mute); }
+.cr-term-main > i { color: var(--rt-fg-dim); }
+.cr-term-main .cr-row-name { font-size: .9375rem; }
+.cr-term-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.cr-move { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding-top: 8px; border-top: 1px solid var(--rt-line-soft); }
+.cr-move[hidden] { display: none; }
+.cr-move > label { font-size: .875rem; color: var(--rt-fg-dim); }
+.cr-move .rt-select { flex: 1 1 220px; min-width: 0; height: 38px; }
+.cr-move-note { flex: 1 1 100%; font-size: .8125rem; color: var(--rt-fg-mute); }
+.cr-move .rt-ferr:empty { display: none; }
+.cr-fold { margin-top: 10px; }
+
 /* Форма добавления — вложенная панель внизу карточки */
 .cr-add {
     margin-top: 14px; padding: 14px 14px 12px; border: 1px solid var(--rt-line-soft); border-radius: var(--rt-radius-sm);
@@ -123,6 +144,14 @@
 .cr-qr[hidden] { display: none; }
 .cr-qr:focus { outline: none; }
 .cr-qr:focus-visible { outline: 2px solid var(--rt-acc); outline-offset: 2px; }
+.cr-qr-for { margin: 0 0 8px; font-weight: 700; color: var(--rt-fg); overflow-wrap: anywhere; }
+.cr-qr-for:empty { display: none; }
+.cr-qr-old {
+    display: flex; align-items: flex-start; gap: 9px; margin: 0 0 10px; padding: 8px 10px; font-weight: 600; line-height: 1.45;
+    color: var(--rt-danger); border: 1px solid var(--rt-danger-line); border-radius: 10px; background: var(--rt-danger-bg);
+}
+.cr-qr-old[hidden] { display: none; }
+.cr-qr-old i { margin-top: 4px; }
 .cr-qr-warn { display: flex; align-items: flex-start; gap: 9px; margin: 0 0 10px; font-weight: 600; color: var(--rt-warn); line-height: 1.45; }
 .cr-qr-warn i { margin-top: 4px; }
 .cr-qr-img { background: #fff; width: 100%; box-sizing: border-box; padding: 8px; border-radius: 12px; box-shadow: 0 10px 28px rgba(0, 0, 0, .35); }
@@ -197,15 +226,22 @@
     #crPage .cr-tabs a { flex: 0 0 auto; scroll-snap-align: start; }
 }
 @media (max-width: 640px) {
-    .cr-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .rt-kpis.is-4.cr-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }   /* 2 × 2 и на телефоне */
     .cr-kpis .rt-kpi { padding: 10px; gap: 4px; }
     .cr-kpis .rt-kpi-label { font-size: .75rem; overflow-wrap: anywhere; }
-    .cr-kpis .rt-kpi-label i { display: none; }   /* три плитки на 390 px — подписи без значков */
+    .cr-kpis .rt-kpi-label i { display: none; }   /* две плитки в ряд на 390 px — подписи без значков */
     .cr-kpis .rt-kpi-val .now { font-size: 1.5rem; }
     .cr-kpis .rt-kpi-sub { font-size: .8125rem; }
     .cr-row { grid-template-columns: 40px minmax(0, 1fr) auto; }
     .cr-row-badge { grid-column: 2; grid-row: 2; justify-self: start; }
     .cr-row-act { grid-column: 3; grid-row: 1 / span 2; }
+    /* машина: номер и значок сверху, «Միացնել տերմինալ» — во всю ширину; терминалы — без отступа под значок */
+    .cr-car-head { grid-template-columns: 40px minmax(0, 1fr); }
+    .cr-car-head .cr-row-badge { grid-column: 2; justify-self: start; }
+    .cr-car-head .cr-row-act { grid-column: 1 / -1; grid-row: auto; justify-self: stretch; }
+    .cr-terms { padding: 0 8px 8px; }
+    .cr-term-acts { margin-left: 0; width: 100%; }
+    .cr-term-acts .rt-btn { flex: 1 1 auto; justify-content: center; }
     .cr-add-grid { grid-template-columns: minmax(0, 1fr); }
     .cr-add .cr-btns .rt-btn { flex: 1 1 auto; }
     .cr-qr { grid-template-columns: minmax(0, 1fr); }

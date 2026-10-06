@@ -334,7 +334,7 @@
         renderOrderLists();
         const plan = d.plan;
         $('dpBuildText').textContent = plan ? 'Վերակազմել երթերը' : 'Կազմել երթերը';
-        $('dpReset').hidden = !plan || !!d.approved;
+        $('dpReset').hidden = !plan || !!d.approved || !!d.released;   // №80: план у водителей не стирается
         $('dpBuild').disabled = !d.trucks.some(t => t.ready) || !d.depot || !!d.approved;
         // №78: загруженные рейсы закреплены — пересборка их не трогает
         const loadedN = plan ? plan.trucks.reduce((n, t) => n + t.trips.filter(tr => tr.loaded).length, 0) : 0;

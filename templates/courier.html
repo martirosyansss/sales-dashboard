@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <!-- «Առաքիչ» — офис терминалов водителей (docs/plans/courier-app-plan.md §4), армянский, «для чайников» -->
-<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=11">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/courier.css') }}?v=13">
 {% endblock %}
 
 {% block content %}
@@ -39,7 +39,7 @@
     <!-- ВОДИТЕЛИ И ТЕРМИНАЛЫ -->
     <section class="cr-pane" id="crPane-drivers" role="tabpanel" aria-labelledby="crTab-drivers" hidden>
         <!-- итог вкладки: JS заполняет по /api/courier/admin/drivers -->
-        <div class="rt-kpis cr-kpis" id="crDrvKpis" aria-live="polite"></div>
+        <div class="rt-kpis is-4 cr-kpis" id="crDrvKpis" aria-live="polite"></div>
 
         <div class="cr-grid2">
             <section class="rt-card cr-panel" aria-labelledby="crDriversTitle">
@@ -70,17 +70,28 @@
                 </form>
             </section>
 
+            <!-- машина — строка: её терминалы и действия (courier.js renderCars); без терминала — «Միացնել տերմինալ» -->
             <section class="rt-card cr-panel" aria-labelledby="crTermTitle">
                 <div class="rt-card-head">
-                    <h2 class="rt-card-title" id="crTermTitle"><i class="fas fa-mobile-screen" aria-hidden="true"></i>Տերմինալներ</h2>
-                    <span class="cr-count" id="crTermCount"></span>
+                    <h2 class="rt-card-title" id="crTermTitle"><i class="fas fa-truck" aria-hidden="true"></i>Մեքենաներ և տերմինալներ</h2>
+                    <span class="cr-count" id="crTermCount" title="Միացված տերմինալներ"></span>
                 </div>
-                <p class="rt-card-lead">Տերմինալը կցված է մեքենային։ Ստեղծեք տերմինալը, հետո տերմինալով սկանավորեք QR կոդը։
-                    QR-ը ցույց է տրվում <b>միայն մեկ անգամ</b>։ Կորած տերմինալը անջատեք։</p>
-                <ul class="cr-rows" id="crTermRows" aria-labelledby="crTermTitle"></ul>
+                <p class="rt-card-lead">Տերմինալը կցված է մեքենային։ QR-ը ցույց է տրվում <b>միայն մեկ անգամ</b>։
+                    Եթե տերմինալում գրանցումը կորել է, սեղմեք <b>«Նոր QR»</b>՝ նույն տերմինալի համար։ Կորած տերմինալը անջատեք։</p>
+                <ul class="cr-rows" id="crCarRows" aria-labelledby="crTermTitle"></ul>
+                <details class="rt-fold cr-fold" id="crCarsOther" hidden>
+                    <summary><span class="rt-fold-t"><i class="fas fa-truck" aria-hidden="true"></i>Մյուս մեքենաները</span><span class="rt-fold-note" id="crCarsOtherNote"></span></summary>
+                    <div class="rt-fold-body"><ul class="cr-rows" id="crCarOtherRows" aria-label="Մյուս մեքենաները"></ul></div>
+                </details>
+                <details class="rt-fold cr-fold" id="crTermOff" hidden>
+                    <summary><span class="rt-fold-t"><i class="fas fa-ban" aria-hidden="true"></i>Անջատված տերմինալներ</span><span class="rt-fold-note" id="crTermOffNote"></span></summary>
+                    <div class="rt-fold-body"><ul class="cr-rows" id="crTermOffRows" aria-label="Անջատված տերմինալներ"></ul></div>
+                </details>
                 <div id="crQrBox" class="cr-qr" hidden tabindex="-1" aria-labelledby="crQrTitle">
                     <div id="crQr" class="cr-qr-img"></div>
                     <div class="cr-qr-side">
+                        <p class="cr-qr-for" id="crQrFor"></p>
+                        <p class="cr-qr-old" id="crQrOld" hidden><i class="fas fa-triangle-exclamation" aria-hidden="true"></i>Հին QR-ը այլևս չի աշխատում։ Սկանավորեք այս նոր QR-ը տերմինալով, հետո վարորդը թող մտնի իր PIN-ով։</p>
                         <p class="cr-qr-warn" id="crQrTitle"><i class="fas fa-eye" aria-hidden="true"></i>Սկանավորեք հիմա՝ էջը փակելուց հետո QR-ը այլևս չի երևա։</p>
                         <ol class="cr-steps">
                             <li>Միացրեք տերմինալը և բացեք «Առաքիչ» հավելվածը։</li>
@@ -98,7 +109,7 @@
                     <div class="cr-add-grid">
                         <div class="rt-field cr-wide"><label for="crTermCar">Մեքենա</label>
                             <select id="crTermCar" class="rt-select" required aria-describedby="crTermCarHint"></select>
-                            <span class="rt-field-hint" id="crTermCarHint">Մեքենաները, որոնք վերջին 90 օրում առաքել են ERP-ի ապրանքագրերով։</span></div>
+                            <span class="rt-field-hint" id="crTermCarHint">Բոլոր մեքենաները՝ ERP-ից և «Առաքում» բաժնից։ Վերևում՝ առաքման մեքենաները։</span></div>
                         <div class="rt-field"><label for="crTermName">Անուն</label>
                             <input id="crTermName" class="rt-input" maxlength="60" required placeholder="օրինակ՝ Urovo HOWO"></div>
                         <div class="rt-field"><label for="crTermUrl">Որտեղից է միանալու</label>
@@ -227,5 +238,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/courier.js') }}?v=14"></script>
+<script src="{{ url_for('static', filename='js/courier.js') }}?v=19"></script>
 {% endblock %}

@@ -101,7 +101,8 @@ def test_erp_reads_entry_day(monkeypatch):
 
 
 def test_driver_app_gets_predated_order_on_its_date():
-    view = rl.RoutesView(workdays=WEEK6, plan_exists=False)
+    # утверждённый план отдал машине C1 всех клиентов (№80: до утверждения терминалу ничего)
+    view = rl.RoutesView(workdays=WEEK6, plan_exists=True, released=True, trips=(('C1', (101, 102, 103, 104)),))
     lo, hi = rl.orders_window(MON, view)
     assert hi == date(2026, 10, 6)                                   # ERP — и за сам день
     early = _early(_dorder(1, 101, 10.0, day=MON, car='C1'), date(2026, 10, 1))
@@ -109,6 +110,7 @@ def test_driver_app_gets_predated_order_on_its_date():
     old = _dorder(3, 103, 10.0, day=SAT, car='C1')
     early_sat = _early(_dorder(4, 104, 10.0, day=SAT, car='C1'), date(2026, 10, 1))
     assert {o.customer_id for o in rl.pick_orders([early, normal, old, early_sat], MON, view, 'C1')} == {101, 103, 104}
+    assert rl.pick_orders([early, normal, old, early_sat], MON, replace(view, released=False), 'C1') == []   # №80
     # план субботы его уже вёз (клиент в рейсе) — в понедельник водителю второй раз не даём
     seen = replace(view, seen=dp.PlanSeen(customers=frozenset({104})))
     assert {o.customer_id for o in rl.pick_orders([early, normal, old, early_sat], MON, seen, 'C1')} == {101, 103}

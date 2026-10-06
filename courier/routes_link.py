@@ -2,8 +2,14 @@
 """Связь с разделом «Маршруты»: склад, ручные точки клиентов, рабочие дни, план «Развоза» на дату, экипаж машин, дороги.
 
 Только чтение через публичный API route_optimizer (Store.load, Store.load_dispatch, Store.truck_drivers, Draft.from_json,
-RoadProvider.get) — файлы route_optimizer/ не меняются. Раздела нет или его база битая — пустой вид:
-порядок «auto» от склада не строится (склада нет), точки без ручных координат.
+RoadProvider.get); отметка выпуска плана (№80, Draft.released) — в route_optimizer/dispatch. Раздела нет — пустой вид: порядок «auto» от склада не строится
+(склада нет), точки без ручных координат. База раздела не читается — RoutesStoreError (№80): пустой вид значил бы «плана
+нет» — терминалы потеряли бы точки плана и /day сохранил бы урезанный снимок; ошибка оставляет терминалу прежний день.
+
+План «Развоза» идёт на терминал только выпущенный (ответ владельца №80): утверждён «Հաստատել օրվա պլանը» хотя бы раз за
+день (Draft.released). До этого и без плана терминал не получает из плана ничего — ни заказов (O:), ни накладных без
+машины по плану, ни порядка объезда плана (RoutesView.released); накладные ERP с машиной (SALES.fDELIVERYCAR) — всегда.
+Офис (courier.views.plan_mismatches) видит план и до выпуска.
 """
 from __future__ import annotations
 
@@ -15,6 +21,7 @@ from typing import Any, Callable, Collection, Mapping, Sequence
 from route_optimizer import dispatch as dp
 from route_optimizer.dispatch import DispatchOrder
 from route_optimizer.geo import Point, haversine_km
+from route_optimizer.store import Bundle
 from route_optimizer.store import StoreError as RoutesStoreError
 from route_optimizer.tsp import Distance
 
@@ -32,6 +39,7 @@ class RoutesView:
     workdays: tuple[int, ...] = DEFAULT_WORKDAYS
     holidays: frozenset[date] = frozenset()                # нерабочие даты настроек (№64)
     plan_exists: bool = False                              # логист собрал план «Развоза» на дату
+    released: bool = False                                 # план есть и выпущен на терминалы — утверждён хотя бы раз (№80)
     trips: tuple[tuple[str, tuple[int, ...]], ...] = ()    # (машина, клиенты по порядку) в порядке черновика
     excluded: frozenset[str] = frozenset()                 # заказы «не везём сегодня»
     added: frozenset[str] = frozenset()                    # заказы прошлых дней, добавленные логистом
@@ -68,14 +76,11 @@ class RoutesView:
 
 
 def routes_view(state: Any, day: date) -> RoutesView:
-    """Вид на «Маршруты» для даты; state — app.extensions['route_optimizer'] (RoutesState) или None."""
+    """Вид на «Маршруты» для даты; state — app.extensions['route_optimizer'] (RoutesState) или None (раздела нет — пустой
+    вид). База «Маршрутов» не читается — RoutesStoreError (№80)."""
     if state is None:
         return RoutesView()
-    try:
-        bundle = state.store.load()
-    except RoutesStoreError:
-        logger.warning('[Courier] База «Маршрутов» недоступна — склад, ручные точки и план не учтены', exc_info=True)
-        return RoutesView()
+    bundle = state.store.load()   # RoutesStoreError — наружу (№80, docstring модуля)
     workdays = tuple(bundle.settings.get('workdays') or DEFAULT_WORKDAYS)
     holidays = dp.holidays_of(bundle.settings)
     roads = None
@@ -85,14 +90,10 @@ def routes_view(state: Any, day: date) -> RoutesView:
         logger.warning('[Courier] Карта дорог недоступна — порядок по прямой', exc_info=True)
     base = RoutesView(depot=bundle.depot, geo_overrides=dict(bundle.geo_overrides), workdays=workdays,
                       holidays=holidays, fleet=dp.FleetRule.from_settings(bundle.settings), roads=roads)
-    try:
-        stored = state.store.load_dispatch(day.isoformat())
-        carried = _carried(state, day, workdays, holidays)
-        taken = _taken(state, day, workdays, holidays)
-        prev = state.store.load_dispatch(dp.previous_workday(day, workdays, holidays).isoformat())
-    except RoutesStoreError:
-        logger.warning('[Courier] План «Развоза» на %s не прочитан', day, exc_info=True)
-        return base
+    stored = state.store.load_dispatch(day.isoformat())   # RoutesStoreError — наружу (№80): не «плана нет»
+    carried = _carried(state, day, workdays, holidays)
+    taken = _taken(state, day, workdays, holidays)
+    prev = state.store.load_dispatch(dp.previous_workday(day, workdays, holidays).isoformat())
     seen = dp.PlanSeen.of(dp.Draft.from_json(prev[0]) if prev is not None else None)
     if stored is None:
         # плана нет — менеджеры, чьи заказы не везём, по правилу настроек «Развоза» (№69)
@@ -101,7 +102,7 @@ def routes_view(state: Any, day: date) -> RoutesView:
                           taken=frozenset(taken), fleet=base.fleet, roads=roads, seen=seen)
     draft = dp.Draft.from_json(stored[0])   # правило №74 — то, с которым день собран: заказы рейсов не пропадут
     return RoutesView(depot=bundle.depot, geo_overrides=base.geo_overrides, workdays=workdays, holidays=holidays,
-                      plan_exists=bool(draft.trips),
+                      plan_exists=bool(draft.trips), released=bool(draft.trips) and draft.released is not None,
                       trips=tuple((t.truck, tuple(t.stops)) for t in draft.trips),
                       excluded=frozenset(draft.excluded), added=frozenset(draft.added),
                       carried=frozenset(carried), dropped=frozenset(draft.dropped),
@@ -117,6 +118,18 @@ def routes_depot(state: Any) -> Point | None:
         return state.store.load().depot
     except RoutesStoreError:
         logger.warning('[Courier] База «Маршрутов» недоступна — склад не учтён', exc_info=True)
+        return None
+
+
+def routes_bundle(state: Any) -> Bundle | None:
+    """Настройки «Маршрутов» (Store.load: таблица парка, вкл. ручные машины) для списка машин терминалов
+    (erp_day.merge_cars). Раздела нет или любой сбой «Маршрутов» — None (сбой — в лог): список строится по ERP."""
+    if state is None:
+        return None
+    try:
+        return state.store.load()
+    except Exception:   # парк — подсказка списка машин: сбой «Маршрутов» не закрывает регистрацию терминала
+        logger.warning('[Courier] Парк «Маршрутов» не прочитан — машины терминалов только по ERP', exc_info=True)
         return None
 
 
@@ -171,8 +184,10 @@ def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, ca
     сегодня» и без взятых в развоз дня их приёма в прошлые дни + добавленные и перенесённые прошлых дней + заказы
     самого дня, взятые в его развоз (№72), без заказов менеджеров, снятых фильтром; только заказы для машин парка по
     правилу дня, №74 — places: клиенты → (адрес, название) для городов-исключений, спрашивается только когда нужен;
-    None — города не проверяются); план на дату есть — клиенты рейсов машины, нет — машина в самом заказе
-    (ORDERS.fDELIVERYCAR)."""
+    None — города не проверяются); клиенты рейсов машины в плане на дату. План не выпущен (не утверждён ни разу, №80) или
+    его нет — ничего: терминал ждёт утверждения (прежний запасной отбор по машине заказа ORDERS.fDELIVERYCAR снят)."""
+    if not view.released:
+        return []
     since, _ = dp.order_window(day, view.workdays, view.holidays)
     need = sorted({o.customer_id for o in orders if view.fleet.needs_place(o)})
     texts = places(need) if need and places is not None else {}
@@ -183,18 +198,16 @@ def pick_orders(orders: Sequence[DispatchOrder], day: date, view: RoutesView, ca
     active = [o for o in sel.main + same if o.isn not in view.excluded and o.isn not in view.taken] \
         + [o for o in sel.backlog if o.isn in inside]
     active = [o for o in active if o.agent_id not in view.agents_off]
-    if view.plan_exists:
-        mine = set(view.car_customers(car_code))
-        return [o for o in active if o.customer_id in mine]
-    return [o for o in active if o.car_code == car_code]
+    mine = set(view.car_customers(car_code))
+    return [o for o in active if o.customer_id in mine]
 
 
 def invoice_owner(view: RoutesView, car_code: str) -> Callable[[int], bool]:
-    """Клиент, чью накладную без машины (fDELIVERYCAR пуст) везёт машина: план есть — клиент только в рейсах этой
+    """Клиент, чью накладную без машины (fDELIVERYCAR пуст) везёт машина: план выпущен — клиент только в рейсах этой
     машины (клиент в рейсах нескольких машин — накладная ничья, иначе одну сумму взяли бы два водителя; офис ставит
-    машину в ERP, plan_mismatches это показывает); плана нет — заказ и так отобран по своей машине (ORDERS.fDELIVERYCAR)."""
-    if not view.plan_exists:
-        return lambda cid: True
+    машину в ERP, plan_mismatches это показывает); план не выпущен или его нет (№80) — ничья."""
+    if not view.released:
+        return lambda cid: False
     owners = view.plan_trucks()
     return lambda cid: owners.get(cid) == {car_code}
 

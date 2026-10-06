@@ -99,7 +99,8 @@ def test_courier_orders_window_skips_holidays():
     """Приложение водителя берёт те же заказы, что «Развоз»: окно понедельника после пятницы-праздника — с четверга."""
     from courier import routes_link as rl
     thu, fri, mon = date(2026, 10, 1), date(2026, 10, 2), date(2026, 10, 5)
-    view = rl.RoutesView(workdays=(1, 2, 3, 4, 5), holidays=frozenset({fri}))
+    view = rl.RoutesView(workdays=(1, 2, 3, 4, 5), holidays=frozenset({fri}), plan_exists=True, released=True,
+                         trips=(('C1', (101, 102)),))
     since, until = rl.orders_window(mon, view)
     assert since == dp.backlog_since(thu, (1, 2, 3, 4, 5), holidays={fri}) and until == date(2026, 10, 6)   # и сам пн (№79)
     assert rl.orders_window(mon, rl.RoutesView(workdays=(1, 2, 3, 4, 5)))[0] == dp.backlog_since(fri, (1, 2, 3, 4, 5))

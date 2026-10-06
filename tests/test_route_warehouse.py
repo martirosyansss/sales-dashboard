@@ -229,7 +229,9 @@ def test_dispatch_logist_marks_unmarks_and_loaded_trip_survives_rebuild(client, 
     d = r.get_json()
     left = [x for t in d['plan']['trucks'] for x in t['trips'] if x['id'] == tr['id']]
     assert all('loaded' not in x and not x['pinned'] for x in left)
-    assert client.post('/api/routes/dispatch/reset', json={'date': DAY}).status_code == 200
+    # отметок нет — «Ջնջել երթերը» держит уже не склад, а выпуск плана водителям (№80: план утверждали)
+    r = client.post('/api/routes/dispatch/reset', json={'date': DAY})
+    assert r.status_code == 400 and r.get_json()['errors']['_'] == views.PLAN_RELEASED
 
 
 def test_warehouse_goods_rows_of_trip(client, monkeypatch):

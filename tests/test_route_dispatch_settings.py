@@ -310,9 +310,9 @@ def test_new_orders_of_today_follow_rule_and_next_day_skips_taken(client, monkey
     # приложение водителя на D+1: взятый не везём; без взятия правило отдало бы его машине заказа
     view = rl.routes_view(state, date(2026, 10, 2))
     every = [_dorder(13, 101, 30.0, day=D, agent=ROCARM, van=ROCARM, car='CAR1')]
-    assert rl.pick_orders(every, date(2026, 10, 2), replace(view, plan_exists=False), 'CAR1', lambda ids: {}) == []
-    assert rl.pick_orders(every, date(2026, 10, 2), replace(view, plan_exists=False, taken=frozenset()), 'CAR1',
-                          lambda ids: {}) == every
+    view = replace(view, plan_exists=True, released=True, trips=(('CAR1', (101,)),))   # утверждённый план D+1 (№80)
+    assert rl.pick_orders(every, date(2026, 10, 2), view, 'CAR1', lambda ids: {}) == []
+    assert rl.pick_orders(every, date(2026, 10, 2), replace(view, taken=frozenset()), 'CAR1', lambda ids: {}) == every
 
 
 def test_courier_selection_follows_rule(client):
@@ -327,13 +327,18 @@ def test_courier_selection_follows_rule(client):
         asked.append(list(ids))
         return {c: (ADDRESSES.get(c, ''), NAMES[c][1]) for c in ids}
     with_car = [replace(o, car_code='CAR1') for o in ORDERS]
+    assert rl.pick_orders(with_car, D, view, 'CAR1', places) == [] and asked == []   # плана нет — ничего (№80)
+    # утверждённый план отдал машине всех клиентов (№80): отбор — как «Развоз»
+    every = (('CAR1', tuple(sorted({o.customer_id for o in ORDERS}))),)
+    view = replace(view, plan_exists=True, released=True, trips=every)
     assert _nums(rl.pick_orders(with_car, D, view, 'CAR1', places)) == [1, 2, 5, 11]    # как «Развоз» без плана
     assert asked == [[104, 105, 107]]                                                # ERP — только про Rocarm «сам»
-    assert _nums(rl.pick_orders(with_car, D, rl.RoutesView(), 'CAR1', places)) == [1, 2, 9, 11]   # правила нет
+    assert _nums(rl.pick_orders(with_car, D, rl.RoutesView(plan_exists=True, released=True, trips=every), 'CAR1',
+                                places)) == [1, 2, 9, 11]                            # правила нет
     # план есть: клиент 105 в рейсах (его заказ 11 — машинам), но заказ Rocarm в Капане — никому
     assert client.post('/api/routes/geo-override', json={'customer_id': 105, 'lat': 40.2, 'lon': 44.55}).status_code == 200
     d = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).get_json()
-    view = rl.routes_view(state, D)
+    view = replace(rl.routes_view(state, D), released=True)                         # как после «Հաստատել» (№80)
     owner = {s['customer_id']: tr['truck'] for t in d['plan']['trucks'] for tr in t['trips'] for s in tr['stops']}
     assert 105 in owner
     mine = _nums(rl.pick_orders(ORDERS, D, view, owner[105], places))
@@ -465,7 +470,7 @@ def test_settings_and_dispatch_pages_have_rule_texts():
     assert "action: 'apply_settings'" in djs and 'other_vehicle' in djs
     assert "'agents', 'fleet', 'custoff'" in js and '/api/routes/settings/customer-hints' in js
     assert 'գնում է այլ մեքենայով' in djs and 'չենք տանում՝ կարգավորումներով' in djs
-    assert "routes_dispatch.js') }}?v=85" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
+    assert "routes_dispatch.js') }}?v=86" in (ROOT / 'templates' / 'routes_dispatch.html').read_text(encoding='utf-8')
 
 
 
@@ -561,7 +566,7 @@ def test_apply_settings_keeps_started_trips_and_works_on_approved_plan(client, m
                                             for s in tr['stops']}
     # снова собрать с 108 и «сейчас» — в разгаре дня: рейс с 108 уже в пути — его заказы настройки не снимают
     client.post('/api/routes/dispatch/edit', json={'date': DAY, 'rev': d['rev'], 'action': 'unapprove'})
-    client.post('/api/routes/dispatch/reset', json={'date': DAY})
+    state.store.delete_dispatch(DAY)   # с чистого листа: выпущенный план «Ջնջել երթերը» не стирает (№80)
     _settings(client, dispatch_customers_off=[])
     d, _ = _built(client, state)
     _settings(client, dispatch_customers_off=[108])

@@ -391,20 +391,22 @@ def test_driver_app_gets_taken_orders_and_next_day_skips_them(client, monkeypatc
     every = [_dorder(1, 101, 400.0), _dorder(2, 102, 300.0, agent=2), _dorder(3, 104, 600.0, agent=2),
              _dorder(10, 103, 250.0, day=D), _dorder(11, 999, 40.0, day=D), _dorder(12, 104, 90.0, day=D, agent=2)]
     view = rl.routes_view(state, D)
-    assert view.same_day == frozenset({_isn(10)})
+    assert view.same_day == frozenset({_isn(10)}) and not view.released
+    view = replace(view, released=True)                                          # №80: как после «Հաստատել»
     lo, hi = rl.orders_window(D, view)
     assert hi == date(2026, 10, 2)                                               # окно ERP — и с заказами самого дня
     window = [o for o in every if lo <= o.order_date < hi]
     mine = rl.pick_orders(window, D, view, key['truck'])
     assert _isn(10) in {o.isn for o in mine} and not {_isn(11), _isn(12)} & {o.isn for o in mine}
-    # без плана — по машине заказа: из заказов самого дня — только взятый
-    by_car = {o.isn for o in rl.pick_orders(window, D, replace(view, plan_exists=False), '')}
-    assert _isn(10) in by_car and not {_isn(11), _isn(12)} & by_car
+    # план не утверждён (№80) — терминалу ничего, и взятого тоже
+    assert rl.pick_orders(window, D, replace(view, released=False), key['truck']) == []
     assert rl.invoice_owner(view, key['truck'])(103) is True
     nxt = rl.routes_view(state, date(2026, 10, 2))
     assert nxt.taken == frozenset({_isn(10)}) and rl.orders_window(date(2026, 10, 2), nxt)[1] == date(2026, 10, 3)
-    picked = rl.pick_orders(every, date(2026, 10, 2), replace(nxt, plan_exists=False), '')
-    assert _isn(10) not in {o.isn for o in picked}
+    # утверждённый план D+1 с клиентом 103 (№80): взятый в D заказ ему второй раз не отдаётся
+    nxt = replace(nxt, plan_exists=True, released=True, trips=(('X', (101, 102, 103, 104)),))
+    picked = rl.pick_orders(every, date(2026, 10, 2), nxt, 'X')
+    assert picked and _isn(10) not in {o.isn for o in picked}
     # без взятых заказов дня окно ERP — тоже и за сам день: заказы, заведённые заранее на него (№79)
     plain = rl.RoutesView()
     assert rl.orders_window(D, plain)[1] == date(2026, 10, 2)

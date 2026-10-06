@@ -11,8 +11,10 @@ import sqlite3
 import sys
 import uuid
 from contextlib import closing
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import werkzeug.security as wz
@@ -26,6 +28,7 @@ from courier.state import CourierState  # noqa: E402
 from courier.store import SCHEMA_VERSION, MarkSetting, PinConflict, PinReset, Store, StoreError  # noqa: E402
 from route_optimizer import erp  # noqa: E402
 from route_optimizer.dispatch import DispatchOrder  # noqa: E402
+from route_optimizer.store import StoreError as RoutesStoreError  # noqa: E402
 
 DEMO = '2000-01-01'
 NOW = datetime(2026, 10, 2, 9, 0, tzinfo=clock.YEREVAN)
@@ -221,11 +224,14 @@ def test_pick_orders_by_plan_or_car():
     d = date(2026, 10, 2)
     orders = [_order(ISN[0], 1, 'A'), _order(ISN[1], 2, 'B'), _order(ISN[2], 3, 'A', shipped=date(2026, 10, 1)),
               _order(ISN[3], 4, 'A', agent=5, van=5), _order(ISN[4], 5, 'A', when=date(2026, 9, 25))]
-    no_plan = rl.RoutesView()
-    assert [o.isn for o in rl.pick_orders(orders, d, no_plan, 'A')] == [ISN[0]]   # отгружен, сам везёт, старый — нет
-    plan = rl.RoutesView(plan_exists=True, trips=(('A', (2, 5)), ('B', (1,))), added=frozenset({ISN[4]}))
+    # №80: плана нет — ничего (прежний отбор по машине заказа снят): терминал ждёт утверждения
+    assert rl.pick_orders(orders, d, rl.RoutesView(), 'A') == []
+    every = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (1, 2, 3, 4, 5)),))
+    assert [o.isn for o in rl.pick_orders(orders, d, every, 'A')] == [ISN[0], ISN[1]]   # отгружен, сам везёт, старый — нет
+    plan = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (2, 5)), ('B', (1,))), added=frozenset({ISN[4]}))
     assert [o.isn for o in rl.pick_orders(orders, d, plan, 'A')] == [ISN[1], ISN[4]]
-    excluded = rl.RoutesView(plan_exists=True, trips=(('A', (2,)),), excluded=frozenset({ISN[1]}))
+    assert rl.pick_orders(orders, d, replace(plan, released=False), 'A') == []      # план не утверждён — ничего
+    excluded = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (2,)),), excluded=frozenset({ISN[1]}))
     assert rl.pick_orders(orders, d, excluded, 'A') == []
 
 
@@ -371,7 +377,8 @@ LINE_KEYS = {'line_id', 'product_id', 'code', 'name', 'qty', 'unit', 'price', 's
 def test_demo_day_matches_contract(term):
     body = term['day']
     assert set(body) == {'date', 'version', 'loaded_at', 'car', 'depot', 'order_source', 'stops', 'tare_types',
-                         'refuse_reasons', 'return_reasons'}
+                         'refuse_reasons', 'return_reasons', 'plan'}
+    assert body['plan'] == 'approved'                    # №80: демо-день — обычный рабочий день, без плашки ожидания
     assert body['date'] == DEMO and isinstance(body['version'], str) and len(body['version']) == 40
     assert clock.parse_moment(body['loaded_at']) is not None
     assert body['car'] == {'code': 'TEST', 'name': 'Թեստ'}
@@ -1111,7 +1118,7 @@ def test_courier_money_page_renders(app, client):
     assert r.status_code == 200 and r.headers['Cache-Control'] == 'no-store'
     html = r.data.decode('utf-8')
     assert 'Վարորդների գումարը' in html and 'id="cmPrintSheet"' in html   # акт сдачи для печати заполняет JS
-    assert 'js/courier_money.js?v=3' in html and 'css/courier_money.css?v=3' in html and 'js/courier.js' not in html
+    assert 'js/courier_money.js?v=4' in html and 'css/courier_money.css?v=3' in html and 'js/courier.js' not in html
     assert 'id="cmReceipt"' in html                                        # квитанция водителю (A4, 2 экземпляра)
 
 
@@ -1121,12 +1128,12 @@ def test_courier_invoice_page_renders(app, client):
     assert r.status_code == 200 and r.headers['Cache-Control'] == 'no-store'
     html = r.data.decode('utf-8')
     assert 'id="ciForm"' in html and 'id="ciCard"' in html                 # список и карточку заполняет JS
-    assert 'js/courier_invoice.js?v=1' in html and 'css/courier_invoice.css?v=1' in html and 'js/courier.js' not in html
+    assert 'js/courier_invoice.js?v=2' in html and 'css/courier_invoice.css?v=1' in html and 'js/courier.js' not in html
 
 
 def test_plan_mismatch(app, st, monkeypatch):
     from courier import views as cv
-    view = rl.RoutesView(plan_exists=True, trips=(('A', (1, 2)), ('B', (3,))))
+    view = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (1, 2)), ('B', (3,))))
     monkeypatch.setattr(cv, 'routes_view', lambda state, d: view)
     st.invoice_loader = lambda d: ([ed.InvoiceCar(ISN[0], '001', 1, 'A'), ed.InvoiceCar(ISN[1], '002', 2, 'B'),
                                     ed.InvoiceCar(ISN[2], '003', 3, ''), ed.InvoiceCar(ISN[3], '004', 4, 'A')],
@@ -1135,7 +1142,7 @@ def test_plan_mismatch(app, st, monkeypatch):
                       '2026-10-02T08:00:00+04:00')
     with app.test_request_context():
         out = cv.plan_mismatches(date(2026, 10, 2))
-    assert out['plan_exists'] is True
+    assert out['plan_exists'] is True and out['released'] is True
     # накладная без машины (003) — не «не та машина»: её везёт машина плана; считается в no_car
     assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('002', 'B', ['A'])]
     assert out['no_car'] == 1
@@ -1143,7 +1150,7 @@ def test_plan_mismatch(app, st, monkeypatch):
     assert out['coverage'] == [{'car_code': 'A', 'plan': 2, 'terminal': 1}]
     # B запросил день и получил 0 точек (как 123AV61 05.10) — видно; клиент 3 в двух машинах — накладная без машины ничья
     st.store.save_day('2026-10-02', 'B', [], 'v0', '2026-10-02T08:00:00+04:00')
-    view = rl.RoutesView(plan_exists=True, trips=(('A', (1, 2, 3)), ('B', (3,))))
+    view = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (1, 2, 3)), ('B', (3,))))
     with app.test_request_context():
         out = cv.plan_mismatches(date(2026, 10, 2))
     assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('002', 'B', ['A']), ('003', None, ['A', 'B'])]
@@ -1593,18 +1600,135 @@ def test_load_day_plan_invoice_customer_on_two_trucks_is_nobodys(fake_erp):
     fake_erp.orders = [(ISN[2], 'Z0011', date(2026, 10, 1), 11, 7, '', 18000, 10, d, 0, None)]
     fake_erp.plan_sales = [((ISN[0], '000318001', 11, 7, '1', 18000), ISN[2])]
     fake_erp.parents = [(ISN[0], ISN[2])]
-    split = rl.RoutesView(plan_exists=True, trips=(('A', (11,)), ('B', (11, 12))))
+    split = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (11,)), ('B', (11, 12))))
     for car in ('A', 'B'):
         data = ed.load_day('cs', car, d, (date(2026, 9, 29), d), lambda o, places, car=car: rl.pick_orders(o, d, split, car, places),
                            rl.invoice_owner(split, car))
         assert data.docs == ()
-    alone = rl.RoutesView(plan_exists=True, trips=(('A', (11,)), ('B', (12,))))
+    alone = rl.RoutesView(plan_exists=True, released=True, trips=(('A', (11,)), ('B', (12,))))
     got = {car: [x.stop_id for x in ed.load_day('cs', car, d, (date(2026, 9, 29), d),
                                                    lambda o, places, car=car: rl.pick_orders(o, d, alone, car, places),
                                                    rl.invoice_owner(alone, car)).docs] for car in ('A', 'B')}
     assert got == {'A': [f'S:{ISN[0]}'], 'B': []}
     assert ed.load_day('cs', 'A', d, (date(2026, 9, 29), d), lambda o, places: rl.pick_orders(o, d, alone, 'A', places)).docs == ()
-    assert rl.invoice_owner(rl.RoutesView(), 'A')(11) is True        # плана нет — заказ отобран по своей машине
+    assert rl.invoice_owner(rl.RoutesView(), 'A')(11) is False       # плана нет — накладная без машины ничья (№80)
+    assert rl.invoice_owner(replace(alone, released=False), 'A')(11) is False   # план не утверждён — тоже
+
+
+# ============================== план дня — только после утверждения (№80) ==============================
+
+def _gate_erp(fake_erp):
+    """Накладная с машиной (клиент 11), заказ машины (клиент 12, ещё не отгружен) и накладная без машины из заказа
+    клиента 13 — две последние приходят на терминал только по плану «Развоза»."""
+    d = date(2026, 10, 2)
+    fake_erp.sales = [(ISN[0], '000318001', 11, 7, '1', 18000)]
+    fake_erp.orders = [(ISN[1], 'Z0012', date(2026, 10, 1), 12, 7, '991AT61', 3600, 5, None, 0, None),
+                       (ISN[2], 'Z0013', date(2026, 10, 1), 13, 7, '', 9000, 10, d, 0, None)]
+    fake_erp.plan_sales = [((ISN[3], '000318003', 13, 7, '1', 9000), ISN[2])]
+    return d
+
+
+def _gate_service(tmp_path, views):
+    loader = lambda car, day, window, pick, owner: ed.load_day('cs', car, day, window, pick, owner)   # noqa: E731
+    return dy.DayService(Store(str(tmp_path / 'c.db')), loader, lambda day: views[0], ttl=60)
+
+
+def test_day_before_approval_has_only_erp_car_invoices(fake_erp, tmp_path):
+    """№80: план есть, но не утверждён, или плана нет — на терминале только накладные ERP с машиной; ни заказов (O:), ни
+    накладных без машины по плану, порядок — не по плану; `plan` — 'pending'. Утверждён — как раньше, `plan` — 'approved'."""
+    d = _gate_erp(fake_erp)
+    plan = rl.RoutesView(plan_exists=True, trips=(('991AT61', (13, 12, 11)),))
+    views = [plan]
+    body = _gate_service(tmp_path, views).get('991AT61', d)
+    assert [s['stop_id'] for s in body['stops']] == [f'S:{ISN[0]}']
+    assert body['plan'] == 'pending' and body['order_source'] == 'auto'
+    assert not any(sql.startswith(ed.SQL_PLAN_SALES.split('{')[0]) for sql in fake_erp.calls)
+    views[0] = rl.RoutesView()                                       # плана нет: и заказ с машиной в ORDERS — не точка
+    body = _gate_service(tmp_path, views).get('991AT61', d)
+    assert [s['stop_id'] for s in body['stops']] == [f'S:{ISN[0]}'] and body['plan'] == 'pending'
+    views[0] = replace(plan, released=True)
+    body = _gate_service(tmp_path, views).get('991AT61', d)
+    assert {s['stop_id'] for s in body['stops']} == {f'S:{ISN[0]}', f'O:{ISN[1]}', f'S:{ISN[3]}'}
+    assert body['plan'] == 'approved' and body['order_source'] == 'dispatch'
+    assert [s['customer']['id'] for s in body['stops']][:2] == [12, 11]   # порядок плана (у 13 нет точки — в конце)
+
+
+def test_day_cache_bounds_approval_delay(fake_erp, tmp_path, monkeypatch):
+    """Утверждение доходит до терминала не позже DAY_TTL_SECONDS: правки «Развоза» кэш /day не сбрасывают."""
+    d = _gate_erp(fake_erp)
+    views = [rl.RoutesView(plan_exists=True, trips=(('991AT61', (12, 11)),))]
+    svc = _gate_service(tmp_path, views)
+    now = [1000.0]
+    monkeypatch.setattr(dy.time, 'monotonic', lambda: now[0])
+    assert svc.get('991AT61', d)['plan'] == 'pending'
+    views[0] = replace(views[0], released=True)
+    now[0] += svc.ttl - 1
+    assert svc.get('991AT61', d)['plan'] == 'pending'                 # ещё в кэше
+    now[0] += 1
+    assert svc.get('991AT61', d)['plan'] == 'approved'
+
+
+class _BrokenRoutesStore:
+    """База «Маршрутов» не читается (route_optimizer.Store): load / load_dispatch — StoreError."""
+
+    def __init__(self, plan_only=False):
+        self.plan_only = plan_only
+
+    def load(self):
+        if self.plan_only:
+            return SimpleNamespace(settings={}, depot=None, geo_overrides={})
+        raise RoutesStoreError('битая база')
+
+    def load_dispatch(self, day):
+        raise RoutesStoreError('битая база')
+
+
+def test_routes_db_down_is_an_error_not_an_empty_plan(fake_erp, app, st, client, monkeypatch):
+    """№80: база «Маршрутов» не читается — не «плана нет»: /day отвечает ошибкой (приложение остаётся с прежним днём),
+    снимок не пишется, кэш не держит урезанный день; офис показывает сбой у машины и в сверке. Раздела нет — пустой вид."""
+    from courier import views as cv
+    d = _gate_erp(fake_erp)
+    ds = d.isoformat()
+    for broken in (_BrokenRoutesStore(), _BrokenRoutesStore(plan_only=True)):
+        with pytest.raises(RoutesStoreError):
+            rl.routes_view(SimpleNamespace(store=broken), d)
+    assert rl.routes_view(None, d) == rl.RoutesView()
+    _, _, h = make_terminal(st, car='991AT61')
+    s = login(client, h)
+    body = client.get(f'/api/courier/v1/day?date={ds}', headers=s).get_json()     # раздела нет — только накладные с машиной
+    assert [x['stop_id'] for x in body['stops']] == [f'S:{ISN[0]}'] and body['plan'] == 'pending'
+    assert set(st.store.day_snapshots(ds).latest) == {'991AT61'}
+    saved = []
+    monkeypatch.setattr(st.store, 'save_day', lambda *a: saved.append(a))
+    tick = [10_000.0]
+    monkeypatch.setattr(dy.time, 'monotonic', lambda: tick[0])
+    app.extensions['route_optimizer'] = SimpleNamespace(store=_BrokenRoutesStore(plan_only=True))
+    st.days.invalidate()
+    r = client.get(f'/api/courier/v1/day?date={ds}', headers=s)
+    assert r.status_code == 500 and r.get_json()['error'] == 'server' and saved == []
+    tick[0] += 1                                                                    # кэш не запомнил пустой день
+    assert client.get(f'/api/courier/v1/day?date={ds}', headers=s).status_code == 500 and saved == []
+    st.invoice_loader = lambda day: ([], {})
+    today = client.get(f'/api/courier/admin/today?date={ds}').get_json()
+    assert today['mismatch']['error'] == cv.ROUTES_DOWN and today['mismatch']['plan_exists'] is None
+    assert [c['error'] for c in today['cars'] if c['car_code'] == '991AT61'] == [cv.ROUTES_DOWN]
+
+
+def test_plan_mismatch_before_approval_keeps_plan_without_coverage(app, st, monkeypatch):
+    """Офис видит план и до утверждения (сверка накладных с машинами), но «не дошло до терминала» не показывает: точки
+    плана терминалы ещё и не должны получать (№80)."""
+    from courier import views as cv
+    view = rl.RoutesView(plan_exists=True, trips=(('A', (1, 2)), ('B', (3,))))
+    monkeypatch.setattr(cv, 'routes_view', lambda state, d: view)
+    st.invoice_loader = lambda d: ([ed.InvoiceCar(ISN[1], '002', 2, 'B')], {2: ('C2', 'Երկու')})
+    st.store.save_day('2026-10-02', 'A', [], 'v0', '2026-10-02T08:00:00+04:00')
+    with app.test_request_context():
+        out = cv.plan_mismatches(date(2026, 10, 2))
+    assert out['plan_exists'] is True and out['released'] is False and out['coverage'] == []
+    js = (ROOT / 'static' / 'js' / 'courier.js').read_text(encoding='utf-8')
+    assert 'mm.plan_exists && mm.released === false' in js        # плашка «պլանը դեռ հաստատված չէ»
+    assert 'mm.no_car && mm.released !== false' in js             # «машину берёт план» — только выпущенный
+    assert [(x['doc_number'], x['erp_car'], x['plan_cars']) for x in out['items']] == [('002', 'B', ['A'])]
 
 
 def test_load_day_plan_invoice_from_two_orders_in_two_chunks(fake_erp, monkeypatch):
@@ -1740,6 +1864,8 @@ def test_role_user_blocked_from_courier_office(dashboard, monkeypatch):
                  '/api/courier/admin/invoices?q=1', f'/api/courier/admin/invoice?date={DEMO}&stop=S:1'):
         assert client.get(path, headers=lan).status_code == 403, path
     assert client.post('/api/courier/admin/drivers', json={'name': 'x', 'pin': '1234'}, headers=lan).status_code == 403
+    for path in ('/api/courier/admin/terminals/1/reissue', '/api/courier/admin/terminals/1/car'):
+        assert client.post(path, json={'car_code': 'TEST'}, headers=lan).status_code == 403, path
     with client.session_transaction() as sess:
         app_v2._stamp_session(sess, 'boss', users['boss'])
     assert client.get('/api/courier/admin/drivers', headers=lan).status_code == 200
@@ -2874,3 +3000,477 @@ def test_pepper_missing_tag_falls_back_to_plain_hash(tmp_path, monkeypatch, now)
     s.save_driver(None, 'B', True, '5678', 'x')
     assert [d.id for d in s.match_pin('1234')] == [a]
     assert len(_pin_row(path, a)[1]) == 64                              # tag — без перца, как в среде
+
+# ============================== машины терминалов, «Նոր QR», смена машины (06.10) ==============================
+
+TODAY = date(2026, 10, 6)
+
+
+def _fleet_bundle():
+    from route_optimizer.store import Bundle, Truck
+    return Bundle(settings={}, depot=None, managers={}, trucks={
+        'A1': Truck('A1', capacity_kg=None, fuel_l_per_100km=20, active=None),          # «авто»: возила 5 дней назад
+        'D4': Truck('D4', capacity_kg=3000, fuel_l_per_100km=20, active=False),         # выключена владельцем
+        'E5': Truck('E5', capacity_kg=3000, fuel_l_per_100km=20, active=None),          # «авто», но не возила 60 дней
+        'M9': Truck('M9', capacity_kg=1500, fuel_l_per_100km=12, active=True, manual=True, name='Ford'),
+        'N8': Truck('N8', capacity_kg=None, fuel_l_per_100km=None, active=True, manual=True, name='Gazel'),  # без норм
+    })
+
+
+def _erp_cars():
+    return {'A1': erp.Car('A1', 'HOWO', False, 3500.0), 'B2': erp.Car('B2', 'JAC', False, None),
+            'C3': erp.Car('C3', 'Старая', True, None), 'D4': erp.Car('D4', 'Isuzu', False, None),
+            'E5': erp.Car('E5', 'Kia', False, 50.0)}   # 50 кг — вне TRUCK_CAPACITY_KG: карточку не берём
+
+
+_SEEN = {'A1': (40, TODAY - timedelta(days=5)), 'C3': (3, TODAY - timedelta(days=10)),
+         'D4': (12, TODAY - timedelta(days=1)), 'E5': (1, TODAY - timedelta(days=70)), 'S5': (2, TODAY - timedelta(days=3))}
+
+
+def test_merge_cars_union_fleet_and_order():
+    """Список машин терминалов — ERP CARS ∪ накладные 90 дней ∪ парк «Маршрутов» (вкл. ручные): парк «Развоза» (как
+    _ready_trucks: активна, тоннаж и расход заданы) сверху, дальше по коду; тоннаж — расчёта или карточки ERP."""
+    cars = {c['code']: c for c in ed.merge_cars(_erp_cars(), _SEEN, _fleet_bundle(), TODAY)}
+    assert list(cars) == ['A1', 'M9', 'B2', 'C3', 'D4', 'E5', 'N8', 'S5']
+    assert {k for k, c in cars.items() if c['fleet']} == {'A1', 'M9'}
+    assert cars['A1'] == {'code': 'A1', 'name': 'HOWO', 'docs': 40, 'last': '2026-10-01', 'fleet': True, 'closed': False,
+                          'capacity_kg': 3500.0}                                       # пустой тоннаж — из карточки ERP
+    assert (cars['M9']['name'], cars['M9']['capacity_kg'], cars['M9']['docs'], cars['M9']['last']) == ('Ford', 1500, 0, None)
+    assert cars['B2']['docs'] == 0 and not cars['B2']['fleet']                         # в накладных нет — всё равно в списке
+    assert cars['C3']['closed'] and not cars['C3']['fleet']
+    assert cars['S5']['name'] == '' and not cars['S5']['closed']                     # машина накладных без карточки CARS
+    assert cars['E5']['capacity_kg'] == 3000 and cars['N8']['capacity_kg'] is None
+    # «Маршрутов» нет / база не читается — парк только «авто» по ERP: не закрыта и возила за CAR_IDLE_DAYS дней
+    erp_only = ed.merge_cars(_erp_cars(), _SEEN, None, TODAY)
+    assert [c['code'] for c in erp_only] == ['A1', 'D4', 'B2', 'C3', 'E5', 'S5']
+    assert [c['code'] for c in erp_only if c['fleet']] == ['A1', 'D4'] and erp_only[0]['capacity_kg'] == 3500.0
+
+
+def test_terminal_cars_loader_routes_failure_falls_back_to_erp(tmp_path, monkeypatch, now, caplog):
+    """Загрузчик машин init_app: ERP (накладные + CARS) и парк «Маршрутов»; сбой «Маршрутов» — в лог, список по ERP."""
+    from flask import Flask
+    from route_optimizer.store import StoreError as RoutesError
+
+    def fake(conn, sql, params=()):
+        if sql == ed.SQL_CARS_SEEN:
+            assert params == (TODAY - timedelta(days=ed.CARS_WINDOW_DAYS),)
+            return [('A1', 40, datetime(2026, 10, 1, 9, 30)), ('S5', 2, date(2026, 10, 3))]
+        if sql == erp.SQL_CARS:
+            return [('A1', 'HOWO', False, 3.5), ('B2', 'JAC', False, 0), ('C3', 'Старая', True, None)]
+        raise AssertionError(sql[:60])
+    monkeypatch.setattr(erp, '_select', fake)
+    monkeypatch.setattr(ed, '_select', fake)
+    monkeypatch.setattr(erp, 'connect', lambda cs, **kw: object())
+    monkeypatch.setattr(erp, 'close_quietly', lambda conn: None)
+    app = Flask(__name__)
+    courier.init_app(app, FakeDb(), db_path=str(tmp_path / 'courier.db'))
+    load = app.extensions['courier'].cars_loader
+
+    class Routes:
+        def __init__(self, bundle=None):
+            self.bundle = bundle
+
+        def load(self):
+            if self.bundle is None:
+                raise RoutesError('битая база')
+            return self.bundle
+
+    app.extensions['route_optimizer'] = SimpleNamespace(store=Routes())
+    with caplog.at_level('WARNING', logger='courier.routes_link'):
+        cars = load(TODAY)
+    assert [(c['code'], c['fleet']) for c in cars] == [('A1', True), ('B2', False), ('C3', False), ('S5', False)]
+    assert 'Парк «Маршрутов» не прочитан' in caplog.text
+    app.extensions['route_optimizer'] = SimpleNamespace(store=Routes(_fleet_bundle()))
+    assert [(c['code'], c['fleet']) for c in load(TODAY)][:2] == [('A1', True), ('M9', True)]
+    assert rl.routes_bundle(None) is None
+    app.extensions['route_optimizer'] = SimpleNamespace(store=SimpleNamespace(load=lambda: 1 / 0))   # любой сбой
+    assert [c['code'] for c in load(TODAY)] == ['A1', 'B2', 'C3', 'S5']
+
+
+def test_office_cars_closed_only_when_bound(client, st):
+    """Закрытая в ERP машина — в списке и проверке, только если возила накладные за 90 дней (docs) или к ней привязан
+    действующий терминал."""
+    st.cars_loader = lambda today: [
+        {'code': '991AT61', 'name': 'HOWO', 'docs': 40, 'last': '2026-10-01', 'fleet': True, 'closed': False, 'capacity_kg': None},
+        {'code': 'OLD1', 'name': 'Old', 'docs': 0, 'last': None, 'fleet': False, 'closed': True, 'capacity_kg': None}]
+    codes = lambda: [c['code'] for c in client.get('/api/courier/admin/drivers').get_json()['cars']]   # noqa: E731
+    assert codes() == ['991AT61', 'TEST']
+    assert client.post('/api/courier/admin/terminals', json={'name': 'X', 'car_code': 'OLD1'}).status_code == 400
+    t, _ = st.store.create_terminal('Старый', 'OLD1', 'admin')
+    assert codes() == ['991AT61', 'OLD1', 'TEST']
+    assert client.post('/api/courier/admin/terminals', json={'name': 'Y', 'car_code': 'OLD1'}).status_code == 200
+    st.store.revoke_terminal(t.id, 'admin')
+    assert 'OLD1' in codes()                                                           # второй терминал ещё на ней
+    for x in st.store.list_terminals():
+        st.store.revoke_terminal(x.id, 'admin')
+    assert codes() == ['991AT61', 'TEST']
+
+
+
+def test_office_cars_closed_with_recent_invoices_selectable(client, st, monkeypatch):
+    """Закрытая в ERP машина, которая возила накладные за окно CARS_WINDOW_DAYS (06.10.2026: 2660062 FORD — 1197
+    накладных), — в списке и регистрации без терминала; та же без накладных за окно — нет."""
+    def fake(conn, sql, params=()):
+        if sql == ed.SQL_CARS_SEEN:
+            return [('2660062', 1197, date(2026, 10, 2))]
+        if sql == erp.SQL_CARS:
+            return [('2660062', 'FORD', True, 2.5), ('447AX61', 'FORD', True, 0.1)]
+        raise AssertionError(sql[:60])
+    monkeypatch.setattr(erp, '_select', fake)
+    monkeypatch.setattr(ed, '_select', fake)
+    monkeypatch.setattr(erp, 'connect', lambda cs, **kw: object())
+    monkeypatch.setattr(erp, 'close_quietly', lambda conn: None)
+    st.cars_loader = lambda today: ed.terminal_cars('cs', today, None)
+    cars = client.get('/api/courier/admin/drivers').get_json()['cars']
+    assert [(c['code'], c['closed'], c['docs']) for c in cars] == [('2660062', True, 1197), ('TEST', False, 0)]
+    assert client.post('/api/courier/admin/terminals', json={'name': 'FORD', 'car_code': '2660062'}).status_code == 200
+    assert client.post('/api/courier/admin/terminals', json={'name': 'X', 'car_code': '447AX61'}).status_code == 400
+
+def test_terminal_reissue(client, st):
+    """«Նոր QR»: тот же терминал (id, имя, машина) с новым токеном и PIN настроек; прежний токен — 401 unauthorized,
+    сессия водителя удалена, блокировка PIN снята; отозванный — нельзя."""
+    st.store.save_driver(None, 'Արամ', True, '1234', 'admin')
+    r = client.post('/api/courier/admin/terminals', json={'name': 'Urovo HOWO', 'car_code': '991AT61'}).get_json()
+    tid, old = r['terminal']['id'], {'Authorization': 'Bearer ' + json.loads(r['qr_text'])['token']}
+    s = login(client, old)
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        conn.execute("UPDATE terminals SET failed_pin_count = 3, locked_until = '2099-01-01T00:00:00+04:00' WHERE id = ?", (tid,))
+        conn.commit()
+        old_pin_hash = conn.execute('SELECT admin_pin_hash FROM terminals WHERE id = ?', (tid,)).fetchone()[0]
+    assert client.post(f'/api/courier/admin/terminals/{tid}/reissue', data='x').status_code == 400      # только JSON
+    n = client.post(f'/api/courier/admin/terminals/{tid}/reissue', json={'url': 'lan'})
+    assert n.status_code == 200
+    body = n.get_json()
+    qr = json.loads(body['qr_text'])
+    assert body['terminal'] == {'id': tid, 'name': 'Urovo HOWO', 'car_code': '991AT61'}
+    assert qr['url'] == 'http://localhost/api/courier/v1' and qr['terminal'] == 'Urovo HOWO' and qr['admin_pin'] == body['admin_pin']
+    assert len(body['admin_pin']) == 6 and (body['qr_svg'] is None or body['qr_svg'].lstrip().startswith('<svg'))
+    r = client.get('/api/courier/v1/ping', headers=old)
+    assert r.status_code == 401 and r.get_json()['error'] == 'unauthorized'
+    new = {'Authorization': 'Bearer ' + qr['token']}
+    assert client.get('/api/courier/v1/ping', headers=new).get_json()['car_code'] == '991AT61'
+    r = client.get(f'/api/courier/v1/day?date={DEMO}', headers={**new, 'X-Courier-Session': s['X-Courier-Session']})
+    assert r.status_code == 401 and r.get_json()['error'] == 'session'                 # сессия устройства удалена
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM sessions WHERE terminal_id = ?', (tid,)).fetchone()[0] == 0
+        row = conn.execute('SELECT failed_pin_count, locked_until, admin_pin_hash FROM terminals WHERE id = ?', (tid,)).fetchone()
+    assert row[:2] == (0, None) and row[2] != old_pin_hash
+    login(client, new)                                                                # блокировка снята — вход по PIN
+    assert [t.id for t in st.store.list_terminals()] == [tid]
+    assert client.post('/api/courier/admin/terminals/999/reissue', json={}).status_code == 404
+    client.post(f'/api/courier/admin/terminals/{tid}/revoke', json={})
+    r = client.post(f'/api/courier/admin/terminals/{tid}/reissue', json={})
+    assert r.status_code == 400 and r.get_json()['success'] is False
+    assert client.get('/api/courier/v1/ping', headers=new).status_code == 401
+    assert st.store.reissue_terminal(tid, '123456', 'admin') is None
+
+
+def test_terminal_change_car_keeps_history(term, client, st):
+    """«Փոխել մեքենան»: проверка по списку машин; события, деньги и снимки прошлого остаются у прежней машины (хранят
+    машину на момент записи); сессия закрыта — вход по PIN сообщает новую машину, /day — день новой машины."""
+    tid = term['terminal'].id
+    cash = next(x for x in term['day']['stops'] if x['collect'] == 'cash')
+    paid = event('payment', cash['stop_id'], {'amount': 12000.0, 'kind': 'invoice', 'ecr_receipt': '7'})
+    done = event('delivery', cash['stop_id'], {'lines': full_lines(cash), 'reason_id': None})
+    post(client, term['s'], paid, done)
+    before = client.get(f'/api/courier/admin/today?date={DEMO}').get_json()
+    money_before = client.get(f'/api/courier/admin/money?date={DEMO}').get_json()['drivers']
+    url = f'/api/courier/admin/terminals/{tid}/car'
+    assert client.post(url, data='car_code=991AT61').status_code == 400               # только JSON
+    for bad in ({'car_code': 'NOPE'}, {'car_code': 'TEST'}, {'car_code': None}, {}):
+        assert client.post(url, json=bad).status_code == 400, bad
+    assert client.post('/api/courier/admin/terminals/999/car', json={'car_code': '991AT61'}).status_code == 404
+    r = client.post(url, json={'car_code': '991AT61'})
+    assert r.get_json() == {'success': True, 'terminal': {'id': tid, 'name': 'Urovo 1', 'car_code': '991AT61'}}
+    assert st.store.terminal(tid).car_code == '991AT61'
+    assert client.get(f'/api/courier/v1/day?date={DEMO}', headers=term['s']).get_json()['error'] == 'session'
+    assert client.get('/api/courier/v1/ping', headers=term['h']).get_json()['car_code'] == '991AT61'
+    r = client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=term['h']).get_json()
+    assert r['car'] == {'code': '991AT61', 'name': 'HOWO'}
+    # прошлое — у прежней машины: события, снимки /day, деньги и офис даты
+    assert {(e['id'], e['car_code']) for e in st.store.events_for_day(DEMO)} == {(paid['id'], 'TEST'), (done['id'], 'TEST')}
+    assert set(st.store.day_snapshots(DEMO).latest) == {'TEST'}
+    assert client.get(f'/api/courier/admin/money?date={DEMO}').get_json()['drivers'] == money_before
+    after = client.get(f'/api/courier/admin/today?date={DEMO}').get_json()
+    pick = lambda d: [(c['car_code'], c['full'], c['pending'], c['last_contact']) for c in d['cars'] if c['car_code'] == 'TEST']   # noqa: E731
+    assert pick(after) == pick(before) and pick(before)[0][:2] == ('TEST', 1)
+    client.post(f'/api/courier/admin/terminals/{tid}/revoke', json={})
+    assert client.post(url, json={'car_code': 'TEST'}).status_code == 400              # отозванный — нельзя
+    assert st.store.set_terminal_car(tid, 'TEST', 'admin') is False
+    with pytest.raises(ValueError):
+        st.store.set_terminal_car(tid, ' ', 'admin')
+
+
+# --- смена машины: очередь офлайн, журнал терминала (v8), вход во время смены ---
+
+def _at(dt):
+    return clock.iso(dt)
+
+
+def test_offline_queue_after_rebind_stays_with_previous_car(term, client, st, now):
+    """Терминал офлайн на машине TEST копит события → офис ставит его на 991AT61 → водитель входит заново → очередь
+    уходит: события с моментом до смены — машины TEST (без `foreign`, деньги и закрытие дня — TEST), после — 991AT61."""
+    tid = term['terminal'].id
+    cash = next(x for x in term['day']['stops'] if x['collect'] == 'cash')
+    before = NOW - timedelta(minutes=30)
+    paid = event('payment', cash['stop_id'], {'amount': 12000.0, 'kind': 'invoice', 'ecr_receipt': '7'}, at=_at(before))
+    done = event('delivery', cash['stop_id'], {'lines': full_lines(cash), 'reason_id': None}, at=_at(before))
+    closed = event('day_closed', None, {'summary': {}}, at=_at(before + timedelta(minutes=1)))
+    now['t'] = NOW + timedelta(minutes=10)
+    assert client.post(f'/api/courier/admin/terminals/{tid}/car', json={'car_code': '991AT61'}).status_code == 200
+    now['t'] = NOW + timedelta(minutes=20)
+    s = login(client, term['h'])
+    later = event('day_closed', None, {'summary': {}}, at=_at(NOW + timedelta(minutes=15)))
+    assert len(post(client, s, paid, done, closed, later)['accepted']) == 4
+    got = {e['id']: (e['car_code'], e['flags']) for e in st.store.events_for_day(DEMO)}
+    assert got[paid['id']][0] == got[done['id']][0] == got[closed['id']][0] == 'TEST'
+    assert 'foreign' not in got[done['id']][1] and 'foreign' not in got[paid['id']][1]
+    assert got[later['id']][0] == '991AT61'
+    car = next(c for c in client.get(f'/api/courier/admin/today?date={DEMO}').get_json()['cars'] if c['car_code'] == 'TEST')
+    assert car['full'] == 1
+
+
+def test_track_batch_spanning_rebind_splits_by_point_moment(term, client, st, now):
+    """Трек, пришедший после смены машины, — каждая точка машине терминала в её момент; событие — по своему at."""
+    tid = term['terminal'].id
+    switch = NOW + timedelta(minutes=30)
+    pts = [{'at': _at(NOW + timedelta(minutes=m)), 'lat': 40.18, 'lon': 44.51, 'acc': 8.0} for m in (10, 20, 40, 50)]
+    track = event('track', None, {'points': pts}, at=_at(NOW + timedelta(minutes=50)))
+    now['t'] = switch
+    assert client.post(f'/api/courier/admin/terminals/{tid}/car', json={'car_code': '991AT61'}).status_code == 200
+    now['t'] = NOW + timedelta(hours=1)
+    s = login(client, term['h'])
+    assert post(client, s, track)['accepted'] == [track['id']]
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        rows = conn.execute('SELECT car_code, COUNT(*) FROM track_points GROUP BY car_code ORDER BY car_code').fetchall()
+    assert rows == [('991AT61', 2), ('TEST', 2)]
+    e = next(x for x in st.store.events_for_day(DEMO) if x['id'] == track['id'])
+    assert e['car_code'] == '991AT61' and e['payload']['new'] == 4
+    gps = {c['car_code']: c.get('gps') for c in client.get(f'/api/courier/admin/today?date={DEMO}').get_json()['cars']}
+    assert gps['TEST']['points'] == 2 and gps['991AT61']['points'] == 2     # км дня — по точкам каждой машины
+
+
+def test_car_at_rule():
+    log = [(1000, 'A'), (2000, 'B'), (2000, 'C'), (3000, 'D')]
+    assert [ev.car_at(log, t, 'X') for t in (0, 999, 1000, 1999, 2000, 2999, 3000, 9999)] == \
+        ['A', 'A', 'A', 'A', 'C', 'C', 'D', 'D']
+    assert ev.car_at([], 5, 'X') == 'X'
+
+
+def test_terminal_log_audit(client, st, now):
+    """Журнал терминала: создан, «Նոր QR», смена машины — кто и когда, в той же транзакции; момент для «последней связи»."""
+    with client.session_transaction() as sess:
+        sess['username'] = 'boss'
+    tid = client.post('/api/courier/admin/terminals', json={'name': 'U', 'car_code': 'TEST'}).get_json()['terminal']['id']
+    now['t'] = NOW + timedelta(minutes=5)
+    client.post(f'/api/courier/admin/terminals/{tid}/reissue', json={})
+    now['t'] = NOW + timedelta(minutes=9)
+    client.post(f'/api/courier/admin/terminals/{tid}/car', json={'car_code': '991AT61'})
+    assert st.store.terminal_log(tid) == [
+        {'kind': 'created', 'car_code': 'TEST', 'at': _at(NOW), 'by': 'boss'},
+        {'kind': 'reissue', 'car_code': 'TEST', 'at': _at(NOW + timedelta(minutes=5)), 'by': 'boss'},
+        {'kind': 'car', 'car_code': '991AT61', 'at': _at(NOW + timedelta(minutes=9)), 'by': 'boss'}]
+    assert st.store.car_since() == {tid: _at(NOW + timedelta(minutes=9))}
+
+
+def test_login_refused_when_car_changed_after_auth(term, client, st, monkeypatch):
+    """Вход проверил токен, а офис тем временем сменил машину (или отозвал терминал): сессия не открывается — терминал
+    не получит старую машину; вход заново — с новой."""
+    tid = term['terminal'].id
+    stale = st.store.terminal(tid)
+    st.store.set_terminal_car(tid, '991AT61', 'admin')
+    real = st.store.terminal_by_token_hash
+    monkeypatch.setattr(st.store, 'terminal_by_token_hash', lambda digest: stale if real(digest) else None)
+    r = client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=term['h'])
+    assert r.status_code == 401 and r.get_json()['error'] == 'session'
+    with closing(sqlite3.connect(st.store.path)) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM sessions WHERE terminal_id = ?', (tid,)).fetchone()[0] == 0
+    monkeypatch.setattr(st.store, 'terminal_by_token_hash', real)
+    assert client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=term['h']).get_json()['car']['code'] == '991AT61'
+    st.store.revoke_terminal(tid, 'admin')
+    assert st.store.open_session(tid, term['driver_id'], NOW + timedelta(hours=1), '991AT61') is None
+
+
+def test_login_survives_car_list_failure(term, client, st):
+    """Название машины во входе — подпись: любой сбой списка машин (не только ERP) не роняет /login."""
+    st.cars_loader = lambda today: 1 / 0
+    r = client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=term['h'])
+    assert r.status_code == 200 and r.get_json()['car']['code'] == 'TEST'
+
+
+def test_merge_cars_routes_rules_failure_falls_back_to_erp():
+    broken = SimpleNamespace(trucks={'M9': None}, resolved_trucks=lambda *a: 1 / 0)
+    assert ed.merge_cars(_erp_cars(), _SEEN, broken, TODAY) == ed.merge_cars(_erp_cars(), _SEEN, None, TODAY)
+
+
+def test_migration_v7_to_v8_keeps_rows_and_backfills_terminal_log(tmp_path, now):
+    """База схемы 7 (как сейчас на сервере: без журнала терминала) → 8: все строки на месте, у каждого терминала —
+    строка created с его машиной, моментом и автором создания; события после миграции — у машины терминала."""
+    path = str(tmp_path / 'c.db')
+    store = Store(path)
+    did = store.save_driver(None, 'Ա', True, '1234', 'admin')
+    t1, _ = store.create_terminal('T1', 'CAR1', 'admin')
+    t2, _ = store.create_terminal('T2', 'CAR2', 'boss')
+    store.revoke_terminal(t2.id, 'admin')
+    store.open_session(t1.id, did, NOW + timedelta(hours=1))
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute('DROP TABLE terminal_log')
+        conn.execute("UPDATE meta SET value = '7' WHERE key = 'schema_version'")
+        conn.commit()
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' "
+                                             "AND name NOT LIKE 'sqlite_%'")]
+        counts = {t: conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in tables if t != 'meta'}
+    migrated = Store(path)
+    assert [t.id for t in migrated.list_terminals()] == [t1.id, t2.id]
+    with closing(sqlite3.connect(path)) as conn:
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION) == '8'
+        assert {t: conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in counts} == counts
+    assert migrated.terminal_log(t1.id) == [{'kind': 'created', 'car_code': 'CAR1', 'at': t1.created_at, 'by': 'admin'}]
+    assert migrated.terminal_log(t2.id) == [{'kind': 'created', 'car_code': 'CAR2', 'at': t2.created_at, 'by': 'boss'}]
+    Store(path).list_terminals()                                       # повторное открытие — без второй строки
+    assert len(migrated.terminal_log(t1.id)) == 1
+
+
+def _switch_day(st, client, now):
+    """Терминал на TEST с точкой S дня 2026-10-02 у TEST; в 09:10 офис ставит его на 991AT61."""
+    did, terminal, h = make_terminal(st)
+    sid = 'S:' + str(uuid.uuid4()).upper()
+    stop = _stop(sid, [('l1', 2, 100.0)])
+    st.store.save_day('2026-10-02', 'TEST', [stop], 'v1', _at(NOW))
+    now['t'] = NOW + timedelta(minutes=10)
+    st.store.set_terminal_car(terminal.id, '991AT61', 'admin')
+    return terminal, h, stop
+
+
+def test_clock_skew_stop_event_goes_to_car_whose_day_has_the_stop(st, client, now):
+    """Часы терминала спешат: доставка точки дня TEST помечена 09:30 (после смены машины в 09:10) — машина события по
+    точке (она только в /day TEST этой даты), а не по часам; флага нет. Событие без точки — по часам: прежняя машина
+    и флаг car_by_time, если пришло позже CAR_BY_TIME_LAG; свежее — без флага."""
+    terminal, h, stop = _switch_day(st, client, now)
+    now['t'] = NOW + timedelta(minutes=11)
+    s = login(client, h)
+    day = '2026-10-02'
+    skewed = event('delivery', stop['stop_id'], {'lines': full_lines(stop), 'reason_id': None},
+                   at=_at(NOW + timedelta(minutes=30)), date_=day)
+    old = event('day_closed', None, {'summary': {}}, at=_at(NOW + timedelta(minutes=5)), date_=day)
+    now['t'] = NOW + timedelta(minutes=12)                                 # пришло через 7 минут после события
+    fresh = event('day_closed', None, {'summary': {}}, at=_at(NOW + timedelta(minutes=5)), date_=day)
+    assert post(client, s, fresh)['accepted'] == [fresh['id']]
+    now['t'] = NOW + timedelta(minutes=31)
+    assert len(post(client, s, skewed, old)['accepted']) == 2
+    got = {e['id']: (e['car_code'], e['flags']) for e in st.store.events_for_day(day)}
+    assert got[skewed['id']] == ('TEST', [])
+    assert got[old['id']] == ('TEST', ['car_by_time'])
+    assert got[fresh['id']] == ('TEST', [])
+    later = event('day_closed', None, {'summary': {}}, at=_at(NOW + timedelta(minutes=15)), date_=day)
+    post(client, s, later)
+    assert {e['id']: e['car_code'] for e in st.store.events_for_day(day)}[later['id']] == '991AT61'
+
+
+def test_clock_skew_stop_in_both_cars_days_falls_back_to_time(st, client, now):
+    """Точка в /day обеих машин этой даты (неоднозначно) или неизвестна — машина по часам события."""
+    terminal, h, stop = _switch_day(st, client, now)
+    st.store.save_day('2026-10-02', '991AT61', [stop], 'v1', _at(NOW + timedelta(minutes=10)))
+    now['t'] = NOW + timedelta(minutes=31)
+    s = login(client, h)
+    a = event('arrived', stop['stop_id'], {'lat': 40.1, 'lon': 44.5}, at=_at(NOW + timedelta(minutes=5)), date_='2026-10-02')
+    b = event('arrived', 'S:' + str(uuid.uuid4()).upper(), {'lat': 40.1, 'lon': 44.5}, at=_at(NOW + timedelta(minutes=20)),
+              date_='2026-10-02')
+    post(client, s, a, b)
+    got = {e['id']: (e['car_code'], e['flags']) for e in st.store.events_for_day('2026-10-02')}
+    assert got[a['id']] == ('TEST', ['car_by_time']) and got[b['id']] == ('991AT61', ['unknown_stop'])
+
+
+def test_cars_on_day():
+    start = round(datetime(2026, 10, 2, tzinfo=clock.YEREVAN).timestamp() * 1000)
+    log = [(start - 1000, 'A'), (start + 5000, 'B')]
+    assert ev.cars_on(log, date(2026, 10, 2), 'X') == {'A', 'B'}
+    assert ev.cars_on(log, date(2026, 10, 3), 'X') == {'B'} and ev.cars_on(log, date(2026, 10, 1), 'X') == {'A'}
+    assert ev.cars_on([], date(2026, 10, 2), 'X') == {'X'}
+
+
+def test_terminal_log_heals_on_migration_and_ingest_warns(tmp_path, now, caplog, monkeypatch):
+    """Журнал разошёлся с машиной терминала (правка базы вручную): ingest пишет предупреждение; повтор миграции 7 → 8
+    (откат на 7 и снова 8) добавляет строку car «сейчас» — и только один раз."""
+    path = str(tmp_path / 'c.db')
+    store = Store(path)
+    did = store.save_driver(None, 'Ա', True, '1234', 'admin')
+    t, _ = store.create_terminal('T1', 'CAR1', 'admin')
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE terminals SET car_code = 'CAR2' WHERE id = ?", (t.id,))
+        conn.commit()
+    monkeypatch.setattr(ev, '_LOG_WARNED', set())
+    with caplog.at_level('WARNING', logger='courier.events'):
+        ev.ingest(store, ev.Who(t.id, 'CAR2', did, 'Ա'), [])
+        ev.ingest(store, ev.Who(t.id, 'CAR2', did, 'Ա'), [])
+    assert caplog.text.count('по журналу — CAR1') == 1                   # раз на терминал за процесс
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE meta SET value = '7' WHERE key = 'schema_version'")
+        conn.commit()
+    now['t'] = NOW + timedelta(hours=1)
+    healed = Store(path)
+    assert [(r['kind'], r['car_code'], r['by']) for r in healed.terminal_log(t.id)] == [
+        ('created', 'CAR1', 'admin'), ('car', 'CAR2', 'auto: migration')]
+    assert healed.terminal_log(t.id)[1]['at'] == _at(NOW + timedelta(hours=1))
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE meta SET value = '7' WHERE key = 'schema_version'")
+        conn.commit()
+    assert len(Store(path).terminal_log(t.id)) == 2                     # журнал сходится — новой строки нет
+
+
+def test_terminal_cars_sorted_by_instant_not_text(tmp_path, now):
+    """Порядок журнала — по моменту: строка с другим смещением зоны раньше по времени, хотя позже по тексту."""
+    path = str(tmp_path / 'c.db')
+    store = Store(path)
+    t, _ = store.create_terminal('T1', 'CAR1', 'admin')                   # 2026-10-02T09:00:00+04:00
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("INSERT INTO terminal_log(terminal_id, kind, car_code, at) VALUES(?, 'car', 'CAR0', "
+                     "'2026-10-02T09:30:00+05:00')", (t.id,))                 # 08:30 по Еревану
+        conn.commit()
+    with store.batch() as conn:
+        from courier.store import EventTx
+        assert [c for _, c in EventTx(conn).terminal_cars(t.id)] == ['CAR0', 'CAR1']
+
+
+def test_open_session_refused_after_reissue(term, st):
+    """Вход проверил старый токен, а офис тем временем выдал «Նոր QR»: сессия по старому токену не открывается."""
+    tid = term['terminal'].id
+    old = term['h']['Authorization'][7:]
+    from courier.security import token_hash
+    st.store.reissue_terminal(tid, '123456', 'admin')
+    assert st.store.open_session(tid, term['driver_id'], NOW + timedelta(hours=1), 'TEST', token_hash(old)) is None
+
+
+def test_late_track_before_rebind_has_no_car_by_time_flag(term, client, st, now):
+    """Трек, снятый до смены машины и пришедший позже, — у прежней машины, но без флага car_by_time (фон, не отметка)."""
+    tid = term['terminal'].id
+    pts = [{'at': _at(NOW + timedelta(minutes=m)), 'lat': 40.18, 'lon': 44.51, 'acc': 8.0} for m in (5, 10)]
+    track = event('track', None, {'points': pts}, at=_at(NOW + timedelta(minutes=10)))
+    now['t'] = NOW + timedelta(minutes=30)
+    st.store.set_terminal_car(tid, '991AT61', 'admin')
+    now['t'] = NOW + timedelta(hours=1)
+    post(client, login(client, term['h']), track)
+    e = next(x for x in st.store.events_for_day(DEMO) if x['id'] == track['id'])
+    assert e['car_code'] == 'TEST' and 'car_by_time' not in e['flags']
+
+
+def test_login_with_reissued_token_is_unauthorized(term, client, st, monkeypatch):
+    """Вход проверил старый токен, а офис тем временем выдал «Նոր QR»: 401 unauthorized (старый QR не действует), а не
+    «машина сменилась»."""
+    tid = term['terminal'].id
+    stale = st.store.terminal(tid)
+    real = st.store.terminal_by_token_hash
+    calls = []
+
+    def first_stale(digest):
+        calls.append(digest)
+        if len(calls) == 1:                                   # проверка токена в _authenticate — до «Նոր QR»
+            st.store.reissue_terminal(tid, '123456', 'admin')
+            return stale
+        return real(digest)
+    monkeypatch.setattr(st.store, 'terminal_by_token_hash', first_stale)
+    r = client.post('/api/courier/v1/login', json={'pin': '1234'}, headers=term['h'])
+    assert r.status_code == 401 and r.get_json()['error'] == 'unauthorized'
+    assert st.store.open_session(tid, term['driver_id'], NOW + timedelta(hours=1)) is not None   # без проверок — можно
+    st.store.revoke_terminal(tid, 'admin')
+    assert st.store.open_session(tid, term['driver_id'], NOW + timedelta(hours=1)) is None       # отозван — никогда

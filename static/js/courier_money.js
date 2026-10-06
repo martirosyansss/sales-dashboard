@@ -41,6 +41,7 @@
         collected_by_other: 'Վերցրել է այլ վարորդ', split_order: 'Մասնակի է՝ բաժանված պատվեր',
         merge_conflict: 'Ստուգել՝ պատվերով և ապրանքագրով նշումները չեն համընկնում',
         helper_unconfirmed: 'Առաքիչը PIN-ով հաստատված չէ', repeat: 'Կրկնակի', unknown_line: 'Անհայտ տող',
+        car_by_time: 'Մեքենան որոշվել է տերմինալի ժամով (մեքենան փոխվել էր)՝ ստուգել',
     };
     const badge = (text, cls) => '<span class="rt-badge ' + cls + '">' + esc(text) + '</span>';
     const statusBadge = (r) => (r.status ? badge(...(STATUS[r.status] || [r.status, 'b-none'])) : '<span class="cm-mute">—</span>')

@@ -6,6 +6,11 @@
   и ничего не меняется; повтор внутри одной пачки — тоже `duplicates`;
 - пачка — одна транзакция (Store.batch): проверки видят события этой же пачки (payment → его отмена,
   scan → scan_cancel), а повтор той же пачки параллельно ждёт и получает `duplicates`;
+- машина события — машина терминала в момент события `at` по журналу терминала (car_at; точка трека — в свой
+  момент), а не машина сейчас: очередь офлайн, отправленная после смены машины офисом, остаётся у прежней машины.
+  Часы терминала могут врать: событие точки в день, когда терминал был на нескольких машинах, — машине, в чьём /day
+  этой даты точка есть (если такая одна); машина по часам, отличная от нынешней, у события старше CAR_BY_TIME_LAG —
+  флаг `car_by_time` (офис проверяет);
 - `rejected` — только нарушения формы и правил таблицы контракта (тип, дата, момент с зоной, qty < 0 или
   сверх накладной, amount ≤ 0, неизвестная строка накладной…); отказ хранится в rejected_events (не больше
   store.REJECTED_PER_DAY на терминал в день — дальше только в ответе) — его видят /status и офис;
@@ -58,8 +63,8 @@ import logging
 import math
 import re
 from collections import Counter
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, time, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
 from route_optimizer.geo import is_valid_point
@@ -82,6 +87,9 @@ SUPERSEDABLE = ('delivery', 'tare', 'refuel')   # `supersedes` — исправ�
 MONEY_MAX = 1e9
 QTY_MAX = 1e6
 DATE_SUSPICIOUS_DAYS = 2
+DAY_MS = 86_400_000
+CAR_BY_TIME_LAG = timedelta(minutes=10)   # машина по часам терминала у события старше — флаг car_by_time
+_LOG_WARNED: set[int] = set()   # терминалы, о расхождении журнала которых уже предупредили (раз на процесс)
 SUGGEST_MAX_ACCURACY_M = 100.0   # geo_suggest: точность обязательна и не хуже 100 м
 SUGGEST_NOTE_MAX = 200
 SUPERSEDES_MAX = 64
@@ -109,7 +117,7 @@ class Reject(Exception):
 
 @dataclass(frozen=True)
 class Who:
-    """Кто прислал: терминал (и его машина) и водитель сессии."""
+    """Кто прислал: терминал (и его машина сейчас) и водитель сессии. Машина события — на момент события (car_at)."""
     terminal_id: int
     car_code: str
     driver_id: int
@@ -583,9 +591,50 @@ def _refuel(tx: EventTx, p: Mapping[str, Any], at: datetime, car_code: str, supe
 
 # --- одна запись ---
 
-def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who
+CarLog = Sequence[tuple[int, str]]   # машины терминала: (с момента, мс UTC; машина) по возрастанию — EventTx.terminal_cars
+
+
+def car_at(log: CarLog, at_ms: int, current: str) -> str:
+    """Машина терминала в момент at_ms (мс UTC) по журналу: последняя запись не позже момента; момент раньше первой
+    записи — машина первой (часы терминала); журнала нет (база до v8 без даты создания) — current (машина сейчас).
+    Очередь офлайн, отправленная после смены машины офисом, так остаётся у прежней машины: доставки, деньги, трек,
+    заправки (цепочка одометра) и закрытие дня."""
+    car = log[0][1] if log else current
+    for since, code in log:
+        if since > at_ms:
+            break
+        car = code
+    return car
+
+
+def _ms(at: datetime) -> int:
+    return round(at.timestamp() * 1000)
+
+
+def cars_on(log: CarLog, day: date, current: str) -> set[str]:
+    """Машины терминала за рабочий день day (Ереван): та, на которой он был в начале дня, и те, на которые его ставили
+    в этот день."""
+    start = _ms(datetime.combine(day, time.min, clock.YEREVAN))
+    return {car_at(log, start, current)} | {code for since, code in log if start <= since < start + DAY_MS}
+
+
+def _event_car(tx: EventTx, cars: CarLog, who: Who, at: datetime, day: date, stop_id: str | None) -> tuple[Who, bool]:
+    """Машина события → (who с ней, решено ли по часам с флагом car_by_time). Событие точки в день, когда терминал был
+    на нескольких машинах, — машине, в чьих снимках /day этой даты точка есть, если такая машина одна (часы терминала
+    могут врать, точка — нет); иначе — car_at по моменту события. Флаг — машина по часам не нынешняя, а событие старше
+    CAR_BY_TIME_LAG от приёма (очередь офлайн или сбитые часы)."""
+    if stop_id is not None and len(that_day := cars_on(cars, day, who.car_code)) > 1:
+        owners = {r['car_code'] for r in tx.stop_rows(stop_id) if r['date'] == day.isoformat()} & that_day
+        if len(owners) == 1:
+            return replace(who, car_code=owners.pop()), False
+    car = car_at(cars, _ms(at), who.car_code)
+    return replace(who, car_code=car), car != who.car_code and abs(clock.now() - at) > CAR_BY_TIME_LAG
+
+
+def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who, cars: CarLog = ()
            ) -> tuple[dict[str, Any], dict[str, Any] | None, list[TrackPoint] | None]:
-    """Проверить событие: (строка events, строка scans или None, точки трека или None) или Reject."""
+    """Проверить событие: (строка events, строка scans или None, точки трека или None) или Reject. Машина события —
+    на момент at (car_at по журналу терминала cars)."""
     etype = raw.get('type')
     if etype not in EVENT_TYPES:
         raise Reject('Անհայտ իրադարձության տեսակ')
@@ -609,10 +658,13 @@ def _check(tx: EventTx, raw: Mapping[str, Any], event_id: str, who: Who
     elif etype not in STOPLESS_TYPES:
         raise Reject('stop_id՝ պարտադիր է')
     ev = {'id': event_id, 'date': day.isoformat(), 'at': raw['at']}
+    who, by_time = _event_car(tx, cars, who, at, day, stop_id)
     # версия /day, по которой водитель записал доставку или тару (§5 п. 16) — необязательна
     day_version = _text(payload.get('day_version'), DAY_VERSION_MAX, 'day_version') \
         if etype in ('delivery', 'tare') else None
     stop, flags = _stop_ctx(tx, stop_id, ev['date'], who.car_code, day_version)
+    if by_time and etype != 'track':   # трек — фон: его точки делятся по машинам сами, флаг офису не нужен
+        flags.append('car_by_time')
     if abs((day - at.astimezone(clock.YEREVAN).date()).days) > DATE_SUSPICIOUS_DAYS:
         flags.append('date_suspicious')
     stored = dict(payload)
@@ -700,6 +752,11 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
     result = Result()
     with store.batch() as conn:
         tx = EventTx(conn)
+        cars = tx.terminal_cars(who.terminal_id)   # в транзакции пачки: смена машины офисом — до или после всей пачки
+        if cars and cars[-1][1] != who.car_code and who.terminal_id not in _LOG_WARNED:
+            _LOG_WARNED.add(who.terminal_id)   # журнал разошёлся с терминалом (правка базы вручную) — раз на процесс
+            logger.warning('[Courier] Терминал %s: машина %s, а по журналу — %s', who.terminal_id, who.car_code,
+                           cars[-1][1])
         rejected_room: int | None = None   # сколько отказов ещё можно сохранить сегодня (считается при первом)
         for raw in events:
             raw_id = raw.get('id') if isinstance(raw, dict) else None
@@ -713,7 +770,7 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
                 continue
             try:
                 try:
-                    row, scan_row, track = _check(tx, raw, event_id, who)
+                    row, scan_row, track = _check(tx, raw, event_id, who, cars)
                 except (TypeError, ValueError, OverflowError, KeyError) as e:   # странное значение — отказ
                     raise Reject('Սխալ տվյալներ') from e                         # события, а не 500 на всю пачку
             except Reject as e:
@@ -738,10 +795,13 @@ def ingest(store: Store, who: Who, events: Sequence[Any]) -> Result:
                 result.accepted.append(raw_id)   # №76: пустой heartbeat с тем же состоянием не позже HEARTBEAT_GAP после
                 continue                          # предыдущего события track — принят (APK не повторяет), но не пишется
             if track is not None:   # точки — до события: в нём число новых (пачка — одна транзакция)
-                row['payload']['new'] = tx.insert_track(who.car_code, row['date'], track)
+                by_car: dict[str, list[TrackPoint]] = {}   # каждая точка — машине терминала в её момент
+                for point in track:
+                    by_car.setdefault(car_at(cars, point[0], who.car_code), []).append(point)
+                row['payload']['new'] = sum(tx.insert_track(car, row['date'], points) for car, points in by_car.items())
                 tx.purge_track(clock.today().isoformat())
                 if row['payload']['dropped']:
-                    logger.info('[Courier] Трек %s машины %s: отброшено точек %s', event_id, who.car_code,
+                    logger.info('[Courier] Трек %s машины %s: отброшено точек %s', event_id, row['car_code'],
                                 row['payload']['dropped'])
             if not tx.insert_event(row):
                 result.duplicates.append(raw_id)

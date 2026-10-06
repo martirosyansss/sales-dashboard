@@ -1647,7 +1647,9 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
                if dd.draft is not None and dd.draft.approved is not None else {}),
             # №78: кто отметил «Բեռնված է» — логин, только странице (рейс → кто)
             **({'loaded_by': {str(t.id): t.loaded['by'] for t in dd.draft.trips if t.loaded is not None}}
-               if dd.draft is not None and any(t.loaded is not None for t in dd.draft.trips) else {})}
+               if dd.draft is not None and any(t.loaded is not None for t in dd.draft.trips) else {}),
+            # №80: план выпущен на терминалы — «Ջնջել երթերը» не показывается (сервер и так откажет)
+            **({'released': True} if dd.draft is not None and dd.draft.released is not None else {})}
 
 
 # --- Новые заказы дня (ответ владельца №72) ---
@@ -1802,6 +1804,8 @@ def _same_day_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay, payload
 PLAN_LOADED = 'Պլանում կան բեռնված երթեր — այն չի ջնջվում։ Նախ հանեք «Բեռնված է» նշումները։'
 LOADED_TRUCK_OFF = dp.LOADED_TRUCK_OFF   # №78: + коды машин
 PLAN_APPROVED = 'Պլանը հաստատված է։ Ամբողջական վերակազմման համար նախ չեղարկեք հաստատումը։'   # №73: пересборка утверждённого плана
+# №80: выпущенный план (утверждён хотя бы раз) не стирается — водители уже везут его точки; пересборка — можно
+PLAN_RELEASED = 'Պլանն արդեն ուղարկված է վարորդներին․ ամբողջը նորից կազմելու համար օգտագործեք «Վերակազմել երթերը»։'
 PAST_DAY_APPROVE = 'Անցած օրվա պլանը չի հաստատվում և չի չեղարկվում'
 
 
@@ -2377,7 +2381,8 @@ def api_dispatch_overtime() -> Any:
 @bp.post('/api/routes/dispatch/reset')
 @_api
 def api_dispatch_reset() -> Any:
-    """«Начать заново»: черновик на дату удаляется (исключения и закрепления — тоже)."""
+    """«Начать заново»: черновик на дату удаляется (исключения и закрепления — тоже). Утверждённый (№73) и выпущенный на
+    терминалы (№80) — нет."""
     payload, day, error = _dispatch_request()
     if error is not None:
         return error
@@ -2387,6 +2392,8 @@ def api_dispatch_reset() -> Any:
         return _bad_request({'_': PLAN_APPROVED})
     if draft is not None and any(t.loaded is not None for t in draft.trips):   # №78: отметки склада не стираются
         return _bad_request({'_': PLAN_LOADED})
+    if draft is not None and draft.released is not None:   # №80: план у водителей — стереть значит снять их точки
+        return _bad_request({'_': PLAN_RELEASED})
     # склад мог отметить рейс, пока читали: стирается ровно прочитанный черновик (№78)
     if not state.store.delete_dispatch(day.isoformat(), expected_rev=rev):
         return _conflict('План изменили в другой вкладке — обновите страницу')

@@ -7,6 +7,7 @@
 Запуск из корня проекта:  python -m pytest tests/test_route_agents_default.py -q
 """
 import sys
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -193,7 +194,9 @@ def test_courier_view_without_plan_uses_rule(client):
     view = rl.routes_view(state, date(2026, 10, 1))
     assert view.plan_exists is False and view.agents_off == frozenset({2})
     orders = [_dorder(1, 101, 400.0, car='CAR1'), _dorder(2, 102, 300.0, agent=2, car='CAR1')]
-    assert [o.isn for o in rl.pick_orders(orders, date(2026, 10, 1), view, 'CAR1')] == [_isn(1)]
+    assert rl.pick_orders(orders, date(2026, 10, 1), view, 'CAR1') == []             # плана нет — ничего (№80)
+    released = replace(view, plan_exists=True, released=True, trips=(('CAR1', (101, 102)),))
+    assert [o.isn for o in rl.pick_orders(orders, date(2026, 10, 1), released, 'CAR1')] == [_isn(1)]
     # план есть — его выбор, а не правило
     client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1'], 'agents_off': []})
     assert rl.routes_view(state, date(2026, 10, 1)).agents_off == frozenset()

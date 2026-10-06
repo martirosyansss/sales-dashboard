@@ -202,9 +202,11 @@ class LiveSource:
                 row['devices'].append((clock.iso(at), e['device'].get('gps')))
         for row in out.values():
             row['last_contact'] = row['contacts'][-1] if row['contacts'] else None
+        since = self.store.car_since()   # связь до смены машины — связь прежней машины (views.day_overview)
         for t in self.store.list_terminals():
             row = out.get(t.car_code)
             if row is not None and not t.revoked and t.last_seen_at and t.last_seen_at[:10] == day \
+                    and t.last_seen_at >= since.get(t.id, '') \
                     and (row['last_contact'] is None or t.last_seen_at > row['last_contact']):
                 row['last_contact'] = t.last_seen_at
         return out

@@ -110,6 +110,7 @@ def _authenticate() -> Any:
         if terminal is None or terminal.revoked:
             return error(401, 'unauthorized')
         g.courier_terminal = terminal
+        g.courier_token_digest = token_hash(token)
         g.courier_session = None
         if request.endpoint not in NO_SESSION:
             sess = request.headers.get('X-Courier-Session', '').strip()
@@ -158,8 +159,8 @@ def _car_name(code: str) -> str:
         return ''
     try:
         cars = st.refs.get(('cars', clock.today()), lambda: st.cars_loader(clock.today()))
-    except ErpError:
-        logger.warning('[Courier] Название машины %s не прочитано из ERP', code, exc_info=True)
+    except Exception:   # название — подпись в ответе: любой сбой списка машин (ERP, «Маршруты») не роняет вход
+        logger.warning('[Courier] Название машины %s не прочитано', code, exc_info=True)
         return ''
     return next((c['name'] for c in cars if c['code'] == code), '')
 
@@ -190,7 +191,12 @@ def login() -> Any:
     if driver is None:
         return failure
     expires = clock.session_expiry(now)
-    token = st.store.open_session(t.id, driver.id, expires)
+    token = st.store.open_session(t.id, driver.id, expires, t.car_code, g.courier_token_digest)
+    if token is None:   # после проверки токена офис сменил машину, выдал «Նոր QR» или отозвал терминал
+        current = st.store.terminal_by_token_hash(g.courier_token_digest)
+        if current is None or current.revoked:   # «Նոր QR» или отозван: старый QR больше не действует
+            return error(401, 'unauthorized')
+        return error(401, 'session', 'Մեքենան փոխվել է․ մուտք գործեք PIN-ով նորից')
     return jsonify({'session': token, 'expires_at': clock.iso(expires),
                     'driver': {'id': driver.id, 'name': driver.name},
                     'car': {'code': t.car_code, 'name': _car_name(t.car_code)},
