@@ -1263,6 +1263,7 @@ def _day_orders(state: RoutesState, bundle: Bundle, day: date, refresh: bool,
                           refresh)
     data = replace(data, orders=tuple(o for o in data.orders if o.order_date < until or o.predated))
     sel = dp.to_deliver(data.orders, day, since, rule, dp.place_of(data.customers, data.addresses))
+    sel = dp.settle_predated(sel, since, _plan_seen(state, since))
     taken, unread = _same_day_taken(state, day, workdays, off)
     if unread:
         sel = replace(sel, same_day_unread=True)
@@ -1316,6 +1317,18 @@ def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: li
             out |= dp.Draft.from_json(stored[0]).deferred
         d += timedelta(days=1)
     return out & {o.isn for o in backlog}
+
+
+def _plan_seen(state: RoutesState, day: date) -> dp.PlanSeen:
+    """Что видел план дня day (№79, dp.settle_predated); плана нет или не прочитан — ничего: заказ, заведённый заранее
+    на day, едет и на следующий рабочий день (не теряется)."""
+    try:
+        draft, _ = _stored_draft(state, day)
+    except StoreError:
+        logger.warning('[Routes] План развоза на %s не прочитан — заказы, заведённые заранее на него, едут и дальше',
+                       day, exc_info=True)
+        return dp.PlanSeen()
+    return dp.PlanSeen.of(draft)
 
 
 def _same_day_taken(state: RoutesState, day: date, workdays: Sequence[int],

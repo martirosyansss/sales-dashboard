@@ -7,8 +7,9 @@
   (правило владельца №5/№19: заказы дня везут на следующий рабочий день, субботние и воскресные —
   в понедельник), кроме уже отгруженных до D (реализация SALES с датой раньше D). Заказ, заведённый в ERP раньше
   своей даты (ответ владельца №79, DispatchOrder.predated), — заказ и на эту дату: его везут уже в неё, не отгрузили — на
-  следующий рабочий день, как обычный (ничего не теряется, даже если его завели после сборки плана); в «новые заказы дня»
-  он не входит.
+  следующий рабочий день, как обычный, если план его даты его не видел (завели после сборки — не теряется); видел —
+  решён там (отвезли без накладной, исключили, перенесли): «не отгружены с прошлых дней» (settle_predated, PlanSeen).
+  В «новые заказы дня» он не входит.
 - «Не отгружены с прошлых дней» — заказы ещё BACKLOG_WORKDAYS рабочих дней раньше, без реализации
   до D: по данным сентября около половины их везут в D, остальные не везут вовсе — поэтому в план
   они не входят, пока логист не добавит их сам (Draft.added).
@@ -430,6 +431,36 @@ def to_deliver(orders: Sequence[DispatchOrder], day: date, since: date, rule: Fl
                          [o for o in pending if of_day(o, since, day)]),
                      self_delivery=of_kind(SELF_DELIVERY), other_vehicle=of_kind(OTHER_VEHICLE),
                      customers_off=of_kind(CUSTOMER_OFF))
+
+
+@dataclass(frozen=True)
+class PlanSeen:
+    """Что видел план прошлого рабочего дня (№79): заказы его сборки, исключённые и перенесённые логистом, клиенты его
+    рейсов (остановка — все заказы клиента дня)."""
+    orders: frozenset[str] = frozenset()
+    customers: frozenset[int] = frozenset()
+
+    @classmethod
+    def of(cls, draft: Draft | None) -> PlanSeen:
+        if draft is None:
+            return cls()
+        return cls(frozenset(draft.built_orders or ()) | frozenset(draft.excluded) | frozenset(draft.deferred),
+                   frozenset(c for t in draft.trips for c in t.stops))
+
+    def has(self, o: DispatchOrder) -> bool:
+        return o.isn in self.orders or o.customer_id in self.customers
+
+
+def settle_predated(sel: Selection, since: date, seen: PlanSeen) -> Selection:
+    """Не отгруженный заказ, заведённый заранее на since (прошлый рабочий день, №79), который план since видел (seen), —
+    решён там: отвезли без накладной, исключили или перенесли («Везти завтра» вернёт его переносом) — в «не отгружены с
+    прошлых дней», а не в развоз дня: иначе его повезли бы второй раз, пока нет накладной. Не видел — едет (of_day)."""
+    done = [o for o in sel.main if o.predated and o.order_date == since and seen.has(o)]
+    if not done:
+        return sel
+    ids = {o.isn for o in done}
+    key = lambda o: (o.customer_id, o.order_date, o.isn)   # noqa: E731
+    return replace(sel, main=[o for o in sel.main if o.isn not in ids], backlog=sorted([*sel.backlog, *done], key=key))
 
 
 def same_day_candidates(orders: Sequence[DispatchOrder], day: date, rule: FleetRule = NO_RULE,

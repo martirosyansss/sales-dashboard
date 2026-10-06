@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """«Развоз»: заказ, заведённый в ERP раньше своей даты (ответ владельца №79), — заказ и на эту дату: его везут уже в неё,
-не отгрузили — на следующий рабочий день, как обычный; в «новые заказы дня» (№72) он не входит. Обычные заказы — как
-прежде. Синтетические данные, без ERP; база «Маршрутов» — временная (фикстура client).
+не отгрузили — на следующий рабочий день, если план его даты его не видел (видел — решён там: «с прошлых дней», без
+повторной доставки); в «новые заказы дня» (№72) он не входит. Обычные заказы — как прежде. Синтетические данные, без ERP; база «Маршрутов» — временная (фикстура client).
 
 Запуск из корня проекта:  python -m pytest tests/test_route_dispatch_predated.py -q
 """
@@ -58,6 +58,22 @@ def test_window_of_day_adds_predated_orders_of_the_day():
     assert [o.customer_id for o in dp.to_deliver([early_sat, normal_fri], SAT, sat_since).main] == [103, 107]
 
 
+def test_settle_predated_moves_orders_seen_by_previous_plan_to_backlog():
+    """План субботы видел заказ, заведённый заранее на субботу (при сборке, в рейсе клиента, исключён, перенесён), — в
+    понедельник он «с прошлых дней»; не видел (завели после сборки, клиент не в рейсах) — едет в понедельник."""
+    since, _ = dp.order_window(MON, WEEK6)
+    before = date(2026, 10, 1)
+    built, in_trip, excl, defer, unseen = (_early(_dorder(i, 100 + i, 10.0, day=SAT), before) for i in range(1, 6))
+    mon = _early(_dorder(6, 101, 10.0, day=MON), before)                  # заказ самого пн — не трогаем
+    sel = dp.to_deliver([built, in_trip, excl, defer, unseen, mon], MON, since)
+    draft = dp.Draft(trips=[dp.DraftTrip(1, 'C1', [102])], built_orders={built.isn: (10.0, 1.0)}, excluded={excl.isn},
+                     deferred={defer.isn})
+    out = dp.settle_predated(sel, since, dp.PlanSeen.of(draft))
+    assert [o.customer_id for o in out.main] == [101, 105]
+    assert [o.customer_id for o in out.backlog] == [101, 102, 103, 104]
+    assert dp.settle_predated(sel, since, dp.PlanSeen.of(None)) == sel
+
+
 def test_shipped_before_and_lists_count_predated_of_day():
     since, _ = dp.order_window(MON, WEEK6)
     early = _early(_dorder(1, 101, 10.0, day=MON, shipped=SAT), date(2026, 10, 1))      # отгружен заранее
@@ -91,12 +107,16 @@ def test_driver_app_gets_predated_order_on_its_date():
     early = _early(_dorder(1, 101, 10.0, day=MON, car='C1'), date(2026, 10, 1))
     normal = _dorder(2, 102, 10.0, day=MON, car='C1')
     old = _dorder(3, 103, 10.0, day=SAT, car='C1')
-    assert {o.customer_id for o in rl.pick_orders([early, normal, old], MON, view, 'C1')} == {101, 103}
+    early_sat = _early(_dorder(4, 104, 10.0, day=SAT, car='C1'), date(2026, 10, 1))
+    assert {o.customer_id for o in rl.pick_orders([early, normal, old, early_sat], MON, view, 'C1')} == {101, 103, 104}
+    # план субботы его уже вёз (клиент в рейсе) — в понедельник водителю второй раз не даём
+    seen = replace(view, seen=dp.PlanSeen(customers=frozenset({104})))
+    assert {o.customer_id for o in rl.pick_orders([early, normal, old, early_sat], MON, seen, 'C1')} == {101, 103}
 
 
 def test_page_plans_predated_order_on_its_date_not_as_new(client, monkeypatch):
     """Заказ магазина 101, заведённый 29.09 на 01.10, — в развозе 01.10 (в остановке 101 вместе с заказом 30.09), не в
-    «новых заказах дня»; не отгружен 01.10 — и в развозе 02.10, как обычный заказ 01.10."""
+    «новых заказах дня»; план 01.10 его вёз — в развоз 02.10 сам не идёт (накладной ещё нет — «с прошлых дней»)."""
     early = _early(_dorder(20, 101, 120.0, day=D), date(2026, 9, 29))
     _page_setup(client, monkeypatch, extra_orders=[early])
     d = _build(client)
@@ -106,8 +126,16 @@ def test_page_plans_predated_order_on_its_date_not_as_new(client, monkeypatch):
     assert _isn(20) not in {o['isn'] for o in d['same_day']['orders']}
     assert d['same_day']['count'] == 3                                # новые — как без него
     nxt = client.get('/api/routes/dispatch?date=' + NEXT).get_json()
-    assert nxt['orders']['count'] == 4                                # заказы 01.10: 103, 999, 104 и заведённый заранее
-    assert _isn(20) not in {o['isn'] for o in nxt['backlog']}
+    assert nxt['orders']['count'] == 3                                # заказы 01.10: 103, 999, 104
+    assert _isn(20) in {o['isn'] for o in nxt['backlog']}
+
+
+def test_page_predated_order_without_plan_of_its_date_goes_next_day(client, monkeypatch):
+    """Плана на 01.10 не собирали (или заказ завели после — его никто не видел): не отгружен — едет 02.10."""
+    early = _early(_dorder(20, 101, 120.0, day=D), date(2026, 9, 29))
+    _page_setup(client, monkeypatch, extra_orders=[early])
+    nxt = client.get('/api/routes/dispatch?date=' + NEXT).get_json()
+    assert nxt['orders']['count'] == 4 and _isn(20) not in {o['isn'] for o in nxt['backlog']}
 
 
 def test_exclude_of_predated_taken_before_rule_is_plain_exclude():
