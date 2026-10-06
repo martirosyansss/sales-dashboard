@@ -204,6 +204,24 @@ def test_valhalla_km_and_minutes_are_directed(tmp_path, fake):
     assert r.unsnapped(P) == 0 and r.size == (len(P), len(P))
 
 
+def test_route_single_leg_without_growing_the_table(tmp_path, fake):
+    """Положение машины для ETA карты (№76): участок отдельным запросом, точка в таблицу не попадает; пути нет, сбой
+    движка и движок выключен — None."""
+    r = _view(tmp_path)
+    r.ensure(P)
+    here = (40.1912, 44.5133)                                 # точки нет в таблице
+    km, minutes = r.route(here, P[1], True)
+    want = _metric(here, P[1])
+    assert km == pytest.approx(want[0], abs=2e-3) and minutes == pytest.approx(want[1] / 60 * ve.TIME_FACTOR[True], abs=0.05)
+    assert r.size == (len(P), len(P)) and r.km(here, P[1]) is None   # таблица не выросла, пары в ней нет
+    assert r.route(P[0], ISLAND, False) is None               # пути нет
+    fake.fail = True
+    assert r.route(here, P[1], True) is None                  # сбой движка — запасная модель, не исключение
+    fake.fail = False
+    r.active = False
+    assert r.route(here, P[1], True) is None
+
+
 def test_valhalla_cache_reread_incremental_equals_full_other_build_and_costing(tmp_path, fake, monkeypatch):
     monkeypatch.setattr(ve, 'BATCH', 2)                     # несколько блоков — расчёт в потоках
     full = _view(tmp_path / 'full')

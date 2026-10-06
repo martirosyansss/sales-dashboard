@@ -9,7 +9,10 @@
 import math
 import sqlite3
 import sys
+import threading
+import time
 from contextlib import closing
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -348,6 +351,132 @@ def test_next_store_eta_delay_and_return():
     assert nxt['delay_min'] == round((eta - planned_b).total_seconds() / 60)
     ret = (now + timedelta(minutes=leg + 8 + 6 * 0.4 + ROAD.minutes(B, C) + 8 + 6 * 0.3 + ROAD.minutes(C, DEPOT)))
     assert card['return_eta'] == ret.isoformat(timespec='seconds')
+
+
+# ============================== этап 2: точное ETA (дороги, время у магазина, обед, склад) ==============================
+
+def _road(legs=None, unload=None):
+    return live.Road(1.3, 25.0, 45.0, (40.1792, 44.4991), 12.0, legs=legs, unload=unload)
+
+
+def _view_eta(tr, stops, road, rules=RULES, plan=None):
+    plan = plan if plan is not None else [live.PlanTrip(tuple(s['customer_id'] for s in stops), {})]
+    return live.car_view(DAY, tr.t, facts(tr.pts, stops, [T0, tr.t]), plan, TRUCK, DEPOT, rules, road, True)
+
+
+def _mid(a, b):
+    return (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+
+
+def test_eta_chain_uses_road_legs_and_store_times():
+    """Остаток разгрузки у A + участок + время у B + участок + время у C + участок до склада — по дорожной модели и
+    времени магазинов (№50/№60)."""
+    tr = Track().park(DEPOT, 5).drive(A).park(A, 3)
+    stops = [stop('S:A', 1, A, 500.0, 'in_progress', seq=1), stop('S:B', 2, B, 300.0, seq=2),
+             stop('S:C', 3, C, 200.0, seq=3)]
+    road = _road(lambda a, b, minute, here: 7.0, unload=lambda p, kg: {A: 12.0, B: 20.0, C: 9.0}[p])
+    card = _view_eta(tr, stops, road)
+    st = {x['stop_id']: x for x in card['stops']}
+    stayed = (tr.t - datetime.fromisoformat(st['S:A']['arrive'])).total_seconds() / 60
+    assert card['next']['here'] is True and card['next']['stop_id'] == 'S:A' and card['next']['eta_source'] is None
+    t_b = tr.t + timedelta(minutes=12 - stayed + 7)
+    t_c = t_b + timedelta(minutes=20 + 7)
+    back = t_c + timedelta(minutes=9 + 7)
+    for sid, want in (('S:B', t_b), ('S:C', t_c)):
+        assert abs((datetime.fromisoformat(st[sid]['eta']) - want).total_seconds()) < 1.5
+        assert st[sid]['eta_source'] == 'road'
+    assert abs((datetime.fromisoformat(card['return_eta']) - back).total_seconds()) < 1.5
+    assert card['return_source'] == 'road'
+
+
+def test_eta_first_leg_from_position_is_asked_with_here_flag():
+    tr = Track().park(DEPOT, 5).drive(_mid(DEPOT, A))
+    stops = [stop('S:A', 1, A, 500.0, seq=1), stop('S:B', 2, B, 300.0, seq=2)]
+    seen = []
+
+    def legs(a, b, minute, here):
+        seen.append(here)
+        return 5.0
+    card = _view_eta(tr, stops, _road(legs))
+    assert card['next']['stop_id'] == 'S:A' and card['next']['eta_source'] == 'road'
+    assert seen[0] is True and not any(seen[1:])   # только участок от положения машины — «живой»
+    # движок не знает положения машины (None) — ETA следующего «запасное», остальные участки — дороги, но источник
+    # накопительный: прибытие после запасного участка тоже «model»
+    card = _view_eta(tr, stops, _road(lambda a, b, minute, here: None if here else 5.0))
+    assert card['next']['eta_source'] == 'model'
+    assert [x['eta_source'] for x in card['stops']] == ['model', 'model']
+
+
+def test_eta_fallback_when_engine_unavailable():
+    """Дорог нет (нет карты, Valhalla не готов) или пары нет — запасная модель: прямая × извилистость, скорость зоны."""
+    tr = Track().park(DEPOT, 5).drive(A)
+    stops = [stop('S:A', 1, A, 400.0, 'full', 1.0, tr.t, seq=1), stop('S:B', 2, B, 300.0, seq=2)]
+    card = _view_eta(tr, stops, ROAD)
+    assert card['next']['stop_id'] == 'S:B' and card['next']['eta_source'] == 'model'
+    got = (datetime.fromisoformat(card['next']['eta']) - tr.t).total_seconds() / 60
+    assert got == pytest.approx(ROAD.minutes(tr.pos, B), abs=0.1)
+    assert _view_eta(tr, stops, _road(lambda *a: None))['next']['eta'] == card['next']['eta']
+    assert card['return_source'] == 'model'
+
+
+def test_eta_store_time_defaults_to_norms_without_road_model():
+    tr = Track().park(DEPOT, 5).drive(A)
+    stops = [stop('S:A', 1, A, 400.0, 'full', 1.0, tr.t, seq=1), stop('S:B', 2, B, 1000.0, seq=2),
+             stop('S:C', 3, C, 100.0, seq=3)]
+    st = {x['stop_id']: x for x in _view_eta(tr, stops, ROAD)['stops']}
+    gap = (datetime.fromisoformat(st['S:C']['eta']) - datetime.fromisoformat(st['S:B']['eta'])).total_seconds() / 60
+    assert gap == pytest.approx(8.0 + 6.0 * 1.0 + ROAD.minutes(B, C), abs=0.1)   # 8 мин на точку + 6 на тонну
+
+
+def _lunch_view(start, lunch_min, window=(750.0, 870.0), legs_min=5.0, park_min=0):
+    road = _road(lambda a, b, minute, here: legs_min, unload=lambda p, kg: 10.0)
+    tr = Track(start).park(DEPOT, 2)
+    if park_min:
+        tr.drive((40.1600, 44.4600)).park((40.1600, 44.4600), park_min)   # стоянка не по плану (обед) до выезда к A
+    tr.drive(_mid(DEPOT, A))
+    stops = [stop('S:A', 1, A, 100.0, seq=1), stop('S:B', 2, B, 100.0, seq=2)]
+    rules = live.Rules(lunch_min=lunch_min, lunch_window=window)
+    return {x['stop_id']: datetime.fromisoformat(x['eta']) for x in _view_eta(tr, stops, road, rules)['stops']}
+
+
+def test_eta_lunch_after_unload_in_window_shifts_following_stops():
+    start = datetime(2026, 10, 5, 12, 40, tzinfo=Y)
+    plain, lunch = _lunch_view(start, 0.0), _lunch_view(start, 30.0)
+    assert lunch['S:A'] == plain['S:A']                                  # до A обеда ещё нет
+    assert lunch['S:B'] - plain['S:B'] == timedelta(minutes=30)          # после разгрузки у A (окно уже открыто)
+    early = datetime(2026, 10, 5, 9, 0, tzinfo=Y)                        # утром окно ещё не началось — обеда в пути нет
+    assert _lunch_view(early, 30.0) == _lunch_view(early, 0.0)
+
+
+def test_eta_lunch_not_repeated_when_already_taken():
+    start = datetime(2026, 10, 5, 12, 20, tzinfo=Y)
+    assert _lunch_view(start, 30.0, park_min=31) == _lunch_view(start, 0.0, park_min=31)   # стоял 31 мин в окне — обед был
+
+
+def test_eta_lunch_on_the_road_when_window_ends_before_arrival():
+    start = datetime(2026, 10, 5, 12, 40, tzinfo=Y)
+    window = (750.0, 780.0)   # 12:30–13:00; перегон 50 мин кончается в 13:30 — обед в дороге
+    plain, lunch = _lunch_view(start, 0.0, window, 50.0), _lunch_view(start, 30.0, window, 50.0)
+    assert lunch['S:A'] - plain['S:A'] == timedelta(minutes=30)
+
+
+def test_eta_next_trip_goes_via_depot_load_and_planned_departure():
+    tr, stops, plan = _two_trips()
+    tr.park(DEPOT, 1)
+    now = tr.t
+    plan[1] = live.PlanTrip((3,), {3: now + timedelta(minutes=70)}, now + timedelta(minutes=40))   # плановый выезд — через 40 мин
+    road = _road(lambda a, b, minute, here: 6.0, unload=lambda p, kg: 10.0)
+
+    def eta_c(rules):
+        card = live.car_view(DAY, now, facts(tr.pts, stops, [T0, now]), plan, TRUCK, DEPOT, rules, road, True)
+        return card, datetime.fromisoformat(next(x for x in card['stops'] if x['stop_id'] == 'S:C')['eta'])
+    # загрузка 15 + 10 × 0,3 т = 18 мин < 40 мин до планового выезда → выезд по плану, затем участок 6 мин
+    card, eta = eta_c(live.Rules(load_min=15.0, load_min_per_tonne=10.0))
+    assert abs((eta - (now + timedelta(minutes=46))).total_seconds()) < 1.5
+    assert card['next']['stop_id'] == 'S:C' and card['next']['delay_min'] == 46 - 70
+    # загрузка дольше планового выезда — выезд после загрузки
+    _, eta = eta_c(live.Rules(load_min=60.0))
+    assert abs((eta - (now + timedelta(minutes=66))).total_seconds()) < 1.5
 
 
 def test_road_minutes_city_and_region():
@@ -800,6 +929,7 @@ def live_app(app_v2, monkeypatch):
     state = app_v2.app.extensions['route_optimizer']
     monkeypatch.setattr(state, 'live_facts', FakeLive())
     monkeypatch.setattr(views, '_yerevan_now', lambda: API_NOW)
+    monkeypatch.setattr(views, 'LIVE_ROAD_BACKGROUND', False)   # дорожная модель ETA — сразу, без фонового потока
     draft = dp.Draft(trucks=['CAR1', 'CAR9'], trips=[dp.DraftTrip(1, 'CAR1', [7, 8]), dp.DraftTrip(2, 'CAR9', [5])])
     draft.prediction = {'trucks': {'CAR1': {'trips': [{'depart': '10:25', 'stops': [[7, '10:40'], [8, '11:20']]}]}}}
     state.store.save_dispatch('2026-10-03', draft.to_json(), 'qa')
@@ -919,3 +1049,111 @@ def test_live_thresholds_in_settings():
     rules = live.Rules.from_settings({**vals, 'live_speed_kmh': 70, 'live_no_contact_min': 10,
                                       'truck_lunch_from': '13:00', 'truck_lunch_min': 45})
     assert (rules.speed_kmh, rules.no_contact_min, rules.lunch_window[0], rules.lunch_min) == (70, 10, 780, 45)
+
+
+# ============================== этап 2: дорожная модель ETA в views, кэш карточек ==============================
+
+class FakeRoads:
+    """Дороги без Valhalla: км по таблице, пары нет — None (запасная модель)."""
+    failed = False
+    map_path = None
+    version = 'fake'
+    km_source = 'osm'
+
+    def __init__(self, km=10.0):
+        self._km = km
+        self.ensured = []
+
+    def ensure(self, points):
+        self.ensured.append(list(points))
+
+    def km(self, a, b):
+        return self._km
+
+    def minutes(self, a, b, city):
+        return None
+
+    def truck(self, truck_time=None):
+        return self
+
+
+def test_live_road_build_store_time_roads_and_fallback(live_app, monkeypatch):
+    """№50/№60: время у магазина — введённое логистом (+ норма на тонну), без него — норма; legs — дорожная модель."""
+    from route_optimizer import views
+    state = live_app.app.extensions['route_optimizer']
+    state.store.save_customer_unload(7, 20, 'qa')
+    bundle = replace(state.store.load(), depot=DEPOT)
+    base = live.Road(1.3, 25.0, 45.0, (40.1792, 44.4991), 12.0)
+    customers = {7: A, 8: B}
+    # дорог нет (снимка ERP нет) — только время магазина; legs нет → запасная модель
+    road = views._live_road_build(state, bundle, None, None, DAY, base, customers)
+    assert road.legs is None
+    assert road.unload(A, 1000.0) == pytest.approx(20 + 6.0)       # введённые 20 мин + 6 мин на тонну
+    assert road.unload(B, 1000.0) == pytest.approx(8 + 6.0)        # нет введённого — норма на точку + на тонну
+    # дороги есть: участки между известными точками — км дорог / скорость зоны (пока Valhalla нет — «model»)
+    fake = FakeRoads(10.0)
+    asked = []
+    monkeypatch.setattr(views, '_roads', lambda *a, **k: asked.append((a, k)) or fake)
+    road = views._live_road_build(state, bundle, object(), None, DAY, base, customers)
+    assert road.legs(A, B, 600.0, False) == pytest.approx(10.0 / 25.0 * 60.0)    # оба конца в городе
+    points = asked[0][0][3]   # точки дорог: магазины дня и склад — как в расчёте «Развоза»
+    assert A in points and B in points and DEPOT in points and asked[0][1]['center_zone']
+    assert road.legs(A, B, 600.0, True) is None            # положение машины без Valhalla — запасная модель
+    fake._km = None
+    assert road.legs(A, B, 600.0, False) is None           # пары в дорогах нет — не выдаём прямую за «дороги»
+
+
+def test_live_roads_builds_in_background_and_serves_fallback(monkeypatch):
+    from route_optimizer import views
+    monkeypatch.setattr(views, 'LIVE_ROAD_BACKGROUND', True)
+    cache = views._LiveRoads()
+    base = live.Road()
+    built = live.Road(detour=2.0)
+    release, done = threading.Event(), threading.Event()
+    calls = []
+
+    def build():
+        calls.append(1)
+        release.wait(5)
+        done.set()
+        return built
+    assert cache.get('k', build, base) is base            # собирается в фоне — опрос не ждёт: запасная модель
+    assert cache.get('k', build, base) is base and calls == [1]   # второй опрос поток не плодит
+    release.set()
+    assert done.wait(5)
+    for _ in range(100):
+        got = cache.get('k', build, base)
+        if got is built:
+            break
+        time.sleep(0.02)
+    assert got is built and calls == [1]                  # готово — из кэша, без пересборки
+    # сбой сборки не роняет опрос: запасная модель, поток освобождён
+    cache2 = views._LiveRoads()
+    monkeypatch.setattr(views, 'LIVE_ROAD_BACKGROUND', False)
+    assert cache2.get('x', lambda: 1 / 0, base) is base
+    assert cache2.get('x', lambda: built, base) is built
+
+
+def test_live_cards_cached_per_fleet_for_ten_seconds(client, live_app, monkeypatch):
+    """Опрос нескольких зрителей, детали машины и Telegram — один расчёт флота на 10 с; новый факт — новый расчёт."""
+    from route_optimizer import views
+    state = live_app.app.extensions['route_optimizer']
+    calls = []
+    real = live.car_view
+    monkeypatch.setattr(live, 'car_view', lambda *a, **k: calls.append(1) or real(*a, **k))
+    _session_as(client, 'boss', base=LAN)
+    for _ in range(3):
+        assert client.get('/api/routes/live', base_url=LAN).status_code == 200
+    first = len(calls)
+    assert first == 2                                      # CAR1 и CAR9 — по разу
+    clock = [time.monotonic()]
+    monkeypatch.setattr(views, '_monotonic', lambda: clock[0])
+    client.get('/api/routes/live', base_url=LAN)
+    clock[0] += views.LIVE_CARDS_TTL_S + 1
+    client.get('/api/routes/live', base_url=LAN)
+    assert len(calls) == first + 2                         # TTL вышел — пересчёт
+    state.live_facts.data['2026-10-03'] = dict(state.live_facts.data['2026-10-03'])   # другой объект факта — пересчёт
+    client.get('/api/routes/live', base_url=LAN)
+    assert len(calls) == first + 4
+    body = client.get('/api/routes/live', base_url=LAN).get_json()
+    assert all('alerts_log' not in t for t in body['trucks'])   # журнал тревог — только в деталях и для Telegram

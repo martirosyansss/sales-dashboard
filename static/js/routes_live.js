@@ -95,6 +95,9 @@
         }
         return parts.join(' · ');
     };
+    // откуда ETA: по дорожной модели (Valhalla / граф дорог, время у магазина, обед) или запасная — по прямой × извилистость
+    const SRC = { road: 'ճանապարհներով', model: 'մոտավոր' };
+    const srcText = (v) => (SRC[v] ? ' (' + SRC[v] + ')' : '');
     const delayText = (d) => {
         const n = num(d);
         if (n === null) return null;
@@ -284,10 +287,10 @@
         if (t.next) {
             const d = delayText(t.next.delay_min);
             rows.push(field('Հաջորդ խանութը', t.next.name || t.next.stop_id,
-                (t.next.here ? 'տեղում է' : 'ժամանում ≈ ' + hm(t.next.eta)) + (t.next.planned_eta ? ' · պլան՝ ' + hm(t.next.planned_eta) : '')
+                (t.next.here ? 'տեղում է' : 'ժամանում ≈ ' + hm(t.next.eta) + srcText(t.next.eta_source)) + (t.next.planned_eta ? ' · պլան՝ ' + hm(t.next.planned_eta) : '')
                 + (d ? ' · ' + d[0] : ''), d && d[1] !== 'is-ok' ? d[1] : null, true));
         }
-        rows.push(field('Վերադարձ պահեստ', t.return_eta ? '≈ ' + hm(t.return_eta) : '—'));
+        rows.push(field('Վերադարձ պահեստ', t.return_eta ? '≈ ' + hm(t.return_eta) : '—', t.return_eta ? srcText(t.return_source).trim().slice(1, -1) : null));
         rows.push(field('Վերջին կապը', t.last_contact ? hms(t.last_contact) : '—', t.contact_age_s !== null ? ago(t.contact_age_s) : null,
             ageClass(t.contact_age_s)));
         const dv = t.device;
@@ -302,7 +305,7 @@
             const dot = h('span', { class: 'lv-dot' });
             dot.style.background = color;
             return h('li', { title: lab }, dot, h('span', { text: (s.name || s.stop_id) + ' · ' + lab }),
-                h('span', { class: 'when', text: (s.arrive ? hm(s.arrive) : '') + (s.planned_eta ? ' (պլան՝ ' + hm(s.planned_eta) + ')' : '') }));
+                h('span', { class: 'when', text: (s.arrive ? hm(s.arrive) : (s.eta ? '≈ ' + hm(s.eta) : '')) + (s.planned_eta ? ' (պլան՝ ' + hm(s.planned_eta) + ')' : '') }));
         }));
         const log = t.alerts_log || [];
         $('lvLogBox').hidden = !t.stops;

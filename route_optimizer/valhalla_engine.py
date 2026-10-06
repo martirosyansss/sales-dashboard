@@ -905,6 +905,21 @@ class ValhallaRoads:
         m = t.minutes.item(ia, ib)
         return m * TIME_FACTOR[city] * self._detour(a, b) if math.isfinite(m) else None
 
+    def route(self, a: Point, b: Point, city: bool) -> tuple[float, float] | None:
+        """(км, минуты) участка A → B отдельным запросом к Valhalla — для точек, которых нет в таблице (положение машины на
+        карте «сейчас» — №76: таблицу такими точками не растим). Минуты — × поправка зоны, как valhalla_minutes; км — путь
+        Valhalla без привязки к дороге. Движка нет, сбой запроса или пути нет — None."""
+        if not self.active:
+            return None
+        try:
+            km, minutes = self._m._block([a], [b], threading.Event())
+        except _BlockError:
+            return None
+        k, m = float(km[0, 0]), float(minutes[0, 0])
+        if not (math.isfinite(k) and math.isfinite(m)) or k <= 0 or m <= 0:
+            return None
+        return k * self._detour(a, b), m * TIME_FACTOR[city] * self._detour(a, b)
+
     def minutes(self, a: Point, b: Point, city: bool) -> float | None:
         """Минуты езды A → B для расчёта; None — скорость зоны (прежняя модель)."""
         return self.valhalla_minutes(a, b, city) if self.serves_minutes else None
