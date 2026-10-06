@@ -122,7 +122,8 @@ def invoice_page() -> str:
 
 def _cars(today: date) -> tuple[list[dict[str, Any]], bool]:
     """Машины для терминала (erp_day.merge_cars: ERP CARS, накладные за 90 дней, парк «Маршрутов»); закрытая в ERP —
-    только если к ней уже привязан действующий терминал. (машины, ERP недоступна). Тот же список — проверка машины
+    только если она возила накладные за эти 90 дней (docs; карточку закрыли, а машина работает — 06.10.2026: 2660062)
+    или к ней уже привязан действующий терминал. (машины, ERP недоступна). Тот же список — проверка машины
     при регистрации и смене машины (_car_listed) и название машины в /login (api._car_name)."""
     st = state()
     cars: list[dict[str, Any]] = []
@@ -135,7 +136,7 @@ def _cars(today: date) -> tuple[list[dict[str, Any]], bool]:
             failed = True
     if any(c.get('closed') for c in cars):
         bound = {t.car_code for t in st.store.list_terminals() if not t.revoked}
-        cars = [c for c in cars if not c.get('closed') or c['code'] in bound]
+        cars = [c for c in cars if not c.get('closed') or c.get('docs') or c['code'] in bound]
     if st.demo:
         cars.append({'code': 'TEST', 'name': 'Թեստ (COURIER_DEMO)', 'docs': 0, 'last': None, 'fleet': False,
                      'closed': False, 'capacity_kg': None})

@@ -3088,7 +3088,8 @@ def test_terminal_cars_loader_routes_failure_falls_back_to_erp(tmp_path, monkeyp
 
 
 def test_office_cars_closed_only_when_bound(client, st):
-    """Закрытая в ERP машина — в списке и проверке только пока к ней привязан действующий терминал."""
+    """Закрытая в ERP машина — в списке и проверке, только если возила накладные за 90 дней (docs) или к ней привязан
+    действующий терминал."""
     st.cars_loader = lambda today: [
         {'code': '991AT61', 'name': 'HOWO', 'docs': 40, 'last': '2026-10-01', 'fleet': True, 'closed': False, 'capacity_kg': None},
         {'code': 'OLD1', 'name': 'Old', 'docs': 0, 'last': None, 'fleet': False, 'closed': True, 'capacity_kg': None}]
@@ -3104,6 +3105,26 @@ def test_office_cars_closed_only_when_bound(client, st):
         st.store.revoke_terminal(x.id, 'admin')
     assert codes() == ['991AT61', 'TEST']
 
+
+
+def test_office_cars_closed_with_recent_invoices_selectable(client, st, monkeypatch):
+    """Закрытая в ERP машина, которая возила накладные за окно CARS_WINDOW_DAYS (06.10.2026: 2660062 FORD — 1197
+    накладных), — в списке и регистрации без терминала; та же без накладных за окно — нет."""
+    def fake(conn, sql, params=()):
+        if sql == ed.SQL_CARS_SEEN:
+            return [('2660062', 1197, date(2026, 10, 2))]
+        if sql == erp.SQL_CARS:
+            return [('2660062', 'FORD', True, 2.5), ('447AX61', 'FORD', True, 0.1)]
+        raise AssertionError(sql[:60])
+    monkeypatch.setattr(erp, '_select', fake)
+    monkeypatch.setattr(ed, '_select', fake)
+    monkeypatch.setattr(erp, 'connect', lambda cs, **kw: object())
+    monkeypatch.setattr(erp, 'close_quietly', lambda conn: None)
+    st.cars_loader = lambda today: ed.terminal_cars('cs', today, None)
+    cars = client.get('/api/courier/admin/drivers').get_json()['cars']
+    assert [(c['code'], c['closed'], c['docs']) for c in cars] == [('2660062', True, 1197), ('TEST', False, 0)]
+    assert client.post('/api/courier/admin/terminals', json={'name': 'FORD', 'car_code': '2660062'}).status_code == 200
+    assert client.post('/api/courier/admin/terminals', json={'name': 'X', 'car_code': '447AX61'}).status_code == 400
 
 def test_terminal_reissue(client, st):
     """«Նոր QR»: тот же терминал (id, имя, машина) с новым токеном и PIN настроек; прежний токен — 401 unauthorized,

@@ -588,7 +588,7 @@ def terminal_cars(connection_string: str, today: date, bundle: Bundle | None) ->
 def merge_cars(cars: Mapping[str, erp.Car], seen: Mapping[str, tuple[int, date]], bundle: Bundle | None,
                today: date) -> list[dict[str, Any]]:
     """Список машин терминалов: {code, name, docs, last, fleet, closed, capacity_kg} — объединение (docstring модуля):
-    - все машины ERP CARS; закрытые — с closed (на странице — только та, к которой уже привязан терминал: views._cars);
+    - все машины ERP CARS; закрытые — с closed (на странице — только с накладными за окно или с терминалом: views._cars);
     - машины накладных (seen: код → (накладных, последний день)) без карточки CARS — name пусто;
     - машины таблицы парка «Маршрутов», которых нет в CARS (ручные: владелец добавил сам) — name своё.
     fleet — машина в расчёте «Развоза», как views._ready_trucks «Маршрутов»: «активна» — выбор владельца, «авто» — не
