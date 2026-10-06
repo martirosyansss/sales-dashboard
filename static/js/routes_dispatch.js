@@ -36,7 +36,11 @@
    «Ուղարկել և շարունակել» (dpSendFirstDlg), чтобы лист и «Բեռնագիր» совпадали с терминалом водителя.
    Как у профессиональных систем (№81): всё, что требует внимания, — строкой счётчиков под «Ի՞նչ անել հիմա» (dpInbox);
    рейсы и карта — рабочий экран на высоту окна со своей прокруткой; магазин можно перетащить мышью на полосу рейса
-   шкалы или в рейс карточки (правка move); на телефоне — вкладки внизу «Օր · Երթեր · Քարտեզ» (dpTabs). */
+   шкалы или в рейс карточки (правка move); на телефоне — вкладки внизу «Օր · Երթեր · Քարտեզ» (dpTabs).
+   Вариант А (ответ владельца №82, как Routific / Яндекс): на широком экране с рейсами — рабочий экран на высоту окна
+   (layoutWs): карта с итогами поверх, справа — карточка выбранной машины, снизу — машины и шкала дня (кружки с номерами
+   магазинов, загрузка %, ⚠); шаги 1–2 и пересборка — в выдвижной панели «Մեքենաներ, պատվերներ». Узлы страницы не
+   пересоздаются — переносятся в слоты и обратно (id и обработчики те же). */
 (function () {
     'use strict';
 
@@ -327,6 +331,9 @@
         const d = state.data;
         const rel = relDay(d.day);
         $('dpTitle').textContent = (rel ? rel + '՝ ' : '') + dayHuman(d.day, true);
+        // №82: в шапке рабочего экрана — коротко «Այսօր · չրք, 7 հոկտ»
+        $('dpTitle').dataset.short = (rel ? rel + ' · ' : '') + (WD_SHORT[wdOf(d.day)] || '') + ', '
+            + (isDay(d.day) ? Number(d.day.slice(8, 10)) + ' ' + MONTH_SHORT[Number(d.day.slice(5, 7)) - 1] : '');
         // листок календаря в шапке: день недели, число, месяц и год
         $('dpCalWd').textContent = WD_SHORT[wdOf(d.day)] || '—';
         $('dpCalDay').textContent = isDay(d.day) ? String(Number(d.day.slice(8, 10))) : '–';
@@ -360,6 +367,7 @@
         if (plan) renderPlan(plan);
         renderInbox();
         renderTabs();
+        layoutWs();
         $('dpAnalysis').hidden = !plan && !d.is_past;
         $('dpFact').hidden = !d.is_past;
         if (!d.is_past) $('dpFactOut').textContent = '';
@@ -499,6 +507,7 @@
         btns.forEach((b, i) => {
             const el = document.createElement(b.href ? 'a' : 'button');
             el.className = 'rt-btn ' + (i ? 'rt-btn-ghost' : 'rt-btn-primary');
+            el.dataset.ico = b.ico;
             el.innerHTML = '<i class="fas ' + b.ico + '" aria-hidden="true"></i><span></span>';
             el.lastChild.textContent = b.text;
             if (b.href) el.href = b.href;
@@ -588,6 +597,8 @@
         b.className = 'rt-btn ' + (d.sent ? 'rt-btn-ghost' : 'rt-btn-primary');
         b.innerHTML = '<i class="fas fa-paper-plane" aria-hidden="true"></i><span></span>';
         b.lastChild.textContent = d.sent ? 'Հաստատել օրվա պլանը' : 'Հաստատել և ուղարկել վարորդներին';
+        b.dataset.short = d.sent ? 'Հաստատել' : 'Հաստատել և ուղարկել';   // №82: в шапке рабочего экрана — коротко
+        b.setAttribute('aria-label', b.lastChild.textContent);
         b.addEventListener('click', approvePlan);
         const note = document.createElement('p');
         note.className = 'dp-approve-note';
@@ -673,6 +684,7 @@
     }
     function openFold(id) {
         if (state.tab !== 'day' && tabsOn()) setTab('day');
+        if ($('rtDispatch').classList.contains('is-ws') && $('dpDrawer').hidden) openDrawer(true);   // №82: шаг 2 — в панели
         unfoldStep('dpStep2');
         const el = $(id);
         el.open = true;
@@ -700,6 +712,8 @@
         if (gs.count) add('is-warn', 'fa-location-crosshairs', 'Նոր տեղ՝ վարորդներից', gs.count, () => openFold('dpGeoSug'));
         const bl = d.backlog || [];
         if (bl.length) add('', 'fa-clock-rotate-left', 'Նախորդ օրերից', bl.length, () => openFold('dpBacklog'));
+        const nd = noDriver();
+        if (nd.length && !d.is_past) add('is-warn', 'fa-id-card', 'Առանց վարորդի', nd.length, () => openDriver(nd[0].car_code));
         if (o.excluded) add('', 'fa-ban', 'Այսօր չենք տանում', o.excluded, () => openFold('dpExcluded'));
         // нормы погрузки, расхода и износа не заполнены — цифры дня приблизительные (раньше — только серым текстом под сводкой)
         const sm = plan.summary;
@@ -1208,6 +1222,7 @@
         b.innerHTML = '<i class="fas fa-arrow-up" aria-hidden="true"></i><span></span>';
         b.lastChild.textContent = text;
         b.addEventListener('click', () => {
+            if ($('rtDispatch').classList.contains('is-ws') && $('dpDrawer').hidden) openDrawer(true);   // №82: шаги — в панели
             unfoldStep(id);
             $(id).scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
             $(id + 'Title').setAttribute('tabindex', '-1');
@@ -1991,10 +2006,21 @@
             lab.className = 'dp-blabel';
             lab.dataset.truck = t.car_code;
             lab.setAttribute('aria-label', 'Ցույց տալ քարտեզում՝ ' + truckLabel(t) + ', ' + pl(t.trips.length, 'երթ') + ', վերադարձ ' + t.return);
-            lab.innerHTML = '<span class="rt-dot" aria-hidden="true"></span><span class="dp-blabel-t"><b></b><small></small></span>';
+            lab.innerHTML = '<span class="rt-dot" aria-hidden="true"></span><span class="dp-blabel-t"><b></b><small></small>'
+                + '<span class="dp-blabel-x"><span class="dp-blx-t"></span><i class="dp-blfill"><em></em></i></span></span>';
             lab.querySelector('.rt-dot').style.background = color;
             lab.querySelector('b').textContent = t.name || t.car_code;
             lab.querySelector('small').textContent = t.name ? t.car_code : '';
+            lab.querySelector('b').dataset.plate = t.name ? ' · ' + t.car_code : '';
+            // №82: загрузка самого полного рейса машины (несколько рейсов — по рейсу, не сумма дня) и число бед
+            const pct = Math.max(0, ...t.trips.map(tr => num(tr.load_pct) || 0));
+            const bad = t.trips.filter(tripBad).length;
+            lab.querySelector('.dp-blx-t').textContent = pl(t.stops, 'կետ') + ' · ' + kgText(t.kg) + ' · ' + pct + '%' + (bad ? ' · ⚠ ' + bad : '');
+            const fill = lab.querySelector('.dp-blfill');
+            fill.classList.toggle('is-hi', pct >= 90 && pct <= 100);
+            fill.classList.toggle('is-over', pct > 100);
+            fill.firstChild.style.width = Math.min(100, pct) + '%';
+            if (bad) lab.classList.add('has-bad');
             lab.addEventListener('click', () => focusFromBoard(t, null));
 
             const track = document.createElement('div');
@@ -2027,11 +2053,13 @@
                 if (tripBad(tr)) bt.insertAdjacentHTML('afterbegin', '<i class="fas fa-triangle-exclamation" aria-hidden="true"></i>');
                 bar.appendChild(bt);
                 // засечки — приезд в каждый магазин
-                tr.stops.forEach(s => {
+                tr.stops.forEach((s, k) => {
                     const e = toMin(s.eta);
                     if (e === null || ret <= dep) return;
                     const tick = document.createElement('i');
-                    tick.className = 'dp-tick';
+                    tick.className = 'dp-tick' + (s.window_miss || s.center_miss || s.vehicle_miss ? ' is-bad' : '');
+                    tick.textContent = String(k + 1);      // №82: в варианте А — кружок с номером магазина
+                    tick.title = (k + 1) + '. ' + (s.name || s.code) + ' · ' + (s.eta || '');
                     tick.style.left = ((e - dep) / (ret - dep) * 100).toFixed(2) + '%';
                     bar.appendChild(tick);
                 });
@@ -2217,6 +2245,7 @@
         $('dpBoard').querySelectorAll('.dp-blabel').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.truck === b.dataset.truck && f.trip == null)));
         $('dpBoard').querySelectorAll('.dp-bar').forEach(b => b.setAttribute('aria-pressed', String(!!f && f.trip != null && String(f.trip) === b.dataset.trip)));
         $('dpTruckCards').querySelectorAll('.dp-tcard').forEach(c => c.classList.toggle('is-focus', !!f && f.truck === c.dataset.truck));
+        if ($('rtDispatch').classList.contains('is-ws')) $('dpWsSide').hidden = !f;
     }
 
     // Нажали машину или рейс на шкале: он же на карте, карточка машины раскрыта и видна рядом с картой
@@ -2228,7 +2257,10 @@
         // к карточке (и рейсу): рядом закреплена карта, а на узком экране карта ниже рейсов — к ней ведёт «Քարտեզում»
         const card = [...$('dpTruckCards').querySelectorAll('.dp-tcard')].find(c => c.dataset.truck === t.car_code);
         const target = tr && card ? card.querySelector('.dp-trip[data-trip="' + tr.id + '"]') || card : card;
-        if (target) target.scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
+        if (target && $('rtDispatch').classList.contains('is-ws')) {   // №82: прокручивается только панель машины, не страница
+            const side = $('dpWsSide');
+            side.scrollTo({ top: target.getBoundingClientRect().top - side.getBoundingClientRect().top + side.scrollTop - 8, behavior: calm() ? 'auto' : 'smooth' });
+        } else if (target) target.scrollIntoView({ behavior: calm() ? 'auto' : 'smooth', block: 'start' });
     }
 
     // Совет «как поместить» (ответ владельца №54; plan.advice — dispatch._advice): отмеченные машины без рейсов — пересобрать;
@@ -3598,7 +3630,8 @@
             setBusy(false);
             setData(data);
             toast('Երթերը կազմված են՝ ' + pl(data.plan.summary.trips, 'երթ') + ', ≈ ' + fmt(data.plan.summary.km) + NB + 'կմ');
-            $('dpStep3Title').focus();
+            if ($('rtDispatch').classList.contains('is-ws')) { window.scrollTo(0, 0); $('dpBoard').querySelector('.dp-blabel')?.focus({ preventScroll: true }); }
+            else $('dpStep3Title').focus();
         } catch (e) {
             setBusy(false);
             render();
@@ -3679,6 +3712,87 @@
             setData(data);
             toast('Օրվա պլանը ջնջված է — կարելի է նորից կազմել երթերը։');
         } catch (e) { setBusy(false); render(); showActionError(e); }
+    }
+
+    // ---------- Вариант А (ответ владельца №82): рабочий экран на широком экране ----------
+    // Узлы страницы переносятся в слоты рабочего экрана и обратно (место запоминает комментарий-«якорь»): id, обработчики и
+    // состояние (карта Leaflet, раскрытые карточки) те же. Ширина меньше 1101 px или рейсов нет — прежняя страница
+    const WIDE = window.matchMedia ? window.matchMedia('(min-width: 1101px)') : null;
+    // вид (как «Timeline / List» у Routific): рабочий экран (по умолчанию) или прежний список — помнится в этом браузере
+    let wsView = 'ws';
+    try { wsView = window.localStorage.getItem('dpLayout') === 'list' ? 'list' : 'ws'; } catch (e) { /* хранилище недоступно */ }
+    const wsOn = () => !!(wsView === 'ws' && WIDE && WIDE.matches && state.data && state.data.plan && state.data.plan.trucks.length);
+    function setView(v) {
+        wsView = v;
+        try { window.localStorage.setItem('dpLayout', v); } catch (e) { /* только на эту страницу */ }
+        layoutWs();
+        window.scrollTo(0, 0);
+    }
+    const wsHome = new Map();
+    function wsPark(node, slot) {
+        if (!node || !slot) return;
+        if (!wsHome.has(node)) { const c = document.createComment('dp-home'); node.parentNode.insertBefore(c, node); wsHome.set(node, c); }
+        if (node.parentNode !== slot) slot.appendChild(node);
+    }
+    function wsUnpark(node) {
+        const c = node && wsHome.get(node);
+        if (c && c.parentNode && node.previousSibling !== c) c.parentNode.insertBefore(node, c.nextSibling);
+    }
+    const wsNodes = () => [[$('dpApprove'), 'dpWsActs'], [document.querySelector('#rtDispatch .dp-summary-cta'), 'dpWsActs'],
+        [$('dpPlanStats'), 'dpWsKpi'], [$('dpMapBox'), 'dpWsMap'], [$('dpBoard'), 'dpWsBottom'], [$('dpTruckCards'), 'dpWsSide'],
+        [$('dpWhy'), 'dpWsSide'], [document.querySelector('#rtDispatch .dp-prep'), 'dpDrawerBody'], [$('dpRun'), 'dpDrawerBody']];
+    function layoutWs() {
+        const on = wsOn(), root = $('rtDispatch'), was = root.classList.contains('is-ws');
+        if (on) wsNodes().forEach(([n, slot]) => wsPark(n, $(slot)));
+        else if (was) wsNodes().forEach(([n]) => wsUnpark(n));
+        root.classList.toggle('is-ws', on);
+        document.body.classList.toggle('dp-ws-on', on);
+        $('dpWs').hidden = !on;
+        $('dpWsActs').hidden = !on;
+        if (!on) { $('dpDrawer').hidden = true; $('dpPrepOpen').setAttribute('aria-expanded', 'false'); }
+        $('dpWsSide').hidden = !on || !state.mapFocus;
+        if (on && !$('dpMapBox').open) $('dpMapBox').open = true;
+        const fab = $('dpAiOpen');
+        $('dpWsAi').hidden = !fab || (fab.hidden && $('dpAi').hidden);
+        if (on) sizeWs();
+        if (on !== was && state.map) setTimeout(() => state.map.invalidateSize({ pan: false }), 0);
+    }
+    // высота рабочего экрана — до низа окна от его верха (шапка дашборда, день, подсказка и счётчики — выше)
+    function sizeWs() {
+        const ws = $('dpWs');
+        if (ws.hidden) return;
+        const top = ws.getBoundingClientRect().top + window.scrollY;
+        $('rtDispatch').style.setProperty('--ws-h', Math.max(440, Math.round(window.innerHeight - top - 12)) + 'px');
+    }
+    function openDrawer(open) {
+        $('dpDrawer').hidden = !open;
+        $('dpPrepOpen').setAttribute('aria-expanded', String(open));
+        if (open) {
+            // в панели шаги открыты (свёрнутые в строку после сборки — для страницы, не для панели)
+            state.stepsOpen.add('dpStep1');
+            state.stepsOpen.add('dpStep2');
+            renderSteps();
+            $('dpDrawerClose').focus();
+        } else $('dpPrepOpen').focus();
+    }
+    function initWs() {
+        $('dpPrepOpen').addEventListener('click', () => openDrawer($('dpDrawer').hidden));
+        $('dpDrawerClose').addEventListener('click', () => openDrawer(false));
+        $('dpDrawer').addEventListener('keydown', (e) => { if (e.key === 'Escape') openDrawer(false); });
+        $('dpWsClose').addEventListener('click', () => { if (state.data && state.data.plan) setMapFocus(null); });
+        $('dpWsAi').addEventListener('click', () => { const fab = $('dpAiOpen'); if (fab) fab.click(); });
+        $('dpViewList').addEventListener('click', () => setView('list'));
+        $('dpViewWs').addEventListener('click', () => setView('ws'));
+        if (WIDE) {
+            const sync = () => { if (state.data) layoutWs(); };
+            if (WIDE.addEventListener) WIDE.addEventListener('change', sync); else if (WIDE.addListener) WIDE.addListener(sync);
+        }
+        window.addEventListener('resize', () => { if ($('rtDispatch').classList.contains('is-ws')) sizeWs(); });
+        // шапка, подсказка и счётчики меняют высоту после отрисовки (шрифты, переносы) — высота рабочего экрана следом
+        if (typeof window.ResizeObserver !== 'undefined') {
+            const ro = new ResizeObserver(() => { if ($('rtDispatch').classList.contains('is-ws')) sizeWs(); });
+            [document.querySelector('#rtDispatch .dp-mast'), $('dpTodo'), $('dpInbox'), $('dpSameDay')].forEach(el => el && ro.observe(el));
+        }
     }
 
     // ---------- Вкладки на телефоне (№81, как Sidebar / Map у Onfleet) ----------
@@ -4359,6 +4473,7 @@
         $('dpUnloadMin').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); saveUnload(false); } });
         $('dpMapBox').addEventListener('toggle', () => { if ($('dpMapBox').open && state.data && state.data.plan) drawMap(); });
         initTabs();
+        initWs();
         dropStops();
         $('dpSfSend').addEventListener('click', () => {
             const go = paperNext;

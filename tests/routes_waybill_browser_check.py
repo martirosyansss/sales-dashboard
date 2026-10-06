@@ -83,6 +83,7 @@ def main() -> int:
             browser = pw.chromium.launch()
             ctx = browser.new_context(viewport={'width': 1440, 'height': 950}, accept_downloads=True)
             page = ctx.new_page()
+            page.add_init_script("try { localStorage.setItem('dpLayout', 'list'); } catch (e) {}")   # №82: прежний вид «список»
             page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
             expected_409 = []      # D: ответы 409 на устаревший план — ожидаемые, браузер пишет их в консоль
 
