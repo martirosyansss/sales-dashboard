@@ -19,7 +19,7 @@ from typing import Any
 
 from flask import Flask
 
-from . import erp, learning, waybill
+from . import erp, learning, live, waybill
 from .actuals import YEREVAN
 from .roads import RoadProvider, osm_path
 from .snapshot import ResultCache, SnapshotCache, load_snapshot
@@ -62,6 +62,8 @@ def init_app(app: Flask, db: Any, db_path: str | None = None) -> None:
         waybill_loader=lambda isns: waybill.load_lines(connection_string, isns),
         driver_list_loader=lambda since, until: waybill.load_drivers(connection_string, since, until),
         group_loader=lambda ids: erp.load_customer_groups(connection_string, ids),
+        customer_ref_loader=lambda query, ids: erp.load_customer_refs(connection_string, query, ids),
+        customer_hint_loader=lambda since, until: erp.load_customer_hints(connection_string, since, until),
     )
     app.register_blueprint(bp)
     logger.info('[Routes] Раздел «Маршруты» подключён; база настроек: %s; карта дорог: %s%s', path,
@@ -78,6 +80,12 @@ def attach_fleet_facts(app: Flask, source: learning.FleetFacts) -> None:
     """Трек, точки дня и заправки машин (раздел «Առաքիչ», контракт v1.3 §7) — для обучения «Развоза» и отчёта «план —
     факт». Вызывает app_v2 после init_app обоих разделов. Не вызван — обучения нет, расчёты как раньше."""
     app.extensions[EXTENSION_KEY].fleet_facts = source
+
+
+def attach_live_facts(app: Flask, source: live.LiveFacts) -> None:
+    """Факт терминалов за день (раздел «Առաքիչ», №76) — для «Մեքենաները առցանց». Вызывает app_v2 после init_app обоих
+    разделов. Не вызван — карта пуста (API отвечает 400)."""
+    app.extensions[EXTENSION_KEY].live_facts = source
 
 
 CATCHUP_DELAY_S = 120   # догнать пропущенный ночной прогон — через 2 мин после запуска (сервер успеет подняться)

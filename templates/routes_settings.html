@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400..700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+Armenian:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=23">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/routes.css') }}?v=24">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/routes_customer_settings.css') }}?v=3">
 {% endblock %}
 
@@ -237,6 +237,42 @@
                     </div>
                     <div class="rt-ferr" id="rsYerevanErr"></div>
                 </section>
+
+                <!-- «Развоз»: чьи заказы везём (№69) — правило для каждого дня без плана -->
+                <section class="rt-card" id="agents" aria-labelledby="rsHAgents">
+                    <div class="rt-card-head">
+                        <h3 class="rt-card-title" id="rsHAgents"><i class="fas fa-user-tie" aria-hidden="true"></i>Որ մենեջերների պատվերներն ենք տանում</h3>
+                        <span class="rt-card-state" id="rsStAgents"></span>
+                    </div>
+                    <p class="rt-card-lead">Նշված մենեջերների պատվերները «Առաքում» էջը տանում է ամեն օր ինքնաբերաբար՝ ամեն օր նորից նշել պետք չէ։
+                        Այն օրերը, որոնց երթերն արդեն կազմված են, պահում են իրենց ընտրությունը։ Առանձին օրվա ընտրությունը կարելի է փոխել «Առաքում» էջում։
+                        Նոր մենեջերը նշված է լռելյայն, որ նրա պատվերները չկորչեն։
+                        Պահպանելու համար սեղմեք «Պահպանել» կոճակը էջի ներքևում։</p>
+                    <div id="rsAgents"></div>
+                </section>
+
+                <!-- «Развоз» (№74): чьи «ինքն է տանում» заказы всё равно везут наши машины, кроме городов-исключений -->
+                <section class="rt-card" id="fleet" aria-labelledby="rsHFleet">
+                    <div class="rt-card-head">
+                        <h3 class="rt-card-title" id="rsHFleet"><i class="fas fa-truck-arrow-right" aria-hidden="true"></i>Մենեջերներ, որոնց «ինքն է տանում» պատվերները տանում են մեր մեքենաները</h3>
+                        <span class="rt-card-state" id="rsStFleet"></span>
+                    </div>
+                    <p class="rt-card-lead">ERP-ում այս մենեջերների պատվերներում առաքողը հենց մենեջերն է (օրինակ՝ Rocarm), բայց պատվերները տանում են մեր մեքենաները։
+                        Բացառություն՝ ստորև նշված քաղաքների պատվերները․ դրանք գնում են այլ մեքենայով և «Առաքում» էջում երևում են առանձին։
+                        Պահպանելու համար սեղմեք «Պահպանել» կոճակը էջի ներքևում։</p>
+                    <div id="rsFleet"></div>
+                </section>
+
+                <!-- «Развоз» (№74): клиенты, чьи заказы машины не везут никогда -->
+                <section class="rt-card" id="custoff" aria-labelledby="rsHCustOff">
+                    <div class="rt-card-head">
+                        <h3 class="rt-card-title" id="rsHCustOff"><i class="fas fa-ban" aria-hidden="true"></i>Հաճախորդներ, որոնց պատվերները մեր մեքենաները չեն տանում</h3>
+                        <span class="rt-card-state" id="rsStCustOff"></span>
+                    </div>
+                    <p class="rt-card-lead">Օրինակ՝ ներքին հաշիվներ, աշխատակիցներ, արտահանում։ Նրանց պատվերները «Առաքում» էջը չի դնում երթերի մեջ և ցույց է տալիս առանձին՝ «չենք տանում՝ կարգավորումներով»։
+                        Պահպանելու համար սեղմեք «Պահպանել» կոճակը էջի ներքևում։</p>
+                    <div id="rsCustOff"></div>
+                </section>
             </div>
         </section>
 
@@ -312,7 +348,7 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="{{ url_for('static', filename='js/routes_basemap.js') }}?v=1" data-yandex-key="{{ yandex_tiles_key }}"></script>
-<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=30"></script>
+<script src="{{ url_for('static', filename='js/routes_settings.js') }}?v=32"></script>
 <script src="{{ url_for('static', filename='js/routes_customer_settings.js') }}?v=11"></script>
 <script src="{{ url_for('static', filename='js/routes_measurements.js') }}?v=4"></script>
 {% endblock %}

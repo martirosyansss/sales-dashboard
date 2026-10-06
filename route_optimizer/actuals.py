@@ -432,6 +432,12 @@ def _km(moving: Sequence[Fix], start: datetime | None, end: datetime | None) -> 
     return track_km(f for f in moving if (start is None or f.at >= start) and (end is None or f.at <= end))
 
 
+def moving_track(track: Iterable[Fix], actual: DayActual) -> list[Fix]:
+    """Точки, по которым reconstruct считает км дня (actual — его результат для того же трека): track_km от них — это
+    actual.km_gps. Для расхода по загрузке за день (№76): те же км, разложенные по сегментам (geo.track_steps)."""
+    return _moving(clean_track(track), actual.stays)
+
+
 def reconstruct(track: Iterable[Fix], stops: Sequence[PlanStop], depot: Point | None) -> DayActual:
     """Трек и точки плана дня → факт: стоянки, визиты, рейсы, участки, км."""
     pts = clean_track(track)

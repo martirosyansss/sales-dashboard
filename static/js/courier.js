@@ -35,6 +35,7 @@
         collected_by_other: 'Վերցրել է այլ վարորդ', split_order: 'Մասնակի է՝ բաժանված պատվեր',
         merge_conflict: 'Ստուգել՝ պատվերով և ապրանքագրով նշումները չեն համընկնում',
         odometer_suspicious: 'Օդոմետրի ցուցմունքը կասկածելի է',
+        helper_unconfirmed: 'Առաքիչը PIN-ով հաստատված չէ',
     };
     const statusBadge = (s) => (s.status ? badge(...(STATUS[s.status] || [s.status, 'b-none'])) : '—') + (s.removed ? ' ' + badge('Հանված է', 'b-none') : '');
     const tareText = (t) => (t && t.length ? ' <span class="cr-muted">Տարա՝ ' + fmt(t.reduce((a, x) => a + (num(x.qty) || 0), 0), 2) + '</span>' : '');
@@ -47,6 +48,8 @@
     const stopLabel = (f) => esc([f.customer, f.doc_number].filter(Boolean).join(' · ') || '—');
     const flagText = (f) => (f || []).map(x => FLAG[x] || x).join(', ');
     const badge = (text, cls) => '<span class="rt-badge ' + cls + '">' + esc(text) + '</span>';
+    // Վարորդ և առաքիչ (պայմանագիր v1.4 §8)՝ առաքիչը վարորդի անվան տակ
+    const whoCell = (driver, helper) => esc(driver || '') + (helper ? '<span class="cr-with"><i class="fas fa-user-group" aria-hidden="true"></i>Առաքիչ՝ ' + esc(helper) + '</span>' : '');
 
     // ---------- Сервер ----------
     function announce(text) { $('crStatus').textContent = text; }
@@ -266,21 +269,23 @@
               + mm.items.map(x => '<li>' + esc(x.customer_name || x.customer_code) + ' · ' + esc(x.doc_number) + ' — ERP՝ ' + esc(x.erp_car || 'առանց մեքենայի')
               + ', պլան՝ ' + esc(x.plan_cars.join(', ')) + '</li>').join('') + '</ul></span></div>'
             : (mm.error ? '<p class="cr-lead">Համեմատել պլանի հետ չհաջողվեց՝ ' + esc(mm.error) + '</p>' : ''))
-            + (mm.no_car ? '<p class="cr-lead">Պլանի խանութների ' + fmt(mm.no_car) + ' ապրանքագիր ERP-ում առանց մեքենայի է։ Մեքենան որոշվում է ըստ պլանի։</p>' : '');
-        $('crTodayCars').innerHTML = d.cars.length ? d.cars.map(carCard).join('')
+            + (mm.no_car ? '<p class="cr-lead">Պլանի խանութների ' + fmt(mm.no_car) + ' ապրանքագիր ERP-ում առանց մեքենայի է։ Մեքենան որոշվում է ըստ պլանի։</p>' : '')
+            + crewMismatch(d.crew_mismatch);
+        const plan = d.crew_mismatch && d.crew_mismatch.available ? (d.crew_mismatch.planned || {}) : null;
+        $('crTodayCars').innerHTML = d.cars.length ? d.cars.map(c => carCard(c, plan)).join('')
             : '<p class="rt-empty">Այս օրվա համար տվյալներ չկան։ Տերմինալ ունեցող մեքենաների կետերը կերևան այստեղ։</p>';
         $('crFlaggedBox').hidden = !d.flagged.length;
         $('crFlaggedNote').textContent = d.flagged.length ? String(d.flagged.length) : '';
-        $('crFlaggedRows').innerHTML = d.flagged.map(f => '<tr><td>' + esc(timeOf(f.at)) + '</td><td>' + esc(f.car_code) + '</td><td>' + esc(f.driver_name || '')
+        $('crFlaggedRows').innerHTML = d.flagged.map(f => '<tr><td>' + esc(timeOf(f.at)) + '</td><td>' + esc(f.car_code) + '</td><td>' + whoCell(f.driver_name, f.helper_name)
             + '</td><td>' + stopLabel(f) + '</td><td>' + esc(TYPE[f.type] || f.type) + '</td><td>' + esc(flagText(f.flags)) + '</td><td>' + thumbs(f.photos) + '</td></tr>').join('');
         const ph = d.photo_events || [];
         $('crPhotosBox').hidden = !ph.length;
         $('crPhotosNote').textContent = ph.length ? String(ph.length) : '';
-        $('crPhotosRows').innerHTML = ph.map(f => '<tr><td>' + esc(timeOf(f.at)) + '</td><td>' + esc(f.car_code) + '</td><td>' + esc(f.driver_name || '')
+        $('crPhotosRows').innerHTML = ph.map(f => '<tr><td>' + esc(timeOf(f.at)) + '</td><td>' + esc(f.car_code) + '</td><td>' + whoCell(f.driver_name, f.helper_name)
             + '</td><td>' + stopLabel(f) + '</td><td>' + esc(TYPE[f.type] || f.type) + '</td><td>' + thumbs(f.photos) + '</td></tr>').join('');
         $('crRejectedBox').hidden = !d.rejected.length;
         $('crRejectedNote').textContent = d.rejected.length ? String(d.rejected.length) : '';
-        $('crRejectedRows').innerHTML = d.rejected.map(r => '<li><span class="grow">' + esc(r.driver_name || '') + ' · ' + esc(TYPE[r.type] || r.type || '')
+        $('crRejectedRows').innerHTML = d.rejected.map(r => '<li><span class="grow">' + esc(r.driver_name || '') + (r.helper_name ? ' · Առաքիչ՝ ' + esc(r.helper_name) : '') + ' · ' + esc(TYPE[r.type] || r.type || '')
             + ' — ' + esc(r.message) + '</span><span class="cr-muted">' + esc(dateTime(r.received_at)) + '</span></li>').join('');
     }
     // Լիցքավորումներ (պայմանագիր §7)՝ ուղղվածը (supersedes) մոխրագույն, կասկածելի օդոմետրը՝ նշումով
@@ -293,18 +298,51 @@
                 + '</td><td>' + esc([r.superseded ? 'Ուղղված է' : '', flagText(r.flags)].filter(Boolean).join(', ')) + '</td><td>' + thumbs(r.photos) + '</td></tr>').join('')
             + '</tbody></table></div></div></details>';
     }
-    function carCard(c) {
+    // «Պլան ≠ փաստ» անձնակազմով (պայմանագիր v1.4 §8)՝ «Առաքում» պլանի վարորդը/առաքիչը և տերմինալում փաստացին
+    function crewMismatch(cm) {
+        const items = (cm && cm.items) || [];
+        if (!items.length) return '';
+        return '<div class="rt-alert is-warn"><i class="fas fa-user-group" aria-hidden="true"></i><span class="rt-alert-text"><b>Անձնակազմը չի համընկնում «Առաքում» պլանի հետ</b><ul>'
+            + items.map(x => '<li>' + esc(x.car_code) + ' · Ըստ պլանի ' + (x.role === 'helper' ? 'առաքիչ' : 'վարորդ') + '՝ ' + esc(x.planned)
+                + ', փաստացի՝ ' + (x.fact && x.fact.length ? esc(x.fact.join(', ')) : 'մենակ') + '</li>').join('')
+            + '</ul></span></div>';
+    }
+    // Մեքենայի անձնակազմը՝ «Վարորդ՝ A · Առաքիչ՝ B» կամ «մենակ»։ Հին տերմինալը անձնակազմ չի հաղորդում՝ միայն վարորդը։
+    // Անձնակազմ՝ վարորդ և յուրաքանչյուր առաքիչ առանձին՝ առաջին հաստատման հերթականությամբ, իր նշումներով.
+    // «ԺԺ:ՐՐ-ից» (օրվա ոչ առաջինը), «մինչև ԺԺ:ՐՐ» (գրասենյակը հանել է՝ մոխրագույն), «պլանում չկա» (միայն նրա մոտ, ով չկա պլանում)
+    const crewName = (n) => String(n || '').trim().split(/\s+/).join(' ').toLocaleLowerCase('hy');
+    function crewStrip(c, plan) {
+        const person = (role, name, cls, notes) => '<span class="cr-crew-p ' + cls + '"><span class="cr-avatar" aria-hidden="true">' + esc(initials(name)) + '</span>'
+            + '<span class="cr-crew-t"><small>' + role + '</small><b>' + esc(name) + '</b>'
+            + (notes.length ? '<span class="cr-crew-note">' + notes.map(esc).join(' · ') + '</span>' : '') + '</span></span>';
+        const drivers = c.drivers || [];
+        const info = c.helper_info || (c.helpers || []).map(n => ({ name: n, since: null, until: null }));
+        const planned = plan ? crewName((plan[c.car_code] || {}).helper) : null;
+        const helpers = info.map((h, i) => person('Առաքիչ՝', h.name, h.until ? 'is-helper is-revoked' : 'is-helper', [
+            i > 0 && h.since ? timeOf(h.since) + '-ից' : '',
+            h.until ? 'մինչև ' + timeOf(h.until) : '',
+            planned !== null && crewName(h.name) !== planned ? 'պլանում չկա' : '',
+        ].filter(Boolean)));
+        if (!helpers.length && c.alone) {
+            helpers.push('<span class="cr-crew-p is-alone"><span class="cr-avatar" aria-hidden="true"><i class="fas fa-user"></i></span><span class="cr-crew-t"><small>Առաքիչ՝</small><b>մենակ</b></span></span>');
+        }
+        if (!drivers.length && !helpers.length) return '';
+        return '<div class="cr-crew" aria-label="Անձնակազմ">' + (drivers.length ? person('Վարորդ՝', drivers.join(', '), '', []) : '')
+            + (drivers.length && helpers.length ? '<span class="cr-crew-sep" aria-hidden="true">·</span>' : '') + helpers.join('') + '</div>';
+    }
+    function carCard(c, plan) {
         const stat = (v, label, cls) => '<div class="cr-stat ' + (v ? cls : '') + '"><b>' + fmt(v) + '</b><span>' + esc(label) + '</span></div>';
         const done = c.full + c.partial + c.refused + c.covered;
         const rows = [...c.stops, ...c.removed];
         return '<section class="rt-card"><div class="rt-card-head"><h2 class="rt-card-title"><i class="fas fa-truck" aria-hidden="true"></i>' + esc(c.car_code) + '</h2>'
             + '<span class="rt-card-state ' + (c.total && done === c.total ? 'is-ok' : 'is-todo') + '">' + fmt(done) + ' / ' + fmt(c.total) + ' կետ</span></div>'
             + (c.error ? '<p class="rt-ferr">' + esc(c.error) + '</p>' : '')
+            + crewStrip(c, plan)
             + '<div class="cr-stats">' + stat(c.full, 'Ստացված է', 'is-ok') + stat(c.partial, 'Մասնակի', 'is-warn') + stat(c.refused, 'Հրաժարում', 'is-bad')
             + stat(c.in_progress, 'Ընթացքում', 'is-warn') + stat(c.covered, 'Պատվերով արված է', 'is-ok')
             + stat(c.pending, 'Սպասում է', '') + stat(c.unreadable, 'Կոդը չի կարդացվում', 'is-warn') + stat(c.foreign, 'Այլ մեքենայի կետ', 'is-warn')
             + stat(c.flagged, 'Ուշադրություն', 'is-bad') + '</div>'
-            + '<div class="cr-meta"><span>Վարորդ՝ ' + esc(c.drivers.join(', ') || '—') + '</span><span>Վերջին կապը՝ ' + esc(dateTime(c.last_contact)) + '</span>'
+            + '<div class="cr-meta">' + (c.drivers.length ? '' : '<span>Վարորդ՝ —</span>') + '<span>Վերջին կապը՝ ' + esc(dateTime(c.last_contact)) + '</span>'
             + (c.removed.length ? '<span>Հանված կետեր՝ ' + fmt(c.removed.length) + '</span>' : '')
             + (c.gps ? '<span>GPS՝ ' + fmt(c.gps.km, 1) + ' կմ (' + fmt(c.gps.points) + ' կետ, ' + esc(timeOf(c.gps.first)) + '–' + esc(timeOf(c.gps.last)) + ')</span>' : '') + '</div>'
             + refuelsBlock(c.refuels || [])

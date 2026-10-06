@@ -31,6 +31,9 @@
   машиной, которая сегодня не выезжала (same_day_options; машина в рейсе новый заказ не берёт — ответ «Բ»). Рейс, чья
   загрузка по плану уже началась, не меняется; прочие рейсы и точки плана не переставляются. Новый рейс не грузится
   раньше «сейчас» (DraftTrip.not_before). Взятые в D заказы D+1 не везёт (views._same_day_taken).
+- Чьи заказы везут машины парка (ответ владельца №74, FleetRule): «везёт сам» (экспедитор = менеджер) — не для машин,
+  кроме менеджеров правила (Rocarm A000), чьи такие заказы везут машины, если клиент не в городе-исключении («գնում է
+  այլ մեքենայով»); клиенты из списка настроек — никогда. Пустое правило — прежний отбор до байта.
 - Утверждение плана дня (ответ владельца №73, «Հաստատել օրվա պլանը»): все рейсы закреплены (approve), пересборка
   запрещена (views), ручные правки и новые заказы дня — можно; новые рейсы, пока план утверждён, тоже закреплены
   (keep_approved). Снятие (unapprove) открепляет ровно то, что закрепило утверждение.
@@ -43,6 +46,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from datetime import date, datetime, time, timedelta
 from itertools import combinations
 from time import perf_counter
@@ -139,6 +143,12 @@ def holidays_of(settings: Mapping[str, Any]) -> frozenset[date]:
     return frozenset(date.fromisoformat(d) for d in settings.get('holidays') or ())
 
 
+def agents_off_of(draft: Draft | None, settings: Mapping[str, Any]) -> set[int]:
+    """Менеджеры, чьи заказы дня не везём (№69): у дня есть черновик — его выбор (Draft.agents_off, меняется на
+    «Развозе»), нет — правило настроек dispatch_agents_off: с него начинается и первый черновик дня (сборка)."""
+    return set(draft.agents_off) if draft is not None else set(settings.get('dispatch_agents_off') or ())
+
+
 def is_workday(day: date, workdays: Sequence[int], holidays: Collection[date] = ()) -> bool:
     """Рабочий день: день недели (1 = пн … 7 = вс) отмечен рабочим и даты нет среди нерабочих (№64)."""
     return day.isoweekday() in (set(workdays) or set(range(1, 8))) and day not in holidays
@@ -175,6 +185,195 @@ def backlog_since(since: date, workdays: Sequence[int], n: int = BACKLOG_WORKDAY
     return since
 
 
+# --- Чьи заказы везут машины парка (ответ владельца №74) ---
+
+FLEET, SELF_DELIVERY, OTHER_VEHICLE, CUSTOMER_OFF = 'fleet', 'self_delivery', 'other_vehicle', 'customers_off'
+# Другие написания городов-исключений (№74): ключ — город настроек по-армянски в нижнем регистре (fold_text), значения —
+# по-русски, латиницей, старое название и дореформенное написание. Город не из словаря — только как его ввели
+CITY_ALIASES: dict[str, tuple[str, ...]] = {
+    'գյումրի': ('գիւմրի', 'լենինական', 'гюмри', 'ленинакан', 'gyumri', 'gumri', 'leninakan'),
+    'կապան': ('ղափան', 'капан', 'kapan', 'ghapan'),
+    'գորիս': ('горис', 'goris'),
+    'վանաձոր': ('կիրովական', 'ванадзор', 'кировакан', 'vanadzor', 'kirovakan'),
+}
+_YO = str.maketrans('ё', 'е')
+# Марзы Армении — первое поле адреса ERP «Марз, город, улица, дом» (fold_text); «Սյունիքի մարզ» — по слову «մարզ»
+MARZES = frozenset({'արագածոտն', 'արարատ', 'արմավիր', 'գեղարքունիք', 'կոտայք', 'լոռի', 'շիրակ', 'սյունիք', 'վայոց ձոր',
+                    'տավուշ', 'арагацотн', 'гегаркуник', 'котайк', 'лори', 'ширак', 'сюник', 'вайоц дзор', 'тавуш'})
+_REGION_WORDS = frozenset({'մարզ', 'մարզի', 'область', 'обл', 'марз'})
+_COUNTRY = frozenset({'հհ', 'հայաստան', 'հայաստանի հանրապետություն', 'армения', 'ра', 'armenia'})
+# Слова улиц и дорог: «Վանաձոր փողոց 4», «Գյումրու խճ.» — это не город
+STREET_WORDS = frozenset({'փ', 'փող', 'փողոց', 'պող', 'պողոտա', 'խճ', 'խճղ', 'խճուղի', 'մայրուղի', 'նրբ', 'նրբանցք',
+                          'թաղ', 'թաղամաս', 'ул', 'улица', 'пр', 'проспект', 'пер', 'переулок', 'шоссе', 'трасса',
+                          'st', 'street', 'str', 'ave', 'avenue', 'road', 'rd', 'highway'})
+# «ք. Կապան», «ք․Գորիս», «г. Капан», «քաղաք Գյումրի» — город назван явно
+_CITY_MARK = re.compile(r'(?<!\w)(?:(?:ք|г)\s*[.․]|(?:քաղաք|город)(?!\w))\s*')
+
+
+def fold_text(text: str) -> str:
+    """Текст для сравнения городов: без регистра (и армянские прописные: «ԿԱՊԱՆ» = «Կապան»), «ё» = «е», «և»/«եւ»/«ԵՎ»
+    = «եվ», пробелы схлопнуты."""
+    return ' '.join(text.casefold().translate(_YO).replace('եւ', 'եվ').split())
+
+
+def city_field(address: str) -> str | None:
+    """Поле города адреса ERP (fold_text) — с него начинается название города, дальше может идти улица: после «ք.»/«г.»
+    («Սյունիքի մարզ, ք․ Կապան Շինարարների 1» → «կապան շինարարների 1»), иначе второе поле после марза («Շիրակ,
+    Գյումրի, …»), иначе первое поле («Երևան, Աջափնյակ, …»; «ՀՀ»/«Հայաստան» впереди пропускаются). Адрес из одного поля
+    без «ք.» («Բաբայան 2/17») или пустой — None: города в нём нет. Адрес в несколько строк — последняя непустая строка
+    (в первых бывает название: «Կապան Մարկետ ՍՊԸ\nԵրևան, Կոմիտաս 1» — Ереван)."""
+    lines = [x for x in address.splitlines() if x.strip()]
+    t = fold_text(lines[-1] if lines else '')
+    m = _CITY_MARK.search(t)
+    if m:
+        return t[m.end():].split(',')[0].strip() or None
+    segs = [x.strip() for x in t.split(',') if x.strip()]
+    while segs and segs[0] in _COUNTRY:
+        segs.pop(0)
+    if len(segs) < 2:
+        return None
+    if segs[0] in MARZES or _REGION_WORDS & set(segs[0].split()):
+        return segs[1]
+    return segs[0]
+
+
+def _starts_city(text: str, key: str) -> bool:
+    """text начинается городом key целым словом, и это не улица/дорога его имени («վանաձոր փողոց», «գյումրի-երևան խճղ.»)."""
+    if text == key:
+        return True
+    if not text.startswith(key + ' '):
+        return False
+    return text[len(key) + 1:].split(' ', 1)[0].strip('.,․') not in STREET_WORDS
+
+
+Place = tuple[str, str]   # клиент: (адрес по умолчанию ERP, название клиента)
+
+
+def place_of(customers: Mapping[int, tuple[str, str]], addresses: Mapping[int, str]) -> Callable[[int], Place]:
+    """Клиент → (адрес, название) по справочникам дня (DispatchData.customers и addresses)."""
+    return lambda cid: (addresses.get(cid, ''), (customers.get(cid) or ('', ''))[1])
+
+
+def _no_place(cid: int) -> Place:
+    return '', ''
+
+
+@dataclass(frozen=True)
+class FleetRule:
+    """Чьи заказы дня везут машины парка (№74, настройки «Маршрутов»). customers_off — клиенты, чьи заказы машины не везут
+    никогда (внутренние счета, экспорт). Заказ «везёт сам» (DispatchOrder.self_delivery) не для машин, кроме менеджеров
+    agents: их такие заказы везут машины (Rocarm A000 — в ERP экспедитор он сам), если клиент не в городе из cities —
+    тогда «գնում է այլ մեքենայով». Город — поле города адреса по умолчанию (city_field; адрес говорит «Երևան» — значит
+    Ереван, что бы ни было в названии); нет его — часть названия клиента после «/» («Տռովիքս ՍՊԸ/ԳՅՈՒՄՐԻ»). Без регистра,
+    с другими написаниями (CITY_ALIASES). Пустое правило (нет ни менеджеров, ни клиентов) — отбор как до него."""
+    agents: frozenset[int] = frozenset()
+    cities: tuple[str, ...] = ()
+    customers_off: frozenset[int] = frozenset()
+
+    @classmethod
+    def from_settings(cls, settings: Mapping[str, Any]) -> FleetRule:
+        return cls(frozenset(settings.get('dispatch_fleet_agents') or ()),
+                   tuple(settings.get('dispatch_other_cities') or ()),
+                   frozenset(settings.get('dispatch_customers_off') or ()))
+
+    @classmethod
+    def from_json(cls, raw: Any) -> FleetRule:
+        """Правило, сохранённое в черновике дня (Draft.fleet); нет его или битое — пустое правило."""
+        if not isinstance(raw, dict):
+            return NO_RULE
+        ids = lambda key: frozenset(x for x in (raw.get(key) or [])[:MAX_FLEET_IDS] if _is_int(x))   # noqa: E731
+        return cls(ids('agents'), tuple(c for c in (raw.get('cities') or [])[:MAX_FLEET_IDS] if isinstance(c, str)),
+                   ids('customers_off'))
+
+    @property
+    def active(self) -> bool:
+        return bool(self.agents or self.customers_off)
+
+    def to_json(self) -> dict[str, Any] | None:
+        """Для черновика дня: пустое правило — None (поля в черновике нет)."""
+        if not self.active:
+            return None
+        return {'agents': sorted(self.agents), 'cities': list(self.cities), 'customers_off': sorted(self.customers_off)}
+
+    def same_as(self, other: FleetRule) -> bool:
+        """Правила отбирают заказы одинаково (города — без регистра и порядка; у пустых правил города не важны)."""
+        if not (self.active or other.active):
+            return True
+        return (self.agents, self.customers_off, frozenset(map(fold_text, self.cities))) == \
+            (other.agents, other.customers_off, frozenset(map(fold_text, other.cities)))
+
+    @cached_property
+    def _keys(self) -> tuple[tuple[str, str], ...]:
+        """(написание, город настроек) — длинные первыми."""
+        out: dict[str, str] = {}
+        for city in self.cities:
+            k = fold_text(city)
+            for v in (k, *CITY_ALIASES.get(k, ())):
+                if v:
+                    out.setdefault(v, city)
+        return tuple(sorted(out.items(), key=lambda kv: -len(kv[0])))
+
+    def matched_city(self, place: Place) -> str | None:
+        """Город из cities, где клиент (адрес, название), или None."""
+        address, name = place
+        field_ = city_field(address)
+        texts = [field_] if field_ is not None else [fold_text(x).strip(' .,-') for x in name.split('/')[1:]]
+        return next((city for key, city in self._keys for t in texts if _starts_city(t, key)), None)
+
+    def needs_place(self, o: DispatchOrder) -> bool:
+        """Решению по заказу нужно, где клиент (город-исключение)."""
+        return bool(self.cities) and o.self_delivery and o.agent_id in self.agents \
+            and o.customer_id not in self.customers_off
+
+    def kind(self, o: DispatchOrder, place: Callable[[int], Place] = _no_place) -> str:
+        """FLEET — заказ для машин парка; SELF_DELIVERY — менеджер везёт сам; OTHER_VEHICLE — менеджер правила, город-
+        исключение; CUSTOMER_OFF — клиент из списка «машины не везут»."""
+        if o.customer_id in self.customers_off:
+            return CUSTOMER_OFF
+        if not o.self_delivery:
+            return FLEET
+        if o.agent_id not in self.agents:
+            return SELF_DELIVERY
+        return OTHER_VEHICLE if self.needs_place(o) and self.matched_city(place(o.customer_id)) else FLEET
+
+
+MAX_FLEET_IDS = 5000   # элементов в списках правила черновика — защита от битого черновика
+
+
+def fleet_rule_of(draft: Draft | None, settings: Mapping[str, Any]) -> FleetRule:
+    """Правило «чьи заказы везут машины» дня (№74, как agents_off_of): у дня есть черновик — правило, с которым его
+    собрали (Draft.fleet: смена настроек не переписывает собранные дни), нет — из настроек."""
+    return FleetRule.from_json(draft.fleet) if draft is not None else FleetRule.from_settings(settings)
+
+
+NO_RULE = FleetRule()
+
+# Подсказка к списку «машины не везут» (№74): клиенты без адреса или вне Армении. Рамка — Армения с запасом (широта,
+# долгота от–до); адрес вне Армении — «ՌԴ»/«Россия» словом или кириллица без армянских букв («г. Краснодар, …»)
+ARMENIA_BOX = ((38.8, 41.4), (43.4, 46.7))
+_ABROAD_WORDS = re.compile(r'(?<!\w)(?:ռդ|ռուսաստան\w*|россия|рф)(?!\w)')
+# адрес по-русски, но в Армении: «г. Ереван, …», «Армения, Армавир» — не «за границей»
+_ARMENIA_RU = re.compile(r'(?<!\w)(?:ереван\w*|армени\w*|армавир\w*|гюмри|ванадзор|капан|горис|абовян|эчмиадзин|'
+                         r'вагаршапат|раздан|масис|арташат|аштарак|севан|дилижан|иджеван|ехегнадзор|сисиан|степанаван|'
+                         r'арарат|чаренцаван|гавар|алаверди|спитак|артик|мегри|каджаран|джермук|вайк|ноемберян)(?!\w)')
+_CYRILLIC = re.compile('[а-я]')
+_ARMENIAN = re.compile('[ա-և]')
+NO_ADDRESS, ABROAD = 'no_address', 'abroad'
+
+
+def hint_reason(addresses: Sequence[str], points: Sequence[tuple[float, float]]) -> str | None:
+    """Почему подсказать клиента (адреса по умолчанию ERP: тексты и точки; точка 0,0 — не точка): ABROAD — точка вне
+    ARMENIA_BOX или адрес за границей; NO_ADDRESS — ни текста, ни точки; иначе None."""
+    (lat_lo, lat_hi), (lon_lo, lon_hi) = ARMENIA_BOX
+    texts = [fold_text(a) for a in addresses if a.strip()]
+    pts = [(lat, lon) for lat, lon in points if (lat, lon) != (0, 0)]
+    if any(not (lat_lo <= lat <= lat_hi and lon_lo <= lon <= lon_hi) for lat, lon in pts) \
+            or any(_ABROAD_WORDS.search(t) or (_CYRILLIC.search(t) and not _ARMENIAN.search(t)
+                                               and not _ARMENIA_RU.search(t)) for t in texts):
+        return ABROAD
+    return None if texts or pts else NO_ADDRESS
+
+
 @dataclass(frozen=True)
 class Selection:
     main: list[DispatchOrder]            # заказы дня к доставке
@@ -183,28 +382,40 @@ class Selection:
     self_delivery: list[DispatchOrder]   # заказы дня, которые менеджер развозит сам
     same_day_taken: int = 0              # заказов дня, взятых в развоз дня их приёма (№72, views._day_orders)
     same_day_unread: bool = False        # план прошлого дня не прочитан: взятые в нём заказы могут прийти сюда повторно
+    # №74: заказы дня менеджеров правила в городах-исключениях («այլ մեքենայով») и клиентов «машины не везут»
+    other_vehicle: list[DispatchOrder] = field(default_factory=list)
+    customers_off: list[DispatchOrder] = field(default_factory=list)
 
 
-def to_deliver(orders: Sequence[DispatchOrder], day: date, since: date) -> Selection:
+def to_deliver(orders: Sequence[DispatchOrder], day: date, since: date, rule: FleetRule = NO_RULE,
+               place: Callable[[int], str] = _no_place) -> Selection:
     """Заказы к доставке в day: с датой от since — заказы дня, раньше — «не отгружены с прошлых дней».
     Отгруженные в day и позже — к доставке: для прошедшей даты это и есть то, что везли (или должны
-    были везти). Заказы, которые менеджер развозит сам, машинам парка не достаются."""
+    были везти). Машинам парка — только заказы FLEET правила rule (№74; place — клиент → place_text): заказы, которые
+    менеджер развозит сам, везут другие машины или не везём вовсе, — отдельными списками (только заказы дня)."""
     key = lambda o: (o.customer_id, o.order_date, o.isn)   # noqa: E731
     pending = [o for o in orders if o.shipped is None or o.shipped >= day]
-    trucks = [o for o in pending if not o.self_delivery]
+    kinds = [(o, rule.kind(o, place)) for o in pending]
+    trucks = [o for o, k in kinds if k == FLEET]
+
+    def of_day(kind: str) -> list[DispatchOrder]:
+        return sorted((o for o, k in kinds if k == kind and o.order_date >= since), key=key)
     return Selection(main=sorted((o for o in trucks if o.order_date >= since), key=key),
                      backlog=sorted((o for o in trucks if o.order_date < since), key=key),
                      shipped_before=sum(1 for o in orders if o.order_date >= since) - len(
                          [o for o in pending if o.order_date >= since]),
-                     self_delivery=sorted((o for o in pending if o.self_delivery and o.order_date >= since), key=key))
+                     self_delivery=of_day(SELF_DELIVERY), other_vehicle=of_day(OTHER_VEHICLE),
+                     customers_off=of_day(CUSTOMER_OFF))
 
 
-def same_day_candidates(orders: Sequence[DispatchOrder], day: date) -> list[DispatchOrder]:
-    """Новые заказы дня day (№72): с датой day, не отгруженные раньше day, кроме тех, что менеджер развозит сам. Это заказы
-    развоза следующего рабочего дня — в развоз day только по выбору логиста (Draft.same_day)."""
+def same_day_candidates(orders: Sequence[DispatchOrder], day: date, rule: FleetRule = NO_RULE,
+                        place: Callable[[int], str] = _no_place) -> list[DispatchOrder]:
+    """Новые заказы дня day (№72): с датой day, не отгруженные раньше day, только для машин парка (FleetRule.kind, №74:
+    не «везёт сам», не город-исключение, не клиент «машины не везут»). Это заказы развоза следующего рабочего дня — в
+    развоз day только по выбору логиста (Draft.same_day)."""
     key = lambda o: (o.customer_id, o.order_date, o.isn)   # noqa: E731
     return sorted((o for o in orders if o.order_date == day and (o.shipped is None or o.shipped >= day)
-                   and not o.self_delivery), key=key)
+                   and rule.kind(o, place) == FLEET), key=key)
 
 
 @dataclass(frozen=True)
@@ -338,6 +549,8 @@ class Draft:
     # план дня утверждён (№73): {'at': когда (ISO), 'by': кто, 'pinned': [рейсы, которые закрепило утверждение —
     # до него они не были закреплены]}; None — не утверждён
     approved: dict[str, Any] | None = None
+    # правило «чьи заказы везут машины», с которым день собран (№74, FleetRule.to_json); None — пустое правило
+    fleet: dict[str, Any] | None = None
     # водителей меньше, чем машин (№77, build_crewed): seats — машина → водитель, которого сборка посадила вместо её
     # водителя (свой водитель машины — не здесь, его берут из «Վարորդ»); unmanned — отмеченные машины, которые сегодня не
     # выходят без водителя: машина → 'absent' (её водитель не вышел) | 'moved' (её водитель на другой машине — так день
@@ -363,6 +576,7 @@ class Draft:
                 **({'same_day_trips': sorted(self.same_day_trips)} if self.same_day_trips else {}),
                 **({'same_day_trucks': sorted(self.same_day_trucks)} if self.same_day_trucks else {}),
                 **({'approved': dict(self.approved)} if self.approved is not None else {}),
+                **({'fleet': dict(self.fleet)} if self.fleet is not None else {}),
                 **({'seats': dict(sorted(self.seats.items()))} if self.seats else {}),
                 **({'unmanned': dict(sorted(self.unmanned.items()))} if self.unmanned else {}),
                 **({'absent': sorted(self.absent)} if self.absent else {})}
@@ -405,7 +619,8 @@ class Draft:
                    same_day_trips=cids('same_day_trips'),
                    same_day_trucks={x for x in (raw.get('same_day_trucks') or [])[:MAX_TRIPS] if isinstance(x, str)}
                    if isinstance(raw.get('same_day_trucks'), list) else set(),
-                   approved=_approved(raw.get('approved')), seats=_str_map(raw.get('seats')),
+                   approved=_approved(raw.get('approved')), fleet=FleetRule.from_json(raw.get('fleet')).to_json(),
+                   seats=_str_map(raw.get('seats')),
                    unmanned={k: v for k, v in _str_map(raw.get('unmanned')).items() if v in UNMANNED},
                    absent=sorted({x for x in (raw.get('absent') or [])[:MAX_TRIPS] if isinstance(x, str) and x})
                    if isinstance(raw.get('absent'), list) else [])
@@ -695,7 +910,8 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
     codes = {t.car_code for t in sel}
     draft = Draft(trucks=sorted(codes), excluded=set(old.excluded), added=set(old.added), next_id=old.next_id,
                   built_at=now, deferred=set(old.deferred), dropped=set(old.dropped), agents_off=set(old.agents_off),
-                  same_day=set(old.same_day), same_day_trips=set(old.same_day_trips))
+                  same_day=set(old.same_day), same_day_trips=set(old.same_day_trips),
+                  fleet=dict(old.fleet) if old.fleet is not None else None)
     pinned = [DraftTrip(t.id, t.truck, list(t.stops), True, t.not_before) for t in old.trips if t.pinned and t.truck in codes]
     tmp = Draft(trips=pinned)
     _clean(tmp, routable)
