@@ -60,7 +60,7 @@ from typing import Any, Callable, Collection, Mapping, Protocol, Sequence
 from . import actuals as ac
 from .geo import Fix, Point, haversine_km, in_city, in_polygon, track_steps
 from .learning import _hhmm, effective_refuels, fuel_intervals, track_fixes
-from .store import DEFAULT_SETTINGS
+from .store import DEFAULT_SETTINGS, LIVE_ALERT_KINDS
 
 YEREVAN = ac.YEREVAN
 DONE = ('full', 'partial', 'refused', 'covered')   # точка закрыта водителем
@@ -98,6 +98,10 @@ class Rules:
     unload_min_per_tonne: float = 6.0
     load_min: float = 0.0                # загрузка на складе перед рейсом: фиксированные минуты и на тонну (настройки)
     load_min_per_tonne: float = 0.0
+    # тревоги в Telegram (live_alerts): какие виды слать, тихие часы (минуты от полуночи: с — до; None — нет), повтор
+    alert_kinds: tuple[str, ...] = LIVE_ALERT_KINDS
+    quiet: tuple[float, float] | None = (1200.0, 480.0)
+    repeat_min: float = 30.0
 
     @classmethod
     def from_settings(cls, s: Mapping[str, Any]) -> Rules:
@@ -108,6 +112,8 @@ class Rules:
         def num(key: str) -> float:
             v = s.get(key)
             return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else float(DEFAULT_SETTINGS[key])
+        quiet = (hm('live_quiet_from', 1200.0), hm('live_quiet_to', 480.0))
+
         def opt(key: str) -> float:   # необязательная (null — «ещё не известно») норма — 0
             v = s.get(key)
             return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
@@ -115,7 +121,9 @@ class Rules:
                    num('truck_lunch_min'), (hm('truck_lunch_from', 750.0), hm('truck_lunch_to', 870.0)),
                    tuple((float(p[0]), float(p[1])) for p in s.get('center_zone') or ()),
                    num('unload_min_per_stop'), num('unload_min_per_tonne'),
-                   opt('warehouse_load_fixed_min'), opt('warehouse_load_min_per_tonne'))
+                   opt('warehouse_load_fixed_min'), opt('warehouse_load_min_per_tonne'),
+                   tuple(k for k in LIVE_ALERT_KINDS if k in (s.get('live_alert_kinds', LIVE_ALERT_KINDS))),
+                   quiet if quiet[0] != quiet[1] else None, num('live_repeat_min'))
 
 
 @dataclass(frozen=True)

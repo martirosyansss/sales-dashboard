@@ -19,13 +19,13 @@ from typing import Any
 
 from flask import Flask
 
-from . import erp, learning, live, waybill
+from . import erp, learning, live, live_alerts, waybill
 from .actuals import YEREVAN
 from .roads import RoadProvider, osm_path
 from .snapshot import ResultCache, SnapshotCache, load_snapshot
 from .store import Store
 from .valhalla_engine import ValhallaProvider
-from .views import EXTENSION_KEY, DriverGeo, RoutesState, bp, run_learning_job
+from .views import EXTENSION_KEY, DriverGeo, RoutesState, _live_cards, bp, run_learning_job
 
 logger = logging.getLogger(__name__)
 
@@ -128,4 +128,44 @@ def start_learning_scheduler(app: Flask) -> threading.Thread | None:
     thread = threading.Thread(target=loop, name='routes-learning-nightly', daemon=True)
     thread.start()
     logger.info('[Routes] Ночное обучение «Развоза» — каждый день в %02d:%02d (Ереван)', *learning.NIGHTLY_AT)
+    return thread
+
+
+def start_live_alerts(app: Flask, send: Any = None, interval_s: float = live_alerts.INTERVAL_S) -> threading.Thread | None:
+    """Тревоги карты машин в Telegram-группу (№76, этап 2, live_alerts) — фоновый поток процесса сервера. Запускает app_v2
+    только при запуске сервера (не при импорте: тесты его не запускают). Только при ROUTES_LIVE_ALERTS=1 и заданных
+    токене и чате (ROUTES_LIVE_TG_TOKEN | TELEGRAM_BOT_TOKEN, ROUTES_LIVE_TG_CHAT); иначе — None. Переменная задаётся
+    только на CT115: слать должен ровно один процесс. send(text) — подмена отправки (тесты); поток каждые interval_s с
+    считает карточки флота за сегодня (тот же кэш 10 с, что у карты) и шлёт новые тревоги; сбой прохода — в журнал,
+    поток работает дальше. Остановка — thread.stop_event.set()."""
+    config = live_alerts.config_from_env()
+    if config is None:
+        logger.info('[Routes] Тревоги карты в Telegram выключены (нужны %s=1, токен и чат)', live_alerts.ENABLE_ENV)
+        return None
+    state = app.extensions[EXTENSION_KEY]
+    token, chat = config
+    path = os.path.join(os.path.dirname(os.path.abspath(state.store.path)), live_alerts.STATE_FILE)
+
+    def source() -> tuple[Any, datetime, Any] | None:
+        if state.live_facts is None:
+            return None
+        ctx, now, _, cards = _live_cards(state, datetime.now(YEREVAN).date())
+        return ctx.rules, now, cards
+
+    alerter = live_alerts.LiveAlerter(source, send or (lambda text: live_alerts.send_telegram(token, chat, text)), path)
+    stop = threading.Event()
+
+    def loop() -> None:
+        while not stop.is_set():
+            try:
+                with app.app_context():
+                    alerter.tick()
+            except Exception:   # поток не должен умереть: следующий проход — новая попытка
+                logger.exception('[Routes] Тревоги в Telegram: сбой прохода')
+            stop.wait(interval_s)
+
+    thread = threading.Thread(target=loop, name='routes-live-alerts', daemon=True)
+    thread.stop_event = stop   # type: ignore[attr-defined]
+    thread.start()
+    logger.info('[Routes] Тревоги карты машин — в Telegram-чат, каждые %.0f с; «уже отправлено»: %s', interval_s, path)
     return thread

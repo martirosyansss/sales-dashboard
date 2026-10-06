@@ -85,6 +85,13 @@
                 hint: 'ճաշի ժամին ամենաերկար կանգառը՝ ճաշ է․ ահազանգ՝ միայն եթե այն ավելի երկար է, քան ճաշը + այս րոպեները' },
             { key: 'live_no_contact_min', label: 'Կապ չկա՝ ավելի երկար, քան, րոպե', min: 1, max: 120, step: 1,
                 hint: 'միայն բաց աշխատանքային օրը՝ տերմինալի առաջին կապից մինչև օրվա փակումը կամ վերադարձը պահեստ' },
+            // ահազանգեր Telegram-ի խմբում (թողարկում 2): ինչ ուղարկել, հանգիստ ժամեր, կրկնության պատուհան
+            { key: 'live_alert_kinds', kind: 'kinds', label: 'Telegram-ի խմբում ուղարկել ահազանգերը՝',
+                hint: 'ահազանգն ուղարկվում է սկսվելիս, իսկ «Կապ չկա»-ն և GPS-ը՝ նաև ավարտվելիս' },
+            { key: 'live_quiet_from', label: 'Հանգիստ ժամեր՝ սկսվում են', type: 'time',
+                hint: 'այդ ժամերին Telegram-ով ահազանգ չի ուղարկվում (քարտեզի վրա այն երևում է)․ սկիզբն ու վերջը նույնն են՝ հանգիստ ժամեր չկան' },
+            { key: 'live_quiet_to', label: 'Հանգիստ ժամեր՝ ավարտվում են', type: 'time' },
+            { key: 'live_repeat_min', label: 'Նույն տեսակի ահազանգը նույն մեքենայի համար՝ ոչ ավելի հաճախ, քան, րոպե', min: 1, max: 1440, step: 1 },
         ] },
         { title: 'Այցի տևողությունը, րոպե', items: [
             { key: 'visit_min_small', label: 'Փոքր խանութ', min: 1, max: 120, step: 0.5, nullable: true, auto: true, hint: 'դատարկ՝ վերցնում ենք GPS հետագծերում խանութների մոտ կանգառներից' },
@@ -1458,6 +1465,20 @@
         box.append(chainsGroup(s));
     }
 
+    // Telegram-ահազանգերի տեսակներ (live_alert_kinds): նշված տեսակներն են ուղարկվում, լռելյայն՝ բոլորը
+    const LIVE_KINDS = [['speed', 'Արագության գերազանցում'], ['stop', 'Երկար կանգառ ոչ խանութում'],
+        ['no_contact', 'Կապ չկա («Առաքիչ» 2.2.0 և ավելի նոր)'], ['gps', 'GPS-ն անջատված է'],
+        ['center', 'Փոքր կենտրոնում (մուտքը թույլատրված չէ)']];
+    function kindsField(it, s, err) {
+        const on = new Set(Array.isArray(s[it.key]) ? s[it.key] : LIVE_KINDS.map(k => k[0]));
+        const box = h('div', { class: 'rt-wd rs-livekinds', role: 'group', 'aria-labelledby': 'rsLiveKindsLabel', id: 'rsN_' + it.key });
+        LIVE_KINDS.forEach(([code, text]) => box.append(h('label', null,
+            h('input', { type: 'checkbox', value: code, checked: on.has(code), dataset: { liveKind: '1' } }), text)));
+        reg(['settings.' + it.key], box, err, it.label);
+        return h('div', { class: 'rt-field' }, h('span', { class: 'rt-field-label', id: 'rsLiveKindsLabel', text: it.label }), box,
+            it.hint ? h('div', { class: 'rt-field-hint', text: it.hint }) : null, err);
+    }
+
     function normField(it, s) {
         const id = 'rsN_' + it.key;
         const err = errNode();
@@ -1468,6 +1489,7 @@
             reg(['settings.' + it.lat, 'settings.' + it.lon, 'settings.' + it.key], inp, err, it.label);
             return h('div', { class: 'rt-field' }, h('label', { for: id, text: it.label }), inp, err);
         }
+        if (it.kind === 'kinds') return kindsField(it, s, err);
         const isTime = it.type === 'time';
         const inp = h('input', {
             class: 'rt-input' + (isTime ? ' rt-num' : ''), id, type: isTime ? 'text' : 'number',
@@ -1853,6 +1875,7 @@
             if (r.error) errors['settings.' + key] = r.error;
             else s[key] = r.value;
         });
+        s.live_alert_kinds = [...document.querySelectorAll('#rsForm [data-live-kind]:checked')].map(i => i.value);
         s.workdays = [...document.querySelectorAll('#rsForm [data-wd]:checked')].map(i => Number(i.value));
         if (!s.workdays.length) errors['settings.workdays'] = 'Նշեք գոնե մեկ աշխատանքային օր';
         const picked = $('rsHolidayNew').value;   // выбрали дату и сразу «Պահպանել», не нажав «Ավելացնել»
