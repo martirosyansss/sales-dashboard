@@ -4430,12 +4430,13 @@ def _warehouse_body(state: RoutesState, bundle: Bundle, day: date) -> dict[str, 
     seats = dp.crew_view(dd.draft, _crew(state, day, bundle.trucks)[0])   # водители — плана водителей, как и рейсы
     by_id = {t.id: t for t in dd.draft.trips}
     marks = {t.id: t.loaded for t in draft.trips}
+    shifted = dp.shares_shifted(draft)   # доля магазина изменилась правкой рейса другой машины — тоже «логист меняет»
     trucks = []
     for t in plan['trucks']:
         trips = []
         for no, tr in enumerate(t['trips'], 1):
             # №81: рейса водителей нет в черновике — логист его убрал или переложил и ещё не отправил: отметку не ставить
-            changing = tr['id'] not in marks
+            changing = tr['id'] not in marks or tr['id'] in shifted
             mark = None if changing else marks[tr['id']]
             loaded = {'at': mark['at'][11:16], 'by': mark['by']} if mark is not None else None
             trips.append({'id': tr['id'], 'no': no, 'of': len(t['trips']), 'kg': tr['kg'], 'stops': len(tr['stops']),
@@ -4452,9 +4453,8 @@ def _waybill_unsent(draft: dp.Draft, car: str) -> bool:
     """У машины неотправленные правки логиста (№81) — Բեռնագիր складу не печатать до «Ուղարկել» (ответ владельца 07.10
     «Запретить до отправки»). Правка — если у водителей и в черновике разные:
     - рейсы машины (номер и точки по порядку) — сюда входит и рейс «changing», который прячет «Բեռնված է»;
-    - рейсы, где бывает клиент этой машины, по порядку черновика (и на других машинах): от них его доля
-      (waybill.truck_waybill: частей — сколько рейсов, своя — по порядку) — убрали магазин из рейса другой машины, и доля
-      здесь стала целой;
+    - доли её магазинов (dp.trip_parts — тот же расчёт, что у листа): убрали магазин из рейса другой машины, и доля здесь
+      стала целой;
     - отбор заказов дня (dp.unsent: orders) — груз любой машины.
     План не отправляли — водители увидят сам черновик, правок «до отправки» нет."""
     if draft.sent is None:
@@ -4466,18 +4466,11 @@ def _waybill_unsent(draft: dp.Draft, car: str) -> bool:
 
     def trips(d: dp.Draft) -> list[tuple[int, tuple[int, ...]]]:
         return sorted((t.id, tuple(t.stops)) for t in d.trips if t.truck == car)
-
-    def visits(d: dp.Draft, cids: Collection[int]) -> dict[int, list[tuple[str, int]]]:
-        seen: dict[int, list[tuple[str, int]]] = {}
-        for t in d.trips:
-            for c in t.stops:
-                if c in cids:
-                    seen.setdefault(c, []).append((t.truck, t.id))
-        return seen
     if trips(draft) != trips(sent):
         return True
-    mine = {c for d in (draft, sent) for t in d.trips if t.truck == car for c in t.stops}
-    return visits(draft, mine) != visits(sent, mine)
+    mine = {t.id for t in draft.trips if t.truck == car}
+    now, was = dp.trip_parts(draft), dp.trip_parts(sent)
+    return any(now[tid] != was[tid] for tid in mine)
 
 
 @bp.get('/api/routes/warehouse')
@@ -4591,9 +4584,9 @@ def api_warehouse_loaded() -> Any:
         return _conflict(WAREHOUSE_NO_PLAN)
     if payload.get('rev') != rev:
         return _conflict(WAREHOUSE_STALE)
-    if all(t.id != payload.get('trip') for t in draft.trips) \
+    if (all(t.id != payload.get('trip') for t in draft.trips) or payload.get('trip') in dp.shares_shifted(draft)) \
             and any(t.id == payload.get('trip') for t in draft.for_drivers().trips):
-        return _conflict(WAREHOUSE_CHANGING)   # №81: рейс водителей логист изменил и ещё не отправил
+        return _conflict(WAREHOUSE_CHANGING)   # №81: рейс водителей логист изменил (и долю магазина) и ещё не отправил
     me = session.get('username')
     now = _same_day_now()
     try:

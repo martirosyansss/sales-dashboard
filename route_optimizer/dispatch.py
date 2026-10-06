@@ -62,8 +62,9 @@
   утверждённому плану (mark_loaded). Инвариант: загруженный рейс закреплён — пересборка его не трогает (ни состав, ни
   машину), снятие утверждения его не открепляет (держит отметка: loaded['pin']), логист не открепляет его кнопкой,
   новые заказы дня (№72) и перенос конца рейса (№59) в него не вставляют; любая правка, меняющая его груз (машину,
-  магазины, заказы их точек — loaded_cargo; в т.ч. фильтр менеджеров, «Կիրառել կարգավորումները», заказы дня), — только с
-  подтверждением (LoadedEdit, views). Снятие отметки (unmark_loaded) открепляет рейс, если его держала только она;
+  магазины, заказы их точек, долю тяжёлого магазина — loaded_cargo; в т.ч. фильтр менеджеров, «Կիրառել
+  կարգավորումները», заказы дня, правка рейса другой машины с тем же магазином), — только с подтверждением (LoadedEdit,
+  views). Снятие отметки (unmark_loaded) открепляет рейс, если его держала только она;
   держит утверждение — закрепление переходит утверждению (снятие утверждения откроет).
 - Правило магазина (ответ владельца №78, 16–18: «Ռամադա» — всегда отдельно и только FORD 333NO33, потом её второй рейс):
   «отдельный рейс» (DayContext.solo, store.customer_rule) — заказы магазина едут рейсом без других магазинов (правило —
@@ -1775,13 +1776,51 @@ LOADED_UNPIN = 'Երթը բեռնված է — նախ հանեք «Բեռնվա�
 LOADED_TRUCK_OFF = 'Բեռնված երթերի մեքենաները պետք է նշված լինեն՝ '   # №78: + коды машин
 
 
+def plan_order(draft: Draft) -> list[DraftTrip]:
+    """Рейсы в порядке plan_view: машины плана по коду, за ними прочие; у машины — порядок черновика."""
+    return sorted(draft.trips, key=lambda t: (t.truck not in draft.trucks, t.truck))
+
+
+def visit_parts(trips: Sequence[tuple[int, Sequence[int]]]) -> dict[tuple[int, int], tuple[int, int]]:
+    """Тяжёлый магазин в нескольких рейсах (№57): (рейс, клиент) → (частей — во скольких рейсах он есть, своя часть по
+    счёту). trips — (номер рейса, клиенты) в порядке плана; заказы магазина делятся по частям в этом порядке
+    (waybill.truck_waybill, split_stop) — и груз рейса зависит от рейсов ДРУГИХ машин с тем же магазином."""
+    seen: dict[int, list[int]] = {}
+    for tid, cids in trips:
+        for c in cids:
+            seen.setdefault(c, []).append(tid)
+    return {(tid, c): (len(seen[c]), seen[c].index(tid)) for tid, cids in trips for c in cids}
+
+
+def trip_parts(draft: Draft, routable: Collection[int] | None = None) -> dict[int, dict[int, tuple[int, int]]]:
+    """Рейс → {клиент: (частей, своя часть)} по плану черновика (visit_parts в порядке plan_order); routable — только эти
+    клиенты (как plan_view: точки без координат в рейсы не попадают)."""
+    order = [(t.id, [c for c in t.stops if routable is None or c in routable]) for t in plan_order(draft)]
+    parts = visit_parts(order)
+    return {tid: {c: parts[(tid, c)] for c in cids} for tid, cids in order}
+
+
+def shares_shifted(draft: Draft) -> set[int]:
+    """Рейсы, которые есть и у водителей (№81), и в черновике, а доля общего магазина в них разная: правка рейса другой
+    машины (убрали или добавили там тяжёлый магазин, переставили рейсы с ним) меняет груз этого рейса. Не отправляли —
+    пусто."""
+    if draft.sent is None:
+        return set()
+    now, was = trip_parts(draft), trip_parts(draft.for_drivers())
+    return {tid for tid in now.keys() & was.keys()
+            if any(now[tid][c] != was[tid][c] for c in now[tid].keys() & was[tid].keys())}
+
+
 def loaded_cargo(draft: Draft, stops: Sequence[Stop], ids: Collection[int] | None = None
-                 ) -> dict[int, tuple[str, frozenset[int], frozenset[str]]]:
-    """Что везёт загруженный рейс (№78; ids — эти рейсы, загружены они ещё или нет): машина, магазины и заказы их точек
-    дня. Правка, после которой это другое (рейса нет — тоже), меняет товар в машине — только с подтверждением."""
+                 ) -> dict[int, tuple[str, frozenset[int], frozenset[str], frozenset[tuple[int, int, int]]]]:
+    """Что везёт загруженный рейс (№78; ids — эти рейсы, загружены они ещё или нет): машина, магазины, заказы их точек
+    дня и доля каждого магазина (trip_parts: правка рейса другой машины с тем же тяжёлым магазином меняет и этот груз).
+    Правка, после которой это другое (рейса нет — тоже), меняет товар в машине — только с подтверждением."""
     by = {s.customer_id: s for s in stops}
     want = {t.id for t in draft.trips if t.loaded is not None} if ids is None else set(ids)
-    return {t.id: (t.truck, frozenset(t.stops), frozenset(o.isn for c in t.stops if c in by for o in by[c].orders))
+    parts = trip_parts(draft, {s.customer_id for s in stops if s.point is not None}) if want else {}
+    return {t.id: (t.truck, frozenset(t.stops), frozenset(o.isn for c in t.stops if c in by for o in by[c].orders),
+                   frozenset((c, *p) for c, p in parts[t.id].items()))
             for t in draft.trips if t.id in want}
 
 
@@ -2266,12 +2305,16 @@ def discard(draft: Draft) -> Draft:
 
 
 def loaded_changed(draft: Draft) -> bool:
-    """Загруженный рейс (№78, отметка в черновике) после отправки изменился: в черновике его точки не те, что у водителей
-    (№81) — склад грузил по отправленному плану, отправка правки изменит то, что уже в машине."""
+    """Загруженный рейс (№78, отметка в черновике) после отправки изменился: в черновике его точки или доли магазинов
+    (trip_parts — и правкой рейса другой машины) не те, что у водителей (№81) — склад грузил по отправленному плану,
+    отправка правки изменит то, что уже в машине."""
     if draft.sent is None:
         return False
-    sent = {t.id: t.stops for t in draft.for_drivers().trips}
-    return any(t.loaded is not None and t.id in sent and list(sent[t.id]) != list(t.stops) for t in draft.trips)
+    sent = draft.for_drivers()
+    stops = {t.id: t.stops for t in sent.trips}
+    now, was = trip_parts(draft), trip_parts(sent)
+    return any(t.loaded is not None and t.id in stops and (list(stops[t.id]) != list(t.stops) or now[t.id] != was[t.id])
+               for t in draft.trips)
 
 
 def _drivers_key(plan: Draft) -> tuple[dict[str, list[int]], tuple[Any, ...]]:

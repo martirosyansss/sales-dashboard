@@ -27,6 +27,7 @@ from datetime import date
 from typing import Any, Mapping, Sequence
 
 from . import erp
+from .dispatch import visit_parts
 from .store import check_driver_name
 
 QTY_SCALE = 10_000   # дробное количество ERP (money) — 4 знака: делим целые десятитысячные
@@ -244,18 +245,15 @@ def truck_waybill(plan: Mapping[str, Any], car_code: str, lines: Lines) -> dict[
     truck = next((t for t in plan['trucks'] if t['car_code'] == car_code), None)
     if truck is None:
         return None
-    visits: dict[int, list[int]] = {}       # клиент → рейсы плана с ним, по порядку плана (как dispatch._shares)
-    for t in plan['trucks']:
-        for tr in t['trips']:
-            for s in tr['stops']:
-                visits.setdefault(s['customer_id'], []).append(tr['id'])
+    # (рейс, клиент) → (частей, своя часть): рейсы плана с клиентом по порядку плана — общий расчёт с проверками
+    # «Բեռնված է» (dispatch.trip_parts)
+    visits = visit_parts([(tr['id'], [s['customer_id'] for s in tr['stops']]) for t in plan['trucks'] for tr in t['trips']])
     trips = []
     for no, tr in enumerate(truck['trips'], 1):
         qty: dict[int, float] = {}
         orders = invoiced = mixed = split = 0
         for s in tr['stops']:
-            seen = visits[s['customer_id']]
-            parts, index = len(seen), seen.index(tr['id'])
+            parts, index = visits[(tr['id'], s['customer_id'])]
             split += parts > 1
             isns = [o['isn'].upper() for o in s['orders']]
             orders += len(isns)

@@ -29,7 +29,7 @@ from route_optimizer import views  # noqa: E402
 from route_optimizer import waybill as wb  # noqa: E402
 from test_route_dispatch_approve import _two_trips  # noqa: E402
 from test_route_dispatch_same_day import DAY, FORD, HOWO, _build, _page_setup, _plan_stops, client  # noqa: E402,F401
-from test_route_optimizer import _isn  # noqa: E402
+from test_route_optimizer import _dorder, _isn  # noqa: E402
 
 AT = '2026-10-01T18:42:05'
 
@@ -504,3 +504,116 @@ def test_build_with_new_manager_filter_dropping_loaded_stop_needs_confirmation(c
     assert r.status_code == 200, r.get_json()
     # тот же фильтр, что у плана, — без вопроса
     assert client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']}).status_code == 200
+
+
+# ============================== ревью: доля тяжёлого магазина в грузе загруженного рейса ==============================
+
+
+def _split_trips():
+    """FORD рейс 1 [101, 102] утверждён и загружен, HOWO рейс 2 [102, 103]: 102 делится пополам между машинами."""
+    ctx, base, orders, new, draft = _two_trips()
+    dp.trip_of(draft, 1).stops = [101, 102]
+    dp.approve(draft, 'at', 'logist')
+    dp.mark_loaded(draft, 1, AT, 'sklad')
+    return ctx, base, {o.isn for o in orders}, draft
+
+
+def test_other_truck_edit_changing_loaded_share_is_seen():
+    """Ревью: правка рейса ДРУГОЙ машины (убрали 102 у HOWO) меняет долю 102 в загруженном рейсе FORD (1/2 → целый) —
+    груз (loaded_cargo) другой, отправка (loaded_changed) — с подтверждением, у склада рейс «changing»; обратное —
+    магазин загруженного рейса стал делиться с рейсом другой машины — так же. Правка без смены долей — без вопроса."""
+    ctx, base, ids, draft = _split_trips()
+    cargo = dp.loaded_cargo(draft, base)
+    assert cargo[1][3] == frozenset({(101, 1, 0), (102, 2, 0)})
+    assert not dp.loaded_changed(draft) and dp.shares_shifted(draft) == set()
+    got = dp.apply_edit(ctx, base, dp.Draft.from_json(draft.to_json()),
+                        {'action': 'move', 'customer_id': 102, 'from_trip': 2, 'to_trip': None, 'truck': None}, ids)
+    assert dp.trip_of(got, 1).stops == [101, 102]                     # сам рейс не тронут, правка прошла без LoadedEdit
+    assert dp.loaded_cargo(got, base, cargo) != cargo                 # но груз другой — views спросит (/edit, /build)
+    assert dp.loaded_changed(got) and dp.shares_shifted(got) == {1}   # «Ուղարկել» — с подтверждением; склад — changing
+    # обратное: 101 загруженного рейса теперь и в рейсе HOWO — его доля в машине FORD стала половиной
+    rev = dp.Draft.from_json(draft.to_json())
+    dp.trip_of(rev, 2).stops.append(101)
+    assert dp.loaded_cargo(rev, base, cargo) != cargo and dp.loaded_changed(rev) and 1 in dp.shares_shifted(rev)
+    # нейтрально: 103 (не делится, не в загруженном рейсе) — новым рейсом FORD; доли рейса 1 те же — вопроса нет
+    same = dp.apply_edit(ctx, base, dp.Draft.from_json(draft.to_json()),
+                         {'action': 'move', 'customer_id': 103, 'from_trip': 2, 'to_trip': None, 'truck': FORD.car_code}, ids)
+    assert dp.loaded_cargo(same, base, cargo) == cargo and not dp.loaded_changed(same)
+    assert 1 not in dp.shares_shifted(same)
+    # лист и проверки — одним расчётом: доли рейса 1 в плане (plan_view share) — те же, что в trip_parts
+    assert dp.trip_parts(got)[1] == {101: (1, 0), 102: (1, 0)} and dp.trip_parts(draft)[1][102] == (2, 0)
+
+
+def _ok(client, d, **body):
+    r = _edit(client, d, **body)
+    assert r.status_code == 200, r.get_json()
+    return r.get_json()
+
+
+def _heavy_split_day(client, monkeypatch):
+    """План 01.10: 104 тяжелее машины — два рейса; второй закреплён за CAR2 (доля 104 — между машинами); утверждён,
+    рейс CAR1 с 104 загружен. (state, ответ дня, загруженный рейс, рейс CAR2 с 104)."""
+    state, _ = _page_setup(client, monkeypatch, now=datetime(2026, 10, 1, 8, 0, tzinfo=ac.YEREVAN),
+                           extra_orders=(_dorder(20, 104, 14000.0, agent=2),))
+    _as(client, 'logist')
+    d = _build(client, ('CAR1', 'CAR2'))
+    with104 = [tr for t in d['plan']['trucks'] for tr in t['trips'] if any(s['customer_id'] == 104 for s in tr['stops'])]
+    assert len(with104) == 2, with104
+    first, second = with104
+    d = _ok(client, d, action='pin', trip=second['id'], truck='CAR2')
+    d = _ok(client, d, action='approve')
+    d = _ok(client, d, action='loaded', trip=first['id'])
+    cars = {tr['id']: t['car_code'] for t in d['plan']['trucks'] for tr in t['trips']}
+    assert cars[first['id']] != cars[second['id']] == 'CAR2'
+    return state, d, first['id'], second['id']
+
+
+def test_api_other_truck_edit_of_heavy_store_needs_confirmation_send_and_changing(client, monkeypatch):
+    """Ревью (репро на API): убрали 104 из рейса CAR2 — у загруженного рейса CAR1 доля 104 стала целой (вес другой):
+    /edit — loaded_confirm, без подтверждения ничего не сохраняется; с подтверждением — склад видит рейс «changing»
+    («Բեռնված է» не показывается, снять/поставить — 409), «Ուղարկել» — снова с подтверждением; после — как обычно."""
+    state, d, loaded, other = _heavy_split_day(client, monkeypatch)
+    before = state.store.load_dispatch(DAY)
+    move = {'action': 'move', 'customer_id': 104, 'from_trip': other, 'to_trip': None, 'truck': None}
+    r = _edit(client, d, **move)
+    assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
+    assert state.store.load_dispatch(DAY) == before
+    d = _ok(client, d, **move, confirm_loaded=True)
+    assert d['unsent'] is not None
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    tr = next(x for t in w['trucks'] for x in t['trips'] if x['id'] == loaded)
+    assert tr.get('changing') is True
+    r = client.post('/api/routes/warehouse/loaded', json={'date': DAY, 'rev': w['rev'], 'trip': loaded, 'loaded': False})
+    assert r.status_code == 409 and r.get_json()['error'] == views.WAREHOUSE_CHANGING
+    r = _edit(client, d, action='send')
+    assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
+    d = _ok(client, d, action='send', confirm_loaded=True)
+    assert d['unsent'] is None
+    w = client.get('/api/routes/warehouse?date=' + DAY).get_json()
+    assert all('changing' not in x for t in w['trucks'] for x in t['trips'])
+
+
+def test_api_build_changing_share_of_loaded_trip_needs_confirmation(client, monkeypatch):
+    """/build: сборка, после которой доля 104 в загруженном рейсе другая (рейс CAR2 с 104 пропал), — loaded_confirm и
+    ничего не сохраняется; та же сборка без смены долей — без вопроса."""
+    state, d, loaded, other = _heavy_split_day(client, monkeypatch)
+    d = _ok(client, d, action='unapprove')
+    real = dp.build_crewed
+
+    def drop_other(*a, **k):
+        out = real(*a, **k)
+        for t in out.trips:
+            if t.id != loaded and 104 in t.stops:
+                t.stops.remove(104)
+        return out
+    monkeypatch.setattr(dp, 'build_crewed', drop_other)
+    before = state.store.load_dispatch(DAY)
+    r = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']})
+    assert r.status_code == 400 and r.get_json()['loaded_confirm'] is True
+    assert state.store.load_dispatch(DAY) == before
+    monkeypatch.setattr(dp, 'build_crewed', real)
+    shares = lambda d: sorted(s['share'] for t in d['plan']['trucks'] for tr in t['trips'] for s in tr['stops']  # noqa
+                              if s['customer_id'] == 104)
+    r = client.post('/api/routes/dispatch/build', json={'date': DAY, 'trucks': ['CAR1', 'CAR2']})
+    assert r.status_code == 200, r.get_json()
+    assert shares(r.get_json()) == [2, 2]
