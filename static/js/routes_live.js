@@ -79,6 +79,22 @@
         if (n > th.no_contact_min * 60) return 'is-bad';
         return n > th.stale_s ? 'is-mute' : '';
     };
+    // сверка расчёта топлива с заправками (этап 2): последняя заправка, интервал «полный бак → полный бак», расчёт после неё
+    const fuelCheckText = (c) => {
+        if (!c) return null;
+        const parts = [];
+        if (c.last && c.last.liters !== null) {
+            parts.push('վերջին լիցքավորում՝ ' + fmt(c.last.liters, 1) + ' լ, ' + (c.last.today ? hm(c.last.at) : c.last.at.slice(5, 10).split('-').reverse().join('.'))
+                + (c.last.full ? '' : ' (ոչ լրիվ բաք)'));
+        }
+        if (c.since_l !== null && c.since_l !== undefined) parts.push('լիցքավորումից հետո՝ ≈ ' + fmt(c.since_l, 1) + ' լ');
+        const iv = c.interval;
+        if (iv) {
+            parts.push('լրիվ բաքից լրիվ բաք (' + fmt(iv.km) + ' կմ)՝ լցրել են ' + fmt(iv.liters, 1) + ' լ'
+                + (iv.calc_l !== null ? ', նորմով՝ ' + fmt(iv.calc_l, 1) + ' լ (' + (iv.delta_pct > 0 ? '+' : '') + fmt(iv.delta_pct, 1) + '%)' : ''));
+        }
+        return parts.join(' · ');
+    };
     const delayText = (d) => {
         const n = num(d);
         if (n === null) return null;
@@ -256,11 +272,14 @@
             t.stores.in_progress ? 'ընթացքի մեջ՝ ' + t.stores.in_progress : null));
         rows.push(field('Այսօր, կմ (GPS)', fmt(t.km, 1)));
         rows.push(field('Վառելիք', t.fuel_l === null ? '—' : ['≈ ' + fmt(t.fuel_l, 1) + ' լ', h('span', { class: 'lv-est', text: 'հաշվարկ' })],
-            t.fuel_l === null ? 'մեքենայի ծախսը նշված չէ կարգավորումներում' : null));
+            t.fuel_l === null ? 'մեքենայի ծախսը նշված չէ կարգավորումներում' : fuelCheckText(t.fuel_check)));
         const ld = t.load;
         rows.push(field('Բեռի մնացորդ', fmt(ld.remaining_kg) + ' կգ',
-            [ld.trips_gone ? 'բեռնված՝ ' + fmt(ld.loaded_kg) + ' կգ, առաքված՝ ' + fmt(ld.delivered_kg) + ' կգ'
+            [ld.trips_gone ? 'բեռնված այս երթում՝ ' + fmt(ld.trip_kg) + ' կգ, առաքված՝ ' + fmt(ld.delivered_kg) + ' կգ'
                 + (ld.trips > 1 ? ' · երթ ' + ld.trips_gone + '/' + ld.trips : '') : 'մեքենան դեռ չի մեկնել պահեստից',
+            ld.refused_kg ? 'չառաքված՝ ' + fmt(ld.refused_kg) + ' կգ (մեքենայում՝ մինչև պահեստ)' : null,
+            ld.returns_kg ? 'վերադարձ՝ ' + fmt(ld.returns_kg) + ' կգ (մեքենայում)' : null,
+            ld.returns_unweighed ? ld.returns_unweighed + ' վերադարձ առանց քաշի' : null,
             ld.unweighed_lines ? ld.unweighed_lines + ' տող առանց քաշի' : null].filter(Boolean).join(' · ')));
         if (t.next) {
             const d = delayText(t.next.delay_min);

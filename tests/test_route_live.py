@@ -135,10 +135,122 @@ def test_one_trip_full_day_km_fuel_load():
     want = (haversine_km(DEPOT, A) * (20 + 10 * 1000 / 2000) + haversine_km(A, B) * (20 + 10 * 400 / 2000)
             + haversine_km(B, DEPOT) * (20 + 10 * 200 / 2000)) / 100   # половина B (200 кг) едет назад
     assert card['fuel_l'] == pytest.approx(want, abs=0.05)
-    assert card['load'] == {'remaining_kg': 200, 'loaded_kg': 1000, 'delivered_kg': 800, 'unweighed_lines': 0,
-                            'trips_gone': 1, 'trips': 1}
+    # недовезённые 200 кг B сданы на склад (вход в его зону после последнего магазина рейса) — в машине пусто
+    assert card['load'] == {'remaining_kg': 0, 'loaded_kg': 1000, 'delivered_kg': 800, 'unweighed_lines': 0,
+                            'trip_kg': 1000, 'refused_kg': 0, 'returns_kg': 0, 'returns_unweighed': 0,
+                            'unloaded_kg': 200, 'trips_gone': 1, 'trips': 1}
     assert card['stores'] == {'done': 2, 'total': 2, 'in_progress': 0}
     assert card['closed'] is True and card['state'] == 'closed' and card['next'] is None
+
+
+# ============================== этап 2: недовезённое, возвраты, перезагрузка, сверка топлива ==============================
+
+def _refused_day(back):
+    """Склад → A (600 кг, отказ) → B (400 кг, всё доставлено) [→ склад, если back]. Возвращает (трек, точки, план)."""
+    tr = Track().park(DEPOT, 10).drive(A)
+    at_a = tr.t
+    tr.park(A, 8).drive(B)
+    at_b = tr.t
+    tr.park(B, 8)
+    if back:
+        tr.drive(DEPOT).park(DEPOT, 3)
+    stops = [stop('S:A', 1, A, 600.0, 'refused', 0.0, at_a + timedelta(minutes=2), seq=1),
+             stop('S:B', 2, B, 400.0, 'full', 1.0, at_b + timedelta(minutes=2), seq=2)]
+    return tr, stops, [live.PlanTrip((1, 2), {}, T0 + timedelta(minutes=10))]
+
+
+def test_refused_weight_stays_on_board_until_depot_entry():
+    tr, stops, plan = _refused_day(back=False)
+    now = tr.t
+    ld = view(facts(tr.pts, stops, [T0, now]), now, plan)['load']
+    # все точки закрыты, но склада не было — отказ A (600 кг) всё ещё в машине
+    assert ld['remaining_kg'] == 600 and ld['refused_kg'] == 600 and ld['unloaded_kg'] == 0 and ld['trip_kg'] == 1000
+    tr, stops, plan = _refused_day(back=True)
+    ld = view(facts(tr.pts, stops, [T0, tr.t]), tr.t, plan)['load']
+    assert ld['remaining_kg'] == 0 and ld['refused_kg'] == 0 and ld['unloaded_kg'] == 600   # вошла в зону склада — выгружено
+
+
+def test_refused_weight_unloads_only_after_last_store_of_trip():
+    """Заехала на склад, не закрыв рейс (B ещё впереди), — недовезённое A остаётся: склад «после последнего магазина»."""
+    tr = Track().park(DEPOT, 10).drive(A)
+    at_a = tr.t
+    tr.park(A, 8).drive(DEPOT).park(DEPOT, 5).drive(B)
+    stops = [stop('S:A', 1, A, 600.0, 'refused', 0.0, at_a + timedelta(minutes=2), seq=1), stop('S:B', 2, B, 400.0, seq=2)]
+    plan = [live.PlanTrip((1, 2), {})]
+    ld = view(facts(tr.pts, stops, [T0, tr.t]), tr.t, plan)['load']
+    assert ld['remaining_kg'] == 1000 and ld['refused_kg'] == 600 and ld['unloaded_kg'] == 0
+
+
+def test_partial_delivery_remainder_unloads_at_depot():
+    tr, stops, plan = _refused_day(back=True)
+    stops[0] = stop('S:A', 1, A, 600.0, 'partial', 0.25, T0 + timedelta(minutes=12), seq=1)
+    ld = view(facts(tr.pts, stops, [T0, tr.t]), tr.t, plan)['load']
+    assert ld['delivered_kg'] == 550 and ld['unloaded_kg'] == 450 and ld['remaining_kg'] == 0   # 150 + 400 доставлено
+
+
+def test_returns_add_weight_until_depot():
+    tr, stops, plan = _refused_day(back=False)
+    ret = [{'at': (tr.t - timedelta(minutes=3)).isoformat(), 'kg': 45.5, 'stop_id': 'S:B'},
+           {'at': (tr.t - timedelta(minutes=2)).isoformat(), 'kg': None, 'stop_id': 'S:B'}]   # вес неизвестен
+    f = facts(tr.pts, stops, [T0, tr.t])
+    f['returns'] = ret
+    ld = view(f, tr.t, plan)['load']
+    assert ld['remaining_kg'] == 646 and ld['returns_kg'] == 46 and ld['returns_unweighed'] == 1   # 600 отказ + 45,5
+    tr.drive(DEPOT).park(DEPOT, 2)                                  # на склад — возврат и отказ сданы
+    f = facts(tr.pts, stops, [T0, tr.t])
+    f['returns'] = ret
+    ld = view(f, tr.t, plan)['load']
+    assert ld['remaining_kg'] == 0 and ld['returns_kg'] == 0 and ld['unloaded_kg'] == 646
+
+
+def test_return_weight_changes_fuel_after_it():
+    """Возврат тяжелит машину на участках после него: топливо больше, чем без возврата."""
+    tr, stops, plan = _refused_day(back=True)
+    plain = view(facts(tr.pts, stops, [T0, tr.t]), tr.t, plan)['fuel_l']
+    f = facts(tr.pts, stops, [T0, tr.t])
+    f['returns'] = [{'at': (T0 + timedelta(minutes=40)).isoformat(), 'kg': 500.0, 'stop_id': 'S:B'}]
+    # B дошёл до склада позже 09:40? момент возврата — за 1 мин до выезда на склад
+    f['returns'][0]['at'] = (tr.t - timedelta(minutes=14)).isoformat()
+    assert view(f, tr.t, plan)['fuel_l'] > plain
+
+
+def test_reload_between_trips_trip_kg_is_current_trip():
+    tr, stops, plan = _two_trips()
+    tr.park(DEPOT, 15).drive(((DEPOT[0] + C[0]) / 2, (DEPOT[1] + C[1]) / 2))
+    ld = view(facts(tr.pts, stops, [T0, tr.t]), tr.t, plan)['load']
+    assert ld['trip_kg'] == 300 and ld['loaded_kg'] == 1300 and ld['remaining_kg'] == 300   # остаток рейса 1 сдан, загружен рейс 2
+
+
+def _refuel(rid, at, liters, odo, full=True, superseded=False):
+    return {'id': rid, 'car_code': 'CAR1', 'date': at.date().isoformat(), 'at_utc': at.astimezone(Y).isoformat(),
+            'payload': {'liters': liters, 'odometer_km': odo, 'full_tank': full}, 'flags': [], 'superseded': superseded,
+            'eff_at_utc': at.astimezone(Y).isoformat()}
+
+
+def test_refuel_check_interval_and_since_refuel():
+    tr, stops, plan = _refused_day(back=True)
+    f = facts(tr.pts, stops, [T0, tr.t])
+    # два полных бака: 400 км одометра, залито 110 л (27,5 л/100); норма машины — середина 20…30 = 25 → расчёт 100 л
+    f['refuels'] = [_refuel('r1', datetime(2026, 10, 1, 8, 0, tzinfo=Y), 40.0, 10000),
+                    _refuel('r2', datetime(2026, 10, 3, 8, 0, tzinfo=Y), 110.0, 10400)]
+    chk = view(f, tr.t, plan)['fuel_check']
+    assert chk['last'] == {'at': '2026-10-03T08:00:00+04:00', 'liters': 110.0, 'full': True, 'today': False}
+    assert chk['interval']['km'] == 400 and chk['interval']['liters'] == 110.0
+    assert chk['interval']['calc_l'] == 100.0 and chk['interval']['delta_pct'] == 10.0 and chk['since_l'] is None
+    # заправка сегодня в 09:30 — расчёт с её момента: только участки после
+    f['refuels'].append(_refuel('r3', T0 + timedelta(minutes=30), 30.0, 10500, full=False))
+    card = view(f, tr.t, plan)
+    chk = card['fuel_check']
+    assert chk['last']['today'] is True and chk['last']['full'] is False and 0 < chk['since_l'] < card['fuel_l']
+    # исправленная заправка не участвует; заправок нет — None, расчёт как раньше
+    f['refuels'] = [_refuel('r3', T0, 30.0, 10500, superseded=True)]
+    assert view(f, tr.t, plan)['fuel_check'] is None
+    assert view(facts(tr.pts, stops, [T0, tr.t]), tr.t, plan)['fuel_check'] is None
+    # нормы машины нет — интервал есть, расчёта нет
+    f['refuels'] = [_refuel('r1', datetime(2026, 10, 1, 8, 0, tzinfo=Y), 40.0, 10000),
+                    _refuel('r2', datetime(2026, 10, 3, 8, 0, tzinfo=Y), 110.0, 10400)]
+    iv = view(f, tr.t, plan, truck=live.TruckSpec(2000.0))['fuel_check']['interval']
+    assert iv['calc_l'] is None and iv['delta_pct'] is None and iv['liters'] == 110.0
 
 
 def _two_trips():
@@ -161,14 +273,15 @@ def test_multi_trip_second_trip_counts_only_after_departure():
     tr.park(DEPOT, 15)                                              # загружается на складе — рейс 2 ещё не уехал
     now = tr.t
     card = view(facts(tr.pts, stops, [T0, now]), now, plan)
-    assert card['load']['trips_gone'] == 1 and card['load']['remaining_kg'] == 200   # остаток рейса 1 (отказ B)
+    assert card['load']['trips_gone'] == 1 and card['load']['remaining_kg'] == 0   # остаток рейса 1 сдан на склад
     assert card['load']['unweighed_lines'] == 0                     # строки без веса — у точки рейса 2, не на борту
     assert card['state'] != 'closed' and card['next']['stop_id'] == 'S:C'
     tr.drive(((DEPOT[0] + C[0]) / 2, (DEPOT[1] + C[1]) / 2))       # выехал с рейсом 2, на полпути к C
     now = tr.t
     card = view(facts(tr.pts, stops, [T0, now]), now, plan)
-    assert card['load'] == {'remaining_kg': 500, 'loaded_kg': 1300, 'delivered_kg': 800, 'unweighed_lines': 2,
-                            'trips_gone': 2, 'trips': 2}
+    assert {k: card['load'][k] for k in ('remaining_kg', 'loaded_kg', 'delivered_kg', 'unweighed_lines', 'trip_kg',
+                                         'trips_gone')}         == {'remaining_kg': 300, 'loaded_kg': 1300, 'delivered_kg': 800, 'unweighed_lines': 2, 'trip_kg': 300,
+            'trips_gone': 2}   # на борту — только рейс 2: «загружено в этом рейсе» 300
 
 
 def test_depot_visit_mid_trip_is_not_a_new_trip():
@@ -545,6 +658,33 @@ def test_live_source_fleet(courier_app):
     with courier_app.app_context():
         car1 = LiveSource(store).fleet(ds)['CAR1']
     assert car1['device']['at'] == t(20).isoformat() and car1['closed_at'] == t(5).isoformat()
+
+
+def test_live_source_returns_weight_and_refuels(courier_app):
+    """Возврат: вес = кол-во × вес единицы товара по строкам точки (нет там — по любой точке машины, нет нигде — None);
+    заправки машины за последние дни — для сверки топлива."""
+    from courier import events as ev
+    from courier.live import LiveSource
+    store = courier_app.extensions['courier'].store
+    ds = DAY.isoformat()
+    s1 = _day_stop(SID1, 1, A, [('l1', 10, 12.0), ('l2', 5, 6.0)], 1)
+    s1['lines'][0]['product_id'], s1['lines'][1]['product_id'] = 11, 12
+    s2 = _day_stop(SID2, 2, B, [('l3', 4, 20.0)], 2)
+    s2['lines'][0]['product_id'] = 13
+    store.save_day(ds, 'CAR1', [s1, s2], 'v1', LIVE_NOW.isoformat())
+    who = _who(store, 'CAR1', 'Արամ', '1111')
+    t = lambda m: LIVE_NOW - timedelta(minutes=m)   # noqa: E731
+    r = ev.ingest(store, who, [
+        _ev('return', SID1, {'product_id': 12, 'qty': 3}, t(30)),     # 3 × 6 = 18 кг (строка этой точки)
+        _ev('return', SID1, {'product_id': 13, 'qty': 2}, t(20)),     # товар другой точки машины: 2 × 20 = 40 кг
+        _ev('return', SID1, {'product_id': 99, 'qty': 1}, t(10)),     # нигде нет — вес неизвестен
+        _ev('refuel', None, {'liters': 55.5, 'odometer_km': 10400, 'full_tank': True}, t(5))]).json()
+    assert len(r['accepted']) == 4, r
+    with courier_app.app_context():
+        car1 = LiveSource(store).fleet(ds)['CAR1']
+    assert [(x['stop_id'], x['kg']) for x in car1['returns']] == [(SID1, 18.0), (SID1, 40.0), (SID1, None)]
+    assert [x['at'] for x in car1['returns']] == [t(30).isoformat(), t(20).isoformat(), t(10).isoformat()]
+    assert [(x['car_code'], x['payload']['liters']) for x in car1['refuels']] == [('CAR1', 55.5)]
 
 
 def test_live_source_cache_ttl_and_fingerprint(courier_app, monkeypatch):

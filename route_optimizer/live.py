@@ -16,10 +16,16 @@
   выезд (берётся последний такой). Рейсы — по порядку: не уехавший рейс останавливает счёт;
 - груз на борту в момент t = Σ вес накладных уехавших рейсов (с момента их выезда) − Σ доставлено (вес × доля
   доставленного, №65) по точкам с моментом выгрузки до t (выгрузка — касание точки, не раньше выезда её рейса; доля
-  известна без момента — с выезда). Не меньше 0. Остаток груза — груз сейчас; строки без веса — отдельным числом;
+  известна без момента — с выезда) + Σ возвратов товара (событие return, вес по строкам накладных) с их момента −
+  Σ выгруженного на складе. Недовезённое (отказ, частичная доставка) и возвраты остаются в машине до входа в зону
+  склада (DEPOT_RADIUS_M) после последнего магазина рейса (возврата) — тогда считаются выгруженными (этап 2). Рейс
+  «загружен» при выезде со склада после стоянки на нём (departed_trips): «загружено в этом рейсе» — вес накладных
+  последнего уехавшего рейса. Не меньше 0. Остаток груза — груз сейчас; строки без веса — отдельным числом;
 - топливо ≈ Σ по сегментам км дня (geo.track_steps по тем же точкам, что км) км × (пусто + (полно − пусто) × груз в
   конце сегмента / грузоподъёмность) / 100 — формула running_costs.route_cost; расход по загрузке не задан — расход
-  машины (l/100), без загрузки; нет ни того, ни другого — неизвестно;
+  машины (l/100), без загрузки; нет ни того, ни другого — неизвестно. Сверка с заправками (этап 2, refuel_check —
+  «Նորմ և փաստ»): интервал «полный бак → полный бак» (learning.fuel_intervals) — залито фактически против км одометра ×
+  норма машины / 100 (норма — середина «пустой — полный», нет — расход машины); заправка сегодня — расчёт с её момента;
 - следующий магазин — первая незакрытая (pending/in_progress) точка с координатой последнего уехавшего рейса (нет
   уехавших — первого) по порядку плана (вне плана — по порядку терминала), затем следующих рейсов, затем пропущенные
   раньше. ETA — сейчас + путь от текущей точки (машина в STOP_RADIUS_M от магазина — «на месте», ETA = сейчас); рейс
@@ -51,7 +57,7 @@ from typing import Any, Collection, Mapping, Protocol, Sequence
 
 from . import actuals as ac
 from .geo import Fix, Point, haversine_km, in_city, in_polygon, track_steps
-from .learning import _hhmm, track_fixes
+from .learning import _hhmm, effective_refuels, fuel_intervals, track_fixes
 from .store import DEFAULT_SETTINGS
 
 YEREVAN = ac.YEREVAN
@@ -113,6 +119,14 @@ class TruckSpec:
     empty_l100: float | None = None
     full_l100: float | None = None
     center_ok: bool | None = None
+
+    @property
+    def norm_l100(self) -> float | None:
+        """Норма для сверки с заправками — как «Նորմ և փաստ» (views._fuel_norms): середина «пустой — полный», нет —
+        расход машины."""
+        if self.empty_l100 is not None and self.full_l100 is not None:
+            return (self.empty_l100 + self.full_l100) / 2
+        return self.empty_l100 if self.empty_l100 is not None else self.l100
 
     def rate(self, load_kg: float) -> float | None:
         """Л/100 км при грузе load_kg — как running_costs.route_cost: base + (full − base) × груз / грузоподъёмность;
@@ -246,6 +260,12 @@ class Load:
     loaded_kg: float          # вес накладных уехавших рейсов
     delivered_kg: float       # доставлено по ним
     unweighed: int            # строк без веса в точках уехавших рейсов, ещё не доставленных полностью
+    returned_kg: float = 0.0       # принято возвратов (все)
+    unloaded_kg: float = 0.0       # выгружено на складе: недовезённое и возвраты
+    trip_kg: float = 0.0           # загружено в последнем уехавшем рейсе
+    refused_kg: float = 0.0        # недовезённое закрытых точек, ещё в машине
+    returns_aboard_kg: float = 0.0  # возвраты, ещё не сданные на склад
+    returns_unweighed: int = 0     # возвратов без известного веса
 
     def at(self, t: datetime) -> float:
         """Груз на борту в момент t (события строго до t), не меньше 0."""
@@ -254,15 +274,42 @@ class Load:
 
     @property
     def remaining_kg(self) -> float:
-        return max(0.0, self.loaded_kg - self.delivered_kg)
+        return max(0.0, math.fsum(d for _, d in self.events))
+
+
+def depot_entries(pts: Sequence[Fix], depot: Point | None) -> list[datetime]:
+    """Моменты входа в зону склада: первая точка трека в DEPOT_RADIUS_M после точки вне зоны (и первая точка, если трек
+    начался в зоне). Нет склада — пусто."""
+    if depot is None:
+        return []
+    out: list[datetime] = []
+    inside = False
+    for f in pts:
+        now = _near(f.point, depot, ac.DEPOT_RADIUS_M)
+        if now and not inside:
+            out.append(f.at)
+        inside = now
+    return out
+
+
+def _entry_after(entries: Sequence[datetime], t: datetime) -> datetime | None:
+    """Первый вход в зону склада строго после t."""
+    k = bisect.bisect_right(entries, t)
+    return entries[k] if k < len(entries) else None
 
 
 def load_of(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int], gone: Mapping[int, datetime],
-            touches: Mapping[str, datetime]) -> Load:
-    """Груз по уехавшим рейсам gone (рейс → выезд): + вес рейса в момент выезда, − доставлено в момент выгрузки точки."""
+            touches: Mapping[str, datetime], returns: Sequence[Mapping[str, Any]] = (),
+            entries: Sequence[datetime] = ()) -> Load:
+    """Груз по уехавшим рейсам gone (рейс → выезд): + вес рейса в момент выезда, − доставлено в момент выгрузки точки.
+    Недовезённое закрытого рейса (все его точки закрыты) — − в момент первого входа в зону склада (entries) после его
+    последнего касания; возврат (returns: at, kg) — + в его момент и − при первом входе в зону склада после него.
+    Нет входа — груз остаётся в машине."""
     events: list[tuple[datetime, float]] = []
-    loaded = delivered = 0.0
+    loaded = delivered = unloaded = returned = refused = 0.0
     unweighed = 0
+    per_trip: dict[int, list[float]] = {}   # рейс → [вес, доставлено, недовезённое закрытых точек]
+    closed = {k: True for k in gone}
     for s in stops:
         k = trips[s['stop_id']]
         if k not in gone:
@@ -273,12 +320,52 @@ def load_of(stops: Sequence[Mapping[str, Any]], trips: Mapping[str, int], gone: 
         share = s.get('share')
         if share is None or share < 1.0:
             unweighed += int(s.get('unweighed') or 0)
-        if share is not None and share > 0:
-            done = kg * min(1.0, float(share))
+        done = kg * min(1.0, float(share)) if share is not None and share > 0 else 0.0
+        if done > 0:
             delivered += done
             events.append((max(touches.get(s['stop_id'], gone[k]), gone[k]), -done))
+        if s.get('status') in OPEN:
+            closed[k] = False
+        acc = per_trip.setdefault(k, [0.0, 0.0, 0.0])
+        acc[0] += kg
+        acc[1] += done
+        if s.get('status') not in OPEN:
+            acc[2] += kg - done
+    touched: dict[int, datetime] = {}
+    for s in stops:
+        k = trips[s['stop_id']]
+        if k in gone and s['stop_id'] in touches:
+            touched[k] = max(touched.get(k, touches[s['stop_id']]), touches[s['stop_id']])
+    for k, (kg, done, left) in per_trip.items():
+        if left <= 0:
+            continue
+        back = _entry_after(entries, touched[k]) if closed[k] and k in touched else None
+        if back is not None:
+            events.append((back, -left))
+            unloaded += left
+        else:
+            refused += left
+    aboard = 0.0
+    no_weight = 0
+    for r in returns:
+        at, kg = _moment(r.get('at')), r.get('kg')
+        if at is None:
+            continue
+        if not isinstance(kg, (int, float)) or kg <= 0:
+            no_weight += 1
+            continue
+        returned += kg
+        events.append((at, float(kg)))
+        back = _entry_after(entries, at)
+        if back is not None:
+            events.append((back, -float(kg)))
+            unloaded += kg
+        else:
+            aboard += kg
     events.sort(key=lambda e: e[0])
-    return Load(tuple(events), loaded, delivered, unweighed)
+    last = max(gone, default=None)
+    trip_kg = per_trip[last][0] if last in per_trip else 0.0
+    return Load(tuple(events), loaded, delivered, unweighed, returned, unloaded, trip_kg, refused, aboard, no_weight)
 
 
 def fuel_liters(moving: Sequence[Fix], load: Load, truck: TruckSpec) -> float | None:
@@ -293,6 +380,34 @@ def fuel_liters(moving: Sequence[Fix], load: Load, truck: TruckSpec) -> float | 
             i += 1
         total += km * truck.rate(max(0.0, onboard)) / 100.0   # type: ignore[operator]
     return total
+
+
+def refuel_check(refuels: Sequence[Mapping[str, Any]], truck: TruckSpec, moving: Sequence[Fix], load: Load,
+                 day: date) -> dict[str, Any] | None:
+    """Сверка расчёта топлива с заправками машины (refuels — Store.refuels одной машины): последняя заправка; последний
+    интервал «полный бак → полный бак» — залито фактически против км одометра × норма / 100 (calc_l, delta_pct — на
+    сколько % факт выше расчёта); заправка сегодня — расчёт с её момента (since_l). Заправок нет — None."""
+    items = next(iter(effective_refuels(refuels).values()), [])
+    if not items:
+        return None
+    at, _, p = items[-1]
+    lit = p.get('liters')
+    out: dict[str, Any] = {
+        'last': {'at': _iso(at), 'liters': float(lit) if isinstance(lit, (int, float)) and not isinstance(lit, bool)
+                 else None, 'full': p.get('full_tank', True) is not False,
+                 'today': at.astimezone(YEREVAN).date() == day},
+        'interval': None, 'since_l': None}
+    ivs = fuel_intervals(refuels)
+    if ivs:
+        iv, norm = ivs[-1], truck.norm_l100
+        calc = iv.km * norm / 100.0 if norm is not None else None
+        out['interval'] = {'from': _iso(iv.start), 'to': _iso(iv.end), 'km': round(iv.km), 'liters': round(iv.liters, 1),
+                           'calc_l': round(calc, 1) if calc is not None else None,
+                           'delta_pct': round((iv.liters / calc - 1.0) * 100.0, 1) if calc else None}
+    if out['last']['today']:
+        since = fuel_liters([f for f in moving if f.at >= at], load, truck)
+        out['since_l'] = round(since, 1) if since is not None else None
+    return out
 
 
 # --- тревоги ---
@@ -432,9 +547,10 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
     deps = departures(pts, actual, depot)
     gone = departed_trips(trips, touches, deps, pts[0].at if pts else None,
                           {s['stop_id'] for s in stops if s.get('status') in OPEN})
-    load = load_of(stops, trips, gone, touches)
-    fuel = fuel_liters(ac.moving_track(fixes, actual), load, truck) if pts else (0.0 if truck.rate(0) is not None
-                                                                                  else None)
+    load = load_of(stops, trips, gone, touches, facts.get('returns') or (), depot_entries(pts, depot))
+    moving = ac.moving_track(fixes, actual)
+    fuel = fuel_liters(moving, load, truck) if pts else (0.0 if truck.rate(0) is not None else None)
+    refuel = refuel_check(facts.get('refuels') or (), truck, moving, load, day)
 
     last = pts[-1] if pts else None
     brg = next((p[5] for p in reversed(raw) if last is not None and p[0] == round(last.at.timestamp() * 1000)
@@ -529,8 +645,12 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
                    'in_progress': sum(1 for s in stops if s.get('status') == 'in_progress')},
         'km': round(actual.km_gps, 1),
         'fuel_l': round(fuel, 1) if fuel is not None else None,
+        'fuel_check': refuel,
         'load': {'remaining_kg': round(load.remaining_kg), 'loaded_kg': round(load.loaded_kg),
                  'delivered_kg': round(load.delivered_kg), 'unweighed_lines': load.unweighed,
+                 'trip_kg': round(load.trip_kg), 'refused_kg': round(load.refused_kg),
+                 'returns_kg': round(load.returns_aboard_kg), 'returns_unweighed': load.returns_unweighed,
+                 'unloaded_kg': round(load.unloaded_kg),
                  'trips_gone': len(gone), 'trips': max(len(plan), 1 if stops else 0)},
         'next': next_out,
         'return_eta': _iso(return_eta),
