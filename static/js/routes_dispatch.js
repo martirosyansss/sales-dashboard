@@ -3728,6 +3728,7 @@
         wsView = v;
         try { window.localStorage.setItem('dpLayout', v); } catch (e) { /* только на эту страницу */ }
         layoutWs();
+        renderInbox();   // счётчик «без водителя» — только на рабочем экране
         window.scrollTo(0, 0);
     }
     const wsHome = new Map();
@@ -3751,7 +3752,7 @@
         document.body.classList.toggle('dp-ws-on', on);
         $('dpWs').hidden = !on;
         $('dpWsActs').hidden = !on;
-        if (!on) { $('dpDrawer').hidden = true; $('dpPrepOpen').setAttribute('aria-expanded', 'false'); }
+        if (!on && !$('dpDrawer').hidden) { $('dpDrawer').hidden = true; $('dpPrepOpen').setAttribute('aria-expanded', 'false'); renderSteps(); }
         $('dpWsSide').hidden = !on || !state.mapFocus;
         if (on && !$('dpMapBox').open) $('dpMapBox').open = true;
         const fab = $('dpAiOpen');
@@ -3797,7 +3798,7 @@
         $('dpViewList').addEventListener('click', () => setView('list'));
         $('dpViewWs').addEventListener('click', () => setView('ws'));
         if (WIDE) {
-            const sync = () => { if (state.data) layoutWs(); };
+            const sync = () => { if (state.data) { layoutWs(); renderInbox(); } };
             if (WIDE.addEventListener) WIDE.addEventListener('change', sync); else if (WIDE.addListener) WIDE.addListener(sync);
         }
         window.addEventListener('resize', () => { if ($('rtDispatch').classList.contains('is-ws')) sizeWs(); });

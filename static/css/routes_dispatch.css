@@ -1070,7 +1070,7 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
     position: absolute; z-index: 500; left: 112px; bottom: 12px; max-width: min(720px, 50%); max-height: 50px; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; border: 1px solid var(--rt-line);
     border-radius: 12px; background: rgba(23, 28, 36, .92); backdrop-filter: blur(6px);
 }
-#rtDispatch .dp-ws-map .dp-mapfocus { position: absolute; z-index: 500; left: 64px; top: 12px; max-width: 46%; border: 1px solid var(--rt-line); border-radius: 10px; background: rgba(23, 28, 36, .94); }
+#rtDispatch .dp-ws-map .dp-mapfocus { position: absolute; z-index: 500; left: 64px; top: 78px; max-width: 46%; border: 1px solid var(--rt-line); border-radius: 10px; background: rgba(23, 28, 36, .94); }
 /* итоги дня поверх карты (плашка Routific) */
 .dp-ws-kpi { position: absolute; z-index: 600; top: 12px; left: 50%; transform: translateX(-50%); pointer-events: none; }
 #rtDispatch .dp-ws-kpi .dp-stats {
@@ -1154,3 +1154,7 @@ body.dp-ws-on .rt-secbar .rt-tabs a { padding-top: 5px; padding-bottom: 5px; }
 /* подписи Яндекса и Leaflet справа внизу (их нельзя перекрывать) — левее открытой карточки машины */
 .dp-ws.has-side .leaflet-bottom.leaflet-right { margin-right: calc(min(460px, 44%) + 24px); }
 .dp-ws.has-side .dp-ws-kpi { left: calc((100% - min(460px, 44%)) / 2); }
+/* узкий рабочий экран с карточкой машины — итоги дня переносятся, а не уходят под карточку */
+.dp-ws.has-side .dp-ws-kpi { max-width: calc(100% - min(460px, 44%) - 40px); }
+#rtDispatch .dp-ws.has-side .dp-ws-kpi .dp-stats { flex-wrap: wrap; justify-content: center; }
+#rtDispatch .dp-ws.has-side .dp-ws-kpi .dp-stat { padding: 6px 10px; }
