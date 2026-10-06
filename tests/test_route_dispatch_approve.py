@@ -51,7 +51,7 @@ def test_approve_unapprove_round_trip_restores_pins_exactly():
         dp.approve(draft, 'x', None)
     dp.unapprove(draft)
     # закрепление логиста и взятия — как было, отметки утверждения нет; план остаётся выпущенным на терминалы (№80)
-    assert {k: v for k, v in draft.to_json().items() if k != 'released'} == before
+    assert {k: v for k, v in draft.to_json().items() if k not in ('released', 'sent')} == before   # №81: снимок водителей
     assert draft.released == {'at': '2026-10-01T08:30:00', 'by': 'logist'}
     with pytest.raises(dp.DispatchError, match='հաստատված չէ'):
         dp.unapprove(draft)

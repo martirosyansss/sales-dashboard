@@ -880,3 +880,96 @@
 .dp-nodriver[hidden] { display: none; }
 .dp-nodriver > i { color: var(--rt-fg-mute); }
 .dp-nodriver > span { flex: 1 1 200px; min-width: 0; }
+
+/* ==========================================================================
+   №81 — как у профессиональных систем (Routific, OptimoRoute, Onfleet)
+   ========================================================================== */
+/* что видят водители: черновик / отправлено / неотправленные правки и «Ուղարկել» */
+.dp-sendstate { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 10px; }
+.dp-sendstate[hidden] { display: none; }
+.dp-sendpill {
+    display: inline-flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 12px; border-radius: 999px;
+    border: 1px solid var(--rt-line); background: var(--rt-panel-2); color: var(--rt-fg-dim); font-size: .875rem; font-weight: 600; line-height: 1.3;
+}
+.dp-sendpill.is-sent { color: var(--rt-ok); border-color: var(--rt-ok-line); background: var(--rt-ok-bg); }
+.dp-sendpill.is-unsent { color: var(--rt-warn); border-color: var(--rt-warn-line); background: var(--rt-warn-bg); }
+.dp-sendpill.is-unsent i { font-size: .55em; }
+
+/* требует внимания: счётчики одной строкой под «Ի՞նչ անել հիմա» */
+.dp-inbox { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 14px; }
+.dp-inbox[hidden] { display: none; }
+.dp-inchip {
+    display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--rt-line); background: var(--rt-panel); color: var(--rt-fg); font: 600 .875rem var(--rt-font); text-decoration: none;
+    transition: border-color .15s, background .15s;
+}
+.dp-inchip:hover { border-color: var(--rt-acc-dim); background: var(--rt-panel-2); color: var(--rt-fg); }
+.dp-inchip i { color: var(--rt-fg-mute); }
+.dp-inchip b { min-width: 22px; padding: 1px 7px; border-radius: 999px; background: var(--rt-panel-2); text-align: center; font-family: var(--rt-mono); font-size: .8125rem; }
+.dp-inchip.is-warn { border-color: var(--rt-warn-line); }
+.dp-inchip.is-warn i, .dp-inchip.is-warn b { color: var(--rt-warn); }
+.dp-inchip.is-bad { border-color: var(--rt-danger-line); background: var(--rt-danger-bg); }
+.dp-inchip.is-bad i, .dp-inchip.is-bad b { color: var(--rt-danger); }
+
+/* новые заказы дня — одной строкой, подробности под «Մանրամասն»; как посчитано — свёрнуто */
+.dp-more { margin-top: 2px; color: var(--rt-fg-dim); }
+.dp-more > summary, details.dp-costnote > summary { cursor: pointer; width: max-content; max-width: 100%; color: var(--rt-fg-mute); font-size: .875rem; }
+.dp-more > summary:hover, details.dp-costnote > summary:hover { color: var(--rt-acc); }
+.dp-more p { margin: 6px 0 0; line-height: 1.5; }
+details.dp-costnote p { margin: 6px 0 0; }
+
+/* шкала дня сворачивается */
+.dp-board-fold { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: .875rem; text-decoration: none; }
+#rtDispatch .dp-board.is-folded .dp-board-head { margin-bottom: 0; }
+.dp-bar .dp-bar-t i { margin-right: 5px; }
+
+/* магазин тянут мышью на рейс: цель подсвечена */
+#rtDispatch .dp-stop[draggable="true"] { cursor: grab; }
+#rtDispatch .dp-stop.is-dragged { opacity: .45; }
+#rtDispatch.is-dragstop .dp-bar, #rtDispatch.is-dragstop .dp-trip { transition: outline-color .1s; }
+#rtDispatch .dp-bar.is-drop, #rtDispatch .dp-trip.is-drop, #rtDispatch .dp-tcard.is-drop { outline: 2px dashed var(--rt-acc); outline-offset: 2px; }
+#rtDispatch .dp-trip.is-drop { background: var(--rt-acc-glow); border-radius: var(--rt-radius-sm); }
+
+/* рабочий экран: рейсы и карта — на высоту окна, у списка рейсов своя прокрутка */
+@media (min-width: 1101px) {
+    #rtDispatch .dp-trucklist {
+        position: sticky; top: var(--dp-top); max-height: calc(100vh - var(--dp-top) - 16px); overflow-y: auto;
+        overscroll-behavior: contain; align-content: start; padding-right: 6px; scrollbar-gutter: stable;
+    }
+}
+
+/* телефон: вкладки внизу; кнопка AI — значком (подпись — в aria-label) и не закрывает кнопки страницы */
+.dp-tabs[hidden] { display: none; }
+@media (max-width: 767px) {
+    #rtDispatch { padding-bottom: 84px; }
+    .dp-ai-fab { width: 52px; height: 52px; padding: 0; justify-content: center; }
+    .dp-ai-fab span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    #rtDispatch[data-tab] .dp-ai-fab { display: none; }
+    #rtDispatch[data-tab] .dp-toast { bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
+    .dp-tabs {
+        position: fixed; left: 0; right: 0; bottom: 0; z-index: 1050; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr);
+        gap: 4px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px)); background: var(--rt-panel); border-top: 1px solid var(--rt-line);
+        box-shadow: 0 -8px 24px rgba(0, 0, 0, .35);
+    }
+    .dp-tab {
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 52px; padding: 0 4px;
+        border: 0; border-radius: 12px; background: none; color: var(--rt-fg-dim); font: 600 .75rem var(--rt-font); cursor: pointer;
+    }
+    .dp-tab i { font-size: 1.1rem; }
+    .dp-tab[aria-pressed="true"] { color: var(--rt-acc); background: var(--rt-acc-glow); }
+    .dp-tab[hidden] { display: none; }
+    /* «Օր»: день, подготовка и сводка; «Երթեր»: шкала и рейсы; «Քարտեզ»: только карта */
+    #rtDispatch[data-tab="day"] :is(#dpBoard, #dpOverflow, #dpUnassigned, .dp-split) { display: none !important; }
+    #rtDispatch[data-tab="trips"] :is(.dp-kicker, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, .dp-mapcol, #dpAnalysis) { display: none !important; }
+    #rtDispatch[data-tab="map"] :is(.dp-kicker, .dp-help, #dpTodo, #dpInbox, #dpNoDriver, #dpSameDay, .dp-prep, #dpRun, .dp-summary, #dpBoard, #dpOverflow, #dpUnassigned, .dp-trucklist, #dpAnalysis) { display: none !important; }
+    #rtDispatch[data-tab="map"] .dp-mapbox-body > .dp-map { height: calc(100vh - var(--rt-nav-h, 64px) - 330px); min-height: 300px; }
+    /* «Երթեր» и «Քարտեզ»: от шапки — только день и что видят водители */
+    body:is([data-dp-tab="trips"], [data-dp-tab="map"]) .rt-secbar { display: none; }
+    #rtDispatch:is([data-tab="trips"], [data-tab="map"]) :is(.dp-cal, .dp-datenote, #dpTomorrow) { display: none !important; }
+    #rtDispatch:is([data-tab="trips"], [data-tab="map"]) .dp-dayboard { grid-template-columns: minmax(0, 1fr); padding: 10px 12px; gap: 8px; }
+    #rtDispatch:is([data-tab="trips"], [data-tab="map"]) .dp-dayboard .rt-title { font-size: 1.125rem; }
+    #rtDispatch:is([data-tab="trips"], [data-tab="map"]) .dp-sendstate { margin-top: 4px; }
+    #rtDispatch[data-tab="map"] .dp-mapfilter { max-height: 84px; }
+    .dp-inbox { margin-top: 0; }
+    .dp-inchip { flex: 1 1 auto; justify-content: center; }
+}

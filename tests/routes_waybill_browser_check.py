@@ -307,6 +307,9 @@ def main() -> int:
             # E
             page.set_viewport_size({'width': 390, 'height': 860})
             page.wait_for_timeout(500)
+            if page.locator('#dpTabs').is_visible():   # №81: на телефоне рейсы — во вкладке «Երթեր»
+                page.click('.dp-tab[data-tab="trips"]')
+                page.wait_for_timeout(300)
             sw = page.evaluate('() => document.documentElement.scrollWidth')
             c0 = page.locator('#dpTruckCards .dp-tcard').first
             hb, ab = c0.locator('.dp-thead').bounding_box(), c0.locator('.dp-tacts').bounding_box()

@@ -1321,7 +1321,7 @@ def _carried(state: RoutesState, day: date, workdays: Sequence[int], backlog: li
         except StoreError:
             stored = None
         if stored is not None:
-            out |= dp.Draft.from_json(stored[0]).deferred
+            out |= dp.Draft.from_json(stored[0]).for_drivers().deferred   # №81: «везти завтра», отправленное водителям
         d += timedelta(days=1)
     return out & {o.isn for o in backlog}
 
@@ -1335,7 +1335,7 @@ def _plan_seen(state: RoutesState, day: date) -> dp.PlanSeen | None:
         logger.warning('[Routes] План развоза на %s не прочитан — заказы, заведённые заранее на него, едут и дальше',
                        day, exc_info=True)
         return None
-    return dp.PlanSeen.of(draft)
+    return dp.PlanSeen.of(draft.for_drivers() if draft is not None else None)   # №81: видел — отправленный план
 
 
 def _same_day_taken(state: RoutesState, day: date, workdays: Sequence[int],
@@ -1354,7 +1354,7 @@ def _same_day_taken(state: RoutesState, day: date, workdays: Sequence[int],
                            d, day, exc_info=True)
             stored, unread = None, True
         if stored is not None:
-            out |= dp.Draft.from_json(stored[0]).same_day
+            out |= dp.Draft.from_json(stored[0]).for_drivers().same_day   # №81: взяли в развоз только отправленные
         d += timedelta(days=1)
     return out, unread
 
@@ -1636,7 +1636,10 @@ def _dispatch_page_body(dd: _DispatchDay) -> dict[str, Any]:
             **({'approved': {'at': dd.draft.approved['at'], 'by': dd.draft.approved['by']}}
                if dd.draft is not None and dd.draft.approved is not None else {}),
             # №80: план выпущен на терминалы — «Ջնջել երթերը» не показывается (сервер и так откажет)
-            **({'released': True} if dd.draft is not None and dd.draft.released is not None else {})}
+            **({'released': True} if dd.draft is not None and dd.draft.released is not None else {}),
+            # №81: когда план ушёл водителям (кто — имя человека, только странице) и что с тех пор не отправлено
+            **({'sent': {'at': dd.draft.sent['at'], 'by': dd.draft.sent['by']}, 'unsent': dp.unsent(dd.draft)}
+               if dd.draft is not None and dd.draft.sent is not None else {})}
 
 
 # --- Новые заказы дня (ответ владельца №72) ---
@@ -1702,8 +1705,7 @@ def _same_day_json(dd: _DispatchDay) -> dict[str, Any]:
     point = {s.customer_id: s.point for s in dd.stops}
     moving: set[int] = set()   # клиенты в рейсах, чья загрузка уже началась
     if is_today and draft is not None and dd.ctx is not None:
-        started = dp.started_trips(dd.ctx, dd.stops, draft, _now_min(dd.ctx, now))
-        moving = {c for t in draft.trips if t.id in started for c in t.stops}
+        moving = dp.started_customers(dd.ctx, dd.stops, draft, _now_min(dd.ctx, now))
 
     def item(o: dp.DispatchOrder, took: bool) -> dict[str, Any]:
         code, name = dd.data.customers.get(o.customer_id) or ('', '')
@@ -1781,8 +1783,7 @@ def _same_day_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay, payload
     isns = {x.upper() for x in raw}
     # рейс, чья загрузка началась, уже везёт заказ: вернуть его на завтра — значит отвезти дважды
     cids = {o.customer_id for o in dd.same_day if o.isn in isns}
-    started = dp.started_trips(dd.ctx, dd.stops, dd.draft, _now_min(dd.ctx, now))
-    if any(t.id in started and cids & set(t.stops) for t in dd.draft.trips):
+    if cids & dp.started_customers(dd.ctx, dd.stops, dd.draft, _now_min(dd.ctx, now)):
         raise dp.DispatchError('Մեքենան արդեն բեռնվում է կամ ճանապարհին է՝ այս պատվերով — այն այսօր է գնում, '
                                'վաղվան թողնել չի կարելի')
     return dp.drop_same_day(dd.draft, isns)
@@ -1795,9 +1796,14 @@ PAST_DAY_APPROVE = 'Անցած օրվա պլանը չի հաստատվում և 
 
 
 def _approve_edit(dd: _DispatchDay, payload: Mapping[str, Any]) -> dp.Draft:
-    """«Հաստատել օրվա պլանը» / «Չեղարկել հաստատումը» (№73): прошедший день — DispatchError."""
+    """«Հաստատել օրվա պլանը» / «Չեղարկել հաստատումը» (№73), «Ուղարկել վարորդներին» (№81 — сам снимок делает
+    api_dispatch_edit последним шагом, dp.send): прошедший день — DispatchError."""
     if dd.day < _same_day_now().date():
         raise dp.DispatchError(PAST_DAY_APPROVE)
+    if payload.get('action') == 'send':
+        if dd.draft.released is None:
+            raise dp.DispatchError('Նախ հաստատեք օրվա պլանը')
+        return dd.draft
     if payload.get('action') == 'approve':
         # время утверждения — по Еревану, как «сегодня» и «сейчас» новых заказов дня
         return dp.approve(dd.draft, _same_day_now().isoformat(timespec='seconds'), session.get('username'))
@@ -1824,8 +1830,7 @@ def _apply_settings_edit(state: RoutesState, bundle: Bundle, dd: _DispatchDay) -
     after = _load_day(state, bundle, dd.day, draft=new, rev=dd.rev)
     now = _same_day_now()
     if dd.ctx is not None and dd.day == now.date():
-        started = dp.started_trips(dd.ctx, dd.stops, dd.draft, _now_min(dd.ctx, now))
-        moving = {c for t in dd.draft.trips if t.id in started for c in t.stops}
+        moving = dp.started_customers(dd.ctx, dd.stops, dd.draft, _now_min(dd.ctx, now))
         before = {o.isn for st in dd.stops if st.customer_id in moving for o in st.orders}
         if before - {o.isn for st in after.stops for o in st.orders}:
             raise dp.DispatchError(SETTINGS_ON_STARTED)
@@ -2220,7 +2225,7 @@ def api_dispatch_edit() -> Any:
     try:
         if payload.get('action') == 'defer_trip':
             _check_defer_same_day(dd, payload.get('trip'))
-        if payload.get('action') in ('approve', 'unapprove'):   # утверждение плана дня (№73)
+        if payload.get('action') in ('approve', 'unapprove', 'send'):   # утверждение плана дня (№73), отправка (№81)
             draft = _approve_edit(dd, payload)
         elif payload.get('action') == 'apply_settings':   # день — по нынешним правилам настроек (№69, №74)
             draft = _apply_settings_edit(state, bundle, dd)
@@ -2245,6 +2250,8 @@ def api_dispatch_edit() -> Any:
     dp.keep_approved(draft, trips_before)   # №73: пока план утверждён, новые рейсы тоже закреплены
     draft.overtime = dp.runs_late(dd.ctx, dd.stops, draft)
     _capture_prediction(dd, draft)
+    if payload.get('action') in ('approve', 'send'):   # №81: водителям — план в том виде, в каком он сохраняется
+        dp.send(draft, _same_day_now().isoformat(timespec='seconds'), session.get('username'))
     rev = state.store.save_dispatch(day.isoformat(), draft.to_json(), session.get('username'), expected_rev=dd.rev)
     if rev is None:
         return _conflict('План изменили в другой вкладке — обновите страницу')
@@ -2682,7 +2689,7 @@ def api_measurements_post() -> Any:
         out['prediction_at'] = old.get('prediction_at')
     else:
         stored = state.store.load_dispatch(day)
-        prediction = stored[0].get('prediction', {}) if stored is not None else {}
+        prediction = dp.sent_json(stored[0]).get('prediction', {}) if stored is not None else {}   # №81: план водителей
         prediction = prediction if isinstance(prediction, dict) else {}
         out['predicted'] = prediction.get('trucks', {}).get(code)
         out['prospective'] = prediction.get('prospective') is True
@@ -2973,7 +2980,7 @@ def _learning_days(state: RoutesState, bundle: Bundle, since: date, until: date
     for car, ds in state.fleet_facts.car_days(since.isoformat(), until.isoformat()):
         if ds not in drafts:
             got = state.store.load_dispatch(ds)
-            drafts[ds] = got[0] if got is not None else None
+            drafts[ds] = dp.sent_json(got[0]) if got is not None else None   # №81: факт сравниваем с планом водителей
         ranks, plan_trips = learning.draft_ranks(drafts[ds], car)
         version = (state.fleet_facts.version(car, ds), bundle.depot, tuple(sorted(ranks.items())), windows_key)
         with state.actuals_lock:
@@ -3763,7 +3770,7 @@ def _live_context(state: RoutesState, day: date,
     plans: dict[str, list[live.PlanTrip]] = {}
     planned: list[str] = []
     if stored is not None:
-        draft = dp.Draft.from_json(stored[0])
+        draft = dp.Draft.from_json(stored[0]).for_drivers()   # №81: машины едут по отправленному плану
         by_truck: dict[str, list[list[int]]] = {}
         for t in draft.trips:
             by_truck.setdefault(t.truck, []).append(list(t.stops))

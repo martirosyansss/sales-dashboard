@@ -149,7 +149,7 @@ def main() -> int:
             check(page.locator('#dpTruckCards .rt-badge', has_text='Այսօրվա նոր պատվեր').count() >= 1, 'C stop badge')
 
             # D
-            text = banner.inner_text()
+            text = banner_box.text_content().replace(' ', ' ')   # №81: пояснения — под свёрнутым «Մանրամասն»
             check('Այսօր եկել է 2 նոր պատվեր' in text and 'Արդեն տանում ենք այսօր՝ 1 պատվեր' in text, 'D banner: 2 new, 1 taken: ' + text)
 
             # E
