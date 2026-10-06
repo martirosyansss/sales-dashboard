@@ -574,10 +574,10 @@ class EtaPlan:
     lunch_at: datetime | None = None
 
 
-def lunch_taken(actual: ac.DayActual, day: date, rules: Rules, last_at: datetime | None = None) -> bool:
+def lunch_taken(actual: ac.DayActual, day: date, rules: Rules) -> bool:
     """Обед уже был: стоянка не по плану не короче половины обеда, начавшаяся в окне начала обеда ± час (обед могли
-    взять раньше или позже — окно только правило сборки); стоянка, начавшаяся в окне и идущая сейчас (last_at — последняя
-    точка трека), — обед уже идёт, второй не добавляется. Обеда в настройках нет — считается взятым."""
+    взять раньше или позже — окно только правило сборки). Идущая сейчас стоянка считается так же — когда простояла не меньше
+    половины обеда (короткая остановка в окне — ещё не обед). Обеда в настройках нет — считается взятым."""
     if rules.lunch_min <= 0:
         return True
     lo, hi = rules.lunch_window
@@ -585,8 +585,7 @@ def lunch_taken(actual: ac.DayActual, day: date, rules: Rules, last_at: datetime
         if s.kind != 'other':
             continue
         m = ac.day_minutes(day, s.arrive)
-        ongoing = last_at is not None and s.leave >= last_at
-        if (s.minutes >= rules.lunch_min / 2 and lo - 60 <= m <= hi + 60) or (ongoing and lo <= m <= hi):
+        if s.minutes >= rules.lunch_min / 2 and lo - 60 <= m <= hi + 60:
             return True
     return False
 
@@ -733,7 +732,7 @@ def car_view(day: date, now: datetime, facts: Mapping[str, Any], plan: Sequence[
             here = (nxt, max(0.0, (now - arrived).total_seconds() / 60.0) if arrived is not None else 0.0)
             queue = [(k, [x for x in xs if x['stop_id'] != nxt['stop_id']]) for k, xs in queue]
         eta = eta_plan(day, now, last.point, queue, gone, current if gone else None, plan, depot, road, rules,
-                       not lunch_taken(actual, day, rules, last.at), at_depot, here)
+                       not lunch_taken(actual, day, rules), at_depot, here)
         etas = dict(eta.arrive)
         if eta.back is not None and gone and not at_depot:
             return_eta, return_source = eta.back[0], 'road' if eta.back[1] else 'model'

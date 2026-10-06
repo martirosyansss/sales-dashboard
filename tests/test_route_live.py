@@ -1207,6 +1207,28 @@ def test_here_leg_cached_by_rounded_position_and_failures_briefly(live_app, monk
     assert len(fake.calls) == 5
 
 
+def test_here_leg_engine_exception_falls_back_not_fails(live_app, monkeypatch):
+    fake = FakeValhallaRoads()
+    road = _here_road(live_app, monkeypatch, fake)
+
+    def boom(a, b, city):
+        raise MemoryError('tiles')
+    fake.route = boom
+    assert road.legs((40.1600, 44.4600), B, 600.0, True) is None           # запасная модель, исключение наружу не идёт
+
+
+def test_live_flight_locks_trimmed_with_cards_cache(live_app):
+    from route_optimizer import views
+    state = live_app.app.extensions['route_optimizer']
+    state.live_cards.clear()
+    state.live_flight.clear()
+    for n in range(10):
+        state.live_flight[date(2026, 1, 1 + n)] = threading.Lock()
+    views._live_cards(state, API_NOW.date())
+    assert set(state.live_flight) <= set(state.live_cards) | {d for d, lk in state.live_flight.items() if lk.locked()}
+    assert len(state.live_flight) <= 4
+
+
 def test_here_leg_over_budget_does_not_ask_valhalla(live_app, monkeypatch):
     from route_optimizer import views
     fake = FakeValhallaRoads()
@@ -1298,13 +1320,15 @@ def test_eta_lunch_not_inserted_after_window_end_and_ongoing_stay_counts():
     rules = live.Rules(lunch_min=30.0)    # окно 12:30–14:30
     late = datetime(2026, 10, 5, 15, 0, tzinfo=Y)
     assert _lunch_eta(late, road, rules) == _lunch_eta(late, road, live.Rules(lunch_min=0.0))   # окно кончилось — обеда нет
-    # идущая сейчас стоянка не по плану, начавшаяся в окне (6 мин < половины обеда), — обед уже идёт: второй не добавляем
+    # идущая стоянка не по плану, начавшаяся в окне: простояла ≥ половины обеда — обед идёт, второй не добавляем;
+    # короткая остановка (6 мин) — ещё не обед, он впереди
     start = datetime(2026, 10, 5, 13, 0, tzinfo=Y)
-    tr = Track(start).park((40.1600, 44.4600), 6)
     stops = [stop('S:A', 1, A, 100.0, seq=1), stop('S:B', 2, B, 100.0, seq=2)]
-    with_l = {x['stop_id']: x['eta'] for x in _view_eta(tr, stops, road, rules)['stops']}
-    without = {x['stop_id']: x['eta'] for x in _view_eta(tr, stops, road, live.Rules(lunch_min=0.0))['stops']}
-    assert with_l == without
+
+    def etas(minutes, r):
+        return {x['stop_id']: x['eta'] for x in _view_eta(Track(start).park((40.1600, 44.4600), minutes), stops, road, r)['stops']}
+    assert etas(16, rules) == etas(16, live.Rules(lunch_min=0.0))
+    assert etas(6, rules) != etas(6, live.Rules(lunch_min=0.0))
     # та же стоянка, но короткая и уже закончилась — обеда не было, он ещё впереди
     tr2 = Track(start).park((40.1600, 44.4600), 3).drive(_mid(DEPOT, A))
     a = {x['stop_id']: x['eta'] for x in _view_eta(tr2, stops, road, rules)['stops']}

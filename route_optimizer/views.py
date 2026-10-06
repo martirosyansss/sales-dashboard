@@ -3585,7 +3585,10 @@ def _live_road_build(state: RoutesState, bundle: Bundle, snap: Any, calib: Any, 
             return hit[1]
         if _monotonic() > getattr(_budget, 'until', math.inf):
             return None
-        got = r.route(a, b, city)
+        try:
+            got = r.route(a, b, city)
+        except Exception:   # участок от машины — лучшая попытка: любой сбой движка не должен ронять флот
+            got = None
         out = None
         if got is not None:
             km, raw = got
@@ -3707,6 +3710,8 @@ def _live_cards(state: RoutesState, day: date) -> tuple[_LiveContext, datetime, 
             state.live_cards[day] = (fleet, _monotonic(), ctx, now, cards)
             while len(state.live_cards) > 4:
                 state.live_cards.pop(next(iter(state.live_cards)))
+            for d in [d for d, lock in state.live_flight.items() if d not in state.live_cards and not lock.locked()]:
+                del state.live_flight[d]   # замки дней — вместе с кэшем, не копятся
         return ctx, now, fleet, cards
     finally:
         flight.release()

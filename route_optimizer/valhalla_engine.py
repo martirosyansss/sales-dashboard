@@ -467,12 +467,11 @@ class _Engine:
 
     @contextmanager
     def actor(self, wait: bool = True) -> Iterator[Any]:
-        """Свободный Actor из пула. wait=False — только уже созданный и свободный сейчас, иначе EngineBusy сразу (карта
-        машин: опрос не должен вставать в очередь за фоновой сборкой матриц)."""
+        """Свободный Actor из пула. wait=False — свободный сейчас или новый (пока создано меньше WORKERS: после перезапуска с
+        кэшем матриц Actor ещё нет), иначе EngineBusy сразу (карта машин: опрос не встаёт в очередь за фоновой сборкой)."""
         with self._cond:
-            if not wait:
-                if not self._idle:
-                    raise EngineBusy('все Actor заняты')
+            if not wait and not self._idle and self._created >= WORKERS:   # свободного нет и новый не создать
+                raise EngineBusy('все Actor заняты')
             while not self._idle and self._created >= WORKERS:
                 self._cond.wait()
             actor = self._idle.pop() if self._idle else None
@@ -929,7 +928,7 @@ class ValhallaRoads:
                 res = actor.matrix(body)['sources_to_targets']
             k, m = res['distances'][0][0], res['durations'][0][0]
             k, m = float(k), float(m) / 60.0
-        except (EngineBusy, TypeError, ValueError, IndexError, KeyError, RuntimeError):   # ValhallaError — RuntimeError
+        except Exception:   # лучшая попытка: занят пул, ValhallaError, OSError, MemoryError… — запасная модель, не отказ флота
             return None
         if not (math.isfinite(k) and math.isfinite(m)) or k <= 0 or m <= 0:
             return None

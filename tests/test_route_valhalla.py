@@ -1276,6 +1276,25 @@ def test_plan_export_shift_gate_uses_road_minutes():
     assert not slow['time_gate']['ok'] and slow['time_gate']['days']
 
 
+def test_route_creates_first_actor_when_none_exist_yet(tmp_path, fake):
+    """После перезапуска с кэшем матриц Actor ещё нет: запрос без ожидания создаёт его, а не отвечает «занят» вечно."""
+    r = _view(tmp_path)
+    assert fake.created == 0
+    assert r.route((40.1912, 44.5133), P[1], True) is not None and fake.created == 1
+
+
+def test_route_swallows_any_engine_exception(tmp_path, fake, monkeypatch):
+    r = _view(tmp_path)
+    r.ensure(P)
+    fake.fail = True
+    assert r.route((40.1912, 44.5133), P[1], True) is None
+    for exc in (OSError('disk'), MemoryError()):
+        def bad(body, exc=exc):
+            raise exc
+        monkeypatch.setattr(fake, 'matrix', lambda self, body, bad=bad: bad(body))
+        assert r.route((40.1912, 44.5133), P[1], True) is None
+
+
 def test_route_never_waits_for_busy_actor_pool(tmp_path, fake):
     """Все Actor заняты (фоновая сборка матриц) — опрос карты не встаёт в очередь: route отвечает None сразу."""
     r = _view(tmp_path)
