@@ -78,6 +78,11 @@ PyVRP пауз и запаса не знает: запас — линейной 
 (тот выезжает позже под окно), сам становится первым — у того загрузка уже в его отрезке. PyVRP — промежуток с начала дня
 начинается раньше на постоянную часть загрузки (на тонну — с запасом); решает точная проверка (_days). Без preload — байт
 в байт прежний расчёт.
+
+Отдельный рейс (ответ владельца №78, 16–17; _Stop.solo) — тоже только в плане развоза: заказ такого магазина едет рейсом
+«склад → магазин → склад» без других магазинов (как неизбежно тяжёлый заказ: не сливается Кларком–Райтом, выравнивание
+его рейс не трогает, в PyVRP рёбра между ним и другими заказами запрещены, проверка решения — тоже). Второй рейс машины —
+как обычно. Без таких магазинов — байт в байт прежний расчёт.
 """
 from __future__ import annotations
 
@@ -276,6 +281,7 @@ class _Stop:
     center: bool = False
     allowed_trucks: frozenset[str] | None = None
     yerevan: bool = False  # в зоне Еревана (№68): большой машине — надбавка к разгрузке и плата за точку
+    solo: bool = False     # отдельный рейс (№78): только этот заказ в рейсе
 
 
 @dataclass(frozen=True)
@@ -734,9 +740,10 @@ def plan_trips(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[Fl
             for _ in range(n):
                 singles.append(len(vs))
                 origin.append(i)
-                vs.append(_Stop(s.node, s.kg / n, s.revenue / n, _split_unload(s, n, tn), yerevan=s.yerevan))
+                vs.append(_Stop(s.node, s.kg / n, s.revenue / n, _split_unload(s, n, tn), yerevan=s.yerevan,
+                                solo=s.solo))
         else:
-            if s.kg > cap + _EPS:
+            if s.kg > cap + _EPS or s.solo:
                 singles.append(len(vs))
             origin.append(i)
             vs.append(s)
@@ -914,7 +921,7 @@ def _plan_timed(stops: Sequence[_Stop], d: Matrix, m: Matrix, trucks: Sequence[F
                 origin.append(i)
                 vs.append(replace(s, kg=s.kg / n, revenue=s.revenue / n, unload=_split_unload(s, n, tn)))
         else:
-            if s.kg > c + _EPS:
+            if s.kg > c + _EPS or s.solo:   # отдельный рейс (№78) — одиночным, как неизбежно тяжёлый
                 singles.append(len(vs))
             origin.append(i)
             vs.append(s)
@@ -1286,7 +1293,7 @@ def _balance(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tr
     base = {code: run(code, {}) for code in order}
     was = {k: x for code, r in base.items() if r is not None for k, x in zip(order[code], r)}
     free = [k for k, t in enumerate(trips)
-            if not (t.extra or base[t.truck] is None or k in pins or any(share[i] > 1 for i in t.items))]
+            if not (t.extra or base[t.truck] is None or k in pins or any(share[i] > 1 or vs[i].solo for i in t.items))]
 
     def day(code: str, alt: Mapping[int, list[int]]) -> bool:
         """День машины с составами alt допустим: окна и конец дня соблюдаются, ожидание внутри рейса выросло не больше
@@ -1615,7 +1622,7 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
             s = vs[i]
             seq.append(len(pieces))
             pieces.append(vrp.Piece(s.node, s.kg, s.unload, bound(s.early), due(s.late), s.center, True, s.allowed_trucks,
-                                    s.yerevan))
+                                    s.yerevan, s.solo))
             origin.append(i)
         dep, end = when[k]
         # промежуток с начала дня вне сезона (№78) начинается раньше: первый рейс сборки — в нём, хоть «грузится» раньше
@@ -1628,7 +1635,7 @@ def _solver(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix, tru
     for i, s in enumerate(stops):
         if i not in placed and any(v.capacity_kg >= s.kg - _EPS for v in _eligible([i], stops, free_trucks)):
             pieces.append(vrp.Piece(s.node, s.kg, s.unload, bound(s.early), due(s.late), s.center, False, s.allowed_trucks,
-                                    s.yerevan))
+                                    s.yerevan, s.solo))
             origin.append(i)
     # большая машина в Ереване (№68): надбавка к разгрузке и плата tn.yerevan_km км — профилем машины
     yer = any(p.yerevan for p in pieces)
@@ -1716,6 +1723,7 @@ def _solver_try(trips: list[Trip], stops: Sequence[_Stop], d: Matrix, m: Matrix,
              for t in out if t.truck not in locked)
     ok = ok and all(t.kg <= _load_limit(t.items, vs2, by_code[t.truck], trucks, LOAD_CAP) + 1e-6
                     for t in out if t.truck not in locked and (t.truck, t.items) not in pinned)
+    ok = ok and all(len(t.items) == 1 for t in out if any(vs2[i].solo for i in t.items))   # отдельный рейс (№78)
     if not ok:
         return None, 'load'
     if not all(r is not None and (not r or r[-1][1] + r[-1][2] <= window + _EPS)
@@ -1745,7 +1753,7 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
               fixed: Sequence[tuple[str, Sequence[int], float]] | None = None,
               balance: bool = False, solver: bool = False, load_cap: float | None = None,
               allowed_trucks: Sequence[Collection[str] | None] | None = None, fed: Collection[str] = (),
-              iterations: int = vrp.ITERATIONS) -> list[Trip]:
+              iterations: int = vrp.ITERATIONS, solo: Sequence[bool] | None = None) -> list[Trip]:
     """Рейсы дня по известным заказам — тот же расчёт, что у пробы Монте-Карло (plan_trips):
     заказ i — точка points[i], kgs[i] кг; Trip.items — номера заказов по порядку объезда.
     Тяжелее самой большой машины — несколько поездок к одному заказу поровну. overflow=False (план
@@ -1758,7 +1766,8 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
     и departs): balance — выровнять загрузку рейсов (_balance, ответ №44); solver — рейсы решателем PyVRP поверх
     сборки (_solver, ответ №45; iterations — итераций поиска, меньше — быстрая проба набора машин, №77), берутся, если
     прошли проверку и лучше (_better), иначе — рейсы сборки. Обед (tn с
-    обедом, №61) — во всех шагах по одному правилу; fed — машины, чей обед уже в занятом времени used / busy."""
+    обедом, №61) — во всех шагах по одному правилу; fed — машины, чей обед уже в занятом времени used / busy.
+    solo[i] — заказ i едет отдельным рейсом (№78, правило — в шапке модуля)."""
     if (balance or solver) and (overflow or busy is not None or departs is not None):
         raise ValueError('balance и solver — только для сборки плана развоза: overflow=False, без busy и departs')
     load_cap = LOAD_CAP if solver else load_cap
@@ -1771,7 +1780,7 @@ def route_day(points: Sequence[Point], kgs: Sequence[float], revenues: Sequence[
     stops = [_Stop(node[p], float(kg), float(rev), tn.unload_at(float(kg), p),
                    *(windows[i] if windows is not None else (0.0, math.inf)), center is not None and bool(center[i]),
                    None if allowed_trucks is None or allowed_trucks[i] is None else frozenset(allowed_trucks[i]),
-                   p in yerevan)
+                   p in yerevan, solo is not None and bool(solo[i]))
              for i, (p, kg, rev) in enumerate(zip(points, kgs, revenues))]
     if overflow or not trucks:
         return plan_trips(stops, d, m, trucks, tn, used, overflow, earliest, reasons, busy, departs, fixed, load_cap, fed)

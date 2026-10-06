@@ -1188,7 +1188,7 @@ def _dispatch_ctx(state: RoutesState, snap: Snapshot, bundle: Bundle, day: date,
                          {cid: w.span() for cid, w in bundle.windows.items()}, zone,
                          vehicle_access=bundle.vehicle_access,
                          model=_model_note(s, calib, norms, eff, [p for p in points if p is not None], trucks),
-                         end_reserve_min=float(s['truck_end_reserve_min']))
+                         end_reserve_min=float(s['truck_end_reserve_min']), solo=bundle.solo)
 
 
 def _model_note(s: Mapping[str, Any], calib: evaluate.Calibration, norms: Any, eff: learning.InEffect,
@@ -2831,9 +2831,11 @@ def api_customer_vehicles() -> Any:
     payload, error = _json_body()
     if error is not None:
         return error
-    if not isinstance(payload, dict) or set(payload) not in ({'customer_id', 'access'}, {'customer_id', 'access', 'window'},
-                                                             {'customer_id', 'access', 'window', 'unload_min'},
-                                                             {'customer_id', 'unload_min'}):
+    # "solo" (№78: отдельный рейс, true | false) — необязателен, только вместе с "window" (карточка «Условий магазина»)
+    if not isinstance(payload, dict) or set(payload) - {'solo'} not in ({'customer_id', 'access'},
+                                                                        {'customer_id', 'access', 'window'},
+                                                                        {'customer_id', 'access', 'window', 'unload_min'},
+                                                                        {'customer_id', 'unload_min'})             or ('solo' in payload and ('window' not in payload or not isinstance(payload['solo'], bool))):
         return _bad_request({'_': 'Սերվերը չընդունեց հարցումը'})
     cid = payload['customer_id']
     if isinstance(cid, bool) or not isinstance(cid, int) or not 0 < cid < 2 ** 31:
@@ -2870,8 +2872,12 @@ def api_customer_vehicles() -> Any:
                 unload, err = check_unload_min(payload['unload_min'])
                 if err:
                     return _bad_request({'unload_min': err})
-        state.store.save_customer_constraints(cid, access, window, session.get('username'), unload)
+        state.store.save_customer_constraints(cid, access, window, session.get('username'), unload,
+                                              payload.get('solo', KEEP))
         logger.info('[Routes] Окно приёма клиента %d: %s (%s)', cid, window or 'убрано', session.get('username'))
+        if 'solo' in payload:
+            logger.info('[Routes] Отдельный рейс магазина %d: %s (%s)', cid, 'да' if payload['solo'] else 'нет',
+                        session.get('username'))
         if unload is not KEEP:
             logger.info('[Routes] Время у магазина %d: %s (%s)', cid, f'{unload:g} мин' if unload else 'по норме',
                         session.get('username'))
@@ -2898,7 +2904,8 @@ def api_customer_vehicles_search() -> Any:
     bundle = _bundle(state)
     customers = [c for cid, c in snap.customers.items() if
                  (cid == customer_id if customer_id is not None else
-                  (not query and (cid in bundle.vehicle_access or cid in bundle.windows or cid in bundle.unload_min)) or
+                  (not query and (cid in bundle.vehicle_access or cid in bundle.windows or cid in bundle.unload_min
+                                  or cid in bundle.solo)) or
                   (query and query in f'{c.code} {c.name} {cid}'.casefold()))]
     customers.sort(key=lambda c: (c.name or '', c.id))
     unload = _unload_now(state)
@@ -2918,6 +2925,7 @@ def api_customer_vehicles_search() -> Any:
          'vehicle_access': bundle.vehicle_access[c.id].to_json() if c.id in bundle.vehicle_access else None,
          'window': bundle.windows[c.id].to_json() if c.id in bundle.windows else None,
          'unload_min': bundle.unload_min.get(c.id),
+         'solo': c.id in bundle.solo,   # №78: отдельный рейс
          # подсказка: сколько «Развоз» возьмёт с пустым полем; разгрузок по GPS — время по ним, введённое не участвует
          'unload_auto_min': round(per_stop + empty.get(c.id, 0.0), 1),
          'unload_visits': stats[c.id][0] if stats.get(c.id, (0, 0.0))[0] >= least else None}
@@ -3796,6 +3804,12 @@ def _live_context(state: RoutesState, day: date,
             by_truck.setdefault(t.truck, []).append(list(t.stops))
         pred = (draft.prediction or {}).get('trucks') or {}
         plans = {car: live.plan_trips(trips, pred.get(car), day) for car, trips in by_truck.items()}
+        # №78: машина везёт сегодня магазин, куда допущена списком «только выбранные» (в центр — ради него), — тревоги
+        # «центр» у неё нет (право въезда — «неизвестно»)
+        for car, trips in by_truck.items():
+            rules = [bundle.vehicle_access.get(c) for trip in trips for c in trip]
+            if car in trucks and any(r is not None and r.mode == 'allow' and car in r.trucks for r in rules):
+                trucks[car] = replace(trucks[car], center_ok=None)
         planned = list(by_truck)
     ds = day.isoformat()
     drivers, helpers = state.store.truck_drivers(ds)[0], state.store.truck_drivers(ds, 'helper')[0]

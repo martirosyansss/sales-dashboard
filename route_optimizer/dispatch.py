@@ -57,6 +57,13 @@
   новые заказы дня (№72) и перенос конца рейса (№59) в него не вставляют; ручная правка, меняющая его состав, — только с
   подтверждением (LoadedEdit). Снятие отметки (unmark_loaded) открепляет рейс, если его держала только она; держит
   утверждение — закрепление переходит утверждению (снятие утверждения откроет).
+- Правило магазина (ответ владельца №78, 16–17: «Ռամադա» — всегда отдельно и только FORD 333NO33): «отдельный рейс»
+  (DayContext.solo, store.customer_solo) — заказы магазина едут рейсом без других магазинов (правило — fleet); допуск
+  «только выбранные машины» (VehicleAccess allow) у магазина в малом центре пускает выбранные машины в центр ради этого
+  магазина (_central: для такого магазина правило центра заменяет его список машин), прочих магазинов центра это не
+  касается. Объезд центра в пути (roads.CenterBypassRoads) участок к магазину в центре и так не объезжает. Правки
+  логиста не запрещаются; сборка, перенос конца рейса и новые заказы дня правило соблюдают (_can_carry). Без правил —
+  прежний план до байта.
 """
 from __future__ import annotations
 
@@ -773,6 +780,7 @@ class DayContext:
     # что учитывает расчёт (views._dispatch_ctx: откуда км и минуты, выученные нормы) — только для пояснения на странице
     model: Mapping[str, Any] = field(default_factory=dict)
     end_reserve_min: float = 0.0         # запас в конце дня (№78): сборка — возврат не позже конца дня минус он
+    solo: frozenset[int] = frozenset()   # магазины «отдельным рейсом» (№78)
 
 
 def morning_loading(day: date, settings: Mapping[str, Any]) -> bool:
@@ -836,8 +844,17 @@ def _span(ctx: DayContext, cid: int) -> fl.Window:
 
 
 def _central(ctx: DayContext, s: Stop) -> bool:
-    """Точка в малом центре (везёт только машина с правом въезда)."""
+    """Точка в малом центре (везёт только машина с правом въезда). Магазин с допуском «только выбранные машины» (№78) —
+    не по правилу центра: его везут выбранные машины, в центр — ради него."""
+    rule = ctx.vehicle_access.get(s.customer_id)
+    if rule is not None and rule.mode == 'allow':
+        return False
     return bool(ctx.center_zone) and s.point is not None and in_polygon(s.point, ctx.center_zone)
+
+
+def _solo(ctx: DayContext, rest: Sequence[Stop]) -> list[bool] | None:
+    """«Отдельный рейс» точек rest для fleet.route_day (№78); правил нет — None (расчёт прежний)."""
+    return [s.customer_id in ctx.solo for s in rest] if ctx.solo else None
 
 
 def _yerevan(ctx: DayContext, s: Stop) -> bool:
@@ -984,8 +1001,10 @@ def _plan_around(ctx: DayContext, sel: Sequence[fl.FleetTruck], routable: Mappin
             cen.append(_central(ctx, s))
             access.append(_allowed_trucks(ctx, c))
     reasons: dict[int, str] = {}
+    solo = [*(_solo(ctx, rest) or [False] * len(rest)), *(c in ctx.solo for t in keep for c in t.stops)] if ctx.solo else None
     trips = fl.route_day(pts, kgs, revs, ctx.depot, sel, ctx.norms, _horizon(ctx), overflow=False, windows=wins, center=cen,
-                         reasons=reasons, fixed=fixed, balance=True, solver=True, allowed_trucks=access, iterations=iterations)
+                         reasons=reasons, fixed=fixed, balance=True, solver=True, allowed_trucks=access, iterations=iterations,
+                         solo=solo)
     own = {tuple(idx): t for t, (_, idx, _) in zip(keep, fixed)}
     out: list[DraftTrip] = []
     for t in trips:
@@ -1043,7 +1062,7 @@ def build(ctx: DayContext, stops: Sequence[Stop], old: Draft | None, trucks: Seq
                              windows=[_span(ctx, s.customer_id) for s in rest], center=[_central(ctx, s) for s in rest],
                              reasons=reasons, balance=True, solver=True,
                              allowed_trucks=[_allowed_trucks(ctx, s.customer_id) for s in rest], fed=fed,
-                             iterations=iterations) if rest and sel else []
+                             iterations=iterations, solo=_solo(ctx, rest)) if rest and sel else []
         draft.trips = list(pinned)
         for t in trips:
             draft.trips.append(DraftTrip(draft.next_id, t.truck, [rest[i].customer_id for i in t.items]))
@@ -1290,7 +1309,8 @@ def overtime(ctx: DayContext, stops: Sequence[Stop], draft: Draft) -> Draft:
                          ctx.depot, sel, ctx.norms, limit, used, overflow=ctx.overtime_minutes is None,
                          earliest=True, windows=[_span(ctx, s.customer_id) for s in rest],
                          center=[_central(ctx, s) for s in rest], reasons=reasons, busy=busy, departs=departs,
-                         load_cap=fl.LOAD_CAP, allowed_trucks=[_allowed_trucks(ctx, s.customer_id) for s in rest], fed=fed)
+                         load_cap=fl.LOAD_CAP, allowed_trucks=[_allowed_trucks(ctx, s.customer_id) for s in rest], fed=fed,
+                         solo=_solo(ctx, rest))
     new = []
     for t in trips:
         new.append(DraftTrip(draft.next_id, t.truck, [rest[i].customer_id for i in t.items]))
@@ -1364,10 +1384,12 @@ def _truck_day(ctx: DayContext, trips: Sequence[DraftTrip], stops: Mapping[int, 
 
 def _can_carry(ctx: DayContext, sel: Sequence[fl.FleetTruck], code: str, cids: Sequence[int],
                stops: Mapping[int, Stop], shares: Mapping[int, int]) -> bool:
-    """Рейс cids по силам машине code: право въезда (машина, центр) и груз не тяжелее предела сборки (fl.load_limit,
-    №45: 90% тоннажа)."""
+    """Рейс cids по силам машине code: право въезда (машина, центр), магазин «отдельным рейсом» — один в рейсе (№78), и
+    груз не тяжелее предела сборки (fl.load_limit, №45: 90% тоннажа)."""
     truck = ctx.trucks[code]
     if any(not _vehicle_ok(ctx, c, code) or (_central(ctx, stops[c]) and not truck.center_ok) for c in cids):
+        return False
+    if len(cids) > 1 and any(c in ctx.solo for c in cids):
         return False
     kgs = [stops[c].kg / shares.get(c, 1) for c in cids]
     lim = fl.load_limit(kgs, [_central(ctx, stops[c]) for c in cids], [_allowed_trucks(ctx, c) for c in cids], truck, sel)
@@ -1879,6 +1901,8 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
         for t in trips0:
             if t.id in started or not _insertable(draft, t) or t.truck not in draft.trucks or t.truck not in ctx.trucks:
                 continue
+            if any(c in ctx.solo for c in [*t.stops, *free]):   # №78: отдельный рейс — без других магазинов
+                continue
             trial = copy()
             dst = next(x for x in trial if x.id == t.id)
             for c in free:
@@ -1887,6 +1911,8 @@ def _same_day_plans(ctx: DayContext, base: Sequence[Stop], stops: Sequence[Stop]
         ones = {c: 1 for c in free}
         working = sorted(set(draft.trucks) & set(ctx.trucks))
         for code in working + spare_trucks(ctx, draft, crew):   # не из шага 1 — только с вышедшим свободным водителем (№77)
+            if len(free) > 1 and any(c in ctx.solo for c in free):   # №78: отдельный магазин с другими — не одним рейсом
+                break
             extra = code not in draft.trucks
             busy = any(t.truck == code for t in trips0)
             start = max(now_min, _truck_day(ctx, trips0, routable0, shares0, code)[1])

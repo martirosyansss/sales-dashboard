@@ -76,6 +76,7 @@ class Piece:
     required: bool
     allowed_trucks: frozenset[str] | None = None
     yerevan: bool = False     # в зоне Еревана (№68)
+    solo: bool = False        # отдельный рейс (№78): рёбра между ним и другими заказами запрещены, как у тяжёлого
 
 
 @dataclass(frozen=True)
@@ -164,7 +165,7 @@ def _solve(pieces, km, minutes, vehicles, shifts, start, load_cap, iterations, s
     central = [False, *(p.center for p in pieces)]
     # Тяжёлое исключение не превращает весь рейс в разрешённую загрузку 100%:
     # такой заказ едет один, соседние клиенты отделены возвратом на склад.
-    solo = [False, *(load_cap is not None and p.kg > load_cap * top(p) + 1e-9 for p in pieces)]
+    solo = [False, *(p.solo or (load_cap is not None and p.kg > load_cap * top(p) + 1e-9) for p in pieces)]
     every = [loc0, *locs]
     # Профиль объединяет машины с одинаковым набором запрещённых магазинов.
     masks = {v.code: (False, *(bool(p.center and not v.center_ok) or

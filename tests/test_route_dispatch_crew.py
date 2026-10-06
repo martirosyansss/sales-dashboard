@@ -336,7 +336,7 @@ def test_store_absence_ranges(tmp_path):
 def test_store_migration_22_to_23_adds_absence_keeps_all_rows(tmp_path):
     """22 → 23: только CREATE TABLE driver_absence, прежние таблицы и строки как были."""
     step = next(v for v, ddl in st._MIGRATIONS.items() if st._DRIVER_ABSENCE_TABLE in ddl)
-    assert step == 22 and st.SCHEMA_VERSION == 23
+    assert step == 22 and st.SCHEMA_VERSION >= 23   # 23 → 24 (№78) — своя миграция, тот же путь
     path = str(tmp_path / 'v22.db')
     s = st.Store(path)
     s.save_truck_driver('CAR1', '2026-10-01', 'Արամ', 'qa')
@@ -351,7 +351,7 @@ def test_store_migration_22_to_23_adds_absence_keeps_all_rows(tmp_path):
     assert s.driver_absences('2026-10-01') == {} and s.truck_drivers('2026-10-01')[0] == {'CAR1': 'Արամ'}
     with closing(sqlite3.connect(path)) as conn:
         assert {t: conn.execute(f'SELECT * FROM {t} ORDER BY 1').fetchall() for t in before} == before
-        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == ('23',)
+        assert conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone() == (str(st.SCHEMA_VERSION),)
     st.Store(path).save_driver_absence('Արամ', '2026-10-01', None, 'qa')     # повторное открытие — без миграции
 
 
